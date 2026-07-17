@@ -117,6 +117,7 @@ class TestRigidBodyFieldKeys(unittest.TestCase):
             '"related_bone"', '"collision_group"', '"collision_mask"',
             '"mass"', '"linear_damping"', '"angular_damping"',
             '"restitution"', '"friction"', '"node"',
+            '"shape_size"', '"pmx_position"', '"pmx_rotation_degrees"',
         ]
         for key in expected_keys:
             self.assertIn(key, self.presenter_src, f"Missing rigid body field key: {key}")
@@ -135,6 +136,7 @@ class TestJointFieldKeys(unittest.TestCase):
             '"translation_limit_min"', '"translation_limit_max"',
             '"rotation_limit_min_degrees"', '"rotation_limit_max_degrees"',
             '"spring_translation"', '"spring_rotation"',
+            '"pmx_position"', '"pmx_rotation_degrees"',
             '"node"',
         ]
         for key in expected_keys:
@@ -186,6 +188,20 @@ class TestTabStructure(unittest.TestCase):
         for language in ("en", "ja"):
             text = (translation_dir / f"{language}.json").read_text(encoding="utf-8")
             self.assertNotIn("physics_authoring_only_notice", text)
+
+    def test_supported_pose_rows_exist_and_unsupported_rows_are_not_added(self):
+        for editor_key in (
+            "rigid_shape_size", "rigid_position", "rigid_rotation",
+            "joint_position", "joint_rotation",
+        ):
+            self.assertIn(f'"{editor_key}"', self.tab_source)
+
+        for editor_key in (
+            "rigid_related_bone", "joint_body_a", "joint_body_b",
+            "joint_linear_states", "joint_angular_states",
+            "joint_spring_translation_enabled", "joint_spring_rotation_enabled",
+        ):
+            self.assertNotIn(f'_add_editor_row(layout, "{editor_key}"', self.tab_source)
 
 if __name__ == "__main__":
     unittest.main()

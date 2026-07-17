@@ -124,6 +124,9 @@ class TestPhysicsTabGUI(GuiTestBase):
                     "name_english": "HairR2",
                     "shape": 2,
                     "physics_mode": 2,
+                    "shape_size": "0.5, 1.0, 1.5",
+                    "pmx_position": "1, 2, 3",
+                    "pmx_rotation_degrees": "10, 20, 30",
                     "related_bone": "右髪２ (4)",
                     "collision_group": 1,
                     "collision_mask": "2",
@@ -141,6 +144,9 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertEqual(tab.rigid_shape_combo.currentIndex(), 2)
             self.assertEqual(tab.rigid_mass_edit.text(), "0.5")
             self.assertTrue(tab.rigid_mass_edit.isEnabled())
+            self.assertEqual(tab.rigid_shape_size_edit.text(), "0.5, 1.0, 1.5")
+            for hidden_key in ("rigid_related_bone",):
+                self.assertNotIn(hidden_key, tab._form_labels)
 
             tab.set_physics_form(
                 "joint",
@@ -150,6 +156,8 @@ class TestPhysicsTabGUI(GuiTestBase):
                     "joint_type": "Spring 6DOF",
                     "rigid_body_a": "Body A (1)",
                     "rigid_body_b": "Body B (2)",
+                    "pmx_position": "4, 5, 6",
+                    "pmx_rotation_degrees": "40, 50, 60",
                     "linear_constraint_states": "X: 0, Y: 0, Z: 0",
                     "angular_constraint_states": "X: 0, Y: 0, Z: 0",
                     "translation_limit_min": "X: 0, Y: 0, Z: 0",
@@ -167,6 +175,12 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertFalse(tab.joint_form_group.isHidden())
             self.assertEqual(tab.joint_type_spin.text(), "Spring 6DOF")
             self.assertTrue(tab.joint_rotation_max_edit.isEnabled())
+            self.assertEqual(tab.joint_position_edit.text(), "4, 5, 6")
+            for hidden_key in (
+                "joint_body_a", "joint_body_b", "joint_linear_states", "joint_angular_states",
+                "joint_spring_translation_enabled", "joint_spring_rotation_enabled",
+            ):
+                self.assertNotIn(hidden_key, tab._form_labels)
         finally:
             tab.deleteLater()
             QApplication.processEvents()

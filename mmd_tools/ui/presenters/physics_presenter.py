@@ -43,11 +43,22 @@ def _get_vector_str(node, attr):
 
 
 def _get_angle_vector_deg_str(node, attr):
-    """Read kAngle attrs via cmds.getAttr (returns Maya's current angle UI unit, degrees by default)."""
+    """Read kAngle attrs and format them in degrees regardless of Maya UI units."""
+    angle_unit = cmds.currentUnit(query=True, angle=True)
     x = _get_attr(node, f"{attr}X", 0.0)
     y = _get_attr(node, f"{attr}Y", 0.0)
     z = _get_attr(node, f"{attr}Z", 0.0)
+    if angle_unit == "rad":
+        x, y, z = (math.degrees(value) for value in (x, y, z))
     return f"{x:.2f}, {y:.2f}, {z:.2f}"
+
+
+def _set_angle_vector_degrees(node, attr, values):
+    """Write degree UI values through undoable cmds.setAttr calls."""
+    if cmds.currentUnit(query=True, angle=True) == "rad":
+        values = tuple(math.radians(value) for value in values)
+    for axis, value in zip("XYZ", values):
+        cmds.setAttr(f"{node}.{attr}{axis}", value)
 
 
 def _resolve_message_name(shape, attr):
@@ -447,6 +458,9 @@ class PhysicsPresenter:
             "shape": int(_get_attr(shape, "shapeType", 0)),
             "physics_mode": int(_get_attr(shape, "physicsMode", 0)),
             "related_bone": related_str,
+            "shape_size": _get_vector_str(shape, "shapeSize"),
+            "pmx_position": _get_vector_str(shape, "position"),
+            "pmx_rotation_degrees": _get_angle_vector_deg_str(shape, "rotation"),
             "collision_group": int(_get_attr(shape, "collisionGroup", 0)),
             "collision_mask": f"0x{mask:04X}",
             "mass": f"{_get_attr(shape, 'mass', 0.0):.4f}",
@@ -468,6 +482,8 @@ class PhysicsPresenter:
             "joint_type": str(_get_attr(shape, "jointType", 0)),
             "rigid_body_a": rb_a if rb_a else str(rb_a_idx),
             "rigid_body_b": rb_b if rb_b else str(rb_b_idx),
+            "pmx_position": _get_vector_str(shape, "position"),
+            "pmx_rotation_degrees": _get_angle_vector_deg_str(shape, "rotation"),
             "linear_constraint_states": "",
             "angular_constraint_states": "",
             "translation_limit_min": _get_vector_str(shape, "translationLimitMin"),
@@ -548,6 +564,9 @@ class PhysicsPresenter:
             "shape": v.rigid_shape_combo.currentIndex(),
             "physics_mode": v.rigid_physics_mode_combo.currentIndex(),
             "related_bone": int(_get_attr(shape, "relatedBoneIndex", -1)),
+            "shape_size": v.rigid_shape_size_edit.text(),
+            "pmx_position": v.rigid_position_edit.text(),
+            "pmx_rotation_degrees": v.rigid_rotation_edit.text(),
             "collision_group": v.rigid_collision_group_spin.value(),
             "collision_mask": mask_int,
             "mass": v.rigid_mass_edit.text(),
@@ -566,6 +585,8 @@ class PhysicsPresenter:
             "joint_type": v.joint_type_spin.text(),
             "rigid_body_a": int(_get_attr(shape, "rigidBodyAIndex", -1)),
             "rigid_body_b": int(_get_attr(shape, "rigidBodyBIndex", -1)),
+            "pmx_position": v.joint_position_edit.text(),
+            "pmx_rotation_degrees": v.joint_rotation_edit.text(),
             "linear_constraint_states": "0, 0, 0",
             "angular_constraint_states": "0, 0, 0",
             "translation_limit_min": getattr(v, "joint_translation_min_edit").text(),
@@ -590,11 +611,29 @@ class PhysicsPresenter:
         cmds.setAttr(f"{shape}.angularDamping", parsed.angular_damping)
         cmds.setAttr(f"{shape}.restitution", parsed.restitution)
         cmds.setAttr(f"{shape}.friction", parsed.friction)
+        cmds.setAttr(f"{shape}.shapeSize", *parsed.shape_size, type="double3")
+        transform = (cmds.listRelatives(shape, parent=True, fullPath=True) or [None])[0]
+        if not transform:
+            raise RuntimeError(f"Rigid body transform not found for {shape}")
+        display_scale = float(_get_attr(transform, "scaleX", 1.0))
+        set_collider_authoring_pose(
+            transform,
+            shape,
+            parsed.pmx_position,
+            tuple(math.radians(value) for value in parsed.pmx_rotation_degrees),
+            display_scale,
+        )
 
     def _apply_validated_joint(self, shape, parsed):
         cmds.setAttr(f"{shape}.nameJp", parsed.name, type="string")
         cmds.setAttr(f"{shape}.nameEn", parsed.name_english, type="string")
         cmds.setAttr(f"{shape}.jointType", parsed.joint_type)
+        cmds.setAttr(f"{shape}.position", *parsed.pmx_position, type="double3")
+        _set_angle_vector_degrees(shape, "rotation", parsed.pmx_rotation_degrees)
+        transform = (cmds.listRelatives(shape, parent=True, fullPath=True) or [None])[0]
+        if not transform:
+            raise RuntimeError(f"Physics joint transform not found for {shape}")
+        cmds.setAttr(f"{transform}.translate", *parsed.pmx_position, type="double3")
         for attr, values in (
             ("translationLimitMin", parsed.translation_limit_min),
             ("translationLimitMax", parsed.translation_limit_max),
@@ -608,9 +647,7 @@ class PhysicsPresenter:
             ("rotationLimitMin", parsed.rotation_limit_min_degrees),
             ("rotationLimitMax", parsed.rotation_limit_max_degrees),
         ):
-            cmds.setAttr(f"{shape}.{attr}X", values[0])
-            cmds.setAttr(f"{shape}.{attr}Y", values[1])
-            cmds.setAttr(f"{shape}.{attr}Z", values[2])
+            _set_angle_vector_degrees(shape, attr, values)
 
     def _on_collider_visibility_changed(self, visible):
         root = self.app_state.current_model_root

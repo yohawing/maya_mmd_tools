@@ -181,8 +181,9 @@ class PhysicsTab(BaseTab):
             ["physics_mode_bone", "physics_mode_physics", "physics_mode_physics_bone"],
         )
         self._add_editor_row(layout, "physics_mode", "rigid_physics_mode", self.rigid_physics_mode_combo)
-        self.rigid_related_bone_spin = self._line_editor("rigid_related_bone", "related_bone")
-        self.rigid_related_bone_spin.setEnabled(False)
+        self.rigid_shape_size_edit = self._line_editor("rigid_shape_size", "shape_size")
+        self.rigid_position_edit = self._line_editor("rigid_position", "pmx_position")
+        self.rigid_rotation_edit = self._line_editor("rigid_rotation", "pmx_rotation_degrees")
         self.rigid_collision_group_spin = self._int_editor("rigid_collision_group", "collision_group", 0, 15)
         self.rigid_collision_mask_spin = self._line_editor("rigid_collision_mask", "collision_mask")
         self.rigid_mass_edit = self._line_editor("rigid_mass", "mass")
@@ -191,7 +192,9 @@ class PhysicsTab(BaseTab):
         self.rigid_restitution_edit = self._line_editor("rigid_restitution", "restitution")
         self.rigid_friction_edit = self._line_editor("rigid_friction", "friction")
         for key, label_key in (
-            ("rigid_related_bone", "related_bone"),
+            ("rigid_shape_size", "shape_size"),
+            ("rigid_position", "pmx_position"),
+            ("rigid_rotation", "pmx_rotation_degrees"),
             ("rigid_collision_group", "collision_group"),
             ("rigid_collision_mask", "non_collision_groups"),
             ("rigid_mass", "mass"),
@@ -211,43 +214,29 @@ class PhysicsTab(BaseTab):
         self.joint_name_edit = self._line_editor("joint_name", "name")
         self.joint_name_english_edit = self._line_editor("joint_name_english", "name_english")
         self.joint_type_spin = self._line_editor("joint_type", "joint_type")
-        self.joint_body_a_spin = self._line_editor("joint_body_a", "rigid_body_a")
-        self.joint_body_a_spin.setEnabled(False)
-        self.joint_body_b_spin = self._line_editor("joint_body_b", "rigid_body_b")
-        self.joint_body_b_spin.setEnabled(False)
+        self.joint_position_edit = self._line_editor("joint_position", "pmx_position")
+        self.joint_rotation_edit = self._line_editor("joint_rotation", "pmx_rotation_degrees")
         for key, field_key in (
-            ("joint_linear_states", "linear_constraint_states"),
-            ("joint_angular_states", "angular_constraint_states"),
             ("joint_translation_min", "translation_limit_min"),
             ("joint_translation_max", "translation_limit_max"),
             ("joint_rotation_min", "rotation_limit_min_degrees"),
             ("joint_rotation_max", "rotation_limit_max_degrees"),
             ("joint_spring_translation", "spring_translation"),
             ("joint_spring_rotation", "spring_rotation"),
-            ("joint_spring_translation_enabled", "spring_translation_enabled"),
-            ("joint_spring_rotation_enabled", "spring_rotation_enabled"),
         ):
             setattr(self, f"{key}_edit", self._line_editor(key, field_key))
-        _NO_BACKING_ATTR = {"joint_linear_states", "joint_angular_states",
-                            "joint_spring_translation_enabled", "joint_spring_rotation_enabled"}
-        for key in _NO_BACKING_ATTR:
-            getattr(self, f"{key}_edit").setEnabled(False)
         for key in (
             "joint_name",
             "joint_name_english",
             "joint_type",
-            "joint_body_a",
-            "joint_body_b",
-            "joint_linear_states",
-            "joint_angular_states",
+            "joint_position",
+            "joint_rotation",
             "joint_translation_min",
             "joint_translation_max",
             "joint_rotation_min",
             "joint_rotation_max",
             "joint_spring_translation",
             "joint_spring_rotation",
-            "joint_spring_translation_enabled",
-            "joint_spring_rotation_enabled",
         ):
             self._add_editor_row(layout, self._physics_editors[key][0], key, self._physics_editors[key][1])
         self._add_node_row(layout, "joint_node")

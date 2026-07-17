@@ -14,6 +14,9 @@ class RigidBodyFormValues:
     shape_type: int
     physics_mode: int
     related_bone_index: int
+    shape_size: tuple[float, float, float]
+    pmx_position: tuple[float, float, float]
+    pmx_rotation_degrees: tuple[float, float, float]
     collision_group: int
     collision_mask: int
     mass: float
@@ -30,6 +33,8 @@ class JointFormValues:
     joint_type: int
     rigid_body_a_index: int
     rigid_body_b_index: int
+    pmx_position: tuple[float, float, float]
+    pmx_rotation_degrees: tuple[float, float, float]
     linear_constraint_states: tuple[int, int, int]
     angular_constraint_states: tuple[int, int, int]
     translation_limit_min: tuple[float, float, float]
@@ -60,6 +65,9 @@ def parse_rigid_body_form(values: Mapping[str, Any]) -> RigidBodyFormValues:
         shape_type=_integer(values, "shape", minimum=0, maximum=2),
         physics_mode=_integer(values, "physics_mode", minimum=0, maximum=2),
         related_bone_index=_integer(values, "related_bone", minimum=-1),
+        shape_size=_number_vector(values, "shape_size", minimum=0.0),
+        pmx_position=_number_vector(values, "pmx_position"),
+        pmx_rotation_degrees=_number_vector(values, "pmx_rotation_degrees"),
         collision_group=_integer(values, "collision_group", minimum=0, maximum=15),
         collision_mask=_integer(values, "collision_mask", minimum=0, maximum=0xFFFF),
         mass=_number(values, "mass", minimum=0.0),
@@ -79,6 +87,8 @@ def parse_joint_form(values: Mapping[str, Any]) -> JointFormValues:
         joint_type=_integer(values, "joint_type", minimum=0, maximum=6),
         rigid_body_a_index=_integer(values, "rigid_body_a", minimum=-1),
         rigid_body_b_index=_integer(values, "rigid_body_b", minimum=-1),
+        pmx_position=_number_vector(values, "pmx_position"),
+        pmx_rotation_degrees=_number_vector(values, "pmx_rotation_degrees"),
         linear_constraint_states=_integer_vector(
             values,
             "linear_constraint_states",
@@ -170,9 +180,9 @@ def _integer_vector(values, field_key, *, minimum=None, maximum=None):
     )
 
 
-def _number_vector(values, field_key):
+def _number_vector(values, field_key, *, minimum=None):
     parts = _vector_parts(_raw(values, field_key), field_key)
-    return tuple(_parse_number(part, field_key) for part in parts)
+    return tuple(_parse_number(part, field_key, minimum=minimum) for part in parts)
 
 
 def _bool_vector(values, field_key):

@@ -180,9 +180,11 @@ def set_collider_authoring_pose(
     if existing_constraints:
         cmds.delete(existing_constraints)
     cmds.setAttr(f"{shape}.position", *position, type="double3")
+    angle_unit = cmds.currentUnit(query=True, angle=True)
+    to_ui_angle = (lambda value: value) if angle_unit == "rad" else math.degrees
     cmds.setAttr(
         f"{shape}.rotation",
-        *(math.degrees(value) for value in rotation_radians),
+        *(to_ui_angle(value) for value in rotation_radians),
         type="double3",
     )
     cmds.setAttr(
@@ -195,7 +197,7 @@ def set_collider_authoring_pose(
     ).asEulerRotation()
     cmds.setAttr(
         f"{transform}.rotate",
-        *(math.degrees(value) for value in maya_rotation),
+        *(to_ui_angle(value) for value in maya_rotation),
         type="double3",
     )
     cmds.setAttr(
