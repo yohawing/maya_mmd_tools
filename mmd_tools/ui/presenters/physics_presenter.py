@@ -200,7 +200,8 @@ class PhysicsPresenter:
     def _find_child(self, parent, name):
         children = cmds.listRelatives(parent, children=True, fullPath=True, type="transform") or []
         for child in children:
-            if child.rsplit("|", 1)[-1] == name:
+            leaf_name = child.rsplit("|", 1)[-1].rsplit(":", 1)[-1]
+            if leaf_name == name:
                 return child
         return None
 

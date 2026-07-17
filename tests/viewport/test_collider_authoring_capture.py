@@ -26,6 +26,14 @@ def _green_report():
             "selectedSelection": ["|ColliderEvidence|capsule"],
             "selectedDisplayStatus": 8,
             "reopenMatrixMaxError": 0.0,
+            "realRestMatrixMaxError": 0.0,
+            "followOffsetMaxError": 0.0,
+            "followBboxCenterMaxError": 0.0,
+            "boundFollowConstraint": True,
+            "rawPoseUnchanged": True,
+            "physicsModeLineStyles": [0, 0, 0],
+            "realColliderCount": 2,
+            "realCollidersVisible": True,
         }
     }
 
@@ -45,6 +53,14 @@ def test_semantic_gate_rejects_each_false_positive():
         "selectedSelection": [],
         "selectedDisplayStatus": 2,
         "reopenMatrixMaxError": 0.01,
+        "realRestMatrixMaxError": 0.01,
+        "followOffsetMaxError": 0.01,
+        "followBboxCenterMaxError": 0.01,
+        "boundFollowConstraint": False,
+        "rawPoseUnchanged": False,
+        "physicsModeLineStyles": [0, 2, 1],
+        "realColliderCount": 0,
+        "realCollidersVisible": False,
     }
     for key, value in mutations.items():
         report = _green_report()
@@ -57,6 +73,9 @@ def test_semantic_gate_rejects_non_finite_numbers():
         "editedCapsuleTotalHeight",
         "reopenCapsuleTotalHeight",
         "reopenMatrixMaxError",
+        "realRestMatrixMaxError",
+        "followOffsetMaxError",
+        "followBboxCenterMaxError",
     ):
         report = _green_report()
         report["checks"][key] = float("nan")

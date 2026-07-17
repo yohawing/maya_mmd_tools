@@ -13,7 +13,8 @@ from mmd_tools.core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BOD
 def _find_group(parent: str, group_name: str) -> Optional[str]:
     children = cmds.listRelatives(parent, children=True, fullPath=True, type="transform") or []
     for child in children:
-        if child.rsplit("|", 1)[-1] == group_name:
+        leaf_name = child.rsplit("|", 1)[-1].rsplit(":", 1)[-1]
+        if leaf_name == group_name:
             return child
     return None
 

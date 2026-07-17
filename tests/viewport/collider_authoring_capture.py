@@ -63,11 +63,25 @@ def _semantic_failures(report: dict, tolerance: float = 1.0e-9) -> list[str]:
     matrix_error = finite_value("reopenMatrixMaxError")
     if matrix_error is not None and matrix_error > tolerance:
         failures.append(f"reopenMatrixMaxError > {tolerance}")
+    for name in ("realRestMatrixMaxError", "followOffsetMaxError", "followBboxCenterMaxError"):
+        value = finite_value(name)
+        if value is not None and value > 1.0e-5:
+            failures.append(f"{name} > 1e-5")
+    if checks.get("boundFollowConstraint") is not True:
+        failures.append("bound collider has no authoring follow constraint")
+    if checks.get("rawPoseUnchanged") is not True:
+        failures.append("raw PMX pose changed during follow capture")
+    if checks.get("physicsModeLineStyles") != [0, 0, 0]:
+        failures.append("physics modes do not all use solid wire")
+    if not isinstance(checks.get("realColliderCount"), int) or checks["realColliderCount"] <= 0:
+        failures.append("real PMX has no captured colliders")
+    if checks.get("realCollidersVisible") is not True:
+        failures.append("real PMX colliders are not visible")
     return failures
 
 
 def run_capture(output_dir: str, log_path: str) -> None:
-    """Run inside Maya GUI and write four viewport captures plus a report."""
+    """Run inside Maya GUI and write authoring plus real-PMX follow captures."""
     import traceback
 
     from maya import cmds
@@ -92,12 +106,12 @@ def run_capture(output_dir: str, log_path: str) -> None:
         "errors": [],
     }
 
-    def capture(name, panel):
+    def capture(name, panel, frame=1):
         requested = out / f"{name}.png"
-        cmds.currentTime(1)
+        cmds.currentTime(frame)
         cmds.refresh(force=True)
         cmds.playblast(
-            format="image", filename=str(requested), compression="png", frame=1,
+            format="image", filename=str(requested), compression="png", frame=frame,
             widthHeight=(720, 480), viewer=False, offScreen=False,
             showOrnaments=False, percent=100, forceOverwrite=True,
             editorPanelName=panel,
@@ -112,6 +126,23 @@ def run_capture(output_dir: str, log_path: str) -> None:
         selection = om.MSelectionList()
         selection.add(node)
         return int(omr.MGeometryUtilities.displayStatus(selection.getDagPath(0)))
+
+    def configure_panel():
+        panels = cmds.getPanel(type="modelPanel") or []
+        focused = cmds.getPanel(withFocus=True)
+        panel = focused if focused in panels else (panels[0] if panels else None)
+        if not panel:
+            raise RuntimeError("no modelPanel available in Maya GUI")
+        cmds.modelEditor(
+            panel, edit=True, rendererName="vp2Renderer", allObjects=False,
+            locators=True, grid=False, manipulators=False, selectionHiliteDisplay=True,
+        )
+        cmds.modelPanel(panel, edit=True, camera="persp")
+        cmds.setAttr("persp.translate", 0.0, 1.0, 22.0, type="double3")
+        cmds.setAttr("persp.rotate", 0.0, 0.0, 0.0, type="double3")
+        cmds.setAttr("perspShape.nearClipPlane", 0.1)
+        cmds.setAttr("perspShape.farClipPlane", 1000.0)
+        return panel
 
     try:
         note("begin")
@@ -153,25 +184,22 @@ def run_capture(output_dir: str, log_path: str) -> None:
             nodes[name] = (transform, shape)
         note("colliders-created")
 
-        panel = cmds.getPanel(withFocus=True)
-        if cmds.getPanel(typeOf=panel) != "modelPanel":
-            panel = (cmds.getPanel(type="modelPanel") or [None])[0]
-        if not panel:
-            raise RuntimeError("no modelPanel available in Maya GUI")
-        cmds.modelEditor(
-            panel, edit=True, rendererName="vp2Renderer", allObjects=False,
-            locators=True, grid=False, manipulators=False, selectionHiliteDisplay=True,
-        )
-        cmds.modelPanel(panel, edit=True, camera="persp")
-        cmds.setAttr("persp.translate", 0.0, 1.0, 22.0, type="double3")
-        cmds.setAttr("persp.rotate", 0.0, 0.0, 0.0, type="double3")
-        cmds.setAttr("perspShape.nearClipPlane", 0.1)
-        cmds.setAttr("perspShape.farClipPlane", 1000.0)
+        panel = configure_panel()
         note("panel-ready")
 
         capsule, capsule_shape = nodes["capsule"]
         cmds.setAttr(f"{capsule_shape}.shapeSizeY", 4.0)
-        cmds.setAttr(f"{capsule_shape}.positionY", 1.0)
+        capsule_position = list(cmds.getAttr(f"{capsule_shape}.position")[0])
+        capsule_position[1] = 1.0
+        capsule_rotation = tuple(
+            math.radians(value) for value in cmds.getAttr(f"{capsule_shape}.rotation")[0]
+        )
+        set_collider_authoring_pose(
+            capsule,
+            capsule_shape,
+            capsule_position,
+            capsule_rotation,
+        )
         report["checks"]["editedCapsuleTotalHeight"] = (
             cmds.getAttr(f"{capsule_shape}.shapeSizeY")
             + 2.0 * cmds.getAttr(f"{capsule_shape}.shapeSizeX")
@@ -221,6 +249,143 @@ def run_capture(output_dir: str, log_path: str) -> None:
         )
         capture("04-reopened", panel)
         note("reopen-captured")
+
+        cmds.file(new=True, force=True)
+        from mmd_tools.core.collider_display import physics_mode_line_style
+        from mmd_tools.core.coordinate_transform import mmd_euler_xyz_to_maya, mmd_point_to_maya
+        from mmd_tools.core.mmd_parser import parse_pmx_file
+        from mmd_tools.core.visibility_state import (
+            get_visibility_category,
+            set_visibility_category,
+            sync_visibility_connections,
+        )
+        from mmd_tools.adapters.maya_cmds_adapter import MayaCmdsAdapter
+        from mmd_tools.io.mmd_importer import import_mmd_file
+
+        fixture = _ROOT / "tests" / "data" / "physics" / "test_hair_physics.pmx"
+        source_pmx = parse_pmx_file(str(fixture), use_native_pmx_parse=False)
+        root = import_mmd_file(
+            str(fixture),
+            scale=1.0,
+            options={
+                "import_physics": True,
+                "create_mmd_shaders": False,
+                "setup_rig": False,
+                "use_cpp_fast_load": False,
+                "use_native_pmx_parse": False,
+                "require_native_pmx_parse": False,
+            },
+        )
+        panel = configure_panel()
+        adapter = MayaCmdsAdapter()
+        set_visibility_category(adapter, root, "colliders", True)
+        sync_visibility_connections(adapter, root, "colliders")
+        real_shapes = cmds.ls(type="mmdRigidBodyShape", long=True) or []
+        real_transforms = [
+            cmds.listRelatives(shape, parent=True, fullPath=True)[0] for shape in real_shapes
+        ]
+        physics_groups = [
+            child
+            for child in (
+                cmds.listRelatives(root, children=True, fullPath=True, type="transform") or []
+            )
+            if child.rsplit("|", 1)[-1].rsplit(":", 1)[-1] == "Physics"
+        ]
+        report["checks"]["realColliderCount"] = len(real_shapes)
+        report["checks"]["realCollidersVisible"] = bool(
+            real_shapes
+            and len(physics_groups) == 1
+            and cmds.getAttr(f"{physics_groups[0]}.visibility")
+            and get_visibility_category(adapter, root, "colliders")
+            and all(cmds.getAttr(f"{shape}.enable") for shape in real_shapes)
+        )
+        bound = None
+        for real_shape in real_shapes:
+            bones = cmds.listConnections(
+                f"{real_shape}.relatedBone", source=True, destination=False, type="joint"
+            ) or []
+            if bones:
+                real_transform = cmds.listRelatives(real_shape, parent=True, fullPath=True)[0]
+                bound = (real_transform, real_shape, bones[0])
+                break
+        if bound is None:
+            raise RuntimeError("real fixture has no bound collider")
+        real_transform, real_shape, bone = bound
+        pmx_index = cmds.getAttr(f"{real_shape}.pmxIndex")
+        source_body = source_pmx.rigid_bodies[pmx_index]
+        raw_position = list(cmds.getAttr(f"{real_shape}.position")[0])
+        raw_rotation = list(cmds.getAttr(f"{real_shape}.rotation")[0])
+
+        expected = om.MTransformationMatrix()
+        expected.setTranslation(
+            om.MVector(*mmd_point_to_maya(source_body.position)), om.MSpace.kTransform
+        )
+        expected.setRotation(om.MEulerRotation(*mmd_euler_xyz_to_maya(source_body.rotation)))
+        actual = om.MMatrix(
+            cmds.xform(real_transform, query=True, worldSpace=True, matrix=True)
+        )
+        expected_matrix = expected.asMatrix()
+        report["checks"]["realRestMatrixMaxError"] = max(
+            abs(actual[index] - expected_matrix[index]) for index in range(16)
+        )
+
+        def relative_matrix():
+            collider_world = om.MMatrix(
+                cmds.xform(real_transform, query=True, worldSpace=True, matrix=True)
+            )
+            bone_world = om.MMatrix(cmds.xform(bone, query=True, worldSpace=True, matrix=True))
+            return collider_world * bone_world.inverse()
+
+        cmds.currentTime(1)
+        for node in (root, bone):
+            cmds.setKeyframe(node, attribute="translate")
+            cmds.setKeyframe(node, attribute="rotate")
+        rest_offset = relative_matrix()
+        follow_constraints = cmds.listConnections(
+            real_transform, source=True, destination=False, type="parentConstraint"
+        ) or []
+        report["checks"]["boundFollowConstraint"] = any(
+            cmds.attributeQuery(
+                "mmdColliderAuthoringFollow", node=constraint, exists=True
+            )
+            and cmds.getAttr(f"{constraint}.mmdColliderAuthoringFollow")
+            for constraint in follow_constraints
+        )
+        report["checks"]["physicsModeLineStyles"] = [
+            physics_mode_line_style(mode) for mode in range(3)
+        ]
+
+        cmds.select(real_transforms, replace=True)
+        cmds.viewFit("persp", all=False, fitFactor=1.15)
+        cmds.select(clear=True)
+        capture("05-real-follow-frame1", panel, frame=1)
+
+        cmds.currentTime(12)
+        cmds.move(1.5, -0.75, 2.25, root, relative=True)
+        cmds.rotate(0.0, 17.0, 0.0, root, relative=True)
+        cmds.move(-0.5, 1.25, 2.0, bone, relative=True, objectSpace=True)
+        cmds.rotate(8.0, -13.0, 21.0, bone, relative=True, objectSpace=True)
+        for node in (root, bone):
+            cmds.setKeyframe(node, attribute="translate")
+            cmds.setKeyframe(node, attribute="rotate")
+        animated_offset = relative_matrix()
+        report["checks"]["followOffsetMaxError"] = max(
+            abs(animated_offset[index] - rest_offset[index]) for index in range(16)
+        )
+        bbox = cmds.exactWorldBoundingBox(real_transform)
+        bbox_center = [(bbox[axis] + bbox[axis + 3]) * 0.5 for axis in range(3)]
+        world_position = cmds.xform(
+            real_transform, query=True, worldSpace=True, translation=True
+        )
+        report["checks"]["followBboxCenterMaxError"] = max(
+            abs(bbox_center[axis] - world_position[axis]) for axis in range(3)
+        )
+        report["checks"]["rawPoseUnchanged"] = (
+            list(cmds.getAttr(f"{real_shape}.position")[0]) == raw_position
+            and list(cmds.getAttr(f"{real_shape}.rotation")[0]) == raw_rotation
+        )
+        capture("06-real-follow-frame12", panel, frame=12)
+        note("real-follow-captured")
     except Exception as exc:
         report["errors"].append({"error": str(exc), "traceback": traceback.format_exc()})
     finally:
@@ -285,7 +450,7 @@ def main() -> int:
 
     report = json.loads(report_path.read_text(encoding="utf-8"))
     semantic_failures = _semantic_failures(report)
-    if report["errors"] or len(report["captures"]) != 4 or semantic_failures:
+    if report["errors"] or len(report["captures"]) != 6 or semantic_failures:
         report["semanticFailures"] = semantic_failures
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         raise RuntimeError(f"collider capture failed: {report}")
