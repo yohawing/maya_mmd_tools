@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
+import os
 import sys
 import time
 from pathlib import Path
@@ -26,12 +28,51 @@ def _resolve_playblast(path: Path) -> Path:
     return next((candidate for candidate in candidates if candidate.is_file()), path)
 
 
+def _semantic_failures(report: dict, tolerance: float = 1.0e-9) -> list[str]:
+    checks = report.get("checks", {})
+    failures = []
+
+    def finite_value(name):
+        try:
+            value = float(checks[name])
+        except (KeyError, TypeError, ValueError):
+            failures.append(f"{name} is missing or not numeric")
+            return None
+        if not math.isfinite(value):
+            failures.append(f"{name} is not finite")
+            return None
+        return value
+
+    for name in ("editedCapsuleTotalHeight", "reopenCapsuleTotalHeight"):
+        value = finite_value(name)
+        if value is not None and abs(value - 6.0) > tolerance:
+            failures.append(f"{name} != 6.0")
+    if checks.get("boxHidden") is not True:
+        failures.append("boxHidden is not true")
+    if checks.get("pluginInitializeComplete") is not True:
+        failures.append("plugin initialization did not complete")
+    if checks.get("unselectedSelection") != []:
+        failures.append("unselected capture contains a selection")
+    if checks.get("unselectedDisplayStatus") != 2:
+        failures.append("unselected display status is not kDormant")
+    selection = checks.get("selectedSelection") or []
+    if len(selection) != 1 or not str(selection[0]).endswith("|ColliderEvidence|capsule"):
+        failures.append("selected capture is not the capsule transform")
+    if checks.get("selectedDisplayStatus") not in (0, 4, 7, 8):
+        failures.append("selected display status is not active/lead/hilite")
+    matrix_error = finite_value("reopenMatrixMaxError")
+    if matrix_error is not None and matrix_error > tolerance:
+        failures.append(f"reopenMatrixMaxError > {tolerance}")
+    return failures
+
+
 def run_capture(output_dir: str, log_path: str) -> None:
     """Run inside Maya GUI and write four viewport captures plus a report."""
     import traceback
 
     from maya import cmds
     import maya.api.OpenMaya as om
+    import maya.api.OpenMayaRender as omr
 
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -65,14 +106,31 @@ def run_capture(output_dir: str, log_path: str) -> None:
         if not actual.is_file() or actual.stat().st_size == 0:
             raise RuntimeError(f"capture missing or empty: {actual}")
         report["captures"].append({"name": name, "path": str(actual), "bytes": actual.stat().st_size})
+        return actual
+
+    def display_status(node):
+        selection = om.MSelectionList()
+        selection.add(node)
+        return int(omr.MGeometryUtilities.displayStatus(selection.getDagPath(0)))
 
     try:
         note("begin")
         cmds.file(new=True, force=True)
         note("scene-created")
         plugin = _ROOT / "mmd_tools" / "plugin_main.py"
-        if not cmds.pluginInfo(str(plugin), query=True, loaded=True):
+        loaded_plugins = cmds.pluginInfo(query=True, listPlugins=True) or []
+        if "mmdRigidBodyShape" not in (cmds.allNodeTypes() or []):
             cmds.loadPlugin(str(plugin), quiet=True)
+        init_trace_path = Path(os.environ.get("MMD_TOOLS_INIT_TRACE_PATH", ""))
+        init_trace = (
+            init_trace_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if init_trace_path.is_file()
+            else []
+        )
+        report["checks"]["initialLoadedPlugins"] = loaded_plugins
+        report["checks"]["pluginInitializeComplete"] = "initialize:done" in init_trace
+        if not report["checks"]["pluginInitializeComplete"]:
+            raise RuntimeError(f"plugin initialization incomplete: {init_trace[-5:]}")
         note("plugin-loaded")
 
         from mmd_tools.core.collider_authoring import set_collider_authoring_pose
@@ -118,6 +176,9 @@ def run_capture(output_dir: str, log_path: str) -> None:
             cmds.getAttr(f"{capsule_shape}.shapeSizeY")
             + 2.0 * cmds.getAttr(f"{capsule_shape}.shapeSizeX")
         )
+        cmds.select(clear=True)
+        report["checks"]["unselectedSelection"] = cmds.ls(selection=True, long=True) or []
+        report["checks"]["unselectedDisplayStatus"] = display_status(capsule_shape)
         capture("01-edited", panel)
         note("edited-captured")
 
@@ -129,7 +190,12 @@ def run_capture(output_dir: str, log_path: str) -> None:
         cmds.setAttr(f"{box}.visibility", True)
 
         cmds.select(capsule, replace=True)
-        report["checks"]["selection"] = cmds.ls(selection=True, long=True)
+        report["checks"]["selectedSelection"] = cmds.ls(selection=True, long=True) or []
+        report["checks"]["selectedDisplayStatus"] = display_status(capsule_shape)
+        selected_path = om.MSelectionList()
+        selected_path.add(capsule_shape)
+        selection_color = omr.MGeometryUtilities.wireframeColor(selected_path.getDagPath(0))
+        report["checks"]["selectedWireframeColor"] = list(selection_color)
         capture("03-selected", panel)
         note("selection-captured")
         cmds.select(clear=True)
@@ -177,14 +243,18 @@ def main() -> int:
     output.mkdir(parents=True, exist_ok=True)
     log = output / "capture.log"
     report_path = output / "report.json"
-    for stale in (log, report_path):
+    init_trace = output / "plugin-initialize.log"
+    for stale in (log, report_path, init_trace):
         if stale.exists():
             stale.unlink()
 
     proc = maya_commandport.launch_maya(
         version=args.maya, project_root=_ROOT, output_dir=output,
         port=args.port, launch_mode="explorer",
-        env_overrides={"MMD_TOOLS_SKIP_SHADER_OVERRIDE": "1"},
+        env_overrides={
+            "MMD_TOOLS_SKIP_SHADER_OVERRIDE": "1",
+            "MMD_TOOLS_INIT_TRACE_PATH": str(init_trace),
+        },
     )
     try:
         maya_commandport.wait_for_port(args.port, args.timeout, proc)
@@ -214,7 +284,10 @@ def main() -> int:
         maya_commandport.close_process_logs(proc)
 
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    if report["errors"] or len(report["captures"]) != 4:
+    semantic_failures = _semantic_failures(report)
+    if report["errors"] or len(report["captures"]) != 4 or semantic_failures:
+        report["semanticFailures"] = semantic_failures
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         raise RuntimeError(f"collider capture failed: {report}")
     LOGGER.info("Maya %s collider evidence: %s", report["mayaVersion"], report_path)
     return 0

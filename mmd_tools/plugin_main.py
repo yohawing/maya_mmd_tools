@@ -35,6 +35,18 @@ _MAIN_WINDOW_NAME = "MMDToolsMainWindow"
 _MAIN_WINDOW_WORKSPACE_CONTROL_NAME = "MMDToolsWorkspaceControl"
 
 
+def _trace_initialize_step(step):
+    """Write an opt-in plugin initialization trace for GUI gate diagnosis."""
+    path = os.environ.get("MMD_TOOLS_INIT_TRACE_PATH")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as stream:
+            stream.write(f"{step}\n")
+    except Exception:
+        pass
+
+
 def _load_main_window_class():
     """Load the Qt UI only when a caller explicitly requests it."""
     from mmd_tools.ui.main_window import MainWindow
@@ -340,40 +352,57 @@ def initializePlugin(mobject):
     plugin_fn = om.MFnPlugin(mobject, vendor, version)
 
     try:
+        _trace_initialize_step("initialize:start")
         install_mmd_menu()
+        _trace_initialize_step("menu:done")
         try:
             install_drag_drop_importer()
         except ImportError as exc:
             om.MGlobal.displayWarning(f"MMD Tools drag-and-drop UI is unavailable: {exc}")
+        _trace_initialize_step("drag-drop:done")
         global _shader_override_registered
         if os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE") != "1":
             mmd_shader.initializePlugin(mobject)
             _shader_override_registered = True
+        _trace_initialize_step("shader-override:done")
         mmd_bone_morph_accum_node.register(plugin_fn)
+        _trace_initialize_step("bone-morph-register:done")
         _soft_check_bone_morph_accum_availability()
+        _trace_initialize_step("bone-morph-check:done")
         mmd_material_morph_eval_node.register(plugin_fn)
+        _trace_initialize_step("material-morph:done")
         mmd_morph_controller_node.register(plugin_fn)
+        _trace_initialize_step("morph-controller:done")
         if not _scene_file_is_being_read():
             _soft_sync_existing_glsl_diffuse_contracts()
+        _trace_initialize_step("scene-sync:done")
         # Skip Python rig-node registration when C++ plugin already provides them
         global _python_rig_nodes_registered
         if not _cpp_plugin_loaded():
             mmd_append_node.register(plugin_fn)
             mmd_ccd_ik_node.register(plugin_fn)
             _python_rig_nodes_registered = True
+        _trace_initialize_step("rig-nodes:done")
         global _physics_nodes_registered
         global _python_physics_solver_registered
         mmd_physics_world_shape.register(plugin_fn)
+        _trace_initialize_step("physics-world:done")
         mmd_rigid_body_shape.register(plugin_fn)
+        _trace_initialize_step("rigid-body-shape:done")
         mmd_rigid_body_draw_override.register()
+        _trace_initialize_step("rigid-body-draw:done")
         mmd_physics_joint_shape.register(plugin_fn)
+        _trace_initialize_step("physics-joint:done")
         if not _cpp_plugin_loaded():
             mmd_physics_solver_node.register(plugin_fn)
             mmd_physics_bone_driver_node.register(plugin_fn)
             _python_physics_solver_registered = True
+        _trace_initialize_step("physics-solver:done")
         _physics_nodes_registered = True
         _register_after_open_callback()
+        _trace_initialize_step("initialize:done")
     except Exception as e:
+        _trace_initialize_step(f"initialize:error:{type(e).__name__}:{e}")
         om.MGlobal.displayError(f"Plugin initialization failed: {str(e)}")
         raise
 
