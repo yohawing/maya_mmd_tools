@@ -230,7 +230,7 @@ class TestPhysicsPresenterNamespace(MayaTestBase):
         self.assertTrue(view.physics_enable_check.checked)
 
     def test_legacy_world_message_connections_are_repaired_only_by_user_actions(self):
-        root_a = self._create_namespaced_model("LegacyToggleA", rigid_count=1, joint_count=0)
+        self._create_namespaced_model("LegacyToggleA", rigid_count=1, joint_count=0)
         self._create_namespaced_model("LegacyToggleB", rigid_count=1, joint_count=0)
         world_transform = cmds.createNode("transform", name="Legacy_PhysicsWorld")
         world = cmds.createNode(
