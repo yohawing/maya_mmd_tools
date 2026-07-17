@@ -155,5 +155,13 @@ class TestTabStructure(unittest.TestCase):
         self.assertIn("duplicate_btn", self.tab_source)
         self.assertIn("delete_btn", self.tab_source)
 
+    def test_authoring_only_notice_widget_and_translation_key_are_removed(self):
+        self.assertNotIn("scope_notice_label", self.tab_source)
+        self.assertNotIn("physics_authoring_only_notice", self.tab_source)
+        translation_dir = TAB_PATH.parents[1] / "translations"
+        for language in ("en", "ja"):
+            text = (translation_dir / f"{language}.json").read_text(encoding="utf-8")
+            self.assertNotIn("physics_authoring_only_notice", text)
+
 if __name__ == "__main__":
     unittest.main()
