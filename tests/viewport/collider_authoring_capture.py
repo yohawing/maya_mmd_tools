@@ -67,6 +67,9 @@ def _semantic_failures(report: dict, tolerance: float = 1.0e-9) -> list[str]:
         value = finite_value(name)
         if value is not None and value > 1.0e-5:
             failures.append(f"{name} > 1e-5")
+    bone_delta = finite_value("boneAnimationMatrixMaxDelta")
+    if bone_delta is not None and bone_delta <= 1.0e-4:
+        failures.append("bone did not animate relative to the model root")
     if checks.get("boundFollowConstraint") is not True:
         failures.append("bound collider has no authoring follow constraint")
     if checks.get("rawPoseUnchanged") is not True:
@@ -77,6 +80,10 @@ def _semantic_failures(report: dict, tolerance: float = 1.0e-9) -> list[str]:
         failures.append("real PMX has no captured colliders")
     if checks.get("realCollidersVisible") is not True:
         failures.append("real PMX colliders are not visible")
+    if not isinstance(checks.get("realMeshCount"), int) or checks["realMeshCount"] <= 0:
+        failures.append("real PMX has no captured mesh")
+    if checks.get("realMeshVisible") is not True:
+        failures.append("real PMX mesh is not visible")
     return failures
 
 
@@ -135,7 +142,8 @@ def run_capture(output_dir: str, log_path: str) -> None:
             raise RuntimeError("no modelPanel available in Maya GUI")
         cmds.modelEditor(
             panel, edit=True, rendererName="vp2Renderer", allObjects=False,
-            locators=True, grid=False, manipulators=False, selectionHiliteDisplay=True,
+            locators=True, polymeshes=True, grid=False, manipulators=False,
+            selectionHiliteDisplay=True, displayAppearance="smoothShaded",
         )
         cmds.modelPanel(panel, edit=True, camera="persp")
         cmds.setAttr("persp.translate", 0.0, 1.0, 22.0, type="double3")
@@ -252,7 +260,8 @@ def run_capture(output_dir: str, log_path: str) -> None:
 
         cmds.file(new=True, force=True)
         from mmd_tools.core.collider_display import physics_mode_line_style
-        from mmd_tools.core.coordinate_transform import mmd_euler_xyz_to_maya, mmd_point_to_maya
+        from mmd_tools.core.coordinate_transform import mmd_point_to_maya
+        from tests.common.maya_coordinate_oracle import reflected_mmd_euler_matrix
         from mmd_tools.core.mmd_parser import parse_pmx_file
         from mmd_tools.core.visibility_state import (
             get_visibility_category,
@@ -281,8 +290,12 @@ def run_capture(output_dir: str, log_path: str) -> None:
         set_visibility_category(adapter, root, "colliders", True)
         sync_visibility_connections(adapter, root, "colliders")
         real_shapes = cmds.ls(type="mmdRigidBodyShape", long=True) or []
-        real_transforms = [
-            cmds.listRelatives(shape, parent=True, fullPath=True)[0] for shape in real_shapes
+        real_meshes = [
+            shape
+            for shape in (
+                cmds.listRelatives(root, allDescendents=True, fullPath=True, type="mesh") or []
+            )
+            if not cmds.getAttr(f"{shape}.intermediateObject")
         ]
         physics_groups = [
             child
@@ -292,6 +305,17 @@ def run_capture(output_dir: str, log_path: str) -> None:
             if child.rsplit("|", 1)[-1].rsplit(":", 1)[-1] == "Physics"
         ]
         report["checks"]["realColliderCount"] = len(real_shapes)
+        report["checks"]["realMeshCount"] = len(real_meshes)
+        visible_meshes = []
+        for mesh in real_meshes:
+            mesh_selection = om.MSelectionList()
+            mesh_selection.add(mesh)
+            if mesh_selection.getDagPath(0).isVisible():
+                visible_meshes.append(mesh)
+        report["checks"]["realMeshVisible"] = bool(
+            len(visible_meshes) == len(real_meshes)
+            and cmds.modelEditor(panel, query=True, polymeshes=True)
+        )
         report["checks"]["realCollidersVisible"] = bool(
             real_shapes
             and len(physics_groups) == 1
@@ -316,11 +340,10 @@ def run_capture(output_dir: str, log_path: str) -> None:
         raw_position = list(cmds.getAttr(f"{real_shape}.position")[0])
         raw_rotation = list(cmds.getAttr(f"{real_shape}.rotation")[0])
 
-        expected = om.MTransformationMatrix()
+        expected = om.MTransformationMatrix(reflected_mmd_euler_matrix(source_body.rotation))
         expected.setTranslation(
             om.MVector(*mmd_point_to_maya(source_body.position)), om.MSpace.kTransform
         )
-        expected.setRotation(om.MEulerRotation(*mmd_euler_xyz_to_maya(source_body.rotation)))
         actual = om.MMatrix(
             cmds.xform(real_transform, query=True, worldSpace=True, matrix=True)
         )
@@ -336,11 +359,17 @@ def run_capture(output_dir: str, log_path: str) -> None:
             bone_world = om.MMatrix(cmds.xform(bone, query=True, worldSpace=True, matrix=True))
             return collider_world * bone_world.inverse()
 
+        def bone_model_matrix():
+            bone_world = om.MMatrix(cmds.xform(bone, query=True, worldSpace=True, matrix=True))
+            root_world = om.MMatrix(cmds.xform(root, query=True, worldSpace=True, matrix=True))
+            return bone_world * root_world.inverse()
+
         cmds.currentTime(1)
         for node in (root, bone):
             cmds.setKeyframe(node, attribute="translate")
             cmds.setKeyframe(node, attribute="rotate")
         rest_offset = relative_matrix()
+        rest_bone_model = bone_model_matrix()
         follow_constraints = cmds.listConnections(
             real_transform, source=True, destination=False, type="parentConstraint"
         ) or []
@@ -355,22 +384,25 @@ def run_capture(output_dir: str, log_path: str) -> None:
             physics_mode_line_style(mode) for mode in range(3)
         ]
 
-        cmds.select(real_transforms, replace=True)
+        cmds.select(root, replace=True)
         cmds.viewFit("persp", all=False, fitFactor=1.15)
         cmds.select(clear=True)
-        capture("05-real-follow-frame1", panel, frame=1)
+        capture("05-real-mesh-follow-frame1", panel, frame=1)
 
         cmds.currentTime(12)
-        cmds.move(1.5, -0.75, 2.25, root, relative=True)
-        cmds.rotate(0.0, 17.0, 0.0, root, relative=True)
-        cmds.move(-0.5, 1.25, 2.0, bone, relative=True, objectSpace=True)
-        cmds.rotate(8.0, -13.0, 21.0, bone, relative=True, objectSpace=True)
+        cmds.move(1.5, -0.75, 0.0, root, relative=True)
+        cmds.rotate(0.0, 0.0, 6.0, root, relative=True)
+        cmds.rotate(0.0, 0.0, 1.0, bone, relative=True, objectSpace=True)
         for node in (root, bone):
             cmds.setKeyframe(node, attribute="translate")
             cmds.setKeyframe(node, attribute="rotate")
         animated_offset = relative_matrix()
         report["checks"]["followOffsetMaxError"] = max(
             abs(animated_offset[index] - rest_offset[index]) for index in range(16)
+        )
+        animated_bone_model = bone_model_matrix()
+        report["checks"]["boneAnimationMatrixMaxDelta"] = max(
+            abs(animated_bone_model[index] - rest_bone_model[index]) for index in range(16)
         )
         bbox = cmds.exactWorldBoundingBox(real_transform)
         bbox_center = [(bbox[axis] + bbox[axis + 3]) * 0.5 for axis in range(3)]
@@ -384,7 +416,7 @@ def run_capture(output_dir: str, log_path: str) -> None:
             list(cmds.getAttr(f"{real_shape}.position")[0]) == raw_position
             and list(cmds.getAttr(f"{real_shape}.rotation")[0]) == raw_rotation
         )
-        capture("06-real-follow-frame12", panel, frame=12)
+        capture("06-real-mesh-follow-frame12", panel, frame=12)
         note("real-follow-captured")
     except Exception as exc:
         report["errors"].append({"error": str(exc), "traceback": traceback.format_exc()})

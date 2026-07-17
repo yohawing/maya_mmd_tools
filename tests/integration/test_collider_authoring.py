@@ -10,14 +10,16 @@ from maya import cmds
 import maya.api.OpenMaya as om
 
 from tests.common.maya_test_base import MayaTestBase
+from tests.common.maya_coordinate_oracle import reflected_mmd_euler_matrix
 from mmd_tools.core.collider_authoring import (
     connect_collider_authoring_follow,
     set_collider_authoring_pose,
 )
 from mmd_tools.core.coordinate_transform import (
-    mmd_euler_radians_to_maya_degrees,
+    mmd_matrix_to_maya,
     mmd_point_to_maya,
 )
+from mmd_tools.nodes.mmd_rigid_body_draw_override import _draw_box
 
 
 class TestColliderAuthoringTransform(MayaTestBase):
@@ -76,7 +78,7 @@ class TestColliderAuthoringTransform(MayaTestBase):
         )
         self.assertListAlmostEqual(
             cmds.getAttr(f"{transform}.rotate")[0],
-            mmd_euler_radians_to_maya_degrees(rotation),
+            [-math.degrees(rotation[0]), -math.degrees(rotation[1]), math.degrees(rotation[2])],
         )
         self.assertListAlmostEqual(
             cmds.getAttr(f"{transform}.scale")[0],
@@ -93,6 +95,48 @@ class TestColliderAuthoringTransform(MayaTestBase):
             self.assertFalse(
                 cmds.isConnected(f"{shape}.{shape_attr}", f"{transform}.{transform_attr}")
             )
+
+    def test_display_rotation_matches_independent_z_reflection_matrix_oracle(self):
+        rotations = (
+            (0.37, 0.0, 0.0),
+            (0.0, -0.61, 0.0),
+            (0.0, 0.0, 0.83),
+            (0.37, -0.61, 0.83),
+        )
+
+        for index, rotation in enumerate(rotations):
+            with self.subTest(rotation=rotation):
+                transform = cmds.createNode("transform", name=f"reflectedCollider{index}")
+                shape = cmds.createNode(
+                    "mmdRigidBodyShape",
+                    name=f"reflectedCollider{index}Shape",
+                    parent=transform,
+                )
+                set_collider_authoring_pose(transform, shape, (0.0, 0.0, 0.0), rotation)
+
+                mmd_matrix = om.MEulerRotation(*rotation).asMatrix()
+                expected_matrix = reflected_mmd_euler_matrix(rotation)
+                expected = [float(expected_matrix[element]) for element in range(16)]
+
+                actual = cmds.xform(transform, query=True, objectSpace=True, matrix=True)
+                max_error = max(abs(actual[element] - expected[element]) for element in range(16))
+                self.assertLessEqual(max_error, 1.0e-10)
+
+                converted_matrix = mmd_matrix_to_maya(
+                    [float(mmd_matrix[element]) for element in range(16)]
+                )
+                quaternion = om.MEulerRotation(*rotation).asQuaternion()
+                reflected_quaternion_matrix = om.MQuaternion(
+                    -quaternion.x,
+                    -quaternion.y,
+                    quaternion.z,
+                    quaternion.w,
+                ).asMatrix()
+                for element in range(16):
+                    self.assertAlmostEqual(converted_matrix[element], expected[element], places=10)
+                    self.assertAlmostEqual(
+                        reflected_quaternion_matrix[element], expected[element], places=10
+                    )
 
     def test_bound_collider_keeps_bone_offset_through_animation_and_reopen(self):
         model = cmds.createNode("transform", name="followModel")
@@ -178,6 +222,27 @@ class TestColliderAuthoringTransform(MayaTestBase):
             actual = cmds.exactWorldBoundingBox(transform)
             for actual_value, expected_value in zip(actual, expected[shape_type]):
                 self.assertAlmostEqual(actual_value, expected_value, places=6)
+
+    def test_box_draw_uses_pmx_half_extents_on_matching_local_axes(self):
+        class DrawManagerProbe:
+            def __init__(self):
+                self.args = None
+
+            def box(self, *args):
+                self.args = args
+
+        manager = DrawManagerProbe()
+        center = om.MPoint(0.0, 0.0, 0.0)
+        x_axis = om.MVector(1.0, 0.0, 0.0)
+        y_axis = om.MVector(0.0, 1.0, 0.0)
+
+        _draw_box(manager, center, x_axis, y_axis, (1.0, 2.0, 3.0))
+
+        self.assertIsNotNone(manager.args)
+        self.assertEqual(manager.args[1], y_axis)
+        self.assertEqual(manager.args[2], x_axis)
+        self.assertEqual(manager.args[3:6], (1.0, 2.0, 3.0))
+        self.assertFalse(manager.args[6])
 
     def test_rotated_box_draw_and_bbox_share_canonical_parent_transform(self):
         transform = cmds.createNode("transform", name="rotatedBox")

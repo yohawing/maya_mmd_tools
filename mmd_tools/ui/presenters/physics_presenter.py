@@ -9,6 +9,7 @@ from maya import cmds
 from mmd_tools.core.collider_authoring import (
     connect_collider_authoring_follow,
     connect_collider_authoring_transform,
+    migrate_legacy_collider_authoring_pose,
     set_collider_authoring_pose,
 )
 
@@ -168,6 +169,7 @@ class PhysicsPresenter:
         rb_group = self._find_child(physics_group, RIGID_BODIES_GROUP)
         jt_group = self._find_child(physics_group, CONSTRAINTS_GROUP)
 
+        self._migrate_legacy_collider_poses(rb_group)
         self._populate_rigid_body_list(rb_group)
         self._populate_joint_list(jt_group)
         self.view.set_physics_details_enabled(True)
@@ -216,6 +218,29 @@ class PhysicsPresenter:
                 result.append((transform, shapes[0]))
         result.sort(key=lambda p: int(_get_attr(p[1], "pmxIndex", 9999)))
         return result
+
+    def _migrate_legacy_collider_poses(self, rigid_body_group):
+        if not rigid_body_group:
+            return
+        cmds.undoInfo(openChunk=True, chunkName="Migrate Collider Authoring Pose")
+        try:
+            for transform, shape in self._find_shapes(
+                rigid_body_group, "mmdRigidBodyShape"
+            ):
+                try:
+                    display_scale = float(_get_attr(transform, "scaleX", 1.0) or 1.0)
+                    if migrate_legacy_collider_authoring_pose(
+                        transform, shape, display_scale
+                    ):
+                        logger.info("Migrated legacy collider authoring pose '%s'", transform)
+                except Exception:
+                    logger.warning(
+                        "Failed to migrate legacy collider authoring pose '%s'",
+                        transform,
+                        exc_info=True,
+                    )
+        finally:
+            cmds.undoInfo(closeChunk=True)
 
     def _populate_rigid_body_list(self, rb_group):
         from ..qt_compat import QListWidgetItem

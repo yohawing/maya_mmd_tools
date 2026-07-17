@@ -15,7 +15,8 @@ from tests.common.maya_test_base import MayaTestBase
 
 from mmd_tools.converters.export_scene_collector import ExportSceneCollector
 from mmd_tools.core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BODIES_GROUP
-from mmd_tools.core.coordinate_transform import mmd_euler_xyz_to_maya, mmd_point_to_maya
+from mmd_tools.core.coordinate_transform import mmd_point_to_maya
+from tests.common.maya_coordinate_oracle import reflected_mmd_euler_matrix
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.io.mmd_importer import import_mmd_file
@@ -319,9 +320,8 @@ class TestPhysicsRoundTrip(MayaTestBase):
                 [math.degrees(value) for value in source.rotation],
             )
 
-            expected = om.MTransformationMatrix()
+            expected = om.MTransformationMatrix(reflected_mmd_euler_matrix(source.rotation))
             expected.setTranslation(om.MVector(*mmd_point_to_maya(source.position)), om.MSpace.kTransform)
-            expected.setRotation(om.MEulerRotation(*mmd_euler_xyz_to_maya(source.rotation)))
             actual = om.MMatrix(cmds.xform(transform, query=True, worldSpace=True, matrix=True))
             expected_matrix = expected.asMatrix()
             for matrix_index in range(16):

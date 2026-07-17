@@ -5,14 +5,44 @@ from __future__ import annotations
 import math
 
 from maya import cmds
+import maya.api.OpenMaya as om
 
 from mmd_tools.core.coordinate_transform import (
+    mmd_euler_xyz_to_maya,
     mmd_euler_radians_to_maya_degrees,
     mmd_point_to_maya,
 )
 
 
 _FOLLOW_TAG = "mmdColliderAuthoringFollow"
+_POSE_VERSION_ATTR = "mmdColliderAuthoringPoseVersion"
+_CURRENT_POSE_VERSION = 2
+
+
+def _mark_pose_version(shape: str) -> None:
+    if not cmds.attributeQuery(_POSE_VERSION_ATTR, node=shape, exists=True):
+        cmds.addAttr(
+            shape,
+            longName=_POSE_VERSION_ATTR,
+            attributeType="long",
+            defaultValue=_CURRENT_POSE_VERSION,
+        )
+    cmds.setAttr(f"{shape}.{_POSE_VERSION_ATTR}", _CURRENT_POSE_VERSION)
+
+
+def _pose_matrix(position, rotation_radians, display_scale: float, *, legacy: bool) -> om.MMatrix:
+    rotation = (
+        (rotation_radians[0], rotation_radians[1], -rotation_radians[2])
+        if legacy
+        else mmd_euler_xyz_to_maya(rotation_radians)
+    )
+    transform = om.MTransformationMatrix()
+    transform.setTranslation(
+        om.MVector(*mmd_point_to_maya(position, display_scale)), om.MSpace.kTransform
+    )
+    transform.setRotation(om.MEulerRotation(*rotation))
+    transform.setScale((display_scale, display_scale, display_scale), om.MSpace.kTransform)
+    return transform.asMatrix()
 
 
 def _authoring_follow_constraints(transform: str) -> list[str]:
@@ -72,6 +102,13 @@ def connect_collider_authoring_follow(transform: str, shape: str) -> str | None:
     )[0]
     cmds.addAttr(constraint, longName=_FOLLOW_TAG, attributeType="bool")
     cmds.setAttr(f"{constraint}.{_FOLLOW_TAG}", True)
+    cmds.addAttr(
+        constraint,
+        longName=_POSE_VERSION_ATTR,
+        attributeType="long",
+        defaultValue=_CURRENT_POSE_VERSION,
+    )
+    cmds.setAttr(f"{constraint}.{_POSE_VERSION_ATTR}", _CURRENT_POSE_VERSION)
     return constraint
 
 
@@ -109,8 +146,54 @@ def set_collider_authoring_pose(
         display_scale,
         type="double3",
     )
+    _mark_pose_version(shape)
     connect_collider_authoring_transform(transform, shape)
     connect_collider_authoring_follow(transform, shape)
+
+
+def migrate_legacy_collider_authoring_pose(
+    transform: str,
+    shape: str,
+    display_scale: float = 1.0,
+) -> bool:
+    """Upgrade a stored legacy display pose while preserving its live bone offset."""
+    if (
+        cmds.attributeQuery(_POSE_VERSION_ATTR, node=shape, exists=True)
+        and cmds.getAttr(f"{shape}.{_POSE_VERSION_ATTR}") >= _CURRENT_POSE_VERSION
+    ):
+        return False
+
+    position = cmds.getAttr(f"{shape}.position")[0]
+    rotation_radians = tuple(
+        math.radians(value) for value in cmds.getAttr(f"{shape}.rotation")[0]
+    )
+    constraints = _authoring_follow_constraints(transform)
+    bones = cmds.listConnections(f"{shape}.relatedBone", source=True, destination=False) or []
+    if constraints and bones and cmds.objExists(bones[0]):
+        collider_world = om.MMatrix(
+            cmds.xform(transform, query=True, worldSpace=True, matrix=True)
+        )
+        bone_world = om.MMatrix(cmds.xform(bones[0], query=True, worldSpace=True, matrix=True))
+        old_offset = collider_world * bone_world.inverse()
+        legacy_rest = _pose_matrix(position, rotation_radians, display_scale, legacy=True)
+        canonical_rest = _pose_matrix(position, rotation_radians, display_scale, legacy=False)
+        canonical_offset = canonical_rest * legacy_rest.inverse() * old_offset
+        canonical_world = canonical_offset * bone_world
+
+        cmds.delete(constraints)
+        cmds.xform(transform, worldSpace=True, matrix=list(canonical_world))
+        _mark_pose_version(shape)
+        connect_collider_authoring_transform(transform, shape)
+        connect_collider_authoring_follow(transform, shape)
+    else:
+        set_collider_authoring_pose(
+            transform,
+            shape,
+            position,
+            rotation_radians,
+            display_scale,
+        )
+    return True
 
 
 def refresh_collider_authoring_pose(

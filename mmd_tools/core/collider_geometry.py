@@ -26,6 +26,6 @@ def capsule_dimensions(size) -> tuple[float, float, float]:
     return radius, cylinder_height, cylinder_height + 2.0 * radius
 
 
-def box_draw_size(size) -> tuple[float, float, float]:
-    """Convert PMX/Bullet box half extents to MUIDrawManager full dimensions."""
-    return tuple(2.0 * max(float(value), 0.0) for value in size)
+def box_draw_scale(size) -> tuple[float, float, float]:
+    """Return the PMX half extents consumed by ``MUIDrawManager.box``."""
+    return tuple(max(float(value), 0.0) for value in size)

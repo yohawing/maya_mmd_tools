@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from mmd_tools.core.collider_geometry import box_draw_size, capsule_dimensions, collider_half_extents
+from mmd_tools.core.collider_geometry import box_draw_scale, capsule_dimensions, collider_half_extents
 
 
 class TestColliderGeometry(unittest.TestCase):
@@ -17,11 +17,11 @@ class TestColliderGeometry(unittest.TestCase):
     def test_sphere_and_box_use_pmx_half_extents(self):
         self.assertEqual(collider_half_extents(0, (2.0, 9.0, 8.0)), (2.0, 2.0, 2.0))
         self.assertEqual(collider_half_extents(1, (2.0, 4.0, 6.0)), (2.0, 4.0, 6.0))
-        self.assertEqual(box_draw_size((2.0, 4.0, 6.0)), (4.0, 8.0, 12.0))
+        self.assertEqual(box_draw_scale((2.0, 4.0, 6.0)), (2.0, 4.0, 6.0))
 
     def test_negative_dimensions_collapse_without_inverting_bounds(self):
         self.assertEqual(collider_half_extents(2, (-1.0, -2.0, 0.0)), (0.0, 0.0, 0.0))
-        self.assertEqual(box_draw_size((-1.0, -2.0, -3.0)), (0.0, 0.0, 0.0))
+        self.assertEqual(box_draw_scale((-1.0, -2.0, -3.0)), (0.0, 0.0, 0.0))
 
 
 if __name__ == "__main__":

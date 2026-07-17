@@ -280,8 +280,11 @@ class TestVpdConverter(unittest.TestCase):
     def test_convert_position_flips_z_axis(self):
         self.assertEqual(self.converter._convert_position_mmd_to_maya([1.0, 2.0, -3.0]), [1.0, 2.0, 3.0])
 
-    def test_convert_rotation_flips_z_axis(self):
-        self.assertEqual(self.converter._convert_rotation_mmd_to_maya([10.0, 20.0, -30.0]), [10.0, 20.0, 30.0])
+    def test_convert_rotation_conjugates_z_reflection(self):
+        self.assertEqual(
+            self.converter._convert_rotation_mmd_to_maya([10.0, 20.0, -30.0]),
+            [-10.0, -20.0, -30.0],
+        )
 
     def test_is_movable_bone_accepts_center_and_master_names(self):
         for bone_name in ["センター", "center", "Center", "全ての親", "master", "Master"]:

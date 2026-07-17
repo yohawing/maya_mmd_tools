@@ -29,11 +29,14 @@ def _green_report():
             "realRestMatrixMaxError": 0.0,
             "followOffsetMaxError": 0.0,
             "followBboxCenterMaxError": 0.0,
+            "boneAnimationMatrixMaxDelta": 0.1,
             "boundFollowConstraint": True,
             "rawPoseUnchanged": True,
             "physicsModeLineStyles": [0, 0, 0],
             "realColliderCount": 2,
             "realCollidersVisible": True,
+            "realMeshCount": 1,
+            "realMeshVisible": True,
         }
     }
 
@@ -56,11 +59,14 @@ def test_semantic_gate_rejects_each_false_positive():
         "realRestMatrixMaxError": 0.01,
         "followOffsetMaxError": 0.01,
         "followBboxCenterMaxError": 0.01,
+        "boneAnimationMatrixMaxDelta": 0.0,
         "boundFollowConstraint": False,
         "rawPoseUnchanged": False,
         "physicsModeLineStyles": [0, 2, 1],
         "realColliderCount": 0,
         "realCollidersVisible": False,
+        "realMeshCount": 0,
+        "realMeshVisible": False,
     }
     for key, value in mutations.items():
         report = _green_report()
@@ -76,6 +82,7 @@ def test_semantic_gate_rejects_non_finite_numbers():
         "realRestMatrixMaxError",
         "followOffsetMaxError",
         "followBboxCenterMaxError",
+        "boneAnimationMatrixMaxDelta",
     ):
         report = _green_report()
         report["checks"][key] = float("nan")

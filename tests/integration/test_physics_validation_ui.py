@@ -1,17 +1,24 @@
 """Focused user-visible validation reporting for the Physics presenter."""
 
 import unittest
+import math
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from maya import cmds
+import maya.api.OpenMaya as om
 
+from mmd_tools.core.collider_authoring import (
+    connect_collider_authoring_follow,
+    connect_collider_authoring_transform,
+)
 from mmd_tools.core.physics_form_validation import PhysicsFormValidationError
 from mmd_tools.core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BODIES_GROUP
 from mmd_tools.converters.physics_export_collector import collect_physics_from_scene
 from mmd_tools.ui.presenters.physics_presenter import PhysicsPresenter, UITranslator
 from tests.common.maya_test_base import MayaTestBase
+from tests.common.maya_coordinate_oracle import reflected_mmd_euler_matrix
 
 
 class _Translator:
@@ -163,6 +170,77 @@ class TestPhysicsPresenterNamespace(MayaTestBase):
         rigid_bodies, joints = collect_physics_from_scene(root_b, {})
         self.assertEqual(len(rigid_bodies), 3)
         self.assertEqual(len(joints), 1)
+
+    def test_refresh_migrates_legacy_collider_pose_without_losing_current_bone_offset(self):
+        root = self._create_namespaced_model("Legacy", rigid_count=1, joint_count=0)
+        bone = cmds.createNode("joint", name="Legacy:hairBone", parent=root)
+        physics = cmds.listRelatives(root, children=True, fullPath=True, type="transform")[0]
+        rigid_group = next(
+            child
+            for child in cmds.listRelatives(
+                physics, children=True, fullPath=True, type="transform"
+            )
+            if child.rsplit(":", 1)[-1] == RIGID_BODIES_GROUP
+        )
+        transform = cmds.listRelatives(
+            rigid_group, children=True, fullPath=True, type="transform"
+        )[0]
+        shape = cmds.listRelatives(transform, shapes=True, fullPath=True)[0]
+        position = (1.25, 2.5, 3.75)
+        rotation = (0.37, -0.61, 0.83)
+        cmds.setAttr(f"{shape}.position", *position, type="double3")
+        cmds.setAttr(
+            f"{shape}.rotation",
+            *(math.degrees(value) for value in rotation),
+            type="double3",
+        )
+
+        legacy_rest = om.MTransformationMatrix()
+        legacy_rest.setTranslation(
+            om.MVector(position[0], position[1], -position[2]), om.MSpace.kTransform
+        )
+        legacy_rest.setRotation(om.MEulerRotation(rotation[0], rotation[1], -rotation[2]))
+        legacy_rest_matrix = legacy_rest.asMatrix()
+        canonical_rest = om.MTransformationMatrix(reflected_mmd_euler_matrix(rotation))
+        canonical_rest.setTranslation(
+            om.MVector(position[0], position[1], -position[2]), om.MSpace.kTransform
+        )
+
+        cmds.xform(transform, objectSpace=True, matrix=list(legacy_rest_matrix))
+        connect_collider_authoring_transform(transform, shape)
+        cmds.connectAttr(f"{bone}.message", f"{shape}.relatedBone")
+        connect_collider_authoring_follow(transform, shape)
+        cmds.move(2.0, -1.0, 0.5, root, relative=True)
+        cmds.rotate(4.0, -7.0, 11.0, bone, relative=True, objectSpace=True)
+
+        old_collider_world = om.MMatrix(
+            cmds.xform(transform, query=True, worldSpace=True, matrix=True)
+        )
+        bone_world = om.MMatrix(cmds.xform(bone, query=True, worldSpace=True, matrix=True))
+        old_offset = old_collider_world * bone_world.inverse()
+        expected_offset = canonical_rest.asMatrix() * legacy_rest_matrix.inverse() * old_offset
+        expected_world = expected_offset * bone_world
+
+        view = _FakePhysicsView()
+        presenter = object.__new__(PhysicsPresenter)
+        presenter.view = view
+        presenter.app_state = SimpleNamespace(current_model_root=root)
+        presenter.maya_adapter = SimpleNamespace(object_exists=cmds.objExists)
+        presenter._current_kind = None
+        presenter._current_shape = None
+        presenter.refresh_physics(force=True)
+
+        actual_world = om.MMatrix(cmds.xform(transform, query=True, worldSpace=True, matrix=True))
+        max_error = max(abs(actual_world[index] - expected_world[index]) for index in range(16))
+        self.assertLessEqual(max_error, 1.0e-9)
+        self.assertEqual(
+            list(cmds.getAttr(f"{shape}.rotation")[0]),
+            [math.degrees(value) for value in rotation],
+        )
+        presenter.refresh_physics(force=True)
+        second_world = om.MMatrix(cmds.xform(transform, query=True, worldSpace=True, matrix=True))
+        for index in range(16):
+            self.assertAlmostEqual(second_world[index], actual_world[index], places=10)
 
 
 if __name__ == "__main__":

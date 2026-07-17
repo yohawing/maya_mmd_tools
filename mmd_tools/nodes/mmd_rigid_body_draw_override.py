@@ -11,7 +11,7 @@ from __future__ import annotations
 import maya.api.OpenMaya as om
 import maya.api.OpenMayaRender as omr
 
-from mmd_tools.core.collider_geometry import box_draw_size, capsule_dimensions, collider_half_extents
+from mmd_tools.core.collider_geometry import box_draw_scale, capsule_dimensions, collider_half_extents
 from mmd_tools.core.collider_display import collision_group_color, physics_mode_line_style
 
 def maya_useNewAPI():
@@ -45,8 +45,9 @@ def _draw_sphere(drawManager, center, radius) -> None:
 
 
 def _draw_box(drawManager, center, x_axis, y_axis, size) -> None:
-    full_size = box_draw_size(size)
-    drawManager.box(center, x_axis, y_axis, *full_size, False)
+    # Maya applies scaleX along ``right`` and scaleY along ``up`` and treats
+    # both as half extents.  Keep PMX X on right and PMX Y on up.
+    drawManager.box(center, y_axis, x_axis, *box_draw_scale(size), False)
 
 
 def _draw_capsule(drawManager, center, y_axis, size) -> None:

@@ -25,29 +25,29 @@ def maya_point_to_mmd(point: Sequence[float], scale: float = 1.0) -> Tuple[float
 
 
 def mmd_euler_xyz_to_maya(euler_xyz: Sequence[float]) -> Tuple[float, float, float]:
-    """Convert MMD XYZ Euler channels to Maya XYZ Euler channels."""
+    """Convert MMD XYZ Euler channels by conjugating with the Z reflection."""
     return (
-        float(euler_xyz[0]),
-        float(euler_xyz[1]),
-        -float(euler_xyz[2]),
+        -float(euler_xyz[0]),
+        -float(euler_xyz[1]),
+        float(euler_xyz[2]),
     )
 
 
 def mmd_euler_radians_to_maya_degrees(euler_xyz: Sequence[float]) -> Tuple[float, float, float]:
-    """Convert MMD XYZ Euler radians to Maya XYZ Euler degrees."""
+    """Convert MMD XYZ Euler radians to reflected Maya XYZ Euler degrees."""
     return (
-        math.degrees(float(euler_xyz[0])),
-        math.degrees(float(euler_xyz[1])),
-        -math.degrees(float(euler_xyz[2])),
+        -math.degrees(float(euler_xyz[0])),
+        -math.degrees(float(euler_xyz[1])),
+        math.degrees(float(euler_xyz[2])),
     )
 
 
 def maya_euler_degrees_to_mmd_radians(euler_xyz: Sequence[float]) -> Tuple[float, float, float]:
-    """Convert Maya XYZ Euler degrees to MMD XYZ Euler radians."""
+    """Convert Maya XYZ Euler degrees to reflected MMD XYZ Euler radians."""
     return (
-        math.radians(float(euler_xyz[0])),
-        math.radians(float(euler_xyz[1])),
-        -math.radians(float(euler_xyz[2])),
+        -math.radians(float(euler_xyz[0])),
+        -math.radians(float(euler_xyz[1])),
+        math.radians(float(euler_xyz[2])),
     )
 
 
