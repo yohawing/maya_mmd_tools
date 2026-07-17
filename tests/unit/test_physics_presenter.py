@@ -155,6 +155,5 @@ class TestTabStructure(unittest.TestCase):
         self.assertIn("duplicate_btn", self.tab_source)
         self.assertIn("delete_btn", self.tab_source)
 
-
 if __name__ == "__main__":
     unittest.main()

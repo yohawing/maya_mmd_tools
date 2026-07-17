@@ -27,7 +27,7 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 | Rig (IK / grant / local axis) | 🔶 | Partially supported. Some complex models still have known issues. |
 | Display frames (表示枠) | 🔶 | Preserved as model metadata for development-mode PMX round-trip; no dedicated editing UI yet |
 | Morphs (vertex / bone / material / group / UV) | 🔶 | Vertex and bone morphs are supported. Material, UV, Flip, and Impulse morphs are not supported. |
-| Rigid bodies & joints | ⛔ | Not supported |
+| Rigid bodies & joints | 🧪 | Development-mode authoring: editable PMX fields, rest-pose Collider display, and PMX round-trip. Live simulation is not supported. |
 | Soft body (PMX 2.1) | ⛔ | Not supported |
 | HumanIK | ⛔ | Not supported |
 | Export | ⛔ | Not supported |
@@ -42,13 +42,14 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 | Camera animation | ✅ | Creates/keys `mmd_camera` |
 | Light animation | ✅ | Drives the `mmd_light` controller |
 | IK on/off frames | 🔶 | Supported for import/bake. Runtime bake applies the state to the baked pose; rig mode keys `mmdCcdIk.enabled`. |
-| Physics | 🔶 | Supported in Bake mode only |
+| Physics | 🔶 | VMD Bake mode only. Live simulation, Controller/IK-driven physics, animated Colliders, and physics cache are not supported. |
 | Export | ⛔ | Not supported |
 
 ## Known Limitations
 
 - **Export is not available.** This is an import-only tool for now — PMX/PMD/VMD export is not implemented (the UI states this explicitly).
 - **Rig mode is experimental for complex motion parity.** It keeps editable sparse keys plus live `mmdCcdIk` / `mmdAppend` nodes, but complex joint-orient, IK, append, and local-axis cases may not match Bake mode or MMD mesh deformation exactly.
+- **Physics authoring is not live physics.** Development-mode rigid-body/joint editing and rest-pose Collider display do not simulate hair or skirts, follow animated Controllers/IK, or provide a scrub cache.
 
 ## System Requirements
 

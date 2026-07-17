@@ -25,6 +25,13 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertFalse(tab.physics_details_content.isEnabled())
             self.assertFalse(tab.apply_btn.isEnabled())
             self.assertFalse(tab.reset_btn.isEnabled())
+            self.assertTrue(tab.scope_notice_label.wordWrap())
+            self.assertEqual(
+                tab.scope_notice_label.text(),
+                UITranslator.instance().translate(
+                    "physics_authoring_only_notice", "messages"
+                ),
+            )
         finally:
             tab.deleteLater()
             QApplication.processEvents()
@@ -96,11 +103,13 @@ class TestPhysicsTabGUI(GuiTestBase):
             tab.retranslateUi()
             en_refresh = tab.refresh_btn.text()
             en_mass = tab._form_labels["rigid_mass"][1].text()
+            en_scope_notice = tab.scope_notice_label.text()
 
             translator.set_language("ja")
             tab.retranslateUi()
             self.assertNotEqual(tab.refresh_btn.text(), en_refresh)
             self.assertNotEqual(tab._form_labels["rigid_mass"][1].text(), en_mass)
+            self.assertNotEqual(tab.scope_notice_label.text(), en_scope_notice)
             self.assertEqual(tab.list_tabs.tabText(0), translator.translate("rigid_bodies", "tabs"))
             self.assertEqual(tab.list_tabs.tabText(1), translator.translate("joints", "tabs"))
         finally:

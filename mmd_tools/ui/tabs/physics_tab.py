@@ -30,6 +30,7 @@ class PhysicsTab(BaseTab):
         ("duplicate_btn", "setText", "duplicate", "buttons"),
         ("delete_btn", "setText", "delete", "buttons"),
         ("collider_visible_check", "setText", "show_colliders", "checkboxes"),
+        ("scope_notice_label", "setText", "physics_authoring_only_notice", "messages"),
         ("rigid_body_search_edit", "setPlaceholderText", "search_rigid_bodies", "placeholders"),
         ("joint_search_edit", "setPlaceholderText", "search_joints", "placeholders"),
         ("apply_btn", "setText", "apply", "buttons"),
@@ -43,8 +44,14 @@ class PhysicsTab(BaseTab):
         self._physics_editors = {}
         self._combo_options = {}
 
-        main_layout = QHBoxLayout(self)
+        main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
+
+        self.scope_notice_label = QLabel(
+            self.tr("physics_authoring_only_notice", "messages")
+        )
+        self.scope_notice_label.setWordWrap(True)
+        main_layout.addWidget(self.scope_notice_label)
 
         self.splitter = QSplitter(Qt.Horizontal)
 

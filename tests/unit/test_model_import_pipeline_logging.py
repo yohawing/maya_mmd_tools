@@ -196,16 +196,32 @@ class TestModelImportPipelineLogging(unittest.TestCase):
             "mmd_tools.converters.physics_scene_builder.build_physics_scene",
             return_value=(["rb"], ["joint"]),
         ) as build_scene, patch.object(pipeline, "_store_source_pmx_payload") as store_payload:
-            result = pipeline.convert_physics(
-                file_kind="pmx",
-                parser=parser,
-                maya_joints=[],
-                root_group="root",
-            )
+            with patch(
+                "mmd_tools.converters.physics_scene_builder.build_physics_live_graph",
+                return_value={"solver": "solver1", "drivers": ["driver1"]},
+            ):
+                result = pipeline.convert_physics(
+                    file_kind="pmx",
+                    parser=parser,
+                    maya_joints=[],
+                    root_group="root",
+                )
 
         self.assertEqual(result, (["rb"], ["joint"]))
         build_scene.assert_called_once()
         store_payload.assert_called_once_with("root")
+        self.assertEqual(profile["physics_converter"]["support_scope"], "authoring_only")
+        self.assertFalse(profile["physics_converter"]["live_physics_supported"])
+        debug_messages = _message_templates(logger.debug)
+        info_messages = _message_templates(logger.info)
+        warning_messages = _message_templates(logger.warning)
+        internal_message = (
+            "Internal physics solver graph built (unsupported): "
+            "solver=%s, bone drivers=%d"
+        )
+        self.assertIn(internal_message, debug_messages)
+        self.assertNotIn(internal_message, info_messages)
+        self.assertNotIn(internal_message, warning_messages)
 
 
 if __name__ == "__main__":

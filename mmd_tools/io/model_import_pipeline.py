@@ -168,14 +168,14 @@ class ModelImportPipeline:
             logger=self.logger,
         )
         if live_graph.get("solver"):
-            self.logger.info(
-                "Physics live graph built: solver=%s, bone drivers=%d",
+            self.logger.debug(
+                "Internal physics solver graph built (unsupported): solver=%s, bone drivers=%d",
                 live_graph["solver"],
                 len(live_graph.get("drivers") or []),
             )
         else:
-            self.logger.warning(
-                "Physics DAG was imported, but live playback graph is unavailable: %s",
+            self.logger.debug(
+                "Internal physics solver graph unavailable (live physics unsupported): %s",
                 live_graph.get("reason", "unknown"),
             )
         if self.profile is not None:
@@ -185,6 +185,8 @@ class ModelImportPipeline:
                 "solver": live_graph.get("solver"),
                 "bone_drivers": len(live_graph.get("drivers") or []),
                 "elapsed_seconds": elapsed,
+                "support_scope": "authoring_only",
+                "live_physics_supported": False,
             }
         return rb_transforms, jt_transforms
 

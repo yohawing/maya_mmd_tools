@@ -132,6 +132,7 @@
     "physics_validation_finite": "有限の数値を入力してください",
     "physics_validation_minimum": "{minimum} 以上にしてください",
     "physics_validation_maximum": "{maximum} 以下にしてください",
+    "physics_authoring_only_notice": "オーサリング専用: PMXの剛体・ジョイント編集と静止姿勢のCollider確認を行います。ライブ物理、アニメーション追従Collider、物理cacheは非対応です。",
     "physics_validation_range": "{minimum} から {maximum} の範囲にしてください",
     "physics_validation_vector_length": "カンマ区切りで {count} 個の値を入力してください",
     "physics_validation_bool": "各値を 0 または 1 にしてください",

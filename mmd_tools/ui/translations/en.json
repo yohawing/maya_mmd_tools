@@ -132,6 +132,7 @@
     "physics_validation_finite": "enter a finite number",
     "physics_validation_minimum": "must be at least {minimum}",
     "physics_validation_maximum": "must be at most {maximum}",
+    "physics_authoring_only_notice": "Authoring only: edit PMX rigid bodies and joints and inspect rest-pose Colliders. Live simulation, animated Colliders, and physics cache are not supported.",
     "physics_validation_range": "must be between {minimum} and {maximum}",
     "physics_validation_vector_length": "enter exactly {count} comma-separated values",
     "physics_validation_bool": "each value must be 0 or 1",
