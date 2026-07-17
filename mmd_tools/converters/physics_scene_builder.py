@@ -16,7 +16,10 @@ from mmd_tools.core.constants import (
 )
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.namespace_utils import NamespaceUtils
-from mmd_tools.core.collider_authoring import set_collider_authoring_pose
+from mmd_tools.core.collider_authoring import (
+    connect_collider_authoring_follow,
+    set_collider_authoring_pose,
+)
 
 _logger = get_logger(__name__)
 
@@ -67,7 +70,14 @@ def _resolve_rigid_body_transform(rigid_body_transforms: list, index: int) -> Op
     return transform if transform and cmds.objExists(transform) else None
 
 
-def _build_rigid_body(index: int, rb, maya_joints: list, parent_group: str, logger) -> Optional[str]:
+def _build_rigid_body(
+    index: int,
+    rb,
+    maya_joints: list,
+    parent_group: str,
+    logger,
+    display_scale: float,
+) -> Optional[str]:
     base_name = _display_name(rb.name_english, rb.name)
     node_name = f"rb_{index}_{_sanitize_node_name(base_name)}"
     transform = None
@@ -82,7 +92,13 @@ def _build_rigid_body(index: int, rb, maya_joints: list, parent_group: str, logg
         cmds.setAttr(f"{shape}.shapeType", rb.shape_type)
 
         _set_vector_attr(shape, "shapeSize", rb.size)
-        set_collider_authoring_pose(transform, shape, rb.position, rb.rotation)
+        set_collider_authoring_pose(
+            transform,
+            shape,
+            rb.position,
+            rb.rotation,
+            display_scale,
+        )
 
         cmds.setAttr(f"{shape}.physicsMode", rb.physics_mode)
         cmds.setAttr(f"{shape}.mass", rb.mass)
@@ -98,6 +114,7 @@ def _build_rigid_body(index: int, rb, maya_joints: list, parent_group: str, logg
             maya_joint = maya_joints[rb.related_bone_index]
             if maya_joint and cmds.objExists(maya_joint):
                 cmds.connectAttr(f"{maya_joint}.message", f"{shape}.relatedBone")
+                connect_collider_authoring_follow(transform, shape)
 
         return transform
     except Exception as exc:
@@ -157,6 +174,7 @@ def build_physics_scene(
     bones,
     maya_joints,
     root_group: str,
+    scale: float = 1.0,
     logger=None,
 ) -> tuple[list[str], list[str]]:
     """Build physics DAG nodes from PMX data.
@@ -176,7 +194,8 @@ def build_physics_scene(
     # Kept positional (index-aligned with the PMX lists, holes as None on
     # failure) because joints resolve rigid_body_a/b_index by list position.
     rigid_body_transforms = [
-        _build_rigid_body(index, rb, maya_joints, rigid_bodies_group, log) for index, rb in enumerate(rigid_bodies)
+        _build_rigid_body(index, rb, maya_joints, rigid_bodies_group, log, scale)
+        for index, rb in enumerate(rigid_bodies)
     ]
     joint_transforms = [
         _build_joint(index, jt, rigid_body_transforms, constraints_group, log) for index, jt in enumerate(joints)

@@ -25,5 +25,5 @@ def collision_group_color(group: int, physics_mode: int) -> tuple[float, float, 
 
 
 def physics_mode_line_style(physics_mode: int) -> int:
-    """Return MUIDrawManager line-style value: solid, dashed, or dotted."""
-    return (0, 2, 1)[min(max(int(physics_mode), 0), 2)]
+    """Return the solid MUIDrawManager line style for every physics mode."""
+    return 0

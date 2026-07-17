@@ -24,10 +24,10 @@ class TestColliderDisplay(unittest.TestCase):
             self.assertGreater(colors[0][3], colors[1][3])
             self.assertGreater(colors[1][3], colors[2][3])
 
-    def test_modes_have_distinct_line_styles(self):
+    def test_modes_all_use_solid_line_style(self):
         self.assertEqual(
             [physics_mode_line_style(mode) for mode in range(3)],
-            [0, 2, 1],
+            [0, 0, 0],
         )
 
     def test_invalid_values_are_clamped(self):

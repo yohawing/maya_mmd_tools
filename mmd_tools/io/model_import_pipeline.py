@@ -146,6 +146,7 @@ class ModelImportPipeline:
             bones=getattr(parser, "bones", None) or [],
             maya_joints=maya_joints,
             root_group=root_group,
+            scale=self.scale,
             logger=self.logger,
         )
         elapsed = time.time() - t0
@@ -167,6 +168,16 @@ class ModelImportPipeline:
             root_group=root_group,
             logger=self.logger,
         )
+        from ..core.collider_authoring import refresh_collider_authoring_pose
+
+        for transform in rb_transforms:
+            if not transform or not cmds.objExists(transform):
+                continue
+            shapes = cmds.listRelatives(
+                transform, shapes=True, fullPath=True, type="mmdRigidBodyShape"
+            ) or []
+            if shapes:
+                refresh_collider_authoring_pose(transform, shapes[0], self.scale)
         if live_graph.get("solver"):
             self.logger.debug(
                 "Internal physics solver graph built (unsupported): solver=%s, bone drivers=%d",

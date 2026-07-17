@@ -10,7 +10,14 @@ from maya import cmds
 import maya.api.OpenMaya as om
 
 from tests.common.maya_test_base import MayaTestBase
-from mmd_tools.core.collider_authoring import set_collider_authoring_pose
+from mmd_tools.core.collider_authoring import (
+    connect_collider_authoring_follow,
+    set_collider_authoring_pose,
+)
+from mmd_tools.core.coordinate_transform import (
+    mmd_euler_radians_to_maya_degrees,
+    mmd_point_to_maya,
+)
 
 
 class TestColliderAuthoringTransform(MayaTestBase):
@@ -44,14 +51,116 @@ class TestColliderAuthoringTransform(MayaTestBase):
             self.assertAlmostEqual(authoring_matrix[index], world_matrix[index], places=10)
             self.assertAlmostEqual(draw_matrix[index], world_matrix[index], places=10)
 
-    def test_persisted_shape_pose_drives_transform_channels(self):
+    def test_raw_pmx_pose_is_preserved_while_unbound_display_uses_maya_space(self):
         transform = cmds.createNode("transform", name="editableCollider")
         shape = cmds.createNode("mmdRigidBodyShape", name="editableColliderShape", parent=transform)
-        set_collider_authoring_pose(transform, shape, (1.0, 2.0, 3.0), (0.1, 0.2, 0.3))
-        cmds.setAttr(f"{shape}.positionY", 9.5)
-        cmds.setAttr(f"{shape}.rotationZ", -45.0)
-        self.assertAlmostEqual(cmds.getAttr(f"{transform}.translateY"), 9.5)
-        self.assertAlmostEqual(cmds.getAttr(f"{transform}.rotateZ"), -45.0)
+        position = (1.25, 2.5, 3.75)
+        rotation = (0.1, -0.2, 0.3)
+        display_scale = 2.5
+        set_collider_authoring_pose(
+            transform,
+            shape,
+            position,
+            rotation,
+            display_scale,
+        )
+
+        self.assertListAlmostEqual(cmds.getAttr(f"{shape}.position")[0], position)
+        self.assertListAlmostEqual(
+            cmds.getAttr(f"{shape}.rotation")[0],
+            [math.degrees(value) for value in rotation],
+        )
+        self.assertListAlmostEqual(
+            cmds.getAttr(f"{transform}.translate")[0],
+            mmd_point_to_maya(position, display_scale),
+        )
+        self.assertListAlmostEqual(
+            cmds.getAttr(f"{transform}.rotate")[0],
+            mmd_euler_radians_to_maya_degrees(rotation),
+        )
+        self.assertListAlmostEqual(
+            cmds.getAttr(f"{transform}.scale")[0],
+            (display_scale, display_scale, display_scale),
+        )
+        for shape_attr, transform_attr in (
+            ("positionX", "translateX"),
+            ("positionY", "translateY"),
+            ("positionZ", "translateZ"),
+            ("rotationX", "rotateX"),
+            ("rotationY", "rotateY"),
+            ("rotationZ", "rotateZ"),
+        ):
+            self.assertFalse(
+                cmds.isConnected(f"{shape}.{shape_attr}", f"{transform}.{transform_attr}")
+            )
+
+    def test_bound_collider_keeps_bone_offset_through_animation_and_reopen(self):
+        model = cmds.createNode("transform", name="followModel")
+        master = cmds.createNode("transform", name="followMaster", parent=model)
+        bone = cmds.createNode("joint", name="followBone", parent=master)
+        physics = cmds.createNode("transform", name="followPhysics", parent=model)
+        transform = cmds.createNode("transform", name="followCollider", parent=physics)
+        shape = cmds.createNode("mmdRigidBodyShape", name="followColliderShape", parent=transform)
+        cmds.setAttr(f"{shape}.shapeType", 1)
+        cmds.setAttr(f"{shape}.shapeSize", 0.5, 1.0, 1.5, type="double3")
+        position = (2.0, 4.0, 6.0)
+        rotation = (0.15, -0.25, 0.35)
+        set_collider_authoring_pose(transform, shape, position, rotation)
+        cmds.connectAttr(f"{bone}.message", f"{shape}.relatedBone")
+        constraint = connect_collider_authoring_follow(transform, shape)
+        self.assertTrue(constraint)
+
+        def relative_matrix():
+            collider_world = om.MMatrix(cmds.xform(transform, query=True, worldSpace=True, matrix=True))
+            bone_world = om.MMatrix(cmds.xform(bone, query=True, worldSpace=True, matrix=True))
+            return collider_world * bone_world.inverse()
+
+        def set_pose(node, frame, translate, rotate):
+            cmds.currentTime(frame)
+            cmds.setAttr(f"{node}.translate", *translate, type="double3")
+            cmds.setAttr(f"{node}.rotate", *rotate, type="double3")
+            cmds.setKeyframe(node, attribute="translate")
+            cmds.setKeyframe(node, attribute="rotate")
+
+        set_pose(model, 1, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+        set_pose(master, 1, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+        set_pose(bone, 1, (0.5, 1.0, -1.5), (0.0, 0.0, 0.0))
+        cmds.currentTime(1)
+        rest_offset = relative_matrix()
+
+        set_pose(model, 12, (3.0, -2.0, 1.0), (0.0, 15.0, 0.0))
+        set_pose(master, 12, (-1.0, 2.0, 4.0), (5.0, -10.0, 20.0))
+        set_pose(bone, 12, (2.5, -0.5, 3.0), (-12.0, 18.0, 27.0))
+        cmds.currentTime(12)
+        animated_offset = relative_matrix()
+        for index in range(16):
+            self.assertAlmostEqual(animated_offset[index], rest_offset[index], places=6)
+
+        bbox = cmds.exactWorldBoundingBox(transform)
+        bbox_center = tuple((bbox[axis] + bbox[axis + 3]) * 0.5 for axis in range(3))
+        world_position = cmds.xform(transform, query=True, worldSpace=True, translation=True)
+        self.assertListAlmostEqual(bbox_center, world_position, places=5)
+        self.assertListAlmostEqual(cmds.getAttr(f"{shape}.position")[0], position)
+        self.assertListAlmostEqual(
+            cmds.getAttr(f"{shape}.rotation")[0],
+            [math.degrees(value) for value in rotation],
+        )
+
+        scene_path = self.get_temp_filename("collider_follow_reopen.ma")
+        cmds.file(rename=scene_path)
+        cmds.file(save=True, type="mayaAscii", force=True)
+        cmds.file(scene_path, open=True, force=True)
+        transform = "followCollider"
+        shape = "followColliderShape"
+        bone = "followBone"
+        self.assertEqual(connect_collider_authoring_follow(transform, shape), constraint)
+        cmds.currentTime(1)
+        reopen_rest = relative_matrix()
+        cmds.currentTime(12)
+        reopen_animated = relative_matrix()
+        for index in range(16):
+            self.assertAlmostEqual(reopen_animated[index], reopen_rest[index], places=6)
+        self.assertListAlmostEqual(cmds.getAttr(f"{shape}.position")[0], position)
 
     def test_locator_world_bbox_matches_each_primitive(self):
         expected = {

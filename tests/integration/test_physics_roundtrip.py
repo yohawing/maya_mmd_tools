@@ -9,11 +9,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from maya import cmds
+import maya.api.OpenMaya as om
 
 from tests.common.maya_test_base import MayaTestBase
 
 from mmd_tools.converters.export_scene_collector import ExportSceneCollector
 from mmd_tools.core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BODIES_GROUP
+from mmd_tools.core.coordinate_transform import mmd_euler_xyz_to_maya, mmd_point_to_maya
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.io.mmd_importer import import_mmd_file
@@ -79,9 +81,10 @@ class TestPhysicsRoundTrip(MayaTestBase):
         except Exception:
             pass
 
-    def _import_fixture(self, path=FIXTURE_PATH):
+    def _import_fixture(self, path=FIXTURE_PATH, scale=None):
         return import_mmd_file(
             str(path),
+            scale=scale,
             options={
                 "import_physics": True,
                 "create_mmd_shaders": False,
@@ -297,6 +300,98 @@ class TestPhysicsRoundTrip(MayaTestBase):
         for index, (actual, expected) in enumerate(zip(exported.joints, after_reimport["joints"])):
             _assert_pmx_fields(self, actual, expected, JOINT_EXACT_FIELDS, (),
                                JOINT_VECTOR_FIELDS, f"reimported.joints[{index}]")
+
+    def test_real_pmx_bound_collider_uses_maya_pose_and_follows_related_bone(self):
+        source_pmx = parse_pmx_file(str(FIXTURE_PATH), use_native_pmx_parse=False)
+        root = self._import_fixture()
+        presenter = self._presenter(root)
+        physics_group = presenter._find_child(root, PHYSICS_GROUP)
+        rb_group = presenter._find_child(physics_group, RIGID_BODIES_GROUP)
+        rigid_pairs = presenter._find_shapes(rb_group, "mmdRigidBodyShape")
+
+        bound = None
+        for transform, shape in rigid_pairs:
+            index = cmds.getAttr(f"{shape}.pmxIndex")
+            source = source_pmx.rigid_bodies[index]
+            self.assertListAlmostEqual(cmds.getAttr(f"{shape}.position")[0], source.position)
+            self.assertListAlmostEqual(
+                cmds.getAttr(f"{shape}.rotation")[0],
+                [math.degrees(value) for value in source.rotation],
+            )
+
+            expected = om.MTransformationMatrix()
+            expected.setTranslation(om.MVector(*mmd_point_to_maya(source.position)), om.MSpace.kTransform)
+            expected.setRotation(om.MEulerRotation(*mmd_euler_xyz_to_maya(source.rotation)))
+            actual = om.MMatrix(cmds.xform(transform, query=True, worldSpace=True, matrix=True))
+            expected_matrix = expected.asMatrix()
+            for matrix_index in range(16):
+                self.assertAlmostEqual(actual[matrix_index], expected_matrix[matrix_index], places=5)
+
+            bones = cmds.listConnections(
+                f"{shape}.relatedBone", source=True, destination=False, type="joint"
+            ) or []
+            if bones and bound is None:
+                bound = (transform, shape, bones[0], source)
+
+        self.assertIsNotNone(bound, "fixture must contain a collider bound to a related bone")
+        transform, shape, bone, source = bound
+
+        def relative_matrix():
+            collider_world = om.MMatrix(cmds.xform(transform, query=True, worldSpace=True, matrix=True))
+            bone_world = om.MMatrix(cmds.xform(bone, query=True, worldSpace=True, matrix=True))
+            return collider_world * bone_world.inverse()
+
+        cmds.currentTime(1)
+        cmds.setKeyframe(root, attribute="translate")
+        cmds.setKeyframe(root, attribute="rotate")
+        cmds.setKeyframe(bone, attribute="translate")
+        cmds.setKeyframe(bone, attribute="rotate")
+        rest_offset = relative_matrix()
+
+        cmds.currentTime(12)
+        cmds.move(1.5, -0.75, 2.25, root, relative=True)
+        cmds.rotate(0.0, 17.0, 0.0, root, relative=True)
+        cmds.move(-0.5, 1.25, 2.0, bone, relative=True, objectSpace=True)
+        cmds.rotate(8.0, -13.0, 21.0, bone, relative=True, objectSpace=True)
+        cmds.setKeyframe(root, attribute="translate")
+        cmds.setKeyframe(root, attribute="rotate")
+        cmds.setKeyframe(bone, attribute="translate")
+        cmds.setKeyframe(bone, attribute="rotate")
+        animated_offset = relative_matrix()
+        for matrix_index in range(16):
+            self.assertAlmostEqual(animated_offset[matrix_index], rest_offset[matrix_index], places=5)
+
+        bbox = cmds.exactWorldBoundingBox(transform)
+        bbox_center = tuple((bbox[axis] + bbox[axis + 3]) * 0.5 for axis in range(3))
+        world_position = cmds.xform(transform, query=True, worldSpace=True, translation=True)
+        self.assertListAlmostEqual(bbox_center, world_position, places=4)
+
+        collected = ExportSceneCollector().collect_from_model_root(root)
+        collected_body = collected["rigid_bodies"][cmds.getAttr(f"{shape}.pmxIndex")]
+        self.assertListAlmostEqual(collected_body["position"], source.position)
+        self.assertListAlmostEqual(collected_body["rotation"], source.rotation)
+
+    def test_nondefault_import_scale_applies_only_to_collider_display_dag(self):
+        display_scale = 2.5
+        source_pmx = parse_pmx_file(str(FIXTURE_PATH), use_native_pmx_parse=False)
+        root = self._import_fixture(scale=display_scale)
+        presenter = self._presenter(root)
+        physics_group = presenter._find_child(root, PHYSICS_GROUP)
+        rb_group = presenter._find_child(physics_group, RIGID_BODIES_GROUP)
+        rigid_pairs = presenter._find_shapes(rb_group, "mmdRigidBodyShape")
+
+        for transform, shape in rigid_pairs:
+            source = source_pmx.rigid_bodies[cmds.getAttr(f"{shape}.pmxIndex")]
+            self.assertListAlmostEqual(
+                cmds.xform(transform, query=True, worldSpace=True, translation=True),
+                mmd_point_to_maya(source.position, display_scale),
+                places=4,
+            )
+            self.assertListAlmostEqual(
+                cmds.getAttr(f"{transform}.scale")[0],
+                (display_scale, display_scale, display_scale),
+            )
+            self.assertListAlmostEqual(cmds.getAttr(f"{shape}.position")[0], source.position)
 
     def test_vertex_morph_and_physics_survive_collector_roundtrip(self):
         """A deleted-target PMX morph and every Physics field survive scene collection."""

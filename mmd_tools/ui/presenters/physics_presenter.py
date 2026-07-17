@@ -7,6 +7,7 @@ import math
 from maya import cmds
 
 from mmd_tools.core.collider_authoring import (
+    connect_collider_authoring_follow,
     connect_collider_authoring_transform,
     set_collider_authoring_pose,
 )
@@ -655,15 +656,19 @@ class PhysicsPresenter:
                 cmds.setAttr(f"{shape}.{vec_attr}{axis}", val)
         position = tuple(_get_attr(source_shape, f"position{axis}", 0.0) for axis in "XYZ")
         rotation_degrees = tuple(_get_attr(source_shape, f"rotation{axis}", 0.0) for axis in "XYZ")
+        source_transform = (cmds.listRelatives(source_shape, parent=True, fullPath=True) or [None])[0]
+        display_scale = _get_attr(source_transform, "scaleX", 1.0) if source_transform else 1.0
         set_collider_authoring_pose(
             transform,
             shape,
             position,
             tuple(math.radians(value) for value in rotation_degrees),
+            display_scale,
         )
         bone_conn = cmds.listConnections(f"{source_shape}.relatedBone", source=True, destination=False) or []
         if bone_conn:
             cmds.connectAttr(f"{bone_conn[0]}.message", f"{shape}.relatedBone", force=True)
+            connect_collider_authoring_follow(transform, shape)
         logger.info("Duplicated rigid body '%s' from '%s'", transform, source_shape)
 
     def _duplicate_joint(self, root, source_shape):
