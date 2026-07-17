@@ -10,6 +10,7 @@ from ...core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BODIES_GRO
 from ...core.logger import get_logger
 from ...core.visibility_state import get_visibility_category, set_visibility_category, sync_visibility_connections
 from ..qt_compat import Qt
+from ..translations import UITranslator
 from .list_presenter_helpers import (
     apply_list_filter,
     reload_for_current_model_change,
@@ -54,6 +55,13 @@ def _parse_vector_str(text):
         return tuple(float(p) for p in parts)
     except ValueError:
         return None
+
+
+def _format_validation_error(error):
+    translator = UITranslator.instance()
+    field = translator.translate(error.field_key, "fields").rstrip(" :：")
+    reason = translator.translate(error.message_key, "messages").format(**error.params)
+    return translator.translate("physics_validation_error", "messages").format(field=field, reason=reason)
 
 
 def _next_pmx_index(shape_pairs):
@@ -353,7 +361,7 @@ class PhysicsPresenter:
             else:
                 return
         except PhysicsFormValidationError as e:
-            cmds.warning(f"Validation error ({e.field_key}): {e.message_key}")
+            self._report_validation_error(e)
             return
 
         try:
@@ -367,6 +375,12 @@ class PhysicsPresenter:
             logger.error("Failed to apply physics changes to '%s'", shape, exc_info=True)
         finally:
             cmds.undoInfo(closeChunk=True)
+
+    def _report_validation_error(self, error):
+        message = _format_validation_error(error)
+        self.app_state.emit_status(message)
+        cmds.warning(message)
+        return message
 
     def reset_changes(self):
         shape = self._current_shape
