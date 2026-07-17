@@ -79,15 +79,17 @@ class TestDrawOverrideStructure(unittest.TestCase):
         self.assertIn("box", self.source.lower())
         self.assertIn("capsule", self.source.lower())
 
-    def test_defines_physics_mode_colors(self):
-        for mode_keyword in ["static", "dynamic"]:
-            self.assertTrue(
-                mode_keyword.lower() in self.source.lower(),
-                f"Missing color definition for mode: {mode_keyword}",
-            )
+    def test_uses_group_palette_and_maya_selection_color(self):
+        self.assertIn("collision_group_color", self.source)
+        self.assertIn("wireframeColor", self.source)
+        self.assertIn("displayStatus", self.source)
+
+    def test_physics_mode_uses_line_style(self):
+        self.assertIn("physics_mode_line_style", self.source)
+        self.assertIn("setLineStyle", self.source)
 
     def test_reads_shape_attributes(self):
-        for attr in ["shapeType", "shapeSizeX", "shapeSizeY", "shapeSizeZ", "physicsMode", "enable"]:
+        for attr in ["shapeType", "shapeSizeX", "shapeSizeY", "shapeSizeZ", "physicsMode", "collisionGroup", "enable"]:
             self.assertIn(attr, self.source, f"Missing attribute read: {attr}")
 
     def test_uses_begin_end_drawable(self):

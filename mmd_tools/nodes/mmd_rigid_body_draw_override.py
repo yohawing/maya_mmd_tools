@@ -12,14 +12,10 @@ import maya.api.OpenMaya as om
 import maya.api.OpenMayaRender as omr
 
 from mmd_tools.core.collider_geometry import capsule_dimensions, collider_half_extents
+from mmd_tools.core.collider_display import collision_group_color, physics_mode_line_style
 
 def maya_useNewAPI():
     pass
-
-_COLOR_STATIC = (0.2, 0.8, 0.2, 0.6)
-_COLOR_DYNAMIC = (0.8, 0.2, 0.2, 0.6)
-_COLOR_DYNAMIC_BONE = (0.2, 0.2, 0.8, 0.6)
-_COLOR_DISABLED = (0.4, 0.4, 0.4, 0.3)
 
 _SPHERE_SUBDIV_AXIS = 16
 _SPHERE_SUBDIV_HEIGHT = 8
@@ -32,18 +28,17 @@ class ColliderDrawData(om.MUserData):
         self.shape_type = 0
         self.size = (1.0, 1.0, 1.0)
         self.physics_mode = 0
+        self.collision_group = 0
         self.enabled = True
         self.legacy_rotation = None
+        self.selected = False
+        self.selection_color = None
 
 
 def _color_for(data: ColliderDrawData) -> om.MColor:
-    if not data.enabled:
-        return om.MColor(_COLOR_DISABLED)
-    if data.physics_mode == 1:
-        return om.MColor(_COLOR_DYNAMIC)
-    if data.physics_mode == 2:
-        return om.MColor(_COLOR_DYNAMIC_BONE)
-    return om.MColor(_COLOR_STATIC)
+    if data.selected and data.selection_color is not None:
+        return data.selection_color
+    return om.MColor(collision_group_color(data.collision_group, data.physics_mode))
 
 
 def _draw_sphere(drawManager, center, radius) -> None:
@@ -120,6 +115,7 @@ class MmdRigidBodyDrawOverride(omr.MPxDrawOverride):
             data.enabled = fn.findPlug("enable", False).asBool()
             data.shape_type = fn.findPlug("shapeType", False).asShort()
             data.physics_mode = fn.findPlug("physicsMode", False).asShort()
+            data.collision_group = fn.findPlug("collisionGroup", False).asShort()
             data.size = (
                 fn.findPlug("shapeSizeX", False).asDouble(),
                 fn.findPlug("shapeSizeY", False).asDouble(),
@@ -130,6 +126,16 @@ class MmdRigidBodyDrawOverride(omr.MPxDrawOverride):
                 fn.findPlug("rotationX", False).asMAngle().asRadians(),
                 fn.findPlug("rotationY", False).asMAngle().asRadians(),
                 fn.findPlug("rotationZ", False).asMAngle().asRadians(),
+            )
+            status = omr.MGeometryUtilities.displayStatus(objPath)
+            data.selected = status in (
+                omr.MGeometryUtilities.kActive,
+                omr.MGeometryUtilities.kLead,
+                omr.MGeometryUtilities.kActiveComponent,
+                omr.MGeometryUtilities.kHilite,
+            )
+            data.selection_color = (
+                omr.MGeometryUtilities.wireframeColor(objPath) if data.selected else None
             )
         except Exception:
             data.enabled = False
@@ -153,7 +159,8 @@ class MmdRigidBodyDrawOverride(omr.MPxDrawOverride):
 
         drawManager.beginDrawable()
         drawManager.setColor(color)
-        drawManager.setLineWidth(1.0)
+        drawManager.setLineWidth(2.5 if data.selected else 1.0)
+        drawManager.setLineStyle(physics_mode_line_style(data.physics_mode))
 
         if data.shape_type == 0:
             _draw_sphere(drawManager, center, data.size[0])
