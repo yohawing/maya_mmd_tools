@@ -72,6 +72,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._cached_flat = None
         self._initialized = False
         self._last_reset_generation = -1
+        self._last_world_settings_version = None
 
     def compute(self, plug, data):
         attr = plug.attribute()
@@ -83,12 +84,20 @@ class MmdPhysicsSolverNode(om.MPxNode):
         ):
             return None
 
-        data.inputValue(self.aInWorldSettingsVersion).asInt()
+        world_settings_version = data.inputValue(
+            self.aInWorldSettingsVersion
+        ).asInt()
 
         enable = data.inputValue(self.aEnable).asBool()
         if not enable:
             self._write_outputs(data, solved=False, status="disabled")
             return
+
+        world_settings_changed = (
+            self._last_world_settings_version is not None
+            and world_settings_version != self._last_world_settings_version
+        )
+        self._last_world_settings_version = world_settings_version
 
         input_mode = data.inputValue(self.aInputMode).asShort()
         current_time = data.inputValue(self.aInTime).asTime().asUnits(om.MTime.kSeconds)
@@ -106,7 +115,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
             self._write_outputs(data, solved=False, status="disabled")
             return
 
-        force_reset = False
+        force_reset = world_settings_changed
         if reset_gen != self._last_reset_generation:
             self._last_reset_generation = reset_gen
             force_reset = True

@@ -229,6 +229,93 @@ class TestPhysicsPresenterNamespace(MayaTestBase):
         self.assertTrue(view.physics_enable_check.enabled)
         self.assertTrue(view.physics_enable_check.checked)
 
+    def test_legacy_world_message_connections_are_repaired_only_by_user_actions(self):
+        root_a = self._create_namespaced_model("LegacyToggleA", rigid_count=1, joint_count=0)
+        self._create_namespaced_model("LegacyToggleB", rigid_count=1, joint_count=0)
+        world_transform = cmds.createNode("transform", name="Legacy_PhysicsWorld")
+        world = cmds.createNode(
+            "mmdPhysicsWorldShape", name="Legacy_PhysicsWorldShape", parent=world_transform
+        )
+        cmds.setAttr(f"{world}.hiddenInOutliner", False)
+        solvers = []
+        for name in ("legacySolverA", "legacySolverB"):
+            solver = cmds.createNode("mmdPhysicsSolver", name=name)
+            cmds.connectAttr(f"{world}.message", f"{solver}.inWorldSettings")
+            solvers.append(solver)
+        wrong_source = cmds.createNode("network", name="wrongWorldVersionSource")
+        cmds.addAttr(wrong_source, longName="outSettingsVersion", attributeType="long")
+        cmds.connectAttr(
+            f"{wrong_source}.outSettingsVersion",
+            f"{solvers[1]}.inWorldSettingsVersion",
+        )
+
+        scene_path = self.get_temp_filename("legacy_physics_settings_schema.ma")
+        cmds.file(rename=scene_path)
+        cmds.file(save=True, type="mayaAscii", force=True)
+        cmds.file(scene_path, open=True, force=True)
+
+        world = (cmds.ls(type="mmdPhysicsWorldShape") or [None])[0]
+        solvers = sorted(cmds.ls(type="mmdPhysicsSolver") or [])
+        self.assertEqual(len(solvers), 2)
+        view = _FakePhysicsView()
+        presenter = object.__new__(PhysicsPresenter)
+        presenter.view = view
+        presenter.app_state = SimpleNamespace(current_model_root="LegacyToggleA:Base_root")
+        presenter.maya_adapter = SimpleNamespace(object_exists=cmds.objExists)
+        presenter._current_kind = None
+        presenter._current_shape = None
+
+        presenter.refresh_physics(force=True)
+        self.assertTrue(view.physics_enable_check.enabled)
+        self.assertFalse(view.physics_enable_check.checked)
+        self.assertFalse(cmds.getAttr(f"{world}.hiddenInOutliner"))
+        original_sources = [
+            cmds.connectionInfo(
+                f"{solver}.inWorldSettingsVersion", sourceFromDestination=True
+            )
+            for solver in solvers
+        ]
+        self.assertEqual(original_sources[0], "")
+        self.assertTrue(original_sources[1].endswith(".outSettingsVersion"))
+        self.assertNotEqual(original_sources[1], f"{world}.outSettingsVersion")
+
+        presenter._on_refresh_requested()
+        for solver in solvers:
+            source = cmds.connectionInfo(
+                f"{solver}.inWorldSettingsVersion", sourceFromDestination=True
+            )
+            self.assertEqual(source, f"{world}.outSettingsVersion")
+        self.assertFalse(cmds.getAttr(f"{world}.enable"))
+        self.assertFalse(cmds.getAttr(f"{world}.hiddenInOutliner"))
+
+        cmds.undo()
+        for solver, original_source in zip(solvers, original_sources):
+            self.assertEqual(
+                cmds.connectionInfo(
+                    f"{solver}.inWorldSettingsVersion", sourceFromDestination=True
+                ),
+                original_source,
+            )
+
+        presenter._on_physics_enable_changed(True)
+        self.assertTrue(cmds.getAttr(f"{world}.enable"))
+        for solver in solvers:
+            self.assertEqual(
+                cmds.connectionInfo(
+                    f"{solver}.inWorldSettingsVersion", sourceFromDestination=True
+                ),
+                f"{world}.outSettingsVersion",
+            )
+        cmds.undo()
+        self.assertFalse(cmds.getAttr(f"{world}.enable"))
+        for solver, original_source in zip(solvers, original_sources):
+            self.assertEqual(
+                cmds.connectionInfo(
+                    f"{solver}.inWorldSettingsVersion", sourceFromDestination=True
+                ),
+                original_source,
+            )
+
     def test_refresh_migrates_legacy_collider_pose_without_losing_current_bone_offset(self):
         root = self._create_namespaced_model("Legacy", rigid_count=1, joint_count=0)
         bone = cmds.createNode("joint", name="Legacy:hairBone", parent=root)

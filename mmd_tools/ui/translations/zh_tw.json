@@ -258,7 +258,8 @@
     "auto_classify_transparency": "自動分類透明 (掃描紋理α)",
     "auto_resolve_textures": "自動修復貼圖",
     "custom_namespace": "自訂命名空間:",
-    "show_colliders": "顯示碰撞體"
+    "show_colliders": "顯示碰撞體",
+    "enable_physics": "啟用物理"
   },
   "fields": {
     "import_scale": "匯入縮放:",

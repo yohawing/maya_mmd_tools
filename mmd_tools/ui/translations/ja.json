@@ -319,7 +319,8 @@
     "enable_logging": "ログを有効にする",
     "auto_classify_transparency": "透過を自動分類 (テクスチャαを走査)",
     "auto_resolve_textures": "テクスチャを自動修復",
-    "show_colliders": "コライダーを表示"
+    "show_colliders": "コライダーを表示",
+    "enable_physics": "物理を有効化"
   },
   "fields": {
     "import_scale": "インポートスケール:",

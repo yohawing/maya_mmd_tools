@@ -1280,6 +1280,12 @@ def maya_smoke(session: nox.Session) -> None:
         env=env,
         external=True,
     )
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/cpp/focused_physics_solver_world_toggle.py"),
+        env=env,
+        external=True,
+    )
 
 
 @nox.session(venv_backend="none")
@@ -2098,6 +2104,12 @@ def cpp_verify(session: nox.Session) -> None:
     session.run(
         str(mayapy),
         _mayapy_script(mayapy, "tests/cpp/smoke_runtime_node.py"),
+        env=env,
+        external=True,
+    )
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/cpp/focused_physics_solver_world_toggle.py"),
         env=env,
         external=True,
     )

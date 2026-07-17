@@ -168,6 +168,17 @@ class TestTabStructure(unittest.TestCase):
         enable_index = self.tab_source.index("toolbar_layout.addWidget(self.physics_enable_check)")
         self.assertLess(collider_index, enable_index)
 
+    def test_physics_enable_checkbox_is_translated_in_all_supported_languages(self):
+        self.assertIn(
+            '("physics_enable_check", "setText", "enable_physics", "checkboxes")',
+            self.tab_source,
+        )
+        self.assertNotIn('QCheckBox("物理を有効化")', self.tab_source)
+        translation_dir = TAB_PATH.parents[1] / "translations"
+        for language in ("ja", "en", "zh_cn", "zh_tw"):
+            text = (translation_dir / f"{language}.json").read_text(encoding="utf-8")
+            self.assertIn('"enable_physics":', text, language)
+
     def test_authoring_only_notice_widget_and_translation_key_are_removed(self):
         self.assertNotIn("scope_notice_label", self.tab_source)
         self.assertNotIn("physics_authoring_only_notice", self.tab_source)

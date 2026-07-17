@@ -30,6 +30,7 @@ class PhysicsTab(BaseTab):
         ("duplicate_btn", "setText", "duplicate", "buttons"),
         ("delete_btn", "setText", "delete", "buttons"),
         ("collider_visible_check", "setText", "show_colliders", "checkboxes"),
+        ("physics_enable_check", "setText", "enable_physics", "checkboxes"),
         ("rigid_body_search_edit", "setPlaceholderText", "search_rigid_bodies", "placeholders"),
         ("joint_search_edit", "setPlaceholderText", "search_joints", "placeholders"),
         ("apply_btn", "setText", "apply", "buttons"),
@@ -82,7 +83,7 @@ class PhysicsTab(BaseTab):
         self.delete_btn.setEnabled(False)
         self.collider_visible_check = QCheckBox(self.tr("show_colliders", "checkboxes"))
         self.collider_visible_check.setChecked(False)
-        self.physics_enable_check = QCheckBox("物理を有効化")
+        self.physics_enable_check = QCheckBox(self.tr("enable_physics", "checkboxes"))
         self.physics_enable_check.setChecked(False)
         self.physics_enable_check.setEnabled(False)
         toolbar_layout.addWidget(self.refresh_btn)

@@ -80,6 +80,8 @@ private:
     size_t boneCount_ = 0;
     double lastTime_ = -1e30;
     int lastResetGeneration_ = -1;
+    int lastWorldSettingsVersion_ = 0;
+    bool hasWorldSettingsVersion_ = false;
     std::vector<double> cachedFlat_;
 
     // Physics bone data

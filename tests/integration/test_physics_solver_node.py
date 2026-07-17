@@ -676,6 +676,24 @@ class TestSolverDisableEnable(MayaTestBase):
         cmds.setAttr(f"{world}.enable", False)
         self.assertFalse(cmds.getAttr(f"{solver}.outSolved"))
 
+    def test_world_off_on_without_intermediate_solver_evaluation_forces_reset(self):
+        solver = self._setup_solver()
+        world = cmds.connectionInfo(
+            f"{solver}.inWorldSettings", sourceFromDestination=True
+        ).rsplit(".", 1)[0]
+        cmds.currentTime(0)
+        _ = cmds.getAttr(f"{solver}.outStatus")
+        for frame in range(1, 6):
+            cmds.currentTime(frame)
+            _ = cmds.getAttr(f"{solver}.outStatus")
+
+        cmds.setAttr(f"{world}.enable", False)
+        cmds.setAttr(f"{world}.enable", True)
+        # Deliberately do not query the solver or driven joints while OFF.
+        cmds.currentTime(6)
+
+        self.assertEqual(cmds.getAttr(f"{solver}.outStatus"), "reset")
+
 
 @unittest.skipUnless(FIXTURE_PATH.exists(), "hair physics fixture not found")
 @unittest.skipUnless(_native_physics_available(), "native physics DLL not available")

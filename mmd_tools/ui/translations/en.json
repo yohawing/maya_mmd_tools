@@ -319,7 +319,8 @@
     "enable_logging": "Enable Logging",
     "auto_classify_transparency": "Auto-classify transparency (scan texture alpha)",
     "auto_resolve_textures": "Auto-resolve textures",
-    "show_colliders": "Show Colliders"
+    "show_colliders": "Show Colliders",
+    "enable_physics": "Enable Physics"
   },
   "fields": {
     "import_scale": "Import Scale:",

@@ -199,13 +199,18 @@ MStatus MmdPhysicsSolverNode::compute(const MPlug& plug, MDataBlock& data) {
     if (!isOutputPlug(plug))
         return MS::kUnknownParameter;
 
-    data.inputValue(aInWorldSettingsVersion).asInt();
+    int worldSettingsVersion = data.inputValue(aInWorldSettingsVersion).asInt();
 
     bool enable = data.inputValue(aEnable).asBool();
     if (!enable) {
         writeDisabledOutputs(data);
         return MS::kSuccess;
     }
+
+    bool worldSettingsChanged = hasWorldSettingsVersion_ &&
+                                worldSettingsVersion != lastWorldSettingsVersion_;
+    lastWorldSettingsVersion_ = worldSettingsVersion;
+    hasWorldSettingsVersion_ = true;
 
     short inputMode = data.inputValue(aInputMode).asShort();
     double currentTime = data.inputValue(aInTime).asTime().as(MTime::kSeconds);
@@ -229,7 +234,7 @@ MStatus MmdPhysicsSolverNode::compute(const MPlug& plug, MDataBlock& data) {
         return MS::kSuccess;
     }
 
-    bool forceReset = false;
+    bool forceReset = worldSettingsChanged;
     if (resetGen != lastResetGeneration_) {
         lastResetGeneration_ = resetGen;
         forceReset = true;

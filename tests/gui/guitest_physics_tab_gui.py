@@ -180,11 +180,21 @@ class TestPhysicsTabGUI(GuiTestBase):
             tab.retranslateUi()
             en_refresh = tab.refresh_btn.text()
             en_mass = tab._form_labels["rigid_mass"][1].text()
+            en_physics_enable = tab.physics_enable_check.text()
+            self.assertEqual(
+                en_physics_enable,
+                translator.translate("enable_physics", "checkboxes"),
+            )
 
             translator.set_language("ja")
             tab.retranslateUi()
             self.assertNotEqual(tab.refresh_btn.text(), en_refresh)
             self.assertNotEqual(tab._form_labels["rigid_mass"][1].text(), en_mass)
+            self.assertNotEqual(tab.physics_enable_check.text(), en_physics_enable)
+            self.assertEqual(
+                tab.physics_enable_check.text(),
+                translator.translate("enable_physics", "checkboxes"),
+            )
             self.assertEqual(tab.list_tabs.tabText(0), translator.translate("rigid_bodies", "tabs"))
             self.assertEqual(tab.list_tabs.tabText(1), translator.translate("joints", "tabs"))
         finally:

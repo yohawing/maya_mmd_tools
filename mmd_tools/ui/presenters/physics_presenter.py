@@ -101,7 +101,7 @@ class PhysicsPresenter:
 
         refresh_btn = getattr(self.view, "refresh_btn", None)
         if refresh_btn is not None:
-            refresh_btn.clicked.connect(lambda *_: self.refresh_physics(force=True))
+            refresh_btn.clicked.connect(self._on_refresh_requested)
 
         rb_list = getattr(self.view, "rigid_body_list", None)
         if rb_list is not None:
@@ -189,6 +189,61 @@ class PhysicsPresenter:
         except Exception:
             return None
 
+    @staticmethod
+    def _world_solvers(world):
+        if not world:
+            return []
+        try:
+            return list(dict.fromkeys(cmds.listConnections(
+                f"{world}.message",
+                source=False,
+                destination=True,
+                type="mmdPhysicsSolver",
+            ) or []))
+        except Exception:
+            return []
+
+    def _solvers_requiring_world_settings_version_repair(self, world):
+        repairs = []
+        world_long = (cmds.ls(world, long=True) or [world])[0]
+        for solver in self._world_solvers(world):
+            try:
+                source = cmds.connectionInfo(
+                    f"{solver}.inWorldSettingsVersion", isDestination=True
+                ) and cmds.connectionInfo(
+                    f"{solver}.inWorldSettingsVersion", sourceFromDestination=True
+                )
+                if not source:
+                    repairs.append(solver)
+                    continue
+                source_node, source_attr = source.rsplit(".", 1)
+                source_long = (cmds.ls(source_node, long=True) or [source_node])[0]
+                if source_attr != "outSettingsVersion" or source_long != world_long:
+                    repairs.append(solver)
+            except Exception:
+                continue
+        return repairs
+
+    @staticmethod
+    def _repair_world_settings_version_connections(world, solvers):
+        for solver in solvers:
+            cmds.connectAttr(
+                f"{world}.outSettingsVersion",
+                f"{solver}.inWorldSettingsVersion",
+                force=True,
+            )
+
+    def _on_refresh_requested(self, *_args):
+        world = self._find_physics_world_shape()
+        repairs = self._solvers_requiring_world_settings_version_repair(world)
+        if repairs:
+            cmds.undoInfo(openChunk=True, chunkName="Repair MMD Physics Settings")
+            try:
+                self._repair_world_settings_version_connections(world, repairs)
+            finally:
+                cmds.undoInfo(closeChunk=True)
+        self.refresh_physics(force=True)
+
     def _sync_physics_enable_checkbox(self):
         checkbox = getattr(self.view, "physics_enable_check", None)
         if checkbox is None:
@@ -197,15 +252,7 @@ class PhysicsPresenter:
         has_physics_data = False
         if world:
             try:
-                has_physics_data = bool(
-                    cmds.listConnections(
-                        f"{world}.outSettingsVersion",
-                        source=False,
-                        destination=True,
-                        type="mmdPhysicsSolver",
-                    )
-                    or []
-                )
+                has_physics_data = bool(self._world_solvers(world))
                 enabled = bool(cmds.getAttr(f"{world}.enable")) if has_physics_data else False
             except Exception:
                 has_physics_data = False
@@ -222,23 +269,15 @@ class PhysicsPresenter:
         if not world:
             self._sync_physics_enable_checkbox()
             return
-        try:
-            has_physics_data = bool(
-                cmds.listConnections(
-                    f"{world}.outSettingsVersion",
-                    source=False,
-                    destination=True,
-                    type="mmdPhysicsSolver",
-                )
-                or []
-            )
-        except Exception:
-            has_physics_data = False
+        solvers = self._world_solvers(world)
+        has_physics_data = bool(solvers)
         if not has_physics_data:
             self._sync_physics_enable_checkbox()
             return
         cmds.undoInfo(openChunk=True, chunkName="MMD Physics Enable")
         try:
+            repairs = self._solvers_requiring_world_settings_version_repair(world)
+            self._repair_world_settings_version_connections(world, repairs)
             cmds.setAttr(f"{world}.enable", bool(enabled))
         finally:
             cmds.undoInfo(closeChunk=True)
