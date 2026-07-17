@@ -206,6 +206,111 @@ class TestColliderAuthoringTransform(MayaTestBase):
             self.assertAlmostEqual(reopen_animated[index], reopen_rest[index], places=6)
         self.assertListAlmostEqual(cmds.getAttr(f"{shape}.position")[0], position)
 
+    def test_bound_collider_uses_bind_pose_offset_when_connected_on_animated_frame(self):
+        model = cmds.createNode("transform", name="lateFollowModel")
+        cmds.setAttr(f"{model}.translate", 4.0, -3.0, 2.0, type="double3")
+        cmds.setAttr(f"{model}.rotate", 7.0, -13.0, 19.0, type="double3")
+        cmds.setAttr(f"{model}.scale", 1.25, 1.25, 1.25, type="double3")
+        skeleton = cmds.createNode("transform", name="lateFollowSkeleton", parent=model)
+        dummy_bone = cmds.createNode("joint", name="lateFollowDeletedBone", parent=skeleton)
+        bone = cmds.createNode("joint", name="lateFollowBone", parent=skeleton)
+        cmds.setAttr(f"{bone}.translate", 1.5, 5.0, -2.0, type="double3")
+        cmds.dagPose(
+            [dummy_bone, bone], save=True, bindPose=True, name="lateFollowBindPose"
+        )
+        cmds.delete(dummy_bone)
+
+        physics = cmds.createNode("transform", name="Physics", parent=model)
+        cmds.setAttr(f"{physics}.translate", -1.0, 2.0, 0.5, type="double3")
+        cmds.setAttr(f"{physics}.rotate", -5.0, 11.0, -17.0, type="double3")
+        cmds.setAttr(f"{physics}.scale", 0.8, 0.8, 0.8, type="double3")
+        transform = cmds.createNode("transform", name="lateFollowCollider", parent=physics)
+        shape = cmds.createNode(
+            "mmdRigidBodyShape", name="lateFollowColliderShape", parent=transform
+        )
+        cmds.connectAttr(f"{bone}.message", f"{shape}.relatedBone")
+
+        bind_translate = cmds.getAttr(f"{bone}.translate")[0]
+        cmds.currentTime(1)
+        cmds.setAttr(f"{bone}.translate", *bind_translate, type="double3")
+        cmds.setAttr(f"{bone}.rotate", 0.0, 0.0, 0.0, type="double3")
+        cmds.setKeyframe(bone, attribute="translate")
+        cmds.setKeyframe(bone, attribute="rotate")
+        cmds.currentTime(12)
+        cmds.setAttr(f"{bone}.translate", 4.0, 7.0, 3.0, type="double3")
+        cmds.setAttr(f"{bone}.rotate", 18.0, -27.0, 33.0, type="double3")
+        cmds.setKeyframe(bone, attribute="translate")
+        cmds.setKeyframe(bone, attribute="rotate")
+
+        position = (3.25, 8.5, 1.75)
+        rotation = (0.37, -0.61, 0.83)
+        expected_local = om.MTransformationMatrix(reflected_mmd_euler_matrix(rotation))
+        expected_local.setTranslation(
+            om.MVector(position[0], position[1], -position[2]), om.MSpace.kTransform
+        )
+        expected_bind_world = expected_local.asMatrix() * om.MMatrix(
+            cmds.xform(physics, query=True, worldSpace=True, matrix=True)
+        )
+        set_collider_authoring_pose(transform, shape, position, rotation)
+
+        cmds.currentTime(1)
+        actual = om.MMatrix(cmds.xform(transform, query=True, worldSpace=True, matrix=True))
+        max_error = max(abs(actual[index] - expected_bind_world[index]) for index in range(16))
+        self.assertLessEqual(max_error, 1.0e-9)
+
+        bone_world = om.MMatrix(cmds.xform(bone, query=True, worldSpace=True, matrix=True))
+        bind_offset = actual * bone_world.inverse()
+        cmds.currentTime(12)
+        animated_world = om.MMatrix(
+            cmds.xform(transform, query=True, worldSpace=True, matrix=True)
+        )
+        animated_bone_world = om.MMatrix(
+            cmds.xform(bone, query=True, worldSpace=True, matrix=True)
+        )
+        animated_offset = animated_world * animated_bone_world.inverse()
+        for index in range(16):
+            self.assertAlmostEqual(animated_offset[index], bind_offset[index], places=9)
+
+    def test_bound_collider_without_dag_pose_keeps_current_pose_offset(self):
+        model = cmds.createNode("transform", name="fallbackFollowModel")
+        bone = cmds.createNode("joint", name="fallbackFollowBone", parent=model)
+        transform = cmds.createNode("transform", name="fallbackFollowCollider", parent=model)
+        shape = cmds.createNode(
+            "mmdRigidBodyShape", name="fallbackFollowColliderShape", parent=transform
+        )
+        cmds.connectAttr(f"{bone}.message", f"{shape}.relatedBone")
+
+        cmds.currentTime(1)
+        cmds.setAttr(f"{bone}.translate", 0.0, 0.0, 0.0, type="double3")
+        cmds.setAttr(f"{bone}.rotate", 0.0, 0.0, 0.0, type="double3")
+        cmds.setKeyframe(bone, attribute="translate")
+        cmds.setKeyframe(bone, attribute="rotate")
+        cmds.currentTime(12)
+        cmds.setAttr(f"{bone}.translate", 2.0, -1.0, 3.0, type="double3")
+        cmds.setAttr(f"{bone}.rotate", 9.0, 17.0, -23.0, type="double3")
+        cmds.setKeyframe(bone, attribute="translate")
+        cmds.setKeyframe(bone, attribute="rotate")
+
+        set_collider_authoring_pose(
+            transform, shape, (1.0, 4.0, 2.0), (0.1, -0.2, 0.3)
+        )
+        current_world = om.MMatrix(
+            cmds.xform(transform, query=True, worldSpace=True, matrix=True)
+        )
+        current_bone_world = om.MMatrix(
+            cmds.xform(bone, query=True, worldSpace=True, matrix=True)
+        )
+        current_offset = current_world * current_bone_world.inverse()
+
+        cmds.currentTime(1)
+        rest_world = om.MMatrix(cmds.xform(transform, query=True, worldSpace=True, matrix=True))
+        rest_bone_world = om.MMatrix(
+            cmds.xform(bone, query=True, worldSpace=True, matrix=True)
+        )
+        rest_offset = rest_world * rest_bone_world.inverse()
+        for index in range(16):
+            self.assertAlmostEqual(rest_offset[index], current_offset[index], places=9)
+
     def test_locator_world_bbox_matches_each_primitive(self):
         expected = {
             0: (-2.0, -2.0, -2.0, 2.0, 2.0, 2.0),

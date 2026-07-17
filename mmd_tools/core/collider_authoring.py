@@ -16,7 +16,7 @@ from mmd_tools.core.coordinate_transform import (
 
 _FOLLOW_TAG = "mmdColliderAuthoringFollow"
 _POSE_VERSION_ATTR = "mmdColliderAuthoringPoseVersion"
-_CURRENT_POSE_VERSION = 2
+_CURRENT_POSE_VERSION = 3
 
 
 def _mark_pose_version(shape: str) -> None:
@@ -62,6 +62,31 @@ def _authoring_follow_constraints(transform: str) -> list[str]:
     ]
 
 
+def _bind_pose_world_matrix(node: str) -> om.MMatrix | None:
+    """Read *node*'s saved bind world matrix without changing Maya time."""
+    bind_poses = set(cmds.dagPose(node, query=True, bindPose=True) or [])
+    if not bind_poses or not cmds.attributeQuery("bindPose", node=node, exists=True):
+        return None
+    plugs = cmds.listConnections(
+        f"{node}.bindPose",
+        source=False,
+        destination=True,
+        type="dagPose",
+        plugs=True,
+    ) or []
+    for plug in plugs:
+        if plug.split(".", 1)[0] in bind_poses and ".worldMatrix[" in plug:
+            return om.MMatrix(cmds.getAttr(plug))
+    return None
+
+
+def _has_keyed_transform_in_hierarchy(node: str) -> bool:
+    """Return whether *node* or a DAG parent has keyed transform channels."""
+    hierarchy = [node]
+    hierarchy.extend(cmds.listRelatives(node, allParents=True, fullPath=True) or [])
+    return any((cmds.keyframe(item, query=True, keyframeCount=True) or 0) > 0 for item in hierarchy)
+
+
 def connect_collider_authoring_transform(transform: str, shape: str) -> None:
     """Connect the canonical parent world matrix without mixing PMX and Maya spaces."""
     for shape_attr, transform_attr in (
@@ -92,6 +117,22 @@ def connect_collider_authoring_follow(transform: str, shape: str) -> str | None:
     bones = cmds.listConnections(f"{shape}.relatedBone", source=True, destination=False) or []
     if not bones or not cmds.objExists(bones[0]):
         return None
+
+    bone_bind_world = _bind_pose_world_matrix(bones[0])
+    if bone_bind_world is not None:
+        # set_collider_authoring_pose has already placed the raw PMX body pose
+        # below its Physics hierarchy.  Read that world matrix so the body and
+        # saved bone bind matrices use the same space, including non-identity
+        # model and Physics parents.
+        body_bind_world = om.MMatrix(
+            cmds.xform(transform, query=True, worldSpace=True, matrix=True)
+        )
+        bone_world = om.MMatrix(
+            cmds.xform(bones[0], query=True, worldSpace=True, matrix=True)
+        )
+        if _has_keyed_transform_in_hierarchy(bones[0]):
+            body_from_bone = body_bind_world * bone_bind_world.inverse()
+            cmds.xform(transform, worldSpace=True, matrix=list(body_from_bone * bone_world))
 
     short_name = transform.rsplit("|", 1)[-1].replace(":", "_")
     constraint = cmds.parentConstraint(
