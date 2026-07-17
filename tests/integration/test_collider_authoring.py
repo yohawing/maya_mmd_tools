@@ -53,6 +53,23 @@ class TestColliderAuthoringTransform(MayaTestBase):
         self.assertAlmostEqual(cmds.getAttr(f"{transform}.translateY"), 9.5)
         self.assertAlmostEqual(cmds.getAttr(f"{transform}.rotateZ"), -45.0)
 
+    def test_locator_world_bbox_matches_each_primitive(self):
+        expected = {
+            0: (-2.0, -2.0, -2.0, 2.0, 2.0, 2.0),
+            1: (-1.0, -2.0, -3.0, 1.0, 2.0, 3.0),
+            2: (-2.0, -4.0, -2.0, 2.0, 4.0, 2.0),
+        }
+        for shape_type in (0, 1, 2):
+            transform = cmds.createNode("transform", name=f"bboxCollider{shape_type}")
+            shape = cmds.createNode(
+                "mmdRigidBodyShape", name=f"bboxCollider{shape_type}Shape", parent=transform
+            )
+            cmds.setAttr(f"{shape}.shapeType", shape_type)
+            cmds.setAttr(f"{shape}.shapeSize", 2.0, 4.0, 6.0, type="double3")
+            actual = cmds.exactWorldBoundingBox(transform)
+            for actual_value, expected_value in zip(actual, expected[shape_type]):
+                self.assertAlmostEqual(actual_value, expected_value, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()

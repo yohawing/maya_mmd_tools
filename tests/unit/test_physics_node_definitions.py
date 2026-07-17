@@ -69,6 +69,10 @@ class TestMmdRigidBodyShapeModule(unittest.TestCase):
     def test_rotation_uses_angle_unit(self):
         self.assertIn("kAngle", self.source)
 
+    def test_locator_bbox_uses_canonical_collider_geometry(self):
+        self.assertIn("def boundingBox", self.source)
+        self.assertIn("collider_half_extents", self.source)
+
 
 class TestMmdPhysicsJointShapeModule(unittest.TestCase):
     """Validate mmd_physics_joint_shape.py structure without importing Maya."""

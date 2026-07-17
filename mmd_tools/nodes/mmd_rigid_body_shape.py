@@ -15,6 +15,8 @@ from __future__ import annotations
 import maya.api.OpenMaya as om
 import maya.api.OpenMayaUI as omui
 
+from mmd_tools.core.collider_geometry import collider_half_extents
+
 
 def maya_useNewAPI():
     pass
@@ -74,6 +76,21 @@ class MmdRigidBodyShape(omui.MPxLocatorNode):
         self._descriptor_version += 1
         data.outputValue(N.aOutDescriptorVersion).setInt(self._descriptor_version)
         data.setClean(plug)
+
+    def isBounded(self):
+        return True
+
+    def boundingBox(self):
+        fn = om.MFnDependencyNode(self.thisMObject())
+        shape_type = fn.findPlug("shapeType", False).asShort()
+        size = tuple(
+            fn.findPlug(f"shapeSize{axis}", False).asDouble()
+            for axis in "XYZ"
+        )
+        half_extents = collider_half_extents(shape_type, size)
+        corner = om.MVector(*(max(value, 0.001) for value in half_extents))
+        center = om.MPoint(0.0, 0.0, 0.0)
+        return om.MBoundingBox(center - corner, center + corner)
 
 
 def creator():

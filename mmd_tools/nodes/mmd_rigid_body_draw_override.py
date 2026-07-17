@@ -11,6 +11,8 @@ from __future__ import annotations
 import maya.api.OpenMaya as om
 import maya.api.OpenMayaRender as omr
 
+from mmd_tools.core.collider_geometry import capsule_dimensions, collider_half_extents
+
 def maya_useNewAPI():
     pass
 
@@ -61,17 +63,13 @@ def _draw_box(drawManager, center, x_axis, y_axis, size) -> None:
 
 
 def _draw_capsule(drawManager, center, y_axis, size) -> None:
-    radius = size[0]
-    height = size[1]
+    radius, cylinder_height, _total_height = capsule_dimensions(size)
     if radius <= 0.0:
         return
-    cyl_height = height - 2.0 * radius
-    if cyl_height <= 0.0:
-        _draw_sphere(drawManager, center, radius)
-        return
     axis = y_axis.normal()
-    drawManager.cylinder(center, axis, radius, cyl_height, _CYLINDER_SUBDIV, False)
-    half = cyl_height * 0.5
+    if cylinder_height > 0.0:
+        drawManager.cylinder(center, axis, radius, cylinder_height, _CYLINDER_SUBDIV, False)
+    half = cylinder_height * 0.5
     top = center + axis * half
     bottom = center - axis * half
     _draw_sphere(drawManager, top, radius)
@@ -101,14 +99,17 @@ class MmdRigidBodyDrawOverride(omr.MPxDrawOverride):
     def boundingBox(self, objPath, cameraPath):
         try:
             fn = om.MFnDependencyNode(objPath.node())
-            sx = fn.findPlug("shapeSizeX", False).asDouble()
-            sy = fn.findPlug("shapeSizeY", False).asDouble()
-            sz = fn.findPlug("shapeSizeZ", False).asDouble()
+            shape_type = fn.findPlug("shapeType", False).asShort()
+            size = (
+                fn.findPlug("shapeSizeX", False).asDouble(),
+                fn.findPlug("shapeSizeY", False).asDouble(),
+                fn.findPlug("shapeSizeZ", False).asDouble(),
+            )
         except Exception:
-            sx = sy = sz = 1.0
-        extent = max(sx, sy, sz, 0.001)
+            shape_type, size = 0, (1.0, 1.0, 1.0)
+        half_extents = collider_half_extents(shape_type, size)
         center = om.MPoint(0.0, 0.0, 0.0)
-        corner = om.MVector(extent, extent, extent)
+        corner = om.MVector(*(max(value, 0.001) for value in half_extents))
         return om.MBoundingBox(center - corner, center + corner)
 
     def prepareForDraw(self, objPath, cameraPath, frameContext, oldData):
