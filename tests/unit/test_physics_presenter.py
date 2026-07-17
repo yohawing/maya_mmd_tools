@@ -197,11 +197,29 @@ class TestTabStructure(unittest.TestCase):
             self.assertIn(f'"{editor_key}"', self.tab_source)
 
         for editor_key in (
-            "rigid_related_bone", "joint_body_a", "joint_body_b",
             "joint_linear_states", "joint_angular_states",
             "joint_spring_translation_enabled", "joint_spring_rotation_enabled",
         ):
             self.assertNotIn(f'_add_editor_row(layout, "{editor_key}"', self.tab_source)
+
+    def test_binding_combo_rows_are_exposed_with_stable_object_names(self):
+        expected = {
+            "rigid_related_bone": "rigidRelatedBoneCombo",
+            "joint_body_a": "jointRigidBodyACombo",
+            "joint_body_b": "jointRigidBodyBCombo",
+        }
+        for editor_key, object_name in expected.items():
+            self.assertIn(f'"{editor_key}"', self.tab_source)
+            self.assertIn(f'"{object_name}"', self.tab_source)
+        self.assertIn("editor.setObjectName(object_name)", self.tab_source)
+
+    def test_binding_combo_helpers_preserve_node_identity_and_translation(self):
+        for method in (
+            "set_binding_options",
+            "binding_selection",
+            "_retranslate_binding_none_items",
+        ):
+            self.assertIn(f"def {method}", self.tab_source)
 
 if __name__ == "__main__":
     unittest.main()

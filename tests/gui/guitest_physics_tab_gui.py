@@ -117,6 +117,18 @@ class TestPhysicsTabGUI(GuiTestBase):
         tab = PhysicsTab()
         try:
             tab.set_physics_details_enabled(True)
+            bone = "|Nested:Base_root|Nested:右髪２"
+            body_a = "|Nested:Base_root|Nested:Physics|Nested:RigidBodies|Nested:Body"
+            body_b = "|Other:Base_root|Other:Physics|Other:RigidBodies|Other:Body"
+            tab.set_binding_options("rigid_related_bone", [("4: 右髪２ [HairR2]", bone, 4)])
+            tab.set_binding_options(
+                "joint_body_a",
+                [("1: 剛体 [Body]", body_a, 1), ("2: 剛体 [Body]", body_b, 2)],
+            )
+            tab.set_binding_options(
+                "joint_body_b",
+                [("1: 剛体 [Body]", body_a, 1), ("2: 剛体 [Body]", body_b, 2)],
+            )
             tab.set_physics_form(
                 "rigid",
                 {
@@ -127,7 +139,7 @@ class TestPhysicsTabGUI(GuiTestBase):
                     "shape_size": "0.5, 1.0, 1.5",
                     "pmx_position": "1, 2, 3",
                     "pmx_rotation_degrees": "10, 20, 30",
-                    "related_bone": "右髪２ (4)",
+                    "related_bone": (bone, 4),
                     "collision_group": 1,
                     "collision_mask": "2",
                     "mass": 0.5,
@@ -145,8 +157,10 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertEqual(tab.rigid_mass_edit.text(), "0.5")
             self.assertTrue(tab.rigid_mass_edit.isEnabled())
             self.assertEqual(tab.rigid_shape_size_edit.text(), "0.5, 1.0, 1.5")
-            for hidden_key in ("rigid_related_bone",):
-                self.assertNotIn(hidden_key, tab._form_labels)
+            self.assertEqual(tab.rigid_related_bone_combo.objectName(), "rigidRelatedBoneCombo")
+            self.assertEqual(tab.binding_selection("rigid_related_bone"), (bone, 4))
+            tab.set_physics_form("rigid", {"related_bone": (bone, 999)})
+            self.assertEqual(tab.binding_selection("rigid_related_bone"), (bone, 4))
 
             tab.set_physics_form(
                 "joint",
@@ -154,8 +168,8 @@ class TestPhysicsTabGUI(GuiTestBase):
                     "name": "右髪２",
                     "name_english": "HairJointR2",
                     "joint_type": "Spring 6DOF",
-                    "rigid_body_a": "Body A (1)",
-                    "rigid_body_b": "Body B (2)",
+                    "rigid_body_a": (body_a, 1),
+                    "rigid_body_b": (body_b, 2),
                     "pmx_position": "4, 5, 6",
                     "pmx_rotation_degrees": "40, 50, 60",
                     "linear_constraint_states": "X: 0, Y: 0, Z: 0",
@@ -176,8 +190,12 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertEqual(tab.joint_type_spin.text(), "Spring 6DOF")
             self.assertTrue(tab.joint_rotation_max_edit.isEnabled())
             self.assertEqual(tab.joint_position_edit.text(), "4, 5, 6")
+            self.assertEqual(tab.joint_body_a_combo.objectName(), "jointRigidBodyACombo")
+            self.assertEqual(tab.joint_body_b_combo.objectName(), "jointRigidBodyBCombo")
+            self.assertEqual(tab.binding_selection("joint_body_a"), (body_a, 1))
+            self.assertEqual(tab.binding_selection("joint_body_b"), (body_b, 2))
             for hidden_key in (
-                "joint_body_a", "joint_body_b", "joint_linear_states", "joint_angular_states",
+                "joint_linear_states", "joint_angular_states",
                 "joint_spring_translation_enabled", "joint_spring_rotation_enabled",
             ):
                 self.assertNotIn(hidden_key, tab._form_labels)
@@ -195,6 +213,7 @@ class TestPhysicsTabGUI(GuiTestBase):
             en_refresh = tab.refresh_btn.text()
             en_mass = tab._form_labels["rigid_mass"][1].text()
             en_physics_enable = tab.physics_enable_check.text()
+            en_none = tab.rigid_related_bone_combo.itemText(0)
             self.assertEqual(
                 en_physics_enable,
                 translator.translate("enable_physics", "checkboxes"),
@@ -205,6 +224,7 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertNotEqual(tab.refresh_btn.text(), en_refresh)
             self.assertNotEqual(tab._form_labels["rigid_mass"][1].text(), en_mass)
             self.assertNotEqual(tab.physics_enable_check.text(), en_physics_enable)
+            self.assertNotEqual(tab.rigid_related_bone_combo.itemText(0), en_none)
             self.assertEqual(
                 tab.physics_enable_check.text(),
                 translator.translate("enable_physics", "checkboxes"),

@@ -43,6 +43,7 @@ class PhysicsTab(BaseTab):
         self._form_labels = {}
         self._physics_editors = {}
         self._combo_options = {}
+        self._binding_editor_keys = set()
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
@@ -181,6 +182,12 @@ class PhysicsTab(BaseTab):
             ["physics_mode_bone", "physics_mode_physics", "physics_mode_physics_bone"],
         )
         self._add_editor_row(layout, "physics_mode", "rigid_physics_mode", self.rigid_physics_mode_combo)
+        self.rigid_related_bone_combo = self._binding_editor(
+            "rigid_related_bone", "related_bone", "rigidRelatedBoneCombo"
+        )
+        self._add_editor_row(
+            layout, "related_bone", "rigid_related_bone", self.rigid_related_bone_combo
+        )
         self.rigid_shape_size_edit = self._line_editor("rigid_shape_size", "shape_size")
         self.rigid_position_edit = self._line_editor("rigid_position", "pmx_position")
         self.rigid_rotation_edit = self._line_editor("rigid_rotation", "pmx_rotation_degrees")
@@ -214,6 +221,12 @@ class PhysicsTab(BaseTab):
         self.joint_name_edit = self._line_editor("joint_name", "name")
         self.joint_name_english_edit = self._line_editor("joint_name_english", "name_english")
         self.joint_type_spin = self._line_editor("joint_type", "joint_type")
+        self.joint_body_a_combo = self._binding_editor(
+            "joint_body_a", "rigid_body_a", "jointRigidBodyACombo"
+        )
+        self.joint_body_b_combo = self._binding_editor(
+            "joint_body_b", "rigid_body_b", "jointRigidBodyBCombo"
+        )
         self.joint_position_edit = self._line_editor("joint_position", "pmx_position")
         self.joint_rotation_edit = self._line_editor("joint_rotation", "pmx_rotation_degrees")
         for key, field_key in (
@@ -229,6 +242,8 @@ class PhysicsTab(BaseTab):
             "joint_name",
             "joint_name_english",
             "joint_type",
+            "joint_body_a",
+            "joint_body_b",
             "joint_position",
             "joint_rotation",
             "joint_translation_min",
@@ -269,6 +284,53 @@ class PhysicsTab(BaseTab):
         self._combo_options[key] = tuple(option_keys)
         return editor
 
+    def _binding_editor(self, key, field_key, object_name):
+        editor = QComboBox()
+        editor.setObjectName(object_name)
+        editor.addItem(self.tr("none", "options"), ("", -1))
+        self._physics_editors[key] = (field_key, editor)
+        self._binding_editor_keys.add(key)
+        return editor
+
+    def set_binding_options(self, editor_key, candidates):
+        """Replace one root-scoped binding list without emitting edit signals."""
+        editor = self._physics_editors[editor_key][1]
+        previous = editor.blockSignals(True)
+        try:
+            editor.clear()
+            editor.addItem(self.tr("none", "options"), ("", -1))
+            for display, node, index in candidates:
+                editor.addItem(display, (node, int(index)))
+        finally:
+            editor.blockSignals(previous)
+
+    def _set_binding_selection(self, editor_key, value):
+        editor = self._physics_editors[editor_key][1]
+        node, fallback_index = value
+        selected = 0
+        if node:
+            for index in range(1, editor.count()):
+                if editor.itemData(index)[0] == node:
+                    selected = index
+                    break
+        elif fallback_index >= 0:
+            for index in range(1, editor.count()):
+                if editor.itemData(index)[1] == fallback_index:
+                    selected = index
+                    break
+        editor.setCurrentIndex(selected)
+
+    def binding_selection(self, editor_key):
+        """Return the selected long node path and fallback PMX index."""
+        data = self._physics_editors[editor_key][1].currentData()
+        return tuple(data) if data else ("", -1)
+
+    def _retranslate_binding_none_items(self):
+        for editor_key in self._binding_editor_keys:
+            editor = self._physics_editors[editor_key][1]
+            if editor.count():
+                editor.setItemText(0, self.tr("none", "options"))
+
     def _add_editor_row(self, layout, field_key, editor_key, editor):
         label = QLabel(self.tr(field_key, "fields"))
         self._form_labels[editor_key] = (field_key, label)
@@ -288,7 +350,10 @@ class PhysicsTab(BaseTab):
                 if isinstance(editor, QLineEdit):
                     editor.setText(str(value))
                 elif isinstance(editor, QComboBox):
-                    editor.setCurrentIndex(int(value))
+                    if editor_key in self._binding_editor_keys:
+                        self._set_binding_selection(editor_key, value)
+                    else:
+                        editor.setCurrentIndex(int(value))
                 else:
                     editor.setValue(value)
             finally:
@@ -309,6 +374,7 @@ class PhysicsTab(BaseTab):
             editor = self._physics_editors[editor_key][1]
             for index, option_key in enumerate(option_keys):
                 editor.setItemText(index, self.tr(option_key, "options"))
+        self._retranslate_binding_none_items()
         if self.list_tabs.count() >= 2:
             self.list_tabs.setTabText(0, self.tr("rigid_bodies", "tabs"))
             self.list_tabs.setTabText(1, self.tr("joints", "tabs"))

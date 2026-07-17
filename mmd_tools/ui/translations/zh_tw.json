@@ -133,6 +133,7 @@
     "physics_validation_range": "必須介於 {minimum} 和 {maximum} 之間",
     "physics_validation_vector_length": "請輸入恰好 {count} 個逗號分隔的值",
     "physics_validation_bool": "每個值必須為 0 或 1",
+    "physics_validation_binding": "請選擇目前模型中的項目",
     "physics_write_node_missing": "找不到場景節點: {node}",
     "physics_write_attribute_missing": "找不到場景屬性: {plug}",
     "physics_write_failed": "套用失敗，已復原變更: {error}",

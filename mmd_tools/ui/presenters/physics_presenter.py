@@ -91,6 +91,16 @@ def _next_pmx_index(shape_pairs):
     ) + 1
 
 
+def _long_name(node):
+    matches = cmds.ls(node, long=True) or []
+    return matches[0] if matches else ""
+
+
+def _candidate_display(index, name_jp, name_en, node):
+    name = name_jp or node.rsplit("|", 1)[-1]
+    return f"{index}: {name}" + (f" [{name_en}]" if name_en else "")
+
+
 class PhysicsPresenter:
     """Load rigid bodies / joints from the Physics DAG and drive the tab view."""
 
@@ -100,6 +110,8 @@ class PhysicsPresenter:
         self.maya_adapter = maya_adapter or MayaCmdsAdapter()
         self._current_kind = None
         self._current_shape = None
+        self._bone_candidates = []
+        self._rigid_body_candidates = []
         self._connect_signals()
 
         if self.app_state.current_model_root:
@@ -186,6 +198,8 @@ class PhysicsPresenter:
 
         rb_group = self._find_child(physics_group, RIGID_BODIES_GROUP)
         jt_group = self._find_child(physics_group, CONSTRAINTS_GROUP)
+
+        self._refresh_binding_candidates(root, rb_group)
 
         self._migrate_legacy_collider_poses(rb_group)
         self._populate_rigid_body_list(rb_group)
@@ -338,6 +352,47 @@ class PhysicsPresenter:
         result.sort(key=lambda p: int(_get_attr(p[1], "pmxIndex", 9999)))
         return result
 
+    def _refresh_binding_candidates(self, root, rigid_body_group, *, publish=True):
+        root = _long_name(root)
+        bones = []
+        for node in cmds.listRelatives(root, allDescendents=True, fullPath=True, type="joint") or []:
+            if not cmds.attributeQuery("mmd_bone_index", node=node, exists=True):
+                continue
+            node = _long_name(node)
+            index = int(_get_attr(node, "mmd_bone_index", -1))
+            bones.append((
+                _candidate_display(
+                    index,
+                    _get_attr(node, "mmd_bone_name", "") or "",
+                    _get_attr(node, "mmd_bone_name_en", "") or "",
+                    node,
+                ),
+                node,
+                index,
+            ))
+        bones.sort(key=lambda candidate: candidate[2])
+        rigids = []
+        for transform, shape in self._find_shapes(rigid_body_group, "mmdRigidBodyShape"):
+            transform = _long_name(transform)
+            index = int(_get_attr(shape, "pmxIndex", -1))
+            rigids.append((
+                _candidate_display(
+                    index,
+                    _get_attr(shape, "nameJp", "") or "",
+                    _get_attr(shape, "nameEn", "") or "",
+                    transform,
+                ),
+                transform,
+                index,
+            ))
+        self._bone_candidates = bones
+        self._rigid_body_candidates = rigids
+        setter = getattr(self.view, "set_binding_options", None) if publish else None
+        if setter:
+            setter("rigid_related_bone", bones)
+            setter("joint_body_a", rigids)
+            setter("joint_body_b", rigids)
+
     def _migrate_legacy_collider_poses(self, rigid_body_group):
         if not rigid_body_group:
             return
@@ -448,16 +503,15 @@ class PhysicsPresenter:
         )
 
     def _read_rigid_body_values(self, shape):
-        bone_name = _resolve_message_name(shape, "relatedBone")
+        bone_name = _long_name(_resolve_message_name(shape, "relatedBone"))
         bone_index = int(_get_attr(shape, "relatedBoneIndex", -1))
-        related_str = bone_name if bone_name else str(bone_index)
         mask = int(_get_attr(shape, "collisionMask", 0))
         return {
             "name": _get_attr(shape, "nameJp", "") or "",
             "name_english": _get_attr(shape, "nameEn", "") or "",
             "shape": int(_get_attr(shape, "shapeType", 0)),
             "physics_mode": int(_get_attr(shape, "physicsMode", 0)),
-            "related_bone": related_str,
+            "related_bone": (bone_name, bone_index),
             "shape_size": _get_vector_str(shape, "shapeSize"),
             "pmx_position": _get_vector_str(shape, "position"),
             "pmx_rotation_degrees": _get_angle_vector_deg_str(shape, "rotation"),
@@ -472,16 +526,16 @@ class PhysicsPresenter:
         }
 
     def _read_joint_values(self, shape):
-        rb_a = _resolve_message_name(shape, "rigidBodyA")
-        rb_b = _resolve_message_name(shape, "rigidBodyB")
+        rb_a = _long_name(_resolve_message_name(shape, "rigidBodyA"))
+        rb_b = _long_name(_resolve_message_name(shape, "rigidBodyB"))
         rb_a_idx = int(_get_attr(shape, "rigidBodyAIndex", -1))
         rb_b_idx = int(_get_attr(shape, "rigidBodyBIndex", -1))
         return {
             "name": _get_attr(shape, "nameJp", "") or "",
             "name_english": _get_attr(shape, "nameEn", "") or "",
             "joint_type": str(_get_attr(shape, "jointType", 0)),
-            "rigid_body_a": rb_a if rb_a else str(rb_a_idx),
-            "rigid_body_b": rb_b if rb_b else str(rb_b_idx),
+            "rigid_body_a": (rb_a, rb_a_idx),
+            "rigid_body_b": (rb_b, rb_b_idx),
             "pmx_position": _get_vector_str(shape, "position"),
             "pmx_rotation_degrees": _get_angle_vector_deg_str(shape, "rotation"),
             "linear_constraint_states": "",
@@ -509,6 +563,7 @@ class PhysicsPresenter:
             return
 
         try:
+            bindings = self._validated_binding_selections(shape)
             if self._current_kind == "rigid":
                 values = self._collect_rigid_body_form_values(shape)
                 parsed = parse_rigid_body_form(values)
@@ -524,9 +579,9 @@ class PhysicsPresenter:
         try:
             cmds.undoInfo(openChunk=True, chunkName="MMD Physics Edit")
             if self._current_kind == "rigid":
-                self._apply_validated_rigid_body(shape, parsed)
+                self._apply_validated_rigid_body(shape, parsed, bindings)
             elif self._current_kind == "joint":
-                self._apply_validated_joint(shape, parsed)
+                self._apply_validated_joint(shape, parsed, bindings)
             logger.info("Applied physics changes to '%s'", shape)
         except Exception:
             logger.error("Failed to apply physics changes to '%s'", shape, exc_info=True)
@@ -563,7 +618,9 @@ class PhysicsPresenter:
             "name_english": v.rigid_name_english_edit.text(),
             "shape": v.rigid_shape_combo.currentIndex(),
             "physics_mode": v.rigid_physics_mode_combo.currentIndex(),
-            "related_bone": int(_get_attr(shape, "relatedBoneIndex", -1)),
+            "related_bone": self._selected_binding(
+                "rigid_related_bone", shape, "relatedBone", "relatedBoneIndex"
+            )[1],
             "shape_size": v.rigid_shape_size_edit.text(),
             "pmx_position": v.rigid_position_edit.text(),
             "pmx_rotation_degrees": v.rigid_rotation_edit.text(),
@@ -583,8 +640,12 @@ class PhysicsPresenter:
             "name": v.joint_name_edit.text(),
             "name_english": v.joint_name_english_edit.text(),
             "joint_type": v.joint_type_spin.text(),
-            "rigid_body_a": int(_get_attr(shape, "rigidBodyAIndex", -1)),
-            "rigid_body_b": int(_get_attr(shape, "rigidBodyBIndex", -1)),
+            "rigid_body_a": self._selected_binding(
+                "joint_body_a", shape, "rigidBodyA", "rigidBodyAIndex"
+            )[1],
+            "rigid_body_b": self._selected_binding(
+                "joint_body_b", shape, "rigidBodyB", "rigidBodyBIndex"
+            )[1],
             "pmx_position": v.joint_position_edit.text(),
             "pmx_rotation_degrees": v.joint_rotation_edit.text(),
             "linear_constraint_states": "0, 0, 0",
@@ -599,7 +660,70 @@ class PhysicsPresenter:
             "spring_rotation_enabled": "0, 0, 0",
         }
 
-    def _apply_validated_rigid_body(self, shape, parsed):
+    def _selected_binding(self, editor_key, shape, message_attr, index_attr):
+        getter = getattr(self.view, "binding_selection", None)
+        if getter:
+            return getter(editor_key)
+        node = _long_name(_resolve_message_name(shape, message_attr))
+        return node, int(_get_attr(shape, index_attr, -1))
+
+    def _validated_binding_selections(self, shape):
+        from ...core.physics_form_validation import PhysicsFormValidationError
+
+        specs = (
+            ("rigid_related_bone", "relatedBone", "relatedBoneIndex", "related_bone"),
+        ) if self._current_kind == "rigid" else (
+            ("joint_body_a", "rigidBodyA", "rigidBodyAIndex", "rigid_body_a"),
+            ("joint_body_b", "rigidBodyB", "rigidBodyBIndex", "rigid_body_b"),
+        )
+        selections = {
+            message_attr: self._selected_binding(editor_key, shape, message_attr, index_attr)
+            for editor_key, message_attr, index_attr, _field_key in specs
+        }
+        root = getattr(self.app_state, "current_model_root", None)
+        root_long = _long_name(root) if root and cmds.objExists(root) else ""
+        shape_long = _long_name(shape)
+        if not root_long or not shape_long.startswith(root_long + "|"):
+            raise PhysicsFormValidationError(specs[0][3], "physics_validation_binding")
+        physics_group = self._find_child(root, PHYSICS_GROUP) if root else None
+        rb_group = self._find_child(physics_group, RIGID_BODIES_GROUP) if physics_group else None
+        self._refresh_binding_candidates(root_long, rb_group, publish=False)
+        candidate_specs = (
+            (specs[0], getattr(self, "_bone_candidates", [])),
+        ) if self._current_kind == "rigid" else (
+            (specs[0], getattr(self, "_rigid_body_candidates", [])),
+            (specs[1], getattr(self, "_rigid_body_candidates", [])),
+        )
+        result = {}
+        for (_editor_key, message_attr, _index_attr, field_key), candidates in candidate_specs:
+            selection = selections[message_attr]
+            selection = (_long_name(selection[0]) if selection[0] else "", int(selection[1]))
+            valid = selection == ("", -1) or any(
+                selection == (candidate[1], candidate[2]) for candidate in candidates
+            )
+            if not valid:
+                raise PhysicsFormValidationError(field_key, "physics_validation_binding")
+            result[message_attr] = selection
+        return result
+
+    @staticmethod
+    def _apply_message_binding(shape, message_attr, index_attr, selection):
+        destination = f"{shape}.{message_attr}"
+        for source in cmds.listConnections(
+            destination, source=True, destination=False, plugs=True
+        ) or []:
+            cmds.disconnectAttr(source, destination)
+        node, index = selection
+        if node:
+            cmds.connectAttr(f"{node}.message", destination)
+        cmds.setAttr(f"{shape}.{index_attr}", index)
+
+    def _apply_validated_rigid_body(self, shape, parsed, bindings=None):
+        bindings = bindings or {
+            "relatedBone": self._selected_binding(
+                "rigid_related_bone", shape, "relatedBone", "relatedBoneIndex"
+            )
+        }
         cmds.setAttr(f"{shape}.nameJp", parsed.name, type="string")
         cmds.setAttr(f"{shape}.nameEn", parsed.name_english, type="string")
         cmds.setAttr(f"{shape}.shapeType", parsed.shape_type)
@@ -612,6 +736,9 @@ class PhysicsPresenter:
         cmds.setAttr(f"{shape}.restitution", parsed.restitution)
         cmds.setAttr(f"{shape}.friction", parsed.friction)
         cmds.setAttr(f"{shape}.shapeSize", *parsed.shape_size, type="double3")
+        self._apply_message_binding(
+            shape, "relatedBone", "relatedBoneIndex", bindings["relatedBone"]
+        )
         transform = (cmds.listRelatives(shape, parent=True, fullPath=True) or [None])[0]
         if not transform:
             raise RuntimeError(f"Rigid body transform not found for {shape}")
@@ -624,10 +751,23 @@ class PhysicsPresenter:
             display_scale,
         )
 
-    def _apply_validated_joint(self, shape, parsed):
+    def _apply_validated_joint(self, shape, parsed, bindings=None):
+        bindings = bindings or {
+            attr: self._selected_binding(editor_key, shape, attr, index_attr)
+            for attr, editor_key, index_attr in (
+                ("rigidBodyA", "joint_body_a", "rigidBodyAIndex"),
+                ("rigidBodyB", "joint_body_b", "rigidBodyBIndex"),
+            )
+        }
         cmds.setAttr(f"{shape}.nameJp", parsed.name, type="string")
         cmds.setAttr(f"{shape}.nameEn", parsed.name_english, type="string")
         cmds.setAttr(f"{shape}.jointType", parsed.joint_type)
+        self._apply_message_binding(
+            shape, "rigidBodyA", "rigidBodyAIndex", bindings["rigidBodyA"]
+        )
+        self._apply_message_binding(
+            shape, "rigidBodyB", "rigidBodyBIndex", bindings["rigidBodyB"]
+        )
         cmds.setAttr(f"{shape}.position", *parsed.pmx_position, type="double3")
         _set_angle_vector_degrees(shape, "rotation", parsed.pmx_rotation_degrees)
         transform = (cmds.listRelatives(shape, parent=True, fullPath=True) or [None])[0]

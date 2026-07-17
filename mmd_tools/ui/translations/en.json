@@ -135,6 +135,7 @@
     "physics_validation_range": "must be between {minimum} and {maximum}",
     "physics_validation_vector_length": "enter exactly {count} comma-separated values",
     "physics_validation_bool": "each value must be 0 or 1",
+    "physics_validation_binding": "select an item from the current model",
     "physics_write_node_missing": "scene node was not found: {node}",
     "physics_write_attribute_missing": "scene attribute was not found: {plug}",
     "physics_write_failed": "Apply failed and changes were rolled back: {error}",
