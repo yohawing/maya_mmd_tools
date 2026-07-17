@@ -10,6 +10,7 @@ GUI が要るためここでは **ブロッカー**)。
 - MMDShaderOverride.__init__ がマテリアル既定値を設定し、shader_path を
   実在する .fx ファイルへ解決すること (パッケージ整合性)
 - supportedDrawAPIs / handlesConsolidatedGeometry の純粋な戻り値
+- initializePlugin / uninitializePlugin の登録順・rollback・二重解除防止
 
 そのために ``maya.api.OpenMaya`` / ``OpenMayaRender`` を *継承可能な実クラスを持つ*
 スタブとして sys.modules に登録する (MagicMock は基底クラスにできないため)。本物の
@@ -19,7 +20,6 @@ maya がある mayapy 環境ではスタブを入れず、import 自体が成立
 ブロッカー (本テストで検証しない / mayapy+VP2.0 必須):
 - MMDShaderNode.compute / initialize (MDataBlock, MFnNumericAttribute 等)
 - MMDShaderOverride.initialize / draw / updateDG / terminate
-- initializePlugin / uninitializePlugin (MFnPlugin, MDrawRegistry 登録)
 """
 
 import os
@@ -118,7 +118,7 @@ class _StubModule(ModuleType):
 
 
 class _StubMPxNode:
-    """継承可能な MPxNode 代替。kDependNode 定数のみ提供。"""
+    """継承可能な MPxNode 代替。kDependNode 定数を提供。"""
 
     kDependNode = 0
 
@@ -205,7 +205,97 @@ class TestShaderModuleConstants(unittest.TestCase):
         )
 
     def test_hypershade_classification(self):
-        self.assertEqual(shader_override.MMDShaderNode.classification, "shader/surface")
+        self.assertEqual(
+            shader_override.MMDShaderNode.classification,
+            "shader/surface:drawdb/shader/surface/MMDShader",
+        )
+
+
+@_skip_without_shader_override_stub()
+class TestShaderRegistrationLifecycle(unittest.TestCase):
+    def setUp(self):
+        shader_override._node_registered = False
+        shader_override._override_registered = False
+        self.plugin_fn = MagicMock(name="plugin_fn")
+        self.plugin_patch = patch.object(
+            shader_override.om,
+            "MFnPlugin",
+            return_value=self.plugin_fn,
+        )
+        self.plugin_patch.start()
+        shader_override.omr.MDrawRegistry.reset_mock()
+        shader_override.omr.MDrawRegistry.registerShaderOverrideCreator.side_effect = None
+        shader_override.omr.MDrawRegistry.deregisterShaderOverrideCreator.side_effect = None
+
+    def tearDown(self):
+        self.plugin_patch.stop()
+        shader_override._node_registered = False
+        shader_override._override_registered = False
+
+    def test_registration_uses_linked_drawdb_classification(self):
+        calls = MagicMock()
+        calls.attach_mock(self.plugin_fn.registerNode, "register_node")
+        calls.attach_mock(
+            shader_override.omr.MDrawRegistry.registerShaderOverrideCreator,
+            "register_override",
+        )
+
+        shader_override.initializePlugin(object())
+
+        self.assertEqual(
+            [call[0] for call in calls.method_calls],
+            ["register_node", "register_override"],
+        )
+        self.plugin_fn.registerNode.assert_called_once_with(
+            shader_override.SHADER_NODE_NAME,
+            shader_override.MMDShaderNode.kNodeId,
+            shader_override.MMDShaderNode.creator,
+            shader_override.MMDShaderNode.initialize,
+            shader_override.om.MPxNode.kDependNode,
+            shader_override.MMDShaderNode.classification,
+        )
+        shader_override.omr.MDrawRegistry.registerShaderOverrideCreator.assert_called_once_with(
+            shader_override.MMDShaderNode.drawDbClassification,
+            shader_override.SHADER_OVERRIDE_REGISTRANT_ID,
+            shader_override.MMDShaderOverride.creator,
+        )
+        self.assertTrue(shader_override._node_registered)
+        self.assertTrue(shader_override._override_registered)
+
+    def test_override_registration_failure_rolls_back_node_once(self):
+        shader_override.omr.MDrawRegistry.registerShaderOverrideCreator.side_effect = RuntimeError(
+            "kInvalidParameter"
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "kInvalidParameter"):
+            shader_override.initializePlugin(object())
+
+        self.plugin_fn.deregisterNode.assert_called_once_with(shader_override.MMDShaderNode.kNodeId)
+        self.assertFalse(shader_override._node_registered)
+        self.assertFalse(shader_override._override_registered)
+
+        shader_override.uninitializePlugin(object())
+        self.plugin_fn.deregisterNode.assert_called_once()
+        shader_override.omr.MDrawRegistry.deregisterShaderOverrideCreator.assert_not_called()
+
+    def test_uninitialize_deregisters_registered_parts_in_reverse_order_once(self):
+        shader_override.initializePlugin(object())
+        calls = MagicMock()
+        calls.attach_mock(
+            shader_override.omr.MDrawRegistry.deregisterShaderOverrideCreator,
+            "deregister_override",
+        )
+        calls.attach_mock(self.plugin_fn.deregisterNode, "deregister_node")
+
+        shader_override.uninitializePlugin(object())
+        shader_override.uninitializePlugin(object())
+
+        self.assertEqual(
+            [call[0] for call in calls.method_calls],
+            ["deregister_override", "deregister_node"],
+        )
+        self.assertFalse(shader_override._node_registered)
+        self.assertFalse(shader_override._override_registered)
 
 
 class TestShaderFxPackaging(unittest.TestCase):

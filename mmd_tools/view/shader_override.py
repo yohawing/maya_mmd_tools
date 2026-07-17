@@ -18,6 +18,7 @@ from mmd_tools.core.logger import get_logger
 SHADER_NODE_NAME = "MMDShader"
 # Shader file path (relative to the plugin root)
 SHADER_FX_FILE = "shaders/MMDShader.fx"
+SHADER_OVERRIDE_REGISTRANT_ID = "mmdShaderOverride"
 
 logger = get_logger(__name__)
 
@@ -38,7 +39,8 @@ class MMDShaderNode(om.MPxNode):
     kNodeName = SHADER_NODE_NAME
     kNodeId = om.MTypeId(0x0007F7F7)  # Unique ID, must be registered
     drawDbClassification = f"drawdb/shader/surface/{kNodeName}"
-    classification = "shader/surface"  # For Hypershade
+    # Maya associates MPxShaderOverride with the node through this shared drawdb entry.
+    classification = f"shader/surface:{drawDbClassification}"
 
     def __init__(self):
         super(MMDShaderNode, self).__init__()
@@ -325,9 +327,13 @@ class MMDShaderOverride(omr.MPxShaderOverride):
 # Plugin Registration
 # ----------------------------------------------------------------------
 
+_node_registered = False
+_override_registered = False
+
 
 def initializePlugin(plugin):
     """Register the shader node and override."""
+    global _node_registered, _override_registered
     vendor = "yohawing"
     version = "1.0.0"
     plugin_fn = om.MFnPlugin(plugin, vendor, version)
@@ -341,7 +347,8 @@ def initializePlugin(plugin):
             om.MPxNode.kDependNode,
             MMDShaderNode.classification,
         )
-    except:
+        _node_registered = True
+    except Exception:
         om.MGlobal.displayError(f"Failed to register node: {SHADER_NODE_NAME}")
         raise
 
@@ -349,26 +356,41 @@ def initializePlugin(plugin):
     try:
         omr.MDrawRegistry.registerShaderOverrideCreator(
             MMDShaderNode.drawDbClassification,
-            "mmdShaderOverride",  # Unique registrant ID
+            SHADER_OVERRIDE_REGISTRANT_ID,
             MMDShaderOverride.creator,
         )
-    except:
+        _override_registered = True
+    except Exception:
         om.MGlobal.displayError("Failed to register shader override.")
+        try:
+            plugin_fn.deregisterNode(MMDShaderNode.kNodeId)
+            _node_registered = False
+        except Exception:
+            om.MGlobal.displayError(f"Failed to roll back node registration: {SHADER_NODE_NAME}")
+            raise
         raise
 
 
 def uninitializePlugin(plugin):
     """Deregister the shader node and override."""
+    global _node_registered, _override_registered
     plugin_fn = om.MFnPlugin(plugin)
 
-    try:
-        omr.MDrawRegistry.deregisterShaderOverrideCreator(MMDShaderNode.drawDbClassification, "mmdShaderOverride")
-    except:
-        om.MGlobal.displayError("Failed to deregister shader override.")
-        raise
+    if _override_registered:
+        try:
+            omr.MDrawRegistry.deregisterShaderOverrideCreator(
+                MMDShaderNode.drawDbClassification,
+                SHADER_OVERRIDE_REGISTRANT_ID,
+            )
+            _override_registered = False
+        except Exception:
+            om.MGlobal.displayError("Failed to deregister shader override.")
+            raise
 
-    try:
-        plugin_fn.deregisterNode(MMDShaderNode.kNodeId)
-    except:
-        om.MGlobal.displayError(f"Failed to deregister node: {SHADER_NODE_NAME}")
-        raise
+    if _node_registered:
+        try:
+            plugin_fn.deregisterNode(MMDShaderNode.kNodeId)
+            _node_registered = False
+        except Exception:
+            om.MGlobal.displayError(f"Failed to deregister node: {SHADER_NODE_NAME}")
+            raise
