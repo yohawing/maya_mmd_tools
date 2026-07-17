@@ -113,6 +113,17 @@ class NamespaceUtils:
 
     @staticmethod
     @contextmanager
+    def root_namespace_context():
+        """Temporarily create scene-global nodes in Maya's root namespace."""
+        current_ns = cmds.namespaceInfo(currentNamespace=True)
+        try:
+            cmds.namespace(set=":")
+            yield
+        finally:
+            cmds.namespace(set=current_ns)
+
+    @staticmethod
+    @contextmanager
     def namespace_context(namespace_name: Optional[str]):
         """
         namespace内で作業するためのcontext manager。

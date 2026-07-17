@@ -28,6 +28,7 @@ from maya import cmds
 
 from ..core.constants import ATTR_MMD_LIGHT, DEFAULT_LIGHT_NAME
 from ..core.logger import get_logger
+from ..core.namespace_utils import NamespaceUtils
 
 logger = get_logger("mmd_tools.converters.light_converter")
 
@@ -53,7 +54,14 @@ def _direction_to_euler(dx: float, dy: float, dz: float):
 
 def find_mmd_light():
     """既存の MMD ライトコントローラ transform を返す（無ければ None）。"""
-    existing = cmds.ls(f"*.{ATTR_MMD_LIGHT}", objectsOnly=True) or []
+    existing = cmds.ls(f"*.{ATTR_MMD_LIGHT}", objectsOnly=True, long=True) or []
+    root_lights = [
+        node
+        for node in existing
+        if node.rsplit("|", 1)[-1] == DEFAULT_LIGHT_NAME
+    ]
+    if root_lights:
+        return root_lights[0]
     return existing[0] if existing else None
 
 
@@ -79,30 +87,31 @@ def create_mmd_light_controller() -> str:
         logger.debug("Reusing existing MMD light controller: %s", existing)
         return existing
 
-    # 操作ハンドルとなるヌル。
-    ctrl = cmds.group(empty=True, name=DEFAULT_LIGHT_NAME)
+    with NamespaceUtils.root_namespace_context():
+        # 操作ハンドルとなるヌル。
+        ctrl = cmds.group(empty=True, name=DEFAULT_LIGHT_NAME)
 
-    # directionalLight を作り、シェイプをコントローラ配下へ再ペアレント。
-    light_shape = cmds.directionalLight()
-    tmp_transform = cmds.listRelatives(light_shape, parent=True)[0]
-    light_shape = cmds.parent(light_shape, ctrl, shape=True, relative=True)[0]
-    cmds.delete(tmp_transform)
+        # directionalLight を作り、シェイプをコントローラ配下へ再ペアレント。
+        light_shape = cmds.directionalLight()
+        tmp_transform = cmds.listRelatives(light_shape, parent=True)[0]
+        light_shape = cmds.parent(light_shape, ctrl, shape=True, relative=True)[0]
+        cmds.delete(tmp_transform)
 
-    # 方向を示す矢印 draw。
-    _add_arrow_shape(ctrl)
+        # 方向を示す矢印 draw。
+        _add_arrow_shape(ctrl)
 
-    # MMD パラメータ / タグ。
-    cmds.addAttr(ctrl, longName=ATTR_MMD_LIGHT, attributeType="bool")
-    cmds.setAttr(f"{ctrl}.{ATTR_MMD_LIGHT}", True)
-    cmds.addAttr(ctrl, longName="mmd_light_color", usedAsColor=True, attributeType="float3")
-    cmds.addAttr(ctrl, longName="mmd_light_colorR", attributeType="float", parent="mmd_light_color")
-    cmds.addAttr(ctrl, longName="mmd_light_colorG", attributeType="float", parent="mmd_light_color")
-    cmds.addAttr(ctrl, longName="mmd_light_colorB", attributeType="float", parent="mmd_light_color")
-    cmds.setAttr(f"{ctrl}.mmd_light_color", 1.0, 1.0, 1.0, type="float3")
-    try:
-        cmds.connectAttr(f"{ctrl}.mmd_light_color", f"{light_shape}.color", force=True)
-    except Exception:
-        logger.debug("Failed to connect mmd_light_color", exc_info=True)
+        # MMD パラメータ / タグ。
+        cmds.addAttr(ctrl, longName=ATTR_MMD_LIGHT, attributeType="bool")
+        cmds.setAttr(f"{ctrl}.{ATTR_MMD_LIGHT}", True)
+        cmds.addAttr(ctrl, longName="mmd_light_color", usedAsColor=True, attributeType="float3")
+        cmds.addAttr(ctrl, longName="mmd_light_colorR", attributeType="float", parent="mmd_light_color")
+        cmds.addAttr(ctrl, longName="mmd_light_colorG", attributeType="float", parent="mmd_light_color")
+        cmds.addAttr(ctrl, longName="mmd_light_colorB", attributeType="float", parent="mmd_light_color")
+        cmds.setAttr(f"{ctrl}.mmd_light_color", 1.0, 1.0, 1.0, type="float3")
+        try:
+            cmds.connectAttr(f"{ctrl}.mmd_light_color", f"{light_shape}.color", force=True)
+        except Exception:
+            logger.debug("Failed to connect mmd_light_color", exc_info=True)
 
     # MMD 既定方向へ向ける（進行方向を Maya 空間 (-x, y, -z) に変換して -Z を合わせる）。
     rx, ry, rz = _direction_to_euler(
@@ -115,7 +124,8 @@ def create_mmd_light_controller() -> str:
     cmds.setAttr(f"{ctrl}.translateY", 30.0)
 
     logger.info("Created MMD light controller: %s (rx=%.1f, ry=%.1f)", ctrl, rx, ry)
-    return ctrl
+    matches = cmds.ls(ctrl, long=True) or []
+    return matches[0] if matches else ctrl
 
 
 def set_mmd_light_direction(direction, color=None) -> str:
@@ -165,7 +175,8 @@ def _get_or_create_light_direction_node(ctrl: str) -> str:
     if existing:
         return existing[0]
 
-    vp = cmds.createNode("vectorProduct", name=node_name)
+    with NamespaceUtils.root_namespace_context():
+        vp = cmds.createNode("vectorProduct", name=node_name)
     # operation 3 = Vector Matrix Product（平行移動を無視＝方向ベクトル用）。
     # 4 の Point Matrix Product だとヌルの translate が方向に足し込まれてしまう。
     cmds.setAttr(f"{vp}.operation", 3)

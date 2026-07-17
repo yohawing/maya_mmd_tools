@@ -15,6 +15,7 @@ from mmd_tools.core.constants import (
     RIGID_BODIES_GROUP,
 )
 from mmd_tools.core.logger import get_logger
+from mmd_tools.core.namespace_utils import NamespaceUtils
 
 _logger = get_logger(__name__)
 
@@ -190,12 +191,30 @@ def build_physics_scene(
 
 def _find_or_create_world_node() -> str:
     """Return the existing scene world node, or create one at the scene root."""
-    existing = cmds.ls(type="mmdPhysicsWorldShape")
+    existing = cmds.ls(type="mmdPhysicsWorldShape", long=True) or []
     if existing:
-        parents = cmds.listRelatives(existing[0], parent=True, fullPath=True) or []
+        parents = [
+            parent
+            for shape in existing
+            for parent in (
+                cmds.listRelatives(shape, parent=True, fullPath=True) or []
+            )
+        ]
+        root_worlds = [
+            parent
+            for parent in parents
+            if parent.rsplit("|", 1)[-1] == PHYSICS_WORLD_NODE
+        ]
+        if root_worlds:
+            return root_worlds[0]
         return parents[0] if parents else existing[0]
-    transform = cmds.createNode("transform", name=PHYSICS_WORLD_NODE)
-    cmds.createNode("mmdPhysicsWorldShape", name=f"{PHYSICS_WORLD_NODE}Shape", parent=transform)
+    with NamespaceUtils.root_namespace_context():
+        transform = cmds.createNode("transform", name=PHYSICS_WORLD_NODE)
+        cmds.createNode(
+            "mmdPhysicsWorldShape",
+            name=f"{PHYSICS_WORLD_NODE}Shape",
+            parent=transform,
+        )
     return transform
 
 
