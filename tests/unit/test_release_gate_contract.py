@@ -40,6 +40,168 @@ import noxfile
 
 
 class ReleaseGateContractTest(unittest.TestCase):
+    def test_mmd_anim_pin_check_rejects_checkout_head_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            submodule = root / "external" / "mmd-anim"
+            (submodule / ".git").mkdir(parents=True)
+            parent_head = "1" * 40
+            checkout_head = "2" * 40
+            completed = [
+                types.SimpleNamespace(
+                    returncode=0,
+                    stdout=f"160000 commit {parent_head}\texternal/mmd-anim\n",
+                    stderr="",
+                ),
+                types.SimpleNamespace(returncode=0, stdout=f"{checkout_head}\n", stderr=""),
+            ]
+
+            with mock.patch("noxfile.subprocess.run", side_effect=completed):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    rf"parent gitlink={parent_head}.*checkout HEAD={checkout_head}",
+                ):
+                    noxfile._release_gate_mmd_anim_pin_check(root)
+
+    def test_mmd_anim_pin_check_rejects_uninitialized_submodule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "external" / "mmd-anim").mkdir(parents=True)
+
+            with mock.patch("noxfile.subprocess.run") as run_mock:
+                with self.assertRaisesRegex(RuntimeError, "not initialized"):
+                    noxfile._release_gate_mmd_anim_pin_check(root)
+
+            run_mock.assert_not_called()
+
+    def test_mmd_anim_pin_check_rejects_unavailable_git(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            submodule = root / "external" / "mmd-anim"
+            (submodule / ".git").mkdir(parents=True)
+
+            with mock.patch("noxfile.subprocess.run", side_effect=FileNotFoundError):
+                with self.assertRaisesRegex(RuntimeError, "Git executable is unavailable"):
+                    noxfile._release_gate_mmd_anim_pin_check(root)
+
+    def test_mmd_anim_pin_check_accepts_matching_heads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            submodule = root / "external" / "mmd-anim"
+            (submodule / ".git").mkdir(parents=True)
+            head = "a" * 40
+            completed = [
+                types.SimpleNamespace(
+                    returncode=0,
+                    stdout=f"160000 commit {head}\texternal/mmd-anim\n",
+                    stderr="",
+                ),
+                types.SimpleNamespace(returncode=0, stdout=f"{head}\n", stderr=""),
+                types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+            ]
+
+            with mock.patch("noxfile.subprocess.run", side_effect=completed):
+                noxfile._release_gate_mmd_anim_pin_check(root)
+
+    def test_mmd_anim_pin_check_rejects_matching_head_with_dirty_worktree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            submodule = root / "external" / "mmd-anim"
+            (submodule / ".git").mkdir(parents=True)
+            head = "a" * 40
+            dirty_status = " M crates/runtime/src/lib.rs\n?? local-source.rs\n"
+            completed = [
+                types.SimpleNamespace(
+                    returncode=0,
+                    stdout=f"160000 commit {head}\texternal/mmd-anim\n",
+                    stderr="",
+                ),
+                types.SimpleNamespace(returncode=0, stdout=f"{head}\n", stderr=""),
+                types.SimpleNamespace(returncode=0, stdout=dirty_status, stderr=""),
+            ]
+
+            with mock.patch("noxfile.subprocess.run", side_effect=completed):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    r"external/mmd-anim worktree is dirty.*crates/runtime/src/lib.rs.*local-source.rs",
+                ):
+                    noxfile._release_gate_mmd_anim_pin_check(root)
+
+    def test_full_release_gate_pin_preflight_fails_before_commands(self):
+        class FakeSession:
+            def __init__(self):
+                self.posargs = []
+                self.logs = []
+
+            def log(self, message):
+                self.logs.append(message)
+
+            def error(self, message):
+                raise RuntimeError(message)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = FakeSession()
+            with mock.patch.object(noxfile, "ROOT", root):
+                with mock.patch(
+                    "noxfile._release_gate_mmd_anim_pin_check",
+                    side_effect=RuntimeError("pin mismatch"),
+                ):
+                    with mock.patch("noxfile._run_release_gate_command") as command_mock:
+                        with mock.patch("builtins.print"):
+                            with self.assertRaisesRegex(RuntimeError, "preflight failed"):
+                                noxfile.release_gate(session)
+
+            command_mock.assert_not_called()
+            payload = json.loads(
+                (root / "build" / "reports" / "release_gate.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(payload["status"], "fail")
+            self.assertEqual(payload["results"][0]["name"], "tier0:mmd-anim-pin")
+            self.assertEqual(payload["results"][0]["error"], "pin mismatch")
+
+    def test_quick_release_gate_skips_pin_preflight_and_runs_commands(self):
+        class FakeSession:
+            posargs = ["--quick"]
+
+            def log(self, _message):
+                pass
+
+            def error(self, message):
+                raise RuntimeError(message)
+
+        callable_names = []
+
+        def record_callable(name, _func, results):
+            callable_names.append(name)
+            results.append(
+                {
+                    "name": name,
+                    "command": [],
+                    "status": "pass",
+                    "returncode": 0,
+                    "duration_sec": 0.0,
+                }
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(noxfile, "ROOT", root):
+                with mock.patch("noxfile._release_gate_mmd_anim_pin_check") as pin_mock:
+                    with mock.patch("noxfile._run_release_gate_command") as command_mock:
+                        with mock.patch(
+                            "noxfile._run_release_gate_callable",
+                            side_effect=record_callable,
+                        ):
+                            with mock.patch("builtins.print"):
+                                noxfile.release_gate(FakeSession())
+
+        pin_mock.assert_not_called()
+        self.assertNotIn("tier0:mmd-anim-pin", callable_names)
+        self.assertIn("tier0:version-markers", callable_names)
+        self.assertGreater(command_mock.call_count, 0)
+        self.assertEqual(command_mock.call_args_list[0].args[0], "tier0:ruff")
+
     def test_callable_failure_error_is_used_by_aggregate_summary(self):
         result = {
             "name": "tier0:version-markers",

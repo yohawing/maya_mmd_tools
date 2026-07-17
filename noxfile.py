@@ -449,6 +449,78 @@ def _release_gate_version_check(expected_version: str | None = None) -> None:
         raise RuntimeError(f"CHANGELOG.md section {heading} is empty")
 
 
+def _release_gate_mmd_anim_pin_check(root: Path | None = None) -> None:
+    """Require the checked-out mmd-anim HEAD to match the parent gitlink."""
+    root = ROOT if root is None else root
+    relative_path = "external/mmd-anim"
+    submodule = root / "external" / "mmd-anim"
+    if not submodule.is_dir() or not (submodule / ".git").exists():
+        raise RuntimeError(
+            f"{relative_path} is not initialized; release provenance cannot be verified. "
+            "Initialize the pinned submodule before running release_gate."
+        )
+
+    def git_output(arguments: list[str], cwd: Path) -> str:
+        try:
+            completed = subprocess.run(
+                ["git", *arguments],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                "Git executable is unavailable; release provenance cannot be verified."
+            ) from exc
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip()
+            suffix = f": {detail}" if detail else ""
+            raise RuntimeError(
+                f"Failed to verify {relative_path} release provenance with "
+                f"git {' '.join(arguments)}{suffix}"
+            )
+        return completed.stdout.rstrip("\r\n")
+
+    gitlink_line = git_output(["ls-tree", "HEAD", "--", relative_path], root)
+    gitlink_match = re.fullmatch(
+        rf"160000 commit ([0-9a-fA-F]{{40,64}})\t{re.escape(relative_path)}",
+        gitlink_line,
+    )
+    if gitlink_match is None:
+        raise RuntimeError(
+            f"Parent HEAD does not contain a valid gitlink for {relative_path}; "
+            "release provenance cannot be verified."
+        )
+    parent_head = gitlink_match.group(1).lower()
+
+    checkout_head = git_output(["rev-parse", "--verify", "HEAD"], submodule).lower()
+    if re.fullmatch(r"[0-9a-f]{40,64}", checkout_head) is None:
+        raise RuntimeError(
+            f"{relative_path} returned an invalid checkout HEAD {checkout_head!r}; "
+            "release provenance cannot be verified."
+        )
+    if checkout_head != parent_head:
+        raise RuntimeError(
+            f"{relative_path} pin mismatch: parent gitlink={parent_head}, "
+            f"checkout HEAD={checkout_head}. Restore or initialize the pinned submodule "
+            "before running release_gate; automatic checkout/reset is intentionally disabled."
+        )
+    dirty_status = git_output(
+        ["status", "--porcelain=v1", "--untracked-files=all"],
+        submodule,
+    )
+    if dirty_status:
+        status_summary = dirty_status.replace("\r\n", "\n").replace("\n", "; ")
+        raise RuntimeError(
+            f"{relative_path} worktree is dirty; release provenance cannot be verified. "
+            f"Git status: {status_summary}. Commit, stash, or remove these changes before "
+            "running release_gate; automatic cleanup is intentionally disabled."
+        )
+
+
 def _run_release_gate_command(
     name: str,
     command: list[str],
@@ -2175,6 +2247,21 @@ def release_gate(session: nox.Session) -> None:
         )
     )
     results: list[dict[str, object]] = []
+
+    if not quick:
+        _run_release_gate_callable(
+            "tier0:mmd-anim-pin",
+            _release_gate_mmd_anim_pin_check,
+            results,
+        )
+        if results[-1]["status"] == "fail":
+            md_path, json_path = _write_release_gate_reports(results, quick)
+            session.log(f"Release gate report: {md_path}")
+            session.log(f"Release gate JSON: {json_path}")
+            session.error(
+                "Release gate preflight failed: "
+                f"{_release_gate_failure_label(results[-1])}"
+            )
 
     tier0_commands = [
         ("tier0:ruff", ["uvx", "ruff", "check", "--no-fix", "."]),
