@@ -56,6 +56,14 @@ def _parse_vector_str(text):
         return None
 
 
+def _next_pmx_index(shape_pairs):
+    """Return a unique, monotonically increasing PMX source-order index."""
+    return max(
+        (int(_get_attr(shape, "pmxIndex", -1)) for _transform, shape in shape_pairs),
+        default=-1,
+    ) + 1
+
+
 class PhysicsPresenter:
     """Load rigid bodies / joints from the Physics DAG and drive the tab view."""
 
@@ -525,6 +533,11 @@ class PhysicsPresenter:
             return
         try:
             cmds.undoInfo(openChunk=True, chunkName="MMD Physics Delete")
+            if self._current_kind == "rigid":
+                self._clear_deleted_rigid_body_references(
+                    root=self.app_state.current_model_root,
+                    rigid_transform=parent[0],
+                )
             cmds.delete(parent[0])
         except Exception:
             logger.error("Failed to delete physics item", exc_info=True)
@@ -533,6 +546,21 @@ class PhysicsPresenter:
         self._current_shape = None
         self._current_kind = None
         self.refresh_physics(force=True)
+
+    def _clear_deleted_rigid_body_references(self, root, rigid_transform):
+        """Prevent disconnected joints from falling back to a stale PMX index."""
+        physics_group = self._find_child(root, PHYSICS_GROUP)
+        jt_group = self._find_child(physics_group, CONSTRAINTS_GROUP) if physics_group else None
+        for _transform, joint_shape in self._find_shapes(jt_group, "mmdPhysicsJointShape"):
+            for message_attr, fallback_attr in (
+                ("rigidBodyA", "rigidBodyAIndex"),
+                ("rigidBodyB", "rigidBodyBIndex"),
+            ):
+                source = f"{rigid_transform}.message"
+                destination = f"{joint_shape}.{message_attr}"
+                if cmds.isConnected(source, destination):
+                    cmds.setAttr(f"{joint_shape}.{fallback_attr}", -1)
+                    cmds.disconnectAttr(source, destination)
 
     def _create_rigid_body(self, root):
         physics_group = self._find_child(root, PHYSICS_GROUP)
@@ -543,7 +571,7 @@ class PhysicsPresenter:
             rb_group = cmds.group(empty=True, name=RIGID_BODIES_GROUP, parent=physics_group)
 
         existing = self._find_shapes(rb_group, "mmdRigidBodyShape")
-        new_index = len(existing)
+        new_index = _next_pmx_index(existing)
 
         transform = cmds.createNode("transform", name=f"rb_{new_index}", parent=rb_group)
         shape = cmds.createNode("mmdRigidBodyShape", name=f"rb_{new_index}Shape", parent=transform)
@@ -568,7 +596,7 @@ class PhysicsPresenter:
             jt_group = cmds.group(empty=True, name=CONSTRAINTS_GROUP, parent=physics_group)
 
         existing = self._find_shapes(jt_group, "mmdPhysicsJointShape")
-        new_index = len(existing)
+        new_index = _next_pmx_index(existing)
 
         transform = cmds.createNode("transform", name=f"joint_{new_index}", parent=jt_group)
         shape = cmds.createNode("mmdPhysicsJointShape", name=f"joint_{new_index}Shape", parent=transform)
@@ -584,7 +612,7 @@ class PhysicsPresenter:
             return
 
         existing = self._find_shapes(rb_group, "mmdRigidBodyShape")
-        new_index = len(existing)
+        new_index = _next_pmx_index(existing)
 
         transform = cmds.createNode("transform", name=f"rb_{new_index}", parent=rb_group)
         shape = cmds.createNode("mmdRigidBodyShape", name=f"rb_{new_index}Shape", parent=transform)
@@ -616,7 +644,7 @@ class PhysicsPresenter:
             return
 
         existing = self._find_shapes(jt_group, "mmdPhysicsJointShape")
-        new_index = len(existing)
+        new_index = _next_pmx_index(existing)
 
         transform = cmds.createNode("transform", name=f"joint_{new_index}", parent=jt_group)
         shape = cmds.createNode("mmdPhysicsJointShape", name=f"joint_{new_index}Shape", parent=transform)

@@ -1,33 +1,64 @@
-"""Integration test: PMX import → DAG scene → export collector → field parity.
-
-Verifies that the full round-trip through the physics scene builder and
-export collector preserves all rigid-body and joint fields from the
-original PMX data.
-"""
+"""End-to-end Physics DAG -> PMX -> fresh-scene Physics DAG round-trip."""
 
 from __future__ import annotations
 
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from maya import cmds
 
 from tests.common.maya_test_base import MayaTestBase
 
+from mmd_tools.converters.export_scene_collector import ExportSceneCollector
+from mmd_tools.core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BODIES_GROUP
 from mmd_tools.core.mmd_parser import parse_pmx_file
-from mmd_tools.converters.physics_scene_builder import build_physics_scene
-from mmd_tools.converters.physics_export_collector import collect_physics_from_scene
+from mmd_tools.io.mmd_importer import import_mmd_file
+from mmd_tools.io.pmx_exporter import PmxExporter
+from mmd_tools.ui.presenters.physics_presenter import PhysicsPresenter
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "data" / "physics" / "test_hair_physics.pmx"
 
 
-def _create_minimal_joints(bones) -> list[str]:
-    joints = []
-    for i, bone in enumerate(bones):
-        jnt = cmds.createNode("joint", name=f"bone_{i}")
-        cmds.xform(jnt, worldSpace=True, translation=list(bone.position))
-        joints.append(jnt)
-    return joints
+RIGID_EXACT_FIELDS = ("name", "name_english", "related_bone_index", "group", "collision_mask", "shape_type", "physics_mode")
+RIGID_FLOAT_FIELDS = ("mass", "velocity_attenuation", "rotation_attenuation", "elasticity", "friction")
+RIGID_VECTOR_FIELDS = ("size", "position", "rotation")
+JOINT_EXACT_FIELDS = ("name", "name_english", "joint_type", "rigid_body_a_index", "rigid_body_b_index")
+JOINT_VECTOR_FIELDS = ("position", "rotation", "translation_limit_min", "translation_limit_max", "rotation_limit_min", "rotation_limit_max", "spring_translation", "spring_rotation")
+
+
+def _assert_pmx_fields(test, actual, expected, exact_fields, float_fields, vector_fields, label):
+    for field in exact_fields:
+        test.assertEqual(getattr(actual, field), expected[field], f"{label}.{field}")
+    for field in float_fields:
+        test.assertAlmostEqual(getattr(actual, field), expected[field], places=5, msg=f"{label}.{field}")
+    for field in vector_fields:
+        actual_vector = getattr(actual, field)
+        test.assertEqual(len(actual_vector), len(expected[field]), f"{label}.{field}")
+        for axis, (actual_value, expected_value) in enumerate(zip(actual_vector, expected[field])):
+            test.assertAlmostEqual(actual_value, expected_value, places=5, msg=f"{label}.{field}[{axis}]")
+
+
+def _field(item, name):
+    return item[name] if isinstance(item, dict) else getattr(item, name)
+
+
+def _binding_names(model):
+    bones = model["bones"] if isinstance(model, dict) else model.bones
+    rigid_bodies = model["rigid_bodies"] if isinstance(model, dict) else model.rigid_bodies
+    joints = model["joints"] if isinstance(model, dict) else model.joints
+    bone_names = [_field(bone, "name") for bone in bones]
+    rigid_names = [_field(body, "name") for body in rigid_bodies]
+    related_bones = [bone_names[index] if index >= 0 else None for index in (
+        _field(body, "related_bone_index") for body in rigid_bodies
+    )]
+    joint_bodies = [
+        tuple(rigid_names[index] if index >= 0 else None for index in
+              (_field(joint, "rigid_body_a_index"), _field(joint, "rigid_body_b_index")))
+        for joint in joints
+    ]
+    return related_bones, joint_bodies
 
 
 @unittest.skipUnless(FIXTURE_PATH.exists(), "hair physics fixture not found")
@@ -41,137 +72,181 @@ class TestPhysicsRoundTrip(MayaTestBase):
             cmds.loadPlugin(plugin_path)
         except Exception:
             pass
-        cls.pmx = parse_pmx_file(str(FIXTURE_PATH))
 
-    @classmethod
-    def tearDownClass(cls):
-        super().tearDownClass()
-
-    def _build_scene(self):
-        root = cmds.group(empty=True, name="test_rt_root")
-        maya_joints = _create_minimal_joints(self.pmx.bones)
-        build_physics_scene(
-            rigid_bodies=self.pmx.rigid_bodies,
-            joints=self.pmx.joints,
-            bones=self.pmx.bones,
-            maya_joints=maya_joints,
-            root_group=root,
+    def _import_fixture(self, path=FIXTURE_PATH):
+        return import_mmd_file(
+            str(path),
+            options={
+                "import_physics": True,
+                "create_mmd_shaders": False,
+                "setup_rig": False,
+                "use_cpp_fast_load": False,
+                "use_native_pmx_parse": False,
+                "require_native_pmx_parse": False,
+            },
         )
-        bone_index_by_joint: dict[str, int] = {}
-        for idx, jnt in enumerate(maya_joints):
-            for long_name in cmds.ls(jnt, long=True) or []:
-                bone_index_by_joint[long_name] = idx
-            bone_index_by_joint[jnt.rsplit("|", 1)[-1]] = idx
-        return root, maya_joints, bone_index_by_joint
 
-    def test_rigid_body_count(self):
-        root, _, bone_map = self._build_scene()
-        rbs, _ = collect_physics_from_scene(root, bone_map)
-        self.assertEqual(len(rbs), len(self.pmx.rigid_bodies))
+    @staticmethod
+    def _presenter(root):
+        presenter = object.__new__(PhysicsPresenter)
+        presenter.app_state = SimpleNamespace(current_model_root=root)
+        presenter.refresh_physics = lambda force=False: None
+        presenter._current_kind = None
+        presenter._current_shape = None
+        return presenter
 
-    def test_joint_count(self):
-        root, _, bone_map = self._build_scene()
-        _, jts = collect_physics_from_scene(root, bone_map)
-        self.assertEqual(len(jts), len(self.pmx.joints))
+    @staticmethod
+    def _shape_by_index(pairs, pmx_index):
+        return next(shape for _transform, shape in pairs if cmds.getAttr(f"{shape}.pmxIndex") == pmx_index)
 
-    def test_rigid_body_fields(self):
-        """All rigid body fields survive the DAG round-trip."""
-        root, _, bone_map = self._build_scene()
-        rbs, _ = collect_physics_from_scene(root, bone_map)
+    @staticmethod
+    def _set_vector(shape, attr, values):
+        for axis, value in zip("XYZ", values):
+            cmds.setAttr(f"{shape}.{attr}{axis}", value)
 
-        for i, (exported, original) in enumerate(zip(rbs, self.pmx.rigid_bodies)):
-            with self.subTest(rigid_body=i):
-                self.assertEqual(exported["name"], original.name, f"rb[{i}] name")
-                self.assertEqual(exported["name_english"], original.name_english, f"rb[{i}] name_english")
-                self.assertEqual(exported["related_bone_index"], original.related_bone_index, f"rb[{i}] related_bone_index")
-                self.assertEqual(exported["group"], original.group, f"rb[{i}] group")
-                self.assertEqual(exported["collision_mask"], original.collision_mask, f"rb[{i}] collision_mask")
-                self.assertEqual(exported["shape_type"], original.shape_type, f"rb[{i}] shape_type")
-                self.assertEqual(exported["physics_mode"], original.physics_mode, f"rb[{i}] physics_mode")
+    def test_physics_edits_survive_real_pmx_export_and_fresh_scene_reimport(self):
+        source_pmx = parse_pmx_file(str(FIXTURE_PATH), use_native_pmx_parse=False)
+        root = self._import_fixture()
+        presenter = self._presenter(root)
 
-                for c, label in enumerate(("x", "y", "z")):
-                    self.assertAlmostEqual(
-                        exported["size"][c], original.size[c],
-                        places=5, msg=f"rb[{i}] size.{label}",
-                    )
-                    self.assertAlmostEqual(
-                        exported["position"][c], original.position[c],
-                        places=5, msg=f"rb[{i}] position.{label}",
-                    )
-                    self.assertAlmostEqual(
-                        exported["rotation"][c], original.rotation[c],
-                        places=5, msg=f"rb[{i}] rotation.{label}",
-                    )
+        physics_group = presenter._find_child(root, PHYSICS_GROUP)
+        rb_group = presenter._find_child(physics_group, RIGID_BODIES_GROUP)
+        jt_group = presenter._find_child(physics_group, CONSTRAINTS_GROUP)
+        rigid_pairs = presenter._find_shapes(rb_group, "mmdRigidBodyShape")
+        joint_pairs = presenter._find_shapes(jt_group, "mmdPhysicsJointShape")
+        original_rigid_max = max(cmds.getAttr(f"{shape}.pmxIndex") for _transform, shape in rigid_pairs)
+        original_joint_max = max(cmds.getAttr(f"{shape}.pmxIndex") for _transform, shape in joint_pairs)
+        candidate_indices = [
+            index
+            for joint in source_pmx.joints
+            for index in (joint.rigid_body_a_index, joint.rigid_body_b_index)
+            if 0 < index < len(source_pmx.rigid_bodies) - 1
+        ]
+        deleted_rigid_index = candidate_indices[0]
+        deleted_rigid_shape = self._shape_by_index(rigid_pairs, deleted_rigid_index)
+        deleted_rigid_transform = cmds.listRelatives(deleted_rigid_shape, parent=True, fullPath=True)[0]
+        affected_slots = []
+        for _transform, joint_shape in joint_pairs:
+            for message_attr, fallback_attr in (
+                ("rigidBodyA", "rigidBodyAIndex"),
+                ("rigidBodyB", "rigidBodyBIndex"),
+            ):
+                if cmds.isConnected(f"{deleted_rigid_transform}.message", f"{joint_shape}.{message_attr}"):
+                    affected_slots.append((joint_shape, message_attr, fallback_attr))
+        self.assertTrue(affected_slots, "fixture must contain a joint that references the deleted body")
+        presenter._current_kind = "rigid"
+        presenter._current_shape = deleted_rigid_shape
+        presenter.delete_item()
+        for joint_shape, message_attr, fallback_attr in affected_slots:
+            self.assertTrue(cmds.objExists(joint_shape), "rigid-body deletion must not cascade-delete joints")
+            self.assertEqual(cmds.getAttr(f"{joint_shape}.{fallback_attr}"), -1)
+            self.assertFalse(cmds.listConnections(f"{joint_shape}.{message_attr}", source=True, destination=False))
+        presenter._create_rigid_body(root)
+        rigid_pairs = presenter._find_shapes(rb_group, "mmdRigidBodyShape")
+        created_rigid_shape = self._shape_by_index(rigid_pairs, original_rigid_max + 1)
+        duplicate_source_shape = rigid_pairs[0][1]
+        presenter._duplicate_rigid_body(root, duplicate_source_shape)
+        rigid_pairs = presenter._find_shapes(rb_group, "mmdRigidBodyShape")
+        duplicated_rigid_shape = self._shape_by_index(rigid_pairs, original_rigid_max + 2)
+        self.assertEqual(len({cmds.getAttr(f"{shape}.pmxIndex") for _transform, shape in rigid_pairs}), len(rigid_pairs))
+        for attr, value in (
+            ("nameJp", "往復剛体"),
+            ("nameEn", "roundtrip_rigid"),
+        ):
+            cmds.setAttr(f"{duplicated_rigid_shape}.{attr}", value, type="string")
+        for attr, value in (
+            ("collisionGroup", 7),
+            ("collisionMask", 0x5A5A),
+            ("shapeType", 2),
+            ("mass", 3.25),
+            ("linearDamping", 0.17),
+            ("angularDamping", 0.29),
+            ("restitution", 0.41),
+            ("friction", 0.53),
+            ("physicsMode", 1),
+        ):
+            cmds.setAttr(f"{duplicated_rigid_shape}.{attr}", value)
+        self._set_vector(duplicated_rigid_shape, "shapeSize", (0.75, 1.25, 0.5))
+        self._set_vector(duplicated_rigid_shape, "position", (1.5, 2.5, -3.5))
+        self._set_vector(duplicated_rigid_shape, "rotation", (11.0, -22.0, 33.0))
+        source_bone = cmds.listConnections(f"{duplicate_source_shape}.relatedBone", source=True, destination=False)[0]
+        if not cmds.isConnected(f"{source_bone}.message", f"{duplicated_rigid_shape}.relatedBone"):
+            cmds.connectAttr(f"{source_bone}.message", f"{duplicated_rigid_shape}.relatedBone", force=True)
+        cmds.setAttr(f"{created_rigid_shape}.nameJp", "新規剛体", type="string")
+        affected_joint_shapes = {slot[0] for slot in affected_slots}
+        joint_pairs = presenter._find_shapes(jt_group, "mmdPhysicsJointShape")
+        deleted_joint_shape = next(shape for _transform, shape in joint_pairs[1:-1] if shape not in affected_joint_shapes)
+        presenter._current_kind = "joint"
+        presenter._current_shape = deleted_joint_shape
+        presenter.delete_item()
+        presenter._create_joint(root)
+        joint_pairs = presenter._find_shapes(jt_group, "mmdPhysicsJointShape")
+        created_joint_shape = self._shape_by_index(joint_pairs, original_joint_max + 1)
+        duplicate_joint_source = joint_pairs[0][1]
+        presenter._duplicate_joint(root, duplicate_joint_source)
+        joint_pairs = presenter._find_shapes(jt_group, "mmdPhysicsJointShape")
+        duplicated_joint_shape = self._shape_by_index(joint_pairs, original_joint_max + 2)
+        self.assertEqual(len({cmds.getAttr(f"{shape}.pmxIndex") for _transform, shape in joint_pairs}), len(joint_pairs))
+        for attr, value in (("nameJp", "往復ジョイント"), ("nameEn", "roundtrip_joint")):
+            cmds.setAttr(f"{duplicated_joint_shape}.{attr}", value, type="string")
+        cmds.setAttr(f"{duplicated_joint_shape}.jointType", 0)
+        for attr, values in (
+            ("position", (4.0, -5.0, 6.0)),
+            ("rotation", (14.0, -25.0, 36.0)),
+            ("translationLimitMin", (-0.4, -0.5, -0.6)),
+            ("translationLimitMax", (0.7, 0.8, 0.9)),
+            ("rotationLimitMin", (-17.0, -28.0, -39.0)),
+            ("rotationLimitMax", (41.0, 52.0, 63.0)),
+            ("springTranslation", (1.1, 2.2, 3.3)),
+            ("springRotation", (4.4, 5.5, 6.6)),
+        ):
+            self._set_vector(duplicated_joint_shape, attr, values)
+        surviving_rigid_transforms = [transform for transform, _shape in rigid_pairs]
+        for message_attr, fallback_attr, rigid_transform in (
+            ("rigidBodyA", "rigidBodyAIndex", surviving_rigid_transforms[0]),
+            ("rigidBodyB", "rigidBodyBIndex", surviving_rigid_transforms[-1]),
+        ):
+            cmds.connectAttr(f"{rigid_transform}.message", f"{duplicated_joint_shape}.{message_attr}", force=True)
+            cmds.setAttr(f"{duplicated_joint_shape}.{fallback_attr}", deleted_rigid_index)
+        cmds.setAttr(f"{created_joint_shape}.nameJp", "新規ジョイント", type="string")
+        collector = ExportSceneCollector()
+        before_export = collector.collect_from_model_root(root)
+        rigid_source_indices = [cmds.getAttr(f"{shape}.pmxIndex") for _transform, shape in rigid_pairs]
+        joint_source_indices = [cmds.getAttr(f"{shape}.pmxIndex") for _transform, shape in joint_pairs]
+        self.assertEqual(rigid_source_indices, sorted(rigid_source_indices))
+        self.assertEqual(joint_source_indices, sorted(joint_source_indices))
+        expected_rigid_order = [body["name"] for body in before_export["rigid_bodies"]]
+        expected_joint_order = [joint["name"] for joint in before_export["joints"]]
+        expected_bindings = _binding_names(before_export)
+        self.assertEqual(len(before_export["rigid_bodies"]), len(source_pmx.rigid_bodies) + 1)
+        self.assertEqual(len(before_export["joints"]), len(source_pmx.joints) + 1)
+        self.assertIn(None, [name for pair in expected_bindings[1] for name in pair])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            export_path = Path(temp_dir) / "physics_roundtrip.pmx"
+            PmxExporter().export_pmx_model(str(export_path), before_export)
+            exported = parse_pmx_file(str(export_path), use_native_pmx_parse=False)
+            self.assertEqual([body.name for body in exported.rigid_bodies], expected_rigid_order)
+            self.assertEqual([joint.name for joint in exported.joints], expected_joint_order)
+            self.assertEqual(_binding_names(exported), expected_bindings)
+            for index, (actual, expected) in enumerate(zip(exported.rigid_bodies, before_export["rigid_bodies"])):
+                _assert_pmx_fields(self, actual, expected, RIGID_EXACT_FIELDS, RIGID_FLOAT_FIELDS,
+                                   RIGID_VECTOR_FIELDS, f"exported.rigid_bodies[{index}]")
+            for index, (actual, expected) in enumerate(zip(exported.joints, before_export["joints"])):
+                _assert_pmx_fields(self, actual, expected, JOINT_EXACT_FIELDS, (),
+                                   JOINT_VECTOR_FIELDS, f"exported.joints[{index}]")
+            cmds.file(new=True, force=True)
+            reimported_root = self._import_fixture(export_path)
+            after_reimport = collector.collect_from_model_root(reimported_root)
 
-                self.assertAlmostEqual(exported["mass"], original.mass, places=5, msg=f"rb[{i}] mass")
-                self.assertAlmostEqual(exported["velocity_attenuation"], original.velocity_attenuation, places=5, msg=f"rb[{i}] velocity_attenuation")
-                self.assertAlmostEqual(exported["rotation_attenuation"], original.rotation_attenuation, places=5, msg=f"rb[{i}] rotation_attenuation")
-                self.assertAlmostEqual(exported["elasticity"], original.elasticity, places=5, msg=f"rb[{i}] elasticity")
-                self.assertAlmostEqual(exported["friction"], original.friction, places=5, msg=f"rb[{i}] friction")
-
-    def test_joint_fields(self):
-        """All joint fields survive the DAG round-trip."""
-        root, _, bone_map = self._build_scene()
-        _, jts = collect_physics_from_scene(root, bone_map)
-
-        for i, (exported, original) in enumerate(zip(jts, self.pmx.joints)):
-            with self.subTest(joint=i):
-                self.assertEqual(exported["name"], original.name, f"jt[{i}] name")
-                self.assertEqual(exported["name_english"], original.name_english, f"jt[{i}] name_english")
-                self.assertEqual(exported["joint_type"], original.joint_type, f"jt[{i}] joint_type")
-                self.assertEqual(exported["rigid_body_a_index"], original.rigid_body_a_index, f"jt[{i}] rb_a")
-                self.assertEqual(exported["rigid_body_b_index"], original.rigid_body_b_index, f"jt[{i}] rb_b")
-
-                for c, label in enumerate(("x", "y", "z")):
-                    self.assertAlmostEqual(
-                        exported["position"][c], original.position[c],
-                        places=5, msg=f"jt[{i}] position.{label}",
-                    )
-                    self.assertAlmostEqual(
-                        exported["rotation"][c], original.rotation[c],
-                        places=5, msg=f"jt[{i}] rotation.{label}",
-                    )
-                    self.assertAlmostEqual(
-                        exported["translation_limit_min"][c], original.translation_limit_min[c],
-                        places=5, msg=f"jt[{i}] trans_limit_min.{label}",
-                    )
-                    self.assertAlmostEqual(
-                        exported["translation_limit_max"][c], original.translation_limit_max[c],
-                        places=5, msg=f"jt[{i}] trans_limit_max.{label}",
-                    )
-                    self.assertAlmostEqual(
-                        exported["rotation_limit_min"][c], original.rotation_limit_min[c],
-                        places=5, msg=f"jt[{i}] rot_limit_min.{label}",
-                    )
-                    self.assertAlmostEqual(
-                        exported["rotation_limit_max"][c], original.rotation_limit_max[c],
-                        places=5, msg=f"jt[{i}] rot_limit_max.{label}",
-                    )
-                    self.assertAlmostEqual(
-                        exported["spring_translation"][c], original.spring_translation[c],
-                        places=5, msg=f"jt[{i}] spring_trans.{label}",
-                    )
-                    self.assertAlmostEqual(
-                        exported["spring_rotation"][c], original.spring_rotation[c],
-                        places=5, msg=f"jt[{i}] spring_rot.{label}",
-                    )
-
-    def test_source_payload_roundtrip(self):
-        """PMX payload stored during import is readable via solver utility."""
-        import base64
-        from mmd_tools.core.constants import ATTR_MMD_SOURCE_PMX_PAYLOAD
-        from mmd_tools.core.physics_solver import read_source_pmx_payload
-
-        root, _, _ = self._build_scene()
-        pmx_bytes = FIXTURE_PATH.read_bytes()
-        encoded = base64.b64encode(pmx_bytes).decode("ascii")
-        cmds.addAttr(root, longName=ATTR_MMD_SOURCE_PMX_PAYLOAD, dataType="string", hidden=True)
-        cmds.setAttr(f"{root}.{ATTR_MMD_SOURCE_PMX_PAYLOAD}", encoded, type="string")
-
-        recovered = read_source_pmx_payload(root)
-        self.assertIsNotNone(recovered)
-        self.assertEqual(len(recovered), len(pmx_bytes))
-        self.assertEqual(recovered, pmx_bytes)
+        self.assertEqual([body["name"] for body in after_reimport["rigid_bodies"]], expected_rigid_order)
+        self.assertEqual([joint["name"] for joint in after_reimport["joints"]], expected_joint_order)
+        self.assertEqual(_binding_names(after_reimport), expected_bindings)
+        for index, (actual, expected) in enumerate(zip(exported.rigid_bodies, after_reimport["rigid_bodies"])):
+            _assert_pmx_fields(self, actual, expected, RIGID_EXACT_FIELDS, RIGID_FLOAT_FIELDS,
+                               RIGID_VECTOR_FIELDS, f"reimported.rigid_bodies[{index}]")
+        for index, (actual, expected) in enumerate(zip(exported.joints, after_reimport["joints"])):
+            _assert_pmx_fields(self, actual, expected, JOINT_EXACT_FIELDS, (),
+                               JOINT_VECTOR_FIELDS, f"reimported.joints[{index}]")
 
 
 if __name__ == "__main__":
