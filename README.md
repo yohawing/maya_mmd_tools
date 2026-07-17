@@ -27,10 +27,10 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 | Rig (IK / grant / local axis) | 🔶 | Partially supported. Some complex models still have known issues. |
 | Display frames (表示枠) | 🔶 | Preserved as model metadata for development-mode PMX round-trip; no dedicated editing UI yet |
 | Morphs (vertex / bone / material / group / UV) | 🔶 | Vertex and bone morphs are supported. Material, UV, Flip, and Impulse morphs are not supported. |
-| Rigid bodies & joints | 🧪 | Development-mode authoring: editable PMX fields, rest-pose Collider display, and PMX round-trip. Live simulation is not supported. |
+| Rigid bodies & joints | 🧪 | Development-mode authoring: edit imported PMX fields and named bone/body bindings (including `None`), validate and undo edits, inspect bone-following rest-pose Colliders, and PMX export/re-import. Live simulation is not supported. |
 | Soft body (PMX 2.1) | ⛔ | Not supported |
 | HumanIK | ⛔ | Not supported |
-| Export | ⛔ | Not supported |
+| Export | ⛔ | Not a public supported feature. Development Mode exposes PMX/VMD export UI, but this matrix claims only the validated Physics-authoring PMX export/re-import scope. |
 
 ### Animation (VMD)
 
@@ -47,9 +47,11 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 
 ## Known Limitations
 
-- **Export is not available.** This is an import-only tool for now — PMX/PMD/VMD export is not implemented (the UI states this explicitly).
+- **Export is not a public supported feature.** Development Mode exposes PMX/VMD export UI, but the support claim here is limited to PMX export/re-import of the Physics-authoring fields described above.
 - **Rig mode is experimental for complex motion parity.** It keeps editable sparse keys plus live `mmdCcdIk` / `mmdAppend` nodes, but complex joint-orient, IK, append, and local-axis cases may not match Bake mode or MMD mesh deformation exactly.
-- **Physics authoring is not live physics.** Development-mode rigid-body/joint editing and rest-pose Collider display do not simulate hair or skirts, follow animated Controllers/IK, or provide a scrub cache.
+- **Physics authoring is not live physics.** It is off by default and limited to editing imported rigid bodies/joints, authoring/rest-pose Collider display and visibility, and development-mode PMX export/re-import. The scene-wide world enable control does not make live simulation supported.
+- **Physics object creation is not available.** Create, duplicate, and delete controls remain hidden. Controller/IK/arbitrary-key pre-physics poses, animated Collider collision, hair/skirt live collision, random scrubbing, and physics caches are unsupported.
+- **Native physics bake is a separate feature.** VMD Bake mode does not make the authoring view a live simulator.
 
 ## System Requirements
 

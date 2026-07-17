@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Added Development Mode physics authoring for imported PMX rigid bodies and joints: editable shape size/raw pose and joint pose, named related bone/body bindings including `None`, validation/undo, authoring/rest-pose Collider display with bone follow and visibility, and PMX export/re-import.
+
+### Changed
+- Kept physics off by default and classified the scene-wide world enable control as shared infrastructure, not a live-simulation support claim.
+- Kept create, duplicate, and delete controls hidden; those object-authoring operations remain unsupported.
+- Separated native physics bake from Physics-tab authoring and live simulation.
+
+### Known Issues
+- Maya live physics simulation, Controller/IK/arbitrary-key pre-physics poses, animated Collider collision, hair/skirt live collision, random scrubbing, and physics caches are unsupported.
+
 ## [0.4.0] - 2026-07-13
 
 ### Added

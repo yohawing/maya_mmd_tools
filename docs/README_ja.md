@@ -27,12 +27,12 @@ MMDのリグの再現及び、アニメーションのインポート・編集�
 | エッジ／輪郭フラグ | 🔶 | 描画順の問題があるため、オプションでONにできます。 |
 | ボーン・スケルトン | 🔶 | 複雑なモデルでは既知の問題があります。 |
 | リグ（IK・付与・ローカル軸 ） | 🔶 | 一部対応。複雑なモデルでは既知の問題があります。 |
-| 表示枠 | ⛔ | 未対応 |
+| 表示枠 | 🔶 | Development ModeのPMX round-trip用model metadataとして保持。専用編集UIは未対応です。 |
 | モーフ（頂点・ボーン・マテリアル・グループ・UV） | 🔶 | 頂点・ボーンモーフ対応済み。マテリアル、UV、Flip、Impulse モーフは未対応です。 |
-| 剛体・ジョイント | ⛔  | 未対応 |
+| 剛体・ジョイント | 🧪 | Development Modeで、import済みPMX項目と名前付きbone/body binding（`None`を含む）の編集、validation/Undo、bone追従するrest-pose Collider表示、PMX export/re-importに対応。live simulationは非対応です。 |
 | ソフトボディ（PMX 2.1） | ⛔ | 非対応 |
 | HumanIK | ⛔  | 未対応 |
-| エクスポート | ⛔ | 未対応 |
+| エクスポート | ⛔ | 公開対応機能ではありません。Development ModeにはPMX/VMD export UIがありますが、この表でclaimするのは検証済みPhysics-authoring PMX export/re-import範囲だけです。 |
 
 ### アニメーション（VMD）
 
@@ -44,13 +44,16 @@ MMDのリグの再現及び、アニメーションのインポート・編集�
 | カメラアニメーション | ✅ | `mmd_camera` を作成・キー設定 |
 | 照明アニメーション | ✅ | `mmd_light` コントローラを駆動 |
 | IK オン／オフフレーム | 🔶 | インポート・ベイクに対応。ランタイムベイクでは最終姿勢に反映され、リグモードでは `mmdCcdIk.enabled` にキーを設定します。 |
-| 物理 | 🔶 | ベイクモードのみ対応 |
+| 物理 | 🔶 | VMDベイクモードのみ。live simulation、Controller/IK由来の物理、animated Collider、physics cacheは非対応です。 |
 | エクスポート | ⛔ | 未対応 |
 
 ## 既知の制限
 
-- **エクスポートは未対応です。** 現時点では PMX/PMD/VMD の読み込み用ツールです。
+- **Exportは公開対応機能ではありません。** Development ModeにはPMX/VMD export UIがありますが、support claimは上記Physics-authoring fieldのPMX export/re-importに限定します。
 - **リグモードは複雑なモーションの一致性が未保証です。** sparse key と live `mmdCcdIk` / `mmdAppend` ノードを保持して編集しやすくしますが、jointOrient、IK、付与、ローカル軸を含むケースでは、ベイクモードや MMD のメッシュ変形と完全には一致しない場合があります。
+- **Physics authoringはlive physicsではありません。** 既定OFFで、import済み剛体・ジョイントの編集、authoring/rest poseのCollider表示・visibility、Development ModeのPMX export/re-importに限定されます。scene-wide world enable UIが存在してもlive simulation対応を意味しません。
+- **物理objectの新規作成は未対応です。** create/duplicate/delete UIは非表示です。Controller/IK/arbitrary key由来のpre-physics pose、animated Collider collision、hair/skirt live collision、random scrub、physics cacheは非対応です。
+- **native physics bakeは別機能です。** VMDベイクモードはauthoring viewをlive simulatorにするものではありません。
 
 ## システム要件
 
