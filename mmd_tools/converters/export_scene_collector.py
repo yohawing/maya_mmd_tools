@@ -306,25 +306,89 @@ def _blendshape_target_indices(blend_shape: str) -> list[int]:
     return sorted(indices)
 
 
-def _mesh_local_positions(shape: str, vertex_count: int) -> list[list[float]]:
-    """Return mesh vertex positions in local mesh space."""
-    try:
-        selection = om.MSelectionList()
-        selection.add(shape)
-        dag = selection.getDagPath(0)
-        points = om.MFnMesh(dag).getPoints(om.MSpace.kObject)
-        if len(points) < vertex_count:
-            raise ValueError("MFnMesh returned fewer points than expected")
-        return [
-            [float(points[index].x), float(points[index].y), float(points[index].z)]
-            for index in range(vertex_count)
-        ]
-    except Exception:
-        pass
-    return [
-        [float(v) for v in cmds.pointPosition(f"{shape}.vtx[{vertex_index}]", local=True)]
-        for vertex_index in range(vertex_count)
+def _blendshape_geometry_index(blend_shape: str, shape: str) -> int:
+    """Return the blendShape logical geometry index for *shape*."""
+    geometries = cmds.blendShape(blend_shape, query=True, geometry=True) or []
+    geometry_indices = cmds.blendShape(blend_shape, query=True, geometryIndices=True) or []
+    if len(geometries) != len(geometry_indices):
+        raise ValueError(
+            f"blendShape '{blend_shape}' returned mismatched geometry names and indices"
+        )
+
+    shape_paths = set(cmds.ls(shape, long=True) or [shape])
+    for geometry, geometry_index in zip(geometries, geometry_indices):
+        if shape_paths.intersection(cmds.ls(geometry, long=True) or [geometry]):
+            return int(geometry_index)
+    raise ValueError(f"blendShape '{blend_shape}' has no geometry entry for shape '{shape}'")
+
+
+def _stored_blendshape_target_offsets(
+    blend_shape: str,
+    shape: str,
+    geometry_index: int,
+    target_index: int,
+    vertex_count: int,
+    vertex_offset: int,
+) -> list[dict]:
+    """Read one full-weight target's sparse saved deltas without evaluating the DG."""
+    group = f"{blend_shape}.inputTarget[{geometry_index}].inputTargetGroup[{target_index}]"
+    item_indices = cmds.getAttr(f"{group}.inputTargetItem", multiIndices=True) or []
+    if not item_indices and target_index in _blendshape_target_indices(blend_shape):
+        # Weight indices are shared by all geometries on a blendShape, but a
+        # target group need not exist for every geometry.
+        return []
+    if 6000 not in item_indices:
+        raise ValueError(
+            f"blendShape '{blend_shape}' target {target_index} geometry {geometry_index} "
+            "has no full-weight inputTargetItem[6000]"
+        )
+
+    item = f"{group}.inputTargetItem[6000]"
+    points = cmds.getAttr(f"{item}.inputPointsTarget")
+    components = cmds.getAttr(f"{item}.inputComponentsTarget")
+    if points is None and components is None:
+        return []
+    points = points or []
+    components = components or []
+    qualified_components = [
+        component if ".vtx[" in component else f"{shape}.{component}"
+        for component in components
     ]
+    flattened = cmds.ls(qualified_components, flatten=True) or []
+    if len(points) != len(flattened):
+        raise ValueError(
+            f"blendShape '{blend_shape}' target {target_index} geometry {geometry_index} "
+            f"has {len(points)} points but {len(flattened)} components"
+        )
+
+    offsets = []
+    for point, component in zip(points, flattened):
+        try:
+            vertex_index = int(component.rsplit(".vtx[", 1)[1].split("]", 1)[0])
+        except (IndexError, ValueError) as exc:
+            raise ValueError(
+                f"blendShape '{blend_shape}' target {target_index} geometry {geometry_index} "
+                f"has invalid vertex component '{component}'"
+            ) from exc
+        if not 0 <= vertex_index < vertex_count:
+            raise ValueError(
+                f"blendShape '{blend_shape}' target {target_index} geometry {geometry_index} "
+                f"references out-of-range vertex {vertex_index}"
+            )
+        try:
+            delta = [float(point[axis]) for axis in range(3)]
+        except (IndexError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"blendShape '{blend_shape}' target {target_index} geometry {geometry_index} "
+                f"has invalid point data {point!r}"
+            ) from exc
+        if all(abs(value) <= 1e-8 for value in delta):
+            continue
+        offsets.append({
+            "vertex_index": vertex_index + vertex_offset,
+            "position_offset": _maya_to_mmd_vector(delta),
+        })
+    return offsets
 
 
 def _collect_vertex_morphs(shape: str, vertex_offset: int = 0) -> list[dict]:
@@ -343,48 +407,27 @@ def _collect_vertex_morphs(shape: str, vertex_offset: int = 0) -> list[dict]:
 
         aliases = _blendshape_aliases_by_index(blend_shape)
         stored_names = _blendshape_stored_names(blend_shape)
-        saved_weights = {}
-        saved_envelope = None
-        try:
-            if cmds.attributeQuery("envelope", node=blend_shape, exists=True):
-                saved_envelope = cmds.getAttr(f"{blend_shape}.envelope")
-                cmds.setAttr(f"{blend_shape}.envelope", 1.0)
-            for index in target_indices:
-                plug = f"{blend_shape}.w[{index}]"
-                saved_weights[index] = cmds.getAttr(plug)
-                cmds.setAttr(plug, 0.0)
+        geometry_index = _blendshape_geometry_index(blend_shape, shape)
+        for target_index in target_indices:
+            offsets = _stored_blendshape_target_offsets(
+                blend_shape,
+                shape,
+                geometry_index,
+                target_index,
+                vertex_count,
+                vertex_offset,
+            )
+            if not offsets:
+                continue
 
-            base_positions = _mesh_local_positions(shape, vertex_count)
-            for target_index in target_indices:
-                cmds.setAttr(f"{blend_shape}.w[{target_index}]", 1.0)
-                target_positions = _mesh_local_positions(shape, vertex_count)
-                cmds.setAttr(f"{blend_shape}.w[{target_index}]", 0.0)
-
-                offsets = []
-                for vertex_index, (base, target) in enumerate(zip(base_positions, target_positions)):
-                    delta = [target[axis] - base[axis] for axis in range(3)]
-                    if all(abs(value) <= 1e-8 for value in delta):
-                        continue
-                    offsets.append({
-                        "vertex_index": vertex_index + vertex_offset,
-                        "position_offset": _maya_to_mmd_vector(delta),
-                    })
-                if not offsets:
-                    continue
-
-                morph_name = stored_names.get(target_index) or aliases.get(target_index) or f"VertexMorph{target_index}"
-                morphs.append({
-                    "type": "vertex",
-                    "name": morph_name,
-                    "name_english": morph_name,
-                    "panel": 4,
-                    "offsets": offsets,
-                })
-        finally:
-            for index, weight in saved_weights.items():
-                cmds.setAttr(f"{blend_shape}.w[{index}]", weight)
-            if saved_envelope is not None:
-                cmds.setAttr(f"{blend_shape}.envelope", saved_envelope)
+            morph_name = stored_names.get(target_index) or aliases.get(target_index) or f"VertexMorph{target_index}"
+            morphs.append({
+                "type": "vertex",
+                "name": morph_name,
+                "name_english": morph_name,
+                "panel": 4,
+                "offsets": offsets,
+            })
 
     return morphs
 

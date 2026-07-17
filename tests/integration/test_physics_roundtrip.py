@@ -15,9 +15,11 @@ from tests.common.maya_test_base import MayaTestBase
 from mmd_tools.converters.export_scene_collector import ExportSceneCollector
 from mmd_tools.core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BODIES_GROUP
 from mmd_tools.core.mmd_parser import parse_pmx_file
+from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.io.pmx_exporter import PmxExporter
 from mmd_tools.ui.presenters.physics_presenter import PhysicsPresenter
+from tests.roundtrip.pmx_roundtrip_runner import _build_synthetic_supported_full_dict
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "data" / "physics" / "test_hair_physics.pmx"
 
@@ -31,13 +33,16 @@ JOINT_VECTOR_FIELDS = ("position", "rotation", "translation_limit_min", "transla
 
 def _assert_pmx_fields(test, actual, expected, exact_fields, float_fields, vector_fields, label):
     for field in exact_fields:
-        test.assertEqual(getattr(actual, field), expected[field], f"{label}.{field}")
+        test.assertEqual(getattr(actual, field), _field(expected, field), f"{label}.{field}")
     for field in float_fields:
-        test.assertAlmostEqual(getattr(actual, field), expected[field], places=5, msg=f"{label}.{field}")
+        test.assertAlmostEqual(
+            getattr(actual, field), _field(expected, field), places=5, msg=f"{label}.{field}"
+        )
     for field in vector_fields:
         actual_vector = getattr(actual, field)
-        test.assertEqual(len(actual_vector), len(expected[field]), f"{label}.{field}")
-        for axis, (actual_value, expected_value) in enumerate(zip(actual_vector, expected[field])):
+        expected_vector = _field(expected, field)
+        test.assertEqual(len(actual_vector), len(expected_vector), f"{label}.{field}")
+        for axis, (actual_value, expected_value) in enumerate(zip(actual_vector, expected_vector)):
             test.assertAlmostEqual(actual_value, expected_value, places=5, msg=f"{label}.{field}[{axis}]")
 
 
@@ -292,6 +297,115 @@ class TestPhysicsRoundTrip(MayaTestBase):
         for index, (actual, expected) in enumerate(zip(exported.joints, after_reimport["joints"])):
             _assert_pmx_fields(self, actual, expected, JOINT_EXACT_FIELDS, (),
                                JOINT_VECTOR_FIELDS, f"reimported.joints[{index}]")
+
+    def test_vertex_morph_and_physics_survive_collector_roundtrip(self):
+        """A deleted-target PMX morph and every Physics field survive scene collection."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir) / "supported_source.pmx"
+            export_path = Path(temp_dir) / "supported_export.pmx"
+            PmxExporter().export_pmx_model(
+                str(source_path),
+                _build_synthetic_supported_full_dict("collector_supported_full"),
+            )
+            source = parse_pmx_file(str(source_path), use_native_pmx_parse=False)
+            root = self._import_fixture(source_path)
+            shape = next(
+                shape
+                for shape in (
+                    cmds.listRelatives(root, allDescendents=True, type="mesh", fullPath=True)
+                    or []
+                )
+                if not cmds.getAttr(f"{shape}.intermediateObject")
+            )
+            blend_shape = next(
+                node
+                for node in (cmds.listHistory(shape, pruneDagObjects=True) or [])
+                if cmds.nodeType(node) == "blendShape"
+            )
+            self.assertFalse(
+                cmds.ls("*vertex_morph*target*", type="transform"),
+                "importer must have deleted its temporary morph target mesh",
+            )
+
+            controller = cmds.createNode("mmdMorphController", name="roundtripMorphController")
+            cmds.setAttr(f"{controller}.groupTopology", "{}", type="string")
+            input_weight = f"{controller}.inputWeight[0]"
+            output_weight = f"{controller}.outputWeight[0]"
+            weight = f"{blend_shape}.weight[0]"
+            cmds.setKeyframe(input_weight, time=1, value=0.2)
+            cmds.setKeyframe(input_weight, time=12, value=0.6)
+            cmds.connectAttr(output_weight, weight, force=True)
+            cmds.setAttr(weight, lock=True)
+            cmds.setAttr(f"{blend_shape}.envelope", 0.35)
+            cmds.currentTime(12)
+
+            def snapshot():
+                return {
+                    "weight": cmds.getAttr(weight),
+                    "locked": cmds.getAttr(weight, lock=True),
+                    "incoming": cmds.listConnections(
+                        weight, source=True, destination=False, plugs=True
+                    )
+                    or [],
+                    "controller_keys": cmds.keyframe(
+                        input_weight, query=True, valueChange=True
+                    )
+                    or [],
+                    "envelope": cmds.getAttr(f"{blend_shape}.envelope"),
+                    "time": cmds.currentTime(query=True),
+                    "points": cmds.xform(
+                        f"{shape}.vtx[*]", query=True, objectSpace=True, translation=True
+                    ),
+                }
+
+            before = snapshot()
+            collected = ExportSceneCollector().collect_from_model_root(root)
+            self.assertEqual(snapshot(), before)
+            PmxExporter().export_pmx_model(str(export_path), collected)
+            exported = parse_pmx_file(str(export_path), use_native_pmx_parse=False)
+
+            source_vertex = next(
+                morph for morph in source.morphs
+                if morph.morph_type == PmxMorphType.VertexMorph
+            )
+            exported_vertex = next(
+                morph for morph in exported.morphs
+                if morph.morph_type == PmxMorphType.VertexMorph
+            )
+            self.assertEqual(exported_vertex.name, source_vertex.name)
+            self.assertEqual(len(exported_vertex.offsets), len(source_vertex.offsets))
+            for actual, expected in zip(exported_vertex.offsets, source_vertex.offsets):
+                self.assertEqual(actual["vertex_index"], expected["vertex_index"])
+                self.assertListAlmostEqual(
+                    actual["position_offset"], expected["position_offset"]
+                )
+
+            self.assertEqual(len(exported.rigid_bodies), len(source.rigid_bodies))
+            self.assertEqual(len(exported.joints), len(source.joints))
+            for index, (actual, expected) in enumerate(
+                zip(exported.rigid_bodies, source.rigid_bodies)
+            ):
+                _assert_pmx_fields(
+                    self, actual, expected, RIGID_EXACT_FIELDS, RIGID_FLOAT_FIELDS,
+                    RIGID_VECTOR_FIELDS, f"supported.rigid_bodies[{index}]",
+                )
+            for index, (actual, expected) in enumerate(zip(exported.joints, source.joints)):
+                _assert_pmx_fields(
+                    self, actual, expected, JOINT_EXACT_FIELDS, (),
+                    JOINT_VECTOR_FIELDS, f"supported.joints[{index}]",
+                )
+
+            cmds.file(new=True, force=True)
+            reimported_root = self._import_fixture(export_path)
+            reimported = ExportSceneCollector().collect_from_model_root(reimported_root)
+            reimported_vertex = next(
+                morph for morph in reimported["morphs"] if morph["type"] == "vertex"
+            )
+            self.assertEqual(reimported_vertex["name"], source_vertex.name)
+            self.assertEqual(
+                [offset["vertex_index"] for offset in reimported_vertex["offsets"]],
+                [offset["vertex_index"] for offset in source_vertex.offsets],
+            )
 
 
 if __name__ == "__main__":
