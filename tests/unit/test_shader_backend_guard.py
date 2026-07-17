@@ -114,6 +114,62 @@ def test_existing_glsl_material_is_replaced_before_directx11_apply():
     delete_node.assert_called_once_with("backend_guard__legacy_GLSLShader")
 
 
+def test_hardware_fallback_preserves_main_texture_and_material_identity():
+    for source_type in ("dx11Shader", "GLSLShader"):
+        cmds = mock.Mock()
+        replacement = "backend_guard__standard"
+
+        def node_type(node):
+            return source_type if node == "backend_guard" else "standardSurface"
+
+        def attribute_query(attr, node, exists):
+            assert exists
+            return (node == "backend_guard" and attr == "MainTexture") or (
+                node == replacement and attr == "baseColor"
+            )
+
+        def list_connections(plug, **_kwargs):
+            if plug == "backend_guard.MainTexture":
+                return ["backend_guard_file.outColor"]
+            if plug == "backend_guard.outColor":
+                return ["backend_guardSG.surfaceShader"]
+            return []
+
+        cmds.nodeType.side_effect = node_type
+        cmds.attributeQuery.side_effect = attribute_query
+        cmds.listConnections.side_effect = list_connections
+        cmds.shadingNode.return_value = replacement
+        cmds.rename.side_effect = [f"backend_guard__legacy_{source_type}", "backend_guard"]
+        cmds.objExists.return_value = False
+        settings = mock.Mock()
+
+        with mock.patch.object(mesh_converter, "cmds", cmds), mock.patch.object(
+            mesh_converter, "settings", settings
+        ), mock.patch.object(
+            mesh_converter, "effective_mmd_shader_backend", return_value="dx11"
+        ), mock.patch.object(
+            mesh_converter, "_ensure_shader_plugin", return_value=False
+        ), mock.patch.object(mesh_converter, "_warn_shader_backend_once"):
+            result = mesh_converter.ensure_material_shader_backend("backend_guard")
+
+        assert result == "backend_guard"
+        cmds.shadingNode.assert_called_once_with(
+            "standardSurface", asShader=True, name="backend_guard__standard"
+        )
+        assert mock.call(
+            "backend_guard_file.outColor", f"{replacement}.baseColor", force=True
+        ) in cmds.connectAttr.call_args_list
+        assert mock.call(
+            "backend_guard.outColor", "backend_guardSG.surfaceShader", force=True
+        ) in cmds.connectAttr.call_args_list
+        assert cmds.rename.call_args_list == [
+            mock.call("backend_guard", f"backend_guard__legacy_{source_type}"),
+            mock.call(replacement, "backend_guard"),
+        ]
+        cmds.loadPlugin.assert_not_called()
+        settings.set.assert_not_called()
+
+
 def test_dx11_replacement_assigns_fx_and_valid_technique_only():
     cmds = mock.Mock()
     cmds.shadingNode.return_value = "backend_guard__dx11"

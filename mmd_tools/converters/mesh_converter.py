@@ -229,6 +229,16 @@ def _copy_shader_backend_state(source, target) -> None:
             _copy_shader_attr_value(source, target, attr_name)
         except Exception:
             LOGGER.debug("Could not migrate hardware shader attr '%s'", attr_name, exc_info=True)
+    if cmds.nodeType(target) == "standardSurface":
+        try:
+            if cmds.attributeQuery("MainTexture", node=source, exists=True):
+                incoming = cmds.listConnections(
+                    f"{source}.MainTexture", source=True, destination=False, plugs=True
+                ) or []
+                if incoming:
+                    cmds.connectAttr(incoming[0], f"{target}.baseColor", force=True)
+        except Exception:
+            LOGGER.debug("Could not migrate the main texture to standardSurface", exc_info=True)
 
 
 def _create_backend_replacement(source, backend):
