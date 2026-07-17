@@ -94,6 +94,7 @@ MObject MmdPhysicsSolverNode::aInputMode;
 MObject MmdPhysicsSolverNode::aInTime;
 MObject MmdPhysicsSolverNode::aModelRoot;
 MObject MmdPhysicsSolverNode::aInWorldSettings;
+MObject MmdPhysicsSolverNode::aInWorldSettingsVersion;
 MObject MmdPhysicsSolverNode::aInKinematicWorldMatrix;
 MObject MmdPhysicsSolverNode::aOutBoneMatrices;
 MObject MmdPhysicsSolverNode::aOutBoneCount;
@@ -140,6 +141,12 @@ MStatus MmdPhysicsSolverNode::initialize() {
     aInWorldSettings = msgAttr.create("inWorldSettings", "iws");
     addAttribute(aInWorldSettings);
 
+    aInWorldSettingsVersion = nAttr.create(
+        "inWorldSettingsVersion", "iwsv", MFnNumericData::kLong, 0);
+    nAttr.setStorable(false);
+    nAttr.setKeyable(false);
+    addAttribute(aInWorldSettingsVersion);
+
     aInKinematicWorldMatrix = mAttr.create(
         "inKinematicWorldMatrix", "ikwm", MFnMatrixAttribute::kDouble);
     mAttr.setStorable(false);
@@ -168,7 +175,10 @@ MStatus MmdPhysicsSolverNode::initialize() {
     nAttr.setStorable(false);
     addAttribute(aOutSolved);
 
-    MObject inputs[] = { aEnable, aInTime, aInputMode, aInKinematicWorldMatrix };
+    MObject inputs[] = {
+        aEnable, aInTime, aInputMode, aInWorldSettingsVersion,
+        aInKinematicWorldMatrix
+    };
     MObject outputs[] = { aOutBoneMatrices, aOutBoneCount, aOutStatus, aOutSolved };
     for (auto& in : inputs) {
         for (auto& out : outputs) {
@@ -188,6 +198,8 @@ bool MmdPhysicsSolverNode::isOutputPlug(const MPlug& plug) const {
 MStatus MmdPhysicsSolverNode::compute(const MPlug& plug, MDataBlock& data) {
     if (!isOutputPlug(plug))
         return MS::kUnknownParameter;
+
+    data.inputValue(aInWorldSettingsVersion).asInt();
 
     bool enable = data.inputValue(aEnable).asBool();
     if (!enable) {
@@ -212,6 +224,7 @@ MStatus MmdPhysicsSolverNode::compute(const MPlug& plug, MDataBlock& data) {
     int resetGen = lastResetGeneration_;
     readWorldSettings(worldEnable, resetGen);
     if (!worldEnable) {
+        lastTime_ = -1e30;
         writeDisabledOutputs(data);
         return MS::kSuccess;
     }
@@ -453,6 +466,7 @@ void MmdPhysicsSolverNode::buildKinematicPoseData() {
 }
 
 bool MmdPhysicsSolverNode::readWorldSettings(bool& outEnable, int& outResetGen) {
+    outEnable = false;
     MFnDependencyNode fnThis(thisMObject());
     MStatus st;
     MPlug wsPlug = fnThis.findPlug("inWorldSettings", false, &st);

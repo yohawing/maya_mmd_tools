@@ -12,6 +12,7 @@ from pathlib import Path
 
 SOLVER_PATH = Path(__file__).resolve().parents[2] / "mmd_tools" / "nodes" / "mmd_physics_solver_node.py"
 DRIVER_PATH = Path(__file__).resolve().parents[2] / "mmd_tools" / "nodes" / "mmd_physics_bone_driver_node.py"
+BUILDER_PATH = Path(__file__).resolve().parents[2] / "mmd_tools" / "converters" / "physics_scene_builder.py"
 PLUGIN_PATH = Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py"
 
 
@@ -82,6 +83,21 @@ class TestSolverNodeStructure(unittest.TestCase):
 
     def test_attribute_affects_declared(self):
         self.assertIn("attributeAffects", self.source)
+
+    def test_world_settings_use_explicit_dirty_value_input(self):
+        self.assertRegex(
+            self.source, r'nAttr\.create\(\s*"inWorldSettingsVersion"'
+        )
+        builder = BUILDER_PATH.read_text(encoding="utf-8")
+        self.assertIn(".outSettingsVersion", builder)
+        self.assertIn(".inWorldSettingsVersion", builder)
+
+    def test_missing_world_is_safe_off_and_disable_invalidates_time_state(self):
+        self.assertIn("return False, self._last_reset_generation", self.source)
+        self.assertRegex(
+            self.source,
+            r"if not world_enable:\s+self\._last_time = None\s+self\._write_outputs",
+        )
 
 
 class TestDriverNodeStructure(unittest.TestCase):
@@ -172,6 +188,13 @@ class TestDriverNodeStructure(unittest.TestCase):
 
     def test_attribute_affects_declared(self):
         self.assertIn("attributeAffects", self.source)
+
+    def test_unsolved_output_passthroughs_pre_physics_pose(self):
+        self.assertIn("_write_pre_physics_pose", self.source)
+        self.assertNotRegex(
+            self.source,
+            r"if not enable or not solved:\s+self\._write_identity",
+        )
 
 
 class TestPluginRegistration(unittest.TestCase):

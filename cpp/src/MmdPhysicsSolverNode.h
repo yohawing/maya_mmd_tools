@@ -43,6 +43,7 @@ public:
     static MObject aInTime;
     static MObject aModelRoot;
     static MObject aInWorldSettings;
+    static MObject aInWorldSettingsVersion;
     static MObject aInKinematicWorldMatrix;
 
     // Outputs

@@ -75,6 +75,12 @@ class TestWorldShapeStructure(unittest.TestCase):
     def test_attribute_affects_declared(self):
         self.assertIn("attributeAffects", self.source)
 
+    def test_new_world_defaults_to_disabled(self):
+        self.assertRegex(
+            self.source,
+            r'nAttr\.create\("enable",\s*"enb",\s*om\.MFnNumericData\.kBoolean,\s*False\)',
+        )
+
     def test_register_is_unconditional(self):
         register_src = re.search(r"def register\(plugin_fn\):(.*?)\ndef deregister", self.source, re.S)
         self.assertIsNotNone(register_src)

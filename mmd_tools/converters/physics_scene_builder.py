@@ -227,11 +227,12 @@ def _find_or_create_world_node() -> str:
         return parents[0] if parents else existing[0]
     with NamespaceUtils.root_namespace_context():
         transform = cmds.createNode("transform", name=PHYSICS_WORLD_NODE)
-        cmds.createNode(
+        shape = cmds.createNode(
             "mmdPhysicsWorldShape",
             name=f"{PHYSICS_WORLD_NODE}Shape",
             parent=transform,
         )
+        cmds.setAttr(f"{shape}.hiddenInOutliner", True)
     return transform
 
 
@@ -393,6 +394,11 @@ def build_physics_live_graph(
             cmds.connectAttr(
                 f"{world_shapes[0]}.message", f"{solver}.inWorldSettings", force=True,
             )
+            cmds.connectAttr(
+                f"{world_shapes[0]}.outSettingsVersion",
+                f"{solver}.inWorldSettingsVersion",
+                force=True,
+            )
     except Exception as exc:
         log.warning("event=physics_solver_graph_failed root=%s error=%s", root_group, exc)
         if solver and cmds.objExists(solver):
@@ -450,6 +456,11 @@ def build_physics_live_graph(
             cmds.setAttr(f"{driver}.inBoneIndex", bone_index)
             cmds.setAttr(f"{driver}.inParentBoneIndex", parent_bone_index)
             cmds.setAttr(f"{driver}.inSolved", False)
+
+            pre_translate = cmds.getAttr(f"{joint}.translate")[0]
+            pre_rotate = cmds.getAttr(f"{joint}.rotate")[0]
+            cmds.setAttr(f"{driver}.inPreTranslate", *pre_translate)
+            cmds.setAttr(f"{driver}.inPreRotate", *pre_rotate)
 
             joint_orient = cmds.getAttr(f"{joint}.jointOrient")[0]
             rotate_axis = cmds.getAttr(f"{joint}.rotateAxis")[0]

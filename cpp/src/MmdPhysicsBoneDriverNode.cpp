@@ -283,6 +283,8 @@ MStatus MmdPhysicsBoneDriverNode::initialize() {
         aInRotateOrder,
         aInSolved,
         aEnable,
+        aInPreTranslate,
+        aInPreRotate,
     };
     MObject outputs[] = { aOutTranslate, aOutRotate };
     for (auto& in : inputs) {
@@ -319,6 +321,19 @@ bool MmdPhysicsBoneDriverNode::isOutputPlug(const MPlug& plug) const {
 void MmdPhysicsBoneDriverNode::writeIdentity(MDataBlock& data) const {
     data.outputValue(aOutTranslate).set3Double(0.0, 0.0, 0.0);
     data.outputValue(aOutRotate).set3Double(0.0, 0.0, 0.0);
+    data.setClean(aOutTranslate);
+    data.setClean(aOutRotate);
+}
+
+void MmdPhysicsBoneDriverNode::writePrePhysicsPose(MDataBlock& data) const {
+    double tx = data.inputValue(aInPreTranslateX).asDouble();
+    double ty = data.inputValue(aInPreTranslateY).asDouble();
+    double tz = data.inputValue(aInPreTranslateZ).asDouble();
+    double rx = data.inputValue(aInPreRotateX).asAngle().asRadians();
+    double ry = data.inputValue(aInPreRotateY).asAngle().asRadians();
+    double rz = data.inputValue(aInPreRotateZ).asAngle().asRadians();
+    data.outputValue(aOutTranslate).set3Double(tx, ty, tz);
+    data.outputValue(aOutRotate).set3Double(rx, ry, rz);
     data.setClean(aOutTranslate);
     data.setClean(aOutRotate);
 }
@@ -381,7 +396,7 @@ MStatus MmdPhysicsBoneDriverNode::compute(const MPlug& plug, MDataBlock& data) {
     bool enable = data.inputValue(aEnable).asBool();
     bool solved = data.inputValue(aInSolved).asBool();
     if (!enable || !solved) {
-        writeIdentity(data);
+        writePrePhysicsPose(data);
         return MS::kSuccess;
     }
 

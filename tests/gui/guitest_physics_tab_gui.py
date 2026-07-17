@@ -73,6 +73,8 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertEqual(tab.list_tabs.count(), 2)
             self.assertTrue(tab.details_scroll_area.widgetResizable())
             self.assertFalse(tab.collider_visible_check.isChecked())
+            self.assertFalse(tab.physics_enable_check.isChecked())
+            self.assertFalse(tab.physics_enable_check.isEnabled())
             self.assertFalse(tab.physics_details_content.isEnabled())
             self.assertFalse(tab.apply_btn.isEnabled())
             self.assertFalse(tab.reset_btn.isEnabled())
@@ -90,6 +92,7 @@ class TestPhysicsTabGUI(GuiTestBase):
             QApplication.processEvents()
             self.assertTrue(tab.refresh_btn.isVisibleTo(tab))
             self.assertTrue(tab.collider_visible_check.isVisibleTo(tab))
+            self.assertTrue(tab.physics_enable_check.isVisibleTo(tab))
             for button in (tab.create_btn, tab.duplicate_btn, tab.delete_btn):
                 self.assertTrue(button.isHidden())
 
@@ -103,7 +106,7 @@ class TestPhysicsTabGUI(GuiTestBase):
             ]
             self.assertEqual(
                 visible_widgets,
-                [tab.refresh_btn, tab.collider_visible_check],
+                [tab.refresh_btn, tab.collider_visible_check, tab.physics_enable_check],
             )
         finally:
             tab.close()

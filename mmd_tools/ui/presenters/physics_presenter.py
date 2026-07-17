@@ -125,6 +125,12 @@ class PhysicsPresenter:
         if collider_check is not None:
             collider_check.stateChanged.connect(lambda state: self._on_collider_visibility_changed(state != 0))
 
+        physics_enable_check = getattr(self.view, "physics_enable_check", None)
+        if physics_enable_check is not None:
+            physics_enable_check.stateChanged.connect(
+                lambda state: self._on_physics_enable_changed(state != 0)
+            )
+
         create_btn = getattr(self.view, "create_btn", None)
         if create_btn is not None:
             create_btn.clicked.connect(self.create_item)
@@ -154,6 +160,7 @@ class PhysicsPresenter:
 
     def refresh_physics(self, force=False):
         self._clear_view()
+        self._sync_physics_enable_checkbox()
         root = self.app_state.current_model_root
         if not root or not self.maya_adapter.object_exists(root):
             return
@@ -174,6 +181,68 @@ class PhysicsPresenter:
         self._populate_joint_list(jt_group)
         self.view.set_physics_details_enabled(True)
         self._sync_collider_visibility_checkbox(root)
+
+    def _find_physics_world_shape(self):
+        try:
+            worlds = cmds.ls(type="mmdPhysicsWorldShape", long=True) or []
+            return worlds[0] if worlds else None
+        except Exception:
+            return None
+
+    def _sync_physics_enable_checkbox(self):
+        checkbox = getattr(self.view, "physics_enable_check", None)
+        if checkbox is None:
+            return
+        world = self._find_physics_world_shape()
+        has_physics_data = False
+        if world:
+            try:
+                has_physics_data = bool(
+                    cmds.listConnections(
+                        f"{world}.outSettingsVersion",
+                        source=False,
+                        destination=True,
+                        type="mmdPhysicsSolver",
+                    )
+                    or []
+                )
+                enabled = bool(cmds.getAttr(f"{world}.enable")) if has_physics_data else False
+            except Exception:
+                has_physics_data = False
+                enabled = False
+        else:
+            enabled = False
+        checkbox.blockSignals(True)
+        checkbox.setChecked(enabled)
+        checkbox.setEnabled(bool(world and has_physics_data))
+        checkbox.blockSignals(False)
+
+    def _on_physics_enable_changed(self, enabled):
+        world = self._find_physics_world_shape()
+        if not world:
+            self._sync_physics_enable_checkbox()
+            return
+        try:
+            has_physics_data = bool(
+                cmds.listConnections(
+                    f"{world}.outSettingsVersion",
+                    source=False,
+                    destination=True,
+                    type="mmdPhysicsSolver",
+                )
+                or []
+            )
+        except Exception:
+            has_physics_data = False
+        if not has_physics_data:
+            self._sync_physics_enable_checkbox()
+            return
+        cmds.undoInfo(openChunk=True, chunkName="MMD Physics Enable")
+        try:
+            cmds.setAttr(f"{world}.enable", bool(enabled))
+        finally:
+            cmds.undoInfo(closeChunk=True)
+        self._sync_physics_enable_checkbox()
 
     def load_physics(self):
         self.refresh_physics(force=True)

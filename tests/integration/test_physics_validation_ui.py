@@ -53,6 +53,18 @@ class _FakeButton:
         self.enabled = bool(enabled)
 
 
+class _FakeCheckbox(_FakeButton):
+    def __init__(self):
+        super().__init__()
+        self.checked = False
+
+    def blockSignals(self, _blocked):
+        return None
+
+    def setChecked(self, checked):
+        self.checked = bool(checked)
+
+
 class _FakeList:
     def __init__(self):
         self.items = []
@@ -79,6 +91,7 @@ class _FakePhysicsView:
         self.reset_btn = _FakeButton()
         self.delete_btn = _FakeButton()
         self.duplicate_btn = _FakeButton()
+        self.physics_enable_check = _FakeCheckbox()
         self.last_form = None
 
     def set_physics_details_enabled(self, enabled):
@@ -170,6 +183,51 @@ class TestPhysicsPresenterNamespace(MayaTestBase):
         rigid_bodies, joints = collect_physics_from_scene(root_b, {})
         self.assertEqual(len(rigid_bodies), 3)
         self.assertEqual(len(joints), 1)
+
+    def test_scene_global_enable_sync_toggle_undo_and_no_world_safety(self):
+        root_a = self._create_namespaced_model("ToggleA", rigid_count=1, joint_count=0)
+        root_b = self._create_namespaced_model("ToggleB", rigid_count=1, joint_count=0)
+        view = _FakePhysicsView()
+        app_state = SimpleNamespace(current_model_root=root_a)
+        presenter = object.__new__(PhysicsPresenter)
+        presenter.view = view
+        presenter.app_state = app_state
+        presenter.maya_adapter = SimpleNamespace(object_exists=cmds.objExists)
+        presenter._current_kind = None
+        presenter._current_shape = None
+
+        presenter.refresh_physics(force=True)
+        self.assertFalse(view.physics_enable_check.enabled)
+        self.assertFalse(view.physics_enable_check.checked)
+        presenter._on_physics_enable_changed(True)
+        self.assertFalse(cmds.ls(type="mmdPhysicsWorldShape") or [])
+
+        world_transform = cmds.createNode("transform", name="MMD_PhysicsWorld")
+        world = cmds.createNode(
+            "mmdPhysicsWorldShape", name="MMD_PhysicsWorldShape", parent=world_transform
+        )
+        solver = cmds.createNode("mmdPhysicsSolver", name="toggleSolver")
+        cmds.connectAttr(f"{world}.message", f"{solver}.inWorldSettings")
+        cmds.connectAttr(
+            f"{world}.outSettingsVersion", f"{solver}.inWorldSettingsVersion"
+        )
+        presenter.refresh_physics(force=True)
+        self.assertTrue(view.physics_enable_check.enabled)
+        self.assertFalse(view.physics_enable_check.checked)
+
+        presenter._on_physics_enable_changed(True)
+        self.assertTrue(cmds.getAttr(f"{world}.enable"))
+        self.assertTrue(view.physics_enable_check.checked)
+        cmds.undo()
+        presenter.refresh_physics(force=True)
+        self.assertFalse(cmds.getAttr(f"{world}.enable"))
+        self.assertFalse(view.physics_enable_check.checked)
+
+        cmds.setAttr(f"{world}.enable", True)
+        app_state.current_model_root = root_b
+        presenter.refresh_physics(force=True)
+        self.assertTrue(view.physics_enable_check.enabled)
+        self.assertTrue(view.physics_enable_check.checked)
 
     def test_refresh_migrates_legacy_collider_pose_without_losing_current_bone_offset(self):
         root = self._create_namespaced_model("Legacy", rigid_count=1, joint_count=0)

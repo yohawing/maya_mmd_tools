@@ -115,7 +115,7 @@ class MmdPhysicsBoneDriverNode(om.MPxNode):
         enable = data.inputValue(self.aEnable).asBool()
         solved = data.inputValue(self.aInSolved).asBool()
         if not enable or not solved:
-            self._write_identity(data)
+            self._write_pre_physics_pose(data)
             return
 
         bone_count = data.inputValue(self.aInSolverBoneCount).asInt()
@@ -251,6 +251,18 @@ class MmdPhysicsBoneDriverNode(om.MPxNode):
     def _write_identity(self, data) -> None:
         data.outputValue(self.aOutTranslate).set3Double(0.0, 0.0, 0.0)
         data.outputValue(self.aOutRotate).set3Double(0.0, 0.0, 0.0)
+        data.setClean(self.aOutTranslate)
+        data.setClean(self.aOutRotate)
+
+    def _write_pre_physics_pose(self, data) -> None:
+        tx = data.inputValue(self.aInPreTranslateX).asDouble()
+        ty = data.inputValue(self.aInPreTranslateY).asDouble()
+        tz = data.inputValue(self.aInPreTranslateZ).asDouble()
+        rx = data.inputValue(self.aInPreRotateX).asAngle().asRadians()
+        ry = data.inputValue(self.aInPreRotateY).asAngle().asRadians()
+        rz = data.inputValue(self.aInPreRotateZ).asAngle().asRadians()
+        data.outputValue(self.aOutTranslate).set3Double(tx, ty, tz)
+        data.outputValue(self.aOutRotate).set3Double(rx, ry, rz)
         data.setClean(self.aOutTranslate)
         data.setClean(self.aOutRotate)
 
@@ -492,6 +504,8 @@ def initialize():
         MmdPhysicsBoneDriverNode.aInRotateOrder,
         MmdPhysicsBoneDriverNode.aInSolved,
         MmdPhysicsBoneDriverNode.aEnable,
+        MmdPhysicsBoneDriverNode.aInPreTranslate,
+        MmdPhysicsBoneDriverNode.aInPreRotate,
     ]
     outputs = [
         MmdPhysicsBoneDriverNode.aOutTranslate,

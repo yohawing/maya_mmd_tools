@@ -52,6 +52,25 @@ def _store_pmx_payload(root, pmx_bytes):
     cmds.setAttr(f"{root}.{ATTR_MMD_SOURCE_PMX_PAYLOAD}", encoded, type="string")
 
 
+def _connect_enabled_world(solver):
+    worlds = cmds.ls(type="mmdPhysicsWorldShape") or []
+    if worlds:
+        world = worlds[0]
+    else:
+        transform = cmds.createNode("transform", name="MMD_PhysicsWorld")
+        world = cmds.createNode(
+            "mmdPhysicsWorldShape", name="MMD_PhysicsWorldShape", parent=transform
+        )
+    cmds.connectAttr(f"{world}.message", f"{solver}.inWorldSettings", force=True)
+    cmds.connectAttr(
+        f"{world}.outSettingsVersion",
+        f"{solver}.inWorldSettingsVersion",
+        force=True,
+    )
+    cmds.setAttr(f"{world}.enable", True)
+    return world
+
+
 @unittest.skipUnless(FIXTURE_PATH.exists(), "hair physics fixture not found")
 @unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
 class TestPhysicsSolverNode(MayaTestBase):
@@ -83,6 +102,7 @@ class TestPhysicsSolverNode(MayaTestBase):
         solver = cmds.createNode("mmdPhysicsSolver", name="testSolver")
         cmds.connectAttr(f"{root}.message", f"{solver}.modelRoot")
         cmds.connectAttr("time1.outTime", f"{solver}.inTime")
+        _connect_enabled_world(solver)
         return solver
 
     def test_solver_node_creates(self):
@@ -407,6 +427,7 @@ class TestSolverTimeStateMachine(MayaTestBase):
         solver = cmds.createNode("mmdPhysicsSolver", name="testSolver")
         cmds.connectAttr(f"{root}.message", f"{solver}.modelRoot")
         cmds.connectAttr("time1.outTime", f"{solver}.inTime")
+        _connect_enabled_world(solver)
         cmds.currentUnit(time="ntsc")
         return solver
 
@@ -604,6 +625,7 @@ class TestSolverDisableEnable(MayaTestBase):
         solver = cmds.createNode("mmdPhysicsSolver", name="testSolver")
         cmds.connectAttr(f"{root}.message", f"{solver}.modelRoot")
         cmds.connectAttr("time1.outTime", f"{solver}.inTime")
+        _connect_enabled_world(solver)
         cmds.currentUnit(time="ntsc")
         return solver
 
@@ -635,6 +657,25 @@ class TestSolverDisableEnable(MayaTestBase):
         cmds.currentTime(2)
         self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
 
+    def test_world_off_on_off_same_frame_resets_instead_of_continuing(self):
+        solver = self._setup_solver()
+        world = cmds.connectionInfo(
+            f"{solver}.inWorldSettings", sourceFromDestination=True
+        ).rsplit(".", 1)[0]
+        cmds.currentTime(0)
+        _ = cmds.getAttr(f"{solver}.outSolved")
+        for frame in range(1, 6):
+            cmds.currentTime(frame)
+            _ = cmds.getAttr(f"{solver}.outSolved")
+
+        cmds.setAttr(f"{world}.enable", False)
+        self.assertFalse(cmds.getAttr(f"{solver}.outSolved"))
+        cmds.setAttr(f"{world}.enable", True)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+        self.assertEqual(cmds.getAttr(f"{solver}.outStatus"), "reset")
+        cmds.setAttr(f"{world}.enable", False)
+        self.assertFalse(cmds.getAttr(f"{solver}.outSolved"))
+
 
 @unittest.skipUnless(FIXTURE_PATH.exists(), "hair physics fixture not found")
 @unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
@@ -663,6 +704,7 @@ class TestSolverEvaluationModes(MayaTestBase):
         solver = cmds.createNode("mmdPhysicsSolver", name="testSolver")
         cmds.connectAttr(f"{root}.message", f"{solver}.modelRoot")
         cmds.connectAttr("time1.outTime", f"{solver}.inTime")
+        _connect_enabled_world(solver)
         cmds.currentUnit(time="ntsc")
         return solver
 
@@ -745,6 +787,7 @@ class TestSolverLifecycle(MayaTestBase):
         solver = cmds.createNode("mmdPhysicsSolver", name="testSolver")
         cmds.connectAttr(f"{root}.message", f"{solver}.modelRoot")
         cmds.connectAttr("time1.outTime", f"{solver}.inTime")
+        _connect_enabled_world(solver)
         cmds.currentUnit(time="ntsc")
         return solver
 

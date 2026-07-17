@@ -56,24 +56,33 @@ def creator():
     return MmdPhysicsWorldShape()
 
 
+def _hide_attribute(fn_attr) -> None:
+    fn_attr.keyable = False
+    fn_attr.channelBox = False
+    fn_attr.hidden = True
+
+
 def initialize():
     nAttr = om.MFnNumericAttribute()
     cAttr = om.MFnCompoundAttribute()
 
-    MmdPhysicsWorldShape.aEnable = nAttr.create("enable", "enb", om.MFnNumericData.kBoolean, True)
+    MmdPhysicsWorldShape.aEnable = nAttr.create("enable", "enb", om.MFnNumericData.kBoolean, False)
     nAttr.storable = True
     nAttr.keyable = True
     MmdPhysicsWorldShape.addAttribute(MmdPhysicsWorldShape.aEnable)
 
     # --- Gravity (input) ---
     MmdPhysicsWorldShape.aGravityX = nAttr.create("gravityX", "grx", om.MFnNumericData.kDouble, 0.0)
+    _hide_attribute(nAttr)
     MmdPhysicsWorldShape.aGravityY = nAttr.create("gravityY", "gry", om.MFnNumericData.kDouble, -9.8)
+    _hide_attribute(nAttr)
     MmdPhysicsWorldShape.aGravityZ = nAttr.create("gravityZ", "grz", om.MFnNumericData.kDouble, 0.0)
+    _hide_attribute(nAttr)
     MmdPhysicsWorldShape.aGravity = cAttr.create("gravity", "grv")
     cAttr.addChild(MmdPhysicsWorldShape.aGravityX)
     cAttr.addChild(MmdPhysicsWorldShape.aGravityY)
     cAttr.addChild(MmdPhysicsWorldShape.aGravityZ)
-    cAttr.keyable = True
+    _hide_attribute(cAttr)
     MmdPhysicsWorldShape.addAttribute(MmdPhysicsWorldShape.aGravity)
 
     MmdPhysicsWorldShape.aFixedTimestep = nAttr.create(
@@ -82,33 +91,36 @@ def initialize():
     nAttr.storable = True
     nAttr.keyable = True
     nAttr.setMin(0.0001)
+    _hide_attribute(nAttr)
     MmdPhysicsWorldShape.addAttribute(MmdPhysicsWorldShape.aFixedTimestep)
 
     MmdPhysicsWorldShape.aMaxSubsteps = nAttr.create("maxSubsteps", "mss", om.MFnNumericData.kInt, 10)
     nAttr.storable = True
     nAttr.keyable = True
     nAttr.setMin(1)
+    _hide_attribute(nAttr)
     MmdPhysicsWorldShape.addAttribute(MmdPhysicsWorldShape.aMaxSubsteps)
 
     MmdPhysicsWorldShape.aTimeScale = nAttr.create("timeScale", "tsc", om.MFnNumericData.kDouble, 1.0)
     nAttr.storable = True
     nAttr.keyable = True
     nAttr.setMin(0.0)
+    _hide_attribute(nAttr)
     MmdPhysicsWorldShape.addAttribute(MmdPhysicsWorldShape.aTimeScale)
 
     MmdPhysicsWorldShape.aStartFrame = nAttr.create("startFrame", "stf", om.MFnNumericData.kInt, 0)
     nAttr.storable = True
-    nAttr.keyable = True
+    _hide_attribute(nAttr)
     MmdPhysicsWorldShape.addAttribute(MmdPhysicsWorldShape.aStartFrame)
 
     MmdPhysicsWorldShape.aResetGeneration = nAttr.create("resetGeneration", "rsg", om.MFnNumericData.kInt, 0)
     nAttr.storable = True
-    nAttr.keyable = False
+    _hide_attribute(nAttr)
     MmdPhysicsWorldShape.addAttribute(MmdPhysicsWorldShape.aResetGeneration)
 
     MmdPhysicsWorldShape.aPhysicsMode = nAttr.create("physicsMode", "phm", om.MFnNumericData.kShort, 0)
     nAttr.storable = True
-    nAttr.keyable = True
+    _hide_attribute(nAttr)
     MmdPhysicsWorldShape.addAttribute(MmdPhysicsWorldShape.aPhysicsMode)
 
     MmdPhysicsWorldShape.aOutSettingsVersion = nAttr.create(
@@ -116,6 +128,7 @@ def initialize():
     )
     nAttr.storable = False
     nAttr.writable = False
+    _hide_attribute(nAttr)
     MmdPhysicsWorldShape.addAttribute(MmdPhysicsWorldShape.aOutSettingsVersion)
 
     input_attrs = (

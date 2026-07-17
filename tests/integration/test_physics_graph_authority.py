@@ -28,9 +28,9 @@ class TestPhysicsGraphAuthority(MayaTestBase):
         except Exception:
             pass
 
-    def _build_graph(self):
-        cmds.namespace(add="graphModel")
-        cmds.namespace(set=":graphModel")
+    def _build_graph(self, namespace="graphModel"):
+        cmds.namespace(add=namespace)
+        cmds.namespace(set=f":{namespace}")
         try:
             root = cmds.group(empty=True, name="root")
             joints = []
@@ -54,6 +54,61 @@ class TestPhysicsGraphAuthority(MayaTestBase):
         finally:
             cmds.namespace(set=":")
         return root, joints, graph
+
+    def test_world_toggle_is_explicitly_dirty_and_off_passthroughs_pre_pose(self):
+        _root, joints, graph = self._build_graph()
+        solver = graph["solver"]
+        driver = graph["drivers"][0]
+        source = cmds.connectionInfo(
+            f"{solver}.inWorldSettingsVersion", sourceFromDestination=True
+        )
+        self.assertTrue(source.endswith(".outSettingsVersion"), source)
+        world = source.rsplit(".", 1)[0]
+
+        expected_t = (1.25, -2.5, 3.75)
+        expected_r = (10.0, -20.0, 30.0)
+        cmds.setAttr(f"{driver}.inPreTranslate", *expected_t)
+        cmds.setAttr(f"{driver}.inPreRotate", *expected_r)
+        for enabled in (False, True, False):
+            cmds.setAttr(f"{world}.enable", enabled)
+            _ = cmds.getAttr(f"{solver}.outStatus")
+            actual_t = cmds.getAttr(f"{joints[0]}.translate")[0]
+            actual_r = cmds.getAttr(f"{joints[0]}.rotate")[0]
+            for actual, expected in zip(actual_t, expected_t):
+                self.assertAlmostEqual(actual, expected, places=5)
+            for actual, expected in zip(actual_r, expected_r):
+                self.assertAlmostEqual(actual, expected, places=5)
+
+        updated_t = (-4.5, 5.25, 6.75)
+        updated_r = (-15.0, 25.0, -35.0)
+        cmds.setAttr(f"{driver}.inPreTranslate", *updated_t)
+        cmds.setAttr(f"{driver}.inPreRotate", *updated_r)
+        for actual, expected in zip(cmds.getAttr(f"{joints[0]}.translate")[0], updated_t):
+            self.assertAlmostEqual(actual, expected, places=5)
+        for actual, expected in zip(cmds.getAttr(f"{joints[0]}.rotate")[0], updated_r):
+            self.assertAlmostEqual(actual, expected, places=5)
+
+        cmds.setKeyframe(driver, attribute="inPreTranslateX", time=1, value=-1.0)
+        cmds.setKeyframe(driver, attribute="inPreTranslateX", time=10, value=9.0)
+        cmds.setKeyframe(driver, attribute="inPreRotateY", time=1, value=-5.0)
+        cmds.setKeyframe(driver, attribute="inPreRotateY", time=10, value=45.0)
+        cmds.currentTime(10)
+        self.assertAlmostEqual(cmds.getAttr(f"{joints[0]}.translateX"), 9.0, places=5)
+        self.assertAlmostEqual(cmds.getAttr(f"{joints[0]}.rotateY"), 45.0, places=5)
+
+    def test_two_namespaced_models_share_one_world(self):
+        _root_a, _joints_a, graph_a = self._build_graph("modelA")
+        _root_b, _joints_b, graph_b = self._build_graph("modelB")
+        worlds = cmds.ls(type="mmdPhysicsWorldShape", long=True) or []
+        self.assertEqual(len(worlds), 1)
+        world = worlds[0]
+        for graph in (graph_a, graph_b):
+            source = cmds.connectionInfo(
+                f"{graph['solver']}.inWorldSettingsVersion",
+                sourceFromDestination=True,
+            )
+            source_world = (cmds.ls(source.rsplit(".", 1)[0], long=True) or [None])[0]
+            self.assertEqual(source_world, world)
 
     def _assert_graph_contract(self, root):
         solver = _find_solver_for_model(root)
@@ -118,6 +173,34 @@ class TestPhysicsGraphAuthority(MayaTestBase):
         cmds.file(new=True, force=True)
         cmds.file(scene_path, reference=True, namespace="refGraph")
         self._assert_graph_contract("refGraph:graphModel:root")
+
+    def test_world_exposes_only_enable_and_serializes_it(self):
+        _root, _joints, graph = self._build_graph()
+        solver = graph["solver"]
+        source_plug = cmds.connectionInfo(
+            f"{solver}.inWorldSettings", sourceFromDestination=True
+        )
+        world = source_plug.rsplit(".", 1)[0]
+        self.assertEqual(cmds.nodeType(world), "mmdPhysicsWorldShape")
+        self.assertFalse(cmds.getAttr(f"{world}.enable"))
+        self.assertTrue(cmds.getAttr(f"{world}.enable", keyable=True))
+        for attr in (
+            "gravity", "gravityX", "gravityY", "gravityZ", "fixedTimestep",
+            "maxSubsteps", "timeScale", "startFrame", "resetGeneration",
+            "physicsMode", "outSettingsVersion",
+        ):
+            self.assertTrue(cmds.attributeQuery(attr, node=world, hidden=True), attr)
+            self.assertFalse(cmds.getAttr(f"{world}.{attr}", keyable=True), attr)
+
+        self.assertTrue(cmds.getAttr(f"{world}.hiddenInOutliner"))
+        cmds.setAttr(f"{world}.enable", True)
+        scene_path = self.get_temp_filename("physics_world_enable.ma")
+        cmds.file(rename=scene_path)
+        cmds.file(save=True, type="mayaAscii", force=True)
+        cmds.file(scene_path, open=True, force=True)
+        reopened_world = (cmds.ls(type="mmdPhysicsWorldShape") or [None])[0]
+        self.assertIsNotNone(reopened_world)
+        self.assertTrue(cmds.getAttr(f"{reopened_world}.enable"))
 
 
 if __name__ == "__main__":

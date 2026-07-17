@@ -83,6 +83,7 @@ public:
 private:
     bool isOutputPlug(const MPlug& plug) const;
     void writeIdentity(MDataBlock& data) const;
+    void writePrePhysicsPose(MDataBlock& data) const;
     static MMatrix extractMatrix(const MDoubleArray& arr, int boneIndex);
 
     static MObject createDouble3(

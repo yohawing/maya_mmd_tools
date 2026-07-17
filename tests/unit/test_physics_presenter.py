@@ -81,6 +81,13 @@ class TestPresenterModuleStructure(unittest.TestCase):
         self.assertIn("_on_collider_visibility_changed", func_names)
         self.assertIn("_sync_collider_visibility_checkbox", func_names)
 
+    def test_has_scene_global_physics_enable_methods(self):
+        func_names = [n.name for n in ast.walk(self.tree) if isinstance(n, ast.FunctionDef)]
+        self.assertIn("_on_physics_enable_changed", func_names)
+        self.assertIn("_sync_physics_enable_checkbox", func_names)
+        self.assertIn("_find_physics_world_shape", func_names)
+        self.assertIn('chunkName="MMD Physics Enable"', self.source)
+
     def test_has_parse_vector_str(self):
         self.assertIn("_parse_vector_str", self.source)
 
@@ -154,6 +161,12 @@ class TestTabStructure(unittest.TestCase):
         self.assertIn("create_btn", self.tab_source)
         self.assertIn("duplicate_btn", self.tab_source)
         self.assertIn("delete_btn", self.tab_source)
+
+    def test_has_persistent_physics_enable_checkbox_next_to_collider_toggle(self):
+        self.assertIn("physics_enable_check", self.tab_source)
+        collider_index = self.tab_source.index("toolbar_layout.addWidget(self.collider_visible_check)")
+        enable_index = self.tab_source.index("toolbar_layout.addWidget(self.physics_enable_check)")
+        self.assertLess(collider_index, enable_index)
 
     def test_authoring_only_notice_widget_and_translation_key_are_removed(self):
         self.assertNotIn("scope_notice_label", self.tab_source)
