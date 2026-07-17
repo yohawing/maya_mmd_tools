@@ -33,6 +33,24 @@ def mmd_euler_xyz_to_maya(euler_xyz: Sequence[float]) -> Tuple[float, float, flo
     )
 
 
+def mmd_euler_xyz_to_maya_quaternion(
+    euler_xyz: Sequence[float],
+) -> Tuple[float, float, float, float]:
+    """Convert PMX XYZ Euler radians to a reflected Maya-space quaternion."""
+    half_x = float(euler_xyz[0]) * 0.5
+    half_y = float(euler_xyz[1]) * 0.5
+    half_z = float(euler_xyz[2]) * 0.5
+    sin_x, cos_x = math.sin(half_x), math.cos(half_x)
+    sin_y, cos_y = math.sin(half_y), math.cos(half_y)
+    sin_z, cos_z = math.sin(half_z), math.cos(half_z)
+
+    qx = sin_x * cos_y * cos_z + cos_x * sin_y * sin_z
+    qy = cos_x * sin_y * cos_z - sin_x * cos_y * sin_z
+    qz = cos_x * cos_y * sin_z - sin_x * sin_y * cos_z
+    qw = cos_x * cos_y * cos_z + sin_x * sin_y * sin_z
+    return (-qx, -qy, qz, qw)
+
+
 def mmd_euler_radians_to_maya_degrees(euler_xyz: Sequence[float]) -> Tuple[float, float, float]:
     """Convert MMD XYZ Euler radians to reflected Maya XYZ Euler degrees."""
     return (

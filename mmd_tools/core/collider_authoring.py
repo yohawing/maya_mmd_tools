@@ -8,8 +8,7 @@ from maya import cmds
 import maya.api.OpenMaya as om
 
 from mmd_tools.core.coordinate_transform import (
-    mmd_euler_xyz_to_maya,
-    mmd_euler_radians_to_maya_degrees,
+    mmd_euler_xyz_to_maya_quaternion,
     mmd_point_to_maya,
 )
 
@@ -31,16 +30,22 @@ def _mark_pose_version(shape: str) -> None:
 
 
 def _pose_matrix(position, rotation_radians, display_scale: float, *, legacy: bool) -> om.MMatrix:
-    rotation = (
-        (rotation_radians[0], rotation_radians[1], -rotation_radians[2])
-        if legacy
-        else mmd_euler_xyz_to_maya(rotation_radians)
-    )
     transform = om.MTransformationMatrix()
     transform.setTranslation(
         om.MVector(*mmd_point_to_maya(position, display_scale)), om.MSpace.kTransform
     )
-    transform.setRotation(om.MEulerRotation(*rotation))
+    if legacy:
+        transform.setRotation(
+            om.MEulerRotation(
+                rotation_radians[0],
+                rotation_radians[1],
+                -rotation_radians[2],
+            )
+        )
+    else:
+        transform.setRotation(
+            om.MQuaternion(*mmd_euler_xyz_to_maya_quaternion(rotation_radians))
+        )
     transform.setScale((display_scale, display_scale, display_scale), om.MSpace.kTransform)
     return transform.asMatrix()
 
@@ -80,13 +85,6 @@ def _bind_pose_world_matrix(node: str) -> om.MMatrix | None:
     return None
 
 
-def _has_keyed_transform_in_hierarchy(node: str) -> bool:
-    """Return whether *node* or a DAG parent has keyed transform channels."""
-    hierarchy = [node]
-    hierarchy.extend(cmds.listRelatives(node, allParents=True, fullPath=True) or [])
-    return any((cmds.keyframe(item, query=True, keyframeCount=True) or 0) > 0 for item in hierarchy)
-
-
 def connect_collider_authoring_transform(transform: str, shape: str) -> None:
     """Connect the canonical parent world matrix without mixing PMX and Maya spaces."""
     for shape_attr, transform_attr in (
@@ -120,19 +118,36 @@ def connect_collider_authoring_follow(transform: str, shape: str) -> str | None:
 
     bone_bind_world = _bind_pose_world_matrix(bones[0])
     if bone_bind_world is not None:
-        # set_collider_authoring_pose has already placed the raw PMX body pose
-        # below its Physics hierarchy.  Read that world matrix so the body and
-        # saved bone bind matrices use the same space, including non-identity
-        # model and Physics parents.
-        body_bind_world = om.MMatrix(
-            cmds.xform(transform, query=True, worldSpace=True, matrix=True)
+        position = cmds.getAttr(f"{shape}.position")[0]
+        rotation_radians = tuple(
+            math.radians(value) for value in cmds.getAttr(f"{shape}.rotation")[0]
         )
+        display_scale = float(cmds.getAttr(f"{transform}.scaleX"))
+        body_bind_local = om.MTransformationMatrix(
+            _pose_matrix(position, rotation_radians, display_scale, legacy=False)
+        )
+        # Collider display scale is shape geometry, not part of the rigid
+        # transform offset from its related bone.
+        body_bind_local.setScale((1.0, 1.0, 1.0), om.MSpace.kTransform)
+        parents = cmds.listRelatives(transform, parent=True, fullPath=True) or []
+        parent_world = (
+            om.MMatrix(cmds.xform(parents[0], query=True, worldSpace=True, matrix=True))
+            if parents
+            else om.MMatrix()
+        )
+        body_bind_world = body_bind_local.asMatrix() * parent_world
         bone_world = om.MMatrix(
             cmds.xform(bones[0], query=True, worldSpace=True, matrix=True)
         )
-        if _has_keyed_transform_in_hierarchy(bones[0]):
-            body_from_bone = body_bind_world * bone_bind_world.inverse()
-            cmds.xform(transform, worldSpace=True, matrix=list(body_from_bone * bone_world))
+        body_from_bone = body_bind_world * bone_bind_world.inverse()
+        cmds.xform(transform, worldSpace=True, matrix=list(body_from_bone * bone_world))
+        cmds.setAttr(
+            f"{transform}.scale",
+            display_scale,
+            display_scale,
+            display_scale,
+            type="double3",
+        )
 
     short_name = transform.rsplit("|", 1)[-1].replace(":", "_")
     constraint = cmds.parentConstraint(
@@ -175,9 +190,12 @@ def set_collider_authoring_pose(
         *mmd_point_to_maya(position, display_scale),
         type="double3",
     )
+    maya_rotation = om.MQuaternion(
+        *mmd_euler_xyz_to_maya_quaternion(rotation_radians)
+    ).asEulerRotation()
     cmds.setAttr(
         f"{transform}.rotate",
-        *mmd_euler_radians_to_maya_degrees(rotation_radians),
+        *(math.degrees(value) for value in maya_rotation),
         type="double3",
     )
     cmds.setAttr(

@@ -16,7 +16,6 @@ from mmd_tools.core.collider_authoring import (
     set_collider_authoring_pose,
 )
 from mmd_tools.core.coordinate_transform import (
-    mmd_matrix_to_maya,
     mmd_point_to_maya,
 )
 from mmd_tools.nodes.mmd_rigid_body_draw_override import _draw_box
@@ -53,6 +52,40 @@ class TestColliderAuthoringTransform(MayaTestBase):
             self.assertAlmostEqual(authoring_matrix[index], world_matrix[index], places=10)
             self.assertAlmostEqual(draw_matrix[index], world_matrix[index], places=10)
 
+    def test_display_rotation_matches_three_mmd_loader_quaternion_oracle(self):
+        transform = cmds.createNode("transform", name="threeMmdRotationCollider")
+        shape = cmds.createNode(
+            "mmdRigidBodyShape",
+            name="threeMmdRotationColliderShape",
+            parent=transform,
+        )
+        set_collider_authoring_pose(
+            transform,
+            shape,
+            (0.0, 0.0, 0.0),
+            (0.7, 0.4, -0.3),
+        )
+
+        # Fixed oracle from three-mmd-loader's legacyMmdEulerToQuaternion,
+        # reflected from MMD to Maya space as (-qx, -qy, qz, qw).
+        expected = om.MQuaternion(
+            -0.30440023509091957,
+            -0.23474953511944815,
+            -0.20493821485715316,
+            0.9001297021701701,
+        )
+        actual_matrix = om.MMatrix(
+            cmds.xform(transform, query=True, objectSpace=True, matrix=True)
+        )
+        actual = om.MTransformationMatrix(actual_matrix).rotation(asQuaternion=True)
+        dot = abs(
+            expected.x * actual.x
+            + expected.y * actual.y
+            + expected.z * actual.z
+            + expected.w * actual.w
+        )
+        self.assertAlmostEqual(dot, 1.0, places=10)
+
     def test_raw_pmx_pose_is_preserved_while_unbound_display_uses_maya_space(self):
         transform = cmds.createNode("transform", name="editableCollider")
         shape = cmds.createNode("mmdRigidBodyShape", name="editableColliderShape", parent=transform)
@@ -76,10 +109,20 @@ class TestColliderAuthoringTransform(MayaTestBase):
             cmds.getAttr(f"{transform}.translate")[0],
             mmd_point_to_maya(position, display_scale),
         )
-        self.assertListAlmostEqual(
-            cmds.getAttr(f"{transform}.rotate")[0],
-            [-math.degrees(rotation[0]), -math.degrees(rotation[1]), math.degrees(rotation[2])],
+        actual_matrix = om.MMatrix(
+            cmds.xform(transform, query=True, objectSpace=True, matrix=True)
         )
+        actual_rotation = om.MTransformationMatrix(actual_matrix).rotation(asQuaternion=True)
+        expected_rotation = om.MTransformationMatrix(
+            reflected_mmd_euler_matrix(rotation)
+        ).rotation(asQuaternion=True)
+        dot = abs(
+            actual_rotation.x * expected_rotation.x
+            + actual_rotation.y * expected_rotation.y
+            + actual_rotation.z * expected_rotation.z
+            + actual_rotation.w * expected_rotation.w
+        )
+        self.assertAlmostEqual(dot, 1.0, places=10)
         self.assertListAlmostEqual(
             cmds.getAttr(f"{transform}.scale")[0],
             (display_scale, display_scale, display_scale),
@@ -114,29 +157,12 @@ class TestColliderAuthoringTransform(MayaTestBase):
                 )
                 set_collider_authoring_pose(transform, shape, (0.0, 0.0, 0.0), rotation)
 
-                mmd_matrix = om.MEulerRotation(*rotation).asMatrix()
                 expected_matrix = reflected_mmd_euler_matrix(rotation)
                 expected = [float(expected_matrix[element]) for element in range(16)]
 
                 actual = cmds.xform(transform, query=True, objectSpace=True, matrix=True)
                 max_error = max(abs(actual[element] - expected[element]) for element in range(16))
                 self.assertLessEqual(max_error, 1.0e-10)
-
-                converted_matrix = mmd_matrix_to_maya(
-                    [float(mmd_matrix[element]) for element in range(16)]
-                )
-                quaternion = om.MEulerRotation(*rotation).asQuaternion()
-                reflected_quaternion_matrix = om.MQuaternion(
-                    -quaternion.x,
-                    -quaternion.y,
-                    quaternion.z,
-                    quaternion.w,
-                ).asMatrix()
-                for element in range(16):
-                    self.assertAlmostEqual(converted_matrix[element], expected[element], places=10)
-                    self.assertAlmostEqual(
-                        reflected_quaternion_matrix[element], expected[element], places=10
-                    )
 
     def test_bound_collider_keeps_bone_offset_through_animation_and_reopen(self):
         model = cmds.createNode("transform", name="followModel")
@@ -185,6 +211,7 @@ class TestColliderAuthoringTransform(MayaTestBase):
         world_position = cmds.xform(transform, query=True, worldSpace=True, translation=True)
         self.assertListAlmostEqual(bbox_center, world_position, places=5)
         self.assertListAlmostEqual(cmds.getAttr(f"{shape}.position")[0], position)
+
         self.assertListAlmostEqual(
             cmds.getAttr(f"{shape}.rotation")[0],
             [math.degrees(value) for value in rotation],
@@ -205,6 +232,40 @@ class TestColliderAuthoringTransform(MayaTestBase):
         for index in range(16):
             self.assertAlmostEqual(reopen_animated[index], reopen_rest[index], places=6)
         self.assertListAlmostEqual(cmds.getAttr(f"{shape}.position")[0], position)
+
+    def test_bound_collider_uses_bind_offset_after_unkeyed_driver_pose_settles(self):
+        model = cmds.createNode("transform", name="driverPoseModel")
+        skeleton = cmds.createNode("transform", name="driverPoseSkeleton", parent=model)
+        dummy = cmds.createNode("joint", name="driverPoseDummy", parent=skeleton)
+        bone = cmds.createNode("joint", name="driverPoseBone", parent=skeleton)
+        bind_translation = (1.5, 5.0, -2.0)
+        cmds.setAttr(f"{bone}.translate", *bind_translation, type="double3")
+        cmds.dagPose([dummy, bone], save=True, bindPose=True, name="driverPoseBindPose")
+        cmds.delete(dummy)
+
+        physics = cmds.createNode("transform", name="driverPosePhysics", parent=model)
+        transform = cmds.createNode("transform", name="driverPoseCollider", parent=physics)
+        shape = cmds.createNode(
+            "mmdRigidBodyShape", name="driverPoseColliderShape", parent=transform
+        )
+        cmds.connectAttr(f"{bone}.message", f"{shape}.relatedBone")
+
+        # Simulate an import-time driver evaluation without animation keys.
+        cmds.setAttr(f"{bone}.translate", 4.0, 7.0, 3.0, type="double3")
+        cmds.setAttr(f"{bone}.rotate", 18.0, -27.0, 33.0, type="double3")
+        position = (3.25, 8.5, 1.75)
+        rotation = (0.37, -0.61, 0.83)
+        set_collider_authoring_pose(transform, shape, position, rotation)
+
+        cmds.setAttr(f"{bone}.translate", *bind_translation, type="double3")
+        cmds.setAttr(f"{bone}.rotate", 0.0, 0.0, 0.0, type="double3")
+        expected = om.MTransformationMatrix(reflected_mmd_euler_matrix(rotation))
+        expected.setTranslation(
+            om.MVector(*mmd_point_to_maya(position)), om.MSpace.kTransform
+        )
+        actual = om.MMatrix(cmds.xform(transform, query=True, worldSpace=True, matrix=True))
+        for element in range(16):
+            self.assertAlmostEqual(actual[element], expected.asMatrix()[element], places=6)
 
     def test_bound_collider_uses_bind_pose_offset_when_connected_on_animated_frame(self):
         model = cmds.createNode("transform", name="lateFollowModel")

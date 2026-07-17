@@ -16,7 +16,10 @@ from tests.common.maya_test_base import MayaTestBase
 from mmd_tools.converters.export_scene_collector import ExportSceneCollector
 from mmd_tools.core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BODIES_GROUP
 from mmd_tools.core.coordinate_transform import mmd_point_to_maya
-from tests.common.maya_coordinate_oracle import reflected_mmd_euler_matrix
+from tests.common.maya_coordinate_oracle import (
+    reflected_mmd_euler_matrix,
+    saved_bind_pose_world_matrix,
+)
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.io.mmd_importer import import_mmd_file
@@ -322,14 +325,28 @@ class TestPhysicsRoundTrip(MayaTestBase):
 
             expected = om.MTransformationMatrix(reflected_mmd_euler_matrix(source.rotation))
             expected.setTranslation(om.MVector(*mmd_point_to_maya(source.position)), om.MSpace.kTransform)
+            bones = cmds.listConnections(
+                f"{shape}.relatedBone", source=True, destination=False, type="joint"
+            ) or []
+            if bones:
+                parents = cmds.listRelatives(transform, parent=True, fullPath=True) or []
+                parent_world = (
+                    om.MMatrix(cmds.xform(parents[0], query=True, worldSpace=True, matrix=True))
+                    if parents
+                    else om.MMatrix()
+                )
+                bone_rest = saved_bind_pose_world_matrix(bones[0])
+                bone_world = om.MMatrix(
+                    cmds.xform(bones[0], query=True, worldSpace=True, matrix=True)
+                )
+                expected = om.MTransformationMatrix(
+                    expected.asMatrix() * parent_world * bone_rest.inverse() * bone_world
+                )
             actual = om.MMatrix(cmds.xform(transform, query=True, worldSpace=True, matrix=True))
             expected_matrix = expected.asMatrix()
             for matrix_index in range(16):
                 self.assertAlmostEqual(actual[matrix_index], expected_matrix[matrix_index], places=5)
 
-            bones = cmds.listConnections(
-                f"{shape}.relatedBone", source=True, destination=False, type="joint"
-            ) or []
             if bones and bound is None:
                 bound = (transform, shape, bones[0], source)
 
@@ -382,9 +399,34 @@ class TestPhysicsRoundTrip(MayaTestBase):
 
         for transform, shape in rigid_pairs:
             source = source_pmx.rigid_bodies[cmds.getAttr(f"{shape}.pmxIndex")]
+            expected_position = mmd_point_to_maya(source.position, display_scale)
+            bones = cmds.listConnections(
+                f"{shape}.relatedBone", source=True, destination=False, type="joint"
+            ) or []
+            if bones:
+                body_rest = om.MTransformationMatrix(
+                    reflected_mmd_euler_matrix(source.rotation)
+                )
+                body_rest.setTranslation(
+                    om.MVector(*expected_position), om.MSpace.kTransform
+                )
+                parents = cmds.listRelatives(transform, parent=True, fullPath=True) or []
+                parent_world = (
+                    om.MMatrix(cmds.xform(parents[0], query=True, worldSpace=True, matrix=True))
+                    if parents
+                    else om.MMatrix()
+                )
+                bone_rest = saved_bind_pose_world_matrix(bones[0])
+                bone_world = om.MMatrix(
+                    cmds.xform(bones[0], query=True, worldSpace=True, matrix=True)
+                )
+                expected_world = (
+                    body_rest.asMatrix() * parent_world * bone_rest.inverse() * bone_world
+                )
+                expected_position = tuple(expected_world[index] for index in (12, 13, 14))
             self.assertListAlmostEqual(
                 cmds.xform(transform, query=True, worldSpace=True, translation=True),
-                mmd_point_to_maya(source.position, display_scale),
+                expected_position,
                 places=4,
             )
             self.assertListAlmostEqual(
