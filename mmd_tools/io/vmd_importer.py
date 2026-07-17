@@ -190,6 +190,25 @@ def import_vmd_file(
             logger.info("VMD file import completed")
             if not scene_animation_only:
                 _try_recover_physics_drivers(target_model, logger, profile)
+                from ..core.collider_authoring import refresh_collider_authoring_pose
+
+                collider_shapes = (
+                    cmds.listRelatives(
+                        target_model,
+                        allDescendents=True,
+                        fullPath=True,
+                        type="mmdRigidBodyShape",
+                    )
+                    if cmds.objExists(target_model)
+                    else []
+                ) or []
+                for shape in collider_shapes:
+                    transforms = cmds.listRelatives(shape, parent=True, fullPath=True) or []
+                    if transforms:
+                        display_scale = float(cmds.getAttr(f"{transforms[0]}.scaleX"))
+                        refresh_collider_authoring_pose(
+                            transforms[0], shape, display_scale
+                        )
             native_physics_used = bool(
                 (profile.get("vmd_converter") or {})
                 .get("native_physics_bake", {})

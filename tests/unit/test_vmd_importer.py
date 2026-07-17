@@ -206,6 +206,28 @@ class TestVmdImporter(MayaTestBase):
         runtime_available.assert_not_called()
         ls_query.assert_not_called()
 
+    def test_model_motion_refreshes_collider_authoring_pose_after_conversion(self):
+        target_model = cmds.group(empty=True, name="mmd_model_root")
+        rigid_transform = cmds.group(empty=True, name="rigidTransform", parent=target_model)
+        temp_root = Path(tempfile.mkdtemp())
+        vmd_path = str(temp_root / "motion.vmd")
+        Path(vmd_path).write_bytes(b"Vocaloid Motion Data 0002\x00")
+        self.files_created.append(vmd_path)
+
+        with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class, patch(
+            "mmd_tools.io.vmd_importer.cmds.listRelatives",
+            side_effect=[["rigidShape"], [rigid_transform]],
+        ), patch(
+            "mmd_tools.core.collider_authoring.refresh_collider_authoring_pose"
+        ) as refresh_pose:
+            converter_class.return_value.convert.return_value = True
+            result = import_vmd_file(
+                object(), vmd_path, {"target_model": target_model}
+            )
+
+        self.assertTrue(result)
+        refresh_pose.assert_called_once_with(rigid_transform, "rigidShape", 1.0)
+
     def test_model_motion_without_explicit_target_is_rejected_before_conversion(self):
         temp_root = Path(tempfile.mkdtemp())
         vmd_path = str(temp_root / "motion.vmd")
