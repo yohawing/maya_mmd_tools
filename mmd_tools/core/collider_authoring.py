@@ -18,6 +18,14 @@ _POSE_VERSION_ATTR = "mmdColliderAuthoringPoseVersion"
 _CURRENT_POSE_VERSION = 3
 
 
+def _is_referenced(node: str) -> bool:
+    """Return whether *node* belongs to a read-only referenced scene."""
+    try:
+        return bool(cmds.referenceQuery(node, isNodeReferenced=True))
+    except (RuntimeError, ValueError):
+        return False
+
+
 def _mark_pose_version(shape: str) -> None:
     if not cmds.attributeQuery(_POSE_VERSION_ATTR, node=shape, exists=True):
         cmds.addAttr(
@@ -218,6 +226,8 @@ def migrate_legacy_collider_authoring_pose(
     display_scale: float = 1.0,
 ) -> bool:
     """Upgrade a stored legacy display pose while preserving its live bone offset."""
+    if _is_referenced(transform) or _is_referenced(shape):
+        return False
     if (
         cmds.attributeQuery(_POSE_VERSION_ATTR, node=shape, exists=True)
         and cmds.getAttr(f"{shape}.{_POSE_VERSION_ATTR}") >= _CURRENT_POSE_VERSION
@@ -263,6 +273,8 @@ def refresh_collider_authoring_pose(
     display_scale: float = 1.0,
 ) -> None:
     """Reapply a stored PMX pose after import-time graph connections settle."""
+    if _is_referenced(transform) or _is_referenced(shape):
+        return
     position = cmds.getAttr(f"{shape}.position")[0]
     rotation_degrees = cmds.getAttr(f"{shape}.rotation")[0]
     set_collider_authoring_pose(
