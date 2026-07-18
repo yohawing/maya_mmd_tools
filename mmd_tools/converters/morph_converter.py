@@ -15,6 +15,7 @@ from maya.api import OpenMaya as om
 from mmd_tools.core import maya_attribute_utils, maya_mesh_utils, maya_name_utils, settings_keys as setting_keys
 from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
+    ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON,
     ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
 )
@@ -437,17 +438,20 @@ class MorphConverter:
         morph_node = self._create_or_get_morph_network_node(morph_name, "bone")
 
         offsets = []
+        raw_offsets = []
         for offset in getattr(morph, "offsets", []):
             if "bone_index" not in offset:
                 continue
+            raw_offset = {
+                "bone_index": int(offset["bone_index"]),
+                "translation": [float(v) for v in offset.get("translation", (0.0, 0.0, 0.0))],
+                "rotation": [float(v) for v in offset.get("rotation", (0.0, 0.0, 0.0, 1.0))],
+            }
+            raw_offsets.append(raw_offset)
             offsets.append(
                 {
-                    "bone_index": int(offset["bone_index"]),
-                    "translation": [
-                        float(v) * self.scale
-                        for v in offset.get("translation", (0.0, 0.0, 0.0))
-                    ],
-                    "rotation": [float(v) for v in offset.get("rotation", (0.0, 0.0, 0.0, 1.0))],
+                    **raw_offset,
+                    "translation": [value * self.scale for value in raw_offset["translation"]],
                 }
             )
 
@@ -461,6 +465,9 @@ class MorphConverter:
                 "mmd_morph_panel": int(getattr(morph, "panel", 0)),
                 "mmd_bone_morph_offset_count": len(offsets),
                 "mmd_bone_morph_offsets_json": json.dumps(offsets, ensure_ascii=False, separators=(",", ":")),
+                ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON: json.dumps(
+                    raw_offsets, ensure_ascii=False, separators=(",", ":")
+                ),
             },
         )
 

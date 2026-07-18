@@ -11,6 +11,7 @@ from mmd_tools.converters import MorphConverter, MeshConverter
 from mmd_tools.core import maya_attribute_utils, maya_mesh_utils
 from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
+    ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
 )
 from mmd_tools.core.settings import settings
@@ -119,7 +120,7 @@ class TestMorphConverter(MayaTestBase):
 
         fake_data = type("FakePmxData", (), {"morphs": [FakeBoneMorph()]})()
 
-        morph_converter = MorphConverter()
+        morph_converter = MorphConverter(scale=2.0)
         result = morph_converter.convert_pmx_morphs(fake_data, mesh_name)
 
         self.assertTrue(result.get("success", False))
@@ -138,7 +139,9 @@ class TestMorphConverter(MayaTestBase):
 
         offsets = json.loads(cmds.getAttr(f"{morph_node}.mmd_bone_morph_offsets_json"))
         self.assertEqual(offsets[0]["bone_index"], 3)
-        self.assertEqual(offsets[0]["translation"], [1.0, 2.0, 3.0])
+        self.assertEqual(offsets[0]["translation"], [2.0, 4.0, 6.0])
+        raw_offsets = json.loads(cmds.getAttr(f"{morph_node}.{ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON}"))
+        self.assertEqual(raw_offsets[0]["translation"], [1.0, 2.0, 3.0])
 
         cmds.delete(mesh_name, morph_node)
 

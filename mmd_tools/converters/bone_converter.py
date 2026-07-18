@@ -389,8 +389,8 @@ class BoneConverter:
             attrs = {
                 ATTR_MMD_BONE_NAME: bone.name,
                 ATTR_MMD_BONE_NAME_EN: bone.name_english,
-                ATTR_MMD_BONE_FLAGS: bone.bone_flag,
-                ATTR_MMD_DEFORM_LAYER: bone.deform_layer if hasattr(bone, "deform_layer") else 0,
+                ATTR_MMD_BONE_FLAGS: int(bone.bone_flag),
+                ATTR_MMD_DEFORM_LAYER: getattr(bone, "deform_layer", getattr(bone, "transform_layer", 0)),
                 ATTR_MMD_PMX_REST_POSITION: bone.position,
                 ATTR_MMD_BONE_INDEX: i,
                 ATTR_MMD_BONE_PARENT_INDEX: bone.parent_bone_index,
