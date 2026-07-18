@@ -17,6 +17,7 @@ from maya import cmds
 from tests.common.maya_test_base import MayaTestBase
 
 from mmd_tools.core.mmd_parser import parse_pmx_file
+from mmd_tools.core.constants import ATTR_MMD_PMX_REST_POSITION
 from mmd_tools.core.native.mmd_anim_runtime import is_native_physics_available
 from mmd_tools.core.native.mmd_anim_runtime_handles import (
     MmdRuntimeInstance,
@@ -125,6 +126,38 @@ class TestPhysicsDagParity(MayaTestBase):
             root, bone_joints=maya_joints, bone_count=len(self.pmx.bones),
         )
         self.assertEqual(dag_desc_set.identity_hash, self.pmx_desc_set.identity_hash)
+
+    def test_dag_descriptor_uses_persisted_rest_position_not_current_pose(self):
+        root, maya_joints, _, _ = self._build_dag_scene()
+        for joint, bone in zip(maya_joints, self.pmx.bones):
+            cmds.addAttr(joint, longName=ATTR_MMD_PMX_REST_POSITION, attributeType="double3")
+            for axis in "XYZ":
+                cmds.addAttr(
+                    joint,
+                    longName=f"{ATTR_MMD_PMX_REST_POSITION}{axis}",
+                    attributeType="double",
+                    parent=ATTR_MMD_PMX_REST_POSITION,
+                )
+            cmds.setAttr(
+                f"{joint}.{ATTR_MMD_PMX_REST_POSITION}",
+                *bone.position,
+                type="double3",
+            )
+            cmds.xform(joint, worldSpace=True, translation=[p + 10.0 for p in bone.position])
+
+        dag_desc_set = build_descriptors_from_dag(
+            root, bone_joints=maya_joints, bone_count=len(self.pmx.bones),
+        )
+        for index, (dag_rb, pmx_rb) in enumerate(
+            zip(dag_desc_set.rigid_bodies, self.pmx_desc_set.rigid_bodies)
+        ):
+            for component in range(3):
+                self.assertAlmostEqual(
+                    dag_rb.body_from_bone_position_xyz[component],
+                    pmx_rb.body_from_bone_position_xyz[component],
+                    places=4,
+                    msg=f"rb[{index}].body_from_bone_position[{component}]",
+                )
 
     def test_dag_rigid_body_fields_match_pmx(self):
         root, maya_joints, _, _ = self._build_dag_scene()

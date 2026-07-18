@@ -13,7 +13,12 @@ from typing import List, Optional, Sequence
 
 from maya import cmds
 
-from mmd_tools.core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BODIES_GROUP
+from mmd_tools.core.constants import (
+    ATTR_MMD_PMX_REST_POSITION,
+    CONSTRAINTS_GROUP,
+    PHYSICS_GROUP,
+    RIGID_BODIES_GROUP,
+)
 from mmd_tools.core.native.mmd_anim_runtime_types import (
     MMD_RUNTIME_PHYSICS_JOINT_KIND_GENERIC_6DOF_SPRING,
     MMD_RUNTIME_PHYSICS_JOINT_KIND_UNSUPPORTED,
@@ -81,19 +86,23 @@ def _resolve_bone_world_position(
     bone_joints: Optional[Sequence[Optional[str]]] = None,
 ) -> tuple[float, float, float]:
     """Get rest-pose world position of the bone linked to this rigid body."""
+    joint = None
     connections = cmds.listConnections(f"{shape}.relatedBone", source=True, destination=False) or []
     if connections:
         joint = connections[0]
-        if cmds.objExists(joint):
-            pos = cmds.xform(joint, query=True, worldSpace=True, translation=True)
-            return (pos[0], pos[1], pos[2])
 
-    bone_idx = int(_get_attr(shape, "relatedBoneIndex", -1))
-    if bone_joints and 0 <= bone_idx < len(bone_joints):
-        joint = bone_joints[bone_idx]
-        if joint and cmds.objExists(joint):
-            pos = cmds.xform(joint, query=True, worldSpace=True, translation=True)
-            return (pos[0], pos[1], pos[2])
+    if not joint:
+        bone_idx = int(_get_attr(shape, "relatedBoneIndex", -1))
+        if bone_joints and 0 <= bone_idx < len(bone_joints):
+            joint = bone_joints[bone_idx]
+
+    if joint and cmds.objExists(joint):
+        if cmds.attributeQuery(ATTR_MMD_PMX_REST_POSITION, node=joint, exists=True):
+            value = cmds.getAttr(f"{joint}.{ATTR_MMD_PMX_REST_POSITION}")
+            if value:
+                return tuple(float(component) for component in value[0])
+        pos = cmds.xform(joint, query=True, worldSpace=True, translation=True)
+        return (pos[0], pos[1], pos[2])
 
     return (0.0, 0.0, 0.0)
 
