@@ -183,28 +183,37 @@ class MmdPhysicsSolverNode(om.MPxNode):
             self._initialized = True
             return
 
-        from mmd_tools.core.physics_solver import _collect_bone_joints, read_source_pmx_payload
+        from mmd_tools.core.physics_solver import _collect_bone_joints
+        from mmd_tools.core.model_dag_descriptor import build_model_descriptors_from_dag
+        from mmd_tools.core.physics_dag_descriptor import build_descriptors_from_dag
         from mmd_tools.core.native.mmd_anim_runtime_handles import (
             MmdRuntimeInstance,
             MmdRuntimeModel,
             MmdRuntimePhysicsWorld,
         )
 
-        pmx_bytes = read_source_pmx_payload(model_root)
-        if not pmx_bytes:
-            self._initialized = True
-            return
-
         bone_joints = _collect_bone_joints(model_root)
         self._bone_count = len(bone_joints)
         self._bone_joints = bone_joints
+        try:
+            world_descriptors = build_descriptors_from_dag(
+                model_root,
+                bone_joints=bone_joints,
+                bone_count=len(bone_joints),
+            )
+            model_descriptors = build_model_descriptors_from_dag(model_root)
+        except Exception:
+            self._initialized = True
+            return
 
-        world = MmdRuntimePhysicsWorld.from_pmx_bytes(pmx_bytes)
+        world = MmdRuntimePhysicsWorld.from_descriptors(
+            world_descriptors.rigid_bodies, world_descriptors.joints
+        )
         if world is None:
             self._initialized = True
             return
 
-        model = MmdRuntimeModel.from_pmx_bytes(pmx_bytes)
+        model = MmdRuntimeModel.from_descriptors(model_descriptors)
         if model is None:
             world.free()
             self._initialized = True

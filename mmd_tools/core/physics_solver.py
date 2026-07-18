@@ -27,6 +27,7 @@ from mmd_tools.core.native.mmd_anim_runtime_types import (
     MMD_RUNTIME_PHYSICS_MODE_LIVE,
 )
 from mmd_tools.core.physics_dag_descriptor import build_descriptors_from_dag
+from mmd_tools.core.model_dag_descriptor import build_model_descriptors_from_dag
 
 logger = get_logger(__name__)
 
@@ -155,22 +156,47 @@ class PhysicsSolverSession:
 
     @classmethod
     def from_scene(cls, root_group: str) -> Optional["PhysicsSolverSession"]:
-        """Create a solver session from the scene, reading PMX payload from the model root.
-
-        Requires that the model root has the ``mmd_source_pmx_payload`` attribute
-        (written by the import pipeline when physics nodes are enabled).
-        """
-        pmx_bytes = read_source_pmx_payload(root_group)
-        if pmx_bytes is None:
-            logger.error("No PMX payload found on '%s'", root_group)
-            return None
-
+        """Create a solver session from one deterministic scene descriptor snapshot."""
         bone_joints = _collect_bone_joints(root_group)
         if not bone_joints:
             logger.error("No bone joints found under '%s'", root_group)
             return None
-
-        return cls.create(root_group, pmx_bytes, bone_joints)
+        if not is_native_physics_available():
+            logger.warning("Native physics not available")
+            return None
+        try:
+            world_descriptors = build_descriptors_from_dag(
+                root_group,
+                bone_joints=bone_joints,
+                bone_count=len(bone_joints),
+            )
+            model_descriptors = build_model_descriptors_from_dag(root_group)
+        except Exception as exc:
+            logger.error("Failed to compile model DAG descriptors: %s", exc)
+            return None
+        if not world_descriptors.rigid_bodies:
+            logger.warning("No rigid bodies found in DAG")
+            return None
+        world = MmdRuntimePhysicsWorld.from_descriptors(
+            world_descriptors.rigid_bodies, world_descriptors.joints
+        )
+        if world is None:
+            return None
+        model = MmdRuntimeModel.from_descriptors(model_descriptors)
+        if model is None:
+            world.free()
+            return None
+        instance = MmdRuntimeInstance.for_model(model)
+        if instance is None:
+            world.free()
+            model.free()
+            return None
+        bone_index_to_joint = {
+            index: joint
+            for index, joint in enumerate(bone_joints)
+            if joint and cmds.objExists(joint)
+        }
+        return cls(world, model, instance, bone_index_to_joint, len(bone_joints))
 
     def reset(self) -> bool:
         """Prepare the physics world for simulation from rest pose."""
