@@ -134,6 +134,7 @@
     "physics_validation_vector_length": "请输入恰好 {count} 个逗号分隔的值",
     "physics_validation_bool": "每个值必须为 0 或 1",
     "physics_validation_binding": "请选择当前模型中的项目",
+    "physics_validation_joint_type_live_unsupported": "实时物理仅支持Spring 6DOF",
     "physics_write_node_missing": "未找到场景节点: {node}",
     "physics_write_attribute_missing": "未找到场景属性: {plug}",
     "physics_write_failed": "应用失败，已回滚更改: {error}",

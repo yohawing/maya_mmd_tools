@@ -194,6 +194,40 @@ class TestPhysicsUIFields(MayaTestBase):
         )
 
     @unittest.skipUnless(FIXTURE.exists(), "hair physics fixture not found")
+    def test_unsupported_joint_type_apply_keeps_live_world(self):
+        root = _import_fixture(FIXTURE, "UnsupportedJoint")
+        solver = (cmds.listConnections(
+            f"{root}.message", source=False, destination=True, type="mmdPhysicsSolver"
+        ) or [None])[0]
+        world = (cmds.listConnections(
+            f"{solver}.inWorldSettings", source=True, destination=False,
+            type="mmdPhysicsWorldShape",
+        ) or [None])[0]
+        cmds.setAttr(f"{world}.enable", True)
+        cmds.currentTime(0)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+
+        selection = om.MSelectionList()
+        selection.add(solver)
+        solver_node = om.MFnDependencyNode(selection.getDependNode(0)).userNode()
+        original_world = solver_node._world
+        joint_shape = (cmds.listRelatives(
+            root, allDescendents=True, type="mmdPhysicsJointShape", fullPath=True,
+        ) or [None])[0]
+        original_type = cmds.getAttr(f"{joint_shape}.jointType")
+        view = _joint_view(
+            _vector(joint_shape, "position"),
+            _vector(joint_shape, "rotation"),
+        )
+        view.joint_type_combo = _Combo(2)
+        presenter = _presenter(view, "joint", joint_shape)
+        presenter.apply_changes()
+
+        self.assertEqual(cmds.getAttr(f"{joint_shape}.jointType"), original_type)
+        self.assertIs(solver_node._world, original_world)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+
+    @unittest.skipUnless(FIXTURE.exists(), "hair physics fixture not found")
     def test_apply_undo_follow_collector_export_and_fresh_reimport(self):
         root = _import_fixture(FIXTURE, "Nested:UIFields")
         rigid_shape = (cmds.listRelatives(root, allDescendents=True, type="mmdRigidBodyShape") or [None])[0]

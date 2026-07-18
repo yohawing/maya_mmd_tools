@@ -136,6 +136,7 @@
     "physics_validation_vector_length": "カンマ区切りで {count} 個の値を入力してください",
     "physics_validation_bool": "各値を 0 または 1 にしてください",
     "physics_validation_binding": "現在のモデル内の項目を選択してください",
+    "physics_validation_joint_type_live_unsupported": "live物理で対応しているのはSpring 6DOFのみです",
     "physics_write_node_missing": "シーンノードが見つかりません: {node}",
     "physics_write_attribute_missing": "シーン属性が見つかりません: {plug}",
     "physics_write_failed": "適用に失敗したため変更を元に戻しました: {error}",

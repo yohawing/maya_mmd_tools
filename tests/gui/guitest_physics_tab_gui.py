@@ -444,9 +444,22 @@ class TestPhysicsTabGUI(GuiTestBase):
             tab.joint_spring_rotation_edit.setText("3.1, 3.2, 3.3")
             tab.apply_btn.click()
             QApplication.processEvents()
+            for attr, expected in joint_original.items():
+                actual = cmds.getAttr(f"{joint_shape}.{attr}")
+                if isinstance(expected, float):
+                    self.assertAlmostEqual(actual, expected, places=5, msg=f"unsupported.{attr}")
+                else:
+                    self.assertEqual(actual, expected, f"unsupported.{attr}")
+            self.assertEqual(
+                cmds.getAttr(f"{joint_shape}.outDescriptorVersion"), joint_version_before
+            )
+
+            tab.joint_type_combo.setCurrentIndex(0)
+            tab.apply_btn.click()
+            QApplication.processEvents()
             self.assertEqual(cmds.getAttr(f"{joint_shape}.nameJp"), "UI編集ジョイント")
             self.assertEqual(cmds.getAttr(f"{joint_shape}.nameEn"), "UIEditedJoint")
-            self.assertEqual(cmds.getAttr(f"{joint_shape}.jointType"), 2)
+            self.assertEqual(cmds.getAttr(f"{joint_shape}.jointType"), 0)
             self.assertGreater(
                 cmds.getAttr(f"{joint_shape}.outDescriptorVersion"), joint_version_before
             )

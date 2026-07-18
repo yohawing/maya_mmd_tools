@@ -191,6 +191,7 @@ class TestPhysicsValidationTranslations(unittest.TestCase):
             "physics_validation_range",
             "physics_validation_vector_length",
             "physics_validation_bool",
+            "physics_validation_joint_type_live_unsupported",
             "physics_write_node_missing",
             "physics_write_attribute_missing",
             "physics_write_failed",

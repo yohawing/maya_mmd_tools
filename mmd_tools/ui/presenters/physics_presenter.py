@@ -610,6 +610,10 @@ class PhysicsPresenter:
             elif self._current_kind == "joint":
                 values = self._collect_joint_form_values(shape)
                 parsed = parse_joint_form(values)
+                if parsed.joint_type != 0:
+                    raise PhysicsFormValidationError(
+                        "joint_type", "physics_validation_joint_type_live_unsupported"
+                    )
             else:
                 return
         except PhysicsFormValidationError as e:
