@@ -399,7 +399,7 @@
     "bodies": "ボディ:",
     "physics_mode": "物理モード:",
     "related_bone": "関連ボーン:",
-    "collision_group": "グループ:",
+    "collision_group": "衝突グループ:",
     "radius": "半径:",
     "radius_height": "半径 / 高さ:",
     "non_collision_groups": "非衝突グループ:",

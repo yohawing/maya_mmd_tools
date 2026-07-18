@@ -364,8 +364,8 @@ class PhysicsTab(BaseTab):
         self.rigid_shape_combo.currentIndexChanged.connect(self._update_rigid_shape_size_editor)
         self.rigid_position_edit = self._vec3_editor("rigid_position", "pmx_position")
         self.rigid_rotation_edit = self._vec3_editor("rigid_rotation", "pmx_rotation_degrees", decimals=2)
-        self.rigid_collision_group_spin = self._collision_groups_editor(
-            "rigid_collision_group", "collision_group"
+        self.rigid_collision_group_spin = self._int_editor(
+            "rigid_collision_group", "collision_group", 0, 15
         )
         self.rigid_collision_mask_spin = self._collision_groups_editor(
             "rigid_collision_mask", "collision_mask", multiple=True

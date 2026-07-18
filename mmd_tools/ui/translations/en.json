@@ -399,7 +399,7 @@
     "bodies": "Bodies:",
     "physics_mode": "Physics Mode:",
     "related_bone": "Related Bone:",
-    "collision_group": "Group:",
+    "collision_group": "Collision Group:",
     "radius": "Radius:",
     "radius_height": "Radius / Height:",
     "non_collision_groups": "Non-collision Groups:",

@@ -337,7 +337,7 @@
     "bodies": "刚体:",
     "physics_mode": "物理模式:",
     "related_bone": "关联骨骼:",
-    "collision_group": "分组:",
+    "collision_group": "碰撞组:",
     "radius": "半径:",
     "radius_height": "半径 / 高度:",
     "non_collision_groups": "非碰撞组:",
