@@ -12,7 +12,11 @@ from maya import cmds
 
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
-from mmd_tools.core.constants import ATTR_MMD_DISPLAY_FRAMES_JSON
+from mmd_tools.core.constants import (
+    ATTR_MMD_DISPLAY_FRAMES_JSON,
+    ATTR_MMD_PMX_REST_POSITION,
+    ATTR_MMD_SOURCE_PMX_PAYLOAD,
+)
 from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.native.mmd_anim_runtime import is_native_physics_available
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
@@ -380,6 +384,29 @@ class TestPmxImporter(MayaTestBase):
             list(cmds.getAttr(f"{target_joint}.rotate")[0]),
             list(pre_rotate),
         )
+
+        indexed_joints = [
+            joint
+            for joint in (cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or [])
+            if cmds.attributeQuery("mmd_bone_index", node=joint, exists=True)
+        ]
+        self.assertTrue(indexed_joints)
+        self.assertTrue(
+            all(cmds.attributeQuery(ATTR_MMD_PMX_REST_POSITION, node=joint, exists=True) for joint in indexed_joints)
+        )
+        self.assertTrue(cmds.attributeQuery(ATTR_MMD_SOURCE_PMX_PAYLOAD, node=root, exists=True))
+        from mmd_tools.core.model_dag_descriptor import build_model_descriptors_from_dag
+
+        descriptors = build_model_descriptors_from_dag(root)
+        self.assertEqual(len(descriptors.bones), len(parser.bones))
+        cmds.deleteAttr(root, attribute=ATTR_MMD_SOURCE_PMX_PAYLOAD)
+        cmds.setAttr(f"{world_shapes[0]}.enable", True)
+        cmds.currentTime(1)
+        self.assertTrue(
+            cmds.getAttr(f"{solvers[0]}.outSolved"),
+            cmds.getAttr(f"{solvers[0]}.outStatus"),
+        )
+        self.assertIn(cmds.getAttr(f"{solvers[0]}.outStatus"), ("reset", "stepped", "cached"))
 
     @unittest.skipUnless(is_native_physics_available(), "native physics DLL not available")
     def test_mixed_mode_bone_omits_kinematic_world_matrix_connection(self):

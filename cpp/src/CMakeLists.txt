@@ -67,7 +67,6 @@ set(SOURCES
     mmdFastLoad.cpp
     MmdAppendNode.cpp
     MmdCcdIkNode.cpp
-    MmdPhysicsSolverNode.cpp
     MmdPhysicsBoneDriverNode.cpp
 )
 
@@ -77,7 +76,6 @@ set(HEADERS
     mmdFastLoad.h
     MmdAppendNode.h
     MmdCcdIkNode.h
-    MmdPhysicsSolverNode.h
     MmdPhysicsBoneDriverNode.h
 )
 

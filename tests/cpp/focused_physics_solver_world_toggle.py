@@ -1,4 +1,4 @@
-"""Verify that world OFF/ON resets the C++ solver before its next forward step."""
+"""Verify that world OFF/ON resets the Python-owned solver after the C++ plug-in loads."""
 
 from __future__ import annotations
 
@@ -21,10 +21,7 @@ def main() -> int:
 
     from mmd_tools.core.mmd_parser import parse_pmx_file
     from tests.cpp.smoke_runtime_node import _find_plugin_path
-    from tests.integration.test_physics_solver_node import (
-        _create_joints_under_root,
-        _store_pmx_payload,
-    )
+    from mmd_tools.io.pmx_importer import import_pmx_file
 
     plugin_path = _find_plugin_path()
     os.environ["PATH"] = str(plugin_path.parent) + os.pathsep + os.environ.get("PATH", "")
@@ -37,32 +34,26 @@ def main() -> int:
         registered_nodes = cmds.pluginInfo(
             str(plugin_path), query=True, dependNode=True
         ) or []
-        if "mmdPhysicsSolver" not in registered_nodes:
+        if "mmdPhysicsSolver" in registered_nodes:
             raise RuntimeError(
-                "C++ plugin did not register mmdPhysicsSolver; another plugin owns the type"
+                "C++ plugin must not register the Python-owned mmdPhysicsSolver"
             )
         os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "1"
         cmds.loadPlugin(str(PYTHON_PLUGIN), quiet=True)
-        pmx_bytes = FIXTURE.read_bytes()
         pmx = parse_pmx_file(str(FIXTURE))
-        root = cmds.group(empty=True, name="test_root")
-        _create_joints_under_root(pmx.bones, root)
-        _store_pmx_payload(root, pmx_bytes)
-
-        solver = cmds.createNode("mmdPhysicsSolver", name="testSolver")
-        cmds.connectAttr(f"{root}.message", f"{solver}.modelRoot")
-        cmds.connectAttr("time1.outTime", f"{solver}.inTime")
-
-        world_transform = cmds.createNode("transform", name="MMD_PhysicsWorld")
-        world = cmds.createNode(
-            "mmdPhysicsWorldShape",
-            name="MMD_PhysicsWorldShape",
-            parent=world_transform,
+        root = import_pmx_file(
+            pmx,
+            str(FIXTURE),
+            options={"import_physics": True, "create_mmd_shaders": False},
         )
-        cmds.connectAttr(f"{world}.message", f"{solver}.inWorldSettings")
-        cmds.connectAttr(
-            f"{world}.outSettingsVersion", f"{solver}.inWorldSettingsVersion"
-        )
+        solver_nodes = cmds.ls(type="mmdPhysicsSolver") or []
+        world_nodes = cmds.ls(type="mmdPhysicsWorldShape") or []
+        if len(solver_nodes) != 1 or len(world_nodes) != 1:
+            raise RuntimeError(f"unexpected physics graph: solvers={solver_nodes}, worlds={world_nodes}")
+        solver = solver_nodes[0]
+        world = world_nodes[0]
+        if cmds.attributeQuery("mmd_source_pmx_payload", node=root, exists=True):
+            cmds.deleteAttr(root, attribute="mmd_source_pmx_payload")
         cmds.setAttr(f"{world}.enable", True)
 
         cmds.currentUnit(time="ntsc")
@@ -87,7 +78,7 @@ def main() -> int:
                 f"Expected stepped after the OFF/ON reset, got {next_status!r}"
             )
         print(
-            "OK: C++ solver reset before its next forward step after unevaluated "
+            "OK: Python-owned payload-free solver reset before its next forward step after unevaluated "
             f"OFF/ON ({plugin_path}; reset_status={status})"
         )
         return 0

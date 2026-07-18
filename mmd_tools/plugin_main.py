@@ -30,6 +30,7 @@ _python_rig_nodes_registered = False
 _shader_override_registered = False
 _physics_nodes_registered = False
 _python_physics_solver_registered = False
+_python_physics_driver_registered = False
 _after_open_callback_id = None
 _MAIN_WINDOW_NAME = "MMDToolsMainWindow"
 _MAIN_WINDOW_WORKSPACE_CONTROL_NAME = "MMDToolsWorkspaceControl"
@@ -385,6 +386,7 @@ def initializePlugin(mobject):
         _trace_initialize_step("rig-nodes:done")
         global _physics_nodes_registered
         global _python_physics_solver_registered
+        global _python_physics_driver_registered
         mmd_physics_world_shape.register(plugin_fn)
         _trace_initialize_step("physics-world:done")
         mmd_rigid_body_shape.register(plugin_fn)
@@ -393,10 +395,12 @@ def initializePlugin(mobject):
         _trace_initialize_step("rigid-body-draw:done")
         mmd_physics_joint_shape.register(plugin_fn)
         _trace_initialize_step("physics-joint:done")
-        if not _cpp_plugin_loaded():
+        if not _node_type_registered("mmdPhysicsSolver"):
             mmd_physics_solver_node.register(plugin_fn)
-            mmd_physics_bone_driver_node.register(plugin_fn)
             _python_physics_solver_registered = True
+        if not _node_type_registered("mmdPhysicsBoneDriver"):
+            mmd_physics_bone_driver_node.register(plugin_fn)
+            _python_physics_driver_registered = True
         _trace_initialize_step("physics-solver:done")
         _physics_nodes_registered = True
         _register_after_open_callback()
@@ -427,9 +431,12 @@ def uninitializePlugin(mobject):
                 _shader_override_registered = False
         global _physics_nodes_registered
         global _python_physics_solver_registered
+        global _python_physics_driver_registered
         if _physics_nodes_registered:
-            if _python_physics_solver_registered:
+            if _python_physics_driver_registered:
                 mmd_physics_bone_driver_node.deregister(plugin_fn)
+                _python_physics_driver_registered = False
+            if _python_physics_solver_registered:
                 mmd_physics_solver_node.deregister(plugin_fn)
                 _python_physics_solver_registered = False
             mmd_physics_joint_shape.deregister(plugin_fn)
