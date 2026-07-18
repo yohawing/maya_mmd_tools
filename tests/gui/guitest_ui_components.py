@@ -93,14 +93,16 @@ class TestMainWindow(GuiTestBase):
         # タブウィジェットが存在する
         self.assertIsNotNone(self.window.tab_widget)
 
-        # Physics を含む全タブは通常モードでも作成される
-        self.assertEqual(self.window.tab_widget.count(), 7)
+        # Physics is constructed for the presenter lifecycle but is not exposed
+        # outside Development Mode.
+        self.assertEqual(self.window.tab_widget.count(), 6)
+        self.assertEqual(self.window.tab_widget.indexOf(self.window.physics_tab), -1)
 
         # 各タブのタイトルを確認（翻訳辞書から期待値を導出し、UI 言語に依存しない）
         from mmd_tools.ui.translations import UITranslator
 
         translator = UITranslator.instance()
-        tab_keys = ["file_io", "info", "material", "bone", "morph", "physics", "settings"]
+        tab_keys = ["file_io", "info", "material", "bone", "morph", "settings"]
         expected_titles = [translator.translate(key, "tabs") for key in tab_keys]
 
         for i, title in enumerate(expected_titles):
@@ -122,9 +124,9 @@ class TestMainWindow(GuiTestBase):
         self.assertIsNotNone(self.window.physics_presenter)
         self.assertIsNotNone(self.window.settings_presenter)
 
-    def test_physics_tab_is_independent_of_development_mode(self):
+    def test_physics_tab_is_exposed_only_in_development_mode(self):
         """
-        Development Mode にかかわらず Physics タブとプレゼンターが作成される
+        Physics tab is exposed only in Development Mode.
         """
         from mmd_tools import settings as _s
 
@@ -137,7 +139,7 @@ class TestMainWindow(GuiTestBase):
             self.assertIsNotNone(dev_window.physics_presenter)
 
             tab = dev_window.physics_tab
-            # Inspection shell: splitter / list tabs / search / scroll
+            # Development-mode editor shell: splitter / list tabs / search / scroll
             self.assertIsNotNone(tab.splitter)
             self.assertIsNotNone(tab.list_tabs)
             self.assertEqual(tab.list_tabs.count(), 2)
@@ -145,20 +147,17 @@ class TestMainWindow(GuiTestBase):
             self.assertIsNotNone(tab.joint_search_edit)
             self.assertIsNotNone(tab.details_scroll_area)
             self.assertTrue(tab.details_scroll_area.widgetResizable())
-            self.assertFalse(hasattr(tab, "apply_btn"))
-            self.assertFalse(hasattr(tab, "reset_btn"))
+            self.assertTrue(hasattr(tab, "apply_btn"))
+            self.assertTrue(hasattr(tab, "reset_btn"))
+            self.assertFalse(tab.apply_btn.isEnabled())
+            self.assertFalse(tab.reset_btn.isEnabled())
 
-            # Legacy presenter-facing attributes
+            # Current presenter-facing controls
             for attr in (
                 "refresh_btn",
                 "collider_visible_check",
                 "rigid_body_list",
                 "joint_list",
-                "detail_name_value",
-                "detail_type_value",
-                "detail_shape_value",
-                "detail_bodies_value",
-                "detail_node_value",
             ):
                 self.assertTrue(hasattr(tab, attr), f"missing attribute: {attr}")
 

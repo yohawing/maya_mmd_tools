@@ -9,6 +9,7 @@ import sys
 import time
 import argparse
 import logging
+import re
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -24,10 +25,23 @@ LOG_FILE_NAME = "ui_test_results.log"
 MAYA_START_TIMEOUT = 120  # seconds
 TEST_EXECUTION_TIMEOUT = 600  # seconds
 LOG_POLL_INTERVAL = 1  # second
+GUI_TEST_FINISHED_MARKER = "//-- GUI TEST FINISHED --//"
+GUI_TEST_STATUSES = frozenset(("PASS", "FAIL", "NO_TESTS", "ERROR"))
+_COMPLETION_RE = re.compile(
+    rf"^{re.escape(GUI_TEST_FINISHED_MARKER)}\s+status=(?P<status>[A-Z_]+)\s*$"
+)
 
 # --- Logger Setup ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+
+def parse_completion_status(line):
+    """Return the explicit GUI-test status encoded in *line*, if present."""
+    match = _COMPLETION_RE.match(line.strip())
+    if match and match.group("status") in GUI_TEST_STATUSES:
+        return match.group("status")
+    return None
 
 
 def monitor_log_file(log_path, timeout):
@@ -40,15 +54,16 @@ def monitor_log_file(log_path, timeout):
 
     start_time = time.time()
     with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-        # Move to the end of the file
-        f.seek(0, 2)
+        # The stale log is removed before dispatch. Read from the beginning so
+        # a fast NO_TESTS/ERROR completion written before this open is not lost.
         while time.time() - start_time < timeout:
             line = f.readline()
             if line:
                 print(line, end="")
-                if "//-- GUI TEST FINISHED --//" in line:
-                    logger.info("Test completion marker found in log.")
-                    return True
+                status = parse_completion_status(line)
+                if status is not None:
+                    logger.info("GUI test completion marker found: %s", status)
+                    return status
             else:
                 time.sleep(LOG_POLL_INTERVAL)
 
@@ -59,10 +74,11 @@ def main():
     """
     Main function to orchestrate the test run.
     """
-    # Reconfigure stdout to handle UTF-8 for printing log content
-    import io
-
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    # Do not replace stdout: test runners and IDEs can provide streams without
+    # ``buffer``.  ``reconfigure`` is both safer and sufficient for UTF-8 logs.
+    stdout_reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(stdout_reconfigure):
+        stdout_reconfigure(encoding="utf-8", errors="replace")
 
     parser = argparse.ArgumentParser(description="Maya GUI Test Runner")
     parser.add_argument(
@@ -81,6 +97,7 @@ def main():
         log_file_path.unlink()
 
     maya_process = None
+    command_port_ready = False
     try:
         # 1. Find and launch Maya
         maya_exe = maya_commandport.maya_exe(args.maya_version)
@@ -90,43 +107,55 @@ def main():
             project_root=project_root,
             output_dir=log_dir,
             port=COMMAND_PORT,
-            launch_mode="direct",
+            # On Windows this deliberately uses launch_maya's Explorer route:
+            # direct child startup is unreliable for Autodesk license checkout.
+            launch_mode="explorer" if sys.platform == "win32" else "direct",
         )
         maya_commandport.wait_for_port(COMMAND_PORT, MAYA_START_TIMEOUT, maya_process)
+        command_port_ready = True
 
         # 2. Prepare and send the test execution command
         test_command = f"""
 import sys
 from pathlib import Path
-project_root = Path(r'{project_root}')
+project_root = Path({str(project_root)!r})
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from tests.common.gui_test_base import GuiTestRunner
-log_path = r'{log_file_path.as_posix()}'
-test_dir = r'{args.test_path}'
+log_path = {str(log_file_path)!r}
+test_dir = {args.test_path!r}
 GuiTestRunner.run_tests_from_command(log_path, test_dir)
 """
         maya_commandport.send_python(COMMAND_PORT, test_command, label="<gui-test-runner-command>")
 
         # 3. Monitor the log file for results
-        monitor_log_file(log_file_path, TEST_EXECUTION_TIMEOUT)
+        status = monitor_log_file(log_file_path, TEST_EXECUTION_TIMEOUT)
+        if status != "PASS":
+            logger.error("GUI tests completed with status %s", status)
+            return 1
 
-    except (FileNotFoundError, TimeoutError, Exception) as e:
+    except Exception as e:
         logger.error(f"An error occurred: {e}", exc_info=True)
         return 1
     finally:
         # 4. Clean up
-        if maya_process:
-            logger.info("Terminating Maya process...")
+        if command_port_ready:
+            # Explorer launches are intentionally detached and have no process
+            # handle.  Quit only the Maya instance on this runner's commandPort;
+            # never enumerate or kill unrelated Maya processes.
+            logger.info("Requesting Maya quit through commandPort...")
             try:
                 maya_commandport.quit_maya(COMMAND_PORT)
-                maya_process.wait(timeout=30)
+                if maya_process:
+                    maya_process.wait(timeout=30)
             except Exception as e:
-                logger.warning(f"Failed to quit Maya gracefully, killing process: {e}")
-                maya_process.kill()
-            maya_commandport.close_process_logs(maya_process)
-            logger.info("Maya process terminated.")
+                if maya_process:
+                    logger.warning("Failed to quit owned Maya process gracefully, killing it: %s", e)
+                    maya_process.kill()
+                else:
+                    logger.warning("Failed to request Explorer-launched Maya quit: %s", e)
+        maya_commandport.close_process_logs(maya_process)
 
     logger.info("GUI test run finished successfully.")
     return 0

@@ -6,17 +6,39 @@ Maya GUI 環境でのみ実行する。
 
 import os
 import unittest
+from pathlib import Path
 
+from maya import cmds
+import maya.api.OpenMaya as om
 from mmd_tools.view import shader_override
 from tests.common.gui_test_base import GuiTestBase, requires_gui
 
 
+class _ShaderOverrideTestBase(GuiTestBase):
+    """Create the registered MMD shader node used by MPxShaderOverride."""
+
+    def setUp(self):
+        super().setUp()
+        plugin = Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py"
+        if not cmds.pluginInfo(str(plugin), query=True, loaded=True):
+            cmds.loadPlugin(str(plugin))
+        self.shader_node = cmds.createNode(shader_override.MMDShaderNode.kNodeName)
+        selection = om.MSelectionList()
+        selection.add(self.shader_node)
+        self.shader_object = selection.getDependNode(0)
+
+    def tearDown(self):
+        if cmds.objExists(self.shader_node):
+            cmds.delete(self.shader_node)
+        super().tearDown()
+
+
 @requires_gui
-class TestShaderOverrideFxPath(GuiTestBase):
+class TestShaderOverrideFxPath(_ShaderOverrideTestBase):
     """shader_path が実在する .fx ファイルへ解決されることを検証する。"""
 
     def test_override_resolves_shader_path_to_existing_fx(self):
-        override = shader_override.MMDShaderOverride(object())
+        override = shader_override.MMDShaderOverride(self.shader_object)
         self.assertTrue(
             os.path.isfile(override.shader_path),
             f"MMDShaderOverride.shader_path does not exist: {override.shader_path}",
@@ -24,12 +46,12 @@ class TestShaderOverrideFxPath(GuiTestBase):
 
 
 @requires_gui
-class TestShaderOverrideInit(GuiTestBase):
+class TestShaderOverrideInit(_ShaderOverrideTestBase):
     """MMDShaderOverride.__init__ の既定値設定を検証する。"""
 
     def setUp(self):
         super().setUp()
-        self.override = shader_override.MMDShaderOverride(object())
+        self.override = shader_override.MMDShaderOverride(self.shader_object)
 
     def test_initial_shader_is_none(self):
         self.assertIsNone(self.override.shader)
@@ -41,7 +63,8 @@ class TestShaderOverrideInit(GuiTestBase):
 
     def test_default_diffuse_color(self):
         c = self.override.diffuse_color
-        self.assertEqual((c.r, c.g, c.b), (0.8, 0.8, 0.8))
+        for actual in (c.r, c.g, c.b):
+            self.assertAlmostEqual(actual, 0.8, places=6)
 
     def test_default_edge_color_is_black(self):
         c = self.override.edge_color
@@ -49,11 +72,11 @@ class TestShaderOverrideInit(GuiTestBase):
 
 
 @requires_gui
-class TestShaderOverridePureMethods(GuiTestBase):
+class TestShaderOverridePureMethods(_ShaderOverrideTestBase):
 
     def setUp(self):
         super().setUp()
-        self.override = shader_override.MMDShaderOverride(object())
+        self.override = shader_override.MMDShaderOverride(self.shader_object)
 
     def test_supported_draw_apis_ors_all_three(self):
         result = self.override.supportedDrawAPIs()
@@ -66,7 +89,7 @@ class TestShaderOverridePureMethods(GuiTestBase):
         self.assertTrue(self.override.activateKey(object(), object()))
 
     def test_creator_returns_instance(self):
-        inst = shader_override.MMDShaderOverride.creator(object())
+        inst = shader_override.MMDShaderOverride.creator(self.shader_object)
         self.assertIsInstance(inst, shader_override.MMDShaderOverride)
 
 
