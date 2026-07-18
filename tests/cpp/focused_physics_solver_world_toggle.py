@@ -41,7 +41,7 @@ def main() -> int:
         os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "1"
         cmds.loadPlugin(str(PYTHON_PLUGIN), quiet=True)
         pmx = parse_pmx_file(str(FIXTURE))
-        root = import_pmx_file(
+        import_pmx_file(
             pmx,
             str(FIXTURE),
             options={"import_physics": True, "create_mmd_shaders": False},
