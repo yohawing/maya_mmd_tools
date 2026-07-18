@@ -146,8 +146,8 @@ class MmdRuntimeFfiRigBoneLocalAxisV2(Structure):
     ]
 
 
-class MmdRuntimeFfiModelBoneV2(Structure):
-    """Complete bone descriptor for payload-free model construction."""
+class MmdRuntimeModelBoneDescriptor(Structure):
+    """Version 1 typed model bone descriptor."""
 
     _fields_ = [
         ("parent_index", c_int32),
@@ -165,7 +165,7 @@ MMD_RUNTIME_MODEL_BONE_FIXED_AXIS = 1 << 1
 MMD_RUNTIME_MODEL_BONE_LOCAL_AXIS = 1 << 2
 
 
-class MmdRuntimeFfiModelIkSolver(Structure):
+class MmdRuntimeModelIkSolverDescriptor(Structure):
     _fields_ = [
         ("ik_bone_index", c_uint32),
         ("target_bone_index", c_uint32),
@@ -176,7 +176,7 @@ class MmdRuntimeFfiModelIkSolver(Structure):
     ]
 
 
-class MmdRuntimeFfiModelIkLink(Structure):
+class MmdRuntimeModelIkLinkDescriptor(Structure):
     _fields_ = [
         ("bone_index", c_uint32),
         ("flags", c_uint32),
@@ -188,7 +188,7 @@ class MmdRuntimeFfiModelIkLink(Structure):
 MMD_RUNTIME_MODEL_IK_LINK_ANGLE_LIMIT = 1
 
 
-class MmdRuntimeFfiModelAppendTransform(Structure):
+class MmdRuntimeModelAppendDescriptor(Structure):
     _fields_ = [
         ("target_bone_index", c_uint32),
         ("source_bone_index", c_uint32),
@@ -202,7 +202,7 @@ MMD_RUNTIME_MODEL_APPEND_TRANSLATION = 1 << 1
 MMD_RUNTIME_MODEL_APPEND_LOCAL = 1 << 2
 
 
-class MmdRuntimeFfiModelBoneMorphOffset(Structure):
+class MmdRuntimeModelBoneMorphOffsetDescriptor(Structure):
     _fields_ = [
         ("morph_index", c_uint32),
         ("target_bone_index", c_uint32),
@@ -211,12 +211,41 @@ class MmdRuntimeFfiModelBoneMorphOffset(Structure):
     ]
 
 
-class MmdRuntimeFfiModelGroupMorphOffset(Structure):
+class MmdRuntimeModelGroupMorphOffsetDescriptor(Structure):
     _fields_ = [
         ("morph_index", c_uint32),
         ("child_morph_index", c_uint32),
         ("ratio", c_float),
     ]
+
+
+class MmdRuntimeModelDescriptor(Structure):
+    """Top-level version 1 model descriptor passed to the native FFI."""
+
+    _fields_ = [
+        ("struct_size", c_uint32),
+        ("descriptor_version", c_uint32),
+        ("flags", c_uint32),
+        ("reserved", c_uint32),
+        ("bones", POINTER(MmdRuntimeModelBoneDescriptor)),
+        ("bone_count", c_size_t),
+        ("ik_solvers", POINTER(MmdRuntimeModelIkSolverDescriptor)),
+        ("ik_solver_count", c_size_t),
+        ("ik_links", POINTER(MmdRuntimeModelIkLinkDescriptor)),
+        ("ik_link_count", c_size_t),
+        ("append_transforms", POINTER(MmdRuntimeModelAppendDescriptor)),
+        ("append_transform_count", c_size_t),
+        ("morph_count", c_uint32),
+        ("bone_morph_offsets", POINTER(MmdRuntimeModelBoneMorphOffsetDescriptor)),
+        ("bone_morph_offset_count", c_size_t),
+        ("group_morph_offsets", POINTER(MmdRuntimeModelGroupMorphOffsetDescriptor)),
+        ("group_morph_offset_count", c_size_t),
+    ]
+
+
+MMD_RUNTIME_FEATURE_MODEL_DESCRIPTOR = 1 << 2
+MMD_RUNTIME_MODEL_DESCRIPTOR_VERSION_V1 = 1
+MMD_RUNTIME_MODEL_DESCRIPTOR_FLAGS_NONE = 0
 
 
 class MmdRuntimeFfiIkSolveStats(Structure):

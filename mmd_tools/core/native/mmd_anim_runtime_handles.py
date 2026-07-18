@@ -14,6 +14,9 @@ from mmd_tools.core.native.mmd_anim_runtime_types import (
     MMD_RUNTIME_PHYSICS_MODE_LIVE,
     MMD_RUNTIME_PHYSICS_FRAME_ACTION_SEED,
     MMD_RUNTIME_PHYSICS_FRAME_ACTION_STEP,
+    MMD_RUNTIME_FEATURE_MODEL_DESCRIPTOR,
+    MMD_RUNTIME_MODEL_DESCRIPTOR_FLAGS_NONE,
+    MMD_RUNTIME_MODEL_DESCRIPTOR_VERSION_V1,
     MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS,
     MMD_RUNTIME_STATUS_OK,
     MMD_RUNTIME_STATUS_UNSUPPORTED,
@@ -24,12 +27,13 @@ from mmd_tools.core.native.mmd_anim_runtime_types import (
     MmdRuntimeFfiPhysicsRigidbodyDesc,
     MmdRuntimeFfiPhysicsTickConfig,
     MmdRuntimeFfiPhysicsWorldStepReport,
-    MmdRuntimeFfiModelAppendTransform,
-    MmdRuntimeFfiModelBoneMorphOffset,
-    MmdRuntimeFfiModelBoneV2,
-    MmdRuntimeFfiModelGroupMorphOffset,
-    MmdRuntimeFfiModelIkLink,
-    MmdRuntimeFfiModelIkSolver,
+    MmdRuntimeModelAppendDescriptor,
+    MmdRuntimeModelBoneMorphOffsetDescriptor,
+    MmdRuntimeModelBoneDescriptor,
+    MmdRuntimeModelDescriptor,
+    MmdRuntimeModelGroupMorphOffsetDescriptor,
+    MmdRuntimeModelIkLinkDescriptor,
+    MmdRuntimeModelIkSolverDescriptor,
 )
 
 logger = get_logger(__name__)
@@ -95,6 +99,27 @@ def _normalized_quaternions(values: Sequence[float], bone_count: int) -> Optiona
     return copied
 
 
+def _copy_native_last_error(lib: CDLL) -> Optional[str]:
+    """Copy the thread-local native error before any subsequent FFI call."""
+    getter = getattr(lib, "mmd_runtime_last_error_message", None)
+    if getter is None:
+        return None
+    try:
+        raw = getter()
+        if isinstance(raw, bytes):
+            return raw.decode("utf-8", errors="replace")
+        if isinstance(raw, str):
+            return raw
+        if isinstance(raw, ctypes.c_char_p):
+            raw = raw.value
+        if raw:
+            value = ctypes.string_at(raw)
+            return value.decode("utf-8", errors="replace") if value else None
+    except Exception as exc:
+        logger.debug("mmd_runtime_last_error_message failed: %s", exc)
+    return None
+
+
 class MmdRuntimeModel:
     """
     mmd-anim のランタイムモデル (PMX 由来) を表すクラス。
@@ -140,37 +165,55 @@ class MmdRuntimeModel:
     def from_descriptors(cls, descriptors) -> Optional["MmdRuntimeModel"]:
         """Create a runtime model from a validated scene descriptor snapshot."""
         lib = cls._get_library()
-        func = getattr(lib, "mmd_runtime_model_create_from_descriptors_v2", None) if lib else None
-        if func is None or not descriptors.bones:
+        flags_func = getattr(lib, "mmd_runtime_feature_flags", None) if lib else None
+        func = getattr(lib, "mmd_runtime_model_create_from_descriptor", None) if lib else None
+        if flags_func is None or func is None or not descriptors.bones:
+            return None
+
+        try:
+            feature_flags = int(flags_func())
+        except Exception as exc:
+            logger.debug("mmd_runtime_feature_flags failed for model descriptor: %s", exc)
+            return None
+        if not (feature_flags & MMD_RUNTIME_FEATURE_MODEL_DESCRIPTOR):
             return None
 
         def _array(ctype, values):
             return (ctype * len(values))(*values) if values else None
 
         try:
-            bones = _array(MmdRuntimeFfiModelBoneV2, descriptors.bones)
-            ik_solvers = _array(MmdRuntimeFfiModelIkSolver, descriptors.ik_solvers)
-            ik_links = _array(MmdRuntimeFfiModelIkLink, descriptors.ik_links)
-            append = _array(MmdRuntimeFfiModelAppendTransform, descriptors.append_transforms)
-            bone_morphs = _array(MmdRuntimeFfiModelBoneMorphOffset, descriptors.bone_morph_offsets)
-            group_morphs = _array(MmdRuntimeFfiModelGroupMorphOffset, descriptors.group_morph_offsets)
-            handle = func(
-                bones,
-                len(descriptors.bones),
-                ik_solvers,
-                len(descriptors.ik_solvers),
-                ik_links,
-                len(descriptors.ik_links),
-                append,
-                len(descriptors.append_transforms),
-                descriptors.morph_count,
-                bone_morphs,
-                len(descriptors.bone_morph_offsets),
-                group_morphs,
-                len(descriptors.group_morph_offsets),
+            bones = _array(MmdRuntimeModelBoneDescriptor, descriptors.bones)
+            ik_solvers = _array(MmdRuntimeModelIkSolverDescriptor, descriptors.ik_solvers)
+            ik_links = _array(MmdRuntimeModelIkLinkDescriptor, descriptors.ik_links)
+            append = _array(MmdRuntimeModelAppendDescriptor, descriptors.append_transforms)
+            bone_morphs = _array(MmdRuntimeModelBoneMorphOffsetDescriptor, descriptors.bone_morph_offsets)
+            group_morphs = _array(MmdRuntimeModelGroupMorphOffsetDescriptor, descriptors.group_morph_offsets)
+            descriptor = MmdRuntimeModelDescriptor(
+                struct_size=ctypes.sizeof(MmdRuntimeModelDescriptor),
+                descriptor_version=MMD_RUNTIME_MODEL_DESCRIPTOR_VERSION_V1,
+                flags=MMD_RUNTIME_MODEL_DESCRIPTOR_FLAGS_NONE,
+                reserved=0,
+                bones=bones,
+                bone_count=len(descriptors.bones),
+                ik_solvers=ik_solvers,
+                ik_solver_count=len(descriptors.ik_solvers),
+                ik_links=ik_links,
+                ik_link_count=len(descriptors.ik_links),
+                append_transforms=append,
+                append_transform_count=len(descriptors.append_transforms),
+                morph_count=descriptors.morph_count,
+                bone_morph_offsets=bone_morphs,
+                bone_morph_offset_count=len(descriptors.bone_morph_offsets),
+                group_morph_offsets=group_morphs,
+                group_morph_offset_count=len(descriptors.group_morph_offsets),
             )
+            handle = func(ctypes.pointer(descriptor))
             if not handle:
-                logger.error("mmd_runtime_model_create_from_descriptors_v2 returned NULL")
+                error = _copy_native_last_error(lib)
+                if error:
+                    logger.error("mmd_runtime_model_create_from_descriptor returned NULL: %s", error)
+                else:
+                    logger.error("mmd_runtime_model_create_from_descriptor returned NULL")
                 return None
             return cls(lib, handle)
         except Exception as exc:

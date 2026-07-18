@@ -34,12 +34,12 @@ from mmd_tools.core.native.mmd_anim_runtime_types import (
     MMD_RUNTIME_MODEL_BONE_LOCAL_AXIS,
     MMD_RUNTIME_MODEL_BONE_TRANSFORM_AFTER_PHYSICS,
     MMD_RUNTIME_MODEL_IK_LINK_ANGLE_LIMIT,
-    MmdRuntimeFfiModelAppendTransform,
-    MmdRuntimeFfiModelBoneMorphOffset,
-    MmdRuntimeFfiModelBoneV2,
-    MmdRuntimeFfiModelGroupMorphOffset,
-    MmdRuntimeFfiModelIkLink,
-    MmdRuntimeFfiModelIkSolver,
+    MmdRuntimeModelAppendDescriptor,
+    MmdRuntimeModelBoneMorphOffsetDescriptor,
+    MmdRuntimeModelBoneDescriptor,
+    MmdRuntimeModelGroupMorphOffsetDescriptor,
+    MmdRuntimeModelIkLinkDescriptor,
+    MmdRuntimeModelIkSolverDescriptor,
 )
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
@@ -50,13 +50,13 @@ class ModelDagDescriptorError(ValueError):
 
 @dataclass(frozen=True)
 class ModelDagDescriptorSet:
-    bones: list[MmdRuntimeFfiModelBoneV2]
-    ik_solvers: list[MmdRuntimeFfiModelIkSolver]
-    ik_links: list[MmdRuntimeFfiModelIkLink]
-    append_transforms: list[MmdRuntimeFfiModelAppendTransform]
+    bones: list[MmdRuntimeModelBoneDescriptor]
+    ik_solvers: list[MmdRuntimeModelIkSolverDescriptor]
+    ik_links: list[MmdRuntimeModelIkLinkDescriptor]
+    append_transforms: list[MmdRuntimeModelAppendDescriptor]
     morph_count: int
-    bone_morph_offsets: list[MmdRuntimeFfiModelBoneMorphOffset]
-    group_morph_offsets: list[MmdRuntimeFfiModelGroupMorphOffset]
+    bone_morph_offsets: list[MmdRuntimeModelBoneMorphOffsetDescriptor]
+    group_morph_offsets: list[MmdRuntimeModelGroupMorphOffsetDescriptor]
 
 
 def _has_attr(node: str, attr: str) -> bool:
@@ -128,10 +128,10 @@ def _indexed_joints(root_group: str) -> list[str]:
 def build_model_descriptors_from_dag(root_group: str) -> ModelDagDescriptorSet:
     joints = _indexed_joints(root_group)
     bone_count = len(joints)
-    bones: list[MmdRuntimeFfiModelBoneV2] = []
-    ik_solvers: list[MmdRuntimeFfiModelIkSolver] = []
-    ik_links: list[MmdRuntimeFfiModelIkLink] = []
-    append_transforms: list[MmdRuntimeFfiModelAppendTransform] = []
+    bones: list[MmdRuntimeModelBoneDescriptor] = []
+    ik_solvers: list[MmdRuntimeModelIkSolverDescriptor] = []
+    ik_links: list[MmdRuntimeModelIkLinkDescriptor] = []
+    append_transforms: list[MmdRuntimeModelAppendDescriptor] = []
 
     for bone_index, joint in enumerate(joints):
         parent_index = int(_required(joint, ATTR_MMD_BONE_PARENT_INDEX))
@@ -153,7 +153,7 @@ def build_model_descriptors_from_dag(root_group: str) -> ModelDagDescriptorSet:
             local_z = _vector3(joint, ATTR_MMD_LOCAL_Z_AXIS)
             model_flags |= MMD_RUNTIME_MODEL_BONE_LOCAL_AXIS
         bones.append(
-            MmdRuntimeFfiModelBoneV2(
+            MmdRuntimeModelBoneDescriptor(
                 parent_index=parent_index,
                 rest_position_xyz=rest,
                 transform_order=int(_required(joint, ATTR_MMD_DEFORM_LAYER)),
@@ -179,7 +179,7 @@ def build_model_descriptors_from_dag(root_group: str) -> ModelDagDescriptorSet:
                 if len(lower) != 3 or len(upper) != 3 or not all(math.isfinite(v) for v in lower + upper):
                     raise ModelDagDescriptorError(f"{joint}: invalid IK angle limit")
                 ik_links.append(
-                    MmdRuntimeFfiModelIkLink(
+                    MmdRuntimeModelIkLinkDescriptor(
                         bone_index=link_index,
                         flags=MMD_RUNTIME_MODEL_IK_LINK_ANGLE_LIMIT if limited else 0,
                         angle_limit_min_xyz=lower,
@@ -190,7 +190,7 @@ def build_model_descriptors_from_dag(root_group: str) -> ModelDagDescriptorSet:
             if target < 0 or target >= bone_count:
                 raise ModelDagDescriptorError(f"{joint}: invalid IK target index {target}")
             ik_solvers.append(
-                MmdRuntimeFfiModelIkSolver(
+                MmdRuntimeModelIkSolverDescriptor(
                     ik_bone_index=bone_index,
                     target_bone_index=target,
                     link_offset=link_offset,
@@ -213,7 +213,7 @@ def build_model_descriptors_from_dag(root_group: str) -> ModelDagDescriptorSet:
             if pmx_flags & int(PmxBoneFlag.LOCAL):
                 append_flags |= MMD_RUNTIME_MODEL_APPEND_LOCAL
             append_transforms.append(
-                MmdRuntimeFfiModelAppendTransform(
+                MmdRuntimeModelAppendDescriptor(
                     target_bone_index=bone_index,
                     source_bone_index=source_index,
                     ratio=_finite_float(joint, ATTR_MMD_GRANT_RATE),
@@ -221,8 +221,8 @@ def build_model_descriptors_from_dag(root_group: str) -> ModelDagDescriptorSet:
                 )
             )
 
-    bone_morph_offsets: list[MmdRuntimeFfiModelBoneMorphOffset] = []
-    group_morph_offsets: list[MmdRuntimeFfiModelGroupMorphOffset] = []
+    bone_morph_offsets: list[MmdRuntimeModelBoneMorphOffsetDescriptor] = []
+    group_morph_offsets: list[MmdRuntimeModelGroupMorphOffsetDescriptor] = []
     morph_count = 0
     metadata_items = sorted(
         iter_morph_network_metadata(root_group=root_group),
@@ -244,7 +244,7 @@ def build_model_descriptors_from_dag(root_group: str) -> ModelDagDescriptorSet:
                 if not all(math.isfinite(v) for v in position + rotation):
                     raise ModelDagDescriptorError(f"{metadata.node}: non-finite bone morph offset")
                 bone_morph_offsets.append(
-                    MmdRuntimeFfiModelBoneMorphOffset(
+                    MmdRuntimeModelBoneMorphOffsetDescriptor(
                         morph_index=metadata.index,
                         target_bone_index=target,
                         position_offset_xyz=position,
@@ -260,7 +260,7 @@ def build_model_descriptors_from_dag(root_group: str) -> ModelDagDescriptorSet:
                 if child < 0 or not math.isfinite(ratio):
                     raise ModelDagDescriptorError(f"{metadata.node}: invalid group morph offset")
                 group_morph_offsets.append(
-                    MmdRuntimeFfiModelGroupMorphOffset(
+                    MmdRuntimeModelGroupMorphOffsetDescriptor(
                         morph_index=metadata.index,
                         child_morph_index=child,
                         ratio=ratio,

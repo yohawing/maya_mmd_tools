@@ -24,6 +24,7 @@ from mmd_tools.core.constants import (
 from mmd_tools.core.model_dag_descriptor import ModelDagDescriptorError, build_model_descriptors_from_dag
 from mmd_tools.core.native.mmd_anim_runtime_handles import MmdRuntimeInstance, MmdRuntimeModel
 from mmd_tools.core.native.mmd_anim_runtime_types import (
+    MMD_RUNTIME_FEATURE_MODEL_DESCRIPTOR,
     MMD_RUNTIME_MODEL_APPEND_ROTATION,
     MMD_RUNTIME_MODEL_BONE_FIXED_AXIS,
     MMD_RUNTIME_MODEL_BONE_LOCAL_AXIS,
@@ -118,8 +119,12 @@ class TestModelDagDescriptor(MayaTestBase):
     def test_native_model_uses_absolute_rest_contract(self):
         descriptors = build_model_descriptors_from_dag(self._scene())
         lib = MmdRuntimeModel._get_library()
-        if lib is None or not hasattr(lib, "mmd_runtime_model_create_from_descriptors_v2"):
+        if lib is None or not hasattr(lib, "mmd_runtime_model_create_from_descriptor"):
             self.skipTest("payload-free model descriptor ABI unavailable")
+        if not hasattr(lib, "mmd_runtime_feature_flags") or not (
+            int(lib.mmd_runtime_feature_flags()) & MMD_RUNTIME_FEATURE_MODEL_DESCRIPTOR
+        ):
+            self.skipTest("payload-free model descriptor feature unavailable")
         model = MmdRuntimeModel.from_descriptors(descriptors)
         self.assertIsNotNone(model)
         instance = MmdRuntimeInstance.for_model(model)
