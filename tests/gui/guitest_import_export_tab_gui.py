@@ -3,10 +3,13 @@ ImportExportTabのGUIテスト
 実際のMaya GUI環境でのみ実行可能
 """
 
+import os
+import tempfile
 import unittest
 
 from tests.common.gui_test_base import GuiTestBase, requires_gui
 from mmd_tools.ui.qt_compat import QSettings
+from mmd_tools.ui.import_export_view_state import ImportExportViewState
 from mmd_tools.ui.tabs.import_export_tab import ImportExportTab
 
 
@@ -16,21 +19,37 @@ class TestImportExportTabGUI(GuiTestBase):
 
     def setUp(self):
         super().setUp()
-        # テスト用の設定をクリア
-        self.settings = QSettings("maya_mmd_tools", "ImportExportTab")
+        # 本番の QSettings を消さないよう、テストごとの一時 INI に隔離する。
+        self._settings_dir = tempfile.TemporaryDirectory()
+        settings_path = os.path.join(self._settings_dir.name, "import_export_tab.ini")
+        self.settings = QSettings(settings_path, QSettings.IniFormat)
         self.settings.clear()
         self.settings.sync()
+        self.view_state = ImportExportViewState(self.settings)
 
     def tearDown(self):
-        # テスト用の設定をクリア
-        self.settings.clear()
-        self.settings.sync()
-        super().tearDown()
+        try:
+            self.settings.clear()
+            self.settings.sync()
+            del self.view_state
+            del self.settings
+            self._settings_dir.cleanup()
+        finally:
+            super().tearDown()
+
+    def _create_tab(self):
+        """テスト専用の view state を使うタブを作成する。"""
+        return ImportExportTab(view_state=self.view_state)
+
+    def test_settings_store_is_isolated_from_user_profile(self):
+        """GUIテストが実ユーザーのファイル履歴ストアを使わないことを確認する。"""
+        user_settings = QSettings("maya_mmd_tools", "ImportExportTab")
+        self.assertNotEqual(self.settings.fileName(), user_settings.fileName())
 
     def test_path_persistence_with_real_widgets(self):
         """実際のウィジェットを使用したパスの永続化テスト"""
         # 最初のタブインスタンスを作成
-        tab1 = ImportExportTab()
+        tab1 = self._create_tab()
 
         # パスを設定
         test_import_path = "/test/import/model.pmx"
@@ -43,7 +62,7 @@ class TestImportExportTabGUI(GuiTestBase):
         tab1.deleteLater()
 
         # 新しいタブインスタンスを作成
-        tab2 = ImportExportTab()
+        tab2 = self._create_tab()
 
         # 保存されたパスが読み込まれていることを確認
         self.assertEqual(tab2.import_path_edit.text(), test_import_path)
@@ -54,7 +73,7 @@ class TestImportExportTabGUI(GuiTestBase):
 
     def test_text_change_triggers_save(self):
         """テキスト変更が自動保存をトリガーすることをテスト"""
-        tab = ImportExportTab()
+        tab = self._create_tab()
 
         # 初期状態を確認
         self.assertEqual(tab.import_path_edit.text(), "")
@@ -73,8 +92,8 @@ class TestImportExportTabGUI(GuiTestBase):
     def test_multiple_instances_share_settings(self):
         """複数のインスタンスが設定を共有することをテスト"""
         # 複数のタブを同時に作成
-        tab1 = ImportExportTab()
-        tab2 = ImportExportTab()
+        tab1 = self._create_tab()
+        tab2 = self._create_tab()
 
         # 片方でパスを設定
         test_path = "/shared/path/model.pmx"
@@ -82,7 +101,7 @@ class TestImportExportTabGUI(GuiTestBase):
 
         # もう片方を再作成して読み込み
         tab2.deleteLater()
-        tab3 = ImportExportTab()
+        tab3 = self._create_tab()
 
         # 共有されていることを確認
         self.assertEqual(tab3.import_path_edit.text(), test_path)
@@ -93,7 +112,7 @@ class TestImportExportTabGUI(GuiTestBase):
 
     def test_special_characters_in_gui(self):
         """GUIで特殊文字を含むパスのテスト"""
-        tab = ImportExportTab()
+        tab = self._create_tab()
 
         special_paths = ["/path with spaces/model.pmx", "/パス/日本語/モデル.pmx", "C:\\Users\\ユーザー\\Documents\\model.pmx"]
 
@@ -106,7 +125,7 @@ class TestImportExportTabGUI(GuiTestBase):
             self.assertEqual(saved_value, path)
 
             # 新しいタブで読み込めることを確認
-            new_tab = ImportExportTab()
+            new_tab = self._create_tab()
             self.assertEqual(new_tab.import_path_edit.text(), path)
             new_tab.deleteLater()
 
@@ -119,7 +138,7 @@ class TestImportExportTabGUI(GuiTestBase):
         以前は存在しない self.joint_name_conversion_check を参照しており、
         言語切り替え（retranslate_all_tabs）時に AttributeError でクラッシュしていた。
         """
-        tab = ImportExportTab()
+        tab = self._create_tab()
         try:
             tab.retranslateUi()  # 例外が出れば test はエラーになる
         finally:
@@ -127,7 +146,7 @@ class TestImportExportTabGUI(GuiTestBase):
 
     def test_export_format_combo_excludes_pmd(self):
         """エクスポート形式に未実装の 'pmd' が含まれないことを確認する（B-3）。"""
-        tab = ImportExportTab()
+        tab = self._create_tab()
         items = [tab.export_format_combo.itemText(i) for i in range(tab.export_format_combo.count())]
         self.assertIn("pmx", items)
         self.assertNotIn("pmd", items)
@@ -135,7 +154,7 @@ class TestImportExportTabGUI(GuiTestBase):
 
     def test_vpd_ui_is_not_in_import_export_tab(self):
         """VPD は pose apply / D&D 導線で扱い、Import/Export タブには置かない（B-3）。"""
-        tab = ImportExportTab()
+        tab = self._create_tab()
         self.assertFalse(hasattr(tab, "vpd_group"))
         self.assertFalse(hasattr(tab, "vpd_not_implemented"))
         tab.deleteLater()
