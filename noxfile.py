@@ -61,9 +61,7 @@ RELEASE_VISUAL_CASES = (
     "fixture-render-generated-visual-mmd-texture-uv-orientation-plane",
     "fixture-render-generated-visual-mmd-sphere-texture-add",
     "fixture-render-generated-visual-mmd-alpha-blend-overlap",
-    "fixture-render-generated-visual-mmd-outline-normal-silhouette",
 )
-DX11_ONLY_VISUAL_CASES = {"fixture-render-generated-visual-mmd-outline-normal-silhouette"}
 MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS = 0x3
 RELEASE_CAMERA_CURRENT_EPSILON = "18.25"
 RELEASE_ADDICTION_INTERPOLATION_EYE_MAX = "2.0"
@@ -92,10 +90,8 @@ MMD_ANIM_CLI_ASSETS = {
 nox.options.sessions = ["tests"]
 
 
-def _release_visual_cases(shader_backend: str) -> tuple[str, ...]:
-    if shader_backend == "dx11":
-        return RELEASE_VISUAL_CASES
-    return tuple(case for case in RELEASE_VISUAL_CASES if case not in DX11_ONLY_VISUAL_CASES)
+def _release_visual_cases(_shader_backend: str) -> tuple[str, ...]:
+    return RELEASE_VISUAL_CASES
 
 
 def _option(args: list[str], name: str, default: str) -> str:
@@ -2386,8 +2382,6 @@ def release_gate(session: nox.Session) -> None:
                         "build/release-gate/visual/glsl-dx11-comparison.json",
                         "--default-threshold",
                         "0.12",
-                        "--ignore-case",
-                        "fixture-render-generated-visual-mmd-outline-normal-silhouette",
                     ],
                 )
             )

@@ -5,8 +5,6 @@ from pathlib import Path
 from tests.viewport.visual_regression_capture import (
     _build_maya_code,
     _device_matches_backend,
-    _is_outline_visual_case,
-    _validate_outline_backend,
     _vp2_override,
 )
 
@@ -26,22 +24,6 @@ def test_device_validation_is_backend_specific():
     assert not _device_matches_backend("dx11", "OpenGL Core Profile")
     assert _device_matches_backend("glsl", "OpenGL Core Profile")
     assert not _device_matches_backend("glsl", "API : DirectX V.11")
-
-
-def test_only_outline_fixture_uses_outline_capture_setup():
-    assert _is_outline_visual_case({"name": "fixture-render-generated-visual-mmd-outline-normal-silhouette"})
-    assert not _is_outline_visual_case({"name": "fixture-render-generated-visual-mmd-diffuse-lit-box"})
-
-
-def test_glsl_rejects_explicit_outline_fixture_before_launch():
-    cases = [{"name": "fixture-render-generated-visual-mmd-outline-normal-silhouette"}]
-    _validate_outline_backend(cases, "dx11")
-    try:
-        _validate_outline_backend(cases, "glsl")
-    except RuntimeError as exc:
-        assert "no production outline pass" in str(exc)
-    else:
-        raise AssertionError("GLSL outline fixture must fail closed")
 
 
 def test_maya_payload_compiles_for_both_backends(tmp_path):

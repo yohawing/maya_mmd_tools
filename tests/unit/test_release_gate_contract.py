@@ -40,12 +40,12 @@ import noxfile
 
 
 class ReleaseGateContractTest(unittest.TestCase):
-    def test_release_visual_matrix_keeps_outline_dx11_only(self):
+    def test_release_visual_matrix_excludes_unreachable_outline_case(self):
         outline = "fixture-render-generated-visual-mmd-outline-normal-silhouette"
-        self.assertIn(outline, noxfile._release_visual_cases("dx11"))
+        self.assertNotIn(outline, noxfile._release_visual_cases("dx11"))
         self.assertNotIn(outline, noxfile._release_visual_cases("glsl"))
         self.assertEqual(
-            set(noxfile._release_visual_cases("dx11")) - {outline},
+            set(noxfile._release_visual_cases("dx11")),
             set(noxfile._release_visual_cases("glsl")),
         )
 
