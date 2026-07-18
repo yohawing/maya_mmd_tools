@@ -221,23 +221,58 @@ class PhysicsPresenter:
         self._sync_collider_visibility_checkbox(root)
 
     def _find_physics_world_shape(self):
+        root = getattr(self.app_state, "current_model_root", None)
+        if not root or not cmds.objExists(root):
+            return None
         try:
-            worlds = cmds.ls(type="mmdPhysicsWorldShape", long=True) or []
-            return worlds[0] if worlds else None
+            solvers = cmds.listConnections(
+                f"{root}.message",
+                source=False,
+                destination=True,
+                type="mmdPhysicsSolver",
+            ) or []
+            for solver in dict.fromkeys(solvers):
+                world_nodes = cmds.listConnections(
+                    f"{solver}.inWorldSettings",
+                    source=True,
+                    destination=False,
+                ) or []
+                for world_node in world_nodes:
+                    if cmds.nodeType(world_node) == "mmdPhysicsWorldShape":
+                        shapes = [world_node]
+                    else:
+                        shapes = cmds.listRelatives(
+                            world_node,
+                            shapes=True,
+                            fullPath=True,
+                            type="mmdPhysicsWorldShape",
+                        ) or []
+                    if shapes:
+                        return (cmds.ls(shapes[0], long=True) or [shapes[0]])[0]
+            return None
         except Exception:
             return None
 
-    @staticmethod
-    def _world_solvers(world):
+    def _world_solvers(self, world):
         if not world:
             return []
         try:
-            return list(dict.fromkeys(cmds.listConnections(
+            connected = list(dict.fromkeys(cmds.listConnections(
                 f"{world}.message",
                 source=False,
                 destination=True,
                 type="mmdPhysicsSolver",
             ) or []))
+            root = getattr(self.app_state, "current_model_root", None)
+            if not root or not cmds.objExists(root):
+                return []
+            selected = set(cmds.listConnections(
+                f"{root}.message",
+                source=False,
+                destination=True,
+                type="mmdPhysicsSolver",
+            ) or [])
+            return [solver for solver in connected if solver in selected]
         except Exception:
             return []
 

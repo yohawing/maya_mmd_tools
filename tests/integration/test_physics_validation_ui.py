@@ -203,7 +203,7 @@ class TestPhysicsPresenterNamespace(MayaTestBase):
         self.assertEqual(len(rigid_bodies), 3)
         self.assertEqual(len(joints), 1)
 
-    def test_scene_global_enable_sync_toggle_undo_and_no_world_safety(self):
+    def test_model_scoped_enable_sync_toggle_undo_and_no_world_safety(self):
         root_a = self._create_namespaced_model("ToggleA", rigid_count=1, joint_count=0)
         root_b = self._create_namespaced_model("ToggleB", rigid_count=1, joint_count=0)
         view = _FakePhysicsView()
@@ -221,44 +221,64 @@ class TestPhysicsPresenterNamespace(MayaTestBase):
         presenter._on_physics_enable_changed(True)
         self.assertFalse(cmds.ls(type="mmdPhysicsWorldShape") or [])
 
-        world_transform = cmds.createNode("transform", name="MMD_PhysicsWorld")
-        world = cmds.createNode(
-            "mmdPhysicsWorldShape", name="MMD_PhysicsWorldShape", parent=world_transform
-        )
-        solver = cmds.createNode("mmdPhysicsSolver", name="toggleSolver")
-        cmds.connectAttr(f"{world}.message", f"{solver}.inWorldSettings")
-        cmds.connectAttr(
-            f"{world}.outSettingsVersion", f"{solver}.inWorldSettingsVersion"
-        )
+        worlds = []
+        solvers = []
+        for root, token in ((root_a, "A"), (root_b, "B")):
+            world_transform = cmds.createNode("transform", name=f"MMD_PhysicsWorld{token}")
+            world = cmds.createNode(
+                "mmdPhysicsWorldShape",
+                name=f"MMD_PhysicsWorldShape{token}",
+                parent=world_transform,
+            )
+            solver = cmds.createNode("mmdPhysicsSolver", name=f"toggleSolver{token}")
+            cmds.connectAttr(f"{root}.message", f"{solver}.modelRoot")
+            cmds.connectAttr(f"{world}.message", f"{solver}.inWorldSettings")
+            cmds.connectAttr(
+                f"{world}.outSettingsVersion", f"{solver}.inWorldSettingsVersion"
+            )
+            worlds.append(world)
+            solvers.append(solver)
+        world_a, world_b = worlds
         presenter.refresh_physics(force=True)
         self.assertTrue(view.physics_enable_check.enabled)
         self.assertFalse(view.physics_enable_check.checked)
 
         presenter._on_physics_enable_changed(True)
-        self.assertTrue(cmds.getAttr(f"{world}.enable"))
+        self.assertTrue(cmds.getAttr(f"{world_a}.enable"))
+        self.assertFalse(cmds.getAttr(f"{world_b}.enable"))
         self.assertTrue(view.physics_enable_check.checked)
         cmds.undo()
         presenter.refresh_physics(force=True)
-        self.assertFalse(cmds.getAttr(f"{world}.enable"))
+        self.assertFalse(cmds.getAttr(f"{world_a}.enable"))
+        self.assertFalse(cmds.getAttr(f"{world_b}.enable"))
         self.assertFalse(view.physics_enable_check.checked)
 
-        cmds.setAttr(f"{world}.enable", True)
+        cmds.setAttr(f"{world_a}.enable", True)
         app_state.current_model_root = root_b
         presenter.refresh_physics(force=True)
         self.assertTrue(view.physics_enable_check.enabled)
-        self.assertTrue(view.physics_enable_check.checked)
+        self.assertFalse(view.physics_enable_check.checked)
+        presenter._on_physics_enable_changed(True)
+        self.assertTrue(cmds.getAttr(f"{world_a}.enable"))
+        self.assertTrue(cmds.getAttr(f"{world_b}.enable"))
+        app_state.current_model_root = root_a
+        presenter.refresh_physics(force=True)
+        presenter._on_physics_enable_changed(False)
+        self.assertFalse(cmds.getAttr(f"{world_a}.enable"))
+        self.assertTrue(cmds.getAttr(f"{world_b}.enable"))
 
     def test_legacy_world_message_connections_are_repaired_only_by_user_actions(self):
-        self._create_namespaced_model("LegacyToggleA", rigid_count=1, joint_count=0)
-        self._create_namespaced_model("LegacyToggleB", rigid_count=1, joint_count=0)
+        root_a = self._create_namespaced_model("LegacyToggleA", rigid_count=1, joint_count=0)
+        root_b = self._create_namespaced_model("LegacyToggleB", rigid_count=1, joint_count=0)
         world_transform = cmds.createNode("transform", name="Legacy_PhysicsWorld")
         world = cmds.createNode(
             "mmdPhysicsWorldShape", name="Legacy_PhysicsWorldShape", parent=world_transform
         )
         cmds.setAttr(f"{world}.hiddenInOutliner", False)
         solvers = []
-        for name in ("legacySolverA", "legacySolverB"):
+        for name, root in (("legacySolverA", root_a), ("legacySolverB", root_b)):
             solver = cmds.createNode("mmdPhysicsSolver", name=name)
+            cmds.connectAttr(f"{root}.message", f"{solver}.modelRoot")
             cmds.connectAttr(f"{world}.message", f"{solver}.inWorldSettings")
             solvers.append(solver)
         wrong_source = cmds.createNode("network", name="wrongWorldVersionSource")
@@ -279,7 +299,7 @@ class TestPhysicsPresenterNamespace(MayaTestBase):
         view = _FakePhysicsView()
         presenter = object.__new__(PhysicsPresenter)
         presenter.view = view
-        presenter.app_state = SimpleNamespace(current_model_root="LegacyToggleA:Base_root")
+        presenter.app_state = SimpleNamespace(current_model_root=root_a)
         presenter.maya_adapter = SimpleNamespace(object_exists=cmds.objExists)
         presenter._current_kind = None
         presenter._current_shape = None
@@ -299,11 +319,18 @@ class TestPhysicsPresenterNamespace(MayaTestBase):
         self.assertNotEqual(original_sources[1], f"{world}.outSettingsVersion")
 
         presenter._on_refresh_requested()
-        for solver in solvers:
-            source = cmds.connectionInfo(
-                f"{solver}.inWorldSettingsVersion", sourceFromDestination=True
-            )
-            self.assertEqual(source, f"{world}.outSettingsVersion")
+        self.assertEqual(
+            cmds.connectionInfo(
+                f"{solvers[0]}.inWorldSettingsVersion", sourceFromDestination=True
+            ),
+            f"{world}.outSettingsVersion",
+        )
+        self.assertEqual(
+            cmds.connectionInfo(
+                f"{solvers[1]}.inWorldSettingsVersion", sourceFromDestination=True
+            ),
+            original_sources[1],
+        )
         self.assertFalse(cmds.getAttr(f"{world}.enable"))
         self.assertFalse(cmds.getAttr(f"{world}.hiddenInOutliner"))
 
@@ -318,13 +345,18 @@ class TestPhysicsPresenterNamespace(MayaTestBase):
 
         presenter._on_physics_enable_changed(True)
         self.assertTrue(cmds.getAttr(f"{world}.enable"))
-        for solver in solvers:
-            self.assertEqual(
-                cmds.connectionInfo(
-                    f"{solver}.inWorldSettingsVersion", sourceFromDestination=True
-                ),
-                f"{world}.outSettingsVersion",
-            )
+        self.assertEqual(
+            cmds.connectionInfo(
+                f"{solvers[0]}.inWorldSettingsVersion", sourceFromDestination=True
+            ),
+            f"{world}.outSettingsVersion",
+        )
+        self.assertEqual(
+            cmds.connectionInfo(
+                f"{solvers[1]}.inWorldSettingsVersion", sourceFromDestination=True
+            ),
+            original_sources[1],
+        )
         cmds.undo()
         self.assertFalse(cmds.getAttr(f"{world}.enable"))
         for solver, original_source in zip(solvers, original_sources):
