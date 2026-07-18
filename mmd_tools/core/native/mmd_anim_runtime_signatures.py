@@ -26,6 +26,12 @@ from mmd_tools.core.native.mmd_anim_runtime_types import (
     MmdRuntimeFfiRigBone,
     MmdRuntimeFfiRigBoneLocalAxisV2,
     MmdRuntimeFfiRigIkLink,
+    MmdRuntimeFfiModelAppendTransform,
+    MmdRuntimeFfiModelBoneMorphOffset,
+    MmdRuntimeFfiModelBoneV2,
+    MmdRuntimeFfiModelGroupMorphOffset,
+    MmdRuntimeFfiModelIkLink,
+    MmdRuntimeFfiModelIkSolver,
 )
 
 logger = get_logger(__name__)
@@ -49,6 +55,20 @@ def setup_function_signatures(lib: CDLL) -> None:
 
     lib.mmd_runtime_model_create_from_pmx_bytes.restype = c_void_p
     lib.mmd_runtime_model_create_from_pmx_bytes.argtypes = [POINTER(c_uint8), c_size_t]
+    set_sig(
+        lib,
+        "mmd_runtime_model_create_from_descriptors_v2",
+        c_void_p,
+        [
+            POINTER(MmdRuntimeFfiModelBoneV2), c_size_t,
+            POINTER(MmdRuntimeFfiModelIkSolver), c_size_t,
+            POINTER(MmdRuntimeFfiModelIkLink), c_size_t,
+            POINTER(MmdRuntimeFfiModelAppendTransform), c_size_t,
+            c_uint32,
+            POINTER(MmdRuntimeFfiModelBoneMorphOffset), c_size_t,
+            POINTER(MmdRuntimeFfiModelGroupMorphOffset), c_size_t,
+        ],
+    )
     set_sig(lib, "mmd_runtime_export_vmd_animation_json", MmdRuntimeFfiByteBuffer, [POINTER(c_uint8), c_size_t])
     set_sig(lib, "mmd_runtime_export_pmx_model_json", MmdRuntimeFfiByteBuffer, [POINTER(c_uint8), c_size_t])
     set_sig(lib, "mmd_runtime_export_pmd_model_json", MmdRuntimeFfiByteBuffer, [POINTER(c_uint8), c_size_t])

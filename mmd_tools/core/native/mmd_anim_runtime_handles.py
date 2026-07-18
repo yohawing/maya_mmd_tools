@@ -24,6 +24,12 @@ from mmd_tools.core.native.mmd_anim_runtime_types import (
     MmdRuntimeFfiPhysicsRigidbodyDesc,
     MmdRuntimeFfiPhysicsTickConfig,
     MmdRuntimeFfiPhysicsWorldStepReport,
+    MmdRuntimeFfiModelAppendTransform,
+    MmdRuntimeFfiModelBoneMorphOffset,
+    MmdRuntimeFfiModelBoneV2,
+    MmdRuntimeFfiModelGroupMorphOffset,
+    MmdRuntimeFfiModelIkLink,
+    MmdRuntimeFfiModelIkSolver,
 )
 
 logger = get_logger(__name__)
@@ -128,6 +134,47 @@ class MmdRuntimeModel:
             return cls(lib, handle)
         except Exception as e:
             logger.error(f"MmdRuntimeModel.from_pmx_bytes failed: {e}", exc_info=True)
+            return None
+
+    @classmethod
+    def from_descriptors(cls, descriptors) -> Optional["MmdRuntimeModel"]:
+        """Create a runtime model from a validated scene descriptor snapshot."""
+        lib = cls._get_library()
+        func = getattr(lib, "mmd_runtime_model_create_from_descriptors_v2", None) if lib else None
+        if func is None or not descriptors.bones:
+            return None
+
+        def _array(ctype, values):
+            return (ctype * len(values))(*values) if values else None
+
+        try:
+            bones = _array(MmdRuntimeFfiModelBoneV2, descriptors.bones)
+            ik_solvers = _array(MmdRuntimeFfiModelIkSolver, descriptors.ik_solvers)
+            ik_links = _array(MmdRuntimeFfiModelIkLink, descriptors.ik_links)
+            append = _array(MmdRuntimeFfiModelAppendTransform, descriptors.append_transforms)
+            bone_morphs = _array(MmdRuntimeFfiModelBoneMorphOffset, descriptors.bone_morph_offsets)
+            group_morphs = _array(MmdRuntimeFfiModelGroupMorphOffset, descriptors.group_morph_offsets)
+            handle = func(
+                bones,
+                len(descriptors.bones),
+                ik_solvers,
+                len(descriptors.ik_solvers),
+                ik_links,
+                len(descriptors.ik_links),
+                append,
+                len(descriptors.append_transforms),
+                descriptors.morph_count,
+                bone_morphs,
+                len(descriptors.bone_morph_offsets),
+                group_morphs,
+                len(descriptors.group_morph_offsets),
+            )
+            if not handle:
+                logger.error("mmd_runtime_model_create_from_descriptors_v2 returned NULL")
+                return None
+            return cls(lib, handle)
+        except Exception as exc:
+            logger.error("MmdRuntimeModel.from_descriptors failed: %s", exc, exc_info=True)
             return None
 
     @property

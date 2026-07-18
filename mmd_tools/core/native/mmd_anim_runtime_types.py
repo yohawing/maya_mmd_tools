@@ -146,6 +146,79 @@ class MmdRuntimeFfiRigBoneLocalAxisV2(Structure):
     ]
 
 
+class MmdRuntimeFfiModelBoneV2(Structure):
+    """Complete bone descriptor for payload-free model construction."""
+
+    _fields_ = [
+        ("parent_index", c_int32),
+        ("rest_position_xyz", c_float * 3),
+        ("transform_order", c_int32),
+        ("flags", c_uint32),
+        ("fixed_axis_xyz", c_float * 3),
+        ("local_axis_x_xyz", c_float * 3),
+        ("local_axis_z_xyz", c_float * 3),
+    ]
+
+
+MMD_RUNTIME_MODEL_BONE_TRANSFORM_AFTER_PHYSICS = 1 << 0
+MMD_RUNTIME_MODEL_BONE_FIXED_AXIS = 1 << 1
+MMD_RUNTIME_MODEL_BONE_LOCAL_AXIS = 1 << 2
+
+
+class MmdRuntimeFfiModelIkSolver(Structure):
+    _fields_ = [
+        ("ik_bone_index", c_uint32),
+        ("target_bone_index", c_uint32),
+        ("link_offset", c_size_t),
+        ("link_count", c_size_t),
+        ("iteration_count", c_uint32),
+        ("limit_angle", c_float),
+    ]
+
+
+class MmdRuntimeFfiModelIkLink(Structure):
+    _fields_ = [
+        ("bone_index", c_uint32),
+        ("flags", c_uint32),
+        ("angle_limit_min_xyz", c_float * 3),
+        ("angle_limit_max_xyz", c_float * 3),
+    ]
+
+
+MMD_RUNTIME_MODEL_IK_LINK_ANGLE_LIMIT = 1
+
+
+class MmdRuntimeFfiModelAppendTransform(Structure):
+    _fields_ = [
+        ("target_bone_index", c_uint32),
+        ("source_bone_index", c_uint32),
+        ("ratio", c_float),
+        ("flags", c_uint32),
+    ]
+
+
+MMD_RUNTIME_MODEL_APPEND_ROTATION = 1
+MMD_RUNTIME_MODEL_APPEND_TRANSLATION = 1 << 1
+MMD_RUNTIME_MODEL_APPEND_LOCAL = 1 << 2
+
+
+class MmdRuntimeFfiModelBoneMorphOffset(Structure):
+    _fields_ = [
+        ("morph_index", c_uint32),
+        ("target_bone_index", c_uint32),
+        ("position_offset_xyz", c_float * 3),
+        ("rotation_offset_xyzw", c_float * 4),
+    ]
+
+
+class MmdRuntimeFfiModelGroupMorphOffset(Structure):
+    _fields_ = [
+        ("morph_index", c_uint32),
+        ("child_morph_index", c_uint32),
+        ("ratio", c_float),
+    ]
+
+
 class MmdRuntimeFfiIkSolveStats(Structure):
     """IK solver statistics returned by the native FFI."""
 
