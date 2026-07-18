@@ -53,7 +53,21 @@ class TestSolverNodeStructure(unittest.TestCase):
 
     def test_has_time_state_machine(self):
         self.assertIn("_forward_step", self.source)
+        self.assertIn("_forward_catch_up", self.source)
         self.assertIn("_reset_world", self.source)
+
+    def test_forward_catch_up_is_fixed_step_and_bounded(self):
+        self.assertIn("_FIXED_STEP_DT = 1.0 / 30.0", self.source)
+        self.assertIn("_MAX_CATCH_UP_DT = 2.0", self.source)
+        self.assertIn("_MAX_CATCH_UP_STEPS = 60", self.source)
+        catch_up = next(
+            node
+            for node in ast.walk(self.tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_forward_catch_up"
+        )
+        catch_up_source = ast.get_source_segment(self.source, catch_up)
+        self.assertIn("step_count < _MAX_CATCH_UP_STEPS", catch_up_source)
+        self.assertIn("min(_FIXED_STEP_DT, remaining)", catch_up_source)
 
     def test_has_register_deregister(self):
         func_names = [n.name for n in ast.walk(self.tree) if isinstance(n, ast.FunctionDef)]

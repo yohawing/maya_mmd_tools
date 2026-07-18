@@ -105,6 +105,20 @@ class TestPhysicsDagParity(MayaTestBase):
         self.assertEqual(len(dag_desc_set.rigid_bodies), len(self.pmx_desc_set.rigid_bodies))
         self.assertEqual(len(dag_desc_set.joints), len(self.pmx_desc_set.joints))
 
+    def test_namespaced_dag_descriptor_count_matches_pmx(self):
+        cmds.namespace(add="Citlali")
+        cmds.namespace(set="Citlali")
+        try:
+            root, maya_joints, _, _ = self._build_dag_scene()
+        finally:
+            cmds.namespace(set=":")
+
+        dag_desc_set = build_descriptors_from_dag(
+            root, bone_joints=maya_joints, bone_count=len(self.pmx.bones),
+        )
+        self.assertEqual(len(dag_desc_set.rigid_bodies), len(self.pmx_desc_set.rigid_bodies))
+        self.assertEqual(len(dag_desc_set.joints), len(self.pmx_desc_set.joints))
+
     def test_dag_descriptor_identity_matches_pmx(self):
         root, maya_joints, _, _ = self._build_dag_scene()
         dag_desc_set = build_descriptors_from_dag(

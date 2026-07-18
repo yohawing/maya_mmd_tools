@@ -7,7 +7,8 @@ doubleArray plus metadata.
 Time state machine:
 - same time → idempotent (cached result)
 - forward step → step_runtime(dt)
-- jump / backward / first eval → reset + single step
+- bounded forward jump → fixed-step catch-up
+- backward / first eval / oversized jump → reset
 
 inputMode attribute:
 - 0 (rest-only): solver uses mmd-anim rest pose only, no Maya joint reading
@@ -30,7 +31,9 @@ def maya_useNewAPI():
 
 
 _TIME_EPSILON = 1e-6
-_MAX_FORWARD_DT = 0.2
+_FIXED_STEP_DT = 1.0 / 30.0
+_MAX_CATCH_UP_DT = 2.0
+_MAX_CATCH_UP_STEPS = 60
 
 INPUT_MODE_REST = 0
 INPUT_MODE_MAYA_POSE = 1
@@ -135,8 +138,12 @@ class MmdPhysicsSolverNode(om.MPxNode):
             status = "pose-updated"
         else:
             dt = current_time - self._last_time if self._last_time is not None else None
-            if not force_reset and dt is not None and 0 < dt < _MAX_FORWARD_DT:
-                self._forward_step(dt, input_mode, data)
+            if (
+                not force_reset
+                and dt is not None
+                and 0 < dt <= _MAX_CATCH_UP_DT + _TIME_EPSILON
+            ):
+                self._forward_catch_up(dt, input_mode, data)
                 status = "stepped"
             else:
                 self._reset_world(input_mode, data)
@@ -146,6 +153,16 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._update_cached_matrices()
         self._update_rigid_body_visual_cache()
         self._write_outputs(data, solved=True, status=status)
+
+    def _forward_catch_up(self, dt: float, input_mode: int, data) -> None:
+        """Advance a bounded forward jump without one unstable large step."""
+        remaining = min(dt, _MAX_CATCH_UP_DT)
+        step_count = 0
+        while remaining > _TIME_EPSILON and step_count < _MAX_CATCH_UP_STEPS:
+            step_dt = min(_FIXED_STEP_DT, remaining)
+            self._forward_step(step_dt, input_mode, data)
+            remaining -= step_dt
+            step_count += 1
 
     def _forward_step(self, dt: float, input_mode: int, data) -> None:
         self._instance.evaluate_rest_pose()

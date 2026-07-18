@@ -177,7 +177,7 @@ class TestPhysicsSolverNode(MayaTestBase):
             selection.add(shape)
             return om.MFnMesh(selection.getDagPath(0)).getPoints(om.MSpace.kWorld)
 
-        cmds.currentUnit(time="ntsc")
+        cmds.currentUnit(time="film")
         cmds.currentTime(0)
         self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
         solver_before = cmds.getAttr(f"{solver}.outBoneMatrices")
@@ -187,9 +187,11 @@ class TestPhysicsSolverNode(MayaTestBase):
         }
         mesh_before = {shape: mesh_points(shape) for shape in meshes}
 
-        for frame in range(1, 31):
-            cmds.currentTime(frame)
-            self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+        # Match a viewport time jump: do not force solver evaluation at every
+        # intermediate frame.  The solver must catch up from 0 to 30 itself.
+        cmds.currentTime(30)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+        self.assertEqual(cmds.getAttr(f"{solver}.outStatus"), "stepped")
 
         solver_after = cmds.getAttr(f"{solver}.outBoneMatrices")
         solver_delta = max(abs(a - b) for a, b in zip(solver_before, solver_after))
@@ -584,8 +586,37 @@ class TestSolverTimeStateMachine(MayaTestBase):
             curr = matrices_by_frame[frame]
             self.assertEqual(len(prev), len(curr))
 
+    def test_direct_thirty_frame_jump_steps_and_moves_physics_bones(self):
+        """A 24 fps viewport frame 0 to 30 jump catches up instead of resetting."""
+        solver = self._setup_solver()
+        cmds.currentUnit(time="film")
+        cmds.currentTime(0)
+        before = cmds.getAttr(f"{solver}.outBoneMatrices")
+
+        cmds.currentTime(30)
+        after = cmds.getAttr(f"{solver}.outBoneMatrices")
+        status = cmds.getAttr(f"{solver}.outStatus")
+
+        physics_bone_indices = {
+            rb.related_bone_index
+            for rb in self.pmx.rigid_bodies
+            if rb.physics_mode != 0 and 0 <= rb.related_bone_index < len(self.pmx.bones)
+        }
+        changed = 0
+        for bone_index in physics_bone_indices:
+            offset = bone_index * 16
+            delta = sum(
+                (a - b) ** 2
+                for a, b in zip(after[offset : offset + 16], before[offset : offset + 16])
+            ) ** 0.5
+            if delta > 0.001:
+                changed += 1
+
+        self.assertEqual(status, "stepped")
+        self.assertGreater(changed, 0, "Direct frame 0 to 30 jump must simulate visible motion")
+
     def test_jump_forward_produces_reset(self):
-        """Jumping far forward (beyond MAX_FORWARD_DT) triggers reset."""
+        """Jumping beyond the bounded two-second catch-up window triggers reset."""
         solver = self._setup_solver()
         cmds.currentTime(0)
         _ = cmds.getAttr(f"{solver}.outSolved")

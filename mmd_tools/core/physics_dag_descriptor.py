@@ -35,7 +35,8 @@ from mmd_tools.core.physics_descriptor import (
 def _find_group(parent: str, name: str) -> Optional[str]:
     children = cmds.listRelatives(parent, children=True, fullPath=True, type="transform") or []
     for child in children:
-        if child.rsplit("|", 1)[-1] == name:
+        leaf_name = child.rsplit("|", 1)[-1]
+        if leaf_name.rsplit(":", 1)[-1] == name:
             return child
     return None
 
