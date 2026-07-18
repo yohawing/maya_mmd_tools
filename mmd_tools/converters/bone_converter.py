@@ -17,6 +17,7 @@ from ..core.constants import (
     ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_BONE_FLAGS,
     ATTR_MMD_DEFORM_LAYER,
+    ATTR_MMD_PMX_REST_POSITION,
     ATTR_MMD_BONE_OFFSET,
     ATTR_MMD_IK_LOOP,
     ATTR_MMD_IK_LIMIT_ANGLE,
@@ -390,6 +391,7 @@ class BoneConverter:
                 ATTR_MMD_BONE_NAME_EN: bone.name_english,
                 ATTR_MMD_BONE_FLAGS: bone.bone_flag,
                 ATTR_MMD_DEFORM_LAYER: bone.deform_layer if hasattr(bone, "deform_layer") else 0,
+                ATTR_MMD_PMX_REST_POSITION: bone.position,
                 ATTR_MMD_BONE_INDEX: i,
                 ATTR_MMD_BONE_PARENT_INDEX: bone.parent_bone_index,
             }

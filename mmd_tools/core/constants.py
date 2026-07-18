@@ -71,6 +71,7 @@ ATTR_MMD_BONE_NAME = "mmd_bone_name"  # ボーン名（日本語）
 ATTR_MMD_BONE_NAME_EN = "mmd_bone_name_en"  # ボーン名（英語）
 ATTR_MMD_BONE_FLAGS = "mmd_bone_flags"  # ボーンフラグ
 ATTR_MMD_DEFORM_LAYER = "mmd_deform_layer"  # 変形階層
+ATTR_MMD_PMX_REST_POSITION = "mmd_pmx_rest_position"  # PMX空間の絶対rest位置
 ATTR_MMD_BONE_OFFSET = "mmd_bone_offset"  # ボーンオフセット（接続先）
 ATTR_MMD_CONNECTION_BONE = "mmd_connection_bone"  # 接続ボーン名
 

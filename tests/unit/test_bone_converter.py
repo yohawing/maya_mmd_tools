@@ -9,6 +9,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_BONE_FLAGS,
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_BONE_NAME,
+    ATTR_MMD_PMX_REST_POSITION,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
 )
 from mmd_tools.core.pmx_data.bone import PmxBone, PmxBoneFlag
@@ -252,7 +253,12 @@ class TestBoneConverterMaya(unittest.TestCase):
     @patch("mmd_tools.converters.bone_converter.maya_attribute_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト"""
-        bone = self._create_mock_pmx_bone(0, "TestBone", bone_flag=PmxBoneFlag.ROTATABLE | PmxBoneFlag.MOVABLE)
+        bone = self._create_mock_pmx_bone(
+            0,
+            "TestBone",
+            position=(1.25, -2.5, 3.75),
+            bone_flag=PmxBoneFlag.ROTATABLE | PmxBoneFlag.MOVABLE,
+        )
 
         # 実際のジョイントを作成
         joint = cmds.joint(name="test_joint")
@@ -265,7 +271,17 @@ class TestBoneConverterMaya(unittest.TestCase):
 
         self.assertEqual(attrs[ATTR_MMD_BONE_INDEX], 0)
         self.assertEqual(attrs[ATTR_MMD_BONE_NAME], "TestBone")
+        self.assertEqual(attrs[ATTR_MMD_PMX_REST_POSITION], bone.position)
         self.assertTrue(attrs[ATTR_MMD_BONE_FLAGS], PmxBoneFlag.ROTATABLE | PmxBoneFlag.MOVABLE)
+
+    def test_set_extra_attributes_pmx_persists_raw_rest_position_as_double3(self):
+        bone = self._create_mock_pmx_bone(0, "RestBone", position=(1.25, -2.5, 3.75))
+        joint = cmds.joint(name="rest_position_joint")
+
+        self.converter._set_extra_attributes(0, joint, bone, "pmx")
+
+        self.assertEqual(cmds.getAttr(f"{joint}.{ATTR_MMD_PMX_REST_POSITION}", type=True), "double3")
+        self.assertEqual(cmds.getAttr(f"{joint}.{ATTR_MMD_PMX_REST_POSITION}")[0], bone.position)
 
     @patch("mmd_tools.converters.bone_converter.maya_attribute_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx_grant_rotate(self, mock_set_attrs):
