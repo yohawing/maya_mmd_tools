@@ -247,8 +247,8 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(morph_tab, translator.translate("morph", "tabs"))
         self.morph_tab = morph_tab
 
-        # Physics Tab (development-only placeholder for a future backend)
-        self._add_physics_tab(add_to_widget=self.settings_service.is_development_mode())
+        # Physics Tab
+        self._add_physics_tab()
 
         # Settings Tab
         settings_tab = SettingsTab()
@@ -262,23 +262,18 @@ class MainWindow(QMainWindow):
             material_tab,
             bone_tab,
             morph_tab,
+            self.physics_tab,
             settings_tab,
         ]
-        if self.settings_service.is_development_mode():
-            self.tabs.insert(-1, self.physics_tab)
 
-    def _add_physics_tab(self, insert_index=None, add_to_widget=True):
-        """Create the development-only Physics tab and add it to the tab widget."""
+    def _add_physics_tab(self):
+        """Create the Physics tab and add it to the tab widget."""
         from .translations import UITranslator
 
         translator = UITranslator.instance()
         physics_tab = PhysicsTab()
         self.physics_presenter = PhysicsPresenter(physics_tab, self.app_state)
-        if add_to_widget:
-            if insert_index is None:
-                self.tab_widget.addTab(physics_tab, translator.translate("physics", "tabs"))
-            else:
-                self.tab_widget.insertTab(insert_index, physics_tab, translator.translate("physics", "tabs"))
+        self.tab_widget.addTab(physics_tab, translator.translate("physics", "tabs"))
         self.physics_tab = physics_tab
         return physics_tab
 
@@ -299,39 +294,10 @@ class MainWindow(QMainWindow):
         """Development Mode 依存の UI 表示を現在のウィンドウへ再適用する。"""
         if hasattr(self, "import_export_tab"):
             self.import_export_tab._apply_dev_mode_visibility()
-        MainWindow._sync_physics_tab_visibility(self)
 
         from mmd_tools.plugin_main import install_mmd_menu
 
         install_mmd_menu()
-
-    def _sync_physics_tab_visibility(self):
-        """Show the existing Physics tab only in Development Mode."""
-        physics_tab = getattr(self, "physics_tab", None)
-        if physics_tab is None:
-            return
-        current_index = self.tab_widget.indexOf(physics_tab)
-        should_show = self.settings_service.is_development_mode()
-        if should_show and current_index < 0:
-            settings_tab = getattr(self, "settings_presenter", None)
-            settings_view = getattr(settings_tab, "view", None)
-            settings_index = self.tab_widget.indexOf(settings_view) if settings_view is not None else -1
-            insert_index = settings_index if settings_index >= 0 else self.tab_widget.count()
-            from .translations import UITranslator
-
-            self.tab_widget.insertTab(
-                insert_index,
-                physics_tab,
-                UITranslator.instance().translate("physics", "tabs"),
-            )
-            tabs = getattr(self, "tabs", None)
-            if isinstance(tabs, list) and physics_tab not in tabs:
-                tabs.insert(max(len(tabs) - 1, 0), physics_tab)
-        elif not should_show and current_index >= 0:
-            self.tab_widget.removeTab(current_index)
-            tabs = getattr(self, "tabs", None)
-            if isinstance(tabs, list) and physics_tab in tabs:
-                tabs.remove(physics_tab)
 
     def retranslate_all_tabs(self):
         """すべてのタブのUIテキストを再翻訳"""

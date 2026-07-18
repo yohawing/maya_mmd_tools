@@ -14,7 +14,6 @@ from ..qt_compat import (
     QLineEdit,
     QSpinBox,
     QDoubleSpinBox,
-    QAbstractSpinBox,
     QSlider,
     QGridLayout,
     Signal,
@@ -28,30 +27,29 @@ from .translation_registry import apply_translation_registry
 
 
 class Vec3Editor(QWidget):
-    """Compact, axis-labelled vector editor with a line-edit compatible API."""
+    """Axis-labelled vector editor matching the other authoring tabs."""
 
     valueChanged = Signal()
 
     def __init__(self, minimum=-1_000_000.0, maximum=1_000_000.0, decimals=4, parent=None):
         super().__init__(parent)
-        layout = QHBoxLayout(self)
+        layout = QGridLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(3)
+        layout.setHorizontalSpacing(4)
+        layout.setVerticalSpacing(0)
+        self.axis_labels = []
         self.spins = []
-        no_buttons = getattr(
-            getattr(QAbstractSpinBox, "ButtonSymbols", QAbstractSpinBox),
-            "NoButtons",
-        )
-        for _axis in "XYZ":
+        for column, axis in enumerate("XYZ"):
+            label = QLabel(f"{axis}:")
             spin = QDoubleSpinBox()
             spin.setRange(minimum, maximum)
             spin.setDecimals(decimals)
             spin.setSingleStep(0.1)
             spin.setKeyboardTracking(False)
-            spin.setButtonSymbols(no_buttons)
-            spin.setMinimumWidth(52)
             spin.valueChanged.connect(lambda _value: self.valueChanged.emit())
-            layout.addWidget(spin, 1)
+            layout.addWidget(label, 0, column * 2)
+            layout.addWidget(spin, 0, column * 2 + 1)
+            self.axis_labels.append(label)
             self.spins.append(spin)
 
     def values(self):
@@ -82,8 +80,10 @@ class Vec3Editor(QWidget):
 
     def setComponentCount(self, count):
         """Show only the leading components used by the current PMX shape."""
-        for index, spin in enumerate(self.spins):
-            spin.setVisible(index < int(count))
+        for index, (label, spin) in enumerate(zip(self.axis_labels, self.spins)):
+            visible = index < int(count)
+            label.setVisible(visible)
+            spin.setVisible(visible)
 
 
 class ScalarSliderEditor(QWidget):

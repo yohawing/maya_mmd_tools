@@ -93,16 +93,15 @@ class TestMainWindow(GuiTestBase):
         # タブウィジェットが存在する
         self.assertIsNotNone(self.window.tab_widget)
 
-        # Physics is constructed for the presenter lifecycle but is not exposed
-        # outside Development Mode.
-        self.assertEqual(self.window.tab_widget.count(), 6)
-        self.assertEqual(self.window.tab_widget.indexOf(self.window.physics_tab), -1)
+        # Physics is available in normal mode as well as Development Mode.
+        self.assertEqual(self.window.tab_widget.count(), 7)
+        self.assertEqual(self.window.tab_widget.indexOf(self.window.physics_tab), 5)
 
         # 各タブのタイトルを確認（翻訳辞書から期待値を導出し、UI 言語に依存しない）
         from mmd_tools.ui.translations import UITranslator
 
         translator = UITranslator.instance()
-        tab_keys = ["file_io", "info", "material", "bone", "morph", "settings"]
+        tab_keys = ["file_io", "info", "material", "bone", "morph", "physics", "settings"]
         expected_titles = [translator.translate(key, "tabs") for key in tab_keys]
 
         for i, title in enumerate(expected_titles):
@@ -124,9 +123,9 @@ class TestMainWindow(GuiTestBase):
         self.assertIsNotNone(self.window.physics_presenter)
         self.assertIsNotNone(self.window.settings_presenter)
 
-    def test_physics_tab_is_exposed_only_in_development_mode(self):
+    def test_physics_tab_is_exposed_in_development_mode(self):
         """
-        Physics tab is exposed only in Development Mode.
+        Physics tab remains exposed in Development Mode.
         """
         from mmd_tools import settings as _s
 

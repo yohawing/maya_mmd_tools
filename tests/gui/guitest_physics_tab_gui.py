@@ -161,12 +161,24 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertEqual(tab.rigid_shape_size_edit.values(), (0.5, 1.0, 1.5))
             self.assertEqual(len(tab.rigid_shape_size_edit.spins), 3)
             self.assertEqual(
+                [label.text() for label in tab.rigid_shape_size_edit.axis_labels],
+                ["X:", "Y:", "Z:"],
+            )
+            self.assertEqual(
                 [not spin.isHidden() for spin in tab.rigid_shape_size_edit.spins],
+                [True, True, False],
+            )
+            self.assertEqual(
+                [not label.isHidden() for label in tab.rigid_shape_size_edit.axis_labels],
                 [True, True, False],
             )
             tab.rigid_shape_combo.setCurrentIndex(0)
             self.assertEqual(
                 [not spin.isHidden() for spin in tab.rigid_shape_size_edit.spins],
+                [True, False, False],
+            )
+            self.assertEqual(
+                [not label.isHidden() for label in tab.rigid_shape_size_edit.axis_labels],
                 [True, False, False],
             )
             tab.rigid_shape_combo.setCurrentIndex(1)
@@ -278,7 +290,7 @@ class TestPhysicsTabGUI(GuiTestBase):
         status_messages = []
         app_state = SimpleNamespace(current_model_root=root, emit_status=status_messages.append)
         tab = PhysicsTab()
-        presenter = PhysicsPresenter(tab, app_state)
+        _presenter = PhysicsPresenter(tab, app_state)
         try:
             QApplication.processEvents()
             for button in (tab.create_btn, tab.duplicate_btn, tab.delete_btn):
