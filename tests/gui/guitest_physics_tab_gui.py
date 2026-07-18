@@ -152,10 +152,11 @@ class TestPhysicsTabGUI(GuiTestBase):
             QApplication.processEvents()
             self.assertFalse(tab.rigid_body_form_group.isHidden())
             self.assertTrue(tab.joint_form_group.isHidden())
+            self.assertFalse(tab.physics_details_content.isEnabled())
             self.assertEqual(tab.rigid_name_edit.text(), "右髪２")
             self.assertEqual(tab.rigid_shape_combo.currentIndex(), 2)
             self.assertEqual(tab.rigid_mass_edit.text(), "0.5")
-            self.assertTrue(tab.rigid_mass_edit.isEnabled())
+            self.assertFalse(tab.rigid_mass_edit.isEnabled())
             self.assertEqual(tab.rigid_shape_size_edit.values(), (0.5, 1.0, 1.5))
             self.assertEqual(len(tab.rigid_shape_size_edit.spins), 3)
             self.assertEqual(
@@ -212,7 +213,7 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertTrue(tab.rigid_body_form_group.isHidden())
             self.assertFalse(tab.joint_form_group.isHidden())
             self.assertEqual(tab.joint_type_spin.text(), "Spring 6DOF")
-            self.assertTrue(tab.joint_rotation_max_edit.isEnabled())
+            self.assertFalse(tab.joint_rotation_max_edit.isEnabled())
             self.assertEqual(tab.joint_position_edit.values(), (4.0, 5.0, 6.0))
             self.assertEqual(tab.joint_body_a_combo.objectName(), "jointRigidBodyACombo")
             self.assertEqual(tab.joint_body_b_combo.objectName(), "jointRigidBodyBCombo")
@@ -270,7 +271,7 @@ class TestPhysicsTabGUI(GuiTestBase):
         root = _import_fixture(FIXTURE_PATH, "Base")
         app_state = SimpleNamespace(current_model_root=root, emit_status=lambda _message: None)
         tab = PhysicsTab()
-        _presenter = PhysicsPresenter(tab, app_state)
+        presenter = PhysicsPresenter(tab, app_state)
         try:
             QApplication.processEvents()
             for button in (tab.create_btn, tab.duplicate_btn, tab.delete_btn):
@@ -287,6 +288,9 @@ class TestPhysicsTabGUI(GuiTestBase):
 
             tab.rigid_body_list.setCurrentRow(0)
             QApplication.processEvents()
+            self.assertFalse(tab.physics_details_content.isEnabled())
+            self.assertFalse(tab.apply_btn.isEnabled())
+            self.assertFalse(tab.reset_btn.isEnabled())
             for button in (tab.create_btn, tab.duplicate_btn, tab.delete_btn):
                 self.assertTrue(button.isHidden())
             rigid_shape = _shape_from_item(tab.rigid_body_list.currentItem())
@@ -323,7 +327,7 @@ class TestPhysicsTabGUI(GuiTestBase):
             tab.rigid_angular_damping_edit.setText(str(rigid_values["angularDamping"]))
             tab.rigid_restitution_edit.setText(str(rigid_values["restitution"]))
             tab.rigid_friction_edit.setText(str(rigid_values["friction"]))
-            tab.apply_btn.click()
+            presenter.apply_changes()
             QApplication.processEvents()
             for attr, expected in rigid_values.items():
                 actual = cmds.getAttr(f"{rigid_shape}.{attr}")
@@ -342,7 +346,7 @@ class TestPhysicsTabGUI(GuiTestBase):
                     self.assertAlmostEqual(actual, expected, places=5, msg=f"undo.{attr}")
                 else:
                     self.assertEqual(actual, expected, f"undo.{attr}")
-            tab.apply_btn.click()
+            presenter.apply_changes()
             QApplication.processEvents()
 
             cmds.select(clear=True)
@@ -391,7 +395,7 @@ class TestPhysicsTabGUI(GuiTestBase):
             tab.joint_rotation_max_edit.setText("11, 12, 13")
             tab.joint_spring_translation_edit.setText("2.1, 2.2, 2.3")
             tab.joint_spring_rotation_edit.setText("3.1, 3.2, 3.3")
-            tab.apply_btn.click()
+            presenter.apply_changes()
             QApplication.processEvents()
             self.assertEqual(cmds.getAttr(f"{joint_shape}.nameJp"), "UI編集ジョイント")
             self.assertEqual(cmds.getAttr(f"{joint_shape}.nameEn"), "UIEditedJoint")
@@ -406,7 +410,7 @@ class TestPhysicsTabGUI(GuiTestBase):
                     self.assertAlmostEqual(actual, expected, places=5, msg=f"undo.{attr}")
                 else:
                     self.assertEqual(actual, expected, f"undo.{attr}")
-            tab.apply_btn.click()
+            presenter.apply_changes()
             QApplication.processEvents()
 
             before_export = ExportSceneCollector().collect_from_model_root(root)

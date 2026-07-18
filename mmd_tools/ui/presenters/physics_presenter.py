@@ -496,6 +496,7 @@ class PhysicsPresenter:
         self._set_apply_reset_enabled(True)
 
     def _set_apply_reset_enabled(self, enabled):
+        enabled = bool(enabled and getattr(self.view, "AUTHORING_ENABLED", True))
         for btn_name in ("apply_btn", "reset_btn", "delete_btn", "duplicate_btn"):
             btn = getattr(self.view, btn_name, None)
             if btn is not None:

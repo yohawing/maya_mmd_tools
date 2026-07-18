@@ -195,6 +195,8 @@ class CollisionGroupsEditor(QWidget):
 
 
 class PhysicsTab(BaseTab):
+    AUTHORING_ENABLED = False
+
     _TRANSLATION_REGISTRY = (
         ("physics_objects_group", "setTitle", "physics_objects", "groups"),
         ("refresh_btn", "setText", "refresh", "buttons"),
@@ -564,8 +566,8 @@ class PhysicsTab(BaseTab):
             self._update_rigid_shape_size_editor(values["shape"])
 
     def set_physics_details_enabled(self, enabled):
-        """Enable or disable the read-only details content."""
-        self.physics_details_content.setEnabled(enabled)
+        """Expose physics details without enabling unsupported authoring."""
+        self.physics_details_content.setEnabled(bool(enabled and self.AUTHORING_ENABLED))
 
     def retranslateUi(self):
         """Re-apply translation registry and tab titles on language change."""
