@@ -10,6 +10,8 @@ import time
 import argparse
 import logging
 import re
+import shutil
+import tempfile
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -98,6 +100,9 @@ def main():
 
     maya_process = None
     command_port_ready = False
+    maya_app_dir = Path(tempfile.mkdtemp(prefix=f"maya_mmd_tools_gui_{args.maya_version}_"))
+    maya_launched = False
+    maya_exited = False
     try:
         # 1. Find and launch Maya
         maya_exe = maya_commandport.maya_exe(args.maya_version)
@@ -110,7 +115,11 @@ def main():
             # On Windows this deliberately uses launch_maya's Explorer route:
             # direct child startup is unreliable for Autodesk license checkout.
             launch_mode="explorer" if sys.platform == "win32" else "direct",
+            # Never let automated Maya startup read or rewrite the user's
+            # Documents/maya preferences (pluginPrefs.mel, userPrefs.mel, etc.).
+            env_overrides={"MAYA_APP_DIR": str(maya_app_dir)},
         )
+        maya_launched = True
         maya_commandport.wait_for_port(COMMAND_PORT, MAYA_START_TIMEOUT, maya_process)
         command_port_ready = True
 
@@ -149,13 +158,28 @@ GuiTestRunner.run_tests_from_command(log_path, test_dir)
                 maya_commandport.quit_maya(COMMAND_PORT)
                 if maya_process:
                     maya_process.wait(timeout=30)
+                else:
+                    maya_commandport.wait_for_port_close(COMMAND_PORT, timeout=30)
+                maya_exited = True
             except Exception as e:
                 if maya_process:
                     logger.warning("Failed to quit owned Maya process gracefully, killing it: %s", e)
                     maya_process.kill()
+                    maya_process.wait(timeout=30)
+                    maya_exited = True
                 else:
                     logger.warning("Failed to request Explorer-launched Maya quit: %s", e)
+        elif maya_process:
+            if maya_process.poll() is None:
+                logger.warning("Maya never opened its commandPort; terminating the owned test process.")
+                maya_process.kill()
+                maya_process.wait(timeout=30)
+            maya_exited = True
         maya_commandport.close_process_logs(maya_process)
+        if maya_exited or not maya_launched:
+            shutil.rmtree(maya_app_dir, ignore_errors=True)
+        else:
+            logger.warning("Keeping isolated Maya profile for the still-running test process: %s", maya_app_dir)
 
     logger.info("GUI test run finished successfully.")
     return 0

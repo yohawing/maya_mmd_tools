@@ -44,6 +44,16 @@ def wait_for_port(port: int, timeout: float, process: Optional[subprocess.Popen]
     raise TimeoutError(f"Timed out waiting for commandPort :{port}")
 
 
+def wait_for_port_close(port: int, timeout: float) -> None:
+    """Wait until the owned Maya commandPort is no longer accepting connections."""
+    start = time.time()
+    while time.time() - start < timeout:
+        if not is_port_open(port):
+            return
+        time.sleep(0.25)
+    raise TimeoutError(f"Timed out waiting for commandPort :{port} to close")
+
+
 def send_python(port: int, code: str, label: str = "<maya-commandport>") -> None:
     """Send Python code through commandPort as one compiled exec payload.
 

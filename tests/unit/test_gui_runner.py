@@ -87,13 +87,19 @@ class GuiTestRunnerTests(unittest.TestCase):
              mock.patch.object(run_gui_tests.maya_commandport, "wait_for_port"), \
              mock.patch.object(run_gui_tests.maya_commandport, "send_python"), \
              mock.patch.object(run_gui_tests.maya_commandport, "quit_maya") as quit_maya, \
+             mock.patch.object(run_gui_tests.maya_commandport, "wait_for_port_close") as wait_for_port_close, \
              mock.patch.object(run_gui_tests.maya_commandport, "close_process_logs"), \
              mock.patch.object(run_gui_tests, "monitor_log_file", return_value="PASS"), \
+             mock.patch.object(run_gui_tests, "LOG_FILE_NAME", "unit_gui_runner_pass.log"), \
              mock.patch.object(sys, "argv", ["run_gui_tests.py"]):
             self.assertEqual(0, run_gui_tests.main())
 
         self.assertEqual("explorer" if sys.platform == "win32" else "direct", launch.call_args.kwargs["launch_mode"])
+        maya_app_dir = Path(launch.call_args.kwargs["env_overrides"]["MAYA_APP_DIR"])
+        self.assertTrue(maya_app_dir.is_absolute())
+        self.assertFalse(maya_app_dir.exists())
         quit_maya.assert_called_once_with(run_gui_tests.COMMAND_PORT)
+        wait_for_port_close.assert_called_once_with(run_gui_tests.COMMAND_PORT, timeout=30)
 
     def test_host_returns_one_for_completed_failure(self):
         with mock.patch.object(run_gui_tests.maya_commandport, "maya_exe", return_value=Path("maya.exe")), \
@@ -101,10 +107,27 @@ class GuiTestRunnerTests(unittest.TestCase):
              mock.patch.object(run_gui_tests.maya_commandport, "wait_for_port"), \
              mock.patch.object(run_gui_tests.maya_commandport, "send_python"), \
              mock.patch.object(run_gui_tests.maya_commandport, "quit_maya"), \
+             mock.patch.object(run_gui_tests.maya_commandport, "wait_for_port_close"), \
              mock.patch.object(run_gui_tests.maya_commandport, "close_process_logs"), \
              mock.patch.object(run_gui_tests, "monitor_log_file", return_value="FAIL"), \
+             mock.patch.object(run_gui_tests, "LOG_FILE_NAME", "unit_gui_runner_fail.log"), \
              mock.patch.object(sys, "argv", ["run_gui_tests.py"]):
             self.assertEqual(1, run_gui_tests.main())
+
+    def test_startup_failure_removes_profile_after_direct_process_exits(self):
+        process = mock.MagicMock()
+        process.poll.return_value = 1
+        with mock.patch.object(run_gui_tests.maya_commandport, "maya_exe", return_value=Path("maya.exe")), \
+             mock.patch.object(run_gui_tests.maya_commandport, "launch_maya", return_value=process) as launch, \
+             mock.patch.object(run_gui_tests.maya_commandport, "wait_for_port", side_effect=RuntimeError("startup failed")), \
+             mock.patch.object(run_gui_tests.maya_commandport, "close_process_logs"), \
+             mock.patch.object(run_gui_tests, "LOG_FILE_NAME", "unit_gui_runner_startup_failure.log"), \
+             mock.patch.object(sys, "argv", ["run_gui_tests.py"]):
+            self.assertEqual(1, run_gui_tests.main())
+
+        maya_app_dir = Path(launch.call_args.kwargs["env_overrides"]["MAYA_APP_DIR"])
+        self.assertFalse(maya_app_dir.exists())
+        process.kill.assert_not_called()
 
 
 def load_tests(loader, tests, pattern):

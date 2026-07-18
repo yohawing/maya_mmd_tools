@@ -9,6 +9,17 @@ from tests.common import maya_commandport
 
 
 class TestMayaCommandPort(unittest.TestCase):
+    def test_wait_for_port_close_polls_until_closed(self):
+        with mock.patch.object(
+            maya_commandport,
+            "is_port_open",
+            side_effect=[True, True, False],
+        ) as is_port_open, mock.patch.object(maya_commandport.time, "sleep") as sleep:
+            maya_commandport.wait_for_port_close(7788, timeout=5)
+
+        self.assertEqual(is_port_open.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
     def test_launch_maya_explorer_writes_detached_launcher(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -24,11 +35,15 @@ class TestMayaCommandPort(unittest.TestCase):
                     output_dir=output,
                     port=7788,
                     launch_mode="explorer",
-                    env_overrides={"MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceGLCore"},
+                    env_overrides={
+                        "MAYA_APP_DIR": str(root / "isolated-maya-app"),
+                        "MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceGLCore",
+                    },
                 )
             self.assertIsNone(result)
             self.assertIn('commandPort -name ":7788"', (output / "commandport_7788.mel").read_text(encoding="utf-8"))
             batch = (output / "launch_maya_2025_7788.bat").read_text(encoding="utf-8")
+            self.assertIn(f"MAYA_APP_DIR={root / 'isolated-maya-app'}", batch)
             self.assertIn("MAYA_VP2_DEVICE_OVERRIDE=VirtualDeviceGLCore", batch)
             self.assertEqual("explorer.exe", run.call_args.args[0][0])
 
