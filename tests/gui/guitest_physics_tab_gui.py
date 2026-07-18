@@ -310,20 +310,6 @@ class TestPhysicsTabGUI(GuiTestBase):
                 )
             }
             rigid_version_before = cmds.getAttr(f"{rigid_shape}.outDescriptorVersion")
-            tab.rigid_mass_edit.setText("not-a-number")
-            tab.apply_btn.click()
-            QApplication.processEvents()
-            self.assertTrue(status_messages)
-            self.assertIn("Mass", status_messages[-1])
-            self.assertAlmostEqual(
-                cmds.getAttr(f"{rigid_shape}.mass"), rigid_original["mass"], places=5
-            )
-            tab.reset_btn.click()
-            QApplication.processEvents()
-            self.assertAlmostEqual(float(tab.rigid_mass_edit.text()), rigid_original["mass"])
-            self.assertAlmostEqual(
-                cmds.getAttr(f"{rigid_shape}.mass"), rigid_original["mass"], places=5
-            )
             rigid_values = {
                 "nameJp": "UI編集剛体",
                 "nameEn": "UIEditedRigid",
@@ -407,6 +393,46 @@ class TestPhysicsTabGUI(GuiTestBase):
             )
             joint_original = {attr: cmds.getAttr(f"{joint_shape}.{attr}") for attr in joint_attrs}
             joint_version_before = cmds.getAttr(f"{joint_shape}.outDescriptorVersion")
+            # ScalarSliderEditor rejects malformed text before it reaches the
+            # presenter, so use an actual user-reachable invalid joint form.
+            # A lower translation limit above its upper limit must fail closed;
+            # Reset must restore the selected joint's authored values.
+            status_count_before = len(status_messages)
+            tab.joint_translation_min_edit.setText("1, 0, 0")
+            tab.joint_translation_max_edit.setText("0, 0, 0")
+            tab.apply_btn.click()
+            QApplication.processEvents()
+            self.assertGreater(len(status_messages), status_count_before)
+            self.assertTrue(status_messages[-1])
+            for attr, expected in joint_original.items():
+                actual = cmds.getAttr(f"{joint_shape}.{attr}")
+                if isinstance(expected, float):
+                    self.assertAlmostEqual(actual, expected, places=5, msg=f"invalid.{attr}")
+                else:
+                    self.assertEqual(actual, expected, f"invalid.{attr}")
+            self.assertEqual(
+                cmds.getAttr(f"{joint_shape}.outDescriptorVersion"), joint_version_before
+            )
+            tab.reset_btn.click()
+            QApplication.processEvents()
+            for actual, expected in zip(
+                tab.joint_translation_min_edit.values(),
+                (
+                    joint_original["translationLimitMinX"],
+                    joint_original["translationLimitMinY"],
+                    joint_original["translationLimitMinZ"],
+                ),
+            ):
+                self.assertAlmostEqual(actual, expected, places=5)
+            for actual, expected in zip(
+                tab.joint_translation_max_edit.values(),
+                (
+                    joint_original["translationLimitMaxX"],
+                    joint_original["translationLimitMaxY"],
+                    joint_original["translationLimitMaxZ"],
+                ),
+            ):
+                self.assertAlmostEqual(actual, expected, places=5)
             tab.joint_name_edit.setText("UI編集ジョイント")
             tab.joint_name_english_edit.setText("UIEditedJoint")
             tab.joint_type_combo.setCurrentIndex(2)

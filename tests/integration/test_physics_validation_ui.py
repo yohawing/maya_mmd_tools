@@ -25,7 +25,9 @@ class _Translator:
     def translate(self, key, category):
         return {
             ("mass", "fields"): "Mass:",
+            ("translation_limit_min", "fields"): "Translation Min:",
             ("physics_validation_minimum", "messages"): "must be at least {minimum}",
+            ("physics_validation_maximum", "messages"): "must be at most {maximum}",
             ("physics_validation_error", "messages"): "{field}: {reason}",
         }[(key, category)]
 
@@ -41,6 +43,23 @@ class TestPhysicsValidationUI(unittest.TestCase):
             message = presenter._report_validation_error(error)
 
         self.assertEqual(message, "Mass: must be at least 0.0")
+        self.assertEqual(status_messages, [message])
+        warning.assert_called_once_with(message)
+
+    def test_componentwise_limit_error_uses_existing_localized_maximum_message(self):
+        status_messages = []
+        presenter = object.__new__(PhysicsPresenter)
+        presenter.app_state = SimpleNamespace(emit_status=status_messages.append)
+        error = PhysicsFormValidationError(
+            "translation_limit_min",
+            "physics_validation_maximum",
+            maximum=0.0,
+        )
+
+        with patch.object(UITranslator, "instance", return_value=_Translator()), patch.object(cmds, "warning") as warning:
+            message = presenter._report_validation_error(error)
+
+        self.assertEqual(message, "Translation Min: must be at most 0.0")
         self.assertEqual(status_messages, [message])
         warning.assert_called_once_with(message)
 

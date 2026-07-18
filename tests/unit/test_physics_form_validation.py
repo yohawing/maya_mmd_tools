@@ -139,6 +139,43 @@ class TestJointFormValidation(unittest.TestCase):
                 self.assertEqual(caught.exception.field_key, field)
                 self.assertEqual(caught.exception.message_key, message_key)
 
+    def test_rejects_componentwise_translation_and_rotation_limit_inversions(self):
+        cases = (
+            ("translation_limit_min", "translation_limit_max", "2, -2, -3", "translation_limit_min", 1.0),
+            ("translation_limit_min", "translation_limit_max", "-1, 3, -3", "translation_limit_min", 2.0),
+            ("translation_limit_min", "translation_limit_max", "-1, -2, 4", "translation_limit_min", 3.0),
+            (
+                "rotation_limit_min_degrees",
+                "rotation_limit_max_degrees",
+                "11, -20, -30",
+                "rotation_limit_min_degrees",
+                10.0,
+            ),
+            (
+                "rotation_limit_min_degrees",
+                "rotation_limit_max_degrees",
+                "-10, 21, -30",
+                "rotation_limit_min_degrees",
+                20.0,
+            ),
+            (
+                "rotation_limit_min_degrees",
+                "rotation_limit_max_degrees",
+                "-10, -20, 31",
+                "rotation_limit_min_degrees",
+                30.0,
+            ),
+        )
+        for lower_key, _upper_key, lower_value, expected_field, maximum in cases:
+            with self.subTest(lower_key=lower_key, lower_value=lower_value):
+                values = _joint_values()
+                values[lower_key] = lower_value
+                with self.assertRaises(PhysicsFormValidationError) as caught:
+                    parse_joint_form(values)
+                self.assertEqual(caught.exception.field_key, expected_field)
+                self.assertEqual(caught.exception.message_key, "physics_validation_maximum")
+                self.assertEqual(caught.exception.params, {"maximum": maximum})
+
 
 class TestPhysicsValidationTranslations(unittest.TestCase):
     def test_all_locales_define_form_validation_messages(self):

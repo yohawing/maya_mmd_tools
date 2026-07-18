@@ -81,6 +81,20 @@ def parse_rigid_body_form(values: Mapping[str, Any]) -> RigidBodyFormValues:
 
 def parse_joint_form(values: Mapping[str, Any]) -> JointFormValues:
     """Return typed joint values or raise a structured validation error."""
+    translation_limit_min = _number_vector(values, "translation_limit_min")
+    translation_limit_max = _number_vector(values, "translation_limit_max")
+    rotation_limit_min_degrees = _number_vector(values, "rotation_limit_min_degrees")
+    rotation_limit_max_degrees = _number_vector(values, "rotation_limit_max_degrees")
+    _validate_componentwise_lower_limits(
+        translation_limit_min,
+        translation_limit_max,
+        "translation_limit_min",
+    )
+    _validate_componentwise_lower_limits(
+        rotation_limit_min_degrees,
+        rotation_limit_max_degrees,
+        "rotation_limit_min_degrees",
+    )
     return JointFormValues(
         name=_text(values, "name"),
         name_english=_text(values, "name_english"),
@@ -101,10 +115,10 @@ def parse_joint_form(values: Mapping[str, Any]) -> JointFormValues:
             minimum=0,
             maximum=2,
         ),
-        translation_limit_min=_number_vector(values, "translation_limit_min"),
-        translation_limit_max=_number_vector(values, "translation_limit_max"),
-        rotation_limit_min_degrees=_number_vector(values, "rotation_limit_min_degrees"),
-        rotation_limit_max_degrees=_number_vector(values, "rotation_limit_max_degrees"),
+        translation_limit_min=translation_limit_min,
+        translation_limit_max=translation_limit_max,
+        rotation_limit_min_degrees=rotation_limit_min_degrees,
+        rotation_limit_max_degrees=rotation_limit_max_degrees,
         spring_translation=_number_vector(values, "spring_translation"),
         spring_rotation=_number_vector(values, "spring_rotation"),
         spring_translation_enabled=_bool_vector(values, "spring_translation_enabled"),
@@ -188,6 +202,17 @@ def _number_vector(values, field_key, *, minimum=None):
 def _bool_vector(values, field_key):
     parts = _vector_parts(_raw(values, field_key), field_key)
     return tuple(_parse_bool(part, field_key) for part in parts)
+
+
+def _validate_componentwise_lower_limits(lower, upper, field_key: str) -> None:
+    """Reject a lower limit that exceeds its matching upper-limit component."""
+    for lower_value, upper_value in zip(lower, upper):
+        if lower_value > upper_value:
+            raise PhysicsFormValidationError(
+                field_key,
+                "physics_validation_maximum",
+                maximum=upper_value,
+            )
 
 
 def _vector_parts(value, field_key):
