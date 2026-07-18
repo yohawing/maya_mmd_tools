@@ -202,8 +202,6 @@ class PhysicsTab(BaseTab):
         ("joint_search_edit", "setPlaceholderText", "search_joints", "placeholders"),
         ("apply_btn", "setText", "apply", "buttons"),
         ("reset_btn", "setText", "reset", "buttons"),
-        ("rigid_node_select_btn", "setText", "select", "buttons"),
-        ("joint_node_select_btn", "setText", "select", "buttons"),
     )
 
     def __init__(self, parent=None):
@@ -390,7 +388,6 @@ class PhysicsTab(BaseTab):
             ("rigid_friction", "friction"),
         ):
             self._add_editor_row(layout, label_key, key, self._physics_editors[key][1])
-        self._add_node_row(layout, "rigid_node")
         group.setLayout(layout)
         return group
 
@@ -436,27 +433,8 @@ class PhysicsTab(BaseTab):
             "joint_spring_rotation",
         ):
             self._add_editor_row(layout, self._physics_editors[key][0], key, self._physics_editors[key][1])
-        self._add_node_row(layout, "joint_node")
         group.setLayout(layout)
         return group
-
-    def _add_node_row(self, layout, key):
-        label = QLabel(self.tr("node", "fields"))
-        value = QLineEdit()
-        value.setReadOnly(True)
-        setattr(self, f"{key}_edit", value)
-        select_btn = QPushButton(self.tr("select", "buttons"))
-        select_btn.setMaximumWidth(60)
-        setattr(self, f"{key}_select_btn", select_btn)
-        row_widget = QWidget()
-        row_layout = QHBoxLayout(row_widget)
-        row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.setSpacing(4)
-        row_layout.addWidget(value, 1)
-        row_layout.addWidget(select_btn)
-        self._form_labels[key] = ("node", label)
-        self._physics_editors[key] = ("node", value)
-        layout.addRow(label, row_widget)
 
     def _line_editor(self, key, field_key):
         editor = QLineEdit()

@@ -165,11 +165,6 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertAlmostEqual(tab.rigid_mass_edit.value(), 0.5)
             self.assertEqual(tab.rigid_mass_edit.slider.maximum(), 1000)
             self.assertEqual(tab.rigid_related_bone_combo.objectName(), "rigidRelatedBoneCombo")
-            self.assertTrue(tab.rigid_node_edit.isReadOnly())
-            self.assertEqual(
-                tab.rigid_node_select_btn.text(),
-                UITranslator.instance().translate("select", "buttons"),
-            )
             self.assertEqual(tab.binding_selection("rigid_related_bone"), (bone, 4))
             tab.set_physics_form("rigid", {"related_bone": (bone, 999)})
             self.assertEqual(tab.binding_selection("rigid_related_bone"), (bone, 4))
@@ -277,10 +272,6 @@ class TestPhysicsTabGUI(GuiTestBase):
             for button in (tab.create_btn, tab.duplicate_btn, tab.delete_btn):
                 self.assertTrue(button.isHidden())
             rigid_shape = _shape_from_item(tab.rigid_body_list.currentItem())
-            cmds.select(clear=True)
-            tab.rigid_node_select_btn.click()
-            QApplication.processEvents()
-            self.assertIn(rigid_shape, cmds.ls(selection=True, long=True) or [])
             rigid_original = {
                 attr: cmds.getAttr(f"{rigid_shape}.{attr}")
                 for attr in (

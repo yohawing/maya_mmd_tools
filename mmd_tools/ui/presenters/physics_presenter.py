@@ -178,16 +178,6 @@ class PhysicsPresenter:
         if reset_btn is not None:
             reset_btn.clicked.connect(self.reset_changes)
 
-        for button_name in ("rigid_node_select_btn", "joint_node_select_btn"):
-            button = getattr(self.view, button_name, None)
-            if button is not None:
-                button.clicked.connect(self.select_current_node)
-
-    def select_current_node(self):
-        """Select the shape represented by the current Physics form."""
-        shape = self._current_shape
-        if shape and cmds.objExists(shape):
-            cmds.select(shape, replace=True)
 
     def on_current_model_changed(self, model_root):
         reload_for_current_model_change(logger, "PhysicsPresenter", model_root, lambda: self.refresh_physics(force=True))
