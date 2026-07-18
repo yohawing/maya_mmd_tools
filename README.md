@@ -51,6 +51,7 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 - **Rig mode is experimental for complex motion parity.** It keeps editable sparse keys plus live `mmdCcdIk` / `mmdAppend` nodes, but complex joint-orient, IK, append, and local-axis cases may not match Bake mode or MMD mesh deformation exactly.
 - **Physics authoring is not live physics.** It is off by default and limited to editing imported rigid bodies/joints, authoring/rest-pose Collider display and visibility, and development-mode PMX export/re-import. The scene-wide world enable control does not make live simulation supported.
 - **Physics object creation is not available.** Create, duplicate, and delete controls remain hidden. Controller/IK/arbitrary-key pre-physics poses, animated Collider collision, hair/skirt live collision, random scrubbing, and physics caches are unsupported.
+- **Duplicating a model root does not clone live physics.** Import another model or use a reference when an independently simulated copy is required.
 - **Native physics bake is a separate feature.** VMD Bake mode does not make the authoring view a live simulator.
 
 ## System Requirements

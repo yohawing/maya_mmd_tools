@@ -53,6 +53,7 @@ MMDのリグの再現及び、アニメーションのインポート・編集�
 - **リグモードは複雑なモーションの一致性が未保証です。** sparse key と live `mmdCcdIk` / `mmdAppend` ノードを保持して編集しやすくしますが、jointOrient、IK、付与、ローカル軸を含むケースでは、ベイクモードや MMD のメッシュ変形と完全には一致しない場合があります。
 - **Physics authoringはlive physicsではありません。** 既定OFFで、import済み剛体・ジョイントの編集、authoring/rest poseのCollider表示・visibility、Development ModeのPMX export/re-importに限定されます。scene-wide world enable UIが存在してもlive simulation対応を意味しません。
 - **物理objectの新規作成は未対応です。** create/duplicate/delete UIは非表示です。Controller/IK/arbitrary key由来のpre-physics pose、animated Collider collision、hair/skirt live collision、random scrub、physics cacheは非対応です。
+- **モデルrootの複製ではlive物理は複製されません。** 独立してsimulationするモデルが必要な場合は、別モデルとしてimportするかreferenceを使用してください。
 - **native physics bakeは別機能です。** VMDベイクモードはauthoring viewをlive simulatorにするものではありません。
 
 ## システム要件

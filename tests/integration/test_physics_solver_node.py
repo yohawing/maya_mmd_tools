@@ -939,14 +939,14 @@ class TestSolverLifecycle(MayaTestBase):
         super().tearDownClass()
 
     def _setup_solver(self):
-        _, _, solver = _import_payload_free_scene(FIXTURE_PATH)
+        root, _, solver = _import_payload_free_scene(FIXTURE_PATH)
         _connect_enabled_world(solver)
         cmds.currentUnit(time="ntsc")
-        return solver
+        return root, solver
 
     def test_new_scene_after_solve(self):
         """Opening a new scene after solver was active doesn't crash."""
-        solver = self._setup_solver()
+        _root, solver = self._setup_solver()
         cmds.currentTime(0)
         _ = cmds.getAttr(f"{solver}.outSolved")
         for frame in range(1, 6):
@@ -954,13 +954,14 @@ class TestSolverLifecycle(MayaTestBase):
             _ = cmds.getAttr(f"{solver}.outSolved")
 
         cmds.file(new=True, force=True)
-        self.assertFalse(cmds.objExists("testSolver"))
+        self.assertFalse(cmds.objExists(solver))
 
     def test_save_open_reinitializes(self):
         """Solver reinitializes correctly after save/open cycle."""
-        solver = self._setup_solver()
+        root, solver = self._setup_solver()
         cmds.currentTime(0)
         _ = cmds.getAttr(f"{solver}.outSolved")
+        root_name = root.rsplit("|", 1)[-1]
 
         scene_path = self.get_temp_filename("solver_lifecycle.ma")
         cmds.file(rename=scene_path)
@@ -968,36 +969,43 @@ class TestSolverLifecycle(MayaTestBase):
 
         cmds.file(scene_path, open=True, force=True)
 
-        if not cmds.objExists("testSolver"):
-            self.skipTest("Solver node not preserved after save/open")
+        reopened_roots = cmds.ls(root_name, long=True) or []
+        self.assertEqual(len(reopened_roots), 1, "Model root must survive save/open")
+        reopened_root = reopened_roots[0]
+        reopened_solvers = cmds.listConnections(
+            f"{reopened_root}.message",
+            source=False,
+            destination=True,
+            type="mmdPhysicsSolver",
+        ) or []
+        self.assertEqual(len(reopened_solvers), 1, "Solver must survive save/open")
+        reopened_solver = reopened_solvers[0]
 
         cmds.currentTime(0)
-        solved = cmds.getAttr("testSolver.outSolved")
+        solved = cmds.getAttr(f"{reopened_solver}.outSolved")
         self.assertTrue(solved, "Solver should reinitialize after scene open")
-        bone_count = cmds.getAttr("testSolver.outBoneCount")
+        bone_count = cmds.getAttr(f"{reopened_solver}.outBoneCount")
         self.assertEqual(bone_count, len(self.pmx.bones))
 
-    def test_duplicate_scene(self):
-        """Solver handles scene duplication without crash."""
-        solver = self._setup_solver()
+    def test_model_root_duplicate_is_explicitly_unsupported(self):
+        """Duplicating a model root does not claim an independent live solver."""
+        root, solver = self._setup_solver()
         cmds.currentTime(0)
         _ = cmds.getAttr(f"{solver}.outSolved")
 
-        scene_path = self.get_temp_filename("solver_dup.ma")
-        cmds.file(rename=scene_path)
-        cmds.file(save=True, type="mayaAscii", force=True)
-
-        cmds.file(scene_path, open=True, force=True)
-        if not cmds.objExists("testSolver"):
-            self.skipTest("Solver not in duplicated scene")
-
-        cmds.currentTime(0)
-        solved = cmds.getAttr("testSolver.outSolved")
-        self.assertTrue(solved)
+        duplicate_root = cmds.duplicate(root, name="unsupported_physics_duplicate")[0]
+        duplicate_solvers = cmds.listConnections(
+            f"{duplicate_root}.message",
+            source=False,
+            destination=True,
+            type="mmdPhysicsSolver",
+        ) or []
+        self.assertEqual(duplicate_solvers, [])
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
 
     def test_reference_scene_no_crash(self):
         """Referencing a scene containing a solver node doesn't crash."""
-        solver = self._setup_solver()
+        _root, solver = self._setup_solver()
         cmds.currentTime(0)
         _ = cmds.getAttr(f"{solver}.outSolved")
         for frame in range(1, 6):
@@ -1020,7 +1028,7 @@ class TestSolverLifecycle(MayaTestBase):
 
     def test_unload_plugin_no_crash(self):
         """Unloading and reloading the plugin doesn't crash."""
-        solver = self._setup_solver()
+        _root, solver = self._setup_solver()
         cmds.currentTime(0)
         _ = cmds.getAttr(f"{solver}.outSolved")
         for frame in range(1, 6):
