@@ -150,6 +150,73 @@ class TestRigConverterMaya(unittest.TestCase):
         self.assertIn(expected_ik_detail, debug_messages)
         self.assertNotIn(expected_ik_detail, info_messages)
 
+    def test_native_ik_link_preserves_rotation_append_as_solver_input(self):
+        """回転付与先が IK link でも append を pre-IK 入力へ引き継ぐ。"""
+        cmds.select(clear=True)
+        root = cmds.joint(name="append_ik_root", position=[0.0, 0.0, 0.0])
+        cmds.select(root)
+        source = cmds.joint(name="append_ik_source", position=[0.0, 1.0, 0.0])
+        cmds.select(source)
+        link = cmds.joint(name="append_ik_link", position=[1.0, 1.0, 0.0])
+        cmds.select(link)
+        target = cmds.joint(name="append_ik_target", position=[2.0, 1.0, 0.0])
+        cmds.select(root)
+        controller = cmds.joint(name="append_ik_controller", position=[2.0, 2.0, 0.0])
+        maya_joints = [root, source, link, target, controller]
+        manifest = RigManifest({
+            "boneCount": 5,
+            "bones": [
+                {"parentIndex": -1, "restPosition": [0.0, 0.0, 0.0]},
+                {"parentIndex": 0, "restPosition": [0.0, 1.0, 0.0]},
+                {"parentIndex": 1, "restPosition": [1.0, 1.0, 0.0]},
+                {"parentIndex": 2, "restPosition": [2.0, 1.0, 0.0]},
+                {"parentIndex": 0, "restPosition": [2.0, 2.0, 0.0]},
+            ],
+            "grants": [{
+                "targetBoneIndex": 2,
+                "sourceBoneIndex": 1,
+                "ratio": 0.5,
+                "affectRotation": True,
+                "affectTranslation": False,
+                "local": False,
+            }],
+            "ikChains": [{
+                "controllerBoneIndex": 4,
+                "targetBoneIndex": 3,
+                "links": [{"boneIndex": 2}],
+                "iterationCount": 4,
+                "limitAngle": 1.0,
+            }],
+        })
+
+        accepted_grants = self.converter._accepted_native_grants(manifest, maya_joints)
+        append_nodes = self.converter._create_append_nodes_from_manifest(
+            manifest, maya_joints, accepted_grants=accepted_grants
+        )
+        ik_nodes = self.converter._create_ik_nodes_from_manifest(
+            manifest, maya_joints, accepted_grants=accepted_grants
+        )
+
+        self.assertEqual(len(append_nodes), 1)
+        self.assertEqual(len(ik_nodes), 1)
+        append_node = append_nodes[0]
+        ik_node = ik_nodes[0]
+        chain = json.loads(cmds.getAttr(f"{ik_node}.chainJson"))
+        link_slot = chain["links"][0]["bone_slot"]
+        self.assertEqual(
+            cmds.listConnections(
+                f"{ik_node}.inputRotate[{link_slot}]",
+                source=True,
+                destination=False,
+                plugs=True,
+            ),
+            [f"{append_node}.outputRotate"],
+        )
+        self.assertEqual(
+            cmds.listConnections(f"{link}.rotate", source=True, destination=False, plugs=True),
+            [f"{ik_node}.outputRotate[0]"],
+        )
+
     def test_extract_ik_chains_pmx(self):
         """PMXボーンからのIKチェーン抽出テスト"""
         # IKボーンの作成

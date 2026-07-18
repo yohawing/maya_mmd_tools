@@ -1284,7 +1284,13 @@ class RigConverter:
         slot_to_pmx: Dict[int, int],
         maya_joints: List[str],
     ) -> None:
-        """Connect native IK output rotations to link joints."""
+        """Connect native IK output rotations to link joints.
+
+        Append is built before IK, so a PMX bone that is both a rotation-grant
+        target and an IK link already has ``mmdAppend.outputRotate`` connected
+        to ``joint.rotate`` here.  Preserve that pre-IK contribution by moving
+        it to the link's solver input before replacing the joint connection.
+        """
         for link_i, link_slot in enumerate(link_slots):
             pmx_idx = slot_to_pmx.get(link_slot, -1)
             if pmx_idx < 0 or pmx_idx >= len(maya_joints):
@@ -1292,6 +1298,18 @@ class RigConverter:
             link_joint = maya_joints[pmx_idx]
             if not maya_scene_utils.object_exists(link_joint):
                 continue
+
+            compound_sources = cmds.listConnections(
+                f"{link_joint}.rotate", s=True, d=False, p=True
+            ) or []
+            for source in compound_sources:
+                source_node = source.split(".", 1)[0]
+                if cmds.nodeType(source_node) == self._append_node_type():
+                    cmds.connectAttr(source, f"{node}.inputRotate[{link_slot}]")
+                try:
+                    cmds.disconnectAttr(source, f"{link_joint}.rotate")
+                except Exception:
+                    pass
 
             for axis in ("X", "Y", "Z"):
                 src = cmds.listConnections(f"{link_joint}.rotate{axis}", s=True, d=False, p=True)
