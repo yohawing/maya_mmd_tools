@@ -127,6 +127,47 @@ class TestPhysicsDagParity(MayaTestBase):
         )
         self.assertEqual(dag_desc_set.identity_hash, self.pmx_desc_set.identity_hash)
 
+    def test_non_contiguous_pmx_indices_map_to_dense_native_slots(self):
+        root, maya_joints, rb_transforms, jt_transforms = self._build_dag_scene()
+        source_to_shifted = {}
+        for source_index, transform in enumerate(rb_transforms):
+            shape = cmds.listRelatives(transform, shapes=True, type="mmdRigidBodyShape")[0]
+            shifted_index = source_index * 2 + 10
+            source_to_shifted[source_index] = shifted_index
+            cmds.setAttr(f"{shape}.pmxIndex", shifted_index)
+
+        for transform in jt_transforms:
+            shape = cmds.listRelatives(transform, shapes=True, type="mmdPhysicsJointShape")[0]
+            for attr in ("rigidBodyAIndex", "rigidBodyBIndex"):
+                source_index = cmds.getAttr(f"{shape}.{attr}")
+                if source_index >= 0:
+                    cmds.setAttr(f"{shape}.{attr}", source_to_shifted[source_index])
+
+        dag_desc_set = build_descriptors_from_dag(
+            root, bone_joints=maya_joints, bone_count=len(self.pmx.bones),
+        )
+        for dag_joint, pmx_joint in zip(dag_desc_set.joints, self.pmx.joints):
+            if pmx_joint.rigid_body_a_index >= 0:
+                self.assertEqual(dag_joint.rigidbody_a, pmx_joint.rigid_body_a_index)
+            if pmx_joint.rigid_body_b_index >= 0:
+                self.assertEqual(dag_joint.rigidbody_b, pmx_joint.rigid_body_b_index)
+
+    def test_missing_rigid_body_reference_fails_closed(self):
+        root, maya_joints, _rb_transforms, jt_transforms = self._build_dag_scene()
+        shape = cmds.listRelatives(
+            jt_transforms[0], shapes=True, type="mmdPhysicsJointShape"
+        )[0]
+        cmds.setAttr(f"{shape}.rigidBodyAIndex", 9999)
+
+        dag_desc_set = build_descriptors_from_dag(
+            root, bone_joints=maya_joints, bone_count=len(self.pmx.bones),
+        )
+        self.assertFalse(dag_desc_set.is_valid)
+        self.assertTrue(any(
+            error.kind == "joint" and error.field == "rigidbody_a_pmx_index"
+            for error in dag_desc_set.validation_errors
+        ))
+
     def test_dag_descriptor_uses_persisted_rest_position_not_current_pose(self):
         root, maya_joints, _, _ = self._build_dag_scene()
         for joint, bone in zip(maya_joints, self.pmx.bones):

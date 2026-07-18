@@ -207,6 +207,8 @@ class TestSolverRigidBodyVisualCache(unittest.TestCase):
         )
         self.assertIn("pmxIndex", src)
         self.assertIn("mmdRigidBodyShape", src)
+        self.assertIn("enumerate(indexed_shapes)", src)
+        self.assertIn("_rb_shape_paths[dense_index]", src)
 
 
 # ---------------------------------------------------------------------------

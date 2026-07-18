@@ -140,6 +140,20 @@ def build_descriptors_from_dag(
     hash_parts: List[bytes] = []
 
     rb_pairs = _find_shapes(rb_group, "mmdRigidBodyShape") if rb_group else []
+    rb_index_to_dense: dict[int, int] = {}
+    for dense_index, (_transform, shape) in enumerate(rb_pairs):
+        source_index = int(_get_attr(shape, "pmxIndex", -1))
+        if source_index < 0:
+            errors.append(DescriptorValidationError(
+                dense_index, "rigid_body", "pmx_index", f"invalid pmxIndex {source_index}",
+            ))
+        elif source_index in rb_index_to_dense:
+            errors.append(DescriptorValidationError(
+                dense_index, "rigid_body", "pmx_index", f"duplicate pmxIndex {source_index}",
+            ))
+        else:
+            rb_index_to_dense[source_index] = dense_index
+
     for i, (_transform, shape) in enumerate(rb_pairs):
         shape_type = int(_get_attr(shape, "shapeType", 0))
         shape_size = _get_vector(shape, "shapeSize")
@@ -216,8 +230,20 @@ def build_descriptors_from_dag(
         spring_trans = _get_vector(shape, "springTranslation")
         spring_rot = _get_vector(shape, "springRotation")
 
-        rb_a_index = int(_get_attr(shape, "rigidBodyAIndex", -1))
-        rb_b_index = int(_get_attr(shape, "rigidBodyBIndex", -1))
+        rb_a_source_index = int(_get_attr(shape, "rigidBodyAIndex", -1))
+        rb_b_source_index = int(_get_attr(shape, "rigidBodyBIndex", -1))
+        rb_a_index = rb_index_to_dense.get(rb_a_source_index, -1)
+        rb_b_index = rb_index_to_dense.get(rb_b_source_index, -1)
+        if rb_a_source_index >= 0 and rb_a_index < 0:
+            errors.append(DescriptorValidationError(
+                i, "joint", "rigidbody_a_pmx_index",
+                f"missing rigid body pmxIndex {rb_a_source_index}",
+            ))
+        if rb_b_source_index >= 0 and rb_b_index < 0:
+            errors.append(DescriptorValidationError(
+                i, "joint", "rigidbody_b_pmx_index",
+                f"missing rigid body pmxIndex {rb_b_source_index}",
+            ))
 
         errs = validate_joint_fields(
             i, jt_kind, rb_a_index, rb_b_index, rb_count,
@@ -228,8 +254,8 @@ def build_descriptors_from_dag(
 
         desc = MmdRuntimeFfiPhysicsJointDesc()
         desc.kind = jt_kind
-        desc.rigidbody_a = max(0, min(rb_a_index, rb_count - 1)) if rb_count > 0 else 0
-        desc.rigidbody_b = max(0, min(rb_b_index, rb_count - 1)) if rb_count > 0 else 0
+        desc.rigidbody_a = rb_a_index if rb_a_index >= 0 else 0
+        desc.rigidbody_b = rb_b_index if rb_b_index >= 0 else 0
         _set_float3(desc.position_xyz, position)
         _set_float3(desc.rotation_euler_xyz, rotation)
         _set_float3(desc.translation_lower_limit_xyz, trans_min)

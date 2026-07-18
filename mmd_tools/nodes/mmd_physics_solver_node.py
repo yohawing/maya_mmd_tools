@@ -229,6 +229,14 @@ class MmdPhysicsSolverNode(om.MPxNode):
                 bone_joints=bone_joints,
                 bone_count=len(bone_joints),
             )
+            fatal_fields = {
+                "pmx_index",
+                "rigidbody_a_pmx_index",
+                "rigidbody_b_pmx_index",
+            }
+            if any(error.field in fatal_fields for error in world_descriptors.validation_errors):
+                self._initialized = True
+                return
             model_descriptors = build_model_descriptors_from_dag(model_root)
         except Exception:
             self._initialized = True
@@ -409,7 +417,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
             self._instance.apply_physics_world_matrices(flat, mask)
 
     def _build_rigid_body_shape_mapping(self, model_root: str) -> None:
-        """Build pmxIndex → shape DAG path mapping for visual cache updates."""
+        """Build dense native state index → shape DAG path mapping."""
         from maya import cmds
 
         try:
@@ -438,20 +446,24 @@ class MmdPhysicsSolverNode(om.MPxNode):
             rb_transforms = cmds.listRelatives(
                 rb_group, children=True, fullPath=True, type="transform",
             ) or []
+            indexed_shapes = []
             for xform in rb_transforms:
                 shapes = cmds.listRelatives(
                     xform, shapes=True, fullPath=True, type="mmdRigidBodyShape",
                 ) or []
                 for shape in shapes:
-                    idx = cmds.getAttr(f"{shape}.pmxIndex")
-                    if idx >= 0:
-                        self._rb_shape_paths[idx] = shape
-                        try:
-                            sel = om.MSelectionList()
-                            sel.add(shape)
-                            self._rb_shape_mobjects[idx] = sel.getDependNode(0)
-                        except Exception:
-                            pass
+                    source_index = cmds.getAttr(f"{shape}.pmxIndex")
+                    if source_index >= 0:
+                        indexed_shapes.append((source_index, shape))
+            indexed_shapes.sort(key=lambda item: item[0])
+            for dense_index, (_source_index, shape) in enumerate(indexed_shapes):
+                self._rb_shape_paths[dense_index] = shape
+                try:
+                    sel = om.MSelectionList()
+                    sel.add(shape)
+                    self._rb_shape_mobjects[dense_index] = sel.getDependNode(0)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -465,17 +477,17 @@ class MmdPhysicsSolverNode(om.MPxNode):
         from mmd_tools.core.coordinate_transform import mmd_point_to_maya
         import maya.api.OpenMayaRender as omr
 
-        for pmx_idx, shape_path in self._rb_shape_paths.items():
-            if pmx_idx >= len(states):
+        for dense_index, shape_path in self._rb_shape_paths.items():
+            if dense_index >= len(states):
                 continue
-            pos_mmd, quat_xyzw_mmd = states[pmx_idx]
+            pos_mmd, quat_xyzw_mmd = states[dense_index]
             pos_maya = mmd_point_to_maya(pos_mmd)
             qx, qy, qz, qw = quat_xyzw_mmd
             tmat = om.MTransformationMatrix()
             tmat.setTranslation(om.MVector(*pos_maya), om.MSpace.kWorld)
             tmat.setRotation(om.MQuaternion(-qx, -qy, qz, qw))
             _SIMULATED_RB_CACHE[shape_path] = tmat.asMatrix()
-            mob = self._rb_shape_mobjects.get(pmx_idx)
+            mob = self._rb_shape_mobjects.get(dense_index)
             if mob is not None and not mob.isNull():
                 try:
                     omr.MRenderer.setGeometryDrawDirty(mob)
