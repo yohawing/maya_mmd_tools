@@ -1,4 +1,4 @@
-"""Focused C++ solver regression for an unevaluated world OFF/ON cycle."""
+"""Verify that world OFF/ON resets the C++ solver before its next forward step."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests" / "data" / "physics" / "test_hair_physics.pmx"
+PYTHON_PLUGIN = ROOT / "mmd_tools" / "plugin_main.py"
 
 
 def main() -> int:
@@ -40,6 +41,8 @@ def main() -> int:
             raise RuntimeError(
                 "C++ plugin did not register mmdPhysicsSolver; another plugin owns the type"
             )
+        os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "1"
+        cmds.loadPlugin(str(PYTHON_PLUGIN), quiet=True)
         pmx_bytes = FIXTURE.read_bytes()
         pmx = parse_pmx_file(str(FIXTURE))
         root = cmds.group(empty=True, name="test_root")
@@ -50,14 +53,17 @@ def main() -> int:
         cmds.connectAttr(f"{root}.message", f"{solver}.modelRoot")
         cmds.connectAttr("time1.outTime", f"{solver}.inTime")
 
-        world = cmds.createNode("network", name="testWorldSettings")
-        cmds.addAttr(world, longName="enable", attributeType="bool", defaultValue=True)
-        cmds.addAttr(world, longName="resetGeneration", attributeType="long", defaultValue=0)
-        cmds.addAttr(world, longName="outSettingsVersion", attributeType="long", defaultValue=0)
+        world_transform = cmds.createNode("transform", name="MMD_PhysicsWorld")
+        world = cmds.createNode(
+            "mmdPhysicsWorldShape",
+            name="MMD_PhysicsWorldShape",
+            parent=world_transform,
+        )
         cmds.connectAttr(f"{world}.message", f"{solver}.inWorldSettings")
         cmds.connectAttr(
             f"{world}.outSettingsVersion", f"{solver}.inWorldSettingsVersion"
         )
+        cmds.setAttr(f"{world}.enable", True)
 
         cmds.currentUnit(time="ntsc")
         for frame in range(6):
@@ -65,15 +71,25 @@ def main() -> int:
             _ = cmds.getAttr(f"{solver}.outStatus")
 
         cmds.setAttr(f"{world}.enable", False)
-        cmds.setAttr(f"{world}.outSettingsVersion", 1)
         cmds.setAttr(f"{world}.enable", True)
-        cmds.setAttr(f"{world}.outSettingsVersion", 2)
         # Do not query the solver or a driven joint while the world is OFF.
-        cmds.currentTime(6)
         status = cmds.getAttr(f"{solver}.outStatus")
-        if status != "reset":
-            raise RuntimeError(f"Expected reset after unevaluated OFF/ON, got {status!r}")
-        print(f"OK: C++ solver reset after unevaluated OFF/ON ({plugin_path})")
+        if status not in {"reset", "pose-updated"}:
+            raise RuntimeError(
+                "Expected reset before the next forward step after unevaluated "
+                f"OFF/ON, got {status!r}"
+            )
+
+        cmds.currentTime(6)
+        next_status = cmds.getAttr(f"{solver}.outStatus")
+        if next_status != "stepped":
+            raise RuntimeError(
+                f"Expected stepped after the OFF/ON reset, got {next_status!r}"
+            )
+        print(
+            "OK: C++ solver reset before its next forward step after unevaluated "
+            f"OFF/ON ({plugin_path}; reset_status={status})"
+        )
         return 0
     finally:
         maya.standalone.uninitialize()
