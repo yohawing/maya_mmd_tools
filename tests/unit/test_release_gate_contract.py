@@ -40,6 +40,33 @@ import noxfile
 
 
 class ReleaseGateContractTest(unittest.TestCase):
+    def test_cpp_verify_mayapy_processes_skip_user_setup(self):
+        class FakeSession:
+            posargs = ["--maya", "2024", "--config", "Release"]
+
+            def __init__(self):
+                self.runs = []
+
+            def run(self, *args, **kwargs):
+                self.runs.append((args, kwargs))
+
+        session = FakeSession()
+        mayapy = Path("C:/Program Files/Autodesk/Maya2024/bin/mayapy.exe")
+        mayapy_env = {"MAYA_SKIP_USERSETUP_PY": "1"}
+        with mock.patch("noxfile._configure_bullet3_dir"):
+            with mock.patch("noxfile._cmake_configure"):
+                with mock.patch("noxfile._cmake_build"):
+                    with mock.patch("noxfile._run_cli_smoke"):
+                        with mock.patch("noxfile._mayapy", return_value=mayapy):
+                            with mock.patch("pathlib.Path.exists", return_value=True):
+                                with mock.patch("noxfile._mayapy_env", return_value=mayapy_env) as env_mock:
+                                    noxfile.cpp_verify(session)
+
+        self.assertEqual(env_mock.call_args.kwargs["MAYA_SKIP_USERSETUP_PY"], "1")
+        mayapy_runs = [kwargs for args, kwargs in session.runs if args and args[0] == str(mayapy)]
+        self.assertEqual(len(mayapy_runs), 2)
+        self.assertTrue(all(run["env"] is mayapy_env for run in mayapy_runs))
+
     def test_mmd_anim_pin_check_rejects_checkout_head_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

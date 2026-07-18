@@ -2185,6 +2185,7 @@ def cpp_verify(session: nox.Session) -> None:
     env = _mayapy_env(
         mayapy,
         MAYA_VERSION=version,
+        MAYA_SKIP_USERSETUP_PY="1",
         MMD_TOOLS_CPP_CONFIG=config,
         MMD_ANIM_FFI_PATH=runtime_env["MMD_ANIM_FFI_PATH"],
     )
