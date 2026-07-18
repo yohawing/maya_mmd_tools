@@ -192,7 +192,7 @@ class TestPhysicsTabGUI(GuiTestBase):
                 {
                     "name": "右髪２",
                     "name_english": "HairJointR2",
-                    "joint_type": "Spring 6DOF",
+                    "joint_type": 0,
                     "rigid_body_a": (body_a, 1),
                     "rigid_body_b": (body_b, 2),
                     "pmx_position": "4, 5, 6",
@@ -212,7 +212,12 @@ class TestPhysicsTabGUI(GuiTestBase):
             QApplication.processEvents()
             self.assertTrue(tab.rigid_body_form_group.isHidden())
             self.assertFalse(tab.joint_form_group.isHidden())
-            self.assertEqual(tab.joint_type_spin.text(), "Spring 6DOF")
+            self.assertEqual(tab.joint_type_combo.currentIndex(), 0)
+            self.assertEqual(
+                tab.joint_type_combo.currentText(),
+                tab.tr("physics_joint_spring_6dof", "options"),
+            )
+            self.assertEqual(tab.joint_type_combo.count(), 6)
             self.assertFalse(tab.joint_rotation_max_edit.isEnabled())
             self.assertEqual(tab.joint_position_edit.values(), (4.0, 5.0, 6.0))
             self.assertEqual(tab.joint_body_a_combo.objectName(), "jointRigidBodyACombo")
@@ -388,7 +393,7 @@ class TestPhysicsTabGUI(GuiTestBase):
             joint_version_before = cmds.getAttr(f"{joint_shape}.outDescriptorVersion")
             tab.joint_name_edit.setText("UI編集ジョイント")
             tab.joint_name_english_edit.setText("UIEditedJoint")
-            tab.joint_type_spin.setText("2")
+            tab.joint_type_combo.setCurrentIndex(2)
             tab.joint_translation_min_edit.setText("-1.1, -1.2, -1.3")
             tab.joint_translation_max_edit.setText("1.1, 1.2, 1.3")
             tab.joint_rotation_min_edit.setText("-11, -12, -13")

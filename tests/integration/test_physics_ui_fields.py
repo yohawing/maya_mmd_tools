@@ -82,7 +82,7 @@ def _joint_view(position, rotation):
     return SimpleNamespace(
         joint_name_edit=_Line("UI field joint"),
         joint_name_english_edit=_Line("UIFieldJoint"),
-        joint_type_spin=_Line("0"),
+        joint_type_combo=_Combo(0),
         joint_position_edit=_Line(", ".join(map(str, position))),
         joint_rotation_edit=_Line(", ".join(map(str, rotation))),
         joint_translation_min_edit=_Line("-1.1, -1.2, -1.3"),

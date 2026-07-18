@@ -239,7 +239,13 @@
     "physics_shape_capsule": "カプセル",
     "physics_mode_bone": "ボーン追従",
     "physics_mode_physics": "物理演算",
-    "physics_mode_physics_bone": "物理演算 + ボーン"
+    "physics_mode_physics_bone": "物理演算 + ボーン",
+    "physics_joint_spring_6dof": "バネ付き6DOF（標準）",
+    "physics_joint_6dof": "6DOF",
+    "physics_joint_p2p": "P2P（点結合）",
+    "physics_joint_cone_twist": "Cone Twist（錐回転）",
+    "physics_joint_slider": "Slider（軸移動）",
+    "physics_joint_hinge": "Hinge（軸回転）"
   },
   "settings": {
     "general": "一般設定",

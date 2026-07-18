@@ -180,7 +180,13 @@
     "physics_shape_capsule": "膠囊體",
     "physics_mode_bone": "骨骼跟隨",
     "physics_mode_physics": "物理",
-    "physics_mode_physics_bone": "物理 + 骨骼"
+    "physics_mode_physics_bone": "物理 + 骨骼",
+    "physics_joint_spring_6dof": "彈簧6DOF（標準）",
+    "physics_joint_6dof": "6DOF",
+    "physics_joint_p2p": "P2P（點連接）",
+    "physics_joint_cone_twist": "Cone Twist（錐形旋轉）",
+    "physics_joint_slider": "Slider（軸向移動）",
+    "physics_joint_hinge": "Hinge（軸向旋轉）"
   },
   "settings": {
     "general": "一般設定",

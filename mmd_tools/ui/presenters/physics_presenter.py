@@ -553,7 +553,7 @@ class PhysicsPresenter:
         return {
             "name": _get_attr(shape, "nameJp", "") or "",
             "name_english": _get_attr(shape, "nameEn", "") or "",
-            "joint_type": str(_get_attr(shape, "jointType", 0)),
+            "joint_type": int(_get_attr(shape, "jointType", 0)),
             "rigid_body_a": (rb_a, rb_a_idx),
             "rigid_body_b": (rb_b, rb_b_idx),
             "pmx_position": _get_vector_str(shape, "position"),
@@ -659,7 +659,7 @@ class PhysicsPresenter:
         return {
             "name": v.joint_name_edit.text(),
             "name_english": v.joint_name_english_edit.text(),
-            "joint_type": v.joint_type_spin.text(),
+            "joint_type": v.joint_type_combo.currentIndex(),
             "rigid_body_a": self._selected_binding(
                 "joint_body_a", shape, "rigidBodyA", "rigidBodyAIndex"
             )[1],

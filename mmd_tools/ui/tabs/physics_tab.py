@@ -415,7 +415,18 @@ class PhysicsTab(BaseTab):
         layout = QFormLayout()
         self.joint_name_edit = self._line_editor("joint_name", "name")
         self.joint_name_english_edit = self._line_editor("joint_name_english", "name_english")
-        self.joint_type_spin = self._line_editor("joint_type", "joint_type")
+        self.joint_type_combo = self._combo_editor(
+            "joint_type",
+            "joint_type",
+            [
+                "physics_joint_spring_6dof",
+                "physics_joint_6dof",
+                "physics_joint_p2p",
+                "physics_joint_cone_twist",
+                "physics_joint_slider",
+                "physics_joint_hinge",
+            ],
+        )
         self.joint_body_a_combo = self._binding_editor(
             "joint_body_a", "rigid_body_a", "jointRigidBodyACombo"
         )
