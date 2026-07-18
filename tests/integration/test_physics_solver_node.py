@@ -15,7 +15,7 @@ from maya import cmds
 
 from tests.common.maya_test_base import MayaTestBase
 
-from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX, ATTR_MMD_SOURCE_PMX_PAYLOAD
+from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.native.mmd_anim_runtime import is_native_physics_available
 
@@ -39,10 +39,6 @@ def _import_payload_free_scene(pmx_file):
         str(pmx_file),
         options={"import_physics": True, "create_mmd_shaders": False},
     )
-    if cmds.attributeQuery(ATTR_MMD_SOURCE_PMX_PAYLOAD, node=root, exists=True):
-        raise AssertionError(
-            f"payload-free import persisted {ATTR_MMD_SOURCE_PMX_PAYLOAD}: {root}"
-        )
     solvers = cmds.listConnections(
         f"{root}.message", source=False, destination=True, type="mmdPhysicsSolver"
     ) or []
@@ -277,10 +273,6 @@ class TestPhysicsSolverNode(MayaTestBase):
             changed_joint_count,
             0,
             "At least one physics-driven Maya joint should move after 30 forward steps",
-        )
-        self.assertFalse(
-            cmds.attributeQuery(ATTR_MMD_SOURCE_PMX_PAYLOAD, node=root, exists=True),
-            "payload-free live solver must not depend on mmd_source_pmx_payload",
         )
 
 
@@ -924,8 +916,8 @@ class TestSolverLifecycle(MayaTestBase):
         status = cmds.getAttr(f"{solver}.outStatus")
         self.assertEqual(status, "no physics data")
 
-    def test_model_root_without_payload_graceful(self):
-        """Solver with model root but no PMX payload outputs not-solved."""
+    def test_model_root_without_physics_metadata_graceful(self):
+        """Solver with model root but no physics metadata outputs not-solved."""
         root = cmds.group(empty=True, name="test_root")
         solver = cmds.createNode("mmdPhysicsSolver", name="testSolver")
         cmds.connectAttr(f"{root}.message", f"{solver}.modelRoot")

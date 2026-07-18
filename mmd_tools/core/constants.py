@@ -60,7 +60,6 @@ ATTR_MMD_ORIGINAL_TEXTURE_PATH = "mmd_original_texture_path"
 ATTR_MMD_TEXTURE_UNRESOLVED = "mmd_texture_unresolved"
 ATTR_MMD_TEXTURE_CACHE_PATH = "mmd_texture_cache_path"
 ATTR_MMD_SOURCE_MODEL_PATH = "mmd_source_model_path"
-ATTR_MMD_SOURCE_PMX_PAYLOAD = "mmd_source_pmx_payload"
 # blendShape ノードに保存する「weight index → 元モーフ名」対応（JSON 文字列）。
 # 頂点モーフは alias を sanitize_text で生成するため lossy だが、これは VMD/PMX が
 # 参照する生のモーフ名 (PmxMorph.name) を権威キーとして保持し、正確なマッピングを保証する。

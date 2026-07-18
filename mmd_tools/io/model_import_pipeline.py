@@ -156,10 +156,6 @@ class ModelImportPipeline:
             len([t for t in jt_transforms if t]),
             elapsed,
         )
-        # Kept as a compatibility hook for callers that monkeypatch the
-        # legacy payload writer.  New imports are descriptor-backed and this
-        # method intentionally performs no scene mutation.
-        self._store_source_pmx_payload(root_group)
         live_graph = build_physics_live_graph(
             rigid_bodies=rigid_bodies,
             bones=getattr(parser, "bones", None) or [],
@@ -199,10 +195,6 @@ class ModelImportPipeline:
                 "live_physics_supported": False,
             }
         return rb_transforms, jt_transforms
-
-    def _store_source_pmx_payload(self, root_group: str) -> None:
-        """Deprecated compatibility hook; payload-free imports do not write bytes."""
-        self.logger.debug("Skipping legacy PMX payload storage on %s", root_group)
 
     def create_light_controller(self) -> Optional[str]:
         """Create the shared MMD light controller when enabled."""

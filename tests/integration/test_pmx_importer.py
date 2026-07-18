@@ -15,7 +15,6 @@ from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.core.constants import (
     ATTR_MMD_DISPLAY_FRAMES_JSON,
     ATTR_MMD_PMX_REST_POSITION,
-    ATTR_MMD_SOURCE_PMX_PAYLOAD,
 )
 from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.native.mmd_anim_runtime import is_native_physics_available
@@ -398,10 +397,6 @@ class TestPmxImporter(MayaTestBase):
 
         descriptors = build_model_descriptors_from_dag(root)
         self.assertEqual(len(descriptors.bones), len(parser.bones))
-        self.assertFalse(
-            cmds.attributeQuery(ATTR_MMD_SOURCE_PMX_PAYLOAD, node=root, exists=True),
-            "new imports must not persist a source PMX payload",
-        )
         cmds.setAttr(f"{world_shapes[0]}.enable", True)
         cmds.currentTime(1)
         self.assertTrue(

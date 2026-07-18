@@ -14,7 +14,6 @@ from typing import Optional, Sequence
 
 from maya import cmds
 
-from mmd_tools.core.constants import ATTR_MMD_SOURCE_PMX_PAYLOAD
 from mmd_tools.core.coordinate_transform import mmd_matrix_to_maya
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.native.mmd_anim_runtime import is_native_physics_available
@@ -30,23 +29,6 @@ from mmd_tools.core.physics_dag_descriptor import build_descriptors_from_dag
 from mmd_tools.core.model_dag_descriptor import build_model_descriptors_from_dag
 
 logger = get_logger(__name__)
-
-
-def read_source_pmx_payload(root_group: str) -> Optional[bytes]:
-    """Read the stored PMX payload from the model root, or None if absent."""
-    import base64
-
-    if not cmds.objExists(root_group):
-        return None
-    if not cmds.attributeQuery(ATTR_MMD_SOURCE_PMX_PAYLOAD, node=root_group, exists=True):
-        return None
-    try:
-        data = cmds.getAttr(f"{root_group}.{ATTR_MMD_SOURCE_PMX_PAYLOAD}")
-        if not data:
-            return None
-        return base64.b64decode(data)
-    except Exception:
-        return None
 
 
 def _collect_bone_joints(root_group: str) -> list[Optional[str]]:

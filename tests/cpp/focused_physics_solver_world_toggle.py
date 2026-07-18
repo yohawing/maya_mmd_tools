@@ -52,8 +52,6 @@ def main() -> int:
             raise RuntimeError(f"unexpected physics graph: solvers={solver_nodes}, worlds={world_nodes}")
         solver = solver_nodes[0]
         world = world_nodes[0]
-        if cmds.attributeQuery("mmd_source_pmx_payload", node=root, exists=True):
-            cmds.deleteAttr(root, attribute="mmd_source_pmx_payload")
         cmds.setAttr(f"{world}.enable", True)
 
         cmds.currentUnit(time="ntsc")
@@ -78,7 +76,7 @@ def main() -> int:
                 f"Expected stepped after the OFF/ON reset, got {next_status!r}"
             )
         print(
-            "OK: Python-owned payload-free solver reset before its next forward step after unevaluated "
+            "OK: Python-owned solver reset before its next forward step after unevaluated "
             f"OFF/ON ({plugin_path}; reset_status={status})"
         )
         return 0
