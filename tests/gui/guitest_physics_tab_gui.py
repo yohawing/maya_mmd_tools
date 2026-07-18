@@ -117,6 +117,7 @@ class TestPhysicsTabGUI(GuiTestBase):
         tab = PhysicsTab()
         try:
             tab.set_physics_details_enabled(True)
+            self.assertTrue(tab.physics_details_content.isEnabled())
             bone = "|Nested:Base_root|Nested:右髪２"
             body_a = "|Nested:Base_root|Nested:Physics|Nested:RigidBodies|Nested:Body"
             body_b = "|Other:Base_root|Other:Physics|Other:RigidBodies|Other:Body"
@@ -152,11 +153,11 @@ class TestPhysicsTabGUI(GuiTestBase):
             QApplication.processEvents()
             self.assertFalse(tab.rigid_body_form_group.isHidden())
             self.assertTrue(tab.joint_form_group.isHidden())
-            self.assertFalse(tab.physics_details_content.isEnabled())
+            self.assertTrue(tab.physics_details_content.isEnabled())
             self.assertEqual(tab.rigid_name_edit.text(), "右髪２")
             self.assertEqual(tab.rigid_shape_combo.currentIndex(), 2)
             self.assertEqual(tab.rigid_mass_edit.text(), "0.5")
-            self.assertFalse(tab.rigid_mass_edit.isEnabled())
+            self.assertTrue(tab.rigid_mass_edit.isEnabled())
             self.assertEqual(tab.rigid_shape_size_edit.values(), (0.5, 1.0, 1.5))
             self.assertEqual(len(tab.rigid_shape_size_edit.spins), 3)
             self.assertEqual(
@@ -218,7 +219,7 @@ class TestPhysicsTabGUI(GuiTestBase):
                 tab.tr("physics_joint_spring_6dof", "options"),
             )
             self.assertEqual(tab.joint_type_combo.count(), 6)
-            self.assertFalse(tab.joint_rotation_max_edit.isEnabled())
+            self.assertTrue(tab.joint_rotation_max_edit.isEnabled())
             self.assertEqual(tab.joint_position_edit.values(), (4.0, 5.0, 6.0))
             self.assertEqual(tab.joint_body_a_combo.objectName(), "jointRigidBodyACombo")
             self.assertEqual(tab.joint_body_b_combo.objectName(), "jointRigidBodyBCombo")
@@ -274,7 +275,8 @@ class TestPhysicsTabGUI(GuiTestBase):
             cmds.loadPlugin(str(plugin))
 
         root = _import_fixture(FIXTURE_PATH, "Base")
-        app_state = SimpleNamespace(current_model_root=root, emit_status=lambda _message: None)
+        status_messages = []
+        app_state = SimpleNamespace(current_model_root=root, emit_status=status_messages.append)
         tab = PhysicsTab()
         presenter = PhysicsPresenter(tab, app_state)
         try:
@@ -293,9 +295,9 @@ class TestPhysicsTabGUI(GuiTestBase):
 
             tab.rigid_body_list.setCurrentRow(0)
             QApplication.processEvents()
-            self.assertFalse(tab.physics_details_content.isEnabled())
-            self.assertFalse(tab.apply_btn.isEnabled())
-            self.assertFalse(tab.reset_btn.isEnabled())
+            self.assertTrue(tab.physics_details_content.isEnabled())
+            self.assertTrue(tab.apply_btn.isEnabled())
+            self.assertTrue(tab.reset_btn.isEnabled())
             for button in (tab.create_btn, tab.duplicate_btn, tab.delete_btn):
                 self.assertTrue(button.isHidden())
             rigid_shape = _shape_from_item(tab.rigid_body_list.currentItem())
@@ -308,6 +310,20 @@ class TestPhysicsTabGUI(GuiTestBase):
                 )
             }
             rigid_version_before = cmds.getAttr(f"{rigid_shape}.outDescriptorVersion")
+            tab.rigid_mass_edit.setText("not-a-number")
+            tab.apply_btn.click()
+            QApplication.processEvents()
+            self.assertTrue(status_messages)
+            self.assertIn("Mass", status_messages[-1])
+            self.assertAlmostEqual(
+                cmds.getAttr(f"{rigid_shape}.mass"), rigid_original["mass"], places=5
+            )
+            tab.reset_btn.click()
+            QApplication.processEvents()
+            self.assertAlmostEqual(float(tab.rigid_mass_edit.text()), rigid_original["mass"])
+            self.assertAlmostEqual(
+                cmds.getAttr(f"{rigid_shape}.mass"), rigid_original["mass"], places=5
+            )
             rigid_values = {
                 "nameJp": "UI編集剛体",
                 "nameEn": "UIEditedRigid",
@@ -332,7 +348,7 @@ class TestPhysicsTabGUI(GuiTestBase):
             tab.rigid_angular_damping_edit.setText(str(rigid_values["angularDamping"]))
             tab.rigid_restitution_edit.setText(str(rigid_values["restitution"]))
             tab.rigid_friction_edit.setText(str(rigid_values["friction"]))
-            presenter.apply_changes()
+            tab.apply_btn.click()
             QApplication.processEvents()
             for attr, expected in rigid_values.items():
                 actual = cmds.getAttr(f"{rigid_shape}.{attr}")
@@ -351,7 +367,7 @@ class TestPhysicsTabGUI(GuiTestBase):
                     self.assertAlmostEqual(actual, expected, places=5, msg=f"undo.{attr}")
                 else:
                     self.assertEqual(actual, expected, f"undo.{attr}")
-            presenter.apply_changes()
+            tab.apply_btn.click()
             QApplication.processEvents()
 
             cmds.select(clear=True)
@@ -400,7 +416,7 @@ class TestPhysicsTabGUI(GuiTestBase):
             tab.joint_rotation_max_edit.setText("11, 12, 13")
             tab.joint_spring_translation_edit.setText("2.1, 2.2, 2.3")
             tab.joint_spring_rotation_edit.setText("3.1, 3.2, 3.3")
-            presenter.apply_changes()
+            tab.apply_btn.click()
             QApplication.processEvents()
             self.assertEqual(cmds.getAttr(f"{joint_shape}.nameJp"), "UI編集ジョイント")
             self.assertEqual(cmds.getAttr(f"{joint_shape}.nameEn"), "UIEditedJoint")
@@ -415,7 +431,7 @@ class TestPhysicsTabGUI(GuiTestBase):
                     self.assertAlmostEqual(actual, expected, places=5, msg=f"undo.{attr}")
                 else:
                     self.assertEqual(actual, expected, f"undo.{attr}")
-            presenter.apply_changes()
+            tab.apply_btn.click()
             QApplication.processEvents()
 
             before_export = ExportSceneCollector().collect_from_model_root(root)
