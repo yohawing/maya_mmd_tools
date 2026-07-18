@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 
 from maya import cmds
+import maya.api.OpenMaya as om
+import maya.api.OpenMayaRender as omr
 
 from mmd_tools.core.collider_authoring import (
     connect_collider_authoring_follow,
@@ -26,6 +28,16 @@ from .list_presenter_helpers import (
 )
 
 logger = get_logger(__name__)
+
+
+def _mark_geometry_draw_dirty(shape):
+    """Invalidate VP2 geometry after collider authoring attributes change."""
+    try:
+        selection = om.MSelectionList()
+        selection.add(shape)
+        omr.MRenderer.setGeometryDrawDirty(selection.getDependNode(0), False)
+    except Exception:
+        logger.debug("Could not dirty collider viewport geometry: %s", shape, exc_info=True)
 
 
 def _get_attr(node, attr, default=None):
@@ -425,9 +437,15 @@ class PhysicsPresenter:
             index = int(_get_attr(shape, "pmxIndex", -1))
             name_jp = _get_attr(shape, "nameJp", "") or ""
             name_en = _get_attr(shape, "nameEn", "") or ""
-            display = f"{index}: {name_jp}"
-            if name_en:
-                display += f" [{name_en}]"
+            group = max(0, min(15, int(_get_attr(shape, "collisionGroup", 0)))) + 1
+            bone = _resolve_message_name(shape, "relatedBone")
+            bone_name = (
+                (_get_attr(bone, "mmd_bone_name", "") or "")
+                if bone else ""
+            )
+            if not bone_name and bone:
+                bone_name = bone.rsplit("|", 1)[-1].rsplit(":", 1)[-1]
+            display = f"{index}: G{group} {name_jp or name_en or transform.rsplit('|', 1)[-1]} - [{bone_name or '-'}]"
             item = QListWidgetItem(display)
             item.setData(Qt.UserRole, shape)
             rb_list.addItem(item)
@@ -751,6 +769,11 @@ class PhysicsPresenter:
             tuple(math.radians(value) for value in parsed.pmx_rotation_degrees),
             display_scale,
         )
+        _mark_geometry_draw_dirty(shape)
+        try:
+            cmds.refresh(force=True)
+        except RuntimeError:
+            logger.debug("Collider viewport refresh is unavailable", exc_info=True)
 
     def _apply_validated_joint(self, shape, parsed, bindings=None):
         bindings = bindings or {

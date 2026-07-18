@@ -80,6 +80,11 @@ class Vec3Editor(QWidget):
     def setValue(self, value):
         self.setText(value)
 
+    def setComponentCount(self, count):
+        """Show only the leading components used by the current PMX shape."""
+        for index, spin in enumerate(self.spins):
+            spin.setVisible(index < int(count))
+
 
 class ScalarSliderEditor(QWidget):
     """A precise spin box paired with a slider for fast physical tuning."""
@@ -356,6 +361,7 @@ class PhysicsTab(BaseTab):
             layout, "related_bone", "rigid_related_bone", self.rigid_related_bone_combo
         )
         self.rigid_shape_size_edit = self._vec3_editor("rigid_shape_size", "shape_size", minimum=0.0)
+        self.rigid_shape_combo.currentIndexChanged.connect(self._update_rigid_shape_size_editor)
         self.rigid_position_edit = self._vec3_editor("rigid_position", "pmx_position")
         self.rigid_rotation_edit = self._vec3_editor("rigid_rotation", "pmx_rotation_degrees", decimals=2)
         self.rigid_collision_group_spin = self._collision_groups_editor(
@@ -388,8 +394,19 @@ class PhysicsTab(BaseTab):
             ("rigid_friction", "friction"),
         ):
             self._add_editor_row(layout, label_key, key, self._physics_editors[key][1])
+        self._update_rigid_shape_size_editor(self.rigid_shape_combo.currentIndex())
         group.setLayout(layout)
         return group
+
+    def _update_rigid_shape_size_editor(self, shape_type):
+        shape_type = int(shape_type)
+        component_count = (1, 3, 2)[max(0, min(2, shape_type))]
+        field_key = ("radius", "shape_size", "radius_height")[max(0, min(2, shape_type))]
+        self.rigid_shape_size_edit.setComponentCount(component_count)
+        if "rigid_shape_size" in self._form_labels:
+            label = self._form_labels["rigid_shape_size"][1]
+            self._form_labels["rigid_shape_size"] = (field_key, label)
+            label.setText(self.tr(field_key, "fields"))
 
     def _create_joint_form(self):
         group = QGroupBox(self.tr("joint_values", "groups"))
@@ -543,6 +560,8 @@ class PhysicsTab(BaseTab):
                     editor.setValue(value)
             finally:
                 editor.blockSignals(previous)
+        if kind == "rigid" and "shape" in values:
+            self._update_rigid_shape_size_editor(values["shape"])
 
     def set_physics_details_enabled(self, enabled):
         """Enable or disable the read-only details content."""

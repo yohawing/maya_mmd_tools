@@ -158,6 +158,22 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertTrue(tab.rigid_mass_edit.isEnabled())
             self.assertEqual(tab.rigid_shape_size_edit.values(), (0.5, 1.0, 1.5))
             self.assertEqual(len(tab.rigid_shape_size_edit.spins), 3)
+            self.assertEqual(
+                [not spin.isHidden() for spin in tab.rigid_shape_size_edit.spins],
+                [True, True, False],
+            )
+            tab.rigid_shape_combo.setCurrentIndex(0)
+            self.assertEqual(
+                [not spin.isHidden() for spin in tab.rigid_shape_size_edit.spins],
+                [True, False, False],
+            )
+            tab.rigid_shape_combo.setCurrentIndex(1)
+            self.assertEqual(
+                [not spin.isHidden() for spin in tab.rigid_shape_size_edit.spins],
+                [True, True, True],
+            )
+            self.assertEqual(tab.rigid_shape_size_edit.values(), (0.5, 1.0, 1.5))
+            tab.rigid_shape_combo.setCurrentIndex(2)
             self.assertEqual(tab.rigid_collision_group_spin.value(), 1)
             self.assertEqual(tab.rigid_collision_mask_spin.value(), 2)
             self.assertEqual(len(tab.rigid_collision_group_spin.buttons), 16)
@@ -266,6 +282,7 @@ class TestPhysicsTabGUI(GuiTestBase):
             )
             self.assertEqual(tab.rigid_body_list.count(), rigid_dag_count)
             self.assertEqual(tab.joint_list.count(), joint_dag_count)
+            self.assertRegex(tab.rigid_body_list.item(0).text(), r"^\d+: G(?:[1-9]|1[0-6]) .+ - \[.+\]$")
 
             tab.rigid_body_list.setCurrentRow(0)
             QApplication.processEvents()
