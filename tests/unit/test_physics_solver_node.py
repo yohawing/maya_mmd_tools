@@ -40,6 +40,7 @@ class TestSolverNodeStructure(unittest.TestCase):
         self.assertIn("aInTime", self.source)
         self.assertIn("aModelRoot", self.source)
         self.assertIn("aInWorldSettings", self.source)
+        self.assertIn("aInDescriptorVersion", self.source)
 
     def test_output_attributes(self):
         self.assertIn("aOutBoneMatrices", self.source)

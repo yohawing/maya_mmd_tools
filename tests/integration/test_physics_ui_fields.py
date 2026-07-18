@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import maya.api.OpenMaya as om
 from maya import cmds
 
 from mmd_tools.converters.export_scene_collector import ExportSceneCollector
@@ -136,6 +137,61 @@ class TestPhysicsUIFields(MayaTestBase):
         plugin = Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py"
         if not cmds.pluginInfo(str(plugin), query=True, loaded=True):
             cmds.loadPlugin(str(plugin))
+
+    @unittest.skipUnless(FIXTURE.exists(), "hair physics fixture not found")
+    def test_apply_recompiles_live_solver_world(self):
+        root = _import_fixture(FIXTURE, "LiveApply")
+        solver = (cmds.listConnections(
+            f"{root}.message", source=False, destination=True, type="mmdPhysicsSolver"
+        ) or [None])[0]
+        self.assertTrue(solver)
+        world = (cmds.listConnections(
+            f"{solver}.inWorldSettings", source=True, destination=False,
+            type="mmdPhysicsWorldShape",
+        ) or [None])[0]
+        self.assertTrue(world)
+        cmds.setAttr(f"{world}.enable", True)
+        cmds.currentTime(0)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+
+        selection = om.MSelectionList()
+        selection.add(solver)
+        solver_node = om.MFnDependencyNode(selection.getDependNode(0)).userNode()
+        original_world = solver_node._world
+        self.assertIsNotNone(original_world)
+
+        rigid_shape = (cmds.listRelatives(
+            root, allDescendents=True, type="mmdRigidBodyShape", fullPath=True,
+        ) or [None])[0]
+        self.assertTrue(rigid_shape)
+        original_size = _vector(rigid_shape, "shapeSize")
+        edited_size = (original_size[0] * 10.0, original_size[1], original_size[2])
+        view = _rigid_view(
+            edited_size,
+            _vector(rigid_shape, "position"),
+            _vector(rigid_shape, "rotation"),
+        )
+        view.rigid_name_edit = _Line(cmds.getAttr(f"{rigid_shape}.nameJp"))
+        view.rigid_name_english_edit = _Line(cmds.getAttr(f"{rigid_shape}.nameEn"))
+        view.rigid_shape_combo = _Combo(cmds.getAttr(f"{rigid_shape}.shapeType"))
+        view.rigid_physics_mode_combo = _Combo(cmds.getAttr(f"{rigid_shape}.physicsMode"))
+        view.rigid_collision_group_spin = _Spin(cmds.getAttr(f"{rigid_shape}.collisionGroup"))
+        view.rigid_collision_mask_spin = _Line(cmds.getAttr(f"{rigid_shape}.collisionMask"))
+        view.rigid_mass_edit = _Line(cmds.getAttr(f"{rigid_shape}.mass"))
+        view.rigid_linear_damping_edit = _Line(cmds.getAttr(f"{rigid_shape}.linearDamping"))
+        view.rigid_angular_damping_edit = _Line(cmds.getAttr(f"{rigid_shape}.angularDamping"))
+        view.rigid_restitution_edit = _Line(cmds.getAttr(f"{rigid_shape}.restitution"))
+        view.rigid_friction_edit = _Line(cmds.getAttr(f"{rigid_shape}.friction"))
+        presenter = _presenter(view, "rigid", rigid_shape)
+        presenter.apply_changes()
+        self.assertEqual(_vector(rigid_shape, "shapeSize"), edited_size)
+
+        _ = cmds.getAttr(f"{solver}.outSolved")
+        self.assertIsNot(
+            solver_node._world,
+            original_world,
+            "Apply must replace the native world compiled from stale descriptors",
+        )
 
     @unittest.skipUnless(FIXTURE.exists(), "hair physics fixture not found")
     def test_apply_undo_follow_collector_export_and_fresh_reimport(self):

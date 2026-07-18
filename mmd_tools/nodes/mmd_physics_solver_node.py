@@ -53,6 +53,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
 
     aInWorldSettings = None
     aInWorldSettingsVersion = None
+    aInDescriptorVersion = None
     aInKinematicWorldMatrix = None
 
     aOutBoneMatrices = None
@@ -76,6 +77,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._initialized = False
         self._last_reset_generation = -1
         self._last_world_settings_version = None
+        self._last_descriptor_version = None
 
     def compute(self, plug, data):
         attr = plug.attribute()
@@ -90,6 +92,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         world_settings_version = data.inputValue(
             self.aInWorldSettingsVersion
         ).asInt()
+        descriptor_version = data.inputValue(self.aInDescriptorVersion).asInt()
 
         enable = data.inputValue(self.aEnable).asBool()
         if not enable:
@@ -101,9 +104,17 @@ class MmdPhysicsSolverNode(om.MPxNode):
             and world_settings_version != self._last_world_settings_version
         )
         self._last_world_settings_version = world_settings_version
+        descriptor_changed = (
+            self._last_descriptor_version is not None
+            and descriptor_version != self._last_descriptor_version
+        )
+        self._last_descriptor_version = descriptor_version
 
         input_mode = data.inputValue(self.aInputMode).asShort()
         current_time = data.inputValue(self.aInTime).asTime().asUnits(om.MTime.kSeconds)
+
+        if descriptor_changed:
+            self._free_handles()
 
         if not self._initialized:
             self._try_initialize()
@@ -118,7 +129,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
             self._write_outputs(data, solved=False, status="disabled")
             return
 
-        force_reset = world_settings_changed
+        force_reset = world_settings_changed or descriptor_changed
         if reset_gen != self._last_reset_generation:
             self._last_reset_generation = reset_gen
             force_reset = True
@@ -586,6 +597,13 @@ def initialize():
     nAttr.keyable = False
     MmdPhysicsSolverNode.addAttribute(MmdPhysicsSolverNode.aInWorldSettingsVersion)
 
+    MmdPhysicsSolverNode.aInDescriptorVersion = nAttr.create(
+        "inDescriptorVersion", "idv", om.MFnNumericData.kLong, 0
+    )
+    nAttr.storable = True
+    nAttr.keyable = False
+    MmdPhysicsSolverNode.addAttribute(MmdPhysicsSolverNode.aInDescriptorVersion)
+
     mAttr = om.MFnMatrixAttribute()
     MmdPhysicsSolverNode.aInKinematicWorldMatrix = mAttr.create(
         "inKinematicWorldMatrix", "ikwm", om.MFnMatrixAttribute.kDouble,
@@ -668,6 +686,9 @@ def initialize():
     ):
         MmdPhysicsSolverNode.attributeAffects(
             MmdPhysicsSolverNode.aInWorldSettingsVersion, output
+        )
+        MmdPhysicsSolverNode.attributeAffects(
+            MmdPhysicsSolverNode.aInDescriptorVersion, output
         )
     MmdPhysicsSolverNode.attributeAffects(
         MmdPhysicsSolverNode.aInKinematicWorldMatrix, MmdPhysicsSolverNode.aOutBoneMatrices

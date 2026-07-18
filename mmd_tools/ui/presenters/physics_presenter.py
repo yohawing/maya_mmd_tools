@@ -325,7 +325,28 @@ class PhysicsPresenter:
         self.refresh_physics(force=True)
 
     def invalidate_physics_cache(self, *_args):
-        return None
+        root = getattr(self.app_state, "current_model_root", None)
+        if not root or not cmds.objExists(root):
+            return
+        solvers = cmds.listConnections(
+            f"{root}.message",
+            source=False,
+            destination=True,
+            type="mmdPhysicsSolver",
+        ) or []
+        for solver in dict.fromkeys(solvers):
+            if cmds.attributeQuery("inDescriptorVersion", node=solver, exists=True):
+                version = int(cmds.getAttr(f"{solver}.inDescriptorVersion"))
+                cmds.setAttr(f"{solver}.inDescriptorVersion", version + 1)
+                continue
+
+            # Nodes registered before this input was added need one explicit
+            # invalidation so Apply also works in an already-open Maya session.
+            selection = om.MSelectionList()
+            selection.add(solver)
+            user_node = om.MFnDependencyNode(selection.getDependNode(0)).userNode()
+            user_node._free_handles()
+            cmds.dgdirty(solver)
 
     def filter_rigid_bodies(self, text):
         rb_list = self.view.rigid_body_list
@@ -601,6 +622,7 @@ class PhysicsPresenter:
                 self._apply_validated_rigid_body(shape, parsed, bindings)
             elif self._current_kind == "joint":
                 self._apply_validated_joint(shape, parsed, bindings)
+            self.invalidate_physics_cache()
             logger.info("Applied physics changes to '%s'", shape)
         except Exception:
             logger.error("Failed to apply physics changes to '%s'", shape, exc_info=True)
