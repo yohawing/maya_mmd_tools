@@ -1454,6 +1454,8 @@ def native_physics_bake_capture(session: nox.Session) -> None:
         mayapy,
         MAYA_VERSION=version,
         MMD_ANIM_FFI_PATH=str(resolved_ffi),
+        MAYA_SKIP_USERSETUP_PY="1",
+        MMD_TOOLS_SKIP_SHADER_OVERRIDE="1",
     )
     session.run(
         str(mayapy),
@@ -1531,6 +1533,8 @@ def native_physics_bake_route_e2e(session: nox.Session) -> None:
         mayapy,
         MAYA_VERSION=version,
         MMD_ANIM_FFI_PATH=str(resolved_ffi),
+        MAYA_SKIP_USERSETUP_PY="1",
+        MMD_TOOLS_SKIP_SHADER_OVERRIDE="1",
     )
     session.run(
         str(mayapy),
@@ -1583,7 +1587,13 @@ def native_physics_release_gate(session: nox.Session) -> None:
     for required in (mayapy, pmx, vmd, ffi):
         if not required.is_file():
             raise FileNotFoundError(f"Native physics release gate input not found: {required}")
-    env = _mayapy_env(mayapy, MAYA_VERSION=maya_version, MMD_ANIM_FFI_PATH=str(ffi))
+    env = _mayapy_env(
+        mayapy,
+        MAYA_VERSION=maya_version,
+        MMD_ANIM_FFI_PATH=str(ffi),
+        MAYA_SKIP_USERSETUP_PY="1",
+        MMD_TOOLS_SKIP_SHADER_OVERRIDE="1",
+    )
     for report in run_reports:
         session.run(
             str(mayapy),
@@ -2021,7 +2031,12 @@ def pmx_roundtrip(session: nox.Session) -> None:
     if not mayapy.exists():
         raise FileNotFoundError(f"mayapy not found: {mayapy}")
 
-    env = _mayapy_env(mayapy, MAYA_VERSION=version)
+    env = _mayapy_env(
+        mayapy,
+        MAYA_VERSION=version,
+        MAYA_SKIP_USERSETUP_PY="1",
+        MMD_TOOLS_SKIP_SHADER_OVERRIDE="1",
+    )
     session.run(
         str(mayapy),
         _mayapy_script(mayapy, "tests/roundtrip/pmx_roundtrip_runner.py"),

@@ -51,9 +51,12 @@ from typing import Any
 
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
-import maya.standalone
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[2]
+if str(DEFAULT_ROOT) not in sys.path:
+    sys.path.insert(0, str(DEFAULT_ROOT))
+
+from tests.common.maya_plugin_setup import load_mmd_tools_plugin
 
 # GoldenOracle-style defaults (same as static_render_capture / track6).
 CAMERA_FOV_DEG = 25.0
@@ -134,6 +137,8 @@ def _parse_eval_frames(raw: str) -> list[int]:
 
 
 def _initialize(repo_root: Path) -> None:
+    import maya.standalone
+
     try:
         maya.standalone.initialize(name="python")
     except RuntimeError:
@@ -146,6 +151,7 @@ def _initialize(repo_root: Path) -> None:
         and str(Path(entry).resolve()) != str(DEFAULT_ROOT.resolve() / "tests" / "viewport")
     ]
     sys.path.insert(0, str(repo_root))
+    load_mmd_tools_plugin(repo_root)
 
 
 def _resolve(repo_root: Path, value: str) -> Path:
