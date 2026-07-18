@@ -13,6 +13,11 @@ from ..qt_compat import (
     QLabel,
     QLineEdit,
     QSpinBox,
+    QDoubleSpinBox,
+    QAbstractSpinBox,
+    QSlider,
+    QGridLayout,
+    Signal,
     QTabWidget,
     QSplitter,
     QScrollArea,
@@ -20,6 +25,168 @@ from ..qt_compat import (
 )
 from ..base_tab import BaseTab
 from .translation_registry import apply_translation_registry
+
+
+class Vec3Editor(QWidget):
+    """Compact, axis-labelled vector editor with a line-edit compatible API."""
+
+    valueChanged = Signal()
+
+    def __init__(self, minimum=-1_000_000.0, maximum=1_000_000.0, decimals=4, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(3)
+        self.spins = []
+        no_buttons = getattr(
+            getattr(QAbstractSpinBox, "ButtonSymbols", QAbstractSpinBox),
+            "NoButtons",
+        )
+        for _axis in "XYZ":
+            spin = QDoubleSpinBox()
+            spin.setRange(minimum, maximum)
+            spin.setDecimals(decimals)
+            spin.setSingleStep(0.1)
+            spin.setKeyboardTracking(False)
+            spin.setButtonSymbols(no_buttons)
+            spin.setMinimumWidth(52)
+            spin.valueChanged.connect(lambda _value: self.valueChanged.emit())
+            layout.addWidget(spin, 1)
+            self.spins.append(spin)
+
+    def values(self):
+        return tuple(spin.value() for spin in self.spins)
+
+    def setValues(self, values):
+        previous = [spin.blockSignals(True) for spin in self.spins]
+        try:
+            for spin, value in zip(self.spins, values):
+                spin.setValue(float(value))
+        finally:
+            for spin, blocked in zip(self.spins, previous):
+                spin.blockSignals(blocked)
+
+    def text(self):
+        return ", ".join(str(value) for value in self.values())
+
+    def setText(self, text):
+        parts = [part.strip() for part in str(text).split(",")]
+        if len(parts) == 3:
+            try:
+                self.setValues(parts)
+            except ValueError:
+                pass
+
+    def setValue(self, value):
+        self.setText(value)
+
+
+class ScalarSliderEditor(QWidget):
+    """A precise spin box paired with a slider for fast physical tuning."""
+
+    valueChanged = Signal(float)
+
+    def __init__(self, slider_minimum, slider_maximum, single_step=0.01, parent=None):
+        super().__init__(parent)
+        self._slider_minimum = float(slider_minimum)
+        self._slider_maximum = float(slider_maximum)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(0, 1000)
+        self.spin = QDoubleSpinBox()
+        self.spin.setRange(-1_000_000.0, 1_000_000.0)
+        self.spin.setDecimals(4)
+        self.spin.setSingleStep(single_step)
+        self.spin.setKeyboardTracking(False)
+        self.spin.setMinimumWidth(88)
+        self.slider.valueChanged.connect(self._set_from_slider)
+        self.spin.valueChanged.connect(self._set_from_spin)
+        layout.addWidget(self.slider, 1)
+        layout.addWidget(self.spin)
+
+    def _set_from_slider(self, position):
+        value = self._slider_minimum + (self._slider_maximum - self._slider_minimum) * position / 1000.0
+        previous = self.spin.blockSignals(True)
+        self.spin.setValue(value)
+        self.spin.blockSignals(previous)
+        self.valueChanged.emit(self.spin.value())
+
+    def _set_from_spin(self, value):
+        span = self._slider_maximum - self._slider_minimum
+        position = round((float(value) - self._slider_minimum) / span * 1000.0) if span else 0
+        previous = self.slider.blockSignals(True)
+        self.slider.setValue(max(0, min(1000, position)))
+        self.slider.blockSignals(previous)
+        self.valueChanged.emit(float(value))
+
+    def value(self):
+        return self.spin.value()
+
+    def setValue(self, value):
+        self.spin.setValue(float(value))
+
+    def text(self):
+        return str(self.value())
+
+    def setText(self, text):
+        try:
+            self.setValue(text)
+        except (TypeError, ValueError):
+            pass
+
+
+class CollisionGroupsEditor(QWidget):
+    """Sixteen direct-access PMX collision group buttons."""
+
+    valueChanged = Signal(int)
+
+    def __init__(self, multiple=False, parent=None):
+        super().__init__(parent)
+        self._multiple = multiple
+        layout = QGridLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setHorizontalSpacing(3)
+        layout.setVerticalSpacing(3)
+        self.buttons = []
+        for group in range(16):
+            button = QPushButton(str(group))
+            button.setCheckable(True)
+            button.setFixedWidth(28)
+            button.clicked.connect(lambda checked, index=group: self._clicked(index, checked))
+            layout.addWidget(button, group // 8, group % 8)
+            self.buttons.append(button)
+
+    def _clicked(self, index, checked):
+        if not self._multiple:
+            for group, button in enumerate(self.buttons):
+                button.setChecked(group == index)
+        self.valueChanged.emit(self.value())
+
+    def value(self):
+        if self._multiple:
+            return sum(1 << index for index, button in enumerate(self.buttons) if button.isChecked())
+        return next((index for index, button in enumerate(self.buttons) if button.isChecked()), 0)
+
+    def setValue(self, value):
+        value = int(value, 0) if isinstance(value, str) else int(value)
+        previous = [button.blockSignals(True) for button in self.buttons]
+        try:
+            for index, button in enumerate(self.buttons):
+                button.setChecked(bool(value & (1 << index)) if self._multiple else index == value)
+        finally:
+            for button, blocked in zip(self.buttons, previous):
+                button.blockSignals(blocked)
+
+    def text(self):
+        return f"0x{self.value():04X}" if self._multiple else str(self.value())
+
+    def setText(self, text):
+        try:
+            self.setValue(int(str(text), 0))
+        except ValueError:
+            pass
 
 
 class PhysicsTab(BaseTab):
@@ -188,16 +355,26 @@ class PhysicsTab(BaseTab):
         self._add_editor_row(
             layout, "related_bone", "rigid_related_bone", self.rigid_related_bone_combo
         )
-        self.rigid_shape_size_edit = self._line_editor("rigid_shape_size", "shape_size")
-        self.rigid_position_edit = self._line_editor("rigid_position", "pmx_position")
-        self.rigid_rotation_edit = self._line_editor("rigid_rotation", "pmx_rotation_degrees")
-        self.rigid_collision_group_spin = self._int_editor("rigid_collision_group", "collision_group", 0, 15)
-        self.rigid_collision_mask_spin = self._line_editor("rigid_collision_mask", "collision_mask")
-        self.rigid_mass_edit = self._line_editor("rigid_mass", "mass")
-        self.rigid_linear_damping_edit = self._line_editor("rigid_linear_damping", "linear_damping")
-        self.rigid_angular_damping_edit = self._line_editor("rigid_angular_damping", "angular_damping")
-        self.rigid_restitution_edit = self._line_editor("rigid_restitution", "restitution")
-        self.rigid_friction_edit = self._line_editor("rigid_friction", "friction")
+        self.rigid_shape_size_edit = self._vec3_editor("rigid_shape_size", "shape_size", minimum=0.0)
+        self.rigid_position_edit = self._vec3_editor("rigid_position", "pmx_position")
+        self.rigid_rotation_edit = self._vec3_editor("rigid_rotation", "pmx_rotation_degrees", decimals=2)
+        self.rigid_collision_group_spin = self._collision_groups_editor(
+            "rigid_collision_group", "collision_group"
+        )
+        self.rigid_collision_mask_spin = self._collision_groups_editor(
+            "rigid_collision_mask", "collision_mask", multiple=True
+        )
+        self.rigid_mass_edit = self._slider_editor("rigid_mass", "mass", 0.0, 10.0, 0.1)
+        self.rigid_linear_damping_edit = self._slider_editor(
+            "rigid_linear_damping", "linear_damping", 0.0, 1.0
+        )
+        self.rigid_angular_damping_edit = self._slider_editor(
+            "rigid_angular_damping", "angular_damping", 0.0, 1.0
+        )
+        self.rigid_restitution_edit = self._slider_editor(
+            "rigid_restitution", "restitution", 0.0, 1.0
+        )
+        self.rigid_friction_edit = self._slider_editor("rigid_friction", "friction", 0.0, 1.0)
         for key, label_key in (
             ("rigid_shape_size", "shape_size"),
             ("rigid_position", "pmx_position"),
@@ -227,8 +404,10 @@ class PhysicsTab(BaseTab):
         self.joint_body_b_combo = self._binding_editor(
             "joint_body_b", "rigid_body_b", "jointRigidBodyBCombo"
         )
-        self.joint_position_edit = self._line_editor("joint_position", "pmx_position")
-        self.joint_rotation_edit = self._line_editor("joint_rotation", "pmx_rotation_degrees")
+        self.joint_position_edit = self._vec3_editor("joint_position", "pmx_position")
+        self.joint_rotation_edit = self._vec3_editor(
+            "joint_rotation", "pmx_rotation_degrees", decimals=2
+        )
         for key, field_key in (
             ("joint_translation_min", "translation_limit_min"),
             ("joint_translation_max", "translation_limit_max"),
@@ -237,7 +416,8 @@ class PhysicsTab(BaseTab):
             ("joint_spring_translation", "spring_translation"),
             ("joint_spring_rotation", "spring_rotation"),
         ):
-            setattr(self, f"{key}_edit", self._line_editor(key, field_key))
+            decimals = 2 if "rotation" in key else 4
+            setattr(self, f"{key}_edit", self._vec3_editor(key, field_key, decimals=decimals))
         for key in (
             "joint_name",
             "joint_name_english",
@@ -274,6 +454,21 @@ class PhysicsTab(BaseTab):
     def _int_editor(self, key, field_key, minimum, maximum):
         editor = QSpinBox()
         editor.setRange(minimum, maximum)
+        self._physics_editors[key] = (field_key, editor)
+        return editor
+
+    def _vec3_editor(self, key, field_key, minimum=-1_000_000.0, maximum=1_000_000.0, decimals=4):
+        editor = Vec3Editor(minimum, maximum, decimals)
+        self._physics_editors[key] = (field_key, editor)
+        return editor
+
+    def _slider_editor(self, key, field_key, minimum, maximum, single_step=0.01):
+        editor = ScalarSliderEditor(minimum, maximum, single_step)
+        self._physics_editors[key] = (field_key, editor)
+        return editor
+
+    def _collision_groups_editor(self, key, field_key, multiple=False):
+        editor = CollisionGroupsEditor(multiple)
         self._physics_editors[key] = (field_key, editor)
         return editor
 
