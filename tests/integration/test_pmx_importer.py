@@ -9,7 +9,6 @@ import unittest
 from unittest.mock import patch
 
 from maya import cmds
-from maya.api import OpenMaya as om
 
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
@@ -296,8 +295,8 @@ class TestPmxImporter(MayaTestBase):
         self.assertNotIn("Physics", child_names)
 
     @unittest.skipUnless(is_native_physics_available(), "native physics DLL not available")
-    def test_import_pmx_with_physics_builds_live_playback_graph(self):
-        """Physics import must wire solver/drivers and produce changing channels."""
+    def test_import_pmx_with_physics_builds_disabled_passthrough_graph(self):
+        """Physics import wires the graph but leaves World OFF and passes through pre-pose."""
         plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
         try:
             self.load_plugin(plugin_path)
@@ -322,97 +321,65 @@ class TestPmxImporter(MayaTestBase):
 
         solvers = cmds.ls(type="mmdPhysicsSolver") or []
         drivers = cmds.ls(type="mmdPhysicsBoneDriver") or []
+        world_shapes = cmds.ls(type="mmdPhysicsWorldShape", long=True) or []
         self.assertEqual(len(solvers), 1)
         self.assertGreater(len(drivers), 0)
+        self.assertEqual(world_shapes, ["|MMD_PhysicsWorld|MMD_PhysicsWorldShape"])
+        self.assertFalse(cmds.getAttr(f"{world_shapes[0]}.enable"))
         self.assertTrue(
             root in (cmds.listConnections(f"{solvers[0]}.modelRoot", source=True, destination=False) or [])
         )
         self.assertTrue(cmds.listConnections(f"{solvers[0]}.inTime", source=True, destination=False))
-
-        snapshots = []
-        cmds.currentTime(0, update=True)
-        for frame in range(1, 31):
-            cmds.currentTime(frame, update=True)
-            frame_values = []
-            for driver in drivers:
-                translate = cmds.getAttr(f"{driver}.outTranslate") or ((0.0, 0.0, 0.0),)
-                rotate = cmds.getAttr(f"{driver}.outRotate") or ((0.0, 0.0, 0.0),)
-                frame_values.extend(translate[0])
-                frame_values.extend(rotate[0])
-            snapshots.append(tuple(round(float(value), 6) for value in frame_values))
-
-        self.assertGreater(
-            len(set(snapshots)),
-            1,
-            "live physics driver output did not change during timeline playback: "
-            f"drivers={len(drivers)} first={snapshots[0][:12]} last={snapshots[-1][:12]} "
-            f"solver_status={cmds.getAttr(f'{solvers[0]}.outStatus')} "
-            f"solver_solved={cmds.getAttr(f'{solvers[0]}.outSolved')} "
-            f"driver_solved={cmds.getAttr(f'{drivers[0]}.inSolved')}",
-        )
-
-        # Final-pose parity: the world matrix of every driven Maya joint must
-        # equal the solver world matrix after the same bind correction used by
-        # the BoneDriver.  Solver/native parity alone does not cover this step.
-        solver_flat = cmds.getAttr(f"{solvers[0]}.outBoneMatrices")
-        for driver in drivers:
-            bone_index = int(cmds.getAttr(f"{driver}.inBoneIndex"))
-            parent_index = int(cmds.getAttr(f"{driver}.inParentBoneIndex"))
-            runtime_world = om.MMatrix(solver_flat[bone_index * 16:(bone_index + 1) * 16])
-            bind_world = om.MMatrix(cmds.getAttr(f"{driver}.inBindWorldMatrix"))
-            no_orient_bind_world = om.MMatrix(
-                cmds.getAttr(f"{driver}.inNoOrientBindWorldMatrix")
+        self.assertTrue(
+            cmds.isConnected(
+                f"{world_shapes[0]}.message",
+                f"{solvers[0]}.inWorldSettings",
             )
-            expected_world = bind_world * no_orient_bind_world.inverse() * runtime_world
-
-            if 0 <= parent_index < len(solver_flat) // 16:
-                parent_runtime_world = om.MMatrix(
-                    solver_flat[parent_index * 16:(parent_index + 1) * 16]
-                )
-                parent_bind_world = om.MMatrix(
-                    cmds.getAttr(f"{driver}.inParentBindWorldMatrix")
-                )
-                parent_no_orient_bind_world = om.MMatrix(
-                    cmds.getAttr(f"{driver}.inParentNoOrientBindWorldMatrix")
-                )
-                expected_parent_world = (
-                    parent_bind_world
-                    * parent_no_orient_bind_world.inverse()
-                    * parent_runtime_world
-                )
-                expected_local = expected_world * expected_parent_world.inverse()
-            else:
-                parent_inverse = om.MMatrix(
-                    cmds.getAttr(f"{driver}.inParentInverseMatrix")
-                )
-                expected_local = expected_world * parent_inverse
-
+        )
+        self.assertTrue(
+            cmds.isConnected(
+                f"{world_shapes[0]}.outSettingsVersion",
+                f"{solvers[0]}.inWorldSettingsVersion",
+            )
+        )
+        for driver in drivers:
             target_joint = cmds.getAttr(f"{driver}.mmd_target_joint")
-            actual_world = om.MMatrix(cmds.getAttr(f"{target_joint}.worldMatrix[0]"))
-            for matrix_index in range(16):
-                self.assertAlmostEqual(
-                    actual_world[matrix_index],
-                    expected_world[matrix_index],
-                    delta=0.02,
-                    msg=f"{driver} final world matrix mismatch at {matrix_index}",
+            for source, destination in (
+                (f"{solvers[0]}.outBoneMatrices", f"{driver}.inSolverBoneMatrices"),
+                (f"{solvers[0]}.outBoneCount", f"{driver}.inSolverBoneCount"),
+                (f"{solvers[0]}.outSolved", f"{driver}.inSolved"),
+                (f"{driver}.outTranslate", f"{target_joint}.translate"),
+                (f"{driver}.outRotate", f"{target_joint}.rotate"),
+            ):
+                self.assertTrue(
+                    cmds.isConnected(source, destination),
+                    f"missing physics graph connection: {source} -> {destination}",
                 )
 
-            # Decomposed local output must reconstruct the same corrected world
-            # through the actual Maya parent hierarchy.
-            parent_joint = cmds.listRelatives(
-                target_joint, parent=True, fullPath=True, type="joint"
-            ) or []
-            if parent_joint:
-                reconstructed_world = expected_local * om.MMatrix(
-                    cmds.getAttr(f"{parent_joint[0]}.worldMatrix[0]")
-                )
-                for matrix_index in range(16):
-                    self.assertAlmostEqual(
-                        reconstructed_world[matrix_index],
-                        actual_world[matrix_index],
-                        delta=0.02,
-                        msg=f"{driver} local reconstruction mismatch at {matrix_index}",
-                    )
+        driver = drivers[0]
+        target_joint = cmds.getAttr(f"{driver}.mmd_target_joint")
+        pre_translate = (1.25, -2.5, 3.75)
+        pre_rotate = (4.0, -5.0, 6.0)
+        cmds.setAttr(f"{driver}.inPreTranslate", *pre_translate)
+        cmds.setAttr(f"{driver}.inPreRotate", *pre_rotate)
+
+        self.assertFalse(cmds.getAttr(f"{solvers[0]}.outSolved"))
+        self.assertListAlmostEqual(
+            list(cmds.getAttr(f"{driver}.outTranslate")[0]),
+            list(pre_translate),
+        )
+        self.assertListAlmostEqual(
+            list(cmds.getAttr(f"{driver}.outRotate")[0]),
+            list(pre_rotate),
+        )
+        self.assertListAlmostEqual(
+            list(cmds.getAttr(f"{target_joint}.translate")[0]),
+            list(pre_translate),
+        )
+        self.assertListAlmostEqual(
+            list(cmds.getAttr(f"{target_joint}.rotate")[0]),
+            list(pre_rotate),
+        )
 
     @unittest.skipUnless(is_native_physics_available(), "native physics DLL not available")
     def test_mixed_mode_bone_omits_kinematic_world_matrix_connection(self):
