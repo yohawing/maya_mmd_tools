@@ -7,7 +7,6 @@ matrices to local translate/rotate.
 
 from __future__ import annotations
 
-import base64
 import math
 import unittest
 from pathlib import Path
@@ -30,26 +29,27 @@ def _native_physics_available() -> bool:
         return False
 
 
-def _create_joints_under_root(bones, root):
-    """Create flat joints under root with mmd_bone_index attributes."""
-    joints = []
-    for i, bone in enumerate(bones):
-        cmds.select(clear=True)
-        jnt = cmds.joint(name=f"bone_{i}")
-        cmds.xform(jnt, worldSpace=True, translation=list(bone.position))
-        cmds.addAttr(jnt, longName=ATTR_MMD_BONE_INDEX, attributeType="long")
-        cmds.setAttr(f"{jnt}.{ATTR_MMD_BONE_INDEX}", i)
-        cmds.parent(jnt, root)
-        joints.append(jnt)
-    return joints
+def _import_payload_free_scene(pmx_file):
+    """Import a normal physics scene and assert that the solver is DAG-backed."""
+    from mmd_tools.io.pmx_importer import import_pmx_file
 
-
-def _store_pmx_payload(root, pmx_bytes):
-    """Store base64-encoded PMX payload on model root."""
-    encoded = base64.b64encode(pmx_bytes).decode("ascii")
-    if not cmds.attributeQuery(ATTR_MMD_SOURCE_PMX_PAYLOAD, node=root, exists=True):
-        cmds.addAttr(root, longName=ATTR_MMD_SOURCE_PMX_PAYLOAD, dataType="string", hidden=True)
-    cmds.setAttr(f"{root}.{ATTR_MMD_SOURCE_PMX_PAYLOAD}", encoded, type="string")
+    parser = parse_pmx_file(str(pmx_file))
+    root = import_pmx_file(
+        parser,
+        str(pmx_file),
+        options={"import_physics": True, "create_mmd_shaders": False},
+    )
+    if cmds.attributeQuery(ATTR_MMD_SOURCE_PMX_PAYLOAD, node=root, exists=True):
+        raise AssertionError(
+            f"payload-free import persisted {ATTR_MMD_SOURCE_PMX_PAYLOAD}: {root}"
+        )
+    solvers = cmds.listConnections(
+        f"{root}.message", source=False, destination=True, type="mmdPhysicsSolver"
+    ) or []
+    if not solvers:
+        raise AssertionError(f"imported physics scene has no solver: {root}")
+    joints = cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or []
+    return root, joints, solvers[0]
 
 
 def _connect_enabled_world(solver):
@@ -91,17 +91,17 @@ class TestPhysicsSolverNode(MayaTestBase):
         super().tearDownClass()
 
     def _build_scene(self):
-        """Create root, joints, PMX payload — minimal scene for solver."""
-        root = cmds.group(empty=True, name="test_solver_root")
-        joints = _create_joints_under_root(self.pmx.bones, root)
-        _store_pmx_payload(root, self.pmx_bytes)
+        """Import the fixture through the PMX pipeline without a source payload."""
+        root, joints, _ = _import_payload_free_scene(FIXTURE_PATH)
         return root, joints
 
     def _create_solver(self, root):
-        """Create and connect a solver node to root and time."""
-        solver = cmds.createNode("mmdPhysicsSolver", name="testSolver")
-        cmds.connectAttr(f"{root}.message", f"{solver}.modelRoot")
-        cmds.connectAttr("time1.outTime", f"{solver}.inTime")
+        """Use the solver created by the importer and enable its world."""
+        solvers = cmds.listConnections(
+            f"{root}.message", source=False, destination=True, type="mmdPhysicsSolver"
+        ) or []
+        self.assertTrue(solvers, f"No solver connected to imported root {root}")
+        solver = solvers[0]
         _connect_enabled_world(solver)
         return solver
 
@@ -228,18 +228,30 @@ class TestPhysicsSolverNode(MayaTestBase):
         cmds.currentTime(0)
         mat_before = cmds.getAttr(f"{solver}.outBoneMatrices")
 
+        physics_bone_indices = {
+            rb.related_bone_index
+            for rb in self.pmx.rigid_bodies
+            if rb.physics_mode != 0 and 0 <= rb.related_bone_index < len(self.pmx.bones)
+        }
+        if not physics_bone_indices:
+            self.skipTest("No physics-driven bones")
+
+        joints = cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or []
+        joints_by_index = {
+            int(cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_INDEX}")): joint
+            for joint in joints
+            if cmds.attributeQuery(ATTR_MMD_BONE_INDEX, node=joint, exists=True)
+        }
+        joint_before = {
+            idx: tuple(cmds.xform(joints_by_index[idx], query=True, worldSpace=True, translation=True))
+            for idx in physics_bone_indices
+            if idx in joints_by_index
+        }
+
         for frame in range(1, 31):
             cmds.currentTime(frame)
             _ = cmds.getAttr(f"{solver}.outSolved")
         mat_after = cmds.getAttr(f"{solver}.outBoneMatrices")
-
-        physics_bone_indices = set()
-        for rb in self.pmx.rigid_bodies:
-            if rb.physics_mode != 0 and 0 <= rb.related_bone_index < len(self.pmx.bones):
-                physics_bone_indices.add(rb.related_bone_index)
-
-        if not physics_bone_indices:
-            self.skipTest("No physics-driven bones")
 
         changed_count = 0
         for idx in physics_bone_indices:
@@ -253,6 +265,22 @@ class TestPhysicsSolverNode(MayaTestBase):
         self.assertGreater(
             changed_count, 0,
             "At least some physics bones should change after 30 forward steps",
+        )
+
+        changed_joint_count = 0
+        for idx, before in joint_before.items():
+            after = tuple(cmds.xform(joints_by_index[idx], query=True, worldSpace=True, translation=True))
+            diff = sum((a - b) ** 2 for a, b in zip(after, before)) ** 0.5
+            if diff > 0.001:
+                changed_joint_count += 1
+        self.assertGreater(
+            changed_joint_count,
+            0,
+            "At least one physics-driven Maya joint should move after 30 forward steps",
+        )
+        self.assertFalse(
+            cmds.attributeQuery(ATTR_MMD_SOURCE_PMX_PAYLOAD, node=root, exists=True),
+            "payload-free live solver must not depend on mmd_source_pmx_payload",
         )
 
 
@@ -421,12 +449,7 @@ class TestSolverTimeStateMachine(MayaTestBase):
         super().tearDownClass()
 
     def _setup_solver(self):
-        root = cmds.group(empty=True, name="test_root")
-        _create_joints_under_root(self.pmx.bones, root)
-        _store_pmx_payload(root, self.pmx_bytes)
-        solver = cmds.createNode("mmdPhysicsSolver", name="testSolver")
-        cmds.connectAttr(f"{root}.message", f"{solver}.modelRoot")
-        cmds.connectAttr("time1.outTime", f"{solver}.inTime")
+        _, _, solver = _import_payload_free_scene(FIXTURE_PATH)
         _connect_enabled_world(solver)
         cmds.currentUnit(time="ntsc")
         return solver
@@ -619,12 +642,7 @@ class TestSolverDisableEnable(MayaTestBase):
         super().tearDownClass()
 
     def _setup_solver(self):
-        root = cmds.group(empty=True, name="test_root")
-        _create_joints_under_root(self.pmx.bones, root)
-        _store_pmx_payload(root, self.pmx_bytes)
-        solver = cmds.createNode("mmdPhysicsSolver", name="testSolver")
-        cmds.connectAttr(f"{root}.message", f"{solver}.modelRoot")
-        cmds.connectAttr("time1.outTime", f"{solver}.inTime")
+        _, _, solver = _import_payload_free_scene(FIXTURE_PATH)
         _connect_enabled_world(solver)
         cmds.currentUnit(time="ntsc")
         return solver
@@ -716,12 +734,7 @@ class TestSolverEvaluationModes(MayaTestBase):
         super().tearDownClass()
 
     def _setup_solver(self):
-        root = cmds.group(empty=True, name="test_root")
-        _create_joints_under_root(self.pmx.bones, root)
-        _store_pmx_payload(root, self.pmx_bytes)
-        solver = cmds.createNode("mmdPhysicsSolver", name="testSolver")
-        cmds.connectAttr(f"{root}.message", f"{solver}.modelRoot")
-        cmds.connectAttr("time1.outTime", f"{solver}.inTime")
+        _, _, solver = _import_payload_free_scene(FIXTURE_PATH)
         _connect_enabled_world(solver)
         cmds.currentUnit(time="ntsc")
         return solver
@@ -799,12 +812,7 @@ class TestSolverLifecycle(MayaTestBase):
         super().tearDownClass()
 
     def _setup_solver(self):
-        root = cmds.group(empty=True, name="test_root")
-        _create_joints_under_root(self.pmx.bones, root)
-        _store_pmx_payload(root, self.pmx_bytes)
-        solver = cmds.createNode("mmdPhysicsSolver", name="testSolver")
-        cmds.connectAttr(f"{root}.message", f"{solver}.modelRoot")
-        cmds.connectAttr("time1.outTime", f"{solver}.inTime")
+        _, _, solver = _import_payload_free_scene(FIXTURE_PATH)
         _connect_enabled_world(solver)
         cmds.currentUnit(time="ntsc")
         return solver

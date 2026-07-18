@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from mmd_tools.core.native.native_pmx_parser import (
+    _build_bones,
     _build_joints,
     _build_morphs,
     _build_rigid_bodies,
@@ -63,6 +64,51 @@ def _make_test_soft_body():
 
 
 class TestNativePmxParserBuilders(unittest.TestCase):
+    def test_build_bones_accepts_native_ik_and_append_schema(self):
+        """Rust non-geometry JSON fields compile into PMX bone metadata."""
+        bones = _build_bones(
+            [
+                {
+                    "name": "ik",
+                    "position": [0.0, 0.0, 0.0],
+                    "parentIndex": -1,
+                    "flags": {
+                        "ik": True,
+                        "appendRotate": True,
+                    },
+                    "ik": {
+                        "targetIndex": 2,
+                        "loopCount": 8,
+                        "limitAngle": 0.5,
+                        "links": [
+                            {
+                                "boneIndex": 1,
+                                "limits": {
+                                    "lower": [-0.1, -0.2, -0.3],
+                                    "upper": [0.1, 0.2, 0.3],
+                                },
+                            }
+                        ],
+                    },
+                    "appendTransform": {
+                        "parentIndex": 3,
+                        "weight": 0.75,
+                    },
+                }
+            ]
+        )
+
+        self.assertEqual(len(bones), 1)
+        bone = bones[0]
+        self.assertEqual(bone.ik_target_bone_index, 2)
+        self.assertEqual(bone.ik_loop_count, 8)
+        self.assertAlmostEqual(bone.ik_limit_angle, 0.5)
+        self.assertEqual(bone.ik_links[0].angle_limit, 1)
+        self.assertEqual(bone.ik_links[0].limit_min, (-0.1, -0.2, -0.3))
+        self.assertEqual(bone.ik_links[0].limit_max, (0.1, 0.2, 0.3))
+        self.assertEqual(bone.grant_parent_bone_index, 3)
+        self.assertAlmostEqual(bone.grant_rate, 0.75)
+
     def test_parse_pmx_native_defers_pmx21_soft_bodies_from_captured_bytes(self):
         native_pmx = _make_minimal_pmx21_data()
         lib = SimpleNamespace(mmd_runtime_parse_pmx_non_geometry_json=object())

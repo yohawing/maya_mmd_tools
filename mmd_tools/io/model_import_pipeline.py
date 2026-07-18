@@ -156,10 +156,9 @@ class ModelImportPipeline:
             len([t for t in jt_transforms if t]),
             elapsed,
         )
-        # The live graph can evaluate immediately while its connections are
-        # being created, so persist the source payload before creating the
-        # solver node.  Otherwise the solver may cache a "no physics data"
-        # initialization result during import.
+        # Kept as a compatibility hook for callers that monkeypatch the
+        # legacy payload writer.  New imports are descriptor-backed and this
+        # method intentionally performs no scene mutation.
         self._store_source_pmx_payload(root_group)
         live_graph = build_physics_live_graph(
             rigid_bodies=rigid_bodies,
@@ -202,19 +201,8 @@ class ModelImportPipeline:
         return rb_transforms, jt_transforms
 
     def _store_source_pmx_payload(self, root_group: str) -> None:
-        """Store raw PMX bytes on the model root for solver use."""
-        import base64
-        from pathlib import Path
-        from ..core.constants import ATTR_MMD_SOURCE_PMX_PAYLOAD
-        try:
-            pmx_bytes = Path(self.filepath).read_bytes()
-            encoded = base64.b64encode(pmx_bytes).decode("ascii")
-            if not cmds.attributeQuery(ATTR_MMD_SOURCE_PMX_PAYLOAD, node=root_group, exists=True):
-                cmds.addAttr(root_group, longName=ATTR_MMD_SOURCE_PMX_PAYLOAD, dataType="string", hidden=True)
-            cmds.setAttr(f"{root_group}.{ATTR_MMD_SOURCE_PMX_PAYLOAD}", encoded, type="string")
-            self.logger.debug("Stored PMX payload (%d bytes) on %s", len(pmx_bytes), root_group)
-        except Exception as exc:
-            self.logger.warning("Failed to store PMX payload: %s", exc)
+        """Deprecated compatibility hook; payload-free imports do not write bytes."""
+        self.logger.debug("Skipping legacy PMX payload storage on %s", root_group)
 
     def create_light_controller(self) -> Optional[str]:
         """Create the shared MMD light controller when enabled."""

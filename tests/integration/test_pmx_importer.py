@@ -394,12 +394,14 @@ class TestPmxImporter(MayaTestBase):
         self.assertTrue(
             all(cmds.attributeQuery(ATTR_MMD_PMX_REST_POSITION, node=joint, exists=True) for joint in indexed_joints)
         )
-        self.assertTrue(cmds.attributeQuery(ATTR_MMD_SOURCE_PMX_PAYLOAD, node=root, exists=True))
         from mmd_tools.core.model_dag_descriptor import build_model_descriptors_from_dag
 
         descriptors = build_model_descriptors_from_dag(root)
         self.assertEqual(len(descriptors.bones), len(parser.bones))
-        cmds.deleteAttr(root, attribute=ATTR_MMD_SOURCE_PMX_PAYLOAD)
+        self.assertFalse(
+            cmds.attributeQuery(ATTR_MMD_SOURCE_PMX_PAYLOAD, node=root, exists=True),
+            "new imports must not persist a source PMX payload",
+        )
         cmds.setAttr(f"{world_shapes[0]}.enable", True)
         cmds.currentTime(1)
         self.assertTrue(
