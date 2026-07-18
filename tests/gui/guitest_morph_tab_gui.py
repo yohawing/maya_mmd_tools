@@ -18,17 +18,44 @@ from mmd_tools.ui.tabs.morph_tab import MorphTab
 class TestMorphTabGUI(GuiTestBase):
     """MorphTab の GUI テスト（実際の Qt 環境で実行）"""
 
-    def test_offset_edit_controls_not_exposed(self):
-        """未実装のオフセット編集コントロールを公開しない（B-3 回帰防止）。
-
-        オフセット表示・編集は未実装なので、操作できそうに見えるボタン自体を
-        MorphTab に生成しない。実装してシグナル接続したら、このテストを更新する。
-        """
+    def test_offset_and_manual_maya_connection_panels_not_exposed(self):
+        """Removed offset and manual Maya-connection features stay absent."""
         tab = MorphTab()
         try:
-            self.assertFalse(hasattr(tab, "add_offset_btn"))
-            self.assertFalse(hasattr(tab, "remove_offset_btn"))
-            self.assertFalse(hasattr(tab, "clear_offsets_btn"))
+            for name in (
+                "offset_table",
+                "offset_count_label",
+                "blend_group",
+                "connection_status_label",
+                "blend_shape_edit",
+                "target_name_edit",
+                "select_blend_shape_btn",
+                "connect_btn",
+                "disconnect_btn",
+                "auto_connect_btn",
+            ):
+                self.assertFalse(hasattr(tab, name), name)
+            self.assertEqual(tab.detail_tabs.count(), 1)
+            self.assertIs(tab.advanced_group.parentWidget(), tab.preview_group)
+            self.assertTrue(hasattr(tab, "invert_check"))
+            self.assertTrue(hasattr(tab, "multiplier_spin"))
+        finally:
+            tab.deleteLater()
+
+    def test_keying_and_preset_controls_not_exposed(self):
+        """Removed keying and preset features must not leave actionable UI behind."""
+        tab = MorphTab()
+        try:
+            for name in (
+                "set_morph_key_btn",
+                "delete_morph_key_btn",
+                "morph_key_status_label",
+                "preset_combo",
+                "save_preset_btn",
+                "load_preset_btn",
+                "delete_preset_btn",
+            ):
+                self.assertFalse(hasattr(tab, name), name)
         finally:
             tab.deleteLater()
 

@@ -48,30 +48,17 @@ class TestMorphPresenter(MayaTestBase):
                 "refresh_morphs_btn",
                 "reset_slider_btn",
                 "reset_all_btn",
-                "connect_btn",
-                "disconnect_btn",
-                "auto_connect_btn",
-                "select_blend_shape_btn",
                 "apply_btn",
                 "reset_btn",
-                "save_preset_btn",
-                "load_preset_btn",
-                "delete_preset_btn",
                 "search_edit",
                 "morph_name_jp_edit",
                 "morph_name_en_edit",
-                "blend_shape_edit",
-                "target_name_edit",
                 "panel_combo",
                 "morph_type_combo",
-                "preset_combo",
                 "morph_slider",
                 "morph_value_label",
-                "connection_status_label",
-                "offset_count_label",
                 "invert_check",
                 "multiplier_spin",
-                "offset_table",
                 "set_morph_details_enabled",
             ],
             mock_cls=MagicMock,
@@ -260,123 +247,6 @@ class TestMorphPresenter(MayaTestBase):
         items[2].setHidden.assert_called_with(False)  # sad
         items[3].setHidden.assert_called_with(True)  # angry
 
-    def test_connect_blend_shape(self):
-        """ブレンドシェイプ連携のテスト"""
-        # ブレンドシェイプを作成
-        mesh = cmds.polyCube(name="test_mesh")[0]
-        target = cmds.polyCube(name="test_target")[0]
-        blend_shape = cmds.blendShape(target, mesh, name="test_blendShape")[0]
-        cmds.delete(target)
-
-        # UIの値を設定
-        self.presenter.current_morph = "test_morph"
-        self.presenter.morph_data = {"test_morph": {}}
-        self.mock_view.blend_shape_edit.text.return_value = blend_shape
-        self.mock_view.target_name_edit.text.return_value = "test_target"
-
-        # 連携実行
-        self.presenter.connect_blend_shape()
-
-        # 結果を確認
-        self.assertEqual(self.presenter.morph_data["test_morph"]["blend_shape_node"], blend_shape)
-        self.assertEqual(self.presenter.morph_data["test_morph"]["blend_shape_target"], "test_target")
-        self.mock_app_state.emit_status.assert_called()
-
-    def test_save_and_load_preset(self):
-        """プリセットの保存と読み込みのテスト"""
-        # モデルとブレンドシェイプを作成
-        test_model = cmds.group(empty=True, name="test_model_root")
-        self.mock_app_state.current_model_root = test_model
-
-        mesh = cmds.polyCube(name="test_mesh")[0]
-        target = cmds.polyCube(name="test_target")[0]
-        blend_shape = cmds.blendShape(target, mesh, name="test_blendShape")[0]
-
-        # エイリアスを設定
-        cmds.aliasAttr("smile_alias", f"{blend_shape}.weight[0]")
-        cmds.delete(target)
-
-        # モーフデータを設定
-        self.presenter.morph_data = {"smile": {"blend_shape_node": blend_shape, "blend_shape_target": "smile_alias"}}
-
-        # ブレンドシェイプに値を設定
-        cmds.setAttr(f"{blend_shape}.smile_alias", 0.8)
-
-        # プリセット名を設定
-        self.mock_view.preset_combo.currentText.return_value = "test_preset"
-        self.mock_view.preset_combo.findText.return_value = -1
-
-        # プリセットを保存
-        self.presenter.save_preset()
-
-        # 保存されたことを確認
-        self.assertTrue(cmds.attributeQuery("mmdMorphPresets", node=test_model, exists=True))
-        presets_json = cmds.getAttr(f"{test_model}.mmdMorphPresets")
-        presets = json.loads(presets_json)
-        self.assertIn("test_preset", presets)
-        self.assertAlmostEqual(presets["test_preset"]["smile"], 0.8, places=5)
-
-        # 値をリセット
-        cmds.setAttr(f"{blend_shape}.smile_alias", 0)
-
-        # プリセットを読み込み
-        self.presenter.load_preset()
-
-        # 値が復元されたことを確認
-        weight = cmds.getAttr(f"{blend_shape}.smile_alias")
-        self.assertAlmostEqual(weight, 0.8, places=5)
-
-    def test_auto_connect_blend_shapes(self):
-        """ブレンドシェイプ自動連携のテスト"""
-        # モデルを作成
-        test_model = cmds.group(empty=True, name="test_model_root")
-        self.mock_app_state.current_model_root = test_model
-
-        # ブレンドシェイプを作成
-        mesh = cmds.polyCube(name="test_mesh")[0]
-        cmds.parent(mesh, test_model)
-
-        # 複数のターゲットでブレンドシェイプを作成
-        targets = []
-        target_names = ["smile", "wink", "sad"]
-        for name in target_names:
-            target = cmds.polyCube(name=f"{name}_target")[0]
-            targets.append(target)
-
-        blend_shape = cmds.blendShape(targets, mesh, name="test_blendShape")[0]
-
-        # ターゲットを削除
-        for target in targets:
-            cmds.delete(target)
-
-        # モーフデータを設定（連携前）
-        self.presenter.morph_data = {
-            "smile": {"name_jp": "笑顔", "name_en": "smile"},
-            "wink": {"name_jp": "ウィンク", "name_en": "wink"},
-            "sad": {"name_jp": "悲しみ", "name_en": "sad"},
-        }
-
-        # 自動連携を実行
-        with patch.object(morph_presenter_module, "logger") as mock_logger:
-            self.presenter.auto_connect_blend_shapes()
-
-        # 結果を確認
-        for name in target_names:
-            self.assertIn("blend_shape_node", self.presenter.morph_data[name])
-            self.assertEqual(self.presenter.morph_data[name]["blend_shape_node"], blend_shape)
-            self.assertIn("blend_shape_target", self.presenter.morph_data[name])
-
-        self.mock_app_state.emit_status.assert_called()
-
-        # 開始・完了は INFO、per-item 成功は DEBUG のみ
-        debug_messages = self._call_messages(mock_logger.debug)
-        info_messages = self._call_messages(mock_logger.info)
-        self.assertIn("Starting auto-connect", info_messages)
-        self.assertIn("Auto-connect complete: connected 3 morph(s)", info_messages)
-        per_item = f"Auto-connect succeeded: smile -> {blend_shape}."
-        self.assertTrue(any(msg.startswith(per_item) for msg in debug_messages))
-        self.assertFalse(any(msg.startswith("Auto-connect succeeded:") for msg in info_messages))
-
     def test_organize_morphs_by_group(self):
         """PMX panel に基づくモーフ整理のテスト"""
         # モーフデータを設定（stale group は分類に使わない）
@@ -446,39 +316,6 @@ class TestMorphPresenter(MayaTestBase):
         saved_data = json.loads(cmds.getAttr(f"{test_model}.mmdMorphData"))
         self.assertEqual(saved_data["test_morph"]["name_jp"], "新名前")
         self.assertNotIn("group", saved_data["test_morph"])
-
-    def test_delete_preset(self):
-        """プリセット削除のテスト"""
-        # モデルを作成
-        test_model = cmds.group(empty=True, name="test_model_root")
-        self.mock_app_state.current_model_root = test_model
-
-        # プリセットを作成
-        presets = {
-            "test_preset": {"smile": 0.5},
-            "笑顔": {"smile": 1.0},  # デフォルトプリセット
-        }
-        cmds.addAttr(test_model, longName="mmdMorphPresets", dataType="string")
-        cmds.setAttr(f"{test_model}.mmdMorphPresets", json.dumps(presets), type="string")
-
-        # カスタムプリセットを削除
-        self.mock_view.preset_combo.currentText.return_value = "test_preset"
-        self.mock_view.preset_combo.findText.return_value = 1
-        self.presenter.delete_preset()
-
-        # 削除されたことを確認
-        saved_presets = json.loads(cmds.getAttr(f"{test_model}.mmdMorphPresets"))
-        self.assertNotIn("test_preset", saved_presets)
-        self.assertIn("笑顔", saved_presets)  # デフォルトは残る
-
-        # デフォルトプリセットの削除を試みる
-        self.mock_view.preset_combo.currentText.return_value = "笑顔"
-        self.presenter.delete_preset()
-
-        # 削除されていないことを確認
-        saved_presets = json.loads(cmds.getAttr(f"{test_model}.mmdMorphPresets"))
-        self.assertIn("笑顔", saved_presets)
-        self.mock_app_state.emit_status.assert_called_with("Default presets cannot be deleted", "warning")
 
 
 if __name__ == "__main__":

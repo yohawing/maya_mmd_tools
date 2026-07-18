@@ -2,7 +2,7 @@
 
 import json
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
 
@@ -205,14 +205,6 @@ class _FakeSpinBox:
         return self._value
 
 
-class _FakeTable:
-    def __init__(self):
-        self.row_count_calls = []
-
-    def setRowCount(self, row_count):
-        self.row_count_calls.append(row_count)
-
-
 class _FakeView:
     def __init__(self):
         self.morph_list = _FakeList()
@@ -220,40 +212,23 @@ class _FakeView:
         self.refresh_morphs_btn = _FakeButton()
         self.reset_slider_btn = _FakeButton()
         self.reset_all_btn = _FakeButton()
-        self.set_morph_key_btn = _FakeButton()
-        self.delete_morph_key_btn = _FakeButton()
-        self.connect_btn = _FakeButton()
-        self.disconnect_btn = _FakeButton()
-        self.auto_connect_btn = _FakeButton()
-        self.select_blend_shape_btn = _FakeButton()
         self.apply_btn = _FakeButton()
         self.reset_btn = _FakeButton()
-        self.save_preset_btn = _FakeButton()
-        self.load_preset_btn = _FakeButton()
-        self.delete_preset_btn = _FakeButton()
 
         self.search_edit = _FakeLineEdit()
         self.morph_name_jp_edit = _FakeLineEdit()
         self.morph_name_en_edit = _FakeLineEdit()
-        self.blend_shape_edit = _FakeLineEdit()
-        self.target_name_edit = _FakeLineEdit()
         self.panel_combo = _FakeComboBox()
         self.morph_type_combo = _FakeComboBox()
-        self.preset_combo = _FakeComboBox("なし")
 
         self.morph_slider = _FakeSlider()
         self.morph_value_label = _FakeLabel()
-        self.connection_status_label = _FakeLabel()
-        self.morph_key_status_label = _FakeLabel()
-        self.offset_count_label = _FakeLabel()
 
         self.invert_check = _FakeCheckBox()
         self.multiplier_spin = _FakeSpinBox()
-        self.offset_table = _FakeTable()
 
         self.details_enabled_calls = []
         self.controls_enabled_calls = []
-        self.keying_enabled_calls = []
         self.tr_calls = []
 
     def set_morph_details_enabled(self, enabled):
@@ -264,11 +239,6 @@ class _FakeView:
         for widget in (self.morph_slider, self.reset_slider_btn):
             widget.setEnabled(enabled)
             widget.setToolTip(tooltip)
-
-    def set_morph_keying_enabled(self, enabled):
-        self.keying_enabled_calls.append(enabled)
-        self.set_morph_key_btn.setEnabled(enabled)
-        self.delete_morph_key_btn.setEnabled(enabled)
 
     def tr(self, key, context):
         self.tr_calls.append((key, context))
@@ -297,8 +267,6 @@ class _FakeMayaAdapter:
         self.aliases = {}
         self.node_types = {}
         self.connections = {}
-        self.time = 0.0
-        self.key_counts = {}
 
     def object_exists(self, node):
         self.calls.append(("object_exists", node))
@@ -315,32 +283,6 @@ class _FakeMayaAdapter:
     def set_attr(self, attr_path, value):
         self.calls.append(("set_attr", attr_path, value))
         self.attr_values[attr_path] = value
-
-    def current_time(self):
-        self.calls.append(("current_time",))
-        return self.time
-
-    def set_keyframe(self, attr_path, **kwargs):
-        self.calls.append(("set_keyframe", attr_path, kwargs))
-        time = kwargs["time"]
-        self.key_counts[(attr_path, time)] = 1
-        self.key_counts[(attr_path, None)] = max(1, self.key_counts.get((attr_path, None), 0))
-
-    def keyframe(self, attr_path, **kwargs):
-        self.calls.append(("keyframe", attr_path, kwargs))
-        time_range = kwargs.get("time")
-        time = time_range[0] if time_range else None
-        return self.key_counts.get((attr_path, time), 0)
-
-    def remove_keyframe(self, attr_path, time):
-        self.calls.append(("remove_keyframe", attr_path, time))
-        removed = self.key_counts.pop((attr_path, time), 0)
-        if removed:
-            self.key_counts[(attr_path, None)] = max(
-                0,
-                self.key_counts.get((attr_path, None), 0) - removed,
-            )
-        return removed
 
     def list_relatives(self, node, *args, **kwargs):
         self.calls.append(("list_relatives", node, args, kwargs))
@@ -413,63 +355,10 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertEqual(app_state.current_model_changed._callbacks, [presenter.on_current_model_changed])
         self.assertEqual(view.morph_list.currentItemChanged._callbacks, [presenter.on_morph_selected])
         self.assertEqual(view.refresh_morphs_btn.clicked._callbacks, [presenter.load_morphs])
-        self.assertEqual(view.save_preset_btn.clicked._callbacks, [presenter.save_preset])
-        self.assertEqual(view.set_morph_key_btn.clicked._callbacks, [presenter.set_current_morph_key])
-        self.assertEqual(
-            view.delete_morph_key_btn.clicked._callbacks,
-            [presenter.delete_current_morph_key],
-        )
         self.assertIsNone(presenter.blend_shape_node)
         self.assertIsNone(presenter.current_morph)
         self.assertEqual(presenter.morph_data, {})
         self.assertEqual(adapter.calls, [])
-
-    def test_controller_keying_routes_selected_index_and_reports_status(self):
-        adapter = _FakeMayaAdapter()
-        adapter.time = 12.0
-        plug = "model_morphController.inputWeight[7]"
-        adapter.existing.add(plug)
-        adapter.attr_values[plug] = 0.42
-        presenter, view, app_state, _ = _make_presenter(adapter=adapter)
-        presenter._morph_controller = "model_morphController"
-        presenter.current_morph = "smile"
-        presenter.morph_data = {
-            "smile": {
-                "index": 7,
-                "blend_shape_node": "faceBlendShape",
-                "blend_shape_weight_attr": "weight[2]",
-            }
-        }
-
-        presenter._update_morph_keying_status()
-        self.assertEqual(view.morph_key_status_label.text, "morph_keying_status:not_animated")
-
-        presenter.set_current_morph_key()
-        self.assertIn(
-            ("set_keyframe", plug, {"time": 12.0}),
-            adapter.calls,
-        )
-        self.assertEqual(
-            view.morph_key_status_label.text,
-            "morph_keying_status:animated",
-        )
-
-        presenter.delete_current_morph_key()
-        self.assertIn(("remove_keyframe", plug, 12.0), adapter.calls)
-        self.assertEqual(view.morph_key_status_label.text, "morph_keying_status:not_animated")
-        key_targets = [call[1] for call in adapter.calls if call[0] in {"set_keyframe", "remove_keyframe"}]
-        self.assertEqual(key_targets, [plug, plug])
-
-        presenter.delete_current_morph_key()
-        self.assertEqual(
-            app_state.statuses,
-            [
-                (
-                    "No key was removed. Select one animation layer and ensure the current time is keyed",
-                    "warning",
-                )
-            ],
-        )
 
     def test_load_morphs_no_model_clears_state_and_returns_before_adapter(self):
         presenter, view, _, adapter = _make_presenter(model=None)
@@ -504,14 +393,13 @@ class TestMorphPresenterHeadless(unittest.TestCase):
     def test_load_morphs_routes_through_adapter_and_populates_view(self):
         adapter = _FakeMayaAdapter()
         adapter.existing.add(TEST_MODEL)
-        adapter.attr_exists.update({(TEST_MODEL, "mmdMorphData"), (TEST_MODEL, "mmdMorphPresets")})
+        adapter.attr_exists.add((TEST_MODEL, "mmdMorphData"))
         adapter.attr_values[f"{TEST_MODEL}.mmdMorphData"] = json.dumps(
             {
                 "smile": {"name_jp": "笑顔", "name_en": "smile", "panel": 1, "type": 0, "group": "目"},
             },
             ensure_ascii=False,
         )
-        adapter.attr_values[f"{TEST_MODEL}.mmdMorphPresets"] = json.dumps({"custom_pose": {"smile": 0.7}})
         mesh_kwargs = tuple(sorted({"allDescendents": True, "type": "mesh"}.items()))
         adapter.relatives[(TEST_MODEL, mesh_kwargs)] = ["faceShape"]
         adapter.history["faceShape"] = ["skinCluster1", "faceBlendShape"]
@@ -536,7 +424,6 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertNotIn("blink", presenter.morph_data)
         self.assertEqual([item.text() for item in view.morph_list.items], ["000:V|笑顔"])
         self.assertEqual([item.data(256) for item in view.morph_list.items], ["smile"])
-        self.assertEqual(view.preset_combo.items, ["なし", "笑顔", "ウィンク", "驚き", "悲しみ", "custom_pose"])
 
     def test_list_metadata_preserves_duplicate_and_empty_names(self):
         presenter, _, _, _ = _make_presenter()
@@ -688,63 +575,21 @@ class TestMorphPresenterHeadless(unittest.TestCase):
             self.assertTrue(view.details_enabled_calls[-1])
             self.assertEqual(presenter.current_morph, name)
 
-    def test_material_capability_requires_destination_evaluator_plug(self):
-        presenter, _, _, adapter = _make_presenter()
-        adapter.existing.add("material_node")
+    def test_material_capability_requires_canonical_network_node(self):
+        presenter, view, _, adapter = _make_presenter()
         data = {"type": 8, "_pmx_type_raw": True, "morph_node": "material_node"}
 
-        adapter.node_types["wrong"] = "multiplyDivide"
-        adapter.connections["material_node.weight"] = [{
-            "source": "material_node.weight",
-            "destination": "wrong.input1X",
-        }]
         self.assertFalse(presenter._morph_controls_supported(data))
 
-        adapter.node_types["materialEval"] = "mmdMaterialMorphEval"
-        adapter.connections["material_node.weight"] = [{
-            "source": "materialEval.outputDiffuseR",
-            "destination": "material_node.weight",
-        }]
-        self.assertFalse(presenter._morph_controls_supported(data))
-
-        adapter.connections["material_node.weight"] = [{
-            "source": "material_node.weight",
-            "destination": "materialEval.contribution[0].weight",
-        }]
-        self.assertFalse(presenter._morph_controls_supported(data))
-
-        adapter.attr_exists.add(("materialEval", "mmd_complete_route_ready"))
-        adapter.attr_values["materialEval.mmd_complete_route_ready"] = True
-        adapter.attr_values["materialEval.mmd_target_shader"] = "materialShader"
-        adapter.node_types["materialShader"] = "GLSLShader"
-        adapter.connections["materialEval.outputDiffuse"] = [{
-            "source": "materialEval.outputDiffuse",
-            "destination": "materialShader.DiffuseColorRGB",
-        }]
+        adapter.existing.add("material_node")
         self.assertTrue(presenter._morph_controls_supported(data))
+        presenter.morph_data = {"material": data}
+        presenter.on_morph_selected(_FakeItem("material", "material"), None)
+        self.assertEqual(view.controls_enabled_calls[-1], (True, ""))
 
-    def test_cached_material_capability_does_not_repeat_graph_traversal(self):
+    def test_cached_material_capability_does_not_depend_on_shader_route(self):
         presenter, _, _, adapter = _make_presenter()
         adapter.existing.add("material_node")
-        adapter.node_types.update({
-            "materialEval": "mmdMaterialMorphEval",
-            "materialShader": "GLSLShader",
-        })
-        adapter.attr_exists.add(("materialEval", "mmd_complete_route_ready"))
-        adapter.attr_values.update({
-            "materialEval.mmd_complete_route_ready": True,
-            "materialEval.mmd_target_shader": "materialShader",
-        })
-        adapter.connections.update({
-            "material_node.weight": [{
-                "source": "material_node.weight",
-                "destination": "materialEval.contribution[0].weight",
-            }],
-            "materialEval.outputDiffuse": [{
-                "source": "materialEval.outputDiffuse",
-                "destination": "materialShader.DiffuseColorRGB",
-            }],
-        })
         data = {
             "type": 8,
             "_pmx_type_raw": True,
@@ -752,58 +597,10 @@ class TestMorphPresenterHeadless(unittest.TestCase):
             "morph_node": "material_node",
         }
         presenter.morph_data = {"material": data}
-        adapter.list_connections = MagicMock(wraps=adapter.list_connections)
 
         presenter._cache_morph_capabilities()
-        calls_after_load = adapter.list_connections.call_count
         self.assertTrue(presenter._morph_controls_supported(data))
-        self.assertTrue(presenter._morph_controls_supported(data))
-
-        self.assertGreater(calls_after_load, 0)
-        self.assertEqual(adapter.list_connections.call_count, calls_after_load)
-
-        # The remaining assertions exercise the uncached evaluator itself.
-        presenter._morph_capability_cache.clear()
-
-        adapter.node_types["unrelated"] = "condition"
-        adapter.connections["material_node.weight"] = [{
-            "source": "material_node.weight",
-            "destination": "unrelated.firstTerm",
-        }]
-        self.assertFalse(presenter._morph_controls_supported(data))
-
-        adapter.node_types["cycleA"] = "unitConversion"
-        adapter.node_types["cycleB"] = "unitConversion"
-        adapter.connections["material_node.weight"] = [{
-            "source": "material_node.weight",
-            "destination": "cycleA.input",
-        }]
-        adapter.connections["cycleA.output"] = [{
-            "source": "cycleA.output", "destination": "cycleB.input",
-        }]
-        adapter.connections["cycleB.output"] = [{
-            "source": "cycleB.output", "destination": "cycleA.input",
-        }]
-        self.assertFalse(presenter._morph_controls_supported(data))
-
-        adapter.connections["material_node.weight"] = [{
-            "source": "material_node.weight",
-            "destination": "materialEval.baseDiffuseR",
-        }]
-        self.assertFalse(presenter._morph_controls_supported(data))
-
-        adapter.connections["material_node.weight"] = [{
-            "source": "material_node.weight",
-            "destination": "ns:materialEval.contribution[12].weight",
-        }]
-        adapter.node_types["ns:materialEval"] = "mmdMaterialMorphEval"
-        adapter.attr_exists.add(("ns:materialEval", "mmd_complete_route_ready"))
-        adapter.attr_values["ns:materialEval.mmd_complete_route_ready"] = True
-        adapter.attr_values["ns:materialEval.mmd_target_shader"] = "materialShader"
-        adapter.connections["ns:materialEval.outputDiffuse"] = [{
-            "source": "ns:materialEval.outputDiffuse",
-            "destination": "materialShader.DiffuseColorRGB",
-        }]
+        adapter.existing.remove("material_node")
         self.assertTrue(presenter._morph_controls_supported(data))
 
     def test_group_capability_requires_referenced_bone_morph(self):
@@ -859,7 +656,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
 
         adapter.attr_values["materialEval.mmd_complete_route_ready"] = False
         presenter.on_morph_selected(_FakeItem("group", "group"), None)
-        self.assertEqual(view.controls_enabled_calls[-1][0], False)
+        self.assertEqual(view.controls_enabled_calls[-1], (True, ""))
 
         group["group_morph_offsets"].append({"morph_index": 1, "morph_rate": 0.5})
         presenter.on_morph_selected(_FakeItem("group", "group"), None)
@@ -1019,9 +816,6 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertEqual(presenter.morph_data["グループ表情"]["type"], 12)
         self.assertEqual(presenter.morph_data["グループ表情"]["panel"], 3)
         self.assertEqual(presenter.morph_data["グループ表情"]["mmd_morph_type"], "group")
-        self.assertEqual(view.blend_shape_edit._text, "boneSmileNode")
-        self.assertEqual(view.target_name_edit._text, "weight")
-        self.assertEqual(view.connection_status_label.text, "Metadata only")
         self.assertEqual(view.morph_slider.set_value_calls, [25])
 
     def test_material_network_slider_drives_weight_with_invert_and_multiplier(self):
@@ -1125,68 +919,6 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertEqual(adapter.attr_values["materialFlashNode.weight"], 0)
         self.assertEqual(view.morph_slider.set_value_calls, [0])
         self.assertEqual(app_state.statuses, [("Reset 2 morph(s)", None)])
-
-    def test_preset_roundtrip_includes_network_morph_weights(self):
-        adapter = _FakeMayaAdapter()
-        adapter.existing.update(
-            {
-                TEST_MODEL,
-                "faceBlendShape",
-                "faceBlendShape.weight[0]",
-                "materialFlashNode",
-                "groupPoseNode",
-            }
-        )
-        adapter.attr_exists.add((TEST_MODEL, "mmdMorphPresets"))
-        adapter.attr_values.update(
-            {
-                "faceBlendShape.weight[0]": 0.8,
-                "materialFlashNode.weight": 0.4,
-                "groupPoseNode.weight": 0.0,
-                f"{TEST_MODEL}.mmdMorphPresets": json.dumps({}),
-            }
-        )
-        adapter.aliases["faceBlendShape"] = ["smile", "weight[0]"]
-        presenter, view, app_state, _ = _make_presenter(model=TEST_MODEL, adapter=adapter)
-        view.preset_combo.setCurrentText("network_pose")
-        presenter.morph_data = {
-            "smile": {
-                "blend_shape_node": "faceBlendShape",
-                "blend_shape_target": "smile",
-                "blend_shape_weight_attr": "weight[0]",
-            },
-            "材質点滅": {
-                "morph_node": "materialFlashNode",
-                "morph_weight_attr": "weight",
-            },
-            "グループ表情": {
-                "morph_node": "groupPoseNode",
-                "morph_weight_attr": "weight",
-            },
-        }
-
-        with patch.object(morph_presenter_module, "set_attribute") as set_attribute:
-            presenter.save_preset()
-
-        saved_presets = json.loads(set_attribute.call_args[0][2])
-        self.assertEqual(
-            saved_presets["network_pose"],
-            {"smile": 0.8, "材質点滅": 0.4},
-        )
-
-        # Mutate scene weights, then reload preset through the same helper path.
-        adapter.attr_values["faceBlendShape.weight[0]"] = 0.0
-        adapter.attr_values["materialFlashNode.weight"] = 0.0
-        adapter.attr_values[f"{TEST_MODEL}.mmdMorphPresets"] = set_attribute.call_args[0][2]
-        presenter.current_morph = "材質点滅"
-        presenter.load_preset()
-
-        self.assertEqual(adapter.attr_values["faceBlendShape.weight[0]"], 0.8)
-        self.assertEqual(adapter.attr_values["materialFlashNode.weight"], 0.4)
-        self.assertEqual(adapter.attr_values["groupPoseNode.weight"], 0.0)
-        self.assertEqual(view.morph_slider.set_value_calls[-1], 40)
-        self.assertIn(("Saved preset 'network_pose'", None), app_state.statuses)
-        self.assertIn(("Applied preset 'network_pose'", None), app_state.statuses)
 
     def test_morph_weight_helper_does_not_double_write_shared_plug(self):
         adapter = _FakeMayaAdapter()
@@ -1564,13 +1296,8 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertEqual(view.morph_name_jp_edit._text, "笑顔")
         self.assertEqual(view.morph_name_en_edit._text, "smile")
         self.assertEqual(view.panel_combo.set_index_calls, [1])
-        self.assertEqual(view.blend_shape_edit._text, "faceBlendShape")
-        self.assertEqual(view.target_name_edit._text, "smile")
-        self.assertEqual(view.connection_status_label.text, "Connected")
         self.assertEqual(view.morph_slider.set_value_calls, [42])
         self.assertEqual(view.morph_value_label.text, "42%")
-        self.assertEqual(view.offset_table.row_count_calls, [0])
-        self.assertEqual(view.offset_count_label.text, "labels:offset_not_supported")
         self.assertIn(("object_exists", "faceBlendShape"), adapter.calls)
         self.assertIn(("get_attr", "faceBlendShape.weight[0]"), adapter.calls)
 
@@ -1608,83 +1335,6 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertNotIn(("set_attr", "faceBlendShape.weight[1]", 0), adapter.calls)
         self.assertEqual(view.morph_slider.set_value_calls, [0])
         self.assertEqual(app_state.statuses, [("Reset 1 morph(s)", None)])
-
-    def test_save_preset_serializes_nonzero_values_and_preserves_existing_presets(self):
-        adapter = _FakeMayaAdapter()
-        adapter.existing.update(
-            {TEST_MODEL, "faceBlendShape", "faceBlendShape.weight[0]", "faceBlendShape.weight[1]"}
-        )
-        adapter.attr_exists.add((TEST_MODEL, "mmdMorphPresets"))
-        adapter.attr_values.update(
-            {
-                "faceBlendShape.weight[0]": 0.8,
-                "faceBlendShape.weight[1]": 0.0,
-                f"{TEST_MODEL}.mmdMorphPresets": json.dumps({"old_pose": {"smile": 0.2}}),
-            }
-        )
-        adapter.aliases["faceBlendShape"] = ["smile", "weight[0]", "blink", "weight[1]"]
-        presenter, view, app_state, _ = _make_presenter(model=TEST_MODEL, adapter=adapter)
-        view.preset_combo.setCurrentText("custom_pose")
-        presenter.morph_data = {
-            "smile": {
-                "blend_shape_node": "faceBlendShape",
-                "blend_shape_target": "smile",
-                "blend_shape_weight_attr": "weight[0]",
-            },
-            "blink": {
-                "blend_shape_node": "faceBlendShape",
-                "blend_shape_target": "blink",
-                "blend_shape_weight_attr": "weight[1]",
-            },
-        }
-
-        with patch.object(morph_presenter_module, "set_attribute") as set_attribute, patch.object(
-            morph_presenter_module, "set_custom_attributes"
-        ) as set_custom_attributes:
-            presenter.save_preset()
-
-        set_custom_attributes.assert_not_called()
-        set_attribute_args = set_attribute.call_args[0]
-        self.assertEqual(set_attribute_args[0], TEST_MODEL)
-        self.assertEqual(set_attribute_args[1], "mmdMorphPresets")
-        self.assertEqual(set_attribute_args[3], "string")
-        saved_presets = json.loads(set_attribute_args[2])
-        self.assertEqual(saved_presets, {"old_pose": {"smile": 0.2}, "custom_pose": {"smile": 0.8}})
-        self.assertIn(("get_attr", "faceBlendShape.weight[0]"), adapter.calls)
-        self.assertIn(("get_attr", "faceBlendShape.weight[1]"), adapter.calls)
-        self.assertIn(("get_attr", f"{TEST_MODEL}.mmdMorphPresets"), adapter.calls)
-        self.assertIn("custom_pose", view.preset_combo.items)
-        self.assertEqual(app_state.statuses, [("Saved preset 'custom_pose'", None)])
-
-    def test_load_preset_parses_json_and_applies_existing_connected_morphs(self):
-        adapter = _FakeMayaAdapter()
-        adapter.existing.update({TEST_MODEL, "faceBlendShape", "faceBlendShape.weight[0]"})
-        adapter.attr_exists.add((TEST_MODEL, "mmdMorphPresets"))
-        adapter.attr_values[f"{TEST_MODEL}.mmdMorphPresets"] = json.dumps(
-            {"custom_pose": {"smile": 0.75, "blink": 0.5, "unknown": 1.0}}
-        )
-        adapter.aliases["faceBlendShape"] = ["smile", "weight[0]"]
-        presenter, view, app_state, _ = _make_presenter(model=TEST_MODEL, adapter=adapter)
-        view.preset_combo.setCurrentText("custom_pose")
-        presenter.current_morph = "smile"
-        presenter.morph_data = {
-            "smile": {
-                "blend_shape_node": "faceBlendShape",
-                "blend_shape_target": "smile",
-                "blend_shape_weight_attr": "weight[0]",
-            },
-            "blink": {"blend_shape_node": "missingBlendShape", "blend_shape_target": "blink"},
-        }
-
-        presenter.load_preset()
-
-        self.assertIn(("object_exists", TEST_MODEL), adapter.calls)
-        self.assertIn(("attribute_exists", "mmdMorphPresets", TEST_MODEL), adapter.calls)
-        self.assertIn(("get_attr", f"{TEST_MODEL}.mmdMorphPresets"), adapter.calls)
-        self.assertIn(("set_attr", "faceBlendShape.weight[0]", 0.75), adapter.calls)
-        self.assertNotIn(("set_attr", "missingBlendShape.blink", 0.5), adapter.calls)
-        self.assertEqual(view.morph_slider.set_value_calls, [75])
-        self.assertEqual(app_state.statuses, [("Applied preset 'custom_pose'", None)])
 
     def test_apply_changes_serializes_morph_data_without_real_scene(self):
         adapter = _FakeMayaAdapter()
