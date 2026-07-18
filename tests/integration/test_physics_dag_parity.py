@@ -26,6 +26,7 @@ from mmd_tools.core.native.mmd_anim_runtime_handles import (
 from mmd_tools.core.native.mmd_anim_runtime_types import (
     MMD_RUNTIME_PHYSICS_MODE_LIVE,
 )
+from mmd_tools.core.model_dag_descriptor import build_model_descriptors_from_dag
 from mmd_tools.core.physics_dag_descriptor import build_descriptors_from_dag
 from mmd_tools.core.physics_descriptor import build_descriptors_from_pmx
 from mmd_tools.converters.physics_scene_builder import build_physics_scene
@@ -205,6 +206,56 @@ class TestPhysicsDagParity(MayaTestBase):
                     dag_jt.spring_rotation_factor_xyz[c], pmx_jt.spring_rotation_factor_xyz[c],
                     places=4, msg=f"jt[{i}].spring_rot[{c}]",
                 )
+
+    @unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
+    def test_dag_model_rest_world_matches_pmx_direct_before_physics(self):
+        """Compare independent PMX/direct and payload-free DAG model rest poses."""
+        from mmd_tools.io.pmx_importer import import_pmx_file
+
+        root = import_pmx_file(
+            self.pmx,
+            str(FIXTURE_PATH),
+            options={"import_physics": True, "create_mmd_shaders": False},
+        )
+        self.assertTrue(root)
+        descriptors = build_model_descriptors_from_dag(root)
+        pmx_model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
+        dag_model = MmdRuntimeModel.from_descriptors(descriptors)
+        self.assertIsNotNone(pmx_model)
+        self.assertIsNotNone(dag_model)
+        pmx_instance = MmdRuntimeInstance.for_model(pmx_model)
+        dag_instance = MmdRuntimeInstance.for_model(dag_model)
+        self.assertIsNotNone(pmx_instance)
+        self.assertIsNotNone(dag_instance)
+        try:
+            self.assertTrue(pmx_instance.evaluate_rest_pose())
+            self.assertTrue(dag_instance.evaluate_rest_pose())
+            pmx_matrices = pmx_instance.get_world_matrices()
+            dag_matrices = dag_instance.get_world_matrices()
+            self.assertIsNotNone(pmx_matrices)
+            self.assertIsNotNone(dag_matrices)
+            self.assertEqual(len(pmx_matrices), len(dag_matrices))
+            differences = []
+            for bone_index, (pmx_matrix, dag_matrix) in enumerate(
+                zip(pmx_matrices, dag_matrices)
+            ):
+                for component, (pmx_value, dag_value) in enumerate(
+                    zip(pmx_matrix, dag_matrix)
+                ):
+                    delta = abs(pmx_value - dag_value)
+                    if delta != 0.0:
+                        differences.append((delta, bone_index, component, pmx_value, dag_value))
+            if differences:
+                differences.sort(reverse=True)
+                self.fail(
+                    "pure rest model mismatch; largest differences: "
+                    f"{differences[:8]}"
+                )
+        finally:
+            dag_instance.free()
+            pmx_instance.free()
+            dag_model.free()
+            pmx_model.free()
 
     @unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
     def test_dag_world_rigidbody_count_matches_pmx_world(self):
