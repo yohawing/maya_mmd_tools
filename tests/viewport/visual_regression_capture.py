@@ -39,6 +39,7 @@ BACKEND_CONFIG = {
     "dx11": {"node_type": "dx11Shader", "plugin": "dx11Shader", "vp2_device": "VirtualDeviceDx11"},
     "glsl": {"node_type": "GLSLShader", "plugin": "glslShader", "vp2_device": "VirtualDeviceGLCore"},
 }
+OUTLINE_VISUAL_CASES = {"fixture-render-generated-visual-mmd-outline-normal-silhouette"}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 LOGGER = logging.getLogger(__name__)
@@ -195,6 +196,19 @@ def _device_matches_backend(backend: str, device_information: object) -> bool:
     return "opengl" in text or "gl core" in text or "glcore" in text
 
 
+def _is_outline_visual_case(case: dict) -> bool:
+    return case.get("name") in OUTLINE_VISUAL_CASES
+
+
+def _validate_outline_backend(cases: list[dict], shader_backend: str) -> None:
+    unsupported = [str(case.get("name")) for case in cases if _is_outline_visual_case(case)]
+    if shader_backend != "dx11" and unsupported:
+        raise RuntimeError(
+            f"Outline visual cases require the DX11 shader backend; {shader_backend} has no production outline pass: "
+            + ", ".join(unsupported)
+        )
+
+
 def _monitor_log(log_path: Path, timeout: int) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.touch(exist_ok=True)
@@ -302,6 +316,7 @@ def _png_stats(path):
     max_v = 0
     total = 0
     count = 0
+    near_black_pixels = 0
     for _y in range(height):
         filt = raw[offset]
         offset += 1
@@ -335,8 +350,20 @@ def _png_stats(path):
             max_v = max(max_v, v)
             total += v
             count += 1
+        for i in range(0, stride, channels):
+            if max(recon[i:i+3]) <= 32:
+                near_black_pixels += 1
         prev = recon
-    return {{"width": width, "height": height, "min": min_v, "max": max_v, "mean": total / max(count, 1), "samples": count}}
+    return {{
+        "width": width,
+        "height": height,
+        "min": min_v,
+        "max": max_v,
+        "mean": total / max(count, 1),
+        "samples": count,
+        "near_black_rgb_pixels": near_black_pixels,
+        "pixel_count": width * height,
+    }}
 
 def _png_center_sample(path):
     path = Path(path)
@@ -682,6 +709,58 @@ def _apply_unique_shader_path():
             cmds.setAttr(shader + ".technique", techniques.get(shader, "MMDTechnique"), type="string")
     return shaders
 
+def _enable_outline_for_case(case):
+    if case.get("name") not in {sorted(OUTLINE_VISUAL_CASES)!r}:
+        return []
+
+    if _shader_backend != "dx11":
+        raise RuntimeError(
+            "outline visual fixture requires the DX11 shader backend; "
+            + _shader_backend
+            + " has no production outline pass"
+        )
+
+    from mmd_tools.core.constants import (
+        ATTR_MMD_DRAW_FLAGS,
+        ATTR_MMD_EDGE_SIZE,
+    )
+    from mmd_tools.converters import mesh_converter
+
+    shaders = cmds.ls(type=_shader_node_type) or []
+    if not shaders:
+        raise AssertionError("outline fixture has no " + _shader_node_type + " materials")
+
+    results = []
+    for shader in shaders:
+        if not cmds.attributeQuery(ATTR_MMD_DRAW_FLAGS, node=shader, exists=True):
+            raise AssertionError(shader + ": missing " + ATTR_MMD_DRAW_FLAGS)
+        draw_flags = int(cmds.getAttr(shader + "." + ATTR_MMD_DRAW_FLAGS))
+        if draw_flags & 0x10 == 0:
+            raise AssertionError(shader + ": PMX edge draw flag 0x10 is not set")
+        if not cmds.attributeQuery(ATTR_MMD_EDGE_SIZE, node=shader, exists=True):
+            raise AssertionError(shader + ": missing " + ATTR_MMD_EDGE_SIZE)
+        edge_size = float(cmds.getAttr(shader + "." + ATTR_MMD_EDGE_SIZE))
+        if edge_size <= 0.0:
+            raise AssertionError(shader + ": authored PMX edge size must be positive")
+
+        technique = mesh_converter.apply_shader_outline(shader, True, edge_size)
+
+        if "NoEdge" in technique:
+            raise AssertionError(shader + ": outline technique still contains NoEdge: " + technique)
+        if not cmds.attributeQuery("EdgeSize", node=shader, exists=True):
+            raise AssertionError(shader + ": missing generated EdgeSize uniform")
+        applied_edge_size = float(cmds.getAttr(shader + ".EdgeSize"))
+        if applied_edge_size <= 0.0:
+            raise AssertionError(shader + ": generated EdgeSize must be positive")
+        results.append({{
+            "shader": shader,
+            "technique": technique,
+            "authoredEdgeSize": edge_size,
+            "edgeSize": applied_edge_size,
+            "mmdDrawFlags": draw_flags,
+        }})
+    return results
+
 def _apply_mmd_light(case):
     light = case.get("light") or {{}}
     source_direction = light.get("direction") or [0.5, -1.0, 0.5]
@@ -733,7 +812,10 @@ def _capture_case(case):
     if root is None:
         raise RuntimeError("import_mmd_file returned None: " + case["model"])
     _apply_unique_shader_path()
-    debug_actions = {{"mmdLight": _apply_mmd_light(case)}}
+    debug_actions = {{
+        "outline": _enable_outline_for_case(case),
+        "mmdLight": _apply_mmd_light(case),
+    }}
     if _hide_orig_shapes:
         debug_actions["hideOrigShapes"] = _mark_orig_shapes_intermediate()
     if _debug_lambert_control:
@@ -875,6 +957,7 @@ def main() -> int:
     _, cases = _load_cases(manifest_path, args.case, args.tag, args.limit)
     if not cases:
         raise RuntimeError("No manifest cases selected.")
+    _validate_outline_backend(cases, args.shader_backend)
 
     shader_fx = _prepare_shader(project_root, output_dir, args.shader_fx)
     log_path = output_dir / "maya_visual_regression.log"

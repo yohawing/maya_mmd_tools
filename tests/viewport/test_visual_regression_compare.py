@@ -83,6 +83,50 @@ class VisualRegressionCompareTest(unittest.TestCase):
         self.assertEqual("pass", report["status"])
         self.assertEqual("maya-visual-regression-backend-comparison", report["kind"])
 
+    def test_backend_missing_case_fails_unless_explicitly_ignored(self):
+        temp, root, reference_capture = self._fixture((200, 40, 20), (200, 40, 20))
+        self.addCleanup(temp.cleanup)
+        reference = json.loads(reference_capture.read_text(encoding="utf-8"))
+        diffuse = reference["results"][0]
+        diffuse["actual_png"] = diffuse["oracle_png"]
+        outline = dict(diffuse, name="fixture-outline")
+        reference["results"] = [diffuse, outline]
+        reference_capture.write_text(json.dumps(reference), encoding="utf-8")
+        actual_capture = root / "actual-capture.json"
+        actual_capture.write_text(json.dumps({"results": [diffuse]}), encoding="utf-8")
+
+        failed = backend_capture_report(reference_capture, actual_capture, root / "missing.json", 0.01)
+        self.assertEqual("fail", failed["status"])
+        self.assertEqual(
+            [{"name": "fixture-outline", "error": "missing backend capture"}],
+            failed["capture_errors"],
+        )
+
+        passed = backend_capture_report(
+            reference_capture,
+            actual_capture,
+            root / "ignored.json",
+            0.01,
+            ignore_cases={"fixture-outline"},
+        )
+        self.assertEqual("pass", passed["status"])
+        self.assertEqual(["fixture-outline"], passed["ignored_cases"])
+
+        reference["results"].append(dict(diffuse, name="fixture-unignored"))
+        reference_capture.write_text(json.dumps(reference), encoding="utf-8")
+        still_failed = backend_capture_report(
+            reference_capture,
+            actual_capture,
+            root / "still-missing.json",
+            0.01,
+            ignore_cases={"fixture-outline"},
+        )
+        self.assertEqual("fail", still_failed["status"])
+        self.assertEqual(
+            [{"name": "fixture-unignored", "error": "missing backend capture"}],
+            still_failed["capture_errors"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

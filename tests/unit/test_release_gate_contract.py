@@ -40,6 +40,15 @@ import noxfile
 
 
 class ReleaseGateContractTest(unittest.TestCase):
+    def test_release_visual_matrix_keeps_outline_dx11_only(self):
+        outline = "fixture-render-generated-visual-mmd-outline-normal-silhouette"
+        self.assertIn(outline, noxfile._release_visual_cases("dx11"))
+        self.assertNotIn(outline, noxfile._release_visual_cases("glsl"))
+        self.assertEqual(
+            set(noxfile._release_visual_cases("dx11")) - {outline},
+            set(noxfile._release_visual_cases("glsl")),
+        )
+
     def test_cpp_verify_mayapy_processes_skip_user_setup(self):
         class FakeSession:
             posargs = ["--maya", "2024", "--config", "Release"]
