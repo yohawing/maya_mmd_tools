@@ -249,7 +249,7 @@ _QTWIDGETS_NAMES = [
     "QLineEdit", "QWidget", "QVBoxLayout", "QHBoxLayout", "QLabel", "QTextEdit", "QDialog",
     "QFileDialog", "QGroupBox", "QFormLayout", "QCheckBox", "QComboBox",
     "QListWidget", "QSlider", "QTreeView", "QTreeWidget", "QTreeWidgetItem",
-    "QColorDialog", "QDoubleSpinBox", "QSpinBox", "QGridLayout", "QScrollArea",
+    "QColorDialog", "QDoubleSpinBox", "QAbstractSpinBox", "QSpinBox", "QGridLayout", "QScrollArea",
     "QListWidgetItem", "QStatusBar", "QProgressBar", "QSplitter", "QTableWidget",
     "QTableWidgetItem", "QHeaderView", "QMessageBox", "QInputDialog", "QToolBar",
     "QMenuBar", "QMenu",
