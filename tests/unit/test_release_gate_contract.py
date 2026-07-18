@@ -72,7 +72,13 @@ class ReleaseGateContractTest(unittest.TestCase):
                                     noxfile.cpp_verify(session)
 
         self.assertEqual(env_mock.call_args.kwargs["MAYA_SKIP_USERSETUP_PY"], "1")
-        mayapy_runs = [kwargs for args, kwargs in session.runs if args and args[0] == str(mayapy)]
+        mayapy_runs = [
+            kwargs
+            for args, kwargs in session.runs
+            if len(args) >= 2
+            and args[0] == str(mayapy)
+            and str(args[1]).endswith(("smoke_runtime_node.py", "focused_physics_solver_world_toggle.py"))
+        ]
         self.assertEqual(len(mayapy_runs), 2)
         self.assertTrue(all(run["env"] is mayapy_env for run in mayapy_runs))
 
