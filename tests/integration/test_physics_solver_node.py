@@ -107,6 +107,110 @@ class TestPhysicsSolverNode(MayaTestBase):
         solver = self._create_solver(root)
         self.assertEqual(cmds.nodeType(solver), "mmdPhysicsSolver")
 
+    def test_ui_enable_moves_solver_joints_and_skinned_mesh(self):
+        """The Physics-tab enable path must produce visible scene motion."""
+        from types import SimpleNamespace
+
+        import maya.api.OpenMaya as om
+
+        from mmd_tools.ui.presenters.physics_presenter import PhysicsPresenter
+
+        class _Checkbox:
+            def __init__(self):
+                self.checked = False
+                self.enabled = False
+
+            def blockSignals(self, _blocked):
+                pass
+
+            def setChecked(self, checked):
+                self.checked = bool(checked)
+
+            def setEnabled(self, enabled):
+                self.enabled = bool(enabled)
+
+        root, joints, solver = _import_payload_free_scene(FIXTURE_PATH)
+        worlds = cmds.listConnections(
+            f"{solver}.inWorldSettings", source=True, destination=False,
+            type="mmdPhysicsWorldShape",
+        ) or []
+        self.assertTrue(worlds, "Imported solver must be connected to a physics world")
+        world = worlds[0]
+        self.assertFalse(cmds.getAttr(f"{world}.enable"))
+
+        checkbox = _Checkbox()
+        presenter = object.__new__(PhysicsPresenter)
+        presenter.view = SimpleNamespace(physics_enable_check=checkbox)
+        presenter.app_state = SimpleNamespace(current_model_root=root)
+        presenter.maya_adapter = SimpleNamespace(object_exists=cmds.objExists)
+        presenter._on_physics_enable_changed(True)
+
+        self.assertTrue(checkbox.enabled)
+        self.assertTrue(checkbox.checked)
+        self.assertTrue(cmds.getAttr(f"{world}.enable"))
+
+        physics_bone_indices = {
+            rb.related_bone_index
+            for rb in self.pmx.rigid_bodies
+            if rb.physics_mode != 0 and 0 <= rb.related_bone_index < len(self.pmx.bones)
+        }
+        joints_by_index = {
+            int(cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_INDEX}")): joint
+            for joint in joints
+            if cmds.attributeQuery(ATTR_MMD_BONE_INDEX, node=joint, exists=True)
+        }
+        driven_joints = {
+            index: joints_by_index[index]
+            for index in physics_bone_indices
+            if index in joints_by_index
+        }
+        self.assertTrue(driven_joints)
+
+        meshes = cmds.listRelatives(
+            root, allDescendents=True, type="mesh", fullPath=True,
+            noIntermediate=True,
+        ) or []
+        self.assertTrue(meshes, "Fixture must contain a final skinned mesh")
+
+        def mesh_points(shape):
+            selection = om.MSelectionList()
+            selection.add(shape)
+            return om.MFnMesh(selection.getDagPath(0)).getPoints(om.MSpace.kWorld)
+
+        cmds.currentUnit(time="ntsc")
+        cmds.currentTime(0)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+        solver_before = cmds.getAttr(f"{solver}.outBoneMatrices")
+        joint_before = {
+            index: tuple(cmds.xform(joint, query=True, worldSpace=True, matrix=True))
+            for index, joint in driven_joints.items()
+        }
+        mesh_before = {shape: mesh_points(shape) for shape in meshes}
+
+        for frame in range(1, 31):
+            cmds.currentTime(frame)
+            self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+
+        solver_after = cmds.getAttr(f"{solver}.outBoneMatrices")
+        solver_delta = max(abs(a - b) for a, b in zip(solver_before, solver_after))
+        self.assertGreater(solver_delta, 0.001, "UI-enabled solver matrices must move")
+
+        joint_delta = max(
+            math.sqrt(sum((a - b) ** 2 for a, b in zip(
+                joint_before[index],
+                cmds.xform(joint, query=True, worldSpace=True, matrix=True),
+            )))
+            for index, joint in driven_joints.items()
+        )
+        self.assertGreater(joint_delta, 0.001, "UI-enabled physics must move a Maya joint")
+
+        mesh_delta = max(
+            (after - before).length()
+            for shape in meshes
+            for before, after in zip(mesh_before[shape], mesh_points(shape))
+        )
+        self.assertGreater(mesh_delta, 0.001, "UI-enabled physics must deform the final mesh")
+
     def test_solver_outputs_bone_count(self):
         root, joints = self._build_scene()
         solver = self._create_solver(root)
