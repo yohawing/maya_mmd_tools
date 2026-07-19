@@ -1,5 +1,6 @@
 """Unit tests for physics_descriptor: validation, identity hash, and transform math."""
 
+import copy
 import math
 import unittest
 
@@ -153,7 +154,7 @@ class TestBuildDescriptorsFromPmx(unittest.TestCase):
             self.pmx.rigid_bodies, self.pmx.joints, self.pmx.bones,
         )
         self.assertEqual(len(desc_set.rigid_bodies), 16)
-        self.assertEqual(len(desc_set.joints), 19)
+        self.assertEqual(len(desc_set.joints), 14)
 
     def test_valid_joints_pass_validation(self):
         desc_set = build_descriptors_from_pmx(
@@ -163,7 +164,7 @@ class TestBuildDescriptorsFromPmx(unittest.TestCase):
                         if e.kind == "joint" and e.field not in ("rigidbody_a", "rigidbody_b")]
         self.assertEqual(valid_errors, [])
 
-    def test_invalid_joint_refs_detected(self):
+    def test_negative_joint_refs_are_omitted_without_errors(self):
         desc_set = build_descriptors_from_pmx(
             self.pmx.rigid_bodies, self.pmx.joints, self.pmx.bones,
         )
@@ -171,7 +172,20 @@ class TestBuildDescriptorsFromPmx(unittest.TestCase):
             e for e in desc_set.validation_errors
             if e.kind == "joint" and e.field in ("rigidbody_a", "rigidbody_b")
         ]
-        self.assertGreater(len(invalid_ref_errors), 0)
+        self.assertEqual(invalid_ref_errors, [])
+
+    def test_positive_dangling_joint_ref_is_rejected(self):
+        dangling = copy.copy(self.pmx.joints[4])
+        dangling.rigid_body_a_index = len(self.pmx.rigid_bodies) + 1
+        desc_set = build_descriptors_from_pmx(
+            self.pmx.rigid_bodies, [dangling], self.pmx.bones,
+        )
+        self.assertFalse(desc_set.is_valid)
+        self.assertEqual(desc_set.joints, [])
+        self.assertTrue(any(
+            error.kind == "joint" and error.field == "rigidbody_a"
+            for error in desc_set.validation_errors
+        ))
 
     def test_identity_hash_is_deterministic(self):
         desc_set1 = build_descriptors_from_pmx(

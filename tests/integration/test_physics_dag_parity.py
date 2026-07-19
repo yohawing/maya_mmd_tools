@@ -146,16 +146,19 @@ class TestPhysicsDagParity(MayaTestBase):
         dag_desc_set = build_descriptors_from_dag(
             root, bone_joints=maya_joints, bone_count=len(self.pmx.bones),
         )
-        for dag_joint, pmx_joint in zip(dag_desc_set.joints, self.pmx.joints):
-            if pmx_joint.rigid_body_a_index >= 0:
-                self.assertEqual(dag_joint.rigidbody_a, pmx_joint.rigid_body_a_index)
-            if pmx_joint.rigid_body_b_index >= 0:
-                self.assertEqual(dag_joint.rigidbody_b, pmx_joint.rigid_body_b_index)
+        valid_pmx_joints = [
+            joint for joint in self.pmx.joints
+            if joint.rigid_body_a_index >= 0 and joint.rigid_body_b_index >= 0
+        ]
+        self.assertEqual(len(dag_desc_set.joints), len(valid_pmx_joints))
+        for dag_joint, pmx_joint in zip(dag_desc_set.joints, valid_pmx_joints):
+            self.assertEqual(dag_joint.rigidbody_a, pmx_joint.rigid_body_a_index)
+            self.assertEqual(dag_joint.rigidbody_b, pmx_joint.rigid_body_b_index)
 
     def test_missing_rigid_body_reference_fails_closed(self):
         root, maya_joints, _rb_transforms, jt_transforms = self._build_dag_scene()
         shape = cmds.listRelatives(
-            jt_transforms[0], shapes=True, type="mmdPhysicsJointShape"
+            jt_transforms[4], shapes=True, type="mmdPhysicsJointShape"
         )[0]
         cmds.setAttr(f"{shape}.rigidBodyAIndex", 9999)
 

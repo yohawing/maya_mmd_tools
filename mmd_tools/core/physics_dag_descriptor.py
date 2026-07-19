@@ -7,7 +7,6 @@ a PhysicsDescriptorSet identical to build_descriptors_from_pmx output.
 from __future__ import annotations
 
 import hashlib
-import math
 import struct
 from typing import List, Optional, Sequence
 
@@ -35,6 +34,7 @@ from mmd_tools.core.physics_descriptor import (
     validate_joint_fields,
     validate_rigid_body_fields,
 )
+from mmd_tools.core.maya_angle import maya_angle_to_radians
 
 
 def _find_group(parent: str, name: str) -> Optional[str]:
@@ -74,11 +74,13 @@ def _get_vector(node: str, attr: str) -> tuple[float, float, float]:
 
 
 def _get_angle_vector_radians(node: str, attr: str) -> tuple[float, float, float]:
-    """Read kAngle attrs (Maya returns degrees) and convert to radians."""
-    x = float(_get_attr(node, f"{attr}X", 0.0))
-    y = float(_get_attr(node, f"{attr}Y", 0.0))
-    z = float(_get_attr(node, f"{attr}Z", 0.0))
-    return (math.radians(x), math.radians(y), math.radians(z))
+    """Read kAngle attrs in Maya's current unit and return radians."""
+    values = (
+        _get_attr(node, f"{attr}X", 0.0),
+        _get_attr(node, f"{attr}Y", 0.0),
+        _get_attr(node, f"{attr}Z", 0.0),
+    )
+    return maya_angle_to_radians(values)
 
 
 def _resolve_bone_world_position(
@@ -232,6 +234,10 @@ def build_descriptors_from_dag(
 
         rb_a_source_index = int(_get_attr(shape, "rigidBodyAIndex", -1))
         rb_b_source_index = int(_get_attr(shape, "rigidBodyBIndex", -1))
+        if rb_a_source_index < 0 or rb_b_source_index < 0:
+            # PMX uses negative body indices for placeholder joints.  They
+            # are omitted by the native builder, not treated as bad worlds.
+            continue
         rb_a_index = rb_index_to_dense.get(rb_a_source_index, -1)
         rb_b_index = rb_index_to_dense.get(rb_b_source_index, -1)
         if rb_a_source_index >= 0 and rb_a_index < 0:
@@ -251,11 +257,16 @@ def build_descriptors_from_dag(
             rot_min, rot_max, spring_trans, spring_rot,
         )
         errors.extend(errs)
+        if errs:
+            # c_size_t cannot represent an invalid reference.  Do not emit a
+            # seemingly valid constraint that points at body zero; the
+            # validation errors keep the descriptor set rejected by callers.
+            continue
 
         desc = MmdRuntimeFfiPhysicsJointDesc()
         desc.kind = jt_kind
-        desc.rigidbody_a = rb_a_index if rb_a_index >= 0 else 0
-        desc.rigidbody_b = rb_b_index if rb_b_index >= 0 else 0
+        desc.rigidbody_a = rb_a_index
+        desc.rigidbody_b = rb_b_index
         _set_float3(desc.position_xyz, position)
         _set_float3(desc.rotation_euler_xyz, rotation)
         _set_float3(desc.translation_lower_limit_xyz, trans_min)

@@ -353,6 +353,11 @@ def build_descriptors_from_pmx(
     rb_count = len(rigid_bodies)
 
     for i, jt in enumerate(joints):
+        # PMX uses a negative body index for joints that are placeholders
+        # rather than constraints.  Match the native builder by omitting
+        # those joints without turning them into a validation failure.
+        if jt.rigid_body_a_index < 0 or jt.rigid_body_b_index < 0:
+            continue
         jt_kind = (
             MMD_RUNTIME_PHYSICS_JOINT_KIND_GENERIC_6DOF_SPRING
             if jt.joint_type == 0
@@ -374,11 +379,15 @@ def build_descriptors_from_pmx(
             jt.spring_rotation,
         )
         errors.extend(errs)
+        if errs:
+            # c_size_t cannot represent an invalid reference.  Keep the
+            # validation error, but never emit a body-zero constraint.
+            continue
 
         desc = MmdRuntimeFfiPhysicsJointDesc()
         desc.kind = jt_kind
-        desc.rigidbody_a = max(0, min(jt.rigid_body_a_index, rb_count - 1)) if rb_count > 0 else 0
-        desc.rigidbody_b = max(0, min(jt.rigid_body_b_index, rb_count - 1)) if rb_count > 0 else 0
+        desc.rigidbody_a = jt.rigid_body_a_index
+        desc.rigidbody_b = jt.rigid_body_b_index
         _set_float3(desc.position_xyz, jt.position)
         _set_float3(desc.rotation_euler_xyz, jt.rotation)
         _set_float3(desc.translation_lower_limit_xyz, jt.translation_limit_min)
