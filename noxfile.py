@@ -1657,6 +1657,47 @@ def humanik_definition_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def humanik_retarget_smoke(session: nox.Session) -> None:
+    """Run the direct HumanIK S0 fixture smoke under Maya 2024 mayapy.
+
+    The smoke writes lock state, direct input type, mapped-joint writer census,
+    changed connections, and root-locomotion world-matrix evidence.
+
+    Examples:
+        uvx nox -s humanik_retarget_smoke -- --maya 2024
+        uvx nox -s humanik_retarget_smoke -- --maya 2024 --out build/reports/humanik_retarget_smoke.json
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    passthrough: list[str] = []
+    path_options = {"--pmx", "--vmd", "--out"}
+    value_options = path_options | {
+        "--name-prefix",
+        "--translation",
+        "--tolerance",
+        "--evaluation-modes",
+    }
+    args = list(session.posargs)
+    i = 0
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in value_options and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        i += 1
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/humanik_retarget_smoke.py"),
+        *_convert_mayapy_path_options(mayapy, passthrough, path_options),
+        env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1"),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def maya_shader_override_smoke(session: nox.Session) -> None:
     """Smoke the legacy MMDShader VP2.0 override through mayapy playblast.
 

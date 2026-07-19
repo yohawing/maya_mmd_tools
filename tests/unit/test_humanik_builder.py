@@ -10,6 +10,8 @@ from mmd_tools.core.humanik_builder import (
     create_humanik_definition,
     create_humanik_definition_from_scene,
     ensure_humanik_mel_loaded,
+    get_humanik_definition_lock_state,
+    lock_humanik_definition,
     resolve_scene_humanik_assignments,
 )
 
@@ -73,6 +75,7 @@ class FakeMel:
         self.commands = []
         self.loaded = False
         self.has_control_rig = False
+        self.locked = False
 
     def eval(self, command):
         self.commands.append(command)
@@ -88,6 +91,11 @@ class FakeMel:
             return None
         if command.startswith("hikHasControlRig("):
             return int(self.has_control_rig)
+        if command.startswith("hikCharacterLock("):
+            self.locked = True
+            return None
+        if command.startswith("hikIsDefinitionLocked("):
+            return int(self.locked)
         return None
 
 
@@ -187,6 +195,24 @@ class TestHumanIkBuilder(unittest.TestCase):
         ensure_humanik_mel_loaded(mel)
 
         self.assertNotIn("source hikGlobalUtils.mel", mel.commands)
+
+    def test_lock_humanik_definition_verifies_state(self):
+        mel = FakeMel()
+
+        self.assertTrue(lock_humanik_definition("Character1", mel_module=mel))
+        self.assertTrue(get_humanik_definition_lock_state("Character1", mel_module=mel))
+        self.assertIn('hikCharacterLock("Character1", 1, 1);', mel.commands)
+
+    def test_lock_humanik_definition_rejects_unlocked_state(self):
+        class BrokenLockMel(FakeMel):
+            def eval(self, command):
+                if command.startswith("hikCharacterLock("):
+                    self.commands.append(command)
+                    return None
+                return super().eval(command)
+
+        with self.assertRaisesRegex(RuntimeError, "failed to lock"):
+            lock_humanik_definition("Character1", mel_module=BrokenLockMel())
 
 
 class _EmptySceneCmds(FakeCmds):

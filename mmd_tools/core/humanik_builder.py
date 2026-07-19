@@ -1,8 +1,8 @@
 """Prepare Maya HumanIK assignments from imported MMD skeleton joints.
 
-The functions here stop at data collection and resolution.  Actual HumanIK
-character creation is kept for a later slice so tests can cover the resolver
-without requiring Maya's HIK UI commands.
+The functions here keep collection, definition creation, and lock verification
+small and testable.  The Maya operations are driven through MEL without
+requiring any HumanIK UI controls.
 """
 
 from __future__ import annotations
@@ -22,6 +22,8 @@ _HIK_MEL_SCRIPTS = (
     "hikSkeletonOperations.mel",
     "hikGlobalUtils.mel",
     "hikDefinitionUtils.mel",
+    "hikDefinitionOperations.mel",
+    "hikInputSourceUtils.mel",
     "hikCharacterControlsUI.mel",
     "hikControlRigOperations.mel",
 )
@@ -29,7 +31,16 @@ _HIK_LOAD_PLUGIN_COMMANDS = (
     'if (!`pluginInfo -query -loaded "mayaHIK"`) loadPlugin "mayaHIK";',
     'if (!`pluginInfo -query -loaded "mayaCharacterization"`) loadPlugin "mayaCharacterization";',
 )
-_REQUIRED_HIK_PROCS = ("hikCreateCharacter", "hikSetCharacterObject", "hikSetCurrentCharacter")
+_REQUIRED_HIK_PROCS = (
+    "hikCreateCharacter",
+    "hikSetCharacterObject",
+    "hikSetCurrentCharacter",
+    "hikCharacterLock",
+    "hikIsDefinitionLocked",
+    "hikSetCharacterInput",
+    "hikGetInputType",
+    "hikGetRetargetCharacterInput",
+)
 
 
 def collect_humanik_joint_candidates(model_root: Optional[str] = None, cmds_module=None) -> List[HumanIkJointCandidate]:
@@ -141,6 +152,55 @@ def create_humanik_definition_from_scene(
         create_control_rig=create_control_rig,
         update_ui=update_ui,
     )
+
+
+def get_humanik_definition_lock_state(character: str, mel_module=None) -> bool:
+    """Return Maya's authoritative lock state for a HIK definition.
+
+    Args:
+        character: HIK character node/name.
+        mel_module: Optional Maya ``mel`` compatible module for tests.
+
+    Returns:
+        ``True`` when Maya reports the definition as locked.
+    """
+    mel = mel_module or _maya_mel()
+    ensure_humanik_mel_loaded(mel)
+    return bool(mel.eval(f"hikIsDefinitionLocked({_mel_string(character)})"))
+
+
+def lock_humanik_definition(
+    character: str,
+    mel_module=None,
+    validate_and_save_stance: bool = True,
+) -> bool:
+    """Lock a HumanIK definition and verify the resulting state.
+
+    This is the non-UI equivalent of pressing the Characterize/Lock button.
+    Maya's MEL procedure takes an explicit integer lock flag and validation
+    flag; passing both keeps behaviour deterministic in mayapy and GUI runs.
+
+    Args:
+        character: HIK character node/name.
+        mel_module: Optional Maya ``mel`` compatible module for tests.
+        validate_and_save_stance: Ask Maya to validate and save the stance pose.
+
+    Returns:
+        The verified lock state (``True`` on success).
+
+    Raises:
+        RuntimeError: If Maya did not report the definition as locked.
+    """
+    mel = mel_module or _maya_mel()
+    ensure_humanik_mel_loaded(mel)
+    mel.eval(
+        f"hikCharacterLock({_mel_string(character)}, 1, "
+        f"{1 if validate_and_save_stance else 0});"
+    )
+    locked = bool(mel.eval(f"hikIsDefinitionLocked({_mel_string(character)})"))
+    if not locked:
+        raise RuntimeError(f"HumanIK definition failed to lock: {character}")
+    return locked
 
 
 def _maya_cmds():
