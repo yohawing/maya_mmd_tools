@@ -7,23 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-- Exposed the Import Physics option in normal mode and enabled PMX/PMD physics import by default; users can still opt out before import.
-- Enabled Create MMD Shaders by default for PMX/PMD imports.
-
 ## [0.5.0] - 2026-07-19
 
 ### Added
-- Added Development Mode physics authoring for imported PMX rigid bodies and joints: editable shape size/raw pose and joint pose, named related bone/body bindings including `None`, validation/undo, authoring/rest-pose Collider display with bone follow and visibility, and validated PMX round-trip for those authoring fields.
+- Added a PMX Editor-inspired Physics tab for imported rigid bodies and joints, with editable shape, pose, binding, collision, limit, and spring properties; validation and undo; collider display; and validated PMX round-trip for supported fields.
 
 ### Changed
+- Exposed the Import Physics option in normal mode and enabled PMX/PMD physics import by default; users can still opt out before import.
+- Enabled Create MMD Shaders by default for PMX/PMD imports.
 - Updated the bundled `mmd-anim` runtime to v0.3.1.
+- Added Maya 2027 release plug-in/runtime artifacts and release verification.
+- Centralized supported morph weights on model-scoped controller attributes and improved VMD morph binding and key recovery.
 
 ### Fixed
 - Fixed material morph sliders on the VP2 OpenGL/GLSL path.
+- Fixed VMD IK, append-bone, and model-scoped morph handling across import and playback paths.
 
 ### Known Issues
-- Native physics bake remains experimental and opt-in; live physics simulation is unsupported.
+- PMX/PMD physics data is imported by default, but native VMD physics bake remains experimental and opt-in; real-time/live physics simulation is unsupported.
 - Create, duplicate, and delete object authoring remain unsupported, as do Controller/IK/arbitrary-key pre-physics poses, animated Collider collision, hair/skirt live collision, random scrubbing, and physics caches.
 
 ## [0.4.0] - 2026-07-13
