@@ -145,7 +145,9 @@ class MmdPhysicsSolverNode(om.MPxNode):
             return
 
         if same_time:
-            self._reset_world(input_mode, data)
+            if not self._reset_world(input_mode, data):
+                self._write_failure(data)
+                return
             status = "pose-updated"
         else:
             dt = current_time - self._last_time if self._last_time is not None else None
@@ -154,62 +156,80 @@ class MmdPhysicsSolverNode(om.MPxNode):
                 and dt is not None
                 and 0 < dt <= _MAX_CATCH_UP_DT + _TIME_EPSILON
             ):
-                self._forward_catch_up(dt, input_mode, data)
+                if not self._forward_catch_up(dt, input_mode, data):
+                    self._write_failure(data)
+                    return
                 status = "stepped"
             else:
-                self._reset_world(input_mode, data)
+                if not self._reset_world(input_mode, data):
+                    self._write_failure(data)
+                    return
                 status = "reset"
 
+        if not self._update_cached_matrices():
+            self._write_failure(data)
+            return
         self._last_time = current_time
-        self._update_cached_matrices()
         self._update_rigid_body_visual_cache()
         self._write_outputs(data, solved=True, status=status)
 
-    def _forward_catch_up(self, dt: float, input_mode: int, data) -> None:
+    def _forward_catch_up(self, dt: float, input_mode: int, data) -> bool:
         """Advance a bounded forward jump without one unstable large step."""
         remaining = min(dt, _MAX_CATCH_UP_DT)
         step_count = 0
         while remaining > _TIME_EPSILON and step_count < _MAX_CATCH_UP_STEPS:
             step_dt = min(_FIXED_STEP_DT, remaining)
-            self._forward_step(step_dt, input_mode, data)
+            if not self._forward_step(step_dt, input_mode, data):
+                return False
             remaining -= step_dt
             step_count += 1
+        return remaining <= _TIME_EPSILON
 
-    def _forward_step(self, dt: float, input_mode: int, data) -> None:
-        self._instance.evaluate_rest_pose()
+    def _forward_step(self, dt: float, input_mode: int, data) -> bool:
+        if not self._instance.evaluate_rest_pose():
+            return False
         if input_mode == INPUT_MODE_MAYA_POSE and self._kinematic_corrections:
-            self._inject_kinematic_poses(data)
-            self._instance.evaluate_current_pose_before_physics()
-        self._world.step_runtime(self._instance, dt)
-        self._instance.evaluate_current_pose_after_physics()
+            if not self._inject_kinematic_poses(data):
+                return False
+            if not self._instance.evaluate_current_pose_before_physics():
+                return False
+        if self._world.step_runtime(self._instance, dt) is None:
+            return False
+        return self._instance.evaluate_current_pose_after_physics()
 
-    def _reset_world(self, input_mode: int, data=None) -> None:
+    def _reset_world(self, input_mode: int, data=None) -> bool:
         from mmd_tools.core.native.mmd_anim_runtime_types import MMD_RUNTIME_PHYSICS_MODE_LIVE
 
-        self._instance.set_physics_mode(MMD_RUNTIME_PHYSICS_MODE_LIVE)
-        self._instance.evaluate_rest_pose()
+        if not self._instance.set_physics_mode(MMD_RUNTIME_PHYSICS_MODE_LIVE):
+            return False
+        if not self._instance.evaluate_rest_pose():
+            return False
         if input_mode == INPUT_MODE_MAYA_POSE and self._kinematic_corrections:
-            self._inject_kinematic_poses(data)
-            self._instance.evaluate_current_pose_before_physics()
-        self._world.reset(self._instance)
+            if not self._inject_kinematic_poses(data):
+                return False
+            if not self._instance.evaluate_current_pose_before_physics():
+                return False
+        return self._world.reset(self._instance) is not None
 
-    def _update_cached_matrices(self) -> None:
+    def _update_cached_matrices(self) -> bool:
         raw = self._instance.get_world_matrices()
         if raw is None:
             self._cached_flat = None
-            return
+            return False
+
         from mmd_tools.core.coordinate_transform import mmd_matrix_to_maya
 
         flat = []
         for mat16 in raw:
             flat.extend(mmd_matrix_to_maya(mat16))
         self._cached_flat = flat
+        return True
 
-    def _try_initialize(self) -> None:
+    def _try_initialize(self) -> bool:
         model_root = self._get_connected_model_root()
         if not model_root:
-            self._initialized = True
-            return
+            self._free_handles()
+            return False
 
         from mmd_tools.core.physics_solver import _collect_bone_joints
         from mmd_tools.core.model_dag_descriptor import build_model_descriptors_from_dag
@@ -220,55 +240,51 @@ class MmdPhysicsSolverNode(om.MPxNode):
             MmdRuntimePhysicsWorld,
         )
 
-        bone_joints = _collect_bone_joints(model_root)
-        self._bone_count = len(bone_joints)
-        self._bone_joints = bone_joints
         try:
+            bone_joints = _collect_bone_joints(model_root)
+            self._bone_count = len(bone_joints)
+            self._bone_joints = bone_joints
             world_descriptors = build_descriptors_from_dag(
                 model_root,
                 bone_joints=bone_joints,
                 bone_count=len(bone_joints),
             )
-            fatal_fields = {
-                "pmx_index",
-                "rigidbody_a_pmx_index",
-                "rigidbody_b_pmx_index",
-            }
-            if any(error.field in fatal_fields for error in world_descriptors.validation_errors):
-                self._initialized = True
-                return
+            if world_descriptors.validation_errors:
+                self._free_handles()
+                return False
             model_descriptors = build_model_descriptors_from_dag(model_root)
         except Exception:
-            self._initialized = True
-            return
+            self._free_handles()
+            return False
 
         world = MmdRuntimePhysicsWorld.from_descriptors(
             world_descriptors.rigid_bodies, world_descriptors.joints
         )
         if world is None:
-            self._initialized = True
-            return
+            self._free_handles()
+            return False
+        self._world = world
 
         model = MmdRuntimeModel.from_descriptors(model_descriptors)
         if model is None:
-            world.free()
-            self._initialized = True
-            return
+            self._free_handles()
+            return False
+        self._model = model
 
         instance = MmdRuntimeInstance.for_model(model)
         if instance is None:
-            world.free()
-            model.free()
-            self._initialized = True
-            return
-
-        self._world = world
-        self._model = model
+            self._free_handles()
+            return False
         self._instance = instance
-        self._initialized = True
 
-        self._build_kinematic_pose_data(model_root)
-        self._build_rigid_body_shape_mapping(model_root)
+        try:
+            self._build_kinematic_pose_data(model_root)
+            self._build_rigid_body_shape_mapping(model_root)
+        except Exception:
+            self._free_handles()
+            return False
+        self._initialized = True
+        return True
 
     def _build_kinematic_pose_data(self, model_root: str) -> None:
         """Identify physics-driven bones and precompute bind corrections.
@@ -368,13 +384,13 @@ class MmdPhysicsSolverNode(om.MPxNode):
             pass
         return all_indices, kinematic_indices - dynamic_indices
 
-    def _inject_kinematic_poses(self, data) -> None:
+    def _inject_kinematic_poses(self, data) -> bool:
         """Read kinematic bone world matrices from DG inputs and inject into the instance."""
         from mmd_tools.core.coordinate_transform import maya_matrix_to_mmd
 
         bone_count = self._bone_count
         if bone_count <= 0:
-            return
+            return False
 
         flat = [0.0] * (bone_count * 16)
         mask = [0] * bone_count
@@ -414,7 +430,9 @@ class MmdPhysicsSolverNode(om.MPxNode):
                 continue
 
         if any(mask):
-            self._instance.apply_physics_world_matrices(flat, mask)
+            result = self._instance.apply_physics_world_matrices(flat, mask)
+            return result is not None
+        return True
 
     def _build_rigid_body_shape_mapping(self, model_root: str) -> None:
         """Build dense native state index → shape DAG path mapping."""
@@ -538,6 +556,12 @@ class MmdPhysicsSolverNode(om.MPxNode):
         data.setClean(self.aOutBoneCount)
         data.setClean(self.aOutStatus)
         data.setClean(self.aOutSolved)
+
+    def _write_failure(self, data, status: str = "physics evaluation failed") -> None:
+        """Publish a failed evaluation without exposing a prior successful pose."""
+        self._last_time = None
+        self._cached_flat = None
+        self._write_outputs(data, solved=False, status=status)
 
     def _free_handles(self) -> None:
         if self._world is not None:
