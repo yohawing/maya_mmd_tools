@@ -339,7 +339,7 @@ void MmdPhysicsBoneDriverNode::writePrePhysicsPose(MDataBlock& data) const {
 }
 
 MMatrix MmdPhysicsBoneDriverNode::extractMatrix(const MDoubleArray& arr, int boneIndex) {
-    int offset = boneIndex * 16;
+    const unsigned int offset = static_cast<unsigned int>(boneIndex) * 16u;
     double values[4][4];
     for (int r = 0; r < 4; ++r) {
         for (int c = 0; c < 4; ++c) {
@@ -404,7 +404,7 @@ MStatus MmdPhysicsBoneDriverNode::compute(const MPlug& plug, MDataBlock& data) {
     int boneIndex = data.inputValue(aInBoneIndex).asInt();
     int parentBoneIndex = data.inputValue(aInParentBoneIndex).asInt();
 
-    if (boneIndex < 0 || boneIndex >= boneCount) {
+    if (boneCount <= 0 || boneIndex < 0 || boneIndex >= boneCount) {
         writeIdentity(data);
         return MS::kSuccess;
     }
@@ -417,8 +417,8 @@ MStatus MmdPhysicsBoneDriverNode::compute(const MPlug& plug, MDataBlock& data) {
 
     MFnDoubleArrayData fnArr(matData);
     MDoubleArray arr = fnArr.array();
-    unsigned int expectedLen = static_cast<unsigned int>(boneCount) * 16u;
-    if (arr.length() < expectedLen) {
+    const unsigned int matrixCount = arr.length() / 16u;
+    if (static_cast<unsigned int>(boneCount) > matrixCount) {
         writeIdentity(data);
         return MS::kSuccess;
     }
