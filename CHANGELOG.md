@@ -7,16 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-19
+
 ### Added
-- Added Development Mode physics authoring for imported PMX rigid bodies and joints: editable shape size/raw pose and joint pose, named related bone/body bindings including `None`, validation/undo, authoring/rest-pose Collider display with bone follow and visibility, and PMX export/re-import.
+- Added Development Mode physics authoring for imported PMX rigid bodies and joints: editable shape size/raw pose and joint pose, named related bone/body bindings including `None`, validation/undo, authoring/rest-pose Collider display with bone follow and visibility, and validated PMX round-trip for those authoring fields.
 
 ### Changed
-- Kept physics off by default and classified the scene-wide world enable control as shared infrastructure, not a live-simulation support claim.
-- Kept create, duplicate, and delete controls hidden; those object-authoring operations remain unsupported.
-- Separated native physics bake from Physics-tab authoring and live simulation.
+- Updated the bundled `mmd-anim` runtime to v0.3.1.
+
+### Fixed
+- Fixed material morph sliders on the VP2 OpenGL/GLSL path.
 
 ### Known Issues
-- Maya live physics simulation, Controller/IK/arbitrary-key pre-physics poses, animated Collider collision, hair/skirt live collision, random scrubbing, and physics caches are unsupported.
+- Native physics bake remains experimental and opt-in; live physics simulation is unsupported.
+- Create, duplicate, and delete object authoring remain unsupported, as do Controller/IK/arbitrary-key pre-physics poses, animated Collider collision, hair/skirt live collision, random scrubbing, and physics caches.
 
 ## [0.4.0] - 2026-07-13
 

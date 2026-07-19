@@ -19,7 +19,7 @@ project(mmd_tools_cpp LANGUAGES CXX)
 # ------------------------------------------------------------------
 # オプション
 # ------------------------------------------------------------------
-set(MAYA_VERSION "2024" CACHE STRING "Target Maya version (2024/2025/2026)")
+set(MAYA_VERSION "2024" CACHE STRING "Target Maya version (2024/2025/2026/2027)")
 set(MAYA_DEVKIT_ROOT "" CACHE PATH "Maya devkit root (include/lib)")
 
 # mmd-anim-ffi ヘッダのヒント (submodule から)

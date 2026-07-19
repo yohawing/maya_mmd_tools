@@ -26,7 +26,7 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 | Bones, skeleton & rig (IK / append / local axis) | 🔶 | Partially supported. Some complex models still have known issues. |
 | Display frames (表示枠) | 🔶 | Not supported |
 | Morphs (vertex / bone / material / group / UV) | 🔶 | Vertex, bone, material, and UV morphs are supported. Flip and Impulse morphs are not supported. |
-| Physics (rigid bodies & joints) | 🔶 | Runtime evaluation and some editing features are available. |
+| Physics (rigid bodies & joints) | 🔶 | Development Mode authoring and PMX round-trip for those authoring fields are supported; native bake is experimental. Live simulation is unsupported. |
 | Soft body (PMX 2.1) | ⛔ | Not supported |
 | Export | ⛔ | Not supported |
 
@@ -39,7 +39,7 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 | Morph animation | 🔶 | Vertex, bone, material, and UV morphs are supported. Flip and Impulse morphs are not supported. |
 | Camera animation | ✅ | Creates and keys `mmd_camera`. Lighting drives the `mmd_light` controller. Self-shadow is not supported. |
 | IK on/off frames | 🔶 | Supported for import/bake. Runtime bake applies the state to the baked pose; rig mode keys `mmdCcdIk.enabled`. |
-| Physics | 🔶 | Real-time physics evaluation and baked import through mmd-anim are supported. Physics is off by default because it is computationally expensive. |
+| Physics | 🧪 | Native mmd-anim physics bake is supported experimentally. Real-time/live physics evaluation is unsupported, and physics is off by default. |
 | HumanIK / retargeting | ⛔ | Not supported |
 | Export | ⛔ | Not supported. Partial public support is planned after import and editing features mature. |
 
