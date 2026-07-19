@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Exposed the Import Physics option in normal mode and enabled PMX/PMD physics import by default; users can still opt out before import.
+- Enabled Create MMD Shaders by default for PMX/PMD imports.
 
 ## [0.5.0] - 2026-07-19
 

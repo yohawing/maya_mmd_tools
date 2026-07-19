@@ -97,7 +97,7 @@ C:\Users\<ユーザー名>\Documents\maya\modules\maya_mmd_tools.mod
 3. `mmd_tools_plugin.py` を探します。
 4. `Loaded` にチェックを入れます。
 5. 自動読み込みしたい場合は `Auto load` にもチェックを入れます。
-6. MMDに寄せたシェーダーにしたい場合は、`dx11Shader`にもチェックをいれて、`MMDシェーダーを作成` をONにしてください。
+6. MMDに寄せたシェーダーにしたい場合は、`dx11Shader`にもチェックを入れてください。`MMDシェーダーを作成` は既定でONです。
 
 ## インストールの確認
 

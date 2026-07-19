@@ -97,7 +97,7 @@ C:\Users\<User Name>\Documents\maya\modules\maya_mmd_tools.mod
 3. Find `mmd_tools_plugin.py`.
 4. Check `Loaded`.
 5. If you want it to load automatically, also check `Auto load`.
-6. For more MMD-like shading, also enable `dx11Shader` and turn on `Create MMD Shader`.
+6. For more MMD-like shading, also enable `dx11Shader`; `Create MMD Shader` is enabled by default.
 
 ## Verify Installation
 
