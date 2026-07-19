@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 import unittest
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 from tests.common.maya_stub import install_maya_stub
@@ -70,12 +70,22 @@ class _Instance:
     def get_world_matrices(self): return self.matrices
 
 
+def _module(name, **attrs):
+    module = ModuleType(name)
+    module.__dict__.update(attrs)
+    return module
+
+
 def _runtime_modules(world_cls, model_cls, instance_cls, descriptor):
-    return {"mmd_tools.core.physics_solver": SimpleNamespace(_collect_bone_joints=lambda _root: []),
-            "mmd_tools.core.model_dag_descriptor": SimpleNamespace(
+    return {"mmd_tools.core.physics_solver": _module(
+                "mmd_tools.core.physics_solver", _collect_bone_joints=lambda _root: []),
+            "mmd_tools.core.model_dag_descriptor": _module(
+                "mmd_tools.core.model_dag_descriptor",
                 build_model_descriptors_from_dag=lambda _root: SimpleNamespace(bones=[object()])),
-            "mmd_tools.core.physics_dag_descriptor": SimpleNamespace(build_descriptors_from_dag=descriptor),
-            "mmd_tools.core.native.mmd_anim_runtime_handles": SimpleNamespace(
+            "mmd_tools.core.physics_dag_descriptor": _module(
+                "mmd_tools.core.physics_dag_descriptor", build_descriptors_from_dag=descriptor),
+            "mmd_tools.core.native.mmd_anim_runtime_handles": _module(
+                "mmd_tools.core.native.mmd_anim_runtime_handles",
                 MmdRuntimePhysicsWorld=world_cls, MmdRuntimeModel=model_cls,
                 MmdRuntimeInstance=instance_cls)}
 
