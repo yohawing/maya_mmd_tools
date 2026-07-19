@@ -102,6 +102,10 @@ class GuiTestRunnerTests(unittest.TestCase):
         maya_app_dir = Path(launch.call_args.kwargs["env_overrides"]["MAYA_APP_DIR"])
         self.assertTrue(maya_app_dir.is_absolute())
         self.assertFalse(maya_app_dir.exists())
+        self.assertEqual(
+            str(run_gui_tests._PROJECT_ROOT / "mmd_tools"),
+            launch.call_args.kwargs["env_overrides"]["MAYA_PLUG_IN_PATH"],
+        )
         quit_maya.assert_called_once_with(run_gui_tests.COMMAND_PORT)
         wait_for_port_close.assert_called_once_with(run_gui_tests.COMMAND_PORT, timeout=30)
 

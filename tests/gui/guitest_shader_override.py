@@ -6,7 +6,6 @@ Maya GUI 環境でのみ実行する。
 
 import os
 import unittest
-from pathlib import Path
 
 from maya import cmds
 import maya.api.OpenMaya as om
@@ -19,9 +18,8 @@ class _ShaderOverrideTestBase(GuiTestBase):
 
     def setUp(self):
         super().setUp()
-        plugin = Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py"
-        if not cmds.pluginInfo(str(plugin), query=True, loaded=True):
-            cmds.loadPlugin(str(plugin))
+        if shader_override.MMDShaderNode.kNodeName not in (cmds.allNodeTypes() or []):
+            cmds.loadPlugin("plugin_main.py")
         self.shader_node = cmds.createNode(shader_override.MMDShaderNode.kNodeName)
         selection = om.MSelectionList()
         selection.add(self.shader_node)

@@ -282,9 +282,8 @@ class TestPhysicsTabGUI(GuiTestBase):
     @unittest.skipUnless(FIXTURE_PATH.exists(), "hair physics fixture not found")
     def test_namespaced_widget_apply_undo_descriptor_and_pmx_roundtrip(self):
         cmds.file(new=True, force=True)
-        plugin = Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py"
-        if not cmds.pluginInfo(str(plugin), query=True, loaded=True):
-            cmds.loadPlugin(str(plugin))
+        if "mmdRigidBodyShape" not in (cmds.allNodeTypes() or []):
+            cmds.loadPlugin("plugin_main.py")
 
         root = _import_fixture(FIXTURE_PATH, "Base")
         status_messages = []

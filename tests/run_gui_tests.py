@@ -117,7 +117,10 @@ def main():
             launch_mode="explorer" if sys.platform == "win32" else "direct",
             # Never let automated Maya startup read or rewrite the user's
             # Documents/maya preferences (pluginPrefs.mel, userPrefs.mel, etc.).
-            env_overrides={"MAYA_APP_DIR": str(maya_app_dir)},
+            env_overrides={
+                "MAYA_APP_DIR": str(maya_app_dir),
+                "MAYA_PLUG_IN_PATH": str(project_root / "mmd_tools"),
+            },
         )
         maya_launched = True
         maya_commandport.wait_for_port(COMMAND_PORT, MAYA_START_TIMEOUT, maya_process)
