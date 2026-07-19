@@ -5,7 +5,6 @@
 ![feature](./assets/feature.png)
 > クレジット — モデル: [Sour](https://bowlroll.net/file/146103) ／ モーション: [mobiusP](https://www.nicovideo.jp/watch/sm42576784) 
 
-
 Maya MMD Toolsは、Autodesk MayaでMikuMikuDance (MMD) のPMD/PMXモデルとVMDモーションを読み込むためのツールです。
 
 MMDのリグの再現及び、アニメーションのインポート・編集・書き出しの一連の流れを実現することを目的としています。
@@ -14,25 +13,22 @@ MMDのリグの再現及び、アニメーションのインポート・編集�
 
 凡例: ✅ 対応 · 🔶 一部対応／制限あり · 🧪 試験的 · ⛔ 未対応
 
-> 本ツールはアルファ版です。詳細は下記の[既知の制限](#既知の制限)を参照してください。
+> 本ツールはアルファ版です。詳細は下記の機能表を参照してください。
 
-### インポート — モデル　（PMX,PMD）
+### モデル（PMX,PMD）
 
 | 機能 | 状態 | 備考 |
 |---|---|---|
 | メッシュ | ✅ | |
-| マテリアル・テクスチャ | 🔶 | DX11・OpenGLシェーダーによるMMDトゥーンシェーダーの実装。VP2.0は再現性が低いです。  |
+| マテリアル・テクスチャ | 🔶 | DX11・OpenGLシェーダーによるMMDトゥーンシェーダーの実装。Viewport2.0の制約により、MMDシェーダーの再現性が低いです。  |
 | Maya向け名前解決 | ✅ | ASCII文字に変換。 また日本語・中国語パスのテクスチャを安全なパスに自動解決します。 |
-| UV | 🔶 |プライマリUVは対応済み。　追加 UV（UV1–4）未対応 |
-| エッジ／輪郭フラグ | 🔶 | 描画順の問題があるため、オプションでONにできます。 |
-| ボーン・スケルトン | 🔶 | 複雑なモデルでは既知の問題があります。 |
-| リグ（IK・付与・ローカル軸 ） | 🔶 | 一部対応。複雑なモデルでは既知の問題があります。 |
-| 表示枠 | 🔶 | Development ModeのPMX round-trip用model metadataとして保持。専用編集UIは未対応です。 |
-| モーフ（頂点・ボーン・マテリアル・グループ・UV） | 🔶 | 頂点・ボーンモーフ対応済み。マテリアル、UV、Flip、Impulse モーフは未対応です。 |
-| 剛体・ジョイント | 🧪 | Development Modeで、import済みPMX項目と名前付きbone/body binding（`None`を含む）の編集、validation/Undo、bone追従するrest-pose Collider表示、PMX export/re-importに対応。live simulationは非対応です。 |
+| エッジ／輪郭フラグ | 🔶 | Viewport2.0の制約があるため、オプションでONにできます。 |
+| ボーン・スケルトン・リグ（IK・付与・ローカル軸 ） | 🔶 | 一部対応。複雑なモデルでは既知の問題があります。 |
+| 表示枠 | 🔶 | 未対応 |
+| モーフ（頂点・ボーン・マテリアル・グループ・UV） | 🔶 | 頂点・ボーン・マテリアル・UVモーフ対応済み。Flip、Impulse モーフは未対応です。 |
+| 物理（剛体・ジョイント） | 🔶 | ランタイム適用と一部編集機能が動きます。 |
 | ソフトボディ（PMX 2.1） | ⛔ | 非対応 |
-| HumanIK | ⛔  | 未対応 |
-| エクスポート | ⛔ | 公開対応機能ではありません。Development ModeにはPMX/VMD export UIがありますが、この表でclaimするのは検証済みPhysics-authoring PMX export/re-import範囲だけです。 |
+| エクスポート | ⛔ | 未対応 |
 
 ### アニメーション（VMD）
 
@@ -40,21 +36,17 @@ MMDのリグの再現及び、アニメーションのインポート・編集�
 |---|---|---|
 | ボーンアニメーション | 🔶 | MayaDGでのMMDリグに対応しています。 ベイクモードは [mmd-anim](https://github.com/yohawing/mmd-anim) による最終姿勢ベイクです。 |
 | VPD | ✅ | ドラッグ＆ドロップのみの対応 |
-| モーフアニメーション | 🔶 | 頂点・ボーンモーフ対応済み。マテリアル,UV、Flip、Impulse モーフ未対応です。 |
-| カメラアニメーション | ✅ | `mmd_camera` を作成・キー設定 |
-| 照明アニメーション | ✅ | `mmd_light` コントローラを駆動 |
+| モーフアニメーション | 🔶 | 頂点・ボーン・マテリアル・UVモーフ対応済み。Flip、Impulse モーフは未対応です。 |
+| カメラアニメーション | ✅ | `mmd_camera` を作成・キー設定。　ライティングは`mmd_light` コントローラを駆動。 セルフ影は未対応。 |
 | IK オン／オフフレーム | 🔶 | インポート・ベイクに対応。ランタイムベイクでは最終姿勢に反映され、リグモードでは `mmdCcdIk.enabled` にキーを設定します。 |
-| 物理 | 🔶 | VMDベイクモードのみ。live simulation、Controller/IK由来の物理、animated Collider、physics cacheは非対応です。 |
-| エクスポート | ⛔ | 未対応 |
+| 物理 | 🔶 | mmd-animによる、リアルタイム物理演算とベイクインポートに対応済み。重たいのでデフォルトでOFFになっています。 |
+| HumanIK・リターゲット | ⛔  | 未対応 |
+| エクスポート | ⛔ | 未対応（インポートの機能が出揃い、編集機能が充実してきたら、部分的に公開する予定です） |
 
 ## 既知の制限
 
-- **Exportは公開対応機能ではありません。** Development ModeにはPMX/VMD export UIがありますが、support claimは上記Physics-authoring fieldのPMX export/re-importに限定します。
-- **リグモードは複雑なモーションの一致性が未保証です。** sparse key と live `mmdCcdIk` / `mmdAppend` ノードを保持して編集しやすくしますが、jointOrient、IK、付与、ローカル軸を含むケースでは、ベイクモードや MMD のメッシュ変形と完全には一致しない場合があります。
-- **Physics authoringはlive physicsではありません。** 既定OFFで、import済み剛体・ジョイントの編集、authoring/rest poseのCollider表示・visibility、Development ModeのPMX export/re-importに限定されます。scene-wide world enable UIが存在してもlive simulation対応を意味しません。
-- **物理objectの新規作成は未対応です。** create/duplicate/delete UIは非表示です。Controller/IK/arbitrary key由来のpre-physics pose、animated Collider collision、hair/skirt live collision、random scrub、physics cacheは非対応です。
-- **モデルrootの複製ではlive物理は複製されません。** 独立してsimulationするモデルが必要な場合は、別モデルとしてimportするかreferenceを使用してください。
-- **native physics bakeは別機能です。** VMDベイクモードはauthoring viewをlive simulatorにするものではありません。
+- **様々な機能が未実装な機能のまま公開されています。** α版の試験的公開なので、ご容赦ください。フィードバックお待ちしております。
+- **複雑なリグやモーションの一致性が未保証です。**  `mmdCcdIk` / `mmdAppend` ノードを保持して編集しやすくしますが、jointOrient、IK、付与、ローカル軸を含むケースでは、ベイクモードや MMD のメッシュ変形と完全には一致しない場合があります。
 
 ## システム要件
 
@@ -105,6 +97,7 @@ C:\Users\<ユーザー名>\Documents\maya\modules\maya_mmd_tools.mod
 3. `mmd_tools_plugin.py` を探します。
 4. `Loaded` にチェックを入れます。
 5. 自動読み込みしたい場合は `Auto load` にもチェックを入れます。
+6. MMDに寄せたシェーダーにしたい場合は、`dx11Shader`にもチェックをいれて、`MMDシェーダーを作成` をONにしてください。
 
 ## インストールの確認
 
@@ -120,13 +113,6 @@ Mayaのメニューバーに `MMD > MMD Tools` が追加されていることを
 2. MMD Tools UIウィンドウが開きます。
 3. 各タブで設定を確認・調整できます。
 
-主なタブ:
-
-- **Info**: モデル情報の確認
-- **Material**: マテリアル設定
-- **Morph**: 表情の調整
-- **Bone**: ボーン情報
-
 ### モデルをインポートする
 
 1. Import/ExportタブでPMXまたはPMDファイルを選択します。
@@ -137,13 +123,8 @@ Mayaのメニューバーに `MMD > MMD Tools` が追加されていることを
 ### アニメーションをインポートする
 
 1. Import/ExportタブでVMDファイルを選択します。
-2. （任意）アニメーションのインポート設定で VMD FPS（30 または 60、既定は 30）を指定します。インポート前に Maya シーンの時間単位が変更されます。
-3. `Import Animation` をクリックします。
-4. シーン内の対応するモデルにアニメーションが適用されます。
-
-※MMDファイルをMayaのビューポートへドラッグ＆ドロップしてインポートすることもできます。（実験機能です）
-
-Maya の `File > Import` は MMD ファイルの対応導線ではありません。Import/Export タブまたはドラッグ＆ドロップを使用してください。
+1. `Import Animation` をクリックします。
+1. シーン内の対応するモデルにアニメーションが適用されます。
 
 ## ビューポートの設定
 

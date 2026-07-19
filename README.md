@@ -2,35 +2,33 @@
 
 [日本語ドキュメント](docs/README_ja.md)
 
+![feature](docs/assets/feature.png)
+> Credits — Model: [Sour](https://bowlroll.net/file/146103) / Motion: [mobiusP](https://www.nicovideo.jp/watch/sm42576784)
+
 Maya MMD Tools is a tool for importing MikuMikuDance (MMD) PMD/PMX models and VMD motions into Autodesk Maya.
 
 It aims to reproduce MMD rigs and provide a complete workflow for importing, editing, and exporting animations.
-
-This is an alpha early release. Some features may be undeveloped or unstable.
 
 ## Feature Support Matrix
 
 Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-in) · ⛔ Not supported yet
 
-> This is an alpha release. See [Known Limitations](#known-limitations) below for details.
+> This is an alpha release. See the feature matrix below for details.
 
-### Import — Model (PMX, PMD)
+### Model (PMX, PMD)
 
 | Feature | Status | Notes |
 |---|---|---|
-| Mesh / vertices / normals | ✅ | |
-| Materials & textures | 🔶 | MMD toon shading through DX11 and OpenGL shaders. VP2.0 fidelity is limited. |
+| Mesh | ✅ | |
+| Materials & textures | 🔶 | MMD toon shading through DX11 and OpenGL shaders. MMD shader fidelity is limited by Viewport 2.0 constraints. |
 | Maya name resolution | ✅ | Names are converted to ASCII-safe Maya names. Japanese and Chinese texture paths are also resolved automatically to safe paths. |
-| UV | 🔶 | Primary UVs are supported. Additional UVs (UV1–4) are not supported. |
-| Edge / outline flags | 🔶 | Can be enabled as an option, but draw-order limitations remain |
-| Bones & skeleton | 🔶 | Some complex models still have known issues |
-| Rig (IK / grant / local axis) | 🔶 | Partially supported. Some complex models still have known issues. |
-| Display frames (表示枠) | 🔶 | Preserved as model metadata for development-mode PMX round-trip; no dedicated editing UI yet |
-| Morphs (vertex / bone / material / group / UV) | 🔶 | Vertex and bone morphs are supported. Material, UV, Flip, and Impulse morphs are not supported. |
-| Rigid bodies & joints | 🧪 | Development-mode authoring: edit imported PMX fields and named bone/body bindings (including `None`), validate and undo edits, inspect bone-following rest-pose Colliders, and PMX export/re-import. Live simulation is not supported. |
+| Edge / outline flags | 🔶 | Can be enabled as an option, subject to Viewport 2.0 constraints. |
+| Bones, skeleton & rig (IK / append / local axis) | 🔶 | Partially supported. Some complex models still have known issues. |
+| Display frames (表示枠) | 🔶 | Not supported |
+| Morphs (vertex / bone / material / group / UV) | 🔶 | Vertex, bone, material, and UV morphs are supported. Flip and Impulse morphs are not supported. |
+| Physics (rigid bodies & joints) | 🔶 | Runtime evaluation and some editing features are available. |
 | Soft body (PMX 2.1) | ⛔ | Not supported |
-| HumanIK | ⛔ | Not supported |
-| Export | ⛔ | Not a public supported feature. Development Mode exposes PMX/VMD export UI, but this matrix claims only the validated Physics-authoring PMX export/re-import scope. |
+| Export | ⛔ | Not supported |
 
 ### Animation (VMD)
 
@@ -38,21 +36,17 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 |---|---|---|
 | Bone animation | 🔶 | MMD rigs are supported through the Maya DG. Bake mode uses [mmd-anim](https://github.com/yohawing/mmd-anim) final-pose evaluation. |
 | VPD | ✅ | Available through drag and drop only |
-| Morph animation | 🔶 | Vertex and bone morphs are supported. Material, UV, Flip, and Impulse morphs are not supported. |
-| Camera animation | ✅ | Creates/keys `mmd_camera` |
-| Light animation | ✅ | Drives the `mmd_light` controller |
+| Morph animation | 🔶 | Vertex, bone, material, and UV morphs are supported. Flip and Impulse morphs are not supported. |
+| Camera animation | ✅ | Creates and keys `mmd_camera`. Lighting drives the `mmd_light` controller. Self-shadow is not supported. |
 | IK on/off frames | 🔶 | Supported for import/bake. Runtime bake applies the state to the baked pose; rig mode keys `mmdCcdIk.enabled`. |
-| Physics | 🔶 | VMD Bake mode only. Live simulation, Controller/IK-driven physics, animated Colliders, and physics cache are not supported. |
-| Export | ⛔ | Not supported |
+| Physics | 🔶 | Real-time physics evaluation and baked import through mmd-anim are supported. Physics is off by default because it is computationally expensive. |
+| HumanIK / retargeting | ⛔ | Not supported |
+| Export | ⛔ | Not supported. Partial public support is planned after import and editing features mature. |
 
 ## Known Limitations
 
-- **Export is not a public supported feature.** Development Mode exposes PMX/VMD export UI, but the support claim here is limited to PMX export/re-import of the Physics-authoring fields described above.
-- **Rig mode is experimental for complex motion parity.** It keeps editable sparse keys plus live `mmdCcdIk` / `mmdAppend` nodes, but complex joint-orient, IK, append, and local-axis cases may not match Bake mode or MMD mesh deformation exactly.
-- **Physics authoring is not live physics.** It is off by default and limited to editing imported rigid bodies/joints, authoring/rest-pose Collider display and visibility, and development-mode PMX export/re-import. The scene-wide world enable control does not make live simulation supported.
-- **Physics object creation is not available.** Create, duplicate, and delete controls remain hidden. Controller/IK/arbitrary-key pre-physics poses, animated Collider collision, hair/skirt live collision, random scrubbing, and physics caches are unsupported.
-- **Duplicating a model root does not clone live physics.** Import another model or use a reference when an independently simulated copy is required.
-- **Native physics bake is a separate feature.** VMD Bake mode does not make the authoring view a live simulator.
+- **Various features are still incomplete.** This is an experimental alpha release; feedback is welcome.
+- **Parity is not guaranteed for complex rigs or motions.** Editable `mmdCcdIk` / `mmdAppend` nodes are preserved, but cases involving joint orientation, IK, append transforms, or local axes may not exactly match Bake mode or MMD mesh deformation.
 
 ## System Requirements
 
@@ -103,6 +97,7 @@ C:\Users\<User Name>\Documents\maya\modules\maya_mmd_tools.mod
 3. Find `mmd_tools_plugin.py`.
 4. Check `Loaded`.
 5. If you want it to load automatically, also check `Auto load`.
+6. For more MMD-like shading, also enable `dx11Shader` and turn on `Create MMD Shader`.
 
 ## Verify Installation
 
@@ -118,13 +113,6 @@ Confirm that `MMD > MMD Tools` appears in Maya's menu bar.
 2. The MMD Tools UI opens.
 3. You can inspect and adjust settings in each tab.
 
-Main tabs:
-
-- **Info**: Model information
-- **Material**: Material settings
-- **Morph**: Facial expression/morph controls
-- **Bone**: Bone information
-
 ### Import a Model
 
 1. In the Import/Export tab, choose a PMX or PMD file.
@@ -135,13 +123,8 @@ If textures fail to load due to multi-byte characters in the path, enable the au
 ### Import Animation
 
 1. In the Import/Export tab, choose a VMD file.
-2. (Optional) In animation import settings, set VMD FPS (30 or 60; default 30). This changes the Maya scene time unit before import.
-3. Click `Import Animation`.
-4. The animation is applied to the matching model in the scene.
-
-You can also import MMD files by dragging them into the Maya viewport. This is an experimental feature.
-
-Maya `File > Import` is not a supported MMD import path in this release.
+2. Click `Import Animation`.
+3. The animation is applied to the matching model in the scene.
 
 ## Viewport Setup
 
