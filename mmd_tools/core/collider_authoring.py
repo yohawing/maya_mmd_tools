@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 from maya import cmds
 import maya.api.OpenMaya as om
 
@@ -11,6 +9,7 @@ from mmd_tools.core.coordinate_transform import (
     mmd_euler_xyz_to_maya_quaternion,
     mmd_point_to_maya,
 )
+from mmd_tools.core.maya_angle import maya_angle_to_radians, radians_to_maya_angle
 
 
 _FOLLOW_TAG = "mmdColliderAuthoringFollow"
@@ -127,9 +126,7 @@ def connect_collider_authoring_follow(transform: str, shape: str) -> str | None:
     bone_bind_world = _bind_pose_world_matrix(bones[0])
     if bone_bind_world is not None:
         position = cmds.getAttr(f"{shape}.position")[0]
-        rotation_radians = tuple(
-            math.radians(value) for value in cmds.getAttr(f"{shape}.rotation")[0]
-        )
+        rotation_radians = maya_angle_to_radians(cmds.getAttr(f"{shape}.rotation")[0])
         display_scale = float(cmds.getAttr(f"{transform}.scaleX"))
         body_bind_local = om.MTransformationMatrix(
             _pose_matrix(position, rotation_radians, display_scale, legacy=False)
@@ -188,11 +185,10 @@ def set_collider_authoring_pose(
     if existing_constraints:
         cmds.delete(existing_constraints)
     cmds.setAttr(f"{shape}.position", *position, type="double3")
-    angle_unit = cmds.currentUnit(query=True, angle=True)
-    to_ui_angle = (lambda value: value) if angle_unit == "rad" else math.degrees
+    to_ui_angle = radians_to_maya_angle
     cmds.setAttr(
         f"{shape}.rotation",
-        *(to_ui_angle(value) for value in rotation_radians),
+        *to_ui_angle(rotation_radians),
         type="double3",
     )
     cmds.setAttr(
@@ -205,7 +201,7 @@ def set_collider_authoring_pose(
     ).asEulerRotation()
     cmds.setAttr(
         f"{transform}.rotate",
-        *(to_ui_angle(value) for value in maya_rotation),
+        *to_ui_angle(maya_rotation),
         type="double3",
     )
     cmds.setAttr(
@@ -235,9 +231,7 @@ def migrate_legacy_collider_authoring_pose(
         return False
 
     position = cmds.getAttr(f"{shape}.position")[0]
-    rotation_radians = tuple(
-        math.radians(value) for value in cmds.getAttr(f"{shape}.rotation")[0]
-    )
+    rotation_radians = maya_angle_to_radians(cmds.getAttr(f"{shape}.rotation")[0])
     constraints = _authoring_follow_constraints(transform)
     bones = cmds.listConnections(f"{shape}.relatedBone", source=True, destination=False) or []
     if constraints and bones and cmds.objExists(bones[0]):
@@ -276,11 +270,11 @@ def refresh_collider_authoring_pose(
     if _is_referenced(transform) or _is_referenced(shape):
         return
     position = cmds.getAttr(f"{shape}.position")[0]
-    rotation_degrees = cmds.getAttr(f"{shape}.rotation")[0]
+    rotation_radians = maya_angle_to_radians(cmds.getAttr(f"{shape}.rotation")[0])
     set_collider_authoring_pose(
         transform,
         shape,
         position,
-        tuple(math.radians(value) for value in rotation_degrees),
+        rotation_radians,
         display_scale,
     )

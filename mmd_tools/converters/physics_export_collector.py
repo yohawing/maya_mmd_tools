@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import math
 from typing import Optional
 
 from maya import cmds
 
 from mmd_tools.core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BODIES_GROUP
+from mmd_tools.core.maya_angle import maya_angle_to_radians
 
 
 def _find_group(parent: str, group_name: str) -> Optional[str]:
@@ -45,11 +45,13 @@ def _get_vector_attr(shape: str, attr: str) -> tuple[float, float, float]:
 
 
 def _get_angle_vector_attr(shape: str, attr: str) -> tuple[float, float, float]:
-    """Read angle attributes (stored in degrees by Maya) and return radians."""
-    x = _get_attr(shape, f"{attr}X", 0.0)
-    y = _get_attr(shape, f"{attr}Y", 0.0)
-    z = _get_attr(shape, f"{attr}Z", 0.0)
-    return (math.radians(x), math.radians(y), math.radians(z))
+    """Read angle attributes and return radians (``math.radians`` in deg UI)."""
+    values = (
+        _get_attr(shape, f"{attr}X", 0.0),
+        _get_attr(shape, f"{attr}Y", 0.0),
+        _get_attr(shape, f"{attr}Z", 0.0),
+    )
+    return maya_angle_to_radians(values)
 
 
 def _resolve_message_target(shape: str, attr: str) -> Optional[str]:

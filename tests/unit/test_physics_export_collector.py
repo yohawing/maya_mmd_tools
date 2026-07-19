@@ -7,9 +7,13 @@ pure-Python reimplementations of non-Maya helpers.
 from __future__ import annotations
 
 import ast
+import importlib
 import math
+import sys
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 MODULE_PATH = Path(__file__).resolve().parents[2] / "mmd_tools" / "converters" / "physics_export_collector.py"
 
@@ -70,6 +74,39 @@ class TestAngleConversion(unittest.TestCase):
 
     def test_zero(self):
         self.assertEqual(math.radians(0.0), 0.0)
+
+
+class TestMayaAngleUnitConversion(unittest.TestCase):
+    """Exercise the shared Maya kAngle conversion in both UI units."""
+
+    @staticmethod
+    def _load_helper(unit: str):
+        fake_cmds = types.SimpleNamespace(
+            currentUnit=lambda **_kwargs: unit,
+        )
+        fake_maya = types.ModuleType("maya")
+        fake_maya.cmds = fake_cmds
+        with mock.patch.dict(sys.modules, {"maya": fake_maya}):
+            spec = importlib.util.spec_from_file_location(
+                "_test_maya_angle", MODULE_PATH.parents[1] / "core" / "maya_angle.py"
+            )
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+
+    def test_degree_ui_roundtrip(self):
+        helper = self._load_helper("deg")
+        radians = helper.maya_angle_to_radians((180.0, -90.0, 45.0))
+        self.assertEqual(radians, (math.pi, -math.pi / 2, math.pi / 4))
+        self.assertEqual(
+            helper.radians_to_maya_angle(radians), (180.0, -90.0, 45.0)
+        )
+
+    def test_radian_ui_roundtrip(self):
+        helper = self._load_helper("rad")
+        values = (math.pi, -math.pi / 2, math.pi / 4)
+        self.assertEqual(helper.maya_angle_to_radians(values), values)
+        self.assertEqual(helper.radians_to_maya_angle(values), values)
 
 
 class TestRigidBodyDictSchema(unittest.TestCase):

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import re
 from typing import Optional
 
@@ -20,6 +19,7 @@ from mmd_tools.core.collider_authoring import (
     connect_collider_authoring_follow,
     set_collider_authoring_pose,
 )
+from mmd_tools.core.maya_angle import radians_to_maya_angle
 
 _logger = get_logger(__name__)
 
@@ -48,12 +48,12 @@ def _set_vector_attr(shape: str, attr: str, values) -> None:
 
 
 def _set_angle_vector_attr(shape: str, attr: str, values) -> None:
-    # rotationX/Y/Z-style attributes are MFnUnitAttribute(kAngle); cmds.setAttr
-    # expects degrees while PMX stores Euler angles in radians.
-    x, y, z = values
-    cmds.setAttr(f"{shape}.{attr}X", math.degrees(x))
-    cmds.setAttr(f"{shape}.{attr}Y", math.degrees(y))
-    cmds.setAttr(f"{shape}.{attr}Z", math.degrees(z))
+    # rotationX/Y/Z-style attributes are MFnUnitAttribute(kAngle); write in
+    # Maya's current angle unit while PMX values remain radians.
+    x, y, z = radians_to_maya_angle(values)
+    cmds.setAttr(f"{shape}.{attr}X", x)
+    cmds.setAttr(f"{shape}.{attr}Y", y)
+    cmds.setAttr(f"{shape}.{attr}Z", z)
 
 
 def _set_position_attr(node: str, attr_prefix: str, position) -> None:
