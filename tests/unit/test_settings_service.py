@@ -241,9 +241,23 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertNotIn("setup_rig", options)
         self.assertNotIn("setup_bone_orientation", options)
 
-    def test_normal_mode_forces_import_physics_off_even_when_user_enabled(self):
+    def test_normal_mode_preserves_import_physics_enabled(self):
         self.service.set("import.physics.import_physics", True)
         self.assertFalse(self.service.is_development_mode())
+
+        options = self.service.build_pmx_import_options()
+
+        self.assertTrue(options["import_physics"])
+
+    def test_import_physics_defaults_enabled_when_setting_is_missing(self):
+        self.store.data["import"].pop("physics")
+
+        options = self.service.build_pmx_import_options()
+
+        self.assertTrue(options["import_physics"])
+
+    def test_normal_mode_preserves_import_physics_disabled(self):
+        self.service.set("import.physics.import_physics", False)
 
         options = self.service.build_pmx_import_options()
 

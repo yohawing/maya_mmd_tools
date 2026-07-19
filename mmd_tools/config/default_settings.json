@@ -21,7 +21,7 @@
     },
     "physics": {
       "_comment": "Settings for importing physics elements like rigid bodies and joints",
-      "import_physics": false
+      "import_physics": true
     },
     "morph": {
       "_comment": "Settings for importing morphs (blend shapes)",

@@ -24,7 +24,6 @@ _NORMAL_MODE_IMPORT_OVERRIDES = {
     "texture_search_path": "",
     "add_semi_standard_bones": False,
     "translate_names": True,
-    "import_physics": False,
 }
 
 

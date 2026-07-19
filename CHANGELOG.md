@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Exposed the Import Physics option in normal mode and enabled PMX/PMD physics import by default; users can still opt out before import.
+
 ## [0.5.0] - 2026-07-19
 
 ### Added

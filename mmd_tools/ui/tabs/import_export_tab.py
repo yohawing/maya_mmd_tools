@@ -238,7 +238,7 @@ class ImportExportTab(BaseTab):
         self.import_physics_check = self._bind_checkbox(
             "import_physics",
             setting_keys.IMPORT_PHYSICS_IMPORT_PHYSICS,
-            False,
+            True,
             physics_layout,
             tooltip_key="import_physics",
         )
@@ -496,7 +496,6 @@ class ImportExportTab(BaseTab):
             self.texture_row,
             self.uv_row,
             self.morph_group,
-            self.physics_group,
             self.other_group,
             self.use_cpp_rig_nodes_check,
             self.motion_scale_row,
