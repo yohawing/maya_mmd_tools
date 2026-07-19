@@ -587,6 +587,22 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         presenter.on_morph_selected(_FakeItem("material", "material"), None)
         self.assertEqual(view.controls_enabled_calls[-1], (True, ""))
 
+    def test_material_capability_uses_controller_output_when_network_lookup_misses(self):
+        presenter, view, _, adapter = _make_presenter()
+        presenter._morph_controller = "controller"
+        data = {"type": 8, "_pmx_type_raw": True, "index": 7}
+        adapter.connections["controller.outputWeight[7]"] = [
+            {
+                "source": "controller.outputWeight[7]",
+                "destination": "material_node.weight",
+            }
+        ]
+        presenter.morph_data = {"material": data}
+
+        presenter.on_morph_selected(_FakeItem("material", "material"), None)
+
+        self.assertEqual(view.controls_enabled_calls[-1], (True, ""))
+
     def test_cached_material_capability_does_not_depend_on_shader_route(self):
         presenter, _, _, adapter = _make_presenter()
         adapter.existing.add("material_node")

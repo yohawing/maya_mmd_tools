@@ -3,6 +3,7 @@ MorphTab の GUI テスト
 実際の Maya GUI 環境でのみ実行可能
 """
 
+import json
 import unittest
 
 from maya import cmds
@@ -96,6 +97,41 @@ class TestMorphTabGUI(GuiTestBase):
             )
         finally:
             presenter = None
+            tab.deleteLater()
+            QApplication.processEvents()
+            cmds.file(new=True, force=True)
+
+    def test_material_slider_uses_controller_when_network_lookup_is_unavailable(self):
+        cmds.file(new=True, force=True)
+        root = cmds.group(empty=True, name="materialMorphGuiModel")
+        cmds.addAttr(root, longName="mmdMorphData", dataType="string")
+        cmds.setAttr(
+            root + ".mmdMorphData",
+            json.dumps([{"name_jp": "材質", "panel": 4, "type": 8, "index": 7}]),
+            type="string",
+        )
+        cmds.addAttr(root, longName="mmd_morph_controller", attributeType="message")
+        controller = cmds.createNode("network", name="materialMorphController")
+        cmds.addAttr(controller, longName="inputWeight", attributeType="double", multi=True)
+        cmds.addAttr(controller, longName="outputWeight", attributeType="double", multi=True)
+        cmds.connectAttr(controller + ".message", root + ".mmd_morph_controller")
+        driven = cmds.createNode("network", name="materialMorphDriven")
+        cmds.addAttr(driven, longName="weight", attributeType="double")
+        cmds.connectAttr(controller + ".outputWeight[7]", driven + ".weight")
+
+        tab = MorphTab()
+        try:
+            app_state = ApplicationState()
+            presenter = MorphPresenter(tab, app_state)
+            app_state._current_model_root = root
+            presenter.load_morphs()
+            tab.morph_list.setCurrentRow(0)
+            QApplication.processEvents()
+
+            self.assertTrue(tab.morph_slider.isEnabled())
+            tab.morph_slider.setValue(65)
+            self.assertAlmostEqual(cmds.getAttr(controller + ".inputWeight[7]"), 0.65)
+        finally:
             tab.deleteLater()
             QApplication.processEvents()
             cmds.file(new=True, force=True)

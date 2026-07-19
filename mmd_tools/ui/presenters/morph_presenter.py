@@ -390,9 +390,16 @@ class MorphPresenter:
         """Compute capability; callers should normally use the cached wrapper."""
         raw_type = self._raw_pmx_type(data)
         if raw_type == 8:
-            # The material morph node's canonical weight is the user-facing
-            # runtime input. Shader routing may be rebuilt independently and
-            # must not disable editing of that input in MorphTab.
+            try:
+                index = int(data.get("index", -1))
+            except (TypeError, ValueError):
+                index = -1
+            if self._morph_controller and index >= 0 and self.maya_adapter.list_connections(
+                f"{self._morph_controller}.outputWeight[{index}]",
+                source=False,
+                destination=True,
+            ):
+                return True
             morph_node = data.get("morph_node")
             return bool(morph_node and self.maya_adapter.object_exists(morph_node))
         if raw_type != 0:
