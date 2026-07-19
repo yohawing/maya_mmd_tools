@@ -45,7 +45,7 @@ def _get_vector_attr(shape: str, attr: str) -> tuple[float, float, float]:
 
 
 def _get_angle_vector_attr(shape: str, attr: str) -> tuple[float, float, float]:
-    """Read angle attributes and return radians (``math.radians`` in deg UI)."""
+    """Read angle attributes in Maya's current unit and return radians."""
     values = (
         _get_attr(shape, f"{attr}X", 0.0),
         _get_attr(shape, f"{attr}Y", 0.0),

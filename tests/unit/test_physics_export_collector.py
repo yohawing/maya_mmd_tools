@@ -54,8 +54,8 @@ class TestModuleStructure(unittest.TestCase):
         self.assertIn("RIGID_BODIES_GROUP", self.source)
         self.assertIn("CONSTRAINTS_GROUP", self.source)
 
-    def test_imports_math_for_radians(self):
-        self.assertIn("math.radians", self.source)
+    def test_uses_unit_aware_angle_conversion(self):
+        self.assertIn("maya_angle_to_radians", self.source)
 
 
 class TestAngleConversion(unittest.TestCase):
