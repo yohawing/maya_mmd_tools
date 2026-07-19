@@ -7,13 +7,13 @@
 
 Maya MMD Tools is a tool for importing MikuMikuDance (MMD) PMD/PMX models and VMD motions into Autodesk Maya.
 
-It aims to reproduce MMD rigs and provide a complete workflow for importing, editing, and exporting animations.
+Its long-term goal is to provide a complete workflow for editing and exporting models and animations.
+
+> Maya MMD Tools is currently in alpha, and its UI and workflows may change. Comprehensive guides for individual features are not yet available. See the feature support matrix below for details.
 
 ## Feature Support Matrix
 
 Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-in) · ⛔ Not supported yet
-
-> This is an alpha release. See the feature matrix below for details.
 
 ### Model (PMX, PMD)
 
@@ -112,6 +112,8 @@ Confirm that `MMD > MMD Tools` appears in Maya's menu bar.
 1. Select `MMD > MMD Tools`.
 2. The MMD Tools UI opens.
 3. You can inspect and adjust settings in each tab.
+
+The UI fields follow PMX Editor conventions. Many fields are not yet implemented, so the tool should currently be considered primarily a preview tool.
 
 ### Import a Model
 
