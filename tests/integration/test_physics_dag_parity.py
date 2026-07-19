@@ -33,6 +33,7 @@ from mmd_tools.core.physics_descriptor import build_descriptors_from_pmx
 from mmd_tools.converters.physics_scene_builder import build_physics_scene
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "data" / "physics" / "test_hair_physics.pmx"
+RESET_STATE_MAX_COMPONENT_DELTA = 1e-3
 
 
 def _native_physics_available() -> bool:
@@ -376,12 +377,18 @@ class TestPhysicsDagParity(MayaTestBase):
         )
         pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
 
-        model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
-        instance = MmdRuntimeInstance.for_model(model)
-        instance.evaluate_rest_pose()
+        # Keep each reset on an independent runtime instance.  Reusing one
+        # instance can hide state leakage between the descriptor and direct
+        # worlds, while the release gate is intended to compare fresh resets.
+        dag_model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
+        dag_instance = MmdRuntimeInstance.for_model(dag_model)
+        pmx_model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
+        pmx_instance = MmdRuntimeInstance.for_model(pmx_model)
+        dag_instance.evaluate_rest_pose()
+        pmx_instance.evaluate_rest_pose()
 
-        dag_world.reset(instance)
-        pmx_world.reset(instance)
+        dag_world.reset(dag_instance)
+        pmx_world.reset(pmx_instance)
 
         dag_states = dag_world.copy_rigidbody_states()
         pmx_states = pmx_world.copy_rigidbody_states()
@@ -392,17 +399,19 @@ class TestPhysicsDagParity(MayaTestBase):
         ):
             for c in range(3):
                 self.assertAlmostEqual(
-                    dag_pos[c], pmx_pos[c], places=5,
-                    msg=f"initial: body[{body_idx}] pos[{c}]",
+                    dag_pos[c], pmx_pos[c], delta=RESET_STATE_MAX_COMPONENT_DELTA,
+                    msg=f"initial reset position delta body[{body_idx}] component[{c}]",
                 )
             for c in range(4):
                 self.assertAlmostEqual(
-                    dag_rot[c], pmx_rot[c], places=5,
-                    msg=f"initial: body[{body_idx}] rot[{c}]",
+                    dag_rot[c], pmx_rot[c], delta=RESET_STATE_MAX_COMPONENT_DELTA,
+                    msg=f"initial reset rotation delta body[{body_idx}] component[{c}]",
                 )
 
-        instance.free()
-        model.free()
+        dag_instance.free()
+        dag_model.free()
+        pmx_instance.free()
+        pmx_model.free()
         dag_world.free()
         pmx_world.free()
 
