@@ -168,10 +168,10 @@ class TestModelImportPipelineLogging(unittest.TestCase):
         self.assertIn("Cleaning up namespace: %s", debug_messages)
         self.assertNotIn("Cleaning up namespace: %s", info_messages)
 
-    def test_physics_import_is_disabled_without_explicit_option(self):
+    def test_physics_import_is_disabled_with_explicit_false(self):
         logger = MagicMock()
         profile = {}
-        pipeline = self._make_pipeline(logger, options={"profile": profile})
+        pipeline = self._make_pipeline(logger, options={"profile": profile, "import_physics": False})
         parser = SimpleNamespace(rigid_bodies=[object()], joints=[object()], bones=[object()])
 
         with patch("mmd_tools.converters.physics_scene_builder.build_physics_scene") as build_scene:
