@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Restored a dedicated Display Frames tab for editing PMX frame names, special-frame flags, and ordered bone/morph items with validation, undo, and metadata round-trip support; Animator Toolset remains a separate read-only picker surface.
+
 ## [0.5.0] - 2026-07-19
 
 ### Added
@@ -60,7 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Known Issues
 - Native physics motion bake remains experimental and opt-in; interactive scene physics is unavailable.
-- Display frames are preserved for PMX round-trip but do not yet have a dedicated editing UI.
+- Display frames are preserved for PMX round-trip; releases through 0.5.0 do not include the dedicated editing UI added under Unreleased.
 - User-facing PMX/PMD/VMD export remains unavailable; current writer and round-trip paths are development-only.
 - Additional UV, Flip, Impulse, and PMX 2.1 soft-body workflows remain unsupported.
 - Bake mode remains the recommended fidelity path for complex VMD motion; rig mode may differ for jointOrient, IK, append, and local-axis cases.

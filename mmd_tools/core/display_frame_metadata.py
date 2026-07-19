@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any, Iterable
 
 
 def display_frame_to_dict(frame: Any) -> dict[str, Any]:
     """Convert a PmxDisplayFrame-like object to exporter metadata."""
+    if isinstance(frame, Mapping):
+        return normalize_display_frame_dict(dict(frame))
     return normalize_display_frame_dict(
         {
             "name": getattr(frame, "name", ""),
