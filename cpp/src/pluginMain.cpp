@@ -24,6 +24,7 @@
 #include "mmdFastLoad.h"
 #include "MmdAppendNode.h"
 #include "MmdCcdIkNode.h"
+#include "MmdPhysicsBoneDriverNode.h"
 
 // 将来のノード登録例 (コメントアウト)
 // #include "MmdAnimSkinDeformer.h"
@@ -32,6 +33,7 @@
 // skipped when the Python plugin already registered them with the same typeId).
 static bool sCppRegisteredAppend = false;
 static bool sCppRegisteredCcdIk = false;
+static bool sCppRegisteredPhysicsBoneDriver = false;
 
 static bool isNodeTypeRegistered(const MTypeId& expectedId)
 {
@@ -42,7 +44,7 @@ static bool isNodeTypeRegistered(const MTypeId& expectedId)
 MStatus initializePlugin(MObject obj)
 {
     MStatus status;
-    MFnPlugin plugin(obj, "yohawing", "0.4.0", "Any");
+    MFnPlugin plugin(obj, "yohawing", "0.5.0", "Any");
 
     const uint32_t runtimeAbi = mmd::RuntimeBridge::runtimeAbiVersion();
     if (runtimeAbi != MMD_RUNTIME_ABI_VERSION) {
@@ -109,6 +111,21 @@ MStatus initializePlugin(MObject obj)
         MGlobal::displayInfo("mmdCcdIk node registered.");
     }
 
+    // mmdPhysicsBoneDriver 登録
+    if (isNodeTypeRegistered(MmdPhysicsBoneDriverNode::id)) {
+        MGlobal::displayInfo("mmdPhysicsBoneDriver already registered by Python plugin; skipping C++ registration.");
+        sCppRegisteredPhysicsBoneDriver = false;
+    } else {
+        status = plugin.registerNode(
+            "mmdPhysicsBoneDriver",
+            MmdPhysicsBoneDriverNode::id,
+            MmdPhysicsBoneDriverNode::creator,
+            MmdPhysicsBoneDriverNode::initialize);
+        CHECK_MSTATUS_AND_RETURN_IT(status);
+        sCppRegisteredPhysicsBoneDriver = true;
+        MGlobal::displayInfo("mmdPhysicsBoneDriver node registered (C++).");
+    }
+
     return MS::kSuccess;
 }
 
@@ -135,6 +152,12 @@ MStatus uninitializePlugin(MObject obj)
         status = plugin.deregisterNode(MmdCcdIkNode::id);
         CHECK_MSTATUS_AND_RETURN_IT(status);
         sCppRegisteredCcdIk = false;
+    }
+
+    if (sCppRegisteredPhysicsBoneDriver) {
+        status = plugin.deregisterNode(MmdPhysicsBoneDriverNode::id);
+        CHECK_MSTATUS_AND_RETURN_IT(status);
+        sCppRegisteredPhysicsBoneDriver = false;
     }
 
     MGlobal::displayInfo("maya_mmd_tools_cpp plugin unloaded.");

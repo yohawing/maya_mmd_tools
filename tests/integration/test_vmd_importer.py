@@ -5,6 +5,7 @@ VMDインポーター機能の統合テスト
 import os
 from maya import cmds
 from mmd_tools.io.mmd_importer import import_mmd_file
+from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.vmd_data import VmdData
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
@@ -108,7 +109,7 @@ class TestVmdImporter(MayaTestBase):
     def test_vmd_import_basic(self):
         """VMDファイルの基本的なインポート機能をテスト"""
         # テスト用スケルトンを作成
-        self._create_test_skeleton()
+        skeleton = self._create_test_skeleton()
 
         # タイムライン拡張を検証するため、24f を超える fixture を明示する。
         vmd_path = self.fixture_provider.get_vmd_file("joint_orient_test")
@@ -117,7 +118,7 @@ class TestVmdImporter(MayaTestBase):
         self.assertTrue(os.path.exists(vmd_path), f"VMDファイルが見つかりません: {vmd_path}")
 
         # VMDファイルをインポート
-        result = import_mmd_file(vmd_path)
+        result = import_mmd_file(vmd_path, options={"target_model": skeleton["root"]})
 
         # インポートが成功したことを確認
         self.assertTrue(result, "VMDファイルのインポートに失敗しました")
@@ -152,7 +153,7 @@ class TestVmdImporter(MayaTestBase):
         vmd_path = os.path.join(self.test_data_dir, vmd_files[0])
 
         # VMDファイルをインポート
-        result = import_mmd_file(vmd_path)
+        result = import_mmd_file(vmd_path, options={"target_model": f"{namespace}:root"})
 
         # インポートが成功したことを確認
         self.assertTrue(result, "ネームスペース付きモデルへのVMDインポートに失敗しました")
@@ -174,11 +175,9 @@ class TestVmdImporter(MayaTestBase):
 
         vmd_path = os.path.join(self.test_data_dir, vmd_files[0])
 
-        # VMDファイルをインポート（モデルがないので失敗するはず）
-        result = import_mmd_file(vmd_path)
-
-        # インポートは成功するが、キーフレームは設定されないはず
-        self.assertTrue(result, "VMDファイルの読み込みに失敗しました")
+        # model motion は明示targetなしでは開始しない。
+        with self.assertRaisesRegex(MMDImportException, "explicit target model"):
+            import_mmd_file(vmd_path)
 
         # ジョイントが存在しないことを確認
         joints = cmds.ls(type="joint")
@@ -229,7 +228,7 @@ class TestVmdImporter(MayaTestBase):
         initial_max = cmds.playbackOptions(query=True, maxTime=True)
 
         # VMDアニメーションをインポート
-        vmd_result = import_mmd_file(vmd_path)
+        vmd_result = import_mmd_file(vmd_path, options={"target_model": pmx_result})
         self.assertTrue(vmd_result, "VMDファイルのインポートに失敗しました")
 
         # タイムラインが更新されたか確認
@@ -276,7 +275,7 @@ class TestVmdImporter(MayaTestBase):
         parser.parse_file(vmd_path)
 
         # VMDファイルをインポート
-        result = import_mmd_file(vmd_path)
+        result = import_mmd_file(vmd_path, options={"scene_animation_only": True})
         self.assertTrue(result, "VMDファイルのインポートに失敗しました")
 
         # MMDカメラが作成されたことを確認
@@ -326,7 +325,7 @@ class TestVmdImporter(MayaTestBase):
         parser.parse_file(vmd_path)
 
         # VMDファイルをインポート
-        result = import_mmd_file(vmd_path)
+        result = import_mmd_file(vmd_path, options={"scene_animation_only": True})
         self.assertTrue(result, "VMDファイルのインポートに失敗しました")
 
         # MMD照明が作成されたことを確認
@@ -366,7 +365,7 @@ class TestVmdImporter(MayaTestBase):
     def test_vmd_import_with_animation_layers(self):
         """アニメーションレイヤーを使用したVMDインポートのテスト"""
         # テスト用スケルトンを作成
-        self._create_test_skeleton()
+        skeleton = self._create_test_skeleton()
 
         # VMDファイルのパスを取得
         vmd_files = [f for f in os.listdir(self.test_data_dir) if f.endswith(".vmd")]
@@ -377,7 +376,7 @@ class TestVmdImporter(MayaTestBase):
         vmd_path = os.path.join(self.test_data_dir, vmd_files[0])
 
         # VMDファイルをインポート（デフォルトでアニメーションレイヤーが使用される）
-        result = import_mmd_file(vmd_path)
+        result = import_mmd_file(vmd_path, options={"target_model": skeleton["root"]})
         self.assertTrue(result, "VMDファイルのインポートに失敗しました")
 
         # アニメーションレイヤーが作成されたことを確認
@@ -396,7 +395,7 @@ class TestVmdImporter(MayaTestBase):
     def test_multiple_vmd_import_with_layers(self):
         """複数のVMDファイルを異なるレイヤーにインポートするテスト"""
         # テスト用スケルトンを作成
-        self._create_test_skeleton()
+        skeleton = self._create_test_skeleton()
 
         # VMDファイルのパスを取得
         vmd_files = [f for f in os.listdir(self.test_data_dir) if f.endswith(".vmd")]
@@ -406,7 +405,7 @@ class TestVmdImporter(MayaTestBase):
 
         # 最初のVMDファイルをインポート
         vmd_path1 = os.path.join(self.test_data_dir, vmd_files[0])
-        result1 = import_mmd_file(vmd_path1)
+        result1 = import_mmd_file(vmd_path1, options={"target_model": skeleton["root"]})
         self.assertTrue(result1, "最初のVMDファイルのインポートに失敗しました")
 
         # アニメーションレイヤーの数を記録
@@ -414,7 +413,7 @@ class TestVmdImporter(MayaTestBase):
         initial_count = len(initial_layers)
 
         # 同じVMDファイルを再度インポート（新しいレイヤーが作成されるはず）
-        result2 = import_mmd_file(vmd_path1)
+        result2 = import_mmd_file(vmd_path1, options={"target_model": skeleton["root"]})
         self.assertTrue(result2, "2回目のVMDファイルのインポートに失敗しました")
 
         # 新しいレイヤーが作成されたことを確認
@@ -429,7 +428,7 @@ class TestVmdImporter(MayaTestBase):
     def test_vmd_import_layer_weight(self):
         """アニメーションレイヤーのウェイト設定テスト"""
         # テスト用スケルトンを作成
-        self._create_test_skeleton()
+        skeleton = self._create_test_skeleton()
 
         # VMDファイルのパスを取得
         vmd_files = [f for f in os.listdir(self.test_data_dir) if f.endswith(".vmd")]
@@ -440,7 +439,7 @@ class TestVmdImporter(MayaTestBase):
         vmd_path = os.path.join(self.test_data_dir, vmd_files[0])
 
         # VMDファイルをインポート
-        result = import_mmd_file(vmd_path)
+        result = import_mmd_file(vmd_path, options={"target_model": skeleton["root"]})
         self.assertTrue(result, "VMDファイルのインポートに失敗しました")
 
         # VMDレイヤーを探す

@@ -175,22 +175,28 @@ def backend_capture_report(
     output: Path,
     threshold: float,
     overrides: dict[str, float] | None = None,
+    ignore_cases: set[str] | None = None,
 ) -> dict[str, object]:
     reference = json.loads(reference_report.read_text(encoding="utf-8"))
     actual = json.loads(actual_report.read_text(encoding="utf-8"))
-    reference_by_name = {item["name"]: item for item in reference.get("results", [])}
+    ignored = set(ignore_cases or ())
+    reference_by_name = {
+        item["name"]: item for item in reference.get("results", []) if item["name"] not in ignored
+    }
+    actual_results = [item for item in actual.get("results", []) if item["name"] not in ignored]
+    capture_errors = list(reference.get("errors", [])) + list(actual.get("errors", []))
     synthetic = {
-        "errors": list(reference.get("errors", [])) + list(actual.get("errors", [])),
+        "errors": [error for error in capture_errors if error.get("name") not in ignored],
         "results": [
             {
                 "name": item["name"],
                 "oracle_png": reference_by_name.get(item["name"], {}).get("actual_png"),
                 "actual_png": item.get("actual_png"),
             }
-            for item in actual.get("results", [])
+            for item in actual_results
         ],
     }
-    missing_cases = sorted(set(reference_by_name) - {item["name"] for item in actual.get("results", [])})
+    missing_cases = sorted(set(reference_by_name) - {item["name"] for item in actual_results})
     synthetic["errors"].extend({"name": name, "error": "missing backend capture"} for name in missing_cases)
     synthetic_path = output.with_suffix(".capture-input.json")
     synthetic_path.parent.mkdir(parents=True, exist_ok=True)
@@ -201,6 +207,7 @@ def backend_capture_report(
     comparison["kind"] = "maya-visual-regression-backend-comparison"
     comparison["reference_capture_report"] = str(reference_report)
     comparison["actual_capture_report"] = str(actual_report)
+    comparison["ignored_cases"] = sorted(ignored)
     output.write_text(json.dumps(comparison, ensure_ascii=False, indent=2), encoding="utf-8")
     return comparison
 
@@ -213,11 +220,19 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--threshold", action="append", default=[], metavar="PATTERN=VALUE")
     parser.add_argument("--default-threshold", type=float, default=0.12)
     parser.add_argument("--flat-gray-min-chroma-ratio", type=float, default=0.25)
+    parser.add_argument(
+        "--ignore-case",
+        action="append",
+        default=[],
+        help="Backend-only comparison: explicitly exclude one non-common case. Repeatable.",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = _parse_args()
+    if args.ignore_case and not args.reference_capture_report:
+        raise ValueError("--ignore-case is only valid with --reference-capture-report")
     overrides = {}
     for item in args.threshold:
         pattern, separator, raw_value = item.partition("=")
@@ -231,6 +246,7 @@ def main() -> int:
             Path(args.out),
             args.default_threshold,
             overrides or None,
+            set(args.ignore_case),
         )
     else:
         comparison = compare_report(

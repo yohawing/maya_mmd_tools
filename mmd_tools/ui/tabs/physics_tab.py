@@ -13,6 +13,10 @@ from ..qt_compat import (
     QLabel,
     QLineEdit,
     QSpinBox,
+    QDoubleSpinBox,
+    QSlider,
+    QGridLayout,
+    Signal,
     QTabWidget,
     QSplitter,
     QScrollArea,
@@ -22,13 +26,187 @@ from ..base_tab import BaseTab
 from .translation_registry import apply_translation_registry
 
 
+class Vec3Editor(QWidget):
+    """Axis-labelled vector editor matching the other authoring tabs."""
+
+    valueChanged = Signal()
+
+    def __init__(self, minimum=-1_000_000.0, maximum=1_000_000.0, decimals=4, parent=None):
+        super().__init__(parent)
+        layout = QGridLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setHorizontalSpacing(4)
+        layout.setVerticalSpacing(0)
+        self.axis_labels = []
+        self.spins = []
+        for column, axis in enumerate("XYZ"):
+            label = QLabel(f"{axis}:")
+            spin = QDoubleSpinBox()
+            spin.setRange(minimum, maximum)
+            spin.setDecimals(decimals)
+            spin.setSingleStep(0.1)
+            spin.setKeyboardTracking(False)
+            spin.valueChanged.connect(lambda _value: self.valueChanged.emit())
+            layout.addWidget(label, 0, column * 2)
+            layout.addWidget(spin, 0, column * 2 + 1)
+            self.axis_labels.append(label)
+            self.spins.append(spin)
+
+    def values(self):
+        return tuple(spin.value() for spin in self.spins)
+
+    def setValues(self, values):
+        previous = [spin.blockSignals(True) for spin in self.spins]
+        try:
+            for spin, value in zip(self.spins, values):
+                spin.setValue(float(value))
+        finally:
+            for spin, blocked in zip(self.spins, previous):
+                spin.blockSignals(blocked)
+
+    def text(self):
+        return ", ".join(str(value) for value in self.values())
+
+    def setText(self, text):
+        parts = [part.strip() for part in str(text).split(",")]
+        if len(parts) == 3:
+            try:
+                self.setValues(parts)
+            except ValueError:
+                pass
+
+    def setValue(self, value):
+        self.setText(value)
+
+    def setComponentCount(self, count):
+        """Show only the leading components used by the current PMX shape."""
+        for index, (label, spin) in enumerate(zip(self.axis_labels, self.spins)):
+            visible = index < int(count)
+            label.setVisible(visible)
+            spin.setVisible(visible)
+
+
+class ScalarSliderEditor(QWidget):
+    """A precise spin box paired with a slider for fast physical tuning."""
+
+    valueChanged = Signal(float)
+
+    def __init__(self, slider_minimum, slider_maximum, single_step=0.01, parent=None):
+        super().__init__(parent)
+        self._slider_minimum = float(slider_minimum)
+        self._slider_maximum = float(slider_maximum)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(0, 1000)
+        self.spin = QDoubleSpinBox()
+        self.spin.setRange(-1_000_000.0, 1_000_000.0)
+        self.spin.setDecimals(4)
+        self.spin.setSingleStep(single_step)
+        self.spin.setKeyboardTracking(False)
+        self.spin.setMinimumWidth(88)
+        self.slider.valueChanged.connect(self._set_from_slider)
+        self.spin.valueChanged.connect(self._set_from_spin)
+        layout.addWidget(self.slider, 1)
+        layout.addWidget(self.spin)
+
+    def _set_from_slider(self, position):
+        value = self._slider_minimum + (self._slider_maximum - self._slider_minimum) * position / 1000.0
+        previous = self.spin.blockSignals(True)
+        self.spin.setValue(value)
+        self.spin.blockSignals(previous)
+        self.valueChanged.emit(self.spin.value())
+
+    def _set_from_spin(self, value):
+        span = self._slider_maximum - self._slider_minimum
+        position = round((float(value) - self._slider_minimum) / span * 1000.0) if span else 0
+        previous = self.slider.blockSignals(True)
+        self.slider.setValue(max(0, min(1000, position)))
+        self.slider.blockSignals(previous)
+        self.valueChanged.emit(float(value))
+
+    def value(self):
+        return self.spin.value()
+
+    def setValue(self, value):
+        self.spin.setValue(float(value))
+
+    def text(self):
+        return str(self.value())
+
+    def setText(self, text):
+        try:
+            self.setValue(text)
+        except (TypeError, ValueError):
+            pass
+
+
+class CollisionGroupsEditor(QWidget):
+    """Sixteen direct-access PMX collision group buttons."""
+
+    valueChanged = Signal(int)
+
+    def __init__(self, multiple=False, parent=None):
+        super().__init__(parent)
+        self._multiple = multiple
+        layout = QGridLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setHorizontalSpacing(3)
+        layout.setVerticalSpacing(3)
+        self.buttons = []
+        for group in range(16):
+            button = QPushButton(str(group))
+            button.setCheckable(True)
+            button.setFixedWidth(28)
+            button.clicked.connect(lambda checked, index=group: self._clicked(index, checked))
+            layout.addWidget(button, group // 8, group % 8)
+            self.buttons.append(button)
+
+    def _clicked(self, index, checked):
+        if not self._multiple:
+            for group, button in enumerate(self.buttons):
+                button.setChecked(group == index)
+        self.valueChanged.emit(self.value())
+
+    def value(self):
+        if self._multiple:
+            return sum(1 << index for index, button in enumerate(self.buttons) if button.isChecked())
+        return next((index for index, button in enumerate(self.buttons) if button.isChecked()), 0)
+
+    def setValue(self, value):
+        value = int(value, 0) if isinstance(value, str) else int(value)
+        previous = [button.blockSignals(True) for button in self.buttons]
+        try:
+            for index, button in enumerate(self.buttons):
+                button.setChecked(bool(value & (1 << index)) if self._multiple else index == value)
+        finally:
+            for button, blocked in zip(self.buttons, previous):
+                button.blockSignals(blocked)
+
+    def text(self):
+        return f"0x{self.value():04X}" if self._multiple else str(self.value())
+
+    def setText(self, text):
+        try:
+            self.setValue(int(str(text), 0))
+        except ValueError:
+            pass
+
+
 class PhysicsTab(BaseTab):
     _TRANSLATION_REGISTRY = (
         ("physics_objects_group", "setTitle", "physics_objects", "groups"),
         ("refresh_btn", "setText", "refresh", "buttons"),
+        ("create_btn", "setText", "create", "buttons"),
+        ("duplicate_btn", "setText", "duplicate", "buttons"),
+        ("delete_btn", "setText", "delete", "buttons"),
         ("collider_visible_check", "setText", "show_colliders", "checkboxes"),
+        ("physics_enable_check", "setText", "enable_physics", "checkboxes"),
         ("rigid_body_search_edit", "setPlaceholderText", "search_rigid_bodies", "placeholders"),
         ("joint_search_edit", "setPlaceholderText", "search_joints", "placeholders"),
+        ("apply_btn", "setText", "apply", "buttons"),
+        ("reset_btn", "setText", "reset", "buttons"),
     )
 
     def __init__(self, parent=None):
@@ -37,8 +215,9 @@ class PhysicsTab(BaseTab):
         self._form_labels = {}
         self._physics_editors = {}
         self._combo_options = {}
+        self._binding_editor_keys = set()
 
-        main_layout = QHBoxLayout(self)
+        main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
 
         self.splitter = QSplitter(Qt.Horizontal)
@@ -66,10 +245,28 @@ class PhysicsTab(BaseTab):
         toolbar_layout = QHBoxLayout()
         self.refresh_btn = QPushButton(self.tr("refresh", "buttons"))
         self.refresh_btn.setMaximumWidth(60)
+        self.create_btn = QPushButton(self.tr("create", "buttons"))
+        self.create_btn.setMaximumWidth(60)
+        self.create_btn.setEnabled(False)
+        self.duplicate_btn = QPushButton(self.tr("duplicate", "buttons"))
+        self.duplicate_btn.setMaximumWidth(70)
+        self.duplicate_btn.setEnabled(False)
+        self.delete_btn = QPushButton(self.tr("delete", "buttons"))
+        self.delete_btn.setMaximumWidth(60)
+        self.delete_btn.setEnabled(False)
         self.collider_visible_check = QCheckBox(self.tr("show_colliders", "checkboxes"))
         self.collider_visible_check.setChecked(False)
+        self.physics_enable_check = QCheckBox(self.tr("enable_physics", "checkboxes"))
+        self.physics_enable_check.setChecked(False)
+        self.physics_enable_check.setEnabled(False)
         toolbar_layout.addWidget(self.refresh_btn)
+        toolbar_layout.addWidget(self.create_btn)
+        toolbar_layout.addWidget(self.duplicate_btn)
+        toolbar_layout.addWidget(self.delete_btn)
+        for button in (self.create_btn, self.duplicate_btn, self.delete_btn):
+            button.hide()
         toolbar_layout.addWidget(self.collider_visible_check)
+        toolbar_layout.addWidget(self.physics_enable_check)
         toolbar_layout.addStretch()
         group_layout.addLayout(toolbar_layout)
 
@@ -103,7 +300,7 @@ class PhysicsTab(BaseTab):
         return widget
 
     def _create_details_section(self):
-        """Right pane: scrollable, read-only PMX physics values."""
+        """Right pane: scrollable physics property forms with Apply/Reset."""
         widget = QWidget()
         main_layout = QVBoxLayout(widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -121,6 +318,16 @@ class PhysicsTab(BaseTab):
         content_layout.addWidget(self.joint_form_group)
         self.rigid_body_form_group.hide()
         self.joint_form_group.hide()
+
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        self.apply_btn = QPushButton(self.tr("apply", "buttons"))
+        self.reset_btn = QPushButton(self.tr("reset", "buttons"))
+        self.apply_btn.setEnabled(False)
+        self.reset_btn.setEnabled(False)
+        button_layout.addWidget(self.apply_btn)
+        button_layout.addWidget(self.reset_btn)
+        content_layout.addLayout(button_layout)
         content_layout.addStretch()
 
         self.details_scroll_area.setWidget(self.physics_details_content)
@@ -140,25 +347,44 @@ class PhysicsTab(BaseTab):
             "shape",
             ["physics_shape_sphere", "physics_shape_box", "physics_shape_capsule"],
         )
-        self.rigid_shape_combo.setEnabled(False)
         self._add_editor_row(layout, "shape", "rigid_shape", self.rigid_shape_combo)
         self.rigid_physics_mode_combo = self._combo_editor(
             "rigid_physics_mode",
             "physics_mode",
             ["physics_mode_bone", "physics_mode_physics", "physics_mode_physics_bone"],
         )
-        self.rigid_physics_mode_combo.setEnabled(False)
         self._add_editor_row(layout, "physics_mode", "rigid_physics_mode", self.rigid_physics_mode_combo)
-        self.rigid_related_bone_spin = self._line_editor("rigid_related_bone", "related_bone")
-        self.rigid_collision_group_spin = self._int_editor("rigid_collision_group", "collision_group", 0, 15)
-        self.rigid_collision_mask_spin = self._line_editor("rigid_collision_mask", "collision_mask")
-        self.rigid_mass_edit = self._line_editor("rigid_mass", "mass")
-        self.rigid_linear_damping_edit = self._line_editor("rigid_linear_damping", "linear_damping")
-        self.rigid_angular_damping_edit = self._line_editor("rigid_angular_damping", "angular_damping")
-        self.rigid_restitution_edit = self._line_editor("rigid_restitution", "restitution")
-        self.rigid_friction_edit = self._line_editor("rigid_friction", "friction")
+        self.rigid_related_bone_combo = self._binding_editor(
+            "rigid_related_bone", "related_bone", "rigidRelatedBoneCombo"
+        )
+        self._add_editor_row(
+            layout, "related_bone", "rigid_related_bone", self.rigid_related_bone_combo
+        )
+        self.rigid_shape_size_edit = self._vec3_editor("rigid_shape_size", "shape_size", minimum=0.0)
+        self.rigid_shape_combo.currentIndexChanged.connect(self._update_rigid_shape_size_editor)
+        self.rigid_position_edit = self._vec3_editor("rigid_position", "pmx_position")
+        self.rigid_rotation_edit = self._vec3_editor("rigid_rotation", "pmx_rotation_degrees", decimals=2)
+        self.rigid_collision_group_spin = self._int_editor(
+            "rigid_collision_group", "collision_group", 0, 15
+        )
+        self.rigid_collision_mask_spin = self._collision_groups_editor(
+            "rigid_collision_mask", "collision_mask", multiple=True
+        )
+        self.rigid_mass_edit = self._slider_editor("rigid_mass", "mass", 0.0, 10.0, 0.1)
+        self.rigid_linear_damping_edit = self._slider_editor(
+            "rigid_linear_damping", "linear_damping", 0.0, 1.0
+        )
+        self.rigid_angular_damping_edit = self._slider_editor(
+            "rigid_angular_damping", "angular_damping", 0.0, 1.0
+        )
+        self.rigid_restitution_edit = self._slider_editor(
+            "rigid_restitution", "restitution", 0.0, 1.0
+        )
+        self.rigid_friction_edit = self._slider_editor("rigid_friction", "friction", 0.0, 1.0)
         for key, label_key in (
-            ("rigid_related_bone", "related_bone"),
+            ("rigid_shape_size", "shape_size"),
+            ("rigid_position", "pmx_position"),
+            ("rigid_rotation", "pmx_rotation_degrees"),
             ("rigid_collision_group", "collision_group"),
             ("rigid_collision_mask", "non_collision_groups"),
             ("rigid_mass", "mass"),
@@ -168,69 +394,75 @@ class PhysicsTab(BaseTab):
             ("rigid_friction", "friction"),
         ):
             self._add_editor_row(layout, label_key, key, self._physics_editors[key][1])
-        self._add_node_row(layout, "rigid_node")
-        self._disable_form_editors("rigid_")
+        self._update_rigid_shape_size_editor(self.rigid_shape_combo.currentIndex())
         group.setLayout(layout)
         return group
+
+    def _update_rigid_shape_size_editor(self, shape_type):
+        shape_type = int(shape_type)
+        component_count = (1, 3, 2)[max(0, min(2, shape_type))]
+        field_key = ("radius", "shape_size", "radius_height")[max(0, min(2, shape_type))]
+        self.rigid_shape_size_edit.setComponentCount(component_count)
+        if "rigid_shape_size" in self._form_labels:
+            label = self._form_labels["rigid_shape_size"][1]
+            self._form_labels["rigid_shape_size"] = (field_key, label)
+            label.setText(self.tr(field_key, "fields"))
 
     def _create_joint_form(self):
         group = QGroupBox(self.tr("joint_values", "groups"))
         layout = QFormLayout()
         self.joint_name_edit = self._line_editor("joint_name", "name")
         self.joint_name_english_edit = self._line_editor("joint_name_english", "name_english")
-        self.joint_type_spin = self._line_editor("joint_type", "joint_type")
-        self.joint_body_a_spin = self._line_editor("joint_body_a", "rigid_body_a")
-        self.joint_body_b_spin = self._line_editor("joint_body_b", "rigid_body_b")
+        self.joint_type_combo = self._combo_editor(
+            "joint_type",
+            "joint_type",
+            [
+                "physics_joint_spring_6dof",
+                "physics_joint_6dof",
+                "physics_joint_p2p",
+                "physics_joint_cone_twist",
+                "physics_joint_slider",
+                "physics_joint_hinge",
+            ],
+        )
+        self.joint_body_a_combo = self._binding_editor(
+            "joint_body_a", "rigid_body_a", "jointRigidBodyACombo"
+        )
+        self.joint_body_b_combo = self._binding_editor(
+            "joint_body_b", "rigid_body_b", "jointRigidBodyBCombo"
+        )
+        self.joint_position_edit = self._vec3_editor("joint_position", "pmx_position")
+        self.joint_rotation_edit = self._vec3_editor(
+            "joint_rotation", "pmx_rotation_degrees", decimals=2
+        )
         for key, field_key in (
-            ("joint_linear_states", "linear_constraint_states"),
-            ("joint_angular_states", "angular_constraint_states"),
             ("joint_translation_min", "translation_limit_min"),
             ("joint_translation_max", "translation_limit_max"),
             ("joint_rotation_min", "rotation_limit_min_degrees"),
             ("joint_rotation_max", "rotation_limit_max_degrees"),
             ("joint_spring_translation", "spring_translation"),
             ("joint_spring_rotation", "spring_rotation"),
-            ("joint_spring_translation_enabled", "spring_translation_enabled"),
-            ("joint_spring_rotation_enabled", "spring_rotation_enabled"),
         ):
-            setattr(self, f"{key}_edit", self._line_editor(key, field_key))
+            decimals = 2 if "rotation" in key else 4
+            setattr(self, f"{key}_edit", self._vec3_editor(key, field_key, decimals=decimals))
         for key in (
             "joint_name",
             "joint_name_english",
             "joint_type",
             "joint_body_a",
             "joint_body_b",
-            "joint_linear_states",
-            "joint_angular_states",
+            "joint_position",
+            "joint_rotation",
             "joint_translation_min",
             "joint_translation_max",
             "joint_rotation_min",
             "joint_rotation_max",
             "joint_spring_translation",
             "joint_spring_rotation",
-            "joint_spring_translation_enabled",
-            "joint_spring_rotation_enabled",
         ):
             self._add_editor_row(layout, self._physics_editors[key][0], key, self._physics_editors[key][1])
-        self._add_node_row(layout, "joint_node")
-        self._disable_form_editors("joint_")
         group.setLayout(layout)
         return group
-
-    def _add_node_row(self, layout, key):
-        label = QLabel(self.tr("node", "fields"))
-        value = QLineEdit()
-        value.setEnabled(False)
-        self._form_labels[key] = ("node", label)
-        self._physics_editors[key] = ("node", value)
-        layout.addRow(label, value)
-
-    def _disable_form_editors(self, prefix):
-        tooltip = self.tr("physics_read_only_v04", "messages")
-        for key, (_field_key, editor) in self._physics_editors.items():
-            if key.startswith(prefix):
-                editor.setEnabled(False)
-                editor.setToolTip(tooltip)
 
     def _line_editor(self, key, field_key):
         editor = QLineEdit()
@@ -243,12 +475,74 @@ class PhysicsTab(BaseTab):
         self._physics_editors[key] = (field_key, editor)
         return editor
 
+    def _vec3_editor(self, key, field_key, minimum=-1_000_000.0, maximum=1_000_000.0, decimals=4):
+        editor = Vec3Editor(minimum, maximum, decimals)
+        self._physics_editors[key] = (field_key, editor)
+        return editor
+
+    def _slider_editor(self, key, field_key, minimum, maximum, single_step=0.01):
+        editor = ScalarSliderEditor(minimum, maximum, single_step)
+        self._physics_editors[key] = (field_key, editor)
+        return editor
+
+    def _collision_groups_editor(self, key, field_key, multiple=False):
+        editor = CollisionGroupsEditor(multiple)
+        self._physics_editors[key] = (field_key, editor)
+        return editor
+
     def _combo_editor(self, key, field_key, option_keys):
         editor = QComboBox()
         editor.addItems([self.tr(option_key, "options") for option_key in option_keys])
         self._physics_editors[key] = (field_key, editor)
         self._combo_options[key] = tuple(option_keys)
         return editor
+
+    def _binding_editor(self, key, field_key, object_name):
+        editor = QComboBox()
+        editor.setObjectName(object_name)
+        editor.addItem(self.tr("none", "options"), ("", -1))
+        self._physics_editors[key] = (field_key, editor)
+        self._binding_editor_keys.add(key)
+        return editor
+
+    def set_binding_options(self, editor_key, candidates):
+        """Replace one root-scoped binding list without emitting edit signals."""
+        editor = self._physics_editors[editor_key][1]
+        previous = editor.blockSignals(True)
+        try:
+            editor.clear()
+            editor.addItem(self.tr("none", "options"), ("", -1))
+            for display, node, index in candidates:
+                editor.addItem(display, (node, int(index)))
+        finally:
+            editor.blockSignals(previous)
+
+    def _set_binding_selection(self, editor_key, value):
+        editor = self._physics_editors[editor_key][1]
+        node, fallback_index = value
+        selected = 0
+        if node:
+            for index in range(1, editor.count()):
+                if editor.itemData(index)[0] == node:
+                    selected = index
+                    break
+        elif fallback_index >= 0:
+            for index in range(1, editor.count()):
+                if editor.itemData(index)[1] == fallback_index:
+                    selected = index
+                    break
+        editor.setCurrentIndex(selected)
+
+    def binding_selection(self, editor_key):
+        """Return the selected long node path and fallback PMX index."""
+        data = self._physics_editors[editor_key][1].currentData()
+        return tuple(data) if data else ("", -1)
+
+    def _retranslate_binding_none_items(self):
+        for editor_key in self._binding_editor_keys:
+            editor = self._physics_editors[editor_key][1]
+            if editor.count():
+                editor.setItemText(0, self.tr("none", "options"))
 
     def _add_editor_row(self, layout, field_key, editor_key, editor):
         label = QLabel(self.tr(field_key, "fields"))
@@ -269,15 +563,20 @@ class PhysicsTab(BaseTab):
                 if isinstance(editor, QLineEdit):
                     editor.setText(str(value))
                 elif isinstance(editor, QComboBox):
-                    editor.setCurrentIndex(int(value))
+                    if editor_key in self._binding_editor_keys:
+                        self._set_binding_selection(editor_key, value)
+                    else:
+                        editor.setCurrentIndex(int(value))
                 else:
                     editor.setValue(value)
             finally:
                 editor.blockSignals(previous)
+        if kind == "rigid" and "shape" in values:
+            self._update_rigid_shape_size_editor(values["shape"])
 
     def set_physics_details_enabled(self, enabled):
-        """Enable or disable the read-only details content."""
-        self.physics_details_content.setEnabled(enabled)
+        """Enable or disable the physics authoring details content."""
+        self.physics_details_content.setEnabled(bool(enabled))
 
     def retranslateUi(self):
         """Re-apply translation registry and tab titles on language change."""
@@ -290,6 +589,7 @@ class PhysicsTab(BaseTab):
             editor = self._physics_editors[editor_key][1]
             for index, option_key in enumerate(option_keys):
                 editor.setItemText(index, self.tr(option_key, "options"))
+        self._retranslate_binding_none_items()
         if self.list_tabs.count() >= 2:
             self.list_tabs.setTabText(0, self.tr("rigid_bodies", "tabs"))
             self.list_tabs.setTabText(1, self.tr("joints", "tabs"))

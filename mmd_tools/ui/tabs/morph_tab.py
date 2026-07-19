@@ -13,7 +13,6 @@ from ..qt_compat import (
     QComboBox,
     QDoubleSpinBox,
     QTabWidget,
-    QTableWidget,
     QSplitter,
     QCheckBox,
 )
@@ -25,32 +24,19 @@ class MorphTab(BaseTab):
     _TRANSLATION_REGISTRY = (
         ("morph_list_group", "setTitle", "morph_list", "groups"),
         ("preview_group", "setTitle", "preview", "groups"),
-        ("blend_group", "setTitle", "blendshape_connection", "groups"),
         ("advanced_group", "setTitle", "advanced_settings", "groups"),
         ("refresh_morphs_btn", "setText", "refresh", "buttons"),
         ("reset_slider_btn", "setText", "reset", "buttons"),
         ("reset_all_btn", "setText", "reset_all", "actions"),
-        ("save_preset_btn", "setText", "save", "buttons"),
-        ("load_preset_btn", "setText", "load", "buttons"),
-        ("delete_preset_btn", "setText", "delete", "buttons"),
         ("apply_btn", "setText", "apply", "buttons"),
         ("reset_btn", "setText", "reset", "buttons"),
-        ("select_blend_shape_btn", "setText", "select", "buttons"),
-        ("connect_btn", "setText", "connect", "actions"),
-        ("disconnect_btn", "setText", "disconnect", "actions"),
-        ("auto_connect_btn", "setText", "auto_connect", "actions"),
         ("search_label", "setText", "search", "fields"),
         ("apply_rate_label", "setText", "apply_rate", "fields"),
-        ("preset_label", "setText", "preset", "fields"),
         ("morph_name_jp_label", "setText", "morph_name_jp", "fields"),
         ("morph_name_en_label", "setText", "morph_name_en", "fields"),
         ("panel_label", "setText", "panel", "fields"),
         ("morph_type_label", "setText", "type", "fields"),
-        ("status_label", "setText", "status", "fields"),
-        ("node_label", "setText", "node", "fields"),
-        ("target_name_label", "setText", "target_name", "fields"),
         ("multiplier_label", "setText", "multiplier", "fields"),
-        ("offset_count_label", "setText", "offset_not_supported", "labels"),
         ("invert_check", "setText", "invert_value", "checkboxes"),
         ("search_edit", "setPlaceholderText", "search_morph_name", "placeholders"),
     )
@@ -127,12 +113,6 @@ class MorphTab(BaseTab):
         # 基本情報タブ
         self.detail_tabs.addTab(self._create_basic_info_tab(), self.tr("basic_information", "tabs"))
 
-        # オフセット情報タブ
-        self.detail_tabs.addTab(self._create_offset_info_tab(), self.tr("offset_information", "tabs"))
-
-        # Maya連携タブ
-        self.detail_tabs.addTab(self._create_maya_connection_tab(), self.tr("maya_connection", "tabs"))
-
         layout.addWidget(self.detail_tabs)
 
         # プレビューセクション
@@ -155,6 +135,21 @@ class MorphTab(BaseTab):
 
         preview_layout.addLayout(slider_layout)
 
+        # プレビュー値の補正
+        self.advanced_group = QGroupBox(self.tr("advanced_settings", "groups"))
+        advanced_layout = QFormLayout()
+        self.invert_check = QCheckBox(self.tr("invert_value", "checkboxes"))
+        advanced_layout.addRow("", self.invert_check)
+
+        self.multiplier_spin = QDoubleSpinBox()
+        self.multiplier_spin.setRange(-10.0, 10.0)
+        self.multiplier_spin.setValue(1.0)
+        self.multiplier_spin.setSingleStep(0.1)
+        self.multiplier_label = QLabel(self.tr("multiplier", "fields"))
+        advanced_layout.addRow(self.multiplier_label, self.multiplier_spin)
+        self.advanced_group.setLayout(advanced_layout)
+        preview_layout.addWidget(self.advanced_group)
+
         # リセットボタン
         reset_layout = QHBoxLayout()
         self.reset_slider_btn = QPushButton(self.tr("reset", "buttons"))
@@ -163,30 +158,6 @@ class MorphTab(BaseTab):
         reset_layout.addWidget(self.reset_slider_btn)
         reset_layout.addWidget(self.reset_all_btn)
         preview_layout.addLayout(reset_layout)
-
-        # プリセット機能
-        preset_layout = QHBoxLayout()
-        self.preset_label = QLabel(self.tr("preset", "fields"))
-        preset_layout.addWidget(self.preset_label)
-        self.preset_combo = QComboBox()
-        self.preset_combo.setEditable(True)
-        self.preset_combo.addItems(
-            [
-                self.tr("none", "presets"),
-                self.tr("smile", "presets"),
-                self.tr("wink", "presets"),
-                self.tr("surprise", "presets"),
-                self.tr("sadness", "presets"),
-            ]
-        )
-        preset_layout.addWidget(self.preset_combo)
-        self.save_preset_btn = QPushButton(self.tr("save", "buttons"))
-        self.load_preset_btn = QPushButton(self.tr("load", "buttons"))
-        self.delete_preset_btn = QPushButton(self.tr("delete", "buttons"))
-        preset_layout.addWidget(self.save_preset_btn)
-        preset_layout.addWidget(self.load_preset_btn)
-        preset_layout.addWidget(self.delete_preset_btn)
-        preview_layout.addLayout(preset_layout)
 
         self.preview_group.setLayout(preview_layout)
         layout.addWidget(self.preview_group)
@@ -257,114 +228,24 @@ class MorphTab(BaseTab):
 
         return widget
 
-    def _create_offset_info_tab(self):
-        """オフセット情報タブを作成"""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-
-        # オフセット数表示（オフセットデータ表示は未対応のため未対応ラベルを表示）
-        info_layout = QHBoxLayout()
-        self.offset_count_label = QLabel(self.tr("offset_not_supported", "labels"))
-        info_layout.addWidget(self.offset_count_label)
-        info_layout.addStretch()
-        layout.addLayout(info_layout)
-
-        # オフセットテーブル
-        self.offset_table = QTableWidget()
-        self.offset_table.setColumnCount(5)
-        self.offset_table.setHorizontalHeaderLabels(
-            [
-                self.tr("index", "table_headers"),
-                self.tr("type", "table_headers"),
-                self.tr("element", "table_headers"),
-                self.tr("value", "table_headers"),
-                self.tr("details", "table_headers"),
-            ]
-        )
-        self.offset_table.horizontalHeader().setStretchLastSection(True)
-        layout.addWidget(self.offset_table)
-
-        return widget
-
-    def _create_maya_connection_tab(self):
-        """Maya連携タブを作成"""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-
-        # ブレンドシェイプ設定
-        self.blend_group = QGroupBox(self.tr("blendshape_connection", "groups"))
-        blend_layout = QFormLayout()
-
-        # 連携状態
-        self.connection_status_label = QLabel(self.tr("not_connected", "status"))
-        self.connection_status_label.setStyleSheet("color: red;")
-        self.status_label = QLabel(self.tr("status", "fields"))
-        blend_layout.addRow(self.status_label, self.connection_status_label)
-
-        # ブレンドシェイプノード
-        node_layout = QHBoxLayout()
-        self.blend_shape_edit = QLineEdit()
-        self.blend_shape_edit.setReadOnly(True)
-        self.select_blend_shape_btn = QPushButton(self.tr("select", "buttons"))
-        self.select_blend_shape_btn.setMaximumWidth(60)
-        node_layout.addWidget(self.blend_shape_edit)
-        node_layout.addWidget(self.select_blend_shape_btn)
-        self.node_label = QLabel(self.tr("node", "fields"))
-        blend_layout.addRow(self.node_label, node_layout)
-
-        # ターゲット名
-        self.target_name_edit = QLineEdit()
-        self.target_name_label = QLabel(self.tr("target_name", "fields"))
-        blend_layout.addRow(self.target_name_label, self.target_name_edit)
-
-        # 連携ボタン
-        connection_layout = QHBoxLayout()
-        self.connect_btn = QPushButton(self.tr("connect", "actions"))
-        self.disconnect_btn = QPushButton(self.tr("disconnect", "actions"))
-        self.auto_connect_btn = QPushButton(self.tr("auto_connect", "actions"))
-        connection_layout.addWidget(self.connect_btn)
-        connection_layout.addWidget(self.disconnect_btn)
-        connection_layout.addWidget(self.auto_connect_btn)
-        connection_layout.addStretch()
-        blend_layout.addRow("", connection_layout)
-
-        self.blend_group.setLayout(blend_layout)
-        layout.addWidget(self.blend_group)
-
-        # 詳細設定
-        self.advanced_group = QGroupBox(self.tr("advanced_settings", "groups"))
-        advanced_layout = QFormLayout()
-
-        # 反転
-        self.invert_check = QCheckBox(self.tr("invert_value", "checkboxes"))
-        advanced_layout.addRow("", self.invert_check)
-
-        # 乗数
-        self.multiplier_spin = QDoubleSpinBox()
-        self.multiplier_spin.setRange(-10.0, 10.0)
-        self.multiplier_spin.setValue(1.0)
-        self.multiplier_spin.setSingleStep(0.1)
-        self.multiplier_label = QLabel(self.tr("multiplier", "fields"))
-        advanced_layout.addRow(self.multiplier_label, self.multiplier_spin)
-
-        self.advanced_group.setLayout(advanced_layout)
-        layout.addWidget(self.advanced_group)
-
-        layout.addStretch()
-
-        return widget
-
     def set_morph_details_enabled(self, enabled):
         """モーフ詳細セクションの有効/無効を設定"""
         self.detail_tabs.setEnabled(enabled)
         self.morph_slider.setEnabled(enabled)
         self.reset_slider_btn.setEnabled(enabled)
+        self.invert_check.setEnabled(enabled)
+        self.multiplier_spin.setEnabled(enabled)
         self.apply_btn.setEnabled(enabled)
         self.reset_btn.setEnabled(enabled)
 
     def set_morph_controls_enabled(self, enabled, tooltip=""):
         """Enable only runtime weight controls while keeping metadata browsable."""
-        for widget in (self.morph_slider, self.reset_slider_btn):
+        for widget in (
+            self.morph_slider,
+            self.reset_slider_btn,
+            self.invert_check,
+            self.multiplier_spin,
+        ):
             widget.setEnabled(enabled)
             widget.setToolTip(tooltip)
 
@@ -373,10 +254,8 @@ class MorphTab(BaseTab):
         apply_translation_registry(self, self._TRANSLATION_REGISTRY)
 
         # Tab widget texts
-        if self.detail_tabs.count() >= 3:
+        if self.detail_tabs.count() >= 1:
             self.detail_tabs.setTabText(0, self.tr("basic_information", "tabs"))
-            self.detail_tabs.setTabText(1, self.tr("offset_information", "tabs"))
-            self.detail_tabs.setTabText(2, self.tr("maya_connection", "tabs"))
 
         # ComboBox items - Panel
         self.panel_combo.clear()
@@ -411,38 +290,3 @@ class MorphTab(BaseTab):
                 self.tr("impulse", "morph_types"),
             ]
         )
-
-        # ComboBox items - Preset
-        current_text = self.preset_combo.currentText()
-        self.preset_combo.clear()
-        self.preset_combo.addItems(
-            [
-                self.tr("none", "presets"),
-                self.tr("smile", "presets"),
-                self.tr("wink", "presets"),
-                self.tr("surprise", "presets"),
-                self.tr("sadness", "presets"),
-            ]
-        )
-        # Try to restore selection if it was a preset
-        if current_text in ["なし", "笑顔", "ウィンク", "驚き", "悲しみ", "None", "Smile", "Wink", "Surprise", "Sadness"]:
-            index = self.preset_combo.findText(current_text)
-            if index >= 0:
-                self.preset_combo.setCurrentIndex(index)
-
-        # Table headers - Offset table
-        self.offset_table.setHorizontalHeaderLabels(
-            [
-                self.tr("index", "table_headers"),
-                self.tr("type", "table_headers"),
-                self.tr("element", "table_headers"),
-                self.tr("value", "table_headers"),
-                self.tr("details", "table_headers"),
-            ]
-        )
-
-        # Status label text
-        if self.connection_status_label.styleSheet() == "color: red;":
-            self.connection_status_label.setText(self.tr("not_connected", "status"))
-        else:
-            self.connection_status_label.setText(self.tr("connected", "status"))

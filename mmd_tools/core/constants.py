@@ -10,6 +10,7 @@ MORPHS_GROUP = "Morphs"  # モーフ関連ノードを格納するグループ�
 PHYSICS_GROUP = "Physics"  # 物理演算関連ノードを格納するグループ名
 RIGID_BODIES_GROUP = "RigidBodies"  # 剛体（nCloth、nHair、nRigid）を格納するグループ名
 CONSTRAINTS_GROUP = "Constraints"  # 物理コンストレイントを格納するグループ名
+PHYSICS_WORLD_NODE = "MMD_PhysicsWorld"  # scene 単位の physics world ノード名
 
 # ファイルタイプ
 FILE_TYPE_PMX = "PMX"  # PMXファイル形式（MikuMikuDance 7.30以降の標準形式）
@@ -63,12 +64,14 @@ ATTR_MMD_SOURCE_MODEL_PATH = "mmd_source_model_path"
 # 頂点モーフは alias を sanitize_text で生成するため lossy だが、これは VMD/PMX が
 # 参照する生のモーフ名 (PmxMorph.name) を権威キーとして保持し、正確なマッピングを保証する。
 ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON = "mmd_blendshape_morph_names_json"
+ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON = "mmd_bone_morph_offsets_raw_json"
 
 # ボーンカスタムアトリビュート名（共通）
 ATTR_MMD_BONE_NAME = "mmd_bone_name"  # ボーン名（日本語）
 ATTR_MMD_BONE_NAME_EN = "mmd_bone_name_en"  # ボーン名（英語）
 ATTR_MMD_BONE_FLAGS = "mmd_bone_flags"  # ボーンフラグ
 ATTR_MMD_DEFORM_LAYER = "mmd_deform_layer"  # 変形階層
+ATTR_MMD_PMX_REST_POSITION = "mmd_pmx_rest_position"  # PMX空間の絶対rest位置
 ATTR_MMD_BONE_OFFSET = "mmd_bone_offset"  # ボーンオフセット（接続先）
 ATTR_MMD_CONNECTION_BONE = "mmd_connection_bone"  # 接続ボーン名
 

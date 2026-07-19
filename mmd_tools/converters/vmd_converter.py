@@ -251,11 +251,13 @@ class VmdConverter:
         profile: Optional[Dict[str, Any]] = None,
         progress_callback: Optional[Callable[[int], None]] = None,
         use_native_physics_bake: bool = False,
+        target_model: str = None,
     ) -> VmdImportContext:
         """Return import-run state for convert() dispatch and split helpers."""
         return VmdImportContext(
             vmd_data=vmd_data,
             target_namespace=target_namespace,
+            target_model=target_model,
             layer_name=layer_name,
             bake_mode=bool(bake_mode),
             clear_existing_motion=bool(clear_existing_motion),
@@ -451,6 +453,8 @@ class VmdConverter:
         profile: Optional[Dict[str, Any]] = None,
         progress_callback: Optional[Callable[[int], None]] = None,
         use_native_physics_bake: bool = False,
+        target_model: str = None,
+        scene_animation_only: bool = False,
     ) -> bool:
         """VMDデータをMayaアニメーションに変換
 
@@ -461,6 +465,8 @@ class VmdConverter:
         Args:
             vmd_data: パース済みのVMDデータ
             target_namespace: 対象となるネームスペース（省略可）
+            target_model: 対象モデルのroot node（指定時はbone/morph mappingをroot配下へ限定）
+            scene_animation_only: camera/lightだけをモデル処理なしで読み込む
             layer_name: アニメーションレイヤー名
             bake_mode: True の場合は live rig ではなく runtime final-pose bake を優先する
             clear_existing_motion: True の場合は既存の VMD motion keys/layer を削除してから読み込む
@@ -475,6 +481,11 @@ class VmdConverter:
         Returns:
             変換が成功した場合True、失敗した場合False
         """
+        if scene_animation_only:
+            return self._convert_scene_animation_only(vmd_data, layer_name, bake_mode, vmd_bytes)
+        if not target_model:
+            self.logger.error("VMD model motion requires an explicit target model")
+            return False
         import_start_time = None
         anim_layer_selection = None
         undo_was_enabled = True
@@ -482,6 +493,7 @@ class VmdConverter:
         import_context = self._import_context(
             vmd_data=vmd_data,
             target_namespace=target_namespace,
+            target_model=target_model,
             layer_name=layer_name,
             bake_mode=bake_mode,
             clear_existing_motion=clear_existing_motion,
@@ -513,11 +525,18 @@ class VmdConverter:
 
             # 名前マッピングの構築（ボーン名 → Maya joint）
             with vmd_profile.scope("name_mapping_build"):
-                self._build_name_mappings(import_context.target_namespace)
+                self._build_name_mappings(
+                    import_context.target_namespace,
+                    target_model=import_context.target_model,
+                )
             _emit_progress(40)
             motion_kind = self._detect_vmd_motion_kind(import_context.vmd_data)
             if import_context.clear_existing_motion and motion_kind in {"model", "mixed"}:
-                self._clear_existing_motion(import_context.layer_name, import_context.target_namespace)
+                self._clear_existing_motion(
+                    import_context.layer_name,
+                    import_context.target_namespace,
+                    target_model=import_context.target_model,
+                )
 
             # ボーンの初期位置を記録
             self._record_bind_poses()
@@ -598,7 +617,11 @@ class VmdConverter:
 
             if not runtime_success:
                 # --- レガシーパス（従来の変換） ---
-                self._apply_ik_enabled_animation(import_context.vmd_data, import_context.target_namespace)
+                self._apply_ik_enabled_animation(
+                    import_context.vmd_data,
+                    import_context.target_namespace,
+                    target_model=import_context.target_model,
+                )
                 _emit_progress(60)
 
                 if hasattr(import_context.vmd_data, "bone_frames") and import_context.vmd_data.bone_frames:
@@ -658,6 +681,55 @@ class VmdConverter:
         """Suppress Maya undo recording and viewport refresh during VMD import."""
         return suspend_import_scene_updates(self._import_state_context())
 
+    def _convert_scene_animation_only(self, vmd_data, layer_name, bake_mode, vmd_bytes) -> bool:
+        """Convert camera/light channels without entering any model or IK path."""
+        if any(
+            getattr(vmd_data, attr, None)
+            for attr in ("bone_frames", "morph_frames", "ik_show_hide_frames")
+        ):
+            self.logger.error("Camera Motion accepts camera/light channels only; model or IK channels were found")
+            return False
+
+        current_time = None
+        selection = None
+        undo_was_enabled = True
+        refresh_suspended = False
+        try:
+            self.logger.info("Starting VMD Camera Motion conversion")
+            undo_was_enabled, refresh_suspended = self._suspend_import_scene_updates()
+            try:
+                current_time = cmds.currentTime(query=True)
+                cmds.play(state=False)
+            except Exception:
+                pass
+            if self.use_animation_layers:
+                selection = self._capture_anim_layer_selection()
+                self.anim_layer = cmds.animLayer(layer_name, override=False, weight=1.0)
+            else:
+                self.anim_layer = None
+            self._setup_timeline(vmd_data)
+            if self.import_camera_animation and getattr(vmd_data, "camera_frames", None):
+                self._clear_existing_camera_motion()
+                self._convert_camera_animation(
+                    vmd_data.camera_frames,
+                    vmd_bytes=vmd_bytes if bake_mode else None,
+                )
+            if self.import_light_animation and getattr(vmd_data, "light_frames", None):
+                self._clear_existing_light_motion()
+                self._convert_light_animation(
+                    vmd_data.light_frames,
+                    vmd_bytes=vmd_bytes if bake_mode else None,
+                )
+            self._restore_import_timeline_state(current_time)
+            return True
+        except Exception as exc:
+            self._restore_import_timeline_state(current_time)
+            self.logger.error("Camera Motion conversion failed: %s", exc, exc_info=True)
+            return False
+        finally:
+            self._restore_anim_layer_selection(selection)
+            self._restore_import_scene_updates(undo_was_enabled, refresh_suspended)
+
     def _restore_import_scene_updates(self, undo_was_enabled: bool, refresh_suspended: bool) -> None:
         """Restore viewport refresh and undo state after VMD import."""
         restore_import_scene_updates(self._import_state_context(), undo_was_enabled, refresh_suspended)
@@ -693,9 +765,19 @@ class VmdConverter:
         """VMD import 中に変わった animLayer selected 状態を元に戻す。"""
         restore_anim_layer_selection(selection)
 
-    def _clear_existing_motion(self, layer_name: str, target_namespace: Optional[str] = None) -> None:
+    def _clear_existing_motion(
+        self,
+        layer_name: str,
+        target_namespace: Optional[str] = None,
+        target_model: Optional[str] = None,
+    ) -> None:
         """対象モデルに残っている既存 VMD motion keys/layer を削除する。"""
-        clear_existing_motion(self._import_state_context(), layer_name, target_namespace)
+        clear_existing_motion(
+            self._import_state_context(),
+            layer_name,
+            target_namespace,
+            target_model=target_model,
+        )
 
     def _clear_existing_camera_motion(self) -> None:
         """既存のMMDカメラアニメーションキーを削除する。"""
@@ -1291,7 +1373,7 @@ class VmdConverter:
         """
         add_transform_attrs_to_anim_layer(self.anim_layer, objects)
 
-    def _build_name_mappings(self, target_namespace: str = None):
+    def _build_name_mappings(self, target_namespace: str = None, target_model: str = None):
         """ボーン名とモーフ名のマッピングを構築
 
         Phase 1 拡張: bone_name → joint に加え、
@@ -1299,7 +1381,11 @@ class VmdConverter:
         これにより mmd-anim の world_matrices (PMXボーン順) を Maya ジョイントに
         正しく対応づけられる。
         """
-        build_name_mappings(self._name_mapping_context(), target_namespace)
+        build_name_mappings(
+            self._name_mapping_context(),
+            target_namespace,
+            target_model=target_model,
+        )
 
     def _record_bind_poses(self):
         """各ボーンの初期位置（バインドポーズ）を記録"""
@@ -1339,11 +1425,24 @@ class VmdConverter:
     def _node_namespace(node: str) -> str:
         return node_namespace(node)
 
-    def _collect_ik_nodes_by_bone_name(self, target_namespace: str = None) -> Dict[str, str]:
+    def _collect_ik_nodes_by_bone_name(
+        self,
+        target_namespace: str = None,
+        target_model: str = None,
+    ) -> Dict[str, str]:
         """mmdCcdIk ノードを PMX IK ボーン名で引けるように収集する。"""
-        return collect_ik_nodes_by_bone_name(target_namespace, self._node_namespace)
+        return collect_ik_nodes_by_bone_name(
+            target_namespace,
+            self._node_namespace,
+            target_model=target_model,
+        )
 
-    def _apply_ik_enabled_animation(self, vmd_data: VmdData, target_namespace: str = None) -> None:
+    def _apply_ik_enabled_animation(
+        self,
+        vmd_data: VmdData,
+        target_namespace: str = None,
+        target_model: str = None,
+    ) -> None:
         """VMD の IK 表示/非表示フレームを mmdCcdIk.enabled に反映する。
 
         PMX import 直後は REST mesh を守るため mmdCcdIk.enabled=False。
@@ -1351,7 +1450,12 @@ class VmdConverter:
         property frame がないモデルモーションでは、従来互換として全 IK を
         評価範囲の先頭で有効にする。
         """
-        apply_ik_enabled_animation(self._ik_enabled_animation_context(), vmd_data, target_namespace)
+        apply_ik_enabled_animation(
+            self._ik_enabled_animation_context(),
+            vmd_data,
+            target_namespace,
+            target_model=target_model,
+        )
 
     def _build_legacy_bone_key_routes(self) -> Dict[str, dict]:
         """レガシー VMD キーの出力先を joint / rig node へ振り分ける。"""
@@ -1500,12 +1604,24 @@ class VmdConverter:
         Returns:
             変換が成功した場合True
         """
+        requested_names = {
+            frame.morph_name if hasattr(frame, "morph_name") else frame.get("morph_name", "")
+            for frame in morph_frames
+        }
+        self.unmapped_vmd_morph_names = sorted(
+            name for name in requested_names if name and name not in self.morph_name_mapping
+        )
+        if self.unmapped_vmd_morph_names:
+            self.logger.warning(
+                "Skipping unmapped VMD morph names: %s",
+                ", ".join(self.unmapped_vmd_morph_names),
+            )
         return convert_morph_animation(self._morph_animation_context(), morph_frames)
 
     @staticmethod
     def _iter_morph_mappings(mapping_entry):
         return iter_morph_mappings(mapping_entry)
 
-    def _build_morph_mappings(self):
+    def _build_morph_mappings(self, target_model: str = None):
         """シーン内のblendShapeとmetadata networkからモーフ名マッピングを構築"""
-        build_morph_mappings(self)
+        build_morph_mappings(self, target_model=target_model)

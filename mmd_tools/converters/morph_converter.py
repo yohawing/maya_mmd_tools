@@ -15,6 +15,7 @@ from maya.api import OpenMaya as om
 from mmd_tools.core import maya_attribute_utils, maya_mesh_utils, maya_name_utils, settings_keys as setting_keys
 from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
+    ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON,
     ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
 )
@@ -147,6 +148,79 @@ class MorphConverter:
             "vertex_morphs_skipped_by_material": skipped_vertex_morphs_by_material,
             "results": results,
         }
+
+    def build_morph_controller(self, pmx_data, root_group: str, morph_result: Dict[str, Any]) -> Optional[str]:
+        """Create one fixed-topology controller and connect all supported morph leaves."""
+        if not morph_result.get("total_morphs"):
+            return None
+        controller = cmds.createNode("mmdMorphController", name=f"{root_group.split('|')[-1]}_morphController")
+        cmds.addAttr(root_group, longName="mmd_morph_controller", attributeType="message")
+        cmds.connectAttr(f"{controller}.message", f"{root_group}.mmd_morph_controller")
+
+        existing_aliases: Set[str] = set(cmds.listAttr(controller) or [])
+        existing_aliases.update(cmds.listAttr(controller, shortNames=True) or [])
+        for morph_index, morph in enumerate(pmx_data.morphs):
+            input_plug = f"{controller}.inputWeight[{morph_index}]"
+            cmds.setAttr(input_plug, 0.0)
+            cmds.setAttr(input_plug, keyable=True)
+
+            raw_name = self._raw_morph_name(morph)
+            display_name = raw_name or str(getattr(morph, "name_english", "") or "")
+            base_alias = maya_name_utils.sanitize_text(display_name) or f"morph_{morph_index}"
+            alias = self._unique_blendshape_alias_from_existing(base_alias, existing_aliases)
+            cmds.aliasAttr(alias, input_plug)
+            existing_aliases.add(alias)
+
+        groups = {
+            index: morph
+            for index, morph in enumerate(pmx_data.morphs)
+            if morph.morph_type == PmxMorphType.GroupMorph
+        }
+        group_rates: Dict[int, Dict[int, float]] = {}
+
+        def expand(source: int, current: int, rate: float, path: Set[int]) -> None:
+            for offset in getattr(groups[current], "offsets", []):
+                try:
+                    target = int(offset["morph_index"])
+                    next_rate = rate * float(offset.get("morph_rate", 0.0))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if target in path:
+                    continue
+                sources = group_rates.setdefault(target, {})
+                sources[source] = sources.get(source, 0.0) + next_rate
+                if target in groups:
+                    expand(source, target, next_rate, path | {target})
+
+        for group_index in groups:
+            expand(group_index, group_index, 1.0, {group_index})
+        topology = {
+            str(target): [[source, rate] for source, rate in sorted(sources.items())]
+            for target, sources in sorted(group_rates.items())
+        }
+        cmds.setAttr(f"{controller}.topologyVersion", 1, lock=True)
+        cmds.setAttr(
+            f"{controller}.groupTopology",
+            json.dumps(topology, separators=(",", ":")),
+            type="string",
+            lock=True,
+        )
+
+        destinations: Dict[int, Set[str]] = {}
+        for blend_shape in morph_result.get("blend_shape_nodes", []):
+            for weight_index, entry in read_blendshape_morph_entry_strings(blend_shape).items():
+                if "index" in entry:
+                    destinations.setdefault(int(entry["index"]), set()).add(
+                        f"{blend_shape}.weight[{int(weight_index)}]"
+                    )
+        for morph_node in morph_result.get("bone_morph_nodes", []) + morph_result.get("material_morph_nodes", []):
+            index = int(cmds.getAttr(f"{morph_node}.mmd_morph_index"))
+            destinations.setdefault(index, set()).add(f"{morph_node}.weight")
+        for leaf_index, leaf_destinations in sorted(destinations.items()):
+            for destination in sorted(leaf_destinations):
+                cmds.connectAttr(f"{controller}.outputWeight[{leaf_index}]", destination, force=True)
+        morph_result["morph_controller"] = controller
+        return controller
 
     def _convert_group_morph_pmx(self, morph, morph_index: int = 0) -> Dict[str, Any]:
         """PMXグループモーフをMayaのnetwork nodeとしてインポートする。"""
@@ -364,17 +438,20 @@ class MorphConverter:
         morph_node = self._create_or_get_morph_network_node(morph_name, "bone")
 
         offsets = []
+        raw_offsets = []
         for offset in getattr(morph, "offsets", []):
             if "bone_index" not in offset:
                 continue
+            raw_offset = {
+                "bone_index": int(offset["bone_index"]),
+                "translation": [float(v) for v in offset.get("translation", (0.0, 0.0, 0.0))],
+                "rotation": [float(v) for v in offset.get("rotation", (0.0, 0.0, 0.0, 1.0))],
+            }
+            raw_offsets.append(raw_offset)
             offsets.append(
                 {
-                    "bone_index": int(offset["bone_index"]),
-                    "translation": [
-                        float(v) * self.scale
-                        for v in offset.get("translation", (0.0, 0.0, 0.0))
-                    ],
-                    "rotation": [float(v) for v in offset.get("rotation", (0.0, 0.0, 0.0, 1.0))],
+                    **raw_offset,
+                    "translation": [value * self.scale for value in raw_offset["translation"]],
                 }
             )
 
@@ -388,6 +465,9 @@ class MorphConverter:
                 "mmd_morph_panel": int(getattr(morph, "panel", 0)),
                 "mmd_bone_morph_offset_count": len(offsets),
                 "mmd_bone_morph_offsets_json": json.dumps(offsets, ensure_ascii=False, separators=(",", ":")),
+                ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON: json.dumps(
+                    raw_offsets, ensure_ascii=False, separators=(",", ":")
+                ),
             },
         )
 
@@ -459,7 +539,20 @@ class MorphConverter:
         node_name = f"{safe_name}_{morph_kind}Morph"
 
         if cmds.objExists(node_name):
-            morph_node = node_name
+            owned = False
+            if cmds.attributeQuery("mmd_model_root", node=node_name, exists=True):
+                owned = bool(
+                    cmds.listConnections(
+                        f"{node_name}.mmd_model_root",
+                        source=True,
+                        destination=False,
+                    )
+                    or []
+                )
+            # A non-namespaced second model must receive its own metadata node.
+            # Maya will add a numeric suffix while preserving the morph name
+            # stored in the node attributes below.
+            morph_node = cmds.createNode("network", name=node_name) if owned else node_name
         else:
             morph_node = cmds.createNode("network", name=node_name)
 

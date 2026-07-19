@@ -45,11 +45,15 @@ def _initialize_maya_if_needed():
         _maya_initialized = True
 
     except ImportError as e:
-        print(f"Warning: Maya modules not available for test discovery: {e}")
-        # Maya環境がない場合でもテスト探索は続行
+        # CPython側のcontrollerやeditor discoveryではMaya不在が正常なので、
+        # 明示的な診断要求がある場合だけ既知の警告を表示する。
+        if os.environ.get("MMD_TEST_DISCOVERY_VERBOSE") == "1":
+            print(f"Warning: Maya modules not available for test discovery: {e}")
     except Exception as e:
         print(f"Warning: Failed to initialize Maya environment: {e}")
 
 
-# テストパッケージがインポートされた時点でMaya環境を初期化
-_initialize_maya_if_needed()
+# 通常のeditor discoveryはimport時に初期化する。公式runnerは出力を完全ログへ
+# 捕捉するため、明示的な初期化まで遅延する。
+if os.environ.get("MMD_TEST_DEFER_MAYA_INIT") != "1":
+    _initialize_maya_if_needed()

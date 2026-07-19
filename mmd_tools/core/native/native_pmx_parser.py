@@ -611,7 +611,10 @@ def _build_bones(bones_json: list) -> List[PmxBone]:
         append = bj.get("appendTransform")
         if append:
             b.grant_parent_bone_index = int(append.get("parentIndex", -1))
-            b.grant_rate = float(append.get("ratio", 0.0))
+            # mmd-anim's non-geometry JSON uses ``weight`` for PMX's
+            # append ratio.  Keep ``ratio`` as a compatibility alias for
+            # older bundled runtimes.
+            b.grant_rate = float(_get_any(append, "weight", "ratio", default=0.0))
         else:
             b.grant_parent_bone_index = -1
             b.grant_rate = 0.0
@@ -636,16 +639,29 @@ def _build_bones(bones_json: list) -> List[PmxBone]:
 
         ik = bj.get("ik")
         if ik:
-            b.ik_target_bone_index = int(ik.get("targetBoneIndex", -1))
+            # Native metadata is camelCase but names the PMX target simply
+            # ``targetIndex``.  ``targetBoneIndex`` was used by an older
+            # producer and remains accepted for compatibility.
+            b.ik_target_bone_index = int(
+                _get_any(ik, "targetIndex", "targetBoneIndex", default=-1)
+            )
             b.ik_loop_count = int(ik.get("loopCount", 0))
             b.ik_limit_angle = float(ik.get("limitAngle", 0.0))
             b.ik_links = []
             for lk in ik.get("links", []):
                 link = PmxIKLink.__new__(PmxIKLink)
                 link.ik_bone_index = int(lk.get("boneIndex", 0))
-                link.angle_limit = 1 if lk.get("hasAngleLimit") else 0
-                lmin = lk.get("limitMin") or [0.0, 0.0, 0.0]
-                lmax = lk.get("limitMax") or [0.0, 0.0, 0.0]
+                limits = lk.get("limits")
+                if isinstance(limits, dict):
+                    link.angle_limit = 1
+                    lmin = _get_any(limits, "lower", "min", default=[0.0, 0.0, 0.0])
+                    lmax = _get_any(limits, "upper", "max", default=[0.0, 0.0, 0.0])
+                else:
+                    # Compatibility aliases for the previous flattened
+                    # schema (and for links without a limit object).
+                    link.angle_limit = 1 if lk.get("hasAngleLimit") else 0
+                    lmin = lk.get("limitMin") or [0.0, 0.0, 0.0]
+                    lmax = lk.get("limitMax") or [0.0, 0.0, 0.0]
                 link.limit_min = tuple(lmin[:3])
                 link.limit_max = tuple(lmax[:3])
                 b.ik_links.append(link)

@@ -302,6 +302,7 @@ def _png_stats(path):
     max_v = 0
     total = 0
     count = 0
+    near_black_pixels = 0
     for _y in range(height):
         filt = raw[offset]
         offset += 1
@@ -335,8 +336,20 @@ def _png_stats(path):
             max_v = max(max_v, v)
             total += v
             count += 1
+        for i in range(0, stride, channels):
+            if max(recon[i:i+3]) <= 32:
+                near_black_pixels += 1
         prev = recon
-    return {{"width": width, "height": height, "min": min_v, "max": max_v, "mean": total / max(count, 1), "samples": count}}
+    return {{
+        "width": width,
+        "height": height,
+        "min": min_v,
+        "max": max_v,
+        "mean": total / max(count, 1),
+        "samples": count,
+        "near_black_rgb_pixels": near_black_pixels,
+        "pixel_count": width * height,
+    }}
 
 def _png_center_sample(path):
     path = Path(path)
@@ -702,6 +715,7 @@ def _capture_case(case):
     import importlib
     import mmd_tools.converters as converters
     import mmd_tools.converters.mesh_converter as mesh_converter
+    import mmd_tools.converters.morph_converter as morph_converter
     import mmd_tools.core.mmd_parser as mmd_parser
     import mmd_tools.core.pmx_data as pmx_data
     import mmd_tools.core.pmx_data.vertex as pmx_vertex
@@ -714,6 +728,7 @@ def _capture_case(case):
     pmx_data = importlib.reload(pmx_data)
     mmd_parser = importlib.reload(mmd_parser)
     mesh_converter = importlib.reload(mesh_converter)
+    morph_converter = importlib.reload(morph_converter)
     converters = importlib.reload(converters)
     pmx_importer = importlib.reload(pmx_importer)
     vmd_importer = importlib.reload(vmd_importer)
@@ -873,7 +888,6 @@ def main() -> int:
     _, cases = _load_cases(manifest_path, args.case, args.tag, args.limit)
     if not cases:
         raise RuntimeError("No manifest cases selected.")
-
     shader_fx = _prepare_shader(project_root, output_dir, args.shader_fx)
     log_path = output_dir / "maya_visual_regression.log"
     report_path = output_dir / "visual-regression-report.json"

@@ -46,6 +46,9 @@ class MayaTestBase(TestBase):
         """
         テストケースクラスの初期化処理
         """
+        # Do not inherit another TestCase's plugin ownership list.  Otherwise a
+        # later class can unload a plugin that it never loaded.
+        cls.plugins_loaded = []
         super(MayaTestBase, cls).setUpClass()
         if not MAYA_AVAILABLE:
             raise RuntimeError("Maya is not available. Tests cannot run without Maya.")
@@ -85,6 +88,8 @@ class MayaTestBase(TestBase):
 
         @param plugin: プラグイン名。
         """
+        if cmds.pluginInfo(plugin, query=True, loaded=True):
+            return
         cmds.loadPlugin(plugin, qt=True)
         cls.plugins_loaded.append(plugin)
 

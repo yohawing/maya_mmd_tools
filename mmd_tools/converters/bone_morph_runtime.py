@@ -81,13 +81,6 @@ def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
         joints_by_index,
         result["skipped"],
     )
-    _append_group_morph_contributions(
-        contributions_by_joint,
-        list(_iter_group_morph_nodes(root_group)),
-        bone_morph_nodes,
-        joints_by_index,
-        result["skipped"],
-    )
     if not contributions_by_joint:
         result["skipped"].append("no_bone_morph_contributions")
         return result
@@ -306,16 +299,11 @@ def _iter_bone_morph_nodes(root_group: str) -> Iterable[str]:
     yield from _iter_morph_nodes(root_group, "bone", "mmd_bone_morph_offsets_json")
 
 
-def _iter_group_morph_nodes(root_group: str) -> Iterable[str]:
-    yield from _iter_morph_nodes(root_group, "group", "mmd_group_morph_offsets_json")
-
-
 def _iter_morph_nodes(root_group: str, morph_type: str, required_attr: str) -> Iterable[str]:
     for metadata in iter_morph_network_metadata(
         root_group=root_group,
         morph_types={morph_type},
         required_attrs=(required_attr,),
-        enforce_model_root_scope=False,
     ):
         yield metadata.node
 
@@ -346,74 +334,8 @@ def _collect_contributions_by_joint(
     return dict(contributions_by_joint)
 
 
-def _append_group_morph_contributions(
-    contributions_by_joint: Dict[str, List[Dict[str, Any]]],
-    group_morph_nodes: Iterable[str],
-    bone_morph_nodes: Iterable[str],
-    joints_by_index: Dict[int, str],
-    skipped: List[str],
-) -> None:
-    bone_nodes_by_morph_index = _collect_morph_nodes_by_index(bone_morph_nodes)
-    for group_node in group_morph_nodes:
-        group_offsets = _parse_group_offsets_json(group_node)
-        if group_offsets is None:
-            skipped.append(f"invalid_group_offsets:{group_node}")
-            continue
-
-        group_order = _get_morph_order(group_node)
-        for group_offset in group_offsets:
-            if not isinstance(group_offset, dict) or "morph_index" not in group_offset:
-                skipped.append(f"invalid_group_offset:{group_node}")
-                continue
-            try:
-                target_morph_index = int(group_offset["morph_index"])
-                group_rate = float(group_offset.get("morph_rate", 0.0))
-            except Exception:
-                skipped.append(f"invalid_group_offset:{group_node}")
-                continue
-
-            target_node = bone_nodes_by_morph_index.get(target_morph_index)
-            if target_node is None:
-                skipped.append(f"group_reference_not_bone:{group_node}:{target_morph_index}")
-                continue
-
-            offsets = _parse_offsets_json(target_node)
-            if offsets is None:
-                skipped.append(f"invalid_offsets:{target_node}")
-                continue
-            for offset in offsets:
-                contribution = _offset_to_contribution(target_node, group_order, offset)
-                if contribution is None:
-                    skipped.append(f"invalid_offset:{target_node}")
-                    continue
-                joint = joints_by_index.get(contribution["bone_index"])
-                if joint is None:
-                    skipped.append(f"missing_joint:{target_node}:{contribution['bone_index']}")
-                    continue
-                contribution["group_morph_node"] = group_node
-                contribution["group_morph_rate"] = group_rate
-                contributions_by_joint.setdefault(joint, []).append(contribution)
-
-
-def _collect_morph_nodes_by_index(morph_nodes: Iterable[str]) -> Dict[int, str]:
-    nodes_by_index: Dict[int, str] = {}
-    for morph_node in morph_nodes:
-        try:
-            if not cmds.attributeQuery("mmd_morph_index", node=morph_node, exists=True):
-                continue
-            morph_index = int(cmds.getAttr(f"{morph_node}.mmd_morph_index"))
-        except Exception:
-            continue
-        nodes_by_index.setdefault(morph_index, morph_node)
-    return nodes_by_index
-
-
 def _parse_offsets_json(morph_node: str) -> Optional[List[Dict[str, Any]]]:
     return parse_morph_offsets_json(morph_node, "mmd_bone_morph_offsets_json")
-
-
-def _parse_group_offsets_json(morph_node: str) -> Optional[List[Dict[str, Any]]]:
-    return parse_morph_offsets_json(morph_node, "mmd_group_morph_offsets_json")
 
 
 def _get_morph_order(morph_node: str) -> int:
@@ -518,38 +440,7 @@ def _refresh_contributions(node: str, contributions: List[Dict[str, Any]]) -> No
         cmds.setAttr(f"{prefix}.translateOffset", tx, ty, tz, type="double3")
         qx, qy, qz, qw = contribution["rotate_quat"]
         cmds.setAttr(f"{prefix}.rotateOffsetQuat", qx, qy, qz, qw, type="double4")
-        _connect_contribution_weight(node, slot, contribution, f"{prefix}.weight")
-
-
-def _connect_contribution_weight(
-    accumulator_node: str,
-    slot: int,
-    contribution: Dict[str, Any],
-    destination: str,
-) -> None:
-    group_node = contribution.get("group_morph_node")
-    if not group_node:
-        _connect_if_needed(str(contribution["weight_source"]), destination, force=True)
-        return
-
-    multiplier = _group_weight_multiplier_node(accumulator_node, slot)
-    if not cmds.objExists(multiplier):
-        multiplier = cmds.createNode("multiplyDivide", name=multiplier)
-    cmds.setAttr(f"{multiplier}.operation", 1)
-    cmds.setAttr(f"{multiplier}.input2X", float(contribution.get("group_morph_rate", 0.0)))
-    _connect_if_needed(f"{group_node}.weight", f"{multiplier}.input1X", force=True)
-    _connect_if_needed(f"{multiplier}.outputX", destination, force=True)
-
-
-def _group_weight_multiplier_node(accumulator_node: str, slot: int) -> str:
-    return f"{_safe_node_token(accumulator_node)}_contribution{slot}_groupWeight"
-
-
-def _safe_node_token(node: str) -> str:
-    token = node.split("|")[-1]
-    for char in (":", ".", "[", "]"):
-        token = token.replace(char, "_")
-    return token
+        _connect_if_needed(str(contribution["weight_source"]), f"{prefix}.weight", force=True)
 
 
 def _reroute_joint_inputs_through_accumulator(joint: str, node: str) -> None:

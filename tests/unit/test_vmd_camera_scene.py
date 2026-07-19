@@ -180,7 +180,7 @@ class TestVmdCameraScene(MayaTestBase):
             },
         )()
 
-        result = self.converter.convert(vmd_data)
+        result = self.converter.convert(vmd_data, scene_animation_only=True)
         self.assertTrue(result)
 
         camera_name = self.converter._get_or_create_camera()

@@ -22,6 +22,7 @@ FAST_LOAD_MODEL = ROOT / "tests" / "data" / "mmt_test_model.pmx"
 FAST_IMPORT_SKIN_MODEL = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube.pmx"
 FAST_LOAD_MORPH_MODEL = ROOT / "tests" / "data" / "test_morph_model.pmx"
 TRACK4_VMD_MOTION = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube_motion.vmd"
+PYTHON_PLUGIN = ROOT / "plug-ins" / "mmd_tools_plugin.py"
 
 
 def _flatten_nested_sequence(values: object) -> list[float | int]:
@@ -404,6 +405,7 @@ def main() -> int:
     maya.standalone.initialize(name="python")
     try:
         cmds.loadPlugin(str(plugin_path), quiet=True)
+        cmds.loadPlugin(str(PYTHON_PLUGIN), quiet=True)
         node = cmds.createNode(NODE_TYPE)
         if not cmds.objExists(node):
             raise RuntimeError(f"Failed to create node: {NODE_TYPE}")
@@ -1078,11 +1080,21 @@ def main() -> int:
             print("SKIP: mmdCcdIk 2-link numeric parity (Python registered, C++ skipped)")
 
         controller_chain = dict(ffi_chain)
-        controller_chain["controllerBoneSlot"] = 1
+        controller_chain["bones"] = [
+            *ffi_chain["bones"],
+            {
+                "parent_slot": -1,
+                "rest_position": [1.0, 0.0, 0.0],
+                "maya_rest_translate": [1.0, 0.0, 0.0],
+            },
+        ]
+        controller_chain["controllerBoneSlot"] = 2
         cmds.setAttr(f"{ccdik_node}.chainJson", json.dumps(controller_chain), type="string")
         cmds.setAttr(f"{ccdik_node}.inputTranslate[0]", 0.0, 0.0, 0.0, type="double3")
         cmds.setAttr(f"{ccdik_node}.inputTranslate[1]", 1.0, 0.0, 0.0, type="double3")
-        cmds.setAttr(f"{ccdik_node}.inputRotate[0]", 0.0, 0.0, 13.0, type="double3")
+        cmds.setAttr(f"{ccdik_node}.inputTranslate[2]", 1.0, 0.0, 0.0, type="double3")
+        cmds.setAttr(f"{ccdik_node}.inputRotate[0]", 0.0, 0.0, 0.0, type="double3")
+        cmds.setAttr(f"{ccdik_node}.inputRotate[2]", 0.0, 0.0, 0.0, type="double3")
         controller_rest_out = cmds.getAttr(f"{ccdik_node}.outputRotate[0]")[0]
         if cpp_registered_ccdik:
             controller_rest_solved = cmds.getAttr(f"{ccdik_node}.solved")
@@ -1093,7 +1105,7 @@ def main() -> int:
                 )
         if any(
             abs(float(actual) - expected) > 1e-6
-            for actual, expected in zip(controller_rest_out, (0.0, 0.0, 13.0))
+            for actual, expected in zip(controller_rest_out, (0.0, 0.0, 0.0))
         ):
             raise RuntimeError(
                 "mmdCcdIk controller rest path should copy inputRotate for link slot 0, "
@@ -1102,7 +1114,7 @@ def main() -> int:
         print("OK: mmdCcdIk controllerBoneSlot rest path copies inputRotate and skips solve")
 
         cmds.setAttr(f"{ccdik_node}.inputRotate[0]", 0.0, 0.0, 0.0, type="double3")
-        cmds.setAttr(f"{ccdik_node}.inputTranslate[1]", 1.0, 1.0, 0.0, type="double3")
+        cmds.setAttr(f"{ccdik_node}.inputTranslate[2]", 0.0, 1.0, 0.0, type="double3")
         if cpp_registered_ccdik:
             controller_moved_solved = cmds.getAttr(f"{ccdik_node}.solved")
             if controller_moved_solved is not True:

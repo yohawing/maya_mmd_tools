@@ -11,6 +11,7 @@ from unittest.mock import patch
 from maya import cmds
 
 from mmd_tools.actions.export_model_action import ExportModelAction, ExportModelRequest
+from mmd_tools.converters import export_scene_collector
 from mmd_tools.converters.export_scene_collector import ExportSceneCollector
 from mmd_tools.converters.morph_converter import MorphConverter
 from mmd_tools.core.constants import (
@@ -431,6 +432,94 @@ class TestPmxExporter(MayaTestBase):
         self.assertAlmostEqual(vertex_morph.offsets[0]["position_offset"][0], 0.25)
         self.assertTrue(any(m.name == "ボーン笑い" and int(m.morph_type) == 2 for m in pmx.morphs))
         self.assertTrue(any(m.name == "材質点滅" and int(m.morph_type) == 8 for m in pmx.morphs))
+
+    def test_vertex_morph_collection_preserves_connected_locked_keyed_state(self):
+        """Stored target deltas export without mutating the evaluated blendShape graph."""
+        mesh, shape = self._make_triangle(name="protected_morph_mesh")
+        self._create_scene_morph_metadata(mesh)
+        blend_shape = next(
+            node for node in (cmds.listHistory(shape, pruneDagObjects=True) or [])
+            if cmds.nodeType(node) == "blendShape"
+        )
+        weight = f"{blend_shape}.weight[0]"
+        cmds.setKeyframe(weight, time=1, value=0.2)
+        cmds.setKeyframe(weight, time=12, value=0.6)
+        cmds.setAttr(weight, lock=True)
+        cmds.setAttr(f"{blend_shape}.envelope", 0.35)
+        cmds.currentTime(12)
+
+        def snapshot():
+            return {
+                "weight": cmds.getAttr(weight),
+                "locked": cmds.getAttr(weight, lock=True),
+                "incoming": cmds.listConnections(weight, source=True, destination=False, plugs=True) or [],
+                "key_times": cmds.keyframe(weight, query=True, timeChange=True) or [],
+                "key_values": cmds.keyframe(weight, query=True, valueChange=True) or [],
+                "envelope": cmds.getAttr(f"{blend_shape}.envelope"),
+                "time": cmds.currentTime(query=True),
+                "points": cmds.xform(f"{shape}.vtx[*]", query=True, objectSpace=True, translation=True),
+            }
+
+        before = snapshot()
+        morphs = export_scene_collector._collect_vertex_morphs(shape)
+        self.assertEqual(snapshot(), before)
+        self.assertEqual([morph["name"] for morph in morphs], ["頂点にこり"])
+        self.assertEqual(morphs[0]["offsets"][0]["vertex_index"], 1)
+        self.assertAlmostEqual(morphs[0]["offsets"][0]["position_offset"][0], 0.25)
+
+        real_get_attr = cmds.getAttr
+
+        def mismatched_points(plug, *args, **kwargs):
+            if str(plug).endswith(".inputPointsTarget"):
+                return [(0.25, 0.0, 0.0, 1.0), (0.5, 0.0, 0.0, 1.0)]
+            return real_get_attr(plug, *args, **kwargs)
+
+        with patch.object(export_scene_collector.cmds, "getAttr", side_effect=mismatched_points):
+            with self.assertRaisesRegex(ValueError, f"{blend_shape}.*target 0"):
+                export_scene_collector._collect_vertex_morphs(shape)
+        self.assertEqual(snapshot(), before)
+
+    def test_vertex_morph_collection_uses_geometry_index_and_flattens_ranges(self):
+        """Multi-geometry targets use their logical index and Maya's component flattening."""
+        base_a = cmds.polyPlane(name="morph_geo_a", subdivisionsX=1, subdivisionsY=1)[0]
+        base_b = cmds.polyPlane(name="morph_geo_b", subdivisionsX=1, subdivisionsY=1)[0]
+        target_a = cmds.duplicate(base_a, name="morph_target_a")[0]
+        target_b = cmds.duplicate(base_b, name="morph_target_b")[0]
+        cmds.move(0.25, 0.5, -0.75, f"{target_a}.vtx[1:3]", relative=True)
+        cmds.move(-0.5, 0.75, 0.25, f"{target_b}.vtx[1:3]", relative=True)
+
+        blend_shape = cmds.blendShape(base_a, name="multiGeometryBlendShape")[0]
+        cmds.blendShape(blend_shape, edit=True, geometry=base_b)
+        cmds.blendShape(blend_shape, edit=True, target=(base_a, 0, target_a, 1.0))
+        cmds.blendShape(blend_shape, edit=True, target=(base_b, 0, target_b, 1.0))
+        cmds.aliasAttr("range_morph", f"{blend_shape}.weight[0]")
+        empty_target = cmds.duplicate(base_b, name="empty_morph_target")[0]
+        cmds.blendShape(blend_shape, edit=True, target=(base_b, 1, empty_target, 1.0))
+        cmds.aliasAttr("empty_morph", f"{blend_shape}.weight[1]")
+        cmds.delete(target_a, target_b, empty_target)
+
+        shape_b = cmds.listRelatives(base_b, shapes=True, type="mesh")[0]
+        self.assertEqual(export_scene_collector._blendshape_geometry_index(blend_shape, shape_b), 1)
+        morphs = export_scene_collector._collect_vertex_morphs(shape_b)
+
+        self.assertEqual([morph["name"] for morph in morphs], ["range_morph"])
+        self.assertEqual([offset["vertex_index"] for offset in morphs[0]["offsets"]], [1, 2, 3])
+        for offset in morphs[0]["offsets"]:
+            self.assertListAlmostEqual(offset["position_offset"], [-0.5, 0.75, -0.25])
+
+        shape_a = cmds.listRelatives(base_a, shapes=True, type="mesh")[0]
+        morphs_a = export_scene_collector._collect_vertex_morphs(shape_a)
+        self.assertEqual([morph["name"] for morph in morphs_a], ["range_morph"])
+
+        with self.assertRaisesRegex(ValueError, f"{blend_shape}.*target 99.*6000"):
+            export_scene_collector._stored_blendshape_target_offsets(
+                blend_shape,
+                shape_b,
+                1,
+                99,
+                4,
+                0,
+            )
 
     def test_export_model_action_collects_display_frames_to_pmx(self):
         """target_model export は root の表示枠 metadata を PMX に書き戻す。"""

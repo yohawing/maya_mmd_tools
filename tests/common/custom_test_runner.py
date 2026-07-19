@@ -48,6 +48,7 @@ class CustomTestResult(TextTestResult):
     def __init__(self, *args, **kwargs):
         super(CustomTestResult, self).__init__(*args, **kwargs)
         self.use_colors = sys.stdout.isatty()  # ターミナルの場合のみカラー表示
+        self.show_error_details = True
 
     def getDescription(self, test):
         """テストの説明を取得します。docstringがあれば表示します。"""
@@ -113,6 +114,10 @@ class CustomTestResult(TextTestResult):
 
     def printErrors(self):
         """エラーの詳細を出力"""
+        if not self.show_error_details:
+            self._print_compact_failures()
+            return
+
         if self.dots or self.showAll:
             self.stream.writeln()
 
@@ -146,6 +151,26 @@ class CustomTestResult(TextTestResult):
                 self.stream.writeln(self.separator2)
                 self.stream.writeln(err)
 
+    def _print_compact_failures(self):
+        """端末向けにtracebackを省略した失敗サマリを出力"""
+        failures = [
+            ("ERROR", test)
+            for test, _ in self.errors
+        ] + [
+            ("FAIL", test)
+            for test, _ in self.failures
+        ] + [
+            ("UNEXPECTED SUCCESS", test)
+            for test in self.unexpectedSuccesses
+        ]
+        if not failures:
+            return
+
+        self.stream.writeln()
+        self.stream.writeln("エラー詳細は省略しました（--verboseで表示）")
+        for kind, test in failures:
+            self.stream.writeln(f"  {kind}: {test.id()}")
+
 
 class CustomTestRunner(TextTestRunner):
     """
@@ -156,9 +181,15 @@ class CustomTestRunner(TextTestRunner):
 
     resultclass = CustomTestResult
 
-    def __init__(self, **kwargs):
+    def __init__(self, *, show_error_details=True, **kwargs):
+        self.show_error_details = show_error_details
         super(CustomTestRunner, self).__init__(**kwargs)
         enable_windows_ansi_support()
+
+    def _makeResult(self):
+        result = super()._makeResult()
+        result.show_error_details = self.show_error_details
+        return result
 
     def run(self, test):
         """テストを実行し、結果を表示"""

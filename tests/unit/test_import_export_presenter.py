@@ -24,7 +24,11 @@ from mmd_tools.core.settings import settings  # noqa: E402
 from mmd_tools.actions.export_model_action import ExportModelResult  # noqa: E402
 from mmd_tools.actions.export_vmd_action import ExportVmdResult  # noqa: E402
 from mmd_tools.actions.import_model_action import ImportModelResult  # noqa: E402
-from mmd_tools.actions.import_vmd_action import ImportVmdResult  # noqa: E402
+from mmd_tools.actions.import_vmd_action import (  # noqa: E402
+    ImportVmdResult,
+    VMD_TARGET_AUTO,
+    VMD_TARGET_CAMERA,
+)
 from mmd_tools.ui.presenters.import_export_presenter import (  # noqa: E402
     ImportExportPresenter,
 )
@@ -95,7 +99,7 @@ class _FakeView:
         self.import_path_edit = _FakeLineEdit("model.pmx")
         self.export_path_edit = _FakeLineEdit("out.pmx")
         self.vmd_path_edit = _FakeLineEdit("motion.vmd")
-        self.target_model_combo = _FakeComboBox()
+        self.target_model_combo = _FakeComboBox(0, {0: VMD_TARGET_CAMERA})
         self.new_file_check = _FakeCheckBox(False)
         self.export_history = []
         self.model_items = None
@@ -302,7 +306,8 @@ class TestImportExportPresenter(unittest.TestCase):
     def test_import_file_vmd_uses_current_model_root(self):
         view = _FakeView()
         view.import_path_edit = _FakeLineEdit("motion.vmd")
-        app_state = _FakeAppState()
+        view.target_model_combo = _FakeComboBox(0, {0: VMD_TARGET_AUTO})
+        app_state = _FakeAppState(_FakeSceneModelService(models=["model_root"]))
         app_state.current_model_root = "model_root"
         action = _RecordingImportVmdAction(ImportVmdResult(root_node=True, succeeded=True))
         presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
@@ -814,7 +819,7 @@ class TestImportExportPresenter(unittest.TestCase):
             presenter.import_file()
 
         self.assertEqual(recorded_history, ["motion.vmd"])
-        self.assertEqual(app_state.current_model_root, True)
+        self.assertIsNone(app_state.current_model_root)
         self.assertFalse(any(s.startswith("Import complete:") for s in app_state.statuses))
         mock_partial.assert_called_once_with(
             warnings,
@@ -898,7 +903,8 @@ class TestImportExportPresenter(unittest.TestCase):
 
     def test_import_vmd_auto_detect_uses_current_model_root(self):
         view = _FakeView()
-        app_state = _FakeAppState()
+        view.target_model_combo = _FakeComboBox(0, {0: VMD_TARGET_AUTO})
+        app_state = _FakeAppState(_FakeSceneModelService(models=["model_root"]))
         app_state.current_model_root = "model_root"
         action = _RecordingImportVmdAction(ImportVmdResult(root_node=True, succeeded=True))
         presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
@@ -912,7 +918,7 @@ class TestImportExportPresenter(unittest.TestCase):
     def test_import_vmd_explicit_target_overrides_current_model_root(self):
         view = _FakeView()
         view.target_model_combo = _FakeComboBox(1, {1: "explicit_model_root"})
-        app_state = _FakeAppState()
+        app_state = _FakeAppState(_FakeSceneModelService(models=["explicit_model_root"]))
         app_state.current_model_root = "current_model_root"
         action = _RecordingImportVmdAction(ImportVmdResult(root_node=True, succeeded=True))
         presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
@@ -1042,9 +1048,10 @@ class TestVmdImportOptions(unittest.TestCase):
             "motion_scale",
             "clear_existing_motion",
             "resample_curves",
-            "target_model",
         ):
             self.assertIn(key, options)
+        self.assertTrue(options["scene_animation_only"])
+        self.assertNotIn("target_model", options)
 
     def test_pmx_branch_excludes_animation_keys(self):
         view = _FakeView()
@@ -1065,15 +1072,15 @@ class TestVmdImportOptions(unittest.TestCase):
     def test_get_vmd_target_model_prefers_explicit_combo(self):
         view = _FakeView()
         view.target_model_combo = _FakeComboBox(2, {2: "combo_model"})
-        app_state = _FakeAppState()
+        app_state = _FakeAppState(_FakeSceneModelService(models=["combo_model"]))
         app_state.current_model_root = "current_model"
         presenter, _, _ = self._make_presenter(view, app_state)
         self.assertEqual(presenter._get_vmd_target_model(), "combo_model")
 
     def test_get_vmd_target_model_falls_back_to_current_root(self):
         view = _FakeView()
-        view.target_model_combo = _FakeComboBox(0, {})  # index 0 = Auto Detect
-        app_state = _FakeAppState()
+        view.target_model_combo = _FakeComboBox(0, {0: VMD_TARGET_AUTO})
+        app_state = _FakeAppState(_FakeSceneModelService(models=["current_model"]))
         app_state.current_model_root = "current_model"
         presenter, _, _ = self._make_presenter(view, app_state)
         with patch("mmd_tools.ui.presenters.import_export_presenter.logger") as mock_logger:
@@ -1082,12 +1089,20 @@ class TestVmdImportOptions(unittest.TestCase):
         self.assertIn(detail, [call[0][0] for call in mock_logger.debug.call_args_list])
         self.assertNotIn(detail, [call[0][0] for call in mock_logger.info.call_args_list])
 
-    def test_get_vmd_target_model_returns_none_when_nothing_selected(self):
+        app_state.current_model_root = None
+        self.assertEqual(presenter._get_vmd_target_model(), "current_model")
+
+    def test_auto_detect_ambiguous_models_prompts_without_import(self):
         view = _FakeView()
-        view.target_model_combo = _FakeComboBox(0, {})
-        app_state = _FakeAppState()  # current_model_root = None
-        presenter, _, _ = self._make_presenter(view, app_state)
-        self.assertIsNone(presenter._get_vmd_target_model())
+        view.target_model_combo = _FakeComboBox(0, {0: VMD_TARGET_AUTO})
+        app_state = _FakeAppState(_FakeSceneModelService(models=["model_a", "model_b"]))
+        action = _RecordingImportVmdAction(ImportVmdResult(root_node=True, succeeded=True))
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        presenter.import_vmd_file()
+
+        self.assertEqual(action.requests, [])
+        self.assertIn("Select a target model, or choose Camera Motion.", app_state.statuses)
 
     def test_import_vmd_empty_path_guard(self):
         view = _FakeView()
@@ -1126,7 +1141,8 @@ class TestVmdImportOptions(unittest.TestCase):
     def test_import_vmd_keeps_operation_boundaries_info_and_target_route_debug(self):
         view = _FakeView()
         view.vmd_path_edit = _FakeLineEdit("dance.vmd")
-        app_state = _FakeAppState()
+        view.target_model_combo = _FakeComboBox(0, {0: VMD_TARGET_AUTO})
+        app_state = _FakeAppState(_FakeSceneModelService(models=["current_model"]))
         app_state.current_model_root = "current_model"
         action = _RecordingImportVmdAction(ImportVmdResult(root_node=True, succeeded=True))
         presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)

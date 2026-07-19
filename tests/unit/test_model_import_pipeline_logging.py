@@ -88,6 +88,39 @@ class TestModelImportPipelineLogging(unittest.TestCase):
             force=True,
         )
 
+    def test_all_generated_network_morph_types_receive_root_ownership(self):
+        """Normal PMX import ownership includes bone, group, and material morph nodes."""
+        pipeline = self._make_pipeline(MagicMock())
+        morph_result = {
+            "bone_morph_nodes": ["bone_morph"],
+            "group_morph_nodes": ["group_morph"],
+            "material_morph_nodes": ["material_morph"],
+        }
+        with patch.object(
+            model_import_pipeline.cmds,
+            "attributeQuery",
+            return_value=False,
+        ), patch.object(model_import_pipeline.cmds, "addAttr") as add_attr, patch.object(
+            model_import_pipeline.cmds,
+            "listConnections",
+            return_value=[],
+        ), patch.object(
+            model_import_pipeline.cmds,
+            "connectAttr",
+        ) as connect_attr:
+            pipeline.connect_morph_nodes_to_root("ModelRoot", morph_result)
+
+        self.assertEqual(add_attr.call_count, 3)
+        self.assertEqual(
+            {call.args for call in connect_attr.call_args_list},
+            {
+                ("ModelRoot.message", "bone_morph.mmd_model_root"),
+                ("ModelRoot.message", "group_morph.mmd_model_root"),
+                ("ModelRoot.message", "material_morph.mmd_model_root"),
+            },
+        )
+        self.assertTrue(all(call.kwargs == {} for call in connect_attr.call_args_list))
+
     def test_mesh_converter_records_glsl_hardware_backend(self):
         converter = MeshConverter()
         with patch.object(mesh_converter_module.cmds, "objExists", return_value=True), patch.object(
@@ -134,6 +167,60 @@ class TestModelImportPipelineLogging(unittest.TestCase):
         info_messages = _message_templates(logger.info)
         self.assertIn("Cleaning up namespace: %s", debug_messages)
         self.assertNotIn("Cleaning up namespace: %s", info_messages)
+
+    def test_physics_import_is_disabled_without_explicit_option(self):
+        logger = MagicMock()
+        profile = {}
+        pipeline = self._make_pipeline(logger, options={"profile": profile})
+        parser = SimpleNamespace(rigid_bodies=[object()], joints=[object()], bones=[object()])
+
+        with patch("mmd_tools.converters.physics_scene_builder.build_physics_scene") as build_scene:
+            result = pipeline.convert_physics(
+                file_kind="pmx",
+                parser=parser,
+                maya_joints=[],
+                root_group="root",
+            )
+
+        self.assertEqual(result, ([], []))
+        build_scene.assert_not_called()
+        self.assertEqual(profile["physics_converter"]["reason"], "import_physics_disabled")
+
+    def test_physics_import_uses_explicit_option_without_environment_gate(self):
+        logger = MagicMock()
+        profile = {}
+        pipeline = self._make_pipeline(logger, options={"profile": profile, "import_physics": True})
+        parser = SimpleNamespace(rigid_bodies=[object()], joints=[object()], bones=[object()])
+
+        with patch(
+            "mmd_tools.converters.physics_scene_builder.build_physics_scene",
+            return_value=(["rb"], ["joint"]),
+        ) as build_scene:
+            with patch(
+                "mmd_tools.converters.physics_scene_builder.build_physics_live_graph",
+                return_value={"solver": "solver1", "drivers": ["driver1"]},
+            ):
+                result = pipeline.convert_physics(
+                    file_kind="pmx",
+                    parser=parser,
+                    maya_joints=[],
+                    root_group="root",
+                )
+
+        self.assertEqual(result, (["rb"], ["joint"]))
+        build_scene.assert_called_once()
+        self.assertEqual(profile["physics_converter"]["support_scope"], "authoring_only")
+        self.assertFalse(profile["physics_converter"]["live_physics_supported"])
+        debug_messages = _message_templates(logger.debug)
+        info_messages = _message_templates(logger.info)
+        warning_messages = _message_templates(logger.warning)
+        internal_message = (
+            "Internal physics solver graph built (unsupported): "
+            "solver=%s, bone drivers=%d"
+        )
+        self.assertIn(internal_message, debug_messages)
+        self.assertNotIn(internal_message, info_messages)
+        self.assertNotIn(internal_message, warning_messages)
 
 
 if __name__ == "__main__":

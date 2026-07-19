@@ -30,6 +30,8 @@ BUILD_ROOT = (ROOT / "build").resolve()
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tests.common.maya_plugin_setup import load_mmd_tools_plugin
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -114,13 +116,14 @@ def _load_cases(manifest_path: str | Path) -> list[dict[str, Any]]:
 
 
 def _initialize_maya() -> None:
-    """Initialize Maya standalone when needed."""
+    """Initialize Maya and fail fast unless the production nodes are registered."""
     import maya.standalone
 
     try:
         maya.standalone.initialize(name="python")
     except RuntimeError:
         pass
+    load_mmd_tools_plugin(ROOT)
 
 
 # ---------------------------------------------------------------------------

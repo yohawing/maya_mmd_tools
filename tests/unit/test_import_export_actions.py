@@ -102,6 +102,12 @@ class _ImportActionContract:
         action = self.action_cls(importer=importer, new_scene=new_scene)
         result = action.execute(self._make_request({}, create_new_scene=True))
 
+        if self.action_cls is ImportVmdAction:
+            self.assertFalse(result.succeeded)
+            self.assertEqual(result.outcome, OUTCOME_FATAL)
+            self.assertIsInstance(result.error, ValueError)
+            self.assertEqual(calls, [])
+            return
         self.assertTrue(result.succeeded)
         self.assertEqual(calls, ["new_scene", "importer"])
 
@@ -113,10 +119,15 @@ class _ImportActionContract:
             return self.root_node
 
         action = self.action_cls(importer=importer, maya_adapter=_FakeMayaAdapter(calls))
-        result = action.execute(self._make_request({}, create_new_scene=True))
+        options = {"scene_animation_only": True} if self.action_cls is ImportVmdAction else {}
+        request = self._make_request(options, create_new_scene=True)
+        result = action.execute(request)
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(calls, [("adapter_new_scene", True), ("importer", {})])
+        self.assertEqual(
+            calls,
+            [("adapter_new_scene", True), ("importer", request.options)],
+        )
 
     def test_execute_prefers_explicit_new_scene_callable_over_adapter(self):
         calls = []
@@ -133,7 +144,8 @@ class _ImportActionContract:
             new_scene=new_scene,
             maya_adapter=_FakeMayaAdapter(calls),
         )
-        result = action.execute(self._make_request({}, create_new_scene=True))
+        options = {"scene_animation_only": True} if self.action_cls is ImportVmdAction else {}
+        result = action.execute(self._make_request(options, create_new_scene=True))
 
         self.assertTrue(result.succeeded)
         self.assertEqual(calls, ["callable_new_scene", "importer"])
@@ -185,7 +197,8 @@ class _ImportActionContract:
             raise error
 
         action = self.action_cls(importer=lambda _path, options=None: self.root_node, new_scene=new_scene)
-        result = action.execute(self._make_request({}, create_new_scene=True))
+        options = {"scene_animation_only": True} if self.action_cls is ImportVmdAction else {}
+        result = action.execute(self._make_request(options, create_new_scene=True))
 
         self.assertFalse(result.succeeded)
         self.assertEqual(result.outcome, OUTCOME_FATAL)
@@ -322,6 +335,12 @@ class TestImportVmdAction(_ImportActionContract, unittest.TestCase):
     file_path = "motion.vmd"
     options = {"target_model": "model_root"}
     root_node = "motion_root"
+
+    def _make_request(self, options=None, *, create_new_scene=False):
+        resolved = dict(options or {})
+        if not resolved.get("scene_animation_only"):
+            resolved.setdefault("target_model", "model_root")
+        return super()._make_request(resolved, create_new_scene=create_new_scene)
 
 
 class TestExportModelAction(unittest.TestCase):

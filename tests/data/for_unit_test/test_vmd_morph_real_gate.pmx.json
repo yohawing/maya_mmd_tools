@@ -1,0 +1,65 @@
+{
+  "metadata": {
+    "format": "pmx", "version": 2.0, "encoding": "utf-8",
+    "name": "vmd_morph_real_gate", "englishName": "vmd_morph_real_gate",
+    "comment": "Deterministic VMD all-morph integration fixture.",
+    "englishComment": "Deterministic VMD all-morph integration fixture.",
+    "counts": {"vertices": 3, "faces": 1, "materials": 1, "bones": 2, "morphs": 5, "displayFrames": 1, "rigidBodies": 0, "joints": 0, "softBodies": 0},
+    "indexSizes": {"vertex": 1, "texture": 1, "material": 1, "bone": 1, "morph": 1, "rigidBody": 1},
+    "additionalUvCount": 0
+  },
+  "geometry": {
+    "positions": [0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0, 0.0],
+    "normals": [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+    "uvs": [0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+    "additionalUvs": [], "indices": [0, 1, 2],
+    "skinIndices": [0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
+    "skinWeights": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+    "edgeScale": [1.0, 1.0, 1.0],
+    "materialGroups": [{"start": 0, "count": 3, "materialIndex": 0}],
+    "sdef": {"enabled": [0.0, 0.0, 0.0], "c": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "r0": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "r1": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "rw0": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "rw1": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]},
+    "qdef": {"enabled": [0.0, 0.0, 0.0]}
+  },
+  "materials": [{
+    "name": "gate_mat", "englishName": "gate_mat", "texturePath": "", "sphereTexturePath": "", "sphereMode": "none", "toonTexturePath": "", "sharedToonIndex": null,
+    "diffuse": [0.4, 0.5, 0.6, 1.0], "specular": [0.0, 0.0, 0.0], "specularPower": 0.0, "ambient": [0.2, 0.2, 0.2], "edgeColor": [0.0, 0.0, 0.0, 1.0], "edgeSize": 0.0,
+    "flags": {"doubleSided": true, "groundShadow": false, "selfShadowMap": false, "selfShadow": false, "edge": false, "vertexColor": false, "pointDraw": false, "lineDraw": false}, "faceCount": 1
+  }],
+  "skeleton": {"bones": [
+    {
+      "name": "root", "englishName": "root", "parentIndex": -1, "layer": 0, "position": [0.0, 0.0, 0.0], "tailIndex": 1, "tailPosition": null,
+      "flags": {"indexedTail": true, "rotatable": true, "translatable": true, "visible": true, "enabled": true, "ik": false, "appendLocal": false, "appendRotate": false, "appendTranslate": false, "fixedAxis": false, "localAxis": false, "transformAfterPhysics": false, "externalParentTransform": false},
+      "appendTransform": null, "fixedAxis": null, "localAxis": null, "externalParentKey": null, "ik": null
+    },
+    {
+      "name": "gate_bone", "englishName": "gate_bone", "parentIndex": 0, "layer": 0, "position": [0.0, 1.0, 0.0], "tailIndex": -1, "tailPosition": [0.0, 1.0, 0.0],
+      "flags": {"indexedTail": false, "rotatable": true, "translatable": true, "visible": true, "enabled": true, "ik": false, "appendLocal": false, "appendRotate": false, "appendTranslate": false, "fixedAxis": false, "localAxis": false, "transformAfterPhysics": false, "externalParentTransform": false},
+      "appendTransform": null, "fixedAxis": null, "localAxis": null, "externalParentKey": null, "ik": null
+    }
+  ]},
+  "morphs": [
+    {
+      "name": "vertex_leaf", "englishName": "vertex_leaf", "panel": 4, "type": "vertex",
+      "vertexOffsets": [{"vertexIndex": 2, "position": [0.0, 1.0, 0.0]}], "boneOffsets": [], "groupOffsets": [], "uvOffsets": [], "additionalUvOffsets": [], "materialOffsets": [], "flipOffsets": [], "impulseOffsets": []
+    },
+    {
+      "name": "bone_leaf", "englishName": "bone_leaf", "panel": 4, "type": "bone", "vertexOffsets": [],
+      "boneOffsets": [{"boneIndex": 1, "translation": [2.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]}], "groupOffsets": [], "uvOffsets": [], "additionalUvOffsets": [], "materialOffsets": [], "flipOffsets": [], "impulseOffsets": []
+    },
+    {
+      "name": "material_leaf", "englishName": "material_leaf", "panel": 4, "type": "material", "vertexOffsets": [], "boneOffsets": [], "groupOffsets": [], "uvOffsets": [], "additionalUvOffsets": [],
+      "materialOffsets": [{"materialIndex": 0, "operation": "add", "diffuse": [0.2, 0.0, 0.0, 0.0], "specular": [0.0, 0.0, 0.0], "specularPower": 0.0, "ambient": [0.0, 0.0, 0.0], "edgeColor": [0.0, 0.0, 0.0, 0.0], "edgeSize": 0.0, "textureFactor": [0.0, 0.0, 0.0, 0.0], "sphereTextureFactor": [0.0, 0.0, 0.0, 0.0], "toonTextureFactor": [0.0, 0.0, 0.0, 0.0]}],
+      "flipOffsets": [], "impulseOffsets": []
+    },
+    {
+      "name": "inner_group", "englishName": "inner_group", "panel": 4, "type": "group", "vertexOffsets": [], "boneOffsets": [],
+      "groupOffsets": [{"morphIndex": 1, "weight": 0.5}, {"morphIndex": 2, "weight": 0.5}], "uvOffsets": [], "additionalUvOffsets": [], "materialOffsets": [], "flipOffsets": [], "impulseOffsets": []
+    },
+    {
+      "name": "outer_group", "englishName": "outer_group", "panel": 4, "type": "group", "vertexOffsets": [], "boneOffsets": [],
+      "groupOffsets": [{"morphIndex": 3, "weight": 0.8}, {"morphIndex": 0, "weight": 0.25}], "uvOffsets": [], "additionalUvOffsets": [], "materialOffsets": [], "flipOffsets": [], "impulseOffsets": []
+    }
+  ],
+  "displayFrames": [{"name": "Root", "englishName": "Root", "special": true, "frames": [{"index": 0, "type": "bone"}, {"index": 1, "type": "bone"}, {"index": 0, "type": "morph"}, {"index": 1, "type": "morph"}, {"index": 2, "type": "morph"}, {"index": 3, "type": "morph"}, {"index": 4, "type": "morph"}]}],
+  "rigidBodies": [], "joints": [], "softBodies": [], "diagnostics": []
+}

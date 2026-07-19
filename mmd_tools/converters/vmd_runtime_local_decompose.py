@@ -21,30 +21,39 @@ ORDER_MAP = {
 }
 
 
+def _stable_long_dag_path(node: str) -> str:
+    """Resolve an unambiguous DAG identifier to its canonical long path."""
+    if node.startswith("|"):
+        return node
+    matches = cmds.ls(node, long=True) or []
+    if len(matches) == 1 and matches[0].startswith("|"):
+        return matches[0]
+    return node
+
+
 def build_bone_hierarchy_and_order_maps(context: VmdRuntimeLocalDecomposeContext) -> None:
     """Build bone parent and rotateOrder maps for runtime bake caches."""
     context.bone_parent_map.clear()
     context.bone_rotate_orders.clear()
+    canonical_joint_by_index = {
+        bidx: _stable_long_dag_path(joint)
+        for bidx, joint in context.bone_index_to_joint.items()
+    }
+    bone_index_by_joint = {
+        joint: bidx
+        for bidx, joint in canonical_joint_by_index.items()
+    }
     for bidx, joint in list(context.bone_index_to_joint.items()):
         context.bone_rotate_orders[bidx] = 0
         try:
-            if cmds.attributeQuery("rotateOrder", node=joint, exists=True):
-                ro = cmds.getAttr(f"{joint}.rotateOrder")
-                if ro is not None:
-                    context.bone_rotate_orders[bidx] = int(ro)
+            ro = cmds.getAttr(f"{joint}.rotateOrder")
+            if ro is not None:
+                context.bone_rotate_orders[bidx] = int(ro)
         except Exception:
             pass
-        context.bone_parent_map[bidx] = None
-        try:
-            parents = cmds.listRelatives(joint, parent=True, type="joint", fullPath=False) or []
-            if parents:
-                pjoint = parents[0]
-                for pidx, pj in context.bone_index_to_joint.items():
-                    if pj == pjoint:
-                        context.bone_parent_map[bidx] = pidx
-                        break
-        except Exception:
-            pass
+        canonical_joint = canonical_joint_by_index[bidx]
+        parent_path = canonical_joint.rpartition("|")[0] if canonical_joint.startswith("|") else ""
+        context.bone_parent_map[bidx] = bone_index_by_joint.get(parent_path)
     context.logger.debug(f"Built hierarchy map for {len(context.bone_parent_map)} bones for runtime cache")
 
 

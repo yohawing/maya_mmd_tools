@@ -31,6 +31,8 @@
     "reset": "重設",
     "add": "新增",
     "remove": "移除",
+    "create": "建立",
+    "duplicate": "複製",
     "delete": "刪除",
     "up": "上移",
     "down": "下移",
@@ -47,7 +49,9 @@
     "next": "下一個",
     "previous": "上一個",
     "search": "搜尋",
-    "timestamp": "時間戳記"
+    "timestamp": "時間戳記",
+    "set_key": "設定關鍵幀",
+    "delete_key": "刪除關鍵幀"
   },
   "labels": {
     "file_path": "檔案路徑:",
@@ -108,10 +112,12 @@
     "vmd_fps": "VMD 檔案的影格率。MMD 標準為 30 fps",
     "separate_meshes": "依材質分割網格",
     "auto_classify_transparency": "透過 UV alpha 掃描自動分類透明材質",
+    "import_physics": "從 PMX 物理資料建立剛體與關節",
     "disable_backface_culling": "停用背面剔除以啟用雙面算圖"
   },
   "messages": {
     "import_success": "匯入完成",
+    "select_vmd_target_model": "請選擇目標模型，或選擇 Camera Motion。",
     "export_success": "匯出完成",
     "error_file_not_found": "找不到檔案",
     "error_invalid_file": "無效的檔案格式",
@@ -127,6 +133,8 @@
     "physics_validation_range": "必須介於 {minimum} 和 {maximum} 之間",
     "physics_validation_vector_length": "請輸入恰好 {count} 個逗號分隔的值",
     "physics_validation_bool": "每個值必須為 0 或 1",
+    "physics_validation_binding": "請選擇目前模型中的項目",
+    "physics_validation_joint_type_live_unsupported": "即時物理僅支援Spring 6DOF",
     "physics_write_node_missing": "找不到場景節點: {node}",
     "physics_write_attribute_missing": "找不到場景屬性: {plug}",
     "physics_write_failed": "套用失敗，已復原變更: {error}",
@@ -149,12 +157,14 @@
     "import_partial_title": "匯入警告",
     "vmd_import_partial": "VMD 匯入完成但有警告 ({warning_count}): {file_path}",
     "vmd_import_partial_title": "VMD 匯入警告",
+    "morph_key_not_removed": "未刪除關鍵幀。請選擇一個動畫層，並確認目前時間已有關鍵幀",
     "loading": "載入中...",
     "saving": "儲存中...",
     "processing": "處理中...",
     "export_dev_mode_required": "匯出僅能在開發模式使用"
   },
   "options": {
+    "none": "無",
     "import_mesh": "匯入網格",
     "import_skeleton": "匯入骨骼",
     "import_morph": "匯入表情",
@@ -171,7 +181,13 @@
     "physics_shape_capsule": "膠囊體",
     "physics_mode_bone": "骨骼跟隨",
     "physics_mode_physics": "物理",
-    "physics_mode_physics_bone": "物理 + 骨骼"
+    "physics_mode_physics_bone": "物理 + 骨骼",
+    "physics_joint_spring_6dof": "彈簧6DOF（標準）",
+    "physics_joint_6dof": "6DOF",
+    "physics_joint_p2p": "P2P（點連接）",
+    "physics_joint_cone_twist": "Cone Twist（錐形旋轉）",
+    "physics_joint_slider": "Slider（軸向移動）",
+    "physics_joint_hinge": "Hinge（軸向旋轉）"
   },
   "settings": {
     "general": "一般設定",
@@ -238,6 +254,7 @@
     "joint_name_conversion": "將關節名稱轉換為英文",
     "disable_backface_culling": "停用背面剔除",
     "import_morphs": "匯入表情",
+    "import_physics": "匯入物理",
     "bake_mode": "烘焙動作",
     "native_physics_bake": "烘焙物理",
     "apply_scale": "套用縮放",
@@ -250,7 +267,8 @@
     "auto_classify_transparency": "自動分類透明 (掃描紋理α)",
     "auto_resolve_textures": "自動修復貼圖",
     "custom_namespace": "自訂命名空間:",
-    "show_colliders": "顯示碰撞體"
+    "show_colliders": "顯示碰撞體",
+    "enable_physics": "啟用物理"
   },
   "fields": {
     "import_scale": "匯入縮放:",
@@ -320,10 +338,15 @@
     "name": "名稱:",
     "name_english": "英文名稱:",
     "shape": "形狀:",
+    "shape_size": "形狀尺寸:",
+    "pmx_position": "原始 PMX 位置:",
+    "pmx_rotation_degrees": "原始 PMX 旋轉角度:",
     "bodies": "剛體:",
     "physics_mode": "物理模式:",
     "related_bone": "關聯骨骼:",
     "collision_group": "碰撞群組:",
+    "radius": "半徑:",
+    "radius_height": "半徑 / 高度:",
     "non_collision_groups": "非碰撞群組:",
     "mass": "質量:",
     "linear_damping": "線性阻尼:",
@@ -335,12 +358,12 @@
     "rigid_body_b": "剛體 B:",
     "linear_constraint_states": "線性狀態 (X, Y, Z):",
     "angular_constraint_states": "角狀態 (X, Y, Z):",
-    "translation_limit_min": "平移下限 (X, Y, Z):",
-    "translation_limit_max": "平移上限 (X, Y, Z):",
-    "rotation_limit_min_degrees": "旋轉下限度數 (X, Y, Z):",
-    "rotation_limit_max_degrees": "旋轉上限度數 (X, Y, Z):",
-    "spring_translation": "平移彈簧 (X, Y, Z):",
-    "spring_rotation": "旋轉彈簧 (X, Y, Z):",
+    "translation_limit_min": "平移下限:",
+    "translation_limit_max": "平移上限:",
+    "rotation_limit_min_degrees": "旋轉下限度數:",
+    "rotation_limit_max_degrees": "旋轉上限度數:",
+    "spring_translation": "平移彈簧:",
+    "spring_rotation": "旋轉彈簧:",
     "spring_translation_enabled": "啟用平移彈簧:",
     "spring_rotation_enabled": "啟用旋轉彈簧:"
   },
@@ -349,6 +372,7 @@
     "import_animation": "匯入動畫",
     "export": "匯出",
     "auto_detect": "<自動偵測>",
+    "camera_motion": "Camera Motion",
     "reset_all": "全部重設",
     "clear_all": "全部清除",
     "connect": "連接",
@@ -455,6 +479,10 @@
   "status": {
     "not_connected": "未連接",
     "connected": "已連接"
+  },
+  "morph_keying_status": {
+    "not_animated": "未設定動畫",
+    "animated": "已有動畫"
   },
   "transparency_modes": {
     "opaque": "不透明",

@@ -1,10 +1,13 @@
 """VMD append-bone routing and decomposition tests."""
 
+import os
+from pathlib import Path
 from unittest.mock import patch
 
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
+from mmd_tools.converters.vmd_append_decomposition import stable_long_dag_path
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from tests.common.maya_test_base import MayaTestBase
@@ -21,6 +24,26 @@ def _bone_frame(bone_name, frame_number, position, rotation=(0.0, 0.0, 0.0, 1.0)
 
 class TestVmdAppendAnimation(MayaTestBase):
     """Append-bone animation route and decomposition tests."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls._previous_skip_shader_override = os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE")
+        os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "1"
+        plugin_path = Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py"
+        if not cmds.pluginInfo(str(plugin_path), query=True, loaded=True):
+            cls.plugins_loaded.extend(cmds.loadPlugin(str(plugin_path), quiet=True) or [])
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            super().tearDownClass()
+        finally:
+            previous = cls._previous_skip_shader_override
+            if previous is None:
+                os.environ.pop("MMD_TOOLS_SKIP_SHADER_OVERRIDE", None)
+            else:
+                os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = previous
 
     def setUp(self):
         super().setUp()
@@ -63,6 +86,41 @@ class TestVmdAppendAnimation(MayaTestBase):
         self.assertIsNone(cmds.keyframe(f"{joint}.rotateX", query=True, timeChange=True))
 
         cmds.delete(joint, append_node)
+
+    def test_root_scoped_long_path_mapping_routes_real_append_with_duplicate_short_names(self):
+        """Canonical append metadata selects model B base attrs, never its driven joint."""
+        root_a = cmds.group(empty=True, name="append_route_model_a")
+        root_b = cmds.group(empty=True, name="append_route_model_b")
+        source_a = cmds.createNode("joint", name="shared_source", parent=root_a)
+        target_a = cmds.createNode("joint", name="shared_target", parent=root_a)
+        source_b = cmds.createNode("joint", name="shared_source", parent=root_b)
+        target_b = cmds.createNode("joint", name="shared_target", parent=root_b)
+        append_node = cmds.createNode("mmdAppend", name="model_b_append")
+        cmds.setAttr(f"{append_node}.ratio", 0.5)
+        cmds.setAttr(f"{append_node}.affectRotation", True)
+        cmds.connectAttr(f"{source_b}.rotate", f"{append_node}.sourceRotate")
+        cmds.connectAttr(f"{append_node}.outputRotate", f"{target_b}.rotate")
+
+        long_source_b = cmds.ls(source_b, long=True)[0]
+        long_target_b = cmds.ls(target_b, long=True)[0]
+        append_info = self.converter._collect_append_info()
+        self.assertIn(long_target_b, append_info)
+        self.assertEqual(append_info[long_target_b]["target_joint"], long_target_b)
+        self.assertEqual(append_info[long_target_b]["source_joint"], long_source_b)
+        # Duplicate leaf names are intentionally not accepted as aliases.
+        self.assertNotIn("shared_target", append_info)
+
+        self.converter.use_animation_layers = False
+        self.converter.set_bone_name_mapping({"付与先": long_target_b})
+        self.converter._bone_bind_poses["付与先"] = (0.0, 0.0, 0.0)
+        frames = [_bone_frame("付与先", 3, (0.0, 0.0, 0.0))]
+
+        self.assertTrue(self.converter._convert_bone_animation(frames))
+
+        self.assertIn(3.0, cmds.keyframe(f"{append_node}.baseRotateX", query=True, timeChange=True) or [])
+        self.assertIsNone(cmds.keyframe(f"{long_target_b}.rotateX", query=True, timeChange=True))
+        self.assertIsNone(cmds.keyframe(f"{target_a}.rotateX", query=True, timeChange=True))
+        self.assertTrue(cmds.objExists(source_a))
 
     def test_append_target_is_not_added_to_animation_layer_joint_rotate(self):
         """append target joint は layer 登録で joint.rotate へ直接キーを作らない。"""
@@ -237,7 +295,8 @@ class TestVmdAppendAnimation(MayaTestBase):
 
         append_info = self.converter._collect_append_info()
 
-        self.assertEqual(append_info[target]["source_joint"], source)
+        self.assertEqual(append_info[target]["target_joint"], cmds.ls(target, long=True)[0])
+        self.assertEqual(append_info[target]["source_joint"], cmds.ls(source, long=True)[0])
         self.assertTrue(append_info[target]["affect_translation"])
         self.assertFalse(append_info[target]["affect_rotation"])
         self.assertEqual(append_info[target]["attr_map"]["translateX"], "baseTranslateX")
@@ -298,13 +357,22 @@ class TestVmdAppendAnimation(MayaTestBase):
             },
         }
 
-        decomposed = self.converter._decompose_append_translations_for_scene(
-            joint_channel_values,
-            {},
-            append_info,
-            n_frames=1,
-        )
+        with patch(
+            "mmd_tools.converters.vmd_append_decomposition.stable_long_dag_path",
+            wraps=stable_long_dag_path,
+        ) as resolve_path:
+            decomposed = self.converter._decompose_append_translations_for_scene(
+                joint_channel_values,
+                {},
+                append_info,
+                n_frames=1,
+            )
 
         self.assertAlmostEqual(decomposed[target]["translateX"][0], 10.0, places=6)
+        self.assertEqual(resolve_path.call_count, len(joint_channel_values))
+        self.assertCountEqual(
+            [call.args[0] for call in resolve_path.call_args_list],
+            joint_channel_values,
+        )
 
         cmds.delete(driver, source, target, source_node, target_node)

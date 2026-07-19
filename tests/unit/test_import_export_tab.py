@@ -31,6 +31,9 @@ class _FakeComboBox:
     def count(self):
         return len(self.items)
 
+    def itemData(self, index):
+        return self.items[index][1] if 0 <= index < len(self.items) else None
+
     def setCurrentIndex(self, index):
         self._current_index = index
 
@@ -45,6 +48,9 @@ class _FakeViewState:
 
     def get(self, _key, _default=None):
         return self._value
+
+    def set(self, _key, value):
+        self._value = value
 
 
 class _FakeSettingsService:
@@ -122,19 +128,25 @@ class TestImportExportTabModelLabels(unittest.TestCase):
 
 
 class TestImportExportTabRefreshModelList(unittest.TestCase):
-    def _make_tab(self, current_index=0, saved_index=0):
+    def _make_tab(self, current_index=0, saved_choice=None):
         tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
         tab.target_model_combo = _FakeComboBox(current_index=current_index)
-        tab.view_state = _FakeViewState(saved_index)
+        tab.view_state = _FakeViewState(saved_choice or import_export_tab.VMD_TARGET_AUTO)
         tab.tr = lambda key, _category: f"<{key}>"
         return tab
 
-    def test_set_target_model_items_adds_auto_detect_first(self):
+    def test_set_target_model_items_adds_tagged_auto_and_camera_choices(self):
         tab = self._make_tab()
 
         import_export_tab.ImportExportTab.set_target_model_items(tab, [])
 
-        self.assertEqual(tab.target_model_combo.items, [("<auto_detect>", None)])
+        self.assertEqual(
+            tab.target_model_combo.items,
+            [
+                ("<auto_detect>", import_export_tab.VMD_TARGET_AUTO),
+                ("<camera_motion>", import_export_tab.VMD_TARGET_CAMERA),
+            ],
+        )
 
     def test_set_target_model_items_shows_namespace_label_but_keeps_model_userdata(self):
         tab = self._make_tab()
@@ -143,7 +155,11 @@ class TestImportExportTabRefreshModelList(unittest.TestCase):
 
         self.assertEqual(
             tab.target_model_combo.items,
-            [("<auto_detect>", None), ("Miku [ModelA:miku_root]", "ModelA:miku_root")],
+            [
+                ("<auto_detect>", import_export_tab.VMD_TARGET_AUTO),
+                ("<camera_motion>", import_export_tab.VMD_TARGET_CAMERA),
+                ("Miku [ModelA:miku_root]", "ModelA:miku_root"),
+            ],
         )
 
     def test_set_target_model_items_distinguishes_same_display_name_by_namespace(self):
@@ -157,14 +173,15 @@ class TestImportExportTabRefreshModelList(unittest.TestCase):
         self.assertEqual(
             tab.target_model_combo.items,
             [
-                ("<auto_detect>", None),
+                ("<auto_detect>", import_export_tab.VMD_TARGET_AUTO),
+                ("<camera_motion>", import_export_tab.VMD_TARGET_CAMERA),
                 ("Miku [ModelA:miku_root]", "ModelA:miku_root"),
                 ("Miku [ModelB:miku_root]", "ModelB:miku_root"),
             ],
         )
 
-    def test_set_target_model_items_restores_saved_index(self):
-        tab = self._make_tab(current_index=0, saved_index=1)
+    def test_set_target_model_items_restores_root_identity_and_stale_root_falls_back_to_auto(self):
+        tab = self._make_tab(current_index=0, saved_choice="ModelA:miku_root")
 
         import_export_tab.ImportExportTab.set_target_model_items(
             tab,
@@ -172,8 +189,16 @@ class TestImportExportTabRefreshModelList(unittest.TestCase):
             restore_selection=True,
         )
 
-        self.assertEqual(tab.target_model_combo.currentIndex(), 1)
+        self.assertEqual(tab.target_model_combo.currentIndex(), 2)
         self.assertEqual(tab.target_model_combo.blocked_states, [True, False])
+
+        tab.view_state._value = "missing_mmd_root"
+        import_export_tab.ImportExportTab.set_target_model_items(
+            tab,
+            [("ModelA:miku_root", "Miku")],
+            restore_selection=True,
+        )
+        self.assertEqual(tab.target_model_combo.currentIndex(), 0)
 
     def test_refresh_model_list_delegates_to_presenter(self):
         tab = self._make_tab()
@@ -378,6 +403,28 @@ class TestImportExportViewState(unittest.TestCase):
 
         self.assertEqual(store.values["a"], "[]")
         self.assertEqual(store.values["b"], "[]")
+
+
+class TestPhysicsVisibilitySourceInspection(unittest.TestCase):
+    """Verify that the physics import UI is available in normal mode."""
+
+    def setUp(self):
+        self.source = Path(import_export_tab.__file__).read_text(encoding="utf-8")
+
+    def test_physics_group_is_not_in_dev_only_widgets(self):
+        self.assertIn("self.physics_group", self.source)
+        lines = self.source.splitlines()
+        in_dev_only = False
+        found = False
+        for line in lines:
+            if "_dev_only_widgets" in line and "[" in line:
+                in_dev_only = True
+            if in_dev_only and "self.physics_group" in line:
+                found = True
+                break
+            if in_dev_only and "]" in line:
+                in_dev_only = False
+        self.assertFalse(found, "self.physics_group must remain visible in normal mode")
 
 
 if __name__ == "__main__":

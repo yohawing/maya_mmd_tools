@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import maya.cmds as cmds
 
@@ -144,8 +144,17 @@ class RigConverter:
 
             self._store_native_rig_metadata(prims, maya_joints, bone_map)
 
-            append_nodes = self._create_append_nodes_from_manifest(prims.manifest, maya_joints)
-            ik_nodes = self._create_ik_nodes_from_manifest(prims.manifest, maya_joints)
+            accepted_grants = self._accepted_native_grants(prims.manifest, maya_joints)
+            append_nodes = self._create_append_nodes_from_manifest(
+                prims.manifest,
+                maya_joints,
+                accepted_grants=accepted_grants,
+            )
+            ik_nodes = self._create_ik_nodes_from_manifest(
+                prims.manifest,
+                maya_joints,
+                accepted_grants=accepted_grants,
+            )
 
             self.logger.info(
                 f"native rig DG nodes: {len(append_nodes)} mmdAppend, "
@@ -693,6 +702,69 @@ class RigConverter:
 
         return accepted
 
+    def _accepted_native_grants(self, manifest, maya_joints: List[str]) -> List[Dict[str, Any]]:
+        """Return the single accepted/order-resolved grant set used by native rig nodes.
+
+        The append nodes and IK input filtering must see the same grant graph.  If
+        either side independently sorts or filters grants, a valid PMX append can
+        still feed a later IK chain back into an earlier chain and form a DG cycle.
+        """
+        grants = list(getattr(manifest, "grants", []))
+        if not grants:
+            return []
+
+        bones = manifest.bones
+        grants.sort(key=lambda grant: (
+            bones[grant["targetBoneIndex"]].get("transformAfterPhysics", False),
+            bones[grant["targetBoneIndex"]].get("deformLayer", 0),
+            grant["targetBoneIndex"],
+        ))
+        grants = self._drop_cycle_closing_grants(
+            grants,
+            target_index=lambda grant: grant["targetBoneIndex"],
+            source_index=lambda grant: grant["sourceBoneIndex"],
+            bone_name=lambda grant: bones[grant["targetBoneIndex"]].get("name")
+            or maya_joints[grant["targetBoneIndex"]],
+        )
+        return self._resolve_grant_dependencies_from_manifest(grants)
+
+    @staticmethod
+    def _accepted_rotation_grant_edges(
+        grants: Iterable[Dict[str, Any]],
+    ) -> List[Tuple[int, int]]:
+        """Return accepted rotation-only grant edges as ``source -> target``."""
+        return [
+            (grant["sourceBoneIndex"], grant["targetBoneIndex"])
+            for grant in grants
+            if grant.get("affectRotation", False)
+        ]
+
+    @staticmethod
+    def _grant_dependency_closure(
+        seed_bones: Iterable[int],
+        rotation_grant_edges: Iterable[Tuple[int, int]],
+    ) -> Set[int]:
+        """Expand IK exclusions through accepted rotation-grant dependents.
+
+        A source grant node is evaluated from the source joint and writes the
+        target joint.  Therefore a bone already excluded from an IK input also
+        excludes every target reachable through accepted rotation grants.
+        """
+        dependents: Dict[int, Set[int]] = {}
+        for source, target in rotation_grant_edges:
+            dependents.setdefault(source, set()).add(target)
+
+        excluded_bones = set(seed_bones)
+        pending = list(excluded_bones)
+        while pending:
+            source = pending.pop()
+            for target in dependents.get(source, ()):
+                if target in excluded_bones:
+                    continue
+                excluded_bones.add(target)
+                pending.append(target)
+        return excluded_bones
+
     def _mark_mmd_grant_constraint(self, constraint):
         """runtime bake時に無効化できるMMD付与constraintとして印を付ける。"""
         try:
@@ -840,28 +912,19 @@ class RigConverter:
         self,
         manifest,
         maya_joints: List[str],
+        *,
+        accepted_grants: Optional[List[Dict[str, Any]]] = None,
     ) -> List[str]:
         """マニフェストの付与情報から mmdAppend DG ノードを作成・接続する。"""
 
         nodes: List[str] = []
-        grants = list(manifest.grants)
+        grants = (
+            list(accepted_grants)
+            if accepted_grants is not None
+            else self._accepted_native_grants(manifest, maya_joints)
+        )
         if not grants:
             return nodes
-
-        bones = manifest.bones
-        grants.sort(key=lambda g: (
-            bones[g["targetBoneIndex"]].get("transformAfterPhysics", False),
-            bones[g["targetBoneIndex"]].get("deformLayer", 0),
-            g["targetBoneIndex"],
-        ))
-        grants = self._drop_cycle_closing_grants(
-            grants,
-            target_index=lambda grant: grant["targetBoneIndex"],
-            source_index=lambda grant: grant["sourceBoneIndex"],
-            bone_name=lambda grant: bones[grant["targetBoneIndex"]].get("name")
-            or maya_joints[grant["targetBoneIndex"]],
-        )
-        grants = self._resolve_grant_dependencies_from_manifest(grants)
 
         append_nodes_by_target: Dict[str, str] = {}
         for grant in grants:
@@ -1134,10 +1197,20 @@ class RigConverter:
         link_slots: List[int],
         slot_to_pmx: Dict[int, int],
         maya_joints: List[str],
+        blocked_pmx_indices: Optional[Set[int]] = None,
     ) -> None:
         """Connect the controller world matrix when it will not create a DG cycle."""
         link_joints = self._existing_ik_link_joints(link_slots, slot_to_pmx, maya_joints)
-        if not self._can_connect_live_ik_goal_world_matrix(controller_joint, link_joints):
+        if blocked_pmx_indices is None:
+            blocked_joints = link_joints
+        else:
+            blocked_joints = [
+                maya_joints[pmx_idx]
+                for pmx_idx in blocked_pmx_indices
+                if 0 <= pmx_idx < len(maya_joints)
+                and maya_scene_utils.object_exists(maya_joints[pmx_idx])
+            ]
+        if not self._can_connect_live_ik_goal_world_matrix(controller_joint, blocked_joints):
             return
         try:
             cmds.connectAttr(
@@ -1153,13 +1226,19 @@ class RigConverter:
         links: List[Dict[str, Any]],
         all_chain_links: List[Tuple[int, set]],
         controller_idx: int,
+        rotation_grant_edges: Iterable[Tuple[int, int]] = (),
     ) -> set:
-        """Return PMX bone indices excluded from inputRotate to avoid DG cycles."""
-        excluded_bones = {lk["boneIndex"] for lk in links}
+        """Return PMX bones excluded from inputRotate to avoid DG cycles.
+
+        The initial exclusions are the chain's own links and downstream chains'
+        links.  Accepted rotation grants are then followed transitively because
+        a grant target is also an output of the excluded source's evaluation.
+        """
+        seed_bones = {lk["boneIndex"] for lk in links}
         for other_ctrl, other_links in all_chain_links:
             if other_ctrl > controller_idx:
-                excluded_bones.update(other_links)
-        return excluded_bones
+                seed_bones.update(other_links)
+        return RigConverter._grant_dependency_closure(seed_bones, rotation_grant_edges)
 
     def _connect_ik_input_channels(
         self,
@@ -1171,9 +1250,15 @@ class RigConverter:
         links: List[Dict[str, Any]],
         all_chain_links: List[Tuple[int, set]],
         controller_idx: int,
+        rotation_grant_edges: Iterable[Tuple[int, int]] = (),
     ) -> None:
         """Connect rotate/translate inputs for a native IK node."""
-        excluded_bones = self._excluded_ik_input_bones(links, all_chain_links, controller_idx)
+        excluded_bones = self._excluded_ik_input_bones(
+            links,
+            all_chain_links,
+            controller_idx,
+            rotation_grant_edges,
+        )
 
         for slot in range(bone_count):
             pmx_idx = slot_to_pmx[slot]
@@ -1199,7 +1284,13 @@ class RigConverter:
         slot_to_pmx: Dict[int, int],
         maya_joints: List[str],
     ) -> None:
-        """Connect native IK output rotations to link joints."""
+        """Connect native IK output rotations to link joints.
+
+        Append is built before IK, so a PMX bone that is both a rotation-grant
+        target and an IK link already has ``mmdAppend.outputRotate`` connected
+        to ``joint.rotate`` here.  Preserve that pre-IK contribution by moving
+        it to the link's solver input before replacing the joint connection.
+        """
         for link_i, link_slot in enumerate(link_slots):
             pmx_idx = slot_to_pmx.get(link_slot, -1)
             if pmx_idx < 0 or pmx_idx >= len(maya_joints):
@@ -1207,6 +1298,18 @@ class RigConverter:
             link_joint = maya_joints[pmx_idx]
             if not maya_scene_utils.object_exists(link_joint):
                 continue
+
+            compound_sources = cmds.listConnections(
+                f"{link_joint}.rotate", s=True, d=False, p=True
+            ) or []
+            for source in compound_sources:
+                source_node = source.split(".", 1)[0]
+                if cmds.nodeType(source_node) == self._append_node_type():
+                    cmds.connectAttr(source, f"{node}.inputRotate[{link_slot}]")
+                try:
+                    cmds.disconnectAttr(source, f"{link_joint}.rotate")
+                except Exception:
+                    pass
 
             for axis in ("X", "Y", "Z"):
                 src = cmds.listConnections(f"{link_joint}.rotate{axis}", s=True, d=False, p=True)
@@ -1222,6 +1325,8 @@ class RigConverter:
         self,
         manifest,
         maya_joints: List[str],
+        *,
+        accepted_grants: Optional[List[Dict[str, Any]]] = None,
     ) -> List[str]:
         """マニフェストの IK チェーン情報から mmdCcdIk DG ノードを作成・接続する。
 
@@ -1229,6 +1334,10 @@ class RigConverter:
         runtime final pose を inputRotate に焼き、mmdCcdIk を pass-through にする。
         """
         from mmd_tools.converters.native_rig_builder import build_ik_mini_chain
+
+        if accepted_grants is None:
+            accepted_grants = self._accepted_native_grants(manifest, maya_joints)
+        rotation_grant_edges = self._accepted_rotation_grant_edges(accepted_grants)
 
         # Collect all chains' link bones keyed by controller index.
         # Downstream chains (higher controller index) must NOT be read by
@@ -1276,6 +1385,13 @@ class RigConverter:
 
             ik_chain_obj.free()
 
+            excluded_bones = self._excluded_ik_input_bones(
+                links,
+                all_chain_links,
+                controller_idx,
+                rotation_grant_edges,
+            )
+
             try:
                 controller_leaf_name = _node_leaf_name(controller_joint)
                 node_name = f"{controller_leaf_name}_mmdCcdIk"
@@ -1302,6 +1418,7 @@ class RigConverter:
                     link_slots,
                     slot_to_pmx,
                     maya_joints,
+                    blocked_pmx_indices=excluded_bones,
                 )
 
                 # inputRotate: exclude own links AND downstream chains' links.
@@ -1316,6 +1433,7 @@ class RigConverter:
                     links=links,
                     all_chain_links=all_chain_links,
                     controller_idx=controller_idx,
+                    rotation_grant_edges=rotation_grant_edges,
                 )
                 self._connect_ik_output_rotates(node, link_slots, slot_to_pmx, maya_joints)
 
@@ -1344,17 +1462,18 @@ class RigConverter:
 
         return nodes
 
-    def _can_connect_live_ik_goal_world_matrix(self, controller_joint: str, link_joints: List[str]) -> bool:
-        """Return True when controller.worldMatrix will not depend on IK output links."""
-        ancestors = set()
+    def _can_connect_live_ik_goal_world_matrix(self, controller_joint: str, blocked_joints: List[str]) -> bool:
+        """Return True when controller.worldMatrix will not depend on blocked IK inputs."""
+        blocked = set(blocked_joints)
         current = controller_joint
         while True:
+            if current in blocked:
+                return False
             parents = cmds.listRelatives(current, parent=True, fullPath=True) or []
             if not parents:
                 break
             current = parents[0]
-            ancestors.add(current)
-        return not any(link_joint in ancestors for link_joint in link_joints)
+        return True
 
 
     def _resolve_grant_dependencies_from_manifest(

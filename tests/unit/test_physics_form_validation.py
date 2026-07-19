@@ -21,6 +21,9 @@ def _rigid_values():
         "shape": 1,
         "physics_mode": 2,
         "related_bone": 9,
+        "shape_size": "0.5, 1.25, 2.0",
+        "pmx_position": "1, 2, 3",
+        "pmx_rotation_degrees": "10, 20, 30",
         "collision_group": 7,
         "collision_mask": 0xFF7F,
         "mass": "2.5",
@@ -38,6 +41,8 @@ def _joint_values():
         "joint_type": 4,
         "rigid_body_a": 2,
         "rigid_body_b": 5,
+        "pmx_position": "4, 5, 6",
+        "pmx_rotation_degrees": "40, 50, 60",
         "linear_constraint_states": "0, 1, 2",
         "angular_constraint_states": "2, 1, 0",
         "translation_limit_min": "-1, -2, -3",
@@ -59,6 +64,9 @@ class TestRigidBodyFormValidation(unittest.TestCase):
         self.assertEqual(parsed.shape_type, 1)
         self.assertEqual(parsed.physics_mode, 2)
         self.assertEqual(parsed.collision_mask, 0xFF7F)
+        self.assertEqual(parsed.shape_size, (0.5, 1.25, 2.0))
+        self.assertEqual(parsed.pmx_position, (1.0, 2.0, 3.0))
+        self.assertEqual(parsed.pmx_rotation_degrees, (10.0, 20.0, 30.0))
         self.assertEqual(parsed.mass, 2.5)
         self.assertEqual(parsed.linear_damping, 0.15)
 
@@ -70,6 +78,10 @@ class TestRigidBodyFormValidation(unittest.TestCase):
             ("collision_group", 16, "physics_validation_range"),
             ("collision_mask", 0x10000, "physics_validation_range"),
             ("mass", -0.1, "physics_validation_minimum"),
+            ("shape_size", "0.5, -1, 2", "physics_validation_minimum"),
+            ("shape_size", "0.5, 1", "physics_validation_vector_length"),
+            ("pmx_position", "0, inf, 1", "physics_validation_finite"),
+            ("pmx_rotation_degrees", "0, nan, 1", "physics_validation_finite"),
             ("mass", math.inf, "physics_validation_finite"),
             ("linear_damping", "nan", "physics_validation_finite"),
             ("friction", "not-a-number", "physics_validation_number"),
@@ -101,6 +113,8 @@ class TestJointFormValidation(unittest.TestCase):
         self.assertIsInstance(parsed, JointFormValues)
         self.assertEqual(parsed.linear_constraint_states, (0, 1, 2))
         self.assertEqual(parsed.translation_limit_min, (-1.0, -2.0, -3.0))
+        self.assertEqual(parsed.pmx_position, (4.0, 5.0, 6.0))
+        self.assertEqual(parsed.pmx_rotation_degrees, (40.0, 50.0, 60.0))
         self.assertEqual(parsed.spring_translation_enabled, (True, False, True))
 
     def test_rejects_invalid_joint_values(self):
@@ -110,6 +124,8 @@ class TestJointFormValidation(unittest.TestCase):
             ("linear_constraint_states", "0, 1", "physics_validation_vector_length"),
             ("angular_constraint_states", "0, 3, 1", "physics_validation_range"),
             ("translation_limit_min", "0, nan, 1", "physics_validation_finite"),
+            ("pmx_position", "0, 1", "physics_validation_vector_length"),
+            ("pmx_rotation_degrees", "0, inf, 1", "physics_validation_finite"),
             ("spring_rotation", "0, nope, 1", "physics_validation_number"),
             ("spring_translation_enabled", "1, true, 0", "physics_validation_bool"),
             ("spring_rotation_enabled", "1, 2, 0", "physics_validation_bool"),
@@ -122,6 +138,43 @@ class TestJointFormValidation(unittest.TestCase):
                     parse_joint_form(values)
                 self.assertEqual(caught.exception.field_key, field)
                 self.assertEqual(caught.exception.message_key, message_key)
+
+    def test_rejects_componentwise_translation_and_rotation_limit_inversions(self):
+        cases = (
+            ("translation_limit_min", "translation_limit_max", "2, -2, -3", "translation_limit_min", 1.0),
+            ("translation_limit_min", "translation_limit_max", "-1, 3, -3", "translation_limit_min", 2.0),
+            ("translation_limit_min", "translation_limit_max", "-1, -2, 4", "translation_limit_min", 3.0),
+            (
+                "rotation_limit_min_degrees",
+                "rotation_limit_max_degrees",
+                "11, -20, -30",
+                "rotation_limit_min_degrees",
+                10.0,
+            ),
+            (
+                "rotation_limit_min_degrees",
+                "rotation_limit_max_degrees",
+                "-10, 21, -30",
+                "rotation_limit_min_degrees",
+                20.0,
+            ),
+            (
+                "rotation_limit_min_degrees",
+                "rotation_limit_max_degrees",
+                "-10, -20, 31",
+                "rotation_limit_min_degrees",
+                30.0,
+            ),
+        )
+        for lower_key, _upper_key, lower_value, expected_field, maximum in cases:
+            with self.subTest(lower_key=lower_key, lower_value=lower_value):
+                values = _joint_values()
+                values[lower_key] = lower_value
+                with self.assertRaises(PhysicsFormValidationError) as caught:
+                    parse_joint_form(values)
+                self.assertEqual(caught.exception.field_key, expected_field)
+                self.assertEqual(caught.exception.message_key, "physics_validation_maximum")
+                self.assertEqual(caught.exception.params, {"maximum": maximum})
 
 
 class TestPhysicsValidationTranslations(unittest.TestCase):
@@ -138,6 +191,7 @@ class TestPhysicsValidationTranslations(unittest.TestCase):
             "physics_validation_range",
             "physics_validation_vector_length",
             "physics_validation_bool",
+            "physics_validation_joint_type_live_unsupported",
             "physics_write_node_missing",
             "physics_write_attribute_missing",
             "physics_write_failed",
@@ -147,11 +201,13 @@ class TestPhysicsValidationTranslations(unittest.TestCase):
             "physics_write_undo_disabled",
             "physics_write_attribute_not_settable",
         }
+        required_fields = {"shape_size", "pmx_position", "pmx_rotation_degrees"}
         translations = Path("mmd_tools/ui/translations")
         for locale in ("en", "ja", "zh_cn", "zh_tw"):
             with self.subTest(locale=locale):
                 data = json.loads((translations / f"{locale}.json").read_text(encoding="utf-8"))
                 self.assertTrue(required.issubset(data["messages"]))
+                self.assertTrue(required_fields.issubset(data["fields"]))
 
 
 if __name__ == "__main__":

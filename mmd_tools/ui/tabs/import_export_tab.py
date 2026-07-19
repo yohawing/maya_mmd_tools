@@ -23,6 +23,7 @@ from ..combo_box_utils import add_combo_item_with_tooltip, configure_model_combo
 from ..import_export_view_state import ImportExportViewState
 from ...core import settings_keys as setting_keys
 from ...services.settings_service import SettingsService
+from ...actions.import_vmd_action import VMD_TARGET_AUTO, VMD_TARGET_CAMERA
 import os
 
 
@@ -231,6 +232,19 @@ class ImportExportTab(BaseTab):
         self.morph_group.setLayout(morph_layout)
         model_settings_layout.addWidget(self.morph_group)
 
+        # Physics Group
+        self.physics_group = QGroupBox(self.tr("physics_settings", "groups"))
+        physics_layout = QVBoxLayout()
+        self.import_physics_check = self._bind_checkbox(
+            "import_physics",
+            setting_keys.IMPORT_PHYSICS_IMPORT_PHYSICS,
+            True,
+            physics_layout,
+            tooltip_key="import_physics",
+        )
+        self.physics_group.setLayout(physics_layout)
+        model_settings_layout.addWidget(self.physics_group)
+
         # Other Settings Group (dev-only advanced toggles)
         self.other_group = QGroupBox(self.tr("other", "groups"))
         other_layout = QVBoxLayout()
@@ -406,7 +420,7 @@ class ImportExportTab(BaseTab):
         self.refresh_model_list(restore_selection=True)
         # 選択が変更されたら保存
         self.target_model_combo.currentIndexChanged.connect(
-            lambda index: self.view_state.set("target_model_index", str(index))
+            self._save_target_model_choice
         )
         self.target_model_label = QLabel(self.tr("target_model", "fields"))
         animation_layout.addRow(self.target_model_label, self.target_model_combo)
@@ -549,22 +563,29 @@ class ImportExportTab(BaseTab):
 
     def set_target_model_items(self, model_items, restore_selection=False):
         """Presenter から渡されたモデル候補で target combo を更新する。"""
-        # 現在の選択を保持
-        current_index = self.target_model_combo.currentIndex() if not restore_selection else -1
-        saved_index = None
-        if restore_selection:
-            saved_target_model = self.view_state.get("target_model_index", 0)
-            try:
-                saved_index = int(saved_target_model)
-            except Exception:
-                saved_index = None
+        current_index = self.target_model_combo.currentIndex()
+        current_choice = self.target_model_combo.itemData(current_index)
+        restore_choice = (
+            self.view_state.get("target_model_choice", VMD_TARGET_AUTO)
+            if restore_selection
+            else current_choice
+        )
 
         previous_signal_state = None
         if hasattr(self.target_model_combo, "blockSignals"):
             previous_signal_state = self.target_model_combo.blockSignals(True)
         try:
             self.target_model_combo.clear()
-            add_combo_item_with_tooltip(self.target_model_combo, self.tr("auto_detect", "actions"))
+            add_combo_item_with_tooltip(
+                self.target_model_combo,
+                self.tr("auto_detect", "actions"),
+                user_data=VMD_TARGET_AUTO,
+            )
+            add_combo_item_with_tooltip(
+                self.target_model_combo,
+                self.tr("camera_motion", "actions"),
+                user_data=VMD_TARGET_CAMERA,
+            )
 
             for model_root, display_name in model_items:
                 add_combo_item_with_tooltip(
@@ -573,15 +594,21 @@ class ImportExportTab(BaseTab):
                     user_data=model_root,
                 )
 
-            # 保存された選択または現在の選択を復元
-            if restore_selection:
-                if saved_index is not None and 0 <= saved_index < self.target_model_combo.count():
-                    self.target_model_combo.setCurrentIndex(saved_index)
-            elif 0 <= current_index < self.target_model_combo.count():
-                self.target_model_combo.setCurrentIndex(current_index)
+            selected_index = 0
+            for index in range(self.target_model_combo.count()):
+                if self.target_model_combo.itemData(index) == restore_choice:
+                    selected_index = index
+                    break
+            self.target_model_combo.setCurrentIndex(selected_index)
         finally:
             if previous_signal_state is not None:
                 self.target_model_combo.blockSignals(previous_signal_state)
+
+    def _save_target_model_choice(self, index):
+        """Persist the tagged choice/root identity instead of a fragile combo index."""
+        choice = self.target_model_combo.itemData(index)
+        if choice is not None:
+            self.view_state.set("target_model_choice", choice)
 
     def refresh_model_list(self, restore_selection=False):
         """シーン内のMMDモデルリストを更新"""
@@ -637,6 +664,8 @@ class ImportExportTab(BaseTab):
             self.model_group.setTitle(self.tr("model", "groups"))
         if hasattr(self, "morph_group"):
             self.morph_group.setTitle(self.tr("morph", "groups"))
+        if hasattr(self, "physics_group"):
+            self.physics_group.setTitle(self.tr("physics_settings", "groups"))
         if hasattr(self, "other_group"):
             self.other_group.setTitle(self.tr("other", "groups"))
         if hasattr(self, "model_import_group"):
@@ -663,6 +692,7 @@ class ImportExportTab(BaseTab):
             self.auto_resolve_textures_check.setText(self.tr("auto_resolve_textures", "checkboxes"))
         self.disable_backface_culling_check.setText(self.tr("disable_backface_culling", "checkboxes"))
         self.import_morphs_check.setText(self.tr("import_morphs", "checkboxes"))
+        self.import_physics_check.setText(self.tr("import_physics", "checkboxes"))
         self.bake_mode_check.setText(self.tr("bake_mode", "checkboxes"))
         self.native_physics_bake_check.setText(self.tr("native_physics_bake", "checkboxes"))
         self.clear_existing_motion_check.setText(self.tr("clear_existing_motion", "checkboxes"))
@@ -678,6 +708,7 @@ class ImportExportTab(BaseTab):
         self.auto_classify_transparency_check.setToolTip(self.tr("auto_classify_transparency", "tooltips"))
         self.auto_resolve_textures_check.setToolTip(self.tr("auto_resolve_textures", "tooltips"))
         self.disable_backface_culling_check.setToolTip(self.tr("disable_backface_culling", "tooltips"))
+        self.import_physics_check.setToolTip(self.tr("import_physics", "tooltips"))
         self.bake_mode_check.setToolTip(self.tr("bake_mode", "tooltips"))
         self.native_physics_bake_check.setToolTip(self.tr("native_physics_bake", "tooltips"))
         self.clear_existing_motion_check.setToolTip(self.tr("clear_existing_motion", "tooltips"))

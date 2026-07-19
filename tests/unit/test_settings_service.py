@@ -27,6 +27,7 @@ class _FakeSettingsStore:
                     "texture_search_path": "/textures",
                     "show_texture_issue_dialog": False,
                 },
+                "physics": {"import_physics": False},
                 "morph": {"import_morphs": False},
                 "rig": {"add_semi_standard_bones": True, "bake_mode": False},
                 "native": {
@@ -197,7 +198,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertTrue(options["use_namespace"])
         self.assertEqual(options["custom_namespace"], "ns")
         self.assertTrue(options["import_models"])
-        self.assertNotIn("import_physics", options)
+        self.assertFalse(options["import_physics"])
         self.assertNotIn("enable_maya_bullet_preview", options)
         self.assertFalse(options["separate_meshes_by_material"])
         self.assertNotIn("split_meshes_by_morph_groups", options)
@@ -219,12 +220,13 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
 
     def test_build_pmx_import_options_preserves_dev_mode_saved_values(self):
         self.service.set("ui.general.development_mode", True)
+        self.service.set("import.physics.import_physics", True)
 
         options = self.service.build_pmx_import_options()
 
         self.assertEqual(options["scale"], 2.0)
         self.assertFalse(options["import_models"])
-        self.assertNotIn("import_physics", options)
+        self.assertTrue(options["import_physics"])
         self.assertNotIn("enable_maya_bullet_preview", options)
         self.assertTrue(options["separate_meshes_by_material"])
         self.assertNotIn("split_meshes_by_morph_groups", options)
@@ -238,6 +240,28 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertFalse(options["translate_names"])
         self.assertNotIn("setup_rig", options)
         self.assertNotIn("setup_bone_orientation", options)
+
+    def test_normal_mode_preserves_import_physics_enabled(self):
+        self.service.set("import.physics.import_physics", True)
+        self.assertFalse(self.service.is_development_mode())
+
+        options = self.service.build_pmx_import_options()
+
+        self.assertTrue(options["import_physics"])
+
+    def test_import_physics_defaults_enabled_when_setting_is_missing(self):
+        self.store.data["import"].pop("physics")
+
+        options = self.service.build_pmx_import_options()
+
+        self.assertTrue(options["import_physics"])
+
+    def test_normal_mode_preserves_import_physics_disabled(self):
+        self.service.set("import.physics.import_physics", False)
+
+        options = self.service.build_pmx_import_options()
+
+        self.assertFalse(options["import_physics"])
 
     def test_build_vmd_import_options_forces_resample_curves_in_normal_mode(self):
         options = self.service.build_vmd_import_options(target_model="model")

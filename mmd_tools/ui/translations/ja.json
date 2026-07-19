@@ -31,6 +31,8 @@
     "reset": "リセット",
     "add": "追加",
     "remove": "削除",
+    "create": "作成",
+    "duplicate": "複製",
     "delete": "削除",
     "up": "上へ",
     "down": "下へ",
@@ -47,7 +49,9 @@
     "apply_to_selected": "選択に適用",
     "clear_history": "履歴をクリア",
     "open_command_port": "開く",
-    "close_command_port": "閉じる"
+    "close_command_port": "閉じる",
+    "set_key": "キー設定",
+    "delete_key": "キー削除"
   },
   "labels": {
     "file_path": "ファイルパス:",
@@ -111,6 +115,7 @@
     "separate_meshes": "マテリアルごとにメッシュを分割します",
     "auto_classify_transparency": "UVアルファスキャンで透過マテリアルを自動分類します",
     "disable_backface_culling": "バックフェースカリングを無効にして両面描画にします",
+    "import_physics": "PMXの物理データから剛体とジョイントを作成します",
     "use_cpp_rig_nodes": "IK/付与制約に実験的なC++リグノードを使います。利用できない場合はPythonノードにフォールバックします"
   },
   "messages": {
@@ -130,6 +135,8 @@
     "physics_validation_range": "{minimum} から {maximum} の範囲にしてください",
     "physics_validation_vector_length": "カンマ区切りで {count} 個の値を入力してください",
     "physics_validation_bool": "各値を 0 または 1 にしてください",
+    "physics_validation_binding": "現在のモデル内の項目を選択してください",
+    "physics_validation_joint_type_live_unsupported": "live物理で対応しているのはSpring 6DOFのみです",
     "physics_write_node_missing": "シーンノードが見つかりません: {node}",
     "physics_write_attribute_missing": "シーン属性が見つかりません: {plug}",
     "physics_write_failed": "適用に失敗したため変更を元に戻しました: {error}",
@@ -170,6 +177,7 @@
     "export_error": "エクスポートエラー: {error}",
     "export_complete_file": "エクスポート完了: {file_path}",
     "enter_vmd_file_path": "VMDファイルパスを入力してください",
+    "select_vmd_target_model": "対象モデルを選択するか、Camera Motionを選択してください。",
     "importing_vmd": "VMDインポート中: {file_path}",
     "vmd_import_complete": "VMDインポート完了: {file_path}",
     "vmd_import_partial": "警告付きでVMDインポート完了 ({warning_count}): {file_path}",
@@ -199,6 +207,7 @@
     "blend_shape_disconnected": "ブレンドシェイプ接続を解除しました",
     "morphs_auto_connected_count": "{count} 個のモーフを自動接続しました",
     "morph_changes_applied": "モーフ変更を適用しました: {morph}",
+    "morph_key_not_removed": "キーを削除できませんでした。対象のアニメーションレイヤーを1つ選び、現在時刻にキーがあることを確認してください",
     "enter_preset_name": "プリセット名を入力してください",
     "no_morph_values_to_save": "保存するモーフ値がありません",
     "preset_saved": "プリセット '{preset}' を保存しました",
@@ -214,6 +223,7 @@
     "export_dev_mode_required": "エクスポートは開発モードでのみ利用できます"
   },
   "options": {
+    "none": "なし",
     "import_mesh": "メッシュをインポート",
     "import_skeleton": "スケルトンをインポート",
     "import_morph": "モーフをインポート",
@@ -230,7 +240,13 @@
     "physics_shape_capsule": "カプセル",
     "physics_mode_bone": "ボーン追従",
     "physics_mode_physics": "物理演算",
-    "physics_mode_physics_bone": "物理演算 + ボーン"
+    "physics_mode_physics_bone": "物理演算 + ボーン",
+    "physics_joint_spring_6dof": "バネ付き6DOF（標準）",
+    "physics_joint_6dof": "6DOF",
+    "physics_joint_p2p": "P2P（点結合）",
+    "physics_joint_cone_twist": "Cone Twist（錐回転）",
+    "physics_joint_slider": "Slider（軸移動）",
+    "physics_joint_hinge": "Hinge（軸回転）"
   },
   "settings": {
     "general": "一般設定",
@@ -298,6 +314,7 @@
     "joint_name_conversion": "ジョイント名を英語に変換",
     "disable_backface_culling": "バックフェースカリングを無効化",
     "import_morphs": "モーフをインポート",
+    "import_physics": "物理をインポート",
     "bake_mode": "モーションをベイク",
     "native_physics_bake": "物理をベイク",
     "clear_existing_motion": "既存モーションをクリア",
@@ -311,7 +328,8 @@
     "enable_logging": "ログを有効にする",
     "auto_classify_transparency": "透過を自動分類 (テクスチャαを走査)",
     "auto_resolve_textures": "テクスチャを自動修復",
-    "show_colliders": "コライダーを表示"
+    "show_colliders": "コライダーを表示",
+    "enable_physics": "物理を有効化"
   },
   "fields": {
     "import_scale": "インポートスケール:",
@@ -382,10 +400,15 @@
     "name": "名前:",
     "name_english": "英語名:",
     "shape": "形状:",
+    "shape_size": "形状サイズ:",
+    "pmx_position": "PMX生座標:",
+    "pmx_rotation_degrees": "PMX生回転・度:",
     "bodies": "ボディ:",
     "physics_mode": "物理モード:",
     "related_bone": "関連ボーン:",
     "collision_group": "衝突グループ:",
+    "radius": "半径:",
+    "radius_height": "半径 / 高さ:",
     "non_collision_groups": "非衝突グループ:",
     "mass": "質量:",
     "linear_damping": "移動減衰:",
@@ -397,12 +420,12 @@
     "rigid_body_b": "剛体 B:",
     "linear_constraint_states": "移動状態 (X, Y, Z):",
     "angular_constraint_states": "回転状態 (X, Y, Z):",
-    "translation_limit_min": "移動下限 (X, Y, Z):",
-    "translation_limit_max": "移動上限 (X, Y, Z):",
-    "rotation_limit_min_degrees": "回転下限・度 (X, Y, Z):",
-    "rotation_limit_max_degrees": "回転上限・度 (X, Y, Z):",
-    "spring_translation": "移動ばね (X, Y, Z):",
-    "spring_rotation": "回転ばね (X, Y, Z):",
+    "translation_limit_min": "移動下限:",
+    "translation_limit_max": "移動上限:",
+    "rotation_limit_min_degrees": "回転下限・度:",
+    "rotation_limit_max_degrees": "回転上限・度:",
+    "spring_translation": "移動ばね:",
+    "spring_rotation": "回転ばね:",
     "spring_translation_enabled": "移動ばね有効:",
     "spring_rotation_enabled": "回転ばね有効:"
   },
@@ -411,6 +434,7 @@
     "import_animation": "アニメーションをインポート",
     "export": "エクスポート",
     "auto_detect": "<自動検出>",
+    "camera_motion": "Camera Motion",
     "reset_all": "全てリセット",
     "clear_all": "全クリア",
     "connect": "連携",
@@ -517,6 +541,10 @@
   "status": {
     "not_connected": "未連携",
     "connected": "連携中"
+  },
+  "morph_keying_status": {
+    "not_animated": "未アニメーション",
+    "animated": "アニメーションあり"
   },
   "transparency_modes": {
     "opaque": "不透明",

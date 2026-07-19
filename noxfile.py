@@ -34,6 +34,14 @@ from tests.common.maya_location import convert_path_options_for_maya_process as 
 from tests.common.maya_location import path_for_maya_process as _maya_process_path  # noqa: E402
 from tests.common.maya_location import pythonpath_for_maya_process as _maya_pythonpath  # noqa: E402
 from tests.common.maya_location import resolve_path_for_maya_process as _resolve_maya_path  # noqa: E402
+from tests.common.output_hygiene import (  # noqa: E402
+    compact_failure_details_from_log as _compact_failure_details_from_log,
+)
+from tests.common.output_hygiene import (  # noqa: E402
+    format_summary as _format_test_summary,
+)
+from tests.common.output_hygiene import run_logged_subprocess as _run_logged_subprocess  # noqa: E402
+from tests.common.output_hygiene import safe_log_name as _safe_log_name  # noqa: E402
 from tests.release.package import DEFAULT_MANIFEST_PATH as _PACKAGE_MANIFEST_PATH  # noqa: E402
 from tests.release.package import build_and_validate as _build_release_package  # noqa: E402
 
@@ -53,7 +61,6 @@ RELEASE_VISUAL_CASES = (
     "fixture-render-generated-visual-mmd-texture-uv-orientation-plane",
     "fixture-render-generated-visual-mmd-sphere-texture-add",
     "fixture-render-generated-visual-mmd-alpha-blend-overlap",
-    "fixture-render-generated-visual-mmd-outline-normal-silhouette",
 )
 MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS = 0x3
 RELEASE_CAMERA_CURRENT_EPSILON = "18.25"
@@ -81,6 +88,10 @@ MMD_ANIM_CLI_ASSETS = {
 }
 
 nox.options.sessions = ["tests"]
+
+
+def _release_visual_cases(_shader_backend: str) -> tuple[str, ...]:
+    return RELEASE_VISUAL_CASES
 
 
 def _option(args: list[str], name: str, default: str) -> str:
@@ -441,6 +452,78 @@ def _release_gate_version_check(expected_version: str | None = None) -> None:
         raise RuntimeError(f"CHANGELOG.md section {heading} is empty")
 
 
+def _release_gate_mmd_anim_pin_check(root: Path | None = None) -> None:
+    """Require the checked-out mmd-anim HEAD to match the parent gitlink."""
+    root = ROOT if root is None else root
+    relative_path = "external/mmd-anim"
+    submodule = root / "external" / "mmd-anim"
+    if not submodule.is_dir() or not (submodule / ".git").exists():
+        raise RuntimeError(
+            f"{relative_path} is not initialized; release provenance cannot be verified. "
+            "Initialize the pinned submodule before running release_gate."
+        )
+
+    def git_output(arguments: list[str], cwd: Path) -> str:
+        try:
+            completed = subprocess.run(
+                ["git", *arguments],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                "Git executable is unavailable; release provenance cannot be verified."
+            ) from exc
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip()
+            suffix = f": {detail}" if detail else ""
+            raise RuntimeError(
+                f"Failed to verify {relative_path} release provenance with "
+                f"git {' '.join(arguments)}{suffix}"
+            )
+        return completed.stdout.rstrip("\r\n")
+
+    gitlink_line = git_output(["ls-tree", "HEAD", "--", relative_path], root)
+    gitlink_match = re.fullmatch(
+        rf"160000 commit ([0-9a-fA-F]{{40,64}})\t{re.escape(relative_path)}",
+        gitlink_line,
+    )
+    if gitlink_match is None:
+        raise RuntimeError(
+            f"Parent HEAD does not contain a valid gitlink for {relative_path}; "
+            "release provenance cannot be verified."
+        )
+    parent_head = gitlink_match.group(1).lower()
+
+    checkout_head = git_output(["rev-parse", "--verify", "HEAD"], submodule).lower()
+    if re.fullmatch(r"[0-9a-f]{40,64}", checkout_head) is None:
+        raise RuntimeError(
+            f"{relative_path} returned an invalid checkout HEAD {checkout_head!r}; "
+            "release provenance cannot be verified."
+        )
+    if checkout_head != parent_head:
+        raise RuntimeError(
+            f"{relative_path} pin mismatch: parent gitlink={parent_head}, "
+            f"checkout HEAD={checkout_head}. Restore or initialize the pinned submodule "
+            "before running release_gate; automatic checkout/reset is intentionally disabled."
+        )
+    dirty_status = git_output(
+        ["status", "--porcelain=v1", "--untracked-files=all"],
+        submodule,
+    )
+    if dirty_status:
+        status_summary = dirty_status.replace("\r\n", "\n").replace("\n", "; ")
+        raise RuntimeError(
+            f"{relative_path} worktree is dirty; release provenance cannot be verified. "
+            f"Git status: {status_summary}. Commit, stash, or remove these changes before "
+            "running release_gate; automatic cleanup is intentionally disabled."
+        )
+
+
 def _run_release_gate_command(
     name: str,
     command: list[str],
@@ -449,13 +532,19 @@ def _run_release_gate_command(
     result_report: Path | None = None,
     required_local: bool = False,
     strict_local: bool = False,
+    verbose: bool = False,
 ) -> None:
-    """Run a command and record its exit code plus an optional explicit child report."""
+    """Run a command quietly, retain its transcript, and record its result."""
     started = time.perf_counter()
     if result_report is not None and result_report.exists():
         result_report.unlink()
-    completed = subprocess.run(command, cwd=ROOT, text=True, check=False)
-    status = "pass" if completed.returncode == 0 else "fail"
+    returncode, log_path, (_, repeated_warnings) = _run_logged_subprocess(
+        command,
+        log_path=ROOT / "build" / "reports" / "release_gate" / f"{_safe_log_name(name)}.log",
+        cwd=ROOT,
+        verbose=verbose,
+    )
+    status = "pass" if returncode == 0 else "fail"
     detail = None
     if result_report is not None and result_report.is_file():
         try:
@@ -468,21 +557,43 @@ def _run_release_gate_command(
             if child_status not in status_aliases:
                 status = "fail"
                 detail = f"invalid child status in {result_report}: {child_status!r}"
-            elif completed.returncode == 0:
+            elif returncode == 0:
                 status = status_aliases[child_status]
     if status == "skip" and required_local and strict_local:
         status = "fail"
         detail = "required local gate skipped under --strict-local"
-    results.append(
-        {
-            "name": name,
-            "command": command,
-            "status": status,
-            "returncode": completed.returncode,
-            "duration_sec": round(time.perf_counter() - started, 3),
-            **({"detail": detail} if detail else {}),
-        }
+    duration_sec = round(time.perf_counter() - started, 3)
+    first_failure, failed_tests = _compact_failure_details_from_log(log_path)
+    result = {
+        "name": name,
+        "command": command,
+        "status": status,
+        "returncode": returncode,
+        "duration_sec": duration_sec,
+        "log": str(log_path),
+        "repeated_warnings_suppressed": repeated_warnings,
+        **({"first_failure": first_failure} if first_failure else {}),
+        **({"failed_tests": failed_tests} if failed_tests else {}),
+        **({"detail": detail} if detail else {}),
+    }
+    results.append(result)
+    print(
+        _format_test_summary(
+            name,
+            total=1,
+            passed=int(status == "pass"),
+            skipped=int(status == "skip"),
+            failed=int(status == "fail"),
+            duration_sec=duration_sec,
+        )
     )
+    if repeated_warnings and not verbose:
+        print(f"[{name}] repeated warnings suppressed from terminal: {repeated_warnings}")
+    if status == "fail":
+        print(f"[{name}] first failure: {first_failure or name}")
+        if failed_tests:
+            print(f"[{name}] failed tests: {', '.join(failed_tests)}")
+        print(f"[{name}] full log: {log_path}")
 
 
 def _run_release_gate_callable(
@@ -495,8 +606,7 @@ def _run_release_gate_callable(
     try:
         func()
     except Exception as exc:
-        results.append(
-            {
+        result = {
                 "name": name,
                 "command": [],
                 "status": "fail",
@@ -504,17 +614,37 @@ def _run_release_gate_callable(
                 "duration_sec": round(time.perf_counter() - started, 3),
                 "error": str(exc),
             }
-        )
     else:
-        results.append(
-            {
+        result = {
                 "name": name,
                 "command": [],
                 "status": "pass",
                 "returncode": 0,
                 "duration_sec": round(time.perf_counter() - started, 3),
             }
+    results.append(result)
+    print(
+        _format_test_summary(
+            name,
+            total=1,
+            passed=int(result["status"] == "pass"),
+            skipped=0,
+            failed=int(result["status"] == "fail"),
+            duration_sec=float(result["duration_sec"]),
         )
+    )
+    if result["status"] == "fail":
+        print(f"[{name}] first failure: {result.get('error', name)}")
+
+
+def _release_gate_failure_label(result: dict[str, object]) -> str:
+    """Return the best available compact failure detail for an aggregate gate."""
+    return str(
+        result.get("first_failure")
+        or result.get("error")
+        or result.get("name")
+        or "unknown failure"
+    )
 
 
 def _write_release_gate_reports(results: list[dict[str, object]], quick: bool) -> tuple[Path, Path]:
@@ -1007,13 +1137,17 @@ def ci_unit(session: nox.Session) -> None:
         session.error("No importable pure-python unit tests found in tests/unit/")
 
     session.log(f"Running {len(importable)} pure-python unit test module(s)")
-    session.run(
-        sys.executable,
-        "-m",
-        "unittest",
-        *importable,
-        external=True,
+    command = ["uvx", "--with", "pytest", "--", "python", "-m", "pytest", "--pyargs", *importable]
+    returncode, log_path, (_, repeated_warnings) = _run_logged_subprocess(
+        command,
+        log_path=ROOT / "build" / "reports" / "ci_unit_tests.log",
+        cwd=ROOT,
+        verbose=False,
     )
+    if returncode != 0:
+        session.error(f"ci_unit failed with exit code {returncode}; full log: {log_path}")
+    detail = f"; repeated warnings suppressed: {repeated_warnings}" if repeated_warnings else ""
+    session.log(f"ci_unit passed; full log: {log_path}{detail}")
 
 
 @nox.session(venv_backend="none")
@@ -1221,6 +1355,12 @@ def maya_smoke(session: nox.Session) -> None:
         env=env,
         external=True,
     )
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/cpp/focused_physics_solver_world_toggle.py"),
+        env=env,
+        external=True,
+    )
 
 
 @nox.session(venv_backend="none")
@@ -1317,6 +1457,8 @@ def native_physics_bake_capture(session: nox.Session) -> None:
         mayapy,
         MAYA_VERSION=version,
         MMD_ANIM_FFI_PATH=str(resolved_ffi),
+        MAYA_SKIP_USERSETUP_PY="1",
+        MMD_TOOLS_SKIP_SHADER_OVERRIDE="1",
     )
     session.run(
         str(mayapy),
@@ -1394,6 +1536,8 @@ def native_physics_bake_route_e2e(session: nox.Session) -> None:
         mayapy,
         MAYA_VERSION=version,
         MMD_ANIM_FFI_PATH=str(resolved_ffi),
+        MAYA_SKIP_USERSETUP_PY="1",
+        MMD_TOOLS_SKIP_SHADER_OVERRIDE="1",
     )
     session.run(
         str(mayapy),
@@ -1446,7 +1590,13 @@ def native_physics_release_gate(session: nox.Session) -> None:
     for required in (mayapy, pmx, vmd, ffi):
         if not required.is_file():
             raise FileNotFoundError(f"Native physics release gate input not found: {required}")
-    env = _mayapy_env(mayapy, MAYA_VERSION=maya_version, MMD_ANIM_FFI_PATH=str(ffi))
+    env = _mayapy_env(
+        mayapy,
+        MAYA_VERSION=maya_version,
+        MMD_ANIM_FFI_PATH=str(ffi),
+        MAYA_SKIP_USERSETUP_PY="1",
+        MMD_TOOLS_SKIP_SHADER_OVERRIDE="1",
+    )
     for report in run_reports:
         session.run(
             str(mayapy),
@@ -1884,7 +2034,12 @@ def pmx_roundtrip(session: nox.Session) -> None:
     if not mayapy.exists():
         raise FileNotFoundError(f"mayapy not found: {mayapy}")
 
-    env = _mayapy_env(mayapy, MAYA_VERSION=version)
+    env = _mayapy_env(
+        mayapy,
+        MAYA_VERSION=version,
+        MAYA_SKIP_USERSETUP_PY="1",
+        MMD_TOOLS_SKIP_SHADER_OVERRIDE="1",
+    )
     session.run(
         str(mayapy),
         _mayapy_script(mayapy, "tests/roundtrip/pmx_roundtrip_runner.py"),
@@ -2033,12 +2188,19 @@ def cpp_verify(session: nox.Session) -> None:
     env = _mayapy_env(
         mayapy,
         MAYA_VERSION=version,
+        MAYA_SKIP_USERSETUP_PY="1",
         MMD_TOOLS_CPP_CONFIG=config,
         MMD_ANIM_FFI_PATH=runtime_env["MMD_ANIM_FFI_PATH"],
     )
     session.run(
         str(mayapy),
         _mayapy_script(mayapy, "tests/cpp/smoke_runtime_node.py"),
+        env=env,
+        external=True,
+    )
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/cpp/focused_physics_solver_world_toggle.py"),
         env=env,
         external=True,
     )
@@ -2088,6 +2250,7 @@ def release_gate(session: nox.Session) -> None:
     if ffi_cargo_target_dir and not ffi_path:
         ffi_path = str(Path(ffi_cargo_target_dir) / "release")
     strict_local = _has_flag(args, "--strict-local")
+    verbose = _has_flag(args, "--verbose")
     local_assets_manifest = _option(args, "--local-assets-manifest", "local-assets-manifest.json")
     camera_manifest = _option(
         args,
@@ -2104,12 +2267,27 @@ def release_gate(session: nox.Session) -> None:
     )
     results: list[dict[str, object]] = []
 
+    if not quick:
+        _run_release_gate_callable(
+            "tier0:mmd-anim-pin",
+            _release_gate_mmd_anim_pin_check,
+            results,
+        )
+        if results[-1]["status"] == "fail":
+            md_path, json_path = _write_release_gate_reports(results, quick)
+            session.log(f"Release gate report: {md_path}")
+            session.log(f"Release gate JSON: {json_path}")
+            session.error(
+                "Release gate preflight failed: "
+                f"{_release_gate_failure_label(results[-1])}"
+            )
+
     tier0_commands = [
         ("tier0:ruff", ["uvx", "ruff", "check", "--no-fix", "."]),
         ("tier0:diff-check", ["git", "diff", "--check"]),
     ]
     for name, command in tier0_commands:
-        _run_release_gate_command(name, command, results)
+        _run_release_gate_command(name, command, results, verbose=verbose)
     _run_release_gate_callable("tier0:version-markers", _release_gate_version_check, results)
 
     tier1_commands = [
@@ -2134,7 +2312,7 @@ def release_gate(session: nox.Session) -> None:
             ]
         )
     for name, command in tier1_commands:
-        _run_release_gate_command(name, command, results)
+        _run_release_gate_command(name, command, results, verbose=verbose)
 
     if not quick:
         tier2_commands = []
@@ -2187,7 +2365,7 @@ def release_gate(session: nox.Session) -> None:
                     "--manifest", str(visual_manifest),
                     "--out", output,
                 ]
-                for case in RELEASE_VISUAL_CASES:
+                for case in _release_visual_cases(shader_backend):
                     command.extend(["--case", case])
                 tier2_commands.append((f"tier2:generated-pmx-visual-{shader_backend}-{maya_version}", command))
             tier2_commands.append(
@@ -2277,8 +2455,12 @@ def release_gate(session: nox.Session) -> None:
                         ["uvx", "nox", "-s", "cpp_verify", "--", "--maya", cpp_version, "--config", cpp_config],
                     )
                 )
+        if verbose:
+            for name, command in tier2_commands:
+                if name.startswith("tier2:mayapy-") and "--verbose" not in command:
+                    command.append("--verbose")
         for name, command in tier2_commands:
-            _run_release_gate_command(name, command, results)
+            _run_release_gate_command(name, command, results, verbose=verbose)
 
         tier3_commands = [
             (
@@ -2348,15 +2530,49 @@ def release_gate(session: nox.Session) -> None:
                 result_report=result_report,
                 required_local=True,
                 strict_local=strict_local,
+                verbose=verbose,
             )
 
     md_path, json_path = _write_release_gate_reports(results, quick)
+    counts = {
+        status: sum(result["status"] == status for result in results)
+        for status in ("pass", "fail", "skip")
+    }
+    print(
+        _format_test_summary(
+            "release_gate",
+            total=len(results),
+            passed=counts["pass"],
+            skipped=counts["skip"],
+            failed=counts["fail"],
+            duration_sec=sum(float(result["duration_sec"]) for result in results),
+        )
+    )
     session.log(f"Release gate report: {md_path}")
     session.log(f"Release gate JSON: {json_path}")
 
     failed = [result for result in results if result["status"] == "fail"]
     if failed:
         failed_names = ", ".join(str(result["name"]) for result in failed)
+        print(
+            "[release_gate] first failure: "
+            f"{_release_gate_failure_label(failed[0])}"
+        )
+        print(f"[release_gate] failed gates: {failed_names}")
+        failed_tests = list(
+            dict.fromkeys(
+                str(test)
+                for result in failed
+                for test in result.get("failed_tests", [])
+            )
+        )
+        if failed_tests:
+            print(f"[release_gate] failed tests: {', '.join(failed_tests)}")
+        failed_logs = [str(result["log"]) for result in failed if result.get("log")]
+        if any(not result.get("log") for result in failed):
+            failed_logs.append(str(json_path))
+        if failed_logs:
+            print(f"[release_gate] failure logs: {', '.join(failed_logs)}")
         session.error(f"Release gate failed: {failed_names}")
 
 

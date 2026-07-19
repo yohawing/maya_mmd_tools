@@ -9,6 +9,10 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from tests.common.maya_stub import install_om_mtime_array_stub
+
+install_om_mtime_array_stub()
+
 import maya.api.OpenMaya as om
 
 from mmd_tools.converters.vmd_converter import VmdConverter

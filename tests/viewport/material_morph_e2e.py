@@ -314,7 +314,18 @@ def diagnostics(morph):
     return {{"evaluators": evaluators, "shaders": shaders}}
 
 def capture(panel, morph, index, label, weight):
-    cmds.setAttr(morph + ".weight", weight)
+    roots = cmds.listConnections(morph + ".mmd_model_root", source=True, destination=False) or []
+    controllers = []
+    if len(roots) == 1 and cmds.attributeQuery("mmd_morph_controller", node=roots[0], exists=True):
+        controllers = cmds.listConnections(
+            roots[0] + ".mmd_morph_controller", source=True, destination=False
+        ) or []
+    weight_plug = (
+        controllers[0] + ".inputWeight[{{}}]".format(index)
+        if len(controllers) == 1
+        else morph + ".weight"
+    )
+    cmds.setAttr(weight_plug, weight)
     cmds.dgdirty(allPlugs=True)
     cmds.refresh(force=True)
     from tests.viewport.material_morph_e2e import safe_capture_dir
@@ -327,7 +338,8 @@ def capture(panel, morph, index, label, weight):
     stats = png_stats(png)
     if stats["bytes"] <= 0 or stats["nonzeroRgb"] <= 0 or stats["rgbRange"] <= 0:
         raise RuntimeError("blank/non-varying capture: " + str(stats))
-    return {{"weight": weight, "png": str(png), "pixels": stats, "diagnostics": diagnostics(morph)}}
+    return {{"weight": weight, "weightPlug": weight_plug, "png": str(png), "pixels": stats,
+             "diagnostics": diagnostics(morph)}}
 
 def flat_outputs(sample):
     result = {{}}

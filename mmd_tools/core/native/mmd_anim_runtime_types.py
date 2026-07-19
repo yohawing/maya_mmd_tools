@@ -8,7 +8,7 @@ without pulling in library discovery or function binding side effects.
 
 from __future__ import annotations
 
-from ctypes import POINTER, Structure, c_bool, c_float, c_int32, c_size_t, c_uint8, c_uint32
+from ctypes import POINTER, Structure, c_bool, c_float, c_int32, c_size_t, c_uint8, c_uint16, c_uint32
 from typing import Any, NamedTuple
 
 
@@ -28,6 +28,9 @@ MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS = (
 MMD_RUNTIME_PHYSICS_MODE_OFF = 0
 MMD_RUNTIME_PHYSICS_MODE_TRACE = 1
 MMD_RUNTIME_PHYSICS_MODE_LIVE = 2
+
+MMD_RUNTIME_PHYSICS_FRAME_ACTION_SEED = 0
+MMD_RUNTIME_PHYSICS_FRAME_ACTION_STEP = 1
 
 
 class MmdRuntimeFfiByteBuffer(Structure):
@@ -84,6 +87,30 @@ class MmdRuntimeFfiPhysicsWorldStepReport(Structure):
     ]
 
 
+class MmdRuntimeFfiPhysicsRigidbodyBinding(Structure):
+    """Rigid body to bone binding returned by the host physics ABI."""
+
+    _fields_ = [
+        ("bone_index", c_int32),
+        ("mode", c_uint32),
+    ]
+
+
+class MmdRuntimeFfiHostPoseView(Structure):
+    """Borrowed caller-owned host pose buffers for one atomic evaluation."""
+
+    _fields_ = [
+        ("local_position_offsets_xyz", POINTER(c_float)),
+        ("local_rotation_xyzw", POINTER(c_float)),
+        ("local_scales_xyz", POINTER(c_float)),
+        ("bone_count", c_size_t),
+        ("morph_weights", POINTER(c_float)),
+        ("morph_count", c_size_t),
+        ("ik_enabled", POINTER(c_uint8)),
+        ("ik_count", c_size_t),
+    ]
+
+
 class MmdRuntimeFfiRigBone(Structure):
     """Runtime rig bone descriptor passed to the native FFI."""
 
@@ -119,6 +146,108 @@ class MmdRuntimeFfiRigBoneLocalAxisV2(Structure):
     ]
 
 
+class MmdRuntimeModelBoneDescriptor(Structure):
+    """Version 1 typed model bone descriptor."""
+
+    _fields_ = [
+        ("parent_index", c_int32),
+        ("rest_position_xyz", c_float * 3),
+        ("transform_order", c_int32),
+        ("flags", c_uint32),
+        ("fixed_axis_xyz", c_float * 3),
+        ("local_axis_x_xyz", c_float * 3),
+        ("local_axis_z_xyz", c_float * 3),
+    ]
+
+
+MMD_RUNTIME_MODEL_BONE_TRANSFORM_AFTER_PHYSICS = 1 << 0
+MMD_RUNTIME_MODEL_BONE_FIXED_AXIS = 1 << 1
+MMD_RUNTIME_MODEL_BONE_LOCAL_AXIS = 1 << 2
+
+
+class MmdRuntimeModelIkSolverDescriptor(Structure):
+    _fields_ = [
+        ("ik_bone_index", c_uint32),
+        ("target_bone_index", c_uint32),
+        ("link_offset", c_size_t),
+        ("link_count", c_size_t),
+        ("iteration_count", c_uint32),
+        ("limit_angle", c_float),
+    ]
+
+
+class MmdRuntimeModelIkLinkDescriptor(Structure):
+    _fields_ = [
+        ("bone_index", c_uint32),
+        ("flags", c_uint32),
+        ("angle_limit_min_xyz", c_float * 3),
+        ("angle_limit_max_xyz", c_float * 3),
+    ]
+
+
+MMD_RUNTIME_MODEL_IK_LINK_ANGLE_LIMIT = 1
+
+
+class MmdRuntimeModelAppendDescriptor(Structure):
+    _fields_ = [
+        ("target_bone_index", c_uint32),
+        ("source_bone_index", c_uint32),
+        ("ratio", c_float),
+        ("flags", c_uint32),
+    ]
+
+
+MMD_RUNTIME_MODEL_APPEND_ROTATION = 1
+MMD_RUNTIME_MODEL_APPEND_TRANSLATION = 1 << 1
+MMD_RUNTIME_MODEL_APPEND_LOCAL = 1 << 2
+
+
+class MmdRuntimeModelBoneMorphOffsetDescriptor(Structure):
+    _fields_ = [
+        ("morph_index", c_uint32),
+        ("target_bone_index", c_uint32),
+        ("position_offset_xyz", c_float * 3),
+        ("rotation_offset_xyzw", c_float * 4),
+    ]
+
+
+class MmdRuntimeModelGroupMorphOffsetDescriptor(Structure):
+    _fields_ = [
+        ("morph_index", c_uint32),
+        ("child_morph_index", c_uint32),
+        ("ratio", c_float),
+    ]
+
+
+class MmdRuntimeModelDescriptor(Structure):
+    """Top-level version 1 model descriptor passed to the native FFI."""
+
+    _fields_ = [
+        ("struct_size", c_uint32),
+        ("descriptor_version", c_uint32),
+        ("flags", c_uint32),
+        ("reserved", c_uint32),
+        ("bones", POINTER(MmdRuntimeModelBoneDescriptor)),
+        ("bone_count", c_size_t),
+        ("ik_solvers", POINTER(MmdRuntimeModelIkSolverDescriptor)),
+        ("ik_solver_count", c_size_t),
+        ("ik_links", POINTER(MmdRuntimeModelIkLinkDescriptor)),
+        ("ik_link_count", c_size_t),
+        ("append_transforms", POINTER(MmdRuntimeModelAppendDescriptor)),
+        ("append_transform_count", c_size_t),
+        ("morph_count", c_uint32),
+        ("bone_morph_offsets", POINTER(MmdRuntimeModelBoneMorphOffsetDescriptor)),
+        ("bone_morph_offset_count", c_size_t),
+        ("group_morph_offsets", POINTER(MmdRuntimeModelGroupMorphOffsetDescriptor)),
+        ("group_morph_offset_count", c_size_t),
+    ]
+
+
+MMD_RUNTIME_FEATURE_MODEL_DESCRIPTOR = 1 << 2
+MMD_RUNTIME_MODEL_DESCRIPTOR_VERSION_V1 = 1
+MMD_RUNTIME_MODEL_DESCRIPTOR_FLAGS_NONE = 0
+
+
 class MmdRuntimeFfiIkSolveStats(Structure):
     """IK solver statistics returned by the native FFI."""
 
@@ -137,4 +266,68 @@ class MmdRuntimeFfiAppendConfig(Structure):
         ("ratio", c_float),
         ("affect_rotation", c_bool),
         ("affect_translation", c_bool),
+    ]
+
+
+MMD_RUNTIME_PHYSICS_RIGIDBODY_SHAPE_SPHERE = 0
+MMD_RUNTIME_PHYSICS_RIGIDBODY_SHAPE_BOX = 1
+MMD_RUNTIME_PHYSICS_RIGIDBODY_SHAPE_CAPSULE = 2
+
+MMD_RUNTIME_PHYSICS_RIGIDBODY_MODE_STATIC = 0
+MMD_RUNTIME_PHYSICS_RIGIDBODY_MODE_DYNAMIC = 1
+MMD_RUNTIME_PHYSICS_RIGIDBODY_MODE_DYNAMIC_BONE = 2
+MMD_RUNTIME_PHYSICS_RIGIDBODY_MODE_UNKNOWN = 3
+
+MMD_RUNTIME_PHYSICS_JOINT_KIND_GENERIC_6DOF_SPRING = 0
+MMD_RUNTIME_PHYSICS_JOINT_KIND_UNSUPPORTED = 1
+
+
+class MmdRuntimeFfiPhysicsTickConfig(Structure):
+    """Physics tick configuration for the native FFI."""
+
+    _fields_ = [
+        ("fixed_substep_seconds", c_float),
+        ("max_substeps_per_tick", c_uint32),
+    ]
+
+
+class MmdRuntimeFfiPhysicsRigidbodyDesc(Structure):
+    """Canonical rigid body descriptor matching mmd_runtime_ffi_physics_rigidbody_desc_t."""
+
+    _fields_ = [
+        ("shape", c_uint32),
+        ("shape_size", c_float * 3),
+        ("position_xyz", c_float * 3),
+        ("rotation_euler_xyz", c_float * 3),
+        ("mass", c_float),
+        ("linear_damping", c_float),
+        ("angular_damping", c_float),
+        ("friction", c_float),
+        ("restitution", c_float),
+        ("collision_group", c_uint16),
+        ("collision_mask", c_uint16),
+        ("bone_index", c_int32),
+        ("mode", c_uint32),
+        ("body_from_bone_position_xyz", c_float * 3),
+        ("body_from_bone_rotation_xyzw", c_float * 4),
+        ("bone_from_body_position_xyz", c_float * 3),
+        ("bone_from_body_rotation_xyzw", c_float * 4),
+    ]
+
+
+class MmdRuntimeFfiPhysicsJointDesc(Structure):
+    """Canonical joint descriptor matching mmd_runtime_ffi_physics_joint_desc_t."""
+
+    _fields_ = [
+        ("kind", c_uint32),
+        ("rigidbody_a", c_size_t),
+        ("rigidbody_b", c_size_t),
+        ("position_xyz", c_float * 3),
+        ("rotation_euler_xyz", c_float * 3),
+        ("translation_lower_limit_xyz", c_float * 3),
+        ("translation_upper_limit_xyz", c_float * 3),
+        ("rotation_lower_limit_xyz", c_float * 3),
+        ("rotation_upper_limit_xyz", c_float * 3),
+        ("spring_translation_factor_xyz", c_float * 3),
+        ("spring_rotation_factor_xyz", c_float * 3),
     ]

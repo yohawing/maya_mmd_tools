@@ -244,7 +244,7 @@ def find_resolvable_source(original_path, model_path) -> Tuple[Optional[Path], s
     if not original_path:
         return None, "missing_original_path"
     original_text = os.fspath(original_path)
-    model_parent = Path(model_path).resolve(strict=False).parent
+    model_parent = Path(model_path).parent
     original = Path(original_text)
     if original.is_absolute():
         candidate = original
@@ -261,7 +261,7 @@ def build_texture_source_candidates(original_path, model_path) -> List[Dict[str,
     if not original_path:
         return []
     original_text = os.fspath(original_path)
-    model_parent = Path(model_path).resolve(strict=False).parent
+    model_parent = Path(model_path).parent
     original = Path(original_text)
     if original.is_absolute():
         candidate = original
@@ -364,13 +364,14 @@ def copy_texture_to_cache(source_path, workspace_root, model_path, original_path
 def _validate_source(candidate: Path, model_parent: Path) -> Tuple[Optional[Path], str]:
     try:
         resolved_candidate = candidate.resolve(strict=False)
+        resolved_model_parent = model_parent.resolve(strict=False)
     except OSError:
         if candidate.is_absolute():
             return None, "absolute_original_path_rejected"
         return None, "source_not_found"
 
     try:
-        resolved_candidate.relative_to(model_parent)
+        resolved_candidate.relative_to(resolved_model_parent)
     except ValueError:
         if candidate.is_absolute():
             return None, "absolute_original_path_rejected"

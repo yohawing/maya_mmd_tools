@@ -209,7 +209,7 @@ def main() -> int:
         project_root=project_root,
         output_dir=log_dir,
         port=args.port,
-        launch_mode="direct",
+        launch_mode="explorer" if sys.platform == "win32" else "direct",
     )
     maya_out = log_dir / "maya_stdout.log"
     maya_err = log_dir / "maya_stderr.log"

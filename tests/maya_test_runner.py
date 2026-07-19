@@ -6,8 +6,10 @@
 """
 
 import argparse
+import json
 import os
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -24,6 +26,14 @@ from tests.common.custom_test_runner import (  # noqa: E402
     CustomTestRunner,
     enable_windows_ansi_support,
 )
+from tests.common.output_hygiene import summarize_unittest_result  # noqa: E402
+
+
+def _load_global_test_plugin() -> None:
+    """Keep repo custom nodes registered for the lifetime of the test process."""
+    plugin_path = str(ROOT_DIR / "mmd_tools" / "plugin_main.py")
+    if not cmds.pluginInfo(plugin_path, query=True, loaded=True):
+        cmds.loadPlugin(plugin_path, quiet=True)
 
 
 def initialize_maya():
@@ -113,13 +123,36 @@ def discover_tests(test_type, test_filter=None):
     return suite
 
 
-def run_tests(test_type, test_filter=None):
+def _result_payload(test_type, result, duration_sec):
+    """Build the stable result contract consumed by the outer runner."""
+    summary, failed_tests = summarize_unittest_result(result)
+    return {
+        "gate": test_type,
+        "status": "pass" if result.wasSuccessful() else "fail",
+        "summary": summary,
+        "duration_sec": round(duration_sec, 3),
+        "first_failure": failed_tests[0] if failed_tests else None,
+        "failed_tests": failed_tests,
+    }
+
+
+def run_tests(
+    test_type,
+    test_filter=None,
+    *,
+    verbose=False,
+    capture_details=False,
+    report_path=None,
+):
     """テストを実行します。
 
     Args:
         test_type: 'unit' または 'integration'
         test_filter: テストをフィルタリングする文字列（オプション）
     """
+    if test_type in {"unit", "integration"}:
+        _load_global_test_plugin()
+
     # テストを探索
     suite = discover_tests(test_type, test_filter)
 
@@ -132,14 +165,24 @@ def run_tests(test_type, test_filter=None):
     enable_windows_ansi_support()
 
     # カラー対応のテストランナーを使用
-    runner = CustomTestRunner(verbosity=2)
+    runner = CustomTestRunner(
+        verbosity=2 if verbose else 1,
+        show_error_details=verbose or capture_details,
+    )
     runner.failfast = False
-    runner.buffer = True
+    # The outer runner owns terminal suppression. Keep successful-test stdout
+    # and warnings in its complete transcript instead of discarding them here.
+    runner.buffer = False
+    started = time.perf_counter()
     result = runner.run(suite)
 
-    # テストが失敗した場合は終了コード1で終了
-    if not result.wasSuccessful():
-        sys.exit(1)
+    if report_path:
+        report = Path(report_path)
+        report.parent.mkdir(parents=True, exist_ok=True)
+        payload = _result_payload(test_type, result, time.perf_counter() - started)
+        report.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    return result
 
 
 def main():
@@ -159,6 +202,22 @@ def main():
         default=None,
         help="A string to filter tests by. Can be a module, class, or method name.",
     )
+    parser.add_argument(
+        "--report",
+        type=str,
+        default=None,
+        help="Write a compact JSON result report for the outer runner.",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show each test and its full diagnostic output.",
+    )
+    parser.add_argument(
+        "--capture-details",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args()
 
     # Maya環境を初期化
@@ -166,10 +225,19 @@ def main():
 
     try:
         # テストを実行
-        run_tests(args.type, args.test)
+        result = run_tests(
+            args.type,
+            args.test,
+            verbose=args.verbose,
+            capture_details=args.capture_details,
+            report_path=args.report,
+        )
     finally:
         # Maya環境を終了
         uninitialize_maya()
+
+    if not result.wasSuccessful():
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -3,13 +3,22 @@ PMXインポーターの統合テスト
 """
 
 import os
+from pathlib import Path
+from types import SimpleNamespace
+import unittest
 from unittest.mock import patch
 
 from maya import cmds
 
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
-from mmd_tools.core.constants import ATTR_MMD_DISPLAY_FRAMES_JSON
+from mmd_tools.core.constants import (
+    ATTR_MMD_DISPLAY_FRAMES_JSON,
+    ATTR_MMD_PMX_REST_POSITION,
+)
+from mmd_tools.core.exceptions import MMDImportException
+from mmd_tools.core.native.mmd_anim_runtime import is_native_physics_available
+from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.io import pmx_importer
 from mmd_tools.io.pmx_importer import import_pmx_file
 from mmd_tools.core.mmd_parser import MMDParseException, parse_pmx_file
@@ -120,6 +129,58 @@ class TestPmxImporter(MayaTestBase):
                 for msg in info_messages
             )
         )
+
+    def test_local_axis_scale_preserves_real_import_world_positions(self):
+        """Real PMX import keeps LOCAL_AXIS bone positions at each import scale."""
+        pmx_file = self.fixture_provider.get_pmx_file("mmt_test_model")
+        bone_index = 1
+        for scale in (0.1, 1.0, 10.0):
+            with self.subTest(scale=scale):
+                cmds.file(new=True, force=True)
+                parser = parse_pmx_file(pmx_file)
+                bone = parser.bones[bone_index]
+                bone.bone_flag |= PmxBoneFlag.LOCAL_AXIS
+                bone.x_axis_direction = (4.0, 0.0, 0.0)
+                bone.z_axis_direction = (0.0, 3.0, 0.0)
+
+                result = import_pmx_file(
+                    parser,
+                    pmx_file,
+                    scale=scale,
+                    options={"setup_rig": False, "import_physics": False},
+                )
+
+                self.assertTrue(result)
+                matches = [
+                    joint
+                    for joint in (cmds.ls(type="joint", long=True) or [])
+                    if cmds.attributeQuery("mmd_bone_index", node=joint, exists=True)
+                    and cmds.getAttr(f"{joint}.mmd_bone_index") == bone_index
+                ]
+                self.assertEqual(len(matches), 1)
+                world_pos = cmds.xform(matches[0], query=True, worldSpace=True, translation=True)
+                expected = (
+                    bone.position[0] * scale,
+                    bone.position[1] * scale,
+                    -bone.position[2] * scale,
+                )
+                for actual, expected_value in zip(world_pos, expected):
+                    self.assertAlmostEqual(actual, expected_value, places=5)
+
+    def test_invalid_local_axis_fails_before_real_import_scene_mutation(self):
+        """Importer rejects degenerate LOCAL_AXIS before root or mesh creation."""
+        pmx_file = self.fixture_provider.get_pmx_file("mmt_test_model")
+        parser = parse_pmx_file(pmx_file)
+        bone = parser.bones[1]
+        bone.bone_flag |= PmxBoneFlag.LOCAL_AXIS
+        bone.x_axis_direction = (0.0, 0.0, 0.0)
+        bone.z_axis_direction = (0.0, 0.0, 1.0)
+        nodes_before = set(cmds.ls(long=True) or [])
+
+        with self.assertRaisesRegex(MMDImportException, "Invalid LOCAL_AXIS"):
+            import_pmx_file(parser, pmx_file, options={"import_physics": False})
+
+        self.assertEqual(set(cmds.ls(long=True) or []), nodes_before)
 
     def test_import_continues_when_bone_morph_runtime_is_unavailable(self):
         """mmdBoneMorphAccum 不可時も PMX import は継続し profile に structured warning を残す。"""
@@ -235,6 +296,159 @@ class TestPmxImporter(MayaTestBase):
             for child in (cmds.listRelatives(result, children=True, fullPath=True) or [])
         }
         self.assertNotIn("Physics", child_names)
+
+    @unittest.skipUnless(is_native_physics_available(), "native physics DLL not available")
+    def test_import_pmx_with_physics_builds_disabled_passthrough_graph(self):
+        """Physics import wires the graph but leaves World OFF and passes through pre-pose."""
+        plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
+        try:
+            self.load_plugin(plugin_path)
+        except Exception:
+            # The plugin may already be loaded by another integration class.
+            pass
+
+        pmx_file = str(Path(__file__).resolve().parents[1] / "data" / "physics" / "test_hair_physics.pmx")
+        parser = parse_pmx_file(pmx_file)
+        dynamic_bones = {
+            int(rb.related_bone_index)
+            for rb in parser.rigid_bodies
+            if int(rb.physics_mode) in (1, 2) and int(rb.related_bone_index) >= 0
+        }
+        self.assertGreater(len(dynamic_bones), 0, "fixture has no dynamic rigid bodies")
+
+        root = import_pmx_file(
+            parser,
+            pmx_file,
+            options={"import_physics": True, "create_mmd_shaders": False},
+        )
+
+        solvers = cmds.ls(type="mmdPhysicsSolver") or []
+        drivers = cmds.ls(type="mmdPhysicsBoneDriver") or []
+        world_shapes = cmds.ls(type="mmdPhysicsWorldShape", long=True) or []
+        self.assertEqual(len(solvers), 1)
+        self.assertGreater(len(drivers), 0)
+        self.assertEqual(world_shapes, ["|MMD_PhysicsWorld|MMD_PhysicsWorldShape"])
+        self.assertFalse(cmds.getAttr(f"{world_shapes[0]}.enable"))
+        self.assertTrue(
+            root in (cmds.listConnections(f"{solvers[0]}.modelRoot", source=True, destination=False) or [])
+        )
+        self.assertTrue(cmds.listConnections(f"{solvers[0]}.inTime", source=True, destination=False))
+        self.assertTrue(
+            cmds.isConnected(
+                f"{world_shapes[0]}.message",
+                f"{solvers[0]}.inWorldSettings",
+            )
+        )
+        self.assertTrue(
+            cmds.isConnected(
+                f"{world_shapes[0]}.outSettingsVersion",
+                f"{solvers[0]}.inWorldSettingsVersion",
+            )
+        )
+        for driver in drivers:
+            target_joint = cmds.getAttr(f"{driver}.mmd_target_joint")
+            for source, destination in (
+                (f"{solvers[0]}.outBoneMatrices", f"{driver}.inSolverBoneMatrices"),
+                (f"{solvers[0]}.outBoneCount", f"{driver}.inSolverBoneCount"),
+                (f"{solvers[0]}.outSolved", f"{driver}.inSolved"),
+                (f"{driver}.outTranslate", f"{target_joint}.translate"),
+                (f"{driver}.outRotate", f"{target_joint}.rotate"),
+            ):
+                self.assertTrue(
+                    cmds.isConnected(source, destination),
+                    f"missing physics graph connection: {source} -> {destination}",
+                )
+
+        driver = drivers[0]
+        target_joint = cmds.getAttr(f"{driver}.mmd_target_joint")
+        pre_translate = (1.25, -2.5, 3.75)
+        pre_rotate = (4.0, -5.0, 6.0)
+        cmds.setAttr(f"{driver}.inPreTranslate", *pre_translate)
+        cmds.setAttr(f"{driver}.inPreRotate", *pre_rotate)
+
+        self.assertFalse(cmds.getAttr(f"{solvers[0]}.outSolved"))
+        self.assertListAlmostEqual(
+            list(cmds.getAttr(f"{driver}.outTranslate")[0]),
+            list(pre_translate),
+        )
+        self.assertListAlmostEqual(
+            list(cmds.getAttr(f"{driver}.outRotate")[0]),
+            list(pre_rotate),
+        )
+        self.assertListAlmostEqual(
+            list(cmds.getAttr(f"{target_joint}.translate")[0]),
+            list(pre_translate),
+        )
+        self.assertListAlmostEqual(
+            list(cmds.getAttr(f"{target_joint}.rotate")[0]),
+            list(pre_rotate),
+        )
+
+        indexed_joints = [
+            joint
+            for joint in (cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or [])
+            if cmds.attributeQuery("mmd_bone_index", node=joint, exists=True)
+        ]
+        self.assertTrue(indexed_joints)
+        self.assertTrue(
+            all(cmds.attributeQuery(ATTR_MMD_PMX_REST_POSITION, node=joint, exists=True) for joint in indexed_joints)
+        )
+        from mmd_tools.core.model_dag_descriptor import build_model_descriptors_from_dag
+
+        descriptors = build_model_descriptors_from_dag(root)
+        self.assertEqual(len(descriptors.bones), len(parser.bones))
+        cmds.setAttr(f"{world_shapes[0]}.enable", True)
+        cmds.currentTime(1)
+        self.assertTrue(
+            cmds.getAttr(f"{solvers[0]}.outSolved"),
+            cmds.getAttr(f"{solvers[0]}.outStatus"),
+        )
+        self.assertIn(cmds.getAttr(f"{solvers[0]}.outStatus"), ("reset", "stepped", "cached"))
+
+    @unittest.skipUnless(is_native_physics_available(), "native physics DLL not available")
+    def test_mixed_mode_bone_omits_kinematic_world_matrix_connection(self):
+        """A mode-0/mode-1 mixed bone must not close a solver DG cycle."""
+        plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
+        try:
+            self.load_plugin(plugin_path)
+        except Exception:
+            pass
+
+        from mmd_tools.converters.physics_scene_builder import build_physics_live_graph
+
+        root = cmds.group(empty=True, name="mixed_mode_root")
+        cmds.select(clear=True)
+        joint = cmds.joint(name="mixed_mode_bone")
+        cmds.parent(joint, root)
+
+        graph = build_physics_live_graph(
+            rigid_bodies=[
+                SimpleNamespace(physics_mode=0, related_bone_index=0),
+                SimpleNamespace(physics_mode=1, related_bone_index=0),
+            ],
+            bones=[SimpleNamespace(parent_bone_index=-1)],
+            maya_joints=[joint],
+            root_group=root,
+        )
+
+        solver = graph["solver"]
+        self.assertIsNotNone(solver)
+        self.assertEqual(len(graph["drivers"]), 1)
+        self.assertFalse(
+            cmds.listConnections(
+                f"{solver}.inKinematicWorldMatrix[0]",
+                source=True,
+                destination=False,
+                plugs=True,
+            ) or [],
+            "mixed-mode bone worldMatrix must not feed the solver",
+        )
+        self.assertTrue(
+            cmds.isConnected(
+                f"{solver}.outBoneMatrices",
+                f"{graph['drivers'][0]}.inSolverBoneMatrices",
+            )
+        )
 
     def test_import_pmx_multiple_files(self):
         """全てのPMXモデルが基本的にロード可能かテスト"""

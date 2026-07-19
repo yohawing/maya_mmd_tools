@@ -2,7 +2,11 @@
 
 from pathlib import Path
 
-from tests.viewport.visual_regression_capture import _build_maya_code, _device_matches_backend, _vp2_override
+from tests.viewport.visual_regression_capture import (
+    _build_maya_code,
+    _device_matches_backend,
+    _vp2_override,
+)
 
 
 def test_default_vp2_device_matches_shader_backend():

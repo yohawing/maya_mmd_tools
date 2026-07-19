@@ -101,6 +101,49 @@ class TestVmdMorphAnimation(MayaTestBase):
 
         cmds.delete(mesh_a, blend_shape_a, mesh_b, blend_shape_b)
 
+    def test_namespace_less_duplicate_morphs_key_only_explicit_target_root(self):
+        """Same alias/index on two namespace-less roots cannot cross-key model A."""
+        root_a = cmds.group(empty=True, name="morph_model_a_root")
+        root_b = cmds.group(empty=True, name="morph_model_b_root")
+        mesh_a = cmds.polyCube(name="morph_model_a_mesh")[0]
+        mesh_b = cmds.polyCube(name="morph_model_b_mesh")[0]
+        cmds.parent(mesh_a, root_a)
+        cmds.parent(mesh_b, root_b)
+        blend_shape_a = cmds.blendShape(mesh_a, name="morph_model_a_bs")[0]
+        blend_shape_b = cmds.blendShape(mesh_b, name="morph_model_b_bs")[0]
+        _add_blendshape_alias(mesh_a, blend_shape_a, 0, "shared_morph", (1, 0, 0))
+        _add_blendshape_alias(mesh_b, blend_shape_b, 0, "shared_morph", (0, 1, 0))
+
+        self.converter._build_morph_mappings(target_model=root_b)
+        mappings = self.converter._iter_morph_mappings(
+            self.converter.morph_name_mapping["shared_morph"]
+        )
+        self.assertEqual([mapping[0] for mapping in mappings], [blend_shape_b])
+
+        self.assertTrue(self.converter._convert_morph_animation([_morph_frame("shared_morph", 7, 0.8)]))
+        self.assertIsNone(cmds.keyframe(f"{blend_shape_a}.weight[0]", query=True))
+        self.assertIn(7.0, cmds.keyframe(f"{blend_shape_b}.weight[0]", query=True))
+
+    def test_root_scoped_network_morph_mapping_fails_closed_without_ownership(self):
+        """Only explicitly root-connected network morphs enter a scoped mapping."""
+        root_a = cmds.group(empty=True, name="network_model_a_root")
+        root_b = cmds.group(empty=True, name="network_model_b_root")
+        morph_a = self._create_network_morph("network_a_boneMorph", "bone", "同名モーフ")
+        morph_b = self._create_network_morph("network_b_boneMorph", "bone", "同名モーフ")
+        unowned = self._create_network_morph("network_legacy_boneMorph", "bone", "同名モーフ")
+        for root, morph in ((root_a, morph_a), (root_b, morph_b)):
+            cmds.addAttr(morph, longName="mmd_model_root", attributeType="message")
+            cmds.connectAttr(f"{root}.message", f"{morph}.mmd_model_root")
+
+        self.converter._build_morph_mappings(target_model=root_b)
+
+        mappings = self.converter._iter_morph_mappings(
+            self.converter.morph_name_mapping["同名モーフ"]
+        )
+        self.assertEqual([mapping[0] for mapping in mappings], [morph_b])
+        self.assertNotIn(morph_a, [mapping[0] for mapping in mappings])
+        self.assertNotIn(unowned, [mapping[0] for mapping in mappings])
+
     def test_convert_morph_animation_legacy_mapping_uses_weight_index_tuple(self):
         """Legacy mapping tuples with integer weight indices still key correctly."""
         frame = _morph_frame("mabataki", 5, 0.6)

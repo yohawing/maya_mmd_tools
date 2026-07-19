@@ -9,6 +9,8 @@ from ..core.constants import ATTR_MMD_CAMERA, ATTR_MMD_LIGHT
 from ..core.logger import get_logger
 from ..core.namespace_utils import NamespaceUtils
 from .vmd_context import VmdImportStateContext
+from .vmd_ik_enabled_animation import ik_node_is_owned_by_root, root_owned_joints
+from .vmd_morph_mapping import morph_node_is_owned_by_root
 from .vmd_runtime_rig_helper import _ls_mmd_ccd_ik_nodes
 
 _ATTR_VMD_BIND_TRANSLATE = "mmd_vmd_bind_translate"
@@ -142,14 +144,22 @@ def clear_existing_motion(
     converter_or_context: Union[Any, VmdImportStateContext],
     layer_name: str,
     target_namespace: Optional[str] = None,
+    target_model: Optional[str] = None,
 ) -> None:
     """Delete existing VMD motion keys/layer for the target model."""
     context = _resolve_import_state_context(converter_or_context)
     cleared = 0
+    owned_motion_nodes = set()
 
-    mapped_joints = set(context.bone_name_mapping.values())
+    owned_joints = root_owned_joints(target_model) if target_model else None
+    mapped_joints = {
+        joint
+        for joint in context.bone_name_mapping.values()
+        if not target_model or _nodes_are_exclusively_owned([joint], owned_joints)
+    }
     fallback_translates = _capture_fallback_rest_translates(mapped_joints, context.logger)
     for joint in mapped_joints:
+        owned_motion_nodes.add(joint)
         cleared += cut_keyable_attrs(
             joint,
             ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"),
@@ -158,9 +168,25 @@ def clear_existing_motion(
     for target_joint, info in context.collect_append_info().items():
         append_node = info.get("node")
         if append_node and (
-            node_matches_target_namespace(target_joint, target_namespace)
-            or node_matches_target_namespace(append_node, target_namespace)
+            (
+                target_model
+                and _append_node_is_owned_by_root(
+                    append_node,
+                    target_joint,
+                    target_model,
+                    owned_joints,
+                    source_joint=info.get("source_joint"),
+                )
+            )
+            or (
+                not target_model
+                and (
+                    node_matches_target_namespace(target_joint, target_namespace)
+                    or node_matches_target_namespace(append_node, target_namespace)
+                )
+            )
         ):
+            owned_motion_nodes.add(append_node)
             cleared += cut_keyable_attrs(
                 append_node,
                 (
@@ -174,22 +200,41 @@ def clear_existing_motion(
             )
 
     for ik_node in _ls_mmd_ccd_ik_nodes():
-        if node_matches_target_namespace(ik_node, target_namespace):
+        if (
+            ik_node_is_owned_by_root(ik_node, target_model, owned_joints)
+            if target_model
+            else node_matches_target_namespace(ik_node, target_namespace)
+        ):
+            owned_motion_nodes.add(ik_node)
             cleared += cut_keyable_attrs(ik_node, ("enabled", "inputRotate"))
 
     morph_nodes = set()
     for mapping_entry in context.morph_name_mapping.values():
         for morph_node, weight_attr, _morph_name in context.iter_morph_mappings(mapping_entry):
-            if node_matches_target_namespace(morph_node, target_namespace):
+            if (
+                morph_node_is_owned_by_root(morph_node, target_model)
+                if target_model
+                else node_matches_target_namespace(morph_node, target_namespace)
+            ):
+                owned_motion_nodes.add(morph_node)
                 cleared += cut_keyable_attrs(morph_node, (weight_attr,))
                 morph_nodes.add(morph_node)
 
-    if cmds.objExists(layer_name):
+    can_delete_layer = not target_model or _anim_layer_is_exclusively_owned_by(
+        layer_name,
+        owned_motion_nodes,
+    )
+    if cmds.objExists(layer_name) and can_delete_layer:
         try:
             cmds.delete(layer_name)
             cleared += 1
         except Exception as exc:
             context.logger.debug(f"failed to delete existing animLayer {layer_name}: {exc}")
+    elif cmds.objExists(layer_name):
+        context.logger.warning(
+            "Preserving shared/unowned animation layer during root-scoped VMD clear: %s",
+            layer_name,
+        )
 
     # cutKey はアニメーション曲線を削除するが joint の attribute 値はポーズのまま残る。
     # 後続の _record_bind_poses が正しい rest position を取得できるよう dagPose で復元する。
@@ -300,6 +345,65 @@ def node_matches_target_namespace(node: str, target_namespace: Optional[str]) ->
     if not target_namespace:
         return True
     return NamespaceUtils.get_namespace_from_node(node) == target_namespace
+
+
+def _long_names(nodes) -> set:
+    result = set()
+    for node in nodes or []:
+        result.update(cmds.ls(node, long=True) or [])
+    return result
+
+
+def _nodes_are_exclusively_owned(nodes, owned_nodes) -> bool:
+    resolved = _long_names(nodes)
+    return bool(resolved) and resolved.issubset(owned_nodes or set())
+
+
+def _append_node_is_owned_by_root(
+    append_node: str,
+    target_joint: str,
+    target_model: str,
+    owned_joints,
+    source_joint: Optional[str] = None,
+) -> bool:
+    """Prove every direct append joint/root connection belongs to target_model."""
+    if not append_node or not cmds.objExists(append_node):
+        return False
+    if not _nodes_are_exclusively_owned([target_joint], owned_joints):
+        return False
+    if source_joint and not _nodes_are_exclusively_owned([source_joint], owned_joints):
+        return False
+
+    connected_joints = cmds.listConnections(
+        append_node,
+        source=True,
+        destination=True,
+        type="joint",
+    ) or []
+    if not _nodes_are_exclusively_owned(connected_joints, owned_joints):
+        return False
+
+    if cmds.attributeQuery("mmd_model_root", node=append_node, exists=True):
+        connected_roots = cmds.listConnections(f"{append_node}.mmd_model_root") or []
+        target_roots = _long_names([target_model])
+        if not _nodes_are_exclusively_owned(connected_roots, target_roots):
+            return False
+    return True
+
+
+def _anim_layer_is_exclusively_owned_by(layer_name: str, owned_nodes) -> bool:
+    """Fail closed when a layer contains attributes outside the target model."""
+    if not cmds.objExists(layer_name):
+        return False
+    attributes = cmds.animLayer(layer_name, query=True, attribute=True) or []
+    if not attributes:
+        return True
+    owned_long_names = _long_names(owned_nodes)
+    for attribute in attributes:
+        node = attribute.split(".", 1)[0]
+        if not _nodes_are_exclusively_owned([node], owned_long_names):
+            return False
+    return True
 
 
 def cut_keyable_attrs(node: str, attrs: Tuple[str, ...]) -> int:

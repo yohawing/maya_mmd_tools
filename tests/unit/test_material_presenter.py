@@ -81,6 +81,12 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_maya_adapter.list_connections.return_value = None
         self.mock_maya_adapter.list_attr.return_value = []
         self.mock_maya_adapter.window.return_value = False
+        self.ensure_shader_backend_patcher = patch(
+            "mmd_tools.ui.presenters.material_presenter.ensure_material_shader_backend"
+        )
+        self.mock_ensure_shader_backend = self.ensure_shader_backend_patcher.start()
+        self.addCleanup(self.ensure_shader_backend_patcher.stop)
+        self.mock_ensure_shader_backend.side_effect = lambda material: material
         self.presenter = MaterialPresenter(
             self.mock_view,
             self.mock_app_state,
@@ -999,6 +1005,27 @@ class TestMaterialPresenter(unittest.TestCase):
             "double3",
         )
         self.assertFalse(self.presenter.has_unsaved_changes)
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_apply_changes_uses_shader_backend_replacement(self, mock_maya_attribute_utils):
+        self._configure_apply_inputs()
+        self.mock_ensure_shader_backend.side_effect = None
+        self.mock_ensure_shader_backend.return_value = "replacement_material"
+        self.mock_maya_adapter.node_type.return_value = "standardSurface"
+        self._set_existing_mmd_attribute_query()
+
+        self.presenter.apply_changes()
+
+        self.mock_ensure_shader_backend.assert_called_once_with("test_material")
+        self.assertEqual(self.presenter.current_material, "replacement_material")
+        self.mock_maya_adapter.node_type.assert_called_with("replacement_material")
+        mock_maya_attribute_utils.set_custom_attributes.assert_any_call(
+            "replacement_material",
+            {
+                ATTR_MMD_MATERIAL_NAME: "新しい名前",
+                ATTR_MMD_MATERIAL_NAME_EN: "New Name",
+            },
+        )
 
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
     def test_apply_changes_routes_transparency_when_attribute_exists(self, mock_maya_attribute_utils):

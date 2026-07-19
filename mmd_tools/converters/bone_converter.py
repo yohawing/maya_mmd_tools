@@ -1,3 +1,4 @@
+import math
 import time
 from typing import List, Optional, Tuple, Union
 
@@ -16,6 +17,7 @@ from ..core.constants import (
     ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_BONE_FLAGS,
     ATTR_MMD_DEFORM_LAYER,
+    ATTR_MMD_PMX_REST_POSITION,
     ATTR_MMD_BONE_OFFSET,
     ATTR_MMD_IK_LOOP,
     ATTR_MMD_IK_LIMIT_ANGLE,
@@ -95,6 +97,8 @@ class BoneConverter:
             tuple: (作成されたMayaジョイントノードの名前のリスト,
                    スキンクラスターの名前、またはスキンクラスター名のリスト)
         """
+        self.validate_pmx_local_axes(pmx_data.bones)
+
         # PMXのボーン階層をMayaのjointノードに変換する
         maya_scene_utils.select_objects(clear=True)
 
@@ -289,6 +293,9 @@ class BoneConverter:
         Returns:
             list: 作成されたMayaジョイントノードの名前のリスト。
         """
+        if format_type == "pmx":
+            self.validate_pmx_local_axes(bones)
+
         maya_joints = []
         joint_uuids = []
 
@@ -372,7 +379,7 @@ class BoneConverter:
 
         # parenting 完了後に LOCAL_AXIS ボーンの JO を設定し translate を補正する。
         if setup_bone_orientation:
-            self._apply_joint_orient_all(maya_joints, bones, format_type)
+            self._apply_joint_orient_all(maya_joints, bones, format_type, scale=scale)
 
         return maya_joints
 
@@ -382,8 +389,9 @@ class BoneConverter:
             attrs = {
                 ATTR_MMD_BONE_NAME: bone.name,
                 ATTR_MMD_BONE_NAME_EN: bone.name_english,
-                ATTR_MMD_BONE_FLAGS: bone.bone_flag,
-                ATTR_MMD_DEFORM_LAYER: bone.deform_layer if hasattr(bone, "deform_layer") else 0,
+                ATTR_MMD_BONE_FLAGS: int(bone.bone_flag),
+                ATTR_MMD_DEFORM_LAYER: getattr(bone, "deform_layer", getattr(bone, "transform_layer", 0)),
+                ATTR_MMD_PMX_REST_POSITION: bone.position,
                 ATTR_MMD_BONE_INDEX: i,
                 ATTR_MMD_BONE_PARENT_INDEX: bone.parent_bone_index,
             }
@@ -599,9 +607,7 @@ class BoneConverter:
         vertex_component_obj = vertex_component.create(om.MFn.kMeshVertComponent)
         vertex_component.addElements(list(range(vertex_count)))
 
-        influence_indices = om.MIntArray(influence_count, 0)
-        for influence_index in range(influence_count):
-            influence_indices[influence_index] = influence_index
+        influence_indices = om.MIntArray(list(range(influence_count)))
 
         skin_fn.setWeights(
             shape_dag_path,
@@ -679,12 +685,25 @@ class BoneConverter:
 
     def _compute_pmx_world_rotation_matrix(self, bone):
         """PMX LOCAL_AXIS の軸方向からワールド空間回転行列を計算する。"""
-        x_axis = om.MVector(bone.x_axis_direction[0], bone.x_axis_direction[1], -bone.x_axis_direction[2])
-        x_axis.normalize()
-        z_axis = om.MVector(bone.z_axis_direction[0], bone.z_axis_direction[1], -bone.z_axis_direction[2])
-        z_axis.normalize()
+        epsilon = 1.0e-8
+
+        def _axis_vector(values, label):
+            if len(values) != 3 or not all(math.isfinite(float(value)) for value in values):
+                raise ValueError(f"LOCAL_AXIS {label} axis must contain three finite values")
+            vector = om.MVector(float(values[0]), float(values[1]), -float(values[2]))
+            if vector.length() <= epsilon:
+                raise ValueError(f"LOCAL_AXIS {label} axis magnitude must be greater than {epsilon}")
+            vector.normalize()
+            return vector
+
+        x_axis = _axis_vector(bone.x_axis_direction, "X")
+        z_axis = _axis_vector(bone.z_axis_direction, "Z")
         y_axis = z_axis ^ x_axis
+        if y_axis.length() <= epsilon:
+            raise ValueError("LOCAL_AXIS X and Z axes must not be parallel")
         y_axis.normalize()
+        z_axis = x_axis ^ y_axis
+        z_axis.normalize()
         return om.MMatrix([
             [x_axis.x, x_axis.y, x_axis.z, 0],
             [y_axis.x, y_axis.y, y_axis.z, 0],
@@ -692,7 +711,18 @@ class BoneConverter:
             [0, 0, 0, 1],
         ])
 
-    def _apply_joint_orient_all(self, maya_joints, bones, format_type):
+    def validate_pmx_local_axes(self, bones):
+        """Validate every LOCAL_AXIS descriptor before creating scene nodes."""
+        for index, bone in enumerate(bones):
+            if not bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
+                continue
+            try:
+                self._compute_pmx_world_rotation_matrix(bone)
+            except (TypeError, ValueError) as exc:
+                name = getattr(bone, "name", "")
+                raise ValueError(f"Invalid LOCAL_AXIS for bone[{index}] {name!r}: {exc}") from exc
+
+    def _apply_joint_orient_all(self, maya_joints, bones, format_type, scale=1.0):
         """LOCAL_AXIS ボーンに JO を設定し、全ボーンの translate を再計算する。
 
         parenting (cmds.parent absolute=True) 完了後に呼ぶ。
@@ -737,9 +767,7 @@ class BoneConverter:
                 parent_wm_flat = cmds.getAttr(f"{maya_joints[pidx]}.worldMatrix[0]")
                 parent_wm = om.MMatrix(parent_wm_flat)
                 parent_wm_inv = parent_wm.inverse()
-                my_pos = om.MPoint(
-                    bone.position[0], bone.position[1], -bone.position[2],
-                )
+                my_pos = om.MPoint(*mmd_point_to_maya(bone.position, scale))
                 local_pos = my_pos * parent_wm_inv
                 maya_attribute_utils.set_attribute(
                     maya_joints[i], "translate",

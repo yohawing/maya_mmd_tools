@@ -79,6 +79,10 @@ class TestSettingsDefaults(unittest.TestCase):
         self.assertIsNotNone(value)
         self.assertAlmostEqual(float(value), 1.0)
 
+    def test_create_mmd_shaders_default(self):
+        """MMDシェーダー作成が既定で有効なことを確認する。"""
+        self.assertTrue(self.settings.get("import.model.create_mmd_shaders", False))
+
     def test_logging_enabled_default(self):
         """logging.enabled のデフォルト値が bool であることを確認する。"""
         value = self.settings.get("logging.enabled", None)

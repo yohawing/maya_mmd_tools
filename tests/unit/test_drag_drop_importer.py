@@ -312,6 +312,27 @@ class TestDragDropImporter(unittest.TestCase):
             with patch.object(drag_drop_importer.cmds, "ls", return_value=[]):
                 self.assertEqual(drag_drop_importer._selected_model_root(), "|first_model")
 
+    def test_drop_filter_uses_global_qt_filter_on_maya_2026(self):
+        event_filter = drag_drop_importer._MmdDropEventFilter()
+        window = object()
+        app = object()
+
+        with patch.object(drag_drop_importer, "_maya_version", return_value=2026), patch(
+            "mmd_tools.ui.qt_compat.QApplication"
+        ) as application:
+            application.instance.return_value = app
+            self.assertEqual(event_filter._drop_targets(window), [app, window])
+
+    def test_drop_filter_avoids_global_qt_filter_on_maya_2027(self):
+        event_filter = drag_drop_importer._MmdDropEventFilter()
+        window = object()
+
+        with patch.object(drag_drop_importer, "_maya_version", return_value=2027), patch(
+            "mmd_tools.ui.qt_compat.QApplication"
+        ) as application:
+            self.assertEqual(event_filter._drop_targets(window), [window])
+            application.instance.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import maya.cmds as cmds
@@ -15,6 +16,26 @@ from tests.common.vmd_mock import create_test_vmd_data
 class TestVmdRuntimeBakeRouting(MayaTestBase):
     """Runtime bake entrypoint, routing, and source recovery tests."""
 
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls._previous_skip_shader_override = os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE")
+        os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "1"
+        plugin_path = Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py"
+        if not cmds.pluginInfo(str(plugin_path), query=True, loaded=True):
+            cls.plugins_loaded.extend(cmds.loadPlugin(str(plugin_path), quiet=True) or [])
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            super().tearDownClass()
+        finally:
+            previous = cls._previous_skip_shader_override
+            if previous is None:
+                os.environ.pop("MMD_TOOLS_SKIP_SHADER_OVERRIDE", None)
+            else:
+                os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = previous
+
     def setUp(self):
         super().setUp()
         self.converter = VmdConverter()
@@ -24,7 +45,13 @@ class TestVmdRuntimeBakeRouting(MayaTestBase):
         vmd_data = create_test_vmd_data()
         self.converter.set_bone_name_mapping({"センター": "center"})
 
-        res = self.converter.convert(vmd_data, vmd_bytes=b"dummy", pmx_bytes=None, pmx_path=None)
+        res = self.converter.convert(
+            vmd_data,
+            vmd_bytes=b"dummy",
+            pmx_bytes=None,
+            pmx_path=None,
+            target_model="model_root",
+        )
         self.assertIsInstance(res, bool)
 
         self.assertFalse(self.converter._should_use_mmd_runtime_bake(b"vmd", None, "/nonexistent.pmx"))

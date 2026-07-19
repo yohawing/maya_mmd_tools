@@ -4,7 +4,6 @@ import traceback
 from maya import cmds
 import maya.api.OpenMaya as om
 from mmd_tools import __version__
-from mmd_tools.ui.main_window import MainWindow
 from mmd_tools.view import shader_override as mmd_shader
 from mmd_tools.ui.drag_drop_importer import (
     install_drag_drop_importer,
@@ -14,6 +13,13 @@ from mmd_tools.nodes import mmd_append_node
 from mmd_tools.nodes import mmd_bone_morph_accum_node
 from mmd_tools.nodes import mmd_ccd_ik_node
 from mmd_tools.nodes import mmd_material_morph_eval_node
+from mmd_tools.nodes import mmd_morph_controller_node
+from mmd_tools.nodes import mmd_rigid_body_shape
+from mmd_tools.nodes import mmd_rigid_body_draw_override
+from mmd_tools.nodes import mmd_physics_joint_shape
+from mmd_tools.nodes import mmd_physics_solver_node
+from mmd_tools.nodes import mmd_physics_bone_driver_node
+from mmd_tools.nodes import mmd_physics_world_shape
 
 _main_window = None
 _animator_toolset_window = None
@@ -22,7 +28,31 @@ _animator_toolset_window = None
 # is fragile if the C++ plugin loads or unloads between init and uninit.
 _python_rig_nodes_registered = False
 _shader_override_registered = False
+_physics_nodes_registered = False
+_python_physics_solver_registered = False
+_python_physics_driver_registered = False
 _after_open_callback_id = None
+_MAIN_WINDOW_NAME = "MMDToolsMainWindow"
+_MAIN_WINDOW_WORKSPACE_CONTROL_NAME = "MMDToolsWorkspaceControl"
+
+
+def _trace_initialize_step(step):
+    """Write an opt-in plugin initialization trace for GUI gate diagnosis."""
+    path = os.environ.get("MMD_TOOLS_INIT_TRACE_PATH")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as stream:
+            stream.write(f"{step}\n")
+    except Exception:
+        pass
+
+
+def _load_main_window_class():
+    """Load the Qt UI only when a caller explicitly requests it."""
+    from mmd_tools.ui.main_window import MainWindow
+
+    return MainWindow
 
 
 def maya_useNewAPI():
@@ -62,7 +92,7 @@ def close_main_window():
         if app is not None:
             for widget in list(app.allWidgets()):
                 try:
-                    if widget.objectName() == MainWindow.WINDOW_NAME:
+                    if widget.objectName() == _MAIN_WINDOW_NAME:
                         _delete_qt_widget(widget)
                 except Exception:
                     pass
@@ -77,17 +107,27 @@ def open_main_window(dockable=False):
 
     close_main_window()
 
+    try:
+        main_window_class = _load_main_window_class()
+    except ImportError as exc:
+        om.MGlobal.displayWarning(f"MMD Tools UI is unavailable: {exc}")
+        return None
+
     # 既存のウィンドウを削除
-    if cmds.window(MainWindow.WINDOW_NAME, exists=True):
-        cmds.deleteUI(MainWindow.WINDOW_NAME)
+    if cmds.window(_MAIN_WINDOW_NAME, exists=True):
+        cmds.deleteUI(_MAIN_WINDOW_NAME)
 
     # workspaceControlがあれば削除
-    if hasattr(MainWindow, "WORKSPACE_CONTROL_NAME"):
-        if cmds.workspaceControl(MainWindow.WORKSPACE_CONTROL_NAME, exists=True):
-            cmds.deleteUI(MainWindow.WORKSPACE_CONTROL_NAME, control=True)
+    workspace_control_name = getattr(
+        main_window_class,
+        "WORKSPACE_CONTROL_NAME",
+        _MAIN_WINDOW_WORKSPACE_CONTROL_NAME,
+    )
+    if cmds.workspaceControl(workspace_control_name, exists=True):
+        cmds.deleteUI(workspace_control_name, control=True)
 
     # 新しいインスタンスを作成して表示
-    main_window = MainWindow()
+    main_window = main_window_class()
     main_window.show_window(dockable=dockable)
     _main_window = main_window
     return main_window
@@ -313,25 +353,60 @@ def initializePlugin(mobject):
     plugin_fn = om.MFnPlugin(mobject, vendor, version)
 
     try:
+        _trace_initialize_step("initialize:start")
         install_mmd_menu()
-        install_drag_drop_importer()
+        _trace_initialize_step("menu:done")
+        try:
+            install_drag_drop_importer()
+        except ImportError as exc:
+            om.MGlobal.displayWarning(f"MMD Tools drag-and-drop UI is unavailable: {exc}")
+        _trace_initialize_step("drag-drop:done")
         global _shader_override_registered
         if os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE") != "1":
             mmd_shader.initializePlugin(mobject)
             _shader_override_registered = True
+        _trace_initialize_step("shader-override:done")
         mmd_bone_morph_accum_node.register(plugin_fn)
+        _trace_initialize_step("bone-morph-register:done")
         _soft_check_bone_morph_accum_availability()
+        _trace_initialize_step("bone-morph-check:done")
         mmd_material_morph_eval_node.register(plugin_fn)
+        _trace_initialize_step("material-morph:done")
+        mmd_morph_controller_node.register(plugin_fn)
+        _trace_initialize_step("morph-controller:done")
         if not _scene_file_is_being_read():
             _soft_sync_existing_glsl_diffuse_contracts()
+        _trace_initialize_step("scene-sync:done")
         # Skip Python rig-node registration when C++ plugin already provides them
         global _python_rig_nodes_registered
         if not _cpp_plugin_loaded():
             mmd_append_node.register(plugin_fn)
             mmd_ccd_ik_node.register(plugin_fn)
             _python_rig_nodes_registered = True
+        _trace_initialize_step("rig-nodes:done")
+        global _physics_nodes_registered
+        global _python_physics_solver_registered
+        global _python_physics_driver_registered
+        mmd_physics_world_shape.register(plugin_fn)
+        _trace_initialize_step("physics-world:done")
+        mmd_rigid_body_shape.register(plugin_fn)
+        _trace_initialize_step("rigid-body-shape:done")
+        mmd_rigid_body_draw_override.register()
+        _trace_initialize_step("rigid-body-draw:done")
+        mmd_physics_joint_shape.register(plugin_fn)
+        _trace_initialize_step("physics-joint:done")
+        if not _node_type_registered("mmdPhysicsSolver"):
+            mmd_physics_solver_node.register(plugin_fn)
+            _python_physics_solver_registered = True
+        if not _node_type_registered("mmdPhysicsBoneDriver"):
+            mmd_physics_bone_driver_node.register(plugin_fn)
+            _python_physics_driver_registered = True
+        _trace_initialize_step("physics-solver:done")
+        _physics_nodes_registered = True
         _register_after_open_callback()
+        _trace_initialize_step("initialize:done")
     except Exception as e:
+        _trace_initialize_step(f"initialize:error:{type(e).__name__}:{e}")
         om.MGlobal.displayError(f"Plugin initialization failed: {str(e)}")
         raise
 
@@ -354,12 +429,28 @@ def uninitializePlugin(mobject):
                 mmd_shader.uninitializePlugin(mobject)
             finally:
                 _shader_override_registered = False
+        global _physics_nodes_registered
+        global _python_physics_solver_registered
+        global _python_physics_driver_registered
+        if _physics_nodes_registered:
+            if _python_physics_driver_registered:
+                mmd_physics_bone_driver_node.deregister(plugin_fn)
+                _python_physics_driver_registered = False
+            if _python_physics_solver_registered:
+                mmd_physics_solver_node.deregister(plugin_fn)
+                _python_physics_solver_registered = False
+            mmd_physics_joint_shape.deregister(plugin_fn)
+            mmd_rigid_body_draw_override.deregister()
+            mmd_rigid_body_shape.deregister(plugin_fn)
+            mmd_physics_world_shape.deregister(plugin_fn)
+            _physics_nodes_registered = False
         # Only deregister rig nodes that Python actually registered
         global _python_rig_nodes_registered
         if _python_rig_nodes_registered:
             mmd_ccd_ik_node.deregister(plugin_fn)
             mmd_append_node.deregister(plugin_fn)
             _python_rig_nodes_registered = False
+        mmd_morph_controller_node.deregister(plugin_fn)
         mmd_material_morph_eval_node.deregister(plugin_fn)
         mmd_bone_morph_accum_node.deregister(plugin_fn)
     except Exception as e:

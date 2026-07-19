@@ -31,6 +31,8 @@
     "reset": "Reset",
     "add": "Add",
     "remove": "Remove",
+    "create": "Create",
+    "duplicate": "Duplicate",
     "delete": "Delete",
     "up": "Up",
     "down": "Down",
@@ -47,7 +49,9 @@
     "apply_to_selected": "Apply to Selected",
     "clear_history": "Clear History",
     "open_command_port": "Open",
-    "close_command_port": "Close"
+    "close_command_port": "Close",
+    "set_key": "Set Key",
+    "delete_key": "Delete Key"
   },
   "labels": {
     "file_path": "File Path:",
@@ -111,6 +115,7 @@
     "separate_meshes": "Split mesh per material",
     "auto_classify_transparency": "Auto-classify transparent materials via UV alpha scan",
     "disable_backface_culling": "Disable backface culling for double-sided rendering",
+    "import_physics": "Create rigid bodies and joints from PMX physics data",
     "use_cpp_rig_nodes": "Use experimental C++ rig nodes for IK/append constraints. Falls back to Python nodes when unavailable"
   },
   "messages": {
@@ -130,6 +135,8 @@
     "physics_validation_range": "must be between {minimum} and {maximum}",
     "physics_validation_vector_length": "enter exactly {count} comma-separated values",
     "physics_validation_bool": "each value must be 0 or 1",
+    "physics_validation_binding": "select an item from the current model",
+    "physics_validation_joint_type_live_unsupported": "only Spring 6DOF is supported by live physics",
     "physics_write_node_missing": "scene node was not found: {node}",
     "physics_write_attribute_missing": "scene attribute was not found: {plug}",
     "physics_write_failed": "Apply failed and changes were rolled back: {error}",
@@ -170,6 +177,7 @@
     "export_error": "Export error: {error}",
     "export_complete_file": "Export complete: {file_path}",
     "enter_vmd_file_path": "Please enter a VMD file path",
+    "select_vmd_target_model": "Select a target model, or choose Camera Motion.",
     "importing_vmd": "Importing VMD: {file_path}",
     "vmd_import_complete": "VMD import complete: {file_path}",
     "vmd_import_partial": "VMD import completed with warnings ({warning_count}): {file_path}",
@@ -199,6 +207,7 @@
     "blend_shape_disconnected": "Disconnected blend shape",
     "morphs_auto_connected_count": "Auto-connected {count} morph(s)",
     "morph_changes_applied": "Applied morph changes: {morph}",
+    "morph_key_not_removed": "No key was removed. Select one animation layer and ensure the current time is keyed",
     "enter_preset_name": "Please enter a preset name",
     "no_morph_values_to_save": "No morph values to save",
     "preset_saved": "Saved preset '{preset}'",
@@ -214,6 +223,7 @@
     "export_dev_mode_required": "Export is available only in Development Mode"
   },
   "options": {
+    "none": "None",
     "import_mesh": "Import Mesh",
     "import_skeleton": "Import Skeleton",
     "import_morph": "Import Morphs",
@@ -230,7 +240,13 @@
     "physics_shape_capsule": "Capsule",
     "physics_mode_bone": "Bone",
     "physics_mode_physics": "Physics",
-    "physics_mode_physics_bone": "Physics + Bone"
+    "physics_mode_physics_bone": "Physics + Bone",
+    "physics_joint_spring_6dof": "Spring 6DOF (Standard)",
+    "physics_joint_6dof": "6DOF",
+    "physics_joint_p2p": "P2P (Point-to-Point)",
+    "physics_joint_cone_twist": "Cone Twist",
+    "physics_joint_slider": "Slider",
+    "physics_joint_hinge": "Hinge"
   },
   "settings": {
     "general": "General Settings",
@@ -298,6 +314,7 @@
     "joint_name_conversion": "Convert Joint Names to English",
     "disable_backface_culling": "Disable Backface Culling",
     "import_morphs": "Import Morphs",
+    "import_physics": "Import Physics",
     "bake_mode": "Bake Motion",
     "native_physics_bake": "Bake Physics",
     "clear_existing_motion": "Clear Existing Motion",
@@ -311,7 +328,8 @@
     "enable_logging": "Enable Logging",
     "auto_classify_transparency": "Auto-classify transparency (scan texture alpha)",
     "auto_resolve_textures": "Auto-resolve textures",
-    "show_colliders": "Show Colliders"
+    "show_colliders": "Show Colliders",
+    "enable_physics": "Enable Physics"
   },
   "fields": {
     "import_scale": "Import Scale:",
@@ -382,10 +400,15 @@
     "name": "Name:",
     "name_english": "English Name:",
     "shape": "Shape:",
+    "shape_size": "Shape Size:",
+    "pmx_position": "Raw PMX Position:",
+    "pmx_rotation_degrees": "Raw PMX Rotation Degrees:",
     "bodies": "Bodies:",
     "physics_mode": "Physics Mode:",
     "related_bone": "Related Bone:",
     "collision_group": "Collision Group:",
+    "radius": "Radius:",
+    "radius_height": "Radius / Height:",
     "non_collision_groups": "Non-collision Groups:",
     "mass": "Mass:",
     "linear_damping": "Linear Damping:",
@@ -397,12 +420,12 @@
     "rigid_body_b": "Rigid Body B:",
     "linear_constraint_states": "Linear States (X, Y, Z):",
     "angular_constraint_states": "Angular States (X, Y, Z):",
-    "translation_limit_min": "Translation Min (X, Y, Z):",
-    "translation_limit_max": "Translation Max (X, Y, Z):",
-    "rotation_limit_min_degrees": "Rotation Min Degrees (X, Y, Z):",
-    "rotation_limit_max_degrees": "Rotation Max Degrees (X, Y, Z):",
-    "spring_translation": "Translation Spring (X, Y, Z):",
-    "spring_rotation": "Rotation Spring (X, Y, Z):",
+    "translation_limit_min": "Translation Min:",
+    "translation_limit_max": "Translation Max:",
+    "rotation_limit_min_degrees": "Rotation Min Degrees:",
+    "rotation_limit_max_degrees": "Rotation Max Degrees:",
+    "spring_translation": "Translation Spring:",
+    "spring_rotation": "Rotation Spring:",
     "spring_translation_enabled": "Translation Spring Enabled:",
     "spring_rotation_enabled": "Rotation Spring Enabled:"
   },
@@ -411,6 +434,7 @@
     "import_animation": "Import Animation",
     "export": "Export",
     "auto_detect": "<Auto Detect>",
+    "camera_motion": "Camera Motion",
     "reset_all": "Reset All",
     "clear_all": "Clear All",
     "connect": "Connect",
@@ -517,6 +541,10 @@
   "status": {
     "not_connected": "Not Connected",
     "connected": "Connected"
+  },
+  "morph_keying_status": {
+    "not_animated": "Not Animated",
+    "animated": "Animated"
   },
   "transparency_modes": {
     "opaque": "Opaque",

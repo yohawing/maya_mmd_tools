@@ -11,7 +11,7 @@ from .. import settings
 from ..converters.light_converter import create_mmd_light_controller, wire_mmd_shaders_to_mmd_light
 from ..converters.mesh_converter import sync_dx11_generated_uniforms
 from ..core import maya_attribute_utils, maya_viewport_utils, settings_keys as setting_keys
-from ..core.constants import SCENE_ROOT_SUFFIX
+from ..core.constants import DEFAULT_IMPORT_PHYSICS, SCENE_ROOT_SUFFIX
 from ..core.namespace_utils import NamespaceUtils
 from ..core.visibility_state import sync_visibility_connections
 from ..adapters.maya_cmds_adapter import MayaCmdsAdapter
@@ -78,11 +78,26 @@ class ModelImportPipeline:
         """Connect PMX network morph metadata nodes back to the model root."""
         for morph_node in (
             morph_result.get("bone_morph_nodes", [])
+            + morph_result.get("group_morph_nodes", [])
             + morph_result.get("material_morph_nodes", [])
         ):
             if not cmds.attributeQuery("mmd_model_root", node=morph_node, exists=True):
                 cmds.addAttr(morph_node, longName="mmd_model_root", attributeType="message")
-            cmds.connectAttr(f"{root_group}.message", f"{morph_node}.mmd_model_root", force=True)
+            existing_roots = cmds.listConnections(
+                f"{morph_node}.mmd_model_root", source=True, destination=False
+            ) or []
+            if existing_roots:
+                requested = cmds.ls(root_group, long=True) or []
+                existing = cmds.ls(existing_roots[0], long=True) or []
+                if requested != existing:
+                    self.logger.warning(
+                        "Refusing to reassign morph node %s from %s to %s",
+                        morph_node,
+                        existing_roots[0],
+                        root_group,
+                    )
+                continue
+            cmds.connectAttr(f"{root_group}.message", f"{morph_node}.mmd_model_root")
 
     def connect_texture_nodes_to_root(self, root_group: str, texture_nodes) -> None:
         """Attach instance ownership to imported texture nodes."""
@@ -99,14 +114,87 @@ class ModelImportPipeline:
         maya_joints: Any,
         root_group: str,
     ) -> Tuple[list, list]:
-        """Skip scene physics creation; physics is available only through native bake."""
-        self.logger.debug("Skipping retired Maya scene physics conversion")
+        """Build physics DAG nodes when the import option is enabled."""
+        if not bool(self.options.get("import_physics", DEFAULT_IMPORT_PHYSICS)):
+            self.logger.debug("Skipping physics scene build (import_physics disabled)")
+            if self.profile is not None:
+                self.profile["physics_converter"] = {
+                    "skipped": True,
+                    "reason": "import_physics_disabled",
+                }
+            return [], []
+
+        rigid_bodies = getattr(parser, "rigid_bodies", None) or []
+        if not rigid_bodies:
+            self.logger.debug("Skipping physics scene build (no physics data found)")
+            if self.profile is not None:
+                self.profile["physics_converter"] = {
+                    "skipped": True,
+                    "reason": "no_physics_data",
+                }
+            return [], []
+
+        from ..converters.physics_scene_builder import (
+            build_physics_live_graph,
+            build_physics_scene,
+        )
+
+        t0 = time.time()
+        rb_transforms, jt_transforms = build_physics_scene(
+            rigid_bodies=rigid_bodies,
+            joints=getattr(parser, "joints", None) or [],
+            bones=getattr(parser, "bones", None) or [],
+            maya_joints=maya_joints,
+            root_group=root_group,
+            scale=self.scale,
+            logger=self.logger,
+        )
+        elapsed = time.time() - t0
+        self.logger.info(
+            "Physics scene built: %d rigid bodies, %d joints (%.3fs)",
+            len([t for t in rb_transforms if t]),
+            len([t for t in jt_transforms if t]),
+            elapsed,
+        )
+        live_graph = build_physics_live_graph(
+            rigid_bodies=rigid_bodies,
+            bones=getattr(parser, "bones", None) or [],
+            maya_joints=maya_joints,
+            root_group=root_group,
+            logger=self.logger,
+        )
+        from ..core.collider_authoring import refresh_collider_authoring_pose
+
+        for transform in rb_transforms:
+            if not transform or not cmds.objExists(transform):
+                continue
+            shapes = cmds.listRelatives(
+                transform, shapes=True, fullPath=True, type="mmdRigidBodyShape"
+            ) or []
+            if shapes:
+                refresh_collider_authoring_pose(transform, shapes[0], self.scale)
+        if live_graph.get("solver"):
+            self.logger.debug(
+                "Internal physics solver graph built (unsupported): solver=%s, bone drivers=%d",
+                live_graph["solver"],
+                len(live_graph.get("drivers") or []),
+            )
+        else:
+            self.logger.debug(
+                "Internal physics solver graph unavailable (live physics unsupported): %s",
+                live_graph.get("reason", "unknown"),
+            )
         if self.profile is not None:
             self.profile["physics_converter"] = {
-                "skipped": True,
-                "reason": "maya_scene_physics_removed",
+                "rigid_bodies": len(rb_transforms),
+                "joints": len(jt_transforms),
+                "solver": live_graph.get("solver"),
+                "bone_drivers": len(live_graph.get("drivers") or []),
+                "elapsed_seconds": elapsed,
+                "support_scope": "authoring_only",
+                "live_physics_supported": False,
             }
-        return [], []
+        return rb_transforms, jt_transforms
 
     def create_light_controller(self) -> Optional[str]:
         """Create the shared MMD light controller when enabled."""

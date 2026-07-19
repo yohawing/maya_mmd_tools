@@ -21,6 +21,7 @@ class VmdImportContext:
 
     vmd_data: Any
     target_namespace: Optional[str]
+    target_model: Optional[str]
     layer_name: str
     bake_mode: bool
     clear_existing_motion: bool
@@ -190,7 +191,7 @@ class VmdIkEnabledAnimationContext:
     """State and scene queries needed by VMD IK enabled-state keying."""
 
     logger: Any
-    collect_ik_nodes_by_bone_name: Callable[[Optional[str]], Dict[str, str]]
+    collect_ik_nodes_by_bone_name: Callable[[Optional[str], Optional[str]], Dict[str, str]]
     get_animation_frame_range: Callable[[Any], Tuple[int, int]]
     vmd_frame_to_maya_time: Callable[[float], float]
 
@@ -203,7 +204,7 @@ class VmdNameMappingContext:
     bone_name_mapping: MutableMapping[str, str]
     bone_name_to_index: MutableMapping[str, int]
     bone_index_to_joint: MutableMapping[int, str]
-    build_morph_mappings: Callable[[], None]
+    build_morph_mappings: Callable[..., None]
 
 
 @dataclass(frozen=True)

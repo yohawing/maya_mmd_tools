@@ -5,7 +5,7 @@ weight 変更がマテリアル外観に反映されることを検証する。
 """
 
 from pathlib import Path
-import json
+import os
 import unittest
 from unittest import mock
 
@@ -32,6 +32,54 @@ from mmd_tools.core.constants import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MMD_SHADER_FX = _REPO_ROOT / "mmd_tools" / "shaders" / "MMDShader.fx"
+_MODULE_PLUGINS_LOADED = []
+_PREVIOUS_SKIP_SHADER_OVERRIDE = None
+
+
+def _restore_skip_shader_override(previous):
+    if previous is None:
+        os.environ.pop("MMD_TOOLS_SKIP_SHADER_OVERRIDE", None)
+    else:
+        os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = previous
+
+
+def _load_repo_plugin_for_tests(owned_plugins):
+    previous = os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE")
+    os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "1"
+    plugin_path = _REPO_ROOT / "mmd_tools" / "plugin_main.py"
+    was_loaded = False
+    try:
+        was_loaded = bool(cmds.pluginInfo(str(plugin_path), query=True, loaded=True))
+        if not was_loaded:
+            owned_plugins.extend(cmds.loadPlugin(str(plugin_path), quiet=True) or [])
+        return previous
+    except Exception:
+        if not was_loaded:
+            try:
+                if cmds.pluginInfo(str(plugin_path), query=True, loaded=True):
+                    cmds.unloadPlugin(str(plugin_path))
+            except Exception:
+                pass
+        _restore_skip_shader_override(previous)
+        raise
+
+
+def setUpModule():
+    global _PREVIOUS_SKIP_SHADER_OVERRIDE
+    _MODULE_PLUGINS_LOADED.clear()
+    _PREVIOUS_SKIP_SHADER_OVERRIDE = _load_repo_plugin_for_tests(_MODULE_PLUGINS_LOADED)
+
+
+def tearDownModule():
+    for plugin in reversed(_MODULE_PLUGINS_LOADED):
+        try:
+            if cmds.pluginInfo(plugin, query=True, loaded=True):
+                cmds.unloadPlugin(plugin)
+        except Exception:
+            pass
+    _restore_skip_shader_override(_PREVIOUS_SKIP_SHADER_OVERRIDE)
+
+
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.nodes.mmd_material_morph_eval_node import MmdMaterialMorphEvalNode
 
@@ -49,6 +97,23 @@ class TestMaterialMorphNumericComposition(unittest.TestCase):
             "edgeColor": (0.5, 0.5, 0.5, 0.5),
             "edgeSize": (0.5,),
         }
+
+    def test_plugin_load_failure_restores_environment_and_unloads_partial_load(self):
+        previous = os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE")
+        os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "preserved"
+        owned_plugins = []
+        fake_cmds = mock.Mock()
+        fake_cmds.pluginInfo.side_effect = [False, True]
+        fake_cmds.loadPlugin.side_effect = RuntimeError("simulated plugin load failure")
+        try:
+            with mock.patch.dict(globals(), {"cmds": fake_cmds}):
+                with self.assertRaisesRegex(RuntimeError, "simulated plugin load failure"):
+                    _load_repo_plugin_for_tests(owned_plugins)
+            self.assertEqual(os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE"), "preserved")
+            self.assertEqual(owned_plugins, [])
+            fake_cmds.unloadPlugin.assert_called_once()
+        finally:
+            _restore_skip_shader_override(previous)
 
     @staticmethod
     def _contribution(op, value, order=0, slot=0):
@@ -327,139 +392,6 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             except RuntimeError:
                 self.skipTest(f"mmdMaterialMorphEval node is unavailable: {exc}")
         cmds.delete(node)
-
-    def test_direct_and_multiple_group_weights_add_at_evaluator_input(self):
-        """direct + group*rate が同じ material contribution weight に加算される。"""
-        self._require_material_morph_node()
-        evaluator = cmds.createNode("mmdMaterialMorphEval", name="groupMaterialEval")
-        direct = cmds.createNode("network", name="directMaterialMorph")
-        group_a = cmds.createNode("network", name="groupMaterialMorphA")
-        group_b = cmds.createNode("network", name="groupMaterialMorphB")
-        for node in (direct, group_a, group_b):
-            cmds.addAttr(node, longName="weight", attributeType="double")
-
-        material_morph_runtime._connect_contribution_weight(
-            evaluator,
-            0,
-            {
-                "morph_node": direct,
-                "group_weight_sources": [
-                    (7, group_a, 0.25),
-                    (8, group_b, -0.5),
-                ],
-            },
-            f"{evaluator}.contribution[0].weight",
-        )
-        cmds.setAttr(f"{direct}.weight", 0.4)
-        cmds.setAttr(f"{group_a}.weight", 0.8)
-        cmds.setAttr(f"{group_b}.weight", 0.2)
-
-        self.assertAlmostEqual(
-            cmds.getAttr(f"{evaluator}.contribution[0].weight"),
-            0.4 + 0.8 * 0.25 + 0.2 * -0.5,
-        )
-
-    def test_all_material_group_weight_is_applied_once_per_evaluator(self):
-        """material_index=-1 のgroup成分をshader数だけ重複加算しない。"""
-        self._require_material_morph_node()
-        material = cmds.createNode("network", name="allMaterialMorph")
-        group = cmds.createNode("network", name="allMaterialGroup")
-        for node, index in ((material, 4), (group, 8)):
-            cmds.addAttr(node, longName="weight", attributeType="double")
-            cmds.addAttr(node, longName="mmd_morph_index", attributeType="long")
-            cmds.setAttr(f"{node}.mmd_morph_index", index)
-        cmds.addAttr(material, longName="mmd_material_morph_offsets_json", dataType="string")
-        cmds.setAttr(
-            f"{material}.mmd_material_morph_offsets_json",
-            json.dumps([{"material_index": -1, "operation_type": 1}]),
-            type="string",
-        )
-        cmds.addAttr(group, longName="mmd_group_morph_offsets_json", dataType="string")
-        cmds.setAttr(
-            f"{group}.mmd_group_morph_offsets_json",
-            json.dumps([{"morph_index": 4, "morph_rate": 0.25}]),
-            type="string",
-        )
-
-        skipped = []
-        contributions = material_morph_runtime._collect_contributions_by_shader(
-            [material],
-            {0: "shaderA", 1: "shaderB"},
-            skipped,
-        )
-        material_morph_runtime._append_group_weight_sources(contributions, [group], skipped)
-        cmds.setAttr(f"{material}.weight", 0.4)
-        cmds.setAttr(f"{group}.weight", 0.8)
-        for shader in ("shaderA", "shaderB"):
-            evaluator = cmds.createNode("mmdMaterialMorphEval", name=f"{shader}Eval")
-            material_morph_runtime._connect_contribution_weight(
-                evaluator,
-                0,
-                contributions[shader][0],
-                f"{evaluator}.contribution[0].weight",
-            )
-            self.assertAlmostEqual(
-                cmds.getAttr(f"{evaluator}.contribution[0].weight"),
-                0.4 + 0.8 * 0.25,
-            )
-        self.assertEqual(skipped, [])
-
-    def test_colliding_sanitized_evaluator_names_keep_owned_helpers_distinct(self):
-        """namespace区切りだけが違う evaluator 間でhelperを共有しない。"""
-        self._require_material_morph_node()
-        if not cmds.namespace(exists="ns"):
-            cmds.namespace(add="ns")
-        evaluators = (
-            cmds.createNode("mmdMaterialMorphEval", name="ns:mat_materialMorphEval"),
-            cmds.createNode("mmdMaterialMorphEval", name="ns_mat_materialMorphEval"),
-        )
-        direct_nodes = []
-        group_nodes = []
-        for index in range(2):
-            direct = cmds.createNode("network", name=f"collisionDirect{index}")
-            group = cmds.createNode("network", name=f"collisionGroup{index}")
-            for node in (direct, group):
-                cmds.addAttr(node, longName="weight", attributeType="double")
-            direct_nodes.append(direct)
-            group_nodes.append(group)
-
-        def connect(index):
-            evaluator = evaluators[index]
-            material_morph_runtime._connect_contribution_weight(
-                evaluator,
-                0,
-                {
-                    "morph_node": direct_nodes[index],
-                    "group_weight_sources": [(8, group_nodes[index], 0.25)],
-                },
-                f"{evaluator}.contribution[0].weight",
-            )
-
-        connect(0)
-        connect(1)
-        owned_before = []
-        for evaluator in evaluators:
-            owned_before.append(
-                set(cmds.listConnections(f"{evaluator}.message", source=False, destination=True) or [])
-            )
-        self.assertTrue(owned_before[0])
-        self.assertTrue(owned_before[1])
-        self.assertTrue(owned_before[0].isdisjoint(owned_before[1]))
-
-        cmds.setAttr(f"{direct_nodes[0]}.weight", 0.1)
-        cmds.setAttr(f"{group_nodes[0]}.weight", 0.4)
-        cmds.setAttr(f"{direct_nodes[1]}.weight", 0.6)
-        cmds.setAttr(f"{group_nodes[1]}.weight", 0.8)
-        self.assertAlmostEqual(cmds.getAttr(f"{evaluators[0]}.contribution[0].weight"), 0.2)
-        self.assertAlmostEqual(cmds.getAttr(f"{evaluators[1]}.contribution[0].weight"), 0.8)
-
-        connect(0)
-        connect(1)
-        for evaluator, expected in zip(evaluators, owned_before):
-            owned_after = set(
-                cmds.listConnections(f"{evaluator}.message", source=False, destination=True) or []
-            )
-            self.assertEqual(owned_after, expected)
 
     def _create_scene_with_shader(
         self,

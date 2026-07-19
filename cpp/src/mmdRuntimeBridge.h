@@ -61,11 +61,42 @@ public:
     bool isModelValid() const { return model_ != nullptr; }
     bool isClipValid() const { return clip_ != nullptr; }
     bool isInstanceValid() const { return instance_ != nullptr; }
+    bool isPhysicsWorldValid() const { return physicsWorld_ != nullptr; }
 
     size_t boneCount() const;
     size_t morphCount() const;
 
+    // Physics world
+    bool createPhysicsWorldFromPmx(const uint8_t* data, size_t len);
+    void freePhysicsWorld();
+    bool resetPhysicsWorld();
+    bool stepPhysicsWorldRuntime(float dtSeconds,
+                                mmd_runtime_ffi_physics_world_step_report_t* outReport = nullptr);
+    size_t physicsWorldRigidbodyCount() const;
+    std::vector<float> copyRigidbodyStates() const;
+    bool getPhysicsGravity(float outGravity[3]) const;
+    bool setPhysicsGravity(const float gravity[3]);
+    std::vector<mmd_runtime_ffi_physics_rigidbody_binding_t> copyRigidbodyBindings() const;
+    std::vector<uint8_t> physicsDrivenBoneMask(size_t boneCount) const;
+    bool evaluateHostFrame(const mmd_runtime_ffi_host_pose_view_t& pose,
+                           mmd_runtime_physics_frame_action_t action,
+                           float dtSeconds,
+                           float ikTolerance = 0.001f,
+                           uint32_t maxIters = 0,
+                           mmd_runtime_ffi_physics_world_step_report_t* outReport = nullptr);
+
+    // Instance physics helpers
+    bool setPhysicsMode(mmd_runtime_physics_mode_t mode);
+    bool evaluateRestPose();
+    bool evaluateCurrentPoseBeforePhysics();
+    bool evaluateCurrentPoseAfterPhysics();
+    bool applyPhysicsWorldMatrices(const float* matrices, size_t matricesLen,
+                                   const uint8_t* mask, size_t maskLen,
+                                   size_t* outUpdatedCount = nullptr);
+
     static uint32_t runtimeAbiVersion();
+    static uint32_t runtimeFeatureFlags();
+    static bool supportsHostPhysics();
     static bool isRuntimeAbiCompatible();
     static bool allowRuntimeAbiMismatch();
     static const char* runtimeAbiMismatchEnvName();
@@ -74,6 +105,7 @@ private:
     mmd_runtime_model_t*   model_ = nullptr;
     mmd_runtime_clip_t*    clip_ = nullptr;
     mmd_runtime_instance_t* instance_ = nullptr;
+    mmd_runtime_physics_world_t* physicsWorld_ = nullptr;
 
     // 内部ユーティリティ
     bool loadFfiIfNeeded();

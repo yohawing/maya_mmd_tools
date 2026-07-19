@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- Exposed the Import Physics option in normal mode and enabled PMX/PMD physics import by default; users can still opt out before import.
+- Enabled Create MMD Shaders by default for PMX/PMD imports.
+
+## [0.5.0] - 2026-07-19
+
+### Added
+- Added Development Mode physics authoring for imported PMX rigid bodies and joints: editable shape size/raw pose and joint pose, named related bone/body bindings including `None`, validation/undo, authoring/rest-pose Collider display with bone follow and visibility, and validated PMX round-trip for those authoring fields.
+
+### Changed
+- Updated the bundled `mmd-anim` runtime to v0.3.1.
+
+### Fixed
+- Fixed material morph sliders on the VP2 OpenGL/GLSL path.
+
+### Known Issues
+- Native physics bake remains experimental and opt-in; live physics simulation is unsupported.
+- Create, duplicate, and delete object authoring remain unsupported, as do Controller/IK/arbitrary-key pre-physics poses, animated Collider collision, hair/skirt live collision, random scrubbing, and physics caches.
+
 ## [0.4.0] - 2026-07-13
 
 ### Added

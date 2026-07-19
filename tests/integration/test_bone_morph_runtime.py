@@ -2,6 +2,7 @@
 
 import json
 import math
+import os
 from pathlib import Path
 from unittest import mock
 
@@ -13,8 +14,69 @@ from mmd_tools.nodes.mmd_bone_morph_accum_node import MmdBoneMorphAccumNode
 from tests.common.maya_test_base import MayaTestBase
 
 
+def _restore_skip_shader_override(previous):
+    if previous is None:
+        os.environ.pop("MMD_TOOLS_SKIP_SHADER_OVERRIDE", None)
+    else:
+        os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = previous
+
+
+def _load_repo_plugin_for_tests(owned_plugins):
+    previous = os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE")
+    os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "1"
+    plugin_path = Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py"
+    was_loaded = False
+    try:
+        was_loaded = bool(cmds.pluginInfo(str(plugin_path), query=True, loaded=True))
+        if not was_loaded:
+            owned_plugins.extend(cmds.loadPlugin(str(plugin_path), quiet=True) or [])
+        return previous
+    except Exception:
+        if not was_loaded:
+            try:
+                if cmds.pluginInfo(str(plugin_path), query=True, loaded=True):
+                    cmds.unloadPlugin(str(plugin_path))
+            except Exception:
+                pass
+        _restore_skip_shader_override(previous)
+        raise
+
+
 class TestBoneMorphRuntime(MayaTestBase):
     """Synthetic scene tests for PMX bone morph DG runtime wiring."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.plugins_loaded = []
+        cls._previous_skip_shader_override = _load_repo_plugin_for_tests(cls.plugins_loaded)
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            super().tearDownClass()
+        finally:
+            _restore_skip_shader_override(cls._previous_skip_shader_override)
+
+    def test_plugin_harness_uses_class_local_ownership(self):
+        self.assertIsNot(type(self).plugins_loaded, MayaTestBase.plugins_loaded)
+
+    def test_plugin_load_failure_restores_environment_and_unloads_partial_load(self):
+        previous = os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE")
+        os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "preserved"
+        owned_plugins = []
+        fake_cmds = mock.Mock()
+        fake_cmds.pluginInfo.side_effect = [False, True]
+        fake_cmds.loadPlugin.side_effect = RuntimeError("simulated plugin load failure")
+        try:
+            with mock.patch.dict(globals(), {"cmds": fake_cmds}):
+                with self.assertRaisesRegex(RuntimeError, "simulated plugin load failure"):
+                    _load_repo_plugin_for_tests(owned_plugins)
+            self.assertEqual(os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE"), "preserved")
+            self.assertEqual(owned_plugins, [])
+            fake_cmds.unloadPlugin.assert_called_once()
+        finally:
+            _restore_skip_shader_override(previous)
 
     def test_plug_match_guard_ignores_uninitialized_attributes(self):
         class FakePlug:
@@ -48,9 +110,15 @@ class TestBoneMorphRuntime(MayaTestBase):
         joint = cmds.createNode("joint", name=name, parent=root)
         cmds.addAttr(joint, longName="mmd_bone_index", attributeType="long")
         cmds.setAttr(f"{joint}.mmd_bone_index", bone_index)
+        self._current_model_root = root
         return root, joint
 
-    def _create_bone_morph_node(self, name, morph_index, offsets):
+    def _connect_morph_root(self, node, root_group=None):
+        root_group = root_group or self._current_model_root
+        cmds.addAttr(node, longName="mmd_model_root", attributeType="message")
+        cmds.connectAttr(f"{root_group}.message", f"{node}.mmd_model_root")
+
+    def _create_bone_morph_node(self, name, morph_index, offsets, root_group=None):
         node = cmds.createNode("network", name=name)
         cmds.addAttr(
             node,
@@ -71,9 +139,10 @@ class TestBoneMorphRuntime(MayaTestBase):
             json.dumps(offsets, separators=(",", ":")),
             type="string",
         )
+        self._connect_morph_root(node, root_group)
         return node
 
-    def _create_group_morph_node(self, name, morph_index, offsets):
+    def _create_group_morph_node(self, name, morph_index, offsets, root_group=None):
         node = cmds.createNode("network", name=name)
         cmds.addAttr(
             node,
@@ -94,6 +163,7 @@ class TestBoneMorphRuntime(MayaTestBase):
             json.dumps(offsets, separators=(",", ":")),
             type="string",
         )
+        self._connect_morph_root(node, root_group)
         return node
 
     def test_weight_drives_translate_offsets_and_adds_multiple_morphs(self):
@@ -134,27 +204,127 @@ class TestBoneMorphRuntime(MayaTestBase):
         self.assertEqual(len(cmds.ls(type="mmdBoneMorphAccum") or []), 1)
 
     def test_group_morph_weight_drives_referenced_bone_morph_offset(self):
-        """Group morph references to bone morphs are weighted by group rate."""
+        """Cross-index controller dirtying drives the referenced bone leaf."""
         self._require_accumulator_node()
         root, joint = self._create_indexed_joint()
 
-        self._create_bone_morph_node(
+        bone_morph = self._create_bone_morph_node(
             "move_target_boneMorph",
             3,
             [{"bone_index": 0, "translation": [4.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]}],
         )
-        group_morph = self._create_group_morph_node(
+        self._create_group_morph_node(
             "move_group_groupMorph",
             4,
             [{"morph_index": 3, "morph_rate": 0.25}],
         )
+        controller = cmds.createNode("mmdMorphController")
+        cmds.setAttr(f"{controller}.topologyVersion", 1)
+        cmds.setAttr(f"{controller}.groupTopology", '{"3":[[4,0.25]]}', type="string")
+        cmds.connectAttr(f"{controller}.outputWeight[3]", f"{bone_morph}.weight")
 
         result = build_bone_morph_graph(root)
         self.assertTrue(result["success"])
-        self.assertEqual(result["contributions"], 2)
+        self.assertEqual(result["contributions"], 1)
 
-        cmds.setAttr(f"{group_morph}.weight", 0.5)
+        cmds.setAttr(f"{controller}.inputWeight[4]", 0.5)
         self.assertListAlmostEqual(cmds.getAttr(f"{joint}.translate")[0], (0.5, 0.0, 0.0), places=5)
+
+    def test_root_scoped_discovery_isolates_same_index_and_skips_legacy_network(self):
+        """Building model B isolates its Controller-driven bone leaf and warns for legacy data."""
+        self._require_accumulator_node()
+        root_a, joint_a = self._create_indexed_joint(name="shared_bone", bone_index=7)
+        root_b, joint_b = self._create_indexed_joint(name="shared_bone", bone_index=7)
+        offset = [
+            {
+                "bone_index": 7,
+                "translation": [2.0, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0, 1.0],
+            }
+        ]
+        bone_a = self._create_bone_morph_node("model_a_boneMorph", 5, offset, root_a)
+        bone_b = self._create_bone_morph_node("model_b_boneMorph", 5, offset, root_b)
+        controller_a = cmds.createNode("mmdMorphController")
+        cmds.addAttr(root_a, longName="mmd_morph_controller", attributeType="message")
+        cmds.connectAttr(f"{controller_a}.message", f"{root_a}.mmd_morph_controller")
+        cmds.setAttr(f"{controller_a}.topologyVersion", 1)
+        cmds.setAttr(f"{controller_a}.groupTopology", '{"5":[[6,0.5]]}', type="string")
+        cmds.connectAttr(f"{controller_a}.outputWeight[5]", f"{bone_a}.weight")
+        controller_b = cmds.createNode("mmdMorphController")
+        cmds.addAttr(root_b, longName="mmd_morph_controller", attributeType="message")
+        cmds.connectAttr(f"{controller_b}.message", f"{root_b}.mmd_morph_controller")
+        cmds.setAttr(f"{controller_b}.topologyVersion", 1)
+        cmds.setAttr(f"{controller_b}.groupTopology", '{"5":[[6,0.5]]}', type="string")
+        cmds.connectAttr(f"{controller_b}.outputWeight[5]", f"{bone_b}.weight")
+        legacy = self._create_bone_morph_node("legacy_unowned_boneMorph", 5, offset, root_b)
+        cmds.deleteAttr(f"{legacy}.mmd_model_root")
+
+        with self.assertLogs(
+            "mmd_tools.converters.morph_scene_metadata",
+            level="WARNING",
+        ) as captured:
+            result = build_bone_morph_graph(root_b)
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["contributions"], 1)
+        migration_warnings = [
+            message for message in captured.output if "migration required" in message
+        ]
+        self.assertEqual(len(migration_warnings), 1)
+        self.assertIn(legacy, migration_warnings[0])
+        self.assertIn(root_b, migration_warnings[0])
+
+        cmds.setAttr(f"{controller_a}.inputWeight[5]", 1.0)
+        cmds.setAttr(f"{controller_a}.inputWeight[6]", 1.0)
+        cmds.setAttr(f"{legacy}.weight", 1.0)
+        self.assertListAlmostEqual(cmds.getAttr(f"{joint_a}.translate")[0], (0.0, 0.0, 0.0))
+        self.assertListAlmostEqual(cmds.getAttr(f"{joint_b}.translate")[0], (0.0, 0.0, 0.0))
+
+        cmds.setAttr(f"{controller_b}.inputWeight[5]", 1.0)
+        cmds.setAttr(f"{controller_b}.inputWeight[6]", 1.0)
+        self.assertListAlmostEqual(cmds.getAttr(f"{joint_b}.translate")[0], (3.0, 0.0, 0.0))
+        self.assertListAlmostEqual(cmds.getAttr(f"{joint_a}.translate")[0], (0.0, 0.0, 0.0))
+
+    def test_explicit_root_rejects_malformed_root_connections_once(self):
+        """Unconnected, multi-root, and non-DAG root metadata all fail closed."""
+        root, _joint = self._create_indexed_joint()
+        other_root = cmds.group(empty=True, name="other_model_root")
+        offset = [
+            {
+                "bone_index": 0,
+                "translation": [1.0, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0, 1.0],
+            }
+        ]
+        unconnected = self._create_bone_morph_node("unconnected_boneMorph", 0, offset)
+        cmds.disconnectAttr(f"{root}.message", f"{unconnected}.mmd_model_root")
+
+        multiple = self._create_bone_morph_node("multiple_roots_boneMorph", 1, offset)
+        cmds.deleteAttr(f"{multiple}.mmd_model_root")
+        cmds.addAttr(multiple, longName="mmd_model_root", attributeType="message", multi=True)
+        cmds.connectAttr(f"{root}.message", f"{multiple}.mmd_model_root[0]")
+        cmds.connectAttr(f"{other_root}.message", f"{multiple}.mmd_model_root[1]")
+
+        invalid = self._create_bone_morph_node("invalid_root_boneMorph", 2, offset)
+        cmds.disconnectAttr(f"{root}.message", f"{invalid}.mmd_model_root")
+        invalid_root = cmds.createNode("network", name="not_a_dag_model_root")
+        cmds.connectAttr(f"{invalid_root}.message", f"{invalid}.mmd_model_root")
+
+        with self.assertLogs(
+            "mmd_tools.converters.morph_scene_metadata",
+            level="WARNING",
+        ) as captured:
+            discovered = list(bone_morph_runtime._iter_bone_morph_nodes(root))
+
+        self.assertEqual(discovered, [])
+        migration_warnings = [
+            message for message in captured.output if "migration required" in message
+        ]
+        self.assertEqual(len(migration_warnings), 3)
+        for node in (unconnected, multiple, invalid):
+            matching = [message for message in migration_warnings if node in message]
+            self.assertEqual(len(matching), 1)
+            self.assertIn(root, matching[0])
 
     def test_rotation_offset_uses_quaternion_slerp(self):
         """PMX quaternion is converted to Maya space and slerped by weight."""

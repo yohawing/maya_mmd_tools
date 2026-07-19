@@ -83,18 +83,25 @@ class GuiTestRunner:
 
         # Configure logging to file
         # This will capture logs from the test runner and the application itself
-        for handler in logging.root.handlers[:]:
+        original_handlers = logging.root.handlers[:]
+        original_log_level = logging.root.level
+        for handler in original_handlers:
             logging.root.removeHandler(handler)
         logging.basicConfig(
             filename=log_file_path,
             level=logging.INFO,
             format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+            encoding="utf-8",
+            errors="backslashreplace",
         )
 
-        # Redirect stdout and stderr to the log file
+        # Redirect stdout and stderr to the log file.  Preserve the live Maya
+        # streams so they can always be restored after a test-side exception.
         log_file = open(log_file_path, "a", encoding="utf-8")
+        original_stdout, original_stderr = sys.stdout, sys.stderr
         sys.stdout = log_file
         sys.stderr = log_file
+        status = "ERROR"
 
         try:
             print(f"Starting GUI tests. Project root: {project_root}")
@@ -111,18 +118,30 @@ class GuiTestRunner:
 
             if suite.countTestCases() == 0:
                 print("No tests found.")
-                return
+                status = "NO_TESTS"
+                return status
 
             # Run tests
             print(f"Found {suite.countTestCases()} tests to run.")
             runner = unittest.TextTestRunner(stream=log_file, verbosity=2)
-            runner.run(suite)
+            result = runner.run(suite)
+            status = "PASS" if result.wasSuccessful() else "FAIL"
+            return status
 
         except Exception:
             logging.error("An unexpected error occurred during test execution.", exc_info=True)
+            return status
         finally:
-            print("\n//-- GUI TEST FINISHED --//")
+            print(f"\n//-- GUI TEST FINISHED --// status={status}")
             log_file.close()
             # Restore original stdout/stderr
-            sys.stdout = sys.__stdout__
-            sys.stderr = sys.__stderr__
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
+            # Do not leave a FileHandler holding the log open on Windows.  Maya
+            # logging is restored to the state it had before this test command.
+            for handler in logging.root.handlers[:]:
+                logging.root.removeHandler(handler)
+                handler.close()
+            for handler in original_handlers:
+                logging.root.addHandler(handler)
+            logging.root.setLevel(original_log_level)
