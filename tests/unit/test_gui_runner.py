@@ -26,11 +26,15 @@ from tests.common.gui_test_base import GuiTestRunner
 
 
 class _PassingCase(unittest.TestCase):
+    __test__ = False
+
     def test_pass(self):
         pass
 
 
 class _FailingCase(unittest.TestCase):
+    __test__ = False
+
     def test_fail(self):
         self.fail("expected failure")
 

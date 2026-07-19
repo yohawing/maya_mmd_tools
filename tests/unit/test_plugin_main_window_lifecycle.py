@@ -94,6 +94,7 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             "mmd_tools.nodes.mmd_bone_morph_accum_node",
             "mmd_tools.nodes.mmd_ccd_ik_node",
             "mmd_tools.nodes.mmd_material_morph_eval_node",
+            "mmd_tools.nodes.mmd_morph_controller_node",
             "mmd_tools.nodes.mmd_rigid_body_shape",
             "mmd_tools.nodes.mmd_physics_joint_shape",
             "mmd_tools.nodes.mmd_physics_solver_node",

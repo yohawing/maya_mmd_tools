@@ -175,7 +175,8 @@ from mmd_tools.view import shader_override  # noqa: E402
 
 
 def _shader_override_uses_test_stub() -> bool:
-    return shader_override.MMDShaderOverride.__mro__[1] is _StubMPxShaderOverride
+    mro = getattr(shader_override.MMDShaderOverride, "__mro__", ())
+    return isinstance(mro, (tuple, list)) and len(mro) > 1 and mro[1] is _StubMPxShaderOverride
 
 
 def _skip_without_shader_override_stub():
