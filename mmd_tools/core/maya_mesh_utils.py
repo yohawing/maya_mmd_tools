@@ -129,9 +129,7 @@ def apply_vertex_weights(
     vertex_indices = list(range(vertex_count))
     vertex_component.addElements(vertex_indices)
 
-    influence_indices = om.MIntArray(influence_count, 0)
-    for ii in range(influence_count):
-        influence_indices[ii] = ii
+    influence_indices = list(range(influence_count))
 
     zero_row = [0.0] * influence_count
     n_weights = len(weights)
@@ -150,7 +148,28 @@ def apply_vertex_weights(
             flat_extend(zero_row)
     weight_array = om.MDoubleArray(flat)
 
-    skin_fn.setWeights(shape_dag_path, vertex_component_obj, influence_indices, weight_array, False)
+    try:
+        skin_fn.setWeights(
+            shape_dag_path,
+            vertex_component_obj,
+            om.MIntArray(influence_indices),
+            weight_array,
+            False,
+        )
+    except TypeError:
+        # Maya 2027's Python 3.13 binding can select only the single-influence
+        # overload here. Keep the API fast path for older Maya versions and
+        # use the command fallback only when that binding defect is observed.
+        influence_names = [path.fullPathName() for path in influence_paths]
+        for vertex_index in range(vertex_count):
+            row_start = vertex_index * influence_count
+            row = flat[row_start : row_start + influence_count]
+            cmds.skinPercent(
+                skin_cluster,
+                f"{mesh_node}.vtx[{vertex_index}]",
+                transformValue=list(zip(influence_names, row)),
+                normalize=False,
+            )
 
 
 def find_or_create_blendshape_node(mesh_node):

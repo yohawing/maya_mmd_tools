@@ -385,8 +385,7 @@ def batch_create_and_key_curve_arrays(
             if state.get("first") is not None:
                 if animation_layer:
                     layer_static_values[attr] = om.MDoubleArray(
-                        len(times),
-                        _as_layer_delta(joint_name, attr, float(state["first"])),
+                        [_as_layer_delta(joint_name, attr, float(state["first"]))] * len(times)
                     )
                     dynamic_attrs.append(attr)
                 else:

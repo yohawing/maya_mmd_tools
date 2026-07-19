@@ -30,9 +30,15 @@ def main() -> int:
 
     maya.standalone.initialize(name="python")
     try:
-        cmds.loadPlugin(str(plugin_path), quiet=True)
+        loaded_plugins = cmds.loadPlugin(str(plugin_path), quiet=True)
+        if isinstance(loaded_plugins, str):
+            plugin_name = loaded_plugins
+        elif loaded_plugins:
+            plugin_name = loaded_plugins[0]
+        else:
+            raise RuntimeError(f"C++ plugin did not report its loaded name: {plugin_path}")
         registered_nodes = cmds.pluginInfo(
-            str(plugin_path), query=True, dependNode=True
+            plugin_name, query=True, dependNode=True
         ) or []
         if "mmdPhysicsSolver" in registered_nodes:
             raise RuntimeError(

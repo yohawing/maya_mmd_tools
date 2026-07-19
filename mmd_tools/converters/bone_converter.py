@@ -607,9 +607,7 @@ class BoneConverter:
         vertex_component_obj = vertex_component.create(om.MFn.kMeshVertComponent)
         vertex_component.addElements(list(range(vertex_count)))
 
-        influence_indices = om.MIntArray(influence_count, 0)
-        for influence_index in range(influence_count):
-            influence_indices[influence_index] = influence_index
+        influence_indices = om.MIntArray(list(range(influence_count)))
 
         skin_fn.setWeights(
             shape_dag_path,

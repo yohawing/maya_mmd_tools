@@ -80,7 +80,7 @@ def get_or_expand_runtime_channel(
         return arr
     state = st_dict.get(attr, {})
     if state.get("is_static") and state.get("first") is not None:
-        return om.MDoubleArray(n_frames, float(state["first"]))
+        return om.MDoubleArray([float(state["first"])] * n_frames)
     return None
 
 
@@ -209,12 +209,12 @@ def decompose_append_own_rotation(
 ):
     """Remove grant contribution from final rotation and return own/grant rotations."""
     n = len(target_rx)
-    own_rx = om.MDoubleArray(n, 0.0)
-    own_ry = om.MDoubleArray(n, 0.0)
-    own_rz = om.MDoubleArray(n, 0.0)
-    grant_rx = om.MDoubleArray(n, 0.0)
-    grant_ry = om.MDoubleArray(n, 0.0)
-    grant_rz = om.MDoubleArray(n, 0.0)
+    own_rx = om.MDoubleArray([0.0] * n)
+    own_ry = om.MDoubleArray([0.0] * n)
+    own_rz = om.MDoubleArray([0.0] * n)
+    grant_rx = om.MDoubleArray([0.0] * n)
+    grant_ry = om.MDoubleArray([0.0] * n)
+    grant_rz = om.MDoubleArray([0.0] * n)
     identity = om.MQuaternion()
 
     for i in range(n):
@@ -340,12 +340,12 @@ def decompose_append_own_translation(
 ):
     """Remove grant contribution from final translation and return own/grant translations."""
     n = len(target_tx)
-    own_tx = om.MDoubleArray(n, 0.0)
-    own_ty = om.MDoubleArray(n, 0.0)
-    own_tz = om.MDoubleArray(n, 0.0)
-    grant_tx = om.MDoubleArray(n, 0.0)
-    grant_ty = om.MDoubleArray(n, 0.0)
-    grant_tz = om.MDoubleArray(n, 0.0)
+    own_tx = om.MDoubleArray([0.0] * n)
+    own_ty = om.MDoubleArray([0.0] * n)
+    own_tz = om.MDoubleArray([0.0] * n)
+    grant_tx = om.MDoubleArray([0.0] * n)
+    grant_ty = om.MDoubleArray([0.0] * n)
+    grant_tz = om.MDoubleArray([0.0] * n)
 
     for i in range(n):
         gx = source_tx[i] * ratio
@@ -404,9 +404,9 @@ def decompose_append_translations_for_scene(
         rest: Tuple[float, float, float],
     ) -> Tuple[om.MDoubleArray, om.MDoubleArray, om.MDoubleArray]:
         tx, ty, tz = values
-        out_x = om.MDoubleArray(n_frames, 0.0)
-        out_y = om.MDoubleArray(n_frames, 0.0)
-        out_z = om.MDoubleArray(n_frames, 0.0)
+        out_x = om.MDoubleArray([0.0] * n_frames)
+        out_y = om.MDoubleArray([0.0] * n_frames)
+        out_z = om.MDoubleArray([0.0] * n_frames)
         for i in range(n_frames):
             out_x[i] = tx[i] - rest[0]
             out_y[i] = ty[i] - rest[1]
