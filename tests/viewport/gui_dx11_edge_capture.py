@@ -951,7 +951,7 @@ def main() -> int:
             project_root=project_root,
             output_dir=output_dir,
             port=args.port,
-            launch_mode="direct",
+            launch_mode="explorer" if sys.platform == "win32" else "direct",
             env_overrides={"MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11"},
         )
         maya_commandport.wait_for_port(args.port, MAYA_START_TIMEOUT, maya_process)
@@ -996,16 +996,19 @@ def main() -> int:
         logger.error("Capture failed: %s", exc, exc_info=True)
         return 1
     finally:
-        if maya_process:
+        if maya_commandport.is_port_open(args.port):
             logger.info("Terminating Maya...")
             try:
                 # Try graceful quit
                 maya_commandport.quit_maya(args.port)
-                maya_process.wait(timeout=30)
+                if maya_process:
+                    maya_process.wait(timeout=30)
             except Exception:
-                logger.warning("Force-killing Maya process...")
-                maya_process.kill()
+                if maya_process:
+                    logger.warning("Force-killing Maya process...")
+                    maya_process.kill()
             logger.info("Maya terminated.")
+        if maya_process:
             maya_commandport.close_process_logs(maya_process)
 
     return 0

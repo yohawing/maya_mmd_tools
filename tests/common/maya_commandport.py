@@ -146,6 +146,12 @@ def launch_maya(
     if env_overrides:
         env.update(env_overrides)
 
+    if platform.system() == "Windows" and launch_mode == "direct":
+        raise ValueError(
+            'launch_mode="direct" is unsupported on Windows; use "explorer" '
+            "to avoid Maya license-checkout exit 253"
+        )
+
     command = [str(executable), "-command", f'commandPort -name ":{port}" -sourceType "python";']
     if platform.system() == "Windows" and launch_mode == "explorer":
         mel_path = (output_dir / f"commandport_{port}.mel").resolve()

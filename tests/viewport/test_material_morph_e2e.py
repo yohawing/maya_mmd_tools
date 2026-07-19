@@ -59,6 +59,11 @@ class MaterialMorphE2ETest(unittest.TestCase):
         ):
             self.assertIn(token, code)
 
+    def test_payload_edits_controller_input_instead_of_connected_morph_weight(self):
+        code = _maya_code({"sentinel": True})
+        self.assertIn('controllers[0] + ".inputWeight[{}]".format(index)', code)
+        self.assertIn('"weightPlug": weight_plug', code)
+
     def test_main_payload_only_verifies_preloaded_plugin_before_import(self):
         code = _maya_code({"sentinel": True})
         plugin_path = 'plugin_path = str(Path(P["production_plugin_path"]).resolve())'

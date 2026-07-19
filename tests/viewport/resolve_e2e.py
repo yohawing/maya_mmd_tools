@@ -359,7 +359,7 @@ def main() -> int:
         project_root=project_root,
         output_dir=out_dir,
         port=port,
-        launch_mode="direct",
+        launch_mode="explorer" if sys.platform == "win32" else "direct",
         env_overrides={"MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11"},
     )
     maya_out_path = out_dir / "maya_stdout.log"
