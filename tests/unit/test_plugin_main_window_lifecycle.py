@@ -222,6 +222,73 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         ]
         self.assertEqual(len(repair_calls), 1)
 
+    def test_install_menu_sets_visible_top_label_and_installs_humanik_submenu(self):
+        self.plugin_main.cmds.menu.side_effect = lambda *_args, **kwargs: (
+            False if kwargs.get("exists") else [] if kwargs.get("query") else "MMD"
+        )
+        with unittest.mock.patch(
+            "mmd_tools.ui.humanik_menu_actions.install_humanik_menu"
+        ) as install_humanik:
+            self.plugin_main.install_mmd_menu()
+
+        self.assertIn(
+            unittest.mock.call("MMD", label="MMD Tools", parent="MayaWindow"),
+            self.plugin_main.cmds.menu.call_args_list,
+        )
+        install_humanik.assert_called_once_with(
+            parent="MMD",
+            cmds_module=self.plugin_main.cmds,
+            callback_dispatcher=self.plugin_main._dispatch_humanik_action,
+        )
+
+    def test_humanik_action_dispatch_is_lazy(self):
+        with unittest.mock.patch(
+            "mmd_tools.ui.humanik_menu_actions.dispatch_action", return_value="ok"
+        ) as dispatch:
+            self.assertEqual(self.plugin_main._dispatch_humanik_action("diagnostics"), "ok")
+
+        dispatch.assert_called_once_with("diagnostics")
+
+    def test_humanik_submenu_has_seven_direct_dispatch_callbacks_and_reinstalls(self):
+        humanik = importlib.import_module("mmd_tools.ui.humanik_menu_actions")
+        existing = False
+
+        def menu_item(*args, **kwargs):
+            nonlocal existing
+            if kwargs.get("exists"):
+                return existing
+            if kwargs.get("subMenu"):
+                existing = True
+            return args[0] if args else "menuItem"
+
+        self.plugin_main.cmds.menu.return_value = False
+        self.plugin_main.cmds.menuItem.side_effect = menu_item
+        dispatch = MagicMock()
+        humanik.install_humanik_menu(
+            parent="MMD",
+            cmds_module=self.plugin_main.cmds,
+            callback_dispatcher=dispatch,
+        )
+        callbacks = [
+            call.kwargs["command"]
+            for call in self.plugin_main.cmds.menuItem.call_args_list
+            if call.kwargs.get("parent") == "MMDHumanIKMenu"
+        ]
+        self.assertEqual(len(callbacks), 7)
+        for callback in callbacks:
+            callback("menu-click")
+        self.assertEqual(
+            [call.args[0] for call in dispatch.call_args_list],
+            [action for action, _label in humanik.ACTION_LABELS],
+        )
+
+        humanik.install_humanik_menu(
+            parent="MMD",
+            cmds_module=self.plugin_main.cmds,
+            callback_dispatcher=dispatch,
+        )
+        self.plugin_main.cmds.deleteUI.assert_called_once_with(humanik.HUMANIK_MENU_NAME)
+
     def test_teardown_restores_parent_package_module_attribute(self):
         parent, child_name, existed, original = self._saved_parent_attrs["mmd_tools.ui.main_window"]
         setattr(parent, child_name, sys.modules["mmd_tools.ui.main_window"])
@@ -247,12 +314,28 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
     def test_uninitialize_closes_python_owned_window(self):
         self.plugin_main.open_main_window(dockable=False)
         window = _FakeMainWindow.instances[0]
+        reset = MagicMock(return_value=True)
+        self.plugin_main._reset_humanik_menu_session = reset
 
         self.plugin_main.uninitializePlugin(MagicMock())
 
+        reset.assert_called_once_with()
         self.assertTrue(window.closed)
         self.assertTrue(window.deleted)
         self.assertIsNone(self.plugin_main._main_window)
+
+    def test_uninitialize_aborts_before_close_when_humanik_restore_fails(self):
+        self.plugin_main.open_main_window(dockable=False)
+        window = _FakeMainWindow.instances[0]
+        self.plugin_main._reset_humanik_menu_session = MagicMock(return_value=False)
+        self.plugin_main._remove_after_open_callback = MagicMock()
+
+        with self.assertRaisesRegex(RuntimeError, "restore failed"):
+            self.plugin_main.uninitializePlugin(MagicMock())
+
+        self.assertFalse(window.closed)
+        self.assertFalse(window.deleted)
+        self.plugin_main._remove_after_open_callback.assert_not_called()
 
     def test_initialize_calls_soft_bone_morph_postcondition(self):
         """initializePlugin invokes soft postcondition after bone morph register."""

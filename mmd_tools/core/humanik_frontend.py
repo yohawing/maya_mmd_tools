@@ -321,6 +321,65 @@ class HumanIkFrontendSession:
             raise first_error
         return restored
 
+    def inspect_model(self, model_root: str) -> Dict[str, Any]:
+        """Resolve a model into body and deferred finger assignments read-only.
+
+        The returned report is JSON-safe and does not create, lock, or mutate a
+        HumanIK character.  UI callers can display it before requesting
+        ``setup_and_characterize`` with explicit stance confirmation.
+        """
+        key = self._require_model_root(model_root)
+        result = resolve_scene_humanik_assignments(key, cmds_module=self._cmds)
+        body_result, excluded = _split_body_assignments(result)
+        assignments = [_assignment_row(item) for item in body_result.assignments]
+        excluded_rows = [_assignment_row(item) for item in excluded]
+        unresolved = {
+            "missingMmdBones": list(body_result.missing_mmd_bones),
+            "unindexedMmdBones": list(body_result.unindexed_mmd_bones),
+        }
+        ambiguous = [_assignment_row(item) for item in body_result.duplicate_assignments]
+        return {
+            "modelRoot": key,
+            "profile": FRONTEND_ASSIGNMENT_PROFILE,
+            "assignments": assignments,
+            "bodyAssignments": assignments,
+            "assignmentCount": len(assignments),
+            "excludedFingerAssignments": excluded_rows,
+            "excludedFingerCount": len(excluded_rows),
+            "unresolved": unresolved,
+            "missingMmdBones": list(unresolved["missingMmdBones"]),
+            "unindexedMmdBones": list(unresolved["unindexedMmdBones"]),
+            "ambiguous": ambiguous,
+            "duplicateAssignments": ambiguous,
+            "blocked": [] if assignments else ["no_resolved_assignments"],
+        }
+
+    def inspect_target_ownership(self, model_root: str) -> Dict[str, Any]:
+        """Classify target writers without starting a HumanIK preview."""
+        model_report = self.inspect_model(model_root)
+        target_joints = tuple(row["joint"] for row in model_report["assignments"])
+        ownership = classify_humanik_constraints(
+            collect_humanik_constraint_facts(cmds_module=self._cmds),
+            target_joints,
+        )
+        blockers = [
+            row for row in ownership.get("rows", [])
+            if row.get("classification") in BLOCKING_CLASSIFICATIONS
+        ]
+        return {
+            **model_report,
+            "ownership": ownership,
+            "constraintCounts": dict(ownership.get("counts", {})),
+            "constraintRows": list(ownership.get("rows", [])),
+            "blockers": [
+                {
+                    "node": str(row.get("node", "")),
+                    "classification": str(row.get("classification", "")),
+                }
+                for row in blockers
+            ],
+        }
+
     def diagnostics(self, model_root: Optional[str] = None) -> Dict[str, Any]:
         """Return JSON-safe lifecycle, assignment, ownership, and quality diagnostics."""
         selected = self._bindings.get(str(model_root)) if model_root else None

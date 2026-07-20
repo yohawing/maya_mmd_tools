@@ -192,10 +192,30 @@ def repair_current_model_texture_paths():
     return presenter.fix_texture_paths()
 
 
+def _dispatch_humanik_action(action_name):
+    """Lazy-dispatch a HumanIK menu action to the UI module."""
+    from mmd_tools.ui import humanik_menu_actions
+
+    return humanik_menu_actions.dispatch_action(action_name)
+
+
+def _reset_humanik_menu_session():
+    """Restore HumanIK-owned scene state before plugin unload when possible."""
+    try:
+        from mmd_tools.ui import humanik_menu_actions
+
+        return humanik_menu_actions.reset_humanik_session(restore=True)
+    except Exception as exc:
+        om.MGlobal.displayWarning(f"HumanIK session reset during unload failed: {exc}")
+        return False
+
+
 def install_mmd_menu():
     """Install the MMD menu in Maya."""
     if not cmds.menu("MMD", exists=True):
-        cmds.menu("MMD", parent="MayaWindow")
+        cmds.menu("MMD", label="MMD Tools", parent="MayaWindow")
+    else:
+        cmds.menu("MMD", edit=True, label="MMD Tools")
 
     _LABELS = ("MMD Tools", "Repair Texture Paths", "Animator Toolset")
     for item in cmds.menu("MMD", query=True, itemArray=True) or []:
@@ -224,6 +244,14 @@ def install_mmd_menu():
             command=lambda *args: open_animator_toolset(dockable=True),
             parent="MMD",
         )
+
+    from mmd_tools.ui.humanik_menu_actions import install_humanik_menu
+
+    install_humanik_menu(
+        parent="MMD",
+        cmds_module=cmds,
+        callback_dispatcher=_dispatch_humanik_action,
+    )
 
 
 def uninstall_mmd_menu():
@@ -418,6 +446,8 @@ def uninitializePlugin(mobject):
     plugin_fn = om.MFnPlugin(mobject)
 
     try:
+        if not _reset_humanik_menu_session():
+            raise RuntimeError("HumanIK session restore failed; plugin unload was aborted")
         _remove_after_open_callback()
         close_animator_toolset()
         close_main_window()

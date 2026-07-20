@@ -94,6 +94,21 @@ class TestHumanIkFrontend(unittest.TestCase):
 
         self.assertEqual([item.hik_bone for item in result.assignments], ["Hips", "LeftArmRoll"])
 
+    @patch("mmd_tools.core.humanik_frontend.collect_humanik_constraint_facts", return_value=[])
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
+    def test_read_only_inspect_reports_assignments_without_character_creation(self, resolve, collect):
+        session = HumanIkFrontendSession()
+
+        model_report = session.inspect_model("|source")
+        ownership_report = session.inspect_target_ownership("|source")
+
+        self.assertEqual(model_report["assignmentCount"], 2)
+        self.assertEqual(model_report["excludedFingerCount"], 1)
+        self.assertEqual(ownership_report["constraintCounts"], {})
+        self.assertEqual(ownership_report["constraintRows"], [])
+        self.assertEqual(resolve.call_count, 2)
+        collect.assert_called_once()
+
     @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
     @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")
     @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
