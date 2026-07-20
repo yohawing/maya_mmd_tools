@@ -80,6 +80,7 @@ class FakeMel:
         self.has_control_rig = False
         self.locked = False
         self.scene_characters = set()
+        self.characterization_status = None
 
     def eval(self, command):
         self.commands.append(command)
@@ -101,11 +102,15 @@ class FakeMel:
             return None
         if command.startswith("hikHasControlRig("):
             return int(self.has_control_rig)
+        if command.startswith("hikGetSkNode("):
+            return "mappedJoint"
         if command.startswith("hikCharacterLock("):
             self.locked = True
             return None
         if command.startswith("hikIsDefinitionLocked("):
             return int(self.locked)
+        if command.startswith("characterizationToolUICmd -query -curcharstatus"):
+            return self.characterization_status
         return None
 
 
@@ -163,10 +168,15 @@ class TestHumanIkBuilder(unittest.TestCase):
         character = create_humanik_definition(result, name_hint="MMD Character", mel_module=mel)
 
         self.assertEqual(character, "Character1")
+        self.assertIn("source hikSkeletonUtils.mel", mel.commands)
         self.assertIn("source hikGlobalUtils.mel", mel.commands)
         self.assertIn("source hikDefinitionUtils.mel", mel.commands)
         self.assertIn('hikCreateCharacter("MMD Character")', mel.commands)
         self.assertIn('hikSetCharacterObject("|model|lower", "Character1", 1, 0);', mel.commands)
+        self.assertEqual(
+            sum(command.startswith("hikGetSkNode(") for command in mel.commands),
+            len(result.assignments),
+        )
         self.assertEqual(mel.commands[-1], "hikUpdateCharacterControlsUI(false);")
 
     def test_create_humanik_definition_from_scene_uses_collector_and_resolver(self):
@@ -210,6 +220,28 @@ class TestHumanIkBuilder(unittest.TestCase):
         self.assertIsInstance(error.creation_error, RuntimeError)
         self.assertIsNone(error.cleanup_error)
         self.assertNotIn("Character1", mel.scene_characters)
+        self.assertIn("cleanup succeeded", str(error))
+
+    def test_create_humanik_definition_cleans_up_after_silent_assignment_readback_failure(self):
+        result = resolve_scene_humanik_assignments("|model", FakeCmds())
+        mel = _SilentAssignmentReadbackMel(HIK_BONE_INDICES["Spine"])
+
+        with self.assertRaises(HumanIkCharacterCreationError) as context:
+            create_humanik_definition(result, mel_module=mel)
+
+        error = context.exception
+        self.assertIsInstance(error.creation_error, RuntimeError)
+        self.assertIsNone(error.cleanup_error)
+        self.assertNotIn("Character1", mel.scene_characters)
+        self.assertEqual(
+            sum(command.startswith("hikGetSkNode(") for command in mel.commands),
+            len(result.assignments),
+        )
+        self.assertRegex(
+            str(error),
+            r"readback failed: character=Character1, requested=2, missing=1",
+        )
+        self.assertRegex(str(error), r"slot=Spine, hikIndex=8")
         self.assertIn("cleanup succeeded", str(error))
 
     def test_create_humanik_definition_retains_character_when_cleanup_fails(self):
@@ -271,6 +303,30 @@ class TestHumanIkBuilder(unittest.TestCase):
         self.assertTrue(get_humanik_definition_lock_state("Character1", mel_module=mel))
         self.assertIn('hikCharacterLock("Character1", 1, 1);', mel.commands)
 
+    def test_lock_syncs_current_characterization_state_before_status_and_lock(self):
+        mel = FakeMel()
+        mel.characterization_status = 2
+
+        self.assertTrue(lock_humanik_definition("Character1", mel_module=mel))
+
+        commands = mel.commands
+        sync_start = commands.index('hikSetCurrentCharacter("Character1");')
+        status_index = commands.index("characterizationToolUICmd -query -curcharstatus")
+        lock_index = commands.index('hikCharacterLock("Character1", 1, 1);')
+        self.assertLess(sync_start, commands.index("hikDefinitionUpdateCharacterLists();"))
+        self.assertLess(commands.index("hikDefinitionUpdateCharacterLists();"), commands.index("hikDefinitionUpdateBones();"))
+        self.assertLess(commands.index("hikDefinitionUpdateBones();"), commands.index("hikUpdateCharacterControlsUI(false);"))
+        self.assertLess(commands.index("hikUpdateCharacterControlsUI(false);"), status_index)
+        self.assertLess(status_index, lock_index)
+
+    def test_lock_rejects_invalid_characterization_status_before_lock(self):
+        mel = FakeMel()
+        mel.characterization_status = 3
+
+        with self.assertRaisesRegex(RuntimeError, r"status=3"):
+            lock_humanik_definition("Character1", mel_module=mel)
+        self.assertFalse(any(command.startswith("hikCharacterLock(") for command in mel.commands))
+
     def test_lock_humanik_definition_rejects_unlocked_state(self):
         class BrokenLockMel(FakeMel):
             def eval(self, command):
@@ -281,6 +337,36 @@ class TestHumanIkBuilder(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "failed to lock"):
             lock_humanik_definition("Character1", mel_module=BrokenLockMel())
+
+    def test_lock_failure_diagnostic_includes_characterization_status(self):
+        class StatusBrokenLockMel(FakeMel):
+            def __init__(self):
+                super().__init__()
+                self.characterization_status = 4
+
+            def eval(self, command):
+                if command.startswith("hikCharacterLock("):
+                    self.commands.append(command)
+                    return None
+                return super().eval(command)
+
+        with self.assertRaisesRegex(RuntimeError, r"character=Character1, status=4"):
+            lock_humanik_definition("Character1", mel_module=StatusBrokenLockMel())
+
+    def test_lock_command_exception_includes_characterization_diagnostic(self):
+        class CommandFailureMel(FakeMel):
+            def __init__(self):
+                super().__init__()
+                self.characterization_status = 2
+
+            def eval(self, command):
+                if command.startswith("hikCharacterLock("):
+                    self.commands.append(command)
+                    raise RuntimeError("canLockCharacterization failed")
+                return super().eval(command)
+
+        with self.assertRaisesRegex(RuntimeError, r"command failed: character=Character1, status=2"):
+            lock_humanik_definition("Character1", mel_module=CommandFailureMel())
 
 
 class _EmptySceneCmds(FakeCmds):
@@ -303,6 +389,20 @@ class _AssignmentAndCleanupFailureMel(_AssignmentFailureMel):
         if command.startswith("hikDeleteCharacter("):
             self.commands.append(command)
             raise RuntimeError("cleanup failed")
+        return super().eval(command)
+
+
+class _SilentAssignmentReadbackMel(FakeMel):
+    def __init__(self, missing_index):
+        super().__init__()
+        self.missing_index = missing_index
+
+    def eval(self, command):
+        if command.startswith("hikGetSkNode("):
+            self.commands.append(command)
+            if f", {self.missing_index});" in command:
+                return ""
+            return "mappedJoint"
         return super().eval(command)
 
 

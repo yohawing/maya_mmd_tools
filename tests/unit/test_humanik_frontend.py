@@ -70,6 +70,47 @@ class FakePreview:
         self.journal = object()
 
 
+class FakeStance:
+    """Host-neutral transaction double for frontend lifecycle tests."""
+
+    def __init__(self, model_root, assignments, **_kwargs):
+        self.model_root = model_root
+        self.assignments = tuple(assignments)
+        self.stance_evidence = {"mode": "test-automatic-stance"}
+        self.active = False
+        self.prepared = False
+        self.restores = 0
+        self.character = None
+
+    def prepare(self):
+        self.prepared = True
+        return self
+
+    def enter(self):
+        self.active = True
+        return self
+
+    def attach_character(self, character):
+        self.character = character
+
+    def restore(self):
+        self.restores += 1
+        self.active = False
+        return {"passed": True}
+
+    def to_dict(self):
+        return {
+            "modelRoot": self.model_root,
+            "active": self.active,
+            "prepared": self.prepared,
+            "stanceEvidence": dict(self.stance_evidence),
+        }
+
+
+def _session():
+    return HumanIkFrontendSession(stance_transaction_factory=FakeStance)
+
+
 class TestHumanIkFrontend(unittest.TestCase):
     def test_synthetic_profile_has_25_body_roll_and_30_finger_assignments(self):
         result = _synthetic_55_result()
@@ -79,15 +120,39 @@ class TestHumanIkFrontend(unittest.TestCase):
         self.assertEqual(len(excluded), 30)
         self.assertEqual(sum("Roll" in item.hik_bone for item in body.assignments), 4)
 
-    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments")
-    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition")
-    def test_stance_must_be_confirmed_before_scene_mutation(self, create, resolve):
-        session = HumanIkFrontendSession()
+    @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
+    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
+    def test_setup_automatically_runs_stance_without_manual_confirmation(self, resolve, create, lock):
+        session = _session()
 
-        with self.assertRaisesRegex(ValueError, "stance_confirmed"):
-            session.setup_and_characterize("|source")
-        resolve.assert_not_called()
-        create.assert_not_called()
+        binding = session.setup_and_characterize("|source")
+
+        self.assertEqual(binding.stance["mode"], "test-automatic-stance")
+        resolve.assert_called_once()
+        create.assert_called_once()
+        lock.assert_called_once()
+
+    @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
+    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
+    def test_stance_captures_character_state_after_lock(self, resolve, create, lock):
+        events = []
+
+        class OrderedStance(FakeStance):
+            def attach_character(self, character):
+                events.append("attach")
+                super().attach_character(character)
+
+        def factory(*args, **kwargs):
+            return OrderedStance(*args, **kwargs)
+
+        lock.side_effect = lambda *args, **kwargs: events.append("lock")
+        session = HumanIkFrontendSession(stance_transaction_factory=factory)
+
+        session.setup_and_characterize("|source")
+
+        self.assertEqual(events, ["lock", "attach"])
 
     def test_body_filter_excludes_finger_and_keeps_roll(self):
         result = filter_humanik_body_assignments(_result())
@@ -97,7 +162,7 @@ class TestHumanIkFrontend(unittest.TestCase):
     @patch("mmd_tools.core.humanik_frontend.collect_humanik_constraint_facts", return_value=[])
     @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
     def test_read_only_inspect_reports_assignments_without_character_creation(self, resolve, collect):
-        session = HumanIkFrontendSession()
+        session = _session()
 
         model_report = session.inspect_model("|source")
         ownership_report = session.inspect_target_ownership("|source")
@@ -106,6 +171,9 @@ class TestHumanIkFrontend(unittest.TestCase):
         self.assertEqual(model_report["excludedFingerCount"], 1)
         self.assertEqual(ownership_report["constraintCounts"], {})
         self.assertEqual(ownership_report["constraintRows"], [])
+        self.assertFalse(model_report["automaticStance"]["ready"])
+        self.assertEqual(ownership_report["automaticStance"]["ownership"]["disconnect"], [])
+        self.assertEqual(ownership_report["automaticStance"]["ownership"]["retain"], [])
         self.assertEqual(resolve.call_count, 2)
         collect.assert_called_once()
 
@@ -113,10 +181,10 @@ class TestHumanIkFrontend(unittest.TestCase):
     @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")
     @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
     def test_setup_is_idempotent_and_reports_excluded_fingers(self, resolve, create, lock):
-        session = HumanIkFrontendSession()
+        session = _session()
 
-        first = session.setup_and_characterize("|source", stance_confirmed=True)
-        second = session.setup_and_characterize("|source", stance_confirmed=True)
+        first = session.setup_and_characterize("|source")
+        second = session.setup_and_characterize("|source")
 
         self.assertIs(first, second)
         self.assertEqual(first.character, "Character_source")
@@ -129,8 +197,8 @@ class TestHumanIkFrontend(unittest.TestCase):
     @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", side_effect=lambda result, **kwargs: "Character_" + kwargs["name_hint"].split("_")[-1])
     @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
     def test_target_rejects_source_root_and_blocker_before_preview_mutation(self, resolve, create, lock):
-        session = HumanIkFrontendSession()
-        session.setup_and_characterize("|source", stance_confirmed=True)
+        session = _session()
+        session.setup_and_characterize("|source")
         session.enter_source_mode("|source")
 
         with self.assertRaisesRegex(ValueError, "must differ"):
@@ -142,7 +210,7 @@ class TestHumanIkFrontend(unittest.TestCase):
         ), patch("mmd_tools.core.humanik_frontend.collect_humanik_constraint_facts", return_value=[]), patch(
             "mmd_tools.core.humanik_frontend.begin_humanik_target_preview"
         ) as begin:
-            session.setup_and_characterize("|target", stance_confirmed=True)
+            session.setup_and_characterize("|target")
             with self.assertRaisesRegex(RuntimeError, "blocked"):
                 session.enter_target_mode("|target")
             begin.assert_not_called()
@@ -155,10 +223,10 @@ class TestHumanIkFrontend(unittest.TestCase):
     @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", side_effect=lambda result, **kwargs: "Character_" + kwargs["name_hint"].split("_")[-1])
     @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
     def test_preview_bake_and_restore_lifecycle(self, resolve, create, lock, classify, collect, begin, stop):
-        session = HumanIkFrontendSession()
-        session.setup_and_characterize("|source", stance_confirmed=True)
+        session = _session()
+        session.setup_and_characterize("|source")
         session.enter_source_mode("|source")
-        session.setup_and_characterize("|target", stance_confirmed=True)
+        session.setup_and_characterize("|target")
         preview = session.enter_target_mode("|target")
 
         self.assertIs(session.active_preview, preview)
@@ -173,8 +241,8 @@ class TestHumanIkFrontend(unittest.TestCase):
     @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")
     @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
     def test_diagnostics_are_json_safe_and_include_quality_route(self, resolve, create, lock):
-        session = HumanIkFrontendSession()
-        session.setup_and_characterize("|source", stance_confirmed=True)
+        session = _session()
+        session.setup_and_characterize("|source")
 
         diagnostics = session.diagnostics("|source")
 
@@ -190,10 +258,10 @@ class TestHumanIkFrontend(unittest.TestCase):
     @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Pending")
     @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
     def test_lock_failure_cleans_up_created_character(self, resolve, create, lock, delete):
-        session = HumanIkFrontendSession()
+        session = _session()
 
         with self.assertRaisesRegex(RuntimeError, "lock failed"):
-            session.setup_and_characterize("|source", stance_confirmed=True)
+            session.setup_and_characterize("|source")
         delete.assert_called_once_with("Pending", mel_module=None)
         self.assertFalse(session._pending_characters)
 
@@ -202,10 +270,10 @@ class TestHumanIkFrontend(unittest.TestCase):
     @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Pending")
     @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
     def test_failed_cleanup_is_pending_and_restore_retries(self, resolve, create, lock, delete):
-        session = HumanIkFrontendSession()
+        session = _session()
 
         with self.assertRaisesRegex(RuntimeError, "cleanup also failed"):
-            session.setup_and_characterize("|source", stance_confirmed=True)
+            session.setup_and_characterize("|source")
         self.assertIn("Pending", session._pending_characters)
         delete.side_effect = [RuntimeError("delete failed"), None]
         with self.assertRaisesRegex(RuntimeError, "delete failed"):
@@ -222,10 +290,10 @@ class TestHumanIkFrontend(unittest.TestCase):
             RuntimeError("assignment failed"),
         )
         create.side_effect = creation_error
-        session = HumanIkFrontendSession()
+        session = _session()
 
         with self.assertRaises(HumanIkCharacterCreationError):
-            session.setup_and_characterize("|source", stance_confirmed=True)
+            session.setup_and_characterize("|source")
         self.assertFalse(session._pending_characters)
 
     @patch("mmd_tools.core.humanik_frontend.delete_humanik_character")
@@ -239,10 +307,10 @@ class TestHumanIkFrontend(unittest.TestCase):
         )
         create.side_effect = creation_error
         delete.side_effect = [RuntimeError("retry failed"), None]
-        session = HumanIkFrontendSession()
+        session = _session()
 
         with self.assertRaises(HumanIkCharacterCreationError):
-            session.setup_and_characterize("|source", stance_confirmed=True)
+            session.setup_and_characterize("|source")
         self.assertEqual(session._pending_characters, {"Orphaned": "|source"})
 
         with self.assertRaisesRegex(RuntimeError, "retry failed"):
@@ -256,12 +324,12 @@ class TestHumanIkFrontend(unittest.TestCase):
     @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")
     @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
     def test_active_preview_rejects_session_mutations(self, resolve, create, lock, control_rig):
-        session = HumanIkFrontendSession()
-        session.setup_and_characterize("|source", stance_confirmed=True)
+        session = _session()
+        session.setup_and_characterize("|source")
         session._preview = FakePreview()
 
         with self.assertRaisesRegex(RuntimeError, "active"):
-            session.setup_and_characterize("|other", stance_confirmed=True)
+            session.setup_and_characterize("|other")
         with self.assertRaisesRegex(RuntimeError, "active"):
             session.enter_source_mode("|source")
         with self.assertRaisesRegex(RuntimeError, "active"):
@@ -275,10 +343,10 @@ class TestHumanIkFrontend(unittest.TestCase):
     @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", side_effect=lambda result, **kwargs: kwargs["name_hint"])
     @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
     def test_blocker_report_is_retained_without_preview(self, resolve, create, lock, classify, collect, begin):
-        session = HumanIkFrontendSession()
-        session.setup_and_characterize("|source", stance_confirmed=True)
+        session = _session()
+        session.setup_and_characterize("|source")
         session.enter_source_mode("|source")
-        session.setup_and_characterize("|target", stance_confirmed=True)
+        session.setup_and_characterize("|target")
 
         with self.assertRaisesRegex(RuntimeError, "blocked"):
             session.enter_target_mode("|target")
@@ -289,7 +357,7 @@ class TestHumanIkFrontend(unittest.TestCase):
 
     @patch("mmd_tools.core.humanik_frontend.stop_humanik_target_preview")
     def test_restore_failure_keeps_preview_for_retry(self, stop):
-        session = HumanIkFrontendSession()
+        session = _session()
         preview = FakePreview()
         session._preview = preview
         def restore_then_clear(*args, **kwargs):
@@ -303,7 +371,7 @@ class TestHumanIkFrontend(unittest.TestCase):
         self.assertTrue(session.restore_mmd_rig())
 
     def test_bake_failure_retains_active_preview_but_clears_inactive_preview(self):
-        session = HumanIkFrontendSession()
+        session = _session()
         target = _result()
         session._bindings["|target"] = type("Binding", (), {"assignments": target.assignments})()
         session._target_model_root = "|target"

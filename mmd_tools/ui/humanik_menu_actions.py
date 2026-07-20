@@ -16,6 +16,7 @@ from mmd_tools.core.humanik_frontend import (
     REFERENCE_QUALITY_DIAGNOSTICS,
     HumanIkFrontendSession,
 )
+from mmd_tools.core.logger import get_logger, install_maya_script_editor_handler
 from mmd_tools.services.scene_model_service import SceneModelService
 
 
@@ -40,6 +41,7 @@ _cmds_module = None
 _mel_module = None
 _confirm_dialog: Optional[Callable[..., str]] = None
 _error_reporter: Optional[Callable[[str], None]] = None
+logger = get_logger(__name__)
 
 
 def _maya_cmds():
@@ -155,7 +157,10 @@ def resolve_model_root(
 
 def install_humanik_menu(parent="MMD", *, cmds_module=None, callback_dispatcher=None):
     """Install the HumanIK submenu and exactly its seven staged actions."""
+    global _cmds_module
     cmds = cmds_module or _maya_cmds()
+    _cmds_module = cmds
+    install_maya_script_editor_handler()
     if _ui_exists(cmds, HUMANIK_MENU_NAME):
         cmds.deleteUI(HUMANIK_MENU_NAME)
     submenu = cmds.menuItem(
@@ -226,7 +231,22 @@ def _setup_and_characterize():
     message = _setup_confirmation_message(root, ownership_report, ownership_report)
     if not _confirm("Setup / Characterize", message):
         return None
-    return session.setup_and_characterize(root, stance_confirmed=True)
+    try:
+        binding = session.setup_and_characterize(root)
+    except Exception as exc:
+        summary = _report_action_failure("Setup / Characterize", exc, model_root=root)
+        return {
+            "success": False,
+            "action": "setup_and_characterize",
+            "modelRoot": root,
+            "error": summary,
+        }
+    return {
+        "success": True,
+        "action": "setup_and_characterize",
+        "modelRoot": root,
+        "binding": binding,
+    }
 
 
 def _enter_source_mode():
@@ -306,57 +326,63 @@ def _show_diagnostics():
 
 
 def _setup_confirmation_message(root, model_report, ownership_report):
-    counts = ownership_report.get("constraintCounts", {})
     blockers = ownership_report.get("blockers", [])
-    rows = ownership_report.get("constraintRows", [])
-    mute_rows = _ownership_rows(rows, "mute_for_hik")
-    keep_rows = _ownership_rows(rows, "keep_post")
-    blocker_labels = ", ".join(
-        f"{row.get('node', '')}:{row.get('classification', '')}" for row in blockers
-    ) or "none"
-    return (
-        f"Model root: {root}\n"
-        "Apply the same user-confirmed common T-pose to both Source and Target before continuing.\n"
-        f"Characterize body + roll assignments: {model_report.get('assignmentCount', 0)}; "
-        f"finger assignments excluded/deferred: {model_report.get('excludedFingerCount', 0)}.\n"
-        f"Unresolved: {len(model_report.get('missingMmdBones', []))}; "
-        f"ambiguous: {len(model_report.get('ambiguous', []))}.\n"
-        f"mute_for_hik: {counts.get('mute_for_hik', 0)}; "
-        f"keep_post: {counts.get('keep_post', 0)}; blockers: {len(blockers)}.\n"
-        f"mute_for_hik nodes/edges: {mute_rows or 'none'}; keep_post: {keep_rows or 'none'}; "
-        f"blocker details: {blocker_labels}.\n"
-        "Target preview captures an ownership journal and Restore MMD Rig can recover it.\n"
-        f"Known S5b reference residual: {REFERENCE_QUALITY_DIAGNOSTICS['referenceS5bBodyMatrixResidual']} "
-        f"({REFERENCE_QUALITY_DIAGNOSTICS['status']})."
-    )
+    unresolved = len(model_report.get("missingMmdBones", []))
+    ambiguous = len(model_report.get("ambiguous", []))
+    lines = [
+        f"Set up HumanIK for {_short_model_label(root)}?",
+        f"Body + roll: {model_report.get('assignmentCount', 0)} bones",
+        f"Fingers: excluded ({model_report.get('excludedFingerCount', 0)} bones)",
+        "The arms are aligned temporarily, then the original pose is restored.",
+    ]
+    if unresolved or ambiguous or blockers:
+        lines.append(
+            f"Issues: unresolved {unresolved}, ambiguous {ambiguous}, blockers {len(blockers)}"
+        )
+    return "\n".join(lines)
 
 
 def _target_confirmation_message(root, report):
     counts = report.get("constraintCounts", {})
-    rows = report.get("constraintRows", [])
     return (
-        f"Target model root: {root}\n"
+        f"Target model root: {_short_model_label(root)}\n"
         "The target preview will journal changes, disconnect mute_for_hik writer edges, "
         "mute only those writers, "
         "retain keep_post writers, and restore all ownership on Restore MMD Rig.\n"
         f"mute_for_hik: {counts.get('mute_for_hik', 0)}; "
-        f"keep_post: {counts.get('keep_post', 0)}; blockers: {len(report.get('blockers', []))}.\n"
-        f"mute_for_hik nodes/edges: {_ownership_rows(rows, 'mute_for_hik') or 'none'}; "
-        f"keep_post nodes/edges: {_ownership_rows(rows, 'keep_post') or 'none'}.\n"
+        f"keep_post: {counts.get('keep_post', 0)}; "
+        f"blocker summary: {_blocker_summary(report.get('blockers', []))}.\n"
         "Continue?"
     )
 
 
-def _ownership_rows(rows, classification):
-    """Format ownership rows as compact node-to-edge text for confirmations."""
-    values = []
-    for row in rows:
-        if row.get("classification") != classification:
-            continue
-        node = str(row.get("node", ""))
-        edges = list(row.get("writes", [])) or list(row.get("reads", []))
-        values.append(f"{node} -> {', '.join(str(edge) for edge in edges) or 'n/a'}")
-    return "; ".join(values)
+def _blocker_summary(blockers, limit: int = 3) -> str:
+    """Return a compact blocker classification summary without node paths."""
+    counts = {}
+    for row in blockers:
+        classification = str(row.get("classification", "unknown"))
+        counts[classification] = counts.get(classification, 0) + 1
+    values = [f"{classification} ({count})" for classification, count in sorted(counts.items())]
+    if len(values) > limit:
+        return ", ".join(values[:limit]) + f", +{len(values) - limit} more"
+    return ", ".join(values) or "none"
+
+
+def _short_model_label(root: str, limit: int = 80) -> str:
+    """Keep confirmation titles readable for deeply nested Maya paths."""
+    value = str(root or "").strip("|")
+    label = value.rsplit("|", 1)[-1] or str(root)
+    if len(label) > limit:
+        return label[: limit - 3].rstrip() + "..."
+    return label
+
+
+def _short_exception_summary(exc: Exception, limit: int = 180) -> str:
+    """Normalize exception text for a safe, bounded user-facing dialog."""
+    summary = " ".join(str(exc).split()) or exc.__class__.__name__
+    if len(summary) > limit:
+        return summary[: limit - 3].rstrip() + "..."
+    return summary
 
 
 def _confirm(title, message):
@@ -378,8 +404,28 @@ def _run_action(label, operation):
     try:
         return operation()
     except Exception as exc:
-        _display_error(f"HumanIK {label} failed: {exc}")
+        _report_action_failure(label, exc)
         return None
+
+
+def _report_action_failure(label: str, exc: Exception, *, model_root: Optional[str] = None) -> str:
+    """Log a full action traceback and show only a bounded user-facing summary."""
+    prefix = f"HumanIK {label} failed: "
+    suffix = ". See the Maya Script Editor for details."
+    summary = _short_exception_summary(exc, limit=max(4, 180 - len(prefix) - len(suffix)))
+    try:
+        install_maya_script_editor_handler()
+    except Exception:
+        pass
+    logger.error(
+        "HumanIK %s failed%s: %s",
+        label,
+        f" for {model_root}" if model_root else "",
+        exc,
+        exc_info=True,
+    )
+    _display_error(prefix + summary + suffix)
+    return summary
 
 
 def _display_error(message):

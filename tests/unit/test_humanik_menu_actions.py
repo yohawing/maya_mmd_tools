@@ -108,7 +108,10 @@ class TestHumanIkMenuActions(unittest.TestCase):
         actions._error_reporter = None
 
     def test_menu_contains_humanik_and_exact_seven_actions(self):
-        submenu = actions.install_humanik_menu(parent="MMD", cmds_module=self.cmds)
+        with patch.object(actions, "install_maya_script_editor_handler") as install_handler:
+            submenu = actions.install_humanik_menu(parent="MMD", cmds_module=self.cmds)
+
+        install_handler.assert_called_once_with()
 
         self.assertEqual(submenu, "MMDHumanIKMenu")
         labels = [
@@ -176,18 +179,96 @@ class TestHumanIkMenuActions(unittest.TestCase):
             actions.resolve_model_root(cmds_module=self.cmds)
 
     @patch.object(actions, "resolve_model_root", return_value="|model_root")
-    def test_setup_cancel_does_not_mutate_and_continue_confirms_stance(self, resolve):
+    def test_setup_cancel_does_not_mutate_and_continue_runs_automatic_stance(self, resolve):
         actions._confirm_dialog = lambda **kwargs: "Cancel"
         self.assertIsNone(actions.setup_and_characterize())
-        self.assertNotIn(("setup_and_characterize", "|model_root", {"stance_confirmed": True}), self.session.calls)
+        self.assertNotIn(("setup_and_characterize", "|model_root", {}), self.session.calls)
 
         actions._confirm_dialog = lambda **kwargs: "Continue"
-        actions.setup_and_characterize()
+        result = actions.setup_and_characterize()
+        self.assertTrue(result["success"])
         self.assertNotIn(("inspect_model", "|model_root"), self.session.calls)
         self.assertIn(
-            ("setup_and_characterize", "|model_root", {"stance_confirmed": True}),
+            ("setup_and_characterize", "|model_root", {}),
             self.session.calls,
         )
+
+    @patch.object(actions, "resolve_model_root", return_value="|model_root")
+    def test_setup_confirmation_summarizes_edges_and_blockers(self, resolve):
+        long_node = "|" + "very_long_constraint_node_" * 30
+        long_edge = long_node + ".outputRotate" + "X" * 100
+        report = {
+            "assignmentCount": 25,
+            "excludedFingerCount": 30,
+            "missingMmdBones": [],
+            "ambiguous": [],
+            "automaticStance": {
+                "directionStrategy": "current-world-direction-horizontal-projection",
+                "targets": {"LeftArm": {"joint": long_node, "child": long_edge}},
+                "missingSlots": [],
+            },
+            "constraintCounts": {"mute_for_hik": 12, "keep_post": 9},
+            "constraintRows": [
+                {"node": long_node, "classification": "mute_for_hik", "writes": [long_edge]},
+            ],
+            "blockers": [
+                {"node": long_node, "classification": "physics_blocker"},
+                {"node": long_node, "classification": "physics_blocker"},
+            ],
+        }
+
+        message = actions._setup_confirmation_message("|" + "deep_model_path_" * 30, report, report)
+
+        self.assertIn("Set up HumanIK for", message)
+        self.assertIn("Body + roll: 25 bones", message)
+        self.assertIn("Fingers: excluded (30 bones)", message)
+        self.assertIn("Issues: unresolved 0, ambiguous 0, blockers 2", message)
+        self.assertNotIn(long_node, message)
+        self.assertNotIn("nodes/edges", message)
+        self.assertNotIn("directionStrategy", message)
+        self.assertNotIn("reference residual", message)
+        self.assertLessEqual(len(message), 320)
+
+        target_message = actions._target_confirmation_message("|model_root", report)
+        self.assertIn("blocker summary: physics_blocker (2)", target_message)
+        self.assertNotIn(long_node, target_message)
+        self.assertNotIn("nodes/edges", target_message)
+
+    def test_setup_confirmation_is_four_plain_lines_when_preflight_is_clean(self):
+        report = {
+            "assignmentCount": 25,
+            "excludedFingerCount": 30,
+            "missingMmdBones": [],
+            "ambiguous": [],
+            "constraintCounts": {"mute_for_hik": 4, "keep_post": 12},
+            "constraintRows": [{"node": "technicalNode", "writes": ["long.edge"]}],
+            "blockers": [],
+        }
+
+        message = actions._setup_confirmation_message("|Base:Base_root", report, report)
+
+        self.assertEqual(len(message.splitlines()), 4)
+        self.assertIn("Set up HumanIK for Base:Base_root?", message)
+        self.assertNotIn("mute_for_hik", message)
+        self.assertNotIn("journal", message)
+        self.assertNotIn("residual", message)
+
+    @patch.object(actions, "resolve_model_root", return_value="|model_root")
+    def test_setup_failure_logs_traceback_and_returns_short_failure(self, resolve):
+        class FailingSession(_FakeSession):
+            def setup_and_characterize(self, root, **kwargs):
+                raise RuntimeError("failure detail " + ("x" * 500))
+
+        actions.set_humanik_session(FailingSession())
+        with patch.object(actions.logger, "error") as log_error:
+            result = actions.setup_and_characterize()
+
+        self.assertFalse(result["success"])
+        self.assertLessEqual(len(result["error"]), 180)
+        self.assertTrue(any("See the Maya Script Editor" in message for message in self._errors))
+        self.assertLessEqual(len(self._errors[-1]), 180)
+        log_error.assert_called_once()
+        self.assertTrue(log_error.call_args.kwargs["exc_info"])
 
     @patch.object(actions, "resolve_model_root", return_value="|model_root")
     def test_target_blocker_reports_error_without_starting_preview(self, resolve):
@@ -221,8 +302,12 @@ class TestHumanIkMenuActions(unittest.TestCase):
     def test_bake_rejects_empty_integer_playback_range_before_confirmation(self):
         self.cmds.playbackOptions.side_effect = [5.2, 4.8]
 
-        self.assertIsNone(actions.bake_to_mmd_rig())
+        with patch.object(actions.logger, "error") as log_error:
+            self.assertIsNone(actions.bake_to_mmd_rig())
+
         self.assertTrue(any("Playback range is empty" in message for message in self._errors))
+        self.assertTrue(any("Maya Script Editor" in message for message in self._errors))
+        self.assertTrue(log_error.call_args.kwargs["exc_info"])
         self.assertNotIn(("bake_to_mmd_rig", 6, 4), self.session.calls)
 
     def test_restore_does_not_require_model_resolution(self):

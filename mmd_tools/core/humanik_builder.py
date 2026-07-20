@@ -19,6 +19,7 @@ from mmd_tools.core.humanik_resolver import (
 
 
 _HIK_MEL_SCRIPTS = (
+    "hikSkeletonUtils.mel",
     "hikSkeletonOperations.mel",
     "hikGlobalUtils.mel",
     "hikDefinitionUtils.mel",
@@ -34,6 +35,7 @@ _HIK_LOAD_PLUGIN_COMMANDS = (
 _REQUIRED_HIK_PROCS = (
     "hikCreateCharacter",
     "hikSetCharacterObject",
+    "hikGetSkNode",
     "hikSetCurrentCharacter",
     "hikCharacterLock",
     "hikIsDefinitionLocked",
@@ -45,6 +47,7 @@ _REQUIRED_HIK_PROCS = (
     "hikDeleteCharacter",
     "hikGetSceneCharacters",
 )
+_VALID_CHARACTERIZATION_STATES = frozenset({0, 2, 4})
 
 
 class HumanIkCharacterCreationError(RuntimeError):
@@ -140,12 +143,17 @@ def create_humanik_definition(
     ensure_humanik_mel_loaded(mel)
     character = str(mel.eval(f'hikCreateCharacter({_mel_string(name_hint)})'))
     try:
-        for command in build_humanik_definition_mel_commands(
+        commands = build_humanik_definition_mel_commands(
             character,
             result.assignments,
             create_control_rig=create_control_rig,
             update_ui=update_ui,
-        ):
+        )
+        assignment_count = len(result.assignments)
+        for command in commands[:assignment_count]:
+            mel.eval(command)
+        _verify_humanik_assignment_readback(character, result.assignments, mel)
+        for command in commands[assignment_count:]:
             mel.eval(command)
         if create_control_rig and not bool(mel.eval(f"hikHasControlRig({_mel_string(character)})")):
             raise RuntimeError(f"HumanIK control rig was not created for character: {character}")
@@ -234,14 +242,102 @@ def lock_humanik_definition(
     """
     mel = mel_module or _maya_mel()
     ensure_humanik_mel_loaded(mel)
-    mel.eval(
-        f"hikCharacterLock({_mel_string(character)}, 1, "
-        f"{1 if validate_and_save_stance else 0});"
-    )
+    characterization = _sync_humanik_characterization_state(character, mel)
+    status = characterization["status"]
+    if status is not None and status not in _VALID_CHARACTERIZATION_STATES:
+        raise RuntimeError(
+            "HumanIK characterization status is invalid before lock: "
+            f"character={character}, status={status}, diagnostics={characterization}"
+        )
+    try:
+        mel.eval(
+            f"hikCharacterLock({_mel_string(character)}, 1, "
+            f"{1 if validate_and_save_stance else 0});"
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "HumanIK definition lock command failed: "
+            f"character={character}, status={status}, diagnostics={characterization}: {exc}"
+        ) from exc
     locked = bool(mel.eval(f"hikIsDefinitionLocked({_mel_string(character)})"))
     if not locked:
-        raise RuntimeError(f"HumanIK definition failed to lock: {character}")
+        raise RuntimeError(
+            "HumanIK definition failed to lock: "
+            f"character={character}, status={status}, diagnostics={characterization}"
+        )
     return locked
+
+
+def _sync_humanik_characterization_state(character: str, mel) -> dict:
+    """Synchronize Maya's current-character/UI state before lock validation.
+
+    Maya 2024's ``canLockCharacterization`` reads the characterization UI
+    plugin's current status rather than only the HIK character node.  The
+    explicit list/bone/UI refresh sequence mirrors Autodesk's local
+    ``hikDefinitionOperations.mel`` flow and keeps ``update_ui=False`` scene
+    setup deterministic in both GUI and mayapy.
+    """
+    mel.eval(f"hikSetCurrentCharacter({_mel_string(character)});")
+    warnings = []
+    for command in (
+        "hikDefinitionUpdateCharacterLists();",
+        "hikDefinitionUpdateBones();",
+        "hikUpdateCharacterControlsUI(false);",
+    ):
+        try:
+            mel.eval(command)
+        except Exception as exc:
+            warnings.append(f"{command}: {exc}")
+    status = None
+    try:
+        raw_status = mel.eval("characterizationToolUICmd -query -curcharstatus")
+        if raw_status not in (None, ""):
+            status = int(raw_status)
+    except Exception as exc:
+        warnings.append(f"characterizationToolUICmd status readback: {exc}")
+    return {
+        "character": str(character),
+        "status": status,
+        "warnings": warnings,
+    }
+
+
+def _verify_humanik_assignment_readback(
+    character: str,
+    assignments: Sequence[HumanIkBoneAssignment],
+    mel,
+) -> None:
+    """Verify every requested HumanIK slot has a connected skeleton node.
+
+    ``hikSetCharacterObject`` can return without an error when Maya rejects a
+    slot (for example, because the character is in an unexpected state).  The
+    authoritative ``hikGetSkNode`` readback catches that semantic failure while
+    intentionally avoiding a strict path comparison: Maya may return a short
+    DAG name even when the requested joint was a long path.
+    """
+    missing = []
+    for assignment in assignments:
+        label = (
+            f"slot={assignment.hik_bone}, hikIndex={assignment.hik_index}, "
+            f"joint={assignment.joint}"
+        )
+        try:
+            raw_node = mel.eval(
+                f"hikGetSkNode({_mel_string(character)}, {assignment.hik_index});"
+            )
+        except Exception as exc:
+            missing.append(f"{label}, readbackError={exc}")
+            continue
+        if raw_node is None or not str(raw_node).strip():
+            missing.append(f"{label}, actual=<empty>")
+
+    if missing:
+        raise RuntimeError(
+            "HumanIK assignment readback failed: "
+            f"character={character}, requested={len(assignments)}, "
+            f"missing={len(missing)}: "
+            + "; ".join(missing)
+        )
 
 
 def create_humanik_control_rig(character: str, mel_module=None) -> bool:

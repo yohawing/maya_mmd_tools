@@ -8,7 +8,7 @@ tested without opening HumanIK panels.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from mmd_tools.core.humanik_bake import HumanIkBakeResult, bake_humanik_target_preview
 from mmd_tools.core.humanik_builder import (
@@ -33,6 +33,7 @@ from mmd_tools.core.humanik_resolver import (
     HumanIkBoneAssignment,
     HumanIkResolveResult,
 )
+from mmd_tools.core.humanik_stance import HumanIkStanceTransaction, canonical_stance_targets
 
 
 FINGER_HIK_MARKERS = ("Index", "Middle", "Ring", "Pinky", "Thumb")
@@ -139,7 +140,13 @@ class HumanIkFrontendBinding:
 class HumanIkFrontendSession:
     """Manage UI-independent HumanIK character and preview lifecycle."""
 
-    def __init__(self, cmds_module=None, mel_module=None, ownership_id: str = "mmd-tools:frontend"):
+    def __init__(
+        self,
+        cmds_module=None,
+        mel_module=None,
+        ownership_id: str = "mmd-tools:frontend",
+        stance_transaction_factory: Optional[Callable[..., HumanIkStanceTransaction]] = None,
+    ):
         self._cmds = cmds_module
         self._mel = mel_module
         self._ownership_id = str(ownership_id)
@@ -149,6 +156,8 @@ class HumanIkFrontendSession:
         self._ownership_report: Optional[Dict[str, Any]] = None
         self._preview: Optional[HumanIkTargetPreview] = None
         self._pending_characters: Dict[str, str] = {}
+        self._pending_stances: Dict[str, HumanIkStanceTransaction] = {}
+        self._stance_transaction_factory = stance_transaction_factory or HumanIkStanceTransaction
 
     @property
     def active_preview(self) -> Optional[HumanIkTargetPreview]:
@@ -158,13 +167,9 @@ class HumanIkFrontendSession:
     def setup_and_characterize(
         self,
         model_root: str,
-        *,
-        stance_confirmed: bool = False,
     ) -> HumanIkFrontendBinding:
-        """Resolve, create, lock, and retain a body-only HIK character binding."""
+        """Automatically pose, characterize, lock, and restore one model."""
         key = self._require_model_root(model_root)
-        if not stance_confirmed:
-            raise ValueError("stance_confirmed=True is required before HumanIK characterization")
         self._reject_active_preview_mutation("setup_and_characterize")
         existing = self._bindings.get(key)
         if existing is not None:
@@ -173,29 +178,69 @@ class HumanIkFrontendSession:
         body_result, excluded = _split_body_assignments(result)
         if not body_result.assignments:
             raise ValueError(f"HumanIK setup resolved no body assignments for: {key}")
+        stance = self._stance_transaction_factory(
+            key,
+            tuple(body_result.assignments),
+            cmds_module=self._cmds,
+            mel_module=self._mel,
+            ownership_report=None,
+            ownership_id=f"{self._ownership_id}:stance:{key}",
+        )
+        self._pending_stances[key] = stance
+        character = None
+        operation_error = None
+        character_cleanup_pending = False
         try:
-            character = create_humanik_definition(
-                body_result,
-                name_hint=self._character_name(key),
-                mel_module=self._mel,
-                update_ui=False,
-            )
-        except HumanIkCharacterCreationError as creation_error:
-            if creation_error.cleanup_error is not None:
-                self._pending_characters[creation_error.character] = key
-            raise
-        self._pending_characters[character] = key
-        try:
-            lock_humanik_definition(character, mel_module=self._mel)
-        except Exception as lock_error:
+            stance.prepare()
+            stance.enter()
             try:
-                delete_humanik_character(character, mel_module=self._mel)
-            except Exception as cleanup_error:
-                raise RuntimeError(
-                    f"HumanIK lock failed for {character}; cleanup also failed: {cleanup_error}"
-                ) from lock_error
-            self._pending_characters.pop(character, None)
-            raise
+                character = create_humanik_definition(
+                    body_result,
+                    name_hint=self._character_name(key),
+                    mel_module=self._mel,
+                    update_ui=False,
+                )
+            except HumanIkCharacterCreationError as creation_error:
+                character = creation_error.character
+                if creation_error.cleanup_error is not None:
+                    self._pending_characters[creation_error.character] = key
+                    character_cleanup_pending = True
+                operation_error = creation_error
+            else:
+                self._pending_characters[character] = key
+                try:
+                    lock_humanik_definition(character, mel_module=self._mel)
+                except Exception as lock_error:
+                    operation_error = lock_error
+                else:
+                    # Capture the post-lock character state.  Restoring the
+                    # pose transaction must not silently unlock a character
+                    # that setup just characterized and locked.
+                    stance.attach_character(character)
+        except Exception as error:
+            operation_error = error
+        finally:
+            try:
+                stance.restore()
+            except Exception as stance_error:
+                self._pending_stances[key] = stance
+                if operation_error is not None:
+                    raise RuntimeError(
+                        f"HumanIK setup failed for {key}; stance restore also failed: {stance_error}"
+                    ) from operation_error
+                raise
+            else:
+                self._pending_stances.pop(key, None)
+        if operation_error is not None:
+            if character and character in self._pending_characters and not character_cleanup_pending:
+                try:
+                    delete_humanik_character(character, mel_module=self._mel)
+                except Exception as cleanup_error:
+                    raise RuntimeError(
+                        f"HumanIK setup failed for {character}; cleanup also failed: {cleanup_error}"
+                    ) from operation_error
+                self._pending_characters.pop(character, None)
+            raise operation_error
         self._pending_characters.pop(character, None)
         binding = HumanIkFrontendBinding(
             model_root=key,
@@ -203,9 +248,7 @@ class HumanIkFrontendSession:
             result=body_result,
             excluded_finger_assignments=excluded,
             stance={
-                "mode": "user-confirmed-current-t-pose",
-                "saved": True,
-                "userConfirmedCommonTPose": True,
+                **stance.stance_evidence,
             },
         )
         self._bindings[key] = binding
@@ -293,7 +336,7 @@ class HumanIkFrontendSession:
         return result
 
     def restore_mmd_rig(self) -> bool:
-        """Stop and clear an active preview; repeated calls are idempotent."""
+        """Restore preview, pending stance transactions, and characters independently."""
         preview = self._preview
         restored = False
         first_error = None
@@ -308,7 +351,21 @@ class HumanIkFrontendSession:
                 self._preview = None
                 self._target_model_root = None
                 self._ownership_report = None
+        failed_stance_roots = set()
+        for model_root, stance in list(self._pending_stances.items()):
+            try:
+                stance.restore()
+            except Exception as exc:
+                failed_stance_roots.add(model_root)
+                if first_error is None:
+                    first_error = exc
+            else:
+                self._pending_stances.pop(model_root, None)
+                restored = True
         for character in list(self._pending_characters):
+            model_root = self._pending_characters[character]
+            if model_root in failed_stance_roots:
+                continue
             try:
                 delete_humanik_character(character, mel_module=self._mel)
             except Exception as exc:
@@ -325,8 +382,8 @@ class HumanIkFrontendSession:
         """Resolve a model into body and deferred finger assignments read-only.
 
         The returned report is JSON-safe and does not create, lock, or mutate a
-        HumanIK character.  UI callers can display it before requesting
-        ``setup_and_characterize`` with explicit stance confirmation.
+        HumanIK character.  UI callers can display it before requesting the
+        automatic snapshot/canonical-pose/characterize/restore transaction.
         """
         key = self._require_model_root(model_root)
         result = resolve_scene_humanik_assignments(key, cmds_module=self._cmds)
@@ -352,6 +409,7 @@ class HumanIkFrontendSession:
             "ambiguous": ambiguous,
             "duplicateAssignments": ambiguous,
             "blocked": [] if assignments else ["no_resolved_assignments"],
+            "automaticStance": canonical_stance_targets(body_result.assignments),
         }
 
     def inspect_target_ownership(self, model_root: str) -> Dict[str, Any]:
@@ -366,11 +424,38 @@ class HumanIkFrontendSession:
             row for row in ownership.get("rows", [])
             if row.get("classification") in BLOCKING_CLASSIFICATIONS
         ]
+        automatic_stance = dict(model_report.get("automaticStance", {}))
+        automatic_stance["ownership"] = {
+            "disconnect": [
+                {
+                    "node": str(row.get("node", "")),
+                    "edges": list(row.get("writes", [])),
+                }
+                for row in ownership.get("rows", [])
+                if row.get("classification") == "mute_for_hik"
+            ],
+            "retain": [
+                {
+                    "node": str(row.get("node", "")),
+                    "edges": list(row.get("writes", [])),
+                }
+                for row in ownership.get("rows", [])
+                if row.get("classification") == "keep_post"
+            ],
+            "blockers": [
+                {
+                    "node": str(row.get("node", "")),
+                    "classification": str(row.get("classification", "")),
+                }
+                for row in blockers
+            ],
+        }
         return {
             **model_report,
             "ownership": ownership,
             "constraintCounts": dict(ownership.get("counts", {})),
             "constraintRows": list(ownership.get("rows", [])),
+            "automaticStance": automatic_stance,
             "blockers": [
                 {
                     "node": str(row.get("node", "")),
@@ -435,6 +520,12 @@ class HumanIkFrontendSession:
             "pendingRecovery": {
                 "characterCount": len(self._pending_characters),
                 "characters": sorted(self._pending_characters),
+                "stanceCount": len(self._pending_stances),
+                "stanceModelRoots": sorted(self._pending_stances),
+                "stances": [
+                    self._pending_stances[root].to_dict()
+                    for root in sorted(self._pending_stances)
+                ],
             },
             "profileCoverage": {
                 "expectedBodyAssignmentCount": EXPECTED_BODY_ASSIGNMENT_COUNT,
