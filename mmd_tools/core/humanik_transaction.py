@@ -98,20 +98,6 @@ def restore_humanik_journal(
     mel = mel_module or _maya_mel()
     ensure_humanik_mel_loaded(mel)
 
-    for snapshot in journal.plugs:
-        for source in _incoming_sources(cmds, snapshot.plug):
-            cmds.disconnectAttr(source, snapshot.plug)
-    for snapshot in journal.plugs:
-        if not snapshot.sources:
-            _set_plug_value(cmds, snapshot.plug, snapshot.value, snapshot.attr_type)
-    for snapshot in journal.plugs:
-        for source in snapshot.sources:
-            if not _is_connected(cmds, source, snapshot.plug):
-                cmds.connectAttr(source, snapshot.plug, force=True)
-    for snapshot in journal.nodes:
-        for attr, value in snapshot.attributes.items():
-            cmds.setAttr(f"{snapshot.node}.{attr}", value)
-
     current_source = str(
         mel.eval(f"hikGetRetargetCharacterInput({_mel_string(journal.character)})") or ""
     )
@@ -126,6 +112,20 @@ def restore_humanik_journal(
             f"hikCharacterLock({_mel_string(journal.character)}, "
             f"{1 if journal.lock_state else 0}, 1);"
         )
+
+    for snapshot in journal.plugs:
+        for source in _incoming_sources(cmds, snapshot.plug):
+            cmds.disconnectAttr(source, snapshot.plug)
+    for snapshot in journal.plugs:
+        if not snapshot.sources:
+            _set_plug_value(cmds, snapshot.plug, snapshot.value, snapshot.attr_type)
+    for snapshot in journal.plugs:
+        for source in snapshot.sources:
+            if not _is_connected(cmds, source, snapshot.plug):
+                cmds.connectAttr(source, snapshot.plug, force=True)
+    for snapshot in journal.nodes:
+        for attr, value in snapshot.attributes.items():
+            cmds.setAttr(f"{snapshot.node}.{attr}", value)
 
 
 @contextmanager
