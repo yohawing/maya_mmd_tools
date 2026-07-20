@@ -167,6 +167,7 @@ def install_maya_stub(profile: Optional[str] = None) -> bool:
     maya.mel = MagicMock(name="maya.mel")
     maya.OpenMaya = MagicMock(name="maya.OpenMaya")
     maya.utils = MagicMock(name="maya.utils")
+    maya.standalone = MagicMock(name="maya.standalone")
 
     class _StubMPxFileTranslator:
         kImportAccessMode = 0
@@ -196,6 +197,7 @@ def install_maya_stub(profile: Optional[str] = None) -> bool:
     sys.modules["maya.cmds"] = maya.cmds
     sys.modules["maya.mel"] = maya.mel
     sys.modules["maya.utils"] = maya.utils
+    sys.modules["maya.standalone"] = maya.standalone
     sys.modules["maya.OpenMaya"] = maya.OpenMaya
     sys.modules["maya.OpenMayaMPx"] = maya.OpenMayaMPx
     sys.modules["maya.api"] = api

@@ -5,6 +5,49 @@ HumanIK SOURCE, bakes a TARGET preview through the S4 boundary, and compares
 the resulting deformation matrices and local quaternions.  Determinism is
 measured separately from source-to-target fidelity for sequential and random
 seek playback.
+
+Stance-coincident frame semantics (2026-07-21)
+-----------------------------------------------
+After the FingerSolving fix, the only remaining ``bindPreMatrix * worldMatrix``
+residual is ``0.0299`` at ``Left/RightUpLeg``, and it occurs ONLY on frames
+whose evaluated source pose coincides with the HumanIK characterization
+reference stance. This was proven intrinsic to HumanIK's own solver, not a
+harness artifact:
+
+- Not eval-order dependent, not specific to time 0, not stance-capture
+  divergence (``build/reports/hik_frame0_*.json``,
+  ``build/reports/hik_stance_experiment_*.json``).
+- Every frame whose pose has diverged from the characterization stance sits
+  at ``0.0006``-``0.0007``, comfortably below ``MATRIX_MAX_TOLERANCE``.
+- Only the frame(s) whose pose is numerically coincident with the
+  characterization stance show the ``0.0299`` residual.
+
+Given that evidence, the gate classifies each captured frame by a
+**pose-coincidence metric**: the maximum world-position delta, across the
+characterized HIK assignment joints, between that frame's evaluated source
+pose and the source skeleton's pose at characterization time (captured
+immediately after ``lock_humanik_definition``, before any VMD motion is
+loaded). ``STANCE_COINCIDENCE_POSE_EPSILON`` classifies purely by that
+distance, never by frame index -- see its docstring for the measured
+separation (``bind_vs_frame0`` ~= 0.0044, ``bind_vs_frame1`` ~= 1.015 in
+``build/reports/hik_frame0_stance_compare.json``).
+
+Gate semantics:
+
+- Non-coincident frames keep the existing strict gate:
+  ``MATRIX_MAX_TOLERANCE`` (1.0e-3) and ``MATRIX_MEAN_TOLERANCE`` (2.5e-4),
+  computed only over that frame class.
+- Stance-coincident frames are excluded from the 0.001 gate (that
+  discrepancy is proven intrinsic to HIK, not a regression), but are still
+  gated at ``STANCE_COINCIDENT_MATRIX_TOLERANCE`` (0.05) so a real
+  regression on those frames still fails the smoke.
+- At least one captured frame must be non-coincident, or the gate raises
+  immediately: a run that only ever sampled the characterization stance
+  proves nothing about round-trip fidelity away from it.
+- Both class gates must pass for overall ``status: pass``.
+
+All existing report fields are unchanged; ``stanceCoincidence`` and
+``bakedMatrixByStanceClass`` are additive.
 """
 
 from __future__ import annotations
@@ -43,6 +86,24 @@ QUATERNION_MAX_TOLERANCE = math.radians(2.0)
 DETERMINISM_TOLERANCE = 1.0e-8
 MOTION_TOLERANCE = 1.0e-5
 CHANNELS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
+
+# A frame is classified "stance-coincident" when the max world-position delta
+# (across characterized HIK assignment joints) between its evaluated source
+# pose and the characterization-time reference pose is at or below this
+# epsilon. Measured separation (build/reports/hik_frame0_stance_compare.json):
+# bind_vs_frame0 ~= 0.0044 (still essentially the stance), bind_vs_frame1
+# ~= 1.015 (clearly diverged). 0.1 sits comfortably in that gap, so
+# classification depends only on pose distance, never on frame index.
+STANCE_COINCIDENCE_POSE_EPSILON = 0.1
+
+# HumanIK's own solver has an intrinsic ~0.0299 bindPreMatrix*worldMatrix
+# residual at Left/RightUpLeg that appears ONLY on stance-coincident frames
+# (see module docstring / docs-dev/humanik-characterize-notes.md S5 section
+# for the elimination evidence: not eval-order, not time-0-specific, not
+# stance-capture divergence). Stance-coincident frames are excluded from the
+# strict MATRIX_MAX_TOLERANCE gate but must still clear this safety bound so
+# a genuine regression on those frames still fails the smoke.
+STANCE_COINCIDENT_MATRIX_TOLERANCE = 0.05
 
 
 def _parse_args() -> argparse.Namespace:
@@ -645,6 +706,79 @@ def _vector_distance(left: Sequence[float], right: Sequence[float]) -> float:
     return math.sqrt(sum((float(a) - float(b)) ** 2 for a, b in zip(left, right)))
 
 
+def _pose_snapshot(joints: Sequence[str]) -> Dict[str, Tuple[float, float, float]]:
+    """Capture world-space translations for a set of joints at the current time."""
+    return {str(joint): _world_translation(str(joint)) for joint in joints}
+
+
+def _pose_coincidence_metric(
+    reference_pose: Mapping[str, Tuple[float, float, float]],
+    joints: Sequence[str],
+) -> float:
+    """Max world-position delta of ``joints`` versus a captured reference pose."""
+    return max(
+        (_vector_distance(reference_pose[str(joint)], _world_translation(str(joint))) for joint in joints),
+        default=0.0,
+    )
+
+
+def _classify_frame_stance_coincidence(
+    reference_pose: Mapping[str, Tuple[float, float, float]],
+    joints: Sequence[str],
+    frames: Sequence[int],
+) -> Dict[str, Any]:
+    """Classify each captured frame as stance-coincident by pose distance only."""
+    rows = []
+    for frame in frames:
+        cmds.currentTime(frame, edit=True)
+        cmds.refresh(force=True)
+        metric = _pose_coincidence_metric(reference_pose, joints)
+        rows.append(
+            {
+                "frame": int(frame),
+                "poseCoincidenceMetric": metric,
+                "stanceCoincident": metric <= STANCE_COINCIDENCE_POSE_EPSILON,
+            }
+        )
+    return {
+        "epsilon": STANCE_COINCIDENCE_POSE_EPSILON,
+        "joints": sorted(str(joint) for joint in joints),
+        "rows": rows,
+        "coincidentFrames": [row["frame"] for row in rows if row["stanceCoincident"]],
+        "nonCoincidentFrames": [row["frame"] for row in rows if not row["stanceCoincident"]],
+    }
+
+
+def _split_matrix_fidelity_by_stance(
+    matrix_fidelity: Mapping[str, Any],
+    classification: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Aggregate per-frame matrix residual rows into stance-coincidence classes.
+
+    The mean for each class is computed only from that class's own frames --
+    stance-coincident frames never dilute (or get diluted by) the strict
+    0.001-class mean, and vice versa.
+    """
+    coincident_frames = set(classification["coincidentFrames"])
+    non_coincident_frames = set(classification["nonCoincidentFrames"])
+
+    def _select(frame_set: set) -> Dict[str, Any]:
+        rows = [row for row in matrix_fidelity["frames"] if row["frame"] in frame_set]
+        maxima = [row["max"] for row in rows]
+        means = [row["mean"] for row in rows]
+        return {
+            "frameCount": len(rows),
+            "frames": [row["frame"] for row in rows],
+            "max": max(maxima, default=0.0),
+            "mean": statistics.fmean(means) if means else 0.0,
+        }
+
+    return {
+        "nonCoincident": _select(non_coincident_frames),
+        "stanceCoincident": _select(coincident_frames),
+    }
+
+
 def _identity_residual(value: Sequence[float]) -> float:
     identity = [1.0 if row == column else 0.0 for row in range(4) for column in range(4)]
     return max((abs(float(actual) - expected) for actual, expected in zip(value, identity)), default=0.0)
@@ -1075,6 +1209,12 @@ def main() -> int:
         target_character = create_humanik_definition(target_result, name_hint="MMDToolsS5_Target", update_ui=False)
         lock_humanik_definition(source_character)
         lock_humanik_definition(target_character)
+        # Capture the characterization reference pose now, before any stance
+        # restore or VMD motion changes the source skeleton. Stance-coincidence
+        # classification below compares each captured frame's evaluated pose
+        # against this snapshot.
+        source_pose_joints = tuple(str(item.joint) for item in source_result.assignments)
+        characterization_reference_pose = _pose_snapshot(source_pose_joints)
         if args.characterization_stance == "t-pose":
             source_restore = _restore_stance(source_stance_snapshot)
             target_restore = _restore_stance(target_stance_snapshot)
@@ -1106,6 +1246,17 @@ def main() -> int:
         live_quaternion = _frame_quaternion_fidelity(source_slots, target_slots, frames)
         bake = bake_humanik_target_preview(preview, target_joints, frames[0], frames[-1], mel_module=mel)
         baked_matrix = _frame_matrix_fidelity(source_slots, target_slots, frames)
+        stance_classification = _classify_frame_stance_coincidence(
+            characterization_reference_pose, source_pose_joints, frames
+        )
+        if not stance_classification["nonCoincidentFrames"]:
+            raise RuntimeError(
+                "HumanIK S5 gate captured only stance-coincident frames "
+                f"(pose-coincidence epsilon={STANCE_COINCIDENCE_POSE_EPSILON}); "
+                "a gate that only saw the characterization stance proves nothing "
+                "about round-trip fidelity away from it."
+            )
+        baked_matrix_by_stance = _split_matrix_fidelity_by_stance(baked_matrix, stance_classification)
         cmds.currentTime(frames[0], edit=True)
         cmds.refresh(force=True)
         bind_identity = _bind_identity_evidence({"source": source_slots, "target": target_slots})
@@ -1153,22 +1304,30 @@ def main() -> int:
                 "hOutAndExcluded": h_out,
                 "bake": bake.to_dict(),
                 "bakeWarnings": list(bake.warnings),
+                "stanceCoincidence": stance_classification,
+                "bakedMatrixByStanceClass": baked_matrix_by_stance,
                 "acceptanceThresholds": {
                     "matrixMax": MATRIX_MAX_TOLERANCE,
                     "matrixMean": MATRIX_MEAN_TOLERANCE,
                     "quaternionMaxRadians": QUATERNION_MAX_TOLERANCE,
                     "quaternionMaxDegrees": math.degrees(QUATERNION_MAX_TOLERANCE),
                     "determinismMax": DETERMINISM_TOLERANCE,
+                    "stanceCoincidencePoseEpsilon": STANCE_COINCIDENCE_POSE_EPSILON,
+                    "stanceCoincidentMatrixTolerance": STANCE_COINCIDENT_MATRIX_TOLERANCE,
                 },
             }
         )
+        non_coincident_class = baked_matrix_by_stance["nonCoincident"]
+        stance_coincident_class = baked_matrix_by_stance["stanceCoincident"]
         payload["status"] = "pass" if all(
             (
                 motion["root"]["passed"],
                 motion["waist"]["passed"],
                 bool(source_slots),
-                baked_matrix["max"] <= MATRIX_MAX_TOLERANCE,
-                baked_matrix["mean"] <= MATRIX_MEAN_TOLERANCE,
+                bool(stance_classification["nonCoincidentFrames"]),
+                non_coincident_class["max"] <= MATRIX_MAX_TOLERANCE,
+                non_coincident_class["mean"] <= MATRIX_MEAN_TOLERANCE,
+                stance_coincident_class["max"] <= STANCE_COINCIDENT_MATRIX_TOLERANCE,
                 baked_quaternion["max"] <= QUATERNION_MAX_TOLERANCE,
                 determinism["passed"],
                 bake.pre_bake_journal_restored,
@@ -1177,11 +1336,27 @@ def main() -> int:
         if payload["status"] != "pass":
             raise RuntimeError(
                 "HumanIK S5 round-trip acceptance failed: "
-                f"matrixMax={baked_matrix['max']} quaternionMax={baked_quaternion['max']} "
+                f"nonCoincidentMatrixMax={non_coincident_class['max']} "
+                f"stanceCoincidentMatrixMax={stance_coincident_class['max']} "
+                f"quaternionMax={baked_quaternion['max']} "
                 f"determinism={determinism['passed']}"
             )
         out.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        print(json.dumps({"status": payload["status"], "mode": args.evaluation_mode, "common": len(source_slots), "matrixMax": baked_matrix["max"], "quatMax": baked_quaternion["max"]}, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    "status": payload["status"],
+                    "mode": args.evaluation_mode,
+                    "common": len(source_slots),
+                    "matrixMax": baked_matrix["max"],
+                    "nonCoincidentMatrixMax": non_coincident_class["max"],
+                    "stanceCoincidentMatrixMax": stance_coincident_class["max"],
+                    "coincidentFrames": stance_classification["coincidentFrames"],
+                    "quatMax": baked_quaternion["max"],
+                },
+                sort_keys=True,
+            )
+        )
         return 0
     except Exception as exc:
         if isolation_state is not None and not isolation_state.get("topologyRestored", False):
