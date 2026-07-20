@@ -1,6 +1,8 @@
 """Maya startup hook for loading the canonical MMD Tools plugin."""
 
 from pathlib import Path
+import os
+import sys
 import traceback
 
 from maya import cmds
@@ -9,8 +11,33 @@ from maya.api import OpenMaya as om
 
 def _mmd_tools_plugin_path():
     """Return the source-tree plugin path when this hook belongs to a checkout."""
-    candidate = Path(__file__).resolve().parent / "plug-ins" / "mmd_tools_plugin.py"
-    return str(candidate) if candidate.is_file() else "mmd_tools_plugin.py"
+    roots = []
+    source_file = globals().get("__file__")
+    if source_file:
+        try:
+            roots.append(Path(source_file).resolve().parent)
+        except Exception:
+            pass
+    for variable in ("MMD_TOOLS_ROOT", "MAYA_MODULE_PATH", "PYTHONPATH"):
+        roots.extend(Path(value) for value in os.environ.get(variable, "").split(os.pathsep) if value)
+    roots.extend(Path(value) for value in sys.path if value)
+    try:
+        roots.append(Path.cwd())
+    except Exception:
+        pass
+    seen = set()
+    for root in roots:
+        try:
+            root = root.resolve()
+        except Exception:
+            continue
+        if root in seen:
+            continue
+        seen.add(root)
+        candidate = root / "plug-ins" / "mmd_tools_plugin.py"
+        if candidate.is_file():
+            return str(candidate)
+    return "mmd_tools_plugin.py"
 
 
 def _mmd_tools_plugin_loaded(plugin_path):
