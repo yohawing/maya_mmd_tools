@@ -10,6 +10,7 @@ seek playback.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 import math
 import statistics
@@ -23,7 +24,7 @@ import maya.standalone
 
 from mmd_tools.core.humanik_bake import bake_humanik_target_preview
 from mmd_tools.core.humanik_builder import (
-    create_humanik_definition_from_scene,
+    create_humanik_definition,
     lock_humanik_definition,
     resolve_scene_humanik_assignments,
 )
@@ -50,6 +51,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--vmd", default="tests/data/mmt_test_model_test_motion.vmd")
     parser.add_argument("--out", default="build/reports/humanik_roundtrip_smoke.json")
     parser.add_argument("--evaluation-mode", choices=("off", "serial", "parallel"), default="off")
+    parser.add_argument("--hik-profile", choices=("full", "body-only"), default="full")
     parser.add_argument("--start", type=int, default=FRAME_START)
     parser.add_argument("--end", type=int, default=FRAME_END)
     return parser.parse_args()
@@ -158,6 +160,80 @@ def _common_skin_slots(source_result, target_result, source_root: str, target_ro
             "logicalIndex": target_index,
         }
     return source_slots, target_slots
+
+
+def _profile_result(result, profile: str):
+    """Filter resolved assignments before HIK characterization for a profile."""
+    if profile == "full":
+        return result
+    assignments = tuple(
+        assignment
+        for assignment in result.assignments
+        if _quaternion_region(assignment.hik_bone) != "finger"
+    )
+    return replace(result, assignments=assignments)
+
+
+def _assignment_rows(assignments: Sequence[Any]) -> List[Dict[str, Any]]:
+    return [
+        {
+            "hikSlot": int(assignment.hik_index),
+            "hikBone": str(assignment.hik_bone),
+            "mmdBone": str(assignment.mmd_bone),
+            "joint": _long_name(assignment.joint),
+            "category": _quaternion_region(assignment.hik_bone),
+        }
+        for assignment in assignments
+    ]
+
+
+def _assignment_profile_evidence(
+    profile: str,
+    source_original,
+    target_original,
+    source_characterized,
+    target_characterized,
+) -> Dict[str, Any]:
+    source_excluded = [
+        assignment
+        for assignment in source_original.assignments
+        if assignment not in source_characterized.assignments
+    ]
+    target_excluded = [
+        assignment
+        for assignment in target_original.assignments
+        if assignment not in target_characterized.assignments
+    ]
+    excluded_slots = sorted({int(assignment.hik_index) for assignment in source_excluded + target_excluded})
+    excluded_categories = {"body": 0, "finger": 0, "roll": 0}
+    for assignment in source_excluded:
+        excluded_categories[_quaternion_region(assignment.hik_bone)] += 1
+    return {
+        "profile": profile,
+        "source": {
+            "originalAssignmentCount": len(source_original.assignments),
+            "characterizedAssignmentCount": len(source_characterized.assignments),
+            "excludedAssignments": _assignment_rows(source_excluded),
+        },
+        "target": {
+            "originalAssignmentCount": len(target_original.assignments),
+            "characterizedAssignmentCount": len(target_characterized.assignments),
+            "excludedAssignments": _assignment_rows(target_excluded),
+        },
+        "excludedSlotIds": excluded_slots,
+        "excludedCategoryCounts": excluded_categories,
+    }
+
+
+def _common_slot_categories(source_slots: Mapping[int, Mapping[str, Any]]) -> Dict[str, Any]:
+    categories = {"body": [], "finger": [], "roll": []}
+    for slot, info in source_slots.items():
+        categories[_quaternion_region(str(info["hikBone"]))].append(int(slot))
+    return {
+        "counts": {category: len(slots) for category, slots in categories.items()},
+        "slotIds": {category: sorted(slots) for category, slots in categories.items()},
+        "total": sum(len(slots) for slots in categories.values()),
+    }
 
 
 def _matrix(plug: str) -> om.MMatrix:
@@ -559,6 +635,7 @@ def main() -> int:
     payload: Dict[str, Any] = {
         "status": "fail",
         "evaluationMode": args.evaluation_mode,
+        "hikProfile": args.hik_profile,
         "characterizationOrder": "bind_before_motion",
     }
     maya.standalone.initialize(name="python")
@@ -572,8 +649,17 @@ def main() -> int:
         frames = list(range(int(args.start), int(args.end) + 1))
         source_root = _load_model(pmx, setup_rig=False)
         target_root = _load_model(pmx, setup_rig=True)
-        source_result = resolve_scene_humanik_assignments(source_root)
-        target_result = resolve_scene_humanik_assignments(target_root)
+        source_original_result = resolve_scene_humanik_assignments(source_root)
+        target_original_result = resolve_scene_humanik_assignments(target_root)
+        source_result = _profile_result(source_original_result, args.hik_profile)
+        target_result = _profile_result(target_original_result, args.hik_profile)
+        assignment_profile = _assignment_profile_evidence(
+            args.hik_profile,
+            source_original_result,
+            target_original_result,
+            source_result,
+            target_result,
+        )
         source_slots, target_slots = _common_skin_slots(source_result, target_result, source_root, target_root)
         if not source_slots:
             raise RuntimeError("S5 has no common HIK skin influences")
@@ -582,8 +668,8 @@ def main() -> int:
         pre_hik_matrix = _frame_matrix_fidelity(source_slots, target_slots, [frames[0]])
         pre_hik_quaternion = _frame_quaternion_fidelity(source_slots, target_slots, [frames[0]])
         pre_hik_bind_identity = _bind_identity_evidence({"source": source_slots, "target": target_slots})
-        source_character = create_humanik_definition_from_scene(source_root, name_hint="MMDToolsS5_Source", update_ui=False)
-        target_character = create_humanik_definition_from_scene(target_root, name_hint="MMDToolsS5_Target", update_ui=False)
+        source_character = create_humanik_definition(source_result, name_hint="MMDToolsS5_Source", update_ui=False)
+        target_character = create_humanik_definition(target_result, name_hint="MMDToolsS5_Target", update_ui=False)
         lock_humanik_definition(source_character)
         lock_humanik_definition(target_character)
         _load_motion(vmd, pmx, source_root)
@@ -619,6 +705,8 @@ def main() -> int:
                 "sourceCharacter": source_character,
                 "targetCharacter": target_character,
                 "ownershipCounts": ownership["counts"],
+                "assignmentProfile": assignment_profile,
+                "commonSlotCategories": _common_slot_categories(source_slots),
                 "targetAssignmentCount": len(target_result.assignments),
                 "commonSkinInfluenceCount": len(source_slots),
                 "motion": motion,
