@@ -3,13 +3,25 @@
 S3 applies a previously reviewed S1 ownership report in the fixed order
 ``journal -> mute conflicting writers -> HIK input`` and restores NEUTRAL from
 the S2 journal.  It does not bake animation or modify physics owners.
+
+``begin_humanik_target_preview`` also disables the TARGET character's
+``FingerSolving`` property for the preview's lifetime (HUMANIK-RETARGET-S5;
+see ``HUMANIK_FINGER_SOLVING_DISABLED`` in ``humanik_builder.py``) and restores
+its prior value on ``stop_humanik_target_preview`` or rollback, exactly like
+``input_source``/``lock_state`` are restored via the journal. It is
+per-preview rather than a characterize-time change because it is only
+meaningful while the target is actively retargeting from a source.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
+from mmd_tools.core.humanik_builder import (
+    HUMANIK_FINGER_SOLVING_DISABLED,
+    set_humanik_finger_solving_state,
+)
 from mmd_tools.core.humanik_constraints import (
     classify_humanik_constraints,
     collect_humanik_constraint_facts,
@@ -37,6 +49,7 @@ class HumanIkTargetPreview:
     retained_nodes: List[str]
     post_report: Dict[str, Any]
     active: bool = True
+    finger_solving_previous: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Return the JSON-safe preview diagnostic payload."""
@@ -48,6 +61,7 @@ class HumanIkTargetPreview:
             "retainedNodes": list(self.retained_nodes),
             "postReport": self.post_report,
             "active": self.active,
+            "fingerSolvingPreviousValue": self.finger_solving_previous,
         }
 
 
@@ -91,7 +105,20 @@ def begin_humanik_target_preview(
         mel_module=mel_module,
     )
     disconnected: List[Dict[str, str]] = []
+    finger_solving_previous: Optional[int] = None
     try:
+        # Disable HumanIK's internal finger-rotation reconstruction on the
+        # TARGET character for the lifetime of this preview (see
+        # HUMANIK_FINGER_SOLVING_DISABLED). Scoped here rather than at
+        # characterize time because it is only meaningful while the target is
+        # actually being driven by a source, and it must be restored the same
+        # way input_source/lock_state already are on stop/rollback.
+        finger_solving_previous = set_humanik_finger_solving_state(
+            target_character,
+            HUMANIK_FINGER_SOLVING_DISABLED,
+            mel_module=mel_module,
+            cmds_module=cmds,
+        )
         disconnect_reviewed_writers(cmds, mute_rows, disconnected)
         connect_humanik_source(
             target_character,
@@ -126,6 +153,13 @@ def begin_humanik_target_preview(
         if post_blockers:
             raise RuntimeError("HumanIK TARGET preview post-scan found blocker")
     except Exception as error:
+        if finger_solving_previous is not None:
+            set_humanik_finger_solving_state(
+                target_character,
+                finger_solving_previous,
+                mel_module=mel_module,
+                cmds_module=cmds,
+            )
         try:
             restore_humanik_journal(
                 journal,
@@ -147,6 +181,7 @@ def begin_humanik_target_preview(
         disconnected=sorted(disconnected, key=lambda row: (row["destination"], row["source"])),
         retained_nodes=retained_nodes,
         post_report=post_report,
+        finger_solving_previous=finger_solving_previous,
     )
 
 
@@ -162,6 +197,13 @@ def stop_humanik_target_preview(
         cmds_module=cmds_module,
         mel_module=mel_module,
     )
+    if preview.finger_solving_previous is not None:
+        set_humanik_finger_solving_state(
+            preview.target_character,
+            preview.finger_solving_previous,
+            mel_module=mel_module,
+            cmds_module=cmds_module,
+        )
     preview.active = False
 
 

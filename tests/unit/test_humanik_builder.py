@@ -13,9 +13,13 @@ from mmd_tools.core.humanik_builder import (
     delete_humanik_character,
     ensure_humanik_mel_loaded,
     get_humanik_definition_lock_state,
+    get_humanik_finger_solving_property_node,
+    get_humanik_finger_solving_state,
     HumanIkCharacterCreationError,
+    HUMANIK_FINGER_SOLVING_DISABLED,
     lock_humanik_definition,
     resolve_scene_humanik_assignments,
+    set_humanik_finger_solving_state,
 )
 
 
@@ -464,6 +468,95 @@ class _NoControlRigMel(FakeMel):
             self.commands.append(command)
             return None
         return super().eval(command)
+
+
+class _FingerSolvingCmds:
+    """Fake ``cmds`` with a HIKProperty2State node holding ``FingerSolving``."""
+
+    def __init__(self, has_attr=True, initial=1):
+        self.has_attr = has_attr
+        self.values = {"propNode.FingerSolving": initial} if has_attr else {}
+        self.attribute_query_calls = []
+        self.set_attr_calls = []
+
+    def attributeQuery(self, attr, node=None, exists=False):
+        self.attribute_query_calls.append((attr, node, exists))
+        return bool(exists and self.has_attr and attr == "FingerSolving" and node == "propNode")
+
+    def getAttr(self, plug):
+        return self.values.get(plug)
+
+    def setAttr(self, plug, value):
+        self.set_attr_calls.append((plug, value))
+        self.values[plug] = value
+
+
+class _FingerSolvingMel:
+    """Fake ``mel`` reporting whether ``hikGetProperty2StateFromCharacter`` exists."""
+
+    def __init__(self, node="propNode", proc_exists=True):
+        self.node = node
+        self.proc_exists = proc_exists
+        self.commands = []
+
+    def eval(self, command):
+        self.commands.append(command)
+        if command.startswith("exists "):
+            return int(self.proc_exists)
+        if command.startswith("hikGetProperty2StateFromCharacter"):
+            return self.node
+        return None
+
+
+class TestHumanIkFingerSolving(unittest.TestCase):
+    """HUMANIK-RETARGET-S5: FingerSolving property lookup/mutation helpers."""
+
+    def test_get_property_node_returns_connected_node(self):
+        mel = _FingerSolvingMel(node="propNode")
+        self.assertEqual(get_humanik_finger_solving_property_node("Target", mel), "propNode")
+
+    def test_get_property_node_returns_empty_when_proc_missing(self):
+        mel = _FingerSolvingMel(proc_exists=False)
+        self.assertEqual(get_humanik_finger_solving_property_node("Target", mel), "")
+
+    def test_get_state_reads_current_value(self):
+        cmds = _FingerSolvingCmds(initial=1)
+        mel = _FingerSolvingMel()
+        self.assertEqual(get_humanik_finger_solving_state("Target", mel, cmds), 1)
+
+    def test_set_state_disables_and_returns_previous_value(self):
+        cmds = _FingerSolvingCmds(initial=1)
+        mel = _FingerSolvingMel()
+        previous = set_humanik_finger_solving_state(
+            "Target", HUMANIK_FINGER_SOLVING_DISABLED, mel, cmds
+        )
+        self.assertEqual(previous, 1)
+        self.assertEqual(cmds.values["propNode.FingerSolving"], 0)
+        self.assertEqual(cmds.set_attr_calls, [("propNode.FingerSolving", 0)])
+
+    def test_set_state_is_noop_when_proc_missing(self):
+        """Older Maya/plugin variants without the proc must not hard-fail."""
+        cmds = _FingerSolvingCmds(initial=1)
+        mel = _FingerSolvingMel(proc_exists=False)
+        previous = set_humanik_finger_solving_state("Target", 0, mel, cmds)
+        self.assertIsNone(previous)
+        self.assertEqual(cmds.set_attr_calls, [])
+
+    def test_set_state_is_noop_when_no_property_node(self):
+        """A character with no associated property node is left untouched."""
+        cmds = _FingerSolvingCmds(initial=1)
+        mel = _FingerSolvingMel(node="")
+        previous = set_humanik_finger_solving_state("Target", 0, mel, cmds)
+        self.assertIsNone(previous)
+        self.assertEqual(cmds.set_attr_calls, [])
+
+    def test_set_state_is_noop_when_attribute_missing(self):
+        """Property node exists but lacks FingerSolving (older HIK schema)."""
+        cmds = _FingerSolvingCmds(has_attr=False)
+        mel = _FingerSolvingMel()
+        previous = set_humanik_finger_solving_state("Target", 0, mel, cmds)
+        self.assertIsNone(previous)
+        self.assertEqual(cmds.set_attr_calls, [])
 
 
 if __name__ == "__main__":

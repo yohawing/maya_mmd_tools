@@ -10,10 +10,13 @@ from mmd_tools.core.humanik_preview import (
 
 
 class FakeCmds:
-    def __init__(self):
+    def __init__(self, finger_solving_node="propNode", finger_solving_initial=1):
         self.connections = {"|hips.rotateX": ["ik.outputRotateX"]}
         self.values = {"|hips.rotateX": 0.0}
         self.disconnects = []
+        self.finger_solving_node = finger_solving_node
+        if finger_solving_node:
+            self.values[f"{finger_solving_node}.FingerSolving"] = finger_solving_initial
 
     def listConnections(self, plug, source=True, destination=False, plugs=True, connections=False):
         if connections:
@@ -37,7 +40,9 @@ class FakeCmds:
         self.values[plug] = values[0]
 
     def attributeQuery(self, attr, node=None, exists=False):
-        return False
+        return bool(
+            exists and attr == "FingerSolving" and self.finger_solving_node and node == self.finger_solving_node
+        )
 
     def ls(self, type=None, long=False):
         return []
@@ -47,9 +52,10 @@ class FakeCmds:
 
 
 class FakeMel:
-    def __init__(self):
+    def __init__(self, finger_solving_node="propNode"):
         self.source = ""
         self.locked = True
+        self.finger_solving_node = finger_solving_node
 
     def eval(self, command):
         if command.startswith("exists "):
@@ -62,6 +68,8 @@ class FakeMel:
             return int(self.locked)
         if command.startswith("hikSetCharacterInput"):
             self.source = "Source" if '"Source"' in command else ""
+        if command.startswith("hikGetProperty2StateFromCharacter"):
+            return self.finger_solving_node
         return None
 
 
@@ -193,6 +201,60 @@ class TestHumanIkPreview(unittest.TestCase):
 
         self.assertEqual(cmds.connections["|hips.rotateX"], ["ik.outputRotateX"])
         self.assertEqual(mel.source, "")
+
+
+class TestHumanIkPreviewFingerSolving(unittest.TestCase):
+    """HUMANIK-RETARGET-S5: FingerSolving is disabled for the preview lifetime."""
+
+    REPORT = {
+        "rows": [{
+            "node": "ik",
+            "classification": "mute_for_hik",
+            "writes": ["|hips.rotateX"],
+        }]
+    }
+
+    def test_begin_disables_finger_solving_and_stop_restores_it(self):
+        cmds, mel = FakeCmds(finger_solving_initial=1), FakeMel()
+
+        preview = begin_humanik_target_preview(
+            "owner:target", "Target", "Source", self.REPORT, {"|hips"}, cmds, mel
+        )
+
+        self.assertEqual(cmds.values["propNode.FingerSolving"], 0)
+        self.assertEqual(preview.finger_solving_previous, 1)
+
+        stop_humanik_target_preview(preview, cmds, mel)
+        self.assertEqual(cmds.values["propNode.FingerSolving"], 1)
+
+        # Repeated stop calls stay idempotent/safe.
+        stop_humanik_target_preview(preview, cmds, mel)
+        self.assertEqual(cmds.values["propNode.FingerSolving"], 1)
+
+    def test_rollback_restores_finger_solving_before_reraising(self):
+        cmds, mel = FakeCmds(finger_solving_initial=1), FakeMel()
+        report = {"rows": [{"node": "unknown", "classification": "manual", "writes": []}]}
+
+        with self.assertRaisesRegex(RuntimeError, "blocked"):
+            begin_humanik_target_preview(
+                "owner:target", "Target", "Source", report, {"|hips"}, cmds, mel
+            )
+
+        # Blocked before any mutation: FingerSolving was never touched.
+        self.assertEqual(cmds.values["propNode.FingerSolving"], 1)
+
+    def test_missing_property_node_does_not_hard_fail(self):
+        """Older Maya/plugin variants without a property node must not break preview."""
+        cmds = FakeCmds(finger_solving_node="")
+        mel = FakeMel(finger_solving_node="")
+
+        preview = begin_humanik_target_preview(
+            "owner:target", "Target", "Source", self.REPORT, {"|hips"}, cmds, mel
+        )
+
+        self.assertIsNone(preview.finger_solving_previous)
+        stop_humanik_target_preview(preview, cmds, mel)
+        self.assertFalse(preview.active)
 
 
 if __name__ == "__main__":

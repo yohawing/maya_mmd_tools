@@ -28,6 +28,8 @@ _HIK_MEL_SCRIPTS = (
     "hikInputSourceUtils.mel",
     "hikCharacterControlsUI.mel",
     "hikControlRigOperations.mel",
+    # hikGetProperty2StateFromCharacter (finger-solving lookup) lives here.
+    "hikCharacterControlsUtils.mel",
 )
 _HIK_LOAD_PLUGIN_COMMANDS = (
     'if (!`pluginInfo -query -loaded "mayaHIK"`) loadPlugin "mayaHIK";',
@@ -206,6 +208,104 @@ def create_humanik_definition_from_scene(
         create_control_rig=create_control_rig,
         update_ui=update_ui,
     )
+
+
+HUMANIK_FINGER_SOLVING_DISABLED = 0
+"""Value that disables HumanIK's internal finger-rotation reconstruction.
+
+HUMANIK-RETARGET-S5 root-caused the self-retarget finger residual
+(``matrixMax`` 0.217693, see ``build/reports/hik_fingersolving_full_on.json``)
+to the TARGET character's ``HIKProperty2State.FingerSolving`` attribute
+defaulting to 1: with it set, HumanIK reconstructs every finger slot's
+rotation through an internal IK solve instead of copying the source's
+rotation directly, even though the source and target skeletons are
+identical. Forcing this attribute to 0 on the TARGET character's property
+node (see :func:`set_humanik_finger_solving_state`) drops every finger slot
+residual to ~1e-6 degrees and the S5 gate ``matrixMax`` to 0.029879 --
+exactly matching the body-only (no finger slots characterized) reference
+(``build/reports/hik_property_experiment_fingersolving0.json``,
+``build/reports/hik_fingersolving_full_off.json``). The setting is a no-op
+when the character has no finger slots characterized at all (there is
+nothing for HIK to reconstruct), so it is safe to apply unconditionally.
+"""
+
+
+def get_humanik_finger_solving_property_node(character: str, mel_module=None) -> str:
+    """Return the ``HIKProperty2State`` node feeding ``character``.
+
+    Args:
+        character: HIK character node/name.
+        mel_module: Optional Maya ``mel`` compatible module for tests.
+
+    Returns:
+        The property-state node name, or ``""`` when Maya's
+        ``hikGetProperty2StateFromCharacter`` procedure is unavailable (older
+        Maya/plugin variants) or the character has no associated property
+        node.
+    """
+    mel = mel_module or _maya_mel()
+    if not _mel_exists(mel, "hikGetProperty2StateFromCharacter"):
+        return ""
+    node = mel.eval(f"hikGetProperty2StateFromCharacter({_mel_string(character)})")
+    return str(node) if node else ""
+
+
+def get_humanik_finger_solving_state(
+    character: str,
+    mel_module=None,
+    cmds_module=None,
+) -> Optional[int]:
+    """Return the current ``FingerSolving`` value for ``character``.
+
+    Args:
+        character: HIK character node/name.
+        mel_module: Optional Maya ``mel`` compatible module for tests.
+        cmds_module: Optional Maya ``cmds`` compatible module for tests.
+
+    Returns:
+        The current integer attribute value, or ``None`` when the property
+        node or the ``FingerSolving`` attribute is unavailable.
+    """
+    mel = mel_module or _maya_mel()
+    cmds = cmds_module or _maya_cmds()
+    node = get_humanik_finger_solving_property_node(character, mel_module=mel)
+    if not node or not cmds.attributeQuery("FingerSolving", node=node, exists=True):
+        return None
+    value = cmds.getAttr(f"{node}.FingerSolving")
+    return None if value is None else int(value)
+
+
+def set_humanik_finger_solving_state(
+    character: str,
+    value: int,
+    mel_module=None,
+    cmds_module=None,
+) -> Optional[int]:
+    """Set ``FingerSolving`` on ``character``'s property node and return the prior value.
+
+    See :data:`HUMANIK_FINGER_SOLVING_DISABLED` for why mmd_tools forces this
+    to 0 around TARGET self-retarget preview.
+
+    Args:
+        character: HIK character node/name.
+        value: New integer attribute value (0 disables finger IK solving).
+        mel_module: Optional Maya ``mel`` compatible module for tests.
+        cmds_module: Optional Maya ``cmds`` compatible module for tests.
+
+    Returns:
+        The previous attribute value so callers can restore it later, or
+        ``None`` when the property node/attribute is unavailable. The scene
+        is left untouched in the ``None`` case -- older Maya/plugin variants
+        without ``HIKProperty2State.FingerSolving`` must not hard-fail here.
+    """
+    mel = mel_module or _maya_mel()
+    cmds = cmds_module or _maya_cmds()
+    node = get_humanik_finger_solving_property_node(character, mel_module=mel)
+    if not node or not cmds.attributeQuery("FingerSolving", node=node, exists=True):
+        return None
+    previous = cmds.getAttr(f"{node}.FingerSolving")
+    cmds.setAttr(f"{node}.FingerSolving", int(value))
+    return None if previous is None else int(previous)
 
 
 def get_humanik_definition_lock_state(character: str, mel_module=None) -> bool:
