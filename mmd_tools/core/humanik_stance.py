@@ -550,18 +550,33 @@ class HumanIkStanceTransaction:
         self.character = str(character)
 
     def restore(self) -> Dict[str, Any]:
-        """Restore pose/JO/skin while isolated, then reconnect exact topology."""
+        """Restore pose/JO/skin while isolated, then reconnect exact topology.
+
+        Attribute restoration is attempted for every journaled joint even when
+        an individual plug cannot be restored (locked or with an incoming
+        connection): failures are aggregated so one bad plug does not prevent
+        restoring the others.  Topology reconnection is attempted on every
+        failure path (aggregated attribute failures, residual-verification
+        failure, or any other exception raised while restoring) before the
+        error is surfaced, so a restore failure never strands the isolated
+        ``mute_for_hik`` writer edges disconnected.
+        """
         if not self.active:
             result = dict(self.stance_evidence.get("restore") or {"passed": True})
             result.setdefault("idempotent", True)
             return result
         try:
             restored_attributes = []
+            attribute_failures = []
             for joint, info in self.restore_joints.items():
-                if _restore_attribute_if_changed(self.cmds, joint, "translate", info["translate"]):
-                    restored_attributes.append(f"{joint}.translate")
-                if _restore_attribute_if_changed(self.cmds, joint, "rotate", info["rotate"]):
-                    restored_attributes.append(f"{joint}.rotate")
+                for attribute in ("translate", "rotate"):
+                    try:
+                        if _restore_attribute_if_changed(self.cmds, joint, attribute, info[attribute]):
+                            restored_attributes.append(f"{joint}.{attribute}")
+                    except Exception as attribute_error:
+                        attribute_failures.append(
+                            {"plug": f"{joint}.{attribute}", "error": str(attribute_error)}
+                        )
             try:
                 self.cmds.refresh(force=True)
             except Exception:
@@ -606,30 +621,58 @@ class HumanIkStanceTransaction:
                 "maxAllSkinMatrixResidual": max((row["skinMatrixResidual"] for row in all_skin_rows), default=0.0),
                 "allSkinInfluenceCount": len(all_skin_rows),
                 "restoredAttributes": restored_attributes,
+                "attributeFailures": attribute_failures,
                 "topologyRestored": False,
                 "skinVerified": bool(all_skin_rows),
-                "passed": all(row["passed"] for row in rows)
+                "residualPassed": all(row["passed"] for row in rows)
                 and all(row["skinMatrixResidual"] <= STANCE_RESTORE_TOLERANCE for row in all_skin_rows),
+                "passed": bool(
+                    all(row["passed"] for row in rows)
+                    and all(row["skinMatrixResidual"] <= STANCE_RESTORE_TOLERANCE for row in all_skin_rows)
+                    and not attribute_failures
+                ),
                 "tolerance": STANCE_RESTORE_TOLERANCE,
             }
             self.stance_evidence["restore"] = restore
             if not restore["passed"]:
-                # Even a residual failure must not strand reviewed writer
-                # edges disconnected.  Reconnect is attempted before the
-                # failure is surfaced; a topology failure remains retryable.
+                # Neither an attribute-restore failure nor a residual failure
+                # may strand reviewed writer edges disconnected.  Reconnect
+                # is attempted before the failure is surfaced; a topology
+                # failure remains retryable.
                 try:
                     self._restore_topology()
                     restore["topologyRestored"] = True
                 except Exception as reconnect_error:
                     restore["reconnectError"] = str(reconnect_error)
-                raise RuntimeError("Canonical T-pose restore residual exceeds tolerance")
+                reasons = []
+                if attribute_failures:
+                    reasons.append(
+                        "attribute restore failed for "
+                        + "; ".join(f"{failure['plug']} ({failure['error']})" for failure in attribute_failures)
+                    )
+                if not restore["residualPassed"]:
+                    reasons.append("residual exceeds tolerance")
+                raise RuntimeError("Canonical T-pose restore failed: " + "; ".join(reasons))
             self._restore_topology()
             restore["topologyRestored"] = True
             self.active = False
             return restore
         except Exception as error:
             failure = dict(self.stance_evidence.get("restore") or {})
-            failure.update({"passed": False, "error": str(error), "topologyRestored": bool(self.ownership_journal.get("topologyRestored", False))})
+            topology_restored = bool(self.ownership_journal.get("topologyRestored", False))
+            if not topology_restored:
+                # An exception raised anywhere else in the try body (for
+                # example while reading back attributes/skin products during
+                # residual verification, or assembling evidence) must not
+                # strand the isolated writer edges disconnected either.
+                # Best-effort reconnect here; the original exception below is
+                # still the one that surfaces.
+                try:
+                    self._restore_topology()
+                    topology_restored = True
+                except Exception as reconnect_error:
+                    failure["reconnectError"] = str(reconnect_error)
+            failure.update({"passed": False, "error": str(error), "topologyRestored": topology_restored})
             self.stance_evidence["restore"] = failure
             self.active = True
             raise

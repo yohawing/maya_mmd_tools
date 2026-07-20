@@ -426,6 +426,90 @@ class TestHumanIkStance(unittest.TestCase):
         cmds.attrs["|model|left_arm.jointOrient"] = [(0.0, 0.0, 0.0)]
         self.assertTrue(tx.restore()["passed"])
 
+    def test_locked_attribute_failure_still_reconnects_and_restores_others(self):
+        cmds = _FakeCmds()
+        destination = "|model|left_arm.rotateX"
+        cmds.connections[destination] = ["|ik_ctrl.outputRotateX"]
+        tx, _ = self._transaction(
+            cmds=cmds,
+            report={
+                "rows": [{
+                    "node": "|ik_ctrl",
+                    "nodeType": "mmdCcdIk",
+                    "classification": "mute_for_hik",
+                    "writes": [destination],
+                }],
+                "counts": {"mute_for_hik": 1},
+            },
+        )
+        tx.enter()
+        locked_plug = "|model|left_forearm.translate"
+        cmds.locked_plugs.add(locked_plug)
+        cmds.attrs[locked_plug] = [(0.25, 0.0, 0.0)]
+        other_plug = "|model|right_forearm.translate"
+        cmds.attrs[other_plug] = [(0.1, 0.0, 0.0)]
+
+        with self.assertRaisesRegex(RuntimeError, r"left_forearm\.translate.*locked"):
+            tx.restore()
+
+        # The other joint's attribute is still restored even though the
+        # locked plug's restore failed.
+        self.assertEqual(cmds.attrs[other_plug], [(0.0, 0.0, 0.0)])
+        # The journaled mute_for_hik writer edge is reconnected even though
+        # the attribute restore aggregated a failure.
+        self.assertEqual(cmds.connections[destination], ["|ik_ctrl.outputRotateX"])
+        self.assertTrue(tx.active)
+        failures = tx.stance_evidence["restore"]["attributeFailures"]
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0]["plug"], locked_plug)
+        self.assertIn("locked", failures[0]["error"])
+
+        cmds.locked_plugs.discard(locked_plug)
+        cmds.attrs[locked_plug] = [(0.0, 0.0, 0.0)]
+        restore = tx.restore()
+        self.assertTrue(restore["passed"])
+        self.assertFalse(tx.active)
+
+    def test_residual_verification_failure_still_reconnects_topology(self):
+        cmds = _FakeCmds()
+        destination = "|model|left_arm.rotateX"
+        cmds.connections[destination] = ["|ik_ctrl.outputRotateX"]
+        tx, _ = self._transaction(
+            cmds=cmds,
+            report={
+                "rows": [{
+                    "node": "|ik_ctrl",
+                    "nodeType": "mmdCcdIk",
+                    "classification": "mute_for_hik",
+                    "writes": [destination],
+                }],
+                "counts": {"mute_for_hik": 1},
+            },
+        )
+        tx.enter()
+
+        original_get_attr = cmds.getAttr
+
+        def failing_get_attr(plug, **kwargs):
+            if plug == "|model|left_arm.jointOrient":
+                raise RuntimeError("simulated read failure")
+            return original_get_attr(plug, **kwargs)
+
+        cmds.getAttr = failing_get_attr
+
+        # The edge should still be disconnected (isolated) before restore
+        # attempts to read back attributes.
+        self.assertEqual(cmds.connections[destination], [])
+
+        with self.assertRaisesRegex(RuntimeError, "simulated read failure"):
+            tx.restore()
+
+        self.assertTrue(tx.active)
+        self.assertEqual(cmds.connections[destination], ["|ik_ctrl.outputRotateX"])
+        self.assertTrue(tx.stance_evidence["restore"]["topologyRestored"])
+        self.assertEqual(tx.stance_evidence["restore"]["error"], "simulated read failure")
+
+        cmds.getAttr = original_get_attr
 
 
 if __name__ == "__main__":
