@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
+from ..core.exceptions import MMDImportException
 from ..core.logger import get_logger
 from ..core.native.native_pmx_parser import parse_pmx_native
 from ..core.settings import settings
@@ -486,6 +487,11 @@ class VmdConverter:
         if not target_model:
             self.logger.error("VMD model motion requires an explicit target model")
             return False
+        # Gate BEFORE any scene mutation (including clear_existing_motion
+        # below): HUMANIK-SOURCE-VMD-IK-PARITY-1 requires VMD import to
+        # refuse fail-closed while target_model is a HumanIK TARGET preview
+        # or has an active Control Rig, with no implicit mode switching.
+        self._enforce_humanik_import_gate(target_model)
         import_start_time = None
         anim_layer_selection = None
         undo_was_enabled = True
@@ -676,6 +682,50 @@ class VmdConverter:
             self._current_import_live_rig_target = False
             self._restore_anim_layer_selection(anim_layer_selection)
             self._restore_import_scene_updates(undo_was_enabled, refresh_suspended)
+
+    def _enforce_humanik_import_gate(self, target_model: str) -> None:
+        """Refuse VMD import while HumanIK owns ``target_model`` as TARGET/Control Rig.
+
+        Per ``HUMANIK-SOURCE-VMD-IK-PARITY-1``, VMD import is permitted while a
+        HumanIK-characterized model is NEUTRAL (uncharacterized) or SOURCE
+        (characterized, read-only, no input source, no Control Rig).  It must
+        be refused fail-closed -- with no implicit mode switching -- while the
+        model is a HumanIK TARGET preview or has an active Control Rig.
+
+        Detection is scene-fact based (see
+        ``mmd_tools.core.humanik_retarget.describe_humanik_import_lock``), not
+        session based, and the HumanIK module is imported lazily/defensively
+        here so VMD import never hard-depends on HumanIK MEL availability: a
+        missing plugin, missing MEL, or any detection failure allows the
+        import to proceed unchanged.
+
+        Args:
+            target_model: Model root VMD motion will be applied to.
+
+        Raises:
+            MMDImportException: If scene facts show ``target_model`` is
+                currently a HumanIK TARGET preview or Control Rig.
+        """
+        try:
+            from ..core.humanik_retarget import describe_humanik_import_lock
+        except Exception:
+            self.logger.debug("HumanIK import gate module unavailable; allowing import", exc_info=True)
+            return
+        try:
+            lock = describe_humanik_import_lock(target_model)
+        except Exception:
+            self.logger.debug("HumanIK import gate detection failed; allowing import", exc_info=True)
+            return
+        if not lock.blocked:
+            return
+        mode_label = "a HumanIK Control Rig" if lock.blocked == "control_rig" else "a HumanIK TARGET preview"
+        message = (
+            f"VMD import is blocked: {target_model} (HumanIK character={lock.character}) "
+            f"is currently {mode_label}. Restore MMD Rig before importing VMD motion; "
+            "VMD import does not implicitly switch HumanIK modes."
+        )
+        self.logger.error(message)
+        raise MMDImportException(message)
 
     def _suspend_import_scene_updates(self) -> Tuple[bool, bool]:
         """Suppress Maya undo recording and viewport refresh during VMD import."""

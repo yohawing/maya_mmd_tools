@@ -1960,6 +1960,71 @@ def humanik_vmd_parity_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def humanik_vmd_import_gate_smoke(session: nox.Session) -> None:
+    """Run the HumanIK VMD-import mode gate smoke (HUMANIK-SOURCE-VMD-IK-PARITY-1).
+
+    Characterizes a Kokomi fixture twice, enters a real HumanIK TARGET preview
+    on the second copy, and verifies VMD import onto the TARGET model is
+    refused fail-closed (naming the blocking mode and ``Restore MMD Rig``)
+    with scene topology/animCurves left untouched, then verifies the same
+    import succeeds once ``HumanIkFrontendSession.restore_mmd_rig()`` runs.
+    Expected ``status`` is ``"pass"``.
+
+    Examples:
+        uvx nox -s humanik_vmd_import_gate_smoke -- --maya 2024
+        uvx nox -s humanik_vmd_import_gate_smoke -- --maya 2024 --model "F:/MMD/pmx/.../model.pmx" --motion tests/data/mmt_test_model_test_motion.vmd
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    out_value = _option(args, "--out", str(ROOT / "build/reports/humanik_vmd_import_gate_smoke.json"))
+    report_path = Path(out_value)
+    path_options = {"--model", "--motion", "--out"}
+    passthrough: list[str] = []
+    i = 0
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in path_options and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        i += 1
+    if "--out" not in passthrough:
+        passthrough.extend(["--out", out_value])
+    try:
+        report_path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        session.error(f"Unable to clear stale HumanIK VMD import gate report {report_path}: {exc}")
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/humanik_vmd_import_gate_smoke.py"),
+        *_convert_mayapy_path_options(mayapy, passthrough, path_options),
+        env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1", PYTHONIOENCODING="utf-8"),
+        success_codes=(0, 1),
+        external=True,
+    )
+    if not report_path.is_file():
+        session.error(f"HumanIK VMD import gate report missing: {report_path}")
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        session.error(f"Invalid HumanIK VMD import gate report {report_path}: {exc}")
+    status = report.get("status")
+    if status != "pass":
+        session.error(
+            "HumanIK VMD import gate smoke failed: "
+            f"status={status}, error={report.get('error')}, "
+            f"gateRaised={report.get('gateRaised')}, "
+            f"topologyUnchangedAfterRefusal={report.get('topologyUnchangedAfterRefusal')}, "
+            f"postRestoreImportSucceeded={report.get('postRestoreImportSucceeded')}"
+        )
+
+
+@nox.session(venv_backend="none")
 def humanik_citlali_stance_smoke(session: nox.Session) -> None:
     """Run the strict Citlali HumanIK setup/restore regression gate.
 

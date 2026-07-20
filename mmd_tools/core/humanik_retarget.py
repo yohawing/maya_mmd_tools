@@ -8,6 +8,7 @@ slices.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from mmd_tools.core.humanik_builder import ensure_humanik_mel_loaded
@@ -15,6 +16,7 @@ from mmd_tools.core.humanik_resolver import HumanIkBoneAssignment, HumanIkResolv
 
 
 HUMANIK_DIRECT_INPUT_TYPE = 3
+HIK_CHARACTER_NODE_TYPE = "HIKCharacterNode"
 DEFAULT_HUMANIK_CHANNELS = (
     "translateX",
     "translateY",
@@ -70,6 +72,142 @@ def connect_humanik_source(
     if require_connected and not report["retargetConnected"]:
         raise RuntimeError(f"HumanIK source connection failed: {report}")
     return report
+
+
+@dataclass(frozen=True)
+class HumanIkImportLock:
+    """Scene-fact snapshot of whether HumanIK currently owns a model.
+
+    ``blocked`` names the fail-closed reason a mutating operation (such as
+    VMD import) must be refused: ``"target_preview"`` when a retarget input
+    is connected to the model's character, or ``"control_rig"`` when a
+    Control Rig exists for it.  Any other scene-fact state -- no
+    ``HIKCharacterNode`` connected to the model at all, or characterized
+    with neither an input source nor a control rig (NEUTRAL/SOURCE) -- reports
+    ``blocked=None`` and the caller should permit the operation.
+    """
+
+    blocked: Optional[str]
+    character: Optional[str]
+    input_source: str = ""
+    has_control_rig: bool = False
+
+
+def find_humanik_character_for_model(model_root: str, cmds_module=None) -> Optional[str]:
+    """Return the ``HIKCharacterNode`` characterizing a model, from scene facts alone.
+
+    This intentionally does not consult any in-memory session/binding state
+    (``HumanIkFrontendSession`` instances are UI-layer and may not exist, for
+    example after a fresh Python session or plain Maya UI use).  It walks
+    ``model_root`` and its joint descendants and returns the first
+    ``HIKCharacterNode`` Maya reports as connected to any of them.
+
+    Args:
+        model_root: Model root or joint path to inspect.
+        cmds_module: Optional Maya ``cmds`` compatible module for tests.
+
+    Returns:
+        The character node name, or ``None`` for an uncharacterized model, a
+        missing node, or any Maya query failure.  Callers building a
+        fail-closed gate should treat ``None`` as "nothing to block" -- see
+        :func:`describe_humanik_import_lock`.
+    """
+    if not model_root:
+        return None
+    cmds = cmds_module or _maya_cmds()
+    try:
+        if not bool(cmds.pluginInfo("mayaHIK", query=True, loaded=True)):
+            return None
+    except Exception:
+        return None
+    try:
+        nodes = _model_hierarchy_nodes(cmds, model_root)
+    except Exception:
+        return None
+    for node in nodes:
+        try:
+            characters = cmds.listConnections(node, type=HIK_CHARACTER_NODE_TYPE) or []
+        except Exception:
+            continue
+        for character in characters:
+            if character:
+                return str(character)
+    return None
+
+
+def describe_humanik_import_lock(
+    model_root: str,
+    cmds_module=None,
+    mel_module=None,
+) -> HumanIkImportLock:
+    """Detect from scene facts whether a model is a HumanIK TARGET/Control Rig.
+
+    VMD import must stay permitted while a HumanIK-characterized model is in
+    NEUTRAL (no ``HIKCharacterNode``) or SOURCE (characterized, but with no
+    retarget input connected and no Control Rig -- the read-only state used
+    while another model previews against it).  It must be refused fail-closed
+    while the model is itself a TARGET preview (``hikGetRetargetCharacterInput``
+    reports a connected source) or has an active Control Rig
+    (``hikHasControlRig``): both derive the model's pose from HumanIK, so a
+    VMD import underneath it would silently disagree with the visible pose
+    and with a later ``Restore MMD Rig``.
+
+    Detection never raises: a missing HumanIK plugin/MEL, an uncharacterized
+    model, or any Maya query failure returns an unblocked result so VMD
+    import keeps working without a hard HumanIK runtime dependency.  Only an
+    explicit TARGET/Control Rig scene fact returns ``blocked``.
+
+    Args:
+        model_root: Model root or joint path to inspect.
+        cmds_module: Optional Maya ``cmds`` compatible module for tests.
+        mel_module: Optional Maya ``mel`` compatible module for tests.
+
+    Returns:
+        A :class:`HumanIkImportLock` describing the detected state.
+    """
+    character = find_humanik_character_for_model(model_root, cmds_module=cmds_module)
+    if not character:
+        return HumanIkImportLock(blocked=None, character=None)
+    try:
+        mel = mel_module or _maya_mel()
+        ensure_humanik_mel_loaded(mel)
+    except Exception:
+        return HumanIkImportLock(blocked=None, character=character)
+    try:
+        has_control_rig = bool(mel.eval(f"hikHasControlRig({_mel_string(character)})"))
+    except Exception:
+        has_control_rig = False
+    try:
+        input_source = str(
+            mel.eval(f"hikGetRetargetCharacterInput({_mel_string(character)})") or ""
+        )
+    except Exception:
+        input_source = ""
+    if has_control_rig:
+        return HumanIkImportLock("control_rig", character, input_source, True)
+    if input_source.strip():
+        return HumanIkImportLock("target_preview", character, input_source, False)
+    return HumanIkImportLock(None, character, input_source, False)
+
+
+def _model_hierarchy_nodes(cmds, model_root: str) -> List[str]:
+    """Return ``model_root`` plus its descendant joints, long-named and deduped."""
+    if not cmds.objExists(model_root):
+        return []
+    nodes = [model_root]
+    nodes.extend(
+        cmds.listRelatives(model_root, allDescendents=True, fullPath=True, type="joint") or []
+    )
+    seen = set()
+    result: List[str] = []
+    for node in nodes:
+        long_names = cmds.ls(node, long=True) or [node]
+        name = str(long_names[0])
+        if name in seen:
+            continue
+        seen.add(name)
+        result.append(name)
+    return result
 
 
 def collect_humanik_incoming_writer_census(

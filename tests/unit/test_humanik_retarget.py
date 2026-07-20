@@ -2,11 +2,15 @@
 
 import unittest
 
+from unittest.mock import patch
+
 from mmd_tools.core.humanik_resolver import HumanIkBoneAssignment
 from mmd_tools.core.humanik_retarget import (
     collect_humanik_incoming_writer_census,
     connect_humanik_source,
+    describe_humanik_import_lock,
     diff_humanik_connections,
+    find_humanik_character_for_model,
     snapshot_humanik_connections,
     verify_root_locomotion,
 )
@@ -184,6 +188,172 @@ class TestHumanIkRetarget(unittest.TestCase):
 
         self.assertEqual(len(snapshot), 6)
         self.assertEqual(snapshot["|hips.translateX"], ["animCurve1.output"])
+
+
+class FakeModelCmds:
+    """Minimal scene-fact double for HumanIK model->character detection tests."""
+
+    def __init__(self, hierarchy, connections=None, exists=None, hik_plugin_loaded=True):
+        self.hierarchy = dict(hierarchy)
+        self.connections = dict(connections or {})
+        self.exists = set(exists if exists is not None else self.hierarchy)
+        self.hik_plugin_loaded = hik_plugin_loaded
+        self.list_connections_calls = 0
+
+    def objExists(self, node):
+        return node in self.exists
+
+    def listRelatives(self, node, allDescendents=False, fullPath=False, type=None):
+        return list(self.hierarchy.get(node, []))
+
+    def ls(self, node, long=False):
+        return [node]
+
+    def pluginInfo(self, name, query=False, loaded=False):
+        return self.hik_plugin_loaded if name == "mayaHIK" else False
+
+    def listConnections(self, node, type=None):
+        self.list_connections_calls += 1
+        if type == "HIKCharacterNode":
+            return list(self.connections.get(node, []))
+        return []
+
+
+class FakeGateMel:
+    """Fake ``mel`` double for the import-gate's control-rig/input checks."""
+
+    def __init__(self, has_control_rig=False, input_source="", raise_on_load=False):
+        self.has_control_rig = has_control_rig
+        self.input_source = input_source
+        self.raise_on_load = raise_on_load
+
+    def eval(self, command):
+        if command.startswith("exists "):
+            if self.raise_on_load:
+                return 0
+            return 1
+        if command.startswith("hikHasControlRig"):
+            return 1 if self.has_control_rig else 0
+        if command.startswith("hikGetRetargetCharacterInput"):
+            return self.input_source
+        return None
+
+
+class TestFindHumanIkCharacterForModel(unittest.TestCase):
+    def test_returns_none_when_model_is_not_characterized(self):
+        cmds = FakeModelCmds(hierarchy={"|model": ["|model|hips"]})
+
+        self.assertIsNone(find_humanik_character_for_model("|model", cmds_module=cmds))
+
+    def test_returns_character_connected_to_a_descendant_joint(self):
+        cmds = FakeModelCmds(
+            hierarchy={"|model": ["|model|hips", "|model|spine"]},
+            connections={"|model|spine": ["Character1"]},
+        )
+
+        self.assertEqual(find_humanik_character_for_model("|model", cmds_module=cmds), "Character1")
+
+    def test_returns_none_when_model_does_not_exist(self):
+        cmds = FakeModelCmds(hierarchy={}, exists=set())
+
+        self.assertIsNone(find_humanik_character_for_model("|missing", cmds_module=cmds))
+
+    def test_returns_none_on_query_failure(self):
+        class RaisingCmds(FakeModelCmds):
+            def listRelatives(self, *args, **kwargs):
+                raise RuntimeError("boom")
+
+        cmds = RaisingCmds(hierarchy={"|model": []})
+
+        self.assertIsNone(find_humanik_character_for_model("|model", cmds_module=cmds))
+
+    def test_skips_connection_queries_when_hik_plugin_not_loaded(self):
+        """Avoids Maya's 'invalid object type' noise for the common non-HIK case."""
+        cmds = FakeModelCmds(
+            hierarchy={"|model": ["|model|hips"]},
+            connections={"|model|hips": ["Character1"]},
+            hik_plugin_loaded=False,
+        )
+
+        result = find_humanik_character_for_model("|model", cmds_module=cmds)
+
+        self.assertIsNone(result)
+        self.assertEqual(cmds.list_connections_calls, 0)
+
+
+class TestDescribeHumanIkImportLock(unittest.TestCase):
+    def _cmds(self, connected_character="Character1"):
+        return FakeModelCmds(
+            hierarchy={"|model": ["|model|hips"]},
+            connections={"|model|hips": [connected_character]} if connected_character else {},
+        )
+
+    def test_neutral_uncharacterized_model_is_unblocked(self):
+        cmds = FakeModelCmds(hierarchy={"|model": ["|model|hips"]})
+
+        lock = describe_humanik_import_lock("|model", cmds_module=cmds, mel_module=FakeGateMel())
+
+        self.assertIsNone(lock.blocked)
+        self.assertIsNone(lock.character)
+
+    def test_source_like_characterized_no_input_no_control_rig_is_unblocked(self):
+        cmds = self._cmds()
+        mel = FakeGateMel(has_control_rig=False, input_source="")
+
+        lock = describe_humanik_import_lock("|model", cmds_module=cmds, mel_module=mel)
+
+        self.assertIsNone(lock.blocked)
+        self.assertEqual(lock.character, "Character1")
+
+    def test_target_preview_with_connected_input_is_blocked(self):
+        cmds = self._cmds()
+        mel = FakeGateMel(has_control_rig=False, input_source="SourceCharacter")
+
+        lock = describe_humanik_import_lock("|model", cmds_module=cmds, mel_module=mel)
+
+        self.assertEqual(lock.blocked, "target_preview")
+        self.assertEqual(lock.character, "Character1")
+        self.assertEqual(lock.input_source, "SourceCharacter")
+
+    def test_control_rig_present_is_blocked_even_without_input(self):
+        cmds = self._cmds()
+        mel = FakeGateMel(has_control_rig=True, input_source="")
+
+        lock = describe_humanik_import_lock("|model", cmds_module=cmds, mel_module=mel)
+
+        self.assertEqual(lock.blocked, "control_rig")
+        self.assertTrue(lock.has_control_rig)
+
+    def test_control_rig_takes_precedence_over_input_source(self):
+        cmds = self._cmds()
+        mel = FakeGateMel(has_control_rig=True, input_source="SourceCharacter")
+
+        lock = describe_humanik_import_lock("|model", cmds_module=cmds, mel_module=mel)
+
+        self.assertEqual(lock.blocked, "control_rig")
+
+    def test_missing_humanik_mel_is_unblocked_even_when_characterized(self):
+        cmds = self._cmds()
+
+        with patch(
+            "mmd_tools.core.humanik_retarget.ensure_humanik_mel_loaded",
+            side_effect=RuntimeError("HIK MEL unavailable"),
+        ):
+            lock = describe_humanik_import_lock("|model", cmds_module=cmds, mel_module=FakeGateMel())
+
+        self.assertIsNone(lock.blocked)
+        self.assertEqual(lock.character, "Character1")
+
+    def test_uncharacterized_model_never_touches_mel(self):
+        cmds = FakeModelCmds(hierarchy={"|model": ["|model|hips"]})
+
+        with patch(
+            "mmd_tools.core.humanik_retarget.ensure_humanik_mel_loaded"
+        ) as ensure_loaded:
+            lock = describe_humanik_import_lock("|model", cmds_module=cmds, mel_module=FakeGateMel())
+
+        self.assertIsNone(lock.blocked)
+        ensure_loaded.assert_not_called()
 
 
 if __name__ == "__main__":
