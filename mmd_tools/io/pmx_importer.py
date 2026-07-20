@@ -93,10 +93,12 @@ def import_pmx_file(
     model_name = maya_name_utils.sanitize_text(parser.header.get_name())
     namespace = pipeline.resolve_namespace(model_name, custom_namespace=options.get("custom_namespace"))
     bone_converter = BoneConverter()
+    morph_converter = MorphConverter(scale=scale)
     try:
         bone_converter.validate_pmx_local_axes(parser.bones)
+        morph_converter.validate_runtime_requirements(parser)
     except Exception as e:
-        logger.error("Invalid PMX LOCAL_AXIS data: %s - %s", filepath, str(e))
+        logger.error("PMX import preflight failed: %s - %s", filepath, str(e))
         raise MMDImportException(f"Failed to import PMX file {filepath}: {e}") from e
 
     try:
@@ -139,7 +141,6 @@ def import_pmx_file(
             logger.debug("Mesh conversion complete: group=%s, name=%s", mesh_group, mesh_name)
 
             logger.debug("Converting morphs...")
-            morph_converter = MorphConverter(scale=scale)
             phase_start = time.perf_counter()
             morph_result = morph_converter.convert_pmx_morphs(parser, mesh_name)
             pipeline.record_phase("morph_conversion_sec", phase_start)

@@ -44,6 +44,26 @@ class MorphConverter:
         """Accumulate timing in the converter profile."""
         self.profile[key] = round(float(self.profile.get(key, 0.0)) + time.perf_counter() - start, 6)
 
+    def validate_runtime_requirements(self, pmx_data) -> None:
+        """Fail before scene mutation when the morph controller type is unavailable.
+
+        Args:
+            pmx_data: Parsed PMX-compatible data containing a ``morphs`` list.
+
+        Raises:
+            RuntimeError: If morph import needs the plugin-owned controller node
+                but the Maya node type is not registered.
+        """
+        if not self.settings.get(_OPT_IMPORT_MORPHS, True):
+            return
+        if not getattr(pmx_data, "morphs", None):
+            return
+        if "mmdMorphController" not in (cmds.allNodeTypes() or []):
+            raise RuntimeError(
+                "Required node type 'mmdMorphController' is unavailable. "
+                "Load or reload the maya_mmd_tools plugin before importing a PMX with morphs."
+            )
+
     def convert_pmx_morphs(self, pmx_data, mesh_node: Union[str, List[str]]) -> Dict[str, Any]:
         """
         PMXのモーフデータをMayaのブレンドシェイプに変換する。
