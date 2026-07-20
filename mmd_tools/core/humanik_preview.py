@@ -81,6 +81,7 @@ def begin_humanik_target_preview(
     )
     destinations = sorted({plug for row in mute_rows for plug in row.get("writes", [])})
     muted_nodes = sorted({row["node"] for row in mute_rows})
+    hik_joint_set = {str(joint) for joint in hik_joints}
     journal = capture_humanik_journal(
         ownership_id,
         target_character,
@@ -91,24 +92,32 @@ def begin_humanik_target_preview(
     )
     disconnected: List[Dict[str, str]] = []
     try:
-        for row in mute_rows:
-            for destination in row.get("writes", []):
-                for source in cmds.listConnections(
-                    destination, source=True, destination=False, plugs=True
-                ) or []:
-                    if _plug_node(str(source)) != row["node"]:
-                        continue
-                    cmds.disconnectAttr(source, destination)
-                    disconnected.append({"source": str(source), "destination": destination})
+        _disconnect_reviewed_writers(cmds, mute_rows, disconnected)
         connect_humanik_source(
             target_character,
             source_character,
             mel_module=mel_module,
         )
+        _re_isolate_reviewed_edges(cmds, disconnected)
         post_report = classify_humanik_constraints(
             collect_humanik_constraint_facts(cmds_module=cmds),
-            hik_joints,
+            hik_joint_set,
         )
+        residual_muted_writers = [
+            row
+            for row in post_report["rows"]
+            if row["node"] in muted_nodes and _row_hik_writes(row, hik_joint_set)
+        ]
+        if residual_muted_writers:
+            labels = ", ".join(
+                f"{row['node']}->{','.join(sorted(_row_hik_writes(row, hik_joint_set)))}"
+                for row in sorted(residual_muted_writers, key=lambda item: item["node"])
+            )
+            _disconnect_residual_muted_writers(cmds, residual_muted_writers, hik_joint_set)
+            raise RuntimeError(
+                "HumanIK TARGET preview post-scan found residual muted HIK writers: "
+                f"{labels}"
+            )
         post_blockers = [
             row for row in post_report["rows"]
             if row["node"] not in muted_nodes
@@ -116,13 +125,19 @@ def begin_humanik_target_preview(
         ]
         if post_blockers:
             raise RuntimeError("HumanIK TARGET preview post-scan found blocker")
-    except Exception:
-        restore_humanik_journal(
-            journal,
-            ownership_id=ownership_id,
-            cmds_module=cmds,
-            mel_module=mel_module,
-        )
+    except Exception as error:
+        try:
+            restore_humanik_journal(
+                journal,
+                ownership_id=ownership_id,
+                cmds_module=cmds,
+                mel_module=mel_module,
+            )
+        except Exception as rollback_error:
+            raise RuntimeError(
+                "HumanIK TARGET preview failed and journal rollback failed: "
+                f"failure={error}; rollback={rollback_error}"
+            ) from error
         raise
     return HumanIkTargetPreview(
         ownership_id=ownership_id,
@@ -152,6 +167,59 @@ def stop_humanik_target_preview(
 
 def _plug_node(plug: str) -> str:
     return plug.rsplit(".", 1)[0] if "." in plug else plug
+
+
+def _row_hik_writes(row: Dict[str, Any], hik_joints: set[str]) -> List[str]:
+    """Return post-scan HIK writes, with a raw-write fallback for test hosts."""
+    reported = row.get("writeHikJoints")
+    if reported:
+        return [str(joint) for joint in reported]
+    return sorted({_plug_node(str(plug)) for plug in row.get("writes", [])} & hik_joints)
+
+
+def _disconnect_residual_muted_writers(cmds, rows, hik_joints: set[str]) -> None:
+    """Remove residual muted-node edges before restoring the scoped journal."""
+    for row in sorted(rows, key=lambda item: str(item["node"])):
+        node = str(row["node"])
+        allowed_joints = set(_row_hik_writes(row, hik_joints))
+        for destination in sorted(str(value) for value in row.get("writes", [])):
+            if _plug_node(destination) not in allowed_joints:
+                continue
+            for source in cmds.listConnections(
+                destination, source=True, destination=False, plugs=True
+            ) or []:
+                source = str(source)
+                if _plug_node(source) == node:
+                    cmds.disconnectAttr(source, destination)
+
+
+def _disconnect_reviewed_writers(cmds, mute_rows, disconnected: List[Dict[str, str]]) -> None:
+    """Disconnect only the reviewed node-to-destination writer edges."""
+    known = {(row["source"], row["destination"]) for row in disconnected}
+    for row in mute_rows:
+        node = str(row["node"])
+        for destination in sorted(str(value) for value in row.get("writes", [])):
+            for source in cmds.listConnections(
+                destination, source=True, destination=False, plugs=True
+            ) or []:
+                source = str(source)
+                edge = (source, destination)
+                if _plug_node(source) != node or edge in known:
+                    continue
+                cmds.disconnectAttr(source, destination)
+                disconnected.append({"source": source, "destination": destination})
+                known.add(edge)
+
+
+def _re_isolate_reviewed_edges(cmds, disconnected: List[Dict[str, str]]) -> None:
+    """Remove reviewed writer edges that reappeared while connecting HIK source."""
+    for edge in sorted(disconnected, key=lambda row: (row["destination"], row["source"])):
+        source = edge["source"]
+        destination = edge["destination"]
+        if source in (cmds.listConnections(
+            destination, source=True, destination=False, plugs=True
+        ) or []):
+            cmds.disconnectAttr(source, destination)
 
 
 def _maya_cmds():

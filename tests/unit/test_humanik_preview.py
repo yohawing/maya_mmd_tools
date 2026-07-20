@@ -1,6 +1,7 @@
 """Unit tests for exclusive HumanIK TARGET preview transitions."""
 
 import unittest
+from unittest.mock import patch
 
 from mmd_tools.core.humanik_preview import (
     begin_humanik_target_preview,
@@ -12,6 +13,7 @@ class FakeCmds:
     def __init__(self):
         self.connections = {"|hips.rotateX": ["ik.outputRotateX"]}
         self.values = {"|hips.rotateX": 0.0}
+        self.disconnects = []
 
     def listConnections(self, plug, source=True, destination=False, plugs=True, connections=False):
         if connections:
@@ -19,6 +21,7 @@ class FakeCmds:
         return list(self.connections.get(plug, []))
 
     def disconnectAttr(self, source, destination):
+        self.disconnects.append((source, destination))
         self.connections[destination].remove(source)
 
     def connectAttr(self, source, destination, force=False):
@@ -62,6 +65,27 @@ class FakeMel:
         return None
 
 
+class ReconnectingMel(FakeMel):
+    def __init__(self, cmds):
+        super().__init__()
+        self.cmds = cmds
+
+    def eval(self, command):
+        if command.startswith("hikSetCharacterInput"):
+            self.cmds.connections["|hips.rotateX"] = ["ik.outputRotateX"]
+        return super().eval(command)
+
+
+class ResidualReconnectingMel(ReconnectingMel):
+    def eval(self, command):
+        if command.startswith("hikSetCharacterInput") and '"Source"' in command:
+            self.cmds.connections["|left_foot.rotateX"] = [
+                "ik.outputRotateX",
+                "third_party.outputRotateX",
+            ]
+        return super().eval(command)
+
+
 class TestHumanIkPreview(unittest.TestCase):
     def test_begin_mutes_writer_then_stop_restores_neutral(self):
         cmds, mel = FakeCmds(), FakeMel()
@@ -98,6 +122,65 @@ class TestHumanIkPreview(unittest.TestCase):
         self.assertEqual(cmds.connections["|hips.rotateX"], ["ik.outputRotateX"])
         self.assertEqual(mel.source, "")
         self.assertFalse(preview.active)
+
+    def test_begin_reisolates_reviewed_edge_reconnected_by_source_connection(self):
+        cmds = FakeCmds()
+        mel = ReconnectingMel(cmds)
+        report = {
+            "rows": [{
+                "node": "ik",
+                "classification": "mute_for_hik",
+                "writes": ["|hips.rotateX"],
+            }]
+        }
+
+        with patch(
+            "mmd_tools.core.humanik_preview.classify_humanik_constraints",
+            return_value={"rows": [{"node": "ik", "classification": "manual", "writes": []}]},
+        ):
+            preview = begin_humanik_target_preview(
+                "owner:target", "Target", "Source", report, {"|hips"}, cmds, mel
+            )
+
+        self.assertEqual(cmds.connections["|hips.rotateX"], [])
+        self.assertEqual(
+            cmds.disconnects,
+            [("ik.outputRotateX", "|hips.rotateX"), ("ik.outputRotateX", "|hips.rotateX")],
+        )
+        self.assertEqual(preview.disconnected, [{"source": "ik.outputRotateX", "destination": "|hips.rotateX"}])
+        stop_humanik_target_preview(preview, cmds, mel)
+        self.assertEqual(cmds.connections["|hips.rotateX"], ["ik.outputRotateX"])
+
+    def test_residual_muted_writer_fails_closed_and_rolls_back(self):
+        cmds = FakeCmds()
+        mel = ResidualReconnectingMel(cmds)
+        report = {
+            "rows": [{
+                "node": "ik",
+                "classification": "mute_for_hik",
+                "writes": ["|hips.rotateX"],
+            }]
+        }
+        post_report = {
+            "rows": [{
+                "node": "ik",
+                "classification": "mute_for_hik",
+                "writes": ["|left_foot.rotateX"],
+                "writeHikJoints": ["|left_foot"],
+            }]
+        }
+
+        with patch(
+            "mmd_tools.core.humanik_preview.classify_humanik_constraints",
+            return_value=post_report,
+        ), self.assertRaisesRegex(RuntimeError, "residual muted HIK writers: ik->\\|left_foot"):
+            begin_humanik_target_preview(
+                "owner:target", "Target", "Source", report, {"|hips", "|left_foot"}, cmds, mel
+            )
+
+        self.assertEqual(cmds.connections["|hips.rotateX"], ["ik.outputRotateX"])
+        self.assertEqual(cmds.connections["|left_foot.rotateX"], ["third_party.outputRotateX"])
+        self.assertEqual(mel.source, "")
 
     def test_blocker_stops_before_mutation(self):
         cmds, mel = FakeCmds(), FakeMel()
