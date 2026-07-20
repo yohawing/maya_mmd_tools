@@ -1874,6 +1874,80 @@ def humanik_roundtrip_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def humanik_citlali_stance_smoke(session: nox.Session) -> None:
+    """Run the strict Citlali HumanIK setup/restore regression gate.
+
+    The gate imports the ASCII-path Citlali fixture, characterizes it through
+    the frontend, and verifies rotate, jointOrient, skin-product, and exact
+    writer-topology restoration evidence without changing the source PMX.
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    out_value = _option(args, "--out", str(ROOT / "build/reports/humanik_citlali_stance_smoke.json"))
+    pmx_value = _option(
+        args,
+        "--pmx",
+        str(ROOT / "build/fixtures/citlali_ascii_file/citlali.pmx"),
+    )
+    profile = _option(args, "--profile", "body-only")
+    report_path = Path(out_value)
+    passthrough = [
+        "--pmx", pmx_value,
+        "--out", out_value,
+        "--profile", profile,
+    ]
+    try:
+        report_path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        session.error(f"Unable to clear stale Citlali HumanIK report {report_path}: {exc}")
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/humanik_citlali_stance_smoke.py"),
+        *_convert_mayapy_path_options(mayapy, passthrough, {"--pmx", "--out"}),
+        env=_mayapy_env(
+            mayapy,
+            MAYA_SKIP_USERSETUP_PY="1",
+            PYTHONIOENCODING="utf-8",
+        ),
+        external=True,
+    )
+    if not report_path.is_file():
+        session.error(f"Citlali HumanIK report missing: {report_path}")
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        session.error(f"Invalid Citlali HumanIK report {report_path}: {exc}")
+    stance = report.get("stance", {})
+    restore = stance.get("restore") or stance.get("stanceEvidence", {}).get("restore", {})
+    required = {
+        "status": report.get("status"),
+        "restorePassed": restore.get("passed"),
+        "topologyRestored": restore.get("topologyRestored"),
+        "maxRotateResidual": restore.get("maxRotateResidual"),
+        "maxJointOrientResidual": restore.get("maxJointOrientResidual"),
+        "maxSkinMatrixResidual": restore.get("maxSkinMatrixResidual"),
+        "maxAllSkinMatrixResidual": restore.get("maxAllSkinMatrixResidual"),
+        "tolerance": restore.get("tolerance"),
+        "transformDiffCount": len(report.get("transformDiffs", [])),
+    }
+    if (
+        required["status"] != "pass"
+        or required["restorePassed"] is not True
+        or required["topologyRestored"] is not True
+        or required["transformDiffCount"] != 0
+        or any(
+            value is None or float(value) > float(required["tolerance"])
+            for key, value in required.items()
+            if key.endswith("Residual")
+        )
+    ):
+        session.error(f"Citlali HumanIK strict restore gate failed: {required}")
+
+
+@nox.session(venv_backend="none")
 def maya_shader_override_smoke(session: nox.Session) -> None:
     """Smoke the legacy MMDShader VP2.0 override through mayapy playblast.
 

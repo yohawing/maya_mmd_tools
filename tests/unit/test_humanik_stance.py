@@ -333,6 +333,16 @@ class TestHumanIkStance(unittest.TestCase):
         cmds.attrs["|model|left_arm.jointOrient"] = [(0.0, 0.0, 0.0)]
         tx.restore()
 
+    def test_assignment_translate_is_restored_for_descendant_skin_products(self):
+        tx, cmds = self._transaction()
+        tx.enter()
+        cmds.attrs["|model|left_forearm.translate"] = [(0.25, 0.0, 0.0)]
+
+        restore = tx.restore()
+
+        self.assertTrue(restore["passed"])
+        self.assertEqual(cmds.attrs["|model|left_forearm.translate"], [(0.0, 0.0, 0.0)])
+
     def test_restore_residual_still_attempts_exact_reconnect(self):
         cmds = _FakeCmds()
         destination = "|model|left_arm.rotateX"

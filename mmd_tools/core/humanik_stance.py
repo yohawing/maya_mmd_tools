@@ -264,6 +264,11 @@ class HumanIkStanceTransaction:
     ownership_id: str = "mmd-tools:automatic-stance"
     world_matrix_setter: Optional[Callable[..., Dict[str, Any]]] = field(default=None, repr=False, compare=False)
     modified_joints: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # HIK characterization can perturb joints below the two arm joints that
+    # are intentionally posed. Keep every resolved assignment's local
+    # translate and rotate so descendants are restored before the strict
+    # JO-aware skin-product check.
+    restore_joints: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     skin_evidence: Dict[str, Any] = field(default_factory=dict)
     ownership_journal: Dict[str, Any] = field(default_factory=dict)
     stance_evidence: Dict[str, Any] = field(default_factory=dict)
@@ -308,6 +313,19 @@ class HumanIkStanceTransaction:
                 "skinProduct": _skin_product(cmds, joint, skin, logical_index) if skin else None,
             }
         self.modified_joints = modified
+        restore_joints: Dict[str, Dict[str, Any]] = {}
+        for assignment in self.assignments:
+            joint = _long_name(cmds, str(assignment.joint))
+            restore_joints.setdefault(
+                joint,
+                {
+                    "hikBone": str(assignment.hik_bone),
+                    "translate": _attribute_vector(cmds, f"{joint}.translate"),
+                    "rotate": _attribute_vector(cmds, f"{joint}.rotate"),
+                    "jointOrient": _attribute_vector(cmds, f"{joint}.jointOrient"),
+                },
+            )
+        self.restore_joints = restore_joints
         skin_rows = []
         for assignment in self.assignments:
             joint = _long_name(cmds, str(assignment.joint))
@@ -483,7 +501,8 @@ class HumanIkStanceTransaction:
             result.setdefault("idempotent", True)
             return result
         try:
-            for joint, info in self.modified_joints.items():
+            for joint, info in self.restore_joints.items():
+                self.cmds.setAttr(f"{joint}.translate", *info["translate"], type="double3")
                 self.cmds.setAttr(f"{joint}.rotate", *info["rotate"], type="double3")
             try:
                 self.cmds.refresh(force=True)
@@ -562,6 +581,7 @@ class HumanIkStanceTransaction:
             "modelRoot": self.model_root,
             "character": self.character,
             "modifiedJoints": _json_value(self.modified_joints),
+            "restoreJoints": _json_value(self.restore_joints),
             "skinEvidence": _json_value(self.skin_evidence),
             "ownershipJournal": _json_value(self.ownership_journal),
             "stanceEvidence": _json_value(self.stance_evidence),
