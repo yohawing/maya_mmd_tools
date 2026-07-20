@@ -261,6 +261,79 @@ def _quaternion_angle(left: Sequence[float], right: Sequence[float]) -> float:
     return 2.0 * math.acos(max(-1.0, min(1.0, dot)))
 
 
+def _quaternion_region(hik_bone: str) -> str:
+    """Classify each HIK slot into one mutually exclusive residual region."""
+    name = str(hik_bone)
+    if "Roll" in name:
+        return "roll"
+    if any(token in name for token in ("Index", "Middle", "Ring", "Pinky", "Thumb")):
+        return "finger"
+    return "body"
+
+
+def _quaternion_slot_diagnostics(
+    source_slots: Mapping[int, Mapping[str, Any]],
+    target_slots: Mapping[int, Mapping[str, Any]],
+    samples: Mapping[int, Sequence[Mapping[str, Any]]],
+) -> Dict[str, Any]:
+    """Summarize every slot's sampled local quaternion deltas and coverage."""
+    per_slot = []
+    category_values: Dict[str, List[float]] = {"body": [], "finger": [], "roll": []}
+    category_slots: Dict[str, List[int]] = {"body": [], "finger": [], "roll": []}
+    for slot in sorted(source_slots):
+        info = source_slots[slot]
+        category = _quaternion_region(str(info["hikBone"]))
+        rows = [dict(row) for row in samples.get(slot, ())]
+        values = [float(row["residualRadians"]) for row in rows]
+        max_value = max(values, default=0.0)
+        max_row = max(rows, key=lambda row: float(row["residualRadians"]), default=None)
+        mean_value = statistics.fmean(values) if values else 0.0
+        variance = statistics.pvariance(values) if values else 0.0
+        category_slots[category].append(int(slot))
+        category_values[category].extend(values)
+        per_slot.append(
+            {
+                "hikSlot": int(slot),
+                "hikBone": str(info["hikBone"]),
+                "sourceJoint": str(info["joint"]),
+                "targetJoint": str(target_slots[slot]["joint"]),
+                "category": category,
+                "sampleCount": len(rows),
+                "samples": rows,
+                "maxResidualRadians": max_value,
+                "maxResidualDegrees": math.degrees(max_value),
+                "meanResidualRadians": mean_value,
+                "meanResidualDegrees": math.degrees(mean_value),
+                "populationVarianceRadiansSquared": variance,
+                "populationStddevRadians": math.sqrt(variance),
+                "maxFrame": int(max_row["frame"]) if max_row is not None else None,
+            }
+        )
+    all_slots = sorted(int(slot) for slot in source_slots)
+    duplicate_slots = sorted(slot for slot in set(all_slots) if all_slots.count(slot) > 1)
+    category_summary = {}
+    for category in ("body", "finger", "roll"):
+        values = category_values[category]
+        category_summary[category] = {
+            "slotCount": len(category_slots[category]),
+            "sampleCount": len(values),
+            "aggregateMaxResidualRadians": max(values, default=0.0),
+            "aggregateMaxResidualDegrees": math.degrees(max(values, default=0.0)),
+            "aggregateMeanResidualRadians": statistics.fmean(values) if values else 0.0,
+            "aggregateMeanResidualDegrees": math.degrees(statistics.fmean(values)) if values else 0.0,
+            "aggregatePopulationVarianceRadiansSquared": statistics.pvariance(values) if values else 0.0,
+            "slotIds": sorted(category_slots[category]),
+        }
+    return {
+        "slotCount": len(all_slots),
+        "coveredSlotCount": len(set(all_slots)),
+        "duplicateSlotIds": duplicate_slots,
+        "categoryCounts": {category: len(category_slots[category]) for category in ("body", "finger", "roll")},
+        "categories": category_summary,
+        "perSlot": per_slot,
+    }
+
+
 def _capture_slots(slot_map: Mapping[int, Mapping[str, Any]], *, skin: bool) -> Dict[int, Any]:
     captured: Dict[int, Any] = {}
     for slot, info in slot_map.items():
@@ -341,9 +414,12 @@ def _frame_quaternion_fidelity(
     source_slots: Mapping[int, Mapping[str, Any]],
     target_slots: Mapping[int, Mapping[str, Any]],
     frames: Sequence[int],
+    *,
+    include_slot_diagnostics: bool = False,
 ) -> Dict[str, Any]:
     rows = []
     worst = []
+    slot_samples: Dict[int, List[Dict[str, Any]]] = {int(slot): [] for slot in source_slots}
     for frame in frames:
         cmds.currentTime(frame, edit=True)
         cmds.refresh(force=True)
@@ -354,6 +430,13 @@ def _frame_quaternion_fidelity(
             residual = _quaternion_angle(source_values[slot], target_values[slot])
             errors.append(residual)
             info = source_slots[slot]
+            slot_samples[int(slot)].append(
+                {
+                    "frame": int(frame),
+                    "residualRadians": residual,
+                    "residualDegrees": math.degrees(residual),
+                }
+            )
             worst.append(
                 {
                     "frame": int(frame),
@@ -376,7 +459,7 @@ def _frame_quaternion_fidelity(
         target_values = _capture_slots({slot: target_slots[slot] for slot in twist_slots}, skin=False)
         errors = [_quaternion_angle(source_values[slot], target_values[slot]) for slot in sorted(twist_slots)]
         twist_rows.append({"frame": int(frame), "max": max(errors, default=float("inf")), "mean": statistics.fmean(errors) if errors else float("inf"), "count": len(errors)})
-    return {
+    result = {
         "frames": rows,
         "max": max((row["max"] for row in rows), default=float("inf")),
         "mean": statistics.fmean(row["mean"] for row in rows) if rows else float("inf"),
@@ -389,6 +472,9 @@ def _frame_quaternion_fidelity(
             "mean": statistics.fmean(row["mean"] for row in twist_rows) if twist_rows else 0.0,
         },
     }
+    if include_slot_diagnostics:
+        result["slotDiagnostics"] = _quaternion_slot_diagnostics(source_slots, target_slots, slot_samples)
+    return result
 
 
 def _capture_target_sequence(target_slots: Mapping[int, Mapping[str, Any]], frames: Sequence[int]) -> Dict[int, List[float]]:
@@ -513,7 +599,14 @@ def main() -> int:
         bind_identity = _bind_identity_evidence({"source": source_slots, "target": target_slots})
         quaternion_source = {slot: {**info, "joint": info["joint"]} for slot, info in source_slots.items()}
         quaternion_target = {slot: {**target_slots[slot], "hikBone": source_slots[slot]["hikBone"]} for slot in source_slots}
-        baked_quaternion = _frame_quaternion_fidelity(quaternion_source, quaternion_target, frames)
+        baked_quaternion = _frame_quaternion_fidelity(
+            quaternion_source,
+            quaternion_target,
+            frames,
+            include_slot_diagnostics=True,
+        )
+        legacy_baked_quaternion = dict(baked_quaternion)
+        legacy_baked_quaternion.pop("slotDiagnostics", None)
         determinism = _determinism_report(target_slots, frames)
         motion = _motion_evidence(source_slots, frames)
         h_out = _h_out_and_excluded(source_root, source_slots)
@@ -540,7 +633,7 @@ def main() -> int:
                 "bakedVsSource": _fidelity_bundle(baked_matrix, baked_quaternion),
                 "skinMatrixFidelity": baked_matrix,
                 "bindMatrixEvidence": bind_identity,
-                "localQuaternionFidelity": baked_quaternion,
+                "localQuaternionFidelity": legacy_baked_quaternion,
                 "fidelityPattern": _fidelity_pattern(baked_matrix["worst"]),
                 "determinism": determinism,
                 "hOutAndExcluded": h_out,
