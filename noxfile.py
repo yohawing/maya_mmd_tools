@@ -1883,6 +1883,13 @@ def humanik_vmd_parity_smoke(session: nox.Session) -> None:
     was found), not ``"pass"``.  Pass ``--allow-stop`` to exit 0 on ``"stop"``
     so evidence can be captured without failing CI; omit it for a strict gate
     once the underlying bug is fixed.
+
+    Pass ``--inject-restore-failure`` to also run the optional
+    ``char_fail_restore_then_vmd`` scenario, which engineers a
+    ``HumanIkStanceTransaction.restore()`` failure (see the harness module
+    docstring) and reports the resulting topology/frame divergence under
+    the report's ``injectedScenarios`` key. Off by default; does not affect
+    the default scenario list or report shape.
     """
     maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     mayapy = _mayapy(maya_ver)
@@ -1898,6 +1905,10 @@ def humanik_vmd_parity_smoke(session: nox.Session) -> None:
     while i < len(args):
         if args[i] in {"--maya", "--evaluation", "--out", "--allow-stop"}:
             i += 1 if args[i] == "--allow-stop" else 2
+            continue
+        if args[i] == "--inject-restore-failure":
+            passthrough.append(args[i])
+            i += 1
             continue
         if args[i] in value_options and i + 1 < len(args):
             passthrough.extend([args[i], args[i + 1]])

@@ -18,6 +18,31 @@ starting from a **fresh Maya scene**:
 * ``vmd_then_source`` — VMD import -> ``setup_and_characterize`` ->
   ``enter_source_mode``.
 
+An optional sixth scenario, ``char_fail_restore_then_vmd``, runs only when
+``--inject-restore-failure`` is passed.  It engineers a minimal trigger for
+the suspected ``HumanIkStanceTransaction.restore()`` failure path
+(``mmd_tools/core/humanik_stance.py``).  A plain attribute connection made
+before ``setup_and_characterize`` was tried first and did not reproduce the
+failure: the model's default pose already satisfies the stance's horizontal
+T-pose tolerance, so ``HumanIkStanceTransaction.enter()`` applies only a
+near-identity delta to the re-posed arm joint and no HIK-assigned joint's
+``rotate``/``translate`` drifts from its ``prepare()``-time snapshot by more
+than ``STANCE_ATTRIBUTE_WRITE_TOLERANCE`` -- so ``_restore_attribute_if_changed``
+never even reaches its locked/incoming check. The scenario instead uses the
+``stance_transaction_factory`` hook on ``HumanIkFrontendSession`` (the same
+public injection point ``tests/unit/test_humanik_frontend.py`` uses with a
+fully fake stance) to wrap the *real* ``HumanIkStanceTransaction`` in a thin
+subclass, ``_RestoreFailureStanceTransaction``, that -- only after the real
+``enter()`` completes -- deterministically bumps the ``RightForeArm``
+HIK-assigned joint's ``rotateX`` away from its ``prepare()``-time snapshot
+and connects an ``animCurveTA`` to it, so ``_attribute_write_state`` reports
+a real incoming connection once ``_restore_attribute_if_changed`` observes
+the (now guaranteed) residual.  This does not modify ``mmd_tools/`` -- it
+only calls the real transaction's own public ``enter``/``restore`` and
+otherwise defers to it. This scenario is not part of ``SCENARIOS`` and never
+runs by default; the report gains an ``injectedScenarios`` section only when
+requested.
+
 At a fixed frame set (clamped to the motion length), each scenario captures:
 
 1. Per HIK-assignment joint: world matrix and JO-aware skin matrix
@@ -59,6 +84,7 @@ import maya.standalone
 from mmd_tools.core.humanik_builder import resolve_scene_humanik_assignments
 from mmd_tools.core.humanik_constraints import collect_humanik_constraint_facts
 from mmd_tools.core.humanik_frontend import HumanIkFrontendSession
+from mmd_tools.core.humanik_stance import HumanIkStanceTransaction
 
 
 DEFAULT_MODEL = r"F:\MMD\pmx\【珊瑚宫心海】_by_原神_32c242c2043da5bac0d24f1b07a2f3f8\珊瑚宫心海.pmx"
@@ -101,6 +127,15 @@ def _parse_args() -> argparse.Namespace:
         "--frames",
         default=",".join(str(value) for value in DEFAULT_FRAMES),
         help="Comma-separated frame list, clamped to the motion length.",
+    )
+    parser.add_argument(
+        "--inject-restore-failure",
+        action="store_true",
+        help=(
+            "Also run the char_fail_restore_then_vmd scenario, which engineers a "
+            "HumanIkStanceTransaction.restore() failure (see module docstring) and "
+            "reports the result under injectedScenarios. Off by default."
+        ),
     )
     return parser.parse_args()
 
@@ -428,6 +463,131 @@ def _run_scenario(
     }
 
 
+RESTORE_FAILURE_TARGET_HIK_BONE = "RightForeArm"
+RESTORE_FAILURE_ROTATE_BUMP_DEGREES = 15.0
+
+
+class _RestoreFailureStanceTransaction(HumanIkStanceTransaction):
+    """Real ``HumanIkStanceTransaction`` that engineers a deterministic restore() failure.
+
+    Delegates every step to the production implementation. Only after the
+    real ``enter()`` has isolated writer edges and applied the canonical
+    stance does this subclass bump the ``RightForeArm`` HIK-assigned joint's
+    ``rotateX`` (one of ``restore_joints``, captured pre-stance by the real
+    ``prepare()``) away from its snapshot and connect an ``animCurveTA`` to
+    it. That guarantees ``_restore_attribute_if_changed`` (in
+    ``mmd_tools/core/humanik_stance.py``) sees both a residual over
+    ``STANCE_ATTRIBUTE_WRITE_TOLERANCE`` and a live incoming connection when
+    the real ``restore()`` runs, so it raises -- without this test file
+    editing ``mmd_tools/`` itself. See the module docstring for the earlier
+    (unsuccessful) plain-connection attempt and why it did not reproduce.
+    """
+
+    injected_trigger: Optional[Dict[str, Any]] = None
+
+    def enter(self) -> "HumanIkStanceTransaction":
+        result = super().enter()
+        cmds = self.cmds
+        target_joint = None
+        for joint, info in self.restore_joints.items():
+            if info.get("hikBone") == RESTORE_FAILURE_TARGET_HIK_BONE:
+                target_joint = joint
+                break
+        if target_joint is None:
+            raise RuntimeError(
+                f"Cannot engineer restore-failure trigger: no restore_joints entry for "
+                f"hikBone={RESTORE_FAILURE_TARGET_HIK_BONE}"
+            )
+        baseline_rotate_x = float(cmds.getAttr(f"{target_joint}.rotateX"))
+        bumped_value = baseline_rotate_x + RESTORE_FAILURE_ROTATE_BUMP_DEGREES
+        curve = cmds.createNode("animCurveTA")
+        cmds.setKeyframe(curve, time=0, value=bumped_value)
+        cmds.connectAttr(f"{curve}.output", f"{target_joint}.rotateX", force=True)
+        self.injected_trigger = {
+            "targetJoint": target_joint,
+            "targetHikBone": RESTORE_FAILURE_TARGET_HIK_BONE,
+            "animCurve": curve,
+            "baselineRotateXDegrees": baseline_rotate_x,
+            "bumpedRotateXDegrees": bumped_value,
+        }
+        return result
+
+
+def _run_injected_restore_failure_scenario(
+    model: Path,
+    motion: Path,
+    frames: Sequence[int],
+    evaluation_mode: str,
+    mel_module,
+) -> Dict[str, Any]:
+    """Run char_fail_restore_then_vmd: engineer a stance-restore failure, then VMD import.
+
+    Unlike ``_run_scenario``, this scenario expects ``setup_and_characterize`` to
+    raise. The exception is caught and recorded; the scenario continues on to
+    VMD import and capture so the resulting topology/frame divergence (if any)
+    versus baseline can be inspected as the hypothesis test for
+    ``HUMANIK-SOURCE-VMD-IK-PARITY-1``.
+    """
+    cmds.file(new=True, force=True)
+    _load_plugin()
+    cmds.evaluationManager(mode=evaluation_mode)
+    root = _import_model(model)
+    ops: List[str] = ["inject_restore_failure_trigger_armed"]
+
+    created_stances: List[_RestoreFailureStanceTransaction] = []
+
+    def _stance_factory(*args, **kwargs) -> _RestoreFailureStanceTransaction:
+        stance = _RestoreFailureStanceTransaction(*args, **kwargs)
+        created_stances.append(stance)
+        return stance
+
+    characterize_error: Optional[str] = None
+    session: Optional[HumanIkFrontendSession] = None
+    try:
+        session = HumanIkFrontendSession(stance_transaction_factory=_stance_factory)
+        session.setup_and_characterize(root)
+        ops.append("characterize")
+    except Exception as exc:  # expected: stance.restore() raises inside setup_and_characterize
+        characterize_error = str(exc)
+        ops.append(f"characterize_raised: {characterize_error}")
+
+    trigger = created_stances[0].injected_trigger if created_stances else None
+
+    joint_map = _resolve_joint_map(root)
+    topology_after_characterize = _capture_topology(joint_map) if joint_map else None
+
+    vmd_error: Optional[str] = None
+    try:
+        _import_motion(motion, model, root)
+        ops.append("vmd_import")
+    except Exception as exc:
+        vmd_error = str(exc)
+        ops.append(f"vmd_import_raised: {vmd_error}")
+
+    if not joint_map:
+        joint_map = _resolve_joint_map(root)
+    frame_capture = _capture_frames(joint_map, frames) if joint_map else {"frames": []}
+    topology = _capture_topology(joint_map) if joint_map else {"mmdCcdIk": [], "mmdAppend": [], "hikJointFanIn": {}}
+    hik_state = _capture_hik_state(mel_module)
+    ik_goal = _capture_ik_goal_evidence()
+    return {
+        "scenario": "char_fail_restore_then_vmd",
+        "operations": ops,
+        "root": root,
+        "trigger": trigger,
+        "characterizeRaised": characterize_error is not None,
+        "characterizeError": characterize_error,
+        "vmdImportRaised": vmd_error is not None,
+        "vmdImportError": vmd_error,
+        "topologyAfterCharacterize": topology_after_characterize,
+        "assignmentCount": len(joint_map),
+        "frames": frame_capture,
+        "topology": topology,
+        "hikState": hik_state,
+        "ikGoalEvidence": ik_goal,
+    }
+
+
 def _diff_matrix_frames(
     baseline_frames: Sequence[Mapping[str, Any]],
     scenario_frames: Sequence[Mapping[str, Any]],
@@ -629,6 +789,22 @@ def main() -> int:
             comparisons[scenario] = _diff_scenario(baseline, scenario_results[scenario])
 
         all_match = all(comparison["matches"] for comparison in comparisons.values())
+
+        injected_section: Optional[Dict[str, Any]] = None
+        if args.inject_restore_failure:
+            injected_result = _run_injected_restore_failure_scenario(model, motion, frames, args.evaluation, mel)
+            injected_comparison = _diff_scenario(baseline, injected_result)
+            injected_section = {
+                "characterizeRaised": injected_result["characterizeRaised"],
+                "characterizeError": injected_result["characterizeError"],
+                "vmdImportRaised": injected_result["vmdImportRaised"],
+                "vmdImportError": injected_result["vmdImportError"],
+                "trigger": injected_result["trigger"],
+                "operations": injected_result["operations"],
+                "topologyAfterCharacterize": injected_result["topologyAfterCharacterize"],
+                "comparisonVsBaseline": injected_comparison,
+            }
+
         payload.update(
             {
                 "status": "pass" if all_match else "stop",
@@ -654,6 +830,8 @@ def main() -> int:
                 "comparisons": comparisons,
             }
         )
+        if injected_section is not None:
+            payload["injectedScenarios"] = {"char_fail_restore_then_vmd": injected_section}
         out.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(
             json.dumps(
@@ -663,6 +841,14 @@ def main() -> int:
                     "firstDivergences": {
                         scenario: comparison["firstDivergence"] for scenario, comparison in comparisons.items()
                     },
+                    "injected": (
+                        None
+                        if injected_section is None
+                        else {
+                            "characterizeRaised": injected_section["characterizeRaised"],
+                            "firstDivergence": injected_section["comparisonVsBaseline"]["firstDivergence"],
+                        }
+                    ),
                 },
                 sort_keys=True,
                 ensure_ascii=False,
