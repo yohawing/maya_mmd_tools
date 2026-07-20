@@ -1724,6 +1724,32 @@ def humanik_constraint_report_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def humanik_transaction_smoke(session: nox.Session) -> None:
+    """Verify S2 HumanIK rollback and idempotent restore under mayapy."""
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    passthrough: list[str] = []
+    args = list(session.posargs)
+    i = 0
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in {"--pmx", "--out"} and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        i += 1
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/humanik_transaction_smoke.py"),
+        *_convert_mayapy_path_options(mayapy, passthrough, {"--pmx", "--out"}),
+        env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1"),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def maya_shader_override_smoke(session: nox.Session) -> None:
     """Smoke the legacy MMDShader VP2.0 override through mayapy playblast.
 
