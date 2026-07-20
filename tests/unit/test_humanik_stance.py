@@ -58,6 +58,11 @@ class _FakeCmds:
             self.attrs[plug] = [tuple(float(value) for value in values)]
         elif values:
             self.attrs[plug] = values[0]
+        if plug.endswith(".rotate"):
+            restore = getattr(self, "_stance_restore_matrices", {}).get(plug.rsplit(".rotate", 1)[0])
+            if restore is not None:
+                child, matrix = restore
+                self.matrices[child] = list(matrix)
 
     def listRelatives(self, *args, **kwargs):
         return []
@@ -118,6 +123,26 @@ def _setter(cmds):
     return apply
 
 
+def _retrying_setter(cmds, retry_joint, failed_attempts):
+    calls = {}
+    base_setter = _setter(cmds)
+
+    def apply(joint, child, target):
+        calls[joint] = calls.get(joint, 0) + 1
+        restore_matrices = getattr(cmds, "_stance_restore_matrices", None)
+        if restore_matrices is None:
+            restore_matrices = cmds._stance_restore_matrices = {}
+        restore_matrices.setdefault(joint, (child, list(cmds.matrices[child])))
+        result = base_setter(joint, child, target)
+        if joint == retry_joint and calls[joint] <= failed_attempts:
+            current = cmds.matrices[child]
+            cmds.matrices[child] = _matrix(current[12], current[13] + 0.01, current[14])
+        return {**result, "call": calls[joint]}
+
+    apply.calls = calls
+    return apply
+
+
 class TestHumanIkStance(unittest.TestCase):
     def _transaction(self, cmds=None, report=None, *, left_direction=1.0, setter=True):
         cmds = cmds or _FakeCmds(left_direction=left_direction)
@@ -155,6 +180,8 @@ class TestHumanIkStance(unittest.TestCase):
         tx.enter()
         self.assertTrue(tx.active)
         self.assertTrue(tx.stance_evidence["pose"]["passed"])
+        self.assertTrue(all(row["attemptCount"] == 1 for row in tx.stance_evidence["pose"]["rows"]))
+        self.assertTrue(all(row["attempts"][0]["passed"] for row in tx.stance_evidence["pose"]["rows"]))
         json.dumps(tx.to_dict())
         restore = tx.restore()
 
@@ -162,6 +189,48 @@ class TestHumanIkStance(unittest.TestCase):
         self.assertTrue(restore["passed"])
         self.assertTrue(tx.restore()["idempotent"])
         self.assertFalse(any(call[0] == "disconnectAttr" for call in cmds.calls))
+
+    def test_direction_retry_converges_on_second_attempt(self):
+        tx, cmds = self._transaction()
+        setter = _retrying_setter(cmds, "|model|left_arm", 1)
+        tx.world_matrix_setter = setter
+
+        tx.enter()
+
+        rows = tx.stance_evidence["pose"]["rows"]
+        left = next(row for row in rows if row["hikBone"] == "LeftArm")
+        right = next(row for row in rows if row["hikBone"] == "RightArm")
+        self.assertEqual(left["attemptCount"], 2)
+        self.assertEqual(right["attemptCount"], 1)
+        self.assertFalse(left["attempts"][0]["passed"])
+        self.assertTrue(left["attempts"][1]["passed"])
+        self.assertEqual(left["finalApply"]["call"], 2)
+        self.assertEqual(left["finalDirection"], left["direction"])
+        self.assertEqual(left["finalDirectionResidual"], left["directionResidual"])
+        self.assertEqual(left["tolerances"]["direction"], 1.0e-8)
+        self.assertEqual(left["tolerances"]["elevation"], 1.0e-4)
+        tx.restore()
+
+    def test_direction_retry_failure_reports_slot_and_final_residual(self):
+        tx, cmds = self._transaction()
+        original_matrices = {joint: list(matrix) for joint, matrix in cmds.matrices.items()}
+        setter = _retrying_setter(cmds, "|model|left_arm", 3)
+        tx.world_matrix_setter = setter
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"hikBone=LeftArm.*directionResidual=.*tolerance=1e-08.*elevationRadians=.*tolerance=0.0001.*attempts=3",
+        ) as context:
+            tx.enter()
+
+        self.assertFalse(tx.active)
+        left = next(row for row in tx.stance_evidence["pose"]["rows"] if row["hikBone"] == "LeftArm")
+        self.assertEqual(left["attemptCount"], 3)
+        self.assertFalse(left["passed"])
+        self.assertEqual(left["attempts"][-1]["elevationRadians"], left["finalElevationRadians"])
+        self.assertIn("tolerance=0.0001", str(context.exception))
+        self.assertTrue(tx.stance_evidence["restore"]["passed"])
+        self.assertEqual(cmds.matrices, original_matrices)
 
     def test_targets_use_each_arm_horizontal_projection(self):
         cmds = _FakeCmds()

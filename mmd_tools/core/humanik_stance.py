@@ -24,6 +24,7 @@ from mmd_tools.core.humanik_resolver import HumanIkBoneAssignment
 STANCE_ELEVATION_TOLERANCE = 1.0e-4
 STANCE_DIRECTION_TOLERANCE = 1.0e-8
 STANCE_RESTORE_TOLERANCE = 1.0e-6
+STANCE_MAX_DIRECTION_ATTEMPTS = 3
 REQUIRED_ARM_SLOTS = {"LeftArm": "LeftForeArm", "RightArm": "RightForeArm"}
 
 
@@ -365,29 +366,66 @@ class HumanIkStanceTransaction:
             for slot, target in self.stance_evidence["targets"].items():
                 joint, child = target["joint"], target["child"]
                 target_direction = target["targetDirection"]
-                apply_row = (
-                    self.world_matrix_setter(joint, child, target_direction)
-                    if self.world_matrix_setter is not None
-                    else set_joint_world_direction(self.cmds, joint, child, target_direction)
-                )
-                direction = direction_evidence(self.cmds, joint, child)
-                residual = _length(_subtract(_unit(direction["worldDirection"]), _unit(target_direction)))
+                attempts = []
+                for attempt in range(1, STANCE_MAX_DIRECTION_ATTEMPTS + 1):
+                    apply_row = (
+                        self.world_matrix_setter(joint, child, target_direction)
+                        if self.world_matrix_setter is not None
+                        else set_joint_world_direction(self.cmds, joint, child, target_direction)
+                    )
+                    direction = direction_evidence(self.cmds, joint, child)
+                    residual = _length(_subtract(_unit(direction["worldDirection"]), _unit(target_direction)))
+                    passed = (
+                        direction["absoluteElevationRadians"] <= STANCE_ELEVATION_TOLERANCE
+                        and residual <= STANCE_DIRECTION_TOLERANCE
+                    )
+                    attempts.append(
+                        {
+                            "attempt": attempt,
+                            "apply": apply_row,
+                            "direction": direction,
+                            "directionResidual": residual,
+                            "elevationRadians": direction["absoluteElevationRadians"],
+                            "passed": passed,
+                        }
+                    )
+                    if passed:
+                        break
+                final = attempts[-1]
                 rows.append(
                     {
                         "hikBone": slot,
                         "joint": joint,
                         "child": child,
                         "targetDirection": list(target_direction),
-                        "apply": apply_row,
-                        "direction": direction,
-                        "directionResidual": residual,
-                        "passed": direction["absoluteElevationRadians"] <= STANCE_ELEVATION_TOLERANCE
-                        and residual <= STANCE_DIRECTION_TOLERANCE,
+                        "apply": final["apply"],
+                        "direction": final["direction"],
+                        "directionResidual": final["directionResidual"],
+                        "passed": final["passed"],
+                        "attempts": attempts,
+                        "attemptCount": len(attempts),
+                        "finalApply": final["apply"],
+                        "finalDirection": final["direction"],
+                        "finalDirectionResidual": final["directionResidual"],
+                        "finalElevationRadians": final["elevationRadians"],
+                        "tolerances": {
+                            "direction": STANCE_DIRECTION_TOLERANCE,
+                            "elevation": STANCE_ELEVATION_TOLERANCE,
+                        },
                     }
                 )
             self.stance_evidence["pose"] = {"rows": rows, "passed": all(row["passed"] for row in rows)}
             if not self.stance_evidence["pose"]["passed"]:
-                raise RuntimeError("Canonical T-pose direction residual exceeds tolerance")
+                failing = next(row for row in rows if not row["passed"])
+                raise RuntimeError(
+                    "Canonical T-pose direction residual exceeds tolerance: "
+                    f"hikBone={failing['hikBone']}, "
+                    f"directionResidual={failing['finalDirectionResidual']} "
+                    f"(tolerance={STANCE_DIRECTION_TOLERANCE}), "
+                    f"elevationRadians={failing['finalElevationRadians']} "
+                    f"(tolerance={STANCE_ELEVATION_TOLERANCE}), "
+                    f"attempts={failing['attemptCount']}"
+                )
             self.ownership_journal["topologyIsolated"] = True
             self.ownership_journal["disconnectedEdges"] = disconnected
             return self
@@ -563,6 +601,7 @@ __all__ = [
     "REQUIRED_ARM_SLOTS",
     "STANCE_DIRECTION_TOLERANCE",
     "STANCE_ELEVATION_TOLERANCE",
+    "STANCE_MAX_DIRECTION_ATTEMPTS",
     "STANCE_RESTORE_TOLERANCE",
     "HumanIkStanceTransaction",
     "canonical_stance_targets",
