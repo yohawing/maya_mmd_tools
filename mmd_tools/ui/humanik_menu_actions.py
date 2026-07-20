@@ -13,7 +13,7 @@ from typing import Callable, Optional
 
 from mmd_tools.core.humanik_frontend import (
     FRONTEND_ASSIGNMENT_PROFILE,
-    REFERENCE_QUALITY_DIAGNOSTICS,
+    FULL_ASSIGNMENT_PROFILE,
     HumanIkFrontendSession,
 )
 from mmd_tools.core.logger import get_logger, install_maya_script_editor_handler
@@ -227,24 +227,47 @@ def diagnostics():
 def _setup_and_characterize():
     root = resolve_model_root(cmds_module=_cmds_module)
     session = get_humanik_session()
-    ownership_report = session.inspect_target_ownership(root)
-    message = _setup_confirmation_message(root, ownership_report, ownership_report)
-    if not _confirm("Setup / Characterize", message):
+    body_report = session.inspect_model(
+        root,
+        profile=FRONTEND_ASSIGNMENT_PROFILE,
+        include_fingers=False,
+    )
+    full_report = session.inspect_model(
+        root,
+        profile=FULL_ASSIGNMENT_PROFILE,
+        include_fingers=True,
+    )
+    message = _setup_confirmation_message(root, body_report, {"blockers": []}, full_report)
+    selected = _choose_setup_profile("Setup / Characterize", message)
+    if selected is None:
         return None
+    profile, include_fingers = selected
     try:
-        binding = session.setup_and_characterize(root)
+        # Run ownership preflight for the selected profile before mutating the scene.
+        session.inspect_target_ownership(
+            root,
+            profile=profile,
+            include_fingers=include_fingers,
+        )
+        binding = session.setup_and_characterize(
+            root,
+            profile=profile,
+            include_fingers=include_fingers,
+        )
     except Exception as exc:
         summary = _report_action_failure("Setup / Characterize", exc, model_root=root)
         return {
             "success": False,
             "action": "setup_and_characterize",
             "modelRoot": root,
+            "profile": profile,
             "error": summary,
         }
     return {
         "success": True,
         "action": "setup_and_characterize",
         "modelRoot": root,
+        "profile": profile,
         "binding": binding,
     }
 
@@ -258,6 +281,16 @@ def _enter_target_mode():
     root = resolve_model_root(cmds_module=_cmds_module)
     session = get_humanik_session()
     report = session.inspect_target_ownership(root)
+    diagnostics_fn = getattr(session, "diagnostics", None)
+    lifecycle_diagnostics = diagnostics_fn() if callable(diagnostics_fn) else {}
+    source_profile = (lifecycle_diagnostics or {}).get("source", {}).get("profile")
+    target_profile = report.get("profile")
+    if source_profile and target_profile and source_profile != target_profile:
+        raise ValueError(
+            "HumanIK source/target assignment profile mismatch: "
+            f"source={source_profile}, target={target_profile}; "
+            "characterize both models with the same profile before target mode"
+        )
     blockers = report.get("blockers", [])
     if blockers:
         labels = ", ".join(
@@ -281,19 +314,22 @@ def _create_control_rig():
 
 def _bake_to_mmd_rig():
     cmds = _cmds_module or _maya_cmds()
+    session = get_humanik_session()
     start = math.ceil(float(cmds.playbackOptions(query=True, minTime=True)))
     end = math.floor(float(cmds.playbackOptions(query=True, maxTime=True)))
     if end < start:
         raise ValueError(f"Playback range is empty after integer conversion: {start}..{end}")
+    diagnostics_fn = getattr(session, "diagnostics", None)
+    diagnostics_report = diagnostics_fn() if callable(diagnostics_fn) else {}
+    profile = (diagnostics_report or {}).get("profile", FRONTEND_ASSIGNMENT_PROFILE)
+    finger_summary = "included experimentally" if profile == FULL_ASSIGNMENT_PROFILE else "excluded/deferred"
     message = (
         f"Bake the active HumanIK target preview from frame {start} to {end}?\n"
-        f"Profile: {FRONTEND_ASSIGNMENT_PROFILE}; finger assignments are excluded/deferred.\n"
-        f"Quality: {REFERENCE_QUALITY_DIAGNOSTICS['status']} "
-        f"(reference residual {REFERENCE_QUALITY_DIAGNOSTICS['referenceS5bBodyMatrixResidual']})."
+        f"Profile: {profile}; finger assignments are {finger_summary}."
     )
     if not _confirm("Bake to MMD Rig", message):
         return None
-    result = get_humanik_session().bake_to_mmd_rig(start, end)
+    result = session.bake_to_mmd_rig(start, end)
     result_dict = result.to_dict() if hasattr(result, "to_dict") else dict(result)
     _display_info("HumanIK bake complete: " + json.dumps(result_dict, sort_keys=True))
     return result
@@ -325,14 +361,23 @@ def _show_diagnostics():
     return report
 
 
-def _setup_confirmation_message(root, model_report, ownership_report):
+def _setup_confirmation_message(root, model_report, ownership_report, full_report=None):
     blockers = ownership_report.get("blockers", [])
     unresolved = len(model_report.get("missingMmdBones", []))
     ambiguous = len(model_report.get("ambiguous", []))
+    body_count = len(model_report.get("bodyAssignments") or []) or model_report.get("assignmentCount", 0)
+    if full_report is None:
+        if model_report.get("profile") == FULL_ASSIGNMENT_PROFILE:
+            finger_count = max(model_report.get("assignmentCount", 0) - body_count, 0)
+        else:
+            finger_count = model_report.get("excludedFingerCount", 0)
+    else:
+        full_count = len(full_report.get("assignments") or [])
+        finger_count = max(full_count - body_count, 0)
     lines = [
         f"Set up HumanIK for {_short_model_label(root)}?",
-        f"Body + roll: {model_report.get('assignmentCount', 0)} bones",
-        f"Fingers: excluded ({model_report.get('excludedFingerCount', 0)} bones)",
+        f"Body only: {body_count} bones (default)",
+        f"Body + fingers: {body_count + finger_count} bones ({finger_count} finger bones)",
         "The arms are aligned temporarily, then the original pose is restored.",
     ]
     if unresolved or ambiguous or blockers:
@@ -386,18 +431,44 @@ def _short_exception_summary(exc: Exception, limit: int = 180) -> str:
 
 
 def _confirm(title, message):
+    return _dialog_choice(title, message, ("Continue", "Cancel")) == "Continue"
+
+
+def _choose_setup_profile(title, message):
+    """Return the selected setup profile from the compact three-button dialog."""
+    choice = _dialog_choice(title, message, ("Body only", "Body + fingers", "Cancel"))
+    if choice in ("Body only", "Continue"):
+        return FRONTEND_ASSIGNMENT_PROFILE, False
+    if choice == "Body + fingers":
+        return FULL_ASSIGNMENT_PROFILE, True
+    return None
+
+
+def _dialog_choice(title, message, buttons):
+    """Show an injectable choice dialog and return its raw button label."""
     if _confirm_dialog is not None:
-        return _confirm_dialog(title=title, message=message) == "Continue"
+        try:
+            return _confirm_dialog(
+                title=title,
+                message=message,
+                button=list(buttons),
+                defaultButton=buttons[0],
+                cancelButton="Cancel",
+                dismissString="Cancel",
+            )
+        except TypeError:
+            # Preserve compatibility with older injectable callbacks accepting
+            # only title/message while keeping the production button contract.
+            return _confirm_dialog(title=title, message=message)
     cmds = _cmds_module or _maya_cmds()
-    result = cmds.confirmDialog(
+    return cmds.confirmDialog(
         title=title,
         message=message,
-        button=["Continue", "Cancel"],
-        defaultButton="Continue",
+        button=list(buttons),
+        defaultButton=buttons[0],
         cancelButton="Cancel",
         dismissString="Cancel",
     )
-    return result == "Continue"
 
 
 def _run_action(label, operation):

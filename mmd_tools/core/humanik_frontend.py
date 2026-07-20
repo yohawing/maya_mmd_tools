@@ -38,6 +38,8 @@ from mmd_tools.core.humanik_stance import HumanIkStanceTransaction, canonical_st
 
 FINGER_HIK_MARKERS = ("Index", "Middle", "Ring", "Pinky", "Thumb")
 FRONTEND_ASSIGNMENT_PROFILE = "body-only"
+FULL_ASSIGNMENT_PROFILE = "full"
+_ASSIGNMENT_PROFILES = frozenset({FRONTEND_ASSIGNMENT_PROFILE, FULL_ASSIGNMENT_PROFILE})
 REFERENCE_QUALITY_DIAGNOSTICS = {
     "status": "experimental",
     "referenceS5bBodyMatrixResidual": 0.0298786502441323,
@@ -46,6 +48,7 @@ REFERENCE_QUALITY_DIAGNOSTICS = {
 }
 EXPECTED_BODY_ASSIGNMENT_COUNT = 25
 EXPECTED_FINGER_ASSIGNMENT_COUNT = 30
+EXPECTED_FULL_ASSIGNMENT_COUNT = EXPECTED_BODY_ASSIGNMENT_COUNT + EXPECTED_FINGER_ASSIGNMENT_COUNT
 
 
 def is_humanik_finger_assignment(assignment: HumanIkBoneAssignment) -> bool:
@@ -75,6 +78,38 @@ def _split_body_assignments(
     return filter_humanik_body_assignments(result), excluded
 
 
+def _normalize_assignment_profile(
+    profile: Optional[str],
+    include_fingers: Optional[bool],
+) -> Tuple[str, bool]:
+    """Resolve the explicit profile/finger flag pair used by setup and inspect."""
+    if profile is None or not str(profile).strip():
+        selected = FULL_ASSIGNMENT_PROFILE if include_fingers else FRONTEND_ASSIGNMENT_PROFILE
+    else:
+        selected = str(profile).strip().lower()
+    if selected not in _ASSIGNMENT_PROFILES:
+        allowed = ", ".join(sorted(_ASSIGNMENT_PROFILES))
+        raise ValueError(f"Unknown HumanIK assignment profile: {selected}; expected one of: {allowed}")
+    expected_include_fingers = selected == FULL_ASSIGNMENT_PROFILE
+    if include_fingers is not None and bool(include_fingers) != expected_include_fingers:
+        raise ValueError(
+            "HumanIK assignment profile/include_fingers mismatch: "
+            f"profile={selected}, include_fingers={bool(include_fingers)}"
+        )
+    return selected, expected_include_fingers
+
+
+def _select_profile_result(
+    result: HumanIkResolveResult,
+    profile: str,
+) -> Tuple[HumanIkResolveResult, Tuple[HumanIkBoneAssignment, ...]]:
+    """Select assignments for a profile while retaining excluded finger evidence."""
+    body_result, excluded = _split_body_assignments(result)
+    if profile == FULL_ASSIGNMENT_PROFILE:
+        return result, ()
+    return body_result, excluded
+
+
 def _assignment_row(assignment: HumanIkBoneAssignment) -> Dict[str, Any]:
     return {
         "joint": str(assignment.joint),
@@ -88,18 +123,19 @@ def _assignment_row(assignment: HumanIkBoneAssignment) -> Dict[str, Any]:
 
 @dataclass
 class HumanIkFrontendBinding:
-    """Characterized body-only HumanIK binding retained by a frontend session."""
+    """Characterized HumanIK binding retained by a frontend session."""
 
     model_root: str
     character: str
     result: HumanIkResolveResult
+    profile: str = FRONTEND_ASSIGNMENT_PROFILE
     excluded_finger_assignments: Tuple[HumanIkBoneAssignment, ...] = ()
     stance: Dict[str, Any] = field(default_factory=dict)
     control_rig_created: bool = False
 
     @property
     def assignments(self) -> Tuple[HumanIkBoneAssignment, ...]:
-        """Return the body-only assignments used for characterization."""
+        """Return the assignments selected by this binding's profile."""
         return self.result.assignments
 
     def to_dict(self) -> Dict[str, Any]:
@@ -107,11 +143,17 @@ class HumanIkFrontendBinding:
         return {
             "modelRoot": self.model_root,
             "character": self.character,
-            "profile": FRONTEND_ASSIGNMENT_PROFILE,
+            "profile": self.profile,
+            "includeFingers": self.profile == FULL_ASSIGNMENT_PROFILE,
             "assignmentCount": len(self.assignments),
             "assignments": [_assignment_row(item) for item in self.assignments],
             "required": {
                 "genericLockMinimumAssignmentCount": 1,
+                "expectedAssignmentCount": (
+                    EXPECTED_FULL_ASSIGNMENT_COUNT
+                    if self.profile == FULL_ASSIGNMENT_PROFILE
+                    else EXPECTED_BODY_ASSIGNMENT_COUNT
+                ),
                 "resolvedAssignmentCount": len(self.assignments),
             },
             "excludedFingerCount": len(self.excluded_finger_assignments),
@@ -167,20 +209,35 @@ class HumanIkFrontendSession:
     def setup_and_characterize(
         self,
         model_root: str,
+        *,
+        profile: Optional[str] = None,
+        include_fingers: Optional[bool] = None,
     ) -> HumanIkFrontendBinding:
         """Automatically pose, characterize, lock, and restore one model."""
         key = self._require_model_root(model_root)
+        selected_profile, _selected_include_fingers = _normalize_assignment_profile(
+            profile,
+            include_fingers,
+        )
         self._reject_active_preview_mutation("setup_and_characterize")
         existing = self._bindings.get(key)
         if existing is not None:
+            if existing.profile != selected_profile:
+                raise ValueError(
+                    "HumanIK model is already characterized with a different assignment profile: "
+                    f"model={key}, existing={existing.profile}, requested={selected_profile}; "
+                    "restore/reload the model before changing profile"
+                )
             return existing
         result = resolve_scene_humanik_assignments(key, cmds_module=self._cmds)
-        body_result, excluded = _split_body_assignments(result)
-        if not body_result.assignments:
-            raise ValueError(f"HumanIK setup resolved no body assignments for: {key}")
+        selected_result, excluded = _select_profile_result(result, selected_profile)
+        if not selected_result.assignments:
+            raise ValueError(
+                f"HumanIK setup resolved no assignments for: {key} (profile={selected_profile})"
+            )
         stance = self._stance_transaction_factory(
             key,
-            tuple(body_result.assignments),
+            tuple(selected_result.assignments),
             cmds_module=self._cmds,
             mel_module=self._mel,
             ownership_report=None,
@@ -195,7 +252,7 @@ class HumanIkFrontendSession:
             stance.enter()
             try:
                 character = create_humanik_definition(
-                    body_result,
+                    selected_result,
                     name_hint=self._character_name(key),
                     mel_module=self._mel,
                     update_ui=False,
@@ -245,7 +302,8 @@ class HumanIkFrontendSession:
         binding = HumanIkFrontendBinding(
             model_root=key,
             character=character,
-            result=body_result,
+            result=selected_result,
+            profile=selected_profile,
             excluded_finger_assignments=excluded,
             stance={
                 **stance.stance_evidence,
@@ -274,6 +332,12 @@ class HumanIkFrontendSession:
             raise RuntimeError("A HumanIK target preview is already active")
         source = self._bindings[self._source_model_root]
         target = self._require_binding(key)
+        if source.profile != target.profile:
+            raise ValueError(
+                "HumanIK source/target assignment profile mismatch: "
+                f"source={source.profile}, target={target.profile}; "
+                "characterize both models with the same profile before target mode"
+            )
         target_joints = tuple(assignment.joint for assignment in target.assignments)
         report = classify_humanik_constraints(
             collect_humanik_constraint_facts(cmds_module=self._cmds),
@@ -378,28 +442,41 @@ class HumanIkFrontendSession:
             raise first_error
         return restored
 
-    def inspect_model(self, model_root: str) -> Dict[str, Any]:
-        """Resolve a model into body and deferred finger assignments read-only.
+    def inspect_model(
+        self,
+        model_root: str,
+        *,
+        profile: Optional[str] = None,
+        include_fingers: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Resolve a model into the requested body-only or full assignment profile.
 
         The returned report is JSON-safe and does not create, lock, or mutate a
         HumanIK character.  UI callers can display it before requesting the
         automatic snapshot/canonical-pose/characterize/restore transaction.
         """
         key = self._require_model_root(model_root)
+        existing = self._bindings.get(key)
+        if profile is None and include_fingers is None and existing is not None:
+            profile = existing.profile
+        profile, include_fingers = _normalize_assignment_profile(profile, include_fingers)
         result = resolve_scene_humanik_assignments(key, cmds_module=self._cmds)
-        body_result, excluded = _split_body_assignments(result)
-        assignments = [_assignment_row(item) for item in body_result.assignments]
+        body_result, _all_excluded = _split_body_assignments(result)
+        selected_result, excluded = _select_profile_result(result, profile)
+        assignments = [_assignment_row(item) for item in selected_result.assignments]
+        body_assignments = [_assignment_row(item) for item in body_result.assignments]
         excluded_rows = [_assignment_row(item) for item in excluded]
         unresolved = {
-            "missingMmdBones": list(body_result.missing_mmd_bones),
-            "unindexedMmdBones": list(body_result.unindexed_mmd_bones),
+            "missingMmdBones": list(selected_result.missing_mmd_bones),
+            "unindexedMmdBones": list(selected_result.unindexed_mmd_bones),
         }
-        ambiguous = [_assignment_row(item) for item in body_result.duplicate_assignments]
+        ambiguous = [_assignment_row(item) for item in selected_result.duplicate_assignments]
         return {
             "modelRoot": key,
-            "profile": FRONTEND_ASSIGNMENT_PROFILE,
+            "profile": profile,
+            "includeFingers": include_fingers,
             "assignments": assignments,
-            "bodyAssignments": assignments,
+            "bodyAssignments": body_assignments,
             "assignmentCount": len(assignments),
             "excludedFingerAssignments": excluded_rows,
             "excludedFingerCount": len(excluded_rows),
@@ -409,12 +486,27 @@ class HumanIkFrontendSession:
             "ambiguous": ambiguous,
             "duplicateAssignments": ambiguous,
             "blocked": [] if assignments else ["no_resolved_assignments"],
-            "automaticStance": canonical_stance_targets(body_result.assignments),
+            "automaticStance": canonical_stance_targets(selected_result.assignments),
         }
 
-    def inspect_target_ownership(self, model_root: str) -> Dict[str, Any]:
+    def inspect_target_ownership(
+        self,
+        model_root: str,
+        *,
+        profile: Optional[str] = None,
+        include_fingers: Optional[bool] = None,
+    ) -> Dict[str, Any]:
         """Classify target writers without starting a HumanIK preview."""
-        model_report = self.inspect_model(model_root)
+        key = self._require_model_root(model_root)
+        existing = self._bindings.get(key)
+        if profile is None and include_fingers is None and existing is not None:
+            profile = existing.profile
+        profile, include_fingers = _normalize_assignment_profile(profile, include_fingers)
+        model_report = self.inspect_model(
+            key,
+            profile=profile,
+            include_fingers=include_fingers,
+        )
         target_joints = tuple(row["joint"] for row in model_report["assignments"])
         ownership = classify_humanik_constraints(
             collect_humanik_constraint_facts(cmds_module=self._cmds),
@@ -477,24 +569,55 @@ class HumanIkFrontendSession:
         ]
         ownership_counts = (self._ownership_report or {}).get("counts", {})
         selected_summary = selected.to_dict() if selected else None
+        active_profile = (
+            selected.profile
+            if selected
+            else source.profile
+            if source
+            else target.profile
+            if target
+            else FRONTEND_ASSIGNMENT_PROFILE
+        )
+        selected_body_count = (
+            sum(not is_humanik_finger_assignment(item) for item in selected.assignments)
+            if selected
+            else 0
+        )
+        quality = dict(REFERENCE_QUALITY_DIAGNOSTICS)
+        quality["assignmentProfile"] = active_profile
+        if active_profile == FULL_ASSIGNMENT_PROFILE:
+            quality["fingerStatus"] = "included-experimental"
         return {
             "modelRoot": str(model_root) if model_root else None,
             "character": selected.character if selected else None,
-            "profile": FRONTEND_ASSIGNMENT_PROFILE,
+            "profile": active_profile,
             "source": {
                 "modelRoot": source.model_root if source else None,
                 "character": source.character if source else None,
+                "profile": source.profile if source else None,
+                "includeFingers": bool(source and source.profile == FULL_ASSIGNMENT_PROFILE),
                 "assignmentCount": len(source.assignments) if source else 0,
+                "excludedFingerCount": len(source.excluded_finger_assignments) if source else 0,
             },
             "target": {
                 "modelRoot": target.model_root if target else None,
                 "character": target.character if target else None,
+                "profile": target.profile if target else None,
+                "includeFingers": bool(target and target.profile == FULL_ASSIGNMENT_PROFILE),
                 "assignmentCount": len(target.assignments) if target else 0,
+                "excludedFingerCount": len(target.excluded_finger_assignments) if target else 0,
             },
             "assignments": selected_summary or {
+                "profile": active_profile,
+                "includeFingers": active_profile == FULL_ASSIGNMENT_PROFILE,
                 "assignmentCount": 0,
                 "required": {
                     "genericLockMinimumAssignmentCount": 1,
+                    "expectedAssignmentCount": (
+                        EXPECTED_FULL_ASSIGNMENT_COUNT
+                        if active_profile == FULL_ASSIGNMENT_PROFILE
+                        else EXPECTED_BODY_ASSIGNMENT_COUNT
+                    ),
                     "resolvedAssignmentCount": 0,
                 },
                 "excludedFingerCount": 0,
@@ -528,12 +651,22 @@ class HumanIkFrontendSession:
                 ],
             },
             "profileCoverage": {
+                "profile": active_profile,
                 "expectedBodyAssignmentCount": EXPECTED_BODY_ASSIGNMENT_COUNT,
-                "expectedFingerExcludedCount": EXPECTED_FINGER_ASSIGNMENT_COUNT,
-                "actualBodyAssignmentCount": len(selected.assignments) if selected else 0,
+                "expectedAssignmentCount": (
+                    EXPECTED_FULL_ASSIGNMENT_COUNT
+                    if active_profile == FULL_ASSIGNMENT_PROFILE
+                    else EXPECTED_BODY_ASSIGNMENT_COUNT
+                ),
+                "expectedFingerExcludedCount": (
+                    0
+                    if active_profile == FULL_ASSIGNMENT_PROFILE
+                    else EXPECTED_FINGER_ASSIGNMENT_COUNT
+                ),
+                "actualBodyAssignmentCount": selected_body_count,
                 "actualFingerExcludedCount": len(selected.excluded_finger_assignments) if selected else 0,
             },
-            "quality": dict(REFERENCE_QUALITY_DIAGNOSTICS),
+            "quality": quality,
         }
 
     def _require_binding(self, model_root: str) -> HumanIkFrontendBinding:

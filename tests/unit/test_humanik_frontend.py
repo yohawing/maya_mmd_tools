@@ -6,6 +6,7 @@ from unittest.mock import patch
 from mmd_tools.core.humanik_bake import HumanIkBakeResult
 from mmd_tools.core.humanik_builder import HumanIkCharacterCreationError
 from mmd_tools.core.humanik_frontend import (
+    FULL_ASSIGNMENT_PROFILE,
     HumanIkFrontendSession,
     _split_body_assignments,
     filter_humanik_body_assignments,
@@ -135,6 +136,68 @@ class TestHumanIkFrontend(unittest.TestCase):
 
     @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
     @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_synthetic_55_result())
+    def test_setup_full_profile_keeps_finger_assignments(self, resolve, create, lock):
+        session = _session()
+
+        binding = session.setup_and_characterize(
+            "|source",
+            profile=FULL_ASSIGNMENT_PROFILE,
+            include_fingers=True,
+        )
+
+        self.assertEqual(binding.profile, FULL_ASSIGNMENT_PROFILE)
+        self.assertEqual(len(binding.assignments), 55)
+        self.assertEqual(binding.to_dict()["assignmentCount"], 55)
+        self.assertEqual(binding.to_dict()["excludedFingerCount"], 0)
+        self.assertTrue(binding.to_dict()["includeFingers"])
+        self.assertEqual(len(session._pending_stances), 0)
+        self.assertEqual(len(create.call_args.args[0].assignments), 55)
+        self.assertEqual(len(session._bindings["|source"].assignments), 55)
+        session.enter_source_mode("|source")
+        diagnostics = session.diagnostics("|source")
+        self.assertEqual(diagnostics["profile"], FULL_ASSIGNMENT_PROFILE)
+        self.assertEqual(diagnostics["source"]["profile"], FULL_ASSIGNMENT_PROFILE)
+        self.assertEqual(diagnostics["assignments"]["excludedFingerCount"], 0)
+        self.assertEqual(diagnostics["profileCoverage"]["expectedAssignmentCount"], 55)
+        self.assertEqual(diagnostics["quality"]["status"], "experimental")
+        self.assertEqual(diagnostics["quality"]["fingerStatus"], "included-experimental")
+        with patch("mmd_tools.core.humanik_frontend.collect_humanik_constraint_facts", return_value=[]), patch(
+            "mmd_tools.core.humanik_frontend.classify_humanik_constraints",
+            return_value={"rows": [], "counts": {}},
+        ):
+            inferred_report = session.inspect_target_ownership("|source")
+        self.assertEqual(inferred_report["profile"], FULL_ASSIGNMENT_PROFILE)
+        self.assertEqual(inferred_report["assignmentCount"], 55)
+
+    @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
+    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
+    def test_setup_same_root_rejects_profile_change(self, resolve, create, lock):
+        session = _session()
+        session.setup_and_characterize("|source")
+
+        with self.assertRaisesRegex(ValueError, "different assignment profile"):
+            session.setup_and_characterize(
+                "|source",
+                profile=FULL_ASSIGNMENT_PROFILE,
+                include_fingers=True,
+            )
+
+        create.assert_called_once()
+        resolve.assert_called_once()
+
+    @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
+    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_synthetic_55_result())
+    def test_include_fingers_flag_selects_full_profile_without_profile_argument(self, resolve, create, lock):
+        binding = _session().setup_and_characterize("|source", include_fingers=True)
+
+        self.assertEqual(binding.profile, FULL_ASSIGNMENT_PROFILE)
+        self.assertEqual(len(binding.assignments), 55)
+
+    @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
+    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")
     @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
     def test_stance_captures_character_state_after_lock(self, resolve, create, lock):
         events = []
@@ -236,6 +299,52 @@ class TestHumanIkFrontend(unittest.TestCase):
         self.assertIs(result, fake_bake)
         self.assertIsNone(session.active_preview)
         self.assertFalse(session.restore_mmd_rig())
+
+    @patch("mmd_tools.core.humanik_frontend.begin_humanik_target_preview", return_value=FakePreview())
+    @patch("mmd_tools.core.humanik_frontend.classify_humanik_constraints", return_value={"rows": [], "counts": {}})
+    @patch("mmd_tools.core.humanik_frontend.collect_humanik_constraint_facts", return_value=[])
+    @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
+    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", side_effect=lambda result, **kwargs: "Character_" + kwargs["name_hint"].split("_")[-1])
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_synthetic_55_result())
+    def test_full_profile_preview_and_bake_receive_all_assignments(
+        self, resolve, create, lock, collect, classify, begin
+    ):
+        session = _session()
+        session.setup_and_characterize("|source", profile=FULL_ASSIGNMENT_PROFILE, include_fingers=True)
+        session.enter_source_mode("|source")
+        session.setup_and_characterize("|target", profile=FULL_ASSIGNMENT_PROFILE, include_fingers=True)
+        session.enter_target_mode("|target")
+
+        preview_joints = tuple(begin.call_args.args[4])
+        self.assertEqual(len(preview_joints), 55)
+        fake_bake = HumanIkBakeResult(0, 1, 55, {}, 0.0, [])
+        with patch(
+            "mmd_tools.core.humanik_frontend.bake_humanik_target_preview",
+            return_value=fake_bake,
+        ) as bake:
+            self.assertIs(session.bake_to_mmd_rig(0, 1), fake_bake)
+        self.assertEqual(len(tuple(bake.call_args.args[1])), 55)
+
+    @patch("mmd_tools.core.humanik_frontend.begin_humanik_target_preview")
+    @patch("mmd_tools.core.humanik_frontend.classify_humanik_constraints", return_value={"rows": [], "counts": {}})
+    @patch("mmd_tools.core.humanik_frontend.collect_humanik_constraint_facts", return_value=[])
+    @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
+    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", side_effect=lambda result, **kwargs: "Character_" + kwargs["name_hint"].split("_")[-1])
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
+    def test_target_rejects_source_target_profile_mismatch_before_preview(
+        self, resolve, create, lock, collect, classify, begin
+    ):
+        session = _session()
+        session.setup_and_characterize("|source")
+        session.enter_source_mode("|source")
+        session.setup_and_characterize("|target", profile=FULL_ASSIGNMENT_PROFILE, include_fingers=True)
+
+        with self.assertRaisesRegex(ValueError, "source/target assignment profile mismatch"):
+            session.enter_target_mode("|target")
+
+        classify.assert_not_called()
+        collect.assert_not_called()
+        begin.assert_not_called()
 
     @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
     @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")

@@ -12,18 +12,25 @@ class _FakeSession:
         self.calls = []
         self.active_preview = None
 
-    def inspect_model(self, root):
-        self.calls.append(("inspect_model", root))
+    def inspect_model(self, root, **kwargs):
+        self.calls.append(("inspect_model", root, kwargs) if kwargs else ("inspect_model", root))
+        full = kwargs.get("profile") == "full" or kwargs.get("include_fingers") is True
         return {
             "modelRoot": root,
-            "assignmentCount": 25,
-            "excludedFingerCount": 30,
+            "assignmentCount": 55 if full else 25,
+            "bodyAssignments": [{}] * 25,
+            "assignments": [{}] * (55 if full else 25),
+            "excludedFingerCount": 0 if full else 30,
             "missingMmdBones": [],
             "ambiguous": [],
         }
 
-    def inspect_target_ownership(self, root):
-        self.calls.append(("inspect_target_ownership", root))
+    def inspect_target_ownership(self, root, **kwargs):
+        self.calls.append(
+            ("inspect_target_ownership", root, kwargs)
+            if kwargs
+            else ("inspect_target_ownership", root)
+        )
         return {
             "modelRoot": root,
             "assignmentCount": 25,
@@ -189,7 +196,43 @@ class TestHumanIkMenuActions(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertNotIn(("inspect_model", "|model_root"), self.session.calls)
         self.assertIn(
-            ("setup_and_characterize", "|model_root", {}),
+            (
+                "setup_and_characterize",
+                "|model_root",
+                {"profile": "body-only", "include_fingers": False},
+            ),
+            self.session.calls,
+        )
+
+    @patch.object(actions, "resolve_model_root", return_value="|model_root")
+    def test_setup_profile_buttons_can_opt_into_full_assignments(self, resolve):
+        dialog = {}
+
+        def choose(**kwargs):
+            dialog.update(kwargs)
+            return "Body + fingers"
+
+        actions._confirm_dialog = choose
+
+        result = actions.setup_and_characterize()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["profile"], "full")
+        self.assertEqual(dialog["button"], ["Body only", "Body + fingers", "Cancel"])
+        self.assertIn(
+            (
+                "inspect_target_ownership",
+                "|model_root",
+                {"profile": "full", "include_fingers": True},
+            ),
+            self.session.calls,
+        )
+        self.assertIn(
+            (
+                "setup_and_characterize",
+                "|model_root",
+                {"profile": "full", "include_fingers": True},
+            ),
             self.session.calls,
         )
 
@@ -220,8 +263,8 @@ class TestHumanIkMenuActions(unittest.TestCase):
         message = actions._setup_confirmation_message("|" + "deep_model_path_" * 30, report, report)
 
         self.assertIn("Set up HumanIK for", message)
-        self.assertIn("Body + roll: 25 bones", message)
-        self.assertIn("Fingers: excluded (30 bones)", message)
+        self.assertIn("Body only: 25 bones (default)", message)
+        self.assertIn("Body + fingers: 55 bones (30 finger bones)", message)
         self.assertIn("Issues: unresolved 0, ambiguous 0, blockers 2", message)
         self.assertNotIn(long_node, message)
         self.assertNotIn("nodes/edges", message)
@@ -283,6 +326,25 @@ class TestHumanIkMenuActions(unittest.TestCase):
         self.assertNotIn(("enter_target_mode", "|model_root"), self.session.calls)
 
     @patch.object(actions, "resolve_model_root", return_value="|model_root")
+    def test_target_profile_mismatch_is_rejected_before_confirmation(self, resolve):
+        self.session.diagnostics = lambda root=None: {
+            "source": {"profile": "body-only"},
+            "preview": {"active": False},
+        }
+        self.session.inspect_target_ownership = lambda root: {
+            "profile": "full",
+            "constraintCounts": {},
+            "blockers": [],
+        }
+        actions._confirm_dialog = lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("confirmation should not be shown")
+        )
+
+        self.assertIsNone(actions.enter_target_mode())
+        self.assertTrue(any("profile mismatch" in message for message in self._errors))
+        self.assertNotIn(("enter_target_mode", "|model_root"), self.session.calls)
+
+    @patch.object(actions, "resolve_model_root", return_value="|model_root")
     def test_target_cancel_does_not_start_preview(self, resolve):
         actions._confirm_dialog = lambda **kwargs: "Cancel"
 
@@ -298,6 +360,22 @@ class TestHumanIkMenuActions(unittest.TestCase):
         self.assertEqual(result.start, 2)
         self.assertEqual(result.end, 10)
         self.assertIn(("bake_to_mmd_rig", 2, 10), self.session.calls)
+
+    def test_bake_confirmation_uses_active_profile_without_quality_residual(self):
+        self.cmds.playbackOptions.side_effect = [1.9, 10.1]
+        self.session.diagnostics = lambda root=None: {"profile": "full"}
+        dialog = {}
+
+        def choose(**kwargs):
+            dialog.update(kwargs)
+            return "Continue"
+
+        actions._confirm_dialog = choose
+        actions.bake_to_mmd_rig()
+
+        self.assertIn("Profile: full", dialog["message"])
+        self.assertIn("included experimentally", dialog["message"])
+        self.assertNotIn("residual", dialog["message"])
 
     def test_bake_rejects_empty_integer_playback_range_before_confirmation(self):
         self.cmds.playbackOptions.side_effect = [5.2, 4.8]
