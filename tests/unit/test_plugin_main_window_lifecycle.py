@@ -222,7 +222,7 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         ]
         self.assertEqual(len(repair_calls), 1)
 
-    def test_install_menu_sets_visible_top_label_and_installs_humanik_submenu(self):
+    def test_install_menu_creates_tearoff_top_menu_and_installs_humanik_submenu(self):
         self.plugin_main.cmds.menu.side_effect = lambda *_args, **kwargs: (
             False if kwargs.get("exists") else [] if kwargs.get("query") else "MMD"
         )
@@ -232,7 +232,12 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             self.plugin_main.install_mmd_menu()
 
         self.assertIn(
-            unittest.mock.call("MMD", label="MMD Tools", parent="MayaWindow"),
+            unittest.mock.call(
+                "MMD",
+                label="MMD Tools",
+                parent="MayaWindow",
+                tearOff=True,
+            ),
             self.plugin_main.cmds.menu.call_args_list,
         )
         install_humanik.assert_called_once_with(

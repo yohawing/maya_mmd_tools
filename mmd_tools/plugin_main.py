@@ -213,7 +213,7 @@ def _reset_humanik_menu_session():
 def install_mmd_menu():
     """Install the MMD menu in Maya."""
     if not cmds.menu("MMD", exists=True):
-        cmds.menu("MMD", label="MMD Tools", parent="MayaWindow")
+        cmds.menu("MMD", label="MMD Tools", parent="MayaWindow", tearOff=True)
     else:
         cmds.menu("MMD", edit=True, label="MMD Tools")
 
