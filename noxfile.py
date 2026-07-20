@@ -1776,6 +1776,41 @@ def humanik_target_preview_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def humanik_bake_smoke(session: nox.Session) -> None:
+    """Run the S4 bake smoke in isolated off/serial/parallel Maya scenes."""
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    requested_mode = _option(args, "--evaluation-mode", "")
+    modes = [requested_mode] if requested_mode else ["off", "serial", "parallel"]
+    out_value = _option(args, "--out", str(ROOT / "build/reports/humanik_bake_smoke.json"))
+    passthrough: list[str] = []
+    value_options = {"--pmx", "--vmd", "--start", "--end"}
+    path_options = {"--pmx", "--vmd", "--out"}
+    i = 0
+    while i < len(args):
+        if args[i] in {"--maya", "--evaluation-mode", "--out"} and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in value_options and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        i += 1
+    base_out = Path(out_value)
+    for mode in modes:
+        mode_out = base_out if requested_mode else base_out.with_name(f"{base_out.stem}.{mode}{base_out.suffix}")
+        mode_args = [*passthrough, "--evaluation-mode", mode, "--out", str(mode_out)]
+        session.run(
+            str(mayapy),
+            _mayapy_script(mayapy, "tests/viewport/humanik_bake_smoke.py"),
+            *_convert_mayapy_path_options(mayapy, mode_args, path_options),
+            env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1"),
+            external=True,
+        )
+
+
+@nox.session(venv_backend="none")
 def maya_shader_override_smoke(session: nox.Session) -> None:
     """Smoke the legacy MMDShader VP2.0 override through mayapy playblast.
 
