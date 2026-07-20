@@ -40,7 +40,37 @@ _REQUIRED_HIK_PROCS = (
     "hikSetCharacterInput",
     "hikGetInputType",
     "hikGetRetargetCharacterInput",
+    "hikCreateControlRig",
+    "hikHasControlRig",
+    "hikDeleteCharacter",
+    "hikGetSceneCharacters",
 )
+
+
+class HumanIkCharacterCreationError(RuntimeError):
+    """Report a failed HumanIK character creation and cleanup outcome.
+
+    ``character`` identifies the Maya character created before the failure.
+    ``creation_error`` is the original assignment, UI, or control-rig error;
+    ``cleanup_error`` is populated only when deleting that character also
+    failed, allowing callers to retain the character for a later retry.
+    """
+
+    def __init__(self, character: str, creation_error: Exception, cleanup_error=None):
+        self.character = str(character)
+        self.creation_error = creation_error
+        self.cleanup_error = cleanup_error
+        if cleanup_error is None:
+            message = (
+                f"HumanIK character creation failed for {self.character}: "
+                f"{creation_error}; cleanup succeeded"
+            )
+        else:
+            message = (
+                f"HumanIK character creation failed for {self.character}: "
+                f"{creation_error}; cleanup failed: {cleanup_error}"
+            )
+        super().__init__(message)
 
 
 def collect_humanik_joint_candidates(model_root: Optional[str] = None, cmds_module=None) -> List[HumanIkJointCandidate]:
@@ -109,15 +139,26 @@ def create_humanik_definition(
     mel = mel_module or _maya_mel()
     ensure_humanik_mel_loaded(mel)
     character = str(mel.eval(f'hikCreateCharacter({_mel_string(name_hint)})'))
-    for command in build_humanik_definition_mel_commands(
-        character,
-        result.assignments,
-        create_control_rig=create_control_rig,
-        update_ui=update_ui,
-    ):
-        mel.eval(command)
-    if create_control_rig and not bool(mel.eval(f"hikHasControlRig({_mel_string(character)})")):
-        raise RuntimeError(f"HumanIK control rig was not created for character: {character}")
+    try:
+        for command in build_humanik_definition_mel_commands(
+            character,
+            result.assignments,
+            create_control_rig=create_control_rig,
+            update_ui=update_ui,
+        ):
+            mel.eval(command)
+        if create_control_rig and not bool(mel.eval(f"hikHasControlRig({_mel_string(character)})")):
+            raise RuntimeError(f"HumanIK control rig was not created for character: {character}")
+    except Exception as creation_error:
+        try:
+            delete_humanik_character(character, mel_module=mel)
+        except Exception as cleanup_error:
+            raise HumanIkCharacterCreationError(
+                character,
+                creation_error,
+                cleanup_error=cleanup_error,
+            ) from creation_error
+        raise HumanIkCharacterCreationError(character, creation_error) from creation_error
     return character
 
 
@@ -203,6 +244,58 @@ def lock_humanik_definition(
     return locked
 
 
+def create_humanik_control_rig(character: str, mel_module=None) -> bool:
+    """Create and verify a HumanIK control rig for an existing character.
+
+    Args:
+        character: Existing characterized HumanIK character name.
+        mel_module: Optional Maya ``mel`` compatible module for tests.
+
+    Returns:
+        ``True`` when Maya reports that the control rig exists.
+
+    Raises:
+        ValueError: If ``character`` is empty.
+        RuntimeError: If Maya does not report a control rig after creation.
+    """
+    if not character:
+        raise ValueError("character is required")
+    mel = mel_module or _maya_mel()
+    ensure_humanik_mel_loaded(mel)
+    mel.eval(f"hikSetCurrentCharacter({_mel_string(character)});")
+    mel.eval("hikCreateControlRig();")
+    if not bool(mel.eval(f"hikHasControlRig({_mel_string(character)})")):
+        raise RuntimeError(f"HumanIK control rig was not created: {character}")
+    return True
+
+
+def delete_humanik_character(character: str, mel_module=None) -> bool:
+    """Delete a HumanIK character and verify it left the Maya scene.
+
+    Args:
+        character: Existing HumanIK character name.
+        mel_module: Optional Maya ``mel`` compatible module for tests.
+
+    Returns:
+        ``True`` when the character is absent after deletion.
+
+    Raises:
+        ValueError: If ``character`` is empty.
+        RuntimeError: If Maya readback still contains the character.
+    """
+    if not character:
+        raise ValueError("character is required")
+    mel = mel_module or _maya_mel()
+    ensure_humanik_mel_loaded(mel)
+    mel.eval(f"hikDeleteCharacter({_mel_string(character)});")
+    remaining = _scene_humanik_characters(mel)
+    if remaining is None:
+        raise RuntimeError("HumanIK character scene readback is unavailable")
+    if str(character) in remaining:
+        raise RuntimeError(f"HumanIK character was not deleted: {character}")
+    return True
+
+
 def _maya_cmds():
     from maya import cmds
 
@@ -280,6 +373,18 @@ def _mel_string(value: str) -> str:
 
 def _has_hik_procs(mel) -> bool:
     return all(_mel_exists(mel, proc) for proc in _REQUIRED_HIK_PROCS)
+
+
+def _scene_humanik_characters(mel):
+    raw = mel.eval("hikGetSceneCharacters()")
+    if raw is None:
+        return None
+    if isinstance(raw, (tuple, list)):
+        return {str(value) for value in raw}
+    text = str(raw).strip()
+    if not text:
+        return set()
+    return {value.strip().strip('"') for value in text.replace(";", " ").split() if value.strip()}
 
 
 def _mel_exists(mel, proc: str) -> bool:

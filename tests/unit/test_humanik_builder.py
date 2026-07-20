@@ -9,8 +9,11 @@ from mmd_tools.core.humanik_builder import (
     collect_humanik_joint_candidates,
     create_humanik_definition,
     create_humanik_definition_from_scene,
+    create_humanik_control_rig,
+    delete_humanik_character,
     ensure_humanik_mel_loaded,
     get_humanik_definition_lock_state,
+    HumanIkCharacterCreationError,
     lock_humanik_definition,
     resolve_scene_humanik_assignments,
 )
@@ -76,6 +79,7 @@ class FakeMel:
         self.loaded = False
         self.has_control_rig = False
         self.locked = False
+        self.scene_characters = set()
 
     def eval(self, command):
         self.commands.append(command)
@@ -85,7 +89,13 @@ class FakeMel:
             self.loaded = True
             return None
         if command.startswith("hikCreateCharacter("):
+            self.scene_characters.add("Character1")
             return "Character1"
+        if command.startswith("hikDeleteCharacter("):
+            self.scene_characters.discard("Character1")
+            return None
+        if command.startswith("hikGetSceneCharacters"):
+            return sorted(self.scene_characters)
         if command == "hikCreateControlRig();":
             self.has_control_rig = True
             return None
@@ -188,6 +198,64 @@ class TestHumanIkBuilder(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "control rig was not created"):
             create_humanik_definition(result, mel_module=mel, create_control_rig=True)
 
+    def test_create_humanik_definition_cleans_up_after_assignment_failure(self):
+        result = resolve_scene_humanik_assignments("|model", FakeCmds())
+        mel = _AssignmentFailureMel()
+
+        with self.assertRaises(HumanIkCharacterCreationError) as context:
+            create_humanik_definition(result, mel_module=mel)
+
+        error = context.exception
+        self.assertEqual(error.character, "Character1")
+        self.assertIsInstance(error.creation_error, RuntimeError)
+        self.assertIsNone(error.cleanup_error)
+        self.assertNotIn("Character1", mel.scene_characters)
+        self.assertIn("cleanup succeeded", str(error))
+
+    def test_create_humanik_definition_retains_character_when_cleanup_fails(self):
+        result = resolve_scene_humanik_assignments("|model", FakeCmds())
+        mel = _AssignmentAndCleanupFailureMel()
+
+        with self.assertRaises(HumanIkCharacterCreationError) as context:
+            create_humanik_definition(result, mel_module=mel)
+
+        error = context.exception
+        self.assertEqual(error.character, "Character1")
+        self.assertIsInstance(error.creation_error, RuntimeError)
+        self.assertIsInstance(error.cleanup_error, RuntimeError)
+        self.assertIn("cleanup failed", str(error))
+        self.assertIn("Character1", mel.scene_characters)
+
+    def test_create_humanik_control_rig_uses_current_character_and_verifies(self):
+        mel = FakeMel()
+
+        self.assertTrue(create_humanik_control_rig("Character1", mel_module=mel))
+        self.assertIn('hikSetCurrentCharacter("Character1");', mel.commands)
+        self.assertIn("hikCreateControlRig();", mel.commands)
+        self.assertIn('hikHasControlRig("Character1")', mel.commands)
+
+    def test_delete_humanik_character_verifies_scene_readback(self):
+        mel = FakeMel()
+        mel.scene_characters.add("Character1")
+
+        self.assertTrue(delete_humanik_character("Character1", mel_module=mel))
+        self.assertIn('hikDeleteCharacter("Character1");', mel.commands)
+        self.assertNotIn("Character1", mel.scene_characters)
+
+    def test_delete_humanik_character_rejects_readback_failure(self):
+        class BrokenDeleteMel(FakeMel):
+            def eval(self, command):
+                if command.startswith("hikDeleteCharacter("):
+                    self.commands.append(command)
+                    return None
+                return super().eval(command)
+
+        mel = BrokenDeleteMel()
+        mel.scene_characters.add("Character1")
+
+        with self.assertRaisesRegex(RuntimeError, "was not deleted"):
+            delete_humanik_character("Character1", mel_module=mel)
+
     def test_ensure_humanik_mel_loaded_skips_source_when_available(self):
         mel = FakeMel()
         mel.loaded = True
@@ -220,6 +288,22 @@ class _EmptySceneCmds(FakeCmds):
         super().__init__()
         self.types["|missing"] = "transform"
         self.children["|missing"] = []
+
+
+class _AssignmentFailureMel(FakeMel):
+    def eval(self, command):
+        if command.startswith("hikSetCharacterObject("):
+            self.commands.append(command)
+            raise RuntimeError("assignment failed")
+        return super().eval(command)
+
+
+class _AssignmentAndCleanupFailureMel(_AssignmentFailureMel):
+    def eval(self, command):
+        if command.startswith("hikDeleteCharacter("):
+            self.commands.append(command)
+            raise RuntimeError("cleanup failed")
+        return super().eval(command)
 
 
 class _NoControlRigMel(FakeMel):
