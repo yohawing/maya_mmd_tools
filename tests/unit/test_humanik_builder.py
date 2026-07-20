@@ -81,6 +81,7 @@ class FakeMel:
         self.locked = False
         self.scene_characters = set()
         self.characterization_status = None
+        self.hik_ui_initialized = False
 
     def eval(self, command):
         self.commands.append(command)
@@ -94,6 +95,15 @@ class FakeMel:
             return "Character1"
         if command.startswith("hikDeleteCharacter("):
             self.scene_characters.discard("Character1")
+            return None
+        if command == "about -batch":
+            return 0
+        if command == "control -exists hikContextualTabs":
+            return int(self.hik_ui_initialized)
+        if command == "HIKCharacterControlsTool;":
+            self.hik_ui_initialized = True
+            return None
+        if command == "hikOnSwitchContextualTabs;":
             return None
         if command.startswith("hikGetSceneCharacters"):
             return sorted(self.scene_characters)
@@ -262,9 +272,51 @@ class TestHumanIkBuilder(unittest.TestCase):
         mel = FakeMel()
 
         self.assertTrue(create_humanik_control_rig("Character1", mel_module=mel))
+        self.assertLess(mel.commands.index("HIKCharacterControlsTool;"), mel.commands.index('hikSetCurrentCharacter("Character1");'))
         self.assertIn('hikSetCurrentCharacter("Character1");', mel.commands)
         self.assertIn("hikCreateControlRig();", mel.commands)
+        self.assertIn("hikOnSwitchContextualTabs;", mel.commands)
         self.assertIn('hikHasControlRig("Character1")', mel.commands)
+
+    def test_create_humanik_control_rig_preserves_existing_hik_ui_state(self):
+        mel = FakeMel()
+        mel.hik_ui_initialized = True
+
+        self.assertTrue(create_humanik_control_rig("Character1", mel_module=mel))
+
+        self.assertNotIn("about -batch", mel.commands)
+        self.assertNotIn("HIKCharacterControlsTool;", mel.commands)
+
+    def test_create_humanik_control_rig_rejects_batch_without_hik_ui(self):
+        class HeadlessMel(FakeMel):
+            def eval(self, command):
+                if command == "about -batch":
+                    self.commands.append(command)
+                    return 1
+                return super().eval(command)
+
+        mel = HeadlessMel()
+
+        with self.assertRaisesRegex(RuntimeError, "interactive Maya Character Controls UI"):
+            create_humanik_control_rig("Character1", mel_module=mel)
+
+        self.assertNotIn("HIKCharacterControlsTool;", mel.commands)
+        self.assertNotIn("hikCreateControlRig();", mel.commands)
+
+    def test_create_humanik_control_rig_rejects_ui_init_without_contextual_tabs(self):
+        class NoOpHikUiMel(FakeMel):
+            def eval(self, command):
+                if command == "HIKCharacterControlsTool;":
+                    self.commands.append(command)
+                    return None
+                return super().eval(command)
+
+        mel = NoOpHikUiMel()
+
+        with self.assertRaisesRegex(RuntimeError, "UI is unavailable"):
+            create_humanik_control_rig("Character1", mel_module=mel)
+
+        self.assertNotIn("hikCreateControlRig();", mel.commands)
 
     def test_delete_humanik_character_verifies_scene_readback(self):
         mel = FakeMel()

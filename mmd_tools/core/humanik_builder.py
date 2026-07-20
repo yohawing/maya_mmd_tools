@@ -1,8 +1,9 @@
 """Prepare Maya HumanIK assignments from imported MMD skeleton joints.
 
 The functions here keep collection, definition creation, and lock verification
-small and testable.  The Maya operations are driven through MEL without
-requiring any HumanIK UI controls.
+small and testable.  Definition-only operations are UI independent; Control
+Rig creation follows Maya's supported Character Controls runtime sequence and
+therefore requires an interactive HumanIK UI.
 """
 
 from __future__ import annotations
@@ -48,6 +49,7 @@ _REQUIRED_HIK_PROCS = (
     "hikGetSceneCharacters",
 )
 _VALID_CHARACTERIZATION_STATES = frozenset({0, 2, 4})
+_HIK_CONTROL_RIG_UI_INIT_COMMAND = "HIKCharacterControlsTool;"
 
 
 class HumanIkCharacterCreationError(RuntimeError):
@@ -122,6 +124,9 @@ def build_humanik_definition_mel_commands(
     ]
     commands.append(f'hikSetCurrentCharacter({_mel_string(character)});')
     if create_control_rig:
+        # This lower-level definition path remains UI independent for existing
+        # mayapy/batch callers.  The user-facing Control Rig action uses
+        # create_humanik_control_rig(), which initializes Character Controls.
         commands.append("hikCreateControlRig();")
     if update_ui:
         commands.append("hikUpdateCharacterControlsUI(false);")
@@ -352,17 +357,73 @@ def create_humanik_control_rig(character: str, mel_module=None) -> bool:
 
     Raises:
         ValueError: If ``character`` is empty.
-        RuntimeError: If Maya does not report a control rig after creation.
+        RuntimeError: If the interactive Character Controls UI is unavailable
+            or Maya does not report a control rig after creation.
     """
     if not character:
         raise ValueError("character is required")
     mel = mel_module or _maya_mel()
     ensure_humanik_mel_loaded(mel)
+    _initialize_humanik_control_rig_ui(mel)
     mel.eval(f"hikSetCurrentCharacter({_mel_string(character)});")
     mel.eval("hikCreateControlRig();")
+    mel.eval("hikOnSwitchContextualTabs;")
     if not bool(mel.eval(f"hikHasControlRig({_mel_string(character)})")):
         raise RuntimeError(f"HumanIK control rig was not created: {character}")
     return True
+
+
+def _initialize_humanik_control_rig_ui(mel) -> None:
+    """Initialize the Character Controls UI required by ``hikCreateControlRig``.
+
+    Maya 2026's ``hikCreateControlRig`` unconditionally updates the
+    ``hikContextualTabs`` tab layout.  The supported runtime command creates
+    that UI first, but it is a no-op in mayapy/batch mode.  Detect batch mode
+    before invoking it and verify the tab layout afterwards so callers never
+    reach a misleading missing-control MEL error.
+    """
+    if _humanik_control_rig_ui_exists(mel):
+        return
+    if _mel_truthy(_mel_eval_optional(mel, "about -batch")):
+        raise RuntimeError(
+            "HumanIK Control Rig requires an interactive Maya Character Controls UI; "
+            "run this operation from the Maya GUI."
+        )
+    try:
+        mel.eval(_HIK_CONTROL_RIG_UI_INIT_COMMAND)
+    except Exception as exc:
+        raise RuntimeError(
+            "HumanIK Character Controls UI could not be initialized; "
+            "open HIKCharacterControlsTool in the Maya GUI and retry."
+        ) from exc
+    if not _humanik_control_rig_ui_exists(mel):
+        raise RuntimeError(
+            "HumanIK Character Controls UI is unavailable; "
+            "open HIKCharacterControlsTool in the Maya GUI and retry."
+        )
+
+
+def _humanik_control_rig_ui_exists(mel) -> bool:
+    """Return whether Maya's contextual tab layout has been built."""
+    try:
+        return _mel_truthy(mel.eval("control -exists hikContextualTabs"))
+    except Exception:
+        return False
+
+
+def _mel_eval_optional(mel, command):
+    """Evaluate a best-effort MEL query without making test doubles fragile."""
+    try:
+        return mel.eval(command)
+    except Exception:
+        return None
+
+
+def _mel_truthy(value) -> bool:
+    """Interpret Maya MEL booleans and integer query results consistently."""
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes"}
+    return bool(value)
 
 
 def delete_humanik_character(character: str, mel_module=None) -> bool:
