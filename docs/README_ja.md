@@ -102,14 +102,14 @@ C:\Users\<ユーザー名>\Documents\maya\modules\maya_mmd_tools.mod
 
 ### メニューで確認
 
-Mayaのメニューバーに `MMD > MMD Tools` が追加されていることを確認します。
+Mayaのメニューバーに `MMD > MMD Editor` が追加されていることを確認します。
 
 ## クイックスタート
 
-### MMD Tools UIを開く
+### MMD Editorを開く
 
-1. `MMD > MMD Tools` を選択します。
-2. MMD Tools UIウィンドウが開きます。
+1. `MMD > MMD Editor` を選択します。
+2. MMD Editorウィンドウが開きます。
 3. 各タブで設定を確認・調整できます。
 
 ※PmxEditor準拠のUI項目になります。現状は未実装項目が多く基本プレビュー専用と捉えてください。

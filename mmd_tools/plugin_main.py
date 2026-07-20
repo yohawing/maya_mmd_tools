@@ -213,18 +213,18 @@ def _reset_humanik_menu_session():
 def install_mmd_menu():
     """Install the MMD menu in Maya."""
     if not cmds.menu("MMD", exists=True):
-        cmds.menu("MMD", label="MMD Tools", parent="MayaWindow", tearOff=True)
+        cmds.menu("MMD", label="MMD", parent="MayaWindow", tearOff=True)
     else:
-        cmds.menu("MMD", edit=True, label="MMD Tools")
+        cmds.menu("MMD", edit=True, label="MMD")
 
-    _LABELS = ("MMD Tools", "Repair Texture Paths", "Animator Toolset")
+    _LABELS = ("MMD Tools", "MMD Editor", "Repair Texture Paths", "Animator Toolset")
     for item in cmds.menu("MMD", query=True, itemArray=True) or []:
         if cmds.menuItem(item, query=True, label=True) in _LABELS:
             cmds.deleteUI(item)
 
     cmds.menuItem(
         "MMDToolsMenuItem",
-        label="MMD Tools",
+        label="MMD Editor",
         command=lambda *args: open_main_window(dockable=False),
         parent="MMD",
     )

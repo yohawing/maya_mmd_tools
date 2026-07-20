@@ -234,7 +234,7 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         self.assertIn(
             unittest.mock.call(
                 "MMD",
-                label="MMD Tools",
+                label="MMD",
                 parent="MayaWindow",
                 tearOff=True,
             ),
@@ -244,6 +244,30 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             parent="MMD",
             cmds_module=self.plugin_main.cmds,
             callback_dispatcher=self.plugin_main._dispatch_humanik_action,
+        )
+
+    def test_install_menu_replaces_legacy_main_window_item(self):
+        self.plugin_main.cmds.menu.side_effect = lambda *_args, **kwargs: (
+            False if kwargs.get("exists") else ["MMDToolsMenuItem"] if kwargs.get("query") else "MMD"
+        )
+        self.plugin_main.cmds.menuItem.side_effect = lambda item, **kwargs: (
+            "MMD Tools" if kwargs.get("query") and kwargs.get("label") else item
+        )
+
+        with unittest.mock.patch(
+            "mmd_tools.ui.humanik_menu_actions.install_humanik_menu"
+        ):
+            self.plugin_main.install_mmd_menu()
+
+        self.plugin_main.cmds.deleteUI.assert_called_once_with("MMDToolsMenuItem")
+        self.assertIn(
+            unittest.mock.call(
+                "MMDToolsMenuItem",
+                label="MMD Editor",
+                command=unittest.mock.ANY,
+                parent="MMD",
+            ),
+            self.plugin_main.cmds.menuItem.call_args_list,
         )
 
     def test_humanik_action_dispatch_is_lazy(self):

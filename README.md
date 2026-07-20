@@ -103,14 +103,14 @@ C:\Users\<User Name>\Documents\maya\modules\maya_mmd_tools.mod
 
 ### Check the Menu
 
-Confirm that `MMD > MMD Tools` appears in Maya's menu bar.
+Confirm that `MMD > MMD Editor` appears in Maya's menu bar.
 
 ## Quick Start
 
-### Open the MMD Tools UI
+### Open MMD Editor
 
-1. Select `MMD > MMD Tools`.
-2. The MMD Tools UI opens.
+1. Select `MMD > MMD Editor`.
+2. The MMD Editor window opens.
 3. You can inspect and adjust settings in each tab.
 
 The UI fields follow PMX Editor conventions. Many fields are not yet implemented, so the tool should currently be considered primarily a preview tool.
