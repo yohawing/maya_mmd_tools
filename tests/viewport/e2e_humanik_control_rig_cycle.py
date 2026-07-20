@@ -42,6 +42,24 @@ last two exercise the transactional fix (Transaction candidate A from
   the pre-characterize baseline. Any assertion failure here is recorded as a
   script error (not just a "found a cycle" finding), because the fix is
   expected to make this path cycle-free.
+* ``standard_ui_adoption`` (fix, gates ``status``) -- characterizes through
+  the mmd_tools frontend, then creates the Control Rig via RAW MEL
+  (``hikSetCurrentCharacter`` + ``hikCreateControlRig()``), simulating Maya's
+  standard HumanIK UI (Character Controls -> Create Control Rig) rather than
+  ``session.create_control_rig()``. This is the ``HUMANIK-CONTROL-RIG-CYCLE-1``
+  part 2 gap: mmd_tools has no code in that call stack to isolate writers
+  proactively. After pumping idle events (``cmds.refresh()`` +
+  ``maya.utils.processIdleEvents()``) so the ``humanik_control_rig_watch``
+  node-added callback's ``evalDeferred`` handler runs, asserts the watch
+  adopted the rig (``humanik_control_rig.get_active_control_rig_transaction``
+  is populated, no control-rig-related DG cycle remains, no
+  ``mute_for_hik`` writer remains connected), then that
+  ``session.restore_mmd_rig()`` tears the adopted transaction down through
+  the shared module-level registry (this session's own
+  ``_control_rig_transactions`` dict never saw this rig -- only
+  ``create_control_rig()`` populates that -- so a successful restore here is
+  itself evidence the registry hand-off works) and restores writer topology
+  to the pre-characterize baseline.
 
 For each stage (post-characterize, post-control-rig, post-each-effector-move)
 the script captures:
@@ -117,6 +135,7 @@ def run_e2e_check(log_path: str, model_path: str, report_path: str) -> None:
         "effectorsMoved": [],
         "errors": [],
         "transactionStagePassed": False,
+        "standardUiAdoptionStagePassed": False,
     }
 
     def _write_report() -> None:
@@ -139,13 +158,17 @@ def run_e2e_check(log_path: str, model_path: str, report_path: str) -> None:
             classify_humanik_constraints,
             collect_humanik_constraint_facts,
         )
-        from mmd_tools.core.humanik_control_rig import new_cycle_plugs
+        from mmd_tools.core.humanik_control_rig import (
+            get_active_control_rig_transaction,
+            new_cycle_plugs,
+        )
         from mmd_tools.core.humanik_frontend import HumanIkFrontendSession
         from mmd_tools.core.humanik_preview import _disconnect_reviewed_writers
         from mmd_tools.core.humanik_retarget import (
             collect_humanik_incoming_writer_census,
             diff_humanik_connections,
         )
+        from mmd_tools.ui import humanik_menu_actions
 
         plugin_path = _PROJECT_ROOT / "mmd_tools" / "plugin_main.py"
         if not cmds.pluginInfo(plugin_path.stem, query=True, loaded=True):
@@ -579,6 +602,212 @@ def run_e2e_check(log_path: str, model_path: str, report_path: str) -> None:
 
             return stage_report
 
+        def _pump_idle_events() -> None:
+            """Flush Maya's idle queue so ``executeDeferred``/``scriptJob(idle)``
+            callbacks scheduled by ``humanik_control_rig_watch`` actually run.
+
+            An automated commandPort session with no real OS input focus never
+            reaches a genuine idle tick on its own (verified empirically: a
+            deferred job scheduled via ``maya.utils.executeDeferred`` after
+            ``hikCreateControlRig()`` in this harness did not fire even after
+            several real-wall-clock seconds and ``maya.utils.processIdleEvents()``
+            calls). ``cmds.flushIdleQueue()`` is the mechanism that reliably
+            drains it here -- ``processIdleEvents()`` alone was not enough in
+            this environment. In normal interactive use this pump is
+            unnecessary: mouse movement and UI interaction generate idle ticks
+            naturally, so ``humanik_control_rig_watch`` never needs
+            ``flushIdleQueue()`` itself.
+            """
+            try:
+                import maya.utils as maya_utils
+            except Exception as exc:
+                _log(f"WARN maya.utils unavailable for idle pump: {exc}")
+                maya_utils = None
+            for _ in range(6):
+                try:
+                    cmds.refresh()
+                except Exception:
+                    pass
+                if maya_utils is not None:
+                    try:
+                        maya_utils.processIdleEvents()
+                    except Exception as exc:
+                        _log(f"WARN processIdleEvents failed: {exc}")
+                try:
+                    cmds.flushIdleQueue()
+                except Exception as exc:
+                    _log(f"WARN flushIdleQueue failed: {exc}")
+
+        def _pump_idle_events_until(predicate, *, max_attempts: int = 20) -> bool:
+            """Repeat :func:`_pump_idle_events` until ``predicate()`` is true.
+
+            A single ``_pump_idle_events`` pass drains whatever is queued at
+            call time, but a busy session (this script runs several
+            characterize/control-rig stages before ``standard_ui_adoption``)
+            can have a deep backlog of unrelated deferred jobs queued by
+            earlier stages' own Control Rig creations -- each firing a
+            ``humanik_control_rig_watch`` node-added event of its own -- ahead
+            of the one this stage cares about, and firing one deferred job
+            can itself schedule another. Looping with a bounded attempt count
+            (rather than a fixed pass count) is the robust way to wait for a
+            specific outcome without guessing how deep that backlog is.
+            """
+            for attempt in range(max_attempts):
+                if predicate():
+                    return True
+                _pump_idle_events()
+            return bool(predicate())
+
+        def _run_standard_ui_adoption_stage() -> dict:
+            """Exercise Control Rig creation via Maya's standard HumanIK UI.
+
+            Characterizes through the mmd_tools frontend (installed as the
+            module-level session via ``humanik_menu_actions.set_humanik_session``
+            so ``humanik_control_rig_watch`` can resolve a binding for it, the
+            same way it would from the real MMD > HumanIK menu), then creates
+            the Control Rig with RAW MEL (``hikSetCurrentCharacter`` +
+            ``hikCreateControlRig()``) instead of
+            ``session.create_control_rig()`` -- simulating a user driving
+            Character Controls directly. Every assertion below raises
+            (recorded as a script error, not a mere finding): this path is
+            expected to be adopted and made cycle-free by the watch, not just
+            diagnosable.
+            """
+            mode = "standard_ui_adoption"
+            stage_report = {"mode": mode, "legacy": False}
+            _log(f"--- stage: {mode} ---")
+            model_root = _import_model()
+            stage_report["modelRoot"] = model_root
+            result = resolve_scene_humanik_assignments(model_root, cmds_module=cmds)
+            if not result.assignments:
+                raise RuntimeError(f"[{mode}] no HumanIK assignments resolved for {model_root}")
+
+            before_snapshot, before_census = _snapshot(result.assignments)
+            stage_report["writerCensusBefore"] = before_census
+            pre_finding = _cycle_state(f"{mode}:pre-characterize")
+            baseline_bucket = _bucket_cycle_plugs(pre_finding["cyclePlugs"])
+            stage_report["cycleBaseline"] = {
+                "count": len(pre_finding["cyclePlugs"]),
+                **baseline_bucket,
+            }
+
+            session = HumanIkFrontendSession(cmds_module=cmds, mel_module=mel)
+            humanik_menu_actions.set_humanik_session(session)
+            binding = session.setup_and_characterize(model_root)
+            character = binding.character
+            stage_report["character"] = character
+            _cycle_state(f"{mode}:post-characterize")
+
+            if get_active_control_rig_transaction(character) is not None:
+                raise RuntimeError(
+                    f"[{mode}] unexpected pre-existing control rig transaction for {character}"
+                )
+
+            # Simulate Maya's standard HumanIK UI: raw MEL, deliberately NOT
+            # session.create_control_rig().
+            mel.eval(f'hikSetCurrentCharacter("{character}");')
+            mel.eval("hikCreateControlRig();")
+
+            if not bool(mel.eval(f'hikHasControlRig("{character}")')):
+                raise RuntimeError(f"[{mode}] hikCreateControlRig did not create a control rig")
+
+            _pump_idle_events_until(
+                lambda: get_active_control_rig_transaction(character) is not None
+            )
+            transaction = get_active_control_rig_transaction(character)
+            stage_report["adopted"] = transaction is not None
+            if transaction is None:
+                raise RuntimeError(
+                    f"[{mode}] humanik_control_rig_watch did not adopt the standard-UI "
+                    f"control rig for {character}"
+                )
+
+            post_adopt_finding = _cycle_state(f"{mode}:post-adoption")
+            post_adopt_bucket = _bucket_cycle_plugs(post_adopt_finding["cyclePlugs"])
+            stage_report["cyclePostAdoption"] = {
+                "count": len(post_adopt_finding["cyclePlugs"]),
+                **post_adopt_bucket,
+            }
+            if post_adopt_bucket["controlRigRelated"]:
+                raise RuntimeError(
+                    f"[{mode}] control-rig-related DG cycle remains after adoption: "
+                    f"{post_adopt_bucket['controlRigRelated']}"
+                )
+
+            hik_joint_set = {str(assignment.joint) for assignment in binding.assignments}
+            facts = collect_humanik_constraint_facts(cmds_module=cmds)
+            ownership_report = classify_humanik_constraints(facts, hik_joint_set)
+            mute_rows = [
+                row for row in ownership_report["rows"]
+                if row.get("classification") == "mute_for_hik"
+            ]
+            stage_report["residualMuteForHikNodes"] = sorted(row["node"] for row in mute_rows)
+            if mute_rows:
+                raise RuntimeError(
+                    f"[{mode}] mute_for_hik writer(s) remain connected after adoption: "
+                    f"{stage_report['residualMuteForHikNodes']}"
+                )
+
+            # Best-effort warning evidence: humanik_control_rig_watch logs via
+            # both the project logger and cmds.warning; the latter lands in
+            # script editor history the same way cycle warnings are captured
+            # below. Not asserted (headless script editor history capture is
+            # not guaranteed reliable across Maya builds), only recorded.
+            try:
+                history_text = (
+                    script_history_path.read_text(encoding="utf-8", errors="replace")
+                    if script_history_path.exists()
+                    else ""
+                )
+            except Exception:
+                history_text = ""
+            stage_report["adoptionWarningInScriptHistory"] = "adopted a HumanIK Control Rig" in history_text
+            if not stage_report["adoptionWarningInScriptHistory"]:
+                _log(f"[{mode}] WARN: adoption warning text not found in script editor history")
+
+            restored = session.restore_mmd_rig()
+            stage_report["restoreMmdRigReturned"] = bool(restored)
+            if bool(mel.eval(f'hikHasControlRig("{character}")')):
+                raise RuntimeError(
+                    f"[{mode}] control rig still present after restore_mmd_rig: {character}"
+                )
+            if get_active_control_rig_transaction(character) is not None:
+                raise RuntimeError(
+                    f"[{mode}] registry still reports an active transaction after "
+                    f"restore_mmd_rig: {character}"
+                )
+
+            after_restore_snapshot, after_restore_census = _snapshot(binding.assignments)
+            stage_report["writerCensusAfterRestore"] = after_restore_census
+            stage_report["diffRestoreVsBaseline"] = diff_humanik_connections(
+                before_snapshot, after_restore_snapshot
+            )
+            if stage_report["diffRestoreVsBaseline"]:
+                raise RuntimeError(
+                    f"[{mode}] writer topology after restore_mmd_rig does not match the "
+                    f"pre-characterize baseline: {stage_report['diffRestoreVsBaseline']}"
+                )
+
+            post_restore_finding = _cycle_state(f"{mode}:post-restore")
+            post_restore_bucket = _bucket_cycle_plugs(post_restore_finding["cyclePlugs"])
+            stage_report["cyclePostRestore"] = {
+                "count": len(post_restore_finding["cyclePlugs"]),
+                **post_restore_bucket,
+            }
+            regressed = new_cycle_plugs(
+                baseline_bucket["controlRigRelated"], post_restore_bucket["controlRigRelated"]
+            )
+            if regressed or sorted(post_restore_bucket["controlRigRelated"]) != sorted(
+                baseline_bucket["controlRigRelated"]
+            ):
+                raise RuntimeError(
+                    f"[{mode}] cycle state after restore_mmd_rig does not match the "
+                    f"pre-characterize baseline: {post_restore_bucket['controlRigRelated']} "
+                    f"vs baseline {baseline_bucket['controlRigRelated']}"
+                )
+
+            return stage_report
+
         for mode in ("frontend", "raw_mel"):
             try:
                 stage = _run_stage(mode)
@@ -604,6 +833,16 @@ def run_e2e_check(log_path: str, model_path: str, report_path: str) -> None:
             _log(f"EXCEPTION in stage transaction_frontend:\n{traceback.format_exc()}")
         report["transactionStagePassed"] = transaction_stage_passed
 
+        standard_ui_adoption_stage_passed = False
+        try:
+            stage = _run_standard_ui_adoption_stage()
+            report["stages"].append(stage)
+            standard_ui_adoption_stage_passed = True
+        except Exception:
+            report["errors"].append(f"[standard_ui_adoption] {traceback.format_exc()}")
+            _log(f"EXCEPTION in stage standard_ui_adoption:\n{traceback.format_exc()}")
+        report["standardUiAdoptionStagePassed"] = standard_ui_adoption_stage_passed
+
         try:
             cmds.scriptEditorInfo(writeHistory=False)
         except Exception:
@@ -628,7 +867,7 @@ def run_e2e_check(log_path: str, model_path: str, report_path: str) -> None:
         # evidence/diagnostics and no longer alone determines pass/fail.
         if report["errors"]:
             report["status"] = "error"
-        elif report["transactionStagePassed"]:
+        elif report["transactionStagePassed"] and report["standardUiAdoptionStagePassed"]:
             report["status"] = "pass"
         elif report["cycleFindings"]:
             report["status"] = "stop"
@@ -636,7 +875,18 @@ def run_e2e_check(log_path: str, model_path: str, report_path: str) -> None:
             report["status"] = "pass"
 
         _write_report()
-        _log(f"RESULT_JSON: {json.dumps({'status': report['status'], 'cycleFindingCount': len(report['cycleFindings']), 'errorCount': len(report['errors']), 'transactionStagePassed': report['transactionStagePassed']})}")
+        _log(
+            "RESULT_JSON: "
+            + json.dumps(
+                {
+                    "status": report["status"],
+                    "cycleFindingCount": len(report["cycleFindings"]),
+                    "errorCount": len(report["errors"]),
+                    "transactionStagePassed": report["transactionStagePassed"],
+                    "standardUiAdoptionStagePassed": report["standardUiAdoptionStagePassed"],
+                }
+            )
+        )
         _log(COMPLETION_MARKER)
 
     except Exception:

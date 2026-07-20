@@ -347,6 +347,31 @@ def _scene_file_is_being_read():
         return True
 
 
+def _register_humanik_control_rig_watch():
+    """Register the out-of-band HumanIK Control Rig detection/adoption watch.
+
+    Best-effort: ``humanik_control_rig_watch`` itself swallows and logs
+    ``OpenMaya`` failures (mayapy/batch hosts with no HumanIK UI simply never
+    fire the callback), so this never raises during plugin initialization.
+    """
+    try:
+        from mmd_tools.core import humanik_control_rig_watch
+
+        humanik_control_rig_watch.register_humanik_control_rig_watch()
+    except Exception:
+        pass
+
+
+def _deregister_humanik_control_rig_watch():
+    """Deregister the HumanIK Control Rig watch callback, if registered."""
+    try:
+        from mmd_tools.core import humanik_control_rig_watch
+
+        humanik_control_rig_watch.deregister_humanik_control_rig_watch()
+    except Exception:
+        pass
+
+
 def _register_after_open_callback():
     """Register one scene-open migration callback, tolerating host limitations."""
     global _after_open_callback_id
@@ -432,6 +457,7 @@ def initializePlugin(mobject):
         _trace_initialize_step("physics-solver:done")
         _physics_nodes_registered = True
         _register_after_open_callback()
+        _register_humanik_control_rig_watch()
         _trace_initialize_step("initialize:done")
     except Exception as e:
         _trace_initialize_step(f"initialize:error:{type(e).__name__}:{e}")
@@ -448,6 +474,7 @@ def uninitializePlugin(mobject):
     try:
         if not _reset_humanik_menu_session():
             raise RuntimeError("HumanIK session restore failed; plugin unload was aborted")
+        _deregister_humanik_control_rig_watch()
         _remove_after_open_callback()
         close_animator_toolset()
         close_main_window()

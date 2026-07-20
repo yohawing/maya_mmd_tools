@@ -38,7 +38,7 @@ HIK-caused regression.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Set
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from mmd_tools.core.humanik_builder import create_humanik_control_rig, ensure_humanik_mel_loaded
 from mmd_tools.core.humanik_constraints import (
@@ -91,6 +91,60 @@ class HumanIkControlRigTransaction:
             "postCyclePlugs": list(self.post_cycle_plugs),
             "active": self.active,
         }
+
+
+# Module-level registry of active Control Rig transactions, keyed by HIK
+# character name. ``begin_humanik_control_rig`` (plugin/frontend path) and
+# ``adopt_humanik_control_rig`` (out-of-band standard-UI path, see
+# ``humanik_control_rig_watch``) both register their transaction here so
+# either path can cheaply answer "does this character already have an
+# active, writer-isolated Control Rig transaction?" without needing to know
+# which path created it. ``stop_humanik_control_rig`` always unregisters.
+_ACTIVE_TRANSACTIONS_BY_CHARACTER: Dict[str, "HumanIkControlRigTransaction"] = {}
+
+
+def register_control_rig_transaction(
+    character: str, transaction: "HumanIkControlRigTransaction"
+) -> None:
+    """Record ``transaction`` as the active Control Rig transaction for ``character``."""
+    _ACTIVE_TRANSACTIONS_BY_CHARACTER[str(character)] = transaction
+
+
+def unregister_control_rig_transaction(character: str) -> None:
+    """Remove any registered Control Rig transaction for ``character``."""
+    _ACTIVE_TRANSACTIONS_BY_CHARACTER.pop(str(character), None)
+
+
+def get_active_control_rig_transaction(
+    character: str,
+) -> Optional["HumanIkControlRigTransaction"]:
+    """Return the active registered transaction for ``character``, or ``None``.
+
+    A registered-but-inactive transaction (already stopped) is pruned and
+    treated as absent.
+    """
+    transaction = _ACTIVE_TRANSACTIONS_BY_CHARACTER.get(str(character))
+    if transaction is not None and not transaction.active:
+        _ACTIVE_TRANSACTIONS_BY_CHARACTER.pop(str(character), None)
+        return None
+    return transaction
+
+
+def iter_active_control_rig_transactions() -> List["HumanIkControlRigTransaction"]:
+    """Return every currently active registered Control Rig transaction.
+
+    Used by ``HumanIkFrontendSession.restore_mmd_rig`` to sweep up
+    transactions adopted from Maya's standard HumanIK UI that no
+    ``HumanIkFrontendSession.create_control_rig()`` call ever created.
+    """
+    stale = [
+        character
+        for character, transaction in _ACTIVE_TRANSACTIONS_BY_CHARACTER.items()
+        if not transaction.active
+    ]
+    for character in stale:
+        _ACTIVE_TRANSACTIONS_BY_CHARACTER.pop(character, None)
+    return list(_ACTIVE_TRANSACTIONS_BY_CHARACTER.values())
 
 
 def detect_dg_cycles(cmds_module=None) -> List[str]:
@@ -243,7 +297,7 @@ def begin_humanik_control_rig(
             mel=mel,
         )
         raise
-    return HumanIkControlRigTransaction(
+    transaction = HumanIkControlRigTransaction(
         ownership_id=ownership_id,
         character=character,
         journal=journal,
@@ -253,6 +307,166 @@ def begin_humanik_control_rig(
         pre_cycle_baseline=pre_cycle_baseline,
         post_cycle_plugs=post_cycle_plugs,
     )
+    register_control_rig_transaction(character, transaction)
+    return transaction
+
+
+def adopt_humanik_control_rig(
+    ownership_id: str,
+    character: str,
+    hik_joints: Iterable[str],
+    cmds_module=None,
+    mel_module=None,
+) -> HumanIkControlRigTransaction:
+    """Retroactively isolate MMD writers around a Control Rig that already exists.
+
+    ``begin_humanik_control_rig`` isolates writers *before* calling
+    ``hikCreateControlRig()``, so the DG cycle never has a chance to form.
+    That ordering is unavailable when Maya's own standard HumanIK UI
+    (Character Controls -> Create Control Rig, or a raw ``hikCreateControlRig()``
+    MEL call) creates the rig: mmd_tools only learns about it after the fact,
+    via ``humanik_control_rig_watch``'s ``HIKState2SK`` node-added callback,
+    by which point Maya has already wired the cyclic connections.
+
+    This function is the ``begin_humanik_control_rig`` machinery minus the
+    creation step: journal the current writer state, isolate
+    ``mute_for_hik`` writers, re-scan for residual writers/blockers, and
+    cycle-gate against a baseline captured at adoption start (which, unlike
+    ``begin_humanik_control_rig``'s pre-creation baseline, may already
+    reflect the HIK-caused cycle -- isolating the writers is expected to
+    remove it, not merely avoid making it worse).
+
+    Failure policy deliberately differs from ``begin_humanik_control_rig``:
+    the Control Rig was created intentionally by the user through Maya's own
+    UI, so a failure here must NEVER delete it. Only the isolation attempt
+    (disconnected writer edges, journal) is rolled back; the rig itself, and
+    any DG cycle it still has, is left in place, and the caller is expected
+    to log/warn loudly and direct the user to the plugin menu's supported
+    Control Rig creation path.
+
+    Args:
+        ownership_id: Journal owner id, distinct from any other active
+            transaction's id (see ``begin_humanik_control_rig``).
+        character: The already characterized, locked HIK character that owns
+            the out-of-band Control Rig.
+        hik_joints: The character's HIK-assigned primary joints (long paths).
+        cmds_module: Optional Maya ``cmds`` compatible module for tests.
+        mel_module: Optional Maya ``mel`` compatible module for tests.
+
+    Returns:
+        The active :class:`HumanIkControlRigTransaction`, already registered
+        in the module-level registry (see ``register_control_rig_transaction``).
+
+    Raises:
+        RuntimeError: On a pre-existing blocker, a post-scan residual muted
+            writer, a post-scan blocker, or a new DG cycle relative to the
+            adoption-start baseline. The isolation attempt is rolled back
+            (writer edges reconnected, journal restored) before re-raising;
+            the Control Rig itself is never touched.
+    """
+    cmds = cmds_module or _maya_cmds()
+    mel = mel_module or _maya_mel()
+    ensure_humanik_mel_loaded(mel)
+    hik_joint_set = {str(joint) for joint in hik_joints}
+
+    ownership_report = classify_humanik_constraints(
+        collect_humanik_constraint_facts(cmds_module=cmds),
+        hik_joint_set,
+    )
+    blockers = [
+        row for row in ownership_report.get("rows", [])
+        if row.get("classification") in BLOCKING_CLASSIFICATIONS
+    ]
+    if blockers:
+        labels = ", ".join(f"{row['node']}:{row['classification']}" for row in blockers)
+        raise RuntimeError(
+            f"HumanIK Control Rig adoption blocked (rig left in place): {labels}"
+        )
+
+    mute_rows = [
+        row for row in ownership_report.get("rows", [])
+        if row.get("classification") == "mute_for_hik"
+    ]
+    retained_nodes = sorted(
+        row["node"] for row in ownership_report.get("rows", [])
+        if row.get("classification") == "keep_post"
+    )
+    destinations = sorted({plug for row in mute_rows for plug in row.get("writes", [])})
+    muted_nodes = sorted({row["node"] for row in mute_rows})
+
+    journal = capture_humanik_journal(
+        ownership_id,
+        character,
+        destinations,
+        muted_nodes,
+        cmds_module=cmds,
+        mel_module=mel,
+    )
+    disconnected: List[Dict[str, str]] = []
+    pre_cycle_baseline = detect_dg_cycles(cmds)
+    try:
+        disconnect_reviewed_writers(cmds, mute_rows, disconnected)
+        re_isolate_reviewed_edges(cmds, disconnected)
+
+        post_report = classify_humanik_constraints(
+            collect_humanik_constraint_facts(cmds_module=cmds),
+            hik_joint_set,
+        )
+        residual_muted_writers = [
+            row
+            for row in post_report["rows"]
+            if row["node"] in muted_nodes and row_hik_writes(row, hik_joint_set)
+        ]
+        if residual_muted_writers:
+            labels = ", ".join(
+                f"{row['node']}->{','.join(sorted(row_hik_writes(row, hik_joint_set)))}"
+                for row in sorted(residual_muted_writers, key=lambda item: item["node"])
+            )
+            disconnect_residual_muted_writers(cmds, residual_muted_writers, hik_joint_set)
+            raise RuntimeError(
+                "HumanIK Control Rig adoption post-scan found residual muted HIK writers: "
+                f"{labels}"
+            )
+        post_blockers = [
+            row for row in post_report["rows"]
+            if row["node"] not in muted_nodes
+            and row["classification"] in BLOCKING_CLASSIFICATIONS
+        ]
+        if post_blockers:
+            raise RuntimeError("HumanIK Control Rig adoption post-scan found blocker")
+
+        post_cycle_plugs = detect_dg_cycles(cmds)
+        regressed = new_cycle_plugs(pre_cycle_baseline, post_cycle_plugs)
+        if regressed:
+            raise RuntimeError(
+                "HumanIK Control Rig adoption still shows new DG cycles after isolation: "
+                f"{regressed}"
+            )
+    except Exception as error:
+        _rollback_isolation_only(
+            error,
+            journal=journal,
+            ownership_id=ownership_id,
+            cmds=cmds,
+            mel=mel,
+        )
+        raise
+    transaction = HumanIkControlRigTransaction(
+        ownership_id=ownership_id,
+        character=character,
+        journal=journal,
+        disconnected=sorted(disconnected, key=lambda row: (row["destination"], row["source"])),
+        retained_nodes=retained_nodes,
+        # Adoption starts after Maya already created the rig, so there is no
+        # pre-creation node snapshot to diff -- deletion relies solely on
+        # ``hikDeleteControlRig()`` (see ``_delete_control_rig``), not the
+        # node-diff fallback.
+        created_nodes=[],
+        pre_cycle_baseline=pre_cycle_baseline,
+        post_cycle_plugs=post_cycle_plugs,
+    )
+    register_control_rig_transaction(character, transaction)
+    return transaction
 
 
 def stop_humanik_control_rig(
@@ -282,6 +496,7 @@ def stop_humanik_control_rig(
         mel_module=mel,
     )
     transaction.active = False
+    unregister_control_rig_transaction(transaction.character)
 
 
 def _rollback(error, *, character, created_nodes, journal, ownership_id, cmds, mel) -> None:
@@ -310,6 +525,26 @@ def _rollback(error, *, character, created_nodes, journal, ownership_id, cmds, m
     except Exception as rollback_error:
         raise RuntimeError(
             "HumanIK Control Rig creation failed and journal rollback failed: "
+            f"failure={error}; rollback={rollback_error}"
+        ) from error
+
+
+def _rollback_isolation_only(error, *, journal, ownership_id, cmds, mel) -> None:
+    """Undo a failed adoption's writer isolation without touching the Control Rig.
+
+    Unlike ``_rollback`` (the plugin-path rollback, which also deletes any
+    control-rig nodes ``hikCreateControlRig`` created), adoption never owns
+    the rig's creation -- it was created by the user through Maya's own UI --
+    so a failed adoption must leave it exactly as found.
+    """
+    try:
+        restore_humanik_journal(
+            journal, ownership_id=ownership_id, cmds_module=cmds, mel_module=mel,
+        )
+    except Exception as rollback_error:
+        raise RuntimeError(
+            "HumanIK Control Rig adoption failed and journal rollback failed "
+            "(Control Rig left in place): "
             f"failure={error}; rollback={rollback_error}"
         ) from error
 

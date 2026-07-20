@@ -4,9 +4,12 @@ import unittest
 from unittest.mock import patch
 
 from mmd_tools.core.humanik_control_rig import (
+    adopt_humanik_control_rig,
     begin_humanik_control_rig,
+    get_active_control_rig_transaction,
     new_cycle_plugs,
     stop_humanik_control_rig,
+    unregister_control_rig_transaction,
 )
 
 
@@ -271,6 +274,146 @@ class TestBeginHumanIkControlRig(unittest.TestCase):
         self.assertEqual(cmds.connections["|hips.rotateX"], ["ik.outputRotateX"])
         self.assertEqual(mel.delete_calls, 1)
         self.assertFalse(transaction.active)
+
+
+class TestAdoptHumanIkControlRig(unittest.TestCase):
+    """``adopt_humanik_control_rig`` isolates writers around a rig mmd_tools
+    did not create itself (Maya's standard HumanIK UI path)."""
+
+    def tearDown(self):
+        # Adoption/begin_ register into a module-level registry; make sure a
+        # failure in one test can never leak into another.
+        unregister_control_rig_transaction("Character")
+
+    def test_blocker_rejects_before_any_mutation_and_does_not_register(self):
+        cmds, mel = FakeCmds(), FakeMel()
+        report = {"rows": [{"node": "physics", "classification": "physics_blocker", "writes": []}]}
+
+        with _patch_facts(), _patch_classify(report):
+            with self.assertRaisesRegex(RuntimeError, "adoption blocked"):
+                adopt_humanik_control_rig("owner:adopt", "Character", {"|hips"}, cmds, mel)
+
+        self.assertEqual(cmds.connections["|hips.rotateX"], ["ik.outputRotateX"])
+        self.assertEqual(cmds.disconnects, [])
+        self.assertIsNone(get_active_control_rig_transaction("Character"))
+
+    def test_isolates_writer_and_registers_transaction(self):
+        cmds, mel = FakeCmds(), FakeMel()
+
+        with _patch_facts(), _patch_classify(MUTE_REPORT, CLEAN_POST_REPORT):
+            transaction = adopt_humanik_control_rig(
+                "owner:adopt", "Character", {"|hips"}, cmds, mel
+            )
+
+        self.assertEqual(cmds.connections["|hips.rotateX"], [])
+        self.assertEqual(transaction.retained_nodes, ["twist"])
+        self.assertEqual(transaction.created_nodes, [])
+        self.assertTrue(transaction.active)
+        self.assertIs(get_active_control_rig_transaction("Character"), transaction)
+
+        stop_humanik_control_rig(transaction, cmds, mel)
+        self.assertIsNone(get_active_control_rig_transaction("Character"))
+        # stop_humanik_control_rig always restores the journal, but adoption
+        # never owned rig creation, so it must never call hikDeleteControlRig
+        # implicitly beyond the normal stop path -- and never bare-delete nodes.
+        self.assertEqual(cmds.connections["|hips.rotateX"], ["ik.outputRotateX"])
+        self.assertEqual(cmds.deleted, [])
+
+    def test_residual_muted_writer_restores_isolation_but_leaves_rig(self):
+        cmds, mel = FakeCmds(), FakeMel()
+        residual_report = {
+            "rows": [
+                {
+                    "node": "ik",
+                    "classification": "mute_for_hik",
+                    "writes": ["|left_foot.rotateX"],
+                    "writeHikJoints": ["|left_foot"],
+                },
+                {"node": "twist", "classification": "keep_post", "writes": ["|twist.rotateX"]},
+            ]
+        }
+        cmds.connections["|left_foot.rotateX"] = ["ik.outputRotateX", "third_party.outputRotateX"]
+
+        with _patch_facts(), _patch_classify(MUTE_REPORT, residual_report):
+            with self.assertRaisesRegex(RuntimeError, "residual muted HIK writers: ik->\\|left_foot"):
+                adopt_humanik_control_rig(
+                    "owner:adopt", "Character", {"|hips", "|left_foot"}, cmds, mel
+                )
+
+        # journal-covered writer restored (isolation attempt rolled back)...
+        self.assertEqual(cmds.connections["|hips.rotateX"], ["ik.outputRotateX"])
+        # ...residual writer explicitly disconnected before rollback (not journaled)
+        self.assertEqual(cmds.connections["|left_foot.rotateX"], ["third_party.outputRotateX"])
+        # ...and the rig itself (no created_nodes, no hikDeleteControlRig call
+        # for a failed adoption) is left completely untouched.
+        self.assertEqual(cmds.deleted, [])
+        self.assertEqual(mel.delete_calls, 0)
+        self.assertIsNone(get_active_control_rig_transaction("Character"))
+
+    def test_new_dg_cycle_restores_isolation_but_leaves_rig(self):
+        cmds, mel = FakeCmds(), FakeMel()
+        cmds.cycle_responses = [
+            ["HIKState2SK1.LeftLegT"],
+            ["HIKState2SK1.LeftLegT", "mmdPhysicsSolver1.outSolved"],
+        ]
+
+        with _patch_facts(), _patch_classify(MUTE_REPORT, CLEAN_POST_REPORT):
+            with self.assertRaisesRegex(RuntimeError, "new DG cycles"):
+                adopt_humanik_control_rig("owner:adopt", "Character", {"|hips"}, cmds, mel)
+
+        self.assertEqual(cmds.connections["|hips.rotateX"], ["ik.outputRotateX"])
+        self.assertEqual(cmds.deleted, [])
+        self.assertEqual(mel.delete_calls, 0)
+        self.assertIsNone(get_active_control_rig_transaction("Character"))
+
+
+class TestControlRigTransactionRegistry(unittest.TestCase):
+    """Registry dedupe between the plugin path and adoption path."""
+
+    def tearDown(self):
+        unregister_control_rig_transaction("Character")
+
+    def test_begin_registers_and_stop_unregisters(self):
+        cmds, mel = FakeCmds(), FakeMel()
+
+        def fake_create(character, mel_module=None):
+            mel.has_control_rig = True
+            return True
+
+        with _patch_facts(), _patch_classify(MUTE_REPORT, CLEAN_POST_REPORT), patch(
+            "mmd_tools.core.humanik_control_rig.create_humanik_control_rig",
+            side_effect=fake_create,
+        ):
+            transaction = begin_humanik_control_rig(
+                "owner:rig", "Character", {"|hips"}, cmds, mel
+            )
+
+        self.assertIs(get_active_control_rig_transaction("Character"), transaction)
+
+        stop_humanik_control_rig(transaction, cmds, mel)
+        self.assertIsNone(get_active_control_rig_transaction("Character"))
+
+    def test_adoption_skips_when_plugin_transaction_already_registered(self):
+        cmds, mel = FakeCmds(), FakeMel()
+
+        def fake_create(character, mel_module=None):
+            mel.has_control_rig = True
+            return True
+
+        with _patch_facts(), _patch_classify(MUTE_REPORT, CLEAN_POST_REPORT), patch(
+            "mmd_tools.core.humanik_control_rig.create_humanik_control_rig",
+            side_effect=fake_create,
+        ):
+            plugin_transaction = begin_humanik_control_rig(
+                "owner:rig", "Character", {"|hips"}, cmds, mel
+            )
+
+        # A caller (the watch module) checking the registry before adopting
+        # must see the plugin path's transaction and skip adoption entirely.
+        self.assertIs(get_active_control_rig_transaction("Character"), plugin_transaction)
+
+        stop_humanik_control_rig(plugin_transaction, cmds, mel)
+        self.assertIsNone(get_active_control_rig_transaction("Character"))
 
 
 if __name__ == "__main__":

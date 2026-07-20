@@ -72,8 +72,10 @@ class FakePreview:
 
 
 class FakeControlRigTransaction:
-    def __init__(self):
+    def __init__(self, ownership_id="owner:control-rig", character="Character_source"):
         self.active = True
+        self.ownership_id = ownership_id
+        self.character = character
 
 
 class FakeStance:
@@ -548,6 +550,69 @@ class TestHumanIkFrontend(unittest.TestCase):
         stop.assert_called_once()
         self.assertNotIn("|source", session._control_rig_transactions)
         self.assertFalse(binding.control_rig_created)
+
+    @patch("mmd_tools.core.humanik_frontend.stop_humanik_control_rig")
+    @patch("mmd_tools.core.humanik_frontend.iter_active_control_rig_transactions")
+    @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
+    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
+    def test_restore_mmd_rig_sweeps_adopted_transaction_not_in_own_dict(
+        self, resolve, create, lock, iter_transactions, stop
+    ):
+        """A Control Rig adopted from Maya's standard UI (never created via
+        ``create_control_rig``, so it is absent from ``_control_rig_transactions``)
+        must still be torn down by ``restore_mmd_rig`` because it is visible
+        through the module-level registry."""
+        session = _session()
+        binding = session.setup_and_characterize("|source")
+
+        adopted = FakeControlRigTransaction(
+            ownership_id="mmd-tools:adopted-control-rig:Character_source",
+            character="Character_source",
+        )
+
+        def deactivate(*_args, **_kwargs):
+            adopted.active = False
+
+        stop.side_effect = deactivate
+        iter_transactions.return_value = [adopted]
+
+        self.assertTrue(session.restore_mmd_rig())
+
+        stop.assert_called_once_with(adopted, cmds_module=session._cmds, mel_module=session._mel)
+        self.assertFalse(binding.control_rig_created)
+
+    @patch("mmd_tools.core.humanik_frontend.stop_humanik_control_rig")
+    @patch("mmd_tools.core.humanik_frontend.begin_humanik_control_rig")
+    @patch("mmd_tools.core.humanik_frontend.iter_active_control_rig_transactions")
+    @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
+    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
+    def test_restore_mmd_rig_does_not_double_restore_own_transaction(
+        self, resolve, create, lock, iter_transactions, begin, stop
+    ):
+        """The session's own transaction is also visible through the shared
+        module-level registry (``begin_humanik_control_rig`` registers into
+        it too); the registry sweep must dedupe by ownership id and not stop
+        it a second time."""
+        session = _session()
+        session.setup_and_characterize("|source")
+        own_transaction = FakeControlRigTransaction(
+            ownership_id="mmd-tools:frontend:control-rig:|source",
+            character="Character_source",
+        )
+        begin.return_value = own_transaction
+        session.create_control_rig("|source")
+
+        def deactivate(*_args, **_kwargs):
+            own_transaction.active = False
+
+        stop.side_effect = deactivate
+        iter_transactions.return_value = [own_transaction]
+
+        self.assertTrue(session.restore_mmd_rig())
+
+        stop.assert_called_once()
 
     def test_bake_failure_retains_active_preview_but_clears_inactive_preview(self):
         session = _session()
