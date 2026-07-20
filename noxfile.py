@@ -1820,7 +1820,7 @@ def humanik_roundtrip_smoke(session: nox.Session) -> None:
     modes = [requested_mode] if requested_mode else ["off", "serial", "parallel"]
     out_value = _option(args, "--out", str(ROOT / "build/reports/humanik_roundtrip_smoke.json"))
     passthrough: list[str] = []
-    value_options = {"--pmx", "--vmd", "--start", "--end", "--hik-profile"}
+    value_options = {"--pmx", "--vmd", "--start", "--end", "--hik-profile", "--characterization-stance"}
     path_options = {"--pmx", "--vmd", "--out"}
     i = 0
     while i < len(args):
