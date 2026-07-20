@@ -200,9 +200,7 @@ class TestNamespaceUtils(unittest.TestCase):
             mock_namespace.set.assert_not_called()
 
     @patch("maya.cmds.namespace")
-    @patch("maya.cmds.ls")
-    @patch("maya.cmds.delete")
-    def test_cleanup_namespace_force(self, mock_delete, mock_ls, mock_namespace):
+    def test_cleanup_namespace_force(self, mock_namespace):
         """強制削除モードのクリーンアップテスト"""
 
         # namespace関数の動作を設定
@@ -213,13 +211,13 @@ class TestNamespaceUtils(unittest.TestCase):
                 return None
 
         mock_namespace.side_effect = namespace_side_effect
-        mock_ls.return_value = ["TestNS:cube1", "TestNS:sphere1"]
-
         with patch.object(namespace_utils, "logger") as mock_logger:
             NamespaceUtils.cleanup_namespace("TestNS", force=True)
 
-        mock_delete.assert_called_once_with(["TestNS:cube1", "TestNS:sphere1"])
-        mock_namespace.assert_any_call(removeNamespace="TestNS", mergeNamespaceWithParent=False)
+        mock_namespace.assert_any_call(
+            removeNamespace="TestNS",
+            deleteNamespaceContent=True,
+        )
 
         # Cleanup detail is DEBUG, not INFO; force-delete warning remains.
         debug_messages = _message_templates(mock_logger.debug)
@@ -228,8 +226,7 @@ class TestNamespaceUtils(unittest.TestCase):
         self.assertNotIn("Cleaned up namespace: TestNS", info_messages)
 
     @patch("maya.cmds.namespace")
-    @patch("maya.cmds.ls")
-    def test_cleanup_namespace_merge(self, mock_ls, mock_namespace):
+    def test_cleanup_namespace_merge(self, mock_namespace):
         """マージモードのクリーンアップテスト"""
 
         # namespace関数の動作を設定
@@ -240,8 +237,6 @@ class TestNamespaceUtils(unittest.TestCase):
                 return None
 
         mock_namespace.side_effect = namespace_side_effect
-        mock_ls.return_value = ["TestNS:cube1"]
-
         with patch.object(namespace_utils, "logger") as mock_logger:
             NamespaceUtils.cleanup_namespace("TestNS", force=False)
 
