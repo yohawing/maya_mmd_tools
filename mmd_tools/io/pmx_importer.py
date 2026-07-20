@@ -7,6 +7,8 @@ import os
 import time
 from typing import Any, Callable, Dict, Optional
 
+from maya import cmds
+
 from mmd_tools.core import maya_name_utils
 from mmd_tools.core.exceptions import MMDImportException
 
@@ -28,6 +30,34 @@ from ..core.namespace_utils import NamespaceUtils
 
 # ロガーを取得
 logger = get_logger("mmd_tools.io.pmx_importer")
+
+
+def _validate_morph_runtime_requirements(morph_converter: Any, pmx_data: Any) -> None:
+    """Validate the morph node contract, including mixed-module sessions.
+
+    Maya keeps Python modules alive after a plug-in unload.  A test or a GUI
+    hot-reload can therefore leave ``pmx_importer`` from one source revision
+    holding a ``MorphConverter`` class from another.  Keep the check at the
+    importer boundary so that this transient state does not become the less
+    useful ``AttributeError`` seen during PMX import.
+    """
+    validator = getattr(morph_converter, "validate_runtime_requirements", None)
+    if callable(validator):
+        validator(pmx_data)
+        return
+
+    settings = getattr(morph_converter, "settings", {}) or {}
+    if not settings.get("import_morphs", True) or not getattr(pmx_data, "morphs", None):
+        return
+    if "mmdMorphController" not in (cmds.allNodeTypes() or []):
+        raise RuntimeError(
+            "Required node type 'mmdMorphController' is unavailable. "
+            "Load or reload the maya_mmd_tools plugin before importing a PMX with morphs."
+        )
+    logger.warning(
+        "Using compatibility morph preflight for a stale MorphConverter class; "
+        "reload mmd_tools modules before the next test run"
+    )
 
 
 def _serialize_pmx_morph_data(morphs: Any) -> str:
@@ -96,7 +126,7 @@ def import_pmx_file(
     morph_converter = MorphConverter(scale=scale)
     try:
         bone_converter.validate_pmx_local_axes(parser.bones)
-        morph_converter.validate_runtime_requirements(parser)
+        _validate_morph_runtime_requirements(morph_converter, parser)
     except Exception as e:
         logger.error("PMX import preflight failed: %s - %s", filepath, str(e))
         raise MMDImportException(f"Failed to import PMX file {filepath}: {e}") from e
