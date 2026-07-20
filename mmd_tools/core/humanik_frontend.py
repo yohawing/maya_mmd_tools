@@ -13,7 +13,6 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from mmd_tools.core.humanik_bake import HumanIkBakeResult, bake_humanik_target_preview
 from mmd_tools.core.humanik_builder import (
     HumanIkCharacterCreationError,
-    create_humanik_control_rig,
     create_humanik_definition,
     delete_humanik_character,
     lock_humanik_definition,
@@ -22,6 +21,11 @@ from mmd_tools.core.humanik_builder import (
 from mmd_tools.core.humanik_constraints import (
     classify_humanik_constraints,
     collect_humanik_constraint_facts,
+)
+from mmd_tools.core.humanik_control_rig import (
+    HumanIkControlRigTransaction,
+    begin_humanik_control_rig,
+    stop_humanik_control_rig,
 )
 from mmd_tools.core.humanik_preview import (
     BLOCKING_CLASSIFICATIONS,
@@ -197,6 +201,7 @@ class HumanIkFrontendSession:
         self._target_model_root: Optional[str] = None
         self._ownership_report: Optional[Dict[str, Any]] = None
         self._preview: Optional[HumanIkTargetPreview] = None
+        self._control_rig_transactions: Dict[str, HumanIkControlRigTransaction] = {}
         self._pending_characters: Dict[str, str] = {}
         self._pending_stances: Dict[str, HumanIkStanceTransaction] = {}
         self._stance_transaction_factory = stance_transaction_factory or HumanIkStanceTransaction
@@ -366,12 +371,52 @@ class HumanIkFrontendSession:
         return preview
 
     def create_control_rig(self, model_root: str) -> bool:
-        """Create a control rig on an already characterized binding."""
+        """Create a control rig on an already characterized binding.
+
+        This wraps ``hikCreateControlRig()`` in the same transaction shape
+        ``enter_target_mode`` uses for TARGET preview -- journal, isolate MMD
+        writers that would otherwise feed a HIK-assigned joint, pre-cycle
+        gate, create, re-scan/re-isolate, post-cycle gate (see
+        ``humanik_control_rig.begin_humanik_control_rig``) -- so Control Rig
+        creation cannot introduce the ``HIKState2SK -> pairBlend -> joint``
+        DG cycle reported for an un-isolated ``hikCreateControlRig()`` call
+        (``HUMANIK-CONTROL-RIG-CYCLE-1``).
+
+        Fail-closed before any scene mutation:
+
+        * while a HumanIK TARGET preview is active for any model (mutation
+          guard shared with every other session operation);
+        * while ``model_root`` is the session's active SOURCE (Control Rig
+          creation would otherwise mutate the character another preview is
+          reading motion from);
+        * while ``model_root`` already has an active transactional control
+          rig (idempotent no-op instead of a duplicate ``hikCreateControlRig``
+          call);
+        * when scene-fact ownership classification finds a blocker
+          (``physics_blocker``/``feedback_blocker``/``manual``) for this
+          model's HIK joints.
+        """
         self._reject_active_preview_mutation("create_control_rig")
-        binding = self._require_binding(model_root)
-        created = create_humanik_control_rig(binding.character, mel_module=self._mel)
-        binding.control_rig_created = bool(created)
-        return bool(created)
+        key = self._require_model_root(model_root)
+        binding = self._require_binding(key)
+        if key == self._source_model_root:
+            raise RuntimeError(
+                f"Cannot create_control_rig while model is the active HumanIK SOURCE: {key}"
+            )
+        existing = self._control_rig_transactions.get(key)
+        if existing is not None and existing.active:
+            return True
+        joints = tuple(assignment.joint for assignment in binding.assignments)
+        transaction = begin_humanik_control_rig(
+            f"{self._ownership_id}:control-rig:{key}",
+            binding.character,
+            joints,
+            cmds_module=self._cmds,
+            mel_module=self._mel,
+        )
+        self._control_rig_transactions[key] = transaction
+        binding.control_rig_created = True
+        return True
 
     def bake_to_mmd_rig(self, start: int, end: int) -> HumanIkBakeResult:
         """Bake the active target preview into the target MMD rig."""
@@ -400,7 +445,17 @@ class HumanIkFrontendSession:
         return result
 
     def restore_mmd_rig(self) -> bool:
-        """Restore preview, pending stance transactions, and characters independently."""
+        """Restore preview/control-rig transactions, stances, and characters.
+
+        Any active Control Rig transaction is deleted through HIK's own
+        ``hikDeleteControlRig()`` MEL and its MMD writer isolation is
+        reversed here (see ``humanik_control_rig.stop_humanik_control_rig``),
+        so a model returns to the unblocked NEUTRAL/SOURCE state
+        ``describe_humanik_import_lock`` expects before VMD import is
+        permitted again. A transaction that fails to tear down is retried
+        on the next ``restore_mmd_rig`` call, mirroring the pending
+        stance/character retry behavior below.
+        """
         preview = self._preview
         restored = False
         first_error = None
@@ -415,6 +470,21 @@ class HumanIkFrontendSession:
                 self._preview = None
                 self._target_model_root = None
                 self._ownership_report = None
+        for model_root, transaction in list(self._control_rig_transactions.items()):
+            if not transaction.active:
+                self._control_rig_transactions.pop(model_root, None)
+                continue
+            try:
+                stop_humanik_control_rig(transaction, cmds_module=self._cmds, mel_module=self._mel)
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+                continue
+            self._control_rig_transactions.pop(model_root, None)
+            binding = self._bindings.get(model_root)
+            if binding is not None:
+                binding.control_rig_created = False
+            restored = True
         failed_stance_roots = set()
         for model_root, stance in list(self._pending_stances.items()):
             try:

@@ -71,6 +71,11 @@ class FakePreview:
         self.journal = object()
 
 
+class FakeControlRigTransaction:
+    def __init__(self):
+        self.active = True
+
+
 class FakeStance:
     """Host-neutral transaction double for frontend lifecycle tests."""
 
@@ -428,7 +433,7 @@ class TestHumanIkFrontend(unittest.TestCase):
         self.assertTrue(session.restore_mmd_rig())
         self.assertFalse(session._pending_characters)
 
-    @patch("mmd_tools.core.humanik_frontend.create_humanik_control_rig", return_value=True)
+    @patch("mmd_tools.core.humanik_frontend.begin_humanik_control_rig", return_value=object())
     @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
     @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")
     @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
@@ -478,6 +483,71 @@ class TestHumanIkFrontend(unittest.TestCase):
             session.restore_mmd_rig()
         self.assertIs(session._preview, preview)
         self.assertTrue(session.restore_mmd_rig())
+
+    @patch("mmd_tools.core.humanik_frontend.begin_humanik_control_rig")
+    @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
+    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
+    def test_create_control_rig_rejects_active_source_before_mutation(
+        self, resolve, create, lock, begin
+    ):
+        session = _session()
+        session.setup_and_characterize("|source")
+        session.enter_source_mode("|source")
+
+        with self.assertRaisesRegex(RuntimeError, "active HumanIK SOURCE"):
+            session.create_control_rig("|source")
+        begin.assert_not_called()
+
+    @patch(
+        "mmd_tools.core.humanik_frontend.begin_humanik_control_rig",
+        return_value=FakeControlRigTransaction(),
+    )
+    @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
+    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
+    def test_create_control_rig_uses_transaction_and_is_idempotent(
+        self, resolve, create, lock, begin
+    ):
+        session = _session()
+        binding = session.setup_and_characterize("|source")
+
+        created = session.create_control_rig("|source")
+        self.assertTrue(created)
+        begin.assert_called_once()
+        self.assertTrue(binding.control_rig_created)
+        self.assertIn("|source", session._control_rig_transactions)
+
+        # A second call is a no-op while the transaction is still active.
+        self.assertTrue(session.create_control_rig("|source"))
+        begin.assert_called_once()
+
+    @patch("mmd_tools.core.humanik_frontend.stop_humanik_control_rig")
+    @patch(
+        "mmd_tools.core.humanik_frontend.begin_humanik_control_rig",
+        return_value=FakeControlRigTransaction(),
+    )
+    @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
+    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
+    def test_restore_mmd_rig_tears_down_control_rig_transaction(
+        self, resolve, create, lock, begin, stop
+    ):
+        session = _session()
+        binding = session.setup_and_characterize("|source")
+        session.create_control_rig("|source")
+        transaction = session._control_rig_transactions["|source"]
+
+        def deactivate(*_args, **_kwargs):
+            transaction.active = False
+
+        stop.side_effect = deactivate
+
+        self.assertTrue(session.restore_mmd_rig())
+
+        stop.assert_called_once()
+        self.assertNotIn("|source", session._control_rig_transactions)
+        self.assertFalse(binding.control_rig_created)
 
     def test_bake_failure_retains_active_preview_but_clears_inactive_preview(self):
         session = _session()
