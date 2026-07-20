@@ -135,6 +135,9 @@ def _classify_constraint(
     elif read_hik and write_outside and not write_hik:
         classification = "keep_post"
         reason = "reads_hik_and_writes_only_outside"
+    elif write_outside and not write_hik:
+        classification = "keep_post"
+        reason = "writes_only_outside_hik"
     else:
         classification = "manual"
         reason = "ownership_not_proven"

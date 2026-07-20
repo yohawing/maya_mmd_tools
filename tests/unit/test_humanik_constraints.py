@@ -66,11 +66,21 @@ class TestHumanIkConstraints(unittest.TestCase):
 
     def test_incomplete_or_unrelated_node_is_manual(self):
         report = classify_humanik_constraints(
-            [HumanIkConstraintFacts("unknown", "mmdAppend", complete=False)],
+            [
+                HumanIkConstraintFacts("unknown", "mmdAppend", complete=False),
+                HumanIkConstraintFacts(
+                    "outside_only",
+                    "mmdAppend",
+                    reads=("|eye.rotateX",),
+                    writes=("|eye_helper.rotateX",),
+                ),
+            ],
             {"|hips"},
         )
 
-        self.assertEqual(report["rows"][0]["classification"], "manual")
+        by_node = {row["node"]: row for row in report["rows"]}
+        self.assertEqual(by_node["unknown"]["classification"], "manual")
+        self.assertEqual(by_node["outside_only"]["classification"], "keep_post")
 
 
 if __name__ == "__main__":
