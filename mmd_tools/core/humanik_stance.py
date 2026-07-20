@@ -19,13 +19,19 @@ from mmd_tools.core.humanik_constraints import (
 )
 from mmd_tools.core.humanik_preview import BLOCKING_CLASSIFICATIONS
 from mmd_tools.core.humanik_resolver import HumanIkBoneAssignment
+from mmd_tools.core.logger import get_logger
 
 
 STANCE_ELEVATION_TOLERANCE = 1.0e-4
 STANCE_DIRECTION_TOLERANCE = 1.0e-8
 STANCE_RESTORE_TOLERANCE = 1.0e-6
 STANCE_MAX_DIRECTION_ATTEMPTS = 3
+STANCE_USABLE_ANGLE_TOLERANCE_RADIANS = math.radians(5.0)
+STANCE_USABLE_DIRECTION_TOLERANCE = 2.0 * math.sin(
+    STANCE_USABLE_ANGLE_TOLERANCE_RADIANS / 2.0
+)
 REQUIRED_ARM_SLOTS = {"LeftArm": "LeftForeArm", "RightArm": "RightForeArm"}
+logger = get_logger(__name__)
 
 
 def _maya_cmds():
@@ -375,9 +381,13 @@ class HumanIkStanceTransaction:
                     )
                     direction = direction_evidence(self.cmds, joint, child)
                     residual = _length(_subtract(_unit(direction["worldDirection"]), _unit(target_direction)))
-                    passed = (
+                    strict_passed = (
                         direction["absoluteElevationRadians"] <= STANCE_ELEVATION_TOLERANCE
                         and residual <= STANCE_DIRECTION_TOLERANCE
+                    )
+                    usable_passed = (
+                        direction["absoluteElevationRadians"] <= STANCE_USABLE_ANGLE_TOLERANCE_RADIANS
+                        and residual <= STANCE_USABLE_DIRECTION_TOLERANCE
                     )
                     attempts.append(
                         {
@@ -386,10 +396,12 @@ class HumanIkStanceTransaction:
                             "direction": direction,
                             "directionResidual": residual,
                             "elevationRadians": direction["absoluteElevationRadians"],
-                            "passed": passed,
+                            "passed": strict_passed,
+                            "strictPassed": strict_passed,
+                            "usablePassed": usable_passed,
                         }
                     )
-                    if passed:
+                    if strict_passed:
                         break
                 final = attempts[-1]
                 rows.append(
@@ -401,7 +413,9 @@ class HumanIkStanceTransaction:
                         "apply": final["apply"],
                         "direction": final["direction"],
                         "directionResidual": final["directionResidual"],
-                        "passed": final["passed"],
+                        "passed": final["usablePassed"],
+                        "strictPassed": final["strictPassed"],
+                        "usablePassed": final["usablePassed"],
                         "attempts": attempts,
                         "attemptCount": len(attempts),
                         "finalApply": final["apply"],
@@ -411,20 +425,42 @@ class HumanIkStanceTransaction:
                         "tolerances": {
                             "direction": STANCE_DIRECTION_TOLERANCE,
                             "elevation": STANCE_ELEVATION_TOLERANCE,
+                            "usableDirection": STANCE_USABLE_DIRECTION_TOLERANCE,
+                            "usableElevation": STANCE_USABLE_ANGLE_TOLERANCE_RADIANS,
                         },
                     }
                 )
-            self.stance_evidence["pose"] = {"rows": rows, "passed": all(row["passed"] for row in rows)}
+            strict_passed = all(row["strictPassed"] for row in rows)
+            usable_passed = all(row["usablePassed"] for row in rows)
+            warning_rows = [row for row in rows if row["usablePassed"] and not row["strictPassed"]]
+            self.stance_evidence["pose"] = {
+                "rows": rows,
+                "passed": usable_passed,
+                "strictPassed": strict_passed,
+                "warning": bool(warning_rows),
+                "warningRows": [row["hikBone"] for row in warning_rows],
+            }
             if not self.stance_evidence["pose"]["passed"]:
                 failing = next(row for row in rows if not row["passed"])
                 raise RuntimeError(
-                    "Canonical T-pose direction residual exceeds tolerance: "
+                    "Canonical T-pose direction residual exceeds usable tolerance: "
                     f"hikBone={failing['hikBone']}, "
                     f"directionResidual={failing['finalDirectionResidual']} "
-                    f"(tolerance={STANCE_DIRECTION_TOLERANCE}), "
+                    f"(tolerance={STANCE_USABLE_DIRECTION_TOLERANCE}), "
                     f"elevationRadians={failing['finalElevationRadians']} "
-                    f"(tolerance={STANCE_ELEVATION_TOLERANCE}), "
+                    f"(tolerance={STANCE_USABLE_ANGLE_TOLERANCE_RADIANS}), "
                     f"attempts={failing['attemptCount']}"
+                )
+            if warning_rows:
+                details = ", ".join(
+                    f"{row['hikBone']}: residual={row['finalDirectionResidual']:.6g}, "
+                    f"elevation={row['finalElevationRadians']:.6g}rad"
+                    for row in warning_rows
+                )
+                logger.warning(
+                    "Canonical T-pose did not reach the strict numeric tolerance; "
+                    "continuing with a usable pose (%s)",
+                    details,
                 )
             self.ownership_journal["topologyIsolated"] = True
             self.ownership_journal["disconnectedEdges"] = disconnected
@@ -602,6 +638,8 @@ __all__ = [
     "STANCE_DIRECTION_TOLERANCE",
     "STANCE_ELEVATION_TOLERANCE",
     "STANCE_MAX_DIRECTION_ATTEMPTS",
+    "STANCE_USABLE_ANGLE_TOLERANCE_RADIANS",
+    "STANCE_USABLE_DIRECTION_TOLERANCE",
     "STANCE_RESTORE_TOLERANCE",
     "HumanIkStanceTransaction",
     "canonical_stance_targets",

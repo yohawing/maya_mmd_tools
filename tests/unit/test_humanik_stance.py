@@ -123,7 +123,7 @@ def _setter(cmds):
     return apply
 
 
-def _retrying_setter(cmds, retry_joint, failed_attempts):
+def _retrying_setter(cmds, retry_joint, failed_attempts, offset=0.01):
     calls = {}
     base_setter = _setter(cmds)
 
@@ -136,7 +136,7 @@ def _retrying_setter(cmds, retry_joint, failed_attempts):
         result = base_setter(joint, child, target)
         if joint == retry_joint and calls[joint] <= failed_attempts:
             current = cmds.matrices[child]
-            cmds.matrices[child] = _matrix(current[12], current[13] + 0.01, current[14])
+            cmds.matrices[child] = _matrix(current[12], current[13] + offset, current[14])
         return {**result, "call": calls[joint]}
 
     apply.calls = calls
@@ -214,12 +214,12 @@ class TestHumanIkStance(unittest.TestCase):
     def test_direction_retry_failure_reports_slot_and_final_residual(self):
         tx, cmds = self._transaction()
         original_matrices = {joint: list(matrix) for joint, matrix in cmds.matrices.items()}
-        setter = _retrying_setter(cmds, "|model|left_arm", 3)
+        setter = _retrying_setter(cmds, "|model|left_arm", 3, offset=0.2)
         tx.world_matrix_setter = setter
 
         with self.assertRaisesRegex(
             RuntimeError,
-            r"hikBone=LeftArm.*directionResidual=.*tolerance=1e-08.*elevationRadians=.*tolerance=0.0001.*attempts=3",
+            r"hikBone=LeftArm.*directionResidual=.*elevationRadians=.*attempts=3",
         ) as context:
             tx.enter()
 
@@ -228,9 +228,29 @@ class TestHumanIkStance(unittest.TestCase):
         self.assertEqual(left["attemptCount"], 3)
         self.assertFalse(left["passed"])
         self.assertEqual(left["attempts"][-1]["elevationRadians"], left["finalElevationRadians"])
-        self.assertIn("tolerance=0.0001", str(context.exception))
+        self.assertIn("usable tolerance", str(context.exception))
         self.assertTrue(tx.stance_evidence["restore"]["passed"])
         self.assertEqual(cmds.matrices, original_matrices)
+
+    def test_small_direction_residual_warns_and_continues(self):
+        tx, cmds = self._transaction()
+        setter = _retrying_setter(cmds, "|model|left_arm", 3, offset=0.01)
+        tx.world_matrix_setter = setter
+
+        with self.assertLogs("mmd_tools.core.humanik_stance", level="WARNING") as captured:
+            tx.enter()
+
+        pose = tx.stance_evidence["pose"]
+        left = next(row for row in pose["rows"] if row["hikBone"] == "LeftArm")
+        self.assertTrue(pose["passed"])
+        self.assertFalse(pose["strictPassed"])
+        self.assertTrue(pose["warning"])
+        self.assertEqual(pose["warningRows"], ["LeftArm"])
+        self.assertTrue(left["usablePassed"])
+        self.assertFalse(left["strictPassed"])
+        self.assertEqual(left["attemptCount"], 3)
+        self.assertIn("continuing with a usable pose", "\n".join(captured.output))
+        tx.restore()
 
     def test_targets_use_each_arm_horizontal_projection(self):
         cmds = _FakeCmds()

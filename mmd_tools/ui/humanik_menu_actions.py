@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import math
-from typing import Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from mmd_tools.core.humanik_frontend import (
     FRONTEND_ASSIGNMENT_PROFILE,
@@ -263,6 +263,9 @@ def _setup_and_characterize():
             "profile": profile,
             "error": summary,
         }
+    warning = _stance_warning_message(binding)
+    if warning:
+        _display_warning(warning)
     return {
         "success": True,
         "action": "setup_and_characterize",
@@ -270,6 +273,21 @@ def _setup_and_characterize():
         "profile": profile,
         "binding": binding,
     }
+
+
+def _stance_warning_message(binding: Any) -> Optional[str]:
+    """Return a short user warning for a usable but numerically imperfect stance."""
+    stance = getattr(binding, "stance", None)
+    if stance is None and isinstance(binding, Mapping):
+        stance = binding.get("stance")
+    pose = stance.get("pose", {}) if isinstance(stance, Mapping) else {}
+    if not pose.get("warning"):
+        return None
+    slots = ", ".join(str(value) for value in pose.get("warningRows", [])) or "arm"
+    return (
+        "HumanIK T-pose is usable but did not reach the strict numeric tolerance "
+        f"({slots}). Characterization continued."
+    )
 
 
 def _enter_source_mode():

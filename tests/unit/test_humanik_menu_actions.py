@@ -237,6 +237,32 @@ class TestHumanIkMenuActions(unittest.TestCase):
         )
 
     @patch.object(actions, "resolve_model_root", return_value="|model_root")
+    def test_setup_warns_but_succeeds_for_usable_stance_residual(self, resolve):
+        class WarningSession(_FakeSession):
+            def setup_and_characterize(self, root, **kwargs):
+                super().setup_and_characterize(root, **kwargs)
+                return {
+                    "modelRoot": root,
+                    "stance": {
+                        "pose": {
+                            "passed": True,
+                            "strictPassed": False,
+                            "warning": True,
+                            "warningRows": ["LeftArm"],
+                        }
+                    },
+                }
+
+        actions.set_humanik_session(WarningSession())
+        with patch.object(actions, "_display_warning") as display_warning:
+            result = actions.setup_and_characterize()
+
+        self.assertTrue(result["success"])
+        display_warning.assert_called_once()
+        self.assertIn("LeftArm", display_warning.call_args.args[0])
+        self.assertIn("Characterization continued", display_warning.call_args.args[0])
+
+    @patch.object(actions, "resolve_model_root", return_value="|model_root")
     def test_setup_confirmation_summarizes_edges_and_blockers(self, resolve):
         long_node = "|" + "very_long_constraint_node_" * 30
         long_edge = long_node + ".outputRotate" + "X" * 100
