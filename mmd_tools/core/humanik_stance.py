@@ -25,6 +25,10 @@ from mmd_tools.core.logger import get_logger
 STANCE_ELEVATION_TOLERANCE = 1.0e-4
 STANCE_DIRECTION_TOLERANCE = 1.0e-8
 STANCE_RESTORE_TOLERANCE = 1.0e-6
+# Keep no-op detection below the strict skin-product acceptance gate.  Maya
+# channel reads can differ by double-precision noise, while real perturbations
+# smaller than STANCE_RESTORE_TOLERANCE still need to be restored exactly.
+STANCE_ATTRIBUTE_WRITE_TOLERANCE = 1.0e-12
 STANCE_MAX_DIRECTION_ATTEMPTS = 3
 STANCE_USABLE_ANGLE_TOLERANCE_RADIANS = math.radians(5.0)
 STANCE_USABLE_DIRECTION_TOLERANCE = 2.0 * math.sin(
@@ -208,6 +212,57 @@ def _attribute_vector(cmds, plug: str) -> List[float]:
     while isinstance(value, (tuple, list)) and len(value) == 1 and isinstance(value[0], (tuple, list)):
         value = value[0]
     return [float(item) for item in (value or ())]
+
+
+def _attribute_write_state(cmds, plug: str) -> Tuple[bool, List[str]]:
+    """Return lock and incoming-writer state for a compound attribute."""
+    children = [plug, *(f"{plug}{axis}" for axis in "XYZ")]
+    locked = False
+    incoming = set()
+    for candidate in children:
+        try:
+            lock_state = cmds.getAttr(candidate, lock=True)
+            if isinstance(lock_state, (bool, int, float)):
+                locked = bool(lock_state) or locked
+        except Exception:
+            # Some host-neutral command fakes and older Maya wrappers do not
+            # expose the lock query.  The setAttr call remains the final guard.
+            pass
+        incoming.update(_incoming_sources(cmds, candidate))
+    return locked, sorted(incoming)
+
+
+def _restore_attribute_if_changed(
+    cmds,
+    joint: str,
+    attribute: str,
+    expected: Sequence[float],
+) -> bool:
+    """Restore a compound only when its live value exceeds write-noise tolerance."""
+    plug = f"{joint}.{attribute}"
+    residual = _matrix_residual(_attribute_vector(cmds, plug), expected)
+    if residual <= STANCE_ATTRIBUTE_WRITE_TOLERANCE:
+        return False
+
+    locked, incoming = _attribute_write_state(cmds, plug)
+    if locked or incoming:
+        state = []
+        if locked:
+            state.append("locked")
+        if incoming:
+            state.append(f"incoming={incoming}")
+        raise RuntimeError(
+            f"Cannot restore {plug}: residual={residual} exceeds "
+            f"writeTolerance={STANCE_ATTRIBUTE_WRITE_TOLERANCE} and attribute is {'; '.join(state)}"
+        )
+    try:
+        cmds.setAttr(plug, *expected, type="double3")
+    except Exception as error:
+        raise RuntimeError(
+            f"Failed to restore {plug}: residual={residual} exceeds "
+            f"writeTolerance={STANCE_ATTRIBUTE_WRITE_TOLERANCE}"
+        ) from error
+    return True
 
 
 def canonical_stance_targets(assignments: Iterable[HumanIkBoneAssignment]) -> Dict[str, Any]:
@@ -501,9 +556,12 @@ class HumanIkStanceTransaction:
             result.setdefault("idempotent", True)
             return result
         try:
+            restored_attributes = []
             for joint, info in self.restore_joints.items():
-                self.cmds.setAttr(f"{joint}.translate", *info["translate"], type="double3")
-                self.cmds.setAttr(f"{joint}.rotate", *info["rotate"], type="double3")
+                if _restore_attribute_if_changed(self.cmds, joint, "translate", info["translate"]):
+                    restored_attributes.append(f"{joint}.translate")
+                if _restore_attribute_if_changed(self.cmds, joint, "rotate", info["rotate"]):
+                    restored_attributes.append(f"{joint}.rotate")
             try:
                 self.cmds.refresh(force=True)
             except Exception:
@@ -547,6 +605,7 @@ class HumanIkStanceTransaction:
                 "maxSkinMatrixResidual": max((row["skinMatrixResidual"] for row in rows), default=0.0),
                 "maxAllSkinMatrixResidual": max((row["skinMatrixResidual"] for row in all_skin_rows), default=0.0),
                 "allSkinInfluenceCount": len(all_skin_rows),
+                "restoredAttributes": restored_attributes,
                 "topologyRestored": False,
                 "skinVerified": bool(all_skin_rows),
                 "passed": all(row["passed"] for row in rows)
@@ -661,6 +720,7 @@ __all__ = [
     "STANCE_USABLE_ANGLE_TOLERANCE_RADIANS",
     "STANCE_USABLE_DIRECTION_TOLERANCE",
     "STANCE_RESTORE_TOLERANCE",
+    "STANCE_ATTRIBUTE_WRITE_TOLERANCE",
     "HumanIkStanceTransaction",
     "canonical_stance_targets",
     "direction_evidence",

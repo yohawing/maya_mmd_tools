@@ -37,6 +37,8 @@ class _FakeCmds:
         self.attrs = {}
         self.connections = {}
         self.calls = []
+        self.locked_plugs = set()
+        self.raise_on_noop_write = False
         for joint in self.matrices:
             self.attrs[f"{joint}.rotate"] = [(0.0, 0.0, 0.0)]
             self.attrs[f"{joint}.jointOrient"] = [(0.0, 0.0, 0.0)]
@@ -48,12 +50,20 @@ class _FakeCmds:
         self.calls.append(("getAttr", plug, kwargs))
         if kwargs.get("multiIndices"):
             return []
+        if kwargs.get("lock"):
+            return plug in getattr(self, "locked_plugs", set())
         if plug.endswith("worldMatrix[0]"):
             return self.matrices[plug.rsplit(".worldMatrix", 1)[0]]
         return self.attrs.get(plug, 0.0)
 
     def setAttr(self, plug, *values, **kwargs):
         self.calls.append(("setAttr", plug, values, kwargs))
+        if self.raise_on_noop_write and plug.endswith((".translate", ".rotate")):
+            current = self.attrs.get(plug, 0.0)
+            if isinstance(current, (tuple, list)) and len(current) == 1:
+                current = current[0]
+            if tuple(float(value) for value in current) == tuple(float(value) for value in values):
+                raise AssertionError(f"no-op setAttr attempted for {plug}")
         if len(values) == 3:
             self.attrs[plug] = [tuple(float(value) for value in values)]
         elif values:
@@ -137,6 +147,10 @@ def _retrying_setter(cmds, retry_joint, failed_attempts, offset=0.01):
         if joint == retry_joint and calls[joint] <= failed_attempts:
             current = cmds.matrices[child]
             cmds.matrices[child] = _matrix(current[12], current[13] + offset, current[14])
+        if joint == retry_joint:
+            # Keep the fake's local channel in sync with the posed matrix so
+            # restore's residual-gated write path is exercised realistically.
+            cmds.attrs[f"{joint}.rotate"] = [(0.1, 0.0, 0.0)]
         return {**result, "call": calls[joint]}
 
     apply.calls = calls
@@ -336,12 +350,55 @@ class TestHumanIkStance(unittest.TestCase):
     def test_assignment_translate_is_restored_for_descendant_skin_products(self):
         tx, cmds = self._transaction()
         tx.enter()
-        cmds.attrs["|model|left_forearm.translate"] = [(0.25, 0.0, 0.0)]
+        cmds.raise_on_noop_write = True
+        cmds.attrs["|model|left_forearm.translate"] = [(5.0e-7, 0.0, 0.0)]
 
         restore = tx.restore()
 
         self.assertTrue(restore["passed"])
         self.assertEqual(cmds.attrs["|model|left_forearm.translate"], [(0.0, 0.0, 0.0)])
+
+    def test_unchanged_locked_or_connected_assignments_skip_restore_writes(self):
+        tx, cmds = self._transaction()
+        cmds.raise_on_noop_write = True
+        locked_translate = "|model|left_forearm.translate"
+        connected_rotate = "|model|right_forearm.rotate"
+        cmds.locked_plugs.add(locked_translate)
+        cmds.connections[connected_rotate] = ["|anim.outputRotate"]
+
+        tx.enter()
+        restore = tx.restore()
+
+        self.assertTrue(restore["passed"])
+        written = {call[1] for call in cmds.calls if call[0] == "setAttr"}
+        self.assertNotIn(locked_translate, written)
+        self.assertNotIn(connected_rotate, written)
+
+    def test_changed_connected_assignment_reports_context_without_writing(self):
+        tx, cmds = self._transaction()
+        plug = "|model|left_forearm.translate"
+        cmds.connections[plug] = ["|anim.outputTranslate"]
+
+        tx.enter()
+        cmds.attrs[plug] = [(0.25, 0.0, 0.0)]
+
+        with self.assertRaisesRegex(RuntimeError, r"left_forearm\.translate.*incoming"):
+            tx.restore()
+        self.assertTrue(tx.active)
+        self.assertFalse(any(call[0] == "setAttr" and call[1] == plug for call in cmds.calls))
+
+    def test_changed_locked_assignment_reports_context_without_writing(self):
+        tx, cmds = self._transaction()
+        plug = "|model|left_forearm.translate"
+        cmds.locked_plugs.add(plug)
+
+        tx.enter()
+        cmds.attrs[plug] = [(0.25, 0.0, 0.0)]
+
+        with self.assertRaisesRegex(RuntimeError, r"left_forearm\.translate.*locked"):
+            tx.restore()
+        self.assertTrue(tx.active)
+        self.assertFalse(any(call[0] == "setAttr" and call[1] == plug for call in cmds.calls))
 
     def test_restore_residual_still_attempts_exact_reconnect(self):
         cmds = _FakeCmds()
