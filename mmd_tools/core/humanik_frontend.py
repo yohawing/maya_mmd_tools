@@ -8,7 +8,7 @@ tested without opening HumanIK panels.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from mmd_tools.core.humanik_bake import HumanIkBakeResult, bake_humanik_target_preview
 from mmd_tools.core.humanik_builder import (
@@ -38,6 +38,7 @@ from mmd_tools.core.humanik_resolver import (
 )
 from mmd_tools.core.humanik_retarget import describe_humanik_import_lock
 from mmd_tools.core.humanik_stance import HumanIkStanceTransaction, canonical_stance_targets
+from mmd_tools.core.humanik_utils import maya_cmds
 
 
 FINGER_HIK_MARKERS = ("Index", "Middle", "Ring", "Pinky", "Thumb")
@@ -823,6 +824,21 @@ class HumanIkFrontendSession:
                 model reports ``allowed=False`` with ``REASON_MODEL_REQUIRED``
                 instead of guessing a model.
 
+        ``restoreHint.orphanedControlRigs`` (HUMANIK-RESTORE-GAPS-1) lists any
+        ``HIKControlSetNode`` present in the scene that is not the
+        ``created_nodes`` of an active tracked transaction -- a Control Rig
+        this session's ``_control_rig_transactions`` has nothing registered
+        for, so ``restore_mmd_rig`` cannot tear it down and silently no-ops
+        for it (see that method's docstring). This happens when a scene is
+        reopened (the in-memory transaction table is lost even though the
+        Control Rig node survives the save/reopen) or when a Control Rig is
+        created through Maya's standard HumanIK UI / a raw
+        ``hikCreateControlRig()`` call instead of ``create_control_rig``.
+        Detection is a single light ``cmds.ls(type="HIKControlSetNode")``
+        scan plus a per-node connection lookup for its owning character --
+        never the expensive ownership classification -- and fails soft to an
+        empty list on any query error, matching ``_describe_import_lock``.
+
         Returns:
             A dict with keys ``mode``, ``source``, ``target``,
             ``previewActive``, ``controlRigs``, ``restoreHint``, ``actions``,
@@ -897,6 +913,7 @@ class HumanIkFrontendSession:
                 "controlRigCount": len(control_rig_rows),
                 "pendingStanceCount": len(self._pending_stances),
                 "pendingCharacterCount": len(self._pending_characters),
+                "orphanedControlRigs": self._describe_orphaned_control_rigs(),
             },
             "actions": actions,
         }
@@ -1014,6 +1031,49 @@ class HumanIkFrontendSession:
                 REASON_NOTHING_TO_RESTORE, "No preview, control rig, or pending recovery state"
             )
         return _action_allowed()
+
+    def _describe_orphaned_control_rigs(self) -> List[Dict[str, Any]]:
+        """Return scene ``HIKControlSetNode``s not owned by an active transaction.
+
+        See ``describe_frontend_state``'s docstring for why this exists
+        (HUMANIK-RESTORE-GAPS-1: scene reopen or a Control Rig created
+        outside ``create_control_rig`` leaves nothing in
+        ``self._control_rig_transactions`` for ``restore_mmd_rig`` to tear
+        down). Read-only and intentionally cheap: one ``cmds.ls`` scan plus a
+        per-node ``listConnections`` lookup for the owning ``HIKCharacterNode``,
+        never ``collect_hik_ownership_report``/``classify_humanik_constraints``.
+        Any query failure (no Maya ``cmds``, HumanIK plugin not loaded, a
+        non-Maya test process) is swallowed and reported as no orphans found,
+        the same fail-soft policy ``_describe_import_lock`` uses.
+        """
+        try:
+            cmds = self._cmds or maya_cmds()
+            control_set_nodes = cmds.ls(type="HIKControlSetNode") or []
+        except Exception:
+            return []
+        owned_nodes = set()
+        for transaction in self._control_rig_transactions.values():
+            if transaction.active:
+                owned_nodes.update(getattr(transaction, "created_nodes", ()) or ())
+        rows = []
+        for node in sorted(str(item) for item in control_set_nodes):
+            if node in owned_nodes:
+                continue
+            character = None
+            try:
+                connected = cmds.listConnections(node, type="HIKCharacterNode") or []
+                character = str(connected[0]) if connected else None
+            except Exception:
+                character = None
+            binding = self.find_binding_by_character(character) if character else None
+            rows.append(
+                {
+                    "controlSetNode": node,
+                    "character": character,
+                    "modelRoot": binding.model_root if binding else None,
+                }
+            )
+        return rows
 
     def _describe_import_lock(self, key: str) -> Dict[str, Any]:
         """Return the ``describe_humanik_import_lock`` snapshot for ``key``.

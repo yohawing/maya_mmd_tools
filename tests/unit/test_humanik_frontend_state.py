@@ -97,8 +97,35 @@ class FakeStance:
         }
 
 
-def _session():
-    return HumanIkFrontendSession(stance_transaction_factory=FakeStance)
+def _session(cmds_module=None):
+    return HumanIkFrontendSession(cmds_module=cmds_module, stance_transaction_factory=FakeStance)
+
+
+class FakeSceneCmds:
+    """Minimal ``cmds`` double for the orphaned-Control-Rig scan.
+
+    Only the two calls ``_describe_orphaned_control_rigs`` makes:
+    ``ls(type="HIKControlSetNode")`` and ``listConnections(node,
+    type="HIKCharacterNode")``.
+    """
+
+    def __init__(self, control_set_nodes=(), character_by_node=None, raise_on_ls=False):
+        self.control_set_nodes = list(control_set_nodes)
+        self.character_by_node = dict(character_by_node or {})
+        self.raise_on_ls = raise_on_ls
+
+    def ls(self, type=None):
+        if self.raise_on_ls:
+            raise RuntimeError("HIK plugin not loaded")
+        if type == "HIKControlSetNode":
+            return list(self.control_set_nodes)
+        return []
+
+    def listConnections(self, node, type=None):
+        if type == "HIKCharacterNode":
+            character = self.character_by_node.get(node)
+            return [character] if character else []
+        return []
 
 
 def _characterize(session, model_root, character):
@@ -372,6 +399,84 @@ class TestDescribeFrontendStateImportLock(unittest.TestCase):
             state["importLock"],
             {"blocked": False, "reasonCode": None, "character": None, "hasControlRig": False},
         )
+
+
+class TestDescribeFrontendStateOrphanedControlRigs(unittest.TestCase):
+    """HUMANIK-RESTORE-GAPS-1 fix 1b: surface Control Rigs this session
+    cannot tear down (scene reopen, or created outside ``create_control_rig``)
+    instead of ``restore_mmd_rig`` silently no-oping for them."""
+
+    def test_no_control_set_nodes_reports_empty_list(self):
+        session = _session(cmds_module=FakeSceneCmds(control_set_nodes=[]))
+
+        state = session.describe_frontend_state()
+
+        self.assertEqual(state["restoreHint"]["orphanedControlRigs"], [])
+
+    def test_untracked_control_set_node_is_reported_as_orphaned(self):
+        cmds = FakeSceneCmds(
+            control_set_nodes=["Stray_ControlRig"],
+            character_by_node={"Stray_ControlRig": "Character_target"},
+        )
+        session = _session(cmds_module=cmds)
+        _characterize(session, "|target", "Character_target")
+
+        state = session.describe_frontend_state()
+
+        self.assertEqual(
+            state["restoreHint"]["orphanedControlRigs"],
+            [
+                {
+                    "controlSetNode": "Stray_ControlRig",
+                    "character": "Character_target",
+                    "modelRoot": "|target",
+                }
+            ],
+        )
+
+    def test_orphaned_node_with_unknown_character_reports_none_model_root(self):
+        cmds = FakeSceneCmds(control_set_nodes=["Stray_ControlRig"], character_by_node={})
+        session = _session(cmds_module=cmds)
+
+        state = session.describe_frontend_state()
+
+        self.assertEqual(
+            state["restoreHint"]["orphanedControlRigs"],
+            [{"controlSetNode": "Stray_ControlRig", "character": None, "modelRoot": None}],
+        )
+
+    @patch(
+        "mmd_tools.core.humanik_frontend.begin_humanik_control_rig",
+        return_value=FakeControlRigTransaction("Character_target"),
+    )
+    def test_control_set_node_owned_by_active_transaction_is_excluded(self, begin):
+        cmds = FakeSceneCmds(
+            control_set_nodes=["Tracked_ControlRig"],
+            character_by_node={"Tracked_ControlRig": "Character_target"},
+        )
+        # The real HumanIkControlRigTransaction records the nodes
+        # hikCreateControlRig() created; simulate that here so the tracked
+        # transaction "owns" the scene node the fake scan reports.
+        FakeControlRigTransaction.created_nodes = ["Tracked_ControlRig"]
+        try:
+            session = _session(cmds_module=cmds)
+            _characterize(session, "|source", "Character_source")
+            session.enter_source_mode("|source")
+            _characterize(session, "|target", "Character_target")
+            session.create_control_rig("|target")
+
+            state = session.describe_frontend_state()
+
+            self.assertEqual(state["restoreHint"]["orphanedControlRigs"], [])
+        finally:
+            del FakeControlRigTransaction.created_nodes
+
+    def test_query_failure_fails_soft_to_empty_list(self):
+        session = _session(cmds_module=FakeSceneCmds(raise_on_ls=True))
+
+        state = session.describe_frontend_state()
+
+        self.assertEqual(state["restoreHint"]["orphanedControlRigs"], [])
 
 
 if __name__ == "__main__":
