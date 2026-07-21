@@ -16,7 +16,8 @@
     "import_settings": "导入设置",
     "export_settings": "导出设置",
     "rigid_bodies": "刚体",
-    "joints": "关节"
+    "joints": "关节",
+    "humanik": "HumanIK (Experimental)"
   },
   "menus": {
     "view": "查看"
@@ -51,7 +52,14 @@
     "search": "搜索",
     "timestamp": "时间戳",
     "set_key": "设置关键帧",
-    "delete_key": "删除关键帧"
+    "delete_key": "删除关键帧",
+    "humanik_setup_characterize": "设置 / 角色化",
+    "humanik_enter_source": "进入 Source 模式",
+    "humanik_enter_target": "进入 Target 模式",
+    "humanik_create_control_rig": "创建 Control Rig",
+    "humanik_bake": "烘焙到 MMD Rig",
+    "humanik_restore": "恢复 MMD Rig",
+    "humanik_diagnostics": "诊断"
   },
   "labels": {
     "file_path": "文件路径:",
@@ -89,7 +97,14 @@
     "log_entries": "日志",
     "search_results": "条",
     "not_found": "未找到",
-    "namespace_placeholder": "自动生成"
+    "namespace_placeholder": "自动生成",
+    "humanik_mode": "模式:",
+    "humanik_source": "SOURCE:",
+    "humanik_target": "TARGET:",
+    "humanik_control_rigs": "Control Rig:",
+    "humanik_bake_start": "起始:",
+    "humanik_bake_end": "结束:",
+    "humanik_none": "(无)"
   },
   "tooltips": {
     "morph_runtime_unsupported": "当前运行时不支持此变形类型",
@@ -161,7 +176,24 @@
     "loading": "加载中...",
     "saving": "保存中...",
     "processing": "处理中...",
-    "export_dev_mode_required": "导出仅在开发模式下可用"
+    "export_dev_mode_required": "导出仅在开发模式下可用",
+    "humanik_experimental_notice": "HumanIK 支持为实验性功能，可能会更改。",
+    "humanik_restore_explanation": "Restore = 删除 Control Rig 并恢复 journal。已角色化的 HIK 节点会保留（回到 SOURCE 状态，而不是未角色化状态）。",
+    "humanik_orphaned_warning": "发现此会话未跟踪的 Control Rig。Restore MMD Rig 可以回收，但由于没有 journal，无法恢复 writer 连接和角色化前的姿势。",
+    "humanik_mode_neutral": "未设置",
+    "humanik_mode_source": "Source",
+    "humanik_mode_target_preview": "Target 预览",
+    "humanik_mode_control_rig": "Control Rig",
+    "humanik_reason_preview_active": "HumanIK Target 预览已激活。",
+    "humanik_reason_not_characterized": "模型尚未角色化。",
+    "humanik_reason_no_source": "请先进入 Source 模式。",
+    "humanik_reason_target_is_source": "SOURCE 和 TARGET 模型必须不同。",
+    "humanik_reason_profile_mismatch": "SOURCE/TARGET 的分配配置文件不一致。",
+    "humanik_reason_model_is_source": "该模型当前用作 SOURCE，无法执行此操作。",
+    "humanik_reason_no_active_preview": "必须处于激活的 Target 预览状态。",
+    "humanik_reason_already_characterized_other_profile": "已使用不同的配置文件角色化。",
+    "humanik_reason_nothing_to_restore": "没有可恢复的内容。",
+    "humanik_reason_model_required": "请在 Maya 场景中选择模型。"
   },
   "options": {
     "none": "无",
@@ -244,7 +276,9 @@
     "physics_objects": "物理对象",
     "details": "详细信息",
     "rigid_body_values": "刚体数值",
-    "joint_values": "关节数值"
+    "joint_values": "关节数值",
+    "humanik_status": "HumanIK 状态",
+    "humanik_actions": "HumanIK 操作"
   },
   "checkboxes": {
     "use_namespace": "使用命名空间",

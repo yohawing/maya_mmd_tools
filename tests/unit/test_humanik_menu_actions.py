@@ -564,7 +564,7 @@ class TestHumanIkMenuActions(unittest.TestCase):
         with patch.object(actions.logger, "error") as log_error:
             self.assertIsNone(actions.bake_to_mmd_rig())
 
-        self.assertTrue(any("Playback range is empty" in message for message in self._errors))
+        self.assertTrue(any("Bake frame range is empty" in message for message in self._errors))
         self.assertTrue(any("Maya Script Editor" in message for message in self._errors))
         self.assertTrue(log_error.call_args.kwargs["exc_info"])
         self.assertNotIn(("bake_to_mmd_rig", 6, 4), self.session.calls)

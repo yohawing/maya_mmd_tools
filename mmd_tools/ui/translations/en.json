@@ -16,7 +16,8 @@
     "import_settings": "Import",
     "export_settings": "Export",
     "rigid_bodies": "Rigid Bodies",
-    "joints": "Joints"
+    "joints": "Joints",
+    "humanik": "HumanIK (Experimental)"
   },
   "menus": {
     "view": "View"
@@ -51,7 +52,14 @@
     "open_command_port": "Open",
     "close_command_port": "Close",
     "set_key": "Set Key",
-    "delete_key": "Delete Key"
+    "delete_key": "Delete Key",
+    "humanik_setup_characterize": "Setup / Characterize",
+    "humanik_enter_source": "Enter Source Mode",
+    "humanik_enter_target": "Enter Target Mode",
+    "humanik_create_control_rig": "Create Control Rig",
+    "humanik_bake": "Bake to MMD Rig",
+    "humanik_restore": "Restore MMD Rig",
+    "humanik_diagnostics": "Diagnostics"
   },
   "labels": {
     "file_path": "File Path:",
@@ -89,7 +97,14 @@
     "offset_not_supported": "Offsets: Not supported",
     "log_entries": "Logs",
     "search_results": "results",
-    "not_found": "Not found"
+    "not_found": "Not found",
+    "humanik_mode": "Mode:",
+    "humanik_source": "SOURCE:",
+    "humanik_target": "TARGET:",
+    "humanik_control_rigs": "Control Rigs:",
+    "humanik_bake_start": "Start:",
+    "humanik_bake_end": "End:",
+    "humanik_none": "(none)"
   },
   "tooltips": {
     "morph_runtime_unsupported": "This morph type is not supported by the current runtime",
@@ -220,7 +235,24 @@
     "loading": "Loading...",
     "saving": "Saving...",
     "processing": "Processing...",
-    "export_dev_mode_required": "Export is available only in Development Mode"
+    "export_dev_mode_required": "Export is available only in Development Mode",
+    "humanik_experimental_notice": "HumanIK support is experimental and may change without notice.",
+    "humanik_restore_explanation": "Restore = delete the Control Rig and restore the journal. Characterized HIK nodes remain (returns to SOURCE state, not to an uncharacterized state).",
+    "humanik_orphaned_warning": "Orphaned Control Rig(s) found outside this session's tracking. Restore MMD Rig can recover them, but writer edges and the pre-characterize stance cannot be restored (no journal).",
+    "humanik_mode_neutral": "Neutral",
+    "humanik_mode_source": "Source",
+    "humanik_mode_target_preview": "Target Preview",
+    "humanik_mode_control_rig": "Control Rig",
+    "humanik_reason_preview_active": "A HumanIK target preview is already active.",
+    "humanik_reason_not_characterized": "The model is not characterized yet.",
+    "humanik_reason_no_source": "Enter Source Mode first.",
+    "humanik_reason_target_is_source": "SOURCE and TARGET models must be different.",
+    "humanik_reason_profile_mismatch": "SOURCE/TARGET assignment profiles do not match.",
+    "humanik_reason_model_is_source": "This model is the active SOURCE and cannot be used here.",
+    "humanik_reason_no_active_preview": "A target preview must be active.",
+    "humanik_reason_already_characterized_other_profile": "Already characterized with a different profile.",
+    "humanik_reason_nothing_to_restore": "There is nothing to restore.",
+    "humanik_reason_model_required": "Select a model in the Maya scene."
   },
   "options": {
     "none": "None",
@@ -303,7 +335,9 @@
     "physics_objects": "Physics Objects",
     "details": "Details",
     "rigid_body_values": "Rigid Body Values",
-    "joint_values": "Joint Values"
+    "joint_values": "Joint Values",
+    "humanik_status": "HumanIK Status",
+    "humanik_actions": "HumanIK Actions"
   },
   "checkboxes": {
     "use_namespace": "Use Namespace",

@@ -123,6 +123,28 @@ def _close_diagnostics_window():
         _display_warning(f"HumanIK diagnostics window close failed: {exc}")
 
 
+def _resolve_selected_mmd_roots(cmds, service) -> set:
+    """Return the set of distinct MMD model roots implied by the current selection.
+
+    Shared by ``resolve_model_root`` (which acts on the result) and
+    ``resolve_selected_model_root_for_display`` (which only reads it), so the
+    selection-to-root mapping rules live in exactly one place.
+    """
+    try:
+        available_models = set(service.list_mmd_models())
+    except Exception:
+        available_models = set()
+    selected_roots = set()
+    for node in cmds.ls(selection=True, long=True) or []:
+        node_name = str(node)
+        root = service.get_parent_mmd_root(node_name)
+        if not root and node_name in available_models:
+            root = node_name
+        if root:
+            selected_roots.add(str(root))
+    return selected_roots
+
+
 def resolve_model_root(
     *,
     cmds_module=None,
@@ -148,14 +170,7 @@ def resolve_model_root(
         available_models = set(service.list_mmd_models())
     except Exception:
         available_models = set()
-    selected_roots = set()
-    for node in cmds.ls(selection=True, long=True) or []:
-        node_name = str(node)
-        root = service.get_parent_mmd_root(node_name)
-        if not root and node_name in available_models:
-            root = node_name
-        if root:
-            selected_roots.add(str(root))
+    selected_roots = _resolve_selected_mmd_roots(cmds, service)
     if len(selected_roots) > 1:
         raise ValueError(
             "Multiple MMD model roots are selected; select exactly one model root"
@@ -167,6 +182,24 @@ def resolve_model_root(
     if len(available_models) == 1:
         return next(iter(available_models))
     return _choose_model_from_scene(available_models)
+
+
+def resolve_selected_model_root_for_display(*, cmds_module=None) -> Optional[str]:
+    """Resolve an MMD root from the current Maya selection, for read-only display only.
+
+    Used by the HumanIK tab presenter to decide which model's state to show.
+    Unlike ``resolve_model_root`` this never auto-adopts the lone scene model,
+    never shows a picker dialog, and never raises -- a UI status refresh
+    should not surprise the user with a dialog or an error just for looking.
+    An empty or ambiguous (multiple distinct roots) selection both resolve to
+    ``None``, which callers should treat as "no model implied by selection".
+    """
+    cmds = cmds_module or _maya_cmds()
+    service = SceneModelService(cmds_module=cmds)
+    selected_roots = _resolve_selected_mmd_roots(cmds, service)
+    if len(selected_roots) == 1:
+        return next(iter(selected_roots))
+    return None
 
 
 def _choose_model_from_scene(available_models) -> Optional[str]:
@@ -245,9 +278,15 @@ def create_control_rig():
     return _run_action("Create Control Rig", _create_control_rig)
 
 
-def bake_to_mmd_rig():
-    """Bake the active target preview over Maya's integer playback range."""
-    return _run_action("Bake to MMD Rig", _bake_to_mmd_rig)
+def bake_to_mmd_rig(start=None, end=None):
+    """Bake the active target preview over an explicit or playback frame range.
+
+    Args:
+        start: Optional explicit integer start frame. When ``None`` (the
+            menu path), Maya's current integer playback range is used.
+        end: Optional explicit integer end frame; same default as ``start``.
+    """
+    return _run_action("Bake to MMD Rig", lambda: _bake_to_mmd_rig(start=start, end=end))
 
 
 def restore_mmd_rig():
@@ -413,13 +452,17 @@ def _create_control_rig():
     return session.create_control_rig(root)
 
 
-def _bake_to_mmd_rig():
+def _bake_to_mmd_rig(start=None, end=None):
     cmds = _cmds_module or _maya_cmds()
     session = get_humanik_session()
-    start = math.ceil(float(cmds.playbackOptions(query=True, minTime=True)))
-    end = math.floor(float(cmds.playbackOptions(query=True, maxTime=True)))
+    if start is None:
+        start = math.ceil(float(cmds.playbackOptions(query=True, minTime=True)))
+    if end is None:
+        end = math.floor(float(cmds.playbackOptions(query=True, maxTime=True)))
+    start = int(start)
+    end = int(end)
     if end < start:
-        raise ValueError(f"Playback range is empty after integer conversion: {start}..{end}")
+        raise ValueError(f"Bake frame range is empty after integer conversion: {start}..{end}")
     diagnostics_fn = getattr(session, "diagnostics", None)
     diagnostics_report = diagnostics_fn() if callable(diagnostics_fn) else {}
     profile = (diagnostics_report or {}).get("profile", FRONTEND_ASSIGNMENT_PROFILE)
