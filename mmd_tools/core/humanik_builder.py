@@ -231,6 +231,17 @@ nothing for HIK to reconstruct), so it is safe to apply unconditionally.
 """
 
 
+HUMANIK_LEFT_ELBOW_KILL_PITCH_ENABLED = 1
+"""Value that disables TARGET-side HIK elbow-pitch reconstruction.
+
+The Aida self-retarget probe showed a causal ``LeftForeArm`` residual with
+``HIKProperty2State.LeftElbowKillPitch=0``. Setting this TARGET-only property
+to ``1`` during preview reduced the local quaternion residual from
+0.1756 radians to 0.00043 radians. The active-preview scope restores the
+previous value after retargeting.
+"""
+
+
 def get_humanik_finger_solving_property_node(character: str, mel_module=None) -> str:
     """Return the ``HIKProperty2State`` node feeding ``character``.
 
@@ -306,6 +317,41 @@ def set_humanik_finger_solving_state(
         return None
     previous = cmds.getAttr(f"{node}.FingerSolving")
     cmds.setAttr(f"{node}.FingerSolving", int(value))
+    return None if previous is None else int(previous)
+
+
+def get_humanik_left_elbow_kill_pitch_state(
+    character: str,
+    mel_module=None,
+    cmds_module=None,
+) -> Optional[int]:
+    """Return TARGET ``LeftElbowKillPitch`` or ``None`` when unsupported."""
+    mel = mel_module or maya_mel()
+    cmds = cmds_module or maya_cmds()
+    node = get_humanik_finger_solving_property_node(character, mel_module=mel)
+    if not node or not cmds.attributeQuery("LeftElbowKillPitch", node=node, exists=True):
+        return None
+    value = cmds.getAttr(f"{node}.LeftElbowKillPitch")
+    return None if value is None else int(value)
+
+
+def set_humanik_left_elbow_kill_pitch_state(
+    character: str,
+    value: int,
+    mel_module=None,
+    cmds_module=None,
+) -> Optional[int]:
+    """Set TARGET ``LeftElbowKillPitch`` and return its previous value.
+
+    Maya versions without this HIK property are intentionally left untouched.
+    """
+    mel = mel_module or maya_mel()
+    cmds = cmds_module or maya_cmds()
+    node = get_humanik_finger_solving_property_node(character, mel_module=mel)
+    if not node or not cmds.attributeQuery("LeftElbowKillPitch", node=node, exists=True):
+        return None
+    previous = cmds.getAttr(f"{node}.LeftElbowKillPitch")
+    cmds.setAttr(f"{node}.LeftElbowKillPitch", int(value))
     return None if previous is None else int(previous)
 
 

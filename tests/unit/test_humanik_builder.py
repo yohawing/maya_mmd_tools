@@ -15,11 +15,14 @@ from mmd_tools.core.humanik_builder import (
     get_humanik_definition_lock_state,
     get_humanik_finger_solving_property_node,
     get_humanik_finger_solving_state,
+    get_humanik_left_elbow_kill_pitch_state,
     HumanIkCharacterCreationError,
     HUMANIK_FINGER_SOLVING_DISABLED,
+    HUMANIK_LEFT_ELBOW_KILL_PITCH_ENABLED,
     lock_humanik_definition,
     resolve_scene_humanik_assignments,
     set_humanik_finger_solving_state,
+    set_humanik_left_elbow_kill_pitch_state,
 )
 
 
@@ -473,15 +476,27 @@ class _NoControlRigMel(FakeMel):
 class _FingerSolvingCmds:
     """Fake ``cmds`` with a HIKProperty2State node holding ``FingerSolving``."""
 
-    def __init__(self, has_attr=True, initial=1):
+    def __init__(self, has_attr=True, initial=1, left_elbow_initial=0):
         self.has_attr = has_attr
-        self.values = {"propNode.FingerSolving": initial} if has_attr else {}
+        self.values = (
+            {
+                "propNode.FingerSolving": initial,
+                "propNode.LeftElbowKillPitch": left_elbow_initial,
+            }
+            if has_attr
+            else {}
+        )
         self.attribute_query_calls = []
         self.set_attr_calls = []
 
     def attributeQuery(self, attr, node=None, exists=False):
         self.attribute_query_calls.append((attr, node, exists))
-        return bool(exists and self.has_attr and attr == "FingerSolving" and node == "propNode")
+        return bool(
+            exists
+            and self.has_attr
+            and attr in {"FingerSolving", "LeftElbowKillPitch"}
+            and node == "propNode"
+        )
 
     def getAttr(self, plug):
         return self.values.get(plug)
@@ -556,6 +571,31 @@ class TestHumanIkFingerSolving(unittest.TestCase):
         mel = _FingerSolvingMel()
         previous = set_humanik_finger_solving_state("Target", 0, mel, cmds)
         self.assertIsNone(previous)
+        self.assertEqual(cmds.set_attr_calls, [])
+
+
+class TestHumanIkLeftElbowKillPitch(unittest.TestCase):
+    """Aida-proven TARGET elbow-pitch property helper behavior."""
+
+    def test_get_state_reads_current_value(self):
+        cmds = _FingerSolvingCmds(left_elbow_initial=0)
+        mel = _FingerSolvingMel()
+        self.assertEqual(get_humanik_left_elbow_kill_pitch_state("Target", mel, cmds), 0)
+
+    def test_set_state_enables_and_returns_previous_value(self):
+        cmds = _FingerSolvingCmds(left_elbow_initial=0)
+        mel = _FingerSolvingMel()
+        previous = set_humanik_left_elbow_kill_pitch_state(
+            "Target", HUMANIK_LEFT_ELBOW_KILL_PITCH_ENABLED, mel, cmds
+        )
+        self.assertEqual(previous, 0)
+        self.assertEqual(cmds.values["propNode.LeftElbowKillPitch"], 1)
+        self.assertEqual(cmds.set_attr_calls, [("propNode.LeftElbowKillPitch", 1)])
+
+    def test_set_state_is_noop_when_property_missing(self):
+        cmds = _FingerSolvingCmds(has_attr=False)
+        mel = _FingerSolvingMel()
+        self.assertIsNone(set_humanik_left_elbow_kill_pitch_state("Target", 1, mel, cmds))
         self.assertEqual(cmds.set_attr_calls, [])
 
 

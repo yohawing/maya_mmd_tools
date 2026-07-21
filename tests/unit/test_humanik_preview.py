@@ -10,13 +10,14 @@ from mmd_tools.core.humanik_preview import (
 
 
 class FakeCmds:
-    def __init__(self, finger_solving_node="propNode", finger_solving_initial=1):
+    def __init__(self, finger_solving_node="propNode", finger_solving_initial=1, left_elbow_kill_pitch_initial=0):
         self.connections = {"|hips.rotateX": ["ik.outputRotateX"]}
         self.values = {"|hips.rotateX": 0.0}
         self.disconnects = []
         self.finger_solving_node = finger_solving_node
         if finger_solving_node:
             self.values[f"{finger_solving_node}.FingerSolving"] = finger_solving_initial
+            self.values[f"{finger_solving_node}.LeftElbowKillPitch"] = left_elbow_kill_pitch_initial
 
     def listConnections(self, plug, source=True, destination=False, plugs=True, connections=False):
         if connections:
@@ -41,7 +42,10 @@ class FakeCmds:
 
     def attributeQuery(self, attr, node=None, exists=False):
         return bool(
-            exists and attr == "FingerSolving" and self.finger_solving_node and node == self.finger_solving_node
+            exists
+            and attr in {"FingerSolving", "LeftElbowKillPitch"}
+            and self.finger_solving_node
+            and node == self.finger_solving_node
         )
 
     def ls(self, type=None, long=False):
@@ -192,6 +196,7 @@ class TestHumanIkPreview(unittest.TestCase):
         self.assertEqual(cmds.connections["|hips.rotateX"], ["ik.outputRotateX"])
         self.assertEqual(cmds.connections["|left_foot.rotateX"], ["third_party.outputRotateX"])
         self.assertEqual(mel.source, "")
+        self.assertEqual(cmds.values["propNode.LeftElbowKillPitch"], 0)
 
     def test_blocker_stops_before_mutation(self):
         cmds, mel = FakeCmds(), FakeMel()
@@ -226,13 +231,17 @@ class TestHumanIkPreviewFingerSolving(unittest.TestCase):
 
         self.assertEqual(cmds.values["propNode.FingerSolving"], 0)
         self.assertEqual(preview.finger_solving_previous, 1)
+        self.assertEqual(cmds.values["propNode.LeftElbowKillPitch"], 1)
+        self.assertEqual(preview.left_elbow_kill_pitch_previous, 0)
 
         stop_humanik_target_preview(preview, cmds, mel)
         self.assertEqual(cmds.values["propNode.FingerSolving"], 1)
+        self.assertEqual(cmds.values["propNode.LeftElbowKillPitch"], 0)
 
         # Repeated stop calls stay idempotent/safe.
         stop_humanik_target_preview(preview, cmds, mel)
         self.assertEqual(cmds.values["propNode.FingerSolving"], 1)
+        self.assertEqual(cmds.values["propNode.LeftElbowKillPitch"], 0)
 
     def test_rollback_restores_finger_solving_before_reraising(self):
         cmds, mel = FakeCmds(finger_solving_initial=1), FakeMel()
@@ -245,6 +254,25 @@ class TestHumanIkPreviewFingerSolving(unittest.TestCase):
 
         # Blocked before any mutation: FingerSolving was never touched.
         self.assertEqual(cmds.values["propNode.FingerSolving"], 1)
+
+    def test_stop_restores_properties_when_restore_state_raises(self):
+        cmds, mel = FakeCmds(finger_solving_initial=1), FakeMel()
+        preview = begin_humanik_target_preview(
+            "owner:target", "Target", "Source", self.REPORT, {"|hips"}, cmds, mel
+        )
+        self.assertEqual(cmds.values["propNode.FingerSolving"], 0)
+        self.assertEqual(cmds.values["propNode.LeftElbowKillPitch"], 1)
+
+        restore_error = RuntimeError("restore-state failure")
+        with patch(
+            "mmd_tools.core.humanik_preview.apply_humanik_restore_state",
+            side_effect=restore_error,
+        ), self.assertRaisesRegex(RuntimeError, "restore-state failure"):
+            stop_humanik_target_preview(preview, cmds, mel)
+
+        self.assertEqual(cmds.values["propNode.FingerSolving"], 1)
+        self.assertEqual(cmds.values["propNode.LeftElbowKillPitch"], 0)
+        self.assertTrue(preview.active)
 
     def test_missing_property_node_does_not_hard_fail(self):
         """Older Maya/plugin variants without a property node must not break preview."""

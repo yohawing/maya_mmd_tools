@@ -68,6 +68,7 @@ import maya.standalone
 from mmd_tools.core.humanik_bake import bake_humanik_target_preview
 from mmd_tools.core.humanik_builder import (
     create_humanik_definition,
+    get_humanik_finger_solving_property_node,
     lock_humanik_definition,
     resolve_scene_humanik_assignments,
 )
@@ -115,6 +116,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--evaluation-mode", choices=("off", "serial", "parallel"), default="off")
     parser.add_argument("--hik-profile", choices=("full", "body-only"), default="full")
     parser.add_argument("--characterization-stance", choices=("bind", "t-pose"), default="bind")
+    parser.add_argument(
+        "--target-hik-property",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="Set one TARGET HIKProperty2State numeric attribute after preview connection.",
+    )
     parser.add_argument("--start", type=int, default=FRAME_START)
     parser.add_argument("--end", type=int, default=FRAME_END)
     return parser.parse_args()
@@ -135,6 +143,127 @@ def _writer_rows_for_hik_bones(
     """Keep writer census rows for the arm/finger slots used in Aida diagnosis."""
     selected = {str(name) for name in hik_bones}
     return [dict(row) for row in rows if str(row.get("hikBone")) in selected]
+
+
+_AIDA_HIK_PROPERTY_NAMES = (
+    "FingerSolving",
+    "leftElbowInverted",
+    "rightElbowInverted",
+    "LeftArm",
+    "LeftForeArm",
+    "LeftArmRoll",
+    "LeftForeArmRoll",
+    "LeftForeArmRoll1",
+    "LeftForeArmRoll2",
+    "LeftForeArmRoll3",
+    "LeftForeArmRoll4",
+    "LeftForeArmRoll5",
+    "LeftArmJointOrient",
+    "LeftForeArmJointOrient",
+    "LeftArmRotateAxis",
+    "LeftForeArmRotateAxis",
+    "LeftElbowKillPitch",
+    "ReachActorLeftElbow",
+    "CtrlPullLeftElbow",
+    "CtrlResistLeftElbow",
+    "CtrlResistMaximumExtensionLeftElbow",
+    "CtrlResistCompressionFactorLeftElbow",
+    "LeftArmFullRollExtraction",
+    "LeftArmFullRollExtractionMode",
+    "LeftForeArmRollEx",
+    "LeftForeArmRollMode",
+    "leftElbowRoll",
+)
+
+
+def _humanik_property_evidence(character: str) -> Dict[str, Any]:
+    """Capture arm/solver property values without mutating the HIK node."""
+    node = get_humanik_finger_solving_property_node(character, mel_module=mel)
+    evidence: Dict[str, Any] = {
+        "character": str(character),
+        "propertyNode": str(node),
+        "propertyNodeType": str(cmds.nodeType(node)) if node and cmds.objExists(node) else None,
+        "attributes": {},
+        "availableArmPropertyNames": [],
+    }
+    if not node or not cmds.objExists(node):
+        return evidence
+    available = sorted(
+        str(name)
+        for name in (cmds.listAttr(node) or [])
+        if any(token in str(name) for token in ("LeftArm", "LeftForeArm", "Elbow", "Roll", "Inverted"))
+    )
+    evidence["availableArmPropertyNames"] = available
+    for name in _AIDA_HIK_PROPERTY_NAMES:
+        if not cmds.attributeQuery(name, node=node, exists=True):
+            continue
+        try:
+            value = cmds.getAttr(f"{node}.{name}")
+        except Exception as exc:  # Maya property variants can expose unreadable plugs.
+            value = f"ERROR: {exc}"
+        evidence["attributes"][name] = _json_attribute_value(value)
+    return evidence
+
+
+def _apply_target_hik_property_overrides(
+    character: str, specifications: Sequence[str]
+) -> List[Dict[str, Any]]:
+    """Apply explicit numeric TARGET property overrides for diagnostics only."""
+    node = get_humanik_finger_solving_property_node(character, mel_module=mel)
+    rows: List[Dict[str, Any]] = []
+    if not node or not cmds.objExists(node):
+        if specifications:
+            raise RuntimeError(f"TARGET HIK property node unavailable: character={character}")
+        return rows
+    for specification in specifications:
+        name, separator, raw_value = str(specification).partition("=")
+        if not separator or not name:
+            raise ValueError(f"Invalid --target-hik-property value: {specification!r}")
+        if not cmds.attributeQuery(name, node=node, exists=True):
+            raise ValueError(f"TARGET HIK property does not exist: {node}.{name}")
+        plug = f"{node}.{name}"
+        previous = cmds.getAttr(plug)
+        try:
+            numeric = float(raw_value)
+        except ValueError as exc:
+            raise ValueError(f"TARGET HIK property must be numeric: {specification!r}") from exc
+        cmds.setAttr(plug, numeric)
+        rows.append(
+            {
+                "node": node,
+                "attribute": name,
+                "previous": _json_attribute_value(previous),
+                "value": _json_attribute_value(cmds.getAttr(plug)),
+            }
+        )
+    return rows
+
+
+def _characterization_joint_evidence(
+    source_slots: Mapping[int, Mapping[str, Any]],
+    target_slots: Mapping[int, Mapping[str, Any]],
+    slots: Sequence[int],
+) -> List[Dict[str, Any]]:
+    """Capture local transform inputs for the arm/forearm/finger chain."""
+    rows = []
+    for slot in slots:
+        if slot not in source_slots or slot not in target_slots:
+            continue
+        source_joint = str(source_slots[slot]["joint"])
+        target_joint = str(target_slots[slot]["joint"])
+        row: Dict[str, Any] = {
+            "hikSlot": int(slot),
+            "hikBone": str(source_slots[slot]["hikBone"]),
+            "sourceJoint": source_joint,
+            "targetJoint": target_joint,
+        }
+        for side, joint in (("source", source_joint), ("target", target_joint)):
+            row[side] = {
+                attribute: _json_attribute_value(cmds.getAttr(f"{joint}.{attribute}"))
+                for attribute in ("translate", "rotate", "jointOrient", "rotateAxis")
+            }
+        rows.append(row)
+    return rows
 
 
 def _load_plugin() -> None:
@@ -1238,6 +1367,11 @@ def main() -> int:
         characterization_quaternion: Dict[str, Any] = {}
         source_writer_census_motion: List[Dict[str, Any]] = []
         target_writer_census_characterized: List[Dict[str, Any]] = []
+        source_hik_property_before_preview: Dict[str, Any] = {}
+        target_hik_property_before_preview: Dict[str, Any] = {}
+        target_hik_property_live: Dict[str, Any] = {}
+        target_hik_property_overrides: List[Dict[str, Any]] = []
+        characterization_joint_evidence: List[Dict[str, Any]] = []
         source_character = create_humanik_definition(source_result, name_hint="MMDToolsS5_Source", update_ui=False)
         target_character = create_humanik_definition(target_result, name_hint="MMDToolsS5_Target", update_ui=False)
         lock_humanik_definition(source_character)
@@ -1265,6 +1399,11 @@ def main() -> int:
         cmds.refresh(force=True)
         characterization_matrix = _frame_matrix_fidelity(source_slots, target_slots, [frames[0]])
         characterization_quaternion = _frame_quaternion_fidelity(source_slots, target_slots, [frames[0]])
+        source_hik_property_before_preview = _humanik_property_evidence(source_character)
+        target_hik_property_before_preview = _humanik_property_evidence(target_character)
+        characterization_joint_evidence = _characterization_joint_evidence(
+            source_slots, target_slots, (9, 10, 12, 13, 60, 84)
+        )
         target_writer_census_characterized = _nonempty_writer_rows(target_result)
         _load_motion(vmd, pmx, source_root)
         source_writer_census_motion = _nonempty_writer_rows(source_result)
@@ -1282,6 +1421,10 @@ def main() -> int:
             payload["characterizationStance"] = stance_evidence
         ownership = classify_humanik_constraints(collect_humanik_constraint_facts(), target_joints)
         preview = begin_humanik_target_preview("mmd-tools:s5:roundtrip", target_character, source_character, ownership, target_joints)
+        target_hik_property_overrides = _apply_target_hik_property_overrides(
+            target_character, args.target_hik_property
+        )
+        target_hik_property_live = _humanik_property_evidence(target_character)
         target_writer_census_live = _nonempty_writer_rows(target_result)
         live_matrix = _frame_matrix_fidelity(source_slots, target_slots, frames)
         live_quaternion = _frame_quaternion_fidelity(source_slots, target_slots, frames)
@@ -1329,6 +1472,13 @@ def main() -> int:
                 "targetWriterCensusBefore": target_writer_census_before,
                 "targetWriterCensusCharacterized": target_writer_census_characterized,
                 "targetWriterCensusLive": target_writer_census_live,
+                "humanikPropertyEvidence": {
+                    "sourceBeforePreview": source_hik_property_before_preview,
+                    "targetBeforePreview": target_hik_property_before_preview,
+                    "targetLive": target_hik_property_live,
+                    "targetOverrides": target_hik_property_overrides,
+                },
+                "characterizationJointEvidence": characterization_joint_evidence,
                 "armFingerWriterCensus": {
                     "sourceMotion": _writer_rows_for_hik_bones(
                         source_writer_census_motion,

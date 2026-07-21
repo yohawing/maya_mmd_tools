@@ -6,11 +6,10 @@ the S2 restore_state.  It does not bake animation or modify physics owners.
 
 ``begin_humanik_target_preview`` also disables the TARGET character's
 ``FingerSolving`` property for the preview's lifetime (HUMANIK-RETARGET-S5;
-see ``HUMANIK_FINGER_SOLVING_DISABLED`` in ``humanik_builder.py``) and restores
-its prior value on ``stop_humanik_target_preview`` or rollback, exactly like
-``input_source``/``lock_state`` are restored via the restore_state. It is
-per-preview rather than a characterize-time change because it is only
-meaningful while the target is actively retargeting from a source.
+see ``HUMANIK_FINGER_SOLVING_DISABLED`` in ``humanik_builder.py``). It also
+scopes the Aida-proven TARGET ``LeftElbowKillPitch`` correction to the preview
+and restores both prior values on ``stop_humanik_target_preview`` or rollback,
+exactly like ``input_source``/``lock_state`` are restored via the restore_state.
 """
 
 from __future__ import annotations
@@ -20,6 +19,8 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from mmd_tools.core.humanik_builder import (
     HUMANIK_FINGER_SOLVING_DISABLED,
+    HUMANIK_LEFT_ELBOW_KILL_PITCH_ENABLED,
+    set_humanik_left_elbow_kill_pitch_state,
     set_humanik_finger_solving_state,
 )
 from mmd_tools.core.humanik_constraints import (
@@ -57,6 +58,7 @@ class HumanIkTargetPreview:
     post_report: Dict[str, Any]
     active: bool = True
     finger_solving_previous: Optional[int] = None
+    left_elbow_kill_pitch_previous: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Return the JSON-safe preview diagnostic payload."""
@@ -69,6 +71,7 @@ class HumanIkTargetPreview:
             "postReport": self.post_report,
             "active": self.active,
             "fingerSolvingPreviousValue": self.finger_solving_previous,
+            "leftElbowKillPitchPreviousValue": self.left_elbow_kill_pitch_previous,
         }
 
 
@@ -101,6 +104,7 @@ def begin_humanik_target_preview(
     )
     disconnected: List[Dict[str, str]] = []
     finger_solving_previous: Optional[int] = None
+    left_elbow_kill_pitch_previous: Optional[int] = None
     try:
         # Disable HumanIK's internal finger-rotation reconstruction on the
         # TARGET character for the lifetime of this preview (see
@@ -111,6 +115,16 @@ def begin_humanik_target_preview(
         finger_solving_previous = set_humanik_finger_solving_state(
             target_character,
             HUMANIK_FINGER_SOLVING_DISABLED,
+            mel_module=mel_module,
+            cmds_module=cmds,
+        )
+        # Aida evidence shows that Maya's default target elbow-pitch
+        # reconstruction introduces a fixed LeftForeArm offset even for
+        # identical source/target characterization. Keep the proven fix
+        # scoped to active TARGET preview and restore it on every exit path.
+        left_elbow_kill_pitch_previous = set_humanik_left_elbow_kill_pitch_state(
+            target_character,
+            HUMANIK_LEFT_ELBOW_KILL_PITCH_ENABLED,
             mel_module=mel_module,
             cmds_module=cmds,
         )
@@ -155,6 +169,13 @@ def begin_humanik_target_preview(
                 mel_module=mel_module,
                 cmds_module=cmds,
             )
+        if left_elbow_kill_pitch_previous is not None:
+            set_humanik_left_elbow_kill_pitch_state(
+                target_character,
+                left_elbow_kill_pitch_previous,
+                mel_module=mel_module,
+                cmds_module=cmds,
+            )
         try:
             apply_humanik_restore_state(
                 restore_state,
@@ -177,6 +198,7 @@ def begin_humanik_target_preview(
         retained_nodes=retained_nodes,
         post_report=post_report,
         finger_solving_previous=finger_solving_previous,
+        left_elbow_kill_pitch_previous=left_elbow_kill_pitch_previous,
     )
 
 
@@ -186,19 +208,44 @@ def stop_humanik_target_preview(
     mel_module=None,
 ) -> None:
     """Restore NEUTRAL ownership; repeated stop calls are safe."""
-    apply_humanik_restore_state(
-        preview.restore_state,
-        ownership_id=preview.ownership_id,
-        cmds_module=cmds_module,
-        mel_module=mel_module,
-    )
-    if preview.finger_solving_previous is not None:
-        set_humanik_finger_solving_state(
-            preview.target_character,
-            preview.finger_solving_previous,
-            mel_module=mel_module,
+    restore_error = None
+    try:
+        apply_humanik_restore_state(
+            preview.restore_state,
+            ownership_id=preview.ownership_id,
             cmds_module=cmds_module,
+            mel_module=mel_module,
         )
+    except Exception as error:  # Preserve the restore_state failure verbatim.
+        restore_error = error
+
+    property_error = None
+    try:
+        if preview.finger_solving_previous is not None:
+            set_humanik_finger_solving_state(
+                preview.target_character,
+                preview.finger_solving_previous,
+                mel_module=mel_module,
+                cmds_module=cmds_module,
+            )
+    except Exception as error:
+        property_error = error
+    try:
+        if preview.left_elbow_kill_pitch_previous is not None:
+            set_humanik_left_elbow_kill_pitch_state(
+                preview.target_character,
+                preview.left_elbow_kill_pitch_previous,
+                mel_module=mel_module,
+                cmds_module=cmds_module,
+            )
+    except Exception as error:
+        if property_error is None:
+            property_error = error
+
+    if restore_error is not None:
+        raise restore_error
+    if property_error is not None:
+        raise property_error
     preview.active = False
 
 
