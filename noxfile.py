@@ -2165,6 +2165,63 @@ def physics_solver_cycle_probe(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def root_move_skin_parity_probe(session: nox.Session) -> None:
+    """Measure Citlali root-motion, skin products, and world-space mesh parity.
+
+    The mayapy probe performs one production import, applies a known non-zero
+    root translation, records major joints/skinClusters/mesh vertices, then
+    saves and reopens the moved scene for parity evidence.  It never zeroes or
+    bakes the root and does not modify source code or the PMX fixture.
+
+    Example:
+        uvx nox -s root_move_skin_parity_probe -- --maya 2024
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    out_value = _option(args, "--out", str(ROOT / "build/reports/root_move_skin_parity_probe.json"))
+    pmx_value = _option(
+        args,
+        "--pmx",
+        str(ROOT / "build/fixtures/citlali_ascii_file/citlali.pmx"),
+    )
+    delta_value = _option(args, "--delta", "17.5,-8.25,11.0")
+    vertices_value = _option(args, "--vertices-per-mesh", "8")
+    report_path = Path(out_value)
+    passthrough = [
+        "--pmx", pmx_value,
+        "--out", out_value,
+        "--delta", delta_value,
+        "--vertices-per-mesh", vertices_value,
+    ]
+    try:
+        report_path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        session.error(f"Unable to clear stale root move parity report {report_path}: {exc}")
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/root_move_skin_parity_probe.py"),
+        *_convert_mayapy_path_options(mayapy, passthrough, {"--pmx", "--out"}),
+        env=_mayapy_env(
+            mayapy,
+            MAYA_SKIP_USERSETUP_PY="1",
+            PYTHONIOENCODING="utf-8",
+        ),
+        external=True,
+    )
+    if not report_path.is_file():
+        session.error(f"Root move parity report missing: {report_path}")
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        session.error(f"Invalid root move parity report {report_path}: {exc}")
+    if report.get("status") != "pass":
+        session.error(f"Root move parity probe failed: errors={report.get('errors')}")
+
+
+@nox.session(venv_backend="none")
 def maya_shader_override_smoke(session: nox.Session) -> None:
     """Smoke the legacy MMDShader VP2.0 override through mayapy playblast.
 
