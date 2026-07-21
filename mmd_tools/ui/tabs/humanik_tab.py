@@ -99,7 +99,7 @@ class HumanIkTab(BaseTab):
     _TRANSLATION_REGISTRY = (
         ("character_combo_label", "setText", "humanik_character", "labels"),
         ("source_combo_label", "setText", "humanik_source", "labels"),
-        ("source_combo", "setToolTip", "humanik_source_mmd_only_tooltip", "messages"),
+        ("source_combo", "setToolTip", "humanik_source_tooltip", "messages"),
         ("bake_start_label", "setText", "humanik_bake_start", "labels"),
         ("bake_end_label", "setText", "humanik_bake_end", "labels"),
         ("refresh_btn", "setText", "refresh", "buttons"),

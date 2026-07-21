@@ -702,7 +702,7 @@ def _setup_and_characterize(model_root: Optional[str] = None):
             "profile": profile,
             "error": summary,
         }
-    _display_info(_setup_confirmation_message(root, body_report, ownership_report, full_report))
+    _display_info(_setup_summary_message(root, body_report, ownership_report, full_report))
     warning = _stance_warning_message(binding)
     if warning:
         _display_warning(warning)
@@ -770,7 +770,7 @@ def _enter_target_mode(model_root: Optional[str] = None):
         )
         raise RuntimeError(f"HumanIK target preview blocked: {labels}")
     result = session.enter_target_mode(root)
-    _display_info(_target_confirmation_message(root, report))
+    _display_info(_target_preview_summary_message(root, report))
     return result
 
 
@@ -829,7 +829,13 @@ def _show_diagnostics():
     return report
 
 
-def _setup_confirmation_message(root, model_report, ownership_report, full_report=None):
+def _setup_summary_message(root, model_report, ownership_report, full_report=None):
+    """Return the informational summary shown after a successful characterize.
+
+    HUMANIK-FRONTEND-1 Phase B6: profile selection is gone (characterize always
+    runs with the full profile), so this is no longer a "Set up HumanIK?"
+    confirmation -- it reports what characterize already did.
+    """
     blockers = ownership_report.get("blockers", [])
     unresolved = len(model_report.get("missingMmdBones", []))
     ambiguous = len(model_report.get("ambiguous", []))
@@ -844,9 +850,8 @@ def _setup_confirmation_message(root, model_report, ownership_report, full_repor
         finger_count = max(full_count - body_count, 0)
     lines = [
         "HumanIK is experimental.",
-        f"Set up HumanIK for {_short_model_label(root)}?",
-        f"Body only: {body_count} bones (default)",
-        f"Body + fingers: {body_count + finger_count} bones ({finger_count} finger bones)",
+        f"Characterized {_short_model_label(root)} with the full profile: "
+        f"{body_count + finger_count} bones ({finger_count} finger bones).",
         "The arms are aligned temporarily, then the original pose is restored.",
     ]
     if unresolved or ambiguous or blockers:
@@ -856,7 +861,7 @@ def _setup_confirmation_message(root, model_report, ownership_report, full_repor
     return "\n".join(lines)
 
 
-def _target_confirmation_message(root, report):
+def _target_preview_summary_message(root, report):
     """Return the informational summary shown after a TARGET preview starts.
 
     HUMANIK-FRONTEND-1 Phase B6: this used to be a "Continue?" confirmation

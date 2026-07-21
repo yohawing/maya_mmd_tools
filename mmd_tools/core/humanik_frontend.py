@@ -84,8 +84,6 @@ REASON_NO_ACTIVE_PREVIEW = "no_active_preview"
 REASON_ALREADY_CHARACTERIZED_OTHER_PROFILE = "already_characterized_other_profile"
 REASON_NOTHING_TO_RESTORE = "nothing_to_restore"
 REASON_MODEL_REQUIRED = "model_required"
-REASON_SOURCE_NOT_LOCKED = "source_not_locked"
-REASON_CHARACTER_REQUIRED = "character_required"
 
 # VMD import lock reasons, mirroring ``humanik_retarget.HumanIkImportLock.blocked``.
 REASON_IMPORT_BLOCKED_TARGET_PREVIEW = "import_blocked_target_preview"
@@ -105,6 +103,10 @@ def _action_blocked(reason_code: str, reason_text: str) -> Dict[str, Any]:
     """Return an ``actions`` entry describing a blocked operation."""
     return {"allowed": False, "reasonCode": reason_code, "reasonText": reason_text}
 
+# Historical name: this is the body-only profile constant, kept from when the
+# frontend's default assignment profile excluded fingers. Since Phase B6 the
+# UI default is ``FULL_ASSIGNMENT_PROFILE``; the name is unchanged for
+# backward compatibility with existing callers/tests.
 FRONTEND_ASSIGNMENT_PROFILE = "body-only"
 FULL_ASSIGNMENT_PROFILE = "full"
 _ASSIGNMENT_PROFILES = frozenset({FRONTEND_ASSIGNMENT_PROFILE, FULL_ASSIGNMENT_PROFILE})

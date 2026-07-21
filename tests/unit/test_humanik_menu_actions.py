@@ -474,11 +474,10 @@ class TestHumanIkMenuActions(unittest.TestCase):
             ],
         }
 
-        message = actions._setup_confirmation_message("|" + "deep_model_path_" * 30, report, report)
+        message = actions._setup_summary_message("|" + "deep_model_path_" * 30, report, report)
 
-        self.assertIn("Set up HumanIK for", message)
-        self.assertIn("Body only: 25 bones (default)", message)
-        self.assertIn("Body + fingers: 55 bones (30 finger bones)", message)
+        self.assertIn("Characterized", message)
+        self.assertIn("55 bones (30 finger bones)", message)
         self.assertIn("Issues: unresolved 0, ambiguous 0, blockers 2", message)
         self.assertNotIn(long_node, message)
         self.assertNotIn("nodes/edges", message)
@@ -486,12 +485,12 @@ class TestHumanIkMenuActions(unittest.TestCase):
         self.assertNotIn("reference residual", message)
         self.assertLessEqual(len(message), 320)
 
-        target_message = actions._target_confirmation_message("|model_root", report)
+        target_message = actions._target_preview_summary_message("|model_root", report)
         self.assertIn("blocker summary: physics_blocker (2)", target_message)
         self.assertNotIn(long_node, target_message)
         self.assertNotIn("nodes/edges", target_message)
 
-    def test_setup_confirmation_is_four_plain_lines_when_preflight_is_clean(self):
+    def test_setup_summary_is_three_plain_lines_when_preflight_is_clean(self):
         report = {
             "assignmentCount": 25,
             "excludedFingerCount": 30,
@@ -502,11 +501,11 @@ class TestHumanIkMenuActions(unittest.TestCase):
             "blockers": [],
         }
 
-        message = actions._setup_confirmation_message("|Base:Base_root", report, report)
+        message = actions._setup_summary_message("|Base:Base_root", report, report)
 
-        self.assertEqual(len(message.splitlines()), 5)
+        self.assertEqual(len(message.splitlines()), 3)
         self.assertIn("experimental", message.splitlines()[0].lower())
-        self.assertIn("Set up HumanIK for Base:Base_root?", message)
+        self.assertIn("Characterized Base:Base_root with the full profile", message)
         self.assertNotIn("mute_for_hik", message)
         self.assertNotIn("journal", message)
         self.assertNotIn("residual", message)
