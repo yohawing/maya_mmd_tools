@@ -173,6 +173,19 @@ _AIDA_HIK_PROPERTY_NAMES = (
     "LeftForeArmRollEx",
     "LeftForeArmRollMode",
     "leftElbowRoll",
+    # Lower-body controls are included for the Aida residual probe.  These
+    # values are captured before/after TARGET preview so a property hypothesis
+    # can be contrasted with the lower-leg local/bind evidence below.
+    "LeftLegFullRollExtraction",
+    "LeftLegFullRollExtractionMode",
+    "LeftLegRoll",
+    "LeftLegRollEx",
+    "LeftLegRollMode",
+    "LeftUpLegRoll",
+    "LeftUpLegRollEx",
+    "LeftUpLegRollMode",
+    "leftHipRoll",
+    "leftKneeRoll",
 )
 
 
@@ -191,7 +204,10 @@ def _humanik_property_evidence(character: str) -> Dict[str, Any]:
     available = sorted(
         str(name)
         for name in (cmds.listAttr(node) or [])
-        if any(token in str(name) for token in ("LeftArm", "LeftForeArm", "Elbow", "Roll", "Inverted"))
+        if any(
+            token in str(name)
+            for token in ("LeftArm", "LeftForeArm", "LeftLeg", "LeftUpLeg", "Elbow", "Hip", "Knee", "Roll", "Inverted")
+        )
     )
     evidence["availableArmPropertyNames"] = available
     for name in _AIDA_HIK_PROPERTY_NAMES:
@@ -244,7 +260,7 @@ def _characterization_joint_evidence(
     target_slots: Mapping[int, Mapping[str, Any]],
     slots: Sequence[int],
 ) -> List[Dict[str, Any]]:
-    """Capture local transform inputs for the arm/forearm/finger chain."""
+    """Capture local transform inputs for the Aida arm/lower-body probe."""
     rows = []
     for slot in slots:
         if slot not in source_slots or slot not in target_slots:
@@ -1402,7 +1418,7 @@ def main() -> int:
         source_hik_property_before_preview = _humanik_property_evidence(source_character)
         target_hik_property_before_preview = _humanik_property_evidence(target_character)
         characterization_joint_evidence = _characterization_joint_evidence(
-            source_slots, target_slots, (9, 10, 12, 13, 60, 84)
+            source_slots, target_slots, (2, 3, 9, 10, 12, 13, 60, 84)
         )
         target_writer_census_characterized = _nonempty_writer_rows(target_result)
         _load_motion(vmd, pmx, source_root)
