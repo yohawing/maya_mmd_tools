@@ -14,6 +14,7 @@ from typing import Any, Callable, Mapping, Optional
 from mmd_tools.core.humanik_frontend import (
     FRONTEND_ASSIGNMENT_PROFILE,
     FULL_ASSIGNMENT_PROFILE,
+    REASON_NOT_CHARACTERIZED,
     HumanIkFrontendSession,
 )
 from mmd_tools.core.logger import get_logger, install_maya_script_editor_handler
@@ -125,12 +126,21 @@ def _close_diagnostics_window():
 def resolve_model_root(
     *,
     cmds_module=None,
-) -> str:
-    """Resolve an MMD root from the current Maya selection only.
+) -> Optional[str]:
+    """Resolve an MMD root the HumanIK menu should act on.
 
-    Multiple selected roots or a selection that cannot be mapped to an MMD root
-    are rejected rather than choosing an arbitrary scene or application-state
-    fallback.
+    Priority order:
+
+    1. An explicit Maya selection wins. A selection that maps to more than one
+       distinct MMD root is rejected (ambiguous) rather than guessing.
+    2. With no selection and exactly one MMD model in the scene, that model is
+       adopted automatically -- no dialog, no error.
+    3. With no selection and two or more MMD models in the scene, a picker
+       dialog (``_dialog_choice``) is shown. Cancelling returns ``None``
+       (a quiet abort, not an error) after notifying the user via
+       ``_display_info``.
+    4. With no selection and no MMD models in the scene, a ``ValueError`` is
+       raised with a message explaining what to select.
     """
     cmds = cmds_module or _maya_cmds()
     service = SceneModelService(cmds_module=cmds)
@@ -152,7 +162,33 @@ def resolve_model_root(
         )
     if selected_roots:
         return next(iter(selected_roots))
-    raise ValueError("Select an MMD model root or one of its joints before using HumanIK")
+    if not available_models:
+        raise ValueError("Select an MMD model root or one of its joints before using HumanIK")
+    if len(available_models) == 1:
+        return next(iter(available_models))
+    return _choose_model_from_scene(available_models)
+
+
+def _choose_model_from_scene(available_models) -> Optional[str]:
+    """Show a picker dialog for two or more scene MMD models; ``None`` on cancel."""
+    sorted_roots = sorted(available_models)
+    labels = []
+    seen = set()
+    for root in sorted_roots:
+        label = _short_model_label(root)
+        if label in seen:
+            label = str(root).strip("|")
+        seen.add(label)
+        labels.append(label)
+    choice = _dialog_choice(
+        "Select MMD Model",
+        "Multiple MMD models were found in the scene. Select one to use with HumanIK.",
+        tuple(labels) + ("Cancel",),
+    )
+    if choice in labels:
+        return sorted_roots[labels.index(choice)]
+    _display_info("HumanIK: model selection cancelled.")
+    return None
 
 
 def install_humanik_menu(parent="MMD", *, cmds_module=None, callback_dispatcher=None):
@@ -224,8 +260,44 @@ def diagnostics():
     return _run_action("Diagnostics", _show_diagnostics)
 
 
+def _ensure_characterized(session, root: str, action: str) -> None:
+    """Auto-characterize ``root`` with the default profile if ``action`` needs it.
+
+    ``describe_frontend_state`` mirrors the same not-characterized guard that
+    ``enter_source_mode``/``enter_target_mode``/``create_control_rig`` would
+    otherwise raise on, so a missing characterization is treated as a
+    recoverable state rather than an error: this runs ``setup_and_characterize``
+    with the default body-only profile and notifies the user, then lets the
+    caller continue with its own operation. Reason codes other than
+    ``not_characterized`` (for example a missing SOURCE model, or a profile
+    mismatch) are left alone; only the one guard this action can self-heal is
+    handled here.
+    """
+    describe = getattr(session, "describe_frontend_state", None)
+    if not callable(describe):
+        return
+    try:
+        state = describe(root) or {}
+    except Exception:
+        return
+    action_state = (state.get("actions") or {}).get(action) or {}
+    if action_state.get("reasonCode") != REASON_NOT_CHARACTERIZED:
+        return
+    _display_info(
+        f"HumanIK: {_short_model_label(root)} is not characterized yet; "
+        "auto-characterizing with the default Body only profile."
+    )
+    session.setup_and_characterize(
+        root,
+        profile=FRONTEND_ASSIGNMENT_PROFILE,
+        include_fingers=False,
+    )
+
+
 def _setup_and_characterize():
     root = resolve_model_root(cmds_module=_cmds_module)
+    if root is None:
+        return None
     session = get_humanik_session()
     body_report = session.inspect_model(
         root,
@@ -292,12 +364,19 @@ def _stance_warning_message(binding: Any) -> Optional[str]:
 
 def _enter_source_mode():
     root = resolve_model_root(cmds_module=_cmds_module)
-    return get_humanik_session().enter_source_mode(root)
+    if root is None:
+        return None
+    session = get_humanik_session()
+    _ensure_characterized(session, root, "enter_source_mode")
+    return session.enter_source_mode(root)
 
 
 def _enter_target_mode():
     root = resolve_model_root(cmds_module=_cmds_module)
+    if root is None:
+        return None
     session = get_humanik_session()
+    _ensure_characterized(session, root, "enter_target_mode")
     report = session.inspect_target_ownership(root)
     diagnostics_fn = getattr(session, "diagnostics", None)
     lifecycle_diagnostics = diagnostics_fn() if callable(diagnostics_fn) else {}
@@ -322,12 +401,16 @@ def _enter_target_mode():
 
 def _create_control_rig():
     root = resolve_model_root(cmds_module=_cmds_module)
+    if root is None:
+        return None
+    session = get_humanik_session()
+    _ensure_characterized(session, root, "create_control_rig")
     if not _confirm(
         "Create Control Rig",
         f"Create a HumanIK Control Rig for {root}? An active preview must be restored first.",
     ):
         return None
-    return get_humanik_session().create_control_rig(root)
+    return session.create_control_rig(root)
 
 
 def _bake_to_mmd_rig():

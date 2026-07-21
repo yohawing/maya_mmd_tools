@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from mmd_tools.core.humanik_bake import HumanIkBakeResult
+from mmd_tools.core.humanik_frontend import REASON_NOT_CHARACTERIZED
 from mmd_tools.ui import humanik_menu_actions as actions
 
 
@@ -69,6 +70,16 @@ class _FakeSession:
     def diagnostics(self, root=None):
         self.calls.append(("diagnostics", root))
         return {"modelRoot": root, "preview": {"active": False}}
+
+    def describe_frontend_state(self, model_root=None):
+        self.calls.append(("describe_frontend_state", model_root))
+        return {
+            "actions": {
+                "enter_source_mode": {"reasonCode": None},
+                "enter_target_mode": {"reasonCode": None},
+                "create_control_rig": {"reasonCode": None},
+            }
+        }
 
 
 class _FakeModelService:
@@ -163,16 +174,19 @@ class TestHumanIkMenuActions(unittest.TestCase):
 
     @patch.object(actions, "SceneModelService", _FakeModelService)
     def test_model_resolution_uses_selected_root_only(self):
+        _FakeModelService.models = ["|selected_root"]
         _FakeModelService.selected_parent = {"|selected|joint": "|selected_root"}
         self.cmds.ls.return_value = ["|selected|joint"]
         self.assertEqual(actions.resolve_model_root(cmds_module=self.cmds), "|selected_root")
 
+        _FakeModelService.models = []
         self.cmds.ls.return_value = []
         with self.assertRaisesRegex(ValueError, "Select an MMD model root"):
             actions.resolve_model_root(cmds_module=self.cmds)
 
     @patch.object(actions, "SceneModelService", _FakeModelService)
     def test_model_resolution_rejects_ambiguous_selection_and_unresolved_selection(self):
+        _FakeModelService.models = ["|a_root", "|b_root"]
         _FakeModelService.selected_parent = {
             "|a|joint": "|a_root",
             "|b|joint": "|b_root",
@@ -181,9 +195,135 @@ class TestHumanIkMenuActions(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Multiple MMD model roots"):
             actions.resolve_model_root(cmds_module=self.cmds)
 
+        _FakeModelService.models = []
         self.cmds.ls.return_value = []
         with self.assertRaisesRegex(ValueError, "Select an MMD model root"):
             actions.resolve_model_root(cmds_module=self.cmds)
+
+    @patch.object(actions, "SceneModelService", _FakeModelService)
+    def test_model_resolution_auto_adopts_the_single_scene_model_without_a_dialog(self):
+        _FakeModelService.models = ["|model_root"]
+        _FakeModelService.selected_parent = {}
+        self.cmds.ls.return_value = []
+        actions._confirm_dialog = lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("no dialog should be shown for a single scene model")
+        )
+
+        self.assertEqual(actions.resolve_model_root(cmds_module=self.cmds), "|model_root")
+
+    @patch.object(actions, "SceneModelService", _FakeModelService)
+    def test_model_resolution_shows_picker_dialog_for_multiple_scene_models(self):
+        _FakeModelService.models = ["|model_a", "|model_b"]
+        _FakeModelService.selected_parent = {}
+        self.cmds.ls.return_value = []
+        dialog = {}
+
+        def choose(**kwargs):
+            dialog.update(kwargs)
+            return "model_b"
+
+        actions._confirm_dialog = choose
+
+        self.assertEqual(actions.resolve_model_root(cmds_module=self.cmds), "|model_b")
+        self.assertEqual(dialog["button"], ["model_a", "model_b", "Cancel"])
+
+    @patch.object(actions, "SceneModelService", _FakeModelService)
+    def test_model_resolution_picker_cancel_returns_none_without_error(self):
+        _FakeModelService.models = ["|model_a", "|model_b"]
+        _FakeModelService.selected_parent = {}
+        self.cmds.ls.return_value = []
+        actions._confirm_dialog = lambda **kwargs: "Cancel"
+
+        with patch.object(actions, "_display_info") as display_info:
+            self.assertIsNone(actions.resolve_model_root(cmds_module=self.cmds))
+
+        display_info.assert_called_once()
+        self.assertIn("cancelled", display_info.call_args.args[0])
+
+    @patch.object(actions, "resolve_model_root", return_value="|model_root")
+    def test_enter_source_mode_auto_characterizes_when_not_characterized(self, resolve):
+        class UncharacterizedSession(_FakeSession):
+            def describe_frontend_state(self, model_root=None):
+                self.calls.append(("describe_frontend_state", model_root))
+                return {"actions": {"enter_source_mode": {"reasonCode": REASON_NOT_CHARACTERIZED}}}
+
+        session = UncharacterizedSession()
+        actions.set_humanik_session(session)
+
+        with patch.object(actions, "_display_info") as display_info:
+            result = actions.enter_source_mode()
+
+        self.assertEqual(result, "|model_root")
+        self.assertIn(
+            (
+                "setup_and_characterize",
+                "|model_root",
+                {"profile": "body-only", "include_fingers": False},
+            ),
+            session.calls,
+        )
+        self.assertIn(("enter_source_mode", "|model_root"), session.calls)
+        display_info.assert_called_once()
+        self.assertIn("auto-characterizing", display_info.call_args.args[0])
+
+    @patch.object(actions, "resolve_model_root", return_value="|model_root")
+    def test_enter_source_mode_skips_auto_characterize_when_already_characterized(self, resolve):
+        with patch.object(actions, "_display_info") as display_info:
+            actions.enter_source_mode()
+
+        self.assertNotIn(
+            (
+                "setup_and_characterize",
+                "|model_root",
+                {"profile": "body-only", "include_fingers": False},
+            ),
+            self.session.calls,
+        )
+        display_info.assert_not_called()
+
+    @patch.object(actions, "resolve_model_root", return_value="|model_root")
+    def test_enter_target_mode_auto_characterizes_when_not_characterized(self, resolve):
+        class UncharacterizedSession(_FakeSession):
+            def describe_frontend_state(self, model_root=None):
+                return {"actions": {"enter_target_mode": {"reasonCode": REASON_NOT_CHARACTERIZED}}}
+
+        session = UncharacterizedSession()
+        actions.set_humanik_session(session)
+
+        result = actions.enter_target_mode()
+
+        self.assertEqual(result, "|model_root")
+        self.assertIn(
+            (
+                "setup_and_characterize",
+                "|model_root",
+                {"profile": "body-only", "include_fingers": False},
+            ),
+            session.calls,
+        )
+        self.assertIn(("enter_target_mode", "|model_root"), session.calls)
+
+    @patch.object(actions, "resolve_model_root", return_value="|model_root")
+    def test_create_control_rig_auto_characterizes_when_not_characterized(self, resolve):
+        class UncharacterizedSession(_FakeSession):
+            def describe_frontend_state(self, model_root=None):
+                return {"actions": {"create_control_rig": {"reasonCode": REASON_NOT_CHARACTERIZED}}}
+
+        session = UncharacterizedSession()
+        actions.set_humanik_session(session)
+
+        result = actions.create_control_rig()
+
+        self.assertTrue(result)
+        self.assertIn(
+            (
+                "setup_and_characterize",
+                "|model_root",
+                {"profile": "body-only", "include_fingers": False},
+            ),
+            session.calls,
+        )
+        self.assertIn(("create_control_rig", "|model_root"), session.calls)
 
     @patch.object(actions, "resolve_model_root", return_value="|model_root")
     def test_setup_cancel_does_not_mutate_and_continue_runs_automatic_stance(self, resolve):
