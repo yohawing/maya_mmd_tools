@@ -98,11 +98,8 @@
     "log_entries": "ログ",
     "search_results": "件",
     "not_found": "見つかりません",
-    "humanik_mode": "モード:",
     "humanik_character": "キャラクタ:",
     "humanik_source": "SOURCE:",
-    "humanik_target": "TARGET:",
-    "humanik_control_rigs": "Control Rig:",
     "humanik_bake_start": "開始:",
     "humanik_bake_end": "終了:",
     "humanik_none": "(なし)"
@@ -244,6 +241,7 @@
     "humanik_mode_source": "Source",
     "humanik_mode_target_preview": "Targetプレビュー",
     "humanik_mode_control_rig": "Control Rig",
+    "humanik_status_control_rig_suffix": " / コントロールリグ: {count}",
     "humanik_reason_preview_active": "HumanIKターゲットプレビューが既にアクティブです。",
     "humanik_reason_not_characterized": "モデルはまだキャラクタライズされていません。",
     "humanik_reason_no_source": "先にSourceモードに入ってください。",
@@ -341,12 +339,7 @@
     "physics_objects": "物理オブジェクト",
     "details": "詳細",
     "rigid_body_values": "剛体の値",
-    "joint_values": "ジョイントの値",
-    "humanik_status": "HumanIK 状態",
-    "humanik_actions": "HumanIK 操作",
-    "humanik_section_control_rig": "コントロールリグ",
-    "humanik_section_bake": "ベイク",
-    "humanik_section_restore_diagnostics": "復元 / 診断"
+    "joint_values": "ジョイントの値"
   },
   "checkboxes": {
     "use_namespace": "ネームスペースを使用",

@@ -98,11 +98,8 @@
     "log_entries": "Logs",
     "search_results": "results",
     "not_found": "Not found",
-    "humanik_mode": "Mode:",
     "humanik_character": "Character:",
     "humanik_source": "SOURCE:",
-    "humanik_target": "TARGET:",
-    "humanik_control_rigs": "Control Rigs:",
     "humanik_bake_start": "Start:",
     "humanik_bake_end": "End:",
     "humanik_none": "(none)"
@@ -244,6 +241,7 @@
     "humanik_mode_source": "Source",
     "humanik_mode_target_preview": "Target Preview",
     "humanik_mode_control_rig": "Control Rig",
+    "humanik_status_control_rig_suffix": " / Control Rig: {count}",
     "humanik_reason_preview_active": "A HumanIK target preview is already active.",
     "humanik_reason_not_characterized": "The model is not characterized yet.",
     "humanik_reason_no_source": "Enter Source Mode first.",
@@ -341,12 +339,7 @@
     "physics_objects": "Physics Objects",
     "details": "Details",
     "rigid_body_values": "Rigid Body Values",
-    "joint_values": "Joint Values",
-    "humanik_status": "HumanIK Status",
-    "humanik_actions": "HumanIK Actions",
-    "humanik_section_control_rig": "Control Rig",
-    "humanik_section_bake": "Bake",
-    "humanik_section_restore_diagnostics": "Restore / Diagnostics"
+    "joint_values": "Joint Values"
   },
   "checkboxes": {
     "use_namespace": "Use Namespace",

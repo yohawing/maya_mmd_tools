@@ -37,6 +37,7 @@ class TestHumanIkTabGUI(GuiTestBase):
         try:
             self.assertTrue(tab.experimental_notice_label.text())
             self.assertTrue(tab.restore_explanation_label.text())
+            self.assertTrue(tab.status_label.text())
             self.assertFalse(tab.orphaned_warning_label.isVisible())
             self.assertFalse(tab.import_lock_warning_label.isVisible())
             # HUMANIK-FRONTEND-1 Phase B4: Setup/Characterize, Enter Source
@@ -44,9 +45,26 @@ class TestHumanIkTabGUI(GuiTestBase):
             # on this tab -- the Character/Source combos replace them.
             for attr in ("setup_characterize_btn", "enter_source_btn", "enter_target_btn"):
                 self.assertFalse(hasattr(tab, attr), attr)
+            # Phase B5 (user feedback): the four-row Mode/Source/Target/
+            # Control Rigs status table and the three collapsible action
+            # sections are both gone -- replaced by ``status_label`` and a
+            # flat button stack.
+            for attr in (
+                "humanik_status_group",
+                "humanik_actions_group",
+                "mode_value_label",
+                "source_value_label",
+                "target_value_label",
+                "control_rigs_value_label",
+                "control_rig_section",
+                "bake_section",
+                "restore_section",
+            ):
+                self.assertFalse(hasattr(tab, attr), attr)
             for attr in (
                 "character_combo",
                 "source_combo",
+                "status_label",
                 "bake_btn",
                 "create_control_rig_btn",
                 "restore_btn",
@@ -84,14 +102,14 @@ class TestHumanIkTabGUI(GuiTestBase):
             tab.deleteLater()
             QApplication.processEvents()
 
-    def test_set_state_renders_mode_source_target_and_blocked_reason(self):
+    def test_set_state_renders_mode_status_and_blocked_reason(self):
         tab = HumanIkTab()
         try:
             state = {
                 "mode": "source",
                 "source": {"modelRoot": "|Model", "character": "ModelChar"},
                 "target": None,
-                "controlRigs": [],
+                "controlRigs": [{"modelRoot": "|Rig", "character": "ModelChar"}],
                 "restoreHint": {"orphanedControlRigs": []},
                 "actions": {
                     "setup_and_characterize": {"allowed": True, "reasonCode": None},
@@ -110,7 +128,11 @@ class TestHumanIkTabGUI(GuiTestBase):
             tab.set_state(state)
             QApplication.processEvents()
 
-            self.assertIn("ModelChar", tab.source_value_label.text())
+            # Source/Target are no longer duplicated in the status label
+            # (they are already visible via the Character/Source combos) --
+            # only the mode text and a Control Rig count suffix remain
+            # (HUMANIK-FRONTEND-1 Phase B5).
+            self.assertIn("1", tab.status_label.text())
             self.assertFalse(tab.bake_btn.isEnabled())
             self.assertTrue(tab.create_control_rig_btn.isEnabled())
             self.assertFalse(tab.orphaned_warning_label.isVisible())

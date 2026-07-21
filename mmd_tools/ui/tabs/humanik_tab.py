@@ -4,8 +4,15 @@ Pair-specified retarget layout (HUMANIK-FRONTEND-1 Phase B4), modeled after
 Maya's own HumanIK "Character Controls" panel: a "Character" combo (the MMD
 model this window currently acts on) and a "Source" combo ("None" plus every
 other scene MMD model -- picking a model there *is* the retarget-connect
-trigger, picking "None" disconnects), followed by the existing status header
-and a set of collapsible action sections.
+trigger, picking "None" disconnects), followed by a compact one-line status
+label and a flat, always-visible column of action buttons.
+
+Phase B5 (user feedback) simplified the layout further: the Refresh button
+moved to the top (next to the Experimental notice), the four-row Mode/
+Source/Target/Control Rigs status table collapsed into a single status
+label, and the three collapsible ``QGroupBox`` action sections were flattened
+into a plain vertical stack of buttons -- there is nothing left to expand or
+collapse.
 
 The single-model "Enter Source Mode"/"Enter Target Mode"/"Setup / Characterize"
 buttons from the previous layout are gone from this View entirely -- the two
@@ -20,13 +27,12 @@ from ..combo_box_utils import configure_model_combo_width
 from ..qt_compat import (
     QComboBox,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
-    QWidget,
 )
 from ..base_tab import BaseTab
 from .translation_registry import apply_translation_registry
@@ -91,18 +97,9 @@ class HumanIkTab(BaseTab):
     """Pair-specified HumanIK retarget UI: Character/Source combos + status + actions."""
 
     _TRANSLATION_REGISTRY = (
-        ("humanik_status_group", "setTitle", "humanik_status", "groups"),
-        ("humanik_actions_group", "setTitle", "humanik_actions", "groups"),
         ("character_combo_label", "setText", "humanik_character", "labels"),
         ("source_combo_label", "setText", "humanik_source", "labels"),
         ("source_combo", "setToolTip", "humanik_source_mmd_only_tooltip", "messages"),
-        ("mode_label_title", "setText", "humanik_mode", "labels"),
-        ("source_label_title", "setText", "humanik_source", "labels"),
-        ("target_label_title", "setText", "humanik_target", "labels"),
-        ("control_rigs_label_title", "setText", "humanik_control_rigs", "labels"),
-        ("control_rig_section", "setTitle", "humanik_section_control_rig", "groups"),
-        ("bake_section", "setTitle", "humanik_section_bake", "groups"),
-        ("restore_section", "setTitle", "humanik_section_restore_diagnostics", "groups"),
         ("bake_start_label", "setText", "humanik_bake_start", "labels"),
         ("bake_end_label", "setText", "humanik_bake_end", "labels"),
         ("refresh_btn", "setText", "refresh", "buttons"),
@@ -115,31 +112,32 @@ class HumanIkTab(BaseTab):
         self.setObjectName("HumanIkTab")
         self._action_buttons = {}
         self._reason_labels = {}
+        self._last_mode = "neutral"
+        self._last_control_rig_count = 0
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
 
+        # Top row: Experimental notice (left, stretches) + Refresh button
+        # (right-aligned, same row) -- moved up from the bottom of the tab
+        # per HUMANIK-FRONTEND-1 Phase B5 user feedback so it is reachable
+        # without scrolling past every action button first.
+        top_row = QHBoxLayout()
         self.experimental_notice_label = QLabel(self.tr("humanik_experimental_notice", "messages"))
         self.experimental_notice_label.setWordWrap(True)
         self.experimental_notice_label.setStyleSheet("font-weight: bold;")
-        main_layout.addWidget(self.experimental_notice_label)
+        top_row.addWidget(self.experimental_notice_label, 1)
+        self.refresh_btn = QPushButton(self.tr("refresh", "buttons"))
+        top_row.addWidget(self.refresh_btn)
+        main_layout.addLayout(top_row)
 
         main_layout.addLayout(self._create_model_selection_section())
-        main_layout.addWidget(self._create_status_section())
+        main_layout.addWidget(self._create_status_label())
         main_layout.addWidget(self._create_import_lock_warning_section())
         main_layout.addWidget(self._create_orphaned_warning_section())
         main_layout.addWidget(self._create_control_rig_watch_warning_section())
-        main_layout.addWidget(self._create_actions_section())
 
-        self.restore_explanation_label = QLabel(self.tr("humanik_restore_explanation", "messages"))
-        self.restore_explanation_label.setWordWrap(True)
-        main_layout.addWidget(self.restore_explanation_label)
-
-        refresh_layout = QHBoxLayout()
-        self.refresh_btn = QPushButton(self.tr("refresh", "buttons"))
-        refresh_layout.addWidget(self.refresh_btn)
-        refresh_layout.addStretch()
-        main_layout.addLayout(refresh_layout)
+        self._build_actions(main_layout)
 
         main_layout.addStretch()
 
@@ -171,29 +169,18 @@ class HumanIkTab(BaseTab):
 
         return form
 
-    def _create_status_section(self):
-        self.humanik_status_group = QGroupBox(self.tr("humanik_status", "groups"))
-        form = QFormLayout()
+    def _create_status_label(self):
+        """Build the single-line status label (HUMANIK-FRONTEND-1 Phase B5).
 
-        self.mode_label_title = QLabel(self.tr("humanik_mode", "labels"))
-        self.mode_value_label = QLabel(self._mode_text("neutral"))
-        form.addRow(self.mode_label_title, self.mode_value_label)
-
-        self.source_label_title = QLabel(self.tr("humanik_source", "labels"))
-        self.source_value_label = QLabel(self.tr("humanik_none", "labels"))
-        form.addRow(self.source_label_title, self.source_value_label)
-
-        self.target_label_title = QLabel(self.tr("humanik_target", "labels"))
-        self.target_value_label = QLabel(self.tr("humanik_none", "labels"))
-        form.addRow(self.target_label_title, self.target_value_label)
-
-        self.control_rigs_label_title = QLabel(self.tr("humanik_control_rigs", "labels"))
-        self.control_rigs_value_label = QLabel(self.tr("humanik_none", "labels"))
-        self.control_rigs_value_label.setWordWrap(True)
-        form.addRow(self.control_rigs_label_title, self.control_rigs_value_label)
-
-        self.humanik_status_group.setLayout(form)
-        return self.humanik_status_group
+        Replaces the previous four-row Mode/Source/Target/Control Rigs
+        status table: SOURCE/TARGET are already visible via the Character/
+        Source combos above, so the only information this label still needs
+        to carry is the current mode plus, when at least one Control Rig
+        exists, a compact count suffix (see ``_status_text``).
+        """
+        self.status_label = QLabel(self._status_text("neutral", 0))
+        self.status_label.setWordWrap(True)
+        return self.status_label
 
     def _create_import_lock_warning_section(self):
         # Single-line state-header warning for ``describe_frontend_state()``'s
@@ -249,38 +236,18 @@ class HumanIkTab(BaseTab):
         )
         self.control_rig_watch_warning_label.show()
 
-    def _create_collapsible_section(self, title_key):
-        """Return a checkable ``QGroupBox`` whose body hides when unchecked.
+    def _build_actions(self, main_layout):
+        """Lay out the action buttons as a flat vertical stack.
 
-        The body lives in a child ``QWidget`` so the checkbox/title stays
-        visible while collapsed (Qt does not offer a built-in collapsible
-        group box). Returns ``(group_box, content_layout)`` -- callers add
-        their rows/widgets to ``content_layout``.
+        HUMANIK-FRONTEND-1 Phase B5 removed the three collapsible
+        ``QGroupBox`` sections (Control Rig / Bake / Restore-Diagnostics) --
+        there was nothing to actually collapse in practice, so the buttons
+        are added directly to ``main_layout`` instead: Create Control Rig,
+        then the Bake frame-range row followed by Bake to MMD Rig, then
+        Restore MMD Rig plus its explanation text, then Diagnostics.
         """
-        group = QGroupBox(self.tr(title_key, "groups"))
-        group.setCheckable(True)
-        group.setChecked(True)
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        outer_layout = QVBoxLayout()
-        outer_layout.setContentsMargins(4, 4, 4, 4)
-        outer_layout.addWidget(content)
-        group.setLayout(outer_layout)
-        group.toggled.connect(content.setVisible)
-        return group, content_layout
+        self._add_action_row(main_layout, "create_control_rig_btn", "humanik_create_control_rig")
 
-    def _create_actions_section(self):
-        self.humanik_actions_group = QGroupBox(self.tr("humanik_actions", "groups"))
-        layout = QVBoxLayout()
-
-        self.control_rig_section, control_rig_layout = self._create_collapsible_section(
-            "humanik_section_control_rig"
-        )
-        self._add_action_row(control_rig_layout, "create_control_rig_btn", "humanik_create_control_rig")
-        layout.addWidget(self.control_rig_section)
-
-        self.bake_section, bake_layout = self._create_collapsible_section("humanik_section_bake")
         bake_row = QHBoxLayout()
         self.bake_start_label = QLabel(self.tr("humanik_bake_start", "labels"))
         self.bake_start_spin = QSpinBox()
@@ -292,29 +259,33 @@ class HumanIkTab(BaseTab):
         bake_row.addWidget(self.bake_start_spin)
         bake_row.addWidget(self.bake_end_label)
         bake_row.addWidget(self.bake_end_spin)
-        bake_layout.addLayout(bake_row)
-        self._add_action_row(bake_layout, "bake_btn", "humanik_bake")
-        layout.addWidget(self.bake_section)
+        main_layout.addLayout(bake_row)
+        self._add_action_row(main_layout, "bake_btn", "humanik_bake")
 
-        self.restore_section, restore_layout = self._create_collapsible_section(
-            "humanik_section_restore_diagnostics"
-        )
-        self._add_action_row(restore_layout, "restore_btn", "humanik_restore")
-        self._add_action_row(restore_layout, "diagnostics_btn", "humanik_diagnostics")
-        layout.addWidget(self.restore_section)
+        self._add_action_row(main_layout, "restore_btn", "humanik_restore")
+        self.restore_explanation_label = QLabel(self.tr("humanik_restore_explanation", "messages"))
+        self.restore_explanation_label.setWordWrap(True)
+        self.restore_explanation_label.setStyleSheet("color: #808080; font-size: 90%;")
+        main_layout.addWidget(self.restore_explanation_label)
 
-        self.humanik_actions_group.setLayout(layout)
-        return self.humanik_actions_group
+        self._add_action_row(main_layout, "diagnostics_btn", "humanik_diagnostics")
 
     def _add_action_row(self, layout, attr, label_key):
-        row = QHBoxLayout()
+        """Add a full-width action button plus its (initially hidden) reason label.
+
+        The reason label sits on its own row below the button -- rather than
+        beside it -- so the button itself can stretch to the tab's full
+        width (per HUMANIK-FRONTEND-1 Phase B5's flat layout), while the
+        disabled-button explanation still has room to wrap.
+        """
         button = QPushButton(self.tr(label_key, "buttons"))
+        button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        layout.addWidget(button)
         reason_label = QLabel("")
         reason_label.setWordWrap(True)
         reason_label.setStyleSheet("color: #a05a00;")
-        row.addWidget(button)
-        row.addWidget(reason_label, 1)
-        layout.addLayout(row)
+        reason_label.hide()
+        layout.addWidget(reason_label)
         setattr(self, attr, button)
         self._action_buttons[attr] = button
         self._reason_labels[attr] = reason_label
@@ -334,28 +305,29 @@ class HumanIkTab(BaseTab):
             return str(reason_code)
         return self.tr(key, "messages")
 
+    def _status_text(self, mode, control_rig_count):
+        """Compose the single-line status label's text.
+
+        HUMANIK-FRONTEND-1 Phase B5: SOURCE/TARGET are already visible via
+        the Character/Source combos, so the status line only carries the
+        mode plus, when at least one Control Rig exists, a compact
+        "/ Control Rig: N" suffix.
+        """
+        text = self._mode_text(mode)
+        if control_rig_count:
+            text += self.tr("humanik_status_control_rig_suffix", "messages").format(
+                count=control_rig_count
+            )
+        return text
+
     def set_state(self, state):
         """Render a ``describe_frontend_state()`` snapshot (or ``{}``) onto the tab."""
         state = state or {}
-        self.mode_value_label.setText(self._mode_text(state.get("mode", "neutral")))
-
-        source = state.get("source")
-        self.source_value_label.setText(
-            self._format_binding(source) if source else self.tr("humanik_none", "labels")
-        )
-
-        target = state.get("target")
-        self.target_value_label.setText(
-            self._format_binding(target) if target else self.tr("humanik_none", "labels")
-        )
-
+        mode = state.get("mode", "neutral")
         control_rigs = state.get("controlRigs") or []
-        if control_rigs:
-            self.control_rigs_value_label.setText(
-                "\n".join(self._format_binding(row) for row in control_rigs)
-            )
-        else:
-            self.control_rigs_value_label.setText(self.tr("humanik_none", "labels"))
+        self._last_mode = mode
+        self._last_control_rig_count = len(control_rigs)
+        self.status_label.setText(self._status_text(mode, self._last_control_rig_count))
 
         import_lock = state.get("importLock") or {}
         if import_lock.get("blocked"):
@@ -395,13 +367,6 @@ class HumanIkTab(BaseTab):
                 reason_label.setText(reason_text)
                 reason_label.setVisible(bool(reason_text))
             button.setToolTip(reason_text)
-
-    @staticmethod
-    def _format_binding(binding):
-        model_root = binding.get("modelRoot") or ""
-        character = binding.get("character") or ""
-        name = model_root.rsplit("|", 1)[-1] if model_root else ""
-        return f"{name} [{character}]" if character else (name or "-")
 
     # -- Character/Source combo rendering --------------------------------
 
@@ -458,3 +423,4 @@ class HumanIkTab(BaseTab):
             button = self._action_buttons.get(attr)
             if button is not None:
                 button.setText(self.tr(label_key, "buttons"))
+        self.status_label.setText(self._status_text(self._last_mode, self._last_control_rig_count))

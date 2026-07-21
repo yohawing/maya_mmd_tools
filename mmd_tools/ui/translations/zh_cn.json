@@ -98,11 +98,8 @@
     "search_results": "条",
     "not_found": "未找到",
     "namespace_placeholder": "自动生成",
-    "humanik_mode": "模式:",
     "humanik_character": "角色:",
     "humanik_source": "SOURCE:",
-    "humanik_target": "TARGET:",
-    "humanik_control_rigs": "Control Rig:",
     "humanik_bake_start": "起始:",
     "humanik_bake_end": "结束:",
     "humanik_none": "(无)"
@@ -185,6 +182,7 @@
     "humanik_mode_source": "Source",
     "humanik_mode_target_preview": "Target 预览",
     "humanik_mode_control_rig": "Control Rig",
+    "humanik_status_control_rig_suffix": " / 控制器: {count}",
     "humanik_reason_preview_active": "HumanIK Target 预览已激活。",
     "humanik_reason_not_characterized": "模型尚未角色化。",
     "humanik_reason_no_source": "请先进入 Source 模式。",
@@ -282,12 +280,7 @@
     "physics_objects": "物理对象",
     "details": "详细信息",
     "rigid_body_values": "刚体数值",
-    "joint_values": "关节数值",
-    "humanik_status": "HumanIK 状态",
-    "humanik_actions": "HumanIK 操作",
-    "humanik_section_control_rig": "控制器",
-    "humanik_section_bake": "烘焙",
-    "humanik_section_restore_diagnostics": "恢复 / 诊断"
+    "joint_values": "关节数值"
   },
   "checkboxes": {
     "use_namespace": "使用命名空间",

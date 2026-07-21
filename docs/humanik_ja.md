@@ -21,9 +21,11 @@ HumanIK Editorは、MMD Editor（`MMD > MMD Editor`）とは別の**独立した
 
 ## 画面構成
 
-HumanIK Editorの上部には、太字で以下の注意書きが常時表示されます。
+HumanIK Editorの最上部には、太字の注意書きと `Refresh` ボタンが1行に並んで常時表示されます。
 
-> HumanIK対応は試験的機能です。予告なく変更される場合があります。
+> HumanIK対応は試験的機能です。予告なく変更される場合があります。　　　　　　　　　　[Refresh]
+
+`Refresh` ボタンは以前はEditorの最下部にありましたが、ユーザーfeedbackにより最上部（注意書きの行）に移動しました。押すと、シーンを再スキャンしてCharacter/Sourceコンボ・ステータス行・各ボタンの有効状態を最新化します。
 
 ### Character（キャラクター）コンボ
 
@@ -44,26 +46,29 @@ HumanIK Editorの上部には、太字で以下の注意書きが常時表示さ
 
 Sourceコンボの表示は、ユーザーが最後にクリックした値ではなく、常にバックエンドの実際の状態（`describe_frontend_state()` が返すSOURCEバインディング）に同期されます。接続や切断が失敗・キャンセルされた場合、コンボは実際の状態に戻ります。
 
-### ステータス（Status）セクション
+### ステータス行
 
-現在の状態を表示するグループです。
+以前はMode/Source/Target/Control Rigsの4行テーブル（Statusグループ）でしたが、ユーザーfeedbackにより**1行のステータスラベル**に簡素化されました。Source/Targetの情報は上部のCharacter/Sourceコンボと重複するため撤去され、ステータス行には次の内容のみが表示されます。
 
-| 項目 | 内容 |
-|---|---|
-| Mode | `neutral` / `source` / `target_preview` / `control_rig` のいずれか |
-| Source | 現在SOURCEとして接続されているモデル（未接続時は「None」） |
-| Target | 現在TARGETプレビュー中のモデル（未接続時は「None」） |
-| Control Rigs | このセッションが把握しているControl Rigの一覧（無ければ「None」） |
+- 現在のMode（`neutral` / `source` / `target_preview` / `control_rig` のいずれかに対応する文言）
+- Control Rigが1つ以上存在する場合のみ、`/ Control Rig: N`（Nは件数）という接尾辞
 
-### アクションセクション
+例: `Control Rig / Control Rig: 1`
 
-以下の3つの折りたたみ可能なセクションがあります（見出しをクリックすると内容を隠す／表示できます）。
+この下に、importLock警告（赤字）や孤立Control Rig警告・Control Rig watch警告（オレンジ字）が、条件を満たす場合のみ表示されます（表示条件は以前と同じです）。
 
-1. **Control Rig** — `Create Control Rig` ボタン。
-2. **Bake** — 開始フレーム／終了フレームのSpinBoxと `Bake to MMD Rig` ボタン。
-3. **Restore / Diagnostics** — `Restore MMD Rig` ボタンと `Diagnostics` ボタン。
+### アクションボタン
 
-各ボタンが無効な場合は、その理由がボタンの隣にオレンジ色のテキストで（ツールチップにも同じ文言で）表示されます。
+以前は3つの折りたたみ可能なセクション（Control Rig / Bake / Restore / Diagnostics）にまとめられていましたが、ユーザーfeedbackにより**フラットな縦積みのボタン列**に変更されました。上から順に次のように並びます。
+
+1. `Create Control Rig` ボタン（全幅）
+2. 開始フレーム／終了フレームのSpinBox（1行）
+3. `Bake to MMD Rig` ボタン（全幅）
+4. `Restore MMD Rig` ボタン（全幅）
+5. Restoreの説明文（小さめ・グレー文字、内容は変更なし）
+6. `Diagnostics` ボタン（全幅）
+
+各ボタンが無効な場合は、その理由がボタンの下にオレンジ色のテキストで（ツールチップにも同じ文言で）表示されます。
 
 ## 接続時に自動で行われること
 

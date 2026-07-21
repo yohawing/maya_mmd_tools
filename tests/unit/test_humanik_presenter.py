@@ -543,17 +543,16 @@ class TestHumanIkTabSetState(unittest.TestCase):
     def _make_fake_tab(self):
         fake = SimpleNamespace()
         fake.tr = lambda key, category=None: UITranslator.instance().translate(key, category)
-        fake.mode_value_label = Mock()
-        fake.source_value_label = Mock()
-        fake.target_value_label = Mock()
-        fake.control_rigs_value_label = Mock()
+        fake.status_label = Mock()
         fake.orphaned_warning_label = Mock()
         fake.import_lock_warning_label = Mock()
         fake._action_buttons = {attr: Mock() for attr in ACTION_KEY_TO_BUTTON.values()}
         fake._reason_labels = {attr: Mock() for attr in ACTION_KEY_TO_BUTTON.values()}
+        fake._last_mode = "neutral"
+        fake._last_control_rig_count = 0
         fake._mode_text = HumanIkTab._mode_text.__get__(fake)
         fake.reason_text = HumanIkTab.reason_text.__get__(fake)
-        fake._format_binding = HumanIkTab._format_binding
+        fake._status_text = HumanIkTab._status_text.__get__(fake)
         return fake
 
     def test_orphaned_control_rigs_show_a_warning(self):
