@@ -11,9 +11,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
-from mmd_tools.core.humanik_builder import ensure_humanik_mel_loaded
+from mmd_tools.core.humanik_builder import ensure_humanik_mel_loaded, get_humanik_definition_lock_state
 from mmd_tools.core.humanik_resolver import HumanIkBoneAssignment, HumanIkResolveResult
 from mmd_tools.core.humanik_utils import maya_cmds, maya_mel, mel_string
+from mmd_tools.services.scene_model_service import SceneModelService
 
 
 HUMANIK_DIRECT_INPUT_TYPE = 3
@@ -189,6 +190,69 @@ def describe_humanik_import_lock(
     if input_source.strip():
         return HumanIkImportLock("target_preview", character, input_source, False)
     return HumanIkImportLock(None, character, input_source, False)
+
+
+def list_scene_hik_characters(
+    cmds_module=None,
+    mel_module=None,
+) -> List[Dict[str, Any]]:
+    """Enumerate every ``HIKCharacterNode`` in the scene as scene facts.
+
+    Used by ``HumanIkFrontendSession.enter_external_source_mode`` (and any UI
+    that needs to offer a SOURCE picker) to distinguish MMD-characterized
+    characters -- which already have a dedicated ``enter_source_mode`` path
+    keyed by model root -- from external/mocap characters characterized
+    outside mmd_tools, and to report whether each character's definition is
+    locked (the external-source precondition).
+
+    This intentionally never consults ``HumanIkFrontendSession`` state: it is
+    a pure scene-fact scan, so it keeps working after a fresh Python session
+    or plain Maya HumanIK UI use, matching ``find_humanik_character_for_model``.
+
+    Args:
+        cmds_module: Optional Maya ``cmds`` compatible module for tests.
+        mel_module: Optional Maya ``mel`` compatible module for tests.
+
+    Returns:
+        A list of ``{"character", "isMmd", "modelRoot", "locked"}`` dicts,
+        one per ``HIKCharacterNode`` found, sorted by character name.  Any
+        Maya query failure (missing plugin, non-Maya test process) returns an
+        empty list rather than raising -- fail-soft, matching every other
+        scene-fact helper in this module.
+    """
+    cmds = cmds_module or maya_cmds()
+    try:
+        characters = sorted(str(item) for item in (cmds.ls(type=HIK_CHARACTER_NODE_TYPE) or []))
+    except Exception:
+        return []
+    mmd_character_to_model: Dict[str, str] = {}
+    try:
+        model_roots = SceneModelService(cmds_module=cmds).list_mmd_models()
+    except Exception:
+        model_roots = []
+    for model_root in model_roots:
+        try:
+            character = find_humanik_character_for_model(model_root, cmds_module=cmds)
+        except Exception:
+            continue
+        if character:
+            mmd_character_to_model[character] = model_root
+    rows: List[Dict[str, Any]] = []
+    for character in characters:
+        try:
+            locked = bool(get_humanik_definition_lock_state(character, mel_module=mel_module))
+        except Exception:
+            locked = False
+        model_root = mmd_character_to_model.get(character)
+        rows.append(
+            {
+                "character": character,
+                "isMmd": model_root is not None,
+                "modelRoot": model_root,
+                "locked": locked,
+            }
+        )
+    return rows
 
 
 def _model_hierarchy_nodes(cmds, model_root: str) -> List[str]:

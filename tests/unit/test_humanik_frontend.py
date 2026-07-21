@@ -580,5 +580,149 @@ class TestHumanIkFrontend(unittest.TestCase):
         self.assertIsNone(session._preview)
 
 
+class FakeHikSceneCmds:
+    """Minimal ``cmds`` double for external-source scene scans.
+
+    Only the one call ``enter_external_source_mode`` makes directly:
+    ``ls(type="HIKCharacterNode")``.
+    """
+
+    def __init__(self, characters=()):
+        self.characters = list(characters)
+
+    def ls(self, type=None):
+        if type == "HIKCharacterNode":
+            return list(self.characters)
+        return []
+
+
+class TestExternalSourceMode(unittest.TestCase):
+    """HUMANIK-EXTERNAL-SOURCE-1 ES-1: a non-MMD, already-locked scene HIK
+    character selected as SOURCE via ``enter_external_source_mode``."""
+
+    @staticmethod
+    def _session(characters=("Character_mocap",)):
+        return HumanIkFrontendSession(
+            cmds_module=FakeHikSceneCmds(characters),
+            stance_transaction_factory=FakeStance,
+        )
+
+    def test_rejects_empty_character(self):
+        session = self._session()
+
+        with self.assertRaises(ValueError):
+            session.enter_external_source_mode("   ")
+
+    def test_rejects_character_not_in_scene(self):
+        session = self._session(characters=())
+
+        with self.assertRaisesRegex(RuntimeError, "not found in scene"):
+            session.enter_external_source_mode("Character_mocap")
+
+    @patch("mmd_tools.core.humanik_frontend.get_humanik_definition_lock_state", return_value=False)
+    def test_rejects_unlocked_character(self, lock_state):
+        session = self._session()
+
+        with self.assertRaisesRegex(RuntimeError, "locked"):
+            session.enter_external_source_mode("Character_mocap")
+
+    @patch("mmd_tools.core.humanik_frontend.get_humanik_definition_lock_state", return_value=True)
+    def test_success_sets_external_source_state(self, lock_state):
+        session = self._session()
+
+        result = session.enter_external_source_mode("Character_mocap")
+
+        self.assertEqual(
+            result, {"character": "Character_mocap", "external": True, "locked": True}
+        )
+        self.assertEqual(session._external_source_character, "Character_mocap")
+        self.assertIsNone(session._source_model_root)
+
+    def test_active_preview_rejects_mutation(self):
+        session = self._session()
+        session._preview = FakePreview()
+
+        with self.assertRaisesRegex(RuntimeError, "active"):
+            session.enter_external_source_mode("Character_mocap")
+
+    @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
+    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
+    @patch("mmd_tools.core.humanik_frontend.get_humanik_definition_lock_state", return_value=True)
+    def test_entering_mmd_source_clears_external_source(self, lock_state, resolve, create, lock):
+        session = self._session()
+        session.enter_external_source_mode("Character_mocap")
+        session.setup_and_characterize("|source")
+
+        session.enter_source_mode("|source")
+
+        self.assertIsNone(session._external_source_character)
+        self.assertEqual(session._source_model_root, "|source")
+
+    @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
+    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
+    @patch("mmd_tools.core.humanik_frontend.get_humanik_definition_lock_state", return_value=True)
+    def test_entering_external_source_clears_mmd_source(self, lock_state, resolve, create, lock):
+        session = self._session()
+        session.setup_and_characterize("|source")
+        session.enter_source_mode("|source")
+
+        session.enter_external_source_mode("Character_mocap")
+
+        self.assertIsNone(session._source_model_root)
+        self.assertEqual(session._external_source_character, "Character_mocap")
+
+    @patch("mmd_tools.core.humanik_frontend.get_humanik_definition_lock_state", return_value=True)
+    @patch("mmd_tools.core.humanik_frontend.begin_humanik_target_preview", return_value=FakePreview())
+    @patch("mmd_tools.core.humanik_frontend.collect_hik_ownership_report", return_value={"rows": [], "counts": {}})
+    @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
+    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_target")
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
+    def test_enter_target_mode_connects_external_source_without_profile_check(
+        self, resolve, create, lock, ownership, begin, lock_state
+    ):
+        session = self._session()
+        session.enter_external_source_mode("Character_mocap")
+        session.setup_and_characterize("|target", profile=FULL_ASSIGNMENT_PROFILE, include_fingers=True)
+
+        preview = session.enter_target_mode("|target")
+
+        self.assertIs(session.active_preview, preview)
+        begin.assert_called_once()
+        self.assertEqual(begin.call_args.args[1], "Character_target")
+        self.assertEqual(begin.call_args.args[2], "Character_mocap")
+
+    @patch("mmd_tools.core.humanik_frontend.get_humanik_definition_lock_state", return_value=True)
+    @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
+    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_mocap")
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
+    def test_enter_target_mode_rejects_target_matching_external_source_character(
+        self, resolve, create, lock, lock_state
+    ):
+        session = self._session()
+        session.enter_external_source_mode("Character_mocap")
+        session.setup_and_characterize("|target")
+
+        with self.assertRaisesRegex(ValueError, "must differ"):
+            session.enter_target_mode("|target")
+
+    def test_no_source_before_external_or_mmd_selection_raises(self):
+        session = self._session()
+
+        with self.assertRaisesRegex(RuntimeError, "before target mode"):
+            session.enter_target_mode("|target")
+
+    @patch("mmd_tools.core.humanik_frontend.get_humanik_definition_lock_state", return_value=True)
+    def test_restore_mmd_rig_clears_external_source_selection(self, lock_state):
+        session = self._session()
+        session.enter_external_source_mode("Character_mocap")
+
+        self.assertTrue(session.restore_mmd_rig())
+
+        self.assertIsNone(session._external_source_character)
+        self.assertFalse(session.restore_mmd_rig())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -198,7 +198,10 @@ class TestDescribeFrontendStateSource(unittest.TestCase):
         state = session.describe_frontend_state("|target")
 
         self.assertEqual(state["mode"], FRONTEND_MODE_SOURCE)
-        self.assertEqual(state["source"], {"modelRoot": "|source", "character": "Character_source"})
+        self.assertEqual(
+            state["source"],
+            {"modelRoot": "|source", "character": "Character_source", "external": False},
+        )
         self.assertIsNone(state["target"])
         self.assertTrue(state["actions"]["enter_target_mode"]["allowed"])
 
@@ -659,6 +662,110 @@ class TestRestoreMmdRigOrphanRecovery(unittest.TestCase):
             )
         finally:
             del FakeControlRigTransaction.created_nodes
+
+
+class FakeHikSceneCmds(FakeSceneCmds):
+    """Extends the orphaned-Control-Rig scene double with the
+    ``ls(type="HIKCharacterNode")`` call ``enter_external_source_mode`` makes.
+    """
+
+    def __init__(self, hik_characters=(), **kwargs):
+        super().__init__(**kwargs)
+        self.hik_characters = list(hik_characters)
+
+    def ls(self, type=None):
+        if type == "HIKCharacterNode":
+            return list(self.hik_characters)
+        return super().ls(type=type)
+
+
+class TestDescribeFrontendStateExternalSource(unittest.TestCase):
+    """HUMANIK-EXTERNAL-SOURCE-1 ES-1: ``describe_frontend_state`` reporting
+    for a SOURCE selected via ``enter_external_source_mode`` rather than a
+    characterized MMD binding."""
+
+    @staticmethod
+    def _session(characters=("Character_mocap",)):
+        return HumanIkFrontendSession(
+            cmds_module=FakeHikSceneCmds(hik_characters=characters),
+            stance_transaction_factory=FakeStance,
+        )
+
+    @patch("mmd_tools.core.humanik_frontend.get_humanik_definition_lock_state", return_value=True)
+    def test_external_source_reports_source_mode_with_external_flag(self, lock_state):
+        session = self._session()
+        session.enter_external_source_mode("Character_mocap")
+
+        state = session.describe_frontend_state()
+
+        self.assertEqual(state["mode"], FRONTEND_MODE_SOURCE)
+        self.assertEqual(
+            state["source"],
+            {"modelRoot": None, "character": "Character_mocap", "external": True},
+        )
+
+    @patch("mmd_tools.core.humanik_frontend.get_humanik_definition_lock_state", return_value=True)
+    def test_external_source_allows_enter_target_mode_without_no_source_reason(self, lock_state):
+        session = self._session()
+        session.enter_external_source_mode("Character_mocap")
+        _characterize(session, "|target", "Character_target")
+
+        state = session.describe_frontend_state("|target")
+
+        self.assertTrue(state["actions"]["enter_target_mode"]["allowed"])
+        self.assertNotEqual(
+            state["actions"]["enter_target_mode"]["reasonCode"], REASON_NO_SOURCE
+        )
+
+    @patch("mmd_tools.core.humanik_frontend.get_humanik_definition_lock_state", return_value=True)
+    def test_enter_target_mode_blocked_when_target_character_matches_external_source(
+        self, lock_state
+    ):
+        session = self._session()
+        session.enter_external_source_mode("Character_mocap")
+        _characterize(session, "|target", "Character_mocap")
+
+        state = session.describe_frontend_state("|target")
+
+        self.assertFalse(state["actions"]["enter_target_mode"]["allowed"])
+        with self.assertRaisesRegex(ValueError, "must differ"):
+            session.enter_target_mode("|target")
+
+    @patch("mmd_tools.core.humanik_frontend.get_humanik_definition_lock_state", return_value=True)
+    def test_restore_mmd_rig_allowed_and_clears_external_source(self, lock_state):
+        session = self._session()
+        session.enter_external_source_mode("Character_mocap")
+
+        state = session.describe_frontend_state()
+        self.assertTrue(state["actions"]["restore_mmd_rig"]["allowed"])
+
+        self.assertTrue(session.restore_mmd_rig())
+
+        state_after = session.describe_frontend_state()
+        self.assertEqual(state_after["mode"], FRONTEND_MODE_NEUTRAL)
+        self.assertIsNone(state_after["source"])
+        self.assertFalse(state_after["actions"]["restore_mmd_rig"]["allowed"])
+
+    def test_active_preview_blocks_enter_external_source_mode(self):
+        session = self._session()
+        _characterize(session, "|source", "Character_source")
+        session.enter_source_mode("|source")
+        _characterize(session, "|target", "Character_target")
+        with patch(
+            "mmd_tools.core.humanik_frontend.collect_hik_ownership_report",
+            return_value={"rows": [], "counts": {}},
+        ), patch(
+            "mmd_tools.core.humanik_frontend.begin_humanik_target_preview",
+            return_value=FakePreview(),
+        ):
+            session.enter_target_mode("|target")
+
+        state = session.describe_frontend_state()
+
+        self.assertFalse(state["actions"]["enter_external_source_mode"]["allowed"])
+        self.assertEqual(
+            state["actions"]["enter_external_source_mode"]["reasonCode"], REASON_PREVIEW_ACTIVE
+        )
 
 
 if __name__ == "__main__":

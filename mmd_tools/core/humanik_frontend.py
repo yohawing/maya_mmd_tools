@@ -15,6 +15,7 @@ from mmd_tools.core.humanik_builder import (
     HumanIkCharacterCreationError,
     create_humanik_definition,
     delete_humanik_character,
+    get_humanik_definition_lock_state,
     lock_humanik_definition,
     resolve_scene_humanik_assignments,
 )
@@ -37,7 +38,12 @@ from mmd_tools.core.humanik_resolver import (
     HumanIkBoneAssignment,
     HumanIkResolveResult,
 )
-from mmd_tools.core.humanik_retarget import describe_humanik_import_lock, find_humanik_character_for_model
+from mmd_tools.core.humanik_retarget import (
+    HIK_CHARACTER_NODE_TYPE,
+    describe_humanik_import_lock,
+    find_humanik_character_for_model,
+    list_scene_hik_characters,
+)
 from mmd_tools.core.humanik_stance import HumanIkStanceTransaction, canonical_stance_targets
 from mmd_tools.core.humanik_utils import maya_cmds, maya_mel
 from mmd_tools.core.logger import get_logger
@@ -78,6 +84,8 @@ REASON_NO_ACTIVE_PREVIEW = "no_active_preview"
 REASON_ALREADY_CHARACTERIZED_OTHER_PROFILE = "already_characterized_other_profile"
 REASON_NOTHING_TO_RESTORE = "nothing_to_restore"
 REASON_MODEL_REQUIRED = "model_required"
+REASON_SOURCE_NOT_LOCKED = "source_not_locked"
+REASON_CHARACTER_REQUIRED = "character_required"
 
 # VMD import lock reasons, mirroring ``humanik_retarget.HumanIkImportLock.blocked``.
 REASON_IMPORT_BLOCKED_TARGET_PREVIEW = "import_blocked_target_preview"
@@ -311,6 +319,12 @@ class HumanIkFrontendSession:
         self._ownership_id = str(ownership_id)
         self._bindings: Dict[str, HumanIkFrontendBinding] = {}
         self._source_model_root: Optional[str] = None
+        # HUMANIK-EXTERNAL-SOURCE-1 ES-1: a SOURCE character already
+        # characterized+locked in the scene by something other than this
+        # session (mocap, plain HumanIK UI use, ...). Mutually exclusive
+        # with ``_source_model_root`` -- selecting one clears the other --
+        # since HumanIK has exactly one active retarget input per TARGET.
+        self._external_source_character: Optional[str] = None
         self._target_model_root: Optional[str] = None
         self._ownership_report: Optional[Dict[str, Any]] = None
         self._preview: Optional[HumanIkTargetPreview] = None
@@ -435,32 +449,125 @@ class HumanIkFrontendSession:
         self._bindings[key] = binding
         return binding
 
+    def list_source_candidates(self) -> List[Dict[str, Any]]:
+        """Return every scene ``HIKCharacterNode``, MMD-bound or external.
+
+        Thin, read-only wrapper around
+        ``humanik_retarget.list_scene_hik_characters`` for a future SOURCE
+        picker (HUMANIK-EXTERNAL-SOURCE-1 ES-3): each row is
+        ``{"character", "isMmd", "modelRoot", "locked"}``. Fails soft to an
+        empty list on any Maya query error, matching every other scene-fact
+        helper this session's read-only methods use.
+        """
+        return list_scene_hik_characters(cmds_module=self._cmds, mel_module=self._mel)
+
     def enter_source_mode(self, model_root: str) -> HumanIkFrontendBinding:
-        """Select a characterized binding as the HumanIK source character."""
+        """Select a characterized MMD binding as the HumanIK source character.
+
+        Replaces any external source selection (``enter_external_source_mode``)
+        -- HumanIK has exactly one active retarget input per TARGET, so the two
+        SOURCE kinds are mutually exclusive on this session.
+        """
         self._reject_active_preview_mutation("enter_source_mode")
         binding = self._require_binding(model_root)
         self._source_model_root = binding.model_root
+        self._external_source_character = None
         return binding
 
+    def enter_external_source_mode(self, character: str) -> Dict[str, Any]:
+        """Select an existing, locked, non-MMD HIK character as SOURCE.
+
+        Unlike ``enter_source_mode`` (which requires a binding this session
+        itself created via ``setup_and_characterize``), this accepts any
+        ``HIKCharacterNode`` already present and locked in the scene -- for
+        example a mocap performer characterized outside mmd_tools
+        (HUMANIK-EXTERNAL-SOURCE-1). The character's scene content (its
+        joints, animation, characterization) is never mutated here or by
+        ``restore_mmd_rig``: this session only remembers its name so
+        ``enter_target_mode``/``begin_humanik_target_preview`` can pass it to
+        ``hikSetCharacterInput`` as the retarget input, exactly as it would an
+        MMD source character.
+
+        Replaces any MMD source selection (``enter_source_mode``) -- the two
+        SOURCE kinds are mutually exclusive on this session.
+
+        Args:
+            character: The scene's ``HIKCharacterNode`` name to use as SOURCE.
+
+        Raises:
+            RuntimeError: While a HumanIK target preview is active; when
+                ``character`` is not a ``HIKCharacterNode`` present in the
+                scene; or when its HumanIK definition is not locked.
+            ValueError: When ``character`` is empty.
+        """
+        self._reject_active_preview_mutation("enter_external_source_mode")
+        character = str(character or "").strip()
+        if not character:
+            raise ValueError("character is required")
+        cmds = self._cmds or maya_cmds()
+        try:
+            scene_characters = {
+                str(item) for item in (cmds.ls(type=HIK_CHARACTER_NODE_TYPE) or [])
+            }
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not query scene HumanIK characters: {exc}"
+            ) from exc
+        if character not in scene_characters:
+            raise RuntimeError(
+                f"HumanIK external source character not found in scene: {character}"
+            )
+        try:
+            locked = bool(
+                get_humanik_definition_lock_state(character, mel_module=self._mel)
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not query HumanIK lock state for external source: {character}: {exc}"
+            ) from exc
+        if not locked:
+            raise RuntimeError(
+                "HumanIK external source character must be characterized and "
+                f"locked before use as SOURCE: {character}"
+            )
+        self._source_model_root = None
+        self._external_source_character = character
+        return {"character": character, "external": True, "locked": True}
+
     def enter_target_mode(self, model_root: str) -> HumanIkTargetPreview:
-        """Start a target preview after ownership classification and blocker checks."""
+        """Start a target preview after ownership classification and blocker checks.
+
+        SOURCE may be either an MMD binding (``enter_source_mode``) or an
+        external HIK character already characterized and locked in the scene
+        (``enter_external_source_mode``, HUMANIK-EXTERNAL-SOURCE-1). The
+        source/target assignment-profile check only applies to an MMD
+        source -- an external source has no MMD assignment profile to
+        compare.
+        """
         key = self._require_model_root(model_root)
-        if self._source_model_root is None:
+        has_source = self._source_model_root is not None or self._external_source_character is not None
+        if not has_source:
             raise RuntimeError("HumanIK source mode must be entered before target mode")
-        if key == self._source_model_root:
+        if self._source_model_root is not None and key == self._source_model_root:
             raise ValueError("HumanIK source and target model roots must differ")
         if self._preview is not None and self._preview.active:
             if self._target_model_root == key:
                 return self._preview
             raise RuntimeError("A HumanIK target preview is already active")
-        source = self._bindings[self._source_model_root]
         target = self._require_binding(key)
-        if source.profile != target.profile:
-            raise ValueError(
-                "HumanIK source/target assignment profile mismatch: "
-                f"source={source.profile}, target={target.profile}; "
-                "characterize both models with the same profile before target mode"
-            )
+        if self._external_source_character is not None:
+            if target.character == self._external_source_character:
+                raise ValueError("HumanIK source and target characters must differ")
+            source_character = self._external_source_character
+        else:
+            source = self._bindings[self._source_model_root]
+            if source.profile != target.profile:
+                raise ValueError(
+                    "HumanIK source/target assignment profile mismatch: "
+                    f"source={source.profile}, target={target.profile}; "
+                    "characterize both models with the same profile before target mode"
+                )
+            source_character = source.character
         target_joints = tuple(assignment.joint for assignment in target.assignments)
         report = collect_hik_ownership_report(target_joints, cmds_module=self._cmds)
         self._target_model_root = key
@@ -475,7 +582,7 @@ class HumanIkFrontendSession:
         preview = begin_humanik_target_preview(
             self._ownership_id,
             target.character,
-            source.character,
+            source_character,
             report,
             target_joints,
             cmds_module=self._cmds,
@@ -652,6 +759,14 @@ class HumanIkFrontendSession:
         orphan_recovery = self._recover_orphaned_control_rigs()
         self._last_orphan_recovery = orphan_recovery
         if orphan_recovery["recovered"]:
+            restored = True
+        if self._external_source_character is not None:
+            # HUMANIK-EXTERNAL-SOURCE-1 ES-1: clear this session's SOURCE
+            # selection. The external character itself (its joints,
+            # animation, characterization) is untouched -- it is not owned
+            # by this session, unlike an MMD binding's pending
+            # character/stance handled above.
+            self._external_source_character = None
             restored = True
         if first_error is not None:
             raise first_error
@@ -897,11 +1012,12 @@ class HumanIkFrontendSession:
             "profile": active_profile,
             "source": {
                 "modelRoot": source.model_root if source else None,
-                "character": source.character if source else None,
+                "character": source.character if source else self._external_source_character,
                 "profile": source.profile if source else None,
                 "includeFingers": bool(source and source.profile == FULL_ASSIGNMENT_PROFILE),
                 "assignmentCount": len(source.assignments) if source else 0,
                 "excludedFingerCount": len(source.excluded_finger_assignments) if source else 0,
+                "external": source is None and self._external_source_character is not None,
             },
             "target": {
                 "modelRoot": target.model_root if target else None,
@@ -1059,11 +1175,13 @@ class HumanIkFrontendSession:
                 }
             )
 
+        external_source = self._external_source_character
+
         if preview_active:
             mode = FRONTEND_MODE_TARGET_PREVIEW
         elif control_rig_rows:
             mode = FRONTEND_MODE_CONTROL_RIG
-        elif source_binding is not None:
+        elif source_binding is not None or external_source is not None:
             mode = FRONTEND_MODE_SOURCE
         else:
             mode = FRONTEND_MODE_NEUTRAL
@@ -1073,6 +1191,7 @@ class HumanIkFrontendSession:
             or control_rig_rows
             or self._pending_stances
             or self._pending_characters
+            or external_source is not None
         )
 
         actions = {
@@ -1080,6 +1199,9 @@ class HumanIkFrontendSession:
                 key, preview_active
             ),
             "enter_source_mode": self._describe_enter_source_mode_action(key, preview_active),
+            "enter_external_source_mode": self._describe_enter_external_source_mode_action(
+                preview_active
+            ),
             "enter_target_mode": self._describe_enter_target_mode_action(key, preview_active),
             "create_control_rig": self._describe_create_control_rig_action(key, preview_active),
             "bake_to_mmd_rig": self._describe_bake_to_mmd_rig_action(),
@@ -1087,13 +1209,24 @@ class HumanIkFrontendSession:
             "diagnostics": {"allowed": True, "reasonCode": None, "reasonText": None},
         }
 
+        if source_binding is not None:
+            source_state: Optional[Dict[str, Any]] = {
+                "modelRoot": source_binding.model_root,
+                "character": source_binding.character,
+                "external": False,
+            }
+        elif external_source is not None:
+            source_state = {
+                "modelRoot": None,
+                "character": external_source,
+                "external": True,
+            }
+        else:
+            source_state = None
+
         state: Dict[str, Any] = {
             "mode": mode,
-            "source": (
-                {"modelRoot": source_binding.model_root, "character": source_binding.character}
-                if source_binding is not None
-                else None
-            ),
+            "source": source_state,
             "target": (
                 {"modelRoot": target_binding.model_root, "character": target_binding.character}
                 if target_binding is not None
@@ -1150,17 +1283,35 @@ class HumanIkFrontendSession:
             )
         return _action_allowed()
 
+    def _describe_enter_external_source_mode_action(self, preview_active: bool) -> Dict[str, Any]:
+        """Mirror ``enter_external_source_mode``'s guards.
+
+        Unlike ``enter_source_mode``/``enter_target_mode`` this action takes a
+        scene character name, not a ``model_root`` -- this read-only snapshot
+        has no character argument to check against the scene, so only the
+        preview-active guard (identical for every mutating method) is
+        mirrored here; the "character exists and is locked" checks require a
+        live Maya scene scan and are exercised by the real call itself.
+        """
+        if preview_active:
+            return _action_blocked(
+                REASON_PREVIEW_ACTIVE,
+                "Cannot enter_external_source_mode while a HumanIK target preview is active",
+            )
+        return _action_allowed()
+
     def _describe_enter_target_mode_action(
         self, key: Optional[str], preview_active: bool
     ) -> Dict[str, Any]:
         """Mirror ``enter_target_mode``'s guards, in the order it checks them."""
         if key is None:
             return _action_blocked(REASON_MODEL_REQUIRED, "Select a model to enter TARGET mode")
-        if self._source_model_root is None:
+        has_source = self._source_model_root is not None or self._external_source_character is not None
+        if not has_source:
             return _action_blocked(
                 REASON_NO_SOURCE, "HumanIK source mode must be entered before target mode"
             )
-        if key == self._source_model_root:
+        if self._source_model_root is not None and key == self._source_model_root:
             return _action_blocked(
                 REASON_TARGET_IS_SOURCE, "HumanIK source and target model roots must differ"
             )
@@ -1172,8 +1323,14 @@ class HumanIkFrontendSession:
             return _action_blocked(
                 REASON_NOT_CHARACTERIZED, f"HumanIK model is not characterized: {key}"
             )
-        source_binding = self._bindings.get(self._source_model_root)
         target_binding = self._bindings[key]
+        if self._external_source_character is not None:
+            if target_binding.character == self._external_source_character:
+                return _action_blocked(
+                    REASON_TARGET_IS_SOURCE, "HumanIK source and target characters must differ"
+                )
+            return _action_allowed()
+        source_binding = self._bindings.get(self._source_model_root)
         if source_binding is not None and source_binding.profile != target_binding.profile:
             return _action_blocked(
                 REASON_PROFILE_MISMATCH,
