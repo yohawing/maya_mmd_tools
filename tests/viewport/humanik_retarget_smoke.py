@@ -10,6 +10,7 @@ mute constraints, bake animation, or create a proxy skeleton.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 from pathlib import Path
 from typing import Any, Dict
@@ -35,11 +36,26 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Smoke direct HumanIK retarget evidence under mayapy.")
     parser.add_argument("--pmx", default="tests/data/mmt_test_model.pmx")
     parser.add_argument(
+        "--pmx-base64",
+        default=None,
+        help="UTF-8/base64 source-PMX path; takes precedence over --pmx.",
+    )
+    parser.add_argument(
         "--target-pmx",
         default=None,
         help="Optional target PMX; defaults to --pmx for self-retarget coverage.",
     )
+    parser.add_argument(
+        "--target-pmx-base64",
+        default=None,
+        help="UTF-8/base64 target-PMX path; takes precedence over --target-pmx.",
+    )
     parser.add_argument("--vmd", default="tests/data/mmt_test_model_test_motion.vmd")
+    parser.add_argument(
+        "--vmd-base64",
+        default=None,
+        help="UTF-8/base64 source-VMD path; takes precedence over --vmd.",
+    )
     parser.add_argument("--out", default="build/reports/humanik_retarget_smoke.json")
     parser.add_argument("--name-prefix", default="MMDToolsS0_")
     parser.add_argument("--translation", default="1,0,0", help="Root probe translation as x,y,z")
@@ -54,7 +70,16 @@ def _parse_args() -> argparse.Namespace:
         default="dg,serial,parallel",
         help="Comma-separated Maya evaluation modes (dg maps to off)",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    for text_option, encoded_option in (
+        ("pmx", "pmx_base64"),
+        ("target_pmx", "target_pmx_base64"),
+        ("vmd", "vmd_base64"),
+    ):
+        encoded_value = getattr(args, encoded_option)
+        if encoded_value:
+            setattr(args, text_option, base64.b64decode(encoded_value).decode("utf-8"))
+    return args
 
 
 def _import_model(path: Path, *, use_namespace: bool) -> str:

@@ -1673,6 +1673,9 @@ def humanik_retarget_smoke(session: nox.Session) -> None:
     passthrough: list[str] = []
     path_options = {"--pmx", "--target-pmx", "--vmd", "--out"}
     value_options = path_options | {
+        "--pmx-base64",
+        "--target-pmx-base64",
+        "--vmd-base64",
         "--name-prefix",
         "--translation",
         "--tolerance",
