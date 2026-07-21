@@ -118,6 +118,29 @@ def _import_motion(path: Path, target_model: str, pmx: Path) -> None:
         raise RuntimeError(f"VMD motion import failed: {path}")
 
 
+def _vmd_preflight(path: Path) -> Dict[str, Any]:
+    """Capture VMD content counts before Maya applies the file."""
+    from mmd_tools.core.vmd_data import VmdData
+
+    data = VmdData().parse_file(str(path))
+    bone_frames = list(getattr(data, "bone_frames", []) or [])
+    bone_names = sorted({str(frame.bone_name) for frame in bone_frames})
+    frame_numbers = [int(frame.frame_number) for frame in bone_frames]
+    return {
+        "headerModelName": str(getattr(getattr(data, "header", None), "model_name", "")),
+        "boneFrameCount": len(bone_frames),
+        "boneNameCount": len(bone_names),
+        "boneNameSample": bone_names[:24],
+        "boneFrameRange": [min(frame_numbers), max(frame_numbers)] if frame_numbers else None,
+        "morphFrameCount": len(getattr(data, "morph_frames", []) or []),
+        "cameraFrameCount": len(getattr(data, "camera_frames", []) or []),
+        "lightFrameCount": len(getattr(data, "light_frames", []) or []),
+        "shadowFrameCount": len(getattr(data, "shadow_frames", []) or []),
+        "ikShowHideFrameCount": len(getattr(data, "ik_show_hide_frames", []) or []),
+        "hasBoneMotion": bool(bone_frames),
+    }
+
+
 def _find_assignment(result, hik_bone: str):
     for assignment in result.assignments:
         if assignment.hik_bone == hik_bone:
@@ -210,6 +233,59 @@ def _motion_transfer_evidence(source_result, target_result, frames, tolerance: f
     }
 
 
+def _motion_transfer_by_mode(source_result, target_result, frames, tolerance: float, modes):
+    """Run the source/target motion probe under every requested evaluator mode."""
+    original_modes = cmds.evaluationManager(query=True, mode=True) or ["off"]
+    reports = {}
+    try:
+        for mode in modes:
+            cmds.evaluationManager(mode=mode)
+            reports[mode] = _motion_transfer_evidence(source_result, target_result, frames, tolerance)
+    finally:
+        cmds.evaluationManager(mode=original_modes[0])
+    return {
+        "modes": reports,
+        "passed": bool(reports) and all(report["passed"] for report in reports.values()),
+    }
+
+
+def _source_anim_curve_evidence(result) -> Dict[str, Any]:
+    """Capture VMD animCurve nodes and direct HIK-joint channel connections."""
+    channels = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
+    rows = []
+    curve_names = set()
+    for assignment in result.assignments:
+        joint = str(assignment.joint)
+        for channel in channels:
+            plug = f"{joint}.{channel}"
+            incoming = cmds.listConnections(plug, source=True, destination=False, plugs=True) or []
+            curves = []
+            for source in incoming:
+                node = str(source).rsplit(".", 1)[0]
+                if not str(cmds.nodeType(node)).startswith("animCurve"):
+                    continue
+                curves.append(str(source))
+                curve_names.add(node)
+            if curves:
+                rows.append(
+                    {
+                        "hikBone": str(assignment.hik_bone),
+                        "hikIndex": int(assignment.hik_index),
+                        "channel": channel,
+                        "destination": plug,
+                        "animCurvePlugs": sorted(curves),
+                    }
+                )
+    scene_curves = sorted(str(node) for node in (cmds.ls(type="animCurve") or []))
+    return {
+        "sceneAnimCurveCount": len(scene_curves),
+        "sourceHikAnimCurveCount": len(curve_names),
+        "sourceHikDrivenChannelCount": len(rows),
+        "sourceHikAnimCurveNodes": sorted(curve_names),
+        "sourceHikDrivenChannels": rows,
+    }
+
+
 def _verify_locomotion_modes(
     source_hips: str,
     target_hips: str,
@@ -270,11 +346,15 @@ def main() -> int:
                 f"source_pmx={source_pmx} target_pmx={target_pmx} vmd={vmd}"
             )
 
+        motion_frames = _parse_motion_frames(args.motion_frames)
+        evaluation_modes = _parse_evaluation_modes(args.evaluation_modes)
+        payload["vmdPreflight"] = _vmd_preflight(vmd)
         source_root = _import_model(source_pmx, use_namespace=True)
         _import_motion(vmd, source_root, source_pmx)
+        source_result = resolve_scene_humanik_assignments(source_root)
+        payload["sourceAnimCurveEvidence"] = _source_anim_curve_evidence(source_result)
         target_root = _import_model(target_pmx, use_namespace=True)
 
-        source_result = resolve_scene_humanik_assignments(source_root)
         target_result = resolve_scene_humanik_assignments(target_root)
         if not source_result.assignments or not target_result.assignments:
             raise RuntimeError("Fixture produced no HumanIK assignments")
@@ -331,12 +411,36 @@ def main() -> int:
             require_connected=False,
         )
         payload["sourceConnection"] = source_report
-        payload["motionTransfer"] = _motion_transfer_evidence(
+        motion_transfer_by_mode = _motion_transfer_by_mode(
             source_result,
             target_result,
-            _parse_motion_frames(args.motion_frames),
+            motion_frames,
             args.tolerance,
+            evaluation_modes,
         )
+        payload["motionTransferByEvaluationMode"] = motion_transfer_by_mode["modes"]
+        payload["motionTransfer"] = motion_transfer_by_mode["modes"][evaluation_modes[0]]
+        source_vmd_motion = {
+            "vmdHasBoneMotion": bool(payload["vmdPreflight"]["hasBoneMotion"]),
+            "sourceHikAnimCurveCount": int(payload["sourceAnimCurveEvidence"]["sourceHikAnimCurveCount"]),
+            "sourceAnimatedByEvaluationMode": {
+                mode: bool(report["sourceAnimated"])
+                for mode, report in motion_transfer_by_mode["modes"].items()
+            },
+            "targetAnimatedByEvaluationMode": {
+                mode: bool(report["targetAnimated"])
+                for mode, report in motion_transfer_by_mode["modes"].items()
+            },
+        }
+        payload["sourceVmdMotion"] = source_vmd_motion
+        if not source_vmd_motion["vmdHasBoneMotion"]:
+            payload["diagnosis"] = "vmd_fixture_has_no_bone_frames"
+        elif not all(source_vmd_motion["sourceAnimatedByEvaluationMode"].values()):
+            payload["diagnosis"] = "source_vmd_application_or_bone_name_mapping_failed"
+        elif not all(source_vmd_motion["targetAnimatedByEvaluationMode"].values()):
+            payload["diagnosis"] = "humanik_retarget_failed"
+        else:
+            payload["diagnosis"] = "source_vmd_propagated_to_target"
         source_after_connections = snapshot_humanik_connections(source_result)
         target_after_connections = snapshot_humanik_connections(target_result)
         source_changed_connections = diff_humanik_connections(
@@ -373,7 +477,7 @@ def main() -> int:
             {"upperBody": [target_spine], "lowerBody": [target_hips], "legs": target_legs},
             _parse_translation(args.translation),
             args.tolerance,
-            _parse_evaluation_modes(args.evaluation_modes),
+            evaluation_modes,
         )
 
         stop_reasons = []
@@ -381,7 +485,7 @@ def main() -> int:
             stop_reasons.append("character_definition_lock_failed")
         if not source_report["retargetConnected"]:
             stop_reasons.append("direct_source_connection_failed")
-        if not payload["motionTransfer"]["passed"]:
+        if not motion_transfer_by_mode["passed"]:
             stop_reasons.append("source_vmd_did_not_propagate_to_target")
         if source_changed_connections:
             stop_reasons.append("source_writer_connections_changed")
