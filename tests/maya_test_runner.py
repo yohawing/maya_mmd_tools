@@ -29,11 +29,23 @@ from tests.common.custom_test_runner import (  # noqa: E402
 from tests.common.output_hygiene import summarize_unittest_result  # noqa: E402
 
 
-def _load_global_test_plugin() -> None:
-    """Keep repo custom nodes registered for the lifetime of the test process."""
+def _load_global_test_plugin() -> str | None:
+    """Load the repo plugin and return its name only when this runner owns it."""
     plugin_path = str(ROOT_DIR / "mmd_tools" / "plugin_main.py")
-    if not cmds.pluginInfo(plugin_path, query=True, loaded=True):
-        cmds.loadPlugin(plugin_path, quiet=True)
+    if cmds.pluginInfo(plugin_path, query=True, loaded=True):
+        return None
+
+    loaded_plugins = cmds.loadPlugin(plugin_path, quiet=True) or []
+    return str(loaded_plugins[0]) if loaded_plugins else plugin_path
+
+
+def _unload_global_test_plugin(plugin_name: str | None) -> None:
+    """Reset the standalone scene and release the plugin owned by this runner."""
+    if plugin_name is None:
+        return
+
+    cmds.file(new=True, force=True)
+    cmds.unloadPlugin(plugin_name, force=True)
 
 
 def initialize_maya():
@@ -150,39 +162,40 @@ def run_tests(
         test_type: 'unit' または 'integration'
         test_filter: テストをフィルタリングする文字列（オプション）
     """
-    if test_type in {"unit", "integration"}:
-        _load_global_test_plugin()
+    plugin_name = _load_global_test_plugin() if test_type in {"unit", "integration"} else None
+    try:
+        # テストを探索
+        suite = discover_tests(test_type, test_filter)
 
-    # テストを探索
-    suite = discover_tests(test_type, test_filter)
+        if suite.countTestCases() == 0:
+            sys.exit(1)
 
-    if suite.countTestCases() == 0:
-        sys.exit(1)
+        print(f"Running {suite.countTestCases()} test(s)...")
 
-    print(f"Running {suite.countTestCases()} test(s)...")
+        # Windows環境でもANSIカラーコードを有効化
+        enable_windows_ansi_support()
 
-    # Windows環境でもANSIカラーコードを有効化
-    enable_windows_ansi_support()
+        # カラー対応のテストランナーを使用
+        runner = CustomTestRunner(
+            verbosity=2 if verbose else 1,
+            show_error_details=verbose or capture_details,
+        )
+        runner.failfast = False
+        # The outer runner owns terminal suppression. Keep successful-test stdout
+        # and warnings in its complete transcript instead of discarding them here.
+        runner.buffer = False
+        started = time.perf_counter()
+        result = runner.run(suite)
 
-    # カラー対応のテストランナーを使用
-    runner = CustomTestRunner(
-        verbosity=2 if verbose else 1,
-        show_error_details=verbose or capture_details,
-    )
-    runner.failfast = False
-    # The outer runner owns terminal suppression. Keep successful-test stdout
-    # and warnings in its complete transcript instead of discarding them here.
-    runner.buffer = False
-    started = time.perf_counter()
-    result = runner.run(suite)
+        if report_path:
+            report = Path(report_path)
+            report.parent.mkdir(parents=True, exist_ok=True)
+            payload = _result_payload(test_type, result, time.perf_counter() - started)
+            report.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    if report_path:
-        report = Path(report_path)
-        report.parent.mkdir(parents=True, exist_ok=True)
-        payload = _result_payload(test_type, result, time.perf_counter() - started)
-        report.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-    return result
+        return result
+    finally:
+        _unload_global_test_plugin(plugin_name)
 
 
 def main():
