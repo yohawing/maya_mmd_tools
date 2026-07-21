@@ -1,15 +1,24 @@
 """HumanIK tab UI shell.
 
-Status display + buttons that call the existing HumanIK menu actions
-(``mmd_tools.ui.humanik_menu_actions``). This tab intentionally does not
-reimplement any lifecycle decision: model resolution UX, confirmation
-dialogs, and error reporting all live in the menu action layer already and
-are reused as-is (see ``HumanIkPresenter``). The tab's own responsibility is
-limited to visualizing ``describe_frontend_state()`` and showing why a button
-is disabled.
+Pair-specified retarget layout (HUMANIK-FRONTEND-1 Phase B4), modeled after
+Maya's own HumanIK "Character Controls" panel: a "Character" combo (the MMD
+model this window currently acts on) and a "Source" combo ("None" plus every
+other scene MMD model -- picking a model there *is* the retarget-connect
+trigger, picking "None" disconnects), followed by the existing status header
+and a set of collapsible action sections.
+
+The single-model "Enter Source Mode"/"Enter Target Mode"/"Setup / Characterize"
+buttons from the previous layout are gone from this View entirely -- the two
+combos now drive that lifecycle (see ``HumanIkPresenter``). The plugin menu's
+seven standalone actions are unchanged and still call the same
+``mmd_tools.ui.humanik_menu_actions`` functions this tab dispatches to; this
+tab's own responsibility is still limited to visualizing
+``describe_frontend_state()`` and showing why a button is disabled.
 """
 
+from ..combo_box_utils import configure_model_combo_width
 from ..qt_compat import (
+    QComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -17,30 +26,30 @@ from ..qt_compat import (
     QPushButton,
     QSpinBox,
     QVBoxLayout,
+    QWidget,
 )
 from ..base_tab import BaseTab
 from .translation_registry import apply_translation_registry
 
 
-# Action button attribute -> (translation key, category) for the button text.
+# Action button attribute -> (translation key) for the button text. Only the
+# four actions that still have a standalone button on this tab (Setup /
+# Characterize, Enter Source Mode, and Enter Target Mode moved to the
+# Character/Source combos, see the module docstring).
 _ACTION_BUTTON_SPECS = (
-    ("setup_characterize_btn", "humanik_setup_characterize"),
-    ("enter_source_btn", "humanik_enter_source"),
-    ("enter_target_btn", "humanik_enter_target"),
-    ("bake_btn", "humanik_bake"),
     ("create_control_rig_btn", "humanik_create_control_rig"),
+    ("bake_btn", "humanik_bake"),
     ("restore_btn", "humanik_restore"),
     ("diagnostics_btn", "humanik_diagnostics"),
 )
 
 # Maps ``describe_frontend_state()`` action keys to the button attribute that
-# represents them on this tab.
+# represents them on this tab. ``setup_and_characterize``/``enter_source_mode``/
+# ``enter_target_mode`` have no button anymore -- ``set_state`` simply skips
+# any action key with no entry here.
 ACTION_KEY_TO_BUTTON = {
-    "setup_and_characterize": "setup_characterize_btn",
-    "enter_source_mode": "enter_source_btn",
-    "enter_target_mode": "enter_target_btn",
-    "bake_to_mmd_rig": "bake_btn",
     "create_control_rig": "create_control_rig_btn",
+    "bake_to_mmd_rig": "bake_btn",
     "restore_mmd_rig": "restore_btn",
     "diagnostics": "diagnostics_btn",
 }
@@ -79,15 +88,21 @@ MODE_TRANSLATION_KEYS = {
 
 
 class HumanIkTab(BaseTab):
-    """Experimental HumanIK workflow status + staged action buttons."""
+    """Pair-specified HumanIK retarget UI: Character/Source combos + status + actions."""
 
     _TRANSLATION_REGISTRY = (
         ("humanik_status_group", "setTitle", "humanik_status", "groups"),
         ("humanik_actions_group", "setTitle", "humanik_actions", "groups"),
+        ("character_combo_label", "setText", "humanik_character", "labels"),
+        ("source_combo_label", "setText", "humanik_source", "labels"),
+        ("source_combo", "setToolTip", "humanik_source_mmd_only_tooltip", "messages"),
         ("mode_label_title", "setText", "humanik_mode", "labels"),
         ("source_label_title", "setText", "humanik_source", "labels"),
         ("target_label_title", "setText", "humanik_target", "labels"),
         ("control_rigs_label_title", "setText", "humanik_control_rigs", "labels"),
+        ("control_rig_section", "setTitle", "humanik_section_control_rig", "groups"),
+        ("bake_section", "setTitle", "humanik_section_bake", "groups"),
+        ("restore_section", "setTitle", "humanik_section_restore_diagnostics", "groups"),
         ("bake_start_label", "setText", "humanik_bake_start", "labels"),
         ("bake_end_label", "setText", "humanik_bake_end", "labels"),
         ("refresh_btn", "setText", "refresh", "buttons"),
@@ -109,6 +124,7 @@ class HumanIkTab(BaseTab):
         self.experimental_notice_label.setStyleSheet("font-weight: bold;")
         main_layout.addWidget(self.experimental_notice_label)
 
+        main_layout.addLayout(self._create_model_selection_section())
         main_layout.addWidget(self._create_status_section())
         main_layout.addWidget(self._create_import_lock_warning_section())
         main_layout.addWidget(self._create_orphaned_warning_section())
@@ -119,9 +135,41 @@ class HumanIkTab(BaseTab):
         self.restore_explanation_label.setWordWrap(True)
         main_layout.addWidget(self.restore_explanation_label)
 
+        refresh_layout = QHBoxLayout()
+        self.refresh_btn = QPushButton(self.tr("refresh", "buttons"))
+        refresh_layout.addWidget(self.refresh_btn)
+        refresh_layout.addStretch()
+        main_layout.addLayout(refresh_layout)
+
         main_layout.addStretch()
 
     # -- construction --------------------------------------------------
+
+    def _create_model_selection_section(self):
+        """Build the Character/Source combo row pair.
+
+        Mirrors Maya's own HumanIK Character Controls panel: "Character" is
+        the MMD model this window currently acts on; "Source" is "None" plus
+        every other scene MMD model -- selecting a model there is the
+        retarget-connect trigger (see ``HumanIkPresenter``), selecting "None"
+        disconnects. Neither combo carries a leading "(none)" placeholder for
+        Character -- see the presenter's sticky/follow/auto-adopt selection
+        logic for why one is always resolvable whenever the scene has any MMD
+        model.
+        """
+        form = QFormLayout()
+
+        self.character_combo_label = QLabel(self.tr("humanik_character", "labels"))
+        self.character_combo = QComboBox()
+        configure_model_combo_width(self.character_combo)
+        form.addRow(self.character_combo_label, self.character_combo)
+
+        self.source_combo_label = QLabel(self.tr("humanik_source", "labels"))
+        self.source_combo = QComboBox()
+        configure_model_combo_width(self.source_combo)
+        form.addRow(self.source_combo_label, self.source_combo)
+
+        return form
 
     def _create_status_section(self):
         self.humanik_status_group = QGroupBox(self.tr("humanik_status", "groups"))
@@ -201,19 +249,38 @@ class HumanIkTab(BaseTab):
         )
         self.control_rig_watch_warning_label.show()
 
+    def _create_collapsible_section(self, title_key):
+        """Return a checkable ``QGroupBox`` whose body hides when unchecked.
+
+        The body lives in a child ``QWidget`` so the checkbox/title stays
+        visible while collapsed (Qt does not offer a built-in collapsible
+        group box). Returns ``(group_box, content_layout)`` -- callers add
+        their rows/widgets to ``content_layout``.
+        """
+        group = QGroupBox(self.tr(title_key, "groups"))
+        group.setCheckable(True)
+        group.setChecked(True)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout = QVBoxLayout()
+        outer_layout.setContentsMargins(4, 4, 4, 4)
+        outer_layout.addWidget(content)
+        group.setLayout(outer_layout)
+        group.toggled.connect(content.setVisible)
+        return group, content_layout
+
     def _create_actions_section(self):
         self.humanik_actions_group = QGroupBox(self.tr("humanik_actions", "groups"))
         layout = QVBoxLayout()
 
-        toolbar_layout = QHBoxLayout()
-        self.refresh_btn = QPushButton(self.tr("refresh", "buttons"))
-        toolbar_layout.addWidget(self.refresh_btn)
-        toolbar_layout.addStretch()
-        layout.addLayout(toolbar_layout)
+        self.control_rig_section, control_rig_layout = self._create_collapsible_section(
+            "humanik_section_control_rig"
+        )
+        self._add_action_row(control_rig_layout, "create_control_rig_btn", "humanik_create_control_rig")
+        layout.addWidget(self.control_rig_section)
 
-        for attr, label_key in _ACTION_BUTTON_SPECS[:3]:
-            self._add_action_row(layout, attr, label_key)
-
+        self.bake_section, bake_layout = self._create_collapsible_section("humanik_section_bake")
         bake_row = QHBoxLayout()
         self.bake_start_label = QLabel(self.tr("humanik_bake_start", "labels"))
         self.bake_start_spin = QSpinBox()
@@ -225,11 +292,16 @@ class HumanIkTab(BaseTab):
         bake_row.addWidget(self.bake_start_spin)
         bake_row.addWidget(self.bake_end_label)
         bake_row.addWidget(self.bake_end_spin)
-        layout.addLayout(bake_row)
-        self._add_action_row(layout, "bake_btn", "humanik_bake")
+        bake_layout.addLayout(bake_row)
+        self._add_action_row(bake_layout, "bake_btn", "humanik_bake")
+        layout.addWidget(self.bake_section)
 
-        for attr, label_key in _ACTION_BUTTON_SPECS[4:]:
-            self._add_action_row(layout, attr, label_key)
+        self.restore_section, restore_layout = self._create_collapsible_section(
+            "humanik_section_restore_diagnostics"
+        )
+        self._add_action_row(restore_layout, "restore_btn", "humanik_restore")
+        self._add_action_row(restore_layout, "diagnostics_btn", "humanik_diagnostics")
+        layout.addWidget(self.restore_section)
 
         self.humanik_actions_group.setLayout(layout)
         return self.humanik_actions_group
@@ -330,6 +402,42 @@ class HumanIkTab(BaseTab):
         character = binding.get("character") or ""
         name = model_root.rsplit("|", 1)[-1] if model_root else ""
         return f"{name} [{character}]" if character else (name or "-")
+
+    # -- Character/Source combo rendering --------------------------------
+
+    def set_character_options(self, options, selected_value):
+        """Rebuild the Character combo and select ``selected_value``.
+
+        ``options`` is a sequence of ``(label, model_root)`` pairs. Rebuilding
+        happens with signals blocked so a presenter-driven refresh never
+        re-triggers the combo's own change handler.
+        """
+        self._populate_combo(self.character_combo, options, selected_value)
+
+    def set_source_options(self, options, selected_value):
+        """Rebuild the Source combo and select ``selected_value`` (``None`` for "None").
+
+        Same signal-blocking contract as ``set_character_options``. The
+        selected value is always driven by backend truth (the session's
+        actual SOURCE binding), never by what the user last clicked -- see
+        ``HumanIkPresenter.refresh``.
+        """
+        self._populate_combo(self.source_combo, options, selected_value)
+
+    @staticmethod
+    def _populate_combo(combo, options, selected_value):
+        previous = combo.blockSignals(True)
+        try:
+            combo.clear()
+            selected_index = 0
+            for index, (label, value) in enumerate(options):
+                combo.addItem(label, value)
+                if value == selected_value:
+                    selected_index = index
+            if combo.count():
+                combo.setCurrentIndex(selected_index)
+        finally:
+            combo.blockSignals(previous)
 
     def bake_frame_range(self):
         """Return the ``(start, end)`` SpinBox values shown for Bake to MMD Rig."""

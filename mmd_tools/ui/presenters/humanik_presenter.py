@@ -1,10 +1,27 @@
 """Presenter for the HumanIK tab.
 
-The tab is a thin status display over ``describe_frontend_state()`` plus
-buttons that dispatch to the existing ``humanik_menu_actions`` functions --
-this presenter intentionally does not reimplement model resolution UX,
-confirmation dialogs, or error reporting, all of which already live in the
-menu action layer and are reused as-is here.
+HUMANIK-FRONTEND-1 Phase B4: the tab is now a pair-specified retarget UI --
+a "Character" combo (the MMD model this window acts on) and a "Source" combo
+("None" or another scene MMD model; picking one connects the retarget,
+picking "None" disconnects) -- plus the existing status header and the
+Control Rig/Bake/Restore-Diagnostics action buttons. This presenter owns:
+
+* populating both combos every refresh from the scene's MMD model list;
+* the Character combo's selection policy (Maya-selection-follow, sticky
+  last-picked value while nothing is selected, single-model auto-adopt, and
+  "a manual pick wins until the *next* Maya selection change" -- see
+  ``_resolve_character_root``);
+* the Source combo's selection being driven by backend truth every refresh
+  (``describe_frontend_state()``'s ``source`` binding), never by what the
+  user last clicked -- a failed/cancelled connect or disconnect must show up
+  as the combo snapping back to the real state;
+* dispatching the Source combo's change to ``connect_retarget``/
+  ``disconnect_retarget``, and the four remaining action buttons to
+  ``humanik_menu_actions`` functions, exactly as before.
+
+This presenter still does not reimplement model resolution UX, confirmation
+dialogs, or error reporting -- all of that lives in the menu action layer
+and is reused as-is here.
 """
 
 from __future__ import annotations
@@ -21,11 +38,10 @@ class HumanIkPresenter:
     # Tab button attribute -> stable action name accepted by
     # ``humanik_menu_actions.dispatch_action``. ``bake_to_mmd_rig`` is handled
     # separately (see ``_on_bake_clicked``) because it passes the frame-range
-    # SpinBox values to the action explicitly.
+    # SpinBox values to the action explicitly. ``setup_and_characterize``/
+    # ``enter_source_mode``/``enter_target_mode`` have no button anymore --
+    # the Character/Source combos replace them (HUMANIK-FRONTEND-1 Phase B4).
     _DISPATCH_ATTR_TO_ACTION = {
-        "setup_characterize_btn": "setup_and_characterize",
-        "enter_source_btn": "enter_source_mode",
-        "enter_target_btn": "enter_target_mode",
         "create_control_rig_btn": "create_control_rig",
         "restore_btn": "restore_mmd_rig",
         "diagnostics_btn": "diagnostics",
@@ -37,6 +53,15 @@ class HumanIkPresenter:
         self._actions = actions_module or default_actions
         self._cmds_module = cmds_module
         self._active = False
+        # Character combo selection-policy state (see
+        # ``_resolve_character_root``): the last Maya-selection-derived root
+        # observed (to detect "the selection just changed"), a user's manual
+        # combo pick that wins until that happens, and the last value
+        # actually shown (sticky fallback while nothing else applies).
+        self._last_seen_selection = None
+        self._character_override = None
+        self._character_sticky = None
+        self._character_root = None
         self._connect_signals()
 
     # -- wiring ------------------------------------------------------------
@@ -54,6 +79,14 @@ class HumanIkPresenter:
         bake_btn = getattr(self.view, "bake_btn", None)
         if bake_btn is not None:
             bake_btn.clicked.connect(self._on_bake_clicked)
+
+        character_combo = getattr(self.view, "character_combo", None)
+        if character_combo is not None:
+            character_combo.currentIndexChanged.connect(self._on_character_combo_changed)
+
+        source_combo = getattr(self.view, "source_combo", None)
+        if source_combo is not None:
+            source_combo.currentIndexChanged.connect(self._on_source_combo_changed)
 
     def _make_dispatcher(self, action_name):
         def _handler(*_args):
@@ -82,6 +115,41 @@ class HumanIkPresenter:
             # Same safety net as ``_dispatch``: the menu action layer already
             # reports failures to the user.
             logger.debug("HumanIK tab bake dispatch raised", exc_info=True)
+        finally:
+            self.refresh()
+
+    def _on_character_combo_changed(self, _index=None):
+        combo = getattr(self.view, "character_combo", None)
+        if combo is None:
+            return
+        value = combo.currentData()
+        if not value:
+            return
+        # A manual pick wins over Maya-selection-follow until the selection
+        # itself changes (see ``_resolve_character_root``).
+        self._character_override = value
+        self.refresh()
+
+    def _on_source_combo_changed(self, _index=None):
+        combo = getattr(self.view, "source_combo", None)
+        if combo is None:
+            return
+        value = combo.currentData()
+        character_root = self._character_root
+        try:
+            if value:
+                # ``connect_retarget`` itself validates both models are
+                # present/distinct and reports any failure to the user; a
+                # missing Character model surfaces the same way as any other
+                # connect failure, rather than being silently swallowed here.
+                self._actions.connect_retarget(value, character_root)
+            else:
+                self._actions.disconnect_retarget()
+        except Exception:
+            # Safety net matching ``_dispatch``: the action layer already
+            # reports failures to the user; refresh below re-syncs the combo
+            # to whatever the real backend state ended up being.
+            logger.debug("HumanIK tab source combo dispatch raised", exc_info=True)
         finally:
             self.refresh()
 
@@ -175,15 +243,105 @@ class HumanIkPresenter:
     # -- refresh -------------------------------------------------------
 
     def refresh(self, *_args):
-        model_root = self._resolve_display_model_root()
+        models = self._list_scene_models()
+        selected_root = self._resolve_display_model_root()
+        character_root = self._resolve_character_root(selected_root, models)
+        self._character_root = character_root
+
+        character_options = [(self._label_for(root), root) for root in models]
+        self._set_character_options(character_options, character_root)
+
         session = self._actions.get_humanik_session()
         try:
-            state = session.describe_frontend_state(model_root)
+            state = session.describe_frontend_state(character_root)
         except Exception:
             logger.warning("HumanIK describe_frontend_state failed", exc_info=True)
             state = {}
         self.view.set_state(state)
+
+        self._refresh_source_combo(models, character_root, state)
         self._sync_bake_frame_range()
+
+    def _refresh_source_combo(self, models, character_root, state):
+        """Populate the Source combo and select it from backend truth, not memory.
+
+        ``state["source"]`` (from ``describe_frontend_state``) is the single
+        source of truth for what is actually bound as SOURCE right now; a
+        failed or cancelled connect/disconnect must show up here as the
+        combo reverting to what the backend actually has, never to whatever
+        the user most recently clicked.
+        """
+        none_label = self.view.tr("humanik_none", "labels") if hasattr(self.view, "tr") else "None"
+        options = [(none_label, None)]
+        for root in models:
+            if root == character_root:
+                continue
+            options.append((self._label_for(root), root))
+        source_binding = (state or {}).get("source") or {}
+        backend_source = source_binding.get("modelRoot")
+        self._set_source_options(options, backend_source)
+
+    def _set_character_options(self, options, selected_value):
+        setter = getattr(self.view, "set_character_options", None)
+        if setter is not None:
+            setter(options, selected_value)
+
+    def _set_source_options(self, options, selected_value):
+        setter = getattr(self.view, "set_source_options", None)
+        if setter is not None:
+            setter(options, selected_value)
+
+    def _list_scene_models(self):
+        lister = getattr(self._actions, "list_scene_mmd_models", None)
+        if lister is None:
+            return []
+        try:
+            return list(lister(cmds_module=self._cmds_module))
+        except Exception:
+            logger.debug("HumanIK tab could not list scene MMD models", exc_info=True)
+            return []
+
+    def _resolve_character_root(self, selected_root, models):
+        """Resolve the Character combo's selected model root.
+
+        Priority, matching the design decision in ``TODO.md``
+        (HUMANIK-FRONTEND-1 Phase B4):
+
+        1. The Maya selection, whenever it just *changed* to a resolvable
+           model -- this always wins and clears any earlier manual pick.
+        2. A manual combo pick (``_character_override``), as long as the
+           selection has not changed since it was made and the picked model
+           still exists in the scene.
+        3. The current Maya selection, if any (covers the first refresh with
+           a selection already made and no override yet).
+        4. The last value shown (``_character_sticky``), if it still exists
+           -- "no selection" sticks to whatever was last resolved.
+        5. The scene's only model, if there is exactly one (also the
+           fallback when several models exist and nothing else applies).
+        """
+        if selected_root != self._last_seen_selection:
+            self._character_override = None
+            self._last_seen_selection = selected_root
+
+        if self._character_override is not None and self._character_override in models:
+            root = self._character_override
+        elif selected_root is not None and selected_root in models:
+            root = selected_root
+        elif self._character_sticky is not None and self._character_sticky in models:
+            root = self._character_sticky
+        elif models:
+            root = models[0]
+        else:
+            root = None
+
+        if root is not None:
+            self._character_sticky = root
+        return root
+
+    @staticmethod
+    def _label_for(model_root):
+        value = str(model_root or "").strip("|")
+        return value.rsplit("|", 1)[-1] or str(model_root)
 
     def _resolve_display_model_root(self):
         """Resolve a model for display only: selection-derived, never a dialog.

@@ -39,10 +39,14 @@ class TestHumanIkTabGUI(GuiTestBase):
             self.assertTrue(tab.restore_explanation_label.text())
             self.assertFalse(tab.orphaned_warning_label.isVisible())
             self.assertFalse(tab.import_lock_warning_label.isVisible())
+            # HUMANIK-FRONTEND-1 Phase B4: Setup/Characterize, Enter Source
+            # Mode, and Enter Target Mode no longer have a standalone button
+            # on this tab -- the Character/Source combos replace them.
+            for attr in ("setup_characterize_btn", "enter_source_btn", "enter_target_btn"):
+                self.assertFalse(hasattr(tab, attr), attr)
             for attr in (
-                "setup_characterize_btn",
-                "enter_source_btn",
-                "enter_target_btn",
+                "character_combo",
+                "source_combo",
                 "bake_btn",
                 "create_control_rig_btn",
                 "restore_btn",
@@ -53,6 +57,29 @@ class TestHumanIkTabGUI(GuiTestBase):
             self.assertEqual(tab.bake_frame_range(), (0, 0))
             tab.set_bake_frame_range(10, 50)
             self.assertEqual(tab.bake_frame_range(), (10, 50))
+        finally:
+            tab.deleteLater()
+            QApplication.processEvents()
+
+    def test_character_and_source_combos_populate_and_select(self):
+        tab = HumanIkTab()
+        try:
+            tab.set_character_options([("ModelA", "|A"), ("ModelB", "|B")], "|B")
+            self.assertEqual(tab.character_combo.count(), 2)
+            self.assertEqual(tab.character_combo.currentData(), "|B")
+
+            tab.set_source_options([("(none)", None), ("ModelA", "|A")], "|A")
+            self.assertEqual(tab.source_combo.count(), 2)
+            self.assertEqual(tab.source_combo.currentData(), "|A")
+
+            # Repopulating must not fire the combo's own change signal --
+            # HumanIkPresenter relies on this to avoid re-triggering
+            # connect/disconnect while rendering backend-truth state.
+            fired = []
+            tab.source_combo.currentIndexChanged.connect(lambda *_args: fired.append(True))
+            tab.set_source_options([("(none)", None)], None)
+            QApplication.processEvents()
+            self.assertEqual(fired, [])
         finally:
             tab.deleteLater()
             QApplication.processEvents()
@@ -84,9 +111,8 @@ class TestHumanIkTabGUI(GuiTestBase):
             QApplication.processEvents()
 
             self.assertIn("ModelChar", tab.source_value_label.text())
-            self.assertFalse(tab.enter_target_btn.isEnabled())
             self.assertFalse(tab.bake_btn.isEnabled())
-            self.assertTrue(tab.enter_source_btn.isEnabled())
+            self.assertTrue(tab.create_control_rig_btn.isEnabled())
             self.assertFalse(tab.orphaned_warning_label.isVisible())
             self.assertFalse(tab.import_lock_warning_label.isVisible())
         finally:
@@ -144,12 +170,12 @@ class TestHumanIkTabGUI(GuiTestBase):
             translator.set_language("en")
             tab.retranslateUi()
             en_refresh = tab.refresh_btn.text()
-            en_setup = tab.setup_characterize_btn.text()
+            en_character_label = tab.character_combo_label.text()
 
             translator.set_language("ja")
             tab.retranslateUi()
             self.assertNotEqual(tab.refresh_btn.text(), en_refresh)
-            self.assertNotEqual(tab.setup_characterize_btn.text(), en_setup)
+            self.assertNotEqual(tab.character_combo_label.text(), en_character_label)
         finally:
             translator.set_language(previous_language)
             tab.deleteLater()

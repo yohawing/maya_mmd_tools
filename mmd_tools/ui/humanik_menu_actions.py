@@ -185,6 +185,23 @@ def resolve_model_root(
     return _choose_model_from_scene(available_models)
 
 
+def list_scene_mmd_models(*, cmds_module=None) -> list:
+    """Return every current scene MMD model root, sorted for stable combo ordering.
+
+    Used by the HumanIK tab presenter to populate the Character/Source
+    combos (HUMANIK-FRONTEND-1 Phase B4). Never raises -- a Maya query
+    failure (no scene, plugin not loaded in a non-Maya test process) is
+    reported as an empty list, matching ``resolve_selected_model_root_for_display``'s
+    fail-soft policy.
+    """
+    try:
+        cmds = cmds_module or _maya_cmds()
+        service = SceneModelService(cmds_module=cmds)
+        return sorted(str(root) for root in service.list_mmd_models())
+    except Exception:
+        return []
+
+
 def resolve_selected_model_root_for_display(*, cmds_module=None) -> Optional[str]:
     """Resolve an MMD root from the current Maya selection, for read-only display only.
 
@@ -280,24 +297,100 @@ def _open_humanik_editor():
     return show_humanik_window(dockable=True)
 
 
-def setup_and_characterize():
-    """Show read-only setup preflight and characterize only after confirmation."""
-    return _run_action("Setup / Characterize", _setup_and_characterize)
+def setup_and_characterize(model_root: Optional[str] = None):
+    """Show read-only setup preflight and characterize only after confirmation.
+
+    Args:
+        model_root: Explicit model to act on (skips Maya-selection resolution
+            entirely). ``None`` falls back to ``resolve_model_root`` as
+            before. Confirmation dialogs, auto-characterize, and error
+            reporting are unchanged either way.
+    """
+    return _run_action("Setup / Characterize", lambda: _setup_and_characterize(model_root))
 
 
-def enter_source_mode():
-    """Select a previously characterized model as the HumanIK source."""
-    return _run_action("Enter Source Mode", _enter_source_mode)
+def enter_source_mode(model_root: Optional[str] = None):
+    """Select a previously characterized model as the HumanIK source.
+
+    Args:
+        model_root: Explicit model to act on (skips Maya-selection
+            resolution). ``None`` falls back to ``resolve_model_root``.
+    """
+    return _run_action("Enter Source Mode", lambda: _enter_source_mode(model_root))
 
 
-def enter_target_mode():
-    """Show ownership facts and start target preview only when unblocked."""
-    return _run_action("Enter Target Mode", _enter_target_mode)
+def enter_target_mode(model_root: Optional[str] = None):
+    """Show ownership facts and start target preview only when unblocked.
+
+    Args:
+        model_root: Explicit model to act on (skips Maya-selection
+            resolution). ``None`` falls back to ``resolve_model_root``.
+    """
+    return _run_action("Enter Target Mode", lambda: _enter_target_mode(model_root))
 
 
-def create_control_rig():
-    """Create a control rig on the selected characterized model after confirmation."""
-    return _run_action("Create Control Rig", _create_control_rig)
+def create_control_rig(model_root: Optional[str] = None):
+    """Create a control rig on the selected characterized model after confirmation.
+
+    Args:
+        model_root: Explicit model to act on (skips Maya-selection
+            resolution). ``None`` falls back to ``resolve_model_root``.
+    """
+    return _run_action("Create Control Rig", lambda: _create_control_rig(model_root))
+
+
+def connect_retarget(source_model_root: str, target_model_root: str):
+    """Bind ``source_model_root`` as SOURCE and start a TARGET preview onto ``target_model_root``.
+
+    The composite action the HumanIK tab's Source combo triggers when the
+    user picks a model there (HUMANIK-FRONTEND-1 Phase B4): auto-characterize
+    + ``enter_source_mode`` on the source, then auto-characterize +
+    ``enter_target_mode`` (with its existing confirmation dialog) on the
+    target. Reuses the already-wrapped ``enter_source_mode``/``enter_target_mode``
+    public functions, so a failure at either step is already reported to the
+    user by that step's own ``_run_action``/``_report_action_failure`` --
+    this function only decides whether to continue to the next step, never
+    duplicates the error reporting. On any failure (or a mid-flow dialog
+    cancel) this returns ``None`` without raising; callers must re-read
+    ``describe_frontend_state`` to learn the real resulting state rather than
+    trusting that SOURCE ended up bound.
+    """
+    return _run_action(
+        "Connect Retarget", lambda: _connect_retarget(source_model_root, target_model_root)
+    )
+
+
+def _connect_retarget(source_model_root: str, target_model_root: str):
+    if not source_model_root or not target_model_root:
+        raise ValueError("HumanIK retarget requires both a Character and a Source model")
+    if source_model_root == target_model_root:
+        raise ValueError("HumanIK Source and Character models must differ")
+    if enter_source_mode(model_root=source_model_root) is None:
+        # enter_source_mode already reported its own failure/cancel; do not
+        # proceed to target mode with no SOURCE actually bound.
+        return None
+    return enter_target_mode(model_root=target_model_root)
+
+
+def disconnect_retarget():
+    """Restore the MMD rig to disconnect the active retarget (Source combo -> "None").
+
+    Confirms with the user first, since this also closes any active Control
+    Rig (``restore_mmd_rig`` tears down both preview and Control Rig
+    transactions). A cancelled confirmation returns ``None`` without
+    mutating the scene.
+    """
+    return _run_action("Disconnect Retarget", _disconnect_retarget)
+
+
+def _disconnect_retarget():
+    message = (
+        "Disconnect the HumanIK retarget and restore the MMD rig?\n"
+        "Any active Control Rig will also be closed."
+    )
+    if not _confirm("Disconnect Retarget", message):
+        return None
+    return get_humanik_session().restore_mmd_rig()
 
 
 def bake_to_mmd_rig(start=None, end=None):
@@ -355,8 +448,8 @@ def _ensure_characterized(session, root: str, action: str) -> None:
     )
 
 
-def _setup_and_characterize():
-    root = resolve_model_root(cmds_module=_cmds_module)
+def _setup_and_characterize(model_root: Optional[str] = None):
+    root = model_root if model_root is not None else resolve_model_root(cmds_module=_cmds_module)
     if root is None:
         return None
     session = get_humanik_session()
@@ -423,8 +516,8 @@ def _stance_warning_message(binding: Any) -> Optional[str]:
     )
 
 
-def _enter_source_mode():
-    root = resolve_model_root(cmds_module=_cmds_module)
+def _enter_source_mode(model_root: Optional[str] = None):
+    root = model_root if model_root is not None else resolve_model_root(cmds_module=_cmds_module)
     if root is None:
         return None
     session = get_humanik_session()
@@ -432,8 +525,8 @@ def _enter_source_mode():
     return session.enter_source_mode(root)
 
 
-def _enter_target_mode():
-    root = resolve_model_root(cmds_module=_cmds_module)
+def _enter_target_mode(model_root: Optional[str] = None):
+    root = model_root if model_root is not None else resolve_model_root(cmds_module=_cmds_module)
     if root is None:
         return None
     session = get_humanik_session()
@@ -460,8 +553,8 @@ def _enter_target_mode():
     return session.enter_target_mode(root)
 
 
-def _create_control_rig():
-    root = resolve_model_root(cmds_module=_cmds_module)
+def _create_control_rig(model_root: Optional[str] = None):
+    root = model_root if model_root is not None else resolve_model_root(cmds_module=_cmds_module)
     if root is None:
         return None
     session = get_humanik_session()

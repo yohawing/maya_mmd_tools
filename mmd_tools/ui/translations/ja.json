@@ -99,6 +99,7 @@
     "search_results": "件",
     "not_found": "見つかりません",
     "humanik_mode": "モード:",
+    "humanik_character": "キャラクタ:",
     "humanik_source": "SOURCE:",
     "humanik_target": "TARGET:",
     "humanik_control_rigs": "Control Rig:",
@@ -253,6 +254,7 @@
     "humanik_reason_already_characterized_other_profile": "別のプロファイルで既にキャラクタライズ済みです。",
     "humanik_reason_nothing_to_restore": "復元対象がありません。",
     "humanik_reason_model_required": "Mayaシーンでモデルを選択してください。",
+    "humanik_source_mmd_only_tooltip": "リターゲットのSourceに指定できるのはMMDモデルのみです。モーキャプ等の外部キャラクターは未対応です。",
     "humanik_import_lock_blocked": "VMD importは現在拒否されます: {reason} — Restore MMD Rigで解除してください。",
     "humanik_reason_import_blocked_target_preview": "このモデルは現在HumanIK Targetプレビュー中です。",
     "humanik_reason_import_blocked_control_rig": "このモデルには現在有効なHumanIK Control Rigがあります。",
@@ -341,7 +343,10 @@
     "rigid_body_values": "剛体の値",
     "joint_values": "ジョイントの値",
     "humanik_status": "HumanIK 状態",
-    "humanik_actions": "HumanIK 操作"
+    "humanik_actions": "HumanIK 操作",
+    "humanik_section_control_rig": "コントロールリグ",
+    "humanik_section_bake": "ベイク",
+    "humanik_section_restore_diagnostics": "復元 / 診断"
   },
   "checkboxes": {
     "use_namespace": "ネームスペースを使用",

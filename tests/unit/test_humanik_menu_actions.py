@@ -646,6 +646,105 @@ class TestHumanIkMenuActions(unittest.TestCase):
 
         self.cmds.deleteUI.assert_called_once_with(actions.DIAGNOSTICS_WINDOW_NAME)
 
+    # -- HUMANIK-FRONTEND-1 Phase B4: explicit model_root arguments ---------
+
+    def test_model_root_argument_skips_selection_resolution(self):
+        with patch.object(actions, "resolve_model_root") as resolve:
+            resolve.side_effect = AssertionError("resolve_model_root must not be called")
+            self.assertTrue(actions.create_control_rig(model_root="|explicit_root"))
+            actions.enter_source_mode(model_root="|explicit_root")
+            actions.enter_target_mode(model_root="|explicit_root")
+            actions.setup_and_characterize(model_root="|explicit_root")
+        resolve.assert_not_called()
+        self.assertIn(("create_control_rig", "|explicit_root"), self.session.calls)
+        self.assertIn(("enter_source_mode", "|explicit_root"), self.session.calls)
+        self.assertIn(("enter_target_mode", "|explicit_root"), self.session.calls)
+        self.assertIn(
+            (
+                "setup_and_characterize",
+                "|explicit_root",
+                {"profile": "body-only", "include_fingers": False},
+            ),
+            self.session.calls,
+        )
+
+    def test_model_root_none_falls_back_to_selection_resolution_as_before(self):
+        with patch.object(actions, "resolve_model_root", return_value="|selected_root") as resolve:
+            actions.create_control_rig()
+        resolve.assert_called_once()
+        self.assertIn(("create_control_rig", "|selected_root"), self.session.calls)
+
+    # -- HUMANIK-FRONTEND-1 Phase B4: list_scene_mmd_models ------------------
+
+    @patch.object(actions, "SceneModelService", _FakeModelService)
+    def test_list_scene_mmd_models_returns_sorted_scene_roots(self):
+        _FakeModelService.models = ["|b_root", "|a_root"]
+        self.assertEqual(
+            actions.list_scene_mmd_models(cmds_module=self.cmds), ["|a_root", "|b_root"]
+        )
+
+    def test_list_scene_mmd_models_fails_soft_to_empty_list(self):
+        cmds = MagicMock()
+        with patch.object(actions, "SceneModelService", side_effect=RuntimeError("boom")):
+            self.assertEqual(actions.list_scene_mmd_models(cmds_module=cmds), [])
+
+    # -- HUMANIK-FRONTEND-1 Phase B4: connect_retarget / disconnect_retarget -
+
+    def test_connect_retarget_runs_source_then_target_in_order(self):
+        actions._confirm_dialog = lambda **kwargs: "Continue"
+
+        result = actions.connect_retarget("|source_root", "|target_root")
+
+        self.assertEqual(result, "|target_root")
+        source_index = self.session.calls.index(("enter_source_mode", "|source_root"))
+        target_index = self.session.calls.index(("enter_target_mode", "|target_root"))
+        self.assertLess(source_index, target_index)
+
+    def test_connect_retarget_rejects_identical_source_and_target(self):
+        actions.connect_retarget("|same_root", "|same_root")
+
+        self.assertTrue(any("must differ" in message for message in self._errors))
+        self.assertNotIn(("enter_source_mode", "|same_root"), self.session.calls)
+
+    def test_connect_retarget_rejects_missing_models(self):
+        actions.connect_retarget("", "|target_root")
+
+        self.assertTrue(any("requires both" in message for message in self._errors))
+        self.assertEqual(self.session.calls, [])
+
+    def test_connect_retarget_stops_before_target_when_source_step_fails(self):
+        class FailingSourceSession(_FakeSession):
+            def enter_source_mode(self, root):
+                raise RuntimeError("source failed")
+
+        actions.set_humanik_session(FailingSourceSession())
+        actions._confirm_dialog = lambda **kwargs: "Continue"
+
+        result = actions.connect_retarget("|source_root", "|target_root")
+
+        self.assertIsNone(result)
+        self.assertTrue(any("Enter Source Mode failed" in message for message in self._errors))
+        self.assertNotIn(("enter_target_mode", "|target_root"), self.session.calls)
+
+    def test_disconnect_retarget_confirms_before_restoring(self):
+        dialog = {}
+
+        def choose(**kwargs):
+            dialog.update(kwargs)
+            return "Continue"
+
+        actions._confirm_dialog = choose
+
+        self.assertTrue(actions.disconnect_retarget())
+        self.assertIn("Control Rig", dialog["message"])
+        self.assertIn(("restore_mmd_rig",), self.session.calls)
+
+    def test_disconnect_retarget_cancel_does_not_restore(self):
+        actions._confirm_dialog = lambda **kwargs: "Cancel"
+
+        self.assertIsNone(actions.disconnect_retarget())
+        self.assertNotIn(("restore_mmd_rig",), self.session.calls)
+
 
 if __name__ == "__main__":
     unittest.main()

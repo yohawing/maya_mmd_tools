@@ -1,12 +1,18 @@
 """Unit tests for the HumanIK tab presenter and the tab's static display maps.
 
 The HumanIK tab is a thin status display over
-``HumanIkFrontendSession.describe_frontend_state()`` plus buttons that
-dispatch to the already-tested ``humanik_menu_actions`` functions (see
-``tests/unit/test_humanik_menu_actions.py``); this suite does not re-verify
-menu action behavior, only that the presenter wires buttons to dispatch +
-refresh correctly and renders state without scanning the scene while the tab
-is inactive.
+``HumanIkFrontendSession.describe_frontend_state()`` plus a Character/Source
+combo pair (HUMANIK-FRONTEND-1 Phase B4) and the four remaining action
+buttons, all dispatching to the already-tested ``humanik_menu_actions``
+functions (see ``tests/unit/test_humanik_menu_actions.py``); this suite does
+not re-verify menu action behavior, only that the presenter:
+
+* wires the remaining buttons to dispatch + refresh correctly;
+* resolves the Character combo's selection per the sticky/follow/override
+  policy the tab's docstring documents;
+* re-syncs the Source combo from backend truth every refresh, and dispatches
+  a user change there to ``connect_retarget``/``disconnect_retarget``;
+* renders state without scanning the scene while the tab is inactive.
 """
 
 import unittest
@@ -81,12 +87,19 @@ class _FakeSession:
 class _FakeActionsModule:
     """Stand-in for ``humanik_menu_actions`` with exactly the surface the presenter uses."""
 
-    def __init__(self, session=None, display_model_root=None):
+    def __init__(self, session=None, display_model_root=None, scene_models=None):
         self.session = session or _FakeSession()
         self.display_model_root = display_model_root
+        self.scene_models = list(scene_models) if scene_models is not None else []
         self.dispatch_calls = []
         self.bake_calls = []
         self.resolve_calls = 0
+        self.connect_calls = []
+        self.disconnect_calls = 0
+        self.connect_result = "connected"
+        self.disconnect_result = True
+        self.connect_error = None
+        self.disconnect_error = None
 
     def get_humanik_session(self):
         return self.session
@@ -100,6 +113,21 @@ class _FakeActionsModule:
     def resolve_selected_model_root_for_display(self, *, cmds_module=None):
         self.resolve_calls += 1
         return self.display_model_root
+
+    def list_scene_mmd_models(self, *, cmds_module=None):
+        return list(self.scene_models)
+
+    def connect_retarget(self, source_model_root, target_model_root):
+        self.connect_calls.append((source_model_root, target_model_root))
+        if self.connect_error is not None:
+            raise self.connect_error
+        return self.connect_result
+
+    def disconnect_retarget(self):
+        self.disconnect_calls += 1
+        if self.disconnect_error is not None:
+            raise self.disconnect_error
+        return self.disconnect_result
 
 
 class _FakeCmds:
@@ -132,22 +160,22 @@ def _make_mock_view():
         view,
         [
             "refresh_btn",
-            "setup_characterize_btn",
-            "enter_source_btn",
-            "enter_target_btn",
             "create_control_rig_btn",
             "bake_btn",
             "restore_btn",
             "diagnostics_btn",
+            "character_combo",
+            "source_combo",
         ],
     )
     view.bake_frame_range.return_value = (5, 25)
+    view.tr.side_effect = lambda key, category=None: key
     return view
 
 
-def _connected_handler(mock_button):
-    """Return the callback the presenter registered via ``.clicked.connect``."""
-    return mock_button.clicked.connect.call_args[0][0]
+def _connected_handler(mock_signal_owner_attr):
+    """Return the callback registered via ``.connect`` on a mock signal."""
+    return mock_signal_owner_attr.connect.call_args[0][0]
 
 
 class TestHumanIkPresenter(unittest.TestCase):
@@ -187,6 +215,7 @@ class TestHumanIkPresenter(unittest.TestCase):
     def test_refresh_passes_describe_frontend_state_result_to_view(self):
         self.session.state = {"mode": "source", "controlRigs": []}
         self.actions.display_model_root = "|Model"
+        self.actions.scene_models = ["|Model"]
 
         self.presenter.refresh()
 
@@ -212,13 +241,10 @@ class TestHumanIkPresenter(unittest.TestCase):
         self.presenter.refresh()
         self.assertEqual(self.actions.resolve_calls, 1)
 
-    # -- (d) buttons dispatch to humanik_menu_actions, then refresh -------
+    # -- (d) remaining buttons dispatch to humanik_menu_actions, then refresh
 
     def test_each_action_button_dispatches_its_stable_action_name_and_refreshes(self):
         button_to_action = {
-            "setup_characterize_btn": "setup_and_characterize",
-            "enter_source_btn": "enter_source_mode",
-            "enter_target_btn": "enter_target_mode",
             "create_control_rig_btn": "create_control_rig",
             "restore_btn": "restore_mmd_rig",
             "diagnostics_btn": "diagnostics",
@@ -227,13 +253,13 @@ class TestHumanIkPresenter(unittest.TestCase):
             with self.subTest(attr=attr):
                 self.actions.dispatch_calls.clear()
                 self.view.set_state.reset_mock()
-                handler = _connected_handler(getattr(self.view, attr))
+                handler = _connected_handler(getattr(self.view, attr).clicked)
                 handler()
                 self.assertEqual(self.actions.dispatch_calls, [action_name])
                 self.view.set_state.assert_called_once()
 
     def test_bake_button_passes_spinbox_range_without_touching_playback(self):
-        handler = _connected_handler(self.view.bake_btn)
+        handler = _connected_handler(self.view.bake_btn.clicked)
 
         handler()
 
@@ -247,14 +273,14 @@ class TestHumanIkPresenter(unittest.TestCase):
             raise RuntimeError("menu action failed")
 
         self.actions.dispatch_action = _raise
-        handler = _connected_handler(self.view.restore_btn)
+        handler = _connected_handler(self.view.restore_btn.clicked)
 
         handler()  # must not raise
 
         self.view.set_state.assert_called_once()
 
     def test_refresh_button_calls_refresh(self):
-        handler = _connected_handler(self.view.refresh_btn)
+        handler = _connected_handler(self.view.refresh_btn.clicked)
         handler()
         self.view.set_state.assert_called_once()
 
@@ -301,6 +327,174 @@ class TestHumanIkPresenter(unittest.TestCase):
         self.view.show_control_rig_warning.assert_not_called()
 
 
+class TestHumanIkPresenterCharacterCombo(unittest.TestCase):
+    """Character combo selection policy: follow / sticky / override (Phase B4)."""
+
+    def setUp(self):
+        self.view = _make_mock_view()
+        self.session = _FakeSession()
+        self.actions = _FakeActionsModule(session=self.session)
+        self.presenter = HumanIkPresenter(
+            self.view,
+            SimpleNamespace(),
+            actions_module=self.actions,
+            cmds_module=_FakeCmds(),
+        )
+
+    def _last_character_call(self):
+        return self.view.set_character_options.call_args
+
+    def test_single_scene_model_is_auto_adopted(self):
+        self.actions.scene_models = ["|Only"]
+
+        self.presenter.refresh()
+
+        _options, selected = self._last_character_call().args
+        self.assertEqual(selected, "|Only")
+        self.assertEqual(self.session.describe_calls, ["|Only"])
+
+    def test_maya_selection_wins_over_default(self):
+        self.actions.scene_models = ["|A", "|B"]
+        self.actions.display_model_root = "|B"
+
+        self.presenter.refresh()
+
+        _options, selected = self._last_character_call().args
+        self.assertEqual(selected, "|B")
+
+    def test_no_selection_sticks_to_last_resolved_model(self):
+        self.actions.scene_models = ["|A", "|B"]
+        self.actions.display_model_root = "|B"
+        self.presenter.refresh()
+
+        self.actions.display_model_root = None
+        self.presenter.refresh()
+
+        _options, selected = self._last_character_call().args
+        self.assertEqual(selected, "|B")
+
+    def test_manual_pick_wins_over_unchanged_selection(self):
+        self.actions.scene_models = ["|A", "|B"]
+        self.actions.display_model_root = "|A"
+        self.presenter.refresh()
+
+        handler = _connected_handler(self.view.character_combo.currentIndexChanged)
+        self.view.character_combo.currentData.return_value = "|B"
+        handler()
+
+        _options, selected = self._last_character_call().args
+        self.assertEqual(selected, "|B")
+        # The Maya selection never changed away from |A during this pick.
+        self.assertEqual(self.actions.display_model_root, "|A")
+
+    def test_selection_change_clears_a_manual_override(self):
+        self.actions.scene_models = ["|A", "|B"]
+        self.actions.display_model_root = None
+        self.presenter.refresh()
+
+        handler = _connected_handler(self.view.character_combo.currentIndexChanged)
+        self.view.character_combo.currentData.return_value = "|B"
+        handler()
+        _options, selected = self._last_character_call().args
+        self.assertEqual(selected, "|B")
+
+        # A genuinely new Maya selection now appears: it must win outright,
+        # discarding the earlier manual override.
+        self.actions.display_model_root = "|A"
+        self.presenter.refresh()
+
+        _options, selected = self._last_character_call().args
+        self.assertEqual(selected, "|A")
+
+    def test_character_combo_change_ignores_falsy_selection(self):
+        self.actions.scene_models = ["|A"]
+        self.presenter.refresh()
+        calls_before = self.view.set_character_options.call_count
+
+        handler = _connected_handler(self.view.character_combo.currentIndexChanged)
+        self.view.character_combo.currentData.return_value = None
+        handler()
+
+        # No refresh should have been triggered by a falsy combo value.
+        self.assertEqual(self.view.set_character_options.call_count, calls_before)
+
+
+class TestHumanIkPresenterSourceCombo(unittest.TestCase):
+    """Source combo: backend-truth sync + connect/disconnect dispatch (Phase B4)."""
+
+    def setUp(self):
+        self.view = _make_mock_view()
+        self.session = _FakeSession()
+        self.actions = _FakeActionsModule(session=self.session, scene_models=["|Char", "|Other"])
+        self.presenter = HumanIkPresenter(
+            self.view,
+            SimpleNamespace(),
+            actions_module=self.actions,
+            cmds_module=_FakeCmds(),
+        )
+
+    def _last_source_call(self):
+        return self.view.set_source_options.call_args
+
+    def test_no_source_bound_shows_none(self):
+        self.session.state = {"source": None}
+
+        self.presenter.refresh()
+
+        _options, selected = self._last_source_call().args
+        self.assertIsNone(selected)
+
+    def test_source_combo_excludes_the_character_model(self):
+        self.session.state = {"source": None}
+
+        self.presenter.refresh()
+
+        options, _selected = self._last_source_call().args
+        values = [value for _label, value in options]
+        self.assertNotIn(self.presenter._character_root, values)
+        self.assertIn(None, values)
+
+    def test_source_combo_reflects_backend_truth_after_refresh(self):
+        self.session.state = {"source": {"modelRoot": "|Other", "character": "OtherChar"}}
+
+        self.presenter.refresh()
+
+        _options, selected = self._last_source_call().args
+        self.assertEqual(selected, "|Other")
+
+    def test_picking_a_model_dispatches_connect_retarget(self):
+        self.presenter.refresh()
+        character_root = self.presenter._character_root
+
+        handler = _connected_handler(self.view.source_combo.currentIndexChanged)
+        self.view.source_combo.currentData.return_value = "|Other"
+        handler()
+
+        self.assertEqual(self.actions.connect_calls, [("|Other", character_root)])
+        self.assertEqual(self.view.set_state.call_count, 2)  # initial refresh + post-pick refresh
+
+    def test_picking_none_dispatches_disconnect_retarget(self):
+        self.presenter.refresh()
+
+        handler = _connected_handler(self.view.source_combo.currentIndexChanged)
+        self.view.source_combo.currentData.return_value = None
+        handler()
+
+        self.assertEqual(self.actions.disconnect_calls, 1)
+        self.assertEqual(self.actions.connect_calls, [])
+
+    def test_connect_failure_still_refreshes_and_does_not_raise(self):
+        self.presenter.refresh()
+        self.actions.connect_error = RuntimeError("connect failed")
+
+        handler = _connected_handler(self.view.source_combo.currentIndexChanged)
+        self.view.source_combo.currentData.return_value = "|Other"
+        handler()  # must not raise
+
+        self.assertEqual(self.actions.connect_calls, [("|Other", self.presenter._character_root)])
+        self.assertGreaterEqual(self.view.set_state.call_count, 2)
+
+
 class TestHumanIkReasonCodeTranslation(unittest.TestCase):
     """(b) Every backend reasonCode maps to a real, non-fallback display string."""
 
@@ -323,11 +517,12 @@ class TestHumanIkReasonCodeTranslation(unittest.TestCase):
         finally:
             translator.set_language(previous_language)
 
-    def test_action_key_to_button_covers_every_describe_frontend_state_action(self):
+    def test_action_key_to_button_covers_the_four_remaining_tab_buttons(self):
+        # Setup/Characterize, Enter Source Mode, and Enter Target Mode moved
+        # to the Character/Source combos (HUMANIK-FRONTEND-1 Phase B4) and no
+        # longer have a button on this tab; the plugin menu keeps those three
+        # actions unchanged (see ``humanik_menu_actions.ACTION_LABELS``).
         expected_actions = {
-            "setup_and_characterize",
-            "enter_source_mode",
-            "enter_target_mode",
             "create_control_rig",
             "bake_to_mmd_rig",
             "restore_mmd_rig",
@@ -435,24 +630,24 @@ class TestHumanIkTabSetState(unittest.TestCase):
         state = {
             "mode": "neutral",
             "actions": {
-                "enter_source_mode": _action_blocked(REASON_NOT_CHARACTERIZED),
-                "enter_target_mode": _action_allowed(),
+                "create_control_rig": _action_blocked(REASON_NOT_CHARACTERIZED),
+                "restore_mmd_rig": _action_allowed(),
             },
             "restoreHint": {"orphanedControlRigs": []},
         }
 
         HumanIkTab.set_state(fake, state)
 
-        enter_source_button = fake._action_buttons["enter_source_btn"]
-        enter_source_button.setEnabled.assert_called_once_with(False)
+        create_button = fake._action_buttons["create_control_rig_btn"]
+        create_button.setEnabled.assert_called_once_with(False)
         expected_text = UITranslator.instance().translate(
             "humanik_reason_not_characterized", "messages"
         )
-        enter_source_button.setToolTip.assert_called_once_with(expected_text)
+        create_button.setToolTip.assert_called_once_with(expected_text)
 
-        enter_target_button = fake._action_buttons["enter_target_btn"]
-        enter_target_button.setEnabled.assert_called_once_with(True)
-        enter_target_button.setToolTip.assert_called_once_with("")
+        restore_button = fake._action_buttons["restore_btn"]
+        restore_button.setEnabled.assert_called_once_with(True)
+        restore_button.setToolTip.assert_called_once_with("")
 
 
 if __name__ == "__main__":

@@ -99,6 +99,7 @@
     "search_results": "results",
     "not_found": "Not found",
     "humanik_mode": "Mode:",
+    "humanik_character": "Character:",
     "humanik_source": "SOURCE:",
     "humanik_target": "TARGET:",
     "humanik_control_rigs": "Control Rigs:",
@@ -253,6 +254,7 @@
     "humanik_reason_already_characterized_other_profile": "Already characterized with a different profile.",
     "humanik_reason_nothing_to_restore": "There is nothing to restore.",
     "humanik_reason_model_required": "Select a model in the Maya scene.",
+    "humanik_source_mmd_only_tooltip": "Only MMD models can be a retarget source. External characters (e.g. mocap rigs) are not supported yet.",
     "humanik_import_lock_blocked": "VMD import is currently refused: {reason} — use Restore MMD Rig to clear this.",
     "humanik_reason_import_blocked_target_preview": "This model is currently a HumanIK TARGET preview.",
     "humanik_reason_import_blocked_control_rig": "This model currently has an active HumanIK Control Rig.",
@@ -341,7 +343,10 @@
     "rigid_body_values": "Rigid Body Values",
     "joint_values": "Joint Values",
     "humanik_status": "HumanIK Status",
-    "humanik_actions": "HumanIK Actions"
+    "humanik_actions": "HumanIK Actions",
+    "humanik_section_control_rig": "Control Rig",
+    "humanik_section_bake": "Bake",
+    "humanik_section_restore_diagnostics": "Restore / Diagnostics"
   },
   "checkboxes": {
     "use_namespace": "Use Namespace",

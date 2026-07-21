@@ -99,6 +99,7 @@
     "not_found": "找不到",
     "namespace_placeholder": "自動產生",
     "humanik_mode": "模式:",
+    "humanik_character": "角色:",
     "humanik_source": "SOURCE:",
     "humanik_target": "TARGET:",
     "humanik_control_rigs": "Control Rig:",
@@ -194,6 +195,7 @@
     "humanik_reason_already_characterized_other_profile": "已使用不同的設定檔角色化。",
     "humanik_reason_nothing_to_restore": "沒有可還原的內容。",
     "humanik_reason_model_required": "請在 Maya 場景中選取模型。",
+    "humanik_source_mmd_only_tooltip": "重定向的Source僅支援MMD模型。動捕等外部角色暫不支援。",
     "humanik_import_lock_blocked": "VMD import 目前遭拒絕：{reason} — 請使用 Restore MMD Rig 解除。",
     "humanik_reason_import_blocked_target_preview": "此模型目前處於 HumanIK Target 預覽狀態。",
     "humanik_reason_import_blocked_control_rig": "此模型目前有啟用中的 HumanIK Control Rig。",
@@ -282,7 +284,10 @@
     "rigid_body_values": "剛體數值",
     "joint_values": "關節數值",
     "humanik_status": "HumanIK 狀態",
-    "humanik_actions": "HumanIK 操作"
+    "humanik_actions": "HumanIK 操作",
+    "humanik_section_control_rig": "控制器",
+    "humanik_section_bake": "烘焙",
+    "humanik_section_restore_diagnostics": "還原 / 診斷"
   },
   "checkboxes": {
     "use_namespace": "使用命名空間",
