@@ -2126,11 +2126,13 @@ def physics_solver_cycle_probe(session: nox.Session) -> None:
         str(ROOT / "build/fixtures/citlali_ascii_file/citlali.pmx"),
     )
     frames_value = _option(args, "--frames", "0,1,2,1,0")
+    modes_value = _option(args, "--modes", "off,serial,parallel")
     report_path = Path(out_value)
     passthrough = [
         "--pmx", pmx_value,
         "--out", out_value,
         "--frames", frames_value,
+        "--modes", modes_value,
     ]
     try:
         report_path.unlink()

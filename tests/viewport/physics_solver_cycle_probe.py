@@ -21,13 +21,14 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple
 
 import maya.cmds as cmds
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PMX = "build/fixtures/citlali_ascii_file/citlali.pmx"
 DEFAULT_REPORT = "build/reports/physics_solver_cycle_probe.json"
+_EVALUATION_MODES = {"off", "serial", "parallel"}
 
 
 def _parse_args() -> argparse.Namespace:
@@ -38,6 +39,11 @@ def _parse_args() -> argparse.Namespace:
         "--frames",
         default="0,1,2,1,0",
         help="Comma-separated Maya frames used by the deterministic playback/scrub sequence.",
+    )
+    parser.add_argument(
+        "--modes",
+        default="off,serial,parallel",
+        help="Comma-separated evaluationManager modes (off, serial, parallel).",
     )
     return parser.parse_args()
 
@@ -189,10 +195,16 @@ def _cycle_state(label: str) -> Dict[str, Any]:
 
 def _evaluation_state() -> Dict[str, Any]:
     try:
-        modes = cmds.evaluationManager(query=True, mode=True) or []
+        raw_modes = cmds.evaluationManager(query=True, mode=True) or []
     except Exception as exc:
         return {"modes": [], "error": str(exc)}
-    return {"modes": [str(mode) for mode in modes]}
+    # Maya may append a localized informational string (for example, when it
+    # has just prepared the evaluation graph).  Keep only actual mode tokens
+    # so before/after restoration compares configuration rather than chatter.
+    modes = [str(mode) for mode in raw_modes if str(mode).lower() in _EVALUATION_MODES]
+    if not modes and raw_modes:
+        modes = [str(raw_modes[0])]
+    return {"modes": modes}
 
 
 def _solver_for_root(root: str) -> str | None:
@@ -385,29 +397,102 @@ def _parse_frames(raw: str) -> List[int]:
     return values
 
 
-def _run(args: argparse.Namespace) -> Dict[str, Any]:
-    pmx = _resolve_path(args.pmx)
+def _parse_modes(raw: str) -> List[str]:
+    """Parse and validate evaluationManager modes in stable caller order."""
+    allowed = _EVALUATION_MODES
+    values = [part.strip().lower() for part in str(raw).split(",") if part.strip()]
+    if not values:
+        raise ValueError("--modes must contain at least one evaluation mode")
+    invalid = sorted(set(values) - allowed)
+    if invalid:
+        raise ValueError(f"Unsupported evaluation mode(s): {', '.join(invalid)}")
+    # Preserve order while avoiding duplicate scene imports.
+    return list(dict.fromkeys(values))
+
+
+def _set_evaluation_mode(mode: str) -> Dict[str, Any]:
+    """Set one evaluationManager mode and return before/after evidence."""
+    before = _evaluation_state()
+    cmds.evaluationManager(mode=mode)
+    after = _evaluation_state()
+    return {"requested": mode, "before": before, "after": after}
+
+
+def _restore_evaluation_mode(state: Mapping[str, Any]) -> Dict[str, Any]:
+    """Restore the first mode returned by an evaluationManager query."""
+    modes = state.get("modes") or []
+    if not modes:
+        return {"requested": None, "after": _evaluation_state(), "restored": True}
+    requested = str(modes[0])
+    cmds.evaluationManager(mode=requested)
+    after = _evaluation_state()
+    return {
+        "requested": requested,
+        "after": after,
+        "restored": after.get("modes") == list(modes),
+    }
+
+
+def _cycle_plug_set(mode_report: Mapping[str, Any]) -> List[str]:
+    """Return the union of cycle plugs observed by one mode run."""
+    plugs: set[str] = set()
+    imported = mode_report.get("import") or {}
+    plugs.update(str(item) for item in (imported.get("cycle") or {}).get("cyclePlugs", []))
+    for operation in mode_report.get("operations") or []:
+        cycle = operation.get("cycle") or {}
+        plugs.update(str(item) for item in cycle.get("cyclePlugs", []))
+        result = operation.get("result") or {}
+        for key in ("cycleBefore", "cycleAfter"):
+            plugs.update(str(item) for item in (result.get(key) or {}).get("cyclePlugs", []))
+    return sorted(plugs)
+
+
+def _solver_connection_set(mode_report: Mapping[str, Any]) -> List[str]:
+    """Return canonical solver connection edges for one mode run."""
+    solver_plugs = mode_report.get("solverPlugs") or {}
+    pairs = solver_plugs.get("connections") or []
+    return sorted(
+        f"{pair.get('thisPlug', '')} -> {pair.get('otherPlug', '')}"
+        for pair in pairs
+    )
+
+
+def _topology_set(mode_report: Mapping[str, Any]) -> List[str]:
+    """Return a compact canonical set of relevant topology nodes and edges."""
+    topology = mode_report.get("topologyBefore") or {}
+    values = {
+        f"node:{row.get('nodeType')}:{row.get('node')}"
+        for row in topology.get("nodes", [])
+    }
+    values.update(
+        f"edge:{pair.get('thisPlug', '')} -> {pair.get('otherPlug', '')}"
+        for pair in topology.get("edges", [])
+    )
+    return sorted(values)
+
+
+def _run_mode(
+    *,
+    args: argparse.Namespace,
+    pmx: Path,
+    mode: str,
+    scene_path: Path,
+    frames: Sequence[int],
+) -> Dict[str, Any]:
+    """Run one fully isolated import/operation/reopen pass."""
     report: Dict[str, Any] = {
         "status": "error",
-        "probe": "MMD-PHYSICS-SOLVER-CYCLE-1",
-        "mayaVersion": None,
-        "pmx": str(pmx),
+        "mode": mode,
         "modelRoot": None,
         "solver": None,
         "import": {},
         "operations": [],
         "errors": [],
+        "evaluationMode": {},
     }
-    report["mayaVersion"] = str(cmds.about(version=True))
-    previous_cycle_evaluation: bool | None = None
+    mode_before = _evaluation_state()
     try:
-        try:
-            previous_cycle_evaluation = bool(cmds.cycleCheck(query=True, evaluation=True))
-            # Explicitly enable checking for this probe, restoring the prior
-            # flag in finally so a command-port/session host is not modified.
-            cmds.cycleCheck(evaluation=True)
-        except Exception as exc:
-            report["errors"].append(f"cycleCheck setup: {exc}")
+        report["evaluationMode"]["set"] = _set_evaluation_mode(mode)
         cmds.file(new=True, force=True)
         if not pmx.is_file():
             raise FileNotFoundError(f"Citlali PMX fixture not found: {pmx}")
@@ -419,7 +504,7 @@ def _run(args: argparse.Namespace) -> Dict[str, Any]:
             "outcome": "pass",
             "solverPresent": bool(solver),
             "evaluation": _evaluation_state(),
-            "cycle": _cycle_state("clean_import"),
+            "cycle": _cycle_state(f"{mode}:clean_import"),
             "solverState": _solver_state(solver),
         }
         if not solver:
@@ -427,29 +512,29 @@ def _run(args: argparse.Namespace) -> Dict[str, Any]:
                 "Production import completed but no mmdPhysicsSolver is connected "
                 f"to model root {root}; native physics registration is required"
             )
-        report["solverPlugs"] = _solver_plugs(solver) if solver else {"node": None, "reason": "mmdPhysicsSolver unavailable"}
+        report["solverPlugs"] = _solver_plugs(solver)
         report["topologyBefore"] = _topology(root, solver)
 
-        frames = _parse_frames(args.frames)
         # Standalone Maya does not advance playback asynchronously, so invoke
         # play/stop and still set explicit frames to make the sequence stable.
         def playback() -> Dict[str, Any]:
+            playback_frames = list(frames[: max(1, min(3, len(frames)))])
             cmds.play(state=False)
             cmds.play(state=True)
-            for frame in frames[: max(1, min(3, len(frames)))]:
+            for frame in playback_frames:
                 cmds.currentTime(frame, edit=True)
             cmds.play(state=False)
-            return {"frames": frames[: max(1, min(3, len(frames)))]}
+            return {"frames": playback_frames}
 
-        report["operations"].append(_operation("playback", playback, solver))
+        report["operations"].append(_operation(f"{mode}:playback", playback, solver))
 
         def scrub() -> Dict[str, Any]:
             for frame in frames:
                 cmds.currentTime(frame, edit=True)
                 cmds.refresh(force=True)
-            return {"frames": frames}
+            return {"frames": list(frames)}
 
-        report["operations"].append(_operation("scrub", scrub, solver))
+        report["operations"].append(_operation(f"{mode}:scrub", scrub, solver))
 
         worlds = [
             str(shape)
@@ -473,7 +558,7 @@ def _run(args: argparse.Namespace) -> Dict[str, Any]:
             cmds.refresh(force=True)
             return {"worlds": worlds}
 
-        report["operations"].append(_operation("reset", reset, solver))
+        report["operations"].append(_operation(f"{mode}:reset", reset, solver))
 
         def toggle_physics() -> Dict[str, Any]:
             for world in worlds:
@@ -485,7 +570,7 @@ def _run(args: argparse.Namespace) -> Dict[str, Any]:
                 cmds.refresh(force=True)
             return {"worlds": worlds, "toggled": bool(worlds)}
 
-        report["operations"].append(_operation("physics_toggle", toggle_physics, solver))
+        report["operations"].append(_operation(f"{mode}:physics_toggle", toggle_physics, solver))
 
         # Restore world values after the reversible sequence.  The reset
         # generation is restored too; the operation evidence remains in JSON.
@@ -497,14 +582,10 @@ def _run(args: argparse.Namespace) -> Dict[str, Any]:
                     except Exception as exc:
                         report["errors"].append(f"restore {world}.{attr}: {exc}")
 
-        scene_path = _resolve_path(
-            str(Path(args.out).with_name(Path(args.out).stem + "_scene.ma"))
-        )
-
         def scene_reopen() -> Dict[str, Any]:
             """Save/open the imported scene and compare solver/cycle evidence."""
             before_connections = _connection_pairs(solver)
-            before_cycle = _cycle_state("scene_reopen_before_save")
+            before_cycle = _cycle_state(f"{mode}:scene_reopen_before_save")
             scene_path.parent.mkdir(parents=True, exist_ok=True)
             cmds.file(rename=str(scene_path))
             cmds.file(save=True, type="mayaAscii", force=True)
@@ -515,7 +596,7 @@ def _run(args: argparse.Namespace) -> Dict[str, Any]:
             if not reopened_solver:
                 raise RuntimeError("scene reopen lost mmdPhysicsSolver")
             after_connections = _connection_pairs(reopened_solver)
-            after_cycle = _cycle_state("scene_reopen_after_open")
+            after_cycle = _cycle_state(f"{mode}:scene_reopen_after_open")
             return {
                 "scenePath": str(scene_path),
                 "solverBefore": solver,
@@ -526,14 +607,15 @@ def _run(args: argparse.Namespace) -> Dict[str, Any]:
                 "cycleAfter": after_cycle,
             }
 
-        report["operations"].append(_operation("scene_reopen", scene_reopen, solver))
+        report["operations"].append(_operation(f"{mode}:scene_reopen", scene_reopen, solver))
         report["topologyAfter"] = _topology(root, solver)
         report["topologyStable"] = report["topologyBefore"] == report["topologyAfter"]
+        operation_errors = [
+            row for row in report["operations"] if row.get("outcome") == "error"
+        ]
+        if operation_errors:
+            raise RuntimeError(f"mode {mode} operation failure: {operation_errors}")
         reopen_result = report["operations"][-1].get("result") or {}
-        if report["operations"][-1].get("outcome") == "error":
-            raise RuntimeError(
-                "scene reopen operation failed: " + str(report["operations"][-1].get("error"))
-            )
         if not reopen_result.get("solverConnectionsStable", False):
             raise RuntimeError("scene reopen changed mmdPhysicsSolver connections")
         if not reopen_result.get("cycleStable", False):
@@ -544,6 +626,113 @@ def _run(args: argparse.Namespace) -> Dict[str, Any]:
     except Exception as exc:
         report["errors"].append(str(exc))
     finally:
+        try:
+            restore = _restore_evaluation_mode(mode_before)
+        except Exception as exc:
+            restore = {"requested": None, "after": _evaluation_state(), "restored": False, "error": str(exc)}
+            report["errors"].append(f"evaluationManager restore: {exc}")
+        report["evaluationMode"]["restore"] = restore
+        report["evaluationMode"]["restored"] = bool(restore.get("restored"))
+        if report["status"] == "pass" and not report["evaluationMode"]["restored"]:
+            report["status"] = "error"
+            report["errors"].append("evaluationManager mode was not restored")
+    return report
+
+
+def _run(args: argparse.Namespace) -> Dict[str, Any]:
+    pmx = _resolve_path(args.pmx)
+    modes = _parse_modes(args.modes)
+    frames = _parse_frames(args.frames)
+    report: Dict[str, Any] = {
+        "status": "error",
+        "probe": "MMD-PHYSICS-SOLVER-CYCLE-1",
+        "mayaVersion": str(cmds.about(version=True)),
+        "pmx": str(pmx),
+        "modesRequested": modes,
+        "modes": [],
+        "modeComparison": {},
+        "errors": [],
+    }
+    initial_eval_mode = _evaluation_state()
+    previous_cycle_evaluation: bool | None = None
+    try:
+        try:
+            previous_cycle_evaluation = bool(cmds.cycleCheck(query=True, evaluation=True))
+            # Explicitly enable checking for this probe, restoring the prior
+            # flag in finally so a command-port/session host is not modified.
+            cmds.cycleCheck(evaluation=True)
+        except Exception as exc:
+            report["errors"].append(f"cycleCheck setup: {exc}")
+        if not pmx.is_file():
+            raise FileNotFoundError(f"Citlali PMX fixture not found: {pmx}")
+
+        for mode in modes:
+            scene_path = _resolve_path(
+                str(Path(args.out).with_name(Path(args.out).stem + f"_{mode}_scene.ma"))
+            )
+            mode_report = _run_mode(
+                args=args,
+                pmx=pmx,
+                mode=mode,
+                scene_path=scene_path,
+                frames=frames,
+            )
+            report["modes"].append(mode_report)
+
+        facts: Dict[str, Any] = {}
+        for mode_report in report["modes"]:
+            mode = str(mode_report.get("mode"))
+            cycle_plugs = _cycle_plug_set(mode_report)
+            solver_connections = _solver_connection_set(mode_report)
+            topology = _topology_set(mode_report)
+            reopen = (mode_report.get("operations") or [])[-1].get("result", {}) if mode_report.get("operations") else {}
+            facts[mode] = {
+                "status": mode_report.get("status"),
+                "cycleCount": len(cycle_plugs),
+                "cycleObservationCount": sum(
+                    len((row.get("cycle") or {}).get("cyclePlugs", []))
+                    for row in mode_report.get("operations", [])
+                ),
+                "cyclePlugs": cycle_plugs,
+                "solverConnectionCount": len(solver_connections),
+                "solverConnections": solver_connections,
+                "solverConnectionsStable": reopen.get("solverConnectionsStable"),
+                "topologyCount": len(topology),
+                "topology": topology,
+                "topologyStable": mode_report.get("topologyStable"),
+                "evaluationModeRestored": (mode_report.get("evaluationMode") or {}).get("restored"),
+            }
+        report["modeComparison"] = {
+            "modes": modes,
+            "facts": facts,
+            "cyclePlugSetsEqual": len({tuple(item["cyclePlugs"]) for item in facts.values()}) <= 1,
+            "solverConnectionSetsEqual": len({tuple(item["solverConnections"]) for item in facts.values()}) <= 1,
+            "topologySetsEqual": len({tuple(item["topology"]) for item in facts.values()}) <= 1,
+        }
+        if not report["modes"]:
+            raise RuntimeError("No evaluation modes were executed")
+        if any(mode_report.get("status") != "pass" for mode_report in report["modes"]):
+            raise RuntimeError("One or more evaluation mode runs failed")
+        report["status"] = "pass"
+    except Exception as exc:
+        report["errors"].append(str(exc))
+    finally:
+        # Each mode restores this state; repeat once at the outer boundary so
+        # a partially initialized mode cannot leak evaluation settings.
+        try:
+            report["evaluationManagerBefore"] = initial_eval_mode
+            evaluation_restore = _restore_evaluation_mode(initial_eval_mode)
+            report["evaluationManagerRestore"] = evaluation_restore
+            report["evaluationManagerAfter"] = _evaluation_state()
+            if not evaluation_restore.get("restored", False):
+                report["status"] = "error"
+                report["errors"].append(
+                    "evaluationManager outer restore did not restore the initial mode: "
+                    f"{evaluation_restore}"
+                )
+        except Exception as exc:
+            report["status"] = "error"
+            report["errors"].append(f"evaluationManager outer restore: {exc}")
         if previous_cycle_evaluation is not None:
             try:
                 cmds.cycleCheck(evaluation=previous_cycle_evaluation)
