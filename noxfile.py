@@ -2187,12 +2187,15 @@ def root_move_skin_parity_probe(session: nox.Session) -> None:
     )
     delta_value = _option(args, "--delta", "17.5,-8.25,11.0")
     vertices_value = _option(args, "--vertices-per-mesh", "8")
+    tolerance_value = _option(args, "--tolerance", "1.0e-4")
     report_path = Path(out_value)
     passthrough = [
         "--pmx", pmx_value,
         "--out", out_value,
         "--delta", delta_value,
         "--vertices-per-mesh", vertices_value,
+        "--expect-parity",
+        "--tolerance", tolerance_value,
     ]
     try:
         report_path.unlink()

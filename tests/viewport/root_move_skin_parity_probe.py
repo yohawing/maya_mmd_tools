@@ -46,6 +46,17 @@ def _parse_args() -> argparse.Namespace:
         default=8,
         help="Number of representative world-space vertices sampled per mesh.",
     )
+    parser.add_argument(
+        "--expect-parity",
+        action="store_true",
+        help="Fail unless root/joint/mesh displacement and reopen parity pass the tolerance gate.",
+    )
+    parser.add_argument(
+        "--tolerance",
+        type=float,
+        default=1.0e-4,
+        help="Absolute matrix/translation tolerance used by --expect-parity.",
+    )
     return parser.parse_args()
 
 
@@ -368,6 +379,8 @@ def _run(args: argparse.Namespace) -> Dict[str, Any]:
         "pmx": str(pmx),
         "requestedRootDelta": delta,
         "rootZeroOrBakePerformed": False,
+        "expectParity": bool(args.expect_parity),
+        "parityTolerance": float(args.tolerance),
         "errors": [],
     }
     try:
@@ -424,6 +437,50 @@ def _run(args: argparse.Namespace) -> Dict[str, Any]:
             "skinTopologyEqual": reopen_skin["topologyEqual"],
             "meshTopologyEqual": reopen_mesh["topologyEqual"],
         }
+        parity = {
+            "enabled": bool(args.expect_parity),
+            "passed": None,
+            "failures": [],
+        }
+        if args.expect_parity:
+            tolerance = float(args.tolerance)
+            if tolerance < 0.0:
+                raise ValueError("--tolerance must be non-negative")
+            root_residual = max(abs(value) for value in move_diff["rootDeltaResidual"])
+            joint_residual = max(
+                (
+                    max(abs(value) for value in row["rootDeltaResidual"])
+                    for row in move_diff["joints"]
+                ),
+                default=0.0,
+            )
+            if root_residual > tolerance:
+                parity["failures"].append(f"root delta residual {root_residual} > {tolerance}")
+            if joint_residual > tolerance:
+                parity["failures"].append(f"joint delta residual {joint_residual} > {tolerance}")
+            if move_diff["mesh"]["maxExpectedDeltaResidual"] > tolerance:
+                parity["failures"].append(
+                    "mesh expected-delta residual "
+                    f"{move_diff['mesh']['maxExpectedDeltaResidual']} > {tolerance}"
+                )
+            if move_diff["skin"]["maxBindPreMatrixDistance"] > tolerance:
+                parity["failures"].append("bindPreMatrix changed during root move")
+            if not move_diff["skin"]["topologyEqual"] or not move_diff["mesh"]["topologyEqual"]:
+                parity["failures"].append("skin or mesh topology changed during root move")
+            reopen_residual = max(
+                float(report["sceneReopen"]["jointWorldMatrixMaxResidual"]),
+                float(reopen_skin["maxSkinProductDistance"]),
+                float(reopen_mesh["maxExpectedDeltaResidual"]),
+                float(report["sceneReopen"]["rootWorldMatrixDistance"]),
+            )
+            if reopen_residual > tolerance:
+                parity["failures"].append(f"scene reopen residual {reopen_residual} > {tolerance}")
+            if not report["sceneReopen"]["skinTopologyEqual"] or not report["sceneReopen"]["meshTopologyEqual"]:
+                parity["failures"].append("scene reopen changed skin or mesh topology")
+            parity["passed"] = not parity["failures"]
+        report["parityGate"] = parity
+        if args.expect_parity and not parity["passed"]:
+            raise RuntimeError(f"root move skin parity gate failed: {parity['failures']}")
         report["status"] = "pass"
     except Exception as exc:
         report["errors"].append(str(exc))

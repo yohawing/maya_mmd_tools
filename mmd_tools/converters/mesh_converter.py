@@ -1170,6 +1170,11 @@ class MeshConverter:
 
         # ジオメトリグループを作成
         geo_group = cmds.group(empty=True, name=GEOMETRY_GROUP, parent=root_group)
+        # Keep Geometry under the model root for ownership/visibility, but do
+        # not apply the root transform a second time.  SkinCluster evaluates
+        # joint.worldMatrix against bindPreMatrix; inheriting the model-root
+        # transform here as well causes root translation to double on meshes.
+        cmds.setAttr(f"{geo_group}.inheritsTransform", False)
 
         # 設定からマテリアルごとのメッシュ分割設定を取得
         separate_by_material = settings.get(setting_keys.IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL, False)
