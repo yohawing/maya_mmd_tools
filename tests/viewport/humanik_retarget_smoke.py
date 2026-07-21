@@ -1,10 +1,10 @@
 """Maya 2024 mayapy smoke for direct HumanIK retarget S0 evidence.
 
-The smoke imports the checked-in PMX/VMD fixtures, creates source and target
-HIK definitions without UI calls, locks both definitions, connects the target
-through ``hikSetCharacterInput``, and writes deterministic connection/writer
-and root-locomotion evidence.  It intentionally does not mute constraints,
-bake animation, or create a proxy skeleton.
+The smoke imports source/target PMX fixtures and a source VMD, creates HIK
+definitions without UI calls, locks both definitions, connects the target
+through ``hikSetCharacterInput``, and writes VMD propagation, deterministic
+connection/writer, and root-locomotion evidence. It intentionally does not
+mute constraints, bake animation, or create a proxy skeleton.
 """
 
 from __future__ import annotations
@@ -34,11 +34,21 @@ from mmd_tools.core.humanik_retarget import (
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Smoke direct HumanIK retarget evidence under mayapy.")
     parser.add_argument("--pmx", default="tests/data/mmt_test_model.pmx")
+    parser.add_argument(
+        "--target-pmx",
+        default=None,
+        help="Optional target PMX; defaults to --pmx for self-retarget coverage.",
+    )
     parser.add_argument("--vmd", default="tests/data/mmt_test_model_test_motion.vmd")
     parser.add_argument("--out", default="build/reports/humanik_retarget_smoke.json")
     parser.add_argument("--name-prefix", default="MMDToolsS0_")
     parser.add_argument("--translation", default="1,0,0", help="Root probe translation as x,y,z")
     parser.add_argument("--tolerance", type=float, default=1.0e-4)
+    parser.add_argument(
+        "--motion-frames",
+        default="0,30,60",
+        help="Comma-separated source-VMD frames used to prove TARGET motion propagation.",
+    )
     parser.add_argument(
         "--evaluation-modes",
         default="dg,serial,parallel",
@@ -112,6 +122,69 @@ def _parse_evaluation_modes(value: str):
     return modes
 
 
+def _parse_motion_frames(value: str):
+    frames = []
+    for item in value.split(","):
+        frame = int(item.strip())
+        if frame not in frames:
+            frames.append(frame)
+    if not frames:
+        raise ValueError("--motion-frames must contain at least one frame")
+    return frames
+
+
+def _world_matrix(joint: str):
+    return tuple(float(value) for value in cmds.xform(joint, query=True, worldSpace=True, matrix=True))
+
+
+def _matrix_delta(reference, value) -> float:
+    return max((abs(left - right) for left, right in zip(reference, value)), default=0.0)
+
+
+def _motion_transfer_evidence(source_result, target_result, frames, tolerance: float):
+    """Capture whether source VMD evaluation produces motion on the HIK target."""
+    source_by_hik = {assignment.hik_bone: assignment.joint for assignment in source_result.assignments}
+    target_by_hik = {assignment.hik_bone: assignment.joint for assignment in target_result.assignments}
+    original_time = cmds.currentTime(query=True)
+    rows = []
+    try:
+        for hik_bone in ("Hips", "Spine", "LeftArm", "RightArm"):
+            source_joint = source_by_hik.get(hik_bone)
+            target_joint = target_by_hik.get(hik_bone)
+            if not source_joint or not target_joint:
+                continue
+            source_values = []
+            target_values = []
+            for frame in frames:
+                cmds.currentTime(frame, edit=True)
+                source_values.append(_world_matrix(source_joint))
+                target_values.append(_world_matrix(target_joint))
+            source_delta = max((_matrix_delta(source_values[0], value) for value in source_values[1:]), default=0.0)
+            target_delta = max((_matrix_delta(target_values[0], value) for value in target_values[1:]), default=0.0)
+            rows.append(
+                {
+                    "hikBone": hik_bone,
+                    "sourceJoint": source_joint,
+                    "targetJoint": target_joint,
+                    "sourceMaxDelta": source_delta,
+                    "targetMaxDelta": target_delta,
+                    "sourceAnimated": source_delta > tolerance,
+                    "targetAnimated": target_delta > tolerance,
+                }
+            )
+    finally:
+        cmds.currentTime(original_time, edit=True)
+    return {
+        "frames": list(frames),
+        "rows": rows,
+        "sourceAnimated": any(row["sourceAnimated"] for row in rows),
+        "targetAnimated": any(row["targetAnimated"] for row in rows),
+        "passed": bool(rows)
+        and any(row["sourceAnimated"] for row in rows)
+        and any(row["targetAnimated"] for row in rows),
+    }
+
+
 def _verify_locomotion_modes(
     source_hips: str,
     target_hips: str,
@@ -152,21 +225,29 @@ def main() -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     payload: Dict[str, Any] = {
         "status": "fail",
-        "fixtures": {"pmx": str(args.pmx), "vmd": str(args.vmd)},
+        "fixtures": {
+            "sourcePmx": str(args.pmx),
+            "targetPmx": str(args.target_pmx or args.pmx),
+            "vmd": str(args.vmd),
+        },
     }
 
     maya.standalone.initialize(name="python")
     try:
         payload["mayaVersion"] = cmds.about(version=True)
         _load_mmd_plugin()
-        pmx = Path(args.pmx).resolve()
+        source_pmx = Path(args.pmx).resolve()
+        target_pmx = Path(args.target_pmx or args.pmx).resolve()
         vmd = Path(args.vmd).resolve()
-        if not pmx.is_file() or not vmd.is_file():
-            raise FileNotFoundError(f"S0 fixtures not found: pmx={pmx} vmd={vmd}")
+        if not source_pmx.is_file() or not target_pmx.is_file() or not vmd.is_file():
+            raise FileNotFoundError(
+                "S0 fixtures not found: "
+                f"source_pmx={source_pmx} target_pmx={target_pmx} vmd={vmd}"
+            )
 
-        source_root = _import_model(pmx, use_namespace=True)
-        _import_motion(vmd, source_root, pmx)
-        target_root = _import_model(pmx, use_namespace=True)
+        source_root = _import_model(source_pmx, use_namespace=True)
+        _import_motion(vmd, source_root, source_pmx)
+        target_root = _import_model(target_pmx, use_namespace=True)
 
         source_result = resolve_scene_humanik_assignments(source_root)
         target_result = resolve_scene_humanik_assignments(target_root)
@@ -225,6 +306,12 @@ def main() -> int:
             require_connected=False,
         )
         payload["sourceConnection"] = source_report
+        payload["motionTransfer"] = _motion_transfer_evidence(
+            source_result,
+            target_result,
+            _parse_motion_frames(args.motion_frames),
+            args.tolerance,
+        )
         source_after_connections = snapshot_humanik_connections(source_result)
         target_after_connections = snapshot_humanik_connections(target_result)
         source_changed_connections = diff_humanik_connections(
@@ -269,6 +356,8 @@ def main() -> int:
             stop_reasons.append("character_definition_lock_failed")
         if not source_report["retargetConnected"]:
             stop_reasons.append("direct_source_connection_failed")
+        if not payload["motionTransfer"]["passed"]:
+            stop_reasons.append("source_vmd_did_not_propagate_to_target")
         if source_changed_connections:
             stop_reasons.append("source_writer_connections_changed")
         if not locomotion["passed"]:

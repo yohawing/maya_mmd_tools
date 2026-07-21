@@ -1666,15 +1666,17 @@ def humanik_retarget_smoke(session: nox.Session) -> None:
     Examples:
         uvx nox -s humanik_retarget_smoke -- --maya 2024
         uvx nox -s humanik_retarget_smoke -- --maya 2024 --out build/reports/humanik_retarget_smoke.json
+        uvx nox -s humanik_retarget_smoke -- --maya 2024 --pmx <source.pmx> --target-pmx <target.pmx> --vmd <source.vmd>
     """
     maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     mayapy = _mayapy(maya_ver)
     passthrough: list[str] = []
-    path_options = {"--pmx", "--vmd", "--out"}
+    path_options = {"--pmx", "--target-pmx", "--vmd", "--out"}
     value_options = path_options | {
         "--name-prefix",
         "--translation",
         "--tolerance",
+        "--motion-frames",
         "--evaluation-modes",
     }
     args = list(session.posargs)
