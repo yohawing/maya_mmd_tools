@@ -252,7 +252,11 @@
     "humanik_reason_no_active_preview": "ターゲットプレビューがアクティブである必要があります。",
     "humanik_reason_already_characterized_other_profile": "別のプロファイルで既にキャラクタライズ済みです。",
     "humanik_reason_nothing_to_restore": "復元対象がありません。",
-    "humanik_reason_model_required": "Mayaシーンでモデルを選択してください。"
+    "humanik_reason_model_required": "Mayaシーンでモデルを選択してください。",
+    "humanik_import_lock_blocked": "VMD importは現在拒否されます: {reason} — Restore MMD Rigで解除してください。",
+    "humanik_reason_import_blocked_target_preview": "このモデルは現在HumanIK Targetプレビュー中です。",
+    "humanik_reason_import_blocked_control_rig": "このモデルには現在有効なHumanIK Control Rigがあります。",
+    "humanik_control_rig_watch_warning": "Control RigがMaya標準UIで作成されました。サポート経路はMMDメニューのHumanIK (Experimental) > Create Control Rigです。Restore MMD Rigで回収できます。"
   },
   "options": {
     "none": "なし",

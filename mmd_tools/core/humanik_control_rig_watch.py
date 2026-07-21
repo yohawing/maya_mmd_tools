@@ -86,7 +86,7 @@ Maya API call and log-and-return on failure instead of propagating.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, List, Optional
 
 from mmd_tools.core.humanik_control_rig import get_active_control_rig_transaction
 from mmd_tools.core.logger import get_logger
@@ -97,6 +97,46 @@ logger = get_logger(__name__)
 HIK_CONTROL_SET_NODE_TYPE = "HIKControlSetNode"
 
 _node_added_callback_id = None
+
+# --- HUMANIK-FRONTEND-1 Phase C: pluggable warning callbacks ----------------
+#
+# The default warning path (logger + ``cmds.warning``, see ``_warn``) always
+# runs and is never removed by registering a callback here -- this list is
+# purely additive, so a UI (the HumanIK tab) can *also* surface the same
+# warning without this module gaining any UI dependency or ever mutating the
+# scene itself. Callbacks are invoked from ``_emit_warning``, which itself
+# only ever runs from ``_handle_new_hik_control_set_node`` -- the
+# ``maya.utils.executeDeferred`` handler described in this module's docstring
+# -- so callbacks observe the same "main thread, scene fully settled" context
+# as the default path; a callback that raises is logged and swallowed so one
+# broken subscriber can never suppress the warning for others or for the
+# default path.
+_warning_callbacks: List[Callable[..., None]] = []
+
+
+def register_control_rig_warning_callback(callback: Callable[..., None]) -> None:
+    """Add a callback invoked whenever this module warns about an out-of-band Control Rig.
+
+    Called as ``callback(message, character=character, model_root=model_root)``
+    -- ``model_root`` is the mmd_tools model root the Control Rig's character
+    resolves to (via ``HumanIkFrontendSession.find_binding_by_character``), or
+    ``None`` if that lookup fails. Safe to call more than once with the same
+    callable (de-duplicated); the default logger/``cmds.warning`` path is
+    unaffected either way.
+    """
+    if callback not in _warning_callbacks:
+        _warning_callbacks.append(callback)
+
+
+def deregister_control_rig_warning_callback(callback: Callable[..., None]) -> None:
+    """Remove a callback registered via :func:`register_control_rig_warning_callback`.
+
+    A no-op if ``callback`` is not currently registered.
+    """
+    try:
+        _warning_callbacks.remove(callback)
+    except ValueError:
+        pass
 
 
 def register_humanik_control_rig_watch(om_module=None) -> bool:
@@ -333,8 +373,31 @@ def _handle_new_hik_control_set_node(node_uuid: str, retry: int = 0) -> None:
         "MMD > HumanIK > 'Create Control Rig' (or 'Restore MMD Rig' first if "
         "one already exists from that path)."
     )
+    # ``getattr`` with a default: test doubles for ``HumanIkFrontendBinding``
+    # (see ``FakeBinding`` in ``test_humanik_control_rig_watch.py``) may omit
+    # ``model_root`` entirely; production bindings always have it.
+    _emit_warning(message, character=character, model_root=getattr(binding, "model_root", None))
+
+
+def _emit_warning(message: str, *, character: str, model_root: Optional[str]) -> None:
+    """Run the default logger/``cmds.warning`` path, then notify subscribers.
+
+    The default path always runs first and unconditionally -- registering a
+    callback (see :func:`register_control_rig_warning_callback`) is purely
+    additive. Each callback is isolated in its own ``try``/``except`` so a
+    broken subscriber (for example a UI callback raising because a widget was
+    already destroyed) can never prevent the default warning, or a *different*
+    subscriber, from running.
+    """
     logger.warning(message)
     _warn(message)
+    for callback in list(_warning_callbacks):
+        try:
+            callback(message, character=character, model_root=model_root)
+        except Exception:
+            logger.debug(
+                "HumanIK control rig watch: warning callback failed", exc_info=True
+            )
 
 
 def _warn(message: str) -> None:

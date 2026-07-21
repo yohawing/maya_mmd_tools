@@ -252,7 +252,11 @@
     "humanik_reason_no_active_preview": "A target preview must be active.",
     "humanik_reason_already_characterized_other_profile": "Already characterized with a different profile.",
     "humanik_reason_nothing_to_restore": "There is nothing to restore.",
-    "humanik_reason_model_required": "Select a model in the Maya scene."
+    "humanik_reason_model_required": "Select a model in the Maya scene.",
+    "humanik_import_lock_blocked": "VMD import is currently refused: {reason} — use Restore MMD Rig to clear this.",
+    "humanik_reason_import_blocked_target_preview": "This model is currently a HumanIK TARGET preview.",
+    "humanik_reason_import_blocked_control_rig": "This model currently has an active HumanIK Control Rig.",
+    "humanik_control_rig_watch_warning": "A HumanIK Control Rig was created through Maya's standard UI. The supported path is MMD menu > HumanIK (Experimental) > Create Control Rig; use Restore MMD Rig to recover it."
   },
   "options": {
     "none": "None",

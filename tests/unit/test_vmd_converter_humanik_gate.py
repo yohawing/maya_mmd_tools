@@ -52,6 +52,8 @@ class TestEnforceHumanIkImportGate(unittest.TestCase):
         self.assertIn("|model", message)
         self.assertIn("TARGET preview", message)
         self.assertIn("Restore MMD Rig", message)
+        self.assertIn("HumanIK (Experimental)", message)
+        self.assertEqual(ctx.exception.reason_code, "import_blocked_target_preview")
 
     @patch(
         "mmd_tools.core.humanik_retarget.describe_humanik_import_lock",
@@ -64,6 +66,8 @@ class TestEnforceHumanIkImportGate(unittest.TestCase):
         message = str(ctx.exception)
         self.assertIn("Control Rig", message)
         self.assertIn("Restore MMD Rig", message)
+        self.assertIn("HumanIK (Experimental)", message)
+        self.assertEqual(ctx.exception.reason_code, "import_blocked_control_rig")
 
     @patch(
         "mmd_tools.core.humanik_retarget.describe_humanik_import_lock",

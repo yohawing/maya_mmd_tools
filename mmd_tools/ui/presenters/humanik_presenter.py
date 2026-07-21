@@ -20,8 +20,8 @@ class HumanIkPresenter:
 
     # Tab button attribute -> stable action name accepted by
     # ``humanik_menu_actions.dispatch_action``. ``bake_to_mmd_rig`` is handled
-    # separately (see ``_on_bake_clicked``) because it needs the frame-range
-    # SpinBoxes applied to Maya's playback range first.
+    # separately (see ``_on_bake_clicked``) because it passes the frame-range
+    # SpinBox values to the action explicitly.
     _DISPATCH_ATTR_TO_ACTION = {
         "setup_characterize_btn": "setup_and_characterize",
         "enter_source_btn": "enter_source_mode",
@@ -103,12 +103,74 @@ class HumanIkPresenter:
         Scene state is only read while this tab is visible: activation is
         the sole trigger for a scan, matching the lazy-refresh pattern the
         Morph/Physics tabs use in ``MainWindow._on_main_tab_changed``.
+
+        Also subscribes to ``humanik_control_rig_watch``'s pluggable warning
+        callback (HUMANIK-FRONTEND-1 Phase C) for as long as this tab is
+        active, so an out-of-band Control Rig created through Maya's own
+        HumanIK UI while the tab is visible shows up as a banner here, not
+        only as a logged/``cmds.warning`` message. See
+        ``_on_control_rig_watch_warning`` for the "tab not visible -> do
+        nothing" guard this registration makes redundant but that method
+        keeps anyway as a second line of defense.
         """
         self._active = True
+        self._register_control_rig_watch_callback()
         self.refresh()
 
     def on_tab_deactivated(self):
         self._active = False
+        self._deregister_control_rig_watch_callback()
+
+    def _register_control_rig_watch_callback(self):
+        try:
+            from ...core import humanik_control_rig_watch
+
+            humanik_control_rig_watch.register_control_rig_warning_callback(
+                self._on_control_rig_watch_warning
+            )
+        except Exception:
+            logger.debug(
+                "HumanIK tab could not subscribe to the control rig watch callback",
+                exc_info=True,
+            )
+
+    def _deregister_control_rig_watch_callback(self):
+        try:
+            from ...core import humanik_control_rig_watch
+
+            humanik_control_rig_watch.deregister_control_rig_warning_callback(
+                self._on_control_rig_watch_warning
+            )
+        except Exception:
+            logger.debug(
+                "HumanIK tab could not unsubscribe from the control rig watch callback",
+                exc_info=True,
+            )
+
+    def _on_control_rig_watch_warning(self, _message, *, character=None, model_root=None):
+        """Push a live ``humanik_control_rig_watch`` warning onto the tab.
+
+        Invoked synchronously from ``humanik_control_rig_watch``'s
+        ``maya.utils.executeDeferred`` handler -- per that module's docstring
+        this always runs on Maya's main thread once idle events are flushed
+        (never from a worker thread), so this may touch Qt widgets directly
+        without a cross-thread signal/slot hop. Still guarded: this callback
+        stays registered only while the tab is active (see
+        ``on_tab_activated``/``on_tab_deactivated``), but ``_active`` is
+        re-checked here too in case a deregister racing a queued
+        ``executeDeferred`` call ever slips through -- if the tab is not
+        active, or the view has no banner method (a bare/test view double),
+        this does nothing.
+        """
+        if not self._active:
+            return
+        show_banner = getattr(self.view, "show_control_rig_warning", None)
+        if show_banner is None:
+            return
+        try:
+            show_banner(character=character, model_root=model_root)
+        except Exception:
+            logger.debug("HumanIK tab failed to render control rig watch warning", exc_info=True)
 
     # -- refresh -------------------------------------------------------
 

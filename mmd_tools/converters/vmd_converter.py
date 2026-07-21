@@ -169,6 +169,22 @@ except Exception:
     compute_maya_local_channels_batch = None  # type: ignore
 
 
+# ``HumanIkImportLock.blocked`` value -> ``MMDImportException.reason_code`` for
+# ``VmdConverter._enforce_humanik_import_gate``. Deliberately duplicated as
+# plain string literals (not imported) instead of importing
+# ``mmd_tools.core.humanik_frontend.REASON_IMPORT_BLOCKED_TARGET_PREVIEW`` /
+# ``REASON_IMPORT_BLOCKED_CONTROL_RIG`` directly -- that module pulls in the
+# full HumanIK frontend session stack, which would turn a lazy, defensive
+# import (see ``_enforce_humanik_import_gate``'s "never hard-depends on
+# HumanIK" contract) into a much heavier one. The string values must stay in
+# sync with ``humanik_frontend.py``'s constants; keep them equal in the same
+# change if either side is renamed.
+_IMPORT_LOCK_REASON_CODE_BY_BLOCKED = {
+    "target_preview": "import_blocked_target_preview",
+    "control_rig": "import_blocked_control_rig",
+}
+
+
 class VmdConverter:
     """VMDデータをMayaアニメーションに変換するクラス
 
@@ -699,12 +715,25 @@ class VmdConverter:
         missing plugin, missing MEL, or any detection failure allows the
         import to proceed unchanged.
 
+        The refusal message and mode names deliberately match the HumanIK tab's
+        own vocabulary (``humanik_tab.MODE_TRANSLATION_KEYS`` /
+        ``describe_frontend_state``'s ``FRONTEND_MODE_TARGET_PREVIEW`` /
+        ``FRONTEND_MODE_CONTROL_RIG``): "TARGET preview" / "Control Rig", plus
+        the exact menu path to clear it ("MMD menu > HumanIK (Experimental) >
+        Restore MMD Rig", see ``humanik_menu_actions.install_humanik_menu``).
+        The raised exception also carries a ``reason_code`` attribute
+        (``_IMPORT_LOCK_REASON_CODE_BY_BLOCKED``) mirroring
+        ``humanik_frontend.REASON_IMPORT_BLOCKED_TARGET_PREVIEW`` /
+        ``REASON_IMPORT_BLOCKED_CONTROL_RIG`` so a caller can classify the
+        failure without parsing the message string.
+
         Args:
             target_model: Model root VMD motion will be applied to.
 
         Raises:
             MMDImportException: If scene facts show ``target_model`` is
-                currently a HumanIK TARGET preview or Control Rig.
+                currently a HumanIK TARGET preview or Control Rig. Carries a
+                ``reason_code`` attribute (see above).
         """
         try:
             from ..core.humanik_retarget import describe_humanik_import_lock
@@ -718,14 +747,16 @@ class VmdConverter:
             return
         if not lock.blocked:
             return
-        mode_label = "a HumanIK Control Rig" if lock.blocked == "control_rig" else "a HumanIK TARGET preview"
+        mode_label = "Control Rig" if lock.blocked == "control_rig" else "TARGET preview"
+        reason_code = _IMPORT_LOCK_REASON_CODE_BY_BLOCKED.get(lock.blocked)
         message = (
             f"VMD import is blocked: {target_model} (HumanIK character={lock.character}) "
-            f"is currently {mode_label}. Restore MMD Rig before importing VMD motion; "
-            "VMD import does not implicitly switch HumanIK modes."
+            f"is currently in {mode_label} mode. Use MMD menu > HumanIK (Experimental) > "
+            "Restore MMD Rig to clear this before importing VMD motion; VMD import does "
+            "not implicitly switch HumanIK modes."
         )
         self.logger.error(message)
-        raise MMDImportException(message)
+        raise MMDImportException(message, reason_code=reason_code)
 
     def _suspend_import_scene_updates(self) -> Tuple[bool, bool]:
         """Suppress Maya undo recording and viewport refresh during VMD import."""

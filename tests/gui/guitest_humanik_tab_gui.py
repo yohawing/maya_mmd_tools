@@ -30,6 +30,7 @@ class TestHumanIkTabGUI(GuiTestBase):
             self.assertTrue(tab.experimental_notice_label.text())
             self.assertTrue(tab.restore_explanation_label.text())
             self.assertFalse(tab.orphaned_warning_label.isVisible())
+            self.assertFalse(tab.import_lock_warning_label.isVisible())
             for attr in (
                 "setup_characterize_btn",
                 "enter_source_btn",
@@ -79,6 +80,40 @@ class TestHumanIkTabGUI(GuiTestBase):
             self.assertFalse(tab.bake_btn.isEnabled())
             self.assertTrue(tab.enter_source_btn.isEnabled())
             self.assertFalse(tab.orphaned_warning_label.isVisible())
+            self.assertFalse(tab.import_lock_warning_label.isVisible())
+        finally:
+            tab.deleteLater()
+            QApplication.processEvents()
+
+    def test_set_state_shows_import_lock_warning_when_blocked(self):
+        tab = HumanIkTab()
+        try:
+            state = {
+                "mode": "target_preview",
+                "source": None,
+                "target": None,
+                "controlRigs": [],
+                "restoreHint": {"orphanedControlRigs": []},
+                "actions": {},
+                "importLock": {
+                    "blocked": True,
+                    "reasonCode": "import_blocked_target_preview",
+                    "character": "Character1",
+                    "hasControlRig": False,
+                },
+            }
+
+            tab.set_state(state)
+            QApplication.processEvents()
+
+            self.assertTrue(tab.import_lock_warning_label.isVisible())
+            self.assertIn("Restore MMD Rig", tab.import_lock_warning_label.text())
+
+            state["importLock"] = {"blocked": False, "reasonCode": None}
+            tab.set_state(state)
+            QApplication.processEvents()
+
+            self.assertFalse(tab.import_lock_warning_label.isVisible())
         finally:
             tab.deleteLater()
             QApplication.processEvents()

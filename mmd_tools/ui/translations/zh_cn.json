@@ -193,7 +193,11 @@
     "humanik_reason_no_active_preview": "必须处于激活的 Target 预览状态。",
     "humanik_reason_already_characterized_other_profile": "已使用不同的配置文件角色化。",
     "humanik_reason_nothing_to_restore": "没有可恢复的内容。",
-    "humanik_reason_model_required": "请在 Maya 场景中选择模型。"
+    "humanik_reason_model_required": "请在 Maya 场景中选择模型。",
+    "humanik_import_lock_blocked": "VMD import 目前被拒绝：{reason} — 请使用 Restore MMD Rig 解除。",
+    "humanik_reason_import_blocked_target_preview": "该模型目前处于 HumanIK Target 预览状态。",
+    "humanik_reason_import_blocked_control_rig": "该模型当前存在已激活的 HumanIK Control Rig。",
+    "humanik_control_rig_watch_warning": "检测到通过 Maya 标准 UI 创建的 HumanIK Control Rig。受支持的路径是 MMD 菜单 > HumanIK (Experimental) > Create Control Rig；可使用 Restore MMD Rig 回收。"
   },
   "options": {
     "none": "无",

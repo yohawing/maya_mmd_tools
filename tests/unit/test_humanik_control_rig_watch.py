@@ -270,6 +270,82 @@ class TestHandleNewHikControlSetNode(unittest.TestCase):
         self.assertIn("Character1", message)
         self.assertIn("mmdCcdIk", message)
 
+    def test_out_of_band_rig_notifies_registered_callback(self):
+        """FakeBinding has no ``model_root`` attribute; the handler must fall
+        back to ``None`` for it (``getattr(..., default=None)``) rather than
+        raising, since production bindings always have it but test doubles
+        here intentionally do not."""
+        binding = FakeBinding("Character1", ["|hips", "|left_foot"])
+        callback = MagicMock()
+        watch.register_control_rig_warning_callback(callback)
+        self.addCleanup(watch.deregister_control_rig_warning_callback, callback)
+        try:
+            with patch.object(
+                watch, "_resolve_character_for_hik_control_set_node", return_value="Character1"
+            ), patch.object(
+                watch, "get_active_control_rig_transaction", return_value=None
+            ), patch.object(
+                watch, "_find_frontend_binding_for_character", return_value=binding
+            ):
+                watch._handle_new_hik_control_set_node(self.NODE_UUID)
+        finally:
+            watch.deregister_control_rig_warning_callback(callback)
+
+        callback.assert_called_once()
+        args, kwargs = callback.call_args
+        self.assertIn("outside MMD Tools", args[0])
+        self.assertEqual(kwargs["character"], "Character1")
+        self.assertIsNone(kwargs["model_root"])
+        # The default logger/cmds.warning path must still run alongside the
+        # callback -- registering a callback is additive, never a replacement.
+        self.warning.assert_called_once()
+
+    def test_callback_exception_does_not_suppress_default_warning_or_other_callbacks(self):
+        binding = FakeBinding("Character1", ["|hips"])
+        broken_callback = MagicMock(side_effect=RuntimeError("boom"))
+        healthy_callback = MagicMock()
+        watch.register_control_rig_warning_callback(broken_callback)
+        watch.register_control_rig_warning_callback(healthy_callback)
+        try:
+            with patch.object(
+                watch, "_resolve_character_for_hik_control_set_node", return_value="Character1"
+            ), patch.object(
+                watch, "get_active_control_rig_transaction", return_value=None
+            ), patch.object(
+                watch, "_find_frontend_binding_for_character", return_value=binding
+            ):
+                watch._handle_new_hik_control_set_node(self.NODE_UUID)
+        finally:
+            watch.deregister_control_rig_warning_callback(broken_callback)
+            watch.deregister_control_rig_warning_callback(healthy_callback)
+
+        self.warning.assert_called_once()
+        healthy_callback.assert_called_once()
+
+
+class TestWarningCallbackRegistration(unittest.TestCase):
+    """Registration/deregistration of the pluggable warning callback API."""
+
+    def tearDown(self):
+        watch._warning_callbacks.clear()
+
+    def test_register_is_idempotent(self):
+        callback = MagicMock()
+        watch.register_control_rig_warning_callback(callback)
+        watch.register_control_rig_warning_callback(callback)
+        self.assertEqual(watch._warning_callbacks.count(callback), 1)
+
+    def test_deregister_missing_callback_is_a_no_op(self):
+        callback = MagicMock()
+        watch.deregister_control_rig_warning_callback(callback)  # must not raise
+        self.assertNotIn(callback, watch._warning_callbacks)
+
+    def test_deregister_removes_registered_callback(self):
+        callback = MagicMock()
+        watch.register_control_rig_warning_callback(callback)
+        watch.deregister_control_rig_warning_callback(callback)
+        self.assertNotIn(callback, watch._warning_callbacks)
+
 
 if __name__ == "__main__":
     unittest.main()

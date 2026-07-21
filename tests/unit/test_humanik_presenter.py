@@ -17,6 +17,8 @@ from tests.common.mock_ui import attach_mocks
 
 from mmd_tools.core.humanik_frontend import (
     REASON_ALREADY_CHARACTERIZED_OTHER_PROFILE,
+    REASON_IMPORT_BLOCKED_CONTROL_RIG,
+    REASON_IMPORT_BLOCKED_TARGET_PREVIEW,
     REASON_MODEL_IS_SOURCE,
     REASON_MODEL_REQUIRED,
     REASON_NO_ACTIVE_PREVIEW,
@@ -46,6 +48,12 @@ _ALL_REASON_CODES = {
     REASON_ALREADY_CHARACTERIZED_OTHER_PROFILE,
     REASON_NOTHING_TO_RESTORE,
     REASON_MODEL_REQUIRED,
+    # importLock reasonCodes (HUMANIK-FRONTEND-1 Phase C): a different
+    # reasonCode namespace than the action guards above, but
+    # ``humanik_tab.REASON_CODE_TRANSLATION_KEYS`` maps both through the same
+    # ``reason_text`` lookup, so both must be covered here.
+    REASON_IMPORT_BLOCKED_TARGET_PREVIEW,
+    REASON_IMPORT_BLOCKED_CONTROL_RIG,
 }
 
 
@@ -250,6 +258,48 @@ class TestHumanIkPresenter(unittest.TestCase):
         handler()
         self.view.set_state.assert_called_once()
 
+    # -- control rig watch callback subscription (HUMANIK-FRONTEND-1 Phase C)
+
+    def test_on_tab_activated_registers_control_rig_watch_callback(self):
+        from mmd_tools.core import humanik_control_rig_watch as watch
+
+        self.presenter.on_tab_activated()
+        try:
+            self.assertIn(
+                self.presenter._on_control_rig_watch_warning, watch._warning_callbacks
+            )
+        finally:
+            self.presenter.on_tab_deactivated()
+
+    def test_on_tab_deactivated_deregisters_control_rig_watch_callback(self):
+        from mmd_tools.core import humanik_control_rig_watch as watch
+
+        self.presenter.on_tab_activated()
+        self.presenter.on_tab_deactivated()
+        self.assertNotIn(
+            self.presenter._on_control_rig_watch_warning, watch._warning_callbacks
+        )
+
+    def test_control_rig_watch_warning_renders_on_the_view_while_active(self):
+        self.presenter.on_tab_activated()
+        try:
+            self.presenter._on_control_rig_watch_warning(
+                "message", character="Character1", model_root="|Model"
+            )
+            self.view.show_control_rig_warning.assert_called_once_with(
+                character="Character1", model_root="|Model"
+            )
+        finally:
+            self.presenter.on_tab_deactivated()
+
+    def test_control_rig_watch_warning_is_a_no_op_while_inactive(self):
+        # Never activated: _active stays False, so the callback (even if
+        # somehow still invoked) must not touch the view.
+        self.presenter._on_control_rig_watch_warning(
+            "message", character="Character1", model_root="|Model"
+        )
+        self.view.show_control_rig_warning.assert_not_called()
+
 
 class TestHumanIkReasonCodeTranslation(unittest.TestCase):
     """(b) Every backend reasonCode maps to a real, non-fallback display string."""
@@ -303,6 +353,7 @@ class TestHumanIkTabSetState(unittest.TestCase):
         fake.target_value_label = Mock()
         fake.control_rigs_value_label = Mock()
         fake.orphaned_warning_label = Mock()
+        fake.import_lock_warning_label = Mock()
         fake._action_buttons = {attr: Mock() for attr in ACTION_KEY_TO_BUTTON.values()}
         fake._reason_labels = {attr: Mock() for attr in ACTION_KEY_TO_BUTTON.values()}
         fake._mode_text = HumanIkTab._mode_text.__get__(fake)
@@ -335,6 +386,49 @@ class TestHumanIkTabSetState(unittest.TestCase):
 
         fake.orphaned_warning_label.hide.assert_called_once()
         fake.orphaned_warning_label.setText.assert_not_called()
+
+    def test_import_lock_blocked_shows_the_warning(self):
+        fake = self._make_fake_tab()
+        state = {
+            "mode": "target_preview",
+            "actions": {},
+            "restoreHint": {"orphanedControlRigs": []},
+            "importLock": {
+                "blocked": True,
+                "reasonCode": "import_blocked_target_preview",
+                "character": "Character1",
+                "hasControlRig": False,
+            },
+        }
+
+        HumanIkTab.set_state(fake, state)
+
+        fake.import_lock_warning_label.show.assert_called_once()
+        fake.import_lock_warning_label.setText.assert_called_once()
+        (warning_text,), _ = fake.import_lock_warning_label.setText.call_args
+        self.assertIn("Restore MMD Rig", warning_text)
+
+    def test_import_lock_unblocked_hides_the_warning(self):
+        fake = self._make_fake_tab()
+        state = {
+            "mode": "neutral",
+            "actions": {},
+            "restoreHint": {"orphanedControlRigs": []},
+            "importLock": {"blocked": False, "reasonCode": None},
+        }
+
+        HumanIkTab.set_state(fake, state)
+
+        fake.import_lock_warning_label.hide.assert_called_once()
+        fake.import_lock_warning_label.setText.assert_not_called()
+
+    def test_missing_import_lock_hides_the_warning(self):
+        fake = self._make_fake_tab()
+        state = {"mode": "neutral", "actions": {}, "restoreHint": {"orphanedControlRigs": []}}
+
+        HumanIkTab.set_state(fake, state)
+
+        fake.import_lock_warning_label.hide.assert_called_once()
 
     def test_blocked_action_disables_its_button_and_shows_the_reason(self):
         fake = self._make_fake_tab()

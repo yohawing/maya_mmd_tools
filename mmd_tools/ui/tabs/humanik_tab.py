@@ -60,6 +60,14 @@ REASON_CODE_TRANSLATION_KEYS = {
     "already_characterized_other_profile": "humanik_reason_already_characterized_other_profile",
     "nothing_to_restore": "humanik_reason_nothing_to_restore",
     "model_required": "humanik_reason_model_required",
+    # ``importLock.reasonCode`` values (mirrors
+    # ``humanik_frontend.REASON_IMPORT_BLOCKED_TARGET_PREVIEW`` /
+    # ``REASON_IMPORT_BLOCKED_CONTROL_RIG``, and the same codes
+    # ``vmd_converter._IMPORT_LOCK_REASON_CODE_BY_BLOCKED`` attaches to a
+    # refused VMD import's ``MMDImportException.reason_code``). Reused here
+    # via the same ``reason_text`` lookup as the action reasonCodes above.
+    "import_blocked_target_preview": "humanik_reason_import_blocked_target_preview",
+    "import_blocked_control_rig": "humanik_reason_import_blocked_control_rig",
 }
 
 MODE_TRANSLATION_KEYS = {
@@ -102,7 +110,9 @@ class HumanIkTab(BaseTab):
         main_layout.addWidget(self.experimental_notice_label)
 
         main_layout.addWidget(self._create_status_section())
+        main_layout.addWidget(self._create_import_lock_warning_section())
         main_layout.addWidget(self._create_orphaned_warning_section())
+        main_layout.addWidget(self._create_control_rig_watch_warning_section())
         main_layout.addWidget(self._create_actions_section())
 
         self.restore_explanation_label = QLabel(self.tr("humanik_restore_explanation", "messages"))
@@ -137,12 +147,59 @@ class HumanIkTab(BaseTab):
         self.humanik_status_group.setLayout(form)
         return self.humanik_status_group
 
+    def _create_import_lock_warning_section(self):
+        # Single-line state-header warning for ``describe_frontend_state()``'s
+        # ``importLock`` section (HUMANIK-FRONTEND-1 Phase C): shown whenever
+        # scene facts say a VMD import onto the displayed model would be
+        # refused by ``vmd_converter._enforce_humanik_import_gate`` right now
+        # -- TARGET preview or an active Control Rig. Hidden otherwise, same
+        # show/hide pattern as ``orphaned_warning_label`` below.
+        self.import_lock_warning_label = QLabel("")
+        self.import_lock_warning_label.setWordWrap(True)
+        self.import_lock_warning_label.setStyleSheet("color: #b00020; font-weight: bold;")
+        self.import_lock_warning_label.hide()
+        return self.import_lock_warning_label
+
     def _create_orphaned_warning_section(self):
         self.orphaned_warning_label = QLabel("")
         self.orphaned_warning_label.setWordWrap(True)
         self.orphaned_warning_label.setStyleSheet("color: #c04b00; font-weight: bold;")
         self.orphaned_warning_label.hide()
         return self.orphaned_warning_label
+
+    def _create_control_rig_watch_warning_section(self):
+        # Adjacent to (same styling family as) ``orphaned_warning_label``:
+        # this one instead reflects a *live* event from
+        # ``humanik_control_rig_watch`` (a Control Rig just created through
+        # Maya's own HumanIK UI rather than the mmd_tools menu), pushed via
+        # ``show_control_rig_warning`` -- see ``HumanIkPresenter``, which
+        # subscribes to the watch module's pluggable callback while this tab
+        # is active and unsubscribes while it is not (HUMANIK-FRONTEND-1
+        # Phase C). Hidden until the first such event; ``set_state`` never
+        # touches this label, since ``describe_frontend_state()`` has no scene
+        # scan for this -- it is event-driven, not state-driven.
+        self.control_rig_watch_warning_label = QLabel("")
+        self.control_rig_watch_warning_label.setWordWrap(True)
+        self.control_rig_watch_warning_label.setStyleSheet("color: #c04b00; font-weight: bold;")
+        self.control_rig_watch_warning_label.hide()
+        return self.control_rig_watch_warning_label
+
+    def show_control_rig_warning(self, *, character=None, model_root=None):
+        """Display the out-of-band Control Rig warning banner.
+
+        Called by ``HumanIkPresenter`` when ``humanik_control_rig_watch``
+        reports (via its pluggable warning callback) that a Control Rig was
+        just created through Maya's own HumanIK UI for a characterized
+        mmd_tools model, instead of through the MMD menu. This never mutates
+        the scene -- it only surfaces the same fact the watch module already
+        logs, in the tab UI.
+        """
+        label = str(character or model_root or "")
+        suffix = f" ({label})" if label else ""
+        self.control_rig_watch_warning_label.setText(
+            self.tr("humanik_control_rig_watch_warning", "messages") + suffix
+        )
+        self.control_rig_watch_warning_label.show()
 
     def _create_actions_section(self):
         self.humanik_actions_group = QGroupBox(self.tr("humanik_actions", "groups"))
@@ -227,6 +284,16 @@ class HumanIkTab(BaseTab):
             )
         else:
             self.control_rigs_value_label.setText(self.tr("humanik_none", "labels"))
+
+        import_lock = state.get("importLock") or {}
+        if import_lock.get("blocked"):
+            reason_text = self.reason_text(import_lock.get("reasonCode"))
+            self.import_lock_warning_label.setText(
+                self.tr("humanik_import_lock_blocked", "messages").format(reason=reason_text)
+            )
+            self.import_lock_warning_label.show()
+        else:
+            self.import_lock_warning_label.hide()
 
         restore_hint = state.get("restoreHint") or {}
         orphaned = restore_hint.get("orphanedControlRigs") or []
