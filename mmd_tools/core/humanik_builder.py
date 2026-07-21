@@ -17,6 +17,7 @@ from mmd_tools.core.humanik_resolver import (
     HumanIkResolveResult,
     resolve_humanik_assignments,
 )
+from mmd_tools.core.humanik_utils import maya_cmds, maya_mel, mel_string
 
 
 _HIK_MEL_SCRIPTS = (
@@ -91,7 +92,7 @@ def collect_humanik_joint_candidates(model_root: Optional[str] = None, cmds_modu
     Returns:
         Joint candidates sorted by imported MMD bone index when available.
     """
-    cmds = cmds_module or _maya_cmds()
+    cmds = cmds_module or maya_cmds()
     joints = _list_candidate_joints(cmds, model_root)
     candidates = [
         HumanIkJointCandidate(
@@ -121,10 +122,10 @@ def build_humanik_definition_mel_commands(
 ) -> List[str]:
     """Build MEL commands that assign resolved joints to a HIK character."""
     commands = [
-        f'hikSetCharacterObject({_mel_string(assignment.joint)}, {_mel_string(character)}, {assignment.hik_index}, 0);'
+        f'hikSetCharacterObject({mel_string(assignment.joint)}, {mel_string(character)}, {assignment.hik_index}, 0);'
         for assignment in assignments
     ]
-    commands.append(f'hikSetCurrentCharacter({_mel_string(character)});')
+    commands.append(f'hikSetCurrentCharacter({mel_string(character)});')
     if create_control_rig:
         # This lower-level definition path remains UI independent for existing
         # mayapy/batch callers.  The user-facing Control Rig action uses
@@ -146,9 +147,9 @@ def create_humanik_definition(
     if not result.assignments:
         raise ValueError("HumanIK definition requires at least one resolved assignment")
 
-    mel = mel_module or _maya_mel()
+    mel = mel_module or maya_mel()
     ensure_humanik_mel_loaded(mel)
-    character = str(mel.eval(f'hikCreateCharacter({_mel_string(name_hint)})'))
+    character = str(mel.eval(f'hikCreateCharacter({mel_string(name_hint)})'))
     try:
         commands = build_humanik_definition_mel_commands(
             character,
@@ -162,7 +163,7 @@ def create_humanik_definition(
         _verify_humanik_assignment_readback(character, result.assignments, mel)
         for command in commands[assignment_count:]:
             mel.eval(command)
-        if create_control_rig and not bool(mel.eval(f"hikHasControlRig({_mel_string(character)})")):
+        if create_control_rig and not bool(mel.eval(f"hikHasControlRig({mel_string(character)})")):
             raise RuntimeError(f"HumanIK control rig was not created for character: {character}")
     except Exception as creation_error:
         try:
@@ -179,7 +180,7 @@ def create_humanik_definition(
 
 def ensure_humanik_mel_loaded(mel_module=None) -> None:
     """Source Maya HumanIK MEL scripts when standalone has not loaded them."""
-    mel = mel_module or _maya_mel()
+    mel = mel_module or maya_mel()
     if _has_hik_procs(mel):
         return
     for command in _HIK_LOAD_PLUGIN_COMMANDS:
@@ -243,10 +244,10 @@ def get_humanik_finger_solving_property_node(character: str, mel_module=None) ->
         Maya/plugin variants) or the character has no associated property
         node.
     """
-    mel = mel_module or _maya_mel()
+    mel = mel_module or maya_mel()
     if not _mel_exists(mel, "hikGetProperty2StateFromCharacter"):
         return ""
-    node = mel.eval(f"hikGetProperty2StateFromCharacter({_mel_string(character)})")
+    node = mel.eval(f"hikGetProperty2StateFromCharacter({mel_string(character)})")
     return str(node) if node else ""
 
 
@@ -266,8 +267,8 @@ def get_humanik_finger_solving_state(
         The current integer attribute value, or ``None`` when the property
         node or the ``FingerSolving`` attribute is unavailable.
     """
-    mel = mel_module or _maya_mel()
-    cmds = cmds_module or _maya_cmds()
+    mel = mel_module or maya_mel()
+    cmds = cmds_module or maya_cmds()
     node = get_humanik_finger_solving_property_node(character, mel_module=mel)
     if not node or not cmds.attributeQuery("FingerSolving", node=node, exists=True):
         return None
@@ -298,8 +299,8 @@ def set_humanik_finger_solving_state(
         is left untouched in the ``None`` case -- older Maya/plugin variants
         without ``HIKProperty2State.FingerSolving`` must not hard-fail here.
     """
-    mel = mel_module or _maya_mel()
-    cmds = cmds_module or _maya_cmds()
+    mel = mel_module or maya_mel()
+    cmds = cmds_module or maya_cmds()
     node = get_humanik_finger_solving_property_node(character, mel_module=mel)
     if not node or not cmds.attributeQuery("FingerSolving", node=node, exists=True):
         return None
@@ -318,9 +319,9 @@ def get_humanik_definition_lock_state(character: str, mel_module=None) -> bool:
     Returns:
         ``True`` when Maya reports the definition as locked.
     """
-    mel = mel_module or _maya_mel()
+    mel = mel_module or maya_mel()
     ensure_humanik_mel_loaded(mel)
-    return bool(mel.eval(f"hikIsDefinitionLocked({_mel_string(character)})"))
+    return bool(mel.eval(f"hikIsDefinitionLocked({mel_string(character)})"))
 
 
 def lock_humanik_definition(
@@ -345,7 +346,7 @@ def lock_humanik_definition(
     Raises:
         RuntimeError: If Maya did not report the definition as locked.
     """
-    mel = mel_module or _maya_mel()
+    mel = mel_module or maya_mel()
     ensure_humanik_mel_loaded(mel)
     characterization = _sync_humanik_characterization_state(character, mel)
     status = characterization["status"]
@@ -356,7 +357,7 @@ def lock_humanik_definition(
         )
     try:
         mel.eval(
-            f"hikCharacterLock({_mel_string(character)}, 1, "
+            f"hikCharacterLock({mel_string(character)}, 1, "
             f"{1 if validate_and_save_stance else 0});"
         )
     except Exception as exc:
@@ -364,7 +365,7 @@ def lock_humanik_definition(
             "HumanIK definition lock command failed: "
             f"character={character}, status={status}, diagnostics={characterization}: {exc}"
         ) from exc
-    locked = bool(mel.eval(f"hikIsDefinitionLocked({_mel_string(character)})"))
+    locked = bool(mel.eval(f"hikIsDefinitionLocked({mel_string(character)})"))
     if not locked:
         raise RuntimeError(
             "HumanIK definition failed to lock: "
@@ -382,7 +383,7 @@ def _sync_humanik_characterization_state(character: str, mel) -> dict:
     ``hikDefinitionOperations.mel`` flow and keeps ``update_ui=False`` scene
     setup deterministic in both GUI and mayapy.
     """
-    mel.eval(f"hikSetCurrentCharacter({_mel_string(character)});")
+    mel.eval(f"hikSetCurrentCharacter({mel_string(character)});")
     warnings = []
     for command in (
         "hikDefinitionUpdateCharacterLists();",
@@ -428,7 +429,7 @@ def _verify_humanik_assignment_readback(
         )
         try:
             raw_node = mel.eval(
-                f"hikGetSkNode({_mel_string(character)}, {assignment.hik_index});"
+                f"hikGetSkNode({mel_string(character)}, {assignment.hik_index});"
             )
         except Exception as exc:
             missing.append(f"{label}, readbackError={exc}")
@@ -462,13 +463,13 @@ def create_humanik_control_rig(character: str, mel_module=None) -> bool:
     """
     if not character:
         raise ValueError("character is required")
-    mel = mel_module or _maya_mel()
+    mel = mel_module or maya_mel()
     ensure_humanik_mel_loaded(mel)
     _initialize_humanik_control_rig_ui(mel)
-    mel.eval(f"hikSetCurrentCharacter({_mel_string(character)});")
+    mel.eval(f"hikSetCurrentCharacter({mel_string(character)});")
     mel.eval("hikCreateControlRig();")
     mel.eval("hikOnSwitchContextualTabs;")
-    if not bool(mel.eval(f"hikHasControlRig({_mel_string(character)})")):
+    if not bool(mel.eval(f"hikHasControlRig({mel_string(character)})")):
         raise RuntimeError(f"HumanIK control rig was not created: {character}")
     return True
 
@@ -542,27 +543,15 @@ def delete_humanik_character(character: str, mel_module=None) -> bool:
     """
     if not character:
         raise ValueError("character is required")
-    mel = mel_module or _maya_mel()
+    mel = mel_module or maya_mel()
     ensure_humanik_mel_loaded(mel)
-    mel.eval(f"hikDeleteCharacter({_mel_string(character)});")
+    mel.eval(f"hikDeleteCharacter({mel_string(character)});")
     remaining = _scene_humanik_characters(mel)
     if remaining is None:
         raise RuntimeError("HumanIK character scene readback is unavailable")
     if str(character) in remaining:
         raise RuntimeError(f"HumanIK character was not deleted: {character}")
     return True
-
-
-def _maya_cmds():
-    from maya import cmds
-
-    return cmds
-
-
-def _maya_mel():
-    from maya import mel
-
-    return mel
 
 
 def _list_candidate_joints(cmds, model_root: Optional[str]) -> List[str]:
@@ -622,10 +611,6 @@ def _dedupe(values: Iterable[str]) -> List[str]:
 
 def _sort_bone_index(index: Optional[int]) -> int:
     return index if index is not None else 1_000_000_000
-
-
-def _mel_string(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def _has_hik_procs(mel) -> bool:

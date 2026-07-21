@@ -42,11 +42,11 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 
 from mmd_tools.core.humanik_builder import create_humanik_control_rig, ensure_humanik_mel_loaded
 from mmd_tools.core.humanik_constraints import (
-    classify_humanik_constraints,
-    collect_humanik_constraint_facts,
+    BLOCKING_CLASSIFICATIONS,
+    collect_hik_ownership_report,
+    split_ownership_rows,
 )
 from mmd_tools.core.humanik_preview import (
-    BLOCKING_CLASSIFICATIONS,
     disconnect_residual_muted_writers,
     disconnect_reviewed_writers,
     re_isolate_reviewed_edges,
@@ -57,6 +57,7 @@ from mmd_tools.core.humanik_transaction import (
     capture_humanik_journal,
     restore_humanik_journal,
 )
+from mmd_tools.core.humanik_utils import maya_cmds, maya_mel
 
 
 @dataclass
@@ -140,7 +141,7 @@ def detect_dg_cycles(cmds_module=None) -> List[str]:
     before/after pair with :func:`new_cycle_plugs` rather than asking this
     function to filter by reachability -- see the module docstring for why.
     """
-    cmds = cmds_module or _maya_cmds()
+    cmds = cmds_module or maya_cmds()
     return sorted(str(plug) for plug in (cmds.cycleCheck(all=True, list=True) or []))
 
 
@@ -186,31 +187,17 @@ def begin_humanik_control_rig(
             pre-mutation state (writers reconnected, journal restored, any
             newly created control-rig nodes removed) before re-raising.
     """
-    cmds = cmds_module or _maya_cmds()
-    mel = mel_module or _maya_mel()
+    cmds = cmds_module or maya_cmds()
+    mel = mel_module or maya_mel()
     ensure_humanik_mel_loaded(mel)
     hik_joint_set = {str(joint) for joint in hik_joints}
 
-    ownership_report = classify_humanik_constraints(
-        collect_humanik_constraint_facts(cmds_module=cmds),
-        hik_joint_set,
-    )
-    blockers = [
-        row for row in ownership_report.get("rows", [])
-        if row.get("classification") in BLOCKING_CLASSIFICATIONS
-    ]
+    ownership_report = collect_hik_ownership_report(hik_joint_set, cmds_module=cmds)
+    blockers, mute_rows, retained_nodes = split_ownership_rows(ownership_report)
     if blockers:
         labels = ", ".join(f"{row['node']}:{row['classification']}" for row in blockers)
         raise RuntimeError(f"HumanIK Control Rig creation blocked: {labels}")
 
-    mute_rows = [
-        row for row in ownership_report.get("rows", [])
-        if row.get("classification") == "mute_for_hik"
-    ]
-    retained_nodes = sorted(
-        row["node"] for row in ownership_report.get("rows", [])
-        if row.get("classification") == "keep_post"
-    )
     destinations = sorted({plug for row in mute_rows for plug in row.get("writes", [])})
     muted_nodes = sorted({row["node"] for row in mute_rows})
 
@@ -237,10 +224,7 @@ def begin_humanik_control_rig(
 
         re_isolate_reviewed_edges(cmds, disconnected)
 
-        post_report = classify_humanik_constraints(
-            collect_humanik_constraint_facts(cmds_module=cmds),
-            hik_joint_set,
-        )
+        post_report = collect_hik_ownership_report(hik_joint_set, cmds_module=cmds)
         residual_muted_writers = [
             row
             for row in post_report["rows"]
@@ -313,8 +297,8 @@ def stop_humanik_control_rig(
     """
     if not transaction.active:
         return
-    cmds = cmds_module or _maya_cmds()
-    mel = mel_module or _maya_mel()
+    cmds = cmds_module or maya_cmds()
+    mel = mel_module or maya_mel()
     _delete_control_rig(transaction.character, transaction.created_nodes, cmds, mel)
     restore_humanik_journal(
         transaction.journal,
@@ -382,15 +366,3 @@ def _delete_control_rig(character: str, created_nodes: Iterable[str], cmds, mel)
 
 def _snapshot_scene_nodes(cmds) -> Set[str]:
     return {str(node) for node in (cmds.ls(long=True) or [])}
-
-
-def _maya_cmds():
-    from maya import cmds
-
-    return cmds
-
-
-def _maya_mel():
-    from maya import mel
-
-    return mel

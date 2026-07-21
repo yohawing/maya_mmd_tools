@@ -1,6 +1,7 @@
 """Unit tests for the transactional HumanIK Control Rig creation path."""
 
 import unittest
+from contextlib import nullcontext
 from unittest.mock import patch
 
 from mmd_tools.core.humanik_control_rig import (
@@ -115,16 +116,22 @@ CLEAN_POST_REPORT = {
 
 def _patch_classify(*reports):
     return patch(
-        "mmd_tools.core.humanik_control_rig.classify_humanik_constraints",
+        "mmd_tools.core.humanik_control_rig.collect_hik_ownership_report",
         side_effect=list(reports),
     )
 
 
 def _patch_facts():
-    return patch(
-        "mmd_tools.core.humanik_control_rig.collect_humanik_constraint_facts",
-        return_value=[],
-    )
+    """No-op context manager kept so call sites do not need to change.
+
+    ``begin_humanik_control_rig`` now calls the consolidated
+    ``collect_hik_ownership_report`` helper (see
+    ``mmd_tools.core.humanik_constraints``) instead of calling
+    ``collect_humanik_constraint_facts``/``classify_humanik_constraints``
+    directly, so there is nothing left here to patch; ``_patch_classify``
+    above covers the whole report.
+    """
+    return nullcontext()
 
 
 class TestBeginHumanIkControlRig(unittest.TestCase):

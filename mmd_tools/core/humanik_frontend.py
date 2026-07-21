@@ -19,8 +19,8 @@ from mmd_tools.core.humanik_builder import (
     resolve_scene_humanik_assignments,
 )
 from mmd_tools.core.humanik_constraints import (
-    classify_humanik_constraints,
-    collect_humanik_constraint_facts,
+    BLOCKING_CLASSIFICATIONS,
+    collect_hik_ownership_report,
 )
 from mmd_tools.core.humanik_control_rig import (
     HumanIkControlRigTransaction,
@@ -28,7 +28,6 @@ from mmd_tools.core.humanik_control_rig import (
     stop_humanik_control_rig,
 )
 from mmd_tools.core.humanik_preview import (
-    BLOCKING_CLASSIFICATIONS,
     HumanIkTargetPreview,
     begin_humanik_target_preview,
     stop_humanik_target_preview,
@@ -344,10 +343,7 @@ class HumanIkFrontendSession:
                 "characterize both models with the same profile before target mode"
             )
         target_joints = tuple(assignment.joint for assignment in target.assignments)
-        report = classify_humanik_constraints(
-            collect_humanik_constraint_facts(cmds_module=self._cmds),
-            target_joints,
-        )
+        report = collect_hik_ownership_report(target_joints, cmds_module=self._cmds)
         self._target_model_root = key
         self._ownership_report = report
         blockers = [
@@ -585,10 +581,7 @@ class HumanIkFrontendSession:
             include_fingers=include_fingers,
         )
         target_joints = tuple(row["joint"] for row in model_report["assignments"])
-        ownership = classify_humanik_constraints(
-            collect_humanik_constraint_facts(cmds_module=self._cmds),
-            target_joints,
-        )
+        ownership = collect_hik_ownership_report(target_joints, cmds_module=self._cmds)
         blockers = [
             row for row in ownership.get("rows", [])
             if row.get("classification") in BLOCKING_CLASSIFICATIONS

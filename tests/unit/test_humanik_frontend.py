@@ -169,8 +169,8 @@ class TestHumanIkFrontend(unittest.TestCase):
         self.assertEqual(diagnostics["profileCoverage"]["expectedAssignmentCount"], 55)
         self.assertEqual(diagnostics["quality"]["status"], "experimental")
         self.assertEqual(diagnostics["quality"]["fingerStatus"], "included-experimental")
-        with patch("mmd_tools.core.humanik_frontend.collect_humanik_constraint_facts", return_value=[]), patch(
-            "mmd_tools.core.humanik_frontend.classify_humanik_constraints",
+        with patch(
+            "mmd_tools.core.humanik_frontend.collect_hik_ownership_report",
             return_value={"rows": [], "counts": {}},
         ):
             inferred_report = session.inspect_target_ownership("|source")
@@ -229,9 +229,9 @@ class TestHumanIkFrontend(unittest.TestCase):
 
         self.assertEqual([item.hik_bone for item in result.assignments], ["Hips", "LeftArmRoll"])
 
-    @patch("mmd_tools.core.humanik_frontend.collect_humanik_constraint_facts", return_value=[])
+    @patch("mmd_tools.core.humanik_frontend.collect_hik_ownership_report", return_value={"rows": [], "counts": {}})
     @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
-    def test_read_only_inspect_reports_assignments_without_character_creation(self, resolve, collect):
+    def test_read_only_inspect_reports_assignments_without_character_creation(self, resolve, ownership):
         session = _session()
 
         model_report = session.inspect_model("|source")
@@ -245,7 +245,7 @@ class TestHumanIkFrontend(unittest.TestCase):
         self.assertEqual(ownership_report["automaticStance"]["ownership"]["disconnect"], [])
         self.assertEqual(ownership_report["automaticStance"]["ownership"]["retain"], [])
         self.assertEqual(resolve.call_count, 2)
-        collect.assert_called_once()
+        ownership.assert_called_once()
 
     @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
     @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")
@@ -275,9 +275,9 @@ class TestHumanIkFrontend(unittest.TestCase):
             session.enter_target_mode("|source")
 
         with patch(
-            "mmd_tools.core.humanik_frontend.classify_humanik_constraints",
+            "mmd_tools.core.humanik_frontend.collect_hik_ownership_report",
             return_value={"rows": [{"node": "physics", "classification": "physics_blocker"}], "counts": {}},
-        ), patch("mmd_tools.core.humanik_frontend.collect_humanik_constraint_facts", return_value=[]), patch(
+        ), patch(
             "mmd_tools.core.humanik_frontend.begin_humanik_target_preview"
         ) as begin:
             session.setup_and_characterize("|target")
@@ -287,12 +287,11 @@ class TestHumanIkFrontend(unittest.TestCase):
 
     @patch("mmd_tools.core.humanik_frontend.stop_humanik_target_preview")
     @patch("mmd_tools.core.humanik_frontend.begin_humanik_target_preview", return_value=FakePreview())
-    @patch("mmd_tools.core.humanik_frontend.collect_humanik_constraint_facts", return_value=[])
-    @patch("mmd_tools.core.humanik_frontend.classify_humanik_constraints", return_value={"rows": [], "counts": {}})
+    @patch("mmd_tools.core.humanik_frontend.collect_hik_ownership_report", return_value={"rows": [], "counts": {}})
     @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
     @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", side_effect=lambda result, **kwargs: "Character_" + kwargs["name_hint"].split("_")[-1])
     @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
-    def test_preview_bake_and_restore_lifecycle(self, resolve, create, lock, classify, collect, begin, stop):
+    def test_preview_bake_and_restore_lifecycle(self, resolve, create, lock, ownership, begin, stop):
         session = _session()
         session.setup_and_characterize("|source")
         session.enter_source_mode("|source")
@@ -308,13 +307,12 @@ class TestHumanIkFrontend(unittest.TestCase):
         self.assertFalse(session.restore_mmd_rig())
 
     @patch("mmd_tools.core.humanik_frontend.begin_humanik_target_preview", return_value=FakePreview())
-    @patch("mmd_tools.core.humanik_frontend.classify_humanik_constraints", return_value={"rows": [], "counts": {}})
-    @patch("mmd_tools.core.humanik_frontend.collect_humanik_constraint_facts", return_value=[])
+    @patch("mmd_tools.core.humanik_frontend.collect_hik_ownership_report", return_value={"rows": [], "counts": {}})
     @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
     @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", side_effect=lambda result, **kwargs: "Character_" + kwargs["name_hint"].split("_")[-1])
     @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_synthetic_55_result())
     def test_full_profile_preview_and_bake_receive_all_assignments(
-        self, resolve, create, lock, collect, classify, begin
+        self, resolve, create, lock, ownership, begin
     ):
         session = _session()
         session.setup_and_characterize("|source", profile=FULL_ASSIGNMENT_PROFILE, include_fingers=True)
@@ -333,13 +331,12 @@ class TestHumanIkFrontend(unittest.TestCase):
         self.assertEqual(len(tuple(bake.call_args.args[1])), 55)
 
     @patch("mmd_tools.core.humanik_frontend.begin_humanik_target_preview")
-    @patch("mmd_tools.core.humanik_frontend.classify_humanik_constraints", return_value={"rows": [], "counts": {}})
-    @patch("mmd_tools.core.humanik_frontend.collect_humanik_constraint_facts", return_value=[])
+    @patch("mmd_tools.core.humanik_frontend.collect_hik_ownership_report", return_value={"rows": [], "counts": {}})
     @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
     @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", side_effect=lambda result, **kwargs: "Character_" + kwargs["name_hint"].split("_")[-1])
     @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
     def test_target_rejects_source_target_profile_mismatch_before_preview(
-        self, resolve, create, lock, collect, classify, begin
+        self, resolve, create, lock, ownership, begin
     ):
         session = _session()
         session.setup_and_characterize("|source")
@@ -349,8 +346,7 @@ class TestHumanIkFrontend(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "source/target assignment profile mismatch"):
             session.enter_target_mode("|target")
 
-        classify.assert_not_called()
-        collect.assert_not_called()
+        ownership.assert_not_called()
         begin.assert_not_called()
 
     @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
@@ -453,12 +449,14 @@ class TestHumanIkFrontend(unittest.TestCase):
         control_rig.assert_not_called()
 
     @patch("mmd_tools.core.humanik_frontend.begin_humanik_target_preview")
-    @patch("mmd_tools.core.humanik_frontend.collect_humanik_constraint_facts", return_value=[])
-    @patch("mmd_tools.core.humanik_frontend.classify_humanik_constraints", return_value={"rows": [{"node": "physics", "classification": "physics_blocker"}], "counts": {"physics_blocker": 1}})
+    @patch(
+        "mmd_tools.core.humanik_frontend.collect_hik_ownership_report",
+        return_value={"rows": [{"node": "physics", "classification": "physics_blocker"}], "counts": {"physics_blocker": 1}},
+    )
     @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
     @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", side_effect=lambda result, **kwargs: kwargs["name_hint"])
     @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
-    def test_blocker_report_is_retained_without_preview(self, resolve, create, lock, classify, collect, begin):
+    def test_blocker_report_is_retained_without_preview(self, resolve, create, lock, ownership, begin):
         session = _session()
         session.setup_and_characterize("|source")
         session.enter_source_mode("|source")

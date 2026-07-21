@@ -15,6 +15,7 @@ from mmd_tools.core.humanik_builder import (
     ensure_humanik_mel_loaded,
     get_humanik_definition_lock_state,
 )
+from mmd_tools.core.humanik_utils import incoming_sources, maya_cmds, maya_mel, mel_string
 
 
 STATE_ATTRIBUTES = ("nodeState", "mute", "envelope", "enabled")
@@ -66,13 +67,13 @@ def capture_humanik_journal(
     """Capture a scoped HumanIK transaction journal without editing the scene."""
     if not ownership_id or not character:
         raise ValueError("ownership_id and character are required")
-    cmds = cmds_module or _maya_cmds()
-    mel = mel_module or _maya_mel()
+    cmds = cmds_module or maya_cmds()
+    mel = mel_module or maya_mel()
     ensure_humanik_mel_loaded(mel)
     plugs = [_capture_plug(cmds, plug) for plug in sorted(set(destination_plugs))]
     node_snapshots = [_capture_node(cmds, node) for node in sorted(set(nodes))]
-    source = str(mel.eval(f"hikGetRetargetCharacterInput({_mel_string(character)})") or "")
-    raw_input_type = mel.eval(f"hikGetInputType({_mel_string(character)})")
+    source = str(mel.eval(f"hikGetRetargetCharacterInput({mel_string(character)})") or "")
+    raw_input_type = mel.eval(f"hikGetInputType({mel_string(character)})")
     input_type = int(raw_input_type) if raw_input_type is not None else -1
     return HumanIkTransactionJournal(
         ownership_id=str(ownership_id),
@@ -94,27 +95,27 @@ def restore_humanik_journal(
     """Restore a journal exactly; repeated restores are idempotent."""
     if ownership_id is not None and ownership_id != journal.ownership_id:
         raise ValueError("HumanIK journal ownership mismatch")
-    cmds = cmds_module or _maya_cmds()
-    mel = mel_module or _maya_mel()
+    cmds = cmds_module or maya_cmds()
+    mel = mel_module or maya_mel()
     ensure_humanik_mel_loaded(mel)
 
     current_source = str(
-        mel.eval(f"hikGetRetargetCharacterInput({_mel_string(journal.character)})") or ""
+        mel.eval(f"hikGetRetargetCharacterInput({mel_string(journal.character)})") or ""
     )
     if current_source != journal.input_source:
         mel.eval(
-            f"hikSetCharacterInput({_mel_string(journal.character)}, "
-            f"{_mel_string(journal.input_source)});"
+            f"hikSetCharacterInput({mel_string(journal.character)}, "
+            f"{mel_string(journal.input_source)});"
         )
     current_lock = get_humanik_definition_lock_state(journal.character, mel)
     if current_lock != journal.lock_state:
         mel.eval(
-            f"hikCharacterLock({_mel_string(journal.character)}, "
+            f"hikCharacterLock({mel_string(journal.character)}, "
             f"{1 if journal.lock_state else 0}, 1);"
         )
 
     for snapshot in journal.plugs:
-        for source in _incoming_sources(cmds, snapshot.plug):
+        for source in incoming_sources(cmds, snapshot.plug):
             cmds.disconnectAttr(source, snapshot.plug)
     for snapshot in journal.plugs:
         if not snapshot.sources:
@@ -161,7 +162,7 @@ def humanik_transaction(
 def _capture_plug(cmds, plug: str) -> HumanIkPlugSnapshot:
     return HumanIkPlugSnapshot(
         plug=str(plug),
-        sources=_incoming_sources(cmds, plug),
+        sources=incoming_sources(cmds, plug),
         value=cmds.getAttr(plug),
         attr_type=str(cmds.getAttr(plug, type=True) or ""),
     )
@@ -175,18 +176,11 @@ def _capture_node(cmds, node: str) -> HumanIkNodeSnapshot:
     return HumanIkNodeSnapshot(node=str(node), attributes=attributes)
 
 
-def _incoming_sources(cmds, plug: str) -> List[str]:
-    return sorted(
-        str(source)
-        for source in (cmds.listConnections(plug, source=True, destination=False, plugs=True) or [])
-    )
-
-
 def _is_connected(cmds, source: str, destination: str) -> bool:
     try:
         return bool(cmds.isConnected(source, destination))
     except Exception:
-        return source in _incoming_sources(cmds, destination)
+        return source in incoming_sources(cmds, destination)
 
 
 def _set_plug_value(cmds, plug: str, value: Any, attr_type: str) -> None:
@@ -198,19 +192,3 @@ def _set_plug_value(cmds, plug: str, value: Any, attr_type: str) -> None:
         cmds.setAttr(plug, *value, type=attr_type or None)
     else:
         cmds.setAttr(plug, value)
-
-
-def _mel_string(value: str) -> str:
-    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
-def _maya_cmds():
-    from maya import cmds
-
-    return cmds
-
-
-def _maya_mel():
-    from maya import mel
-
-    return mel

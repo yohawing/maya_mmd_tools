@@ -23,8 +23,10 @@ from mmd_tools.core.humanik_builder import (
     set_humanik_finger_solving_state,
 )
 from mmd_tools.core.humanik_constraints import (
+    BLOCKING_CLASSIFICATIONS,
     classify_humanik_constraints,
     collect_humanik_constraint_facts,
+    split_ownership_rows,
 )
 from mmd_tools.core.humanik_retarget import connect_humanik_source
 from mmd_tools.core.humanik_transaction import (
@@ -32,9 +34,14 @@ from mmd_tools.core.humanik_transaction import (
     capture_humanik_journal,
     restore_humanik_journal,
 )
+from mmd_tools.core.humanik_utils import maya_cmds
 
 
-BLOCKING_CLASSIFICATIONS = frozenset({"physics_blocker", "feedback_blocker", "manual"})
+# Re-exported here for backward compatibility: several callers (control_rig,
+# frontend, stance, and tests/viewport/humanik_roundtrip_smoke.py) import
+# BLOCKING_CLASSIFICATIONS from this module. The canonical definition now
+# lives in humanik_constraints.py, next to the classification strings it
+# names (see classify_humanik_constraints._classify_constraint).
 
 
 @dataclass
@@ -75,24 +82,12 @@ def begin_humanik_target_preview(
     mel_module=None,
 ) -> HumanIkTargetPreview:
     """Start TARGET preview after rejecting all unresolved ownership rows."""
-    cmds = cmds_module or _maya_cmds()
-    blockers = [
-        row
-        for row in ownership_report.get("rows", [])
-        if row.get("classification") in BLOCKING_CLASSIFICATIONS
-    ]
+    cmds = cmds_module or maya_cmds()
+    blockers, mute_rows, retained_nodes = split_ownership_rows(ownership_report)
     if blockers:
         labels = ", ".join(f"{row['node']}:{row['classification']}" for row in blockers)
         raise RuntimeError(f"HumanIK TARGET preview blocked: {labels}")
 
-    mute_rows = [
-        row for row in ownership_report.get("rows", [])
-        if row.get("classification") == "mute_for_hik"
-    ]
-    retained_nodes = sorted(
-        row["node"] for row in ownership_report.get("rows", [])
-        if row.get("classification") == "keep_post"
-    )
     destinations = sorted({plug for row in mute_rows for plug in row.get("writes", [])})
     muted_nodes = sorted({row["node"] for row in mute_rows})
     hik_joint_set = {str(joint) for joint in hik_joints}
@@ -263,9 +258,3 @@ def re_isolate_reviewed_edges(cmds, disconnected: List[Dict[str, str]]) -> None:
             destination, source=True, destination=False, plugs=True
         ) or []):
             cmds.disconnectAttr(source, destination)
-
-
-def _maya_cmds():
-    from maya import cmds
-
-    return cmds

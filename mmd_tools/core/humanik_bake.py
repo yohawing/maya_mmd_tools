@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from mmd_tools.core.humanik_preview import HumanIkTargetPreview, stop_humanik_target_preview
+from mmd_tools.core.humanik_utils import maya_cmds
 
 
 CHANNELS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
@@ -75,7 +76,7 @@ def bake_humanik_target_preview(
         raise RuntimeError("HumanIK TARGET preview is not active")
     if end < start:
         raise ValueError("bake end must be greater than or equal to start")
-    cmds = cmds_module or _maya_cmds()
+    cmds = cmds_module or maya_cmds()
     joint_list = sorted(set(str(joint) for joint in joints))
     channel_list = tuple(str(channel) for channel in channels)
     if not joint_list or not channel_list:
@@ -510,9 +511,3 @@ def _scalar_value(value: Any, plug: str) -> float:
         return float(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Expected numeric value for HumanIK bake plug: {plug}") from exc
-
-
-def _maya_cmds():
-    from maya import cmds
-
-    return cmds

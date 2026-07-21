@@ -10,9 +10,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
+from mmd_tools.core.humanik_utils import maya_cmds
+
 
 PHYSICS_NODE_TYPES = frozenset({"mmdPhysicsBoneDriver"})
 SUPPORTED_NODE_TYPES = ("mmdAppend", "mmdCcdIk", *sorted(PHYSICS_NODE_TYPES))
+
+BLOCKING_CLASSIFICATIONS = frozenset({"physics_blocker", "feedback_blocker", "manual"})
+"""Classifications that must fail-closed a HumanIK ownership-changing operation.
+
+Re-exported from :mod:`mmd_tools.core.humanik_preview` for backward
+compatibility -- this is where the classification strings themselves are
+produced (see :func:`_classify_constraint`), so it is the canonical home.
+"""
 
 
 @dataclass(frozen=True)
@@ -63,12 +73,58 @@ def classify_humanik_constraints(
     }
 
 
+def collect_hik_ownership_report(
+    hik_joints: Iterable[str],
+    cmds_module=None,
+) -> Dict[str, Any]:
+    """Collect and classify constraint facts for a set of HIK joints in one call.
+
+    This is the ``collect_humanik_constraint_facts`` + ``classify_humanik_constraints``
+    pair that ``humanik_control_rig``, ``humanik_frontend``, and
+    ``humanik_stance`` each performed inline before this consolidation.
+
+    Args:
+        hik_joints: The HIK-assigned primary joints (long paths) to classify
+            ownership against.
+        cmds_module: Optional Maya ``cmds`` compatible module for tests.
+
+    Returns:
+        The same report shape ``classify_humanik_constraints`` returns.
+    """
+    cmds = cmds_module or maya_cmds()
+    return classify_humanik_constraints(collect_humanik_constraint_facts(cmds_module=cmds), hik_joints)
+
+
+def split_ownership_rows(
+    report: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str]]:
+    """Split a classified ownership report into blockers, mute rows, and keep-post nodes.
+
+    This is the exact row-selection trio ``humanik_control_rig.begin_humanik_control_rig``
+    and ``humanik_preview.begin_humanik_target_preview`` each duplicated verbatim.
+
+    Args:
+        report: A report as returned by :func:`classify_humanik_constraints` or
+            :func:`collect_hik_ownership_report`.
+
+    Returns:
+        A ``(blockers, mute_rows, retained_nodes)`` tuple: rows whose
+        classification blocks the operation, rows classified
+        ``mute_for_hik``, and the sorted node names classified ``keep_post``.
+    """
+    rows = report.get("rows", [])
+    blockers = [row for row in rows if row.get("classification") in BLOCKING_CLASSIFICATIONS]
+    mute_rows = [row for row in rows if row.get("classification") == "mute_for_hik"]
+    retained_nodes = sorted(row["node"] for row in rows if row.get("classification") == "keep_post")
+    return blockers, mute_rows, retained_nodes
+
+
 def collect_humanik_constraint_facts(
     cmds_module=None,
     node_types: Sequence[str] = SUPPORTED_NODE_TYPES,
 ) -> List[HumanIkConstraintFacts]:
     """Read Append, CCDIK, and physics node connections from a Maya scene."""
-    cmds = cmds_module or _maya_cmds()
+    cmds = cmds_module or maya_cmds()
     facts: List[HumanIkConstraintFacts] = []
     for node_type in node_types:
         for node in sorted(cmds.ls(type=node_type) or []):
@@ -91,7 +147,7 @@ def snapshot_constraint_connections(
     node_types: Sequence[str] = SUPPORTED_NODE_TYPES,
 ) -> Dict[str, List[str]]:
     """Return stable raw connection snapshots for the report-only mutation gate."""
-    cmds = cmds_module or _maya_cmds()
+    cmds = cmds_module or maya_cmds()
     result: Dict[str, List[str]] = {}
     for node_type in node_types:
         for node in sorted(cmds.ls(type=node_type) or []):
@@ -203,9 +259,3 @@ def _connected_joint_plugs(cmds, node: str, incoming: bool) -> set[str]:
 
 def _joint_from_plug(plug: str) -> str:
     return str(plug).rsplit(".", 1)[0] if "." in str(plug) else ""
-
-
-def _maya_cmds():
-    from maya import cmds
-
-    return cmds

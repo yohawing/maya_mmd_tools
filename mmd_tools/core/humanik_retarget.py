@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from mmd_tools.core.humanik_builder import ensure_humanik_mel_loaded
 from mmd_tools.core.humanik_resolver import HumanIkBoneAssignment, HumanIkResolveResult
+from mmd_tools.core.humanik_utils import maya_cmds, maya_mel, mel_string
 
 
 HUMANIK_DIRECT_INPUT_TYPE = 3
@@ -49,14 +50,14 @@ def connect_humanik_source(
     Raises:
         RuntimeError: If Maya does not report the requested direct connection.
     """
-    mel = mel_module or _maya_mel()
+    mel = mel_module or maya_mel()
     ensure_humanik_mel_loaded(mel)
-    command = f"hikSetCharacterInput({_mel_string(target_character)}, {_mel_string(source_character)});"
+    command = f"hikSetCharacterInput({mel_string(target_character)}, {mel_string(source_character)});"
     mel.eval(command)
 
-    input_type = _as_int(mel.eval(f"hikGetInputType({_mel_string(target_character)})"), default=-1)
+    input_type = _as_int(mel.eval(f"hikGetInputType({mel_string(target_character)})"), default=-1)
     connected_source = str(
-        mel.eval(f"hikGetRetargetCharacterInput({_mel_string(target_character)})") or ""
+        mel.eval(f"hikGetRetargetCharacterInput({mel_string(target_character)})") or ""
     )
     report = {
         "targetCharacter": str(target_character),
@@ -114,7 +115,7 @@ def find_humanik_character_for_model(model_root: str, cmds_module=None) -> Optio
     """
     if not model_root:
         return None
-    cmds = cmds_module or _maya_cmds()
+    cmds = cmds_module or maya_cmds()
     try:
         if not bool(cmds.pluginInfo("mayaHIK", query=True, loaded=True)):
             return None
@@ -169,17 +170,17 @@ def describe_humanik_import_lock(
     if not character:
         return HumanIkImportLock(blocked=None, character=None)
     try:
-        mel = mel_module or _maya_mel()
+        mel = mel_module or maya_mel()
         ensure_humanik_mel_loaded(mel)
     except Exception:
         return HumanIkImportLock(blocked=None, character=character)
     try:
-        has_control_rig = bool(mel.eval(f"hikHasControlRig({_mel_string(character)})"))
+        has_control_rig = bool(mel.eval(f"hikHasControlRig({mel_string(character)})"))
     except Exception:
         has_control_rig = False
     try:
         input_source = str(
-            mel.eval(f"hikGetRetargetCharacterInput({_mel_string(character)})") or ""
+            mel.eval(f"hikGetRetargetCharacterInput({mel_string(character)})") or ""
         )
     except Exception:
         input_source = ""
@@ -220,7 +221,7 @@ def collect_humanik_incoming_writer_census(
     The result is flat by destination channel so it can be written directly as
     JSONL and diffed between pre-HIK and post-HIK snapshots.
     """
-    cmds = cmds_module or _maya_cmds()
+    cmds = cmds_module or maya_cmds()
     rows: List[Dict[str, Any]] = []
     for assignment in _normalise_assignments(assignments):
         for channel in channels:
@@ -298,7 +299,7 @@ def verify_root_locomotion(
     as the observed root.  The authored driver translation is restored in a
     ``finally`` block.
     """
-    cmds = cmds_module or _maya_cmds()
+    cmds = cmds_module or maya_cmds()
     delta = tuple(float(value) for value in translation)
     if len(delta) != 3:
         raise ValueError("translation must contain exactly three values")
@@ -471,19 +472,3 @@ def _as_int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
-
-
-def _mel_string(value: str) -> str:
-    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
-def _maya_cmds():
-    from maya import cmds
-
-    return cmds
-
-
-def _maya_mel():
-    from maya import mel
-
-    return mel

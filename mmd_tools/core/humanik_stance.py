@@ -14,11 +14,11 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from mmd_tools.core.humanik_constraints import (
-    classify_humanik_constraints,
-    collect_humanik_constraint_facts,
+    BLOCKING_CLASSIFICATIONS,
+    collect_hik_ownership_report,
 )
-from mmd_tools.core.humanik_preview import BLOCKING_CLASSIFICATIONS
 from mmd_tools.core.humanik_resolver import HumanIkBoneAssignment
+from mmd_tools.core.humanik_utils import incoming_sources, maya_cmds
 from mmd_tools.core.logger import get_logger
 
 
@@ -36,12 +36,6 @@ STANCE_USABLE_DIRECTION_TOLERANCE = 2.0 * math.sin(
 )
 REQUIRED_ARM_SLOTS = {"LeftArm": "LeftForeArm", "RightArm": "RightForeArm"}
 logger = get_logger(__name__)
-
-
-def _maya_cmds():
-    from maya import cmds
-
-    return cmds
 
 
 def _maya_open_maya():
@@ -77,7 +71,7 @@ def _matrix(cmds, plug: str) -> List[float]:
 
 def joint_world_direction(cmds_module, joint: str, child: str) -> Tuple[float, float, float]:
     """Return the world-space vector from an arm joint to its child."""
-    cmds = cmds_module or _maya_cmds()
+    cmds = cmds_module or maya_cmds()
     parent = _matrix(cmds, f"{joint}.worldMatrix[0]")
     child_matrix = _matrix(cmds, f"{child}.worldMatrix[0]")
     return (
@@ -128,7 +122,7 @@ def set_joint_world_direction(
     target_direction: Sequence[float],
 ) -> Dict[str, Any]:
     """Set a joint with the S5c world-matrix shortest-arc setter."""
-    cmds = cmds_module or _maya_cmds()
+    cmds = cmds_module or maya_cmds()
     om = _maya_open_maya()
     current_direction = joint_world_direction(cmds, joint, child)
     delta = _shortest_arc(current_direction, target_direction)
@@ -228,7 +222,7 @@ def _attribute_write_state(cmds, plug: str) -> Tuple[bool, List[str]]:
             # Some host-neutral command fakes and older Maya wrappers do not
             # expose the lock query.  The setAttr call remains the final guard.
             pass
-        incoming.update(_incoming_sources(cmds, candidate))
+        incoming.update(incoming_sources(cmds, candidate))
     return locked, sorted(incoming)
 
 
@@ -296,15 +290,11 @@ def _stance_joint_map(cmds, assignments: Iterable[HumanIkBoneAssignment]) -> Dic
     return {slot: (by_hik[slot], by_hik[child]) for slot, child in REQUIRED_ARM_SLOTS.items()}
 
 
-def _incoming_sources(cmds, destination: str) -> List[str]:
-    return sorted({str(value) for value in (cmds.listConnections(destination, source=True, destination=False, plugs=True) or [])})
-
-
 def _edge_connected(cmds, source: str, destination: str) -> bool:
     try:
         return bool(cmds.isConnected(source, destination))
     except Exception:
-        return source in _incoming_sources(cmds, destination)
+        return source in incoming_sources(cmds, destination)
 
 
 @dataclass
@@ -337,16 +327,16 @@ class HumanIkStanceTransaction:
 
     @property
     def cmds(self):
-        return self.cmds_module or _maya_cmds()
+        return self.cmds_module or maya_cmds()
 
     def prepare(self) -> "HumanIkStanceTransaction":
         """Capture stance, skin, and exact ownership state without mutation."""
         if self.prepared:
             return self
         cmds = self.cmds
-        report = self.ownership_report or classify_humanik_constraints(
-            collect_humanik_constraint_facts(cmds_module=cmds),
+        report = self.ownership_report or collect_hik_ownership_report(
             tuple(str(item.joint) for item in self.assignments),
+            cmds_module=cmds,
         )
         blockers = [row for row in report.get("rows", []) if row.get("classification") in BLOCKING_CLASSIFICATIONS]
         if blockers:
@@ -698,7 +688,7 @@ class HumanIkStanceTransaction:
             if row.get("classification") != "mute_for_hik":
                 continue
             for destination in row.get("writes", []):
-                baseline = _incoming_sources(self.cmds, str(destination))
+                baseline = incoming_sources(self.cmds, str(destination))
                 matched = [source for source in baseline if source.rsplit(".", 1)[0] == str(row.get("node", ""))]
                 if len(matched) > 1:
                     raise RuntimeError(f"Ambiguous HIK writer edges for {row.get('node')}: {destination}")
@@ -732,7 +722,7 @@ class HumanIkStanceTransaction:
             destination_edges = [edge for edge in self.ownership_journal["edges"] if edge["destination"] == destination]
             baseline = list(destination_edges[0]["baselineIncomingSources"])
             isolated = {edge["source"] for edge in destination_edges}
-            actual = _incoming_sources(self.cmds, destination)
+            actual = incoming_sources(self.cmds, destination)
             expected = sorted(source for source in baseline if source not in isolated)
             if actual != expected:
                 mismatches.append({"destination": destination, "expected": expected, "actual": actual})
@@ -744,13 +734,13 @@ class HumanIkStanceTransaction:
         for edge in self.ownership_journal.get("edges", []):
             destination = edge["destination"]
             baseline = list(edge["baselineIncomingSources"])
-            actual = _incoming_sources(self.cmds, destination)
+            actual = incoming_sources(self.cmds, destination)
             unexpected = [source for source in actual if source not in baseline]
             if unexpected:
                 raise RuntimeError(f"Canonical T-pose topology has third-party writers: {destination}: {unexpected}")
             if not _edge_connected(self.cmds, edge["source"], destination):
                 self.cmds.connectAttr(edge["source"], destination, force=False)
-            if _incoming_sources(self.cmds, destination) != sorted(baseline):
+            if incoming_sources(self.cmds, destination) != sorted(baseline):
                 raise RuntimeError(f"Canonical T-pose topology restore failed: {destination}")
         self.ownership_journal["topologyRestored"] = True
 
