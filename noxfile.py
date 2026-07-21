@@ -2104,6 +2104,65 @@ def humanik_citlali_stance_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def physics_solver_cycle_probe(session: nox.Session) -> None:
+    """Capture Citlali mmdPhysicsSolver cycle evidence without changing solver code.
+
+    A Maya-reported DG cycle is intentionally accepted as probe evidence; the
+    mayapy script only fails when clean production import or the reversible
+    operation harness itself fails.  The JSON report is the investigation
+    artifact consumed by the MMD-PHYSICS-SOLVER-CYCLE-1 queue item.
+
+    Examples:
+        uvx nox -s physics_solver_cycle_probe -- --maya 2024
+        uvx nox -s physics_solver_cycle_probe -- --maya 2026 --frames 0,1,2,1,0
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    out_value = _option(args, "--out", str(ROOT / "build/reports/physics_solver_cycle_probe.json"))
+    pmx_value = _option(
+        args,
+        "--pmx",
+        str(ROOT / "build/fixtures/citlali_ascii_file/citlali.pmx"),
+    )
+    frames_value = _option(args, "--frames", "0,1,2,1,0")
+    report_path = Path(out_value)
+    passthrough = [
+        "--pmx", pmx_value,
+        "--out", out_value,
+        "--frames", frames_value,
+    ]
+    try:
+        report_path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        session.error(f"Unable to clear stale physics cycle probe report {report_path}: {exc}")
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/physics_solver_cycle_probe.py"),
+        *_convert_mayapy_path_options(mayapy, passthrough, {"--pmx", "--out"}),
+        env=_mayapy_env(
+            mayapy,
+            MAYA_SKIP_USERSETUP_PY="1",
+            PYTHONIOENCODING="utf-8",
+        ),
+        external=True,
+    )
+    if not report_path.is_file():
+        session.error(f"Physics solver cycle probe report missing: {report_path}")
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        session.error(f"Invalid physics solver cycle probe report {report_path}: {exc}")
+    if report.get("status") != "pass":
+        session.error(
+            "Physics solver cycle probe failed: "
+            f"errors={report.get('errors')}, solver={report.get('solver')}"
+        )
+
+
+@nox.session(venv_backend="none")
 def maya_shader_override_smoke(session: nox.Session) -> None:
     """Smoke the legacy MMDShader VP2.0 override through mayapy playblast.
 
