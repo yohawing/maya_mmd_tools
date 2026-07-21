@@ -2,9 +2,10 @@
 
 The implementation is the productionized, single-model form of the stance
 helpers used by ``tests/viewport/humanik_roundtrip_smoke.py``.  It snapshots
-the two arm joints, isolates only reviewed ``mute_for_hik`` writer edges, uses
-each arm's current horizontal world direction as its target, and restores the
-snapshot before reconnecting the exact original topology.
+the two arm joints, isolates reviewed ``mute_for_hik`` edges plus direct
+arm-pose writers, uses each arm's current horizontal world direction as its
+target, and restores the snapshot before reconnecting the exact original
+topology.
 """
 
 from __future__ import annotations
@@ -395,7 +396,7 @@ class HumanIkStanceTransaction:
             "rows": skin_rows,
         }
         self.ownership_report = report
-        self.ownership_snapshot = self._capture_ownership_snapshot(report)
+        self.ownership_snapshot = self._capture_ownership_snapshot(report, chains)
         self.stance_evidence = {
             "mode": "automatic-horizontal-world-t-pose",
             "upAxis": "Y",
@@ -425,7 +426,7 @@ class HumanIkStanceTransaction:
         self.active = True
         disconnected = []
         try:
-            for edge in self.ownership_snapshot.get("edges", []):
+            for edge in self._isolated_edges():
                 if not _edge_connected(self.cmds, edge["source"], edge["destination"]):
                     raise RuntimeError(f"Writer edge disappeared before isolation: {edge['source']} -> {edge['destination']}")
                 self.cmds.disconnectAttr(edge["source"], edge["destination"])
@@ -548,8 +549,9 @@ class HumanIkStanceTransaction:
         restoring the others.  Topology reconnection is attempted on every
         failure path (aggregated attribute failures, residual-verification
         failure, or any other exception raised while restoring) before the
-        error is surfaced, so a restore failure never strands the isolated
-        ``mute_for_hik`` writer edges disconnected.
+        error is surfaced, so a restore failure never strands either the
+        reviewed ``mute_for_hik`` edges or temporary arm-pose writers
+        disconnected.
         """
         if not self.active:
             result = dict(self.stance_evidence.get("restore") or {"passed": True})
@@ -681,7 +683,11 @@ class HumanIkStanceTransaction:
             "prepared": bool(self.prepared),
         }
 
-    def _capture_ownership_snapshot(self, report: Mapping[str, Any]) -> Dict[str, Any]:
+    def _capture_ownership_snapshot(
+        self,
+        report: Mapping[str, Any],
+        chains: Mapping[str, Tuple[str, str]],
+    ) -> Dict[str, Any]:
         edges = []
         seen = set()
         for row in report.get("rows", []):
@@ -707,19 +713,65 @@ class HumanIkStanceTransaction:
                         "baselineIncomingSources": baseline,
                     }
                 )
+        pose_writer_edges = []
+        for slot, (joint, _) in chains.items():
+            # A direct input to an HIK arm's translate/rotate channel can
+            # immediately overwrite ``xform`` even though it is neither a
+            # feedback blocker nor an MMD IK writer.  Capture only these two
+            # explicitly posed arm channels (including component inputs), not
+            # arbitrary descendants or post-HIK deformers.
+            for attribute in ("translate", "rotate"):
+                for destination in (f"{joint}.{attribute}", *(f"{joint}.{attribute}{axis}" for axis in "XYZ")):
+                    baseline = incoming_sources(self.cmds, destination)
+                    for source in baseline:
+                        edge = (source, destination)
+                        if edge in seen:
+                            continue
+                        seen.add(edge)
+                        source_node = source.rsplit(".", 1)[0]
+                        try:
+                            source_type = str(self.cmds.nodeType(source_node))
+                        except Exception:
+                            source_type = "unknown"
+                        pose_writer_edges.append(
+                            {
+                                "source": source,
+                                "destination": destination,
+                                "node": source_node,
+                                "nodeType": source_type,
+                                "classification": "temporary_arm_pose_writer",
+                                "hikBone": slot,
+                                "attribute": attribute,
+                                "baselineIncomingSources": baseline,
+                            }
+                        )
         return {
             "classificationCounts": dict(report.get("counts", {})),
             "rows": list(report.get("rows", [])),
             "edges": sorted(edges, key=lambda item: (item["destination"], item["source"])),
+            "poseWriterEdges": sorted(pose_writer_edges, key=lambda item: (item["destination"], item["source"])),
             "topologyIsolated": False,
             "topologyRestored": False,
             "topologyMismatches": [],
         }
 
+    def _isolated_edges(self) -> List[Dict[str, Any]]:
+        """Return the exact reviewed and direct-pose edges isolated for stance."""
+        edges = []
+        seen = set()
+        for key in ("edges", "poseWriterEdges"):
+            for edge in self.ownership_snapshot.get(key, []):
+                identity = (edge["source"], edge["destination"])
+                if identity not in seen:
+                    seen.add(identity)
+                    edges.append(edge)
+        return sorted(edges, key=lambda item: (item["destination"], item["source"]))
+
     def _verify_isolated_topology(self):
         mismatches = []
-        for destination in sorted({edge["destination"] for edge in self.ownership_snapshot.get("edges", [])}):
-            destination_edges = [edge for edge in self.ownership_snapshot["edges"] if edge["destination"] == destination]
+        edges = self._isolated_edges()
+        for destination in sorted({edge["destination"] for edge in edges}):
+            destination_edges = [edge for edge in edges if edge["destination"] == destination]
             baseline = list(destination_edges[0]["baselineIncomingSources"])
             isolated = {edge["source"] for edge in destination_edges}
             actual = incoming_sources(self.cmds, destination)
@@ -731,7 +783,7 @@ class HumanIkStanceTransaction:
             raise RuntimeError("Canonical T-pose writer isolation topology verification failed")
 
     def _restore_topology(self):
-        for edge in self.ownership_snapshot.get("edges", []):
+        for edge in self._isolated_edges():
             destination = edge["destination"]
             baseline = list(edge["baselineIncomingSources"])
             actual = incoming_sources(self.cmds, destination)

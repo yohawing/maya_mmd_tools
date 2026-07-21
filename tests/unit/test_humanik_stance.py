@@ -298,6 +298,39 @@ class TestHumanIkStance(unittest.TestCase):
         self.assertEqual(cmds.connections[destination], ["|ik_ctrl.outputRotateX"])
         self.assertTrue(any(call[0] == "connectAttr" and call[3].get("force") is False for call in cmds.calls))
 
+    def test_direct_arm_pose_writers_are_isolated_only_during_stance(self):
+        cmds = _FakeCmds()
+        left_rotate = "|model|left_arm.rotate"
+        left_translate = "|model|left_arm.translate"
+        forearm_rotate = "|model|left_forearm.rotate"
+        cmds.connections[left_rotate] = ["|left_arm_boneMorphAccum.outputRotate"]
+        cmds.connections[left_translate] = ["|left_arm_boneMorphAccum.outputTranslate"]
+        # Descendant animation is not part of the arm-pose writer scope.
+        cmds.connections[forearm_rotate] = ["|left_forearm_anim.outputRotate"]
+        tx, _ = self._transaction(cmds=cmds)
+        base_setter = _setter(cmds)
+
+        def setter(joint, child, target):
+            if joint == "|model|left_arm":
+                self.assertEqual(cmds.connections[left_rotate], [])
+                self.assertEqual(cmds.connections[left_translate], [])
+                self.assertEqual(cmds.connections[forearm_rotate], ["|left_forearm_anim.outputRotate"])
+            return base_setter(joint, child, target)
+
+        tx.world_matrix_setter = setter
+        tx.enter()
+
+        pose_edges = tx.ownership_snapshot["poseWriterEdges"]
+        self.assertEqual([(edge["source"], edge["destination"]) for edge in pose_edges], [
+            ("|left_arm_boneMorphAccum.outputRotate", left_rotate),
+            ("|left_arm_boneMorphAccum.outputTranslate", left_translate),
+        ])
+        tx.restore()
+
+        self.assertEqual(cmds.connections[left_rotate], ["|left_arm_boneMorphAccum.outputRotate"])
+        self.assertEqual(cmds.connections[left_translate], ["|left_arm_boneMorphAccum.outputTranslate"])
+        self.assertEqual(cmds.connections[forearm_rotate], ["|left_forearm_anim.outputRotate"])
+
     def test_apply_failure_rolls_back_pose_and_topology(self):
         tx, cmds = self._transaction()
         calls = []
