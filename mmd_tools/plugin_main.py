@@ -210,6 +210,25 @@ def _reset_humanik_menu_session():
         return False
 
 
+def _close_humanik_window():
+    """Close the standalone HumanIK Editor window before plugin unload.
+
+    Soft-fails like the rest of unload cleanup: an already-torn-down window
+    (or an environment where the Qt UI never loaded) must never abort
+    ``uninitializePlugin``. This runs after ``_reset_humanik_menu_session()``
+    (see ``uninitializePlugin``), which already restored any HumanIK-owned
+    scene state, so this is purely UI/window cleanup -- and drops the
+    presenter's ``humanik_control_rig_watch`` callback subscription via the
+    window's own ``hideEvent``/``closeEvent`` handling.
+    """
+    try:
+        from mmd_tools.ui import humanik_window
+
+        humanik_window.close_humanik_window()
+    except Exception as exc:
+        om.MGlobal.displayWarning(f"HumanIK window close during unload failed: {exc}")
+
+
 def install_mmd_menu():
     """Install the MMD menu in Maya."""
     if not cmds.menu("MMD", exists=True):
@@ -474,6 +493,7 @@ def uninitializePlugin(mobject):
     try:
         if not _reset_humanik_menu_session():
             raise RuntimeError("HumanIK session restore failed; plugin unload was aborted")
+        _close_humanik_window()
         _deregister_humanik_control_rig_watch()
         _remove_after_open_callback()
         close_animator_toolset()

@@ -29,8 +29,6 @@ from .tabs.morph_tab import MorphTab
 from .presenters.morph_presenter import MorphPresenter
 from .tabs.physics_tab import PhysicsTab
 from .presenters.physics_presenter import PhysicsPresenter
-from .tabs.humanik_tab import HumanIkTab
-from .presenters.humanik_presenter import HumanIkPresenter
 from .tabs.settings_tab import SettingsTab
 from .presenters.settings_presenter import SettingsPresenter
 
@@ -252,9 +250,6 @@ class MainWindow(QMainWindow):
         # Physics Tab
         self._add_physics_tab()
 
-        # HumanIK Tab (Experimental)
-        self._add_humanik_tab()
-
         # Settings Tab
         settings_tab = SettingsTab()
         self.settings_presenter = SettingsPresenter(settings_tab, self.app_state)
@@ -268,7 +263,6 @@ class MainWindow(QMainWindow):
             bone_tab,
             morph_tab,
             self.physics_tab,
-            self.humanik_tab,
             settings_tab,
         ]
 
@@ -283,17 +277,6 @@ class MainWindow(QMainWindow):
         self.physics_tab = physics_tab
         return physics_tab
 
-    def _add_humanik_tab(self):
-        """Create the HumanIK (Experimental) tab and add it to the tab widget."""
-        from .translations import UITranslator
-
-        translator = UITranslator.instance()
-        humanik_tab = HumanIkTab()
-        self.humanik_presenter = HumanIkPresenter(humanik_tab, self.app_state)
-        self.tab_widget.addTab(humanik_tab, translator.translate("humanik", "tabs"))
-        self.humanik_tab = humanik_tab
-        return humanik_tab
-
     def _on_main_tab_changed(self, index):
         """Refresh data-backed tabs when they become active."""
         active_tab = self.tab_widget.widget(index)
@@ -306,14 +289,6 @@ class MainWindow(QMainWindow):
         presenter = getattr(self, "physics_presenter", None)
         if physics_tab is not None and presenter is not None and active_tab is physics_tab:
             presenter.refresh_physics()
-
-        humanik_tab = getattr(self, "humanik_tab", None)
-        humanik_presenter = getattr(self, "humanik_presenter", None)
-        if humanik_tab is not None and humanik_presenter is not None:
-            if active_tab is humanik_tab:
-                humanik_presenter.on_tab_activated()
-            else:
-                humanik_presenter.on_tab_deactivated()
 
     def refresh_development_mode_visibility(self):
         """Development Mode 依存の UI 表示を現在のウィンドウへ再適用する。"""
@@ -338,7 +313,6 @@ class MainWindow(QMainWindow):
             (self.bone_presenter.view, "bone"),
             (self.morph_tab, "morph"),
             (self.physics_tab, "physics"),
-            (self.humanik_tab, "humanik"),
             (self.settings_presenter.view, "settings"),
         ]
         for tab, key in tab_entries:

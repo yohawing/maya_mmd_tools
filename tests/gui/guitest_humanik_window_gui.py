@@ -1,11 +1,19 @@
-"""HumanIkTab GUI smoke tests.
+"""HumanIkTab / HumanIkWindow GUI smoke tests.
 
-These only check that the tab can be constructed, wired to a real presenter,
-and refreshed without raising -- scene-level HumanIK lifecycle behavior
+The tab-shell tests below only check that ``HumanIkTab`` can be constructed
+and rendered without raising -- scene-level HumanIK lifecycle behavior
 (characterize/source/target/bake/restore) is already covered by
 ``tests/unit/test_humanik_menu_actions.py`` and the HumanIK E2E harnesses;
 this file exists to lock the Qt widget contract, matching
 ``guitest_physics_tab_gui.py``.
+
+HUMANIK-FRONTEND-1 Phase B3 moved the HumanIK workflow out of the MMD Editor
+tab bar and into its own standalone window (``mmd_tools.ui.humanik_window``).
+The ``TestHumanIkWindowGUI`` class below covers that window: construction,
+floating/dockable ``show_window``, and that showing/hiding it drives the
+presenter's ``on_tab_activated``/``on_tab_deactivated`` lifecycle, matching
+``guitest_ui_components.py``'s ``test_show_window_floating`` /
+``test_show_window_dockable`` coverage of ``MainWindow``.
 """
 
 import unittest
@@ -160,6 +168,98 @@ class TestHumanIkTabGUI(GuiTestBase):
         finally:
             tab.deleteLater()
             QApplication.processEvents()
+
+
+@requires_gui
+class TestHumanIkWindowGUI(GuiTestBase):
+    """Lock the standalone HumanIK Editor window's construction and lifecycle."""
+
+    def setUp(self):
+        super().setUp()
+        cmds.file(new=True, force=True)
+        from mmd_tools.ui import humanik_window
+
+        self._humanik_window_module = humanik_window
+        # Every test starts from "no window open" -- the singleton in
+        # ``humanik_window`` must not leak a previous test's instance.
+        humanik_window.close_humanik_window()
+
+    def tearDown(self):
+        self._humanik_window_module.close_humanik_window()
+        QApplication.processEvents()
+        super().tearDown()
+
+    def test_construction_hosts_the_humanik_tab(self):
+        from mmd_tools.ui.humanik_window import HumanIkWindow
+
+        window = HumanIkWindow()
+        try:
+            self.assertIsInstance(window.humanik_tab, HumanIkTab)
+            self.assertIsInstance(window.humanik_presenter, HumanIkPresenter)
+            self.assertTrue(window.windowTitle())
+        finally:
+            window.close()
+            window.deleteLater()
+            QApplication.processEvents()
+
+    def test_show_window_floating(self):
+        from mmd_tools.ui.humanik_window import HumanIkWindow
+
+        window = HumanIkWindow()
+        try:
+            window.show_window(dockable=False)
+            QApplication.processEvents()
+            self.assertTrue(window.isVisible())
+        finally:
+            window.close()
+            window.deleteLater()
+            QApplication.processEvents()
+
+    def test_show_window_dockable_creates_workspace_control(self):
+        from mmd_tools.ui.humanik_window import HumanIkWindow
+
+        workspace_name = HumanIkWindow.WORKSPACE_CONTROL_NAME
+        if cmds.workspaceControl(workspace_name, exists=True):
+            cmds.deleteUI(workspace_name, control=True)
+
+        window = HumanIkWindow()
+        try:
+            window.show_window(dockable=True)
+            QApplication.processEvents()
+            self.assertTrue(cmds.workspaceControl(workspace_name, exists=True))
+            self.assertTrue(window.isVisible())
+        finally:
+            window.close_window()
+            QApplication.processEvents()
+
+    def test_show_hide_drives_presenter_lifecycle(self):
+        from mmd_tools.ui.humanik_window import HumanIkWindow
+
+        window = HumanIkWindow()
+        try:
+            self.assertFalse(window._lifecycle_active)
+
+            window.show_window(dockable=False)
+            QApplication.processEvents()
+            self.assertTrue(window._lifecycle_active)
+
+            window.hide()
+            QApplication.processEvents()
+            self.assertFalse(window._lifecycle_active)
+        finally:
+            window.close()
+            window.deleteLater()
+            QApplication.processEvents()
+
+    def test_show_humanik_window_singleton_raises_existing_instance(self):
+        from mmd_tools.ui import humanik_window
+
+        first = humanik_window.show_humanik_window(dockable=False)
+        QApplication.processEvents()
+        second = humanik_window.show_humanik_window(dockable=False)
+        QApplication.processEvents()
+
+        self.assertIs(first, second)
 
 
 if __name__ == "__main__":

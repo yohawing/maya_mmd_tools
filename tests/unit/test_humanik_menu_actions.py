@@ -125,6 +125,22 @@ class TestHumanIkMenuActions(unittest.TestCase):
         actions._confirm_dialog = None
         actions._error_reporter = None
 
+    def test_action_labels_lead_with_open_humanik_editor_plus_seven_staged_actions(self):
+        self.assertEqual(actions.ACTION_LABELS[0], ("open_humanik_editor", "HumanIK Editor..."))
+        self.assertEqual(len(actions.ACTION_LABELS), 8)
+
+    def test_open_humanik_editor_dispatches_to_the_standalone_window(self):
+        with patch("mmd_tools.ui.humanik_window.show_humanik_window") as show_window:
+            actions.open_humanik_editor()
+
+        show_window.assert_called_once_with(dockable=True)
+
+    def test_dispatch_action_routes_open_humanik_editor(self):
+        with patch("mmd_tools.ui.humanik_window.show_humanik_window") as show_window:
+            actions.dispatch_action("open_humanik_editor")
+
+        show_window.assert_called_once_with(dockable=True)
+
     def test_menu_contains_humanik_and_exact_seven_actions(self):
         with patch.object(actions, "install_maya_script_editor_handler") as install_handler:
             submenu = actions.install_humanik_menu(parent="MMD", cmds_module=self.cmds)
@@ -184,7 +200,7 @@ class TestHumanIkMenuActions(unittest.TestCase):
             if call.kwargs.get("parent") == "MMDHumanIKMenu"
         ]
         callbacks[0]("ignored")
-        self.assertEqual(calls, ["setup_and_characterize"])
+        self.assertEqual(calls, ["open_humanik_editor"])
 
     @patch.object(actions, "SceneModelService", _FakeModelService)
     def test_model_resolution_uses_selected_root_only(self):

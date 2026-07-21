@@ -278,7 +278,7 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
 
         dispatch.assert_called_once_with("diagnostics")
 
-    def test_humanik_submenu_has_seven_direct_dispatch_callbacks_and_reinstalls(self):
+    def test_humanik_submenu_has_direct_dispatch_callbacks_for_every_action_and_reinstalls(self):
         humanik = importlib.import_module("mmd_tools.ui.humanik_menu_actions")
         existing = False
 
@@ -303,7 +303,7 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             for call in self.plugin_main.cmds.menuItem.call_args_list
             if call.kwargs.get("parent") == "MMDHumanIKMenu"
         ]
-        self.assertEqual(len(callbacks), 7)
+        self.assertEqual(len(callbacks), len(humanik.ACTION_LABELS))
         for callback in callbacks:
             callback("menu-click")
         self.assertEqual(

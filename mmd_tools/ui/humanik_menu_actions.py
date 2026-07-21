@@ -24,6 +24,7 @@ from mmd_tools.services.scene_model_service import SceneModelService
 HUMANIK_MENU_NAME = "MMDHumanIKMenu"
 DIAGNOSTICS_WINDOW_NAME = "MMDHumanIKDiagnosticsWindow"
 ACTION_LABELS = (
+    ("open_humanik_editor", "HumanIK Editor..."),
     ("setup_and_characterize", "Setup / Characterize"),
     ("enter_source_mode", "Enter Source Mode"),
     ("enter_target_mode", "Enter Target Mode"),
@@ -225,7 +226,8 @@ def _choose_model_from_scene(available_models) -> Optional[str]:
 
 
 def install_humanik_menu(parent="MMD", *, cmds_module=None, callback_dispatcher=None):
-    """Install the HumanIK submenu and exactly its seven staged actions."""
+    """Install the HumanIK submenu with the "Open HumanIK Editor" entry plus
+    its seven staged workflow actions."""
     global _cmds_module
     cmds = cmds_module or _maya_cmds()
     _cmds_module = cmds
@@ -256,6 +258,26 @@ def dispatch_action(action: str):
     if function is None:
         raise ValueError(f"Unknown HumanIK menu action: {action}")
     return function()
+
+
+def open_humanik_editor():
+    """Open (or focus) the standalone HumanIK Editor window.
+
+    The window is imported lazily here -- and only here -- because
+    ``mmd_tools.ui.humanik_window`` imports ``HumanIkPresenter``, which in
+    turn imports this module at module scope (to dispatch the other six
+    staged actions). Importing the window at this module's top level would
+    therefore be a circular import; deferring it to call time breaks the
+    cycle since by the time this function runs, this module has already
+    finished loading.
+    """
+    return _run_action("Open HumanIK Editor", _open_humanik_editor)
+
+
+def _open_humanik_editor():
+    from .humanik_window import show_humanik_window
+
+    return show_humanik_window(dockable=True)
 
 
 def setup_and_characterize():
@@ -700,6 +722,7 @@ def _ui_exists(cmds, name):
 
 
 _ACTION_FUNCTIONS = {
+    "open_humanik_editor": open_humanik_editor,
     "setup_and_characterize": setup_and_characterize,
     "enter_source_mode": enter_source_mode,
     "enter_target_mode": enter_target_mode,
