@@ -55,6 +55,7 @@ from mmd_tools.core.humanik_preview import (
 from mmd_tools.core.humanik_transaction import (
     HumanIkTransactionJournal,
     capture_humanik_journal,
+    deserialize_humanik_transaction_state,
     restore_humanik_journal,
 )
 from mmd_tools.core.humanik_utils import maya_cmds, maya_mel
@@ -96,6 +97,51 @@ class HumanIkControlRigTransaction:
             "postCyclePlugs": list(self.post_cycle_plugs),
             "active": self.active,
         }
+
+    def to_scene_dict(self, model_root: str) -> Dict[str, Any]:
+        """Return the minimal active transaction facts persisted in a scene."""
+        return {
+            "modelRoot": str(model_root),
+            "ownershipId": self.ownership_id,
+            "character": self.character,
+            "journal": self.journal.to_dict(),
+            "disconnected": list(self.disconnected),
+            "retainedNodes": list(self.retained_nodes),
+            "createdNodes": list(self.created_nodes),
+            "preCycleBaseline": list(self.pre_cycle_baseline),
+            "postCyclePlugs": list(self.post_cycle_plugs),
+            "active": bool(self.active),
+        }
+
+    @classmethod
+    def from_scene_dict(cls, payload: Dict[str, Any]) -> "HumanIkControlRigTransaction":
+        """Reconstruct a transaction row loaded from scene metadata."""
+        rows = deserialize_humanik_transaction_state({
+            "schema": "mmd_tools.humanik_transaction",
+            "version": 1,
+            "transactions": [payload],
+        })
+        row = rows[0]
+        journal = HumanIkTransactionJournal.from_dict(row["journal"])
+        def _string_list(key: str) -> List[str]:
+            value = row.get(key, [])
+            if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                raise ValueError(f"HumanIK transaction {key} must be an array of strings")
+            return list(value)
+        disconnected = row.get("disconnected", [])
+        if not isinstance(disconnected, list) or not all(isinstance(item, dict) for item in disconnected):
+            raise ValueError("HumanIK transaction disconnected must be an array")
+        return cls(
+            ownership_id=row["ownershipId"],
+            character=row["character"],
+            journal=journal,
+            disconnected=[dict(item) for item in disconnected],
+            retained_nodes=_string_list("retainedNodes"),
+            created_nodes=_string_list("createdNodes"),
+            pre_cycle_baseline=_string_list("preCycleBaseline"),
+            post_cycle_plugs=_string_list("postCyclePlugs"),
+            active=bool(row.get("active", True)),
+        )
 
 
 # Module-level registry of active Control Rig transactions, keyed by HIK

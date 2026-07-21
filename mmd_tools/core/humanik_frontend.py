@@ -27,6 +27,7 @@ from mmd_tools.core.humanik_control_rig import (
     HumanIkControlRigTransaction,
     begin_humanik_control_rig,
     delete_orphaned_control_rig,
+    register_control_rig_transaction,
     stop_humanik_control_rig,
 )
 from mmd_tools.core.humanik_preview import (
@@ -45,6 +46,7 @@ from mmd_tools.core.humanik_retarget import (
     list_scene_hik_characters,
 )
 from mmd_tools.core.humanik_stance import HumanIkStanceTransaction, canonical_stance_targets
+from mmd_tools.core.humanik_transaction import load_humanik_transaction_state, persist_humanik_transaction_state
 from mmd_tools.core.humanik_utils import maya_cmds, maya_mel
 from mmd_tools.core.logger import get_logger
 from mmd_tools.services.scene_model_service import SceneModelService
@@ -339,6 +341,61 @@ class HumanIkFrontendSession:
             "skipped": [],
             "failed": [],
         }
+        self._load_persisted_control_rig_transactions()
+
+    def _load_persisted_control_rig_transactions(self) -> None:
+        """Rebuild active Control Rig transactions from scene metadata.
+
+        The scene payload is advisory and validated twice: first by the
+        journal schema loader, then by proving that the recorded character is
+        still the HIK character for a real MMD model root.  Invalid/stale or
+        foreign records are ignored, never auto-adopted or deleted.
+        """
+        try:
+            rows = load_humanik_transaction_state(cmds_module=self._cmds)
+            cmds = self._cmds or maya_cmds()
+        except Exception:
+            return
+        valid = []
+        for row in rows:
+            try:
+                model_root = str(row["modelRoot"])
+                character = str(row["character"])
+                if not model_root or not character:
+                    continue
+                if not cmds.objExists(model_root) or not cmds.objExists(character):
+                    continue
+                if _find_mmd_model_root_for_character(character, cmds) != model_root:
+                    continue
+                transaction = HumanIkControlRigTransaction.from_scene_dict(row)
+                if not transaction.active:
+                    continue
+            except Exception as exc:  # noqa: BLE001 - stale/foreign metadata is rejected
+                logger.warning("HumanIK persisted transaction rejected: %s", exc)
+                continue
+            self._control_rig_transactions[model_root] = transaction
+            register_control_rig_transaction(character, transaction)
+            valid.append(transaction.to_scene_dict(model_root))
+        # Remove stale records from the metadata payload while retaining the
+        # owned node for future writes.  Persistence itself is fail-soft.
+        if rows != valid:
+            self._persist_control_rig_transactions(valid)
+
+    def _persist_control_rig_transactions(self, records=None) -> None:
+        """Best-effort scene persistence for active Control Rig transactions."""
+        if records is None:
+            records = []
+            for model_root, transaction in self._control_rig_transactions.items():
+                if not getattr(transaction, "active", False):
+                    continue
+                to_scene_dict = getattr(transaction, "to_scene_dict", None)
+                if to_scene_dict is None:
+                    continue
+                try:
+                    records.append(to_scene_dict(model_root))
+                except Exception as exc:  # noqa: BLE001 - test doubles/foreign transactions
+                    logger.warning("HumanIK transaction persistence skipped: %s", exc)
+        persist_humanik_transaction_state(records, cmds_module=self._cmds)
 
     @property
     def active_preview(self) -> Optional[HumanIkTargetPreview]:
@@ -641,6 +698,7 @@ class HumanIkFrontendSession:
         )
         self._control_rig_transactions[key] = transaction
         binding.control_rig_created = True
+        self._persist_control_rig_transactions()
         return True
 
     def bake_to_mmd_rig(self, start: int, end: int) -> HumanIkBakeResult:
@@ -771,6 +829,7 @@ class HumanIkFrontendSession:
             # character/stance handled above.
             self._external_source_character = None
             restored = True
+        self._persist_control_rig_transactions()
         if first_error is not None:
             raise first_error
         return restored

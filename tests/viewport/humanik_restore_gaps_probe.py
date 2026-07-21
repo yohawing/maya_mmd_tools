@@ -312,18 +312,13 @@ def run_probe(log_path: str, pmx_path: str, report_path: str) -> None:
         return report
 
     def case_session_loss(pmx: Path) -> Dict[str, Any]:
-        """Hypothesis A: the in-memory journal is lost across a scene reopen.
+        """Hypothesis A: the transaction survives a scene reopen via journal data.
 
-        HUMANIK-RESTORE-GAPS-1 slice 1c added a scene-facts best-effort
-        recovery fallback to ``restore_mmd_rig`` for exactly this case: the
-        Control Rig node survives the reopen but the transaction that
-        created it does not, so ``new_session`` has nothing tracked for it.
-        The fallback still finds and deletes it via scene facts (the
-        character's joints resolve back to the imported MMD model root), so
-        the pass bar here changed from "gap confirmed" to "fallback
-        recovered it, with the unrecoverable-journal limitation surfaced as
-        a structured warning instead of being silently absorbed into a full
-        restore."
+        HUMANIK-RESTORE-GAPS-1d persists the writer-isolation journal on an
+        owned scene network node.  A fresh frontend session must reconstruct
+        the tracked transaction, restore the exact pre-Control-Rig writer
+        topology, and leave no orphan-recovery warning (the 1c scene-facts
+        fallback remains reserved for Control Rigs created outside this path).
         """
         import tempfile
 
@@ -338,6 +333,7 @@ def run_probe(log_path: str, pmx_path: str, report_path: str) -> None:
 
         session = HumanIkFrontendSession()
         session.setup_and_characterize(root)
+        before_control_rig = _scene_snapshot(joints)
         session.create_control_rig(root)
         before_reopen = _scene_snapshot(joints)
         report["stateBeforeReopen"] = _describe_state(session, root)
@@ -352,6 +348,7 @@ def run_probe(log_path: str, pmx_path: str, report_path: str) -> None:
 
         new_session = HumanIkFrontendSession()
         report["stateInNewSessionAfterReopen"] = _describe_state(new_session, root)
+        report["persistedTransactionReconstructed"] = bool(new_session._control_rig_transactions)
         restore_error = None
         try:
             restored = new_session.restore_mmd_rig()
@@ -374,11 +371,16 @@ def run_probe(log_path: str, pmx_path: str, report_path: str) -> None:
         report["orphanRecoveryReportedUnrecoverableWarning"] = bool(recovered_rows) and all(
             row.get("unrecoverableWarnings") for row in recovered_rows
         )
+        report["writerTopologyRestored"] = (
+            before_control_rig.get("connections") == after_restore.get("connections")
+        )
         report["status"] = "pass" if (
             restored is True
             and not report["controlRigSurvivedReopenAndRestoreAttempt"]
-            and report["orphanRecoveredCount"] >= 1
-            and report["orphanRecoveryReportedUnrecoverableWarning"]
+            and report["persistedTransactionReconstructed"]
+            and report["orphanRecoveredCount"] == 0
+            and not report["orphanRecoveryReportedUnrecoverableWarning"]
+            and report["writerTopologyRestored"]
         ) else "fail-reproduces-gap"
         return report
 

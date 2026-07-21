@@ -11,6 +11,7 @@ from mmd_tools.core.humanik_frontend import (
     _split_body_assignments,
     filter_humanik_body_assignments,
 )
+from mmd_tools.core.humanik_transaction import HumanIkTransactionJournal
 from mmd_tools.core.humanik_resolver import (
     HumanIkBoneAssignment,
     HumanIkResolveResult,
@@ -120,6 +121,47 @@ def _session():
 
 
 class TestHumanIkFrontend(unittest.TestCase):
+    @patch("mmd_tools.core.humanik_frontend._find_mmd_model_root_for_character", return_value="|target")
+    @patch("mmd_tools.core.humanik_frontend.persist_humanik_transaction_state")
+    @patch("mmd_tools.core.humanik_frontend.load_humanik_transaction_state")
+    def test_new_session_rebuilds_persisted_control_rig_transaction(
+        self, load_state, persist_state, find_model
+    ):
+        journal = HumanIkTransactionJournal(
+            "mmd-tools:frontend:control-rig:|target",
+            "Character_target",
+            True,
+            "",
+            -1,
+            [],
+            [],
+        )
+        load_state.return_value = [{
+            "modelRoot": "|target",
+            "ownershipId": journal.ownership_id,
+            "character": journal.character,
+            "journal": journal.to_dict(),
+            "disconnected": [],
+            "retainedNodes": [],
+            "createdNodes": ["HIKControlSetNode1"],
+            "preCycleBaseline": [],
+            "postCyclePlugs": [],
+            "active": True,
+        }]
+
+        class Cmds:
+            def objExists(self, name):
+                return name in {"|target", "Character_target"}
+
+        session = HumanIkFrontendSession(cmds_module=Cmds())
+
+        self.assertIn("|target", session._control_rig_transactions)
+        transaction = session._control_rig_transactions["|target"]
+        self.assertTrue(transaction.active)
+        self.assertEqual(transaction.journal.input_source, "")
+        find_model.assert_called_once_with("Character_target", session._cmds or find_model.call_args.args[1])
+        persist_state.assert_not_called()
+
     def test_synthetic_profile_has_25_body_roll_and_30_finger_assignments(self):
         result = _synthetic_55_result()
 

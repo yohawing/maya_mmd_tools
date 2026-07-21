@@ -3,8 +3,13 @@
 import unittest
 
 from mmd_tools.core.humanik_transaction import (
+    HumanIkNodeSnapshot,
+    HumanIkPlugSnapshot,
+    HumanIkTransactionJournal,
     capture_humanik_journal,
+    deserialize_humanik_transaction_state,
     humanik_transaction,
+    serialize_humanik_transaction_state,
     restore_humanik_journal,
 )
 
@@ -68,6 +73,66 @@ class FakeMel:
 
 
 class TestHumanIkTransaction(unittest.TestCase):
+    def test_journal_serializes_and_reconstructs_with_schema_validation(self):
+        journal = HumanIkTransactionJournal(
+            ownership_id="owner:A",
+            character="Target",
+            lock_state=True,
+            input_source="Source",
+            input_type=3,
+            plugs=[HumanIkPlugSnapshot("joint.tx", ["writer.out"], [1.0, 2.0], "double3")],
+            nodes=[HumanIkNodeSnapshot("writer", {"mute": True})],
+        )
+        payload = serialize_humanik_transaction_state(
+            [{
+                "modelRoot": "|model_root",
+                "ownershipId": "owner:A",
+                "character": "Target",
+                "journal": journal.to_dict(),
+                "createdNodes": ["HIKControlSetNode1"],
+                "active": True,
+            }]
+        )
+        rows = deserialize_humanik_transaction_state(payload)
+        restored = HumanIkTransactionJournal.from_dict(rows[0]["journal"])
+        self.assertEqual(restored.to_dict(), journal.to_dict())
+        self.assertEqual(rows[0]["modelRoot"], "|model_root")
+
+    def test_malformed_or_foreign_scene_payload_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "schema mismatch"):
+            deserialize_humanik_transaction_state({
+                "schema": "foreign",
+                "version": 1,
+                "transactions": [],
+            })
+        with self.assertRaisesRegex(ValueError, "character mismatch"):
+            deserialize_humanik_transaction_state({
+                "schema": "mmd_tools.humanik_transaction",
+                "version": 1,
+                "transactions": [{
+                    "modelRoot": "|model_root",
+                    "ownershipId": "owner:A",
+                    "character": "Other",
+                    "journal": HumanIkTransactionJournal(
+                        "owner:A", "Target", True, "Source", 3, [], []
+                    ).to_dict(),
+                }],
+            })
+        with self.assertRaisesRegex(ValueError, "invalid active flag"):
+            deserialize_humanik_transaction_state({
+                "schema": "mmd_tools.humanik_transaction",
+                "version": 1,
+                "transactions": [{
+                    "modelRoot": "|model_root",
+                    "ownershipId": "owner:A",
+                    "character": "Target",
+                    "journal": HumanIkTransactionJournal(
+                        "owner:A", "Target", True, "Source", 3, [], []
+                    ).to_dict(),
+                    "active": "false",
+                }],
+            })
+
     def test_restore_is_exact_and_idempotent(self):
         cmds, mel = FakeCmds(), FakeMel()
         journal = capture_humanik_journal("owner:A", "Target", ["dst.tx"], ["node"], cmds, mel)
