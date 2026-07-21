@@ -16,7 +16,10 @@ from mmd_tools.core.humanik_builder import (
     get_humanik_definition_lock_state,
 )
 from mmd_tools.core.humanik_utils import incoming_sources, maya_cmds, maya_mel, mel_string
+from mmd_tools.core.logger import get_logger
 
+
+logger = get_logger(__name__)
 
 STATE_ATTRIBUTES = ("nodeState", "mute", "envelope", "enabled")
 
@@ -91,42 +94,131 @@ def restore_humanik_journal(
     ownership_id: Optional[str] = None,
     cmds_module=None,
     mel_module=None,
-) -> None:
-    """Restore a journal exactly; repeated restores are idempotent."""
+) -> List[str]:
+    """Restore a journal exactly; repeated restores are idempotent.
+
+    A journal entry (the character itself, a plug's node, a reconnect
+    source, or a state node) that no longer exists in the scene -- because
+    the user deleted it, or because a Control Rig teardown step already
+    removed it -- is skipped with a logged warning instead of raising: there
+    is nothing to restore back onto a node that is gone, and treating that
+    as fatal is what previously left ``HumanIkControlRigTransaction``s stuck
+    permanently active (every retry hit the same "node not found" MEL error
+    from ``restore_humanik_journal`` before it ever reached the
+    deactivate/unregister step -- see ``stop_humanik_control_rig``).
+
+    Restore failures against nodes that DO still exist are not skipped: every
+    remaining entry is still attempted, then all such failures are raised
+    together as a single aggregated ``RuntimeError`` so one bad plug cannot
+    hide failures on the others. This keeps the original "an incomplete
+    rollback surfaces as an error" guarantee for anything actually
+    restorable, while making the "node was deleted out from under us" case
+    (which is not restorable, by definition) non-fatal.
+
+    Returns:
+        Warning messages for skipped missing-node entries (empty when every
+        journaled node was present in the scene).
+
+    Raises:
+        ValueError: ``ownership_id`` does not match the journal's owner.
+        RuntimeError: Aggregated restore failures against nodes that still
+            exist in the scene.
+    """
     if ownership_id is not None and ownership_id != journal.ownership_id:
         raise ValueError("HumanIK journal ownership mismatch")
     cmds = cmds_module or maya_cmds()
     mel = mel_module or maya_mel()
     ensure_humanik_mel_loaded(mel)
 
-    current_source = str(
-        mel.eval(f"hikGetRetargetCharacterInput({mel_string(journal.character)})") or ""
-    )
-    if current_source != journal.input_source:
-        mel.eval(
-            f"hikSetCharacterInput({mel_string(journal.character)}, "
-            f"{mel_string(journal.input_source)});"
-        )
-    current_lock = get_humanik_definition_lock_state(journal.character, mel)
-    if current_lock != journal.lock_state:
-        mel.eval(
-            f"hikCharacterLock({mel_string(journal.character)}, "
-            f"{1 if journal.lock_state else 0}, 1);"
+    warnings: List[str] = []
+    failures: List[str] = []
+
+    if cmds.objExists(journal.character):
+        try:
+            current_source = str(
+                mel.eval(f"hikGetRetargetCharacterInput({mel_string(journal.character)})") or ""
+            )
+            if current_source != journal.input_source:
+                mel.eval(
+                    f"hikSetCharacterInput({mel_string(journal.character)}, "
+                    f"{mel_string(journal.input_source)});"
+                )
+            current_lock = get_humanik_definition_lock_state(journal.character, mel)
+            if current_lock != journal.lock_state:
+                mel.eval(
+                    f"hikCharacterLock({mel_string(journal.character)}, "
+                    f"{1 if journal.lock_state else 0}, 1);"
+                )
+        except Exception as exc:  # noqa: BLE001 - aggregated below, character node exists
+            failures.append(
+                f"character input/lock restore failed for {journal.character}: {exc}"
+            )
+    else:
+        warnings.append(
+            f"HumanIK journal skip: character node no longer exists: {journal.character}"
         )
 
+    live_plugs = []
     for snapshot in journal.plugs:
-        for source in incoming_sources(cmds, snapshot.plug):
-            cmds.disconnectAttr(source, snapshot.plug)
-    for snapshot in journal.plugs:
-        if not snapshot.sources:
+        node = snapshot.plug.rsplit(".", 1)[0]
+        if cmds.objExists(node):
+            live_plugs.append(snapshot)
+        else:
+            warnings.append(
+                f"HumanIK journal skip: plug node no longer exists: {snapshot.plug}"
+            )
+
+    for snapshot in live_plugs:
+        try:
+            for source in incoming_sources(cmds, snapshot.plug):
+                cmds.disconnectAttr(source, snapshot.plug)
+        except Exception as exc:  # noqa: BLE001 - aggregated below
+            failures.append(f"disconnect failed for {snapshot.plug}: {exc}")
+    for snapshot in live_plugs:
+        if snapshot.sources:
+            continue
+        try:
             _set_plug_value(cmds, snapshot.plug, snapshot.value, snapshot.attr_type)
-    for snapshot in journal.plugs:
+        except Exception as exc:  # noqa: BLE001 - aggregated below
+            failures.append(f"value restore failed for {snapshot.plug}: {exc}")
+    for snapshot in live_plugs:
         for source in snapshot.sources:
-            if not _is_connected(cmds, source, snapshot.plug):
-                cmds.connectAttr(source, snapshot.plug, force=True)
+            source_node = source.rsplit(".", 1)[0]
+            if not cmds.objExists(source_node):
+                warnings.append(
+                    f"HumanIK journal skip: reconnect source no longer exists: "
+                    f"{source} -> {snapshot.plug}"
+                )
+                continue
+            try:
+                if not _is_connected(cmds, source, snapshot.plug):
+                    cmds.connectAttr(source, snapshot.plug, force=True)
+            except Exception as exc:  # noqa: BLE001 - aggregated below
+                failures.append(
+                    f"reconnect failed for {source} -> {snapshot.plug}: {exc}"
+                )
+
     for snapshot in journal.nodes:
+        if not cmds.objExists(snapshot.node):
+            warnings.append(
+                f"HumanIK journal skip: node no longer exists: {snapshot.node}"
+            )
+            continue
         for attr, value in snapshot.attributes.items():
-            cmds.setAttr(f"{snapshot.node}.{attr}", value)
+            try:
+                cmds.setAttr(f"{snapshot.node}.{attr}", value)
+            except Exception as exc:  # noqa: BLE001 - aggregated below
+                failures.append(
+                    f"attribute restore failed for {snapshot.node}.{attr}: {exc}"
+                )
+
+    for message in warnings:
+        logger.warning(message)
+    if failures:
+        raise RuntimeError(
+            "HumanIK journal restore failed for existing nodes: " + "; ".join(failures)
+        )
+    return warnings
 
 
 @contextmanager

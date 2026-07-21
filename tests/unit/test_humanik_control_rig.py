@@ -19,7 +19,11 @@ class FakeCmds:
         self.values = {"|hips.rotateX": 0.0}
         self.disconnects = []
         self.deleted = []
-        self.existing_nodes = {"|hips", "ik", "twist"} | set(extra_nodes or [])
+        # "Character" is tracked here too: every existing test exercises a
+        # normal teardown where the HIK character node is still present.
+        # Tests for HUMANIK-RESTORE-GAPS-1 (a manually deleted character)
+        # remove it explicitly via ``existing_nodes.discard("Character")``.
+        self.existing_nodes = {"|hips", "ik", "twist", "Character"} | set(extra_nodes or [])
         self.cycle_responses = []
 
     def listConnections(self, plug, source=True, destination=False, plugs=True, connections=False):
@@ -280,6 +284,79 @@ class TestBeginHumanIkControlRig(unittest.TestCase):
         self.assertEqual(cmds.connections["|hips.rotateX"], ["ik.outputRotateX"])
         self.assertEqual(mel.delete_calls, 1)
         self.assertFalse(transaction.active)
+
+
+class TestStopControlRigExceptionSafety(unittest.TestCase):
+    """HUMANIK-RESTORE-GAPS-1 fix 1a: teardown must not get permanently stuck.
+
+    Before this fix, deleting the HIK character node out from under an
+    active transaction (the ``case_partial_delete`` probe scenario) made
+    ``stop_humanik_control_rig``/``restore_mmd_rig`` raise the same
+    "node not found" MEL error on every single call forever: the exception
+    happened before ``transaction.active`` was ever set ``False`` or the
+    transaction unregistered, so nothing about the stuck state ever changed
+    between retries.
+    """
+
+    def tearDown(self):
+        unregister_control_rig_transaction("Character")
+
+    def _begin(self, cmds, mel):
+        def fake_create(character, mel_module=None):
+            mel.has_control_rig = True
+            return True
+
+        with _patch_facts(), _patch_classify(MUTE_REPORT, CLEAN_POST_REPORT), patch(
+            "mmd_tools.core.humanik_control_rig.create_humanik_control_rig",
+            side_effect=fake_create,
+        ):
+            return begin_humanik_control_rig("owner:rig", "Character", {"|hips"}, cmds, mel)
+
+    def test_deleted_character_node_stops_cleanly_instead_of_raising_forever(self):
+        cmds, mel = FakeCmds(), FakeMel()
+        transaction = self._begin(cmds, mel)
+
+        # Simulate the user manually deleting the HIK character node between
+        # create_control_rig and restore_mmd_rig (the probe's partial_delete
+        # case).
+        cmds.existing_nodes.discard("Character")
+
+        stop_humanik_control_rig(transaction, cmds, mel)  # must not raise
+
+        self.assertFalse(transaction.active)
+        self.assertIsNone(get_active_control_rig_transaction("Character"))
+        # hikDeleteControlRig was skipped (no character to target)...
+        self.assertEqual(mel.delete_calls, 0)
+        # ...but the journaled writer on the (still-existing) skeleton joint
+        # was restored normally.
+        self.assertEqual(cmds.connections["|hips.rotateX"], ["ik.outputRotateX"])
+
+        # A retry after the transaction was already released is a pure no-op,
+        # not another attempt at the same doomed teardown.
+        stop_humanik_control_rig(transaction, cmds, mel)
+        self.assertEqual(mel.delete_calls, 0)
+
+    def test_journal_restore_failure_still_releases_transaction_and_raises_once(self):
+        cmds, mel = FakeCmds(), FakeMel()
+        transaction = self._begin(cmds, mel)
+
+        def failing_connect(source, destination, force=False):
+            raise RuntimeError("boom-connect")
+
+        cmds.connectAttr = failing_connect
+
+        with self.assertRaisesRegex(RuntimeError, "boom-connect"):
+            stop_humanik_control_rig(transaction, cmds, mel)
+
+        # The transaction was released even though teardown failed, so a
+        # caller (restore_mmd_rig) retrying later does not hit the same
+        # exception again.
+        self.assertFalse(transaction.active)
+        self.assertIsNone(get_active_control_rig_transaction("Character"))
+        self.assertEqual(mel.delete_calls, 1)  # control rig delete step still ran
+
+        stop_humanik_control_rig(transaction, cmds, mel)  # no-op, does not re-raise
+        self.assertEqual(mel.delete_calls, 1)
 
 
 class TestControlRigTransactionRegistry(unittest.TestCase):

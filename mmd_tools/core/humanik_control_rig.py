@@ -58,6 +58,10 @@ from mmd_tools.core.humanik_transaction import (
     restore_humanik_journal,
 )
 from mmd_tools.core.humanik_utils import maya_cmds, maya_mel
+from mmd_tools.core.logger import get_logger
+
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -294,20 +298,45 @@ def stop_humanik_control_rig(
     and HIK source/lock -- returning the model to the same unblocked NEUTRAL
     state ``describe_humanik_import_lock`` reports for an uncharacterized or
     SOURCE-only model.
+
+    HUMANIK-RESTORE-GAPS-1: teardown is exception-safe. ``transaction`` is
+    always deactivated and unregistered before this function returns or
+    raises -- previously, an exception partway through teardown (for
+    example the user manually deleting the ``HIKCharacterNode`` before
+    calling ``restore_mmd_rig``) left the transaction registered and active,
+    so every subsequent ``restore_mmd_rig`` call re-attempted the exact same
+    doomed teardown and hit the exact same exception forever. Both teardown
+    steps are attempted even if the first one fails (a delete failure must
+    not prevent the journal restore, and vice versa); any failures are
+    aggregated and raised together as a single ``RuntimeError`` *after* the
+    transaction has already been released, so the failure surfaces exactly
+    once instead of on every retry.
     """
     if not transaction.active:
         return
     cmds = cmds_module or maya_cmds()
     mel = mel_module or maya_mel()
-    _delete_control_rig(transaction.character, transaction.created_nodes, cmds, mel)
-    restore_humanik_journal(
-        transaction.journal,
-        ownership_id=transaction.ownership_id,
-        cmds_module=cmds,
-        mel_module=mel,
-    )
+    failures: List[str] = []
+    try:
+        _delete_control_rig(transaction.character, transaction.created_nodes, cmds, mel)
+    except Exception as exc:  # noqa: BLE001 - aggregated below, transaction still released
+        failures.append(f"control rig delete failed: {exc}")
+    try:
+        restore_humanik_journal(
+            transaction.journal,
+            ownership_id=transaction.ownership_id,
+            cmds_module=cmds,
+            mel_module=mel,
+        )
+    except Exception as exc:  # noqa: BLE001 - aggregated below, transaction still released
+        failures.append(f"journal restore failed: {exc}")
     transaction.active = False
     unregister_control_rig_transaction(transaction.character)
+    if failures:
+        raise RuntimeError(
+            "HumanIK Control Rig teardown had failures (transaction released "
+            "so a retry will not repeat them): " + "; ".join(failures)
+        )
 
 
 def _rollback(error, *, character, created_nodes, journal, ownership_id, cmds, mel) -> None:
@@ -352,13 +381,27 @@ def _delete_control_rig(character: str, created_nodes: Iterable[str], cmds, mel)
     node diff delete afterwards is a fallback safety net for any stray nodes
     ``hikDeleteControlRig`` did not know about (or if it silently no-ops),
     not the primary mechanism.
+
+    HUMANIK-RESTORE-GAPS-1: if ``character`` was deleted out from under the
+    transaction (for example manually, between ``create_control_rig`` and
+    ``restore_mmd_rig``), there is no HIK character left for
+    ``hikSetCurrentCharacter``/``hikDeleteControlRig`` to act on -- calling
+    them anyway is exactly what previously raised Maya's "node not found"
+    MEL error (``hikInputSourceUtils.mel``, ``OutputCharacterDefinition``)
+    on every single retry. That step is now skipped with a logged warning
+    instead. This function no longer swallows a genuine MEL failure when the
+    character *does* exist; ``stop_humanik_control_rig`` aggregates and
+    surfaces it instead.
     """
-    try:
+    if cmds.objExists(character):
         mel.eval(f'hikSetCurrentCharacter("{character}");')
         if bool(mel.eval(f'hikHasControlRig("{character}")')):
             mel.eval("hikDeleteControlRig();")
-    except Exception:
-        pass
+    else:
+        logger.warning(
+            "HumanIK control rig delete skipped: character node no longer exists: %s",
+            character,
+        )
     remaining = sorted(node for node in created_nodes if cmds.objExists(node))
     if remaining:
         cmds.delete(remaining)

@@ -10,10 +10,15 @@ from mmd_tools.core.humanik_transaction import (
 
 
 class FakeCmds:
-    def __init__(self):
+    def __init__(self, missing_nodes=None):
         self.values = {"dst.tx": 3.0, "node.nodeState": 0, "node.enabled": True}
         self.types = {"dst.tx": "double"}
         self.connections = {"dst.tx": ["src.tx"]}
+        # Every node this fake knows about is treated as existing by default
+        # (this fake does not model node deletion elsewhere); tests exercising
+        # the missing-node skip path pass explicit names here or mutate this
+        # set directly before calling restore_humanik_journal.
+        self.missing_nodes = set(missing_nodes or ())
 
     def listConnections(self, plug, source=True, destination=False, plugs=True):
         return list(self.connections.get(plug, []))
@@ -36,6 +41,9 @@ class FakeCmds:
 
     def isConnected(self, source, destination):
         return source in self.connections.get(destination, [])
+
+    def objExists(self, node):
+        return node not in self.missing_nodes
 
 
 class FakeMel:
@@ -109,6 +117,61 @@ class TestHumanIkTransaction(unittest.TestCase):
             StanceMel(),
         )
         self.assertEqual(journal.input_type, 0)
+
+    def test_missing_character_node_is_skipped_with_warning_not_error(self):
+        """HUMANIK-RESTORE-GAPS-1 fix 1a: a deleted character must not raise.
+
+        Character-level restore (input source / lock) has nothing to act on
+        once the character node is gone, so it is skipped with a warning
+        instead of hitting Maya's "node not found" MEL error. Journaled
+        entries on other, still-existing nodes are restored normally.
+        """
+        cmds, mel = FakeCmds(), FakeMel()
+        journal = capture_humanik_journal("owner:A", "Target", ["dst.tx"], ["node"], cmds, mel)
+        cmds.connections["dst.tx"] = []
+        mel.source = ""
+        cmds.missing_nodes.add("Target")
+
+        warnings = restore_humanik_journal(journal, "owner:A", cmds, mel)
+
+        self.assertTrue(any("Target" in message for message in warnings))
+        self.assertEqual(mel.source, "")  # character-level restore was skipped
+        self.assertEqual(cmds.connections["dst.tx"], ["src.tx"])  # unaffected node restored
+
+    def test_missing_plug_node_is_skipped_with_warning_not_error(self):
+        cmds, mel = FakeCmds(), FakeMel()
+        journal = capture_humanik_journal("owner:A", "Target", ["dst.tx"], ["node"], cmds, mel)
+        cmds.connections["dst.tx"] = []
+        cmds.missing_nodes.add("dst")
+
+        warnings = restore_humanik_journal(journal, "owner:A", cmds, mel)
+
+        self.assertTrue(any("dst.tx" in message for message in warnings))
+        self.assertEqual(cmds.connections["dst.tx"], [])  # not restored: node is gone
+        self.assertEqual(mel.source, "Source")  # character-level restore still ran
+
+    def test_restore_aggregates_failures_for_existing_nodes_and_raises(self):
+        """A restore failure against a node that still exists must still
+        surface as an error (the pre-existing "incomplete rollback is an
+        error" guarantee), but every other journaled entry is still
+        attempted first."""
+        cmds, mel = FakeCmds(), FakeMel()
+        journal = capture_humanik_journal("owner:A", "Target", ["dst.tx"], ["node"], cmds, mel)
+        cmds.connections["dst.tx"] = []
+        cmds.values["node.nodeState"] = 2
+        mel.source = ""
+
+        def failing_connect(source, destination, force=False):
+            raise RuntimeError("boom-connect")
+
+        cmds.connectAttr = failing_connect
+
+        with self.assertRaisesRegex(RuntimeError, "boom-connect"):
+            restore_humanik_journal(journal, "owner:A", cmds, mel)
+
+        # The plug reconnect failed, but unrelated entries were still restored.
+        self.assertEqual(mel.source, "Source")
+        self.assertEqual(cmds.values["node.nodeState"], 0)
 
 
 if __name__ == "__main__":

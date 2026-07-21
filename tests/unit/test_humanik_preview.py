@@ -50,6 +50,9 @@ class FakeCmds:
     def nodeType(self, node):
         return "joint"
 
+    def objExists(self, node):
+        return True
+
 
 class FakeMel:
     def __init__(self, finger_solving_node="propNode"):
