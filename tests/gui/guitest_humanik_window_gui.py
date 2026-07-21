@@ -122,6 +122,11 @@ class TestHumanIkTabGUI(GuiTestBase):
     def test_set_state_shows_import_lock_warning_when_blocked(self):
         tab = HumanIkTab()
         try:
+            # ``isVisible()`` on a child is always False while its top-level
+            # ancestor is hidden, so the tab itself must be shown for the
+            # positive assertion below to be meaningful.
+            tab.show()
+            QApplication.processEvents()
             state = {
                 "mode": "target_preview",
                 "source": None,

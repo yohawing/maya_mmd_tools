@@ -173,7 +173,11 @@ class HumanIkWindow(QWidget):
         ws = self.WORKSPACE_CONTROL_NAME
         if cmds.workspaceControl(ws, exists=True):
             cmds.workspaceControl(ws, e=True, close=True)
-            cmds.deleteUI(ws)
+            # Closing a workspaceControl can already destroy it (observed on
+            # Maya 2024), so re-check before deleteUI to avoid a "not found"
+            # RuntimeError on the cleanup path.
+            if cmds.workspaceControl(ws, exists=True):
+                cmds.deleteUI(ws)
         self.close()
         self.setParent(None)
         self.deleteLater()
