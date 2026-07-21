@@ -53,7 +53,7 @@ def _result():
 class FakePreview:
     def __init__(self):
         self.active = True
-        self.journal = object()
+        self.restore_state = object()
 
 
 class FakeControlRigTransaction:
@@ -524,7 +524,7 @@ class TestRestoreMmdRigOrphanRecovery(unittest.TestCase):
         self.assertEqual(recovered["modelRoot"], "|target")
         self.assertTrue(recovered["unrecoverableWarnings"])
         self.assertTrue(
-            any("journal_unavailable" in warning for warning in recovered["unrecoverableWarnings"])
+            any("restore_state_unavailable" in warning for warning in recovered["unrecoverableWarnings"])
         )
         # Same report is surfaced through describe_frontend_state for UI consumption.
         state = session.describe_frontend_state()

@@ -3,7 +3,7 @@
 This module holds the genuinely duplicated, semantics-identical pieces that
 were previously copy-pasted into every ``humanik_*`` module: lazy ``maya``
 module accessors, MEL string quoting, and the incoming-source-plug lookup
-used by both the transaction journal and the stance transaction.
+used by both the transaction restore_state and the stance transaction.
 
 Every ``humanik_*`` module keeps its own per-function ``cmds_module=None`` /
 ``mel_module=None`` test-injection parameters; only the fallback

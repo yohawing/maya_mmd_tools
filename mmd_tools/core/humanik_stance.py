@@ -315,7 +315,7 @@ class HumanIkStanceTransaction:
     # JO-aware skin-product check.
     restore_joints: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     skin_evidence: Dict[str, Any] = field(default_factory=dict)
-    ownership_journal: Dict[str, Any] = field(default_factory=dict)
+    ownership_snapshot: Dict[str, Any] = field(default_factory=dict)
     stance_evidence: Dict[str, Any] = field(default_factory=dict)
     active: bool = False
     prepared: bool = False
@@ -395,7 +395,7 @@ class HumanIkStanceTransaction:
             "rows": skin_rows,
         }
         self.ownership_report = report
-        self.ownership_journal = self._capture_ownership_journal(report)
+        self.ownership_snapshot = self._capture_ownership_snapshot(report)
         self.stance_evidence = {
             "mode": "automatic-horizontal-world-t-pose",
             "upAxis": "Y",
@@ -425,7 +425,7 @@ class HumanIkStanceTransaction:
         self.active = True
         disconnected = []
         try:
-            for edge in self.ownership_journal.get("edges", []):
+            for edge in self.ownership_snapshot.get("edges", []):
                 if not _edge_connected(self.cmds, edge["source"], edge["destination"]):
                     raise RuntimeError(f"Writer edge disappeared before isolation: {edge['source']} -> {edge['destination']}")
                 self.cmds.disconnectAttr(edge["source"], edge["destination"])
@@ -525,8 +525,8 @@ class HumanIkStanceTransaction:
                     "continuing with a usable pose (%s)",
                     details,
                 )
-            self.ownership_journal["topologyIsolated"] = True
-            self.ownership_journal["disconnectedEdges"] = disconnected
+            self.ownership_snapshot["topologyIsolated"] = True
+            self.ownership_snapshot["disconnectedEdges"] = disconnected
             return self
         except Exception as error:
             try:
@@ -542,7 +542,7 @@ class HumanIkStanceTransaction:
     def restore(self) -> Dict[str, Any]:
         """Restore pose/JO/skin while isolated, then reconnect exact topology.
 
-        Attribute restoration is attempted for every journaled joint even when
+        Attribute restoration is attempted for every captured joint even when
         an individual plug cannot be restored (locked or with an incoming
         connection): failures are aggregated so one bad plug does not prevent
         restoring the others.  Topology reconnection is attempted on every
@@ -649,7 +649,7 @@ class HumanIkStanceTransaction:
             return restore
         except Exception as error:
             failure = dict(self.stance_evidence.get("restore") or {})
-            topology_restored = bool(self.ownership_journal.get("topologyRestored", False))
+            topology_restored = bool(self.ownership_snapshot.get("topologyRestored", False))
             if not topology_restored:
                 # An exception raised anywhere else in the try body (for
                 # example while reading back attributes/skin products during
@@ -675,13 +675,13 @@ class HumanIkStanceTransaction:
             "modifiedJoints": _json_value(self.modified_joints),
             "restoreJoints": _json_value(self.restore_joints),
             "skinEvidence": _json_value(self.skin_evidence),
-            "ownershipJournal": _json_value(self.ownership_journal),
+            "ownershipSnapshot": _json_value(self.ownership_snapshot),
             "stanceEvidence": _json_value(self.stance_evidence),
             "active": bool(self.active),
             "prepared": bool(self.prepared),
         }
 
-    def _capture_ownership_journal(self, report: Mapping[str, Any]) -> Dict[str, Any]:
+    def _capture_ownership_snapshot(self, report: Mapping[str, Any]) -> Dict[str, Any]:
         edges = []
         seen = set()
         for row in report.get("rows", []):
@@ -718,20 +718,20 @@ class HumanIkStanceTransaction:
 
     def _verify_isolated_topology(self):
         mismatches = []
-        for destination in sorted({edge["destination"] for edge in self.ownership_journal.get("edges", [])}):
-            destination_edges = [edge for edge in self.ownership_journal["edges"] if edge["destination"] == destination]
+        for destination in sorted({edge["destination"] for edge in self.ownership_snapshot.get("edges", [])}):
+            destination_edges = [edge for edge in self.ownership_snapshot["edges"] if edge["destination"] == destination]
             baseline = list(destination_edges[0]["baselineIncomingSources"])
             isolated = {edge["source"] for edge in destination_edges}
             actual = incoming_sources(self.cmds, destination)
             expected = sorted(source for source in baseline if source not in isolated)
             if actual != expected:
                 mismatches.append({"destination": destination, "expected": expected, "actual": actual})
-        self.ownership_journal["topologyMismatches"] = mismatches
+        self.ownership_snapshot["topologyMismatches"] = mismatches
         if mismatches:
             raise RuntimeError("Canonical T-pose writer isolation topology verification failed")
 
     def _restore_topology(self):
-        for edge in self.ownership_journal.get("edges", []):
+        for edge in self.ownership_snapshot.get("edges", []):
             destination = edge["destination"]
             baseline = list(edge["baselineIncomingSources"])
             actual = incoming_sources(self.cmds, destination)
@@ -742,7 +742,7 @@ class HumanIkStanceTransaction:
                 self.cmds.connectAttr(edge["source"], destination, force=False)
             if incoming_sources(self.cmds, destination) != sorted(baseline):
                 raise RuntimeError(f"Canonical T-pose topology restore failed: {destination}")
-        self.ownership_journal["topologyRestored"] = True
+        self.ownership_snapshot["topologyRestored"] = True
 
 
 __all__ = [

@@ -46,7 +46,10 @@ from mmd_tools.core.humanik_retarget import (
     list_scene_hik_characters,
 )
 from mmd_tools.core.humanik_stance import HumanIkStanceTransaction, canonical_stance_targets
-from mmd_tools.core.humanik_transaction import load_humanik_transaction_state, persist_humanik_transaction_state
+from mmd_tools.core.humanik_transaction import (
+    load_humanik_restore_state,
+    persist_humanik_restore_state,
+)
 from mmd_tools.core.humanik_utils import maya_cmds, maya_mel
 from mmd_tools.core.logger import get_logger
 from mmd_tools.services.scene_model_service import SceneModelService
@@ -127,15 +130,15 @@ EXPECTED_FULL_ASSIGNMENT_COUNT = EXPECTED_BODY_ASSIGNMENT_COUNT + EXPECTED_FINGE
 #
 # Structured warnings attached to every orphaned Control Rig this session
 # recovers via scene facts alone (see ``_recover_orphaned_control_rigs``).
-# There is no surviving ``HumanIkTransactionJournal`` for these -- the
+# There is no surviving ``HumanIkRestoreState`` for these -- the
 # in-memory transaction table was either lost (scene reopen) or never
 # existed for this Control Rig (created outside ``create_control_rig``) --
 # so the writer-isolation reconnection and the pre-characterize stance
 # restore that a *tracked* teardown performs cannot happen here. These
 # strings must stay visible in the recovery report rather than letting a
 # "recovered" entry read as a full restore.
-ORPHAN_RECOVERY_WARNING_JOURNAL_UNAVAILABLE = (
-    "journal_unavailable: no MMD-writer-isolation journal survived for this "
+ORPHAN_RECOVERY_WARNING_RESTORE_STATE_UNAVAILABLE = (
+    "restore_state_unavailable: no MMD-writer-isolation restore_state survived for this "
     "Control Rig (scene reopen, or created outside create_control_rig), so "
     "any muted MMD writer edge could not be reconnected automatically."
 )
@@ -145,7 +148,7 @@ ORPHAN_RECOVERY_WARNING_STANCE_UNAVAILABLE = (
     "to its pre-HumanIK stance."
 )
 ORPHAN_RECOVERY_UNRECOVERABLE_WARNINGS = (
-    ORPHAN_RECOVERY_WARNING_JOURNAL_UNAVAILABLE,
+    ORPHAN_RECOVERY_WARNING_RESTORE_STATE_UNAVAILABLE,
     ORPHAN_RECOVERY_WARNING_STANCE_UNAVAILABLE,
 )
 
@@ -347,16 +350,15 @@ class HumanIkFrontendSession:
         """Rebuild active Control Rig transactions from scene metadata.
 
         The scene payload is advisory and validated twice: first by the
-        journal schema loader, then by proving that the recorded character is
+        restore_state schema loader, then by proving that the recorded character is
         still the HIK character for a real MMD model root.  Invalid/stale or
         foreign records are ignored, never auto-adopted or deleted.
         """
         try:
-            rows = load_humanik_transaction_state(cmds_module=self._cmds)
+            rows = load_humanik_restore_state(cmds_module=self._cmds)
             cmds = self._cmds or maya_cmds()
         except Exception:
             return
-        valid = []
         for row in rows:
             try:
                 model_root = str(row["modelRoot"])
@@ -375,11 +377,6 @@ class HumanIkFrontendSession:
                 continue
             self._control_rig_transactions[model_root] = transaction
             register_control_rig_transaction(character, transaction)
-            valid.append(transaction.to_scene_dict(model_root))
-        # Remove stale records from the metadata payload while retaining the
-        # owned node for future writes.  Persistence itself is fail-soft.
-        if rows != valid:
-            self._persist_control_rig_transactions(valid)
 
     def _persist_control_rig_transactions(self, records=None) -> None:
         """Best-effort scene persistence for active Control Rig transactions."""
@@ -395,7 +392,7 @@ class HumanIkFrontendSession:
                     records.append(to_scene_dict(model_root))
                 except Exception as exc:  # noqa: BLE001 - test doubles/foreign transactions
                     logger.warning("HumanIK transaction persistence skipped: %s", exc)
-        persist_humanik_transaction_state(records, cmds_module=self._cmds)
+        persist_humanik_restore_state(records, cmds_module=self._cmds)
 
     @property
     def active_preview(self) -> Optional[HumanIkTargetPreview]:
@@ -656,7 +653,7 @@ class HumanIkFrontendSession:
         """Create a control rig on an already characterized binding.
 
         This wraps ``hikCreateControlRig()`` in the same transaction shape
-        ``enter_target_mode`` uses for TARGET preview -- journal, isolate MMD
+        ``enter_target_mode`` uses for TARGET preview -- restore_state, isolate MMD
         writers that would otherwise feed a HIK-assigned joint, pre-cycle
         gate, create, re-scan/re-isolate, post-cycle gate (see
         ``humanik_control_rig.begin_humanik_control_rig``) -- so Control Rig
@@ -752,7 +749,7 @@ class HumanIkFrontendSession:
         scene (``_find_mmd_model_root_for_character``) -- a Control Rig for
         an unrelated, non-MMD HIK character is never touched, matching the
         "auto-adopt is out of scope" decision in ``TODO.md``. There is no
-        journal for this recovery, so muted MMD writer edges and the
+        restore_state for this recovery, so muted MMD writer edges and the
         pre-characterize stance cannot be restored; that limitation is
         reported as structured warnings (``ORPHAN_RECOVERY_UNRECOVERABLE_WARNINGS``)
         on each recovered entry, never silently upgraded to a full restore.
@@ -788,6 +785,8 @@ class HumanIkFrontendSession:
             except Exception as exc:
                 if first_error is None:
                     first_error = exc
+                if not transaction.active:
+                    self._control_rig_transactions.pop(model_root, None)
                 continue
             self._control_rig_transactions.pop(model_root, None)
             binding = self._bindings.get(model_root)
@@ -854,7 +853,7 @@ class HumanIkFrontendSession:
         * otherwise attempts ``delete_orphaned_control_rig`` and records the
           outcome as ``recovered`` (with
           ``ORPHAN_RECOVERY_UNRECOVERABLE_WARNINGS`` attached -- there is no
-          journal, so writer/stance restore did not happen) or ``failed``
+          restore_state, so writer/stance restore did not happen) or ``failed``
           (the MEL call raised -- for example no HumanIK UI in a batch/mayapy
           process) without ever raising out of this method.
 
@@ -905,7 +904,7 @@ class HumanIkFrontendSession:
             logger.warning(
                 "HumanIK recovered an orphaned Control Rig outside this session's "
                 "tracked transactions (character=%s modelRoot=%s controlSetNode=%s); "
-                "no journal survived for it, so muted MMD writer edges and the "
+                "no restore_state survived for it, so muted MMD writer edges and the "
                 "pre-characterize stance were not restored -- see "
                 "ORPHAN_RECOVERY_UNRECOVERABLE_WARNINGS.",
                 character, model_root, node,
@@ -1120,7 +1119,7 @@ class HumanIkFrontendSession:
             },
             "preview": {
                 "active": bool(self.active_preview),
-                "journalAvailable": bool(self.active_preview and self.active_preview.journal),
+                "restoreStateAvailable": bool(self.active_preview and self.active_preview.restore_state),
             },
             "pendingRecovery": {
                 "characterCount": len(self._pending_characters),
@@ -1203,7 +1202,7 @@ class HumanIkFrontendSession:
         ``restoreHint.lastOrphanRecovery`` (HUMANIK-RESTORE-GAPS-1 slice 1c)
         reports what the most recent ``restore_mmd_rig`` call did about the
         rows above: which orphaned Control Rigs it deleted (with structured
-        ``unrecoverableWarnings`` -- there is no journal for these, so muted
+        ``unrecoverableWarnings`` -- there is no restore_state for these, so muted
         MMD writer edges and the pre-characterize stance were not restored),
         which it skipped because the character could not be resolved back to
         an MMD model root (never deletes a non-MMD Control Rig), and which

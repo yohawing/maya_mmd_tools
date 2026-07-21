@@ -206,9 +206,9 @@ class TestBeginHumanIkControlRig(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "residual muted HIK writers: ik->\\|left_foot"):
                 begin_humanik_control_rig("owner:rig", "Character", {"|hips", "|left_foot"}, cmds, mel)
 
-        # journal-covered writer restored
+        # restore_state-covered writer restored
         self.assertEqual(cmds.connections["|hips.rotateX"], ["ik.outputRotateX"])
-        # residual writer explicitly disconnected before rollback (not journaled)
+        # residual writer explicitly disconnected before rollback (not captured)
         self.assertEqual(cmds.connections["|left_foot.rotateX"], ["third_party.outputRotateX"])
         # node created by hikCreateControlRig was removed
         self.assertNotIn("newCtrlNode", cmds.existing_nodes)
@@ -263,7 +263,7 @@ class TestBeginHumanIkControlRig(unittest.TestCase):
             [],
         )
 
-    def test_stop_deletes_rig_and_restores_journal_idempotently(self):
+    def test_stop_deletes_rig_and_restores_restore_state_idempotently(self):
         cmds, mel = FakeCmds(), FakeMel()
 
         def fake_create(character, mel_module=None):
@@ -327,7 +327,7 @@ class TestStopControlRigExceptionSafety(unittest.TestCase):
         self.assertIsNone(get_active_control_rig_transaction("Character"))
         # hikDeleteControlRig was skipped (no character to target)...
         self.assertEqual(mel.delete_calls, 0)
-        # ...but the journaled writer on the (still-existing) skeleton joint
+        # ...but the captured writer on the (still-existing) skeleton joint
         # was restored normally.
         self.assertEqual(cmds.connections["|hips.rotateX"], ["ik.outputRotateX"])
 
@@ -336,7 +336,7 @@ class TestStopControlRigExceptionSafety(unittest.TestCase):
         stop_humanik_control_rig(transaction, cmds, mel)
         self.assertEqual(mel.delete_calls, 0)
 
-    def test_journal_restore_failure_still_releases_transaction_and_raises_once(self):
+    def test_restore_state_restore_failure_still_releases_transaction_and_raises_once(self):
         cmds, mel = FakeCmds(), FakeMel()
         transaction = self._begin(cmds, mel)
 

@@ -105,7 +105,7 @@ def reset_humanik_session(*, restore: bool = True) -> bool:
     """Restore owned scene state before dropping the shared session.
 
     When restore fails the session is retained so an unload/reload path cannot
-    silently discard the journal or pending character recovery state.
+    silently discard the restore_state or pending character recovery state.
     """
     global _session
     if _session is None:
@@ -586,7 +586,7 @@ def _restore_mmd_rig():
     if _has_active_control_rig(session):
         if not _confirm(
             "Restore MMD Rig",
-            "This will delete the active HumanIK Control Rig and restore the journal. Continue?",
+            "This will delete the active HumanIK Control Rig and restore the restore_state. Continue?",
         ):
             return None
     return session.restore_mmd_rig()
@@ -872,7 +872,7 @@ def _target_preview_summary_message(root, report):
     counts = report.get("constraintCounts", {})
     return (
         f"Target model root: {_short_model_label(root)}\n"
-        "The target preview journaled changes, disconnected mute_for_hik writer edges, "
+        "The target preview captured changes, disconnected mute_for_hik writer edges, "
         "muted only those writers, "
         "retained keep_post writers, and will restore all ownership on Restore MMD Rig.\n"
         f"mute_for_hik: {counts.get('mute_for_hik', 0)}; "

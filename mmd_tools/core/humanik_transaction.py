@@ -1,6 +1,6 @@
-"""Reversible HumanIK scene transaction journal.
+"""Reversible HumanIK scene transaction restore_state.
 
-The journal captures only explicitly scoped plugs and nodes.  It restores exact
+The restore_state captures only explicitly scoped plugs and nodes.  It restores exact
 incoming connections, values, node enable state, definition lock state, and HIK
 source input after failures without changing unrelated scene data.
 """
@@ -24,15 +24,15 @@ logger = get_logger(__name__)
 
 STATE_ATTRIBUTES = ("nodeState", "mute", "envelope", "enabled")
 
-# Scene-persisted transaction metadata is deliberately a small, versioned
-# JSON payload on an owned ``network`` node.  The version/schema guard keeps a
-# future plugin (or hand-edited scene data) from reconstructing a transaction
-# it cannot safely understand.
-HUMANIK_TRANSACTION_SCHEMA = "mmd_tools.humanik_transaction"
-HUMANIK_TRANSACTION_VERSION = 1
-HUMANIK_TRANSACTION_NODE = "mmdHumanIkTransactionJournal"
-HUMANIK_TRANSACTION_TAG_ATTR = "mmd_humanik_transaction_schema"
-HUMANIK_TRANSACTION_PAYLOAD_ATTR = "mmd_humanik_transaction_payload"
+# Scene-persisted restore state lives on one non-DAG ``network`` node. The
+# version/schema guard keeps a future plugin (or hand-edited scene data) from
+# reconstructing state it cannot safely understand, while keeping storage off
+# user-facing MMD model roots and out of the normal Outliner hierarchy.
+HUMANIK_RESTORE_STATE_SCHEMA = "mmd_tools.humanik_restore_state"
+HUMANIK_RESTORE_STATE_VERSION = 1
+HUMANIK_RESTORE_STATE_NODE = "mmdHumanIkRestoreState"
+HUMANIK_RESTORE_STATE_TAG_ATTR = "mmd_humanik_restore_state_schema"
+HUMANIK_RESTORE_STATE_PAYLOAD_ATTR = "mmd_humanik_restore_state_payload"
 
 
 @dataclass
@@ -54,7 +54,7 @@ class HumanIkNodeSnapshot:
 
 
 @dataclass
-class HumanIkTransactionJournal:
+class HumanIkRestoreState:
     """JSON-safe reversible state for one character ownership operation."""
 
     ownership_id: str
@@ -66,70 +66,70 @@ class HumanIkTransactionJournal:
     nodes: List[HumanIkNodeSnapshot]
 
     def to_dict(self) -> Dict[str, Any]:
-        """Return a deterministic serialisable journal payload."""
+        """Return a deterministic serialisable restore_state payload."""
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, Any]) -> "HumanIkTransactionJournal":
-        """Reconstruct a journal after validating its persisted shape.
+    def from_dict(cls, payload: Mapping[str, Any]) -> "HumanIkRestoreState":
+        """Reconstruct a restore_state after validating its persisted shape.
 
         Scene metadata is user-editable Maya data, so restoration must fail
         closed on malformed rows instead of relying on ``dict`` unpacking and
         accidentally accepting a stale/foreign payload.
         """
         if not isinstance(payload, Mapping):
-            raise ValueError("HumanIK journal payload must be an object")
+            raise ValueError("HumanIK restore_state payload must be an object")
         required = ("ownership_id", "character", "lock_state", "input_source", "input_type", "plugs", "nodes")
         missing = [key for key in required if key not in payload]
         if missing:
-            raise ValueError("HumanIK journal payload missing: " + ", ".join(missing))
+            raise ValueError("HumanIK restore_state payload missing: " + ", ".join(missing))
         ownership_id = payload["ownership_id"]
         character = payload["character"]
         input_source = payload["input_source"]
         if not all(isinstance(value, str) and value for value in (ownership_id, character)):
-            raise ValueError("HumanIK journal ownership_id and character must be non-empty strings")
+            raise ValueError("HumanIK restore_state ownership_id and character must be non-empty strings")
         if not isinstance(input_source, str):
-            raise ValueError("HumanIK journal input_source must be a string")
+            raise ValueError("HumanIK restore_state input_source must be a string")
         if not isinstance(payload["lock_state"], bool):
-            raise ValueError("HumanIK journal lock_state must be boolean")
+            raise ValueError("HumanIK restore_state lock_state must be boolean")
         if not isinstance(payload["input_type"], int) or isinstance(payload["input_type"], bool):
-            raise ValueError("HumanIK journal input_type must be an integer")
+            raise ValueError("HumanIK restore_state input_type must be an integer")
 
         plugs = []
         raw_plugs = payload["plugs"]
         if not isinstance(raw_plugs, list):
-            raise ValueError("HumanIK journal plugs must be an array")
+            raise ValueError("HumanIK restore_state plugs must be an array")
         for row in raw_plugs:
             if not isinstance(row, Mapping):
-                raise ValueError("HumanIK journal plug row must be an object")
+                raise ValueError("HumanIK restore_state plug row must be an object")
             plug = row.get("plug")
             sources = row.get("sources")
             attr_type = row.get("attr_type")
             if not isinstance(plug, str) or not plug or not isinstance(attr_type, str):
-                raise ValueError("HumanIK journal plug row has invalid plug or attr_type")
+                raise ValueError("HumanIK restore_state plug row has invalid plug or attr_type")
             if not isinstance(sources, list) or not all(isinstance(source, str) for source in sources):
-                raise ValueError("HumanIK journal plug sources must be an array of strings")
+                raise ValueError("HumanIK restore_state plug sources must be an array of strings")
             value = row.get("value")
             try:
                 json.dumps(value, ensure_ascii=False)
             except (TypeError, ValueError) as exc:
-                raise ValueError(f"HumanIK journal plug value is not JSON-safe: {plug}") from exc
+                raise ValueError(f"HumanIK restore_state plug value is not JSON-safe: {plug}") from exc
             plugs.append(HumanIkPlugSnapshot(plug, list(sources), value, attr_type))
 
         nodes = []
         raw_nodes = payload["nodes"]
         if not isinstance(raw_nodes, list):
-            raise ValueError("HumanIK journal nodes must be an array")
+            raise ValueError("HumanIK restore_state nodes must be an array")
         for row in raw_nodes:
             if not isinstance(row, Mapping) or not isinstance(row.get("node"), str) or not row.get("node"):
-                raise ValueError("HumanIK journal node row has invalid node")
+                raise ValueError("HumanIK restore_state node row has invalid node")
             attributes = row.get("attributes")
             if not isinstance(attributes, Mapping):
-                raise ValueError("HumanIK journal node attributes must be an object")
+                raise ValueError("HumanIK restore_state node attributes must be an object")
             try:
                 json.dumps(attributes, ensure_ascii=False)
             except (TypeError, ValueError) as exc:
-                raise ValueError(f"HumanIK journal node attributes are not JSON-safe: {row['node']}") from exc
+                raise ValueError(f"HumanIK restore_state node attributes are not JSON-safe: {row['node']}") from exc
             nodes.append(HumanIkNodeSnapshot(str(row["node"]), dict(attributes)))
         return cls(
             ownership_id=str(ownership_id),
@@ -142,18 +142,18 @@ class HumanIkTransactionJournal:
         )
 
 
-def serialize_humanik_transaction_state(records: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
+def serialize_humanik_restore_state(records: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
     """Build the versioned scene payload for active frontend transactions."""
     rows = []
     for record in records:
         if not isinstance(record, Mapping):
             raise ValueError("HumanIK transaction record must be an object")
-        # Validate the nested journal before writing scene metadata.  This is
+        # Validate the nested restore_state before writing scene metadata.  This is
         # also useful for callers using lightweight test doubles: a fake
         # transaction is simply not eligible for persistence in the frontend.
-        journal = HumanIkTransactionJournal.from_dict(record.get("journal", {}))
+        restore_state = HumanIkRestoreState.from_dict(record.get("restore_state", {}))
         row = dict(record)
-        row["journal"] = journal.to_dict()
+        row["restore_state"] = restore_state.to_dict()
         row["active"] = bool(row.get("active", True))
         if not isinstance(row.get("modelRoot"), str) or not row["modelRoot"]:
             raise ValueError("HumanIK transaction modelRoot must be a non-empty string")
@@ -162,13 +162,13 @@ def serialize_humanik_transaction_state(records: Iterable[Mapping[str, Any]]) ->
         rows.append(row)
     rows.sort(key=lambda item: item["modelRoot"])
     return {
-        "schema": HUMANIK_TRANSACTION_SCHEMA,
-        "version": HUMANIK_TRANSACTION_VERSION,
+        "schema": HUMANIK_RESTORE_STATE_SCHEMA,
+        "version": HUMANIK_RESTORE_STATE_VERSION,
         "transactions": rows,
     }
 
 
-def deserialize_humanik_transaction_state(payload: Any) -> List[Dict[str, Any]]:
+def deserialize_humanik_restore_state(payload: Any) -> List[Dict[str, Any]]:
     """Validate a scene payload and return reconstructable transaction rows.
 
     ``ValueError`` is intentional for malformed/stale metadata; frontend
@@ -177,9 +177,9 @@ def deserialize_humanik_transaction_state(payload: Any) -> List[Dict[str, Any]]:
     """
     if not isinstance(payload, Mapping):
         raise ValueError("HumanIK transaction scene payload must be an object")
-    if payload.get("schema") != HUMANIK_TRANSACTION_SCHEMA:
+    if payload.get("schema") != HUMANIK_RESTORE_STATE_SCHEMA:
         raise ValueError("HumanIK transaction scene schema mismatch")
-    if payload.get("version") != HUMANIK_TRANSACTION_VERSION:
+    if payload.get("version") != HUMANIK_RESTORE_STATE_VERSION:
         raise ValueError("Unsupported HumanIK transaction scene version")
     rows = payload.get("transactions")
     if not isinstance(rows, list):
@@ -194,26 +194,26 @@ def deserialize_humanik_transaction_state(payload: Any) -> List[Dict[str, Any]]:
             raise ValueError("HumanIK transaction scene row has invalid modelRoot")
         if not isinstance(character, str) or not character:
             raise ValueError("HumanIK transaction scene row has invalid character")
-        journal = HumanIkTransactionJournal.from_dict(row.get("journal", {}))
-        if journal.character != character:
-            raise ValueError("HumanIK transaction journal character mismatch")
+        restore_state = HumanIkRestoreState.from_dict(row.get("restore_state", {}))
+        if restore_state.character != character:
+            raise ValueError("HumanIK transaction restore_state character mismatch")
         ownership_id = row.get("ownershipId")
         if not isinstance(ownership_id, str) or not ownership_id:
             raise ValueError("HumanIK transaction scene row has invalid ownershipId")
-        if journal.ownership_id != ownership_id:
-            raise ValueError("HumanIK transaction journal ownership mismatch")
+        if restore_state.ownership_id != ownership_id:
+            raise ValueError("HumanIK transaction restore_state ownership mismatch")
         active = row.get("active", True)
         if not isinstance(active, bool):
             raise ValueError("HumanIK transaction scene row has invalid active flag")
-        result.append({**dict(row), "journal": journal.to_dict(), "active": active})
+        result.append({**dict(row), "restore_state": restore_state.to_dict(), "active": active})
     return result
 
 
-def persist_humanik_transaction_state(
+def persist_humanik_restore_state(
     records: Iterable[Mapping[str, Any]],
     cmds_module=None,
 ) -> bool:
-    """Persist active transaction rows on an owned Maya network node.
+    """Persist active restore-state rows on an internal Maya network node.
 
     The operation is fail-soft and returns ``False`` when Maya is unavailable
     or an attribute cannot be written.  A failed metadata write must never
@@ -222,19 +222,19 @@ def persist_humanik_transaction_state(
     """
     try:
         cmds = cmds_module or maya_cmds()
-        payload = serialize_humanik_transaction_state(records)
-        node = _find_or_create_transaction_node(cmds)
+        payload = serialize_humanik_restore_state(records)
+        node = _find_or_create_restore_state_node(cmds)
         if node is None:
             return False
-        _ensure_string_attr(cmds, node, HUMANIK_TRANSACTION_TAG_ATTR)
-        _ensure_string_attr(cmds, node, HUMANIK_TRANSACTION_PAYLOAD_ATTR)
+        _ensure_string_attr(cmds, node, HUMANIK_RESTORE_STATE_TAG_ATTR)
+        _ensure_string_attr(cmds, node, HUMANIK_RESTORE_STATE_PAYLOAD_ATTR)
         cmds.setAttr(
-            f"{node}.{HUMANIK_TRANSACTION_TAG_ATTR}",
-            HUMANIK_TRANSACTION_SCHEMA,
+            f"{node}.{HUMANIK_RESTORE_STATE_TAG_ATTR}",
+            HUMANIK_RESTORE_STATE_SCHEMA,
             type="string",
         )
         cmds.setAttr(
-            f"{node}.{HUMANIK_TRANSACTION_PAYLOAD_ATTR}",
+            f"{node}.{HUMANIK_RESTORE_STATE_PAYLOAD_ATTR}",
             json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
             type="string",
         )
@@ -244,54 +244,52 @@ def persist_humanik_transaction_state(
         return False
 
 
-def load_humanik_transaction_state(cmds_module=None) -> List[Dict[str, Any]]:
-    """Load and validate persisted transaction rows, or return an empty list."""
+def load_humanik_restore_state(cmds_module=None) -> List[Dict[str, Any]]:
+    """Load valid restore-state rows from the internal network node."""
     try:
         cmds = cmds_module or maya_cmds()
-        for node in _transaction_nodes(cmds):
-            raw = cmds.getAttr(f"{node}.{HUMANIK_TRANSACTION_PAYLOAD_ATTR}") or ""
-            if not raw:
-                continue
-            return deserialize_humanik_transaction_state(json.loads(str(raw)))
+        for node in _restore_state_nodes(cmds):
+            raw = cmds.getAttr(f"{node}.{HUMANIK_RESTORE_STATE_PAYLOAD_ATTR}") or ""
+            if raw:
+                return deserialize_humanik_restore_state(json.loads(str(raw)))
     except Exception as exc:  # noqa: BLE001 - stale/foreign metadata is rejected
-        logger.warning("HumanIK transaction scene metadata rejected: %s", exc)
+        logger.warning("HumanIK restore state rejected: %s", exc)
     return []
 
 
-def _transaction_nodes(cmds) -> List[str]:
+def _restore_state_nodes(cmds) -> List[str]:
     candidates = []
     try:
         candidates.extend(str(node) for node in (cmds.ls(type="network") or []))
     except Exception:
         pass
     try:
-        if cmds.objExists(HUMANIK_TRANSACTION_NODE):
-            candidates.insert(0, HUMANIK_TRANSACTION_NODE)
+        if cmds.objExists(HUMANIK_RESTORE_STATE_NODE):
+            candidates.insert(0, HUMANIK_RESTORE_STATE_NODE)
     except Exception:
         pass
     result = []
     for node in dict.fromkeys(candidates):
         try:
-            if cmds.attributeQuery(HUMANIK_TRANSACTION_TAG_ATTR, node=node, exists=True):
-                tag = cmds.getAttr(f"{node}.{HUMANIK_TRANSACTION_TAG_ATTR}")
-                if tag == HUMANIK_TRANSACTION_SCHEMA:
+            if cmds.attributeQuery(HUMANIK_RESTORE_STATE_TAG_ATTR, node=node, exists=True):
+                if cmds.getAttr(f"{node}.{HUMANIK_RESTORE_STATE_TAG_ATTR}") == HUMANIK_RESTORE_STATE_SCHEMA:
                     result.append(node)
         except Exception:
             continue
     return result
 
 
-def _find_or_create_transaction_node(cmds) -> Optional[str]:
-    existing = _transaction_nodes(cmds)
+def _find_or_create_restore_state_node(cmds) -> Optional[str]:
+    existing = _restore_state_nodes(cmds)
     if existing:
         return existing[0]
     try:
-        if cmds.objExists(HUMANIK_TRANSACTION_NODE):
-            return None  # a foreign node owns our preferred name
+        if cmds.objExists(HUMANIK_RESTORE_STATE_NODE):
+            return None  # a foreign node owns the reserved storage name
     except Exception:
         pass
     try:
-        return str(cmds.createNode("network", name=HUMANIK_TRANSACTION_NODE))
+        return str(cmds.createNode("network", name=HUMANIK_RESTORE_STATE_NODE))
     except Exception:
         return None
 
@@ -302,15 +300,15 @@ def _ensure_string_attr(cmds, node: str, attr: str) -> None:
     cmds.addAttr(node, longName=attr, dataType="string")
 
 
-def capture_humanik_journal(
+def capture_humanik_restore_state(
     ownership_id: str,
     character: str,
     destination_plugs: Iterable[str],
     nodes: Iterable[str],
     cmds_module=None,
     mel_module=None,
-) -> HumanIkTransactionJournal:
-    """Capture a scoped HumanIK transaction journal without editing the scene."""
+) -> HumanIkRestoreState:
+    """Capture a scoped HumanIK transaction restore_state without editing the scene."""
     if not ownership_id or not character:
         raise ValueError("ownership_id and character are required")
     cmds = cmds_module or maya_cmds()
@@ -321,7 +319,7 @@ def capture_humanik_journal(
     source = str(mel.eval(f"hikGetRetargetCharacterInput({mel_string(character)})") or "")
     raw_input_type = mel.eval(f"hikGetInputType({mel_string(character)})")
     input_type = int(raw_input_type) if raw_input_type is not None else -1
-    return HumanIkTransactionJournal(
+    return HumanIkRestoreState(
         ownership_id=str(ownership_id),
         character=str(character),
         lock_state=get_humanik_definition_lock_state(character, mel),
@@ -332,22 +330,22 @@ def capture_humanik_journal(
     )
 
 
-def restore_humanik_journal(
-    journal: HumanIkTransactionJournal,
+def apply_humanik_restore_state(
+    restore_state: HumanIkRestoreState,
     ownership_id: Optional[str] = None,
     cmds_module=None,
     mel_module=None,
 ) -> List[str]:
-    """Restore a journal exactly; repeated restores are idempotent.
+    """Restore a restore_state exactly; repeated restores are idempotent.
 
-    A journal entry (the character itself, a plug's node, a reconnect
+    A restore_state entry (the character itself, a plug's node, a reconnect
     source, or a state node) that no longer exists in the scene -- because
     the user deleted it, or because a Control Rig teardown step already
     removed it -- is skipped with a logged warning instead of raising: there
     is nothing to restore back onto a node that is gone, and treating that
     as fatal is what previously left ``HumanIkControlRigTransaction``s stuck
     permanently active (every retry hit the same "node not found" MEL error
-    from ``restore_humanik_journal`` before it ever reached the
+    from ``apply_humanik_restore_state`` before it ever reached the
     deactivate/unregister step -- see ``stop_humanik_control_rig``).
 
     Restore failures against nodes that DO still exist are not skipped: every
@@ -360,15 +358,15 @@ def restore_humanik_journal(
 
     Returns:
         Warning messages for skipped missing-node entries (empty when every
-        journaled node was present in the scene).
+        captured node was present in the scene).
 
     Raises:
-        ValueError: ``ownership_id`` does not match the journal's owner.
+        ValueError: ``ownership_id`` does not match the restore_state's owner.
         RuntimeError: Aggregated restore failures against nodes that still
             exist in the scene.
     """
-    if ownership_id is not None and ownership_id != journal.ownership_id:
-        raise ValueError("HumanIK journal ownership mismatch")
+    if ownership_id is not None and ownership_id != restore_state.ownership_id:
+        raise ValueError("HumanIK restore_state ownership mismatch")
     cmds = cmds_module or maya_cmds()
     mel = mel_module or maya_mel()
     ensure_humanik_mel_loaded(mel)
@@ -376,39 +374,39 @@ def restore_humanik_journal(
     warnings: List[str] = []
     failures: List[str] = []
 
-    if cmds.objExists(journal.character):
+    if cmds.objExists(restore_state.character):
         try:
             current_source = str(
-                mel.eval(f"hikGetRetargetCharacterInput({mel_string(journal.character)})") or ""
+                mel.eval(f"hikGetRetargetCharacterInput({mel_string(restore_state.character)})") or ""
             )
-            if current_source != journal.input_source:
+            if current_source != restore_state.input_source:
                 mel.eval(
-                    f"hikSetCharacterInput({mel_string(journal.character)}, "
-                    f"{mel_string(journal.input_source)});"
+                    f"hikSetCharacterInput({mel_string(restore_state.character)}, "
+                    f"{mel_string(restore_state.input_source)});"
                 )
-            current_lock = get_humanik_definition_lock_state(journal.character, mel)
-            if current_lock != journal.lock_state:
+            current_lock = get_humanik_definition_lock_state(restore_state.character, mel)
+            if current_lock != restore_state.lock_state:
                 mel.eval(
-                    f"hikCharacterLock({mel_string(journal.character)}, "
-                    f"{1 if journal.lock_state else 0}, 1);"
+                    f"hikCharacterLock({mel_string(restore_state.character)}, "
+                    f"{1 if restore_state.lock_state else 0}, 1);"
                 )
         except Exception as exc:  # noqa: BLE001 - aggregated below, character node exists
             failures.append(
-                f"character input/lock restore failed for {journal.character}: {exc}"
+                f"character input/lock restore failed for {restore_state.character}: {exc}"
             )
     else:
         warnings.append(
-            f"HumanIK journal skip: character node no longer exists: {journal.character}"
+            f"HumanIK restore_state skip: character node no longer exists: {restore_state.character}"
         )
 
     live_plugs = []
-    for snapshot in journal.plugs:
+    for snapshot in restore_state.plugs:
         node = snapshot.plug.rsplit(".", 1)[0]
         if cmds.objExists(node):
             live_plugs.append(snapshot)
         else:
             warnings.append(
-                f"HumanIK journal skip: plug node no longer exists: {snapshot.plug}"
+                f"HumanIK restore_state skip: plug node no longer exists: {snapshot.plug}"
             )
 
     for snapshot in live_plugs:
@@ -429,7 +427,7 @@ def restore_humanik_journal(
             source_node = source.rsplit(".", 1)[0]
             if not cmds.objExists(source_node):
                 warnings.append(
-                    f"HumanIK journal skip: reconnect source no longer exists: "
+                    f"HumanIK restore_state skip: reconnect source no longer exists: "
                     f"{source} -> {snapshot.plug}"
                 )
                 continue
@@ -441,10 +439,10 @@ def restore_humanik_journal(
                     f"reconnect failed for {source} -> {snapshot.plug}: {exc}"
                 )
 
-    for snapshot in journal.nodes:
+    for snapshot in restore_state.nodes:
         if not cmds.objExists(snapshot.node):
             warnings.append(
-                f"HumanIK journal skip: node no longer exists: {snapshot.node}"
+                f"HumanIK restore_state skip: node no longer exists: {snapshot.node}"
             )
             continue
         for attr, value in snapshot.attributes.items():
@@ -459,7 +457,7 @@ def restore_humanik_journal(
         logger.warning(message)
     if failures:
         raise RuntimeError(
-            "HumanIK journal restore failed for existing nodes: " + "; ".join(failures)
+            "HumanIK restore_state restore failed for existing nodes: " + "; ".join(failures)
         )
     return warnings
 
@@ -472,9 +470,9 @@ def humanik_transaction(
     nodes: Iterable[str],
     cmds_module=None,
     mel_module=None,
-) -> Iterator[HumanIkTransactionJournal]:
+) -> Iterator[HumanIkRestoreState]:
     """Capture state and automatically roll it back when the body raises."""
-    journal = capture_humanik_journal(
+    restore_state = capture_humanik_restore_state(
         ownership_id,
         character,
         destination_plugs,
@@ -483,10 +481,10 @@ def humanik_transaction(
         mel_module=mel_module,
     )
     try:
-        yield journal
+        yield restore_state
     except Exception:
-        restore_humanik_journal(
-            journal,
+        apply_humanik_restore_state(
+            restore_state,
             ownership_id=ownership_id,
             cmds_module=cmds_module,
             mel_module=mel_module,

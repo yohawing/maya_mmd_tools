@@ -1,4 +1,4 @@
-"""Maya 2024 smoke for HumanIK journal rollback and idempotent restore."""
+"""Maya 2024 smoke for HumanIK restore_state rollback and idempotent restore."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from mmd_tools.core.humanik_builder import (
     lock_humanik_definition,
 )
 from mmd_tools.core.humanik_retarget import connect_humanik_source
-from mmd_tools.core.humanik_transaction import humanik_transaction, restore_humanik_journal
+from mmd_tools.core.humanik_transaction import humanik_transaction, apply_humanik_restore_state
 
 
 def _parse_args() -> argparse.Namespace:
@@ -78,7 +78,7 @@ def main() -> int:
         state_node = cmds.createNode("multiplyDivide", name="s2_state_node")
         cmds.setAttr(f"{source}.translateX", 3.0)
         cmds.connectAttr(f"{source}.translateX", f"{destination}.translateX", force=True)
-        journal = None
+        restore_state = None
         rollback_triggered = False
         try:
             with humanik_transaction(
@@ -87,7 +87,7 @@ def main() -> int:
                 [f"{destination}.translateX"],
                 [state_node],
             ) as captured:
-                journal = captured
+                restore_state = captured
                 cmds.disconnectAttr(f"{source}.translateX", f"{destination}.translateX")
                 cmds.setAttr(f"{destination}.translateX", 42.0)
                 cmds.setAttr(f"{state_node}.nodeState", 2)
@@ -97,9 +97,9 @@ def main() -> int:
             if str(exc) != "intentional_s2_rollback":
                 raise
             rollback_triggered = True
-        if journal is None:
-            raise RuntimeError("journal was not captured")
-        restore_humanik_journal(journal, "mmd-tools:s2:target")
+        if restore_state is None:
+            raise RuntimeError("restore_state was not captured")
+        apply_humanik_restore_state(restore_state, "mmd-tools:s2:target")
 
         restored_sources = cmds.listConnections(
             f"{destination}.translateX", source=True, destination=False, plugs=True
@@ -109,12 +109,12 @@ def main() -> int:
             {
                 "mayaVersion": cmds.about(version=True),
                 "rollbackTriggered": rollback_triggered,
-                "ownershipId": journal.ownership_id,
+                "ownershipId": restore_state.ownership_id,
                 "connectionRestored": restored_sources == [f"{source}.translateX"],
                 "nodeStateRestored": cmds.getAttr(f"{state_node}.nodeState") == 0,
                 "inputSourceRestored": input_source == source_character,
                 "inputType": int(mel.eval(f'hikGetInputType("{target_character}")')),
-                "journal": journal.to_dict(),
+                "restore_state": restore_state.to_dict(),
             }
         )
         payload["status"] = "pass" if all(

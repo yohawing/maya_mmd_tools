@@ -137,10 +137,10 @@ TARGETプレビュー中のHumanIKリターゲット結果を、指定したフ�
 
 現在のHumanIK状態を元のMMDリグ状態へ復元します。意味論は次の通りです。
 
-- **Control Rigを削除し、journal（このセッションが記録した変更履歴）を復元します。**
+- **Control Rigを削除し、復元状態（このセッションが記録した変更履歴）を復元します。**
 - **キャラクタライズ済みのHIKノード自体は削除されません** — つまり、Restore後はキャラクタライズされていない状態ではなく、**SOURCE状態（キャラクタライズ済みだがTARGET/Control Rigではない状態）へ戻ります**。
-- Editor下部には次の説明文が常時表示されます: 「Restore = Control Rigを削除しjournalを復元します。characterize済みのHIKノードは残ります（SOURCE状態へ戻ります。未characterize状態には戻りません）。」
-- **孤立したControl Rig**（このセッションが作成・追跡していないControl Rig）も、MMDモデルによって駆動されているものであれば、Restore MMD Rigの実行時に回収（削除）されます。ただしjournalが無いため、writerの接続やキャラクタライズ前のポーズは復元されません（後述のトラブルシューティングを参照）。
+- Editor下部には次の説明文が常時表示されます: 「Restore = Control Rigを削除し復元状態を復元します。characterize済みのHIKノードは残ります（SOURCE状態へ戻ります。未characterize状態には戻りません）。」
+- **孤立したControl Rig**（このセッションが作成・追跡していないControl Rig）も、MMDモデルによって駆動されているものであれば、Restore MMD Rigの実行時に回収（削除）されます。ただし復元状態が無いため、writerの接続やキャラクタライズ前のポーズは復元されません（後述のトラブルシューティングを参照）。
 
 Source コンボで「None」を選ぶとこのRestoreが実行されます。確認ダイアログが表示されるのは**アクティブなControl Rigがある場合のみ**（「Disconnect the HumanIK retarget and restore the MMD rig? The active Control Rig will also be deleted.」）です。Control Rigが無い状態（TARGETプレビューのみ、または何も無い状態）からの切断は即実行されます。
 
@@ -158,10 +158,10 @@ Source コンボで「None」を選ぶとこのRestoreが実行されます。�
 
 ### 「Restoreが効かないように見える」
 
-Restore MMD Rig実行後もモデルの姿勢や制約ノードの接続が完全には元に戻っていないように見える場合、そのControl Rigが**このセッションのjournal無しで回収された「孤立したControl Rig」**である可能性があります。
+Restore MMD Rig実行後もモデルの姿勢や制約ノードの接続が完全には元に戻っていないように見える場合、そのControl Rigが**このセッションの復元状態無しで回収された「孤立したControl Rig」**である可能性があります。
 
-- Editor上部にオレンジ色で「このセッションが追跡していないControl Rigが見つかりました。Restore MMD Rigで回収できますが、journalが無いためwriter接続とcharacterize前のポーズは復元されません。」という警告バナーが表示されていた場合、その回収では **writerの接続（mmdCcdIkなどの制約ノードの再接続）とキャラクタライズ前のポーズは復元対象になりません**。これはjournalが存在しない場合の既知の制約です。
-- 正常なjournal付きのRestore（このプラグインのメニュー／Editorから開始したリターゲット・Control Rigに対するRestore）であれば、writer接続とポーズは正しく復元されます。「効かない」と感じたら、まずその孤立警告が出ていたかどうかを確認してください。
+- Editor上部にオレンジ色で「このセッションが追跡していないControl Rigが見つかりました。Restore MMD Rigで回収できますが、復元状態が無いためwriter接続とcharacterize前のポーズは復元されません。」という警告バナーが表示されていた場合、その回収では **writerの接続（mmdCcdIkなどの制約ノードの再接続）とキャラクタライズ前のポーズは復元対象になりません**。これは復元状態が存在しない場合の既知の制約です。
+- 正常な復元状態付きのRestore（このプラグインのメニュー／Editorから開始したリターゲット・Control Rigに対するRestore）であれば、writer接続とポーズは正しく復元されます。「効かない」と感じたら、まずその孤立警告が出ていたかどうかを確認してください。
 
 ### 孤立したControl Rig警告バナーの意味
 
@@ -178,7 +178,7 @@ Editor上に「Control RigがMaya標準UIで作成されました。サポート
 - キー済みチャンネルへの直接`setAttr`は無効。
 - TARGETプレビュー中／Control Rigアクティブ中は対象モデルへのVMD importが拒否される。
 - Restoreで戻るのはSOURCE状態まで（未characterize状態へは戻らない）。
-- 孤立したControl Rig（journal無し）の回収では、writer接続とキャラクタライズ前ポーズは復元されない。
+- 孤立したControl Rig（復元状態無し）の回収では、writer接続とキャラクタライズ前ポーズは復元されない。
 - Setup / Characterizeの既定プロファイルはFull（Body + fingers）。既に別プロファイルでcharacterize済みのモデルは再characterizeされない。
 - 確認ダイアログはRestore/切断（アクティブなControl Rigがある場合のみ）と、外部Source接続時の既存アニメーションクリア確認のみに限定されている（Phase B6）。
 - 試験的機能のため、UI・挙動は予告なく変更される可能性がある。

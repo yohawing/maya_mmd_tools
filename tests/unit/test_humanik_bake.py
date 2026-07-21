@@ -159,7 +159,7 @@ class FailingHikCmds(BakeCmds):
 class TestHumanIkBake(unittest.TestCase):
     def test_routes_direct_append_and_ccdik_channels(self):
         preview = SimpleNamespace(
-            journal=SimpleNamespace(
+            restore_state=SimpleNamespace(
                 plugs=[
                     SimpleNamespace(plug="|appendJoint.rotate", sources=["append.outputRotate"]),
                     SimpleNamespace(plug="|ikJoint.rotate", sources=["ik.outputRotate[0]"]),
@@ -178,9 +178,9 @@ class TestHumanIkBake(unittest.TestCase):
             "ik.inputRotate[4].inputRotateElementZ",
         )
 
-    def test_append_route_supports_scalar_journal_plug(self):
+    def test_append_route_supports_scalar_restore_state_plug(self):
         preview = SimpleNamespace(
-            journal=SimpleNamespace(
+            restore_state=SimpleNamespace(
                 plugs=[
                     SimpleNamespace(plug="|appendJoint.rotateX", sources=["append.outputRotateX"]),
                 ]
@@ -195,7 +195,7 @@ class TestHumanIkBake(unittest.TestCase):
     def test_bake_stops_preview_and_reports_keys_and_neutral_restore(self):
         preview = SimpleNamespace(
             active=True,
-            journal=SimpleNamespace(
+            restore_state=SimpleNamespace(
                 plugs=[],
                 nodes=[SimpleNamespace(node="solver", attributes={"enabled": True})],
             ),
@@ -216,7 +216,7 @@ class TestHumanIkBake(unittest.TestCase):
             )
 
         self.assertEqual(result.key_count, 3)
-        self.assertTrue(result.pre_bake_journal_restored)
+        self.assertTrue(result.pre_bake_restore_state_restored)
         self.assertEqual(result.disabled_ik_nodes, [])
         self.assertEqual(result.frame_errors, {0: 0.0, 1: 0.0, 2: 0.0})
         self.assertEqual(result.max_error, 0.0)
@@ -224,7 +224,7 @@ class TestHumanIkBake(unittest.TestCase):
         self.assertEqual([key[2] for key in cmds.keys], [0.25, 0.5, 0.75])
 
     def test_bake_sampling_error_still_stops_preview(self):
-        preview = SimpleNamespace(active=True, journal=SimpleNamespace(plugs=[]))
+        preview = SimpleNamespace(active=True, restore_state=SimpleNamespace(plugs=[]))
         cmds = BakeCmds()
         cmds.getAttr = lambda plug: (_ for _ in ()).throw(RuntimeError("sample failed"))
 
@@ -307,7 +307,7 @@ class TestHumanIkBake(unittest.TestCase):
     def test_authoring_failure_deletes_only_new_curves_and_restores_solver(self):
         preview = SimpleNamespace(
             active=True,
-            journal=SimpleNamespace(
+            restore_state=SimpleNamespace(
                 plugs=[SimpleNamespace(plug="|joint.rotateX", sources=["ik.outputRotate[0]"])],
                 nodes=[SimpleNamespace(node="ik", attributes={"enabled": True})],
             ),
@@ -335,7 +335,7 @@ class TestHumanIkBake(unittest.TestCase):
     def test_authoring_failure_reconnects_characterized_hik_writer(self):
         preview = SimpleNamespace(
             active=True,
-            journal=SimpleNamespace(
+            restore_state=SimpleNamespace(
                 plugs=[SimpleNamespace(plug="|joint.rotateX", sources=["HIKState2SK.outputRotate"])],
                 nodes=[],
             ),

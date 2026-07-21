@@ -441,7 +441,7 @@ def main() -> int:
                 "expectedHikWriterRemovals": connection_deltas["expectedHikWriterRemovals"],
                 "connectionDeltas": connection_deltas,
                 "neutralInputRestored": restored_source == "",
-                "preBakeJournalRestored": bake.pre_bake_journal_restored,
+                "preBakeRestoreStateRestored": bake.pre_bake_restore_state_restored,
                 "disabledIkNodes": list(bake.disabled_ik_nodes),
                 "disabledIkNodesFinal": all(
                     not bool(cmds.getAttr(f"{node}.enabled")) for node in bake.disabled_ik_nodes
@@ -455,7 +455,7 @@ def main() -> int:
         payload["status"] = "pass" if all(
             (
                 payload["keyCount"] > 0,
-                payload["preBakeJournalRestored"],
+                payload["preBakeRestoreStateRestored"],
                 payload["disabledIkNodes"],
                 payload["disabledIkNodesFinal"],
                 payload["baselineConnectionsPreserved"],

@@ -1330,7 +1330,7 @@ def main() -> int:
                 stance_coincident_class["max"] <= STANCE_COINCIDENT_MATRIX_TOLERANCE,
                 baked_quaternion["max"] <= QUATERNION_MAX_TOLERANCE,
                 determinism["passed"],
-                bake.pre_bake_journal_restored,
+                bake.pre_bake_restore_state_restored,
             )
         ) else "fail"
         if payload["status"] != "pass":

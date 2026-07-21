@@ -1,14 +1,14 @@
 """Exclusive HumanIK TARGET preview ownership transition.
 
 S3 applies a previously reviewed S1 ownership report in the fixed order
-``journal -> mute conflicting writers -> HIK input`` and restores NEUTRAL from
-the S2 journal.  It does not bake animation or modify physics owners.
+``restore_state -> mute conflicting writers -> HIK input`` and restores NEUTRAL from
+the S2 restore_state.  It does not bake animation or modify physics owners.
 
 ``begin_humanik_target_preview`` also disables the TARGET character's
 ``FingerSolving`` property for the preview's lifetime (HUMANIK-RETARGET-S5;
 see ``HUMANIK_FINGER_SOLVING_DISABLED`` in ``humanik_builder.py``) and restores
 its prior value on ``stop_humanik_target_preview`` or rollback, exactly like
-``input_source``/``lock_state`` are restored via the journal. It is
+``input_source``/``lock_state`` are restored via the restore_state. It is
 per-preview rather than a characterize-time change because it is only
 meaningful while the target is actively retargeting from a source.
 """
@@ -30,9 +30,9 @@ from mmd_tools.core.humanik_constraints import (
 )
 from mmd_tools.core.humanik_retarget import connect_humanik_source
 from mmd_tools.core.humanik_transaction import (
-    HumanIkTransactionJournal,
-    capture_humanik_journal,
-    restore_humanik_journal,
+    HumanIkRestoreState,
+    capture_humanik_restore_state,
+    apply_humanik_restore_state,
 )
 from mmd_tools.core.humanik_utils import maya_cmds
 
@@ -46,12 +46,12 @@ from mmd_tools.core.humanik_utils import maya_cmds
 
 @dataclass
 class HumanIkTargetPreview:
-    """Active TARGET preview and its reversible journal."""
+    """Active TARGET preview and its reversible restore_state."""
 
     ownership_id: str
     target_character: str
     source_character: str
-    journal: HumanIkTransactionJournal
+    restore_state: HumanIkRestoreState
     disconnected: List[Dict[str, str]]
     retained_nodes: List[str]
     post_report: Dict[str, Any]
@@ -91,7 +91,7 @@ def begin_humanik_target_preview(
     destinations = sorted({plug for row in mute_rows for plug in row.get("writes", [])})
     muted_nodes = sorted({row["node"] for row in mute_rows})
     hik_joint_set = {str(joint) for joint in hik_joints}
-    journal = capture_humanik_journal(
+    restore_state = capture_humanik_restore_state(
         ownership_id,
         target_character,
         destinations,
@@ -156,15 +156,15 @@ def begin_humanik_target_preview(
                 cmds_module=cmds,
             )
         try:
-            restore_humanik_journal(
-                journal,
+            apply_humanik_restore_state(
+                restore_state,
                 ownership_id=ownership_id,
                 cmds_module=cmds,
                 mel_module=mel_module,
             )
         except Exception as rollback_error:
             raise RuntimeError(
-                "HumanIK TARGET preview failed and journal rollback failed: "
+                "HumanIK TARGET preview failed and restore_state rollback failed: "
                 f"failure={error}; rollback={rollback_error}"
             ) from error
         raise
@@ -172,7 +172,7 @@ def begin_humanik_target_preview(
         ownership_id=ownership_id,
         target_character=target_character,
         source_character=source_character,
-        journal=journal,
+        restore_state=restore_state,
         disconnected=sorted(disconnected, key=lambda row: (row["destination"], row["source"])),
         retained_nodes=retained_nodes,
         post_report=post_report,
@@ -186,8 +186,8 @@ def stop_humanik_target_preview(
     mel_module=None,
 ) -> None:
     """Restore NEUTRAL ownership; repeated stop calls are safe."""
-    restore_humanik_journal(
-        preview.journal,
+    apply_humanik_restore_state(
+        preview.restore_state,
         ownership_id=preview.ownership_id,
         cmds_module=cmds_module,
         mel_module=mel_module,
@@ -216,7 +216,7 @@ def row_hik_writes(row: Dict[str, Any], hik_joints: set[str]) -> List[str]:
 
 
 def disconnect_residual_muted_writers(cmds, rows, hik_joints: set[str]) -> None:
-    """Remove residual muted-node edges before restoring the scoped journal."""
+    """Remove residual muted-node edges before restoring the scoped restore_state."""
     for row in sorted(rows, key=lambda item: str(item["node"])):
         node = str(row["node"])
         allowed_joints = set(row_hik_writes(row, hik_joints))

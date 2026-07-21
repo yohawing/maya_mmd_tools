@@ -22,7 +22,7 @@ the two paths that still matter:
 * ``transaction_frontend`` (gates ``status``) -- exercises
   ``HumanIkFrontendSession.create_control_rig()``, which wraps
   ``hikCreateControlRig()`` in ``humanik_control_rig.begin_humanik_control_rig()``
-  (journal -> isolate MMD writers -> pre-cycle gate -> create -> re-scan/
+  (restore_state -> isolate MMD writers -> pre-cycle gate -> create -> re-scan/
   re-isolate -> post-cycle gate). Asserts the control-rig-related cycle
   bucket is empty right after creation and after each effector move, that
   ``keep_post`` writers stay connected, and that

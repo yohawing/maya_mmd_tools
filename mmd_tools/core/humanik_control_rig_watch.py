@@ -10,7 +10,7 @@ Controls -> Create Control Rig) or any other raw ``hikCreateControlRig()``/
 ``hikSetCurrentCharacter`` MEL call bypasses mmd_tools entirely: the same
 writer-isolation problem exists, but with no mmd_tools code in the call
 stack to fix it proactively. Auto-adopting that rig (retroactively
-journaling/isolating/cycle-gating it) was tried and dropped -- passing
+capturing restore state/isolating/cycle-gating it) was tried and dropped -- passing
 Maya's own Control Rig UI through the cycle gate is no longer a requirement
 (see ``TODO.md``); this module is now a reactive, read-only detector: it
 warns the user and points them at the supported mmd_tools path, and never

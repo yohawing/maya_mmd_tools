@@ -27,7 +27,7 @@ class HumanIkBakeResult:
     routes: Dict[str, str]
     max_error: float
     warnings: List[str]
-    pre_bake_journal_restored: bool = False
+    pre_bake_restore_state_restored: bool = False
     disabled_ik_nodes: List[str] = field(default_factory=list)
     frame_errors: Dict[int, float] = field(default_factory=dict)
 
@@ -40,7 +40,7 @@ class HumanIkBakeResult:
             "maxError": self.max_error,
             "frameErrors": {str(frame): error for frame, error in sorted(self.frame_errors.items())},
             "warnings": list(self.warnings),
-            "preBakeJournalRestored": bool(self.pre_bake_journal_restored),
+            "preBakeRestoreStateRestored": bool(self.pre_bake_restore_state_restored),
             "disabledIkNodes": list(self.disabled_ik_nodes),
         }
 
@@ -103,9 +103,9 @@ def bake_humanik_target_preview(
         if preview.active:
             stop_humanik_target_preview(preview, cmds_module=cmds, mel_module=mel_module)
 
-    pre_bake_journal_restored = _verify_journal_restored(preview, cmds, mel_module)
-    if not pre_bake_journal_restored:
-        raise RuntimeError("HumanIK preview journal was not restored before bake authoring")
+    pre_bake_restore_state_restored = _verify_restore_state_restored(preview, cmds, mel_module)
+    if not pre_bake_restore_state_restored:
+        raise RuntimeError("HumanIK preview restore_state was not restored before bake authoring")
     corrected_samples = _correct_samples(routes, raw_samples, append_states, frames)
     solver_nodes = sorted(
         {
@@ -164,7 +164,7 @@ def bake_humanik_target_preview(
         routes={plug: route.destination for plug, route in routes.items()},
         max_error=max_error,
         warnings=warnings,
-        pre_bake_journal_restored=pre_bake_journal_restored,
+        pre_bake_restore_state_restored=pre_bake_restore_state_restored,
         disabled_ik_nodes=disabled_ik_nodes,
         frame_errors=frame_errors,
     )
@@ -174,7 +174,7 @@ def _resolve_route(preview: HumanIkTargetPreview, plug: str, cmds) -> _BakeRoute
     node, channel = plug.rsplit(".", 1)
     parent = "translate" if channel.startswith("translate") else "rotate"
     axis = channel[-1]
-    snapshot = _journal_snapshot(preview, node, channel, parent)
+    snapshot = _restore_state_snapshot(preview, node, channel, parent)
     if snapshot is None or not snapshot.sources:
         return _BakeRoute(plug, plug, "direct")
     if len(snapshot.sources) != 1:
@@ -289,8 +289,8 @@ def _ccd_bone_slot(cmds, node: str, link_index: int) -> int:
     return bone_slot
 
 
-def _journal_snapshot(preview: HumanIkTargetPreview, node: str, channel: str, parent: str):
-    snapshots = getattr(getattr(preview, "journal", None), "plugs", ())
+def _restore_state_snapshot(preview: HumanIkTargetPreview, node: str, channel: str, parent: str):
+    snapshots = getattr(getattr(preview, "restore_state", None), "plugs", ())
     for plug in (f"{node}.{channel}", f"{node}.{parent}"):
         snapshot = next((item for item in snapshots if item.plug == plug), None)
         if snapshot is not None:
@@ -449,19 +449,19 @@ def _evaluate_all_frames(cmds, raw_samples, source_plugs, frames) -> Dict[int, f
     return errors
 
 
-def _verify_journal_restored(preview: HumanIkTargetPreview, cmds, mel_module=None) -> bool:
+def _verify_restore_state_restored(preview: HumanIkTargetPreview, cmds, mel_module=None) -> bool:
     """Verify exact incoming plugs, node state, and HIK state before authoring."""
-    journal = getattr(preview, "journal", None)
-    if journal is None:
+    restore_state = getattr(preview, "restore_state", None)
+    if restore_state is None:
         return False
     list_connections = getattr(cmds, "listConnections", None)
     if list_connections is not None:
-        for snapshot in getattr(journal, "plugs", ()):
+        for snapshot in getattr(restore_state, "plugs", ()):
             actual = sorted(str(source) for source in (list_connections(snapshot.plug, source=True, destination=False, plugs=True) or []))
             if actual != sorted(str(source) for source in snapshot.sources):
                 return False
     get_attr = getattr(cmds, "getAttr", None)
-    for snapshot in getattr(journal, "nodes", ()):
+    for snapshot in getattr(restore_state, "nodes", ()):
         for attribute, expected in getattr(snapshot, "attributes", {}).items():
             if get_attr is None:
                 return False
@@ -473,11 +473,11 @@ def _verify_journal_restored(preview: HumanIkTargetPreview, cmds, mel_module=Non
                 return False
     if mel_module is not None:
         try:
-            source = str(mel_module.eval(f'hikGetRetargetCharacterInput("{journal.character}")') or "")
-            if source != str(getattr(journal, "input_source", "")):
+            source = str(mel_module.eval(f'hikGetRetargetCharacterInput("{restore_state.character}")') or "")
+            if source != str(getattr(restore_state, "input_source", "")):
                 return False
-            locked = bool(mel_module.eval(f'hikIsDefinitionLocked("{journal.character}")'))
-            if locked != bool(getattr(journal, "lock_state", locked)):
+            locked = bool(mel_module.eval(f'hikIsDefinitionLocked("{restore_state.character}")'))
+            if locked != bool(getattr(restore_state, "lock_state", locked)):
                 return False
         except Exception:
             return False

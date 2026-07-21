@@ -312,9 +312,9 @@ def run_probe(log_path: str, pmx_path: str, report_path: str) -> None:
         return report
 
     def case_session_loss(pmx: Path) -> Dict[str, Any]:
-        """Hypothesis A: the transaction survives a scene reopen via journal data.
+        """Hypothesis A: the transaction survives a scene reopen via restore_state data.
 
-        HUMANIK-RESTORE-GAPS-1d persists the writer-isolation journal on an
+        HUMANIK-RESTORE-GAPS-1d persists the writer-isolation restore_state on an
         owned scene network node.  A fresh frontend session must reconstruct
         the tracked transaction, restore the exact pre-Control-Rig writer
         topology, and leave no orphan-recovery warning (the 1c scene-facts
@@ -397,7 +397,7 @@ def run_probe(log_path: str, pmx_path: str, report_path: str) -> None:
         exercises the "characterize-live binding" path
         (``find_binding_by_character`` still resolves) alongside the
         scene-facts-only path. The pass bar changed the same way: fallback
-        recovers it and reports the unrecoverable-journal limitation instead
+        recovers it and reports the unrecoverable-restore_state limitation instead
         of leaving the Control Rig node behind.
         """
         from mmd_tools.core.humanik_builder import (
@@ -419,7 +419,7 @@ def run_probe(log_path: str, pmx_path: str, report_path: str) -> None:
         report["stateAfterCharacterizeOnly"] = _describe_state(session, root)
 
         # Raw MEL path: the same MEL sequence humanik_builder.create_humanik_control_rig
-        # issues, but bypassing begin_humanik_control_rig's journal/isolate/
+        # issues, but bypassing begin_humanik_control_rig's restore_state/isolate/
         # cycle-gate transaction -- equivalent to Character Controls UI.
         create_humanik_control_rig(character)
         cmds.refresh()

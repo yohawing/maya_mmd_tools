@@ -507,7 +507,7 @@ class TestHumanIkMenuActions(unittest.TestCase):
         self.assertIn("experimental", message.splitlines()[0].lower())
         self.assertIn("Characterized Base:Base_root with the full profile", message)
         self.assertNotIn("mute_for_hik", message)
-        self.assertNotIn("journal", message)
+        self.assertNotIn("restore_state", message)
         self.assertNotIn("residual", message)
 
     @patch.object(actions, "resolve_model_root", return_value="|model_root")

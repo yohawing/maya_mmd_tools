@@ -455,7 +455,7 @@ class TestHumanIkStance(unittest.TestCase):
         # The other joint's attribute is still restored even though the
         # locked plug's restore failed.
         self.assertEqual(cmds.attrs[other_plug], [(0.0, 0.0, 0.0)])
-        # The journaled mute_for_hik writer edge is reconnected even though
+        # The captured mute_for_hik writer edge is reconnected even though
         # the attribute restore aggregated a failure.
         self.assertEqual(cmds.connections[destination], ["|ik_ctrl.outputRotateX"])
         self.assertTrue(tx.active)

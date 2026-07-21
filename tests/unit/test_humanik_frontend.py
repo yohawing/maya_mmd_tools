@@ -11,7 +11,7 @@ from mmd_tools.core.humanik_frontend import (
     _split_body_assignments,
     filter_humanik_body_assignments,
 )
-from mmd_tools.core.humanik_transaction import HumanIkTransactionJournal
+from mmd_tools.core.humanik_transaction import HumanIkRestoreState
 from mmd_tools.core.humanik_resolver import (
     HumanIkBoneAssignment,
     HumanIkResolveResult,
@@ -69,7 +69,7 @@ def _synthetic_55_result():
 class FakePreview:
     def __init__(self):
         self.active = True
-        self.journal = object()
+        self.restore_state = object()
 
 
 class FakeControlRigTransaction:
@@ -122,12 +122,12 @@ def _session():
 
 class TestHumanIkFrontend(unittest.TestCase):
     @patch("mmd_tools.core.humanik_frontend._find_mmd_model_root_for_character", return_value="|target")
-    @patch("mmd_tools.core.humanik_frontend.persist_humanik_transaction_state")
-    @patch("mmd_tools.core.humanik_frontend.load_humanik_transaction_state")
+    @patch("mmd_tools.core.humanik_frontend.persist_humanik_restore_state")
+    @patch("mmd_tools.core.humanik_frontend.load_humanik_restore_state")
     def test_new_session_rebuilds_persisted_control_rig_transaction(
         self, load_state, persist_state, find_model
     ):
-        journal = HumanIkTransactionJournal(
+        restore_state = HumanIkRestoreState(
             "mmd-tools:frontend:control-rig:|target",
             "Character_target",
             True,
@@ -138,9 +138,9 @@ class TestHumanIkFrontend(unittest.TestCase):
         )
         load_state.return_value = [{
             "modelRoot": "|target",
-            "ownershipId": journal.ownership_id,
-            "character": journal.character,
-            "journal": journal.to_dict(),
+            "ownershipId": restore_state.ownership_id,
+            "character": restore_state.character,
+            "restore_state": restore_state.to_dict(),
             "disconnected": [],
             "retainedNodes": [],
             "createdNodes": ["HIKControlSetNode1"],
@@ -158,7 +158,7 @@ class TestHumanIkFrontend(unittest.TestCase):
         self.assertIn("|target", session._control_rig_transactions)
         transaction = session._control_rig_transactions["|target"]
         self.assertTrue(transaction.active)
-        self.assertEqual(transaction.journal.input_source, "")
+        self.assertEqual(transaction.restore_state.input_source, "")
         find_model.assert_called_once_with("Character_target", session._cmds or find_model.call_args.args[1])
         persist_state.assert_not_called()
 
@@ -404,7 +404,7 @@ class TestHumanIkFrontend(unittest.TestCase):
         self.assertEqual(diagnostics["quality"]["status"], "experimental")
         self.assertEqual(diagnostics["quality"]["referenceS5bBodyMatrixResidual"], 0.0298786502441323)
         self.assertEqual(diagnostics["quality"]["fingerStatus"], "deferred")
-        self.assertEqual(diagnostics["preview"], {"active": False, "journalAvailable": False})
+        self.assertEqual(diagnostics["preview"], {"active": False, "restoreStateAvailable": False})
         self.assertEqual(diagnostics["assignments"]["required"]["genericLockMinimumAssignmentCount"], 1)
 
     @patch("mmd_tools.core.humanik_frontend.delete_humanik_character")

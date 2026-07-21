@@ -10,17 +10,17 @@ and ``parentMatrix`` in the reported evidence,
 ``build/reports/humanik_control_rig_cycle_e2e.json``).
 
 ``humanik_preview.begin_humanik_target_preview`` already solves the
-equivalent problem for TARGET preview by journaling scene state, isolating
+equivalent problem for TARGET preview by capturing restore state scene state, isolating
 reviewed MMD writers, connecting the HIK source, and re-scanning/re-isolating
 writers that reappeared. This module applies the identical machinery around
 ``hikCreateControlRig()`` -- Transaction candidate A from the TODO:
 
-    journal -> isolate MMD writers -> pre-cycle gate -> hikCreateControlRig
+    restore_state -> isolate MMD writers -> pre-cycle gate -> hikCreateControlRig
     -> re-scan/re-isolate writers -> post-cycle gate
 
-Any failure after the journal is captured rolls the scene back: MMD writer
+Any failure after the restore_state is captured rolls the scene back: MMD writer
 edges are reconnected, plug values/node state/HIK source+lock are restored
-from the journal, and any control-rig nodes ``hikCreateControlRig`` created
+from the restore_state, and any control-rig nodes ``hikCreateControlRig`` created
 are removed via HIK's own ``hikDeleteControlRig()`` MEL command (never a bare
 ``cmds.delete`` first -- see ``_delete_control_rig`` for why a node-diff
 delete is only a fallback).
@@ -53,10 +53,10 @@ from mmd_tools.core.humanik_preview import (
     row_hik_writes,
 )
 from mmd_tools.core.humanik_transaction import (
-    HumanIkTransactionJournal,
-    capture_humanik_journal,
-    deserialize_humanik_transaction_state,
-    restore_humanik_journal,
+    HumanIkRestoreState,
+    capture_humanik_restore_state,
+    deserialize_humanik_restore_state,
+    apply_humanik_restore_state,
 )
 from mmd_tools.core.humanik_utils import maya_cmds, maya_mel
 from mmd_tools.core.logger import get_logger
@@ -77,7 +77,7 @@ class HumanIkControlRigTransaction:
 
     ownership_id: str
     character: str
-    journal: HumanIkTransactionJournal
+    restore_state: HumanIkRestoreState
     disconnected: List[Dict[str, str]]
     retained_nodes: List[str]
     created_nodes: List[str]
@@ -104,7 +104,7 @@ class HumanIkControlRigTransaction:
             "modelRoot": str(model_root),
             "ownershipId": self.ownership_id,
             "character": self.character,
-            "journal": self.journal.to_dict(),
+            "restore_state": self.restore_state.to_dict(),
             "disconnected": list(self.disconnected),
             "retainedNodes": list(self.retained_nodes),
             "createdNodes": list(self.created_nodes),
@@ -116,13 +116,13 @@ class HumanIkControlRigTransaction:
     @classmethod
     def from_scene_dict(cls, payload: Dict[str, Any]) -> "HumanIkControlRigTransaction":
         """Reconstruct a transaction row loaded from scene metadata."""
-        rows = deserialize_humanik_transaction_state({
-            "schema": "mmd_tools.humanik_transaction",
+        rows = deserialize_humanik_restore_state({
+            "schema": "mmd_tools.humanik_restore_state",
             "version": 1,
             "transactions": [payload],
         })
         row = rows[0]
-        journal = HumanIkTransactionJournal.from_dict(row["journal"])
+        restore_state = HumanIkRestoreState.from_dict(row["restore_state"])
         def _string_list(key: str) -> List[str]:
             value = row.get(key, [])
             if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
@@ -134,7 +134,7 @@ class HumanIkControlRigTransaction:
         return cls(
             ownership_id=row["ownershipId"],
             character=row["character"],
-            journal=journal,
+            restore_state=restore_state,
             disconnected=[dict(item) for item in disconnected],
             retained_nodes=_string_list("retainedNodes"),
             created_nodes=_string_list("createdNodes"),
@@ -220,7 +220,7 @@ def begin_humanik_control_rig(
     command adapter) get the same fail-closed guarantee.
 
     Args:
-        ownership_id: Journal owner id, distinct from any active preview's id
+        ownership_id: RestoreState owner id, distinct from any active preview's id
             so the two transactions can never cross-restore each other.
         character: Already characterized and locked HIK character name.
         hik_joints: The character's HIK-assigned primary joints (long paths).
@@ -234,7 +234,7 @@ def begin_humanik_control_rig(
         RuntimeError: On a pre-existing blocker, a post-scan residual muted
             writer, a post-scan blocker, or a new DG cycle relative to the
             pre-mutation baseline. The scene is rolled back to its
-            pre-mutation state (writers reconnected, journal restored, any
+            pre-mutation state (writers reconnected, restore_state restored, any
             newly created control-rig nodes removed) before re-raising.
     """
     cmds = cmds_module or maya_cmds()
@@ -251,7 +251,7 @@ def begin_humanik_control_rig(
     destinations = sorted({plug for row in mute_rows for plug in row.get("writes", [])})
     muted_nodes = sorted({row["node"] for row in mute_rows})
 
-    journal = capture_humanik_journal(
+    restore_state = capture_humanik_restore_state(
         ownership_id,
         character,
         destinations,
@@ -310,7 +310,7 @@ def begin_humanik_control_rig(
             error,
             character=character,
             created_nodes=created_nodes,
-            journal=journal,
+            restore_state=restore_state,
             ownership_id=ownership_id,
             cmds=cmds,
             mel=mel,
@@ -319,7 +319,7 @@ def begin_humanik_control_rig(
     transaction = HumanIkControlRigTransaction(
         ownership_id=ownership_id,
         character=character,
-        journal=journal,
+        restore_state=restore_state,
         disconnected=sorted(disconnected, key=lambda row: (row["destination"], row["source"])),
         retained_nodes=retained_nodes,
         created_nodes=created_nodes,
@@ -340,7 +340,7 @@ def stop_humanik_control_rig(
     This is the ``restore_mmd_rig``/post-bake teardown path: it deletes the
     control rig through HIK's own ``hikDeleteControlRig()`` MEL command (which
     also resets the character's source input to stance/none) and then
-    restores every journaled MMD writer connection, plug value, node state,
+    restores every captured MMD writer connection, plug value, node state,
     and HIK source/lock -- returning the model to the same unblocked NEUTRAL
     state ``describe_humanik_import_lock`` reports for an uncharacterized or
     SOURCE-only model.
@@ -353,7 +353,7 @@ def stop_humanik_control_rig(
     so every subsequent ``restore_mmd_rig`` call re-attempted the exact same
     doomed teardown and hit the exact same exception forever. Both teardown
     steps are attempted even if the first one fails (a delete failure must
-    not prevent the journal restore, and vice versa); any failures are
+    not prevent the restore_state restore, and vice versa); any failures are
     aggregated and raised together as a single ``RuntimeError`` *after* the
     transaction has already been released, so the failure surfaces exactly
     once instead of on every retry.
@@ -368,14 +368,14 @@ def stop_humanik_control_rig(
     except Exception as exc:  # noqa: BLE001 - aggregated below, transaction still released
         failures.append(f"control rig delete failed: {exc}")
     try:
-        restore_humanik_journal(
-            transaction.journal,
+        apply_humanik_restore_state(
+            transaction.restore_state,
             ownership_id=transaction.ownership_id,
             cmds_module=cmds,
             mel_module=mel,
         )
     except Exception as exc:  # noqa: BLE001 - aggregated below, transaction still released
-        failures.append(f"journal restore failed: {exc}")
+        failures.append(f"restore_state restore failed: {exc}")
     transaction.active = False
     unregister_control_rig_transaction(transaction.character)
     if failures:
@@ -393,7 +393,7 @@ def delete_orphaned_control_rig(character: str, cmds_module=None, mel_module=Non
     that has nothing in ``_control_rig_transactions`` to tear it down with --
     a scene reopen (the in-memory transaction is lost even though the node
     survives save/reopen) or a Control Rig created through Maya's standard
-    HumanIK UI / a raw ``hikCreateControlRig()`` call. There is no journal to
+    HumanIK UI / a raw ``hikCreateControlRig()`` call. There is no restore_state to
     restore in either case, so this performs only the
     ``hikSetCurrentCharacter`` -> ``hikHasControlRig`` -> ``hikDeleteControlRig()``
     sequence :func:`_delete_control_rig` already uses for a tracked
@@ -401,7 +401,7 @@ def delete_orphaned_control_rig(character: str, cmds_module=None, mel_module=Non
     recorded to node-diff-delete as a fallback).
 
     Unlike :func:`stop_humanik_control_rig`, this never touches a
-    :class:`HumanIkTransactionJournal` -- callers must report separately (see
+    :class:`HumanIkRestoreState` -- callers must report separately (see
     ``describe_frontend_state``/the recovery report) that any muted MMD
     writer edge or pre-characterize stance for this character cannot be
     restored automatically.
@@ -416,32 +416,32 @@ def delete_orphaned_control_rig(character: str, cmds_module=None, mel_module=Non
     _delete_control_rig(character, (), cmds, mel)
 
 
-def _rollback(error, *, character, created_nodes, journal, ownership_id, cmds, mel) -> None:
-    """Undo a failed control-rig creation: delete new nodes, then the journal."""
+def _rollback(error, *, character, created_nodes, restore_state, ownership_id, cmds, mel) -> None:
+    """Undo a failed control-rig creation: delete new nodes, then the restore_state."""
     try:
         _delete_control_rig(character, created_nodes, cmds, mel)
     except Exception as delete_error:
         try:
-            restore_humanik_journal(
-                journal, ownership_id=ownership_id, cmds_module=cmds, mel_module=mel,
+            apply_humanik_restore_state(
+                restore_state, ownership_id=ownership_id, cmds_module=cmds, mel_module=mel,
             )
         except Exception as rollback_error:
             raise RuntimeError(
                 "HumanIK Control Rig creation failed; node deletion failed; "
-                f"journal rollback failed: failure={error}; "
+                f"restore_state rollback failed: failure={error}; "
                 f"delete={delete_error}; rollback={rollback_error}"
             ) from error
         raise RuntimeError(
             "HumanIK Control Rig creation failed and node deletion failed "
-            f"(journal restored): failure={error}; delete={delete_error}"
+            f"(restore_state restored): failure={error}; delete={delete_error}"
         ) from error
     try:
-        restore_humanik_journal(
-            journal, ownership_id=ownership_id, cmds_module=cmds, mel_module=mel,
+        apply_humanik_restore_state(
+            restore_state, ownership_id=ownership_id, cmds_module=cmds, mel_module=mel,
         )
     except Exception as rollback_error:
         raise RuntimeError(
-            "HumanIK Control Rig creation failed and journal rollback failed: "
+            "HumanIK Control Rig creation failed and restore_state rollback failed: "
             f"failure={error}; rollback={rollback_error}"
         ) from error
 
