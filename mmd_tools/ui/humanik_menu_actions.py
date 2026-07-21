@@ -201,7 +201,7 @@ def install_humanik_menu(parent="MMD", *, cmds_module=None, callback_dispatcher=
         cmds.deleteUI(HUMANIK_MENU_NAME)
     submenu = cmds.menuItem(
         HUMANIK_MENU_NAME,
-        label="HumanIK",
+        label="HumanIK (Experimental)",
         parent=parent,
         subMenu=True,
     )
@@ -446,8 +446,9 @@ def _show_diagnostics():
     cmds = _cmds_module or _maya_cmds()
     if _ui_exists(cmds, DIAGNOSTICS_WINDOW_NAME):
         cmds.deleteUI(DIAGNOSTICS_WINDOW_NAME)
-    cmds.window(DIAGNOSTICS_WINDOW_NAME, title="HumanIK Diagnostics", sizeable=True)
+    cmds.window(DIAGNOSTICS_WINDOW_NAME, title="HumanIK Diagnostics (Experimental)", sizeable=True)
     cmds.columnLayout(adjustableColumn=True)
+    cmds.text(label="HumanIK is experimental.", align="left")
     cmds.scrollField(
         editable=False,
         wordWrap=True,
@@ -476,6 +477,7 @@ def _setup_confirmation_message(root, model_report, ownership_report, full_repor
         full_count = len(full_report.get("assignments") or [])
         finger_count = max(full_count - body_count, 0)
     lines = [
+        "HumanIK is experimental.",
         f"Set up HumanIK for {_short_model_label(root)}?",
         f"Body only: {body_count} bones (default)",
         f"Body + fingers: {body_count + finger_count} bones ({finger_count} finger bones)",

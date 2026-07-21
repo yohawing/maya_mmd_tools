@@ -139,6 +139,20 @@ class TestHumanIkMenuActions(unittest.TestCase):
         ]
         self.assertEqual(labels, [label for _action, label in actions.ACTION_LABELS])
 
+    def test_menu_submenu_label_marks_humanik_as_experimental(self):
+        actions.install_humanik_menu(parent="MMD", cmds_module=self.cmds)
+
+        submenu_calls = [
+            call
+            for call in self.cmds.menuItem.call_args_list
+            if call.kwargs.get("subMenu")
+        ]
+        self.assertEqual(len(submenu_calls), 1)
+        self.assertEqual(submenu_calls[0].kwargs.get("label"), "HumanIK (Experimental)")
+        # The menu id/name stays stable for backward compatibility even though
+        # the displayed label now flags the feature as experimental.
+        self.assertEqual(submenu_calls[0].args[0], actions.HUMANIK_MENU_NAME)
+
     def test_menu_reinstall_removes_previous_submenu_before_recreating(self):
         existing = False
 
@@ -456,7 +470,8 @@ class TestHumanIkMenuActions(unittest.TestCase):
 
         message = actions._setup_confirmation_message("|Base:Base_root", report, report)
 
-        self.assertEqual(len(message.splitlines()), 4)
+        self.assertEqual(len(message.splitlines()), 5)
+        self.assertIn("experimental", message.splitlines()[0].lower())
         self.assertIn("Set up HumanIK for Base:Base_root?", message)
         self.assertNotIn("mute_for_hik", message)
         self.assertNotIn("journal", message)
@@ -602,6 +617,10 @@ class TestHumanIkMenuActions(unittest.TestCase):
         self.assertEqual(self.cmds.window.call_count, 2)
         self.cmds.scrollField.assert_called_once()
         self.cmds.showWindow.assert_called_once_with(actions.DIAGNOSTICS_WINDOW_NAME)
+        window_call = next(
+            call for call in self.cmds.window.call_args_list if "title" in call.kwargs
+        )
+        self.assertIn("Experimental", window_call.kwargs["title"])
 
     @patch.object(actions, "resolve_model_root", side_effect=ValueError("no model"))
     def test_diagnostics_reopen_deletes_existing_window(self, resolve):
