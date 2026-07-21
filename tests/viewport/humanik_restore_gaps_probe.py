@@ -312,7 +312,19 @@ def run_probe(log_path: str, pmx_path: str, report_path: str) -> None:
         return report
 
     def case_session_loss(pmx: Path) -> Dict[str, Any]:
-        """Hypothesis A: the in-memory journal is lost across a scene reopen."""
+        """Hypothesis A: the in-memory journal is lost across a scene reopen.
+
+        HUMANIK-RESTORE-GAPS-1 slice 1c added a scene-facts best-effort
+        recovery fallback to ``restore_mmd_rig`` for exactly this case: the
+        Control Rig node survives the reopen but the transaction that
+        created it does not, so ``new_session`` has nothing tracked for it.
+        The fallback still finds and deletes it via scene facts (the
+        character's joints resolve back to the imported MMD model root), so
+        the pass bar here changed from "gap confirmed" to "fallback
+        recovered it, with the unrecoverable-journal limitation surfaced as
+        a structured warning instead of being silently absorbed into a full
+        restore."
+        """
         import tempfile
 
         from mmd_tools.core.humanik_builder import resolve_scene_humanik_assignments
@@ -348,15 +360,26 @@ def run_probe(log_path: str, pmx_path: str, report_path: str) -> None:
             restore_error = str(exc)
         after_restore = _scene_snapshot(joints)
 
+        last_orphan_recovery = new_session.describe_last_orphan_recovery()
+        recovered_rows = last_orphan_recovery.get("recovered", [])
+
         report["restoreMmdRigReturned"] = restored
         report["restoreMmdRigError"] = restore_error
         report["hikNodesBeforeReopen"] = {t: before_reopen[t] for t in HIK_NODE_TYPES}
         report["hikNodesAfterRestoreAttempt"] = {t: after_restore[t] for t in HIK_NODE_TYPES}
         report["controlRigSurvivedReopenAndRestoreAttempt"] = bool(after_restore["HIKControlSetNode"])
         report["characterSurvivedReopenAndRestoreAttempt"] = bool(after_restore["HIKCharacterNode"])
-        report["status"] = (
-            "confirmed-gap" if report["controlRigSurvivedReopenAndRestoreAttempt"] else "not-reproduced"
+        report["lastOrphanRecovery"] = last_orphan_recovery
+        report["orphanRecoveredCount"] = len(recovered_rows)
+        report["orphanRecoveryReportedUnrecoverableWarning"] = bool(recovered_rows) and all(
+            row.get("unrecoverableWarnings") for row in recovered_rows
         )
+        report["status"] = "pass" if (
+            restored is True
+            and not report["controlRigSurvivedReopenAndRestoreAttempt"]
+            and report["orphanRecoveredCount"] >= 1
+            and report["orphanRecoveryReportedUnrecoverableWarning"]
+        ) else "fail-reproduces-gap"
         return report
 
     def case_raw_control_rig(pmx: Path) -> Dict[str, Any]:
@@ -364,6 +387,16 @@ def run_probe(log_path: str, pmx_path: str, report_path: str) -> None:
         (Maya's own UI, or a raw hikCreateControlRig() call) is never
         registered in the session's transaction table, so restore_mmd_rig has
         nothing to tear down for it.
+
+        HUMANIK-RESTORE-GAPS-1 slice 1c: the same scene-facts fallback used
+        for ``case_session_loss`` also covers this -- ``session`` here is
+        the *same* session that characterized ``root`` (unlike
+        ``case_session_loss``'s fresh ``new_session``), so this additionally
+        exercises the "characterize-live binding" path
+        (``find_binding_by_character`` still resolves) alongside the
+        scene-facts-only path. The pass bar changed the same way: fallback
+        recovers it and reports the unrecoverable-journal limitation instead
+        of leaving the Control Rig node behind.
         """
         from mmd_tools.core.humanik_builder import (
             create_humanik_control_rig,
@@ -406,14 +439,25 @@ def run_probe(log_path: str, pmx_path: str, report_path: str) -> None:
             restore_error = str(exc)
         after_restore = _scene_snapshot(joints)
 
+        last_orphan_recovery = session.describe_last_orphan_recovery()
+        recovered_rows = last_orphan_recovery.get("recovered", [])
+
         report["restoreMmdRigReturned"] = restored
         report["restoreMmdRigError"] = restore_error
         report["hikNodesAfterRawCreate"] = {t: after_raw_create[t] for t in HIK_NODE_TYPES}
         report["hikNodesAfterRestoreAttempt"] = {t: after_restore[t] for t in HIK_NODE_TYPES}
         report["controlRigSurvivedRestoreAttempt"] = bool(after_restore["HIKControlSetNode"])
-        report["status"] = (
-            "confirmed-gap" if report["controlRigSurvivedRestoreAttempt"] else "not-reproduced"
+        report["lastOrphanRecovery"] = last_orphan_recovery
+        report["orphanRecoveredCount"] = len(recovered_rows)
+        report["orphanRecoveryReportedUnrecoverableWarning"] = bool(recovered_rows) and all(
+            row.get("unrecoverableWarnings") for row in recovered_rows
         )
+        report["status"] = "pass" if (
+            restored is True
+            and not report["controlRigSurvivedRestoreAttempt"]
+            and report["orphanRecoveredCount"] >= 1
+            and report["orphanRecoveryReportedUnrecoverableWarning"]
+        ) else "fail-reproduces-gap"
         return report
 
     def case_partial_delete(pmx: Path) -> Dict[str, Any]:

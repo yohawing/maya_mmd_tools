@@ -339,6 +339,37 @@ def stop_humanik_control_rig(
         )
 
 
+def delete_orphaned_control_rig(character: str, cmds_module=None, mel_module=None) -> None:
+    """Delete a Control Rig for ``character`` with no tracked transaction.
+
+    HUMANIK-RESTORE-GAPS-1 slice 1c: ``HumanIkFrontendSession.restore_mmd_rig``'s
+    scene-facts fallback recovery pass uses this for a ``HIKControlSetNode``
+    that has nothing in ``_control_rig_transactions`` to tear it down with --
+    a scene reopen (the in-memory transaction is lost even though the node
+    survives save/reopen) or a Control Rig created through Maya's standard
+    HumanIK UI / a raw ``hikCreateControlRig()`` call. There is no journal to
+    restore in either case, so this performs only the
+    ``hikSetCurrentCharacter`` -> ``hikHasControlRig`` -> ``hikDeleteControlRig()``
+    sequence :func:`_delete_control_rig` already uses for a tracked
+    transaction's teardown, passing an empty ``created_nodes`` (nothing was
+    recorded to node-diff-delete as a fallback).
+
+    Unlike :func:`stop_humanik_control_rig`, this never touches a
+    :class:`HumanIkTransactionJournal` -- callers must report separately (see
+    ``describe_frontend_state``/the recovery report) that any muted MMD
+    writer edge or pre-characterize stance for this character cannot be
+    restored automatically.
+
+    Raises:
+        Exception: Any MEL failure (for example the HumanIK Character
+            Controls UI not being available in a batch/mayapy process)
+            surfaces uncaught. Fail-soft handling belongs to the caller.
+    """
+    cmds = cmds_module or maya_cmds()
+    mel = mel_module or maya_mel()
+    _delete_control_rig(character, (), cmds, mel)
+
+
 def _rollback(error, *, character, created_nodes, journal, ownership_id, cmds, mel) -> None:
     """Undo a failed control-rig creation: delete new nodes, then the journal."""
     try:

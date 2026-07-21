@@ -25,6 +25,7 @@ from mmd_tools.core.humanik_constraints import (
 from mmd_tools.core.humanik_control_rig import (
     HumanIkControlRigTransaction,
     begin_humanik_control_rig,
+    delete_orphaned_control_rig,
     stop_humanik_control_rig,
 )
 from mmd_tools.core.humanik_preview import (
@@ -36,9 +37,14 @@ from mmd_tools.core.humanik_resolver import (
     HumanIkBoneAssignment,
     HumanIkResolveResult,
 )
-from mmd_tools.core.humanik_retarget import describe_humanik_import_lock
+from mmd_tools.core.humanik_retarget import describe_humanik_import_lock, find_humanik_character_for_model
 from mmd_tools.core.humanik_stance import HumanIkStanceTransaction, canonical_stance_targets
-from mmd_tools.core.humanik_utils import maya_cmds
+from mmd_tools.core.humanik_utils import maya_cmds, maya_mel
+from mmd_tools.core.logger import get_logger
+from mmd_tools.services.scene_model_service import SceneModelService
+
+
+logger = get_logger(__name__)
 
 
 FINGER_HIK_MARKERS = ("Index", "Middle", "Ring", "Pinky", "Thumb")
@@ -103,6 +109,63 @@ REFERENCE_QUALITY_DIAGNOSTICS = {
 EXPECTED_BODY_ASSIGNMENT_COUNT = 25
 EXPECTED_FINGER_ASSIGNMENT_COUNT = 30
 EXPECTED_FULL_ASSIGNMENT_COUNT = EXPECTED_BODY_ASSIGNMENT_COUNT + EXPECTED_FINGER_ASSIGNMENT_COUNT
+
+
+# --- HUMANIK-RESTORE-GAPS-1 slice 1c: orphaned Control Rig recovery --------
+#
+# Structured warnings attached to every orphaned Control Rig this session
+# recovers via scene facts alone (see ``_recover_orphaned_control_rigs``).
+# There is no surviving ``HumanIkTransactionJournal`` for these -- the
+# in-memory transaction table was either lost (scene reopen) or never
+# existed for this Control Rig (created outside ``create_control_rig``) --
+# so the writer-isolation reconnection and the pre-characterize stance
+# restore that a *tracked* teardown performs cannot happen here. These
+# strings must stay visible in the recovery report rather than letting a
+# "recovered" entry read as a full restore.
+ORPHAN_RECOVERY_WARNING_JOURNAL_UNAVAILABLE = (
+    "journal_unavailable: no MMD-writer-isolation journal survived for this "
+    "Control Rig (scene reopen, or created outside create_control_rig), so "
+    "any muted MMD writer edge could not be reconnected automatically."
+)
+ORPHAN_RECOVERY_WARNING_STANCE_UNAVAILABLE = (
+    "stance_unavailable: the pre-characterize stance snapshot for this "
+    "recovery is not tracked either, so the model's pose was not reverted "
+    "to its pre-HumanIK stance."
+)
+ORPHAN_RECOVERY_UNRECOVERABLE_WARNINGS = (
+    ORPHAN_RECOVERY_WARNING_JOURNAL_UNAVAILABLE,
+    ORPHAN_RECOVERY_WARNING_STANCE_UNAVAILABLE,
+)
+
+
+def _find_mmd_model_root_for_character(character: str, cmds) -> Optional[str]:
+    """Return the MMD model root HIK-characterized as ``character``, from scene facts.
+
+    Deliberately scene-fact based -- unlike ``find_binding_by_character`` this
+    never consults a session's in-memory ``_bindings`` -- so it still answers
+    correctly after a scene reopen or when the Control Rig was created by
+    something other than this session entirely (HUMANIK-RESTORE-GAPS-1).  This
+    is the safety gate for ``restore_mmd_rig``'s orphaned Control Rig
+    recovery: a Control Rig is only ever deleted here when its character's
+    joints resolve back to a real ``*_root``/MMD model in the scene, so a
+    Control Rig belonging to an unrelated (non-MMD) HIK character is never
+    touched.
+
+    Any Maya query failure or an empty ``list_mmd_models()`` returns
+    ``None`` -- "cannot prove this is MMD-driven" -- never raises.
+    """
+    try:
+        model_roots = SceneModelService(cmds_module=cmds).list_mmd_models()
+    except Exception:
+        return None
+    for model_root in model_roots:
+        try:
+            found = find_humanik_character_for_model(model_root, cmds_module=cmds)
+        except Exception:
+            continue
+        if found and found == character:
+            return model_root
+    return None
 
 
 def is_humanik_finger_assignment(assignment: HumanIkBoneAssignment) -> bool:
@@ -255,6 +318,11 @@ class HumanIkFrontendSession:
         self._pending_characters: Dict[str, str] = {}
         self._pending_stances: Dict[str, HumanIkStanceTransaction] = {}
         self._stance_transaction_factory = stance_transaction_factory or HumanIkStanceTransaction
+        self._last_orphan_recovery: Dict[str, List[Dict[str, Any]]] = {
+            "recovered": [],
+            "skipped": [],
+            "failed": [],
+        }
 
     @property
     def active_preview(self) -> Optional[HumanIkTargetPreview]:
@@ -503,12 +571,31 @@ class HumanIkFrontendSession:
         on the next ``restore_mmd_rig`` call, mirroring the pending
         stance/character retry behavior below.
 
-        A Control Rig created outside mmd_tools (Maya's standard HumanIK UI,
-        or a raw ``hikCreateControlRig()`` call) is never in
-        ``self._control_rig_transactions`` -- ``humanik_control_rig_watch``
-        only warns about it, it never registers a transaction -- so this
-        method has nothing to tear down for it; deleting it remains the
-        user's own responsibility via Character Controls.
+        HUMANIK-RESTORE-GAPS-1 slice 1c: after the tracked teardown above,
+        this also runs a best-effort scene-facts recovery pass (see
+        ``_recover_orphaned_control_rigs``) for any ``HIKControlSetNode`` this
+        session has no transaction for -- a scene reopen (the in-memory
+        transaction table is lost even though the Control Rig node survives
+        save/reopen) or a Control Rig created through Maya's standard
+        HumanIK UI / a raw ``hikCreateControlRig()`` call instead of
+        ``create_control_rig``. It is deleted through the same
+        ``hikDeleteControlRig()`` MEL sequence, but **only** when its
+        character's joints resolve back to a real MMD model root in the
+        scene (``_find_mmd_model_root_for_character``) -- a Control Rig for
+        an unrelated, non-MMD HIK character is never touched, matching the
+        "auto-adopt is out of scope" decision in ``TODO.md``. There is no
+        journal for this recovery, so muted MMD writer edges and the
+        pre-characterize stance cannot be restored; that limitation is
+        reported as structured warnings (``ORPHAN_RECOVERY_UNRECOVERABLE_WARNINGS``)
+        on each recovered entry, never silently upgraded to a full restore.
+        This pass is fail-soft by design (a MEL failure -- for example the
+        HumanIK Character Controls UI not being available in a batch/mayapy
+        process -- is recorded in the report and logged, never raised) so it
+        can never turn a clean tracked-transaction restore into an
+        exception; the return value stays a plain ``bool`` for backward
+        compatibility, and the detailed per-node outcome is available via
+        ``describe_last_orphan_recovery()`` or ``describe_frontend_state()``'s
+        ``restoreHint.lastOrphanRecovery``.
         """
         preview = self._preview
         restored = False
@@ -562,9 +649,105 @@ class HumanIkFrontendSession:
             else:
                 self._pending_characters.pop(character, None)
                 restored = True
+        orphan_recovery = self._recover_orphaned_control_rigs()
+        self._last_orphan_recovery = orphan_recovery
+        if orphan_recovery["recovered"]:
+            restored = True
         if first_error is not None:
             raise first_error
         return restored
+
+    def _recover_orphaned_control_rigs(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Best-effort scene-facts recovery for untracked Control Rigs.
+
+        Reuses ``_describe_orphaned_control_rigs``'s cheap
+        ``HIKControlSetNode`` scan (no ownership classification) to find
+        every Control Rig this session has no active transaction for, then
+        for each one:
+
+        * skips it with ``skippedReason="unknown_character"`` when the node
+          has no connected ``HIKCharacterNode`` (nothing to act on);
+        * skips it with ``skippedReason="not_mmd_driven"`` when
+          ``_find_mmd_model_root_for_character`` cannot resolve the
+          character back to a real MMD model root -- this is the hard
+          safety gate: a Control Rig for an unrelated HIK character is
+          never deleted, matching the "MMD-driven only" constraint in
+          ``TODO.md`` (auto-adopt of arbitrary Control Rigs was explicitly
+          rejected);
+        * otherwise attempts ``delete_orphaned_control_rig`` and records the
+          outcome as ``recovered`` (with
+          ``ORPHAN_RECOVERY_UNRECOVERABLE_WARNINGS`` attached -- there is no
+          journal, so writer/stance restore did not happen) or ``failed``
+          (the MEL call raised -- for example no HumanIK UI in a batch/mayapy
+          process) without ever raising out of this method.
+
+        Returns:
+            ``{"recovered": [...], "skipped": [...], "failed": [...]}``,
+            each a list of JSON-safe dicts.
+        """
+        report: Dict[str, List[Dict[str, Any]]] = {"recovered": [], "skipped": [], "failed": []}
+        orphans = self._describe_orphaned_control_rigs()
+        if not orphans:
+            return report
+        cmds = self._cmds or maya_cmds()
+        try:
+            mel = self._mel or maya_mel()
+        except Exception as exc:
+            for row in orphans:
+                report["skipped"].append(
+                    {**row, "skippedReason": "mel_unavailable", "detail": str(exc)}
+                )
+            return report
+        for row in orphans:
+            node = row["controlSetNode"]
+            character = row.get("character")
+            entry: Dict[str, Any] = {"controlSetNode": node, "character": character}
+            if not character:
+                entry["skippedReason"] = "unknown_character"
+                report["skipped"].append(entry)
+                continue
+            model_root = _find_mmd_model_root_for_character(character, cmds)
+            if model_root is None:
+                entry["skippedReason"] = "not_mmd_driven"
+                report["skipped"].append(entry)
+                continue
+            entry["modelRoot"] = model_root
+            try:
+                delete_orphaned_control_rig(character, cmds_module=cmds, mel_module=mel)
+            except Exception as exc:
+                entry["error"] = str(exc)
+                report["failed"].append(entry)
+                logger.warning(
+                    "HumanIK orphaned Control Rig recovery failed: character=%s "
+                    "modelRoot=%s controlSetNode=%s: %s",
+                    character, model_root, node, exc,
+                )
+                continue
+            entry["unrecoverableWarnings"] = list(ORPHAN_RECOVERY_UNRECOVERABLE_WARNINGS)
+            report["recovered"].append(entry)
+            logger.warning(
+                "HumanIK recovered an orphaned Control Rig outside this session's "
+                "tracked transactions (character=%s modelRoot=%s controlSetNode=%s); "
+                "no journal survived for it, so muted MMD writer edges and the "
+                "pre-characterize stance were not restored -- see "
+                "ORPHAN_RECOVERY_UNRECOVERABLE_WARNINGS.",
+                character, model_root, node,
+            )
+        return report
+
+    def describe_last_orphan_recovery(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Return the outcome of the most recent ``restore_mmd_rig`` orphan pass.
+
+        JSON-safe copy of the report ``_recover_orphaned_control_rigs``
+        produced on the last ``restore_mmd_rig`` call (empty lists before the
+        first call). ``describe_frontend_state()`` surfaces the same data as
+        ``restoreHint.lastOrphanRecovery`` for UI consumption.
+        """
+        return {
+            "recovered": [dict(item) for item in self._last_orphan_recovery.get("recovered", [])],
+            "skipped": [dict(item) for item in self._last_orphan_recovery.get("skipped", [])],
+            "failed": [dict(item) for item in self._last_orphan_recovery.get("failed", [])],
+        }
 
     def inspect_model(
         self,
@@ -839,6 +1022,16 @@ class HumanIkFrontendSession:
         never the expensive ownership classification -- and fails soft to an
         empty list on any query error, matching ``_describe_import_lock``.
 
+        ``restoreHint.lastOrphanRecovery`` (HUMANIK-RESTORE-GAPS-1 slice 1c)
+        reports what the most recent ``restore_mmd_rig`` call did about the
+        rows above: which orphaned Control Rigs it deleted (with structured
+        ``unrecoverableWarnings`` -- there is no journal for these, so muted
+        MMD writer edges and the pre-characterize stance were not restored),
+        which it skipped because the character could not be resolved back to
+        an MMD model root (never deletes a non-MMD Control Rig), and which
+        MEL delete attempt failed (fail-soft, never raised). See
+        ``describe_last_orphan_recovery``/``_recover_orphaned_control_rigs``.
+
         Returns:
             A dict with keys ``mode``, ``source``, ``target``,
             ``previewActive``, ``controlRigs``, ``restoreHint``, ``actions``,
@@ -914,6 +1107,7 @@ class HumanIkFrontendSession:
                 "pendingStanceCount": len(self._pending_stances),
                 "pendingCharacterCount": len(self._pending_characters),
                 "orphanedControlRigs": self._describe_orphaned_control_rigs(),
+                "lastOrphanRecovery": self.describe_last_orphan_recovery(),
             },
             "actions": actions,
         }

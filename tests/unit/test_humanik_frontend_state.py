@@ -9,7 +9,7 @@ prediction agrees with what the real guard does.
 
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from mmd_tools.core.humanik_frontend import (
     FRONTEND_MODE_CONTROL_RIG,
@@ -477,6 +477,188 @@ class TestDescribeFrontendStateOrphanedControlRigs(unittest.TestCase):
         state = session.describe_frontend_state()
 
         self.assertEqual(state["restoreHint"]["orphanedControlRigs"], [])
+
+
+class TestRestoreMmdRigOrphanRecovery(unittest.TestCase):
+    """HUMANIK-RESTORE-GAPS-1 slice 1c: ``restore_mmd_rig``'s best-effort
+    scene-facts recovery pass for a Control Rig this session has no
+    ``HumanIkControlRigTransaction`` for (scene reopen, or a raw
+    ``hikCreateControlRig()``/Maya standard UI Control Rig)."""
+
+    @staticmethod
+    def _session(cmds_module):
+        return HumanIkFrontendSession(
+            cmds_module=cmds_module,
+            mel_module=object(),
+            stance_transaction_factory=FakeStance,
+        )
+
+    @patch("mmd_tools.core.humanik_frontend.delete_orphaned_control_rig")
+    @patch("mmd_tools.core.humanik_frontend.find_humanik_character_for_model")
+    @patch("mmd_tools.core.humanik_frontend.SceneModelService")
+    def test_mmd_driven_orphan_is_recovered(self, scene_service_cls, find_character, delete_rig):
+        scene_service_cls.return_value.list_mmd_models.return_value = ["|target"]
+        find_character.side_effect = (
+            lambda model_root, cmds_module=None: "Character_target" if model_root == "|target" else None
+        )
+        cmds = FakeSceneCmds(
+            control_set_nodes=["Stray_ControlRig"],
+            character_by_node={"Stray_ControlRig": "Character_target"},
+        )
+        session = self._session(cmds)
+
+        restored = session.restore_mmd_rig()
+
+        self.assertTrue(restored)
+        delete_rig.assert_called_once_with("Character_target", cmds_module=cmds, mel_module=ANY)
+        report = session.describe_last_orphan_recovery()
+        self.assertEqual(report["skipped"], [])
+        self.assertEqual(report["failed"], [])
+        self.assertEqual(len(report["recovered"]), 1)
+        recovered = report["recovered"][0]
+        self.assertEqual(recovered["controlSetNode"], "Stray_ControlRig")
+        self.assertEqual(recovered["character"], "Character_target")
+        self.assertEqual(recovered["modelRoot"], "|target")
+        self.assertTrue(recovered["unrecoverableWarnings"])
+        self.assertTrue(
+            any("journal_unavailable" in warning for warning in recovered["unrecoverableWarnings"])
+        )
+        # Same report is surfaced through describe_frontend_state for UI consumption.
+        state = session.describe_frontend_state()
+        self.assertEqual(state["restoreHint"]["lastOrphanRecovery"], report)
+
+    @patch("mmd_tools.core.humanik_frontend.delete_orphaned_control_rig")
+    @patch("mmd_tools.core.humanik_frontend.find_humanik_character_for_model")
+    @patch("mmd_tools.core.humanik_frontend.SceneModelService")
+    def test_non_mmd_character_is_never_deleted(self, scene_service_cls, find_character, delete_rig):
+        # No MMD model root in the scene resolves to this character: it is
+        # not MMD-driven, so the Control Rig must be left completely alone.
+        scene_service_cls.return_value.list_mmd_models.return_value = ["|target"]
+        find_character.return_value = None
+        cmds = FakeSceneCmds(
+            control_set_nodes=["Unrelated_ControlRig"],
+            character_by_node={"Unrelated_ControlRig": "Character_unrelated"},
+        )
+        session = self._session(cmds)
+
+        restored = session.restore_mmd_rig()
+
+        self.assertFalse(restored)
+        delete_rig.assert_not_called()
+        report = session.describe_last_orphan_recovery()
+        self.assertEqual(report["recovered"], [])
+        self.assertEqual(report["failed"], [])
+        self.assertEqual(len(report["skipped"]), 1)
+        skipped = report["skipped"][0]
+        self.assertEqual(skipped["controlSetNode"], "Unrelated_ControlRig")
+        self.assertEqual(skipped["character"], "Character_unrelated")
+        self.assertEqual(skipped["skippedReason"], "not_mmd_driven")
+
+    def test_orphan_with_unknown_character_is_skipped_without_scene_scan(self):
+        cmds = FakeSceneCmds(control_set_nodes=["Stray_ControlRig"], character_by_node={})
+        session = self._session(cmds)
+
+        with patch("mmd_tools.core.humanik_frontend.SceneModelService") as scene_service_cls, patch(
+            "mmd_tools.core.humanik_frontend.delete_orphaned_control_rig"
+        ) as delete_rig:
+            restored = session.restore_mmd_rig()
+
+        self.assertFalse(restored)
+        delete_rig.assert_not_called()
+        scene_service_cls.assert_not_called()
+        report = session.describe_last_orphan_recovery()
+        self.assertEqual(report["skipped"], [{"controlSetNode": "Stray_ControlRig", "character": None, "skippedReason": "unknown_character"}])
+
+    @patch(
+        "mmd_tools.core.humanik_frontend.delete_orphaned_control_rig",
+        side_effect=RuntimeError("HIKCharacterControlsTool not available in batch mode"),
+    )
+    @patch("mmd_tools.core.humanik_frontend.find_humanik_character_for_model")
+    @patch("mmd_tools.core.humanik_frontend.SceneModelService")
+    def test_mel_delete_failure_is_fail_soft_not_raised(self, scene_service_cls, find_character, delete_rig):
+        scene_service_cls.return_value.list_mmd_models.return_value = ["|target"]
+        find_character.return_value = "Character_target"
+        cmds = FakeSceneCmds(
+            control_set_nodes=["Stray_ControlRig"],
+            character_by_node={"Stray_ControlRig": "Character_target"},
+        )
+        session = self._session(cmds)
+
+        restored = session.restore_mmd_rig()  # must not raise
+
+        self.assertFalse(restored)
+        report = session.describe_last_orphan_recovery()
+        self.assertEqual(report["recovered"], [])
+        self.assertEqual(len(report["failed"]), 1)
+        failed = report["failed"][0]
+        self.assertEqual(failed["controlSetNode"], "Stray_ControlRig")
+        self.assertEqual(failed["modelRoot"], "|target")
+        self.assertIn("batch mode", failed["error"])
+
+    def test_no_orphans_leaves_tracked_teardown_return_value_unchanged(self):
+        """Existing behavior (HUMANIK-RESTORE-GAPS-1 1a/1b): nothing to
+        restore still returns False, and the orphan pass is a pure no-op."""
+        cmds = FakeSceneCmds(control_set_nodes=[])
+        session = self._session(cmds)
+
+        self.assertFalse(session.restore_mmd_rig())
+        self.assertEqual(
+            session.describe_last_orphan_recovery(),
+            {"recovered": [], "skipped": [], "failed": []},
+        )
+
+    @patch(
+        "mmd_tools.core.humanik_frontend.begin_humanik_control_rig",
+        return_value=FakeControlRigTransaction("Character_target"),
+    )
+    def test_tracked_transaction_teardown_still_wins_over_orphan_pass(self, begin):
+        """A Control Rig this session *does* track must still be torn down
+        through the normal ``stop_humanik_control_rig`` path exactly once,
+        with the new orphan-recovery pass never also deleting it -- even
+        though ``stop_humanik_control_rig`` is stubbed here (so the fake
+        scene's ``HIKControlSetNode`` is not actually removed) and the
+        transaction is popped as soon as the stub "succeeds", which would
+        otherwise make the node look newly-unowned to
+        ``_describe_orphaned_control_rigs`` on the very same
+        ``restore_mmd_rig`` call.
+        """
+        FakeControlRigTransaction.created_nodes = ["Tracked_ControlRig"]
+        try:
+            cmds = FakeSceneCmds(
+                control_set_nodes=["Tracked_ControlRig"],
+                character_by_node={"Tracked_ControlRig": "Character_target"},
+            )
+            session = self._session(cmds)
+            _characterize(session, "|source", "Character_source")
+            session.enter_source_mode("|source")
+            _characterize(session, "|target", "Character_target")
+            session.create_control_rig("|target")
+
+            with patch(
+                "mmd_tools.core.humanik_frontend.stop_humanik_control_rig"
+            ) as stop_control_rig, patch(
+                "mmd_tools.core.humanik_frontend.delete_orphaned_control_rig"
+            ) as delete_rig, patch(
+                "mmd_tools.core.humanik_frontend.SceneModelService"
+            ) as scene_service_cls:
+                scene_service_cls.return_value.list_mmd_models.return_value = []
+                restored = session.restore_mmd_rig()
+
+            self.assertTrue(restored)
+            stop_control_rig.assert_called_once()
+            delete_rig.assert_not_called()
+            self.assertEqual(
+                session.describe_last_orphan_recovery()["skipped"],
+                [
+                    {
+                        "controlSetNode": "Tracked_ControlRig",
+                        "character": "Character_target",
+                        "skippedReason": "not_mmd_driven",
+                    }
+                ],
+            )
+        finally:
+            del FakeControlRigTransaction.created_nodes
 
 
 if __name__ == "__main__":
