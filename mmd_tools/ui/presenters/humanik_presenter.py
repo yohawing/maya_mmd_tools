@@ -259,10 +259,10 @@ class HumanIkPresenter:
             state = {}
         self.view.set_state(state)
 
-        self._refresh_source_combo(models, character_root, state)
+        self._refresh_source_combo(models, character_root, state, session)
         self._sync_bake_frame_range()
 
-    def _refresh_source_combo(self, models, character_root, state):
+    def _refresh_source_combo(self, models, character_root, state, session):
         """Populate the Source combo and select it from backend truth, not memory.
 
         ``state["source"]`` (from ``describe_frontend_state``) is the single
@@ -270,16 +270,52 @@ class HumanIkPresenter:
         failed or cancelled connect/disconnect must show up here as the
         combo reverting to what the backend actually has, never to whatever
         the user most recently clicked.
+
+        HUMANIK-EXTERNAL-SOURCE-1 ES-3: besides "None" and every other scene
+        MMD model, the combo also lists every scene HIK character that is
+        *not* MMD-driven (``session.list_source_candidates()``'s
+        ``isMmd=False`` rows -- e.g. a mocap performer characterized outside
+        mmd_tools), labeled ``"<character> (HIK)"``. An unlocked external
+        character is still listed (rather than hidden or pre-disabled) --
+        picking one dispatches to ``connect_retarget`` exactly like any other
+        item, and ``enter_external_source_mode``'s existing not-locked
+        RuntimeError surfaces through the same error-reporting path every
+        other connect failure already uses; the combo then re-syncs to
+        backend truth (still "None") on the next refresh. Item data is a
+        ``("mmd", model_root)``/``("external", character)`` pair so
+        ``humanik_menu_actions.connect_retarget`` can tell the two kinds
+        apart; ``None`` still means "no source" (disconnect).
         """
         none_label = self.view.tr("humanik_none", "labels") if hasattr(self.view, "tr") else "None"
         options = [(none_label, None)]
         for root in models:
             if root == character_root:
                 continue
-            options.append((self._label_for(root), root))
+            options.append((self._label_for(root), ("mmd", root)))
+        for row in self._list_external_source_candidates(session):
+            character = row.get("character")
+            if not character:
+                continue
+            options.append((f"{character} (HIK)", ("external", character)))
         source_binding = (state or {}).get("source") or {}
-        backend_source = source_binding.get("modelRoot")
+        if source_binding.get("external"):
+            backend_source = ("external", source_binding.get("character"))
+        elif source_binding.get("modelRoot"):
+            backend_source = ("mmd", source_binding.get("modelRoot"))
+        else:
+            backend_source = None
         self._set_source_options(options, backend_source)
+
+    def _list_external_source_candidates(self, session):
+        lister = getattr(session, "list_source_candidates", None)
+        if not callable(lister):
+            return []
+        try:
+            rows = lister() or []
+        except Exception:
+            logger.debug("HumanIK tab could not list external source candidates", exc_info=True)
+            return []
+        return [row for row in rows if not row.get("isMmd")]
 
     def _set_character_options(self, options, selected_value):
         setter = getattr(self.view, "set_character_options", None)

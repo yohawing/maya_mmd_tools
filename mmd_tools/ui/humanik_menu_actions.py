@@ -23,6 +23,14 @@ from mmd_tools.services.scene_model_service import SceneModelService
 
 HUMANIK_MENU_NAME = "MMDHumanIKMenu"
 DIAGNOSTICS_WINDOW_NAME = "MMDHumanIKDiagnosticsWindow"
+
+# HUMANIK-EXTERNAL-SOURCE-1 ES-3: the Source combo's item data distinguishes
+# an MMD model root from a scene HIK character that is not MMD-driven (e.g. a
+# mocap performer characterized outside mmd_tools) via a ``(kind, value)``
+# pair. ``connect_retarget`` accepts a bare string too (legacy/MMD-only
+# callers) for backward compatibility -- see ``_normalize_source_selector``.
+SOURCE_KIND_MMD = "mmd"
+SOURCE_KIND_EXTERNAL = "external"
 ACTION_LABELS = (
     ("open_humanik_editor", "HumanIK Editor..."),
     ("setup_and_characterize", "Setup / Characterize"),
@@ -339,58 +347,218 @@ def create_control_rig(model_root: Optional[str] = None):
     return _run_action("Create Control Rig", lambda: _create_control_rig(model_root))
 
 
-def connect_retarget(source_model_root: str, target_model_root: str):
-    """Bind ``source_model_root`` as SOURCE and start a TARGET preview onto ``target_model_root``.
+def enter_external_source_mode(character: Optional[str] = None):
+    """Select a scene HIK character (not MMD-driven) already locked as SOURCE.
+
+    HUMANIK-EXTERNAL-SOURCE-1 ES-3: unlike ``enter_source_mode`` this never
+    auto-characterizes anything -- an external character (mocap performer,
+    plain HumanIK UI use, ...) is never mutated by mmd_tools.
+    """
+    return _run_action("Enter External Source Mode", lambda: _enter_external_source_mode(character))
+
+
+def _enter_external_source_mode(character: Optional[str] = None):
+    if not character:
+        raise ValueError("HumanIK external source requires a character name")
+    return get_humanik_session().enter_external_source_mode(character)
+
+
+def connect_retarget(source, target_model_root: str):
+    """Bind ``source`` as SOURCE and start a TARGET preview onto ``target_model_root``.
 
     The composite action the HumanIK tab's Source combo triggers when the
-    user picks a model there (HUMANIK-FRONTEND-1 Phase B4): auto-characterize
-    + ``enter_source_mode`` on the source, then auto-characterize +
-    ``enter_target_mode`` (with its existing confirmation dialog) on the
-    target. Reuses the already-wrapped ``enter_source_mode``/``enter_target_mode``
-    public functions, so a failure at either step is already reported to the
-    user by that step's own ``_run_action``/``_report_action_failure`` --
-    this function only decides whether to continue to the next step, never
-    duplicates the error reporting. On any failure (or a mid-flow dialog
-    cancel) this returns ``None`` without raising; callers must re-read
-    ``describe_frontend_state`` to learn the real resulting state rather than
-    trusting that SOURCE ended up bound.
+    user picks an item there (HUMANIK-FRONTEND-1 Phase B4; HUMANIK-EXTERNAL-
+    SOURCE-1 ES-3 for the external branch).
+
+    Args:
+        source: Either a bare MMD model-root string (legacy/MMD-only
+            callers), or a ``(kind, value)`` pair where ``kind`` is
+            ``SOURCE_KIND_MMD``/``SOURCE_KIND_EXTERNAL`` and ``value`` is the
+            model root or the scene HIK character name respectively -- see
+            ``_normalize_source_selector``.
+        target_model_root: The MMD model (Character combo) to retarget onto.
+
+    For an MMD source: auto-characterize + ``enter_source_mode`` on the
+    source, then auto-characterize + ``enter_target_mode`` on the target (no
+    confirmation dialogs -- HUMANIK-FRONTEND-1 Phase B6). For an external
+    source: no auto-characterize of the source (it is never mutated), and --
+    only for this branch -- a one-time check for existing animCurves on the
+    target's HIK-assigned joints, since baking an external retarget onto an
+    already-keyed channel fails (HUMANIK-EXTERNAL-SOURCE-1 ES-2 probe
+    finding). The user is asked whether to clear that animation first, keep
+    it and try anyway, or cancel; MMD-to-MMD connects are unaffected.
+
+    Reuses the already-wrapped ``enter_source_mode``/``enter_target_mode``/
+    ``enter_external_source_mode`` public functions, so a failure at either
+    step is already reported to the user by that step's own ``_run_action``/
+    ``_report_action_failure`` -- this function only decides whether to
+    continue to the next step, never duplicates the error reporting. On any
+    failure (or a mid-flow dialog cancel) this returns ``None`` without
+    raising; callers must re-read ``describe_frontend_state`` to learn the
+    real resulting state rather than trusting that SOURCE ended up bound.
     """
-    return _run_action(
-        "Connect Retarget", lambda: _connect_retarget(source_model_root, target_model_root)
-    )
+    return _run_action("Connect Retarget", lambda: _connect_retarget(source, target_model_root))
 
 
-def _connect_retarget(source_model_root: str, target_model_root: str):
-    if not source_model_root or not target_model_root:
+def _normalize_source_selector(source):
+    """Return ``(kind, value)`` for any Source-combo item-data shape.
+
+    Accepts a bare string (legacy MMD-only callers/tests), a ``(kind,
+    value)`` tuple/list, or a ``{"kind": ..., "modelRoot"/"character": ...}``
+    mapping -- see ``connect_retarget``.
+    """
+    if isinstance(source, (tuple, list)) and len(source) == 2:
+        return str(source[0]), source[1]
+    if isinstance(source, Mapping):
+        kind = str(source.get("kind", SOURCE_KIND_MMD))
+        value = source.get("modelRoot") if kind == SOURCE_KIND_MMD else source.get("character")
+        return kind, value
+    return SOURCE_KIND_MMD, source
+
+
+def _connect_retarget(source, target_model_root: str):
+    kind, value = _normalize_source_selector(source)
+    if not value or not target_model_root:
         raise ValueError("HumanIK retarget requires both a Character and a Source model")
-    if source_model_root == target_model_root:
-        raise ValueError("HumanIK Source and Character models must differ")
-    if enter_source_mode(model_root=source_model_root) is None:
-        # enter_source_mode already reported its own failure/cancel; do not
-        # proceed to target mode with no SOURCE actually bound.
-        return None
+    if kind == SOURCE_KIND_EXTERNAL:
+        if not _confirm_clear_existing_target_animation(target_model_root):
+            return None
+        if enter_external_source_mode(character=value) is None:
+            # enter_external_source_mode already reported its own failure;
+            # do not proceed to target mode with no SOURCE actually bound.
+            return None
+    else:
+        if value == target_model_root:
+            raise ValueError("HumanIK Source and Character models must differ")
+        if enter_source_mode(model_root=value) is None:
+            return None
     return enter_target_mode(model_root=target_model_root)
+
+
+def _confirm_clear_existing_target_animation(target_model_root: str) -> bool:
+    """Ask before connecting an external SOURCE onto an already-keyed TARGET.
+
+    HUMANIK-EXTERNAL-SOURCE-1 ES-3: the ES-2 probe found that baking an
+    external HumanIK retarget onto a TARGET joint that already carries a VMD
+    ``animCurve`` hits the bake path's write-conflict guard. This is a light,
+    read-only scan (``cmds.listConnections`` per HIK-assigned joint) run only
+    on the external-source connect path -- MMD-to-MMD connects keep their
+    existing behavior unchanged.
+
+    Returns ``True`` to proceed (nothing found, or the user chose to clear or
+    keep the animation), ``False`` on cancel.
+    """
+    session = get_humanik_session()
+    curves = _find_target_animcurves(session, target_model_root)
+    if not curves:
+        return True
+    choice = _dialog_choice(
+        "Existing Animation",
+        (
+            f"{_short_model_label(target_model_root)} already has {len(curves)} animation "
+            "curve(s) on its HumanIK-assigned joints. Baking an external HumanIK source onto "
+            "already-keyed channels will fail.\n"
+            "Clear the existing animation before connecting?"
+        ),
+        ("Clear and connect", "Connect anyway", "Cancel"),
+    )
+    if choice == "Clear and connect":
+        _clear_animcurves(curves)
+        return True
+    if choice == "Connect anyway":
+        return True
+    return False
+
+
+def _find_target_animcurves(session, target_model_root: str) -> list:
+    """Return every distinct ``animCurve`` feeding a joint HumanIK would assign.
+
+    Uses ``inspect_model`` (a pure resolve, no characterization required) so
+    this works whether or not ``target_model_root`` is characterized yet.
+    Fails soft to an empty list on any query error, matching every other
+    scene-fact helper this module and ``humanik_frontend`` use.
+    """
+    try:
+        report = session.inspect_model(target_model_root)
+    except Exception:
+        return []
+    joints = [row.get("joint") for row in report.get("assignments", []) if row.get("joint")]
+    cmds = _cmds_module or _maya_cmds()
+    seen = set()
+    curves = []
+    for joint in joints:
+        try:
+            connected = cmds.listConnections(joint, source=True, destination=False, type="animCurve") or []
+        except Exception:
+            connected = []
+        for curve in connected:
+            curve_name = str(curve)
+            if curve_name not in seen:
+                seen.add(curve_name)
+                curves.append(curve_name)
+    return curves
+
+
+def _clear_animcurves(curves) -> None:
+    """Delete ``curves`` inside one undo chunk so the clear is a single undo step."""
+    cmds = _cmds_module or _maya_cmds()
+    existing = []
+    for curve in curves:
+        try:
+            if cmds.objExists(curve):
+                existing.append(curve)
+        except Exception:
+            continue
+    if not existing:
+        return
+    cmds.undoInfo(openChunk=True)
+    try:
+        cmds.delete(existing)
+    finally:
+        cmds.undoInfo(closeChunk=True)
 
 
 def disconnect_retarget():
     """Restore the MMD rig to disconnect the active retarget (Source combo -> "None").
 
-    Confirms with the user first, since this also closes any active Control
-    Rig (``restore_mmd_rig`` tears down both preview and Control Rig
-    transactions). A cancelled confirmation returns ``None`` without
-    mutating the scene.
+    HUMANIK-FRONTEND-1 Phase B6: confirmation is shown only when a Control
+    Rig transaction is currently active (deleting it is the one
+    irreversible-in-this-call side effect); otherwise this restores
+    immediately, matching the other de-popup-ified actions. A cancelled
+    confirmation returns ``None`` without mutating the scene.
     """
     return _run_action("Disconnect Retarget", _disconnect_retarget)
 
 
 def _disconnect_retarget():
-    message = (
-        "Disconnect the HumanIK retarget and restore the MMD rig?\n"
-        "Any active Control Rig will also be closed."
-    )
-    if not _confirm("Disconnect Retarget", message):
-        return None
-    return get_humanik_session().restore_mmd_rig()
+    session = get_humanik_session()
+    if _has_active_control_rig(session):
+        message = (
+            "Disconnect the HumanIK retarget and restore the MMD rig?\n"
+            "The active Control Rig will also be deleted."
+        )
+        if not _confirm("Disconnect Retarget", message):
+            return None
+    return session.restore_mmd_rig()
+
+
+def _has_active_control_rig(session) -> bool:
+    """Return whether ``session`` currently has at least one active Control Rig.
+
+    Read-only: reuses ``describe_frontend_state()['controlRigs']`` (already
+    computed from live transactions) rather than reaching into the session's
+    private state. Fails soft to ``False`` -- if this cannot be determined,
+    the confirmation is skipped rather than raising, matching every other
+    ``describe_frontend_state`` consumer in this module.
+    """
+    describe = getattr(session, "describe_frontend_state", None)
+    if not callable(describe):
+        return False
+    try:
+        state = describe() or {}
+    except Exception:
+        return False
+    return bool(state.get("controlRigs"))
 
 
 def bake_to_mmd_rig(start=None, end=None):
@@ -405,8 +573,23 @@ def bake_to_mmd_rig(start=None, end=None):
 
 
 def restore_mmd_rig():
-    """Restore active preview state or pending setup characters without a model selection."""
-    return _run_action("Restore MMD Rig", lambda: get_humanik_session().restore_mmd_rig())
+    """Restore active preview state or pending setup characters without a model selection.
+
+    HUMANIK-FRONTEND-1 Phase B6: confirmation is shown only when a Control
+    Rig transaction is currently active, matching ``disconnect_retarget``.
+    """
+    return _run_action("Restore MMD Rig", _restore_mmd_rig)
+
+
+def _restore_mmd_rig():
+    session = get_humanik_session()
+    if _has_active_control_rig(session):
+        if not _confirm(
+            "Restore MMD Rig",
+            "This will delete the active HumanIK Control Rig and restore the journal. Continue?",
+        ):
+            return None
+    return session.restore_mmd_rig()
 
 
 def diagnostics():
@@ -421,11 +604,16 @@ def _ensure_characterized(session, root: str, action: str) -> None:
     ``enter_source_mode``/``enter_target_mode``/``create_control_rig`` would
     otherwise raise on, so a missing characterization is treated as a
     recoverable state rather than an error: this runs ``setup_and_characterize``
-    with the default body-only profile and notifies the user, then lets the
-    caller continue with its own operation. Reason codes other than
+    with the default profile and notifies the user, then lets the caller
+    continue with its own operation. Reason codes other than
     ``not_characterized`` (for example a missing SOURCE model, or a profile
     mismatch) are left alone; only the one guard this action can self-heal is
     handled here.
+
+    HUMANIK-FRONTEND-1 Phase B6: the default profile is now
+    ``FULL_ASSIGNMENT_PROFILE`` (body + fingers) -- there is no existing
+    binding to preserve here (this only runs when ``not_characterized`` is
+    true), so there is nothing to default *to* except the new full default.
     """
     describe = getattr(session, "describe_frontend_state", None)
     if not callable(describe):
@@ -439,20 +627,50 @@ def _ensure_characterized(session, root: str, action: str) -> None:
         return
     _display_info(
         f"HumanIK: {_short_model_label(root)} is not characterized yet; "
-        "auto-characterizing with the default Body only profile."
+        "auto-characterizing with the default Full (body + fingers) profile."
     )
     session.setup_and_characterize(
         root,
-        profile=FRONTEND_ASSIGNMENT_PROFILE,
-        include_fingers=False,
+        profile=FULL_ASSIGNMENT_PROFILE,
+        include_fingers=True,
     )
 
 
+def _resolve_setup_profile(session, root: str):
+    """Return ``(profile, include_fingers)`` for an explicit Setup / Characterize call.
+
+    HUMANIK-FRONTEND-1 Phase B6: characterize always uses the full (body +
+    fingers) profile now, and the previous "Body only / Body + fingers /
+    Cancel" picker dialog is gone -- but a model already characterized with
+    a different profile (body-only, characterized before this change, or by
+    an older session) must not be silently re-characterized: ``diagnostics``
+    reports the existing binding's profile when one exists, and that wins.
+    """
+    diagnostics_fn = getattr(session, "diagnostics", None)
+    if callable(diagnostics_fn):
+        try:
+            diag = diagnostics_fn(root) or {}
+        except Exception:
+            diag = {}
+        if diag.get("character"):
+            existing_profile = diag.get("profile") or FULL_ASSIGNMENT_PROFILE
+            return existing_profile, existing_profile == FULL_ASSIGNMENT_PROFILE
+    return FULL_ASSIGNMENT_PROFILE, True
+
+
 def _setup_and_characterize(model_root: Optional[str] = None):
+    """Characterize with the default full profile; no selection dialog (Phase B6).
+
+    Preflight information that used to gate a "Body only / Body + fingers /
+    Cancel" confirmation is now shown as a plain info message after a
+    successful characterize -- there is nothing left to confirm since the
+    profile choice itself is gone (see ``_resolve_setup_profile``).
+    """
     root = model_root if model_root is not None else resolve_model_root(cmds_module=_cmds_module)
     if root is None:
         return None
     session = get_humanik_session()
+    profile, include_fingers = _resolve_setup_profile(session, root)
     body_report = session.inspect_model(
         root,
         profile=FRONTEND_ASSIGNMENT_PROFILE,
@@ -463,14 +681,9 @@ def _setup_and_characterize(model_root: Optional[str] = None):
         profile=FULL_ASSIGNMENT_PROFILE,
         include_fingers=True,
     )
-    message = _setup_confirmation_message(root, body_report, {"blockers": []}, full_report)
-    selected = _choose_setup_profile("Setup / Characterize", message)
-    if selected is None:
-        return None
-    profile, include_fingers = selected
     try:
         # Run ownership preflight for the selected profile before mutating the scene.
-        session.inspect_target_ownership(
+        ownership_report = session.inspect_target_ownership(
             root,
             profile=profile,
             include_fingers=include_fingers,
@@ -489,6 +702,7 @@ def _setup_and_characterize(model_root: Optional[str] = None):
             "profile": profile,
             "error": summary,
         }
+    _display_info(_setup_confirmation_message(root, body_report, ownership_report, full_report))
     warning = _stance_warning_message(binding)
     if warning:
         _display_warning(warning)
@@ -526,6 +740,11 @@ def _enter_source_mode(model_root: Optional[str] = None):
 
 
 def _enter_target_mode(model_root: Optional[str] = None):
+    """Start a TARGET preview after ownership/profile preflight; no confirmation (Phase B6).
+
+    The ownership summary that used to gate a "Continue/Cancel" dialog is now
+    shown as a plain info message after the preview actually starts.
+    """
     root = model_root if model_root is not None else resolve_model_root(cmds_module=_cmds_module)
     if root is None:
         return None
@@ -535,12 +754,14 @@ def _enter_target_mode(model_root: Optional[str] = None):
     diagnostics_fn = getattr(session, "diagnostics", None)
     lifecycle_diagnostics = diagnostics_fn() if callable(diagnostics_fn) else {}
     source_profile = (lifecycle_diagnostics or {}).get("source", {}).get("profile")
+    source_external = bool((lifecycle_diagnostics or {}).get("source", {}).get("external"))
     target_profile = report.get("profile")
-    if source_profile and target_profile and source_profile != target_profile:
+    if not source_external and source_profile and target_profile and source_profile != target_profile:
         raise ValueError(
             "HumanIK source/target assignment profile mismatch: "
             f"source={source_profile}, target={target_profile}; "
-            "characterize both models with the same profile before target mode"
+            "Restore both models and reconnect them so they both characterize with "
+            f"the same profile (default: {FULL_ASSIGNMENT_PROFILE}) before target mode"
         )
     blockers = report.get("blockers", [])
     if blockers:
@@ -548,26 +769,23 @@ def _enter_target_mode(model_root: Optional[str] = None):
             f"{row.get('node', '')}:{row.get('classification', '')}" for row in blockers
         )
         raise RuntimeError(f"HumanIK target preview blocked: {labels}")
-    if not _confirm("Enter Target Mode", _target_confirmation_message(root, report)):
-        return None
-    return session.enter_target_mode(root)
+    result = session.enter_target_mode(root)
+    _display_info(_target_confirmation_message(root, report))
+    return result
 
 
 def _create_control_rig(model_root: Optional[str] = None):
+    """Create a control rig on the (auto-characterized) model; no confirmation (Phase B6)."""
     root = model_root if model_root is not None else resolve_model_root(cmds_module=_cmds_module)
     if root is None:
         return None
     session = get_humanik_session()
     _ensure_characterized(session, root, "create_control_rig")
-    if not _confirm(
-        "Create Control Rig",
-        f"Create a HumanIK Control Rig for {root}? An active preview must be restored first.",
-    ):
-        return None
     return session.create_control_rig(root)
 
 
 def _bake_to_mmd_rig(start=None, end=None):
+    """Bake the active target preview; no confirmation (Phase B6, no configurable options)."""
     cmds = _cmds_module or _maya_cmds()
     session = get_humanik_session()
     if start is None:
@@ -578,16 +796,6 @@ def _bake_to_mmd_rig(start=None, end=None):
     end = int(end)
     if end < start:
         raise ValueError(f"Bake frame range is empty after integer conversion: {start}..{end}")
-    diagnostics_fn = getattr(session, "diagnostics", None)
-    diagnostics_report = diagnostics_fn() if callable(diagnostics_fn) else {}
-    profile = (diagnostics_report or {}).get("profile", FRONTEND_ASSIGNMENT_PROFILE)
-    finger_summary = "included experimentally" if profile == FULL_ASSIGNMENT_PROFILE else "excluded/deferred"
-    message = (
-        f"Bake the active HumanIK target preview from frame {start} to {end}?\n"
-        f"Profile: {profile}; finger assignments are {finger_summary}."
-    )
-    if not _confirm("Bake to MMD Rig", message):
-        return None
     result = session.bake_to_mmd_rig(start, end)
     result_dict = result.to_dict() if hasattr(result, "to_dict") else dict(result)
     _display_info("HumanIK bake complete: " + json.dumps(result_dict, sort_keys=True))
@@ -649,16 +857,22 @@ def _setup_confirmation_message(root, model_report, ownership_report, full_repor
 
 
 def _target_confirmation_message(root, report):
+    """Return the informational summary shown after a TARGET preview starts.
+
+    HUMANIK-FRONTEND-1 Phase B6: this used to be a "Continue?" confirmation
+    message; entering TARGET mode no longer asks first (the ownership
+    preflight/blocker check above already ran and would have raised), so this
+    is now shown via ``_display_info`` after the preview is already active.
+    """
     counts = report.get("constraintCounts", {})
     return (
         f"Target model root: {_short_model_label(root)}\n"
-        "The target preview will journal changes, disconnect mute_for_hik writer edges, "
-        "mute only those writers, "
-        "retain keep_post writers, and restore all ownership on Restore MMD Rig.\n"
+        "The target preview journaled changes, disconnected mute_for_hik writer edges, "
+        "muted only those writers, "
+        "retained keep_post writers, and will restore all ownership on Restore MMD Rig.\n"
         f"mute_for_hik: {counts.get('mute_for_hik', 0)}; "
         f"keep_post: {counts.get('keep_post', 0)}; "
-        f"blocker summary: {_blocker_summary(report.get('blockers', []))}.\n"
-        "Continue?"
+        f"blocker summary: {_blocker_summary(report.get('blockers', []))}."
     )
 
 
@@ -693,16 +907,6 @@ def _short_exception_summary(exc: Exception, limit: int = 180) -> str:
 
 def _confirm(title, message):
     return _dialog_choice(title, message, ("Continue", "Cancel")) == "Continue"
-
-
-def _choose_setup_profile(title, message):
-    """Return the selected setup profile from the compact three-button dialog."""
-    choice = _dialog_choice(title, message, ("Body only", "Body + fingers", "Cancel"))
-    if choice in ("Body only", "Continue"):
-        return FRONTEND_ASSIGNMENT_PROFILE, False
-    if choice == "Body + fingers":
-        return FULL_ASSIGNMENT_PROFILE, True
-    return None
 
 
 def _dialog_choice(title, message, buttons):

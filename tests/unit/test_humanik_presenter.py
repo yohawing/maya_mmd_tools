@@ -72,16 +72,20 @@ def _action_blocked(reason_code, reason_text="blocked"):
 
 
 class _FakeSession:
-    def __init__(self, state=None, error=None):
+    def __init__(self, state=None, error=None, external_candidates=None):
         self.state = state if state is not None else {}
         self.error = error
         self.describe_calls = []
+        self.external_candidates = list(external_candidates) if external_candidates else []
 
     def describe_frontend_state(self, model_root=None):
         self.describe_calls.append(model_root)
         if self.error is not None:
             raise self.error
         return self.state
+
+    def list_source_candidates(self):
+        return list(self.external_candidates)
 
 
 class _FakeActionsModule:
@@ -460,7 +464,16 @@ class TestHumanIkPresenterSourceCombo(unittest.TestCase):
         self.presenter.refresh()
 
         _options, selected = self._last_source_call().args
-        self.assertEqual(selected, "|Other")
+        self.assertEqual(selected, ("mmd", "|Other"))
+
+    def test_source_combo_mmd_item_data_is_a_kind_value_pair(self):
+        self.session.state = {"source": None}
+
+        self.presenter.refresh()
+
+        options, _selected = self._last_source_call().args
+        values = [value for _label, value in options]
+        self.assertIn(("mmd", "|Other"), values)
 
     def test_picking_a_model_dispatches_connect_retarget(self):
         self.presenter.refresh()
@@ -472,6 +485,66 @@ class TestHumanIkPresenterSourceCombo(unittest.TestCase):
 
         self.assertEqual(self.actions.connect_calls, [("|Other", character_root)])
         self.assertEqual(self.view.set_state.call_count, 2)  # initial refresh + post-pick refresh
+
+    # -- HUMANIK-EXTERNAL-SOURCE-1 ES-3: external (non-MMD) HIK characters --
+
+    def test_external_hik_characters_are_listed_and_labeled(self):
+        self.session.external_candidates = [
+            {"character": "MocapChar", "isMmd": False, "modelRoot": None, "locked": True},
+            {"character": "|Other_hidden_mmd", "isMmd": True, "modelRoot": "|Other", "locked": True},
+        ]
+        self.session.state = {"source": None}
+
+        self.presenter.refresh()
+
+        options, _selected = self._last_source_call().args
+        labels_and_values = {label: value for label, value in options}
+        self.assertIn("MocapChar (HIK)", labels_and_values)
+        self.assertEqual(labels_and_values["MocapChar (HIK)"], ("external", "MocapChar"))
+        # The isMmd=True row must not be duplicated as an "(HIK)" entry --
+        # it is already represented by the plain MMD model options above.
+        self.assertNotIn("|Other_hidden_mmd (HIK)", labels_and_values)
+
+    def test_external_source_binding_selects_the_external_combo_item(self):
+        self.session.external_candidates = [
+            {"character": "MocapChar", "isMmd": False, "modelRoot": None, "locked": True},
+        ]
+        self.session.state = {
+            "source": {"modelRoot": None, "character": "MocapChar", "external": True}
+        }
+
+        self.presenter.refresh()
+
+        _options, selected = self._last_source_call().args
+        self.assertEqual(selected, ("external", "MocapChar"))
+
+    def test_external_candidate_listing_failure_falls_back_to_no_external_items(self):
+        def _raise():
+            raise RuntimeError("boom")
+
+        self.session.list_source_candidates = _raise
+        self.session.state = {"source": None}
+
+        self.presenter.refresh()  # must not raise
+
+        options, _selected = self._last_source_call().args
+        self.assertTrue(all(not str(label).endswith("(HIK)") for label, _value in options))
+
+    def test_picking_an_external_character_dispatches_connect_retarget(self):
+        self.session.external_candidates = [
+            {"character": "MocapChar", "isMmd": False, "modelRoot": None, "locked": True},
+        ]
+        self.session.state = {"source": None}
+        self.presenter.refresh()
+        character_root = self.presenter._character_root
+
+        handler = _connected_handler(self.view.source_combo.currentIndexChanged)
+        self.view.source_combo.currentData.return_value = ("external", "MocapChar")
+        handler()
+
+        self.assertEqual(
+            self.actions.connect_calls, [(("external", "MocapChar"), character_root)]
+        )
 
     def test_picking_none_dispatches_disconnect_retarget(self):
         self.presenter.refresh()

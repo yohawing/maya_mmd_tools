@@ -565,7 +565,8 @@ class HumanIkFrontendSession:
                 raise ValueError(
                     "HumanIK source/target assignment profile mismatch: "
                     f"source={source.profile}, target={target.profile}; "
-                    "characterize both models with the same profile before target mode"
+                    "Restore both models and reconnect them so they both characterize "
+                    f"with the same profile (default: {FULL_ASSIGNMENT_PROFILE}) before target mode"
                 )
             source_character = source.character
         target_joints = tuple(assignment.joint for assignment in target.assignments)
@@ -1335,7 +1336,9 @@ class HumanIkFrontendSession:
             return _action_blocked(
                 REASON_PROFILE_MISMATCH,
                 "HumanIK source/target assignment profile mismatch: "
-                f"source={source_binding.profile}, target={target_binding.profile}",
+                f"source={source_binding.profile}, target={target_binding.profile}. "
+                f"Restore both models and reconnect them so they both characterize with the "
+                f"same profile (default: {FULL_ASSIGNMENT_PROFILE}).",
             )
         return _action_allowed()
 

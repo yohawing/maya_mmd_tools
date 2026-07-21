@@ -67,6 +67,14 @@ class _FakeSession:
         self.calls.append(("restore_mmd_rig",))
         return True
 
+    def enter_external_source_mode(self, character):
+        self.calls.append(("enter_external_source_mode", character))
+        return {"character": character, "external": True, "locked": True}
+
+    def list_source_candidates(self):
+        self.calls.append(("list_source_candidates",))
+        return []
+
     def diagnostics(self, root=None):
         self.calls.append(("diagnostics", root))
         return {"modelRoot": root, "preview": {"active": False}}
@@ -106,6 +114,8 @@ class TestHumanIkMenuActions(unittest.TestCase):
         self.cmds.ls.return_value = []
         self.cmds.menu.return_value = False
         self.cmds.window.return_value = False
+        self.cmds.listConnections.return_value = []
+        self.cmds.objExists.return_value = True
         self.cmds.menuItem.side_effect = lambda *args, **kwargs: (
             False if kwargs.get("exists") else args[0] if args else "menuItem"
         )
@@ -288,13 +298,14 @@ class TestHumanIkMenuActions(unittest.TestCase):
             (
                 "setup_and_characterize",
                 "|model_root",
-                {"profile": "body-only", "include_fingers": False},
+                {"profile": "full", "include_fingers": True},
             ),
             session.calls,
         )
         self.assertIn(("enter_source_mode", "|model_root"), session.calls)
         display_info.assert_called_once()
         self.assertIn("auto-characterizing", display_info.call_args.args[0])
+        self.assertIn("Full", display_info.call_args.args[0])
 
     @patch.object(actions, "resolve_model_root", return_value="|model_root")
     def test_enter_source_mode_skips_auto_characterize_when_already_characterized(self, resolve):
@@ -305,7 +316,7 @@ class TestHumanIkMenuActions(unittest.TestCase):
             (
                 "setup_and_characterize",
                 "|model_root",
-                {"profile": "body-only", "include_fingers": False},
+                {"profile": "full", "include_fingers": True},
             ),
             self.session.calls,
         )
@@ -327,7 +338,7 @@ class TestHumanIkMenuActions(unittest.TestCase):
             (
                 "setup_and_characterize",
                 "|model_root",
-                {"profile": "body-only", "include_fingers": False},
+                {"profile": "full", "include_fingers": True},
             ),
             session.calls,
         )
@@ -349,46 +360,33 @@ class TestHumanIkMenuActions(unittest.TestCase):
             (
                 "setup_and_characterize",
                 "|model_root",
-                {"profile": "body-only", "include_fingers": False},
+                {"profile": "full", "include_fingers": True},
             ),
             session.calls,
         )
         self.assertIn(("create_control_rig", "|model_root"), session.calls)
 
     @patch.object(actions, "resolve_model_root", return_value="|model_root")
-    def test_setup_cancel_does_not_mutate_and_continue_runs_automatic_stance(self, resolve):
-        actions._confirm_dialog = lambda **kwargs: "Cancel"
-        self.assertIsNone(actions.setup_and_characterize())
-        self.assertNotIn(("setup_and_characterize", "|model_root", {}), self.session.calls)
-
-        actions._confirm_dialog = lambda **kwargs: "Continue"
-        result = actions.setup_and_characterize()
-        self.assertTrue(result["success"])
-        self.assertNotIn(("inspect_model", "|model_root"), self.session.calls)
-        self.assertIn(
-            (
-                "setup_and_characterize",
-                "|model_root",
-                {"profile": "body-only", "include_fingers": False},
-            ),
-            self.session.calls,
+    def test_setup_runs_immediately_with_the_full_default_profile_no_dialog(self, resolve):
+        # HUMANIK-FRONTEND-1 Phase B6: the "Body only / Body + fingers /
+        # Cancel" picker dialog is gone; Setup / Characterize always runs
+        # immediately with the full (body + fingers) default profile.
+        actions._confirm_dialog = lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("no dialog should be shown for Setup / Characterize")
         )
-
-    @patch.object(actions, "resolve_model_root", return_value="|model_root")
-    def test_setup_profile_buttons_can_opt_into_full_assignments(self, resolve):
-        dialog = {}
-
-        def choose(**kwargs):
-            dialog.update(kwargs)
-            return "Body + fingers"
-
-        actions._confirm_dialog = choose
 
         result = actions.setup_and_characterize()
 
         self.assertTrue(result["success"])
         self.assertEqual(result["profile"], "full")
-        self.assertEqual(dialog["button"], ["Body only", "Body + fingers", "Cancel"])
+        self.assertIn(
+            (
+                "setup_and_characterize",
+                "|model_root",
+                {"profile": "full", "include_fingers": True},
+            ),
+            self.session.calls,
+        )
         self.assertIn(
             (
                 "inspect_target_ownership",
@@ -397,11 +395,31 @@ class TestHumanIkMenuActions(unittest.TestCase):
             ),
             self.session.calls,
         )
+
+    @patch.object(actions, "resolve_model_root", return_value="|model_root")
+    def test_setup_preserves_an_existing_body_only_binding_instead_of_recharacterizing(self, resolve):
+        # HUMANIK-FRONTEND-1 Phase B6 compatibility: a model already
+        # characterized body-only (by an older session, or before this
+        # change) must not be silently forced to full.
+        self.session.diagnostics = lambda root=None: {
+            "modelRoot": root,
+            "character": "MMDFrontend_model_root",
+            "profile": "body-only",
+            "preview": {"active": False},
+        }
+        actions._confirm_dialog = lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("no dialog should be shown for Setup / Characterize")
+        )
+
+        result = actions.setup_and_characterize()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["profile"], "body-only")
         self.assertIn(
             (
                 "setup_and_characterize",
                 "|model_root",
-                {"profile": "full", "include_fingers": True},
+                {"profile": "body-only", "include_fingers": False},
             ),
             self.session.calls,
         )
@@ -542,12 +560,17 @@ class TestHumanIkMenuActions(unittest.TestCase):
         self.assertNotIn(("enter_target_mode", "|model_root"), self.session.calls)
 
     @patch.object(actions, "resolve_model_root", return_value="|model_root")
-    def test_target_cancel_does_not_start_preview(self, resolve):
-        actions._confirm_dialog = lambda **kwargs: "Cancel"
+    def test_target_mode_starts_immediately_without_a_confirmation_dialog(self, resolve):
+        # HUMANIK-FRONTEND-1 Phase B6: the "Continue/Cancel" confirmation is
+        # gone; an unblocked, profile-matched Enter Target Mode call starts
+        # the preview immediately.
+        actions._confirm_dialog = lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("no dialog should be shown for Enter Target Mode")
+        )
 
-        self.assertIsNone(actions.enter_target_mode())
+        self.assertEqual(actions.enter_target_mode(), "|model_root")
         self.assertIn(("inspect_target_ownership", "|model_root"), self.session.calls)
-        self.assertNotIn(("enter_target_mode", "|model_root"), self.session.calls)
+        self.assertIn(("enter_target_mode", "|model_root"), self.session.calls)
 
     @patch.object(actions, "resolve_model_root", return_value="|model_root")
     def test_bake_uses_integer_playback_range(self, resolve):
@@ -558,21 +581,19 @@ class TestHumanIkMenuActions(unittest.TestCase):
         self.assertEqual(result.end, 10)
         self.assertIn(("bake_to_mmd_rig", 2, 10), self.session.calls)
 
-    def test_bake_confirmation_uses_active_profile_without_quality_residual(self):
+    def test_bake_runs_immediately_without_a_confirmation_dialog(self):
+        # HUMANIK-FRONTEND-1 Phase B6: Bake to MMD Rig has no configurable
+        # options left to confirm, so it bakes immediately.
         self.cmds.playbackOptions.side_effect = [1.9, 10.1]
-        self.session.diagnostics = lambda root=None: {"profile": "full"}
-        dialog = {}
+        actions._confirm_dialog = lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("no dialog should be shown for Bake to MMD Rig")
+        )
 
-        def choose(**kwargs):
-            dialog.update(kwargs)
-            return "Continue"
+        result = actions.bake_to_mmd_rig()
 
-        actions._confirm_dialog = choose
-        actions.bake_to_mmd_rig()
-
-        self.assertIn("Profile: full", dialog["message"])
-        self.assertIn("included experimentally", dialog["message"])
-        self.assertNotIn("residual", dialog["message"])
+        self.assertEqual(result.start, 2)
+        self.assertEqual(result.end, 10)
+        self.assertIn(("bake_to_mmd_rig", 2, 10), self.session.calls)
 
     def test_bake_rejects_empty_integer_playback_range_before_confirmation(self):
         self.cmds.playbackOptions.side_effect = [5.2, 4.8]
@@ -663,7 +684,7 @@ class TestHumanIkMenuActions(unittest.TestCase):
             (
                 "setup_and_characterize",
                 "|explicit_root",
-                {"profile": "body-only", "include_fingers": False},
+                {"profile": "full", "include_fingers": True},
             ),
             self.session.calls,
         )
@@ -726,7 +747,131 @@ class TestHumanIkMenuActions(unittest.TestCase):
         self.assertTrue(any("Enter Source Mode failed" in message for message in self._errors))
         self.assertNotIn(("enter_target_mode", "|target_root"), self.session.calls)
 
-    def test_disconnect_retarget_confirms_before_restoring(self):
+    # -- HUMANIK-EXTERNAL-SOURCE-1 ES-3: external (non-MMD) HIK source ------
+
+    def test_connect_retarget_accepts_mmd_kind_value_pairs(self):
+        actions._confirm_dialog = lambda **kwargs: "Continue"
+
+        result = actions.connect_retarget(("mmd", "|source_root"), "|target_root")
+
+        self.assertEqual(result, "|target_root")
+        self.assertIn(("enter_source_mode", "|source_root"), self.session.calls)
+        self.assertNotIn(("enter_external_source_mode", "|source_root"), self.session.calls)
+
+    def test_connect_retarget_external_skips_auto_characterize_of_the_source(self):
+        self.cmds.listConnections.return_value = []
+
+        result = actions.connect_retarget(("external", "MocapChar"), "|target_root")
+
+        self.assertEqual(result, "|target_root")
+        self.assertIn(("enter_external_source_mode", "MocapChar"), self.session.calls)
+        self.assertNotIn(("enter_source_mode", "MocapChar"), self.session.calls)
+        # No dialog is shown when there is no existing animation to warn about.
+        source_index = self.session.calls.index(("enter_external_source_mode", "MocapChar"))
+        target_index = self.session.calls.index(("enter_target_mode", "|target_root"))
+        self.assertLess(source_index, target_index)
+
+    def test_connect_retarget_external_rejects_missing_character(self):
+        result = actions.connect_retarget(("external", ""), "|target_root")
+
+        self.assertIsNone(result)
+        self.assertTrue(any("requires both" in message for message in self._errors))
+        self.assertEqual(self.session.calls, [])
+
+    def test_connect_retarget_external_warns_and_clears_existing_target_animation(self):
+        class SessionWithJoints(_FakeSession):
+            def inspect_model(self, root, **kwargs):
+                return {"modelRoot": root, "assignments": [{"joint": "|target|Hips"}]}
+
+        session = SessionWithJoints()
+        actions.set_humanik_session(session)
+        self.cmds.listConnections.return_value = ["curveA", "curveB"]
+        dialog = {}
+
+        def choose(**kwargs):
+            dialog.update(kwargs)
+            return "Clear and connect"
+
+        actions._confirm_dialog = choose
+
+        result = actions.connect_retarget(("external", "MocapChar"), "|target_root")
+
+        self.assertEqual(result, "|target_root")
+        self.assertIn("2", dialog["message"])
+        self.cmds.undoInfo.assert_any_call(openChunk=True)
+        self.cmds.delete.assert_called_once_with(["curveA", "curveB"])
+        self.cmds.undoInfo.assert_any_call(closeChunk=True)
+        self.assertIn(("enter_external_source_mode", "MocapChar"), session.calls)
+
+    def test_connect_retarget_external_connect_anyway_keeps_existing_animation(self):
+        class SessionWithJoints(_FakeSession):
+            def inspect_model(self, root, **kwargs):
+                return {"modelRoot": root, "assignments": [{"joint": "|target|Hips"}]}
+
+        session = SessionWithJoints()
+        actions.set_humanik_session(session)
+        self.cmds.listConnections.return_value = ["curveA"]
+        actions._confirm_dialog = lambda **kwargs: "Connect anyway"
+
+        result = actions.connect_retarget(("external", "MocapChar"), "|target_root")
+
+        self.assertEqual(result, "|target_root")
+        self.cmds.delete.assert_not_called()
+        self.assertIn(("enter_external_source_mode", "MocapChar"), session.calls)
+
+    def test_connect_retarget_external_cancel_on_existing_animation_stops(self):
+        class SessionWithJoints(_FakeSession):
+            def inspect_model(self, root, **kwargs):
+                return {"modelRoot": root, "assignments": [{"joint": "|target|Hips"}]}
+
+        session = SessionWithJoints()
+        actions.set_humanik_session(session)
+        self.cmds.listConnections.return_value = ["curveA"]
+        actions._confirm_dialog = lambda **kwargs: "Cancel"
+
+        result = actions.connect_retarget(("external", "MocapChar"), "|target_root")
+
+        self.assertIsNone(result)
+        self.cmds.delete.assert_not_called()
+        self.assertNotIn(("enter_external_source_mode", "MocapChar"), session.calls)
+
+    def test_connect_retarget_mmd_source_never_scans_for_existing_animation(self):
+        # ES-3: "MMD source connection keeps current behavior" -- the
+        # animation-clear check only runs on the external-source branch.
+        actions._confirm_dialog = lambda **kwargs: "Continue"
+        self.cmds.listConnections.return_value = ["curveA"]
+
+        result = actions.connect_retarget("|source_root", "|target_root")
+
+        self.assertEqual(result, "|target_root")
+        self.cmds.delete.assert_not_called()
+
+    def test_enter_external_source_mode_dispatches_to_the_session(self):
+        result = actions.enter_external_source_mode("MocapChar")
+
+        self.assertEqual(result, {"character": "MocapChar", "external": True, "locked": True})
+        self.assertIn(("enter_external_source_mode", "MocapChar"), self.session.calls)
+
+    def test_enter_external_source_mode_requires_a_character(self):
+        result = actions.enter_external_source_mode("")
+
+        self.assertIsNone(result)
+        self.assertTrue(any("requires a character" in message for message in self._errors))
+
+    def test_disconnect_retarget_runs_immediately_when_no_control_rig_is_active(self):
+        # HUMANIK-FRONTEND-1 Phase B6: confirmation is shown only when a
+        # Control Rig transaction is currently active.
+        actions._confirm_dialog = lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("no dialog should be shown without an active Control Rig")
+        )
+
+        self.assertTrue(actions.disconnect_retarget())
+        self.assertIn(("restore_mmd_rig",), self.session.calls)
+
+    def test_disconnect_retarget_confirms_before_restoring_an_active_control_rig(self):
+        self.session.describe_frontend_state = lambda model_root=None: {
+            "controlRigs": [{"modelRoot": "|model_root", "character": "Char"}]
+        }
         dialog = {}
 
         def choose(**kwargs):
@@ -739,10 +884,30 @@ class TestHumanIkMenuActions(unittest.TestCase):
         self.assertIn("Control Rig", dialog["message"])
         self.assertIn(("restore_mmd_rig",), self.session.calls)
 
-    def test_disconnect_retarget_cancel_does_not_restore(self):
+    def test_disconnect_retarget_cancel_with_active_control_rig_does_not_restore(self):
+        self.session.describe_frontend_state = lambda model_root=None: {
+            "controlRigs": [{"modelRoot": "|model_root", "character": "Char"}]
+        }
         actions._confirm_dialog = lambda **kwargs: "Cancel"
 
         self.assertIsNone(actions.disconnect_retarget())
+        self.assertNotIn(("restore_mmd_rig",), self.session.calls)
+
+    def test_restore_mmd_rig_runs_immediately_when_no_control_rig_is_active(self):
+        actions._confirm_dialog = lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("no dialog should be shown without an active Control Rig")
+        )
+
+        self.assertTrue(actions.restore_mmd_rig())
+        self.assertIn(("restore_mmd_rig",), self.session.calls)
+
+    def test_restore_mmd_rig_confirms_before_deleting_an_active_control_rig(self):
+        self.session.describe_frontend_state = lambda model_root=None: {
+            "controlRigs": [{"modelRoot": "|model_root", "character": "Char"}]
+        }
+        actions._confirm_dialog = lambda **kwargs: "Cancel"
+
+        self.assertIsNone(actions.restore_mmd_rig())
         self.assertNotIn(("restore_mmd_rig",), self.session.calls)
 
 
