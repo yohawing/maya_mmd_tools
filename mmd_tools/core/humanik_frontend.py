@@ -36,10 +36,60 @@ from mmd_tools.core.humanik_resolver import (
     HumanIkBoneAssignment,
     HumanIkResolveResult,
 )
+from mmd_tools.core.humanik_retarget import describe_humanik_import_lock
 from mmd_tools.core.humanik_stance import HumanIkStanceTransaction, canonical_stance_targets
 
 
 FINGER_HIK_MARKERS = ("Index", "Middle", "Ring", "Pinky", "Thumb")
+
+# --- Frontend mode constants -------------------------------------------------
+#
+# These describe the mutually-exclusive high-level state ``describe_frontend_state``
+# reports for UI consumption.  Preview and Control Rig transactions cannot be
+# simultaneously active on the *same* session (``create_control_rig`` and every
+# other mutating method reject while a preview is active via
+# ``_reject_active_preview_mutation``), so TARGET_PREVIEW always takes priority
+# over CONTROL_RIG when both would otherwise apply.
+FRONTEND_MODE_NEUTRAL = "neutral"
+FRONTEND_MODE_SOURCE = "source"
+FRONTEND_MODE_TARGET_PREVIEW = "target_preview"
+FRONTEND_MODE_CONTROL_RIG = "control_rig"
+
+# --- Reason codes -------------------------------------------------------------
+#
+# One code per guard condition currently enforced by
+# ``HumanIkFrontendSession``'s mutating methods.  ``describe_frontend_state``
+# mirrors these guards to predict allowed/blocked without executing them; the
+# guard logic itself remains the source of truth.
+REASON_PREVIEW_ACTIVE = "preview_active"
+REASON_NOT_CHARACTERIZED = "not_characterized"
+REASON_NO_SOURCE = "no_source"
+REASON_TARGET_IS_SOURCE = "target_is_source"
+REASON_PROFILE_MISMATCH = "profile_mismatch"
+REASON_MODEL_IS_SOURCE = "model_is_source"
+REASON_NO_ACTIVE_PREVIEW = "no_active_preview"
+REASON_ALREADY_CHARACTERIZED_OTHER_PROFILE = "already_characterized_other_profile"
+REASON_NOTHING_TO_RESTORE = "nothing_to_restore"
+REASON_MODEL_REQUIRED = "model_required"
+
+# VMD import lock reasons, mirroring ``humanik_retarget.HumanIkImportLock.blocked``.
+REASON_IMPORT_BLOCKED_TARGET_PREVIEW = "import_blocked_target_preview"
+REASON_IMPORT_BLOCKED_CONTROL_RIG = "import_blocked_control_rig"
+_IMPORT_LOCK_REASON_BY_BLOCKED = {
+    "target_preview": REASON_IMPORT_BLOCKED_TARGET_PREVIEW,
+    "control_rig": REASON_IMPORT_BLOCKED_CONTROL_RIG,
+}
+
+
+def _action_allowed() -> Dict[str, Any]:
+    """Return an ``actions`` entry describing a permitted operation."""
+    return {"allowed": True, "reasonCode": None, "reasonText": None}
+
+
+def _action_blocked(reason_code: str, reason_text: str) -> Dict[str, Any]:
+    """Return an ``actions`` entry describing a blocked operation."""
+    return {"allowed": False, "reasonCode": reason_code, "reasonText": reason_text}
+
 FRONTEND_ASSIGNMENT_PROFILE = "body-only"
 FULL_ASSIGNMENT_PROFILE = "full"
 _ASSIGNMENT_PROFILES = frozenset({FRONTEND_ASSIGNMENT_PROFILE, FULL_ASSIGNMENT_PROFILE})
@@ -739,6 +789,256 @@ class HumanIkFrontendSession:
             "quality": quality,
         }
 
+    def describe_frontend_state(self, model_root: Optional[str] = None) -> Dict[str, Any]:
+        """Return a JSON-safe, machine-drivable snapshot of the session's lifecycle state.
+
+        This is an *additive* UI helper: it does not mutate the scene, does not
+        run :func:`humanik_constraints.classify_humanik_constraints` ownership
+        classification (too expensive to run on every UI refresh -- callers
+        that need it should call ``inspect_target_ownership`` from a button
+        press instead), and does not change the behavior of any existing
+        method.
+
+        The ``actions`` section mirrors the fail-closed guard conditions each
+        mutating method checks *before* touching the scene
+        (``_reject_active_preview_mutation``, ``_require_binding``, the
+        SOURCE/TARGET/profile checks in ``enter_target_mode``, etc.) so a UI
+        can enable/disable buttons and show a reason without invoking the
+        method and catching an exception.  **This mirror is not the source of
+        truth.**  The guards inside each method are authoritative; if a guard
+        condition changes, update the matching branch here in the same
+        change.  A few guard conditions are not captured as a distinct reason
+        code (see the docstring notes below on ``enter_target_mode`` ownership
+        blockers and ``setup_and_characterize`` profile-mismatch-on-existing-
+        binding) because they either require a live Maya scene scan or a
+        ``profile``/``include_fingers`` argument this read-only snapshot does
+        not take; those cases currently report ``allowed=True`` here even
+        though the real call could still raise. Both are exercised by
+        ``diagnostics``/``inspect_target_ownership`` and the method's own
+        docstring, not by this snapshot.
+
+        Args:
+            model_root: Optional model root the caller is about to act on.
+                When ``None``, every action whose guard depends on a specific
+                model reports ``allowed=False`` with ``REASON_MODEL_REQUIRED``
+                instead of guessing a model.
+
+        Returns:
+            A dict with keys ``mode``, ``source``, ``target``,
+            ``previewActive``, ``controlRigs``, ``restoreHint``, ``actions``,
+            and (only when ``model_root`` is given) ``importLock``.
+        """
+        key = self._optional_model_root(model_root)
+        preview_active = bool(self.active_preview)
+        source_binding = (
+            self._bindings.get(self._source_model_root) if self._source_model_root else None
+        )
+        target_binding = (
+            self._bindings.get(self._target_model_root)
+            if preview_active and self._target_model_root
+            else None
+        )
+        control_rig_rows = []
+        for control_root, transaction in self._control_rig_transactions.items():
+            if not transaction.active:
+                continue
+            binding = self._bindings.get(control_root)
+            control_rig_rows.append(
+                {
+                    "modelRoot": control_root,
+                    "character": binding.character if binding else None,
+                }
+            )
+
+        if preview_active:
+            mode = FRONTEND_MODE_TARGET_PREVIEW
+        elif control_rig_rows:
+            mode = FRONTEND_MODE_CONTROL_RIG
+        elif source_binding is not None:
+            mode = FRONTEND_MODE_SOURCE
+        else:
+            mode = FRONTEND_MODE_NEUTRAL
+
+        nothing_to_restore = not (
+            preview_active
+            or control_rig_rows
+            or self._pending_stances
+            or self._pending_characters
+        )
+
+        actions = {
+            "setup_and_characterize": self._describe_setup_and_characterize_action(
+                key, preview_active
+            ),
+            "enter_source_mode": self._describe_enter_source_mode_action(key, preview_active),
+            "enter_target_mode": self._describe_enter_target_mode_action(key, preview_active),
+            "create_control_rig": self._describe_create_control_rig_action(key, preview_active),
+            "bake_to_mmd_rig": self._describe_bake_to_mmd_rig_action(),
+            "restore_mmd_rig": self._describe_restore_mmd_rig_action(nothing_to_restore),
+            "diagnostics": {"allowed": True, "reasonCode": None, "reasonText": None},
+        }
+
+        state: Dict[str, Any] = {
+            "mode": mode,
+            "source": (
+                {"modelRoot": source_binding.model_root, "character": source_binding.character}
+                if source_binding is not None
+                else None
+            ),
+            "target": (
+                {"modelRoot": target_binding.model_root, "character": target_binding.character}
+                if target_binding is not None
+                else None
+            ),
+            "previewActive": preview_active,
+            "controlRigs": control_rig_rows,
+            "restoreHint": {
+                "hasPreview": preview_active,
+                "controlRigCount": len(control_rig_rows),
+                "pendingStanceCount": len(self._pending_stances),
+                "pendingCharacterCount": len(self._pending_characters),
+            },
+            "actions": actions,
+        }
+
+        # ``importLock`` needs a specific model to inspect; without one there
+        # is nothing scene-fact-based to report, so it is omitted rather than
+        # guessing SOURCE/TARGET (design decision -- callers that need the
+        # import-lock state for "the current model" must pass it explicitly).
+        if key is not None:
+            state["importLock"] = self._describe_import_lock(key)
+        return state
+
+    def _describe_setup_and_characterize_action(
+        self, key: Optional[str], preview_active: bool
+    ) -> Dict[str, Any]:
+        """Mirror ``setup_and_characterize``'s guards, in the order it checks them."""
+        if preview_active:
+            return _action_blocked(
+                REASON_PREVIEW_ACTIVE,
+                "Cannot setup_and_characterize while a HumanIK target preview is active",
+            )
+        if key is None:
+            return _action_blocked(REASON_MODEL_REQUIRED, "Select a model to characterize")
+        return _action_allowed()
+
+    def _describe_enter_source_mode_action(
+        self, key: Optional[str], preview_active: bool
+    ) -> Dict[str, Any]:
+        """Mirror ``enter_source_mode``'s guards, in the order it checks them."""
+        if preview_active:
+            return _action_blocked(
+                REASON_PREVIEW_ACTIVE,
+                "Cannot enter_source_mode while a HumanIK target preview is active",
+            )
+        if key is None:
+            return _action_blocked(REASON_MODEL_REQUIRED, "Select a model to enter SOURCE mode")
+        if key not in self._bindings:
+            return _action_blocked(
+                REASON_NOT_CHARACTERIZED, f"HumanIK model is not characterized: {key}"
+            )
+        return _action_allowed()
+
+    def _describe_enter_target_mode_action(
+        self, key: Optional[str], preview_active: bool
+    ) -> Dict[str, Any]:
+        """Mirror ``enter_target_mode``'s guards, in the order it checks them."""
+        if key is None:
+            return _action_blocked(REASON_MODEL_REQUIRED, "Select a model to enter TARGET mode")
+        if self._source_model_root is None:
+            return _action_blocked(
+                REASON_NO_SOURCE, "HumanIK source mode must be entered before target mode"
+            )
+        if key == self._source_model_root:
+            return _action_blocked(
+                REASON_TARGET_IS_SOURCE, "HumanIK source and target model roots must differ"
+            )
+        if preview_active and self._target_model_root != key:
+            return _action_blocked(
+                REASON_PREVIEW_ACTIVE, "A HumanIK target preview is already active"
+            )
+        if key not in self._bindings:
+            return _action_blocked(
+                REASON_NOT_CHARACTERIZED, f"HumanIK model is not characterized: {key}"
+            )
+        source_binding = self._bindings.get(self._source_model_root)
+        target_binding = self._bindings[key]
+        if source_binding is not None and source_binding.profile != target_binding.profile:
+            return _action_blocked(
+                REASON_PROFILE_MISMATCH,
+                "HumanIK source/target assignment profile mismatch: "
+                f"source={source_binding.profile}, target={target_binding.profile}",
+            )
+        return _action_allowed()
+
+    def _describe_create_control_rig_action(
+        self, key: Optional[str], preview_active: bool
+    ) -> Dict[str, Any]:
+        """Mirror ``create_control_rig``'s guards, in the order it checks them."""
+        if preview_active:
+            return _action_blocked(
+                REASON_PREVIEW_ACTIVE,
+                "Cannot create_control_rig while a HumanIK target preview is active",
+            )
+        if key is None:
+            return _action_blocked(REASON_MODEL_REQUIRED, "Select a model to create a control rig")
+        if key not in self._bindings:
+            return _action_blocked(
+                REASON_NOT_CHARACTERIZED, f"HumanIK model is not characterized: {key}"
+            )
+        if key == self._source_model_root:
+            return _action_blocked(
+                REASON_MODEL_IS_SOURCE,
+                f"Cannot create_control_rig while model is the active HumanIK SOURCE: {key}",
+            )
+        return _action_allowed()
+
+    def _describe_bake_to_mmd_rig_action(self) -> Dict[str, Any]:
+        """Mirror ``bake_to_mmd_rig``'s guard: an active preview is required."""
+        if self.active_preview is None or self._target_model_root is None:
+            return _action_blocked(
+                REASON_NO_ACTIVE_PREVIEW, "HumanIK target preview is not active"
+            )
+        return _action_allowed()
+
+    def _describe_restore_mmd_rig_action(self, nothing_to_restore: bool) -> Dict[str, Any]:
+        """Mirror ``restore_mmd_rig``'s no-op case.
+
+        Unlike the other guards, calling ``restore_mmd_rig`` with nothing
+        pending does not raise -- it simply returns ``False``.  ``allowed``
+        here is a UI convenience (disable the button, nothing to do), not a
+        prediction of an exception.
+        """
+        if nothing_to_restore:
+            return _action_blocked(
+                REASON_NOTHING_TO_RESTORE, "No preview, control rig, or pending recovery state"
+            )
+        return _action_allowed()
+
+    def _describe_import_lock(self, key: str) -> Dict[str, Any]:
+        """Return the ``describe_humanik_import_lock`` snapshot for ``key``.
+
+        Detection failures (missing HumanIK plugin/MEL, non-Maya test
+        process) are swallowed the same way ``describe_humanik_import_lock``
+        itself swallows most Maya query failures, and are reported as an
+        unblocked, uncharacterized lock rather than propagating.
+        """
+        try:
+            lock = describe_humanik_import_lock(key, cmds_module=self._cmds, mel_module=self._mel)
+        except Exception:
+            return {
+                "blocked": False,
+                "reasonCode": None,
+                "character": None,
+                "hasControlRig": False,
+            }
+        return {
+            "blocked": bool(lock.blocked),
+            "reasonCode": _IMPORT_LOCK_REASON_BY_BLOCKED.get(lock.blocked),
+            "character": lock.character,
+            "hasControlRig": bool(lock.has_control_rig),
+        }
+
     def find_binding_by_character(self, character: str) -> Optional[HumanIkFrontendBinding]:
         """Return the characterized binding for ``character``, if tracked.
 
@@ -769,6 +1069,19 @@ class HumanIkFrontendSession:
         if not value:
             raise ValueError("model_root is required")
         return value
+
+    @staticmethod
+    def _optional_model_root(model_root: Optional[str]) -> Optional[str]:
+        """Return a stripped ``model_root``, or ``None`` -- never raises.
+
+        Non-raising counterpart of ``_require_model_root`` for read-only
+        state description, where a missing model is reported as a
+        ``REASON_MODEL_REQUIRED`` action reason rather than an exception.
+        """
+        if model_root is None:
+            return None
+        value = str(model_root).strip()
+        return value or None
 
     @staticmethod
     def _character_name(model_root: str) -> str:
