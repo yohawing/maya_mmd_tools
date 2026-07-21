@@ -265,17 +265,6 @@ def re_isolate_reviewed_edges(cmds, disconnected: List[Dict[str, str]]) -> None:
             cmds.disconnectAttr(source, destination)
 
 
-# Backward-compatible aliases: the E2E evidence script
-# (tests/viewport/e2e_humanik_control_rig_cycle.py) and any external callers
-# imported these as private names before they were factored out for reuse by
-# humanik_control_rig.py.
-_plug_node = plug_node
-_row_hik_writes = row_hik_writes
-_disconnect_residual_muted_writers = disconnect_residual_muted_writers
-_disconnect_reviewed_writers = disconnect_reviewed_writers
-_re_isolate_reviewed_edges = re_isolate_reviewed_edges
-
-
 def _maya_cmds():
     from maya import cmds
 

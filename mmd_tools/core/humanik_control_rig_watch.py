@@ -1,54 +1,53 @@
-"""Detect and adopt HumanIK Control Rigs created outside the mmd_tools plugin path.
+"""Warn when a HumanIK Control Rig is created outside the mmd_tools plugin path.
 
 ``HUMANIK-CONTROL-RIG-CYCLE-1`` fixed the ``hikCreateControlRig()``-induced DG
 cycle (see ``humanik_control_rig.py``'s module docstring) for Control Rig
 creation that goes through mmd_tools' own menu/frontend
 (``HumanIkFrontendSession.create_control_rig`` -> ``humanik_control_rig.begin_humanik_control_rig``).
-``TODO.md`` also requires covering Control Rig creation through **Maya's
-standard HumanIK UI** (Character Controls -> Create Control Rig) or any other
-raw ``hikCreateControlRig()``/``hikSetCurrentCharacter`` MEL call: that path
-calls the exact same MEL command directly and bypasses mmd_tools entirely, so
-the identical writer-isolation problem exists with no mmd_tools code in the
-call stack to fix it proactively.
 
-This module detects that case reactively instead. A Maya Python API 2.0
-node-added callback (``om.MDGMessage.addNodeAddedCallback``) watches for node
-type ``HIKControlSetNode`` -- the single node ``hikCreateControlRig()``
-creates per character to own the Control Rig's effector/FK "control set"
-(named ``"{character}_ControlRig"`` and connected directly back to the
-character's ``HIKCharacterNode``, confirmed empirically against Maya 2024 and
-2026: characterization alone already creates ``HIKState2SK``/``HIKSolverNode``/
-``HIKProperty2State``, so those types fire far too early and are not a Control
-Rig signal; ``HIKControlSetNode`` only appears once ``hikCreateControlRig()``
-itself runs). ``addNodeAddedCallback`` is registered against the always-present
-base type ``dependNode`` rather than ``HIKControlSetNode`` directly, though:
-passing a HIK-specific type name raises ``kInvalidParameter`` unless that type
-is already registered in the DG, and HIK's own plugin (and therefore its node
-types) loads lazily on first use, not at mmd_tools plugin-load time when this
-callback is registered (also confirmed empirically -- see
-:func:`register_humanik_control_rig_watch`). The raw callback itself does the
-type-name comparison instead -- a single string compare per node the scene
-ever creates, still cheap. ``MDGMessage.addNodeAddedCallback`` was chosen over
-a ``scriptJob`` because it is the documented, low-overhead mechanism for "a
-node was just created", avoiding polling or diffing ``cmds.ls(...)`` on every
-scene change.
+Control Rig creation through **Maya's standard HumanIK UI** (Character
+Controls -> Create Control Rig) or any other raw ``hikCreateControlRig()``/
+``hikSetCurrentCharacter`` MEL call bypasses mmd_tools entirely: the same
+writer-isolation problem exists, but with no mmd_tools code in the call
+stack to fix it proactively. Auto-adopting that rig (retroactively
+journaling/isolating/cycle-gating it) was tried and dropped -- passing
+Maya's own Control Rig UI through the cycle gate is no longer a requirement
+(see ``TODO.md``); this module is now a reactive, read-only detector: it
+warns the user and points them at the supported mmd_tools path, and never
+mutates the scene itself.
 
-The raw callback only enqueues a deferred check via ``cmds.evalDeferred``.
+A Maya Python API 2.0 node-added callback (``om.MDGMessage.addNodeAddedCallback``)
+watches for node type ``HIKControlSetNode`` -- the single node
+``hikCreateControlRig()`` creates per character to own the Control Rig's
+effector/FK "control set" (named ``"{character}_ControlRig"`` and connected
+directly back to the character's ``HIKCharacterNode``, confirmed empirically
+against Maya 2024 and 2026: characterization alone already creates
+``HIKState2SK``/``HIKSolverNode``/``HIKProperty2State``, so those types fire
+far too early and are not a Control Rig signal; ``HIKControlSetNode`` only
+appears once ``hikCreateControlRig()`` itself runs). ``addNodeAddedCallback``
+is registered against the always-present base type ``dependNode`` rather than
+``HIKControlSetNode`` directly, though: passing a HIK-specific type name
+raises ``kInvalidParameter`` unless that type is already registered in the
+DG, and HIK's own plugin (and therefore its node types) loads lazily on first
+use, not at mmd_tools plugin-load time when this callback is registered
+(also confirmed empirically -- see :func:`register_humanik_control_rig_watch`).
+The raw callback itself does the type-name comparison instead -- a single
+string compare per node the scene ever creates, still cheap.
+``MDGMessage.addNodeAddedCallback`` was chosen over a ``scriptJob`` because
+it is the documented, low-overhead mechanism for "a node was just created",
+avoiding polling or diffing ``cmds.ls(...)`` on every scene change.
+
+The raw callback only enqueues a deferred check via ``maya.utils.executeDeferred``.
 Maya is still mid-DG-mutation when a node-added callback runs (HIK is still
-wiring the Control Rig's connections), so classifying ownership or mutating
-connections inside it is unsafe and unsupported; all real work happens once
-Maya's idle queue is flushed.
+wiring the Control Rig's connections), so reading connections or the scene at
+all is unsafe there; all real work happens once Maya's idle queue is flushed.
 
 The deferred handler:
 
 1. Resolves which HIK character the new ``HIKControlSetNode`` belongs to (via
-   its connection to the character's ``HIKCharacterNode``), then which
-   characterized MMD model that is, through the active
-   ``HumanIkFrontendSession`` singleton
-   (``mmd_tools.ui.humanik_menu_actions.get_humanik_session``) --
-   ``HumanIkFrontendSession.find_binding_by_character``. Empirically (repeated
-   E2E reruns against real Maya 2024/2026 -- see
-   ``tests/viewport/e2e_humanik_control_rig_cycle.py``'s ``standard_ui_adoption``
+   its connection to the character's ``HIKCharacterNode``). Empirically
+   (repeated E2E reruns against real Maya 2024/2026 -- see
+   ``tests/viewport/e2e_humanik_control_rig_cycle.py``'s ``standard_ui_warning``
    stage), the ``HIKControlSetNode -> HIKCharacterNode`` connection is not
    always in place by the time this handler's first idle tick runs -- HIK
    appears to finish some of its own post-create wiring through its own
@@ -56,34 +55,25 @@ The deferred handler:
    fired ours. A miss on the first attempt therefore reschedules itself (via
    another ``executeDeferred`` hop) up to ``MAX_CHARACTER_RESOLUTION_RETRIES``
    times rather than concluding the node is unrelated to HIK and giving up
-   permanently -- the latter reproduced as this stage passing on some E2E
-   runs and silently never adopting on others, with no code difference
-   between runs.
+   permanently.
 2. If ``humanik_control_rig`` already has an active transaction registered
    for that character (``humanik_control_rig.get_active_control_rig_transaction``),
    the plugin path (``begin_humanik_control_rig``) got there first and
    already owns writer isolation for this rig; this module does nothing.
    This is what keeps the plugin's own ``hikCreateControlRig()`` call from
-   triggering a second, redundant adoption of its own rig.
-3. Otherwise this is an out-of-band Control Rig the user created directly.
-   ``humanik_control_rig.adopt_humanik_control_rig`` retroactively journals
-   the current writer state, isolates ``mute_for_hik`` writers, and
-   cycle-gates the result, then registers the transaction in the same
-   module-level registry ``begin_humanik_control_rig`` uses -- so
-   ``HumanIkFrontendSession.restore_mmd_rig`` (or any future explicit
-   teardown command) finds and tears it down later even though no
-   ``create_control_rig()`` call ever ran for it.
-
-Failure policy deliberately differs from the plugin path: adoption failure
-must NEVER delete the user's Control Rig -- they created it intentionally
-through Maya's own UI, and mmd_tools silently deleting it out from under them
-would be far more surprising than leaving a blocked rig in place. On failure
-``adopt_humanik_control_rig`` only rolls back its own isolation attempt
-(reconnects any writer edges it disconnected, restores the captured journal);
-this module then logs a prominent error (both the project logger and
-``cmds.warning``) directing the user to the mmd_tools plugin menu's own
-"Create Control Rig" action -- which will explain, via the same blocker
-classification, why it refuses to proceed until the ad-hoc rig is cleaned up.
+   triggering a redundant warning about its own rig.
+3. Otherwise, if the character is a characterized mmd_tools binding (via the
+   active ``HumanIkFrontendSession`` singleton,
+   ``mmd_tools.ui.humanik_menu_actions.get_humanik_session`` ->
+   ``HumanIkFrontendSession.find_binding_by_character``), this is an
+   out-of-band Control Rig the user created directly through Maya's own UI.
+   This module never mutates the scene for it -- it only logs (project
+   logger + ``cmds.warning``) that the rig may create a DG cycle with the MMD
+   rig (the same ``mmdCcdIk``-writer cycle ``HUMANIK-CONTROL-RIG-CYCLE-1``
+   describes) and that the supported path is the mmd_tools menu: delete the
+   Control Rig via Character Controls, then use MMD > HumanIK > "Create
+   Control Rig" (or, if a Control Rig already exists from that supported
+   path, "Restore MMD Rig" first).
 
 Lifecycle: ``register_humanik_control_rig_watch``/``deregister_humanik_control_rig_watch``
 are called from ``plugin_main.initializePlugin``/``uninitializePlugin``,
@@ -98,10 +88,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from mmd_tools.core.humanik_control_rig import (
-    adopt_humanik_control_rig,
-    get_active_control_rig_transaction,
-)
+from mmd_tools.core.humanik_control_rig import get_active_control_rig_transaction
 from mmd_tools.core.logger import get_logger
 
 
@@ -196,9 +183,9 @@ def _on_hik_control_set_node_added(mobject, _client_data=None, om_module=None) -
     comparison against ``HIK_CONTROL_SET_NODE_TYPE`` and returns immediately
     for anything else. For an actual match, Maya is still mid-operation --
     ``hikCreateControlRig`` is still wiring connections when this runs -- so
-    this must never classify ownership or mutate the scene directly; it only
-    reads the new node's persistent UUID and schedules
-    ``_handle_new_hik_control_set_node`` via ``maya.utils.executeDeferred``.
+    this must never touch the scene directly; it only reads the new node's
+    persistent UUID and schedules ``_handle_new_hik_control_set_node`` via
+    ``maya.utils.executeDeferred``.
 
     A UUID -- not the node's name at creation time -- is what gets deferred:
     empirically, ``hikCreateControlRig()`` creates the node under a generic
@@ -259,7 +246,10 @@ MAX_CHARACTER_RESOLUTION_RETRIES = 10
 
 
 def _handle_new_hik_control_set_node(node_uuid: str, retry: int = 0) -> None:
-    """Deferred handler: classify ownership and adopt the rig if out-of-band.
+    """Deferred handler: classify ownership and warn if the rig is out-of-band.
+
+    This never mutates the scene -- it only decides whether to log a warning
+    directing the user to the supported mmd_tools path.
 
     Args:
         node_uuid: Persistent UUID of the new ``HIKControlSetNode``, captured
@@ -273,7 +263,7 @@ def _handle_new_hik_control_set_node(node_uuid: str, retry: int = 0) -> None:
     matches = cmds.ls(node_uuid) or []
     if not matches:
         # Transient node (e.g. the create was undone) by the time Maya
-        # flushed idle events; nothing to adopt.
+        # flushed idle events; nothing to warn about.
         return
     node_name = str(matches[0])
 
@@ -294,10 +284,9 @@ def _handle_new_hik_control_set_node(node_uuid: str, retry: int = 0) -> None:
         # which can land on a later idle tick than ours. Treating a miss on
         # the very first attempt as "not a Control Rig node" silently
         # abandoned real, still-forming Control Rigs (observed as flaky E2E
-        # behavior -- adoption succeeding on some runs and never firing on
-        # others with identical code). Reschedule a bounded number of times
-        # instead of giving up after a single miss; each retry is another
-        # cheap executeDeferred hop, not a busy-wait.
+        # behavior). Reschedule a bounded number of times instead of giving
+        # up after a single miss; each retry is another cheap
+        # executeDeferred hop, not a busy-wait.
         if retry < MAX_CHARACTER_RESOLUTION_RETRIES:
             try:
                 from maya import utils as maya_utils
@@ -322,40 +311,27 @@ def _handle_new_hik_control_set_node(node_uuid: str, retry: int = 0) -> None:
 
     if get_active_control_rig_transaction(character) is not None:
         # The plugin/frontend path (begin_humanik_control_rig) already owns
-        # writer isolation for this rig -- nothing to adopt.
+        # writer isolation for this rig -- nothing to warn about.
         return
 
     binding = _find_frontend_binding_for_character(character)
     if binding is None:
         logger.debug(
             "HumanIK control rig watch: '%s' is not a characterized mmd_tools "
-            "binding; skipping adoption",
+            "binding; skipping warning",
             character,
         )
         return
 
-    joints = tuple(assignment.joint for assignment in binding.assignments)
-    ownership_id = f"mmd-tools:adopted-control-rig:{character}"
-    try:
-        adopt_humanik_control_rig(ownership_id, character, joints)
-    except Exception as exc:
-        message = (
-            "MMD Tools detected a HumanIK Control Rig created outside the plugin menu "
-            f"for character '{character}' and could not safely isolate MMD writers from "
-            f"it: {exc} The Control Rig was left in place (not deleted). Delete it via "
-            "Character Controls, then use MMD > HumanIK > 'Create Control Rig' for the "
-            "supported, writer-isolated path."
-        )
-        logger.error(message, exc_info=True)
-        _warn(message)
-        return
-
-    binding.control_rig_created = True
     message = (
-        "MMD Tools adopted a HumanIK Control Rig created via Maya's standard HumanIK UI "
-        f"for character '{character}': MMD writers into HIK-owned joint channels were "
-        "isolated to avoid a DG cycle. Use MMD > HumanIK > 'Restore MMD Rig' to remove the "
-        "Control Rig and restore the MMD rig."
+        "MMD Tools detected a HumanIK Control Rig created outside MMD Tools "
+        f"(Maya's standard HumanIK UI or a raw hikCreateControlRig() call) for "
+        f"character '{character}'. This can create a DG cycle with the MMD rig "
+        "(the same kind of cycle through mmdCcdIk writers described by "
+        "HUMANIK-CONTROL-RIG-CYCLE-1). MMD Tools did not modify this Control "
+        "Rig. Supported path: delete it via Character Controls, then use "
+        "MMD > HumanIK > 'Create Control Rig' (or 'Restore MMD Rig' first if "
+        "one already exists from that path)."
     )
     logger.warning(message)
     _warn(message)
@@ -385,8 +361,9 @@ def _find_frontend_binding_for_character(character: str):
     load time -- the same pattern ``plugin_main.py`` already uses for its own
     lazy ``mmd_tools.ui.humanik_menu_actions`` imports. The frontend session
     singleton is, for this cycle, the only place mmd_tools tracks which
-    model_root/HIK character/joint bindings exist, so adoption is limited to
-    models characterized through it.
+    model_root/HIK character/joint bindings exist, so this warning is limited
+    to models characterized through it -- an unrelated, non-mmd_tools HIK
+    character in the scene never triggers it.
     """
     from mmd_tools.ui import humanik_menu_actions
 

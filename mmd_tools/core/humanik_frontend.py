@@ -25,7 +25,6 @@ from mmd_tools.core.humanik_constraints import (
 from mmd_tools.core.humanik_control_rig import (
     HumanIkControlRigTransaction,
     begin_humanik_control_rig,
-    iter_active_control_rig_transactions,
     stop_humanik_control_rig,
 )
 from mmd_tools.core.humanik_preview import (
@@ -457,15 +456,12 @@ class HumanIkFrontendSession:
         on the next ``restore_mmd_rig`` call, mirroring the pending
         stance/character retry behavior below.
 
-        This also sweeps the module-level Control Rig transaction registry
-        (``humanik_control_rig.iter_active_control_rig_transactions``) for
-        transactions this session did not itself create -- i.e. Control
-        Rigs adopted from Maya's standard HumanIK UI via
-        ``humanik_control_rig_watch``/``adopt_humanik_control_rig``, which
-        register into the same registry but never populate
-        ``self._control_rig_transactions``. Transactions already handled by
-        the loop above are skipped by ownership id so neither loop restores
-        the same transaction twice.
+        A Control Rig created outside mmd_tools (Maya's standard HumanIK UI,
+        or a raw ``hikCreateControlRig()`` call) is never in
+        ``self._control_rig_transactions`` -- ``humanik_control_rig_watch``
+        only warns about it, it never registers a transaction -- so this
+        method has nothing to tear down for it; deleting it remains the
+        user's own responsibility via Character Controls.
         """
         preview = self._preview
         restored = False
@@ -481,9 +477,7 @@ class HumanIkFrontendSession:
                 self._preview = None
                 self._target_model_root = None
                 self._ownership_report = None
-        handled_ownership_ids = set()
         for model_root, transaction in list(self._control_rig_transactions.items()):
-            handled_ownership_ids.add(transaction.ownership_id)
             if not transaction.active:
                 self._control_rig_transactions.pop(model_root, None)
                 continue
@@ -498,19 +492,6 @@ class HumanIkFrontendSession:
             if binding is not None:
                 binding.control_rig_created = False
             restored = True
-        for transaction in iter_active_control_rig_transactions():
-            if transaction.ownership_id in handled_ownership_ids or not transaction.active:
-                continue
-            try:
-                stop_humanik_control_rig(transaction, cmds_module=self._cmds, mel_module=self._mel)
-            except Exception as exc:
-                if first_error is None:
-                    first_error = exc
-                continue
-            restored = True
-            binding = self.find_binding_by_character(transaction.character)
-            if binding is not None:
-                binding.control_rig_created = False
         failed_stance_roots = set()
         for model_root, stance in list(self._pending_stances.items()):
             try:

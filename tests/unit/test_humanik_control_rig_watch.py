@@ -1,4 +1,4 @@
-"""Unit tests for the out-of-band HumanIK Control Rig detection/adoption watch.
+"""Unit tests for the out-of-band HumanIK Control Rig warn-only detector.
 
 These tests run both against the stubbed ``maya`` package (no real Maya
 available) and against real ``mayapy`` (nox's ``tests`` session, where
@@ -12,8 +12,8 @@ Callback *registration* is only exercised at the Python-call level here (did
 ``register_humanik_control_rig_watch`` call ``MDGMessage.addNodeAddedCallback``
 with the right node type/callback?). Whether Maya's real HIK actually fires
 that callback on a genuine ``HIKControlSetNode`` node creation is covered by the
-``standard_ui_adoption`` stage of ``tests/viewport/e2e_humanik_control_rig_cycle.py``.
-The deferred handler's classification/adoption logic is covered here with
+``standard_ui_warning`` stage of ``tests/viewport/e2e_humanik_control_rig_cycle.py``.
+The deferred handler's classification/warning logic is covered here with
 fakes, independent of whether a real node-added event ever fires.
 """
 
@@ -162,12 +162,14 @@ class TestResolveCharacter(unittest.TestCase):
 
 
 class TestHandleNewHikControlSetNode(unittest.TestCase):
-    """Deferred-handler classification/adoption logic, fully faked.
+    """Deferred-handler classification/warning logic, fully faked.
 
     The handler receives a UUID string, not a name (see
     ``TestHikControlSetNodeUuidFilter``'s docstring for why), and resolves
     the node's *current* name via ``cmds.ls(uuid)`` -- these tests patch
-    ``cmds.ls`` accordingly rather than ``cmds.objExists``.
+    ``cmds.ls`` accordingly rather than ``cmds.objExists``. The handler never
+    mutates the scene -- these tests only assert warning/no-warning and
+    retry behavior.
     """
 
     NODE_UUID = "abc-123"
@@ -185,6 +187,7 @@ class TestHandleNewHikControlSetNode(unittest.TestCase):
         with patch.object(watch, "_resolve_character_for_hik_control_set_node") as resolve:
             watch._handle_new_hik_control_set_node(self.NODE_UUID)
             resolve.assert_not_called()
+        self.warning.assert_not_called()
 
     def test_no_character_found_is_ignored(self):
         with patch.object(
@@ -194,6 +197,7 @@ class TestHandleNewHikControlSetNode(unittest.TestCase):
                 self.NODE_UUID, retry=watch.MAX_CHARACTER_RESOLUTION_RETRIES
             )
             find_binding.assert_not_called()
+        self.warning.assert_not_called()
 
     def test_no_character_found_reschedules_instead_of_giving_up(self):
         """Empirically (E2E reruns against real Maya 2024/2026), HIK does not
@@ -226,30 +230,28 @@ class TestHandleNewHikControlSetNode(unittest.TestCase):
             find_binding.assert_not_called()
             execute_deferred.assert_not_called()
 
-    def test_plugin_owned_transaction_skips_adoption(self):
+    def test_plugin_owned_transaction_stays_silent(self):
         with patch.object(
             watch, "_resolve_character_for_hik_control_set_node", return_value="Character1"
         ), patch.object(
             watch, "get_active_control_rig_transaction", return_value=MagicMock()
-        ), patch.object(watch, "_find_frontend_binding_for_character") as find_binding, patch.object(
-            watch, "adopt_humanik_control_rig"
-        ) as adopt:
+        ), patch.object(watch, "_find_frontend_binding_for_character") as find_binding:
             watch._handle_new_hik_control_set_node(self.NODE_UUID)
             find_binding.assert_not_called()
-            adopt.assert_not_called()
+        self.warning.assert_not_called()
 
-    def test_no_frontend_binding_skips_adoption(self):
+    def test_no_frontend_binding_stays_silent(self):
         with patch.object(
             watch, "_resolve_character_for_hik_control_set_node", return_value="Character1"
         ), patch.object(
             watch, "get_active_control_rig_transaction", return_value=None
         ), patch.object(
             watch, "_find_frontend_binding_for_character", return_value=None
-        ), patch.object(watch, "adopt_humanik_control_rig") as adopt:
+        ):
             watch._handle_new_hik_control_set_node(self.NODE_UUID)
-            adopt.assert_not_called()
+        self.warning.assert_not_called()
 
-    def test_successful_adoption_marks_binding_and_warns(self):
+    def test_out_of_band_rig_warns_without_mutating_binding_state(self):
         binding = FakeBinding("Character1", ["|hips", "|left_foot"])
         with patch.object(
             watch, "_resolve_character_for_hik_control_set_node", return_value="Character1"
@@ -257,33 +259,16 @@ class TestHandleNewHikControlSetNode(unittest.TestCase):
             watch, "get_active_control_rig_transaction", return_value=None
         ), patch.object(
             watch, "_find_frontend_binding_for_character", return_value=binding
-        ), patch.object(watch, "adopt_humanik_control_rig") as adopt:
-            watch._handle_new_hik_control_set_node(self.NODE_UUID)
-            adopt.assert_called_once()
-            args, _kwargs = adopt.call_args
-            self.assertEqual(args[1], "Character1")
-            self.assertEqual(set(args[2]), {"|hips", "|left_foot"})
-
-        self.assertTrue(binding.control_rig_created)
-        self.warning.assert_called_once()
-        self.assertIn("adopted", self.warning.call_args[0][0])
-
-    def test_failed_adoption_warns_error_and_leaves_binding_flag_unset(self):
-        binding = FakeBinding("Character1", ["|hips"])
-        with patch.object(
-            watch, "_resolve_character_for_hik_control_set_node", return_value="Character1"
-        ), patch.object(
-            watch, "get_active_control_rig_transaction", return_value=None
-        ), patch.object(
-            watch, "_find_frontend_binding_for_character", return_value=binding
-        ), patch.object(
-            watch, "adopt_humanik_control_rig", side_effect=RuntimeError("blocked")
         ):
             watch._handle_new_hik_control_set_node(self.NODE_UUID)
 
+        # Warn-only: no adoption, no scene mutation, no binding state change.
         self.assertFalse(binding.control_rig_created)
         self.warning.assert_called_once()
-        self.assertIn("could not safely isolate", self.warning.call_args[0][0])
+        message = self.warning.call_args[0][0]
+        self.assertIn("outside MMD Tools", message)
+        self.assertIn("Character1", message)
+        self.assertIn("mmdCcdIk", message)
 
 
 if __name__ == "__main__":
