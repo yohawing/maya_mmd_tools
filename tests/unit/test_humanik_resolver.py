@@ -35,6 +35,29 @@ class TestHumanIkResolver(unittest.TestCase):
         self.assertNotIn("下半身", result.missing_mmd_bones)
         self.assertIn("右腕", result.missing_mmd_bones)
 
+    def test_resolve_assignments_uses_center_as_hips_fallback_when_lower_body_missing(self):
+        result = resolve_humanik_assignments(
+            [HumanIkJointCandidate("center_joint", mmd_name="センター", bone_index=0)]
+        )
+
+        assignment = result.assignments_by_hik_index[HIK_BONE_INDICES["Hips"]]
+        self.assertEqual(assignment.joint, "center_joint")
+        self.assertEqual(assignment.mmd_bone, "下半身")
+        self.assertEqual(assignment.source, "mmd_fallback")
+        self.assertNotIn("下半身", result.missing_mmd_bones)
+
+    def test_resolve_assignments_prefers_canonical_lower_body_over_center_fallback(self):
+        result = resolve_humanik_assignments(
+            [
+                HumanIkJointCandidate("center_joint", mmd_name="センター", bone_index=0),
+                HumanIkJointCandidate("lower_body_joint", mmd_name="下半身", bone_index=4),
+            ]
+        )
+
+        assignment = result.assignments_by_hik_index[HIK_BONE_INDICES["Hips"]]
+        self.assertEqual(assignment.joint, "lower_body_joint")
+        self.assertEqual(assignment.source, "mmd_name")
+
     def test_resolve_assignments_falls_back_to_joint_name(self):
         result = resolve_humanik_assignments([HumanIkJointCandidate("|root|left_arm")])
 

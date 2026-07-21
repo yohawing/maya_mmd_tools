@@ -7,7 +7,7 @@ collect Maya joints and call this resolver before mutating HIK character nodes.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 import unicodedata
 
 from mmd_tools.config.humanik_mapping import MMD_TO_HIK_BONE, MMD_TO_HIK_BONE_INDEX
@@ -16,6 +16,11 @@ from mmd_tools.validation.bone_validator import BoneValidator
 
 _BONE_VALIDATOR = BoneValidator()
 _NO_BONE_INDEX = 1_000_000_000
+
+# Some production MMD models omit the optional ``下半身`` bone and use the
+# standard ``センター`` root instead.  These aliases are considered only when
+# the normal canonical pass did not produce a Hips assignment.
+_HUMANIK_FALLBACK_MMD_BONES = {"センター": "下半身", "center": "下半身"}
 
 
 @dataclass(frozen=True)
@@ -71,12 +76,27 @@ def resolve_humanik_assignments(candidates: Iterable[HumanIkJointCandidate]) -> 
     earlier PMX/PMD bone index wins.
     """
     best_by_hik_index: Dict[int, Tuple[Tuple[int, int, str], HumanIkBoneAssignment]] = {}
+    fallback_by_hik_index: Dict[int, List[Tuple[Tuple[int, int, str], HumanIkBoneAssignment]]] = {}
     duplicates = []
     unindexed = set()
 
     for candidate in candidates:
         resolved = _resolve_candidate(candidate)
         if resolved is None:
+            fallback = _resolve_fallback_candidate(candidate)
+            if fallback is not None:
+                mmd_bone, hik_bone, source, source_rank = fallback
+                hik_index = MMD_TO_HIK_BONE_INDEX[mmd_bone]
+                assignment = HumanIkBoneAssignment(
+                    joint=candidate.node,
+                    mmd_bone=mmd_bone,
+                    hik_bone=hik_bone,
+                    hik_index=hik_index,
+                    source=source,
+                    bone_index=candidate.bone_index,
+                )
+                rank = (source_rank, _sort_bone_index(candidate.bone_index), candidate.node)
+                fallback_by_hik_index.setdefault(hik_index, []).append((rank, assignment))
             continue
         mmd_bone, hik_bone, source, source_rank = resolved
         if mmd_bone not in MMD_TO_HIK_BONE_INDEX:
@@ -100,6 +120,19 @@ def resolve_humanik_assignments(candidates: Iterable[HumanIkJointCandidate]) -> 
             best_by_hik_index[assignment.hik_index] = (rank, assignment)
         else:
             duplicates.append(assignment)
+
+    # Only use a ``センター``/``center`` alias when the canonical ``下半身``
+    # candidate was genuinely absent.  This avoids replacing a valid lower-body
+    # Hips assignment on models that contain both bones.
+    for hik_index, fallback_rows in fallback_by_hik_index.items():
+        if hik_index in best_by_hik_index:
+            continue
+        best_by_hik_index[hik_index] = min(fallback_rows, key=lambda item: item[0])
+        duplicates.extend(
+            assignment
+            for _, assignment in fallback_rows
+            if assignment != best_by_hik_index[hik_index][1]
+        )
 
     assignments = tuple(
         assignment
@@ -130,6 +163,16 @@ def _resolve_candidate(candidate: HumanIkJointCandidate) -> Optional[Tuple[str, 
         mmd_bone = normalize_mmd_bone_name(value)
         if mmd_bone and mmd_bone in MMD_TO_HIK_BONE:
             return mmd_bone, MMD_TO_HIK_BONE[mmd_bone], source, source_rank
+    return None
+
+
+def _resolve_fallback_candidate(candidate: HumanIkJointCandidate) -> Optional[Tuple[str, str, str, int]]:
+    """Resolve a root alias only for the missing-Hips fallback pass."""
+    for value in (candidate.mmd_name, candidate.english_name, candidate.node.rsplit("|", 1)[-1]):
+        normalized = unicodedata.normalize("NFKC", (value or "").strip()).lower()
+        mmd_bone = _HUMANIK_FALLBACK_MMD_BONES.get(normalized)
+        if mmd_bone and mmd_bone in MMD_TO_HIK_BONE:
+            return mmd_bone, MMD_TO_HIK_BONE[mmd_bone], "mmd_fallback", 3
     return None
 
 

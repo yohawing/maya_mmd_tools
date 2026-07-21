@@ -75,6 +75,7 @@ from mmd_tools.core.humanik_constraints import (
     classify_humanik_constraints,
     collect_humanik_constraint_facts,
 )
+from mmd_tools.core.humanik_retarget import collect_humanik_incoming_writer_census
 from mmd_tools.core.humanik_preview import BLOCKING_CLASSIFICATIONS, begin_humanik_target_preview
 
 
@@ -117,6 +118,23 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--start", type=int, default=FRAME_START)
     parser.add_argument("--end", type=int, default=FRAME_END)
     return parser.parse_args()
+
+
+def _nonempty_writer_rows(result) -> List[Dict[str, Any]]:
+    """Capture only destination channels with an actual incoming writer."""
+    return [
+        row
+        for row in collect_humanik_incoming_writer_census(result)
+        if row.get("writers")
+    ]
+
+
+def _writer_rows_for_hik_bones(
+    rows: Sequence[Mapping[str, Any]], hik_bones: Sequence[str]
+) -> List[Dict[str, Any]]:
+    """Keep writer census rows for the arm/finger slots used in Aida diagnosis."""
+    selected = {str(name) for name in hik_bones}
+    return [dict(row) for row in rows if str(row.get("hikBone")) in selected]
 
 
 def _load_plugin() -> None:
@@ -244,6 +262,8 @@ def _assignment_rows(assignments: Sequence[Any]) -> List[Dict[str, Any]]:
             "mmdBone": str(assignment.mmd_bone),
             "joint": _long_name(assignment.joint),
             "category": _quaternion_region(assignment.hik_bone),
+            "source": str(assignment.source),
+            "boneIndex": assignment.bone_index,
         }
         for assignment in assignments
     ]
@@ -1170,6 +1190,10 @@ def main() -> int:
         target_original_result = resolve_scene_humanik_assignments(target_root)
         source_result = _profile_result(source_original_result, args.hik_profile)
         target_result = _profile_result(target_original_result, args.hik_profile)
+        source_assignment_rows = _assignment_rows(source_result.assignments)
+        target_assignment_rows = _assignment_rows(target_result.assignments)
+        source_writer_census = _nonempty_writer_rows(source_result)
+        target_writer_census_before = _nonempty_writer_rows(target_result)
         assignment_profile = _assignment_profile_evidence(
             args.hik_profile,
             source_original_result,
@@ -1184,7 +1208,12 @@ def main() -> int:
         if args.characterization_stance == "t-pose":
             source_stance_snapshot = _snapshot_stance(source_root, source_result, source_slots)
             target_stance_snapshot = _snapshot_stance(target_root, target_result, target_slots)
-            isolation_state = _isolate_hik_writer_edges(target_joints)
+        # The target's imported MMD IK writers must stay isolated while Maya
+        # characterizes it.  Otherwise ``hikCharacterLock`` evaluates the
+        # target-only IK pose (Aida's legs move ~40 degrees) while the source
+        # copy remains at bind pose, baking a source/target characterization
+        # mismatch before any HIK input is connected.
+        isolation_state = _isolate_hik_writer_edges(target_joints)
         if args.characterization_stance == "t-pose":
             stance_evidence = _apply_t_pose(source_stance_snapshot, target_stance_snapshot)
         else:
@@ -1205,6 +1234,10 @@ def main() -> int:
         pre_hik_matrix = _frame_matrix_fidelity(source_slots, target_slots, [frames[0]])
         pre_hik_quaternion = _frame_quaternion_fidelity(source_slots, target_slots, [frames[0]])
         pre_hik_bind_identity = _bind_identity_evidence({"source": source_slots, "target": target_slots})
+        characterization_matrix: Dict[str, Any] = {}
+        characterization_quaternion: Dict[str, Any] = {}
+        source_writer_census_motion: List[Dict[str, Any]] = []
+        target_writer_census_characterized: List[Dict[str, Any]] = []
         source_character = create_humanik_definition(source_result, name_hint="MMDToolsS5_Source", update_ui=False)
         target_character = create_humanik_definition(target_result, name_hint="MMDToolsS5_Target", update_ui=False)
         lock_humanik_definition(source_character)
@@ -1228,20 +1261,28 @@ def main() -> int:
             payload["characterizationStance"] = stance_evidence
             if not stance_evidence["restore"]["passed"]:
                 raise RuntimeError("T-pose stance restore failed before source VMD import")
+        cmds.currentTime(frames[0], edit=True)
+        cmds.refresh(force=True)
+        characterization_matrix = _frame_matrix_fidelity(source_slots, target_slots, [frames[0]])
+        characterization_quaternion = _frame_quaternion_fidelity(source_slots, target_slots, [frames[0]])
+        target_writer_census_characterized = _nonempty_writer_rows(target_result)
         _load_motion(vmd, pmx, source_root)
+        source_writer_census_motion = _nonempty_writer_rows(source_result)
         if isolation_state is not None:
             _reconnect_hik_writer_edges(isolation_state)
             _force_constraint_evaluation(frames[0])
-            post_reconnect = _common_skin_snapshot_evaluation(target_stance_snapshot)
-            post_reconnect.pop("passed", None)
-            stance_evidence["postReconnectConstraintEvaluation"] = {
-                "phase": "after_source_vmd_before_s3_preview",
-                "interpretation": "Reconnecting the original target constraints immediately before S3 preview re-enables their evaluation; this residual is not pose-restoration evidence.",
-                **post_reconnect,
-            }
+            if target_stance_snapshot is not None:
+                post_reconnect = _common_skin_snapshot_evaluation(target_stance_snapshot)
+                post_reconnect.pop("passed", None)
+                stance_evidence["postReconnectConstraintEvaluation"] = {
+                    "phase": "after_source_vmd_before_s3_preview",
+                    "interpretation": "Reconnecting the original target constraints immediately before S3 preview re-enables their evaluation; this residual is not pose-restoration evidence.",
+                    **post_reconnect,
+                }
             payload["characterizationStance"] = stance_evidence
         ownership = classify_humanik_constraints(collect_humanik_constraint_facts(), target_joints)
         preview = begin_humanik_target_preview("mmd-tools:s5:roundtrip", target_character, source_character, ownership, target_joints)
+        target_writer_census_live = _nonempty_writer_rows(target_result)
         live_matrix = _frame_matrix_fidelity(source_slots, target_slots, frames)
         live_quaternion = _frame_quaternion_fidelity(source_slots, target_slots, frames)
         bake = bake_humanik_target_preview(preview, target_joints, frames[0], frames[-1], mel_module=mel)
@@ -1281,7 +1322,29 @@ def main() -> int:
                 "targetRoot": target_root,
                 "sourceCharacter": source_character,
                 "targetCharacter": target_character,
+                "sourceAssignments": source_assignment_rows,
+                "targetAssignments": target_assignment_rows,
+                "sourceWriterCensus": source_writer_census,
+                "sourceWriterCensusMotion": source_writer_census_motion,
+                "targetWriterCensusBefore": target_writer_census_before,
+                "targetWriterCensusCharacterized": target_writer_census_characterized,
+                "targetWriterCensusLive": target_writer_census_live,
+                "armFingerWriterCensus": {
+                    "sourceMotion": _writer_rows_for_hik_bones(
+                        source_writer_census_motion,
+                        ("LeftArm", "LeftForeArm", "RightArm", "RightForeArm", "LeftHandMiddle3", "RightHandMiddle3"),
+                    ),
+                    "targetCharacterized": _writer_rows_for_hik_bones(
+                        target_writer_census_characterized,
+                        ("LeftArm", "LeftForeArm", "RightArm", "RightForeArm", "LeftHandMiddle3", "RightHandMiddle3"),
+                    ),
+                    "targetLive": _writer_rows_for_hik_bones(
+                        target_writer_census_live,
+                        ("LeftArm", "LeftForeArm", "RightArm", "RightForeArm", "LeftHandMiddle3", "RightHandMiddle3"),
+                    ),
+                },
                 "ownershipCounts": ownership["counts"],
+                "ownershipRows": ownership["rows"],
                 "assignmentProfile": assignment_profile,
                 "commonSlotCategories": _common_slot_categories(source_slots),
                 "targetAssignmentCount": len(target_result.assignments),
@@ -1294,6 +1357,11 @@ def main() -> int:
                     "frame": int(frames[0]),
                 },
                 "preHikBindMatrixEvidence": pre_hik_bind_identity,
+                "characterizationSourceVsTarget": {
+                    **_fidelity_bundle(characterization_matrix, characterization_quaternion),
+                    "frame": int(frames[0]),
+                    "interpretation": "Source/target transform comparison after HIK definition lock and before source VMD import.",
+                },
                 "liveVsSource": _fidelity_bundle(live_matrix, live_quaternion),
                 "bakedVsSource": _fidelity_bundle(baked_matrix, baked_quaternion),
                 "skinMatrixFidelity": baked_matrix,

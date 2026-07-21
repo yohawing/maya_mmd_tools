@@ -1879,6 +1879,84 @@ def humanik_roundtrip_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def humanik_aida_wave_probe(session: nox.Session) -> None:
+    """Capture the Aida + wavefile 0..60 SOURCE/TARGET mismatch evidence.
+
+    This is intentionally report-only: the current Aida full-profile result is
+    expected to be ``fail`` while the probe records live/baked matrices,
+    assignment slots, Hips/root status, and incoming writers.  A Maya/runtime
+    error or missing diagnostic fields still fails the Nox session.
+
+    Example:
+        uvx nox -s humanik_aida_wave_probe -- --maya 2024
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    pmx_value = _option(args, "--pmx", r"F:\MMD\pmx\xzy_MMD\aida\aida_MMD.pmx")
+    vmd_value = _option(args, "--vmd", r"F:\MMD\vmd\wavefile_v2.vmd")
+    out_value = _option(args, "--out", str(ROOT / "build/reports/humanik_aida_wave_probe.json"))
+    start_value = _option(args, "--start", "0")
+    end_value = _option(args, "--end", "60")
+    evaluation_value = _option(args, "--evaluation-mode", "off")
+    profile_value = _option(args, "--hik-profile", "full")
+    stance_value = _option(args, "--characterization-stance", "bind")
+    report_path = Path(out_value)
+    passthrough = [
+        "--pmx", pmx_value,
+        "--vmd", vmd_value,
+        "--out", out_value,
+        "--start", start_value,
+        "--end", end_value,
+        "--evaluation-mode", evaluation_value,
+        "--hik-profile", profile_value,
+        "--characterization-stance", stance_value,
+    ]
+    try:
+        report_path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        session.error(f"Unable to clear stale Aida HumanIK report {report_path}: {exc}")
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/humanik_roundtrip_smoke.py"),
+        *_convert_mayapy_path_options(mayapy, passthrough, {"--pmx", "--vmd", "--out"}),
+        env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1", PYTHONIOENCODING="utf-8"),
+        success_codes=(0, 1),
+        external=True,
+    )
+    if not report_path.is_file():
+        session.error(f"Aida HumanIK report missing: {report_path}")
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        session.error(f"Invalid Aida HumanIK report {report_path}: {exc}")
+    required = (
+        "sourceAssignments",
+        "targetAssignments",
+        "sourceWriterCensus",
+        "targetWriterCensusBefore",
+        "targetWriterCensusLive",
+        "liveVsSource",
+        "bakedVsSource",
+        "motion",
+    )
+    missing = [key for key in required if key not in report]
+    if missing:
+        session.error(f"Aida HumanIK report missing diagnostic fields: {missing}")
+    if report.get("status") not in {"pass", "fail"}:
+        session.error(f"Aida HumanIK probe runtime error: {report.get('error')}")
+    session.log(
+        "Aida HumanIK evidence captured: "
+        f"status={report.get('status')}, sourceAssignments={len(report['sourceAssignments'])}, "
+        f"targetAssignments={len(report['targetAssignments'])}, "
+        f"liveMax={report['liveVsSource']['skinMatrix']['max']}, "
+        f"bakedMax={report['bakedVsSource']['skinMatrix']['max']}"
+    )
+
+
+@nox.session(venv_backend="none")
 def humanik_vmd_parity_smoke(session: nox.Session) -> None:
     """Run the SOURCE/VMD IK reproduction-matrix smoke (HUMANIK-SOURCE-VMD-IK-PARITY-1).
 
