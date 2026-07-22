@@ -14,6 +14,7 @@ from mmd_tools.core.humanik_control_rig import (
     stop_humanik_control_rig,
     unregister_control_rig_transaction,
 )
+from mmd_tools.core.humanik_transaction import HumanIkRestoreState
 
 
 class FakeCmds:
@@ -81,6 +82,7 @@ class FakeMel:
         self.locked = True
         self.has_control_rig = False
         self.delete_calls = 0
+        self.current_character = ""
 
     def eval(self, command):
         if command.startswith("exists "):
@@ -96,7 +98,11 @@ class FakeMel:
             return None
         if command.startswith("hikCharacterLock"):
             return None
+        if command.startswith("hikGetCurrentCharacter"):
+            return self.current_character
         if command.startswith("hikSetCurrentCharacter"):
+            value = command[len("hikSetCurrentCharacter(") :].rstrip(");").strip()
+            self.current_character = value[1:-1] if value.startswith('"') and value.endswith('"') else value
             return None
         if command.startswith("hikHasControlRig"):
             return int(self.has_control_rig)
@@ -142,11 +148,12 @@ class FakeBakeCmds(FakeCmds):
 
 
 class FakeBakeMel(FakeMel):
-    def __init__(self, fail=False):
+    def __init__(self, fail=False, current_character=""):
         super().__init__()
         self.has_control_rig = True
         self.commands = []
         self.fail = fail
+        self.current_character = current_character
 
     def eval(self, command):
         self.commands.append(command)
@@ -495,27 +502,46 @@ class TestStopControlRigExceptionSafety(unittest.TestCase):
         stop_humanik_control_rig(transaction, cmds, mel)
         self.assertEqual(mel.delete_calls, 0)
 
-    def test_restore_state_restore_failure_still_releases_transaction_and_raises_once(self):
+    def test_restore_state_restore_failure_retains_transaction_for_safe_retry(self):
         cmds, mel = FakeCmds(), FakeMel()
         transaction = self._begin(cmds, mel)
 
         def failing_connect(source, destination, force=False):
             raise RuntimeError("boom-connect")
 
+        original_connect = cmds.connectAttr
         cmds.connectAttr = failing_connect
 
         with self.assertRaisesRegex(RuntimeError, "boom-connect"):
             stop_humanik_control_rig(transaction, cmds, mel)
 
-        # The transaction was released even though teardown failed, so a
-        # caller (restore_mmd_rig) retrying later does not hit the same
-        # exception again.
-        self.assertFalse(transaction.active)
-        self.assertIsNone(get_active_control_rig_transaction("Character"))
+        # The rig was deleted, but restore_state failed.  Keep the
+        # transaction registered so a retry can complete the writer restore.
+        self.assertTrue(transaction.active)
+        self.assertIs(get_active_control_rig_transaction("Character"), transaction)
         self.assertEqual(mel.delete_calls, 1)  # control rig delete step still ran
 
-        stop_humanik_control_rig(transaction, cmds, mel)  # no-op, does not re-raise
+        cmds.connectAttr = original_connect
+        stop_humanik_control_rig(transaction, cmds, mel)
+        self.assertFalse(transaction.active)
+        self.assertIsNone(get_active_control_rig_transaction("Character"))
         self.assertEqual(mel.delete_calls, 1)
+
+    def test_control_rig_delete_failure_does_not_restore_writers_or_release_transaction(self):
+        cmds, mel = FakeCmds(), FakeMel()
+        transaction = self._begin(cmds, mel)
+
+        with patch(
+            "mmd_tools.core.humanik_control_rig._delete_control_rig",
+            side_effect=RuntimeError("delete failed"),
+        ) as delete:
+            with self.assertRaisesRegex(RuntimeError, "deletion failed"):
+                stop_humanik_control_rig(transaction, cmds, mel)
+
+        delete.assert_called_once()
+        self.assertTrue(transaction.active)
+        self.assertIs(get_active_control_rig_transaction("Character"), transaction)
+        self.assertEqual(cmds.connections["|hips.rotateX"], [])
 
 
 class TestControlRigTransactionRegistry(unittest.TestCase):
@@ -583,6 +609,35 @@ class TestBakeHumanIkControlRig(unittest.TestCase):
             active=active,
         )
 
+    def test_baked_flag_scene_round_trip_and_legacy_default(self):
+        restore_state = HumanIkRestoreState(
+            "owner:rig",
+            "Character",
+            True,
+            "",
+            -1,
+            [],
+            [],
+        )
+        transaction = HumanIkControlRigTransaction(
+            ownership_id="owner:rig",
+            character="Character",
+            restore_state=restore_state,
+            disconnected=[],
+            retained_nodes=[],
+            created_nodes=[],
+            baked=True,
+        )
+
+        payload = transaction.to_scene_dict("|model")
+        self.assertTrue(payload["baked"])
+        restored = HumanIkControlRigTransaction.from_scene_dict(payload)
+        self.assertTrue(restored.baked)
+
+        legacy_payload = dict(payload)
+        legacy_payload.pop("baked")
+        self.assertFalse(HumanIkControlRigTransaction.from_scene_dict(legacy_payload).baked)
+
     def test_native_bake_uses_explicit_range_and_restores_playback_state(self):
         cmds, mel = FakeBakeCmds(), FakeBakeMel()
         with patch("mmd_tools.core.humanik_control_rig.ensure_humanik_mel_loaded"):
@@ -607,6 +662,20 @@ class TestBakeHumanIkControlRig(unittest.TestCase):
         })
         self.assertEqual(cmds.current, 7.0)
 
+    def test_native_bake_restores_previous_current_character(self):
+        cmds, mel = FakeBakeCmds(), FakeBakeMel(current_character="OtherCharacter")
+        with patch("mmd_tools.core.humanik_control_rig.ensure_humanik_mel_loaded"):
+            bake_humanik_control_rig(self._transaction(), 2, 18, cmds, mel)
+
+        self.assertEqual(mel.current_character, "OtherCharacter")
+        self.assertEqual(
+            [command for command in mel.commands if command.startswith("hikSetCurrentCharacter")],
+            [
+                'hikSetCurrentCharacter("Character");',
+                'hikSetCurrentCharacter("OtherCharacter");',
+            ],
+        )
+
     def test_native_bake_failure_restores_playback_and_keeps_transaction_active(self):
         cmds, mel = FakeBakeCmds(), FakeBakeMel(fail=True)
         transaction = self._transaction()
@@ -617,6 +686,62 @@ class TestBakeHumanIkControlRig(unittest.TestCase):
         self.assertTrue(transaction.active)
         self.assertEqual(len(cmds.playback_edits), 2)
         self.assertEqual(cmds.playback["minTime"], 1.5)
+
+    def test_native_bake_failure_restores_previous_current_character(self):
+        cmds, mel = FakeBakeCmds(), FakeBakeMel(fail=True, current_character="OtherCharacter")
+        transaction = self._transaction()
+        with patch("mmd_tools.core.humanik_control_rig.ensure_humanik_mel_loaded"):
+            with self.assertRaisesRegex(RuntimeError, "native bake failed"):
+                bake_humanik_control_rig(transaction, 2, 18, cmds, mel)
+
+        self.assertTrue(transaction.active)
+        self.assertEqual(mel.current_character, "OtherCharacter")
+
+    def test_native_bake_failure_logs_concurrent_cleanup_failure(self):
+        cmds, mel = FakeBakeCmds(), FakeBakeMel(fail=True)
+        original_playback = cmds.playbackOptions
+
+        def fail_playback_restore(query=False, edit=False, **kwargs):
+            if edit and kwargs.get("minTime") == 1.5:
+                raise RuntimeError("playback cleanup failed")
+            return original_playback(query=query, edit=edit, **kwargs)
+
+        cmds.playbackOptions = fail_playback_restore
+        with patch("mmd_tools.core.humanik_control_rig.ensure_humanik_mel_loaded"), patch(
+            "mmd_tools.core.humanik_control_rig.logger.error"
+        ) as log_error:
+            with self.assertRaisesRegex(RuntimeError, "native bake failed"):
+                bake_humanik_control_rig(self._transaction(), 2, 18, cmds, mel)
+
+        log_error.assert_called_once()
+        self.assertIn("after an operation failure", log_error.call_args.args[1])
+
+    def test_native_bake_cleanup_failure_keeps_success_and_attempts_current_restore(self):
+        cmds, mel = FakeBakeCmds(), FakeBakeMel(current_character="OtherCharacter")
+        original_playback = cmds.playbackOptions
+
+        def fail_playback_restore(query=False, edit=False, **kwargs):
+            if edit and kwargs.get("minTime") == 1.5:
+                raise RuntimeError("playback cleanup failed")
+            return original_playback(query=query, edit=edit, **kwargs)
+
+        cmds.playbackOptions = fail_playback_restore
+        with patch("mmd_tools.core.humanik_control_rig.ensure_humanik_mel_loaded"), patch(
+            "mmd_tools.core.humanik_control_rig.logger.error"
+        ) as log_error:
+            result = bake_humanik_control_rig(self._transaction(), 2, 18, cmds, mel)
+
+        self.assertIsInstance(result, HumanIkControlRigBakeResult)
+        self.assertEqual(mel.current_character, "OtherCharacter")
+        log_error.assert_called_once()
+
+    def test_native_bake_with_no_previous_current_character_restores_empty_selection(self):
+        cmds, mel = FakeBakeCmds(), FakeBakeMel(current_character="")
+        with patch("mmd_tools.core.humanik_control_rig.ensure_humanik_mel_loaded"):
+            bake_humanik_control_rig(self._transaction(), 2, 18, cmds, mel)
+
+        self.assertEqual(mel.current_character, "")
+        self.assertIn('hikSetCurrentCharacter("");', mel.commands)
 
     def test_native_bake_rejects_inactive_transaction_before_maya_queries(self):
         cmds, mel = FakeBakeCmds(), FakeBakeMel()

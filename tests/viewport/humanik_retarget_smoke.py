@@ -13,7 +13,7 @@ import argparse
 import base64
 import json
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import maya.cmds as cmds
 import maya.standalone
@@ -293,6 +293,7 @@ def _verify_locomotion_modes(
     translation,
     tolerance: float,
     modes,
+    source_model_root: Optional[str] = None,
 ):
     original_modes = cmds.evaluationManager(query=True, mode=True) or ["off"]
     reports = {}
@@ -305,12 +306,14 @@ def _verify_locomotion_modes(
                 translation=translation,
                 tolerance=tolerance,
                 observed_root_joint=target_hips,
+                source_model_root=source_model_root,
             )
     finally:
         cmds.evaluationManager(mode=original_modes[0])
     return {
         "modes": reports,
-        "passed": bool(reports) and all(report["passed"] for report in reports.values()),
+        "passed": bool(reports)
+        and all(report.get("supported", True) and report["passed"] for report in reports.values()),
     }
 
 
@@ -478,6 +481,7 @@ def main() -> int:
             _parse_translation(args.translation),
             args.tolerance,
             evaluation_modes,
+            source_model_root=source_root,
         )
 
         stop_reasons = []
@@ -490,16 +494,53 @@ def main() -> int:
         if source_changed_connections:
             stop_reasons.append("source_writer_connections_changed")
         if not locomotion["passed"]:
-            if any(
-                not report["rootMotionPassed"]
-                for report in locomotion["modes"].values()
-            ):
-                stop_reasons.append("root_motion_lost")
-            if any(
-                not all(group["passed"] for group in report["groups"].values())
-                for report in locomotion["modes"].values()
-            ):
-                stop_reasons.append("root_locomotion_body_split")
+            reports = list(locomotion.get("modes", {}).values())
+            unsupported = any(report.get("supported") is False for report in reports)
+            if unsupported:
+                stop_reasons.append("root_locomotion_probe_unsupported")
+            else:
+                if any(not report.get("writeSucceeded", True) for report in reports):
+                    stop_reasons.append("root_locomotion_probe_write_failed")
+                if any(
+                    report.get("writeSucceeded", True)
+                    and not report.get("writeReadbackPassed", True)
+                    for report in reports
+                ):
+                    stop_reasons.append("root_locomotion_probe_readback_failed")
+                if any(
+                    report.get("writeSucceeded", True)
+                    and not report.get("restoreSucceeded", True)
+                    for report in reports
+                ):
+                    stop_reasons.append("root_locomotion_probe_restore_failed")
+                if any(
+                    report.get("writeSucceeded", True)
+                    and report.get("writeReadbackPassed", True)
+                    and report.get("restoreSucceeded", True)
+                    and not report.get("rootMotionPassed", True)
+                    for report in reports
+                ):
+                    stop_reasons.append("root_motion_lost")
+                if any(
+                    report.get("writeSucceeded", True)
+                    and report.get("writeReadbackPassed", True)
+                    and report.get("restoreSucceeded", True)
+                    and not all(
+                        group.get("passed", False)
+                        for group in report.get("groups", {}).values()
+                    )
+                    for report in reports
+                ):
+                    stop_reasons.append("root_locomotion_body_split")
+                known_reasons = {
+                    "root_locomotion_probe_write_failed",
+                    "root_locomotion_probe_readback_failed",
+                    "root_locomotion_probe_restore_failed",
+                    "root_motion_lost",
+                    "root_locomotion_body_split",
+                }
+                if not known_reasons.intersection(stop_reasons):
+                    stop_reasons.append("root_locomotion_probe_failed")
         payload.update(
             {
                 "locomotion": locomotion,

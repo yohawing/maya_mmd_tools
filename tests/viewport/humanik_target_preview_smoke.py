@@ -125,6 +125,7 @@ def main() -> int:
                     source_hips,
                     groups,
                     observed_root_joint=target_hips,
+                    source_model_root=source_root,
                 )
         finally:
             cmds.evaluationManager(mode=original_mode)

@@ -63,10 +63,11 @@ class FakePreview:
 
 
 class FakeControlRigTransaction:
-    def __init__(self, character="Character_source", preview=None):
+    def __init__(self, character="Character_source", preview=None, baked=False):
         self.active = True
         self.character = character
         self.preview = preview
+        self.baked = baked
 
 
 class FakeScenePairMel:
@@ -302,6 +303,7 @@ class TestDescribeFrontendStateSource(unittest.TestCase):
         session._control_rig_transactions["|target"] = FakeControlRigTransaction(
             "Character_target",
             preview=persisted_preview,
+            baked=True,
         )
         scene_pair = {
             "source": {
@@ -343,7 +345,7 @@ class TestDescribeFrontendStateSource(unittest.TestCase):
         )
         self.assertEqual(
             state["controlRigs"],
-            [{"modelRoot": "|target", "character": "Character_target"}],
+            [{"modelRoot": "|target", "character": "Character_target", "baked": True}],
         )
 
     def test_scene_pair_without_control_rig_reports_native_target_preview(self):
@@ -466,7 +468,8 @@ class TestDescribeFrontendStateControlRig(unittest.TestCase):
 
         self.assertEqual(state["mode"], FRONTEND_MODE_CONTROL_RIG)
         self.assertEqual(
-            state["controlRigs"], [{"modelRoot": "|target", "character": "Character_target"}]
+            state["controlRigs"],
+            [{"modelRoot": "|target", "character": "Character_target", "baked": False}],
         )
         self.assertTrue(state["actions"]["restore_mmd_rig"]["allowed"])
 

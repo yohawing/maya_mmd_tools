@@ -466,6 +466,8 @@ class HumanIkFrontendSession:
                 logger.warning("HumanIK persisted transaction rejected: %s", exc)
                 continue
             self._control_rig_transactions[model_root] = transaction
+            if transaction.baked:
+                self._control_rig_baked_roots.add(model_root)
             register_control_rig_transaction(character, transaction)
 
     def _persist_control_rig_transactions(self, records=None) -> None:
@@ -948,7 +950,9 @@ class HumanIkFrontendSession:
         TARGET input to the Control Rig.  In that state the preview object is
         retained only as the reversible bake context required by
         :meth:`bake_from_control_rig`; deleting the Control Rig here would
-        discard the animation the user just baked.
+        discard the animation the user just baked.  The same decision is used
+        after scene reopen because ``HumanIkControlRigTransaction.baked`` is
+        persisted with the transaction.
 
         Returns:
             ``True`` when a preview or SOURCE selection was cleared, otherwise
@@ -964,9 +968,12 @@ class HumanIkFrontendSession:
         keep_baked_control_rig = bool(
             preview is not None
             and preview.active
-            and target_root in self._control_rig_baked_roots
             and transaction is not None
             and transaction.active
+            and (
+                bool(getattr(transaction, "baked", False))
+                or target_root in self._control_rig_baked_roots
+            )
         )
 
         disconnected = False
@@ -1164,7 +1171,9 @@ class HumanIkFrontendSession:
         The native HumanIK bake switches the character input to the Control
         Rig; this method therefore leaves ``_preview`` and the transaction in
         place so the Control Rig remains active/editable until
-        :meth:`restore_mmd_rig` is explicitly requested.
+        :meth:`restore_mmd_rig` is explicitly requested.  Successful calls
+        persist the transaction's ``baked`` flag so a reopened scene keeps the
+        same non-destructive Keep path available.
         """
         preview = self.active_preview
         if preview is None or self._target_model_root is None:
@@ -1188,7 +1197,9 @@ class HumanIkFrontendSession:
             cmds_module=self._cmds,
             mel_module=self._mel,
         )
+        transaction.baked = True
         self._control_rig_baked_roots.add(key)
+        self._persist_control_rig_transactions()
         return result
 
     def bake_from_control_rig(self, start: int, end: int) -> HumanIkBakeResult:
@@ -1224,9 +1235,13 @@ class HumanIkFrontendSession:
                 cmds_module=self._cmds,
                 mel_module=self._mel,
             )
-        except Exception as exc:  # transaction is released even when teardown aggregates failures
+        except Exception as exc:  # fail-closed teardown retains the transaction for retry
             teardown_error = exc
-        finally:
+            # ``stop_humanik_control_rig`` is fail-closed: a deletion or
+            # restore_state failure leaves the transaction active for retry.
+            # Keep every ownership marker and persist that retryable state.
+            self._persist_control_rig_transactions()
+        else:
             self._control_rig_transactions.pop(key, None)
             self._control_rig_baked_roots.discard(key)
             binding.control_rig_created = False
@@ -1235,10 +1250,21 @@ class HumanIkFrontendSession:
             raise teardown_error
         return result
 
-    def restore_mmd_rig(self) -> bool:
+    def _has_active_baked_control_rig(self) -> bool:
+        """Return whether a tracked active Control Rig already has a bake."""
+        return any(
+            transaction.active
+            and (
+                bool(getattr(transaction, "baked", False))
+                or model_root in self._control_rig_baked_roots
+            )
+            for model_root, transaction in self._control_rig_transactions.items()
+        )
+
+    def restore_mmd_rig(self, delete_baked_control_rig: bool = False) -> bool:
         """Restore preview/control-rig transactions, stances, and characters.
 
-        Any active Control Rig transaction is deleted through HIK's own
+        Any active *unbaked* Control Rig transaction is deleted through HIK's own
         ``hikDeleteControlRig()`` MEL and its MMD writer isolation is
         reversed here (see ``humanik_control_rig.stop_humanik_control_rig``),
         so a model returns to the unblocked NEUTRAL/SOURCE state
@@ -1272,21 +1298,18 @@ class HumanIkFrontendSession:
         compatibility, and the detailed per-node outcome is available via
         ``describe_last_orphan_recovery()`` or ``describe_frontend_state()``'s
         ``restoreHint.lastOrphanRecovery``.
+
+        By default, a baked Control Rig is preserved through the same
+        non-destructive :meth:`disconnect_retarget` route used by Source=None;
+        this keeps its transaction, preview restore context, writer isolation,
+        and Bake From capability intact.  Callers that explicitly choose the
+        destructive path must pass ``delete_baked_control_rig=True``.
         """
+        if not delete_baked_control_rig and self._has_active_baked_control_rig():
+            return self.disconnect_retarget()
         preview = self._preview
         restored = False
         first_error = None
-        try:
-            if preview is not None and preview.active:
-                stop_humanik_target_preview(preview, cmds_module=self._cmds, mel_module=self._mel)
-                restored = True
-        except Exception as exc:
-            first_error = exc
-        finally:
-            if preview is not None and not preview.active:
-                self._preview = None
-                self._target_model_root = None
-                self._ownership_report = None
         for model_root, transaction in list(self._control_rig_transactions.items()):
             if not transaction.active:
                 self._control_rig_transactions.pop(model_root, None)
@@ -1305,6 +1328,41 @@ class HumanIkFrontendSession:
             if binding is not None:
                 binding.control_rig_created = False
             restored = True
+        # Delete Control Rig transactions before restoring preview/MMD writer
+        # state.  In particular, a native-baked rig may still be connected to
+        # the HIK character; restoring preview writers first would leave those
+        # writers connected while the Control Rig remains live.
+        active_control_rig_remaining = any(
+            transaction.active for transaction in self._control_rig_transactions.values()
+        )
+        if active_control_rig_remaining:
+            if first_error is None:
+                first_error = RuntimeError(
+                    "Cannot restore preview writers while a HumanIK Control Rig remains active"
+                )
+            # Do not advance any other destructive recovery while the live
+            # Control Rig foundation is still present.  In particular,
+            # restoring a pending stance, deleting a pending character, or
+            # recovering orphan nodes could invalidate the rig and make the
+            # retained transaction impossible to retry safely.
+            self._persist_control_rig_transactions()
+            self._control_rig_baked_roots.intersection_update(
+                self._control_rig_transactions
+            )
+            raise first_error
+        else:
+            try:
+                if preview is not None and preview.active:
+                    stop_humanik_target_preview(preview, cmds_module=self._cmds, mel_module=self._mel)
+                    restored = True
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+            finally:
+                if preview is not None and not preview.active:
+                    self._preview = None
+                    self._target_model_root = None
+                    self._ownership_report = None
         failed_stance_roots = set()
         for model_root, stance in list(self._pending_stances.items()):
             try:
@@ -1782,6 +1840,7 @@ class HumanIkFrontendSession:
                         if binding
                         else str(getattr(transaction, "character", "")) or None
                     ),
+                    "baked": bool(getattr(transaction, "baked", False)),
                 }
             )
 
@@ -1792,7 +1851,16 @@ class HumanIkFrontendSession:
             preview_active
             and source_binding is None
             and external_source is None
-            and self._target_model_root in self._control_rig_baked_roots
+            and (
+                self._target_model_root in self._control_rig_baked_roots
+                or bool(
+                    getattr(
+                        self._control_rig_transactions.get(self._target_model_root),
+                        "baked",
+                        False,
+                    )
+                )
+            )
         )
 
         if preview_active and not baked_control_rig_detached:

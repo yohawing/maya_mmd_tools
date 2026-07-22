@@ -82,6 +82,7 @@ class FakeControlRigTransaction:
         self.active = True
         self.ownership_id = ownership_id
         self.character = character
+        self.baked = False
 
 
 class FakeStance:
@@ -186,6 +187,7 @@ class TestHumanIkFrontend(unittest.TestCase):
                 "leftElbowKillPitchPreviousValue": 0,
             },
             "active": True,
+            "baked": True,
         }]
 
         class Cmds:
@@ -197,6 +199,8 @@ class TestHumanIkFrontend(unittest.TestCase):
         self.assertIn("|target", session._control_rig_transactions)
         transaction = session._control_rig_transactions["|target"]
         self.assertTrue(transaction.active)
+        self.assertTrue(transaction.baked)
+        self.assertEqual(session._control_rig_baked_roots, {"|target"})
         self.assertEqual(transaction.restore_state.input_source, "")
         self.assertIsNotNone(transaction.preview)
         self.assertEqual(transaction.preview.source_character, "Character_source")
@@ -866,6 +870,100 @@ class TestHumanIkFrontend(unittest.TestCase):
         self.assertNotIn("|source", session._control_rig_transactions)
         self.assertFalse(binding.control_rig_created)
 
+    def test_restore_deletes_control_rig_before_restoring_preview_writers(self):
+        session = _session()
+        preview = FakePreview()
+        transaction = FakeControlRigTransaction(character="Character_target")
+        transaction.baked = True
+        session._preview = preview
+        session._target_model_root = "|target"
+        session._control_rig_transactions["|target"] = transaction
+        events = []
+
+        def stop_control(stopped, **_kwargs):
+            events.append("control_rig")
+            stopped.active = False
+
+        def stop_preview(stopped, **_kwargs):
+            events.append("preview")
+            stopped.active = False
+
+        with patch(
+            "mmd_tools.core.humanik_frontend.stop_humanik_control_rig",
+            side_effect=stop_control,
+        ), patch(
+            "mmd_tools.core.humanik_frontend.stop_humanik_target_preview",
+            side_effect=stop_preview,
+        ):
+            self.assertTrue(session.restore_mmd_rig(delete_baked_control_rig=True))
+
+        self.assertEqual(events, ["control_rig", "preview"])
+
+    @patch("mmd_tools.core.humanik_frontend.stop_humanik_control_rig")
+    def test_restore_default_preserves_baked_control_rig(self, stop_control):
+        session = _session()
+        session._source_model_root = "|source"
+        session._target_model_root = "|target"
+        session._preview = FakePreview()
+        transaction = FakeControlRigTransaction(character="Character_target")
+        transaction.baked = True
+        session._control_rig_transactions["|target"] = transaction
+
+        self.assertTrue(session.restore_mmd_rig())
+
+        stop_control.assert_not_called()
+        self.assertTrue(transaction.active)
+        self.assertTrue(session._preview.active)
+        self.assertIsNone(session._source_model_root)
+
+    def test_restore_skips_preview_writer_restore_when_control_rig_teardown_remains_active(self):
+        session = _session()
+        preview = FakePreview()
+        transaction = FakeControlRigTransaction(character="Character_target")
+        transaction.baked = True
+        session._preview = preview
+        session._target_model_root = "|target"
+        session._control_rig_transactions["|target"] = transaction
+
+        with patch(
+            "mmd_tools.core.humanik_frontend.stop_humanik_control_rig",
+            side_effect=RuntimeError("control rig delete failed"),
+        ), patch(
+            "mmd_tools.core.humanik_frontend.stop_humanik_target_preview",
+        ) as stop_preview:
+            with self.assertRaisesRegex(RuntimeError, "control rig delete failed"):
+                session.restore_mmd_rig(delete_baked_control_rig=True)
+
+        stop_preview.assert_not_called()
+        self.assertTrue(transaction.active)
+        self.assertTrue(preview.active)
+
+    def test_restore_failure_preserves_pending_setup_and_skips_orphan_recovery(self):
+        session = _session()
+        transaction = FakeControlRigTransaction(character="Character_target")
+        transaction.baked = True
+        session._control_rig_transactions["|target"] = transaction
+        pending_stance = FakeStance("|target", ())
+        session._pending_stances["|target"] = pending_stance
+        session._pending_characters["PendingCharacter"] = "|target"
+
+        with patch(
+            "mmd_tools.core.humanik_frontend.stop_humanik_control_rig",
+            side_effect=RuntimeError("control rig delete failed"),
+        ), patch(
+            "mmd_tools.core.humanik_frontend.delete_humanik_character",
+        ) as delete_character, patch.object(
+            session, "_recover_orphaned_control_rigs"
+        ) as recover_orphans:
+            with self.assertRaisesRegex(RuntimeError, "control rig delete failed"):
+                session.restore_mmd_rig(delete_baked_control_rig=True)
+
+        self.assertEqual(pending_stance.restores, 0)
+        self.assertIn("|target", session._pending_stances)
+        self.assertIn("PendingCharacter", session._pending_characters)
+        delete_character.assert_not_called()
+        recover_orphans.assert_not_called()
+
     def test_bake_failure_retains_active_preview_but_clears_inactive_preview(self):
         session = _session()
         target = _result()
@@ -931,7 +1029,32 @@ class TestHumanIkFrontend(unittest.TestCase):
         )
         self.assertIs(session.active_preview, session._preview)
         self.assertTrue(transaction.active)
+        self.assertTrue(transaction.baked)
         self.assertEqual(session._control_rig_baked_roots, {"|target"})
+        self.assertTrue(session.describe_frontend_state()["controlRigs"][0]["baked"])
+
+    def test_control_rig_bake_failure_does_not_mark_transaction_baked(self):
+        session = _session()
+        target = _result()
+        session._bindings["|target"] = HumanIkFrontendBinding(
+            model_root="|target",
+            character="Character_target",
+            result=target,
+        )
+        session._target_model_root = "|target"
+        session._preview = FakePreview()
+        transaction = FakeControlRigTransaction(character="Character_target")
+        session._control_rig_transactions["|target"] = transaction
+
+        with patch(
+            "mmd_tools.core.humanik_frontend.bake_humanik_control_rig",
+            side_effect=RuntimeError("native bake failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "native bake failed"):
+                session.bake_to_control_rig(3, 9)
+
+        self.assertFalse(transaction.baked)
+        self.assertNotIn("|target", session._control_rig_baked_roots)
 
     @patch("mmd_tools.core.humanik_frontend.stop_humanik_target_preview")
     def test_disconnect_after_control_rig_bake_preserves_bake_context_and_animation(
@@ -954,7 +1077,7 @@ class TestHumanIkFrontend(unittest.TestCase):
         session._preview = FakePreview()
         transaction = FakeControlRigTransaction(character="Character_target")
         session._control_rig_transactions["|target"] = transaction
-        session._control_rig_baked_roots.add("|target")
+        transaction.baked = True
 
         self.assertTrue(session.disconnect_retarget())
 
@@ -1035,6 +1158,39 @@ class TestHumanIkFrontend(unittest.TestCase):
         self.assertIsNone(session.active_preview)
         self.assertNotIn("|target", session._control_rig_transactions)
         self.assertFalse(binding.control_rig_created)
+
+    def test_bake_from_teardown_failure_retains_retryable_control_rig_state(self):
+        session = _session()
+        target = _result()
+        binding = HumanIkFrontendBinding(
+            model_root="|target",
+            character="Character_target",
+            result=target,
+            control_rig_created=True,
+        )
+        session._bindings["|target"] = binding
+        session._target_model_root = "|target"
+        preview = FakePreview()
+        session._preview = preview
+        transaction = FakeControlRigTransaction(character="Character_target")
+        transaction.baked = True
+        session._control_rig_transactions["|target"] = transaction
+        session._control_rig_baked_roots.add("|target")
+        fake_bake = HumanIkBakeResult(0, 1, 2, {}, 0.0, [])
+
+        with patch.object(session, "bake_to_mmd_rig", return_value=fake_bake), patch(
+            "mmd_tools.core.humanik_frontend.stop_humanik_control_rig",
+            side_effect=RuntimeError("restore_state pending"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "restore_state pending"):
+                session.bake_from_control_rig(0, 1)
+
+        self.assertIs(session._control_rig_transactions["|target"], transaction)
+        self.assertTrue(transaction.active)
+        self.assertTrue(transaction.baked)
+        self.assertIn("|target", session._control_rig_baked_roots)
+        self.assertTrue(binding.control_rig_created)
+        self.assertIs(session._preview, preview)
 
     def test_bake_from_control_rig_requires_active_transaction_before_sampling(self):
         session = _session()

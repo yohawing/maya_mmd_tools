@@ -232,13 +232,18 @@ nothing for HIK to reconstruct), so it is safe to apply unconditionally.
 
 
 HUMANIK_LEFT_ELBOW_KILL_PITCH_ENABLED = 1
-"""Value that disables TARGET-side HIK elbow-pitch reconstruction.
+"""Value that disables TARGET-side HIK elbow-pitch reconstruction on the left.
 
 The Aida self-retarget probe showed a causal ``LeftForeArm`` residual with
 ``HIKProperty2State.LeftElbowKillPitch=0``. Setting this TARGET-only property
 to ``1`` during preview reduced the local quaternion residual from
-0.1756 radians to 0.00043 radians. The active-preview scope restores the
-previous value after retargeting.
+0.1756375963 radians to 0.0004326967 radians. This policy is intentionally
+left-only: enabling the right property alone leaves the left-arm residual at
+0.1756375963 radians, while enabling both properties raises the overall
+residual to 0.0011058493 radians (worse than the left-only result). Therefore
+no symmetric ``RightElbowKillPitch`` mutation is appropriate for this defect.
+The active-preview scope restores the previous left-property value after
+retargeting.
 """
 
 
@@ -325,7 +330,13 @@ def get_humanik_left_elbow_kill_pitch_state(
     mel_module=None,
     cmds_module=None,
 ) -> Optional[int]:
-    """Return TARGET ``LeftElbowKillPitch`` or ``None`` when unsupported."""
+    """Return TARGET ``LeftElbowKillPitch`` or ``None`` when unsupported.
+
+    The helper deliberately queries only the left property. Aida evidence
+    showed that the right-only setting does not fix the left residual, and
+    enabling both sides regresses the measured overall residual; callers must
+    not infer a symmetric right-side mutation from this helper.
+    """
     mel = mel_module or maya_mel()
     cmds = cmds_module or maya_cmds()
     node = get_humanik_finger_solving_property_node(character, mel_module=mel)
@@ -344,6 +355,10 @@ def set_humanik_left_elbow_kill_pitch_state(
     """Set TARGET ``LeftElbowKillPitch`` and return its previous value.
 
     Maya versions without this HIK property are intentionally left untouched.
+    This is intentionally a left-only policy: the Aida probe showed that a
+    right-only change leaves the left-arm defect unresolved and changing both
+    sides is measurably worse than the left-only result. Do not add a
+    ``RightElbowKillPitch`` write here without new target-specific evidence.
     """
     mel = mel_module or maya_mel()
     cmds = cmds_module or maya_cmds()

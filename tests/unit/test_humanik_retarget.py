@@ -74,6 +74,78 @@ class FakeCmds:
         return None
 
 
+class ScalarProbeCmds:
+    """Small scalar-plug double for lock/connection and restore contracts."""
+
+    def __init__(self, *, block_hips=False, block_root=False):
+        self.values = {
+            "|hips": [0.0, 0.0, 0.0],
+            "|root": [0.0, 0.0, 0.0],
+            "|targetHips": [0.0, 0.0, 0.0],
+            "|targetSpine": [0.0, 1.0, 0.0],
+        }
+        self.parents = {"|hips": ["|root"], "|root": []}
+        self.writers = {}
+        self.locked = set()
+        self.writes = []
+        if block_hips:
+            self.writers.update(
+                {
+                    "|hips.translateX": ["animCurve.output"],
+                    "|hips.translateY": ["animCurve.output"],
+                    "|hips.translateZ": ["animCurve.output"],
+                }
+            )
+        if block_root:
+            self.locked.add("|root")
+
+    def listRelatives(self, node, parent=False, fullPath=False):
+        return self.parents.get(node, []) if parent else []
+
+    def ls(self, node, long=False):
+        aliases = {"hips": "|hips", "root": "|root"}
+        return [aliases.get(node, node)]
+
+    def lockNode(self, node, query=False, lock=False):
+        return [node in self.locked]
+
+    def listConnections(self, plug, source=True, destination=False, plugs=True):
+        return self.writers.get(plug, [])
+
+    def getAttr(self, plug, **kwargs):
+        node, attr = plug.rsplit(".", 1)
+        if kwargs.get("lock"):
+            return attr.startswith("translate") and node in self.locked
+        if kwargs.get("settable"):
+            return node not in self.locked and not self.writers.get(plug)
+        if attr == "translate":
+            return [tuple(self.values[node])]
+        if attr.startswith("translate"):
+            return self.values[node]["XYZ".index(attr[-1])]
+        raise AssertionError(plug)
+
+    def setAttr(self, plug, value, *args, **kwargs):
+        node, attr = plug.rsplit(".", 1)
+        if attr == "translate":
+            raise AssertionError("compound writes are not allowed")
+        if node in self.locked or self.writers.get(plug):
+            raise RuntimeError("non-writable plug")
+        axis = "XYZ".index(attr[-1])
+        delta = float(value) - self.values[node][axis]
+        self.values[node][axis] = float(value)
+        if node == "|root":
+            for child in ("|hips", "|targetHips", "|targetSpine"):
+                self.values[child][axis] += delta
+        self.writes.append(plug)
+
+    def xform(self, joint, query=False, worldSpace=False, matrix=False):
+        x, y, z = self.values[joint]
+        return [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, x, y, z, 1.0]
+
+    def refresh(self, force=False):
+        return None
+
+
 class TestHumanIkRetarget(unittest.TestCase):
     def setUp(self):
         self.assignments = [
@@ -182,6 +254,102 @@ class TestHumanIkRetarget(unittest.TestCase):
 
         self.assertTrue(report["passed"])
         self.assertEqual(report["rootDelta"], [3.0, 0.0, 0.0])
+
+    def test_root_locomotion_skips_connected_hips_and_restores_scalar_ancestor(self):
+        cmds = ScalarProbeCmds(block_hips=True)
+        before = dict((node, list(value)) for node, value in cmds.values.items())
+        report = verify_root_locomotion(
+            "|hips",
+            {"upperBody": ["|targetSpine"]},
+            translation=(2.0, 0.0, 0.0),
+            cmds_module=cmds,
+            observed_root_joint="|targetHips",
+            source_model_root="|root",
+        )
+
+        self.assertTrue(report["supported"])
+        self.assertEqual(report["selectedPlug"], "|root.translateX")
+        self.assertTrue(report["passed"])
+        self.assertEqual(cmds.writes, ["|root.translateX", "|root.translateX"])
+        self.assertEqual(cmds.values, before)
+        self.assertIn("incoming_writers", report["rejectedCandidates"][0]["reasons"])
+        self.assertEqual(len(report["rejectedCandidates"]), 1)
+        self.assertEqual(len(report["candidateDiagnostics"]), 2)
+        self.assertTrue(report["candidateDiagnostics"][1]["selected"])
+
+    def test_root_locomotion_returns_unsupported_without_writable_scalar(self):
+        cmds = ScalarProbeCmds(block_hips=True, block_root=True)
+        cmds.writers.update(
+            {
+                "|root.translateX": ["rootAnim.output"],
+                "|root.translateY": ["rootAnim.output"],
+                "|root.translateZ": ["rootAnim.output"],
+            }
+        )
+        report = verify_root_locomotion(
+            "|hips",
+            [],
+            translation=(1.0, 0.0, 0.0),
+            cmds_module=cmds,
+            observed_root_joint="|targetHips",
+            source_model_root="|root",
+        )
+
+        self.assertFalse(report["supported"])
+        self.assertEqual(report["reason"], "no_writable_locomotion_driver")
+        self.assertEqual(cmds.writes, [])
+
+    def test_root_locomotion_normalises_short_driver_and_root_paths(self):
+        cmds = ScalarProbeCmds(block_hips=True)
+        report = verify_root_locomotion(
+            "hips",
+            {"upperBody": ["|targetSpine"]},
+            translation=(2.0, 0.0, 0.0),
+            cmds_module=cmds,
+            observed_root_joint="|targetHips",
+            source_model_root="root",
+        )
+
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["driverJoint"], "|hips")
+        self.assertEqual(report["candidates"], ["|hips", "|root"])
+
+    def test_root_locomotion_fails_when_restore_is_silent_noop(self):
+        class SilentRestoreCmds(ScalarProbeCmds):
+            def setAttr(self, plug, value, *args, **kwargs):
+                if plug == "|root.translateX" and self.writes:
+                    return
+                return super().setAttr(plug, value, *args, **kwargs)
+
+        cmds = SilentRestoreCmds(block_hips=True)
+        report = verify_root_locomotion(
+            "|hips",
+            {"upperBody": ["|targetSpine"]},
+            translation=(2.0, 0.0, 0.0),
+            cmds_module=cmds,
+            observed_root_joint="|targetHips",
+            source_model_root="|root",
+        )
+
+        self.assertFalse(report["passed"])
+        self.assertFalse(report["restoreSucceeded"])
+        self.assertFalse(report["restoreReadbackPassed"])
+        self.assertIn("restore_readback_mismatch", report["restoreError"])
+
+    def test_root_locomotion_does_not_cross_unreachable_model_boundary(self):
+        cmds = ScalarProbeCmds(block_hips=True)
+        report = verify_root_locomotion(
+            "|hips",
+            [],
+            translation=(1.0, 0.0, 0.0),
+            cmds_module=cmds,
+            observed_root_joint="|targetHips",
+            source_model_root="|not_an_ancestor",
+        )
+
+        self.assertFalse(report["supported"])
+        self.assertEqual(report["reason"], "source_model_root_unreachable")
+        self.assertEqual(cmds.writes, [])
 
     def test_snapshot_contains_all_requested_channels(self):
         snapshot = snapshot_humanik_connections(self.assignments[:1], cmds_module=FakeCmds())

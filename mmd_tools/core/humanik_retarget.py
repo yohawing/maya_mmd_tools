@@ -9,7 +9,7 @@ slices.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from mmd_tools.core.humanik_builder import ensure_humanik_mel_loaded, get_humanik_definition_lock_state
 from mmd_tools.core.humanik_resolver import HumanIkBoneAssignment, HumanIkResolveResult
@@ -27,6 +27,7 @@ DEFAULT_HUMANIK_CHANNELS = (
     "rotateY",
     "rotateZ",
 )
+_TRANSLATE_CHANNELS = ("translateX", "translateY", "translateZ")
 
 
 def connect_humanik_source(
@@ -353,47 +354,237 @@ def verify_root_locomotion(
     cmds_module=None,
     tolerance: float = 1.0e-4,
     observed_root_joint: Optional[str] = None,
+    source_model_root: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Drive source Hips and compare observed world-matrix motion.
+    """Probe root locomotion through a writable scalar source channel.
 
     ``affected_joints`` may be a flat sequence or a mapping such as
     ``{"upperBody": [...], "lowerBody": [...], "legs": [...]}``.
     ``observed_root_joint`` defaults to ``driver_joint`` for hierarchy-only
     probes.  A retarget probe passes source Hips as the driver and target Hips
-    as the observed root.  The authored driver translation is restored in a
-    ``finally`` block.
+    as the observed root.  Candidate source drivers are the Hips joint and its
+    ancestors through ``source_model_root`` (or the topmost parent when no
+    root is supplied).  Only one writable ``translateX/Y/Z`` scalar is edited;
+    the exact original scalar is restored in ``finally``.
+
+    The returned report is deliberately structured for smoke JSON.  A locked
+    or connected Hips channel is not an exception: the probe tries an ancestor
+    and returns ``supported=False`` with reason
+    ``"no_writable_locomotion_driver"`` when no safe scalar exists.
     """
     cmds = cmds_module or maya_cmds()
     delta = tuple(float(value) for value in translation)
     if len(delta) != 3:
         raise ValueError("translation must contain exactly three values")
     observed_root = observed_root_joint or driver_joint
+    driver_joint = _normalise_locomotion_name(cmds, driver_joint)
+    observed_root = _normalise_locomotion_name(cmds, observed_root)
+    if source_model_root is not None:
+        source_model_root = _normalise_locomotion_name(cmds, source_model_root)
     groups = _normalise_groups(observed_root, affected_joints)
-    joints = [observed_root] + [joint for values in groups.values() for joint in values]
+    # Always sample source Hips as well as target groups.  The source world
+    # delta is the locomotion reference; the authored local request is not.
+    joints = [str(driver_joint), observed_root] + [
+        joint for values in groups.values() for joint in values
+    ]
     joints = list(dict.fromkeys(joints))
+
+    candidates, candidate_boundary_reason = _locomotion_driver_candidates(
+        cmds,
+        driver_joint,
+        source_model_root=source_model_root,
+    )
+    requested_axes = [
+        index for index, value in enumerate(delta) if abs(float(value)) > float(tolerance)
+    ]
+    candidate_diagnostics: List[Dict[str, Any]] = []
+    rejected_candidates: List[Dict[str, Any]] = []
+    selected: Optional[Dict[str, Any]] = None
+    if candidate_boundary_reason is None:
+        for candidate in candidates:
+            candidate_report = _inspect_locomotion_candidate(
+                cmds,
+                candidate,
+                requested_axes,
+            )
+            candidate_diagnostics.append(candidate_report)
+            if candidate_report.get("selected"):
+                selected = candidate_report
+                break
+            rejected_candidates.append(candidate_report)
+
+    # The repository's original hierarchy unit double only implements a
+    # compound ``translate`` API.  Keep that narrow compatibility path for
+    # doubles lacking scalar/lock/hierarchy APIs; real Maya always takes the
+    # scalar path above.
+    legacy_vector_fallback = False
+    if (
+        selected is None
+        and candidate_boundary_reason is None
+        and _supports_legacy_vector_probe(cmds)
+    ):
+        axis = requested_axes[0] if requested_axes else None
+        if axis is not None:
+            selected = {
+                "candidate": str(driver_joint),
+                "selected": True,
+                "selectedAxis": int(axis),
+                "selectedChannel": _TRANSLATE_CHANNELS[axis],
+                "selectedPlug": f"{driver_joint}.{_TRANSLATE_CHANNELS[axis]}",
+                "legacyVectorFallback": True,
+                "reasons": [],
+                "writers": [],
+            }
+            legacy_vector_fallback = True
+
+    base_report: Dict[str, Any] = {
+        "driverJoint": str(driver_joint),
+        "rootJoint": str(observed_root),
+        "translation": list(delta),
+        "tolerance": float(tolerance),
+        "candidates": [str(candidate) for candidate in candidates],
+        "candidateBoundaryReason": candidate_boundary_reason,
+        "rejectedCandidates": rejected_candidates,
+        "candidateDiagnostics": candidate_diagnostics,
+        "selectedPlug": selected.get("selectedPlug") if selected else None,
+        "selectedDriverJoint": selected.get("candidate") if selected else None,
+        "selectedAxis": selected.get("selectedChannel") if selected else None,
+        "legacyVectorFallback": bool(legacy_vector_fallback),
+        "supported": bool(selected),
+        "reason": (
+            None
+            if selected
+            else candidate_boundary_reason or "no_writable_locomotion_driver"
+        ),
+        "writeSucceeded": False,
+        "writeReadbackPassed": False,
+        "originalScalar": None,
+        "requestedScalar": None,
+        "readback": None,
+        "restoreReadback": None,
+        "restoreReadbackPassed": False,
+        "restoreSucceeded": False,
+        "restoreAttempted": False,
+        "restoreError": None,
+        "restore": {"attempted": False, "succeeded": False, "error": None},
+        "beforeWorldMatrix": {},
+        "afterWorldMatrix": {},
+        "beforeWorldTranslation": {},
+        "afterWorldTranslation": {},
+        "deltas": {},
+        "groups": {},
+        "rootDelta": [0.0, 0.0, 0.0],
+        "sourceHipsDelta": [0.0, 0.0, 0.0],
+        "sourceRootDelta": [0.0, 0.0, 0.0],
+        "targetRootDelta": [0.0, 0.0, 0.0],
+        "rootMotionScale": None,
+        "rootMotionResidual": None,
+        "rootMotionPassed": False,
+        "passed": False,
+    }
+    if selected is None:
+        return base_report
+
     before_matrices = {joint: _world_matrix(cmds, joint) for joint in joints}
     before = {joint: _matrix_translation(matrix) for joint, matrix in before_matrices.items()}
-    original = _get_vector_attr(cmds, driver_joint, "translate")
+    selected_joint = str(selected["candidate"])
+    selected_axis = int(selected["selectedAxis"])
+    selected_plug = str(selected["selectedPlug"])
+    original_scalar: Optional[float] = None
+    after_matrices: Dict[str, List[float]] = {}
+    write_error: Optional[str] = None
     try:
-        cmds.setAttr(
-            f"{driver_joint}.translate",
-            original[0] + delta[0],
-            original[1] + delta[1],
-            original[2] + delta[2],
-            type="double3",
-        )
+        if legacy_vector_fallback:
+            original_vector = _get_vector_attr(cmds, selected_joint, "translate")
+            original_scalar = float(original_vector[selected_axis])
+            base_report["originalScalar"] = original_scalar
+            updated_vector = list(original_vector)
+            updated_vector[selected_axis] += float(delta[selected_axis])
+            base_report["requestedScalar"] = updated_vector[selected_axis]
+            cmds.setAttr(
+                f"{selected_joint}.translate",
+                updated_vector[0],
+                updated_vector[1],
+                updated_vector[2],
+                type="double3",
+            )
+        else:
+            original_scalar = _get_scalar_attr(cmds, selected_plug)
+            base_report["originalScalar"] = original_scalar
+            base_report["requestedScalar"] = original_scalar + float(delta[selected_axis])
+            cmds.setAttr(selected_plug, original_scalar + float(delta[selected_axis]))
+        # This flag is intentionally set before the finally restoration so a
+        # successful temporary write cannot be lost from the diagnostic.
+        base_report["writeSucceeded"] = True
+        if legacy_vector_fallback:
+            readback_vector = _get_vector_attr(cmds, selected_joint, "translate")
+            readback = float(readback_vector[selected_axis])
+        else:
+            readback = _get_scalar_attr(cmds, selected_plug)
+        base_report["readback"] = readback
+        expected_readback = float(original_scalar) + float(delta[selected_axis])
+        base_report["writeReadbackPassed"] = abs(readback - expected_readback) <= float(tolerance)
         _force_evaluation(cmds)
         after_matrices = {joint: _world_matrix(cmds, joint) for joint in joints}
-        after = {joint: _matrix_translation(matrix) for joint, matrix in after_matrices.items()}
+    except Exception as exc:
+        write_error = str(exc)
     finally:
-        cmds.setAttr(
-            f"{driver_joint}.translate",
-            original[0],
-            original[1],
-            original[2],
-            type="double3",
-        )
-        _force_evaluation(cmds)
+        if original_scalar is not None:
+            base_report["restoreAttempted"] = True
+            try:
+                if legacy_vector_fallback:
+                    restore_vector = _get_vector_attr(cmds, selected_joint, "translate")
+                    restore_vector[selected_axis] = original_scalar
+                    cmds.setAttr(
+                        f"{selected_joint}.translate",
+                        restore_vector[0],
+                        restore_vector[1],
+                        restore_vector[2],
+                        type="double3",
+                    )
+                else:
+                    cmds.setAttr(selected_plug, original_scalar)
+                _force_evaluation(cmds)
+                if legacy_vector_fallback:
+                    restored_vector = _get_vector_attr(cmds, selected_joint, "translate")
+                    restore_readback = float(restored_vector[selected_axis])
+                else:
+                    restore_readback = _get_scalar_attr(cmds, selected_plug)
+                base_report["restoreReadback"] = restore_readback
+                restore_matches = abs(restore_readback - float(original_scalar)) <= float(tolerance)
+                base_report["restoreReadbackPassed"] = bool(restore_matches)
+                if not restore_matches:
+                    raise RuntimeError(
+                        "restore_readback_mismatch: "
+                        f"expected={float(original_scalar)!r} actual={restore_readback!r}"
+                    )
+                base_report["restoreSucceeded"] = True
+                base_report["restore"] = {"attempted": True, "succeeded": True, "error": None}
+            except Exception as exc:
+                base_report["restoreError"] = str(exc)
+                base_report["restore"] = {
+                    "attempted": True,
+                    "succeeded": False,
+                    "error": str(exc),
+                }
+
+    after = {
+        joint: _matrix_translation(matrix)
+        for joint, matrix in after_matrices.items()
+    }
+    base_report["beforeWorldMatrix"] = before_matrices
+    base_report["afterWorldMatrix"] = after_matrices
+    base_report["beforeWorldTranslation"] = before
+    base_report["afterWorldTranslation"] = after
+    if write_error is not None:
+        base_report["writeError"] = write_error
+    if not after_matrices:
+        base_report["reason"] = "locomotion_probe_write_failed"
+        return base_report
+    if not base_report["writeReadbackPassed"]:
+        base_report["reason"] = "locomotion_probe_readback_failed"
+    elif not base_report["restoreSucceeded"]:
+        base_report["reason"] = "locomotion_probe_restore_failed"
 
     deltas = {joint: _vector_delta(before[joint], after[joint]) for joint in joints}
     root_delta = deltas[observed_root]
@@ -405,25 +596,37 @@ def verify_root_locomotion(
         }
         for name, values in groups.items()
     }
-    root_motion_passed = _root_motion_matches_direction(root_delta, delta, tolerance)
-    passed = root_motion_passed and all(
-        report["passed"] for report in group_report.values()
+    source_delta = deltas.get(str(driver_joint), [0.0, 0.0, 0.0])
+    root_motion_passed, root_motion_scale, root_motion_residual = _root_motion_matches_scaled_source(
+        root_delta,
+        source_delta,
+        tolerance,
     )
-    return {
-        "driverJoint": str(driver_joint),
-        "rootJoint": str(observed_root),
-        "translation": list(delta),
-        "rootDelta": root_delta,
-        "rootMotionPassed": bool(root_motion_passed),
-        "tolerance": float(tolerance),
-        "passed": bool(passed),
-        "beforeWorldMatrix": before_matrices,
-        "afterWorldMatrix": after_matrices,
-        "beforeWorldTranslation": before,
-        "afterWorldTranslation": after,
-        "deltas": deltas,
-        "groups": group_report,
-    }
+    passed = (
+        bool(base_report["supported"])
+        and bool(base_report["writeSucceeded"])
+        and bool(base_report["writeReadbackPassed"])
+        and bool(base_report["restoreSucceeded"])
+        and root_motion_passed
+        and all(
+        report["passed"] for report in group_report.values()
+        )
+    )
+    base_report.update(
+        {
+            "rootDelta": root_delta,
+            "sourceHipsDelta": source_delta,
+            "sourceRootDelta": source_delta,
+            "targetRootDelta": root_delta,
+            "rootMotionPassed": bool(root_motion_passed),
+            "rootMotionScale": root_motion_scale,
+            "rootMotionResidual": root_motion_residual,
+            "deltas": deltas,
+            "groups": group_report,
+            "passed": bool(passed),
+        }
+    )
+    return base_report
 
 
 def build_humanik_writer_report(
@@ -480,6 +683,187 @@ def _get_vector_attr(cmds, node: str, attr: str) -> List[float]:
     return [float(component) for component in (value or (0.0, 0.0, 0.0))[:3]]
 
 
+def _get_scalar_attr(cmds, plug: str) -> float:
+    """Read one scalar Maya plug, normalising Maya's scalar return shape."""
+    value = cmds.getAttr(plug)
+    if isinstance(value, (tuple, list)):
+        while isinstance(value, (tuple, list)) and value:
+            value = value[0]
+    return float(value)
+
+
+def _normalise_locomotion_name(cmds, node: str) -> str:
+    """Resolve a node to its long path when Maya can provide one."""
+    name = str(node)
+    ls = getattr(cmds, "ls", None)
+    if ls is None:
+        return name
+    try:
+        values = ls(name, long=True) or []
+    except TypeError:
+        try:
+            values = ls(name, l=True) or []
+        except (AttributeError, RuntimeError, TypeError):
+            values = []
+    except (AttributeError, RuntimeError):
+        values = []
+    return str(values[0]) if values else name
+
+
+def _locomotion_driver_candidates(
+    cmds,
+    driver_joint: str,
+    source_model_root: Optional[str] = None,
+) -> Tuple[List[str], Optional[str]]:
+    """Return Hips-to-root candidates without changing hierarchy state."""
+    candidates: List[str] = []
+    seen = set()
+    current = _normalise_locomotion_name(cmds, driver_joint)
+    root = (
+        _normalise_locomotion_name(cmds, source_model_root)
+        if source_model_root
+        else None
+    )
+    while current and current not in seen:
+        seen.add(current)
+        candidates.append(current)
+        if root is not None and current == root:
+            return candidates, None
+        list_relatives = getattr(cmds, "listRelatives", None)
+        if list_relatives is None:
+            return candidates, "source_model_root_unreachable" if root else None
+        try:
+            parents = list_relatives(current, parent=True, fullPath=True) or []
+        except TypeError:
+            try:
+                parents = list_relatives(current, p=True, f=True) or []
+            except (AttributeError, RuntimeError, TypeError):
+                parents = []
+        except (AttributeError, RuntimeError):
+            parents = []
+        current = _normalise_locomotion_name(cmds, parents[0]) if parents else ""
+    if root is not None and (not candidates or candidates[-1] != root):
+        return candidates, "source_model_root_unreachable"
+    return candidates, None
+
+
+def _inspect_locomotion_candidate(
+    cmds,
+    candidate: str,
+    requested_axes: Sequence[int],
+) -> Dict[str, Any]:
+    """Classify scalar translation plugs for one candidate joint."""
+    node_locked = _query_node_locked(cmds, candidate)
+    axes: List[Dict[str, Any]] = []
+    selected_axis = None
+    reasons: List[str] = []
+    requested = set(int(axis) for axis in requested_axes)
+    # Classify all scalar axes for diagnostics; only requested axes may be
+    # selected for the temporary edit.
+    for axis in range(len(_TRANSLATE_CHANNELS)):
+        channel = _TRANSLATE_CHANNELS[int(axis)]
+        plug = f"{candidate}.{channel}"
+        writers = _incoming_writers(cmds, plug)
+        plug_locked = _query_attr_bool(cmds, plug, "lock")
+        settable = _query_attr_bool(cmds, plug, "settable")
+        scalar_readable = True
+        scalar_error = None
+        try:
+            _get_scalar_attr(cmds, plug)
+        except Exception as exc:
+            scalar_readable = False
+            scalar_error = str(exc)
+        axis_reasons: List[str] = []
+        if node_locked is True:
+            axis_reasons.append("node_locked")
+        if plug_locked is True:
+            axis_reasons.append("plug_locked")
+        if settable is False:
+            axis_reasons.append("not_settable")
+        if writers:
+            axis_reasons.append("incoming_writers")
+        if not scalar_readable:
+            axis_reasons.append("scalar_unreadable")
+        axis_report = {
+            "channel": channel,
+            "plug": plug,
+            "requested": axis in requested,
+            "writers": sorted(set(str(writer) for writer in writers)),
+            "nodeLocked": node_locked,
+            "plugLocked": plug_locked,
+            "settable": settable,
+            "scalarReadable": scalar_readable,
+            "reasons": axis_reasons,
+        }
+        if scalar_error is not None:
+            axis_report["readError"] = scalar_error
+        axes.append(axis_report)
+        if selected_axis is None and axis in requested and not axis_reasons:
+            selected_axis = int(axis)
+    if selected_axis is not None:
+        selected_channel = _TRANSLATE_CHANNELS[selected_axis]
+        return {
+            "candidate": str(candidate),
+            "selected": True,
+            "selectedAxis": selected_axis,
+            "selectedChannel": selected_channel,
+            "selectedPlug": f"{candidate}.{selected_channel}",
+            "nodeLocked": node_locked,
+            "axes": axes,
+            "reasons": [],
+            "writers": sorted({writer for item in axes for writer in item["writers"]}),
+        }
+    for item in axes:
+        if item["requested"]:
+            reasons.extend(item["reasons"])
+    return {
+        "candidate": str(candidate),
+        "selected": False,
+        "nodeLocked": node_locked,
+        "axes": axes,
+        "reasons": sorted(set(reasons)) or ["no_requested_translation_axis"],
+        "writers": sorted({writer for item in axes for writer in item["writers"]}),
+    }
+
+
+def _query_attr_bool(cmds, plug: str, flag: str) -> Optional[bool]:
+    try:
+        value = cmds.getAttr(plug, **{flag: True})
+    except (AttributeError, RuntimeError, TypeError):
+        return None
+    if isinstance(value, (tuple, list)) and value:
+        value = value[0]
+    return None if value is None else bool(value)
+
+
+def _query_node_locked(cmds, node: str) -> Optional[bool]:
+    lock_node = getattr(cmds, "lockNode", None)
+    if lock_node is None:
+        return None
+    try:
+        value = lock_node(node, query=True, lock=True)
+    except TypeError:
+        try:
+            value = lock_node(node, q=True, l=True)
+        except (AttributeError, RuntimeError, TypeError):
+            return None
+    except (AttributeError, RuntimeError):
+        return None
+    if isinstance(value, (tuple, list)) and value:
+        value = value[0]
+    return None if value is None else bool(value)
+
+
+def _supports_legacy_vector_probe(cmds) -> bool:
+    """Recognise only the old minimal hierarchy test double.
+
+    Maya exposes ``listRelatives`` and ``lockNode``; requiring both to be
+    absent prevents a real/realistic command double from bypassing scalar
+    safety checks merely because a scalar plug is unavailable.
+    """
+    return not hasattr(cmds, "listRelatives") and not hasattr(cmds, "lockNode")
+
+
 def _force_evaluation(cmds) -> None:
     dgdirty = getattr(cmds, "dgdirty", None)
     if dgdirty is not None:
@@ -518,6 +902,30 @@ def _root_motion_matches_direction(
         if float(observed_value) * float(requested_value) <= 0.0:
             return False
     return True
+
+
+def _root_motion_matches_scaled_source(
+    target_delta: Sequence[float],
+    source_delta: Sequence[float],
+    tolerance: float,
+) -> Tuple[bool, Optional[float], Optional[List[float]]]:
+    """Compare world deltas using one positive uniform retarget scale.
+
+    The source delta is measured from source Hips, not inferred from the
+    authored local probe vector.  This is important when Hips has a rotated
+    parent or when the HIK target uses a different scale.
+    """
+    source = [float(value) for value in source_delta]
+    target = [float(value) for value in target_delta]
+    source_norm_sq = sum(value * value for value in source)
+    target_norm_sq = sum(value * value for value in target)
+    tolerance_sq = float(tolerance) * float(tolerance)
+    if source_norm_sq <= tolerance_sq or target_norm_sq <= tolerance_sq:
+        return False, None, None
+    scale = sum(target[index] * source[index] for index in range(3)) / source_norm_sq
+    residual = [target[index] - source[index] * scale for index in range(3)]
+    passed = scale > 0.0 and all(abs(value) <= float(tolerance) for value in residual)
+    return bool(passed), float(scale), residual
 
 
 def _input_type_name(value: int) -> str:

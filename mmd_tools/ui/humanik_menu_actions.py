@@ -551,9 +551,10 @@ def disconnect_retarget():
     """Disconnect SOURCE/TARGET while preserving any baked Control Rig.
 
     Source combo ``None`` is a connection operation, not the destructive
-    Restore MMD Rig operation.  The session therefore clears the selected
-    SOURCE and restores a live pre-bake preview, while a Control Rig that has
-    already received a native bake (and all of its animation) stays active.
+    Restore MMD Rig operation.  The session clears the selected SOURCE and
+    restores the pre-bake preview for an unbaked target, while a Control Rig
+    that has already received a native bake (and all of its animation) stays
+    active with its Bake From context intact.
     """
     return _run_action("Disconnect Retarget", _disconnect_retarget)
 
@@ -571,14 +572,25 @@ def _has_active_control_rig(session) -> bool:
     the confirmation is skipped rather than raising, matching every other
     ``describe_frontend_state`` consumer in this module.
     """
+    return bool(_active_control_rig_rows(session))
+
+
+def _active_control_rig_rows(session):
+    """Return active Control Rig rows from the public structured frontend state."""
     describe = getattr(session, "describe_frontend_state", None)
     if not callable(describe):
-        return False
+        return []
     try:
         state = describe() or {}
     except Exception:
-        return False
-    return bool(state.get("controlRigs"))
+        return []
+    rows = state.get("controlRigs") or []
+    return [row for row in rows if isinstance(row, Mapping)]
+
+
+def _has_baked_control_rig(session) -> bool:
+    """Return whether structured frontend state reports a baked Control Rig."""
+    return any(bool(row.get("baked", False)) for row in _active_control_rig_rows(session))
 
 
 def bake_to_mmd_rig(start=None, end=None):
@@ -617,14 +629,29 @@ def bake_from_control_rig(start=None, end=None):
 def restore_mmd_rig():
     """Restore active preview state or pending setup characters without a model selection.
 
-    HUMANIK-FRONTEND-1 Phase B6: confirmation is shown only when a Control
-    Rig transaction is currently active, matching ``disconnect_retarget``.
+    A baked Control Rig presents Keep (default), Delete and Restore, or Cancel;
+    Keep dispatches the non-destructive ``disconnect_retarget`` route.  An
+    unbaked Control Rig retains the destructive Restore/Cancel confirmation.
     """
     return _run_action("Restore MMD Rig", _restore_mmd_rig)
 
 
 def _restore_mmd_rig():
     session = get_humanik_session()
+    if _has_baked_control_rig(session):
+        choice = _dialog_choice(
+            "Restore MMD Rig",
+            (
+                "A baked HumanIK Control Rig is active. Keep the Control Rig and its "
+                "animation, or delete it and restore the MMD rig?"
+            ),
+            ("Keep", "Delete and Restore", "Cancel"),
+        )
+        if choice == "Keep":
+            return session.disconnect_retarget()
+        if choice != "Delete and Restore":
+            return None
+        return session.restore_mmd_rig(delete_baked_control_rig=True)
     if _has_active_control_rig(session):
         if not _confirm(
             "Restore MMD Rig",

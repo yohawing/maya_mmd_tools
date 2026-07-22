@@ -577,6 +577,17 @@ class TestHumanIkFingerSolving(unittest.TestCase):
 class TestHumanIkLeftElbowKillPitch(unittest.TestCase):
     """Aida-proven TARGET elbow-pitch property helper behavior."""
 
+    def test_policy_is_left_only(self):
+        cmds = _FingerSolvingCmds(left_elbow_initial=0)
+        mel = _FingerSolvingMel()
+        set_humanik_left_elbow_kill_pitch_state(
+            "Target", HUMANIK_LEFT_ELBOW_KILL_PITCH_ENABLED, mel, cmds
+        )
+
+        self.assertEqual(HUMANIK_LEFT_ELBOW_KILL_PITCH_ENABLED, 1)
+        self.assertIn(("LeftElbowKillPitch", "propNode", True), cmds.attribute_query_calls)
+        self.assertNotIn(("RightElbowKillPitch", "propNode", True), cmds.attribute_query_calls)
+
     def test_get_state_reads_current_value(self):
         cmds = _FingerSolvingCmds(left_elbow_initial=0)
         mel = _FingerSolvingMel()

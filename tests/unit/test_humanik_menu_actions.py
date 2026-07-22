@@ -72,8 +72,11 @@ class _FakeSession:
         self.calls.append(("bake_from_control_rig", start, end))
         return HumanIkBakeResult(start, end, 4, {}, 0.0, [])
 
-    def restore_mmd_rig(self):
-        self.calls.append(("restore_mmd_rig",))
+    def restore_mmd_rig(self, delete_baked_control_rig=False):
+        if delete_baked_control_rig:
+            self.calls.append(("restore_mmd_rig", True))
+        else:
+            self.calls.append(("restore_mmd_rig",))
         return True
 
     def disconnect_retarget(self):
@@ -967,6 +970,50 @@ class TestHumanIkMenuActions(unittest.TestCase):
 
         self.assertIsNone(actions.restore_mmd_rig())
         self.assertNotIn(("restore_mmd_rig",), self.session.calls)
+
+    def test_restore_baked_control_rig_keep_uses_non_destructive_disconnect(self):
+        dialog = {}
+        self.session.describe_frontend_state = lambda model_root=None: {
+            "controlRigs": [
+                {"modelRoot": "|model_root", "character": "Char", "baked": True}
+            ]
+        }
+
+        def choose(**kwargs):
+            dialog.update(kwargs)
+            return "Keep"
+
+        actions._confirm_dialog = choose
+
+        self.assertTrue(actions.restore_mmd_rig())
+        self.assertIn(("disconnect_retarget",), self.session.calls)
+        self.assertNotIn(("restore_mmd_rig",), self.session.calls)
+        self.assertEqual(dialog["button"], ["Keep", "Delete and Restore", "Cancel"])
+        self.assertEqual(dialog["defaultButton"], "Keep")
+
+    def test_restore_baked_control_rig_delete_calls_destructive_restore(self):
+        self.session.describe_frontend_state = lambda model_root=None: {
+            "controlRigs": [
+                {"modelRoot": "|model_root", "character": "Char", "baked": True}
+            ]
+        }
+        actions._confirm_dialog = lambda **kwargs: "Delete and Restore"
+
+        self.assertTrue(actions.restore_mmd_rig())
+        self.assertIn(("restore_mmd_rig", True), self.session.calls)
+        self.assertNotIn(("disconnect_retarget",), self.session.calls)
+
+    def test_restore_baked_control_rig_cancel_does_nothing(self):
+        self.session.describe_frontend_state = lambda model_root=None: {
+            "controlRigs": [
+                {"modelRoot": "|model_root", "character": "Char", "baked": True}
+            ]
+        }
+        actions._confirm_dialog = lambda **kwargs: "Cancel"
+
+        self.assertIsNone(actions.restore_mmd_rig())
+        self.assertNotIn(("restore_mmd_rig",), self.session.calls)
+        self.assertNotIn(("disconnect_retarget",), self.session.calls)
 
 
 if __name__ == "__main__":

@@ -45,7 +45,7 @@ HumanIK Editorの最上部右側には `Refresh` ボタンだけを表示しま�
 3. シーン内の**非MMDのHumanIKキャラクター**（`(HIK)` サフィックス付きで表示、例: 「MocapChar (HIK)」。モーキャプ等、mmd_toolsの外でcharacterizeされたキャラクター）
 
 - **項目を選択する = リターゲット接続のトリガー**です。選択した瞬間に、Source（MMDモデルまたは外部HIKキャラクター）とCharacter（Target）用モデルの接続処理が自動的に始まります。
-- **「None」を選択する = 切断（Restore）**です。アクティブなリターゲットとControl Rigを終了し、MMDリグの状態を復元します。
+- **「None」を選択する = Sourceの切断**です。通常のTARGETプレビューは終了してMMDリグの状態を復元します。Control Rigへベイク済みの場合は、ベイク済みControl Rigとアニメーションを保持したままSOURCEだけを切断します。Control Rig自体を削除する場合は`Restore MMD Rig`を使います。
 - Sourceコンボには次のツールチップが表示されます: 「SourceにはMMDモデル、またはシーン内でcharacterize/lock済みのHumanIKキャラクター（モーキャプ等）を指定できます。」
 - 非MMDのHumanIKキャラクターは、Characterize/Lockされていなくても一覧には表示されます。未lockのキャラクターを選択すると接続はエラーになり（通常の接続失敗と同じ経路でエラー表示され）、コンボは未接続状態に戻ります。
 
@@ -59,7 +59,7 @@ MMDモデルをSourceに選ぶ場合はこのチェックは行われず、従�
 
 Sourceコンボの表示は、ユーザーが最後にクリックした値ではなく、常にバックエンドの実際の状態（`describe_frontend_state()` が返すSOURCEバインディング）に同期されます。接続や切断が失敗・キャンセルされた場合、コンボは実際の状態に戻ります。
 
-シーンを開き直した場合やプラグインを再読み込みした場合も、Maya標準HumanIKに残っているDirect Character Input（SOURCE/TARGET関係）を読み戻してSourceコンボへ表示します。プラグイン経由で作成したControl Rigでは、Bake/Restoreに必要なプレビュー復元情報もControl Rig transactionと一緒にシーンへ保存されるため、再読み込み後も同じBake経路を継続できます。Mayaの標準UIから作られたControl Rigや、復元情報を持たない旧シーンは安全に再構築できないため、推測でBakeを有効化しません。
+シーンを開き直した場合やプラグインを再読み込みした場合も、Maya標準HumanIKに残っているDirect Character Input（SOURCE/TARGET関係）を読み戻してSourceコンボへ表示します。プラグイン経由で作成したControl Rigでは、Bake/Restoreに必要なプレビュー復元情報とベイク済み状態もControl Rig transactionと一緒にシーンへ保存されるため、再読み込み後も同じBake経路を継続できます。ベイク済みControl Rigに対するSourceの`None`（切断）はControl Rigとアニメーションを保持します。Mayaの標準UIから作られたControl Rigや、復元情報を持たない旧シーンは安全に再構築できないため、推測でBakeを有効化しません。
 
 ### ステータス行
 
@@ -109,7 +109,7 @@ Sourceコンボで項目を選ぶと、以下が自動的に順番に実行さ�
 - **Enter Target Mode**: 「Continue/Cancel」の確認ダイアログは廃止されました。ownership/blockerチェックを通過すれば即実行されます。
 - **Bake to MMD Rig**: 確認ダイアログは廃止されました（設定項目がフレーム範囲のSpinBoxのみのため）。即実行されます。
 - **Create Control Rig**: 確認ダイアログは廃止されました。
-- **Restore MMD Rig / 切断（Sourceコンボで「None」を選択）**: **アクティブなControl Rigがある場合のみ**、確認ダイアログ（「Control Rigが削除されます。続行しますか？」）が表示されます。Control Rigが無い場合は即実行されます。
+- **Restore MMD Rig**: 未ベイクのControl Rigでは、従来どおり「Delete and Restore / Cancel」の確認後に削除・復元します。ベイク済みControl Rigでは「Keep（デフォルト） / Delete and Restore / Cancel」を表示します。`Keep`はControl Rigとアニメーションを保持してSourceだけを切断し、`Delete and Restore`だけがControl Rigを削除します。Sourceコンボで「None」を選択した場合は、ベイク済みなら常に非破壊の`Keep`相当、未ベイクならSource/TARGETの切断・復元です。
 - **既存アニメーションのクリア確認**（外部Source接続時）: これは設定項目（Clear and connect / Connect anyway / Cancel）のある確認なので、Phase B6でも残されています。
 
 ## HumanIKとキー済みチャンネルの注意
@@ -143,12 +143,13 @@ TARGETプレビュー中のHumanIKリターゲット結果を、指定したフ�
 
 現在のHumanIK状態を元のMMDリグ状態へ復元します。意味論は次の通りです。
 
-- **Control Rigを削除し、復元状態（このセッションが記録した変更履歴）を復元します。**
+- **未ベイクのControl Rigでは、Control Rigを削除し、復元状態（このセッションが記録した変更履歴）を復元します。**
+- **ベイク済みControl Rigでは、確認で`Keep`を選ぶとControl Rigとアニメーションを保持し、SOURCEだけを切断します。** `Delete and Restore`を選んだ場合のみControl Rigを削除して復元状態を適用します。
 - **HumanIKのため一時的に外したMMDの足IK／つま先IK、付与、制約の接続と有効状態も復元します。**
 - **キャラクタライズ済みのHIKノード自体は削除されません** — つまり、Restore後はキャラクタライズされていない状態ではなく、**SOURCE状態（キャラクタライズ済みだがTARGET/Control Rigではない状態）へ戻ります**。
 - **孤立したControl Rig**（このセッションが作成・追跡していないControl Rig）も、MMDモデルによって駆動されているものであれば、Restore MMD Rigの実行時に回収（削除）されます。ただし復元状態が無いため、writerの接続やキャラクタライズ前のポーズは復元されません（後述のトラブルシューティングを参照）。
 
-Source コンボで「None」を選ぶとこのRestoreが実行されます。確認ダイアログが表示されるのは**アクティブなControl Rigがある場合のみ**（「Disconnect the HumanIK retarget and restore the MMD rig? The active Control Rig will also be deleted.」）です。Control Rigが無い状態（TARGETプレビューのみ、または何も無い状態）からの切断は即実行されます。
+Source コンボで「None」を選ぶとSource切断が実行されます。未ベイクControl Rigがある場合の`Restore MMD Rig`には削除確認が表示されます。ベイク済みControl Rigがある場合は**Keep（デフォルト） / Delete and Restore / Cancel**の3択です。`Keep`ではControl Rig・アニメーション・Bake From用の復元コンテキストを保持します。Control Rigが無い状態（TARGETプレビューのみ、または何も無い状態）からの切断は即実行されます。
 
 ## VMD importの制限
 
@@ -158,7 +159,7 @@ Source コンボで「None」を選ぶとこのRestoreが実行されます。�
 - Control Rigがアクティブな間に拒否された場合の理由文言: 「このモデルには現在有効なHumanIK Control Rigがあります。」
 - 拒否理由と詳細はMaya Script Editorへ出力されます。
 
-この制限は **Restore MMD Rig** を実行してTARGET preview / Control Rig状態を終了すれば解除されます。NEUTRAL状態やSOURCE状態のモデル、またそもそもHumanIKに関与していないモデルへのVMD importは通常どおり可能です。
+この制限は **Restore MMD Rig** で`Delete and Restore`を選びTARGET preview / Control Rig状態を終了すれば解除されます。ベイク済みControl Rigで`Keep`を選んだ場合はControl Rigが残るため、アニメーションをBake Fromしてから削除するか、改めて`Delete and Restore`を選ぶ必要があります。NEUTRAL状態やSOURCE状態のモデル、またそもそもHumanIKに関与していないモデルへのVMD importは通常どおり可能です。
 
 ## トラブルシューティング
 
@@ -186,5 +187,5 @@ Maya Script EditorにControl RigがMaya標準UIで作成されたという警告
 - Restoreで戻るのはSOURCE状態まで（未characterize状態へは戻らない）。
 - 孤立したControl Rig（復元状態無し）の回収では、writer接続とキャラクタライズ前ポーズは復元されない。
 - Setup / Characterizeの既定プロファイルはFull（Body + fingers）。既に別プロファイルでcharacterize済みのモデルは再characterizeされない。
-- 確認ダイアログはRestore/切断（アクティブなControl Rigがある場合のみ）と、外部Source接続時の既存アニメーションクリア確認のみに限定されている（Phase B6）。
+- 確認ダイアログは未ベイクControl RigのRestore、ベイク済みControl RigのKeep / Delete and Restore / Cancel、外部Source接続時の既存アニメーションクリア確認に限定されている（Phase B6）。
 - 試験的機能のため、UI・挙動は予告なく変更される可能性がある。

@@ -93,6 +93,7 @@ class HumanIkControlRigTransaction:
     post_cycle_plugs: List[str] = field(default_factory=list)
     preview: Optional[HumanIkTargetPreview] = None
     active: bool = True
+    baked: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         """Return the JSON-safe control-rig transaction diagnostic payload."""
@@ -107,6 +108,7 @@ class HumanIkControlRigTransaction:
             "postCyclePlugs": list(self.post_cycle_plugs),
             "preview": self.preview.to_dict() if self.preview is not None else None,
             "active": self.active,
+            "baked": bool(self.baked),
         }
 
     def to_scene_dict(self, model_root: str) -> Dict[str, Any]:
@@ -126,6 +128,7 @@ class HumanIkControlRigTransaction:
                 self.preview.to_scene_dict() if self.preview is not None else None
             ),
             "active": bool(self.active),
+            "baked": bool(self.baked),
         }
 
     @classmethod
@@ -154,6 +157,9 @@ class HumanIkControlRigTransaction:
         )
         if preview is not None and preview.target_character != row["character"]:
             raise ValueError("HumanIK transaction preview character mismatch")
+        baked = row.get("baked", False)
+        if not isinstance(baked, bool):
+            raise ValueError("HumanIK transaction baked must be a boolean")
         return cls(
             ownership_id=row["ownershipId"],
             character=row["character"],
@@ -166,6 +172,7 @@ class HumanIkControlRigTransaction:
             post_cycle_plugs=_string_list("postCyclePlugs"),
             preview=preview,
             active=bool(row.get("active", True)),
+            baked=baked,
         )
 
 
@@ -408,9 +415,10 @@ def bake_humanik_control_rig(
     selection to the current playback range.  This wrapper temporarily sets
     both playback and animation ranges to the requested integer interval,
     runs that native command, and restores the user's original range/current
-    time even when Maya raises.  The Control Rig transaction deliberately
-    remains active: the command's post hook switches the character input to
-    the Control Rig, which is the editable/live state this action promises.
+    time/current HIK character even when Maya raises.  The Control Rig
+    transaction deliberately remains active: the command's post hook switches
+    the character input to the Control Rig, which is the editable/live state
+    this action promises.
 
     Raises:
         RuntimeError: If the transaction, character, or Control Rig is not
@@ -440,6 +448,12 @@ def bake_humanik_control_rig(
     if not bool(mel.eval(f"hikHasControlRig({character_literal})")):
         raise RuntimeError(f"HumanIK Control Rig is not active for character: {character}")
 
+    # ``hikSetCurrentCharacter`` changes Maya's process-global HIK selection,
+    # not just the transaction's character.  Capture that selection before
+    # switching so a bake cannot leave another character (or the empty
+    # selection) stranded as the current character after the operation.
+    previous_character = str(mel.eval("hikGetCurrentCharacter()") or "").strip()
+
     playback = {
         "minTime": cmds.playbackOptions(query=True, minTime=True),
         "maxTime": cmds.playbackOptions(query=True, maxTime=True),
@@ -448,8 +462,10 @@ def bake_humanik_control_rig(
     }
     current_time = cmds.currentTime(query=True)
     command = "hikBakeToControlRig(0);"
-    mel.eval(f"hikSetCurrentCharacter({character_literal});")
+    operation_error = None
+    bake_succeeded = False
     try:
+        mel.eval(f"hikSetCurrentCharacter({character_literal});")
         cmds.playbackOptions(
             edit=True,
             minTime=bake_start,
@@ -462,9 +478,38 @@ def bake_humanik_control_rig(
             raise RuntimeError(
                 f"HumanIK native bake removed the Control Rig for character: {character}"
             )
-    finally:
+        bake_succeeded = True
+    except Exception as exc:
+        operation_error = exc
+
+    cleanup_errors = []
+    try:
         cmds.playbackOptions(edit=True, **playback)
+    except Exception as exc:  # noqa: BLE001 - cleanup must continue
+        cleanup_errors.append(f"playback restore failed: {exc}")
+    try:
         cmds.currentTime(current_time, edit=True)
+    except Exception as exc:  # noqa: BLE001 - cleanup must continue
+        cleanup_errors.append(f"current time restore failed: {exc}")
+    try:
+        # An empty value is intentional: Maya uses it to represent no
+        # current HIK character.  Do not synthesize a character when the
+        # pre-bake query returned no selection.
+        mel.eval(f"hikSetCurrentCharacter({mel_string(previous_character)});")
+    except Exception as exc:  # noqa: BLE001 - cleanup must not strand a successful bake
+        cleanup_errors.append(f"current character restore failed: {exc}")
+
+    if cleanup_errors:
+        logger.error(
+            "HumanIK native bake cleanup was incomplete%s: %s",
+            " after an operation failure" if operation_error is not None else "",
+            "; ".join(cleanup_errors),
+        )
+    if operation_error is not None:
+        raise operation_error
+
+    if not bake_succeeded:
+        raise RuntimeError("HumanIK native bake did not complete")
 
     return HumanIkControlRigBakeResult(character, bake_start, bake_end, command)
 
@@ -484,28 +529,23 @@ def stop_humanik_control_rig(
     state ``describe_humanik_import_lock`` reports for an uncharacterized or
     SOURCE-only model.
 
-    HUMANIK-RESTORE-GAPS-1: teardown is exception-safe. ``transaction`` is
-    always deactivated and unregistered before this function returns or
-    raises -- previously, an exception partway through teardown (for
-    example the user manually deleting the ``HIKCharacterNode`` before
-    calling ``restore_mmd_rig``) left the transaction registered and active,
-    so every subsequent ``restore_mmd_rig`` call re-attempted the exact same
-    doomed teardown and hit the exact same exception forever. Both teardown
-    steps are attempted even if the first one fails (a delete failure must
-    not prevent the restore_state restore, and vice versa); any failures are
-    aggregated and raised together as a single ``RuntimeError`` *after* the
-    transaction has already been released, so the failure surfaces exactly
-    once instead of on every retry.
+    Teardown is fail-closed and retryable: the Control Rig must be deleted
+    successfully before the captured MMD writer state is restored. If either
+    deletion or restore fails, the transaction remains active and registered
+    so a later retry can finish safely. A retry after a partial deletion
+    treats the already-removed rig as a no-op, then retries ``restore_state``.
     """
     if not transaction.active:
         return
     cmds = cmds_module or maya_cmds()
     mel = mel_module or maya_mel()
-    failures: List[str] = []
     try:
         _delete_control_rig(transaction.character, transaction.created_nodes, cmds, mel)
-    except Exception as exc:  # noqa: BLE001 - aggregated below, transaction still released
-        failures.append(f"control rig delete failed: {exc}")
+    except Exception as exc:  # noqa: BLE001 - retain transaction for a safe retry
+        raise RuntimeError(
+            "HumanIK Control Rig deletion failed; restore_state was left pending: "
+            f"{exc}"
+        ) from exc
     try:
         apply_humanik_restore_state(
             transaction.restore_state,
@@ -513,15 +553,13 @@ def stop_humanik_control_rig(
             cmds_module=cmds,
             mel_module=mel,
         )
-    except Exception as exc:  # noqa: BLE001 - aggregated below, transaction still released
-        failures.append(f"restore_state restore failed: {exc}")
+    except Exception as exc:  # noqa: BLE001 - retain transaction for a safe retry
+        raise RuntimeError(
+            "HumanIK Control Rig was deleted but restore_state remains pending: "
+            f"{exc}"
+        ) from exc
     transaction.active = False
     unregister_control_rig_transaction(transaction.character)
-    if failures:
-        raise RuntimeError(
-            "HumanIK Control Rig teardown had failures (transaction released "
-            "so a retry will not repeat them): " + "; ".join(failures)
-        )
 
 
 def delete_orphaned_control_rig(character: str, cmds_module=None, mel_module=None) -> None:
@@ -606,8 +644,8 @@ def _delete_control_rig(character: str, created_nodes: Iterable[str], cmds, mel)
     MEL error (``hikInputSourceUtils.mel``, ``OutputCharacterDefinition``)
     on every single retry. That step is now skipped with a logged warning
     instead. This function no longer swallows a genuine MEL failure when the
-    character *does* exist; ``stop_humanik_control_rig`` aggregates and
-    surfaces it instead.
+    character *does* exist; ``stop_humanik_control_rig`` surfaces the failure
+    and retains the transaction for a safe retry instead.
     """
     if cmds.objExists(character):
         mel.eval(f'hikSetCurrentCharacter("{character}");')
