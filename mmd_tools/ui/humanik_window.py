@@ -69,7 +69,7 @@ class HumanIkWindow(QWidget):
 
     WINDOW_NAME = "MMDHumanIkWindow"
     WORKSPACE_CONTROL_NAME = "MMDHumanIkWorkspaceControl"
-    PREFERRED_WIDTH = 260
+    PREFERRED_WIDTH = 320
 
     def __init__(self, parent=None):
         if parent is None:

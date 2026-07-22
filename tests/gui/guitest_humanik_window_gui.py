@@ -313,6 +313,7 @@ class TestHumanIkWindowGUI(GuiTestBase):
             window.show_window(dockable=False)
             QApplication.processEvents()
             self.assertTrue(window.isVisible())
+            self.assertGreaterEqual(window.width(), window.PREFERRED_WIDTH)
         finally:
             window.close()
             window.deleteLater()
