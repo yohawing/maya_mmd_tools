@@ -56,7 +56,7 @@
     "humanik_create_control_rig": "Control Rig作成",
     "humanik_bake": "MMD Rigへベイク",
     "humanik_bake_execute": "ベイクを実行",
-    "humanik_restore": "MMD Rigを復元",
+    "humanik_restore": "MMDリグを復元",
     "humanik_diagnostics": "診断"
   },
   "labels": {
@@ -237,6 +237,7 @@
     "export_dev_mode_required": "エクスポートは開発モードでのみ利用できます",
     "humanik_experimental_notice": "HumanIK対応は試験的機能です。予告なく変更される場合があります。",
     "humanik_restore_explanation": "Restore = Control Rigを削除し復元状態を戻します。characterize済みのHIKノードは残ります（SOURCE状態へ戻ります。未characterize状態には戻りません）。",
+    "humanik_restore_tooltip": "HumanIKのControl Rig／ターゲットプレビューを終了し、一時的に外していたMMDの足IK・付与・制約接続と有効状態を復元します。HumanIKのキャラクタ定義は残ります。",
     "humanik_orphaned_warning": "このセッションが追跡していないControl Rigが見つかりました。Restore MMD Rigで回収できますが、復元状態が無いためwriter接続とcharacterize前のポーズは戻せません。",
     "humanik_mode_neutral": "未設定",
     "humanik_mode_source": "Source",

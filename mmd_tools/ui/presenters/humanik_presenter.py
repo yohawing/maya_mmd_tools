@@ -4,7 +4,7 @@ HUMANIK-FRONTEND-1 Phase B4: the tab is now a pair-specified retarget UI --
 a "Character" combo (the MMD model this window acts on) and a "Source" combo
 ("None" or another scene MMD model; picking one connects the retarget,
 picking "None" disconnects) -- plus the existing status header and the
-Control Rig/Bake/Restore-Diagnostics action buttons. This presenter owns:
+Control Rig/Bake/Restore action buttons. This presenter owns:
 
 * populating both combos every refresh from the scene's MMD model list;
 * the Character combo's selection policy (Maya-selection-follow, sticky
@@ -45,7 +45,6 @@ class HumanIkPresenter:
     _DISPATCH_ATTR_TO_ACTION = {
         "create_control_rig_btn": "create_control_rig",
         "restore_btn": "restore_mmd_rig",
-        "diagnostics_btn": "diagnostics",
     }
 
     def __init__(self, view, app_state, *, actions_module=None, cmds_module=None, **_kwargs):

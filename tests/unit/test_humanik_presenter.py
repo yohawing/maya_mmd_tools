@@ -2,7 +2,7 @@
 
 The HumanIK tab is a thin status display over
 ``HumanIkFrontendSession.describe_frontend_state()`` plus a Character/Source
-combo pair (HUMANIK-FRONTEND-1 Phase B4) and the four remaining action
+combo pair (HUMANIK-FRONTEND-1 Phase B4) and the remaining action
 buttons, all dispatching to the already-tested ``humanik_menu_actions``
 functions (see ``tests/unit/test_humanik_menu_actions.py``); this suite does
 not re-verify menu action behavior, only that the presenter:
@@ -28,7 +28,6 @@ _ACTION_BUTTON_ATTRS = (
     "create_control_rig_btn",
     "bake_btn",
     "restore_btn",
-    "diagnostics_btn",
 )
 
 
@@ -133,7 +132,6 @@ def _make_mock_view():
             "bake_btn",
             "bake_execute_btn",
             "restore_btn",
-            "diagnostics_btn",
             "character_combo",
             "source_combo",
         ],
@@ -233,7 +231,6 @@ class TestHumanIkPresenter(unittest.TestCase):
         button_to_action = {
             "create_control_rig_btn": "create_control_rig",
             "restore_btn": "restore_mmd_rig",
-            "diagnostics_btn": "diagnostics",
         }
         for attr, action_name in button_to_action.items():
             with self.subTest(attr=attr):
@@ -562,7 +559,7 @@ class TestHumanIkTabSetState(unittest.TestCase):
 
         for button in fake._action_buttons.values():
             button.setEnabled.assert_called_once_with(True)
-            button.setToolTip.assert_called_once_with("")
+            button.setToolTip.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

@@ -69,6 +69,7 @@ class HumanIkWindow(QWidget):
 
     WINDOW_NAME = "MMDHumanIkWindow"
     WORKSPACE_CONTROL_NAME = "MMDHumanIkWorkspaceControl"
+    PREFERRED_WIDTH = 260
 
     def __init__(self, parent=None):
         if parent is None:
@@ -148,7 +149,7 @@ class HumanIkWindow(QWidget):
                 ws,
                 label=self._window_title(),
                 tabToControl=["AttributeEditor", -1],
-                initialWidth=480,
+                initialWidth=self.PREFERRED_WIDTH,
                 initialHeight=640,
                 widthProperty="preferred",
                 retain=False,
@@ -163,7 +164,7 @@ class HumanIkWindow(QWidget):
             _raise_workspace_control(ws)
         else:
             self.setWindowFlags(Qt.Window)
-            self.resize(480, 640)
+            self.resize(self.PREFERRED_WIDTH, 640)
             self.show()
             self.raise_()
             self.activateWindow()

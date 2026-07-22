@@ -237,6 +237,7 @@
     "export_dev_mode_required": "Export is available only in Development Mode",
     "humanik_experimental_notice": "HumanIK support is experimental and may change without notice.",
     "humanik_restore_explanation": "Restore = delete the Control Rig and restore the restore_state. Characterized HIK nodes remain (returns to SOURCE state, not to an uncharacterized state).",
+    "humanik_restore_tooltip": "End the HumanIK Control Rig/target preview and restore the MMD foot IK, append, and constraint connections and enabled states that were temporarily isolated. The HumanIK character definition remains.",
     "humanik_orphaned_warning": "Orphaned Control Rig(s) found outside this session's tracking. Restore MMD Rig can recover them, but writer edges and the pre-characterize stance cannot be restored (no restore_state).",
     "humanik_mode_neutral": "Neutral",
     "humanik_mode_source": "Source",

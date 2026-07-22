@@ -178,6 +178,7 @@
     "export_dev_mode_required": "匯出僅能在開發模式使用",
     "humanik_experimental_notice": "HumanIK 支援為實驗性功能，可能會變更。",
     "humanik_restore_explanation": "Restore = 刪除 Control Rig 並還原 restore_state。已角色化的 HIK 節點會保留（回到 SOURCE 狀態，而非未角色化狀態）。",
+    "humanik_restore_tooltip": "結束 HumanIK Control Rig／目標預覽，並還原暫時隔離的 MMD 足部 IK、附加與約束連線及啟用狀態。HumanIK 角色定義會保留。",
     "humanik_orphaned_warning": "發現此工作階段未追蹤的 Control Rig。Restore MMD Rig 可以回收，但因為沒有 restore_state，無法還原 writer 連線與角色化前的姿勢。",
     "humanik_mode_neutral": "未設定",
     "humanik_mode_source": "Source",

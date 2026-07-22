@@ -44,14 +44,13 @@ from .translation_registry import apply_translation_registry
 
 
 # Action button attribute -> (translation key) for the button text. Only the
-# four actions that still have a standalone button on this tab (Setup /
+# actions that still have a standalone button on this tab (Setup /
 # Characterize, Enter Source Mode, and Enter Target Mode moved to the
 # Character/Source combos, see the module docstring).
 _ACTION_BUTTON_SPECS = (
     ("create_control_rig_btn", "humanik_create_control_rig"),
     ("bake_btn", "humanik_bake_execute"),
     ("restore_btn", "humanik_restore"),
-    ("diagnostics_btn", "humanik_diagnostics"),
 )
 
 MODE_TRANSLATION_KEYS = {
@@ -85,6 +84,7 @@ class HumanIkTab(BaseTab):
             "labels",
         ),
         ("refresh_btn", "setText", "refresh", "buttons"),
+        ("restore_btn", "setToolTip", "humanik_restore_tooltip", "messages"),
         ("experimental_notice_label", "setText", "humanik_experimental_notice", "messages"),
     )
 
@@ -134,15 +134,18 @@ class HumanIkTab(BaseTab):
         model.
         """
         form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.WrapAllRows)
 
         self.character_combo_label = QLabel(self.tr("humanik_character", "labels"))
         self.character_combo = QComboBox()
-        configure_model_combo_width(self.character_combo)
+        configure_model_combo_width(self.character_combo, minimum_width=160, minimum_contents_length=18)
+        self.character_combo.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         form.addRow(self.character_combo_label, self.character_combo)
 
         self.source_combo_label = QLabel(self.tr("humanik_source", "labels"))
         self.source_combo = QComboBox()
-        configure_model_combo_width(self.source_combo)
+        configure_model_combo_width(self.source_combo, minimum_width=160, minimum_contents_length=18)
+        self.source_combo.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         form.addRow(self.source_combo_label, self.source_combo)
 
         return form
@@ -164,12 +167,12 @@ class HumanIkTab(BaseTab):
         """Lay out the action buttons as a flat vertical stack.
 
         HUMANIK-FRONTEND-1 Phase B5 removed the three collapsible
-        ``QGroupBox`` sections (Control Rig / Bake / Restore-Diagnostics) --
+        ``QGroupBox`` sections (Control Rig / Bake / Restore) --
         there was nothing to actually collapse in practice, so the buttons
         are added directly to ``main_layout`` instead: Create Control Rig,
         then the Bake destination/range section followed by one Execute Bake
         button, then
-        Restore MMD Rig, then Diagnostics.
+        Restore MMD Rig.
         """
         self._add_action_row(main_layout, "create_control_rig_btn", "humanik_create_control_rig")
 
@@ -186,17 +189,21 @@ class HumanIkTab(BaseTab):
         self.bake_start_spin = QSpinBox()
         self.bake_start_spin.setRange(-1_000_000, 1_000_000)
         self.bake_start_spin.setSuffix(" F")
+        self.bake_start_spin.setMinimumWidth(72)
+        self.bake_start_spin.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.bake_end_label = QLabel(self.tr("humanik_bake_end", "labels"))
         self.bake_end_spin = QSpinBox()
         self.bake_end_spin.setRange(-1_000_000, 1_000_000)
         self.bake_end_spin.setSuffix(" F")
+        self.bake_end_spin.setMinimumWidth(72)
+        self.bake_end_spin.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         bake_row.addWidget(self.bake_start_label)
         bake_row.addWidget(self.bake_start_spin)
         bake_row.addWidget(self.bake_end_label)
         bake_row.addWidget(self.bake_end_spin)
         bake_section_layout.addLayout(bake_row)
 
-        destination_row = QHBoxLayout()
+        destination_row = QVBoxLayout()
         self.bake_to_control_rig_radio = QRadioButton(
             self.tr("humanik_bake_to_control_rig", "labels")
         )
@@ -210,7 +217,6 @@ class HumanIkTab(BaseTab):
         self.bake_to_mmd_rig_radio.setChecked(True)
         destination_row.addWidget(self.bake_to_control_rig_radio)
         destination_row.addWidget(self.bake_to_mmd_rig_radio)
-        destination_row.addStretch()
         bake_section_layout.addLayout(destination_row)
         self._add_action_row(bake_section_layout, "bake_btn", "humanik_bake_execute")
         # ``bake_btn`` remains the compatibility name used by older callers;
@@ -219,7 +225,7 @@ class HumanIkTab(BaseTab):
         main_layout.addWidget(bake_section)
 
         self._add_action_row(main_layout, "restore_btn", "humanik_restore")
-        self._add_action_row(main_layout, "diagnostics_btn", "humanik_diagnostics")
+        self.restore_btn.setToolTip(self.tr("humanik_restore_tooltip", "messages"))
 
     def _add_action_row(self, layout, attr, label_key):
         """Add one full-width action button without inline state prose."""
@@ -264,7 +270,6 @@ class HumanIkTab(BaseTab):
         # longer duplicates them as disabled buttons and inline error prose.
         for button in self._action_buttons.values():
             button.setEnabled(True)
-            button.setToolTip("")
 
     def _selected_bake_destination(self):
         """Return the stable destination identifier selected in the Bake UI."""
