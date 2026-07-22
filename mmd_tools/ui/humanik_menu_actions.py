@@ -1001,7 +1001,7 @@ def _run_action(label, operation):
 
 
 def _report_action_failure(label: str, exc: Exception, *, model_root: Optional[str] = None) -> str:
-    """Log a full action traceback and show only a bounded user-facing summary."""
+    """Log the full traceback and emit a bounded Script Editor error."""
     prefix = f"HumanIK {label} failed: "
     suffix = ". See the Maya Script Editor for details."
     summary = _short_exception_summary(exc, limit=max(4, 180 - len(prefix) - len(suffix)))
@@ -1021,6 +1021,7 @@ def _report_action_failure(label: str, exc: Exception, *, model_root: Optional[s
 
 
 def _display_error(message):
+    """Write an error to Maya's Script Editor without opening a modal dialog."""
     if _error_reporter is not None:
         _error_reporter(message)
         return
@@ -1028,11 +1029,6 @@ def _display_error(message):
         import maya.api.OpenMaya as om
 
         om.MGlobal.displayError(message)
-    except Exception:
-        pass
-    try:
-        cmds = _cmds_module or _maya_cmds()
-        cmds.confirmDialog(title="HumanIK Error", message=message, button=["OK"], icon="critical")
     except Exception:
         pass
 

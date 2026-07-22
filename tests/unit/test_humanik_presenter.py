@@ -21,56 +21,15 @@ from unittest.mock import MagicMock, Mock
 
 from tests.common.mock_ui import attach_mocks
 
-from mmd_tools.core.humanik_frontend import (
-    REASON_ALREADY_CHARACTERIZED_OTHER_PROFILE,
-    REASON_IMPORT_BLOCKED_CONTROL_RIG,
-    REASON_IMPORT_BLOCKED_TARGET_PREVIEW,
-    REASON_MODEL_IS_SOURCE,
-    REASON_MODEL_REQUIRED,
-    REASON_NO_ACTIVE_CONTROL_RIG,
-    REASON_NO_ACTIVE_PREVIEW,
-    REASON_NO_SOURCE,
-    REASON_NOT_CHARACTERIZED,
-    REASON_NOTHING_TO_RESTORE,
-    REASON_PREVIEW_ACTIVE,
-    REASON_PROFILE_MISMATCH,
-    REASON_TARGET_IS_SOURCE,
-)
 from mmd_tools.ui.presenters.humanik_presenter import HumanIkPresenter
-from mmd_tools.ui.tabs.humanik_tab import (
-    ACTION_KEY_TO_BUTTON,
-    HumanIkTab,
-    REASON_CODE_TRANSLATION_KEYS,
+from mmd_tools.ui.tabs.humanik_tab import HumanIkTab
+
+_ACTION_BUTTON_ATTRS = (
+    "create_control_rig_btn",
+    "bake_btn",
+    "restore_btn",
+    "diagnostics_btn",
 )
-from mmd_tools.ui.translations import UITranslator
-
-_ALL_REASON_CODES = {
-    REASON_PREVIEW_ACTIVE,
-    REASON_NOT_CHARACTERIZED,
-    REASON_NO_SOURCE,
-    REASON_TARGET_IS_SOURCE,
-    REASON_PROFILE_MISMATCH,
-    REASON_MODEL_IS_SOURCE,
-    REASON_NO_ACTIVE_PREVIEW,
-    REASON_NO_ACTIVE_CONTROL_RIG,
-    REASON_ALREADY_CHARACTERIZED_OTHER_PROFILE,
-    REASON_NOTHING_TO_RESTORE,
-    REASON_MODEL_REQUIRED,
-    # importLock reasonCodes (HUMANIK-FRONTEND-1 Phase C): a different
-    # reasonCode namespace than the action guards above, but
-    # ``humanik_tab.REASON_CODE_TRANSLATION_KEYS`` maps both through the same
-    # ``reason_text`` lookup, so both must be covered here.
-    REASON_IMPORT_BLOCKED_TARGET_PREVIEW,
-    REASON_IMPORT_BLOCKED_CONTROL_RIG,
-}
-
-
-def _action_allowed():
-    return {"allowed": True, "reasonCode": None, "reasonText": None}
-
-
-def _action_blocked(reason_code, reason_text="blocked"):
-    return {"allowed": False, "reasonCode": reason_code, "reasonText": reason_text}
 
 
 class _FakeSession:
@@ -322,49 +281,6 @@ class TestHumanIkPresenter(unittest.TestCase):
         handler()
         self.view.set_state.assert_called_once()
 
-    # -- control rig watch callback subscription (HUMANIK-FRONTEND-1 Phase C)
-
-    def test_on_tab_activated_registers_control_rig_watch_callback(self):
-        from mmd_tools.core import humanik_control_rig_watch as watch
-
-        self.presenter.on_tab_activated()
-        try:
-            self.assertIn(
-                self.presenter._on_control_rig_watch_warning, watch._warning_callbacks
-            )
-        finally:
-            self.presenter.on_tab_deactivated()
-
-    def test_on_tab_deactivated_deregisters_control_rig_watch_callback(self):
-        from mmd_tools.core import humanik_control_rig_watch as watch
-
-        self.presenter.on_tab_activated()
-        self.presenter.on_tab_deactivated()
-        self.assertNotIn(
-            self.presenter._on_control_rig_watch_warning, watch._warning_callbacks
-        )
-
-    def test_control_rig_watch_warning_renders_on_the_view_while_active(self):
-        self.presenter.on_tab_activated()
-        try:
-            self.presenter._on_control_rig_watch_warning(
-                "message", character="Character1", model_root="|Model"
-            )
-            self.view.show_control_rig_warning.assert_called_once_with(
-                character="Character1", model_root="|Model"
-            )
-        finally:
-            self.presenter.on_tab_deactivated()
-
-    def test_control_rig_watch_warning_is_a_no_op_while_inactive(self):
-        # Never activated: _active stays False, so the callback (even if
-        # somehow still invoked) must not touch the view.
-        self.presenter._on_control_rig_watch_warning(
-            "message", character="Character1", model_root="|Model"
-        )
-        self.view.show_control_rig_warning.assert_not_called()
-
-
 class TestHumanIkPresenterCharacterCombo(unittest.TestCase):
     """Character combo selection policy: follow / sticky / override (Phase B4)."""
 
@@ -602,189 +518,51 @@ class TestHumanIkPresenterSourceCombo(unittest.TestCase):
         self.assertGreaterEqual(self.view.set_state.call_count, 2)
 
 
-class TestHumanIkReasonCodeTranslation(unittest.TestCase):
-    """(b) Every backend reasonCode maps to a real, non-fallback display string."""
-
-    def test_reason_code_map_covers_every_describe_frontend_state_reason(self):
-        self.assertEqual(set(REASON_CODE_TRANSLATION_KEYS), _ALL_REASON_CODES)
-
-    def test_each_mapped_key_translates_in_english_and_japanese(self):
-        translator = UITranslator.instance()
-        previous_language = translator.get_language()
-        try:
-            for language in ("en", "ja"):
-                translator.set_language(language)
-                for reason_code, key in REASON_CODE_TRANSLATION_KEYS.items():
-                    with self.subTest(language=language, reason_code=reason_code):
-                        text = translator.translate(key, "messages")
-                        # A translation miss falls back to returning the key
-                        # itself; that would silently show a raw enum string
-                        # in the UI, so it must never happen for a known key.
-                        self.assertNotEqual(text, key)
-        finally:
-            translator.set_language(previous_language)
-
-    def test_action_key_to_button_covers_the_four_remaining_tab_buttons(self):
-        # Setup/Characterize, Enter Source Mode, and Enter Target Mode moved
-        # to the Character/Source combos (HUMANIK-FRONTEND-1 Phase B4) and no
-        # longer have a button on this tab; the plugin menu keeps those three
-        # actions unchanged (see ``humanik_menu_actions.ACTION_LABELS``).
-        expected_actions = {
-            "create_control_rig",
-            "bake_to_mmd_rig",
-            "restore_mmd_rig",
-            "diagnostics",
-        }
-        self.assertEqual(set(ACTION_KEY_TO_BUTTON), expected_actions)
-
-
 class TestHumanIkTabSetState(unittest.TestCase):
-    """View-logic checks that avoid constructing a real QWidget.
-
-    ``HumanIkTab.set_state``/``reason_text`` only touch attributes set on
-    ``self`` and call ``self.tr`` -- calling them unbound against a plain
-    stand-in object exercises the exact same branches as a real tab without
-    needing a running QApplication.
-    """
+    """The compact view renders status but never duplicates backend guards."""
 
     def _make_fake_tab(self):
         fake = SimpleNamespace()
-        fake.tr = lambda key, category=None: UITranslator.instance().translate(key, category)
+        fake.tr = lambda key, category=None: key
         fake.status_label = Mock()
-        fake.orphaned_warning_label = Mock()
-        fake.import_lock_warning_label = Mock()
-        fake._action_buttons = {attr: Mock() for attr in ACTION_KEY_TO_BUTTON.values()}
-        fake._reason_labels = {attr: Mock() for attr in ACTION_KEY_TO_BUTTON.values()}
+        fake._action_buttons = {attr: Mock() for attr in _ACTION_BUTTON_ATTRS}
         fake._last_mode = "neutral"
         fake._last_control_rig_count = 0
         fake._mode_text = HumanIkTab._mode_text.__get__(fake)
-        fake.reason_text = HumanIkTab.reason_text.__get__(fake)
         fake._status_text = HumanIkTab._status_text.__get__(fake)
-        fake._selected_bake_destination = HumanIkTab._selected_bake_destination.__get__(fake)
-        fake._apply_bake_action_state = HumanIkTab._apply_bake_action_state.__get__(fake)
         return fake
 
-    def test_orphaned_control_rigs_show_a_warning(self):
-        fake = self._make_fake_tab()
-        state = {
-            "mode": "neutral",
-            "actions": {},
-            "restoreHint": {
-                "orphanedControlRigs": [{"modelRoot": "|Orphan", "character": "OrphanChar"}],
-            },
-        }
-
-        HumanIkTab.set_state(fake, state)
-
-        fake.orphaned_warning_label.show.assert_called_once()
-        fake.orphaned_warning_label.setText.assert_called_once()
-        (warning_text,), _ = fake.orphaned_warning_label.setText.call_args
-        self.assertIn("Orphan", warning_text)
-
-    def test_no_orphaned_control_rigs_hides_the_warning(self):
-        fake = self._make_fake_tab()
-        state = {"mode": "neutral", "actions": {}, "restoreHint": {"orphanedControlRigs": []}}
-
-        HumanIkTab.set_state(fake, state)
-
-        fake.orphaned_warning_label.hide.assert_called_once()
-        fake.orphaned_warning_label.setText.assert_not_called()
-
-    def test_import_lock_blocked_shows_the_warning(self):
+    def test_status_keeps_only_mode_and_control_rig_count(self):
         fake = self._make_fake_tab()
         state = {
             "mode": "target_preview",
-            "actions": {},
-            "restoreHint": {"orphanedControlRigs": []},
-            "importLock": {
-                "blocked": True,
-                "reasonCode": "import_blocked_target_preview",
-                "character": "Character1",
-                "hasControlRig": False,
-            },
+            "controlRigs": [{"modelRoot": "|Target"}],
         }
 
         HumanIkTab.set_state(fake, state)
 
-        fake.import_lock_warning_label.show.assert_called_once()
-        fake.import_lock_warning_label.setText.assert_called_once()
-        (warning_text,), _ = fake.import_lock_warning_label.setText.call_args
-        self.assertIn("Restore MMD Rig", warning_text)
+        fake.status_label.setText.assert_called_once_with(
+            "humanik_mode_target_previewhumanik_status_control_rig_suffix"
+        )
 
-    def test_import_lock_unblocked_hides_the_warning(self):
-        fake = self._make_fake_tab()
-        state = {
-            "mode": "neutral",
-            "actions": {},
-            "restoreHint": {"orphanedControlRigs": []},
-            "importLock": {"blocked": False, "reasonCode": None},
-        }
-
-        HumanIkTab.set_state(fake, state)
-
-        fake.import_lock_warning_label.hide.assert_called_once()
-        fake.import_lock_warning_label.setText.assert_not_called()
-
-    def test_missing_import_lock_hides_the_warning(self):
-        fake = self._make_fake_tab()
-        state = {"mode": "neutral", "actions": {}, "restoreHint": {"orphanedControlRigs": []}}
-
-        HumanIkTab.set_state(fake, state)
-
-        fake.import_lock_warning_label.hide.assert_called_once()
-
-    def test_blocked_action_disables_its_button_and_shows_the_reason(self):
+    def test_backend_blocked_actions_stay_clickable_without_inline_reason(self):
         fake = self._make_fake_tab()
         state = {
             "mode": "neutral",
             "actions": {
-                "create_control_rig": _action_blocked(REASON_NOT_CHARACTERIZED),
-                "restore_mmd_rig": _action_allowed(),
+                "create_control_rig": {
+                    "allowed": False,
+                    "reasonCode": "not_characterized",
+                    "reasonText": "details",
+                },
             },
-            "restoreHint": {"orphanedControlRigs": []},
         }
 
         HumanIkTab.set_state(fake, state)
 
-        create_button = fake._action_buttons["create_control_rig_btn"]
-        create_button.setEnabled.assert_called_once_with(False)
-        expected_text = UITranslator.instance().translate(
-            "humanik_reason_not_characterized", "messages"
-        )
-        create_button.setToolTip.assert_called_once_with(expected_text)
-
-        restore_button = fake._action_buttons["restore_btn"]
-        restore_button.setEnabled.assert_called_once_with(True)
-        restore_button.setToolTip.assert_called_once_with("")
-
-    def test_bake_execute_gate_tracks_selected_destination(self):
-        fake = self._make_fake_tab()
-        fake.bake_to_control_rig_radio = Mock()
-        state = {
-            "mode": "target_preview",
-            "actions": {
-                "bake_to_control_rig": _action_blocked(REASON_NO_ACTIVE_CONTROL_RIG),
-                "bake_to_mmd_rig": _action_allowed(),
-            },
-            "restoreHint": {"orphanedControlRigs": []},
-        }
-        button = fake._action_buttons["bake_btn"]
-
-        fake.bake_to_control_rig_radio.isChecked.return_value = False
-        HumanIkTab.set_state(fake, state)
-        button.setEnabled.assert_called_with(True)
-        button.setToolTip.assert_called_with("")
-
-        button.reset_mock()
-        fake.bake_to_control_rig_radio.isChecked.return_value = True
-        HumanIkTab.set_state(fake, state)
-        button.setEnabled.assert_called_with(False)
-        button.setToolTip.assert_called_with(
-            UITranslator.instance().translate(
-                "humanik_reason_no_active_control_rig", "messages"
-            )
-        )
-
+        for button in fake._action_buttons.values():
+            button.setEnabled.assert_called_once_with(True)
+            button.setToolTip.assert_called_once_with("")
 
 if __name__ == "__main__":
     unittest.main()

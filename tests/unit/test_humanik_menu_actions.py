@@ -540,6 +540,16 @@ class TestHumanIkMenuActions(unittest.TestCase):
         log_error.assert_called_once()
         self.assertTrue(log_error.call_args.kwargs["exc_info"])
 
+    def test_production_error_reporting_never_opens_a_modal_dialog(self):
+        previous_reporter = actions._error_reporter
+        actions._error_reporter = None
+        try:
+            actions._display_error("HumanIK failed. See the Maya Script Editor for details.")
+        finally:
+            actions._error_reporter = previous_reporter
+
+        self.cmds.confirmDialog.assert_not_called()
+
     @patch.object(actions, "resolve_model_root", return_value="|model_root")
     def test_target_blocker_reports_error_without_starting_preview(self, resolve):
         self.session.inspect_target_ownership = lambda root: {

@@ -27,7 +27,7 @@ HumanIK Editorの最上部には、太字の注意書きと `Refresh` ボタン�
 
 > HumanIK対応は試験的機能です。予告なく変更される場合があります。　　　　　　　　　　[Refresh]
 
-`Refresh` ボタンは以前はEditorの最下部にありましたが、ユーザーfeedbackにより最上部（注意書きの行）に移動しました。押すと、シーンを再スキャンしてCharacter/Sourceコンボ・ステータス行・各ボタンの有効状態を最新化します。
+`Refresh` ボタンは以前はEditorの最下部にありましたが、ユーザーfeedbackにより最上部（注意書きの行）に移動しました。押すと、シーンを再スキャンしてCharacter/Sourceコンボとステータス行を最新化します。
 
 ### Character（キャラクター）コンボ
 
@@ -72,7 +72,7 @@ Sourceコンボの表示は、ユーザーが最後にクリックした値で�
 
 例: `Control Rig / Control Rig: 1`
 
-この下に、importLock警告（赤字）や孤立Control Rig警告・Control Rig watch警告（オレンジ字）が、条件を満たす場合のみ表示されます（表示条件は以前と同じです）。
+詳細な状態・警告文はEditor内へ展開せず、Maya Script Editorへ記録されます。
 
 ### アクションボタン
 
@@ -82,10 +82,9 @@ Sourceコンボの表示は、ユーザーが最後にクリックした値で�
 2. 開始フレーム／終了フレームのSpinBox（1行）
 3. `Bake to MMD Rig` ボタン（全幅）
 4. `Restore MMD Rig` ボタン（全幅）
-5. Restoreの説明文（小さめ・グレー文字、内容は変更なし）
-6. `Diagnostics` ボタン（全幅）
+5. `Diagnostics` ボタン（全幅）
 
-各ボタンが無効な場合は、その理由がボタンの下にオレンジ色のテキストで（ツールチップにも同じ文言で）表示されます。
+ボタンは常に操作可能です。実行できない状態ではバックエンドが処理を拒否し、操作名・理由・tracebackをMaya Script Editorへ出力します。Editor内に長い理由文やエラーダイアログは表示しません。
 
 ## 接続時に自動で行われること
 
@@ -97,7 +96,7 @@ Sourceコンボで項目を選ぶと、以下が自動的に順番に実行さ�
 3. **SOURCE設定**（Enter Source Mode / Enter External Source Mode）: Source側をHumanIKのSOURCEとして設定します。
 4. **TARGET preview**（Enter Target Mode）: Character側モデルをTARGETプレビュー状態にします。確認ダイアログは表示されず、ownership（どの制約ノードがミュートされ、どれが保持されるか）のpreflightチェックを通過すれば即座に実行されます。結果の概要はダイアログではなく完了後の情報メッセージとして表示されます。
 
-途中のいずれかのステップが失敗した場合（例: SOURCE/TARGETのプロファイル不一致、blockerの存在など）、その時点でエラーが表示され、Sourceコンボは実際の状態（未接続のまま等）に戻ります。SOURCE/TARGETのプロファイル不一致が起きた場合のエラーには、「両モデルをRestoreしてから接続し直すとfullで揃う」という案内が含まれます。
+途中のいずれかのステップが失敗した場合（例: SOURCE/TARGETのプロファイル不一致、blockerの存在など）、詳細はMaya Script Editorへ記録され、Sourceコンボは実際の状態（未接続のまま等）に戻ります。
 
 ## ポップアップの削減（Phase B6）
 
@@ -132,7 +131,7 @@ TARGETプレビュー中のHumanIKリターゲット結果を、指定したフ�
 
 キャラクタライズ済みのモデルに対してHumanIK Control Rigを作成します。
 
-- **サポートされる経路は、このプラグインのメニュー／ボタン経由のみです。** Maya標準のCharacter Controls UIから直接Control Rigを作成した場合、`mmd_tools`はその変化を検知して警告バナーを表示します（詳細は後述のトラブルシューティングを参照）。
+- **サポートされる経路は、このプラグインのメニュー／ボタン経由のみです。** Maya標準のCharacter Controls UIから直接Control Rigを作成した場合、`mmd_tools`はその変化を検知してMaya Script Editorへ警告します（詳細は後述のトラブルシューティングを参照）。
 - 確認ダイアログはありません（Phase B6でポップアップを削減）。アクティブなプレビューが残っている場合は、これまで通りエラーとして拒否されます。
 
 ### Restore MMD Rig
@@ -141,7 +140,6 @@ TARGETプレビュー中のHumanIKリターゲット結果を、指定したフ�
 
 - **Control Rigを削除し、復元状態（このセッションが記録した変更履歴）を復元します。**
 - **キャラクタライズ済みのHIKノード自体は削除されません** — つまり、Restore後はキャラクタライズされていない状態ではなく、**SOURCE状態（キャラクタライズ済みだがTARGET/Control Rigではない状態）へ戻ります**。
-- Editor下部には次の説明文が常時表示されます: 「Restore = Control Rigを削除し復元状態を復元します。characterize済みのHIKノードは残ります（SOURCE状態へ戻ります。未characterize状態には戻りません）。」
 - **孤立したControl Rig**（このセッションが作成・追跡していないControl Rig）も、MMDモデルによって駆動されているものであれば、Restore MMD Rigの実行時に回収（削除）されます。ただし復元状態が無いため、writerの接続やキャラクタライズ前のポーズは復元されません（後述のトラブルシューティングを参照）。
 
 Source コンボで「None」を選ぶとこのRestoreが実行されます。確認ダイアログが表示されるのは**アクティブなControl Rigがある場合のみ**（「Disconnect the HumanIK retarget and restore the MMD rig? The active Control Rig will also be deleted.」）です。Control Rigが無い状態（TARGETプレビューのみ、または何も無い状態）からの切断は即実行されます。
@@ -152,7 +150,7 @@ Source コンボで「None」を選ぶとこのRestoreが実行されます。�
 
 - TARGETプレビュー中に拒否された場合の理由文言: 「このモデルは現在HumanIK Targetプレビュー中です。」
 - Control Rigがアクティブな間に拒否された場合の理由文言: 「このモデルには現在有効なHumanIK Control Rigがあります。」
-- Editor上部にも赤字の警告として「VMD importは現在拒否されます: (理由) — Restore MMD Rigで解除してください。」が表示されます。
+- 拒否理由と詳細はMaya Script Editorへ出力されます。
 
 この制限は **Restore MMD Rig** を実行してTARGET preview / Control Rig状態を終了すれば解除されます。NEUTRAL状態やSOURCE状態のモデル、またそもそもHumanIKに関与していないモデルへのVMD importは通常どおり可能です。
 
@@ -162,12 +160,12 @@ Source コンボで「None」を選ぶとこのRestoreが実行されます。�
 
 Restore MMD Rig実行後もモデルの姿勢や制約ノードの接続が完全には元に戻っていないように見える場合、そのControl Rigが**このセッションの復元状態無しで回収された「孤立したControl Rig」**である可能性があります。
 
-- Editor上部にオレンジ色で「このセッションが追跡していないControl Rigが見つかりました。Restore MMD Rigで回収できますが、復元状態が無いためwriter接続とcharacterize前のポーズは復元されません。」という警告バナーが表示されていた場合、その回収では **writerの接続（mmdCcdIkなどの制約ノードの再接続）とキャラクタライズ前のポーズは復元対象になりません**。これは復元状態が存在しない場合の既知の制約です。
-- 正常な復元状態付きのRestore（このプラグインのメニュー／Editorから開始したリターゲット・Control Rigに対するRestore）であれば、writer接続とポーズは正しく復元されます。「効かない」と感じたら、まずその孤立警告が出ていたかどうかを確認してください。
+- Maya Script Editorに孤立Control Rigの警告が出ていた場合、その回収では **writerの接続（mmdCcdIkなどの制約ノードの再接続）とキャラクタライズ前のポーズは復元対象になりません**。これは復元状態が存在しない場合の既知の制約です。
+- 正常な復元状態付きのRestore（このプラグインのメニュー／Editorから開始したリターゲット・Control Rigに対するRestore）であれば、writer接続とポーズは正しく復元されます。
 
-### 孤立したControl Rig警告バナーの意味
+### 孤立したControl Rig警告の意味
 
-Editor上に「Control RigがMaya標準UIで作成されました。サポート経路はMMDメニューのHumanIK (Experimental) > Create Control Rigです。Restore MMD Rigで回収できます。」という警告バナーが表示された場合、これは**Maya標準のCharacter Controls UIから直接Control Rigを作成した**ことを検知して表示されるものです。
+Maya Script EditorにControl RigがMaya標準UIで作成されたという警告が出た場合、これは**Maya標準のCharacter Controls UIから直接Control Rigを作成した**ことを検知したものです。
 
 - この警告表示自体はシーンを変更しません（監視のみで、自動的な回収や削除は行いません）。
 - 表示された場合、そのControl Rigを正しく片付けるには **Restore MMD Rig** を実行してください（孤立したControl Rigの回収についての制約は前項を参照）。
