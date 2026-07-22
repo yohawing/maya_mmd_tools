@@ -84,7 +84,10 @@ def run_probe(
     import maya.cmds as cmds
     import maya.mel as mel
 
-    from mmd_tools.core.humanik_frontend import HumanIkFrontendSession
+    from mmd_tools.core.humanik_frontend import (
+        FULL_ASSIGNMENT_PROFILE,
+        HumanIkFrontendSession,
+    )
 
     report: Dict[str, Any] = {
         "status": "error",
@@ -159,6 +162,134 @@ def run_probe(
                 except (TypeError, ValueError):
                     continue
         return samples
+
+    def _world_position(node: str):
+        """Return one DAG node's evaluated world-space translation."""
+        value = cmds.xform(node, query=True, worldSpace=True, translation=True)
+        return tuple(float(component) for component in value)
+
+    def _distance(left, right) -> float:
+        """Return the Euclidean distance between two world-space points."""
+        return sum((float(a) - float(b)) ** 2 for a, b in zip(left, right)) ** 0.5
+
+    def _move_control_attribute(effector: str, attribute: str, amount: float) -> Dict[str, Any]:
+        """Key an editable Control Rig channel at zero and describe the edit.
+
+        A relative ``keyframe`` edit is a no-op when a baked control has no
+        key at exactly frame zero.  Writing an explicit key models an actual
+        animator edit and removes that false-negative path.  The caller wraps
+        this in an undo chunk, so no test edit survives the drive check.
+        """
+        attribute_path = f"{effector}.{attribute}"
+        curves = cmds.listConnections(
+            attribute_path,
+            source=True,
+            destination=False,
+            type="animCurve",
+        ) or []
+        before = float(cmds.getAttr(attribute_path))
+        if curves:
+            if len(curves) != 1:
+                raise RuntimeError(
+                    "Control Rig foot channel has ambiguous animation curves: "
+                    f"{attribute_path} -> {[str(curve) for curve in curves]}"
+                )
+            cmds.keyframe(
+                curves[0],
+                edit=True,
+                time=(0, 0),
+                absolute=True,
+                valueChange=before + float(amount),
+            )
+            return {
+                "route": "animCurveKey",
+                "before": before,
+                "after": float(cmds.getAttr(attribute_path)),
+                "curves": [str(curve) for curve in curves],
+            }
+        if not cmds.getAttr(attribute_path, settable=True):
+            raise RuntimeError(f"Control Rig foot channel is not editable: {attribute_path}")
+        cmds.setAttr(attribute_path, before + float(amount))
+        return {"route": "attribute", "before": before, "after": float(cmds.getAttr(attribute_path))}
+
+    def _verify_foot_effector_drive(assignments, character: str):
+        """Require each ankle IK control to move its characterized ankle.
+
+        Characterization readback alone proves only that HIK slots are
+        populated. Maya names the ankle-driving IK controller
+        ``LeftAnkleEffector`` / ``RightAnkleEffector`` even though their
+        characterized slots are ``LeftFoot`` / ``RightFoot``; the similarly
+        named Foot Effectors drive the toe-base portion of the HIK rig.
+        This direct control-to-skeleton check catches a broken Control Rig leg
+        chain even when a generic hips effector still works.
+        """
+        joints_by_slot = {str(item.hik_bone): str(item.joint) for item in assignments}
+        ik_nodes = sorted(
+            str(node)
+            for node in (mel.eval(f'hikGetRigIkNodes("{character}")') or [])
+            if node and cmds.objExists(str(node))
+        )
+        checks = []
+        for slot, effector_name in (
+            ("LeftFoot", "LeftAnkleEffector"),
+            ("RightFoot", "RightAnkleEffector"),
+        ):
+            # Bake preserves the caller's current frame, while this probe
+            # deliberately offsets the keys authored at frame zero.  Evaluate
+            # that same frame before measuring the HIK output.
+            cmds.currentTime(0, edit=True)
+            cmds.refresh(force=True)
+            joint = joints_by_slot.get(slot)
+            candidates = [
+                node for node in ik_nodes
+                if effector_name.lower() in node.lower()
+            ]
+            if not joint or not candidates:
+                checks.append(
+                    {
+                        "slot": slot,
+                        "joint": joint,
+                        "effectors": candidates,
+                        "moved": False,
+                        "error": "missing characterized joint or Ankle Effector",
+                    }
+                )
+                continue
+            effector = candidates[0]
+            before = _world_position(joint)
+            edit = None
+            error = None
+            cmds.undoInfo(openChunk=True, chunkName=f"HumanIKFootDrive:{slot}")
+            try:
+                edit = _move_control_attribute(effector, "translateX", 1.0)
+                cmds.refresh(force=True)
+                after = _world_position(joint)
+                movement = _distance(before, after)
+            except Exception as exc:  # noqa: BLE001 - retain Maya-side diagnosis
+                after = None
+                movement = 0.0
+                error = str(exc)
+            finally:
+                cmds.undoInfo(closeChunk=True)
+                try:
+                    cmds.undo()
+                    cmds.refresh(force=True)
+                except Exception as restore_exc:  # noqa: BLE001 - include recovery failure
+                    error = f"{error or ''}; restore={restore_exc}".strip("; ")
+            checks.append(
+                {
+                    "slot": slot,
+                    "joint": joint,
+                    "effector": effector,
+                    "edit": edit,
+                    "before": before,
+                    "after": after,
+                    "movement": movement,
+                    "moved": error is None and movement > 1.0e-4,
+                    "error": error,
+                }
+            )
+        return checks
 
     def _edit_control_rig(joints, character):
         ik_nodes = [
@@ -312,11 +443,19 @@ def run_probe(
         report.update({"sourceRoot": source_root, "targetRoot": target_root})
 
         session = HumanIkFrontendSession(cmds_module=cmds, mel_module=mel)
-        source_binding = session.setup_and_characterize(source_root)
+        source_binding = session.setup_and_characterize(
+            source_root,
+            profile=FULL_ASSIGNMENT_PROFILE,
+            include_fingers=True,
+        )
         session.enter_source_mode(source_root)
         _import_motion(vmd, pmx, source_root)
         source_anim_curve_count = len(cmds.ls(type="animCurve") or [])
-        target_binding = session.setup_and_characterize(target_root)
+        target_binding = session.setup_and_characterize(
+            target_root,
+            profile=FULL_ASSIGNMENT_PROFILE,
+            include_fingers=True,
+        )
         report.update(
             {
                 "sourceCharacter": source_binding.character,
@@ -367,6 +506,11 @@ def run_probe(
                 # direct SOURCE input is 3).
                 "controlRigInputAfterBake": input_type == 1,
             }
+        )
+        foot_drive = _verify_foot_effector_drive(target_binding.assignments, target_character)
+        report["ankleEffectorDrive"] = foot_drive
+        report["checks"]["bothAnkleEffectorsDriveCharacterizedAnkles"] = all(
+            bool(item.get("moved")) for item in foot_drive
         )
         if not all(report["checks"].values()):
             raise RuntimeError(f"Control Rig bake acceptance failed: {report['checks']}")
