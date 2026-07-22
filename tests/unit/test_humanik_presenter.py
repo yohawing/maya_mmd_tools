@@ -27,6 +27,7 @@ from mmd_tools.core.humanik_frontend import (
     REASON_IMPORT_BLOCKED_TARGET_PREVIEW,
     REASON_MODEL_IS_SOURCE,
     REASON_MODEL_REQUIRED,
+    REASON_NO_ACTIVE_CONTROL_RIG,
     REASON_NO_ACTIVE_PREVIEW,
     REASON_NO_SOURCE,
     REASON_NOT_CHARACTERIZED,
@@ -51,6 +52,7 @@ _ALL_REASON_CODES = {
     REASON_PROFILE_MISMATCH,
     REASON_MODEL_IS_SOURCE,
     REASON_NO_ACTIVE_PREVIEW,
+    REASON_NO_ACTIVE_CONTROL_RIG,
     REASON_ALREADY_CHARACTERIZED_OTHER_PROFILE,
     REASON_NOTHING_TO_RESTORE,
     REASON_MODEL_REQUIRED,
@@ -97,6 +99,7 @@ class _FakeActionsModule:
         self.scene_models = list(scene_models) if scene_models is not None else []
         self.dispatch_calls = []
         self.bake_calls = []
+        self.bake_control_rig_calls = []
         self.resolve_calls = 0
         self.connect_calls = []
         self.disconnect_calls = 0
@@ -113,6 +116,9 @@ class _FakeActionsModule:
 
     def bake_to_mmd_rig(self, start=None, end=None):
         self.bake_calls.append((start, end))
+
+    def bake_to_control_rig(self, start=None, end=None):
+        self.bake_control_rig_calls.append((start, end))
 
     def resolve_selected_model_root_for_display(self, *, cmds_module=None):
         self.resolve_calls += 1
@@ -166,6 +172,7 @@ def _make_mock_view():
             "refresh_btn",
             "create_control_rig_btn",
             "bake_btn",
+            "bake_execute_btn",
             "restore_btn",
             "diagnostics_btn",
             "character_combo",
@@ -173,6 +180,7 @@ def _make_mock_view():
         ],
     )
     view.bake_frame_range.return_value = (5, 25)
+    view.bake_destination.return_value = "mmd_rig"
     view.tr.side_effect = lambda key, category=None: key
     return view
 
@@ -263,13 +271,24 @@ class TestHumanIkPresenter(unittest.TestCase):
                 self.view.set_state.assert_called_once()
 
     def test_bake_button_passes_spinbox_range_without_touching_playback(self):
-        handler = _connected_handler(self.view.bake_btn.clicked)
+        handler = _connected_handler(self.view.bake_execute_btn.clicked)
 
         handler()
 
         self.assertEqual(self.cmds.edits, [])
         self.assertEqual(self.actions.bake_calls, [(5, 25)])
         self.assertEqual(self.actions.dispatch_calls, [])
+        self.view.set_state.assert_called_once()
+
+    def test_bake_button_dispatches_selected_control_rig_route(self):
+        self.view.bake_destination.return_value = "control_rig"
+        handler = _connected_handler(self.view.bake_execute_btn.clicked)
+
+        handler()
+
+        self.assertEqual(self.cmds.edits, [])
+        self.assertEqual(self.actions.bake_control_rig_calls, [(5, 25)])
+        self.assertEqual(self.actions.bake_calls, [])
         self.view.set_state.assert_called_once()
 
     def test_dispatch_exception_still_refreshes(self):
@@ -626,6 +645,8 @@ class TestHumanIkTabSetState(unittest.TestCase):
         fake._mode_text = HumanIkTab._mode_text.__get__(fake)
         fake.reason_text = HumanIkTab.reason_text.__get__(fake)
         fake._status_text = HumanIkTab._status_text.__get__(fake)
+        fake._selected_bake_destination = HumanIkTab._selected_bake_destination.__get__(fake)
+        fake._apply_bake_action_state = HumanIkTab._apply_bake_action_state.__get__(fake)
         return fake
 
     def test_orphaned_control_rigs_show_a_warning(self):
@@ -720,6 +741,34 @@ class TestHumanIkTabSetState(unittest.TestCase):
         restore_button = fake._action_buttons["restore_btn"]
         restore_button.setEnabled.assert_called_once_with(True)
         restore_button.setToolTip.assert_called_once_with("")
+
+    def test_bake_execute_gate_tracks_selected_destination(self):
+        fake = self._make_fake_tab()
+        fake.bake_to_control_rig_radio = Mock()
+        state = {
+            "mode": "target_preview",
+            "actions": {
+                "bake_to_control_rig": _action_blocked(REASON_NO_ACTIVE_CONTROL_RIG),
+                "bake_to_mmd_rig": _action_allowed(),
+            },
+            "restoreHint": {"orphanedControlRigs": []},
+        }
+        button = fake._action_buttons["bake_btn"]
+
+        fake.bake_to_control_rig_radio.isChecked.return_value = False
+        HumanIkTab.set_state(fake, state)
+        button.setEnabled.assert_called_with(True)
+        button.setToolTip.assert_called_with("")
+
+        button.reset_mock()
+        fake.bake_to_control_rig_radio.isChecked.return_value = True
+        HumanIkTab.set_state(fake, state)
+        button.setEnabled.assert_called_with(False)
+        button.setToolTip.assert_called_with(
+            UITranslator.instance().translate(
+                "humanik_reason_no_active_control_rig", "messages"
+            )
+        )
 
 
 if __name__ == "__main__":

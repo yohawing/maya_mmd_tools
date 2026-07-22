@@ -16,8 +16,9 @@ Control Rig/Bake/Restore-Diagnostics action buttons. This presenter owns:
   user last clicked -- a failed/cancelled connect or disconnect must show up
   as the combo snapping back to the real state;
 * dispatching the Source combo's change to ``connect_retarget``/
-  ``disconnect_retarget``, and the four remaining action buttons to
-  ``humanik_menu_actions`` functions, exactly as before.
+  ``disconnect_retarget``, and the remaining action buttons to
+  ``humanik_menu_actions`` functions. Bake uses one Execute button and
+  dispatches the selected destination with the explicit frame range.
 
 This presenter still does not reimplement model resolution UX, confirmation
 dialogs, or error reporting -- all of that lives in the menu action layer
@@ -76,7 +77,11 @@ class HumanIkPresenter:
             if button is not None:
                 button.clicked.connect(self._make_dispatcher(action_name))
 
-        bake_btn = getattr(self.view, "bake_btn", None)
+        bake_btn = getattr(self.view, "bake_execute_btn", None)
+        if bake_btn is None:
+            # Compatibility with older view doubles and integrations that
+            # still expose the pre-destination ``bake_btn`` name.
+            bake_btn = getattr(self.view, "bake_btn", None)
         if bake_btn is not None:
             bake_btn.clicked.connect(self._on_bake_clicked)
 
@@ -106,15 +111,24 @@ class HumanIkPresenter:
             self.refresh()
 
     def _on_bake_clicked(self, *_args):
-        # The SpinBox values are passed to the menu action explicitly; the
-        # user's playback range is never modified as a side effect of baking.
+        # The SpinBox values are passed to the selected menu action
+        # explicitly; the user's playback range is never modified as a side
+        # effect of baking.
         start, end = self.view.bake_frame_range()
+        destination_getter = getattr(self.view, "bake_destination", None)
+        destination = destination_getter() if callable(destination_getter) else "mmd_rig"
+        action = getattr(self._actions, "bake_to_mmd_rig", None)
+        if destination == "control_rig":
+            action = getattr(self._actions, "bake_to_control_rig", None)
         try:
-            self._actions.bake_to_mmd_rig(int(start), int(end))
+            if action is not None:
+                action(int(start), int(end))
         except Exception:
             # Same safety net as ``_dispatch``: the menu action layer already
             # reports failures to the user.
-            logger.debug("HumanIK tab bake dispatch raised", exc_info=True)
+            logger.debug(
+                "HumanIK tab bake dispatch for '%s' raised", destination, exc_info=True
+            )
         finally:
             self.refresh()
 

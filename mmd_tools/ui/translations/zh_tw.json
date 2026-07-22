@@ -55,6 +55,7 @@
     "delete_key": "刪除關鍵幀",
     "humanik_create_control_rig": "建立 Control Rig",
     "humanik_bake": "烘焙到 MMD Rig",
+    "humanik_bake_execute": "執行烘焙",
     "humanik_restore": "還原 MMD Rig",
     "humanik_diagnostics": "診斷"
   },
@@ -99,6 +100,9 @@
     "humanik_source": "SOURCE:",
     "humanik_bake_start": "起始:",
     "humanik_bake_end": "結束:",
+    "humanik_bake_section": "烘焙",
+    "humanik_bake_to_control_rig": "烘焙到 Control Rig",
+    "humanik_bake_to_mmd_rig": "烘焙到 MMD Rig",
     "humanik_none": "(無)"
   },
   "tooltips": {
@@ -187,6 +191,7 @@
     "humanik_reason_profile_mismatch": "SOURCE/TARGET 的指派設定檔不一致。請先Restore兩個模型再重新連線，使兩者採用相同（預設：full）的設定檔。",
     "humanik_reason_model_is_source": "此模型目前作為 SOURCE 使用，無法執行此操作。",
     "humanik_reason_no_active_preview": "必須處於啟用中的 Target 預覽狀態。",
+    "humanik_reason_no_active_control_rig": "需要啟用中的目標 Control Rig。",
     "humanik_reason_already_characterized_other_profile": "已使用不同的設定檔角色化。",
     "humanik_reason_nothing_to_restore": "沒有可還原的內容。",
     "humanik_reason_model_required": "請在 Maya 場景中選取模型。",

@@ -55,6 +55,7 @@
     "delete_key": "キー削除",
     "humanik_create_control_rig": "Control Rig作成",
     "humanik_bake": "MMD Rigへベイク",
+    "humanik_bake_execute": "ベイクを実行",
     "humanik_restore": "MMD Rigを復元",
     "humanik_diagnostics": "診断"
   },
@@ -99,6 +100,9 @@
     "humanik_source": "SOURCE:",
     "humanik_bake_start": "開始:",
     "humanik_bake_end": "終了:",
+    "humanik_bake_section": "ベイク",
+    "humanik_bake_to_control_rig": "Control Rigへベイク",
+    "humanik_bake_to_mmd_rig": "MMD Rigへベイク",
     "humanik_none": "(なし)"
   },
   "tooltips": {
@@ -246,6 +250,7 @@
     "humanik_reason_profile_mismatch": "SOURCE/TARGETのアサインプロファイルが一致していません。両モデルをRestoreしてから接続し直すと、同じ（既定はfull）プロファイルで揃います。",
     "humanik_reason_model_is_source": "このモデルは現在SOURCEとして使用中のため実行できません。",
     "humanik_reason_no_active_preview": "ターゲットプレビューがアクティブである必要があります。",
+    "humanik_reason_no_active_control_rig": "アクティブなターゲットControl Rigが必要です。",
     "humanik_reason_already_characterized_other_profile": "別のプロファイルで既にキャラクタライズ済みです。",
     "humanik_reason_nothing_to_restore": "復元対象がありません。",
     "humanik_reason_model_required": "Mayaシーンでモデルを選択してください。",

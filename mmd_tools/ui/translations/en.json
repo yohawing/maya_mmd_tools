@@ -55,6 +55,7 @@
     "delete_key": "Delete Key",
     "humanik_create_control_rig": "Create Control Rig",
     "humanik_bake": "Bake to MMD Rig",
+    "humanik_bake_execute": "Execute Bake",
     "humanik_restore": "Restore MMD Rig",
     "humanik_diagnostics": "Diagnostics"
   },
@@ -99,6 +100,9 @@
     "humanik_source": "SOURCE:",
     "humanik_bake_start": "Start:",
     "humanik_bake_end": "End:",
+    "humanik_bake_section": "Bake",
+    "humanik_bake_to_control_rig": "Bake to Control Rig",
+    "humanik_bake_to_mmd_rig": "Bake to MMD Rig",
     "humanik_none": "(none)"
   },
   "tooltips": {
@@ -246,6 +250,7 @@
     "humanik_reason_profile_mismatch": "SOURCE/TARGET assignment profiles do not match. Restore both models and reconnect them so they characterize with the same (default: full) profile.",
     "humanik_reason_model_is_source": "This model is the active SOURCE and cannot be used here.",
     "humanik_reason_no_active_preview": "A target preview must be active.",
+    "humanik_reason_no_active_control_rig": "An active target Control Rig is required.",
     "humanik_reason_already_characterized_other_profile": "Already characterized with a different profile.",
     "humanik_reason_nothing_to_restore": "There is nothing to restore.",
     "humanik_reason_model_required": "Select a model in the Maya scene.",

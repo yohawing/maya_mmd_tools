@@ -27,6 +27,7 @@ from ..combo_box_utils import configure_model_combo_width
 from ..qt_compat import (
     QComboBox,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -34,6 +35,11 @@ from ..qt_compat import (
     QSpinBox,
     QVBoxLayout,
 )
+
+try:  # ``qt_compat`` intentionally exposes only the shared widget surface.
+    from PySide6.QtWidgets import QRadioButton
+except ImportError:  # pragma: no cover - exercised only on Maya/PySide2.
+    from PySide2.QtWidgets import QRadioButton
 from ..base_tab import BaseTab
 from .translation_registry import apply_translation_registry
 
@@ -44,7 +50,7 @@ from .translation_registry import apply_translation_registry
 # Character/Source combos, see the module docstring).
 _ACTION_BUTTON_SPECS = (
     ("create_control_rig_btn", "humanik_create_control_rig"),
-    ("bake_btn", "humanik_bake"),
+    ("bake_btn", "humanik_bake_execute"),
     ("restore_btn", "humanik_restore"),
     ("diagnostics_btn", "humanik_diagnostics"),
 )
@@ -60,6 +66,11 @@ ACTION_KEY_TO_BUTTON = {
     "diagnostics": "diagnostics_btn",
 }
 
+BAKE_DESTINATION_ACTIONS = {
+    "mmd_rig": "bake_to_mmd_rig",
+    "control_rig": "bake_to_control_rig",
+}
+
 # reasonCode (from mmd_tools.core.humanik_frontend) -> translation key for the
 # user-facing disabled-button explanation. Kept in the View so the reasonCode
 # enum stays the single source of truth on the backend and this file is the
@@ -72,6 +83,7 @@ REASON_CODE_TRANSLATION_KEYS = {
     "profile_mismatch": "humanik_reason_profile_mismatch",
     "model_is_source": "humanik_reason_model_is_source",
     "no_active_preview": "humanik_reason_no_active_preview",
+    "no_active_control_rig": "humanik_reason_no_active_control_rig",
     "already_characterized_other_profile": "humanik_reason_already_characterized_other_profile",
     "nothing_to_restore": "humanik_reason_nothing_to_restore",
     "model_required": "humanik_reason_model_required",
@@ -102,6 +114,19 @@ class HumanIkTab(BaseTab):
         ("source_combo", "setToolTip", "humanik_source_tooltip", "messages"),
         ("bake_start_label", "setText", "humanik_bake_start", "labels"),
         ("bake_end_label", "setText", "humanik_bake_end", "labels"),
+        ("bake_section_label", "setText", "humanik_bake_section", "labels"),
+        (
+            "bake_to_control_rig_radio",
+            "setText",
+            "humanik_bake_to_control_rig",
+            "labels",
+        ),
+        (
+            "bake_to_mmd_rig_radio",
+            "setText",
+            "humanik_bake_to_mmd_rig",
+            "labels",
+        ),
         ("refresh_btn", "setText", "refresh", "buttons"),
         ("experimental_notice_label", "setText", "humanik_experimental_notice", "messages"),
         ("restore_explanation_label", "setText", "humanik_restore_explanation", "messages"),
@@ -114,6 +139,7 @@ class HumanIkTab(BaseTab):
         self._reason_labels = {}
         self._last_mode = "neutral"
         self._last_control_rig_count = 0
+        self._last_state = {}
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
@@ -243,24 +269,58 @@ class HumanIkTab(BaseTab):
         ``QGroupBox`` sections (Control Rig / Bake / Restore-Diagnostics) --
         there was nothing to actually collapse in practice, so the buttons
         are added directly to ``main_layout`` instead: Create Control Rig,
-        then the Bake frame-range row followed by Bake to MMD Rig, then
+        then the Bake destination/range section followed by one Execute Bake
+        button, then
         Restore MMD Rig plus its explanation text, then Diagnostics.
         """
         self._add_action_row(main_layout, "create_control_rig_btn", "humanik_create_control_rig")
+
+        bake_section = QGroupBox()
+        bake_section.setObjectName("HumanIkBakeSection")
+        self.bake_section = bake_section
+        bake_section_layout = QVBoxLayout(bake_section)
+        self.bake_section_label = QLabel(self.tr("humanik_bake_section", "labels"))
+        self.bake_section_label.setStyleSheet("font-weight: bold;")
+        bake_section_layout.addWidget(self.bake_section_label)
 
         bake_row = QHBoxLayout()
         self.bake_start_label = QLabel(self.tr("humanik_bake_start", "labels"))
         self.bake_start_spin = QSpinBox()
         self.bake_start_spin.setRange(-1_000_000, 1_000_000)
+        self.bake_start_spin.setSuffix(" F")
         self.bake_end_label = QLabel(self.tr("humanik_bake_end", "labels"))
         self.bake_end_spin = QSpinBox()
         self.bake_end_spin.setRange(-1_000_000, 1_000_000)
+        self.bake_end_spin.setSuffix(" F")
         bake_row.addWidget(self.bake_start_label)
         bake_row.addWidget(self.bake_start_spin)
         bake_row.addWidget(self.bake_end_label)
         bake_row.addWidget(self.bake_end_spin)
-        main_layout.addLayout(bake_row)
-        self._add_action_row(main_layout, "bake_btn", "humanik_bake")
+        bake_section_layout.addLayout(bake_row)
+
+        destination_row = QHBoxLayout()
+        self.bake_to_control_rig_radio = QRadioButton(
+            self.tr("humanik_bake_to_control_rig", "labels")
+        )
+        self.bake_to_control_rig_radio.setObjectName("BakeToControlRig")
+        self.bake_to_mmd_rig_radio = QRadioButton(
+            self.tr("humanik_bake_to_mmd_rig", "labels")
+        )
+        self.bake_to_mmd_rig_radio.setObjectName("BakeToMmdRig")
+        # QRadioButtons sharing a parent are mutually exclusive.  Keep MMD
+        # as the safe/default destination, matching the existing Bake action.
+        self.bake_to_mmd_rig_radio.setChecked(True)
+        self.bake_to_control_rig_radio.toggled.connect(self._on_bake_destination_toggled)
+        self.bake_to_mmd_rig_radio.toggled.connect(self._on_bake_destination_toggled)
+        destination_row.addWidget(self.bake_to_control_rig_radio)
+        destination_row.addWidget(self.bake_to_mmd_rig_radio)
+        destination_row.addStretch()
+        bake_section_layout.addLayout(destination_row)
+        self._add_action_row(bake_section_layout, "bake_btn", "humanik_bake_execute")
+        # ``bake_btn`` remains the compatibility name used by older callers;
+        # the explicit name makes the single Execute action discoverable.
+        self.bake_execute_btn = self.bake_btn
+        main_layout.addWidget(bake_section)
 
         self._add_action_row(main_layout, "restore_btn", "humanik_restore")
         self.restore_explanation_label = QLabel(self.tr("humanik_restore_explanation", "messages"))
@@ -323,6 +383,7 @@ class HumanIkTab(BaseTab):
     def set_state(self, state):
         """Render a ``describe_frontend_state()`` snapshot (or ``{}``) onto the tab."""
         state = state or {}
+        self._last_state = state
         mode = state.get("mode", "neutral")
         control_rigs = state.get("controlRigs") or []
         self._last_mode = mode
@@ -355,6 +416,10 @@ class HumanIkTab(BaseTab):
 
         actions = state.get("actions") or {}
         for action_key, attr in ACTION_KEY_TO_BUTTON.items():
+            # Bake destinations share one Execute button.  Render that button
+            # once below from whichever destination is currently selected.
+            if action_key in BAKE_DESTINATION_ACTIONS.values():
+                continue
             button = self._action_buttons.get(attr)
             reason_label = self._reason_labels.get(attr)
             if button is None:
@@ -367,6 +432,44 @@ class HumanIkTab(BaseTab):
                 reason_label.setText(reason_text)
                 reason_label.setVisible(bool(reason_text))
             button.setToolTip(reason_text)
+        self._apply_bake_action_state(actions)
+
+    def _selected_bake_destination(self):
+        """Return the stable destination identifier selected in the Bake UI."""
+        radio = getattr(self, "bake_to_control_rig_radio", None)
+        if radio is not None and radio.isChecked():
+            return "control_rig"
+        return "mmd_rig"
+
+    def bake_destination(self):
+        """Return the selected bake destination for presenter dispatch."""
+        return self._selected_bake_destination()
+
+    def _on_bake_destination_toggled(self, checked):
+        # ``toggled(False)`` is emitted for the destination being deselected;
+        # only the newly selected route needs to update the Execute gate.
+        if checked:
+            self._apply_bake_action_state((self._last_state or {}).get("actions") or {})
+
+    def _apply_bake_action_state(self, actions):
+        """Gate Execute Bake and show the selected route's reason text."""
+        action_key = BAKE_DESTINATION_ACTIONS[self._selected_bake_destination()]
+        action_state = actions.get(action_key) or {}
+        allowed = bool(action_state.get("allowed", True))
+        button = getattr(self, "bake_execute_btn", None) or self._action_buttons.get("bake_btn")
+        if button is None:
+            return
+        reason_label = self._reason_labels.get("bake_btn")
+        button.setEnabled(allowed)
+        reason_text = ""
+        if not allowed:
+            reason_text = self.reason_text(action_state.get("reasonCode"))
+            if not reason_text or reason_text == str(action_state.get("reasonCode")):
+                reason_text = str(action_state.get("reasonText") or reason_text)
+        if reason_label is not None:
+            reason_label.setText(reason_text)
+            reason_label.setVisible(bool(reason_text))
+        button.setToolTip(reason_text)
 
     # -- Character/Source combo rendering --------------------------------
 
