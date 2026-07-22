@@ -170,6 +170,38 @@ class TestHumanIkPreview(unittest.TestCase):
             )
         self.assertEqual(cmds.connections[destination], [f"{node}.outputRotate[0]"])
 
+    def test_control_rig_preisolated_foot_feedback_is_allowed_without_writer(self):
+        cmds, mel = FakeCmds(), FakeMel()
+        node = "|left_leg_ik_mmdCcdIk"
+        report = {
+            "rows": [{
+                "node": node,
+                "nodeType": "mmdCcdIk",
+                "classification": "manual",
+                "reads": ["|model|left_leg_ik.translate"],
+                "writes": [],
+            }],
+        }
+
+        with patch(
+            "mmd_tools.core.humanik_preview.classify_humanik_constraints",
+            return_value=report,
+        ):
+            preview = begin_humanik_target_preview(
+                "owner:target",
+                "Target",
+                "Source",
+                report,
+                {"|model|left_leg"},
+                cmds,
+                mel,
+                preisolated_feedback_nodes=(node,),
+            )
+
+        self.assertTrue(preview.active)
+        self.assertEqual([row["node"] for row in preview.isolated_feedback_rows], [node])
+        stop_humanik_target_preview(preview, cmds, mel)
+
     def test_begin_mutes_writer_then_stop_restores_neutral(self):
         cmds, mel = FakeCmds(), FakeMel()
         report = {

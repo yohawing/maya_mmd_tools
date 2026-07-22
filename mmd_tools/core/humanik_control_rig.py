@@ -49,6 +49,7 @@ from mmd_tools.core.humanik_builder import create_humanik_control_rig, ensure_hu
 from mmd_tools.core.humanik_constraints import (
     BLOCKING_CLASSIFICATIONS,
     collect_hik_ownership_report,
+    is_supported_mmd_ccdik_feedback_row,
     split_ownership_rows,
 )
 from mmd_tools.core.humanik_preview import (
@@ -86,6 +87,7 @@ class HumanIkControlRigTransaction:
     disconnected: List[Dict[str, str]]
     retained_nodes: List[str]
     created_nodes: List[str]
+    isolated_feedback_nodes: List[str] = field(default_factory=list)
     pre_cycle_baseline: List[str] = field(default_factory=list)
     post_cycle_plugs: List[str] = field(default_factory=list)
     active: bool = True
@@ -98,6 +100,7 @@ class HumanIkControlRigTransaction:
             "disconnected": list(self.disconnected),
             "retainedNodes": list(self.retained_nodes),
             "createdNodes": list(self.created_nodes),
+            "isolatedFeedbackNodes": list(self.isolated_feedback_nodes),
             "preCycleBaseline": list(self.pre_cycle_baseline),
             "postCyclePlugs": list(self.post_cycle_plugs),
             "active": self.active,
@@ -113,6 +116,7 @@ class HumanIkControlRigTransaction:
             "disconnected": list(self.disconnected),
             "retainedNodes": list(self.retained_nodes),
             "createdNodes": list(self.created_nodes),
+            "isolatedFeedbackNodes": list(self.isolated_feedback_nodes),
             "preCycleBaseline": list(self.pre_cycle_baseline),
             "postCyclePlugs": list(self.post_cycle_plugs),
             "active": bool(self.active),
@@ -143,6 +147,7 @@ class HumanIkControlRigTransaction:
             disconnected=[dict(item) for item in disconnected],
             retained_nodes=_string_list("retainedNodes"),
             created_nodes=_string_list("createdNodes"),
+            isolated_feedback_nodes=_string_list("isolatedFeedbackNodes"),
             pre_cycle_baseline=_string_list("preCycleBaseline"),
             post_cycle_plugs=_string_list("postCyclePlugs"),
             active=bool(row.get("active", True)),
@@ -237,6 +242,7 @@ def begin_humanik_control_rig(
     hik_joints: Iterable[str],
     cmds_module=None,
     mel_module=None,
+    assignments: Optional[Iterable[Any]] = None,
 ) -> HumanIkControlRigTransaction:
     """Create a Control Rig with MMD writer isolation and DG-cycle gating.
 
@@ -257,6 +263,9 @@ def begin_humanik_control_rig(
         hik_joints: The character's HIK-assigned primary joints (long paths).
         cmds_module: Optional Maya ``cmds`` compatible module for tests.
         mel_module: Optional Maya ``mel`` compatible module for tests.
+        assignments: Optional HIK slot assignments used to recognize the
+            narrowly supported importer-created leg/toe ``mmdCcdIk`` graph.
+            Without assignments, feedback blockers remain fail-closed.
 
     Returns:
         The active :class:`HumanIkControlRigTransaction`.
@@ -275,12 +284,20 @@ def begin_humanik_control_rig(
 
     ownership_report = collect_hik_ownership_report(hik_joint_set, cmds_module=cmds)
     blockers, mute_rows, retained_nodes = split_ownership_rows(ownership_report)
+    supported_feedback = [
+        row
+        for row in ownership_report.get("rows", [])
+        if is_supported_mmd_ccdik_feedback_row(row, assignments or ())
+    ]
+    blockers = [row for row in blockers if row not in supported_feedback]
     if blockers:
         labels = ", ".join(f"{row['node']}:{row['classification']}" for row in blockers)
         raise RuntimeError(f"HumanIK Control Rig creation blocked: {labels}")
 
-    destinations = sorted({plug for row in mute_rows for plug in row.get("writes", [])})
+    isolated_rows = [*mute_rows, *supported_feedback]
+    destinations = sorted({plug for row in isolated_rows for plug in row.get("writes", [])})
     muted_nodes = sorted({row["node"] for row in mute_rows})
+    feedback_nodes = sorted({row["node"] for row in supported_feedback})
 
     restore_state = capture_humanik_restore_state(
         ownership_id,
@@ -294,7 +311,7 @@ def begin_humanik_control_rig(
     created_nodes: List[str] = []
     pre_cycle_baseline: List[str] = []
     try:
-        disconnect_reviewed_writers(cmds, mute_rows, disconnected)
+        disconnect_reviewed_writers(cmds, isolated_rows, disconnected)
 
         pre_cycle_baseline = detect_dg_cycles(cmds)
 
@@ -306,10 +323,11 @@ def begin_humanik_control_rig(
         re_isolate_reviewed_edges(cmds, disconnected)
 
         post_report = collect_hik_ownership_report(hik_joint_set, cmds_module=cmds)
+        isolated_nodes = set(muted_nodes) | set(feedback_nodes)
         residual_muted_writers = [
             row
             for row in post_report["rows"]
-            if row["node"] in muted_nodes and row_hik_writes(row, hik_joint_set)
+            if row["node"] in isolated_nodes and row_hik_writes(row, hik_joint_set)
         ]
         if residual_muted_writers:
             labels = ", ".join(
@@ -324,6 +342,7 @@ def begin_humanik_control_rig(
         post_blockers = [
             row for row in post_report["rows"]
             if row["node"] not in muted_nodes
+            and row["node"] not in feedback_nodes
             and row["classification"] in BLOCKING_CLASSIFICATIONS
         ]
         if post_blockers:
@@ -354,6 +373,7 @@ def begin_humanik_control_rig(
         disconnected=sorted(disconnected, key=lambda row: (row["destination"], row["source"])),
         retained_nodes=retained_nodes,
         created_nodes=created_nodes,
+        isolated_feedback_nodes=feedback_nodes,
         pre_cycle_baseline=pre_cycle_baseline,
         post_cycle_plugs=post_cycle_plugs,
     )

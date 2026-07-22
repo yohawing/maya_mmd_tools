@@ -204,6 +204,114 @@ class TestBeginHumanIkControlRig(unittest.TestCase):
         self.assertEqual(cmds.connections["|hips.rotateX"], ["ik.outputRotateX"])
         self.assertEqual(cmds.disconnects, [])
 
+    def test_supported_importer_foot_feedback_is_isolated_and_restored(self):
+        cmds, mel = FakeCmds(extra_nodes={"left_leg_ik_mmdCcdIk"}), FakeMel()
+        source = "left_leg_ik_mmdCcdIk.outputRotate[0]"
+        cmds.connections["|hips.rotateX"] = [source]
+        safe_row = {
+            "node": "left_leg_ik_mmdCcdIk",
+            "nodeType": "mmdCcdIk",
+            "classification": "feedback_blocker",
+            "reads": ["|left_leg.translate", "|left_leg_ik.translate"],
+            "readHikJoints": ["|left_leg"],
+            "readOutsideJoints": ["|left_leg_ik"],
+            "writes": ["|hips.rotateX"],
+        }
+        clean_post = {
+            "rows": [
+                {
+                    "node": "left_leg_ik_mmdCcdIk",
+                    "classification": "manual",
+                    "writes": [],
+                }
+            ]
+        }
+
+        def fake_create(character, mel_module=None):
+            self.assertEqual(cmds.connections["|hips.rotateX"], [])
+            mel.has_control_rig = True
+            return True
+
+        with _patch_classify({"rows": [safe_row]}, clean_post), patch(
+            "mmd_tools.core.humanik_control_rig.create_humanik_control_rig",
+            side_effect=fake_create,
+        ):
+            transaction = begin_humanik_control_rig(
+                "owner:rig",
+                "Character",
+                {"|hips"},
+                cmds,
+                mel,
+                assignments=[{"joint": "|hips", "hikBone": "LeftUpLeg"}],
+            )
+
+        self.assertEqual(cmds.connections["|hips.rotateX"], [])
+        self.assertEqual(
+            transaction.disconnected,
+            [{"source": source, "destination": "|hips.rotateX"}],
+        )
+        self.assertEqual(transaction.isolated_feedback_nodes, ["left_leg_ik_mmdCcdIk"])
+        stop_humanik_control_rig(transaction, cmds, mel)
+        self.assertEqual(cmds.connections["|hips.rotateX"], [source])
+
+    def test_importer_foot_feedback_without_assignments_remains_blocked(self):
+        cmds, mel = FakeCmds(), FakeMel()
+        safe_shape_without_context = {
+            "node": "left_leg_ik_mmdCcdIk",
+            "nodeType": "mmdCcdIk",
+            "classification": "feedback_blocker",
+            "reads": ["|left_leg.translate", "|left_leg_ik.translate"],
+            "readHikJoints": ["|left_leg"],
+            "readOutsideJoints": ["|left_leg_ik"],
+            "writes": ["|hips.rotateX"],
+        }
+
+        with _patch_classify({"rows": [safe_shape_without_context]}), patch(
+            "mmd_tools.core.humanik_control_rig.create_humanik_control_rig"
+        ) as create:
+            with self.assertRaisesRegex(RuntimeError, "blocked"):
+                begin_humanik_control_rig("owner:rig", "Character", {"|hips"}, cmds, mel)
+            create.assert_not_called()
+
+    def test_supported_foot_feedback_new_writer_after_create_rolls_back(self):
+        cmds, mel = FakeCmds(extra_nodes={"left_leg_ik_mmdCcdIk", "|left_foot"}), FakeMel()
+        source = "left_leg_ik_mmdCcdIk.outputRotate[0]"
+        cmds.connections["|hips.rotateX"] = [source]
+        safe_row = {
+            "node": "left_leg_ik_mmdCcdIk",
+            "nodeType": "mmdCcdIk",
+            "classification": "feedback_blocker",
+            "reads": ["|left_leg.translate", "|left_leg_ik.translate"],
+            "readHikJoints": ["|left_leg"],
+            "readOutsideJoints": ["|left_leg_ik"],
+            "writes": ["|hips.rotateX"],
+        }
+        residual_row = {
+            **safe_row,
+            "writes": ["|left_foot.rotateX"],
+            "writeHikJoints": ["|left_foot"],
+        }
+
+        def fake_create(character, mel_module=None):
+            mel.has_control_rig = True
+            cmds.connections["|left_foot.rotateX"] = [source]
+
+        with _patch_classify({"rows": [safe_row]}, {"rows": [residual_row]}), patch(
+            "mmd_tools.core.humanik_control_rig.create_humanik_control_rig",
+            side_effect=fake_create,
+        ), self.assertRaisesRegex(RuntimeError, "residual muted HIK writers"):
+            begin_humanik_control_rig(
+                "owner:rig",
+                "Character",
+                {"|hips", "|left_foot"},
+                cmds,
+                mel,
+                assignments=[{"joint": "|hips", "hikBone": "LeftUpLeg"}],
+            )
+
+        self.assertEqual(cmds.connections["|hips.rotateX"], [source])
+        self.assertEqual(cmds.connections["|left_foot.rotateX"], [])
+
     def test_isolates_writer_before_create_and_keeps_it_disconnected(self):
         cmds, mel = FakeCmds(), FakeMel()
         observed = {}

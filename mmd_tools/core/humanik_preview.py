@@ -27,6 +27,7 @@ from mmd_tools.core.humanik_constraints import (
     BLOCKING_CLASSIFICATIONS,
     classify_humanik_constraints,
     collect_humanik_constraint_facts,
+    is_preisolated_mmd_ccdik_feedback_row,
     is_supported_mmd_ccdik_feedback_row,
     split_ownership_rows,
 )
@@ -87,6 +88,7 @@ def begin_humanik_target_preview(
     cmds_module=None,
     mel_module=None,
     assignments: Optional[Iterable[Any]] = None,
+    preisolated_feedback_nodes: Optional[Iterable[str]] = None,
 ) -> HumanIkTargetPreview:
     """Start TARGET preview after rejecting all unresolved ownership rows.
 
@@ -102,7 +104,17 @@ def begin_humanik_target_preview(
         for row in ownership_report.get("rows", [])
         if is_supported_mmd_ccdik_feedback_row(row, assignments or ())
     ]
-    blockers = [row for row in blockers if row not in supported_feedback]
+    preisolated_nodes = tuple(str(node) for node in (preisolated_feedback_nodes or ()))
+    preisolated_feedback = [
+        row
+        for row in ownership_report.get("rows", [])
+        if is_preisolated_mmd_ccdik_feedback_row(row, preisolated_nodes)
+    ]
+    blockers = [
+        row
+        for row in blockers
+        if row not in supported_feedback and row not in preisolated_feedback
+    ]
     if blockers:
         labels = ", ".join(f"{row['node']}:{row['classification']}" for row in blockers)
         raise RuntimeError(f"HumanIK TARGET preview blocked: {labels}")
@@ -110,7 +122,9 @@ def begin_humanik_target_preview(
     isolated_rows = [*mute_rows, *supported_feedback]
     destinations = sorted({plug for row in isolated_rows for plug in row.get("writes", [])})
     muted_nodes = sorted({row["node"] for row in mute_rows})
-    feedback_nodes = sorted({row["node"] for row in supported_feedback})
+    feedback_nodes = sorted(
+        {row["node"] for row in [*supported_feedback, *preisolated_feedback]}
+    )
     hik_joint_set = {str(joint) for joint in hik_joints}
     restore_state = capture_humanik_restore_state(
         ownership_id,
@@ -157,10 +171,11 @@ def begin_humanik_target_preview(
             collect_humanik_constraint_facts(cmds_module=cmds),
             hik_joint_set,
         )
+        isolated_nodes = set(muted_nodes) | set(feedback_nodes)
         residual_muted_writers = [
             row
             for row in post_report["rows"]
-            if row["node"] in muted_nodes and row_hik_writes(row, hik_joint_set)
+            if row["node"] in isolated_nodes and row_hik_writes(row, hik_joint_set)
         ]
         if residual_muted_writers:
             labels = ", ".join(
@@ -216,7 +231,9 @@ def begin_humanik_target_preview(
         disconnected=sorted(disconnected, key=lambda row: (row["destination"], row["source"])),
         retained_nodes=retained_nodes,
         post_report=post_report,
-        isolated_feedback_rows=[dict(row) for row in supported_feedback],
+        isolated_feedback_rows=[
+            dict(row) for row in [*supported_feedback, *preisolated_feedback]
+        ],
         finger_solving_previous=finger_solving_previous,
         left_elbow_kill_pitch_previous=left_elbow_kill_pitch_previous,
     )

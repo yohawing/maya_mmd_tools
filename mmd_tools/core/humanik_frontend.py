@@ -22,6 +22,7 @@ from mmd_tools.core.humanik_builder import (
 from mmd_tools.core.humanik_constraints import (
     BLOCKING_CLASSIFICATIONS,
     collect_hik_ownership_report,
+    is_preisolated_mmd_ccdik_feedback_row,
     is_supported_mmd_ccdik_feedback_row,
 )
 from mmd_tools.core.humanik_control_rig import (
@@ -773,12 +774,21 @@ class HumanIkFrontendSession:
             source_character = source.character
         target_joints = tuple(assignment.joint for assignment in target.assignments)
         report = collect_hik_ownership_report(target_joints, cmds_module=self._cmds)
+        transaction = self._control_rig_transactions.get(key)
+        preisolated_feedback_nodes = (
+            transaction.isolated_feedback_nodes
+            if transaction is not None and transaction.active
+            else ()
+        )
         self._target_model_root = key
         self._ownership_report = report
         blockers = [
             row for row in report.get("rows", [])
             if row.get("classification") in BLOCKING_CLASSIFICATIONS
             and not is_supported_mmd_ccdik_feedback_row(row, target.assignments)
+            and not is_preisolated_mmd_ccdik_feedback_row(
+                row, preisolated_feedback_nodes
+            )
         ]
         if blockers:
             labels = ", ".join(f"{row['node']}:{row['classification']}" for row in blockers)
@@ -792,6 +802,7 @@ class HumanIkFrontendSession:
             cmds_module=self._cmds,
             mel_module=self._mel,
             assignments=target.assignments,
+            preisolated_feedback_nodes=preisolated_feedback_nodes,
         )
         self._target_model_root = key
         self._preview = preview
@@ -840,6 +851,7 @@ class HumanIkFrontendSession:
             joints,
             cmds_module=self._cmds,
             mel_module=self._mel,
+            assignments=binding.assignments,
         )
         self._control_rig_transactions[key] = transaction
         binding.control_rig_created = True
@@ -1216,10 +1228,19 @@ class HumanIkFrontendSession:
         )
         target_joints = tuple(row["joint"] for row in model_report["assignments"])
         ownership = collect_hik_ownership_report(target_joints, cmds_module=self._cmds)
+        transaction = self._control_rig_transactions.get(key)
+        preisolated_feedback_nodes = (
+            transaction.isolated_feedback_nodes
+            if transaction is not None and transaction.active
+            else ()
+        )
         blockers = [
             row for row in ownership.get("rows", [])
             if row.get("classification") in BLOCKING_CLASSIFICATIONS
             and not is_supported_mmd_ccdik_feedback_row(row, model_report["assignments"])
+            and not is_preisolated_mmd_ccdik_feedback_row(
+                row, preisolated_feedback_nodes
+            )
         ]
         automatic_stance = dict(model_report.get("automaticStance", {}))
         automatic_stance["ownership"] = {
@@ -1268,12 +1289,25 @@ class HumanIkFrontendSession:
         source = self._bindings.get(self._source_model_root) if self._source_model_root else None
         target = self._bindings.get(self._target_model_root) if self._target_model_root else None
         ownership_rows = (self._ownership_report or {}).get("rows", [])
+        transaction = (
+            self._control_rig_transactions.get(self._target_model_root)
+            if self._target_model_root is not None
+            else None
+        )
+        preisolated_feedback_nodes = (
+            transaction.isolated_feedback_nodes
+            if transaction is not None and transaction.active
+            else ()
+        )
         blockers = [
             row for row in ownership_rows
             if row.get("classification") in BLOCKING_CLASSIFICATIONS
             and not is_supported_mmd_ccdik_feedback_row(
                 row,
                 target.assignments if target is not None else (),
+            )
+            and not is_preisolated_mmd_ccdik_feedback_row(
+                row, preisolated_feedback_nodes
             )
         ]
         ownership_counts = (self._ownership_report or {}).get("counts", {})

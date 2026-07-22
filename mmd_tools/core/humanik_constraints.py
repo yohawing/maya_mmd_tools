@@ -101,6 +101,26 @@ def is_supported_mmd_ccdik_feedback_row(
     return bool(write_slots) and write_slots.issubset(allowed)
 
 
+def is_preisolated_mmd_ccdik_feedback_row(
+    row: Dict[str, Any],
+    isolated_nodes: Iterable[str],
+) -> bool:
+    """Return whether an active owner already isolated a reviewed foot IK node.
+
+    Once a Control Rig transaction disconnects the exact writer edges from a
+    supported importer foot ``mmdCcdIk``, the ownership classifier sees the
+    still-readable node as ``manual`` rather than ``feedback_blocker``.  Only
+    an active transaction's recorded node list may authorize that no-writer
+    shape; a reconnected writer immediately stops matching and fails closed.
+    """
+    return (
+        row.get("classification") == "manual"
+        and row.get("nodeType") == "mmdCcdIk"
+        and str(row.get("node", "")) in {str(node) for node in isolated_nodes}
+        and not row.get("writes")
+    )
+
+
 @dataclass(frozen=True)
 class HumanIkConstraintFacts:
     """Read/write facts collected for one Maya constraint node."""
