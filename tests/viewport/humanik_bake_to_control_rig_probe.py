@@ -555,6 +555,19 @@ def run_probe(
         """Return the Euclidean distance between two world-space points."""
         return sum((float(a) - float(b)) ** 2 for a, b in zip(left, right)) ** 0.5
 
+    def _animation_curve_snapshot() -> Dict[str, Any]:
+        """Return an exact scene animCurve/key census for deletion checks."""
+        curves = sorted(str(node) for node in (cmds.ls(type="animCurve") or []))
+        key_counts = {
+            curve: int(cmds.keyframe(curve, query=True, keyframeCount=True) or 0)
+            for curve in curves
+        }
+        return {
+            "curves": curves,
+            "keyCounts": key_counts,
+            "totalKeyCount": sum(key_counts.values()),
+        }
+
     def _move_control_attribute(effector: str, attribute: str, amount: float) -> Dict[str, Any]:
         """Key an editable Control Rig channel at zero and describe the edit.
 
@@ -1053,6 +1066,40 @@ def run_probe(
         if not all(report["checks"].values()):
             raise RuntimeError(f"Control Rig bake acceptance failed: {report['checks']}")
 
+        animation_before_disconnect = _animation_curve_snapshot()
+        disconnect_result = session.disconnect_retarget()
+        animation_after_disconnect = _animation_curve_snapshot()
+        state_after_disconnect = session.describe_frontend_state(target_root)
+        report["sourceDisconnectAfterBake"] = {
+            "result": bool(disconnect_result),
+            "state": state_after_disconnect,
+            "animationBefore": animation_before_disconnect,
+            "animationAfter": animation_after_disconnect,
+            "targetInputType": int(mel.eval(f'hikGetInputType("{target_character}")')),
+        }
+        report["checks"].update(
+            {
+                "sourceClearedAfterControlRigBake": state_after_disconnect.get("source") is None,
+                "controlRigModeAfterSourceDisconnect": (
+                    state_after_disconnect.get("mode") == "control_rig"
+                ),
+                "controlRigPreservedAfterSourceDisconnect": bool(
+                    mel.eval(f'hikHasControlRig("{target_character}")')
+                ),
+                "controlRigTransactionPreservedAfterSourceDisconnect": bool(
+                    transaction_after and transaction_after.active
+                ),
+                "bakeContextPreservedAfterSourceDisconnect": session.active_preview is not None,
+                "animationCurvesPreservedAfterSourceDisconnect": (
+                    animation_after_disconnect == animation_before_disconnect
+                ),
+            }
+        )
+        if not all(report["checks"].values()):
+            raise RuntimeError(
+                f"Control Rig SOURCE disconnect acceptance failed: {report['checks']}"
+            )
+
         edited_effector, changed_channel = _edit_control_rig(
             [assignment.joint for assignment in target_binding.assignments],
             target_character,
@@ -1132,6 +1179,28 @@ def run_probe(
         report["targetEditedChannelAnimCurves"] = sorted(str(curve) for curve in keyed_curves)
         if not all(report["checks"].values()):
             raise RuntimeError(f"Bake From Control Rig acceptance failed: {report['checks']}")
+
+        from mmd_tools.ui import humanik_menu_actions
+
+        humanik_menu_actions.set_humanik_session(session)
+        previous_session_id = id(session)
+        cmds.file(new=True, force=True)
+        new_scene_session = humanik_menu_actions.get_humanik_session()
+        new_scene_state = new_scene_session.describe_frontend_state()
+        report["newSceneSessionReset"] = {
+            "previousSessionId": previous_session_id,
+            "newSessionId": id(new_scene_session),
+            "state": new_scene_state,
+        }
+        report["checks"].update(
+            {
+                "newSceneUsesFreshFrontendSession": id(new_scene_session) != previous_session_id,
+                "newSceneSourceCleared": new_scene_state.get("source") is None,
+                "newSceneFrontendNeutral": new_scene_state.get("mode") == "neutral",
+            }
+        )
+        if not all(report["checks"].values()):
+            raise RuntimeError(f"New scene reset acceptance failed: {report['checks']}")
         report["status"] = "pass"
     except Exception as exc:  # noqa: BLE001 - completion/report must always be emitted
         text = str(exc)

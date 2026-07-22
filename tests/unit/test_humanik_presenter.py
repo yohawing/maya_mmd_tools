@@ -222,6 +222,21 @@ class TestHumanIkPresenter(unittest.TestCase):
         self.presenter.on_tab_deactivated()
         self.assertEqual(self.session.describe_calls, [])
 
+    def test_scene_change_clears_combo_memory_and_refreshes_while_active(self):
+        self.presenter._last_seen_selection = "|Old"
+        self.presenter._character_override = "|Old"
+        self.presenter._character_sticky = "|Old"
+        self.presenter._character_root = "|Old"
+        self.presenter._active = True
+
+        self.presenter.on_scene_changed()
+
+        self.assertIsNone(self.presenter._last_seen_selection)
+        self.assertIsNone(self.presenter._character_override)
+        self.assertIsNone(self.presenter._character_sticky)
+        self.assertIsNone(self.presenter._character_root)
+        self.assertEqual(len(self.session.describe_calls), 1)
+
     # -- (a) refresh reflects session state onto the view ----------------
 
     def test_refresh_passes_describe_frontend_state_result_to_view(self):

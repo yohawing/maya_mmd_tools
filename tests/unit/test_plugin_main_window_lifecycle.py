@@ -440,26 +440,44 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         )
 
     def test_after_open_callback_registers_once_invokes_and_removes(self):
-        callback_id = 42
-        add_callback = MagicMock(return_value=callback_id)
+        add_callback = MagicMock(side_effect=[42, 43])
         remove_callback = MagicMock()
         self.plugin_main.om = types.SimpleNamespace(
-            MSceneMessage=types.SimpleNamespace(kAfterOpen=7, addCallback=add_callback),
+            MSceneMessage=types.SimpleNamespace(
+                kAfterOpen=7,
+                kAfterNew=8,
+                addCallback=add_callback,
+            ),
             MMessage=types.SimpleNamespace(removeCallback=remove_callback),
         )
         migrate = MagicMock()
         self.plugin_main._soft_sync_existing_glsl_diffuse_contracts = migrate
+        reset = MagicMock()
+        self.plugin_main._reset_humanik_session_after_scene_change = reset
 
         self.plugin_main._register_after_open_callback()
         self.plugin_main._register_after_open_callback()
-        registered_callback = add_callback.call_args.args[1]
-        registered_callback("scene.ma")
+        open_callback = add_callback.call_args_list[0].args[1]
+        new_callback = add_callback.call_args_list[1].args[1]
+        open_callback("scene.ma")
+        new_callback()
         self.plugin_main._remove_after_open_callback()
 
-        add_callback.assert_called_once_with(7, self.plugin_main._after_scene_open)
+        self.assertEqual(
+            add_callback.call_args_list,
+            [
+                unittest.mock.call(7, self.plugin_main._after_scene_open),
+                unittest.mock.call(8, self.plugin_main._after_scene_new),
+            ],
+        )
         migrate.assert_called_once_with()
-        remove_callback.assert_called_once_with(callback_id)
+        self.assertEqual(reset.call_count, 2)
+        self.assertEqual(
+            remove_callback.call_args_list,
+            [unittest.mock.call(42), unittest.mock.call(43)],
+        )
         self.assertIsNone(self.plugin_main._after_open_callback_id)
+        self.assertIsNone(self.plugin_main._after_new_callback_id)
 
     def test_after_open_callback_registration_failure_is_soft(self):
         add_callback = MagicMock(side_effect=RuntimeError("callback unavailable"))
@@ -473,11 +491,25 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         self.assertIsNone(self.plugin_main._after_open_callback_id)
 
     def test_after_open_callback_migration_failure_is_soft(self):
+        self.plugin_main._reset_humanik_session_after_scene_change = MagicMock()
         self.plugin_main._soft_sync_existing_glsl_diffuse_contracts = MagicMock(
             side_effect=RuntimeError("migration failed")
         )
 
         self.plugin_main._after_scene_open("scene.ma")
+
+    def test_scene_change_drops_stale_humanik_session_and_refreshes_window(self):
+        actions = types.ModuleType("mmd_tools.ui.humanik_menu_actions")
+        actions.reset_humanik_session = MagicMock(return_value=True)
+        window = types.ModuleType("mmd_tools.ui.humanik_window")
+        window.refresh_humanik_window_for_scene_change = MagicMock(return_value=True)
+        self._inject_module("mmd_tools.ui.humanik_menu_actions", actions)
+        self._inject_module("mmd_tools.ui.humanik_window", window)
+
+        self.plugin_main._reset_humanik_session_after_scene_change()
+
+        actions.reset_humanik_session.assert_called_once_with(restore=False)
+        window.refresh_humanik_window_for_scene_change.assert_called_once_with()
 
     def test_soft_bone_morph_postcondition_warns_without_raising(self):
         """Unavailable probe emits a warning and never aborts plugin load."""

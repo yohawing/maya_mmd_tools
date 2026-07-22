@@ -418,6 +418,13 @@ class HumanIkFrontendSession:
         self._ownership_report: Optional[Dict[str, Any]] = None
         self._preview: Optional[HumanIkTargetPreview] = None
         self._control_rig_transactions: Dict[str, HumanIkControlRigTransaction] = {}
+        # A successful native Control Rig bake switches the TARGET character
+        # away from the selected SOURCE and onto its Control Rig.  Retain that
+        # fact separately from ``_preview``: the preview object still owns the
+        # reversible MMD writer state needed by Bake From Control Rig, but the
+        # user may safely clear the SOURCE selection without deleting the
+        # baked Control Rig or its animation.
+        self._control_rig_baked_roots: set[str] = set()
         self._pending_characters: Dict[str, str] = {}
         self._pending_stances: Dict[str, HumanIkStanceTransaction] = {}
         self._stance_transaction_factory = stance_transaction_factory or HumanIkStanceTransaction
@@ -797,6 +804,57 @@ class HumanIkFrontendSession:
         self._external_source_character = character
         return {"character": character, "external": True, "locked": True}
 
+    def disconnect_retarget(self) -> bool:
+        """Clear the selected SOURCE without destroying a baked Control Rig.
+
+        Before a Control Rig bake, disconnecting an active SOURCE/TARGET
+        preview restores the TARGET's pre-preview input and writer ownership.
+        After :meth:`bake_to_control_rig`, Maya has already switched the
+        TARGET input to the Control Rig.  In that state the preview object is
+        retained only as the reversible bake context required by
+        :meth:`bake_from_control_rig`; deleting the Control Rig here would
+        discard the animation the user just baked.
+
+        Returns:
+            ``True`` when a preview or SOURCE selection was cleared, otherwise
+            ``False``.
+        """
+        preview = self._preview
+        target_root = self._target_model_root
+        transaction = (
+            self._control_rig_transactions.get(target_root)
+            if target_root is not None
+            else None
+        )
+        keep_baked_control_rig = bool(
+            preview is not None
+            and preview.active
+            and target_root in self._control_rig_baked_roots
+            and transaction is not None
+            and transaction.active
+        )
+
+        disconnected = False
+        if preview is not None and preview.active and not keep_baked_control_rig:
+            # Fail closed: if restoring TARGET ownership fails, keep the
+            # SOURCE selection and preview context so Restore can retry.
+            stop_humanik_target_preview(
+                preview,
+                cmds_module=self._cmds,
+                mel_module=self._mel,
+            )
+            disconnected = True
+        if preview is not None and not preview.active:
+            self._preview = None
+            self._target_model_root = None
+            self._ownership_report = None
+
+        if self._source_model_root is not None or self._external_source_character is not None:
+            self._source_model_root = None
+            self._external_source_character = None
+            disconnected = True
+        return disconnected
+
     def enter_target_mode(self, model_root: str) -> HumanIkTargetPreview:
         """Start a target preview after ownership classification and blocker checks.
 
@@ -981,6 +1039,7 @@ class HumanIkFrontendSession:
             cmds_module=self._cmds,
             mel_module=self._mel,
         )
+        self._control_rig_baked_roots.add(key)
         return result
 
     def bake_from_control_rig(self, start: int, end: int) -> HumanIkBakeResult:
@@ -1020,6 +1079,7 @@ class HumanIkFrontendSession:
             teardown_error = exc
         finally:
             self._control_rig_transactions.pop(key, None)
+            self._control_rig_baked_roots.discard(key)
             binding.control_rig_created = False
             self._persist_control_rig_transactions()
         if teardown_error is not None:
@@ -1091,6 +1151,7 @@ class HumanIkFrontendSession:
                     self._control_rig_transactions.pop(model_root, None)
                 continue
             self._control_rig_transactions.pop(model_root, None)
+            self._control_rig_baked_roots.discard(model_root)
             binding = self._bindings.get(model_root)
             if binding is not None:
                 binding.control_rig_created = False
@@ -1131,6 +1192,9 @@ class HumanIkFrontendSession:
             self._external_source_character = None
             restored = True
         self._persist_control_rig_transactions()
+        self._control_rig_baked_roots.intersection_update(
+            self._control_rig_transactions
+        )
         if first_error is not None:
             raise first_error
         return restored
@@ -1566,8 +1630,14 @@ class HumanIkFrontendSession:
             )
 
         external_source = self._external_source_character
+        baked_control_rig_detached = bool(
+            preview_active
+            and source_binding is None
+            and external_source is None
+            and self._target_model_root in self._control_rig_baked_roots
+        )
 
-        if preview_active:
+        if preview_active and not baked_control_rig_detached:
             mode = FRONTEND_MODE_TARGET_PREVIEW
         elif control_rig_rows:
             mode = FRONTEND_MODE_CONTROL_RIG

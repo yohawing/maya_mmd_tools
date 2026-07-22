@@ -76,6 +76,10 @@ class _FakeSession:
         self.calls.append(("restore_mmd_rig",))
         return True
 
+    def disconnect_retarget(self):
+        self.calls.append(("disconnect_retarget",))
+        return True
+
     def enter_external_source_mode(self, character):
         self.calls.append(("enter_external_source_mode", character))
         return {"character": character, "external": True, "locked": True}
@@ -890,39 +894,25 @@ class TestHumanIkMenuActions(unittest.TestCase):
         self.assertIsNone(result)
         self.assertTrue(any("requires a character" in message for message in self._errors))
 
-    def test_disconnect_retarget_runs_immediately_when_no_control_rig_is_active(self):
-        # HUMANIK-FRONTEND-1 Phase B6: confirmation is shown only when a
-        # Control Rig transaction is currently active.
+    def test_disconnect_retarget_uses_non_destructive_session_route(self):
         actions._confirm_dialog = lambda **kwargs: (_ for _ in ()).throw(
-            AssertionError("no dialog should be shown without an active Control Rig")
+            AssertionError("Source None must not ask to delete a Control Rig")
         )
 
         self.assertTrue(actions.disconnect_retarget())
-        self.assertIn(("restore_mmd_rig",), self.session.calls)
+        self.assertIn(("disconnect_retarget",), self.session.calls)
+        self.assertNotIn(("restore_mmd_rig",), self.session.calls)
 
-    def test_disconnect_retarget_confirms_before_restoring_an_active_control_rig(self):
+    def test_disconnect_retarget_preserves_active_control_rig_without_confirmation(self):
         self.session.describe_frontend_state = lambda model_root=None: {
             "controlRigs": [{"modelRoot": "|model_root", "character": "Char"}]
         }
-        dialog = {}
-
-        def choose(**kwargs):
-            dialog.update(kwargs)
-            return "Continue"
-
-        actions._confirm_dialog = choose
+        actions._confirm_dialog = lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("disconnect must not use the destructive Restore confirmation")
+        )
 
         self.assertTrue(actions.disconnect_retarget())
-        self.assertIn("Control Rig", dialog["message"])
-        self.assertIn(("restore_mmd_rig",), self.session.calls)
-
-    def test_disconnect_retarget_cancel_with_active_control_rig_does_not_restore(self):
-        self.session.describe_frontend_state = lambda model_root=None: {
-            "controlRigs": [{"modelRoot": "|model_root", "character": "Char"}]
-        }
-        actions._confirm_dialog = lambda **kwargs: "Cancel"
-
-        self.assertIsNone(actions.disconnect_retarget())
+        self.assertIn(("disconnect_retarget",), self.session.calls)
         self.assertNotIn(("restore_mmd_rig",), self.session.calls)
 
     def test_restore_mmd_rig_runs_immediately_when_no_control_rig_is_active(self):

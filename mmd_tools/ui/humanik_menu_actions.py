@@ -521,27 +521,18 @@ def _clear_animcurves(curves) -> None:
 
 
 def disconnect_retarget():
-    """Restore the MMD rig to disconnect the active retarget (Source combo -> "None").
+    """Disconnect SOURCE/TARGET while preserving any baked Control Rig.
 
-    HUMANIK-FRONTEND-1 Phase B6: confirmation is shown only when a Control
-    Rig transaction is currently active (deleting it is the one
-    irreversible-in-this-call side effect); otherwise this restores
-    immediately, matching the other de-popup-ified actions. A cancelled
-    confirmation returns ``None`` without mutating the scene.
+    Source combo ``None`` is a connection operation, not the destructive
+    Restore MMD Rig operation.  The session therefore clears the selected
+    SOURCE and restores a live pre-bake preview, while a Control Rig that has
+    already received a native bake (and all of its animation) stays active.
     """
     return _run_action("Disconnect Retarget", _disconnect_retarget)
 
 
 def _disconnect_retarget():
-    session = get_humanik_session()
-    if _has_active_control_rig(session):
-        message = (
-            "Disconnect the HumanIK retarget and restore the MMD rig?\n"
-            "The active Control Rig will also be deleted."
-        )
-        if not _confirm("Disconnect Retarget", message):
-            return None
-    return session.restore_mmd_rig()
+    return get_humanik_session().disconnect_retarget()
 
 
 def _has_active_control_rig(session) -> bool:

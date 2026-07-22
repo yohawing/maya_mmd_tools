@@ -203,6 +203,15 @@ class HumanIkPresenter:
         self._active = False
         self._deregister_control_rig_watch_callback()
 
+    def on_scene_changed(self):
+        """Drop combo-selection memory and refresh the visible new scene."""
+        self._last_seen_selection = None
+        self._character_override = None
+        self._character_sticky = None
+        self._character_root = None
+        if self._active:
+            self.refresh()
+
     def _register_control_rig_watch_callback(self):
         try:
             from ...core import humanik_control_rig_watch

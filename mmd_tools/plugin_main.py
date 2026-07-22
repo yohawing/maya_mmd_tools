@@ -32,6 +32,7 @@ _physics_nodes_registered = False
 _python_physics_solver_registered = False
 _python_physics_driver_registered = False
 _after_open_callback_id = None
+_after_new_callback_id = None
 _MAIN_WINDOW_NAME = "MMDToolsMainWindow"
 _MAIN_WINDOW_WORKSPACE_CONTROL_NAME = "MMDToolsWorkspaceControl"
 
@@ -352,8 +353,32 @@ def _soft_sync_existing_glsl_diffuse_contracts():
 
 def _after_scene_open(*_args):
     """Run strict existing-scene migration after Maya opens a scene."""
+    _reset_humanik_session_after_scene_change()
     try:
         _soft_sync_existing_glsl_diffuse_contracts()
+    except Exception:
+        pass
+
+
+def _after_scene_new(*_args):
+    """Drop process-owned HumanIK state after Maya creates a new scene."""
+    _reset_humanik_session_after_scene_change()
+
+
+def _reset_humanik_session_after_scene_change():
+    """Replace stale frontend state and refresh an open HumanIK Editor."""
+    try:
+        from mmd_tools.ui import humanik_menu_actions
+
+        # The old scene has already been replaced at kAfterOpen/kAfterNew;
+        # attempting Restore here would act on the new scene with stale names.
+        humanik_menu_actions.reset_humanik_session(restore=False)
+    except Exception:
+        pass
+    try:
+        from mmd_tools.ui import humanik_window
+
+        humanik_window.refresh_humanik_window_for_scene_change()
     except Exception:
         pass
 
@@ -392,27 +417,39 @@ def _deregister_humanik_control_rig_watch():
 
 
 def _register_after_open_callback():
-    """Register one scene-open migration callback, tolerating host limitations."""
-    global _after_open_callback_id
-    if _after_open_callback_id is not None:
-        return
-    try:
-        _after_open_callback_id = om.MSceneMessage.addCallback(om.MSceneMessage.kAfterOpen, _after_scene_open)
-    except Exception:
-        _after_open_callback_id = None
+    """Register scene-open/new callbacks, tolerating host limitations."""
+    global _after_open_callback_id, _after_new_callback_id
+    if _after_open_callback_id is None:
+        try:
+            _after_open_callback_id = om.MSceneMessage.addCallback(
+                om.MSceneMessage.kAfterOpen,
+                _after_scene_open,
+            )
+        except Exception:
+            _after_open_callback_id = None
+    if _after_new_callback_id is None:
+        try:
+            _after_new_callback_id = om.MSceneMessage.addCallback(
+                om.MSceneMessage.kAfterNew,
+                _after_scene_new,
+            )
+        except Exception:
+            _after_new_callback_id = None
 
 
 def _remove_after_open_callback():
-    """Remove the owned scene-open callback if it exists."""
-    global _after_open_callback_id
-    callback_id = _after_open_callback_id
+    """Remove the owned scene-open/new callbacks if they exist."""
+    global _after_open_callback_id, _after_new_callback_id
+    callback_ids = (_after_open_callback_id, _after_new_callback_id)
     _after_open_callback_id = None
-    if callback_id is None:
-        return
-    try:
-        om.MMessage.removeCallback(callback_id)
-    except Exception:
-        pass
+    _after_new_callback_id = None
+    for callback_id in callback_ids:
+        if callback_id is None:
+            continue
+        try:
+            om.MMessage.removeCallback(callback_id)
+        except Exception:
+            pass
 
 
 def initializePlugin(mobject):

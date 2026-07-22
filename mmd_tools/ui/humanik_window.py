@@ -248,3 +248,15 @@ def close_humanik_window() -> None:
             cmds.deleteUI(ws)
     except Exception:
         pass
+
+
+def refresh_humanik_window_for_scene_change() -> bool:
+    """Refresh the singleton editor after Maya replaces the current scene."""
+    if _window is None:
+        return False
+    try:
+        _window.humanik_presenter.on_scene_changed()
+    except Exception:
+        logger.debug("HumanIK window scene-change refresh failed", exc_info=True)
+        return False
+    return True

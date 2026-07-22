@@ -917,6 +917,59 @@ class TestHumanIkFrontend(unittest.TestCase):
         )
         self.assertIs(session.active_preview, session._preview)
         self.assertTrue(transaction.active)
+        self.assertEqual(session._control_rig_baked_roots, {"|target"})
+
+    @patch("mmd_tools.core.humanik_frontend.stop_humanik_target_preview")
+    def test_disconnect_after_control_rig_bake_preserves_bake_context_and_animation(
+        self, stop_preview
+    ):
+        session = _session()
+        session._source_model_root = "|source"
+        session._bindings["|source"] = HumanIkFrontendBinding(
+            model_root="|source",
+            character="Character_source",
+            result=_result(),
+        )
+        session._bindings["|target"] = HumanIkFrontendBinding(
+            model_root="|target",
+            character="Character_target",
+            result=_result(),
+            control_rig_created=True,
+        )
+        session._target_model_root = "|target"
+        session._preview = FakePreview()
+        transaction = FakeControlRigTransaction(character="Character_target")
+        session._control_rig_transactions["|target"] = transaction
+        session._control_rig_baked_roots.add("|target")
+
+        self.assertTrue(session.disconnect_retarget())
+
+        stop_preview.assert_not_called()
+        self.assertIsNone(session._source_model_root)
+        self.assertTrue(session._preview.active)
+        self.assertIs(session._control_rig_transactions["|target"], transaction)
+        self.assertEqual(session.describe_frontend_state()["mode"], "control_rig")
+
+    @patch("mmd_tools.core.humanik_frontend.stop_humanik_target_preview")
+    def test_disconnect_live_retarget_restores_preview_before_clearing_source(
+        self, stop_preview
+    ):
+        session = _session()
+        session._source_model_root = "|source"
+        session._target_model_root = "|target"
+        session._preview = FakePreview()
+
+        def deactivate(preview, **_kwargs):
+            preview.active = False
+
+        stop_preview.side_effect = deactivate
+
+        self.assertTrue(session.disconnect_retarget())
+
+        stop_preview.assert_called_once()
+        self.assertIsNone(session._source_model_root)
+        self.assertIsNone(session._preview)
+        self.assertIsNone(session._target_model_root)
 
     def test_control_rig_bake_requires_target_transaction(self):
         session = _session()
