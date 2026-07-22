@@ -7,6 +7,7 @@ from mmd_tools.core.humanik_bake import HumanIkBakeResult
 from mmd_tools.core.humanik_builder import HumanIkCharacterCreationError
 from mmd_tools.core.humanik_frontend import (
     FULL_ASSIGNMENT_PROFILE,
+    HumanIkFrontendBinding,
     HumanIkFrontendSession,
     _split_body_assignments,
     filter_humanik_body_assignments,
@@ -620,6 +621,60 @@ class TestHumanIkFrontend(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "bake failed"):
                 session.bake_to_mmd_rig(0, 1)
         self.assertIsNone(session._preview)
+
+    def test_control_rig_bake_keeps_preview_and_transaction_active(self):
+        session = _session()
+        target = _result()
+        session._bindings["|target"] = HumanIkFrontendBinding(
+            model_root="|target",
+            character="Character_target",
+            result=target,
+        )
+        session._source_model_root = "|source"
+        session._bindings["|source"] = HumanIkFrontendBinding(
+            model_root="|source",
+            character="Character_source",
+            result=target,
+        )
+        session._target_model_root = "|target"
+        session._preview = FakePreview()
+        transaction = FakeControlRigTransaction(character="Character_target")
+        session._control_rig_transactions["|target"] = transaction
+        fake_result = object()
+
+        with patch(
+            "mmd_tools.core.humanik_frontend.bake_humanik_control_rig",
+            return_value=fake_result,
+        ) as bake:
+            self.assertIs(session.bake_to_control_rig(3, 9), fake_result)
+
+        bake.assert_called_once_with(
+            transaction,
+            3,
+            9,
+            cmds_module=None,
+            mel_module=None,
+        )
+        self.assertIs(session.active_preview, session._preview)
+        self.assertTrue(transaction.active)
+
+    def test_control_rig_bake_requires_target_transaction(self):
+        session = _session()
+        session._preview = FakePreview()
+        session._target_model_root = "|target"
+
+        with self.assertRaisesRegex(RuntimeError, "Control Rig transaction is not active"):
+            session.bake_to_control_rig(3, 9)
+
+    def test_control_rig_bake_without_preview_fails_closed(self):
+        session = _session()
+        session._target_model_root = "|target"
+        session._control_rig_transactions["|target"] = FakeControlRigTransaction(
+            character="Character_target"
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "target preview is not active"):
+            session.bake_to_control_rig(3, 9)
 
 
 class FakeHikSceneCmds:

@@ -5,6 +5,9 @@ from contextlib import nullcontext
 from unittest.mock import patch
 
 from mmd_tools.core.humanik_control_rig import (
+    HumanIkControlRigBakeResult,
+    HumanIkControlRigTransaction,
+    bake_humanik_control_rig,
     begin_humanik_control_rig,
     get_active_control_rig_transaction,
     new_cycle_plugs,
@@ -102,6 +105,54 @@ class FakeMel:
             self.has_control_rig = False
             return 1
         return None
+
+
+class FakeBakeCmds(FakeCmds):
+    """Playback/current-time surface used by the native bake wrapper tests."""
+
+    def __init__(self):
+        super().__init__()
+        self.playback = {
+            "minTime": 1.5,
+            "maxTime": 24.5,
+            "animationStartTime": 0.0,
+            "animationEndTime": 30.0,
+        }
+        self.current = 7.0
+        self.playback_edits = []
+
+    def playbackOptions(self, query=False, edit=False, **kwargs):
+        if query:
+            for key, value in kwargs.items():
+                if value:
+                    return self.playback[key]
+            return None
+        if edit:
+            self.playback_edits.append(dict(kwargs))
+            self.playback.update({key: value for key, value in kwargs.items() if value is not None})
+            return None
+        return None
+
+    def currentTime(self, value=None, query=False, edit=False):
+        if query:
+            return self.current
+        if edit:
+            self.current = value
+        return None
+
+
+class FakeBakeMel(FakeMel):
+    def __init__(self, fail=False):
+        super().__init__()
+        self.has_control_rig = True
+        self.commands = []
+        self.fail = fail
+
+    def eval(self, command):
+        self.commands.append(command)
+        if command == "hikBakeToControlRig(0);" and self.fail:
+            raise RuntimeError("native bake failed")
+        return super().eval(command)
 
 
 MUTE_REPORT = {
@@ -410,6 +461,61 @@ class TestControlRigTransactionRegistry(unittest.TestCase):
 
         stop_humanik_control_rig(plugin_transaction, cmds, mel)
         self.assertIsNone(get_active_control_rig_transaction("Character"))
+
+
+class TestBakeHumanIkControlRig(unittest.TestCase):
+    def _transaction(self, active=True):
+        return HumanIkControlRigTransaction(
+            ownership_id="owner:rig",
+            character="Character",
+            restore_state=None,
+            disconnected=[],
+            retained_nodes=[],
+            created_nodes=["HIKControlSetNode1"],
+            active=active,
+        )
+
+    def test_native_bake_uses_explicit_range_and_restores_playback_state(self):
+        cmds, mel = FakeBakeCmds(), FakeBakeMel()
+        with patch("mmd_tools.core.humanik_control_rig.ensure_humanik_mel_loaded"):
+            result = bake_humanik_control_rig(self._transaction(), 2, 18, cmds, mel)
+
+        self.assertIsInstance(result, HumanIkControlRigBakeResult)
+        self.assertEqual(result.to_dict()["start"], 2)
+        self.assertEqual(result.to_dict()["end"], 18)
+        self.assertIn('hikSetCurrentCharacter("Character");', mel.commands)
+        self.assertIn("hikBakeToControlRig(0);", mel.commands)
+        self.assertEqual(cmds.playback_edits[0], {
+            "minTime": 2,
+            "maxTime": 18,
+            "animationStartTime": 2,
+            "animationEndTime": 18,
+        })
+        self.assertEqual(cmds.playback_edits[1], {
+            "minTime": 1.5,
+            "maxTime": 24.5,
+            "animationStartTime": 0.0,
+            "animationEndTime": 30.0,
+        })
+        self.assertEqual(cmds.current, 7.0)
+
+    def test_native_bake_failure_restores_playback_and_keeps_transaction_active(self):
+        cmds, mel = FakeBakeCmds(), FakeBakeMel(fail=True)
+        transaction = self._transaction()
+        with patch("mmd_tools.core.humanik_control_rig.ensure_humanik_mel_loaded"):
+            with self.assertRaisesRegex(RuntimeError, "native bake failed"):
+                bake_humanik_control_rig(transaction, 2, 18, cmds, mel)
+
+        self.assertTrue(transaction.active)
+        self.assertEqual(len(cmds.playback_edits), 2)
+        self.assertEqual(cmds.playback["minTime"], 1.5)
+
+    def test_native_bake_rejects_inactive_transaction_before_maya_queries(self):
+        cmds, mel = FakeBakeCmds(), FakeBakeMel()
+        with self.assertRaisesRegex(RuntimeError, "transaction is not active"):
+            bake_humanik_control_rig(self._transaction(active=False), 2, 18, cmds, mel)
+        self.assertEqual(mel.commands, [])
+        self.assertEqual(cmds.playback_edits, [])
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from mmd_tools.core.humanik_bake import HumanIkBakeResult
+from mmd_tools.core.humanik_control_rig import HumanIkControlRigBakeResult
 from mmd_tools.core.humanik_frontend import REASON_NOT_CHARACTERIZED
 from mmd_tools.ui import humanik_menu_actions as actions
 
@@ -62,6 +63,10 @@ class _FakeSession:
     def bake_to_mmd_rig(self, start, end):
         self.calls.append(("bake_to_mmd_rig", start, end))
         return HumanIkBakeResult(start, end, 4, {}, 0.0, [])
+
+    def bake_to_control_rig(self, start, end):
+        self.calls.append(("bake_to_control_rig", start, end))
+        return HumanIkControlRigBakeResult("Character_target", start, end)
 
     def restore_mmd_rig(self):
         self.calls.append(("restore_mmd_rig",))
@@ -135,9 +140,9 @@ class TestHumanIkMenuActions(unittest.TestCase):
         actions._confirm_dialog = None
         actions._error_reporter = None
 
-    def test_action_labels_lead_with_open_humanik_editor_plus_seven_staged_actions(self):
+    def test_action_labels_lead_with_open_humanik_editor_plus_eight_staged_actions(self):
         self.assertEqual(actions.ACTION_LABELS[0], ("open_humanik_editor", "HumanIK Editor..."))
-        self.assertEqual(len(actions.ACTION_LABELS), 8)
+        self.assertEqual(len(actions.ACTION_LABELS), 9)
 
     def test_open_humanik_editor_dispatches_to_the_standalone_window(self):
         with patch("mmd_tools.ui.humanik_window.show_humanik_window") as show_window:
@@ -593,6 +598,18 @@ class TestHumanIkMenuActions(unittest.TestCase):
         self.assertEqual(result.start, 2)
         self.assertEqual(result.end, 10)
         self.assertIn(("bake_to_mmd_rig", 2, 10), self.session.calls)
+
+    def test_control_rig_bake_uses_integer_playback_range_without_confirmation(self):
+        self.cmds.playbackOptions.side_effect = [1.9, 10.1]
+        actions._confirm_dialog = lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("no dialog should be shown for Bake to Control Rig")
+        )
+
+        result = actions.bake_to_control_rig()
+
+        self.assertEqual(result.start, 2)
+        self.assertEqual(result.end, 10)
+        self.assertIn(("bake_to_control_rig", 2, 10), self.session.calls)
 
     def test_bake_rejects_empty_integer_playback_range_before_confirmation(self):
         self.cmds.playbackOptions.side_effect = [5.2, 4.8]

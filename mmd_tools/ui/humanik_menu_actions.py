@@ -38,6 +38,7 @@ ACTION_LABELS = (
     ("enter_target_mode", "Enter Target Mode"),
     ("create_control_rig", "Create Control Rig"),
     ("bake_to_mmd_rig", "Bake to MMD Rig"),
+    ("bake_to_control_rig", "Bake to Control Rig"),
     ("restore_mmd_rig", "Restore MMD Rig"),
     ("diagnostics", "Diagnostics"),
 )
@@ -252,7 +253,7 @@ def _choose_model_from_scene(available_models) -> Optional[str]:
 
 def install_humanik_menu(parent="MMD", *, cmds_module=None, callback_dispatcher=None):
     """Install the HumanIK submenu with the "Open HumanIK Editor" entry plus
-    its seven staged workflow actions."""
+    its eight staged workflow actions."""
     global _cmds_module
     cmds = cmds_module or _maya_cmds()
     _cmds_module = cmds
@@ -290,7 +291,7 @@ def open_humanik_editor():
 
     The window is imported lazily here -- and only here -- because
     ``mmd_tools.ui.humanik_window`` imports ``HumanIkPresenter``, which in
-    turn imports this module at module scope (to dispatch the other six
+    turn imports this module at module scope (to dispatch the other staged
     staged actions). Importing the window at this module's top level would
     therefore be a circular import; deferring it to call time breaks the
     cycle since by the time this function runs, this module has already
@@ -572,6 +573,20 @@ def bake_to_mmd_rig(start=None, end=None):
     return _run_action("Bake to MMD Rig", lambda: _bake_to_mmd_rig(start=start, end=end))
 
 
+def bake_to_control_rig(start=None, end=None):
+    """Bake the active SOURCE/VMD retarget onto the target Control Rig.
+
+    ``start``/``end`` are explicit when called from a future range-aware UI;
+    the menu callback falls back to Maya's current integer playback range.
+    The frontend keeps the preview and transaction active after success so
+    the resulting Control Rig remains editable until Restore MMD Rig.
+    """
+    return _run_action(
+        "Bake to Control Rig",
+        lambda: _bake_to_control_rig(start=start, end=end),
+    )
+
+
 def restore_mmd_rig():
     """Restore active preview state or pending setup characters without a model selection.
 
@@ -799,6 +814,24 @@ def _bake_to_mmd_rig(start=None, end=None):
     result = session.bake_to_mmd_rig(start, end)
     result_dict = result.to_dict() if hasattr(result, "to_dict") else dict(result)
     _display_info("HumanIK bake complete: " + json.dumps(result_dict, sort_keys=True))
+    return result
+
+
+def _bake_to_control_rig(start=None, end=None):
+    """Bake the active target Control Rig over an explicit frame range."""
+    cmds = _cmds_module or _maya_cmds()
+    session = get_humanik_session()
+    if start is None:
+        start = math.ceil(float(cmds.playbackOptions(query=True, minTime=True)))
+    if end is None:
+        end = math.floor(float(cmds.playbackOptions(query=True, maxTime=True)))
+    start = int(start)
+    end = int(end)
+    if end < start:
+        raise ValueError(f"Bake frame range is empty after integer conversion: {start}..{end}")
+    result = session.bake_to_control_rig(start, end)
+    result_dict = result.to_dict() if hasattr(result, "to_dict") else dict(result)
+    _display_info("HumanIK Control Rig bake complete: " + json.dumps(result_dict, sort_keys=True))
     return result
 
 
@@ -1030,6 +1063,7 @@ _ACTION_FUNCTIONS = {
     "enter_target_mode": enter_target_mode,
     "create_control_rig": create_control_rig,
     "bake_to_mmd_rig": bake_to_mmd_rig,
+    "bake_to_control_rig": bake_to_control_rig,
     "restore_mmd_rig": restore_mmd_rig,
     "diagnostics": diagnostics,
 }

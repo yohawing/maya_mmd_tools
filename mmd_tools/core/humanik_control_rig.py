@@ -25,6 +25,11 @@ are removed via HIK's own ``hikDeleteControlRig()`` MEL command (never a bare
 ``cmds.delete`` first -- see ``_delete_control_rig`` for why a node-diff
 delete is only a fallback).
 
+The same transaction owns the public ``bake_humanik_control_rig`` route. It
+invokes Maya's supported ``hikBakeToControlRig(0)`` over a caller-supplied
+frame range while preserving playback/current-time state; baking leaves the
+Control Rig active for interactive editing until the normal restore path.
+
 Cycle-gate scoping: ``cmds.cycleCheck`` only supports scene-wide queries, so
 this module captures a baseline cycle-plug set *before* mutating (after
 writer isolation, right before ``hikCreateControlRig``) and only fails on
@@ -58,7 +63,7 @@ from mmd_tools.core.humanik_transaction import (
     deserialize_humanik_restore_state,
     apply_humanik_restore_state,
 )
-from mmd_tools.core.humanik_utils import maya_cmds, maya_mel
+from mmd_tools.core.humanik_utils import maya_cmds, maya_mel, mel_string
 from mmd_tools.core.logger import get_logger
 
 
@@ -142,6 +147,32 @@ class HumanIkControlRigTransaction:
             post_cycle_plugs=_string_list("postCyclePlugs"),
             active=bool(row.get("active", True)),
         )
+
+
+@dataclass(frozen=True)
+class HumanIkControlRigBakeResult:
+    """Describe a native HumanIK bake onto an existing Control Rig.
+
+    ``hikBakeToControlRig`` keys the currently active HIK character and then
+    switches that character's input to the Control Rig.  The transaction is
+    intentionally kept active after this operation so the caller can continue
+    editing the Control Rig and later use the normal restore path.
+    """
+
+    character: str
+    start: int
+    end: int
+    command: str = "hikBakeToControlRig(0);"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a JSON-safe result for UI/menu diagnostics."""
+        return {
+            "character": self.character,
+            "start": self.start,
+            "end": self.end,
+            "command": self.command,
+            "controlRigActive": True,
+        }
 
 
 # Module-level registry of active Control Rig transactions, keyed by HIK
@@ -328,6 +359,80 @@ def begin_humanik_control_rig(
     )
     register_control_rig_transaction(character, transaction)
     return transaction
+
+
+def bake_humanik_control_rig(
+    transaction: HumanIkControlRigTransaction,
+    start: int,
+    end: int,
+    cmds_module=None,
+    mel_module=None,
+) -> HumanIkControlRigBakeResult:
+    """Bake the active HIK retarget onto an existing Control Rig.
+
+    Maya's supported ``hikBakeToControlRig(0)`` command delegates its range
+    selection to the current playback range.  This wrapper temporarily sets
+    both playback and animation ranges to the requested integer interval,
+    runs that native command, and restores the user's original range/current
+    time even when Maya raises.  The Control Rig transaction deliberately
+    remains active: the command's post hook switches the character input to
+    the Control Rig, which is the editable/live state this action promises.
+
+    Raises:
+        RuntimeError: If the transaction, character, or Control Rig is not
+            active/present, or if Maya's native bake command fails.
+        ValueError: If the requested frame interval is empty.
+    """
+    if transaction is None or not bool(getattr(transaction, "active", False)):
+        raise RuntimeError("HumanIK Control Rig transaction is not active")
+    try:
+        bake_start = int(start)
+        bake_end = int(end)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Bake frame range must be integer-valued: {start}..{end}") from exc
+    if bake_end < bake_start:
+        raise ValueError(f"Bake frame range is empty after integer conversion: {bake_start}..{bake_end}")
+
+    cmds = cmds_module or maya_cmds()
+    mel = mel_module or maya_mel()
+    character = str(getattr(transaction, "character", "") or "").strip()
+    if not character:
+        raise RuntimeError("HumanIK Control Rig transaction has no character")
+    if not cmds.objExists(character):
+        raise RuntimeError(f"HumanIK Control Rig character no longer exists: {character}")
+
+    ensure_humanik_mel_loaded(mel)
+    character_literal = mel_string(character)
+    if not bool(mel.eval(f"hikHasControlRig({character_literal})")):
+        raise RuntimeError(f"HumanIK Control Rig is not active for character: {character}")
+
+    playback = {
+        "minTime": cmds.playbackOptions(query=True, minTime=True),
+        "maxTime": cmds.playbackOptions(query=True, maxTime=True),
+        "animationStartTime": cmds.playbackOptions(query=True, animationStartTime=True),
+        "animationEndTime": cmds.playbackOptions(query=True, animationEndTime=True),
+    }
+    current_time = cmds.currentTime(query=True)
+    command = "hikBakeToControlRig(0);"
+    mel.eval(f"hikSetCurrentCharacter({character_literal});")
+    try:
+        cmds.playbackOptions(
+            edit=True,
+            minTime=bake_start,
+            maxTime=bake_end,
+            animationStartTime=bake_start,
+            animationEndTime=bake_end,
+        )
+        mel.eval(command)
+        if not bool(mel.eval(f"hikHasControlRig({character_literal})")):
+            raise RuntimeError(
+                f"HumanIK native bake removed the Control Rig for character: {character}"
+            )
+    finally:
+        cmds.playbackOptions(edit=True, **playback)
+        cmds.currentTime(current_time, edit=True)
+
+    return HumanIkControlRigBakeResult(character, bake_start, bake_end, command)
 
 
 def stop_humanik_control_rig(

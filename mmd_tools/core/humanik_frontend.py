@@ -24,7 +24,9 @@ from mmd_tools.core.humanik_constraints import (
     collect_hik_ownership_report,
 )
 from mmd_tools.core.humanik_control_rig import (
+    HumanIkControlRigBakeResult,
     HumanIkControlRigTransaction,
+    bake_humanik_control_rig,
     begin_humanik_control_rig,
     delete_orphaned_control_rig,
     register_control_rig_transaction,
@@ -86,6 +88,7 @@ REASON_TARGET_IS_SOURCE = "target_is_source"
 REASON_PROFILE_MISMATCH = "profile_mismatch"
 REASON_MODEL_IS_SOURCE = "model_is_source"
 REASON_NO_ACTIVE_PREVIEW = "no_active_preview"
+REASON_NO_ACTIVE_CONTROL_RIG = "no_active_control_rig"
 REASON_ALREADY_CHARACTERIZED_OTHER_PROFILE = "already_characterized_other_profile"
 REASON_NOTHING_TO_RESTORE = "nothing_to_restore"
 REASON_MODEL_REQUIRED = "model_required"
@@ -724,6 +727,39 @@ class HumanIkFrontendSession:
         self._ownership_report = None
         return result
 
+    def bake_to_control_rig(self, start: int, end: int) -> HumanIkControlRigBakeResult:
+        """Bake the active SOURCE/VMD retarget onto the target Control Rig.
+
+        The target preview and its Control Rig transaction are both required.
+        The native HumanIK bake switches the character input to the Control
+        Rig; this method therefore leaves ``_preview`` and the transaction in
+        place so the Control Rig remains active/editable until
+        :meth:`restore_mmd_rig` is explicitly requested.
+        """
+        preview = self.active_preview
+        if preview is None or self._target_model_root is None:
+            raise RuntimeError("HumanIK target preview is not active")
+        key = self._target_model_root
+        transaction = self._control_rig_transactions.get(key)
+        if transaction is None or not transaction.active:
+            raise RuntimeError("HumanIK target Control Rig transaction is not active")
+        binding = self._bindings.get(key)
+        if binding is None:
+            raise RuntimeError(f"HumanIK target model binding is missing: {key}")
+        if str(transaction.character) != str(binding.character):
+            raise RuntimeError(
+                "HumanIK target Control Rig character does not match the target binding: "
+                f"transaction={transaction.character}, binding={binding.character}"
+            )
+        result = bake_humanik_control_rig(
+            transaction,
+            int(start),
+            int(end),
+            cmds_module=self._cmds,
+            mel_module=self._mel,
+        )
+        return result
+
     def restore_mmd_rig(self) -> bool:
         """Restore preview/control-rig transactions, stances, and characters.
 
@@ -1266,6 +1302,7 @@ class HumanIkFrontendSession:
             "enter_target_mode": self._describe_enter_target_mode_action(key, preview_active),
             "create_control_rig": self._describe_create_control_rig_action(key, preview_active),
             "bake_to_mmd_rig": self._describe_bake_to_mmd_rig_action(),
+            "bake_to_control_rig": self._describe_bake_to_control_rig_action(),
             "restore_mmd_rig": self._describe_restore_mmd_rig_action(nothing_to_restore),
             "diagnostics": {"allowed": True, "reasonCode": None, "reasonText": None},
         }
@@ -1429,6 +1466,20 @@ class HumanIkFrontendSession:
         if self.active_preview is None or self._target_model_root is None:
             return _action_blocked(
                 REASON_NO_ACTIVE_PREVIEW, "HumanIK target preview is not active"
+            )
+        return _action_allowed()
+
+    def _describe_bake_to_control_rig_action(self) -> Dict[str, Any]:
+        """Mirror ``bake_to_control_rig``'s preview/transaction guards."""
+        if self.active_preview is None or self._target_model_root is None:
+            return _action_blocked(
+                REASON_NO_ACTIVE_PREVIEW, "HumanIK target preview is not active"
+            )
+        transaction = self._control_rig_transactions.get(self._target_model_root)
+        if transaction is None or not transaction.active:
+            return _action_blocked(
+                REASON_NO_ACTIVE_CONTROL_RIG,
+                "HumanIK target Control Rig transaction is not active",
             )
         return _action_allowed()
 
