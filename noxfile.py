@@ -1887,14 +1887,19 @@ def humanik_aida_wave_probe(session: nox.Session) -> None:
     assignment slots, Hips/root status, and incoming writers.  A Maya/runtime
     error or missing diagnostic fields still fails the Nox session.
 
+    ``--pmx``/``--vmd`` are required: the probe targets local production
+    assets whose absolute paths must stay out of the repository.
+
     Example:
-        uvx nox -s humanik_aida_wave_probe -- --maya 2024
+        uvx nox -s humanik_aida_wave_probe -- --maya 2024 --pmx <aida.pmx> --vmd <wave.vmd>
     """
     maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     mayapy = _mayapy(maya_ver)
     args = list(session.posargs)
-    pmx_value = _option(args, "--pmx", r"F:\MMD\pmx\xzy_MMD\aida\aida_MMD.pmx")
-    vmd_value = _option(args, "--vmd", r"F:\MMD\vmd\wavefile_v2.vmd")
+    pmx_value = _option(args, "--pmx", None)
+    vmd_value = _option(args, "--vmd", None)
+    if not pmx_value or not vmd_value:
+        session.error("humanik_aida_wave_probe requires --pmx and --vmd (local asset paths are not committed)")
     out_value = _option(args, "--out", str(ROOT / "build/reports/humanik_aida_wave_probe.json"))
     start_value = _option(args, "--start", "0")
     end_value = _option(args, "--end", "60")

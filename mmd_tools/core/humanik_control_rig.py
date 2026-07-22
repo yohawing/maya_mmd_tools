@@ -191,7 +191,6 @@ class HumanIkControlRigBakeResult:
             "start": self.start,
             "end": self.end,
             "command": self.command,
-            "controlRigActive": True,
         }
 
 
