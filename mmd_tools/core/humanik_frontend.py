@@ -760,6 +760,49 @@ class HumanIkFrontendSession:
         )
         return result
 
+    def bake_from_control_rig(self, start: int, end: int) -> HumanIkBakeResult:
+        """Bake edited Control Rig output back to the target MMD rig.
+
+        This is the terminal half of the Control Rig round trip.  It reuses
+        ``bake_to_mmd_rig``'s fail-safe sampling/route splice/rollback path,
+        then releases the target Control Rig transaction only after authoring
+        succeeds.  A failed authoring attempt leaves the transaction available
+        for the normal Restore MMD Rig recovery path.
+        """
+        preview = self.active_preview
+        if preview is None or self._target_model_root is None:
+            raise RuntimeError("HumanIK target preview is not active")
+        key = self._target_model_root
+        transaction = self._control_rig_transactions.get(key)
+        if transaction is None or not transaction.active:
+            raise RuntimeError("HumanIK target Control Rig transaction is not active")
+        binding = self._bindings.get(key)
+        if binding is None:
+            raise RuntimeError(f"HumanIK target model binding is missing: {key}")
+        if str(transaction.character) != str(binding.character):
+            raise RuntimeError(
+                "HumanIK target Control Rig character does not match the target binding: "
+                f"transaction={transaction.character}, binding={binding.character}"
+            )
+
+        result = self.bake_to_mmd_rig(start, end)
+        teardown_error = None
+        try:
+            stop_humanik_control_rig(
+                transaction,
+                cmds_module=self._cmds,
+                mel_module=self._mel,
+            )
+        except Exception as exc:  # transaction is released even when teardown aggregates failures
+            teardown_error = exc
+        finally:
+            self._control_rig_transactions.pop(key, None)
+            binding.control_rig_created = False
+            self._persist_control_rig_transactions()
+        if teardown_error is not None:
+            raise teardown_error
+        return result
+
     def restore_mmd_rig(self) -> bool:
         """Restore preview/control-rig transactions, stances, and characters.
 
@@ -1303,6 +1346,7 @@ class HumanIkFrontendSession:
             "create_control_rig": self._describe_create_control_rig_action(key, preview_active),
             "bake_to_mmd_rig": self._describe_bake_to_mmd_rig_action(),
             "bake_to_control_rig": self._describe_bake_to_control_rig_action(),
+            "bake_from_control_rig": self._describe_bake_from_control_rig_action(),
             "restore_mmd_rig": self._describe_restore_mmd_rig_action(nothing_to_restore),
             "diagnostics": {"allowed": True, "reasonCode": None, "reasonText": None},
         }
@@ -1471,6 +1515,20 @@ class HumanIkFrontendSession:
 
     def _describe_bake_to_control_rig_action(self) -> Dict[str, Any]:
         """Mirror ``bake_to_control_rig``'s preview/transaction guards."""
+        if self.active_preview is None or self._target_model_root is None:
+            return _action_blocked(
+                REASON_NO_ACTIVE_PREVIEW, "HumanIK target preview is not active"
+            )
+        transaction = self._control_rig_transactions.get(self._target_model_root)
+        if transaction is None or not transaction.active:
+            return _action_blocked(
+                REASON_NO_ACTIVE_CONTROL_RIG,
+                "HumanIK target Control Rig transaction is not active",
+            )
+        return _action_allowed()
+
+    def _describe_bake_from_control_rig_action(self) -> Dict[str, Any]:
+        """Mirror ``bake_from_control_rig``'s preview/transaction guards."""
         if self.active_preview is None or self._target_model_root is None:
             return _action_blocked(
                 REASON_NO_ACTIVE_PREVIEW, "HumanIK target preview is not active"

@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 import time
 from pathlib import Path
@@ -144,6 +145,136 @@ def run_probe(
         ):
             raise RuntimeError(f"VMD import failed: {path}")
 
+    def _sample_joints(joints):
+        cmds.currentTime(0, edit=True)
+        cmds.refresh(force=True)
+        samples = {}
+        for joint in joints:
+            for channel in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
+                value = cmds.getAttr(f"{joint}.{channel}")
+                while isinstance(value, (tuple, list)) and len(value) == 1:
+                    value = value[0]
+                try:
+                    samples[(str(joint), channel)] = float(value)
+                except (TypeError, ValueError):
+                    continue
+        return samples
+
+    def _edit_control_rig(joints, character):
+        ik_nodes = [
+            str(node)
+            for node in (mel.eval(f'hikGetRigIkNodes("{character}")') or [])
+            if node and cmds.objExists(str(node))
+        ]
+        candidates = [
+            ("hikIkNode", node)
+            for node in ik_nodes
+        ] + [
+            ("effectorTransform", str(node))
+            for node in (cmds.ls(type="transform", long=True) or [])
+            if "effector" in str(node).lower()
+            and re.search(r"(LeftHand|RightHand|LeftFoot|RightFoot)", str(node), re.IGNORECASE)
+        ]
+        if not candidates:
+            raise RuntimeError("No editable HIK Control Rig IK node or effector transform was found")
+        candidates.sort(key=lambda item: (item[0] != "hikIkNode", item[1]))
+        diagnostics = []
+        for candidate_kind, candidate in candidates:
+            effector = candidate
+            for edit_kind, edit_values, undo_values in (
+                ("translation", (1.0, 0.0, 0.0), (-1.0, 0.0, 0.0)),
+                ("rotation", (20.0, 0.0, 0.0), (-20.0, 0.0, 0.0)),
+            ):
+                before = _sample_joints(joints)
+                attribute = "translateX" if edit_kind == "translation" else "rotateX"
+                attribute_path = f"{effector}.{attribute}"
+                driver_curves = cmds.listConnections(
+                    attribute_path,
+                    source=True,
+                    destination=False,
+                    type="animCurve",
+                ) or []
+                edit_mode = "keyframe" if driver_curves else "attribute"
+                try:
+                    if driver_curves:
+                        # Bake-To writes keys on Control Rig IK nodes.  Editing
+                        # the connected plug directly is a no-op in Maya, so
+                        # move the current-frame key on its animCurve instead.
+                        for curve in driver_curves:
+                            cmds.keyframe(
+                                curve,
+                                time=(0, 0),
+                                relative=True,
+                                valueChange=edit_values[0],
+                            )
+                        current_attribute = None
+                    else:
+                        current_attribute = float(cmds.getAttr(attribute_path))
+                        cmds.setAttr(attribute_path, current_attribute + edit_values[0])
+                except Exception as exc:
+                    diagnostics.append(
+                        {
+                            "effector": effector,
+                            "candidateKind": candidate_kind,
+                            "editKind": edit_kind,
+                            "editMode": edit_mode,
+                            "driverCurves": [str(curve) for curve in driver_curves],
+                            "error": str(exc),
+                        }
+                    )
+                    continue
+                cmds.refresh(force=True)
+                after = _sample_joints(joints)
+                changed = []
+                for (joint, channel), before_value in before.items():
+                    after_value = after.get((joint, channel))
+                    if after_value is not None and abs(after_value - before_value) > 1.0e-4:
+                        changed.append(
+                            {
+                                "joint": joint,
+                                "channel": channel,
+                                "before": before_value,
+                                "after": after_value,
+                                "delta": after_value - before_value,
+                                "editKind": edit_kind,
+                                "candidateKind": candidate_kind,
+                            }
+                        )
+                if changed:
+                    return effector, changed[0]
+                diagnostics.append(
+                    {
+                        "effector": effector,
+                        "candidateKind": candidate_kind,
+                        "editKind": edit_kind,
+                        "editMode": edit_mode,
+                        "driverCurves": [str(curve) for curve in driver_curves],
+                        "settable": {
+                            channel: {
+                                "lock": bool(cmds.getAttr(f"{effector}.{channel}", lock=True)),
+                                "settable": bool(cmds.getAttr(f"{effector}.{channel}", settable=True)),
+                            }
+                            for channel in ("translateX", "rotateX")
+                        },
+                    }
+                )
+                if driver_curves:
+                    for curve in driver_curves:
+                        cmds.keyframe(
+                            curve,
+                            time=(0, 0),
+                            relative=True,
+                            valueChange=undo_values[0],
+                        )
+                else:
+                    cmds.setAttr(attribute_path, current_attribute + undo_values[0])
+                cmds.refresh(force=True)
+        raise RuntimeError(
+            "Control Rig edit did not change a target joint: "
+            + ", ".join(item[1] for item in candidates)
+            + f"; diagnostics={diagnostics}"
+        )
+
     def _restore() -> None:
         if session is None:
             return
@@ -212,14 +343,14 @@ def run_probe(
             }
         )
 
-        bake_result = session.bake_to_control_rig(0, int(end))
+        bake_to_result = session.bake_to_control_rig(0, int(end))
         transaction_after = session._control_rig_transactions.get(target_root)
         input_type = int(mel.eval(f'hikGetInputType("{target_character}")'))
-        state_after = session.describe_frontend_state(target_root)
+        state_after_bake_to = session.describe_frontend_state(target_root)
         report.update(
             {
-                "bakeResult": bake_result.to_dict(),
-                "stateAfterBake": state_after,
+                "bakeToResult": bake_to_result.to_dict(),
+                "stateAfterBakeTo": state_after_bake_to,
                 "targetInputTypeAfterBake": input_type,
             }
         )
@@ -230,7 +361,7 @@ def run_probe(
                 ),
                 "transactionActiveAfterBake": bool(transaction_after and transaction_after.active),
                 "previewActiveAfterBake": session.active_preview is not None,
-                "controlRigCountAfterBake": len(state_after.get("controlRigs") or []),
+                "controlRigCountAfterBake": len(state_after_bake_to.get("controlRigs") or []),
                 # hikBakeToControlRigPost switches the character to the live
                 # Control Rig input (Maya 2024 reports the native enum as 1;
                 # direct SOURCE input is 3).
@@ -239,6 +370,51 @@ def run_probe(
         )
         if not all(report["checks"].values()):
             raise RuntimeError(f"Control Rig bake acceptance failed: {report['checks']}")
+
+        edited_effector, changed_channel = _edit_control_rig(
+            [assignment.joint for assignment in target_binding.assignments],
+            target_character,
+        )
+        report["controlRigEdit"] = {
+            "effector": edited_effector,
+            "changedChannel": changed_channel,
+        }
+        bake_from_result = session.bake_from_control_rig(0, int(end))
+        state_after_bake_from = session.describe_frontend_state(target_root)
+        keyed_channel = f"{changed_channel['joint']}.{changed_channel['channel']}"
+        keyed_curves = cmds.listConnections(
+            keyed_channel,
+            source=True,
+            destination=False,
+            type="animCurve",
+        ) or []
+        report.update(
+            {
+                "bakeFromResult": bake_from_result.to_dict(),
+                "stateAfterBakeFrom": state_after_bake_from,
+                "targetInputTypeAfterBakeFrom": int(
+                    mel.eval(f'hikGetInputType("{target_character}")')
+                ),
+            }
+        )
+        report["checks"].update(
+            {
+                "editedJointChannelChanged": abs(changed_channel["delta"]) > 1.0e-4,
+                "bakeFromKeyCountPositive": bake_from_result.key_count > 0,
+                "bakeFromResidualWithinTolerance": bake_from_result.max_error <= 1.0e-5,
+                "targetEditedChannelKeyed": bool(keyed_curves),
+                "previewClearedAfterBakeFrom": session.active_preview is None,
+                "controlRigClearedAfterBakeFrom": not bool(
+                    mel.eval(f'hikHasControlRig("{target_character}")')
+                ),
+                "noActiveTransactionsAfterBakeFrom": not any(
+                    item.active for item in session._control_rig_transactions.values()
+                ),
+            }
+        )
+        report["targetEditedChannelAnimCurves"] = sorted(str(curve) for curve in keyed_curves)
+        if not all(report["checks"].values()):
+            raise RuntimeError(f"Bake From Control Rig acceptance failed: {report['checks']}")
         report["status"] = "pass"
     except Exception as exc:  # noqa: BLE001 - completion/report must always be emitted
         text = str(exc)
@@ -248,9 +424,13 @@ def run_probe(
     finally:
         _restore()
         if report["status"] == "pass":
+            # Bake-From intentionally tears down the target preview and
+            # Control Rig as part of the successful authoring operation.  In
+            # that completed state restore_mmd_rig() correctly returns False
+            # because there is nothing left to restore; the post-bake state is
+            # the acceptance evidence instead.
             restore_ok = all(
                 (
-                    report.get("restoreMmdRigReturned"),
                     report.get("controlRigClearedAfterRestore"),
                     report.get("previewClearedAfterRestore"),
                     report.get("transactionCountAfterRestore") == 0,

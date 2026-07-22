@@ -39,6 +39,7 @@ ACTION_LABELS = (
     ("create_control_rig", "Create Control Rig"),
     ("bake_to_mmd_rig", "Bake to MMD Rig"),
     ("bake_to_control_rig", "Bake to Control Rig"),
+    ("bake_from_control_rig", "Bake From Control Rig"),
     ("restore_mmd_rig", "Restore MMD Rig"),
     ("diagnostics", "Diagnostics"),
 )
@@ -253,7 +254,7 @@ def _choose_model_from_scene(available_models) -> Optional[str]:
 
 def install_humanik_menu(parent="MMD", *, cmds_module=None, callback_dispatcher=None):
     """Install the HumanIK submenu with the "Open HumanIK Editor" entry plus
-    its eight staged workflow actions."""
+    its nine staged workflow actions."""
     global _cmds_module
     cmds = cmds_module or _maya_cmds()
     _cmds_module = cmds
@@ -587,6 +588,14 @@ def bake_to_control_rig(start=None, end=None):
     )
 
 
+def bake_from_control_rig(start=None, end=None):
+    """Bake edited target Control Rig output back to the MMD rig."""
+    return _run_action(
+        "Bake From Control Rig",
+        lambda: _bake_from_control_rig(start=start, end=end),
+    )
+
+
 def restore_mmd_rig():
     """Restore active preview state or pending setup characters without a model selection.
 
@@ -835,6 +844,24 @@ def _bake_to_control_rig(start=None, end=None):
     return result
 
 
+def _bake_from_control_rig(start=None, end=None):
+    """Bake edited Control Rig output using the fail-safe MMD authoring path."""
+    cmds = _cmds_module or _maya_cmds()
+    session = get_humanik_session()
+    if start is None:
+        start = math.ceil(float(cmds.playbackOptions(query=True, minTime=True)))
+    if end is None:
+        end = math.floor(float(cmds.playbackOptions(query=True, maxTime=True)))
+    start = int(start)
+    end = int(end)
+    if end < start:
+        raise ValueError(f"Bake frame range is empty after integer conversion: {start}..{end}")
+    result = session.bake_from_control_rig(start, end)
+    result_dict = result.to_dict() if hasattr(result, "to_dict") else dict(result)
+    _display_info("HumanIK Bake From Control Rig complete: " + json.dumps(result_dict, sort_keys=True))
+    return result
+
+
 def _show_diagnostics():
     session = get_humanik_session()
     try:
@@ -1064,6 +1091,7 @@ _ACTION_FUNCTIONS = {
     "create_control_rig": create_control_rig,
     "bake_to_mmd_rig": bake_to_mmd_rig,
     "bake_to_control_rig": bake_to_control_rig,
+    "bake_from_control_rig": bake_from_control_rig,
     "restore_mmd_rig": restore_mmd_rig,
     "diagnostics": diagnostics,
 }

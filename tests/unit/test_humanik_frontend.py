@@ -676,6 +676,49 @@ class TestHumanIkFrontend(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "target preview is not active"):
             session.bake_to_control_rig(3, 9)
 
+    def test_bake_from_control_rig_reuses_mmd_bake_and_releases_transaction(self):
+        session = _session()
+        target = _result()
+        binding = HumanIkFrontendBinding(
+            model_root="|target",
+            character="Character_target",
+            result=target,
+        )
+        session._bindings["|target"] = binding
+        session._source_model_root = "|source"
+        session._target_model_root = "|target"
+        session._preview = FakePreview()
+        transaction = FakeControlRigTransaction(character="Character_target")
+        session._control_rig_transactions["|target"] = transaction
+        fake_bake = HumanIkBakeResult(0, 1, 2, {}, 0.0, [])
+
+        def _stop(stopped, **_kwargs):
+            stopped.active = False
+
+        with patch(
+            "mmd_tools.core.humanik_frontend.bake_humanik_target_preview",
+            return_value=fake_bake,
+        ), patch(
+            "mmd_tools.core.humanik_frontend.stop_humanik_control_rig",
+            side_effect=_stop,
+        ) as stop:
+            self.assertIs(session.bake_from_control_rig(0, 1), fake_bake)
+
+        stop.assert_called_once_with(transaction, cmds_module=None, mel_module=None)
+        self.assertIsNone(session.active_preview)
+        self.assertNotIn("|target", session._control_rig_transactions)
+        self.assertFalse(binding.control_rig_created)
+
+    def test_bake_from_control_rig_requires_active_transaction_before_sampling(self):
+        session = _session()
+        session._preview = FakePreview()
+        session._target_model_root = "|target"
+
+        with patch("mmd_tools.core.humanik_frontend.bake_humanik_target_preview") as bake:
+            with self.assertRaisesRegex(RuntimeError, "Control Rig transaction is not active"):
+                session.bake_from_control_rig(0, 1)
+        bake.assert_not_called()
+
 
 class FakeHikSceneCmds:
     """Minimal ``cmds`` double for external-source scene scans.
