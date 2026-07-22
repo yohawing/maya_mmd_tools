@@ -1,13 +1,16 @@
-"""Maya GUI/commandPort probe for baking a live HumanIK retarget to Control Rig.
+"""Maya GUI/commandPort probe for a HumanIK Control Rig round trip.
 
-The probe uses the smallest checked-in PMX/VMD pair by default, imports motion
-onto SOURCE, characterizes SOURCE/TARGET, creates the target Control Rig through
-the frontend transaction, starts TARGET preview, and invokes the public
-``HumanIkFrontendSession.bake_to_control_rig`` route.  It verifies that native
-``hikBakeToControlRig`` leaves the Control Rig and transaction alive/editable,
-then restores the full topology.  Control Rig creation requires an interactive
-Maya GUI; a batch/licensing/GUI obstacle is recorded verbatim as ``blocked`` in
-the JSON report rather than being reported as a fabricated pass.
+The normal path imports the smallest checked-in PMX/VMD pair with the MMD
+``setup_rig=True`` importer option, imports motion onto SOURCE,
+characterizes SOURCE/TARGET, creates the target Control Rig through the
+frontend transaction, starts TARGET preview, and invokes the public
+``HumanIkFrontendSession.bake_to_control_rig`` route.  It verifies native bake,
+Control Rig edit propagation, exact importer foot-IK writer isolation, and
+writer/topology restoration after ``bake_from_control_rig`` teardown.
+``--no-setup-rig`` keeps a short direct-joint route available for release/nightly
+coverage.  Control Rig creation requires an interactive Maya GUI; a
+batch/licensing/GUI obstacle is recorded verbatim as ``blocked`` in the JSON
+report rather than being reported as a fabricated pass.
 
 Host-side usage::
 
@@ -25,7 +28,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
@@ -40,6 +43,28 @@ LOG_POLL_INTERVAL = 1.0
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+
+# These are the only importer-created CCDIK nodes that the HumanIK ownership
+# policy allows to be isolated.  Keep this list explicit: a broad ``mmdCcdIk``
+# mute would hide a genuine writer conflict or DG cycle in a release gate.
+EXPECTED_FOOT_CCDIK_NODES = frozenset(
+    {
+        "left_leg_ik_mmdCcdIk",
+        "left_toe_ik_mmdCcdIk",
+        "right_leg_ik_mmdCcdIk",
+        "right_toe_ik_mmdCcdIk",
+    }
+)
+
+
+def _foot_ccdik_key(node: str) -> Optional[str]:
+    """Return the canonical importer foot-IK name for a Maya node path."""
+    leaf = str(node).rsplit("|", 1)[-1].rsplit(":", 1)[-1]
+    return next(
+        (expected for expected in EXPECTED_FOOT_CCDIK_NODES if expected.lower() == leaf.lower()),
+        None,
+    )
 
 
 def _is_gui_obstacle(error: str) -> bool:
@@ -77,7 +102,7 @@ def run_probe(
     vmd_path: str,
     report_path: str,
     end: int = 10,
-    setup_rig: bool = False,
+    setup_rig: bool = True,
 ) -> None:
     import traceback
 
@@ -114,7 +139,7 @@ def run_probe(
         if not cmds.pluginInfo(plugin_path.stem, query=True, loaded=True):
             cmds.loadPlugin(str(plugin_path), quiet=True)
 
-    def _import_model(path: Path, *, setup_rig: bool = False) -> str:
+    def _import_model(path: Path, *, setup_rig: bool = True) -> str:
         from mmd_tools.io.mmd_importer import import_mmd_file
 
         root = import_mmd_file(
@@ -167,6 +192,145 @@ def run_probe(
         """Return one DAG node's evaluated world-space translation."""
         value = cmds.xform(node, query=True, worldSpace=True, translation=True)
         return tuple(float(component) for component in value)
+
+    def _edge_connected(source: str, destination: str) -> bool:
+        """Return whether one exact source/destination DG edge is connected."""
+        try:
+            return bool(cmds.isConnected(str(source), str(destination)))
+        except Exception:
+            incoming = cmds.listConnections(
+                str(destination), source=True, destination=False, plugs=True
+            ) or []
+            return str(source) in {str(value) for value in incoming}
+
+    def _foot_ownership_rows(
+        ownership: Dict[str, Any], model_root: str
+    ) -> Dict[str, Dict[str, Any]]:
+        """Index the four reviewed importer foot CCDIK rows by canonical name."""
+        # ``inspect_target_ownership`` has already scoped this report to the
+        # characterized target joints.  Do not compare its destination plugs
+        # with assignment strings again: Maya may return one side as a full DAG
+        # path and the other as a short name.
+        raw_rows = ownership.get("constraintRows")
+        if raw_rows is None:
+            nested_ownership = ownership.get("ownership")
+            raw_rows = (
+                nested_ownership.get("rows", ())
+                if isinstance(nested_ownership, dict)
+                else ownership.get("rows", ())
+            )
+        rows: Dict[str, Dict[str, Any]] = {}
+        root_leaf = str(model_root).rsplit("|", 1)[-1]
+        namespace = root_leaf.split(":", 1)[0] if ":" in root_leaf else ""
+        for row in raw_rows:
+            if row.get("nodeType") != "mmdCcdIk":
+                continue
+            node = str(row.get("node", ""))
+            node_leaf = node.rsplit("|", 1)[-1]
+            if namespace and not node_leaf.startswith(f"{namespace}:"):
+                continue
+            key = _foot_ccdik_key(node)
+            if key is not None:
+                rows[key] = dict(row)
+        return rows
+
+    def _foot_transaction_edges(edges) -> List[Dict[str, str]]:
+        """Keep only transaction edges owned by the reviewed foot CCDIK set."""
+        return [
+            dict(edge)
+            for edge in edges or ()
+            if _foot_ccdik_key(
+                str(edge.get("node") or str(edge.get("source", "")).rsplit(".", 1)[0])
+            )
+            is not None
+        ]
+
+    def _writer_edges_for_nodes(rows: Dict[str, Dict[str, Any]]) -> List[Dict[str, str]]:
+        """Capture exact source/destination edges for reviewed foot CCDIK rows."""
+        edges: List[Dict[str, str]] = []
+        for row in rows.values():
+            node = str(row.get("node", ""))
+            for destination in sorted(str(value) for value in row.get("writes", ())):
+                for source in cmds.listConnections(
+                    destination, source=True, destination=False, plugs=True
+                ) or []:
+                    source = str(source)
+                    if source.rsplit(".", 1)[0] == node:
+                        edges.append(
+                            {
+                                "node": node,
+                                "source": source,
+                                "destination": destination,
+                            }
+                        )
+        return sorted(edges, key=lambda item: (item["node"], item["destination"], item["source"]))
+
+    def _foot_ik_isolation(
+        ownership: Dict[str, Any],
+        transaction,
+        *,
+        model_root: str,
+        recorded_edges: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
+        """Describe the reviewed foot set and exact edge state at one lifecycle point."""
+        rows = _foot_ownership_rows(ownership, model_root)
+        expected = sorted(EXPECTED_FOOT_CCDIK_NODES)
+        isolated_nodes = sorted(str(node) for node in (transaction.isolated_feedback_nodes if transaction else ()))
+        edges = _foot_transaction_edges(
+            recorded_edges
+            if recorded_edges is not None
+            else (transaction.disconnected if transaction else ())
+        )
+        edge_states = [
+            {
+                **dict(edge),
+                "connected": _edge_connected(edge["source"], edge["destination"]),
+            }
+            for edge in edges
+        ]
+        row_names = sorted(rows)
+        row_feedback = all(
+            rows.get(name, {}).get("classification") in {"mute_for_hik", "feedback_blocker"}
+            and bool(rows.get(name, {}).get("writes"))
+            for name in expected
+        )
+        node_set_matches = set(row_names) == set(expected)
+        disconnected_nodes = {
+            _foot_ccdik_key(str(edge.get("node") or edge.get("source", "")))
+            for edge in edges
+            if _foot_ccdik_key(str(edge.get("node") or edge.get("source", ""))) is not None
+        }
+        isolated_nodes = sorted(
+            {
+                node for node in isolated_nodes if _foot_ccdik_key(node) is not None
+            }
+            | {
+                str(edge.get("node") or str(edge.get("source", "")).rsplit(".", 1)[0])
+                for edge in edges
+                if edge.get("node") or edge.get("source")
+            }
+        )
+        isolated_set_matches = {
+            _foot_ccdik_key(node) or str(node).rsplit("|", 1)[-1].rsplit(":", 1)[-1]
+            for node in isolated_nodes
+        } == set(expected) and disconnected_nodes.issubset(set(expected))
+        return {
+            "expectedNodes": expected,
+            "ownershipRows": rows,
+            "ownershipNodeSetMatches": node_set_matches,
+            "allRowsReviewedFeedback": row_feedback,
+            "isolatedFeedbackNodes": isolated_nodes,
+            "isolatedNodeSetMatches": isolated_set_matches,
+            "recordedEdges": edges,
+            "edgeStates": edge_states,
+            "recordedEdgesCount": len(edges),
+            "allRecordedEdgesDisconnected": bool(edges) and not any(
+                state["connected"] for state in edge_states
+            ),
+            "allRecordedEdgesRestored": bool(edges) and all(
+                state["connected"] for state in edge_states
+            ),
+        }
 
     def _distance(left, right) -> float:
         """Return the Euclidean distance between two world-space points."""
@@ -434,10 +598,10 @@ def run_probe(
         cmds.file(new=True, force=True)
         _load_plugin()
 
-        # The compact fixture's optional MMD IK rig contributes manual writer
-        # blockers to TARGET preview.  HIK bake only needs characterized joints
-        # and source animCurves, so keep both imports in the minimal direct-joint
-        # mode used by the retarget smoke paths.
+        # The normal regression path deliberately keeps the importer-created MMD
+        # CCDIK graph.  The Control Rig transaction must isolate only the four
+        # reviewed foot nodes while it owns TARGET; ``setup_rig=False`` remains
+        # available for short direct-joint release/nightly coverage.
         source_root = _import_model(pmx, setup_rig=setup_rig)
         target_root = _import_model(pmx, setup_rig=setup_rig)
         report.update({"sourceRoot": source_root, "targetRoot": target_root})
@@ -456,6 +620,8 @@ def run_probe(
             profile=FULL_ASSIGNMENT_PROFILE,
             include_fingers=True,
         )
+        ownership_before_control_rig = session.inspect_target_ownership(target_root)
+        foot_before = _foot_ownership_rows(ownership_before_control_rig, target_root)
         report.update(
             {
                 "sourceCharacter": source_binding.character,
@@ -463,15 +629,62 @@ def run_probe(
                 "sourceAssignmentCount": len(source_binding.assignments),
                 "targetAssignmentCount": len(target_binding.assignments),
                 "sourceAnimCurveCountAfterVmd": source_anim_curve_count,
+                "targetFootOwnershipBeforeControlRig": foot_before,
             }
         )
+
+        if setup_rig and set(foot_before) != set(EXPECTED_FOOT_CCDIK_NODES):
+            raise RuntimeError(
+                "Expected exactly four importer foot mmdCcdIk ownership rows in setup_rig=True mode: "
+                f"found={sorted(foot_before)}"
+            )
+        if setup_rig and not all(
+            row.get("classification") in {"mute_for_hik", "feedback_blocker"}
+            and row.get("writes")
+            for row in foot_before.values()
+        ):
+            raise RuntimeError(
+                "Importer foot mmdCcdIk rows were not all reviewed feedback blockers: "
+                f"{foot_before}"
+            )
 
         session.create_control_rig(target_root)
         target_character = target_binding.character
         rig_before_preview = bool(mel.eval(f'hikHasControlRig("{target_character}")'))
+        transaction = session._control_rig_transactions.get(target_root)
+        foot_transaction = _foot_ik_isolation(
+            ownership_before_control_rig,
+            transaction,
+            model_root=target_root,
+        )
+        report["footIkIsolationAfterControlRig"] = foot_transaction
+        report["checks"].update(
+            {
+                "footIkNodesReviewedAndIsolated": (
+                    not setup_rig
+                    or (
+                        foot_transaction["ownershipNodeSetMatches"]
+                        and foot_transaction["allRowsReviewedFeedback"]
+                        and foot_transaction["isolatedNodeSetMatches"]
+                        and foot_transaction["recordedEdgesCount"] > 0
+                    )
+                ),
+                "footIkWriterEdgesDisconnectedBeforePreview": (
+                    not setup_rig
+                    or foot_transaction["allRecordedEdgesDisconnected"]
+                ),
+            }
+        )
         session.enter_target_mode(target_root)
         state_before = session.describe_frontend_state(target_root)
         transaction = session._control_rig_transactions.get(target_root)
+        foot_preview = _foot_ik_isolation(
+            ownership_before_control_rig,
+            transaction,
+            model_root=target_root,
+            recorded_edges=(transaction.disconnected if transaction else []),
+        )
+        report["footIkIsolationDuringPreview"] = foot_preview
         report["stateBeforeBake"] = state_before
         report["checks"].update(
             {
@@ -479,11 +692,24 @@ def run_probe(
                 "targetControlRigBeforePreview": rig_before_preview,
                 "previewActiveBeforeBake": session.active_preview is not None,
                 "transactionActiveBeforeBake": bool(transaction and transaction.active),
+                "footIkWriterEdgesDisconnectedDuringPreview": (
+                    not setup_rig or foot_preview["allRecordedEdgesDisconnected"]
+                ),
             }
         )
 
         bake_to_result = session.bake_to_control_rig(0, int(end))
         transaction_after = session._control_rig_transactions.get(target_root)
+        foot_after_bake_to = _foot_ik_isolation(
+            ownership_before_control_rig,
+            transaction_after,
+            model_root=target_root,
+            recorded_edges=(transaction_after.disconnected if transaction_after else []),
+        )
+        report["footIkIsolationAfterBakeTo"] = foot_after_bake_to
+        recorded_foot_edges = _foot_transaction_edges(
+            transaction_after.disconnected if transaction_after else ()
+        )
         input_type = int(mel.eval(f'hikGetInputType("{target_character}")'))
         state_after_bake_to = session.describe_frontend_state(target_root)
         report.update(
@@ -505,6 +731,9 @@ def run_probe(
                 # Control Rig input (Maya 2024 reports the native enum as 1;
                 # direct SOURCE input is 3).
                 "controlRigInputAfterBake": input_type == 1,
+                "footIkWriterEdgesDisconnectedAfterBakeTo": (
+                    not setup_rig or foot_after_bake_to["allRecordedEdgesDisconnected"]
+                ),
             }
         )
         foot_drive = _verify_foot_effector_drive(target_binding.assignments, target_character)
@@ -525,6 +754,29 @@ def run_probe(
         }
         bake_from_result = session.bake_from_control_rig(0, int(end))
         state_after_bake_from = session.describe_frontend_state(target_root)
+        ownership_after_bake_from = session.inspect_target_ownership(target_root)
+        foot_after_bake_from = _foot_ik_isolation(
+            ownership_after_bake_from,
+            None,
+            model_root=target_root,
+            recorded_edges=recorded_foot_edges,
+        )
+        restored_foot_edges = _writer_edges_for_nodes(
+            _foot_ownership_rows(ownership_after_bake_from, target_root)
+        )
+        recorded_edge_pairs = {
+            (str(edge["source"]), str(edge["destination"]))
+            for edge in recorded_foot_edges
+        }
+        restored_edge_pairs = {
+            (str(edge["source"]), str(edge["destination"]))
+            for edge in restored_foot_edges
+        }
+        report["footIkRestorationAfterBakeFrom"] = {
+            **foot_after_bake_from,
+            "restoredEdges": restored_foot_edges,
+            "recordedTopologyRestored": recorded_edge_pairs == restored_edge_pairs,
+        }
         keyed_channel = f"{changed_channel['joint']}.{changed_channel['channel']}"
         keyed_curves = cmds.listConnections(
             keyed_channel,
@@ -553,6 +805,18 @@ def run_probe(
                 ),
                 "noActiveTransactionsAfterBakeFrom": not any(
                     item.active for item in session._control_rig_transactions.values()
+                ),
+                "footIkWriterEdgesRestoredAfterBakeFrom": (
+                    not setup_rig
+                    or foot_after_bake_from["allRecordedEdgesRestored"]
+                ),
+                "footIkTopologyRestoredAfterBakeFrom": (
+                    not setup_rig
+                    or (
+                        foot_after_bake_from["ownershipNodeSetMatches"]
+                        and foot_after_bake_from["allRowsReviewedFeedback"]
+                        and report["footIkRestorationAfterBakeFrom"]["recordedTopologyRestored"]
+                    )
                 ),
             }
         )
@@ -592,16 +856,33 @@ def run_probe(
 # Host-side launcher/commandPort driver
 # ===================================================================
 def main() -> int:
-    parser = argparse.ArgumentParser(description="HumanIK bake-to-Control-Rig GUI probe")
+    parser = argparse.ArgumentParser(
+        description=(
+            "HumanIK bake-to-Control-Rig GUI regression probe "
+            "(default: full importer MMD rig round trip)"
+        )
+    )
     parser.add_argument("--maya", default="2024")
     parser.add_argument("--pmx", default="tests/data/mmt_test_model.pmx")
     parser.add_argument("--vmd", default="tests/data/mmt_test_model_test_motion.vmd")
     parser.add_argument("--end", type=int, default=10)
-    parser.add_argument(
+    setup_group = parser.add_mutually_exclusive_group()
+    setup_group.add_argument(
         "--setup-rig",
+        dest="setup_rig",
         action="store_true",
-        help="Opt into importer setup_rig=True (retains MMD IK nodes to reproduce blocker evidence).",
+        help="Use the full importer MMD rig path (default).",
     )
+    setup_group.add_argument(
+        "--no-setup-rig",
+        dest="setup_rig",
+        action="store_false",
+        help=(
+            "Use direct-joint importer mode for short release/nightly coverage "
+            "(for example, --end 1)."
+        ),
+    )
+    parser.set_defaults(setup_rig=True)
     parser.add_argument("--port", type=int, default=COMMAND_PORT)
     parser.add_argument(
         "--out",
@@ -628,6 +909,7 @@ def main() -> int:
         "errors": [],
     }
     proc = None
+    maya_port_ready = False
     try:
         if not pmx_path.is_file() or not vmd_path.is_file():
             obstacle = f"Fixtures not found: pmx={pmx_path} vmd={vmd_path}"
@@ -643,11 +925,13 @@ def main() -> int:
             launch_mode="explorer" if sys.platform == "win32" else "direct",
         )
         maya_commandport.wait_for_port(args.port, timeout=120, process=proc)
+        maya_port_ready = True
         command = (
-            "import sys; "
+            "import importlib, sys; "
             f"sys.path.insert(0, {json.dumps(str(_PROJECT_ROOT))}); "
-            "from tests.viewport.humanik_bake_to_control_rig_probe import run_probe; "
-            f"run_probe({json.dumps(str(log_path))}, {json.dumps(str(pmx_path))}, "
+            "import tests.viewport.humanik_bake_to_control_rig_probe as _probe; "
+            "importlib.reload(_probe); "
+            f"_probe.run_probe({json.dumps(str(log_path))}, {json.dumps(str(pmx_path))}, "
             f"{json.dumps(str(vmd_path))}, {json.dumps(str(output))}, {int(args.end)}, "
             f"{bool(args.setup_rig)})"
         )
@@ -683,11 +967,21 @@ def main() -> int:
         logger.error("probe did not run: %s", obstacle)
         return 2 if base_report["status"] == "blocked" else 1
     finally:
-        if proc is not None:
+        if maya_port_ready:
             try:
-                maya_commandport.quit_maya(args.port)
+                # The imported/edited probe scene can keep Maya's normal quit
+                # request alive despite ``force=True``.  Clear only this
+                # dedicated probe process before asking it to exit.
+                maya_commandport.send_python(
+                    args.port,
+                    "import maya.cmds as cmds\n"
+                    "cmds.file(new=True, force=True)\n"
+                    "cmds.quit(force=True)\n",
+                    label="<humanik-bake-to-control-rig-probe-cleanup>",
+                )
             except Exception:
                 pass
+        if proc is not None:
             maya_commandport.close_process_logs(proc)
 
 
