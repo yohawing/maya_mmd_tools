@@ -607,14 +607,6 @@ def run_probe(
         report.update({"sourceRoot": source_root, "targetRoot": target_root})
 
         session = HumanIkFrontendSession(cmds_module=cmds, mel_module=mel)
-        source_binding = session.setup_and_characterize(
-            source_root,
-            profile=FULL_ASSIGNMENT_PROFILE,
-            include_fingers=True,
-        )
-        session.enter_source_mode(source_root)
-        _import_motion(vmd, pmx, source_root)
-        source_anim_curve_count = len(cmds.ls(type="animCurve") or [])
         target_binding = session.setup_and_characterize(
             target_root,
             profile=FULL_ASSIGNMENT_PROFILE,
@@ -624,11 +616,8 @@ def run_probe(
         foot_before = _foot_ownership_rows(ownership_before_control_rig, target_root)
         report.update(
             {
-                "sourceCharacter": source_binding.character,
                 "targetCharacter": target_binding.character,
-                "sourceAssignmentCount": len(source_binding.assignments),
                 "targetAssignmentCount": len(target_binding.assignments),
-                "sourceAnimCurveCountAfterVmd": source_anim_curve_count,
                 "targetFootOwnershipBeforeControlRig": foot_before,
             }
         )
@@ -672,6 +661,34 @@ def run_probe(
                 "footIkWriterEdgesDisconnectedBeforePreview": (
                     not setup_rig
                     or foot_transaction["allRecordedEdgesDisconnected"]
+                ),
+            }
+        )
+
+        # Match the GUI regression order: the selected TARGET already owns an
+        # active Control Rig when an uncharacterized SOURCE is connected.  Its
+        # temporarily disconnected foot writers must not pollute the SOURCE's
+        # canonical-stance ownership report.
+        source_binding = session.setup_and_characterize(
+            source_root,
+            profile=FULL_ASSIGNMENT_PROFILE,
+            include_fingers=True,
+        )
+        session.enter_source_mode(source_root)
+        _import_motion(vmd, pmx, source_root)
+        source_anim_curve_count = len(cmds.ls(type="animCurve") or [])
+        report.update(
+            {
+                "sourceCharacter": source_binding.character,
+                "sourceAssignmentCount": len(source_binding.assignments),
+                "sourceAnimCurveCountAfterVmd": source_anim_curve_count,
+            }
+        )
+        report["checks"].update(
+            {
+                "targetControlRigActiveBeforeSourceCharacterize": rig_before_preview,
+                "sourceCharacterizedAfterTargetControlRig": bool(
+                    source_binding.character and source_binding.assignments
                 ),
             }
         )

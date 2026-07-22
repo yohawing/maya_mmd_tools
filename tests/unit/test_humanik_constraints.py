@@ -1,15 +1,67 @@
 """Unit tests for report-only HumanIK constraint classification."""
 
 import unittest
+from unittest.mock import patch
 
 from mmd_tools.core.humanik_constraints import (
     HumanIkConstraintFacts,
     classify_humanik_constraints,
+    collect_hik_ownership_report,
     preisolated_mmd_ccdik_nodes_from_disconnected_edges,
 )
 
 
 class TestHumanIkConstraints(unittest.TestCase):
+    def test_ownership_report_excludes_other_models_disconnected_manual_nodes(self):
+        facts = [
+            HumanIkConstraintFacts(
+                "src:left_leg_ik_mmdCcdIk",
+                "mmdCcdIk",
+                reads=("|src|left_leg_ik.translate",),
+                writes=("|src|left_leg.rotate",),
+            ),
+            HumanIkConstraintFacts(
+                "tgt:left_leg_ik_mmdCcdIk",
+                "mmdCcdIk",
+                reads=("|tgt|left_leg.translate",),
+                writes=(),
+            ),
+        ]
+
+        with patch(
+            "mmd_tools.core.humanik_constraints.collect_humanik_constraint_facts",
+            return_value=facts,
+        ):
+            report = collect_hik_ownership_report(
+                {"|src|left_leg"},
+                cmds_module=object(),
+            )
+
+        self.assertEqual(
+            [row["node"] for row in report["rows"]],
+            ["src:left_leg_ik_mmdCcdIk"],
+        )
+        self.assertEqual(report["counts"], {"mute_for_hik": 1})
+
+    def test_ownership_report_keeps_same_model_disconnected_manual_node(self):
+        fact = HumanIkConstraintFacts(
+            "src:left_leg_ik_mmdCcdIk",
+            "mmdCcdIk",
+            reads=("|src|left_leg.translate",),
+            writes=(),
+        )
+
+        with patch(
+            "mmd_tools.core.humanik_constraints.collect_humanik_constraint_facts",
+            return_value=[fact],
+        ):
+            report = collect_hik_ownership_report(
+                {"|src|left_leg"},
+                cmds_module=object(),
+            )
+
+        self.assertEqual(report["rows"][0]["classification"], "manual")
+
     def test_preisolated_ccdik_edge_requires_exact_importer_foot_rotate_topology(self):
         valid_node = "|target:left_leg_ik_mmdCcdIk"
         valid_edge = {

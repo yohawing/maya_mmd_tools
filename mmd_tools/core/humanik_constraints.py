@@ -243,7 +243,23 @@ def collect_hik_ownership_report(
         The same report shape ``classify_humanik_constraints`` returns.
     """
     cmds = cmds_module or maya_cmds()
-    return classify_humanik_constraints(collect_humanik_constraint_facts(cmds_module=cmds), hik_joints)
+    hik = {str(joint) for joint in hik_joints}
+    facts = collect_humanik_constraint_facts(cmds_module=cmds)
+    # Fact collection is intentionally scene-global, but ownership is not.
+    # A different characterized model may currently have its MMD writers
+    # disconnected by an active TARGET/Control Rig transaction; those nodes
+    # then look ``manual`` and must not block this model's SOURCE stance.
+    # Keep rows that directly read or write this character's HIK joints.
+    scoped_facts = [
+        fact
+        for fact in facts
+        if {
+            _joint_from_plug(plug)
+            for plug in (*fact.reads, *fact.writes)
+        }
+        & hik
+    ]
+    return classify_humanik_constraints(scoped_facts, hik)
 
 
 def split_ownership_rows(
