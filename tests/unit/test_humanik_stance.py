@@ -118,6 +118,19 @@ def _assignments():
     )
 
 
+def _leg_assignments():
+    return _assignments() + (
+        _assignment("LeftUpLeg", "|model|left_leg"),
+        _assignment("LeftLeg", "|model|left_knee"),
+        _assignment("LeftFoot", "|model|left_ankle"),
+        _assignment("LeftToeBase", "|model|left_toe"),
+        _assignment("RightUpLeg", "|model|right_leg"),
+        _assignment("RightLeg", "|model|right_knee"),
+        _assignment("RightFoot", "|model|right_ankle"),
+        _assignment("RightToeBase", "|model|right_toe"),
+    )
+
+
 def _setter(cmds):
     def apply(joint, child, target):
         parent = cmds.matrices[joint]
@@ -187,6 +200,63 @@ class TestHumanIkStance(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "ownership blocked"):
             tx.prepare()
         self.assertFalse(any(call[0] in {"disconnectAttr", "setAttr"} for call in cmds.calls))
+
+    def test_supported_mmd_ccdik_foot_feedback_isolated_and_restored(self):
+        cmds = _FakeCmds()
+        node = "|left_leg_ik_mmdCcdIk"
+        left_leg = "|model|left_leg.rotate"
+        left_knee = "|model|left_knee.rotate"
+        cmds.connections[left_leg] = [f"{node}.outputRotate[0]"]
+        cmds.connections[left_knee] = [f"{node}.outputRotate[1]"]
+        report = {
+            "rows": [{
+                "node": node,
+                "nodeType": "mmdCcdIk",
+                "classification": "feedback_blocker",
+                "reads": ["|model|left_leg.translate", "|model|left_leg_ik.translate"],
+                "readHikJoints": ["|model|left_leg"],
+                "readOutsideJoints": ["|model|left_leg_ik"],
+                "writes": [left_leg, left_knee],
+            }],
+            "counts": {"feedback_blocker": 1},
+        }
+        tx = HumanIkStanceTransaction(
+            "|model",
+            _leg_assignments(),
+            ownership_report=report,
+            cmds_module=cmds,
+            world_matrix_setter=_setter(cmds),
+        )
+
+        tx.enter()
+        self.assertEqual(cmds.connections[left_leg], [])
+        self.assertEqual(cmds.connections[left_knee], [])
+        self.assertEqual(
+            [row["node"] for row in tx.ownership_snapshot["temporarilyIsolatedFeedbackRows"]],
+            [node],
+        )
+        tx.restore()
+        self.assertEqual(cmds.connections[left_leg], [f"{node}.outputRotate[0]"])
+        self.assertEqual(cmds.connections[left_knee], [f"{node}.outputRotate[1]"])
+
+    def test_unsupported_mmd_ccdik_feedback_remains_blocked(self):
+        node = "|left_arm_ik_mmdCcdIk"
+        destination = "|model|left_arm.rotate"
+        tx, cmds = self._transaction(report={
+            "rows": [{
+                "node": node,
+                "nodeType": "mmdCcdIk",
+                "classification": "feedback_blocker",
+                "reads": ["|model|left_arm.translate", "|model|left_arm_ik.translate"],
+                "writes": [destination],
+            }],
+            "counts": {"feedback_blocker": 1},
+        })
+        cmds.connections[destination] = [f"{node}.outputRotate[0]"]
+
+        with self.assertRaisesRegex(RuntimeError, "ownership blocked"):
+            tx.prepare()
+        self.assertFalse(any(call[0] == "disconnectAttr" for call in cmds.calls))
 
     def test_zero_edge_target_is_valid_and_restorable(self):
         tx, cmds = self._transaction()

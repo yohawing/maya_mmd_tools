@@ -3,7 +3,8 @@
 The implementation is the productionized, single-model form of the stance
 helpers used by ``tests/viewport/humanik_roundtrip_smoke.py``.  It snapshots
 the two arm joints, isolates reviewed ``mute_for_hik`` edges plus direct
-arm-pose writers, uses each arm's current horizontal world direction as its
+arm-pose writers and the narrowly supported importer-owned mmdCcdIk foot
+feedback edges, uses each arm's current horizontal world direction as its
 target, and restores the snapshot before reconnecting the exact original
 topology.
 """
@@ -11,6 +12,7 @@ topology.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -36,6 +38,22 @@ STANCE_USABLE_DIRECTION_TOLERANCE = 2.0 * math.sin(
     STANCE_USABLE_ANGLE_TOLERANCE_RADIANS / 2.0
 )
 REQUIRED_ARM_SLOTS = {"LeftArm": "LeftForeArm", "RightArm": "RightForeArm"}
+SUPPORTED_FOOT_HIK_SLOTS = frozenset(
+    {
+        "LeftUpLeg",
+        "LeftLeg",
+        "LeftFoot",
+        "LeftToeBase",
+        "RightUpLeg",
+        "RightLeg",
+        "RightFoot",
+        "RightToeBase",
+    }
+)
+_MMD_CCDIK_FOOT_NAME = re.compile(
+    r"(?P<side>left|right)_(?P<kind>leg|toe)_ik_mmdccdik$",
+    re.IGNORECASE,
+)
 logger = get_logger(__name__)
 
 
@@ -298,6 +316,61 @@ def _edge_connected(cmds, source: str, destination: str) -> bool:
         return source in incoming_sources(cmds, destination)
 
 
+def _supported_mmd_ccdik_feedback_row(
+    row: Mapping[str, Any],
+    assignments: Iterable[HumanIkBoneAssignment],
+) -> bool:
+    """Return whether a feedback row is the importer-owned foot IK graph.
+
+    ``mmdCcdIk`` leg/toe nodes normally read both the HIK leg chain and an
+    external IK controller, which the report-only classifier correctly marks
+    as ``feedback_blocker``.  During canonical stance we can safely
+    isolate that exact importer graph, but only when every written channel is
+    a rotate channel on the same-side HIK leg/foot slots.  This intentionally
+    rejects arbitrary CCDIK feedback, manual writers, and physics nodes.
+    """
+    if row.get("classification") != "feedback_blocker" or row.get("nodeType") != "mmdCcdIk":
+        return False
+    node = str(row.get("node", ""))
+    match = _MMD_CCDIK_FOOT_NAME.search(node.rsplit("|", 1)[-1].rsplit(":", 1)[-1])
+    if match is None:
+        return False
+    # Keep the exception tied to the classifier's proven feedback shape.  A
+    # hand-authored row with the same node name but no complete read evidence
+    # must remain blocked rather than becoming name-based permission.
+    if not row.get("reads") or not row.get("readHikJoints") or not row.get("readOutsideJoints"):
+        return False
+
+    assignments_by_joint = {
+        str(assignment.joint): str(assignment.hik_bone)
+        for assignment in assignments
+    }
+    write_slots = set()
+    writes = [str(plug) for plug in row.get("writes", ())]
+    if not writes:
+        return False
+    for plug in writes:
+        if "." not in plug:
+            return False
+        joint, attribute = plug.rsplit(".", 1)
+        if attribute not in {"rotate", "rotateX", "rotateY", "rotateZ"}:
+            return False
+        slot = assignments_by_joint.get(joint)
+        if slot not in SUPPORTED_FOOT_HIK_SLOTS:
+            return False
+        write_slots.add(slot)
+
+    side = match.group("side").capitalize()
+    allowed = {
+        f"{side}UpLeg",
+        f"{side}Leg",
+    } if match.group("kind").lower() == "leg" else {
+        f"{side}Foot",
+        f"{side}ToeBase",
+    }
+    return bool(write_slots) and write_slots.issubset(allowed)
+
+
 @dataclass
 class HumanIkStanceTransaction:
     """One model-scoped automatic horizontal arm stance transaction."""
@@ -339,7 +412,16 @@ class HumanIkStanceTransaction:
             tuple(str(item.joint) for item in self.assignments),
             cmds_module=cmds,
         )
-        blockers = [row for row in report.get("rows", []) if row.get("classification") in BLOCKING_CLASSIFICATIONS]
+        supported_feedback = [
+            row
+            for row in report.get("rows", [])
+            if _supported_mmd_ccdik_feedback_row(row, self.assignments)
+        ]
+        blockers = [
+            row
+            for row in report.get("rows", [])
+            if row.get("classification") in BLOCKING_CLASSIFICATIONS and row not in supported_feedback
+        ]
         if blockers:
             labels = ", ".join(f"{row.get('node')}:{row.get('classification')}" for row in blockers)
             raise RuntimeError(f"Canonical T-pose ownership blocked: {labels}")
@@ -396,7 +478,7 @@ class HumanIkStanceTransaction:
             "rows": skin_rows,
         }
         self.ownership_report = report
-        self.ownership_snapshot = self._capture_ownership_snapshot(report, chains)
+        self.ownership_snapshot = self._capture_ownership_snapshot(report, chains, supported_feedback)
         self.stance_evidence = {
             "mode": "automatic-horizontal-world-t-pose",
             "upAxis": "Y",
@@ -687,12 +769,17 @@ class HumanIkStanceTransaction:
         self,
         report: Mapping[str, Any],
         chains: Mapping[str, Tuple[str, str]],
+        supported_feedback: Iterable[Mapping[str, Any]] = (),
     ) -> Dict[str, Any]:
         edges = []
         seen = set()
+        supported_feedback_nodes = {str(row.get("node", "")) for row in supported_feedback}
+        isolated_rows = []
         for row in report.get("rows", []):
-            if row.get("classification") != "mute_for_hik":
+            classification = row.get("classification")
+            if classification != "mute_for_hik" and str(row.get("node", "")) not in supported_feedback_nodes:
                 continue
+            isolated_rows.append(row)
             for destination in row.get("writes", []):
                 baseline = incoming_sources(self.cmds, str(destination))
                 matched = [source for source in baseline if source.rsplit(".", 1)[0] == str(row.get("node", ""))]
@@ -710,6 +797,7 @@ class HumanIkStanceTransaction:
                         "destination": edge[1],
                         "node": str(row.get("node", "")),
                         "nodeType": str(row.get("nodeType", "")),
+                        "classification": str(row.get("classification", "")),
                         "baselineIncomingSources": baseline,
                     }
                 )
@@ -748,6 +836,7 @@ class HumanIkStanceTransaction:
         return {
             "classificationCounts": dict(report.get("counts", {})),
             "rows": list(report.get("rows", [])),
+            "temporarilyIsolatedFeedbackRows": [dict(row) for row in isolated_rows if row in supported_feedback],
             "edges": sorted(edges, key=lambda item: (item["destination"], item["source"])),
             "poseWriterEdges": sorted(pose_writer_edges, key=lambda item: (item["destination"], item["source"])),
             "topologyIsolated": False,
