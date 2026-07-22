@@ -10,7 +10,9 @@ writer/topology restoration after ``bake_from_control_rig`` teardown.
 ``--no-setup-rig`` keeps a short direct-joint route available for release/nightly
 coverage.  Control Rig creation requires an interactive Maya GUI; a
 batch/licensing/GUI obstacle is recorded verbatim as ``blocked`` in the JSON
-report rather than being reported as a fabricated pass.
+report rather than being reported as a fabricated pass.  The probe also
+captures the characterized TARGET world-matrix pose over the bake range and
+records translation/basis-angle residuals after native Control Rig input.
 
 Host-side usage::
 
@@ -24,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import re
 import sys
 import time
@@ -192,6 +195,222 @@ def run_probe(
         """Return one DAG node's evaluated world-space translation."""
         value = cmds.xform(node, query=True, worldSpace=True, translation=True)
         return tuple(float(component) for component in value)
+
+    # Keep the parity gate focused on the characterized body slots that are
+    # meaningful for a Control Rig round trip.  Reference/extra spine/neck
+    # slots are optional because the checked-in MMD resolver does not populate
+    # every Maya HIK slot for every model.  The hips and bilateral limbs are
+    # required: a report that silently compared only one surviving joint would
+    # not prove that the target preview pose survived the bake.
+    target_pose_slots = (
+        "Reference",
+        "Hips",
+        "Spine",
+        "Spine1",
+        "Spine2",
+        "Spine3",
+        "Neck",
+        "Head",
+        "LeftShoulder",
+        "LeftArm",
+        "LeftForeArm",
+        "LeftHand",
+        "RightShoulder",
+        "RightArm",
+        "RightForeArm",
+        "RightHand",
+        "LeftUpLeg",
+        "LeftLeg",
+        "LeftFoot",
+        "LeftToeBase",
+        "RightUpLeg",
+        "RightLeg",
+        "RightFoot",
+        "RightToeBase",
+    )
+    target_pose_required_slots = frozenset(
+        {
+            "Hips",
+            "LeftUpLeg",
+            "LeftLeg",
+            "LeftFoot",
+            "RightUpLeg",
+            "RightLeg",
+            "RightFoot",
+            "LeftArm",
+            "LeftForeArm",
+            "LeftHand",
+            "RightArm",
+            "RightForeArm",
+            "RightHand",
+        }
+    )
+    # Maya linear units/radians: these bounds admit the measured native bake
+    # quantization at frame 0 while still rejecting materially larger drift.
+    target_pose_translation_tolerance = 1.0e-2
+    target_pose_rotation_tolerance_radians = 2.0e-3
+
+    def _world_matrix(node: str) -> tuple:
+        """Return one evaluated world matrix as 16 row-major floats."""
+        value = cmds.getAttr(f"{node}.worldMatrix[0]")
+        while isinstance(value, (tuple, list)) and len(value) == 1:
+            value = value[0]
+        matrix = tuple(float(component) for component in value)
+        if len(matrix) != 16 or not all(math.isfinite(component) for component in matrix):
+            raise RuntimeError(f"Invalid worldMatrix for characterized joint {node}: {matrix}")
+        return matrix
+
+    def _translation_residual(left, right) -> float:
+        """Return world-space translation distance between two matrices."""
+        return math.sqrt(
+            sum((right[index] - left[index]) ** 2 for index in (12, 13, 14))
+        )
+
+    def _basis_angle(left, right) -> float:
+        """Return the largest normalized basis-axis angle between matrices."""
+        angles = []
+        for offset in (0, 4, 8):
+            left_basis = left[offset : offset + 3]
+            right_basis = right[offset : offset + 3]
+            left_length = math.sqrt(sum(value * value for value in left_basis))
+            right_length = math.sqrt(sum(value * value for value in right_basis))
+            if left_length <= 1.0e-12 or right_length <= 1.0e-12:
+                # A degenerate basis is not a valid orientation; use the
+                # largest finite angular residual so JSON remains strict.
+                return math.pi
+            cosine = sum(
+                left_basis[index] * right_basis[index]
+                for index in range(3)
+            ) / (left_length * right_length)
+            cosine = max(-1.0, min(1.0, cosine))
+            angles.append(math.acos(cosine))
+        return max(angles)
+
+    def _target_pose_assignments(assignments):
+        """Select requested HIK slots and identify optional/core omissions."""
+        by_slot = {str(item.hik_bone): str(item.joint) for item in assignments}
+        selected = []
+        skipped = []
+        for slot in target_pose_slots:
+            joint = by_slot.get(slot)
+            if joint and cmds.objExists(joint):
+                selected.append((slot, joint))
+            else:
+                skipped.append(slot)
+        missing_required = sorted(target_pose_required_slots.intersection(skipped))
+        return selected, skipped, missing_required
+
+    def _capture_target_pose(assignments, start: int, end: int):
+        """Capture evaluated TARGET world matrices over the explicit frame range."""
+        selected, skipped, missing_required = _target_pose_assignments(assignments)
+        snapshots: Dict[int, Dict[str, Dict[str, Any]]] = {}
+        original_frame = float(cmds.currentTime(query=True))
+        try:
+            for frame in range(int(start), int(end) + 1):
+                cmds.currentTime(frame, edit=True)
+                cmds.refresh(force=True)
+                snapshots[frame] = {
+                    slot: {"joint": joint, "worldMatrix": _world_matrix(joint)}
+                    for slot, joint in selected
+                }
+        finally:
+            cmds.currentTime(original_frame, edit=True)
+            cmds.refresh(force=True)
+        return snapshots, selected, skipped, missing_required
+
+    def _target_pose_motion(snapshots, selected, start: int, end: int) -> Dict[str, Any]:
+        """Prove that SOURCE-driven TARGET preview is not a static pose."""
+        max_translation = 0.0
+        max_rotation = 0.0
+        worst_translation = None
+        worst_rotation = None
+        baseline = snapshots[int(start)]
+        for frame in range(int(start) + 1, int(end) + 1):
+            for slot, joint in selected:
+                first = baseline[slot]["worldMatrix"]
+                current = snapshots[frame][slot]["worldMatrix"]
+                translation = _translation_residual(first, current)
+                rotation = _basis_angle(first, current)
+                row = {"frame": frame, "hikBone": slot, "joint": joint}
+                if worst_translation is None or translation > max_translation:
+                    max_translation = translation
+                    worst_translation = {**row, "translationFromStart": translation}
+                if worst_rotation is None or rotation > max_rotation:
+                    max_rotation = rotation
+                    worst_rotation = {**row, "rotationFromStartRadians": rotation}
+        # A valid retarget clip may be translation-only or rotation-only. The
+        # thresholds reject evaluation noise without prescribing one channel.
+        animated = max_translation > 1.0e-3 or max_rotation > 1.0e-4
+        return {
+            "maxTranslationFromStart": max_translation,
+            "maxRotationFromStartRadians": max_rotation,
+            "worstTranslation": worst_translation,
+            "worstRotation": worst_rotation,
+            "animated": animated,
+        }
+
+    def _compare_target_pose(before, selected, start: int, end: int) -> Dict[str, Any]:
+        """Compare TARGET preview matrices with the post-bake Control Rig pose."""
+        diagnostics = []
+        max_translation = 0.0
+        max_rotation = 0.0
+        worst_translation = None
+        worst_rotation = None
+        original_frame = float(cmds.currentTime(query=True))
+
+        try:
+            for frame in range(int(start), int(end) + 1):
+                cmds.currentTime(frame, edit=True)
+                cmds.refresh(force=True)
+                frame_rows = []
+                for slot, joint in selected:
+                    before_matrix = before[frame][slot]["worldMatrix"]
+                    after_matrix = _world_matrix(joint)
+                    translation = _translation_residual(before_matrix, after_matrix)
+                    rotation = _basis_angle(before_matrix, after_matrix)
+                    row = {
+                        "hikBone": slot,
+                        "joint": joint,
+                        "translationResidual": translation,
+                        "rotationResidualRadians": rotation,
+                    }
+                    frame_rows.append(row)
+                    if worst_translation is None or translation > max_translation:
+                        max_translation = translation
+                        worst_translation = {"frame": frame, **row}
+                    if worst_rotation is None or rotation > max_rotation:
+                        max_rotation = rotation
+                        worst_rotation = {"frame": frame, **row}
+                diagnostics.append(
+                    {
+                        "frame": frame,
+                        "joints": frame_rows,
+                        "maxTranslationResidual": max(
+                            (row["translationResidual"] for row in frame_rows), default=0.0
+                        ),
+                        "maxRotationResidualRadians": max(
+                            (row["rotationResidualRadians"] for row in frame_rows), default=0.0
+                        ),
+                    }
+                )
+        finally:
+            cmds.currentTime(original_frame, edit=True)
+            cmds.refresh(force=True)
+        translation_ok = max_translation <= target_pose_translation_tolerance
+        rotation_ok = max_rotation <= target_pose_rotation_tolerance_radians
+        return {
+            "frames": diagnostics,
+            "frameCount": len(diagnostics),
+            "maxTranslationResidual": max_translation,
+            "maxRotationResidualRadians": max_rotation,
+            "worstTranslation": worst_translation,
+            "worstRotation": worst_rotation,
+            "translationTolerance": target_pose_translation_tolerance,
+            "rotationToleranceRadians": target_pose_rotation_tolerance_radians,
+            "translationWithinTolerance": translation_ok,
+            "rotationWithinTolerance": rotation_ok,
+            "poseParity": bool(diagnostics) and translation_ok and rotation_ok,
+        }
 
     def _edge_connected(source: str, destination: str) -> bool:
         """Return whether one exact source/destination DG edge is connected."""
@@ -715,6 +934,53 @@ def run_probe(
             }
         )
 
+        # Capture the evaluated TARGET pose while SOURCE-driven preview is
+        # active.  The same TARGET joints are sampled again after native
+        # Control Rig input is enabled by bake_to_control_rig; SOURCE and
+        # TARGET translations are intentionally never compared directly.
+        (
+            target_pose_before,
+            target_pose_selected,
+            target_pose_skipped,
+            target_pose_missing_required,
+        ) = _capture_target_pose(target_binding.assignments, 0, int(end))
+        target_pose_motion = _target_pose_motion(
+            target_pose_before,
+            target_pose_selected,
+            0,
+            int(end),
+        )
+        target_pose_report = {
+            "requestedSlots": list(target_pose_slots),
+            "comparedSlots": [
+                {"hikBone": slot, "joint": joint}
+                for slot, joint in target_pose_selected
+            ],
+            "skippedOptionalSlots": sorted(
+                set(target_pose_skipped) - target_pose_required_slots
+            ),
+            "missingRequiredSlots": target_pose_missing_required,
+            "requiredSlots": sorted(target_pose_required_slots),
+            "previewMotion": target_pose_motion,
+        }
+        report["targetPreviewPose"] = target_pose_report
+        expected_frame_count = max(0, int(end) + 1)
+        report["checks"].update(
+            {
+                "targetPoseRequiredSlotsPresent": not target_pose_missing_required,
+                "targetPoseFramesCaptured": (
+                    bool(target_pose_before)
+                    and len(target_pose_before) == expected_frame_count
+                ),
+                "targetPreviewPoseAnimated": target_pose_motion["animated"],
+            }
+        )
+        if target_pose_missing_required:
+            raise RuntimeError(
+                "TARGET characterized skeleton is missing required pose slots: "
+                f"{target_pose_missing_required}"
+            )
+
         bake_to_result = session.bake_to_control_rig(0, int(end))
         transaction_after = session._control_rig_transactions.get(target_root)
         foot_after_bake_to = _foot_ik_isolation(
@@ -751,6 +1017,32 @@ def run_probe(
                 "footIkWriterEdgesDisconnectedAfterBakeTo": (
                     not setup_rig or foot_after_bake_to["allRecordedEdgesDisconnected"]
                 ),
+            }
+        )
+        target_pose_parity = _compare_target_pose(
+            target_pose_before,
+            target_pose_selected,
+            0,
+            int(end),
+        )
+        target_pose_report.update(target_pose_parity)
+        target_pose_report["checks"] = {
+            "requiredSlotsPresent": report["checks"]["targetPoseRequiredSlotsPresent"],
+            "framesCaptured": report["checks"]["targetPoseFramesCaptured"],
+            "previewAnimated": report["checks"]["targetPreviewPoseAnimated"],
+            "translationWithinTolerance": target_pose_parity["translationWithinTolerance"],
+            "rotationWithinTolerance": target_pose_parity["rotationWithinTolerance"],
+            "poseParity": target_pose_parity["poseParity"],
+        }
+        report["checks"].update(
+            {
+                "targetPreviewPoseTranslationWithinTolerance": target_pose_parity[
+                    "translationWithinTolerance"
+                ],
+                "targetPreviewPoseRotationWithinTolerance": target_pose_parity[
+                    "rotationWithinTolerance"
+                ],
+                "targetPreviewPoseParityAfterBake": target_pose_parity["poseParity"],
             }
         )
         foot_drive = _verify_foot_effector_drive(target_binding.assignments, target_character)
