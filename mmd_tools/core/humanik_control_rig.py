@@ -53,6 +53,7 @@ from mmd_tools.core.humanik_constraints import (
     split_ownership_rows,
 )
 from mmd_tools.core.humanik_preview import (
+    HumanIkTargetPreview,
     disconnect_residual_muted_writers,
     disconnect_reviewed_writers,
     re_isolate_reviewed_edges,
@@ -90,6 +91,7 @@ class HumanIkControlRigTransaction:
     isolated_feedback_nodes: List[str] = field(default_factory=list)
     pre_cycle_baseline: List[str] = field(default_factory=list)
     post_cycle_plugs: List[str] = field(default_factory=list)
+    preview: Optional[HumanIkTargetPreview] = None
     active: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
@@ -103,6 +105,7 @@ class HumanIkControlRigTransaction:
             "isolatedFeedbackNodes": list(self.isolated_feedback_nodes),
             "preCycleBaseline": list(self.pre_cycle_baseline),
             "postCyclePlugs": list(self.post_cycle_plugs),
+            "preview": self.preview.to_dict() if self.preview is not None else None,
             "active": self.active,
         }
 
@@ -119,6 +122,9 @@ class HumanIkControlRigTransaction:
             "isolatedFeedbackNodes": list(self.isolated_feedback_nodes),
             "preCycleBaseline": list(self.pre_cycle_baseline),
             "postCyclePlugs": list(self.post_cycle_plugs),
+            "preview": (
+                self.preview.to_scene_dict() if self.preview is not None else None
+            ),
             "active": bool(self.active),
         }
 
@@ -140,6 +146,14 @@ class HumanIkControlRigTransaction:
         disconnected = row.get("disconnected", [])
         if not isinstance(disconnected, list) or not all(isinstance(item, dict) for item in disconnected):
             raise ValueError("HumanIK transaction disconnected must be an array")
+        preview_payload = row.get("preview")
+        preview = (
+            HumanIkTargetPreview.from_scene_dict(preview_payload)
+            if preview_payload is not None
+            else None
+        )
+        if preview is not None and preview.target_character != row["character"]:
+            raise ValueError("HumanIK transaction preview character mismatch")
         return cls(
             ownership_id=row["ownershipId"],
             character=row["character"],
@@ -150,6 +164,7 @@ class HumanIkControlRigTransaction:
             isolated_feedback_nodes=_string_list("isolatedFeedbackNodes"),
             pre_cycle_baseline=_string_list("preCycleBaseline"),
             post_cycle_plugs=_string_list("postCyclePlugs"),
+            preview=preview,
             active=bool(row.get("active", True)),
         )
 

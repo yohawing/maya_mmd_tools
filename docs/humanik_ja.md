@@ -61,7 +61,7 @@ MMDモデルをSourceに選ぶ場合はこのチェックは行われず、従�
 
 Sourceコンボの表示は、ユーザーが最後にクリックした値ではなく、常にバックエンドの実際の状態（`describe_frontend_state()` が返すSOURCEバインディング）に同期されます。接続や切断が失敗・キャンセルされた場合、コンボは実際の状態に戻ります。
 
-シーンを開き直した場合やプラグインを再読み込みした場合も、Maya標準HumanIKに残っているDirect Character Input（SOURCE/TARGET関係）を読み戻してSourceコンボへ表示します。ただし、表示を復元できても前セッションの一時的なプレビュー所有情報までは再構築しません。復元履歴が無い状態でBakeやRestoreを安全に実行できると誤認しないよう、操作可否は保持されている復元状態に基づいて判定されます。
+シーンを開き直した場合やプラグインを再読み込みした場合も、Maya標準HumanIKに残っているDirect Character Input（SOURCE/TARGET関係）を読み戻してSourceコンボへ表示します。プラグイン経由で作成したControl Rigでは、Bake/Restoreに必要なプレビュー復元情報もControl Rig transactionと一緒にシーンへ保存されるため、再読み込み後も同じBake経路を継続できます。Mayaの標準UIから作られたControl Rigや、復元情報を持たない旧シーンは安全に再構築できないため、推測でBakeを有効化しません。
 
 ### ステータス行
 

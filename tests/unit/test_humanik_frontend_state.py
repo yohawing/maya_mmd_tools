@@ -51,15 +51,22 @@ def _result():
 
 
 class FakePreview:
-    def __init__(self):
+    def __init__(
+        self,
+        target_character="Character_target",
+        source_character="Character_source",
+    ):
         self.active = True
         self.restore_state = object()
+        self.target_character = target_character
+        self.source_character = source_character
 
 
 class FakeControlRigTransaction:
-    def __init__(self, character="Character_source"):
+    def __init__(self, character="Character_source", preview=None):
         self.active = True
         self.character = character
+        self.preview = preview
 
 
 class FakeScenePairMel:
@@ -286,10 +293,15 @@ class TestDescribeFrontendStateSource(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "active HumanIK SOURCE"):
             session.create_control_rig("|source")
 
-    def test_reopened_scene_pair_is_reported_without_claiming_preview_ownership(self):
+    def test_reopened_scene_pair_recovers_bindings_preview_and_bake_action(self):
         session = _session()
+        source_binding = _characterize(session, "|source", "Character_source")
+        target_binding = _characterize(session, "|target", "Character_target")
+        session._bindings.clear()
+        persisted_preview = FakePreview()
         session._control_rig_transactions["|target"] = FakeControlRigTransaction(
-            "Character_target"
+            "Character_target",
+            preview=persisted_preview,
         )
         scene_pair = {
             "source": {
@@ -306,18 +318,29 @@ class TestDescribeFrontendStateSource(unittest.TestCase):
             "inputType": 3,
         }
 
+        bindings = {"|source": source_binding, "|target": target_binding}
+
+        def adopt(model_root):
+            binding = bindings[model_root]
+            session._bindings[model_root] = binding
+            return binding
+
         with patch.object(
-            session,
-            "_describe_scene_retarget_pair",
-            return_value=scene_pair,
-        ):
+            session, "_describe_scene_retarget_pair", return_value=scene_pair
+        ), patch.object(session, "_adopt_existing_character", side_effect=adopt):
             state = session.describe_frontend_state("|target")
 
-        self.assertEqual(state["mode"], FRONTEND_MODE_CONTROL_RIG)
-        self.assertEqual(state["source"], scene_pair["source"])
-        self.assertEqual(state["target"], scene_pair["target"])
+        self.assertEqual(state["mode"], FRONTEND_MODE_TARGET_PREVIEW)
+        self.assertEqual(state["source"]["modelRoot"], "|source")
+        self.assertEqual(state["target"]["modelRoot"], "|target")
         self.assertTrue(state["sceneRetargetActive"])
-        self.assertFalse(state["previewActive"])
+        self.assertTrue(state["previewActive"])
+        self.assertIs(session.active_preview, persisted_preview)
+        self.assertTrue(state["actions"]["bake_to_control_rig"]["allowed"])
+        self.assertNotEqual(
+            state["actions"]["create_control_rig"]["reasonCode"],
+            REASON_NOT_CHARACTERIZED,
+        )
         self.assertEqual(
             state["controlRigs"],
             [{"modelRoot": "|target", "character": "Character_target"}],

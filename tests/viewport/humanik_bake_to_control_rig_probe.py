@@ -927,8 +927,8 @@ def run_probe(
         session.enter_target_mode(target_root)
         state_before = session.describe_frontend_state(target_root)
         # Simulate a reopened/reloaded frontend process while Maya retains the
-        # native direct Character Input.  The fresh session owns no preview,
-        # but its UI state must still reconcile the scene SOURCE/TARGET pair.
+        # native direct Character Input.  The fresh session must recover both
+        # UI truth and the persisted reversible preview context used by Bake.
         reopened_session = HumanIkFrontendSession(cmds_module=cmds, mel_module=mel)
         reopened_state = reopened_session.describe_frontend_state(target_root)
         report["reopenedScenePair"] = reopened_state
@@ -952,9 +952,10 @@ def run_probe(
                 "reopenedSceneTargetMatches": (
                     (reopened_state.get("target") or {}).get("modelRoot") == target_root
                 ),
-                "reopenedScenePairIsTruthfulNotOwned": (
+                "reopenedScenePairRecoversBakeContext": (
                     reopened_state.get("sceneRetargetActive") is True
-                    and reopened_state.get("previewActive") is False
+                    and reopened_state.get("previewActive") is True
+                    and reopened_state["actions"]["bake_to_control_rig"]["allowed"]
                 ),
                 "transactionActiveBeforeBake": bool(transaction and transaction.active),
                 "footIkWriterEdgesDisconnectedDuringPreview": (
@@ -1010,6 +1011,10 @@ def run_probe(
                 f"{target_pose_missing_required}"
             )
 
+        # All remaining operations intentionally use the fresh session.  This
+        # is the UI/menu regression gate: a backend-only original session can
+        # no longer hide failure to recover Character/Source/Bake capability.
+        session = reopened_session
         bake_to_result = session.bake_to_control_rig(0, int(end))
         transaction_after = session._control_rig_transactions.get(target_root)
         foot_after_bake_to = _foot_ik_isolation(

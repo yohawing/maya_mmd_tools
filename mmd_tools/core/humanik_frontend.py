@@ -536,6 +536,88 @@ class HumanIkFrontendSession:
             "inputType": input_type,
         }
 
+    def _reconcile_scene_retarget_context(
+        self,
+        model_root: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Rebuild the usable frontend context for a persisted scene pair.
+
+        Maya persists the direct Character Input and this plugin persists the
+        Control Rig transaction, while ``_bindings`` and ``_preview`` are
+        process-local.  When all scene facts agree, adopt the characterized
+        SOURCE/TARGET definitions and rebuild the reversible preview handle
+        from the persisted transaction.  No Maya scene data is edited.
+        """
+        scene_pair = self._describe_scene_retarget_pair(model_root)
+        if scene_pair is None or self.active_preview is not None:
+            return scene_pair
+
+        transaction = self._control_rig_transactions.get(model_root)
+        persisted_preview = getattr(transaction, "preview", None)
+        if (
+            transaction is None
+            or not transaction.active
+            or persisted_preview is None
+            or not persisted_preview.active
+        ):
+            return scene_pair
+
+        target_character = str(scene_pair["target"]["character"])
+        source_character = str(scene_pair["source"]["character"])
+        if str(transaction.character) != target_character:
+            logger.warning(
+                "HumanIK scene pair transaction character mismatch: target=%s, transaction=%s",
+                target_character,
+                transaction.character,
+            )
+            return scene_pair
+        if (
+            persisted_preview.target_character != target_character
+            or persisted_preview.source_character != source_character
+        ):
+            logger.warning(
+                "HumanIK persisted preview does not match the native scene pair: "
+                "target=%s, source=%s",
+                target_character,
+                source_character,
+            )
+            return scene_pair
+
+        try:
+            target_binding = self._bindings.get(model_root) or self._adopt_existing_character(
+                model_root
+            )
+            if target_binding is None or target_binding.character != target_character:
+                raise RuntimeError(
+                    "persisted TARGET character does not match the characterized model"
+                )
+
+            source_model_root = scene_pair["source"]["modelRoot"]
+            if source_model_root is not None:
+                source_binding = self._bindings.get(
+                    source_model_root
+                ) or self._adopt_existing_character(source_model_root)
+                if source_binding is None or source_binding.character != source_character:
+                    raise RuntimeError(
+                        "persisted SOURCE character does not match the characterized model"
+                    )
+                self._source_model_root = source_model_root
+                self._external_source_character = None
+            else:
+                self._source_model_root = None
+                self._external_source_character = source_character
+        except Exception as exc:
+            logger.warning(
+                "HumanIK scene pair frontend reconciliation failed for %s: %s",
+                model_root,
+                exc,
+            )
+            return scene_pair
+
+        self._target_model_root = model_root
+        self._preview = persisted_preview
+        return scene_pair
+
     @property
     def active_preview(self) -> Optional[HumanIkTargetPreview]:
         """Return the active target preview, if any."""
@@ -898,9 +980,12 @@ class HumanIkFrontendSession:
             )
             disconnected = True
         if preview is not None and not preview.active:
+            if transaction is not None:
+                transaction.preview = None
             self._preview = None
             self._target_model_root = None
             self._ownership_report = None
+            self._persist_control_rig_transactions()
 
         if self._source_model_root is not None or self._external_source_character is not None:
             self._source_model_root = None
@@ -977,6 +1062,9 @@ class HumanIkFrontendSession:
         )
         self._target_model_root = key
         self._preview = preview
+        if transaction is not None and transaction.active:
+            transaction.preview = preview
+            self._persist_control_rig_transactions()
         return preview
 
     def create_control_rig(self, model_root: str) -> bool:
@@ -1040,7 +1128,9 @@ class HumanIkFrontendSession:
         preview = self.active_preview
         if preview is None or self._target_model_root is None:
             raise RuntimeError("HumanIK target preview is not active")
-        target = self._bindings[self._target_model_root]
+        target_root = self._target_model_root
+        target = self._bindings[target_root]
+        transaction = self._control_rig_transactions.get(target_root)
         try:
             result = bake_humanik_target_preview(
                 preview,
@@ -1052,13 +1142,19 @@ class HumanIkFrontendSession:
             )
         except Exception:
             if not preview.active:
+                if transaction is not None:
+                    transaction.preview = None
                 self._preview = None
                 self._target_model_root = None
                 self._ownership_report = None
+                self._persist_control_rig_transactions()
             raise
+        if transaction is not None:
+            transaction.preview = None
         self._preview = None
         self._target_model_root = None
         self._ownership_report = None
+        self._persist_control_rig_transactions()
         return result
 
     def bake_to_control_rig(self, start: int, end: int) -> HumanIkControlRigBakeResult:
@@ -1661,6 +1757,9 @@ class HumanIkFrontendSession:
             and (only when ``model_root`` is given) ``importLock``.
         """
         key = self._optional_model_root(model_root)
+        scene_pair = (
+            self._reconcile_scene_retarget_context(key) if key is not None else None
+        )
         preview_active = bool(self.active_preview)
         source_binding = (
             self._bindings.get(self._source_model_root) if self._source_model_root else None
@@ -1687,11 +1786,8 @@ class HumanIkFrontendSession:
             )
 
         external_source = self._external_source_character
-        scene_pair = (
-            self._describe_scene_retarget_pair(key)
-            if key is not None and source_binding is None and external_source is None
-            else None
-        )
+        if scene_pair is None and key is not None and source_binding is None and external_source is None:
+            scene_pair = self._describe_scene_retarget_pair(key)
         baked_control_rig_detached = bool(
             preview_active
             and source_binding is None

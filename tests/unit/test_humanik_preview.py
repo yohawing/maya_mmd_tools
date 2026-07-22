@@ -4,9 +4,11 @@ import unittest
 from unittest.mock import patch
 
 from mmd_tools.core.humanik_preview import (
+    HumanIkTargetPreview,
     begin_humanik_target_preview,
     stop_humanik_target_preview,
 )
+from mmd_tools.core.humanik_transaction import HumanIkRestoreState
 
 
 class FakeCmds:
@@ -102,6 +104,40 @@ class ResidualReconnectingMel(ReconnectingMel):
 
 
 class TestHumanIkPreview(unittest.TestCase):
+    def test_scene_payload_round_trip_preserves_reversible_preview_context(self):
+        restore_state = HumanIkRestoreState(
+            "owner:target",
+            "Target",
+            True,
+            "",
+            -1,
+            [],
+            [],
+        )
+        preview = HumanIkTargetPreview(
+            ownership_id="owner:target",
+            target_character="Target",
+            source_character="Source",
+            restore_state=restore_state,
+            disconnected=[{"source": "ik.output", "destination": "joint.rotateX"}],
+            retained_nodes=["constraint1"],
+            post_report={"rows": []},
+            isolated_feedback_rows=[],
+            finger_solving_previous=1,
+            left_elbow_kill_pitch_previous=0,
+        )
+
+        recovered = HumanIkTargetPreview.from_scene_dict(preview.to_scene_dict())
+
+        self.assertTrue(recovered.active)
+        self.assertEqual(recovered.target_character, "Target")
+        self.assertEqual(recovered.source_character, "Source")
+        self.assertEqual(recovered.restore_state.to_dict(), restore_state.to_dict())
+        self.assertEqual(recovered.disconnected, preview.disconnected)
+        self.assertEqual(recovered.retained_nodes, preview.retained_nodes)
+        self.assertEqual(recovered.finger_solving_previous, 1)
+        self.assertEqual(recovered.left_elbow_kill_pitch_previous, 0)
+
     def test_supported_importer_foot_feedback_isolated_for_preview_and_restored(self):
         cmds, mel = FakeCmds(), FakeMel()
         node = "|left_leg_ik_mmdCcdIk"

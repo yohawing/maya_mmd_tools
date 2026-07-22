@@ -15,7 +15,7 @@ exactly like ``input_source``/``lock_state`` are restored via the restore_state.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from mmd_tools.core.humanik_builder import (
     HUMANIK_FINGER_SOLVING_DISABLED,
@@ -77,6 +77,78 @@ class HumanIkTargetPreview:
             "fingerSolvingPreviousValue": self.finger_solving_previous,
             "leftElbowKillPitchPreviousValue": self.left_elbow_kill_pitch_previous,
         }
+
+    def to_scene_dict(self) -> Dict[str, Any]:
+        """Return the reversible subset required after a scene reload."""
+        return {
+            "ownershipId": self.ownership_id,
+            "targetCharacter": self.target_character,
+            "sourceCharacter": self.source_character,
+            "restore_state": self.restore_state.to_dict(),
+            "disconnected": list(self.disconnected),
+            "retainedNodes": list(self.retained_nodes),
+            "active": bool(self.active),
+            "fingerSolvingPreviousValue": self.finger_solving_previous,
+            "leftElbowKillPitchPreviousValue": self.left_elbow_kill_pitch_previous,
+        }
+
+    @classmethod
+    def from_scene_dict(cls, payload: Mapping[str, Any]) -> "HumanIkTargetPreview":
+        """Reconstruct and validate a persisted reversible preview handle."""
+        if not isinstance(payload, Mapping):
+            raise ValueError("HumanIK preview scene payload must be an object")
+        ownership_id = payload.get("ownershipId")
+        target_character = payload.get("targetCharacter")
+        source_character = payload.get("sourceCharacter")
+        if not isinstance(ownership_id, str) or not ownership_id:
+            raise ValueError("HumanIK preview ownershipId must be a non-empty string")
+        if not isinstance(target_character, str) or not target_character:
+            raise ValueError("HumanIK preview targetCharacter must be a non-empty string")
+        if not isinstance(source_character, str) or not source_character:
+            raise ValueError("HumanIK preview sourceCharacter must be a non-empty string")
+        restore_state = HumanIkRestoreState.from_dict(payload.get("restore_state", {}))
+        if restore_state.ownership_id != ownership_id:
+            raise ValueError("HumanIK preview restore_state ownership mismatch")
+        if restore_state.character != target_character:
+            raise ValueError("HumanIK preview restore_state character mismatch")
+
+        disconnected = payload.get("disconnected", [])
+        retained_nodes = payload.get("retainedNodes", [])
+        if not isinstance(disconnected, list) or not all(
+            isinstance(item, dict) for item in disconnected
+        ):
+            raise ValueError("HumanIK preview disconnected must be an array")
+        if not isinstance(retained_nodes, list) or not all(
+            isinstance(item, str) for item in retained_nodes
+        ):
+            raise ValueError("HumanIK preview retainedNodes must be an array of strings")
+        active = payload.get("active", True)
+        if not isinstance(active, bool):
+            raise ValueError("HumanIK preview active must be a boolean")
+
+        def _optional_int(key: str) -> Optional[int]:
+            value = payload.get(key)
+            if value is None:
+                return None
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"HumanIK preview {key} must be an integer or null")
+            return value
+
+        return cls(
+            ownership_id=ownership_id,
+            target_character=target_character,
+            source_character=source_character,
+            restore_state=restore_state,
+            disconnected=[dict(item) for item in disconnected],
+            retained_nodes=list(retained_nodes),
+            post_report={"rows": [], "sceneRecovered": True},
+            isolated_feedback_rows=[],
+            active=active,
+            finger_solving_previous=_optional_int("fingerSolvingPreviousValue"),
+            left_elbow_kill_pitch_previous=_optional_int(
+                "leftElbowKillPitchPreviousValue"
+            ),
+        )
 
 
 def begin_humanik_target_preview(

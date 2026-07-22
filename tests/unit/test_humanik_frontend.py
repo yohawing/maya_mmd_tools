@@ -174,6 +174,17 @@ class TestHumanIkFrontend(unittest.TestCase):
             "createdNodes": ["HIKControlSetNode1"],
             "preCycleBaseline": [],
             "postCyclePlugs": [],
+            "preview": {
+                "ownershipId": restore_state.ownership_id,
+                "targetCharacter": restore_state.character,
+                "sourceCharacter": "Character_source",
+                "restore_state": restore_state.to_dict(),
+                "disconnected": [],
+                "retainedNodes": [],
+                "active": True,
+                "fingerSolvingPreviousValue": 1,
+                "leftElbowKillPitchPreviousValue": 0,
+            },
             "active": True,
         }]
 
@@ -187,6 +198,9 @@ class TestHumanIkFrontend(unittest.TestCase):
         transaction = session._control_rig_transactions["|target"]
         self.assertTrue(transaction.active)
         self.assertEqual(transaction.restore_state.input_source, "")
+        self.assertIsNotNone(transaction.preview)
+        self.assertEqual(transaction.preview.source_character, "Character_source")
+        self.assertEqual(transaction.preview.finger_solving_previous, 1)
         find_model.assert_called_once_with("Character_target", session._cmds or find_model.call_args.args[1])
         persist_state.assert_not_called()
 
