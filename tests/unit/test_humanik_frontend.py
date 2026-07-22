@@ -6,7 +6,11 @@ from unittest.mock import patch
 from mmd_tools.core.humanik_bake import HumanIkBakeResult
 from mmd_tools.core.humanik_builder import HumanIkCharacterCreationError
 from mmd_tools.core.humanik_frontend import (
+    EXPECTED_BODY_ASSIGNMENT_COUNT,
+    EXPECTED_FINGER_ASSIGNMENT_COUNT,
+    EXPECTED_FULL_ASSIGNMENT_COUNT,
     FULL_ASSIGNMENT_PROFILE,
+    FRONTEND_ASSIGNMENT_PROFILE,
     HumanIkFrontendBinding,
     HumanIkFrontendSession,
     _split_body_assignments,
@@ -117,6 +121,29 @@ class FakeStance:
         }
 
 
+class FakeExistingHikMel:
+    """MEL double for authoritative ``hikGetSkNode`` adoption readback."""
+
+    def __init__(self, result, *, include_fingers=True, missing_indices=()):
+        self.calls = []
+        self._nodes = {
+            assignment.hik_index: assignment.joint
+            for assignment in result.assignments
+            if include_fingers or not any(
+                marker in str(assignment.hik_bone) for marker in ("Index", "Middle", "Ring", "Pinky", "Thumb")
+            )
+        }
+        for index in missing_indices:
+            self._nodes.pop(index, None)
+
+    def eval(self, command):
+        self.calls.append(command)
+        if not command.startswith("hikGetSkNode("):
+            raise AssertionError(f"unexpected MEL command: {command}")
+        index = int(command.rsplit(",", 1)[-1].split(")", 1)[0].strip())
+        return self._nodes.get(index, "")
+
+
 def _session():
     return HumanIkFrontendSession(stance_transaction_factory=FakeStance)
 
@@ -219,6 +246,144 @@ class TestHumanIkFrontend(unittest.TestCase):
             inferred_report = session.inspect_target_ownership("|source")
         self.assertEqual(inferred_report["profile"], FULL_ASSIGNMENT_PROFILE)
         self.assertEqual(inferred_report["assignmentCount"], 55)
+
+    @patch("mmd_tools.core.humanik_frontend.find_humanik_character_for_model", return_value='Character_"quoted\\node')
+    @patch("mmd_tools.core.humanik_frontend.get_humanik_definition_lock_state", return_value=True)
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_synthetic_55_result())
+    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition")
+    @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
+    def test_fresh_session_adopts_locked_full_without_characterize_or_stance(
+        self, lock, create, resolve, lock_state, find_character
+    ):
+        result = _synthetic_55_result()
+        mel = FakeExistingHikMel(result)
+        def stance_factory(*args, **kwargs):
+            self.fail("adoption must not create a stance")
+
+        session = HumanIkFrontendSession(
+            mel_module=mel,
+            stance_transaction_factory=stance_factory,
+        )
+
+        binding = session.setup_and_characterize("|model", profile=FULL_ASSIGNMENT_PROFILE)
+
+        self.assertEqual(binding.character, 'Character_"quoted\\node')
+        self.assertEqual(binding.profile, FULL_ASSIGNMENT_PROFILE)
+        self.assertEqual(len(binding.assignments), EXPECTED_FULL_ASSIGNMENT_COUNT)
+        create.assert_not_called()
+        lock.assert_not_called()
+        resolve.assert_called_once_with("|model", cmds_module=None)
+        find_character.assert_called_once_with("|model", cmds_module=None)
+        lock_state.assert_called_once()
+        self.assertTrue(any('\\"quoted' in command for command in mel.calls))
+        self.assertEqual(session._pending_stances, {})
+
+    @patch("mmd_tools.core.humanik_frontend.find_humanik_character_for_model", return_value="Character_body")
+    @patch("mmd_tools.core.humanik_frontend.get_humanik_definition_lock_state", return_value=True)
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_synthetic_55_result())
+    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition")
+    @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
+    def test_fresh_session_adopts_actual_body_only_when_default_requests_full(
+        self, lock, create, resolve, lock_state, find_character
+    ):
+        result = _synthetic_55_result()
+        mel = FakeExistingHikMel(result, include_fingers=False)
+        def stance_factory(*args, **kwargs):
+            self.fail("adoption must not create a stance")
+
+        session = HumanIkFrontendSession(
+            mel_module=mel,
+            stance_transaction_factory=stance_factory,
+        )
+
+        binding = session.setup_and_characterize("|model")
+
+        self.assertEqual(binding.profile, FRONTEND_ASSIGNMENT_PROFILE)
+        self.assertEqual(len(binding.assignments), EXPECTED_BODY_ASSIGNMENT_COUNT)
+        self.assertEqual(len(binding.excluded_finger_assignments), EXPECTED_FINGER_ASSIGNMENT_COUNT)
+        create.assert_not_called()
+        lock.assert_not_called()
+        resolve.assert_called_once()
+        find_character.assert_called_once()
+        lock_state.assert_called_once()
+
+    @patch("mmd_tools.core.humanik_frontend.find_humanik_character_for_model", return_value="Character_small_body")
+    @patch("mmd_tools.core.humanik_frontend.get_humanik_definition_lock_state", return_value=True)
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())
+    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition")
+    @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
+    def test_adoption_accepts_resolved_body_profile_below_nominal_count(
+        self, lock, create, resolve, lock_state, find_character
+    ):
+        result = _result()
+        mel = FakeExistingHikMel(result, include_fingers=False)
+
+        def stance_factory(*args, **kwargs):
+            self.fail("adoption must not create a stance")
+
+        session = HumanIkFrontendSession(
+            mel_module=mel,
+            stance_transaction_factory=stance_factory,
+        )
+
+        binding = session.setup_and_characterize("|model")
+
+        self.assertEqual(binding.profile, FRONTEND_ASSIGNMENT_PROFILE)
+        self.assertEqual(len(binding.assignments), 2)
+        self.assertEqual(len(binding.excluded_finger_assignments), 1)
+        create.assert_not_called()
+        lock.assert_not_called()
+        resolve.assert_called_once()
+        find_character.assert_called_once()
+        lock_state.assert_called_once()
+
+    @patch("mmd_tools.core.humanik_frontend.find_humanik_character_for_model", return_value="Character_unlocked")
+    @patch("mmd_tools.core.humanik_frontend.get_humanik_definition_lock_state", return_value=False)
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments")
+    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition")
+    @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
+    def test_fresh_session_rejects_unlocked_existing_character_without_mutation(
+        self, lock, create, resolve, lock_state, find_character
+    ):
+        session = HumanIkFrontendSession(
+            stance_transaction_factory=lambda *args, **kwargs: self.fail(
+                "unlocked adoption must not create a stance"
+            )
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "not locked"):
+            session.setup_and_characterize("|model")
+
+        resolve.assert_not_called()
+        create.assert_not_called()
+        lock.assert_not_called()
+        self.assertNotIn("|model", session._bindings)
+
+    @patch("mmd_tools.core.humanik_frontend.find_humanik_character_for_model", return_value="Character_incomplete")
+    @patch("mmd_tools.core.humanik_frontend.get_humanik_definition_lock_state", return_value=True)
+    @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_synthetic_55_result())
+    @patch("mmd_tools.core.humanik_frontend.create_humanik_definition")
+    @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
+    def test_fresh_session_rejects_incomplete_existing_character_without_mutation(
+        self, lock, create, resolve, lock_state, find_character
+    ):
+        result = _synthetic_55_result()
+        missing_index = result.assignments[0].hik_index
+        mel = FakeExistingHikMel(result, missing_indices=(missing_index,))
+        session = HumanIkFrontendSession(
+            mel_module=mel,
+            stance_transaction_factory=lambda *args, **kwargs: self.fail(
+                "incomplete adoption must not create a stance"
+            ),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "incomplete"):
+            session.setup_and_characterize("|model")
+
+        resolve.assert_called_once()
+        create.assert_not_called()
+        lock.assert_not_called()
+        self.assertNotIn("|model", session._bindings)
 
     @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
     @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")

@@ -52,7 +52,7 @@ from mmd_tools.core.humanik_transaction import (
     load_humanik_restore_state,
     persist_humanik_restore_state,
 )
-from mmd_tools.core.humanik_utils import maya_cmds, maya_mel
+from mmd_tools.core.humanik_utils import maya_cmds, maya_mel, mel_string
 from mmd_tools.core.logger import get_logger
 from mmd_tools.services.scene_model_service import SceneModelService
 
@@ -245,6 +245,23 @@ def _select_profile_result(
     return body_result, excluded
 
 
+def _maya_node_matches_assignment(actual_node: Any, expected_joint: str) -> bool:
+    """Return whether a HIK readback node identifies ``expected_joint``.
+
+    ``hikGetSkNode`` commonly returns a short DAG name even when the resolver
+    kept a long path.  Comparing both the complete spelling and the leaf keeps
+    the adoption check strict enough to reject a definition wired to another
+    model while remaining compatible with Maya's normal short-name readback.
+    """
+    if actual_node is None:
+        return False
+    actual = str(actual_node).strip()
+    expected = str(expected_joint or "").strip()
+    if not actual or not expected:
+        return False
+    return actual == expected or actual.rsplit("|", 1)[-1] == expected.rsplit("|", 1)[-1]
+
+
 def _assignment_row(assignment: HumanIkBoneAssignment) -> Dict[str, Any]:
     return {
         "joint": str(assignment.joint),
@@ -402,6 +419,128 @@ class HumanIkFrontendSession:
         """Return the active target preview, if any."""
         return self._preview if self._preview and self._preview.active else None
 
+    def _adopt_existing_character(
+        self,
+        model_root: str,
+    ) -> Optional[HumanIkFrontendBinding]:
+        """Adopt a complete, locked MMD HumanIK character already in the scene.
+
+        A frontend session is deliberately ephemeral: a new Maya Python
+        session must be able to recover a character created by an earlier
+        session without calling ``hikCreateCharacter`` or touching its lock or
+        stance.  The scene-fact association is proved by
+        :func:`find_humanik_character_for_model`; the assignment profile is
+        then inferred from authoritative ``hikGetSkNode`` readback.
+
+        ``None`` means that no character is associated with ``model_root`` and
+        the normal characterize path should proceed.  Once a character is
+        found, every validation failure raises instead of falling through to
+        characterization: silently replacing an existing definition would
+        trigger Maya's unlock dialog and could overwrite user edits.
+        """
+        character = find_humanik_character_for_model(model_root, cmds_module=self._cmds)
+        if not character:
+            return None
+
+        try:
+            locked = bool(
+                get_humanik_definition_lock_state(character, mel_module=self._mel)
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Could not query HumanIK definition lock state for existing character: "
+                f"character={character}, model={model_root}: {exc}"
+            ) from exc
+        if not locked:
+            raise RuntimeError(
+                "Existing HumanIK character is not locked; refusing to re-characterize "
+                f"model={model_root}, character={character}"
+            )
+
+        result = resolve_scene_humanik_assignments(model_root, cmds_module=self._cmds)
+        body_result, excluded = _split_body_assignments(result)
+        body_assignments = tuple(body_result.assignments)
+        finger_assignments = tuple(excluded)
+        if not body_assignments:
+            raise RuntimeError(
+                "Existing HumanIK character definition is incomplete: "
+                f"model={model_root}, character={character}, "
+                "resolved body assignments=0"
+            )
+
+        mel = self._mel or maya_mel()
+        body_missing = []
+        body_mismatched = []
+        finger_mapped = 0
+        finger_mismatched = []
+        finger_errors = []
+        for assignment in result.assignments:
+            command = (
+                f"hikGetSkNode({mel_string(character)}, {int(assignment.hik_index)});"
+            )
+            try:
+                actual_node = mel.eval(command)
+            except Exception as exc:
+                if is_humanik_finger_assignment(assignment):
+                    finger_errors.append(f"{assignment.hik_bone}: {exc}")
+                else:
+                    body_missing.append(f"{assignment.hik_bone}: {exc}")
+                continue
+            if is_humanik_finger_assignment(assignment):
+                if actual_node is None or not str(actual_node).strip():
+                    continue
+                if not _maya_node_matches_assignment(actual_node, assignment.joint):
+                    finger_mismatched.append(
+                        f"{assignment.hik_bone}: expected={assignment.joint}, "
+                        f"actual={actual_node}"
+                    )
+                else:
+                    finger_mapped += 1
+            elif actual_node is None or not str(actual_node).strip():
+                body_missing.append(assignment.hik_bone)
+            elif not _maya_node_matches_assignment(actual_node, assignment.joint):
+                body_mismatched.append(
+                    f"{assignment.hik_bone}: expected={assignment.joint}, actual={actual_node}"
+                )
+
+        if body_missing or body_mismatched:
+            details = "; ".join(body_missing + body_mismatched)
+            raise RuntimeError(
+                "Existing HumanIK character definition is incomplete or does not match "
+                f"the MMD model: model={model_root}, character={character}; {details}"
+            )
+        if finger_errors or finger_mismatched:
+            details = "; ".join(finger_errors + finger_mismatched)
+            raise RuntimeError(
+                "Existing HumanIK character finger definition is incomplete or does not "
+                f"match the MMD model: model={model_root}, character={character}; {details}"
+            )
+        if finger_mapped not in (0, len(finger_assignments)):
+            raise RuntimeError(
+                "Existing HumanIK character has a partial finger definition; refusing "
+                f"to adopt model={model_root}, character={character}, "
+                f"mapped={finger_mapped}, expected={len(finger_assignments)}"
+            )
+
+        actual_profile = (
+            FULL_ASSIGNMENT_PROFILE
+            if finger_assignments and finger_mapped == len(finger_assignments)
+            else FRONTEND_ASSIGNMENT_PROFILE
+        )
+        selected_result, selected_excluded = _select_profile_result(result, actual_profile)
+        binding = HumanIkFrontendBinding(
+            model_root=model_root,
+            character=str(character),
+            result=selected_result,
+            profile=actual_profile,
+            excluded_finger_assignments=selected_excluded,
+            # No stance transaction is created or mutated while adopting an
+            # existing definition; this field intentionally remains empty.
+            stance={},
+        )
+        self._bindings[model_root] = binding
+        return binding
+
     def setup_and_characterize(
         self,
         model_root: str,
@@ -425,6 +564,9 @@ class HumanIkFrontendSession:
                     "restore/reload the model before changing profile"
                 )
             return existing
+        adopted = self._adopt_existing_character(key)
+        if adopted is not None:
+            return adopted
         result = resolve_scene_humanik_assignments(key, cmds_module=self._cmds)
         selected_result, excluded = _select_profile_result(result, selected_profile)
         if not selected_result.assignments:
