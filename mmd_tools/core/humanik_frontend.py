@@ -46,6 +46,7 @@ from mmd_tools.core.humanik_resolver import (
 )
 from mmd_tools.core.humanik_retarget import (
     HIK_CHARACTER_NODE_TYPE,
+    HUMANIK_DIRECT_INPUT_TYPE,
     describe_humanik_import_lock,
     find_humanik_character_for_model,
     list_scene_hik_characters,
@@ -482,6 +483,58 @@ class HumanIkFrontendSession:
                 except Exception as exc:  # noqa: BLE001 - test doubles/foreign transactions
                     logger.warning("HumanIK transaction persistence skipped: %s", exc)
         persist_humanik_restore_state(records, cmds_module=self._cmds)
+
+    def _describe_scene_retarget_pair(self, model_root: str) -> Optional[Dict[str, Any]]:
+        """Read an active native HIK SOURCE/TARGET pair from scene facts.
+
+        A reopened scene can retain Maya's direct Character Input while the
+        process-owned frontend session has no ``_bindings`` or preview object.
+        This helper is deliberately read-only: it restores truthful UI labels
+        without pretending the frontend owns the missing bake/restore context.
+        """
+        try:
+            target_character = find_humanik_character_for_model(
+                model_root,
+                cmds_module=self._cmds,
+            )
+            if not target_character:
+                return None
+            mel = self._mel or maya_mel()
+            input_type = int(
+                mel.eval(f"hikGetInputType({mel_string(target_character)})")
+            )
+            source_character = str(
+                mel.eval(
+                    f"hikGetRetargetCharacterInput({mel_string(target_character)})"
+                )
+                or ""
+            ).strip()
+            # Maya's direct character input is enum 3.  A retained retargeter
+            # node while Control Rig/Stance is the active input must not be
+            # presented as the current SOURCE.
+            if input_type != HUMANIK_DIRECT_INPUT_TYPE or not source_character:
+                return None
+            cmds = self._cmds or maya_cmds()
+            source_model_root = _find_mmd_model_root_for_character(
+                source_character,
+                cmds,
+            )
+        except Exception:
+            return None
+        return {
+            "source": {
+                "modelRoot": source_model_root,
+                "character": source_character,
+                "external": source_model_root is None,
+                "sceneDerived": True,
+            },
+            "target": {
+                "modelRoot": model_root,
+                "character": target_character,
+                "sceneDerived": True,
+            },
+            "inputType": input_type,
+        }
 
     @property
     def active_preview(self) -> Optional[HumanIkTargetPreview]:
@@ -1625,11 +1678,20 @@ class HumanIkFrontendSession:
             control_rig_rows.append(
                 {
                     "modelRoot": control_root,
-                    "character": binding.character if binding else None,
+                    "character": (
+                        binding.character
+                        if binding
+                        else str(getattr(transaction, "character", "")) or None
+                    ),
                 }
             )
 
         external_source = self._external_source_character
+        scene_pair = (
+            self._describe_scene_retarget_pair(key)
+            if key is not None and source_binding is None and external_source is None
+            else None
+        )
         baked_control_rig_detached = bool(
             preview_active
             and source_binding is None
@@ -1641,6 +1703,8 @@ class HumanIkFrontendSession:
             mode = FRONTEND_MODE_TARGET_PREVIEW
         elif control_rig_rows:
             mode = FRONTEND_MODE_CONTROL_RIG
+        elif scene_pair is not None:
+            mode = FRONTEND_MODE_TARGET_PREVIEW
         elif source_binding is not None or external_source is not None:
             mode = FRONTEND_MODE_SOURCE
         else:
@@ -1684,7 +1748,7 @@ class HumanIkFrontendSession:
                 "external": True,
             }
         else:
-            source_state = None
+            source_state = scene_pair["source"] if scene_pair is not None else None
 
         state: Dict[str, Any] = {
             "mode": mode,
@@ -1692,9 +1756,12 @@ class HumanIkFrontendSession:
             "target": (
                 {"modelRoot": target_binding.model_root, "character": target_binding.character}
                 if target_binding is not None
+                else scene_pair["target"]
+                if scene_pair is not None
                 else None
             ),
             "previewActive": preview_active,
+            "sceneRetargetActive": scene_pair is not None,
             "controlRigs": control_rig_rows,
             "restoreHint": {
                 "hasPreview": preview_active,

@@ -62,6 +62,23 @@ class FakeControlRigTransaction:
         self.character = character
 
 
+class FakeScenePairMel:
+    """MEL double for native HIK input/source scene readback."""
+
+    def __init__(self, input_type=3, source_character="Character_source"):
+        self.input_type = input_type
+        self.source_character = source_character
+        self.calls = []
+
+    def eval(self, command):
+        self.calls.append(command)
+        if command.startswith("hikGetInputType("):
+            return self.input_type
+        if command.startswith("hikGetRetargetCharacterInput("):
+            return self.source_character
+        raise AssertionError(f"unexpected MEL command: {command}")
+
+
 class FakeStance:
     """Host-neutral transaction double, matching ``test_humanik_frontend.py``."""
 
@@ -99,6 +116,57 @@ class FakeStance:
 
 def _session(cmds_module=None):
     return HumanIkFrontendSession(cmds_module=cmds_module, stance_transaction_factory=FakeStance)
+
+
+class TestSceneRetargetPairReadback(unittest.TestCase):
+    @patch(
+        "mmd_tools.core.humanik_frontend._find_mmd_model_root_for_character",
+        return_value="|source",
+    )
+    @patch(
+        "mmd_tools.core.humanik_frontend.find_humanik_character_for_model",
+        return_value="Character_target",
+    )
+    def test_direct_character_input_reports_native_scene_pair(
+        self,
+        _find_character,
+        _find_source_root,
+    ):
+        mel = FakeScenePairMel()
+        session = HumanIkFrontendSession(
+            cmds_module=object(),
+            mel_module=mel,
+            stance_transaction_factory=FakeStance,
+        )
+
+        pair = session._describe_scene_retarget_pair("|target")
+
+        self.assertEqual(pair["source"]["modelRoot"], "|source")
+        self.assertEqual(pair["source"]["character"], "Character_source")
+        self.assertFalse(pair["source"]["external"])
+        self.assertTrue(pair["source"]["sceneDerived"])
+        self.assertEqual(pair["target"]["modelRoot"], "|target")
+        self.assertEqual(pair["target"]["character"], "Character_target")
+        self.assertEqual(pair["inputType"], 3)
+
+    @patch("mmd_tools.core.humanik_frontend._find_mmd_model_root_for_character")
+    @patch(
+        "mmd_tools.core.humanik_frontend.find_humanik_character_for_model",
+        return_value="Character_target",
+    )
+    def test_non_character_input_ignores_stale_retarget_source(
+        self,
+        _find_character,
+        find_source_root,
+    ):
+        session = HumanIkFrontendSession(
+            cmds_module=object(),
+            mel_module=FakeScenePairMel(input_type=1),
+            stance_transaction_factory=FakeStance,
+        )
+
+        self.assertIsNone(session._describe_scene_retarget_pair("|target"))
+        find_source_root.assert_not_called()
 
 
 class FakeSceneCmds:
@@ -217,6 +285,72 @@ class TestDescribeFrontendStateSource(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "active HumanIK SOURCE"):
             session.create_control_rig("|source")
+
+    def test_reopened_scene_pair_is_reported_without_claiming_preview_ownership(self):
+        session = _session()
+        session._control_rig_transactions["|target"] = FakeControlRigTransaction(
+            "Character_target"
+        )
+        scene_pair = {
+            "source": {
+                "modelRoot": "|source",
+                "character": "Character_source",
+                "external": False,
+                "sceneDerived": True,
+            },
+            "target": {
+                "modelRoot": "|target",
+                "character": "Character_target",
+                "sceneDerived": True,
+            },
+            "inputType": 3,
+        }
+
+        with patch.object(
+            session,
+            "_describe_scene_retarget_pair",
+            return_value=scene_pair,
+        ):
+            state = session.describe_frontend_state("|target")
+
+        self.assertEqual(state["mode"], FRONTEND_MODE_CONTROL_RIG)
+        self.assertEqual(state["source"], scene_pair["source"])
+        self.assertEqual(state["target"], scene_pair["target"])
+        self.assertTrue(state["sceneRetargetActive"])
+        self.assertFalse(state["previewActive"])
+        self.assertEqual(
+            state["controlRigs"],
+            [{"modelRoot": "|target", "character": "Character_target"}],
+        )
+
+    def test_scene_pair_without_control_rig_reports_native_target_preview(self):
+        session = _session()
+        scene_pair = {
+            "source": {
+                "modelRoot": None,
+                "character": "Mocap_source",
+                "external": True,
+                "sceneDerived": True,
+            },
+            "target": {
+                "modelRoot": "|target",
+                "character": "Character_target",
+                "sceneDerived": True,
+            },
+            "inputType": 3,
+        }
+
+        with patch.object(
+            session,
+            "_describe_scene_retarget_pair",
+            return_value=scene_pair,
+        ):
+            state = session.describe_frontend_state("|target")
+
+        self.assertEqual(state["mode"], FRONTEND_MODE_TARGET_PREVIEW)
+        self.assertEqual(state["source"], scene_pair["source"])
+        self.assertTrue(state["sceneRetargetActive"])
+        self.assertFalse(state["previewActive"])
 
     @patch("mmd_tools.core.humanik_frontend.begin_humanik_control_rig", return_value=FakeControlRigTransaction("Character_target"))
     def test_create_control_rig_on_target_model_is_allowed_and_succeeds(self, begin):

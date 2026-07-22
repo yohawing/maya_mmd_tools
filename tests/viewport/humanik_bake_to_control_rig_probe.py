@@ -926,6 +926,12 @@ def run_probe(
         )
         session.enter_target_mode(target_root)
         state_before = session.describe_frontend_state(target_root)
+        # Simulate a reopened/reloaded frontend process while Maya retains the
+        # native direct Character Input.  The fresh session owns no preview,
+        # but its UI state must still reconcile the scene SOURCE/TARGET pair.
+        reopened_session = HumanIkFrontendSession(cmds_module=cmds, mel_module=mel)
+        reopened_state = reopened_session.describe_frontend_state(target_root)
+        report["reopenedScenePair"] = reopened_state
         transaction = session._control_rig_transactions.get(target_root)
         foot_preview = _foot_ik_isolation(
             ownership_before_control_rig,
@@ -940,6 +946,16 @@ def run_probe(
                 "sourceMotionImported": source_anim_curve_count > 0,
                 "targetControlRigBeforePreview": rig_before_preview,
                 "previewActiveBeforeBake": session.active_preview is not None,
+                "reopenedSceneSourceMatches": (
+                    (reopened_state.get("source") or {}).get("modelRoot") == source_root
+                ),
+                "reopenedSceneTargetMatches": (
+                    (reopened_state.get("target") or {}).get("modelRoot") == target_root
+                ),
+                "reopenedScenePairIsTruthfulNotOwned": (
+                    reopened_state.get("sceneRetargetActive") is True
+                    and reopened_state.get("previewActive") is False
+                ),
                 "transactionActiveBeforeBake": bool(transaction and transaction.active),
                 "footIkWriterEdgesDisconnectedDuringPreview": (
                     not setup_rig or foot_preview["allRecordedEdgesDisconnected"]
