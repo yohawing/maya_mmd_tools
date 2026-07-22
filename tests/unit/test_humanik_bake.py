@@ -8,6 +8,7 @@ from mmd_tools.core.humanik_bake import (
     _bake_route,
     _ccd_bone_slot,
     _capture_route_values,
+    _resolve_foot_ik_bake_targets,
     _rollback_authoring,
     _BakeRoute,
     bake_humanik_target_preview,
@@ -157,6 +158,54 @@ class FailingHikCmds(BakeCmds):
 
 
 class TestHumanIkBake(unittest.TestCase):
+    def test_resolves_importer_leg_ik_controller_and_target(self):
+        class FootIkCmds:
+            def getAttr(self, plug):
+                if plug == "ns:left_leg_ik_mmdCcdIk.chainJson":
+                    return '{"controllerBoneSlot":7,"targetBoneSlot":9,"links":[]}'
+                raise AssertionError(plug)
+
+            def listConnections(self, plug, **_kwargs):
+                return {
+                    "ns:left_leg_ik_mmdCcdIk.inputTranslate[7]": ["ns:left_leg_ik.translate"],
+                    "ns:left_leg_ik_mmdCcdIk.inputTranslate[9]": ["ns:left_ankle.translate"],
+                    "ns:left_leg_ik_mmdCcdIk.goalWorldMatrix": ["ns:left_leg_ik.worldMatrix[0]"],
+                }.get(plug, [])
+
+            def objExists(self, node):
+                return node in {"ns:left_leg_ik", "ns:left_ankle"}
+
+        targets = _resolve_foot_ik_bake_targets(
+            [
+                _BakeRoute(
+                    "ns:left_leg.rotateX",
+                    "ns:left_leg_ik_mmdCcdIk.inputRotate[1].inputRotateElementX",
+                    "mmdCcdIk",
+                    node="ns:left_leg_ik_mmdCcdIk",
+                )
+            ],
+            FootIkCmds(),
+        )
+
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0].controller, "ns:left_leg_ik")
+        self.assertEqual(targets[0].target, "ns:left_ankle")
+
+    def test_toe_ik_stays_on_legacy_fail_safe_route(self):
+        targets = _resolve_foot_ik_bake_targets(
+            [
+                _BakeRoute(
+                    "ns:left_ankle.rotateX",
+                    "ns:left_toe_ik_mmdCcdIk.inputRotate[1].inputRotateElementX",
+                    "mmdCcdIk",
+                    node="ns:left_toe_ik_mmdCcdIk",
+                )
+            ],
+            object(),
+        )
+
+        self.assertEqual(targets, ())
+
     def test_routes_direct_append_and_ccdik_channels(self):
         preview = SimpleNamespace(
             restore_state=SimpleNamespace(

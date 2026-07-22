@@ -1,9 +1,10 @@
 """Maya 2024 S4 bake-boundary smoke using the checked-in PMX/VMD fixture.
 
 The smoke runs an exclusive TARGET preview, samples active HIK output, stops
-the preview back to NEUTRAL, keys pre-solver channels, and reports all-frame
-residuals plus topology/input restoration.  The fixture also gates the native
-mmdAppend grant math with a nonzero synthetic grant.
+the preview back to NEUTRAL, keys pre-solver channels plus the standard leg-IK
+controllers, and reports all-frame residuals plus topology/input restoration.
+The fixture also gates the native mmdAppend grant math with a nonzero synthetic
+grant.
 """
 
 from __future__ import annotations
@@ -101,6 +102,23 @@ def _as_vector3(value, plug: str):
     if not isinstance(value, (list, tuple)) or len(value) != 3:
         raise RuntimeError(f"Expected vector3 from {plug}: {value!r}")
     return tuple(float(item) for item in value)
+
+
+def _controller_key_counts(controllers, start: int, end: int):
+    """Return per-channel key counts for baked MMD IK controllers."""
+    return {
+        f"{controller}.translate{axis}": int(
+            cmds.keyframe(
+                f"{controller}.translate{axis}",
+                query=True,
+                keyframeCount=True,
+                time=(start, end),
+            )
+            or 0
+        )
+        for controller in controllers
+        for axis in "XYZ"
+    }
 
 
 def _mmd_append_synthetic_gate() -> Dict[str, Any]:
@@ -417,6 +435,12 @@ def main() -> int:
             else:
                 route_counts["direct"] += 1
         final_writer_gate = _final_writer_gate(target_joints, bake.routes)
+        controller_key_counts = _controller_key_counts(
+            bake.baked_ik_controllers,
+            args.start,
+            args.end,
+        )
+        expected_controller_key_count = args.end - args.start + 1
         payload.update(
             {
                 "sourceRoot": source_root,
@@ -428,7 +452,7 @@ def main() -> int:
                 "ownershipCounts": ownership["counts"],
                 "routeCounts": route_counts,
                 "keyCount": bake.key_count,
-                "staleControlWarning": "mmd_ik_controls_may_be_stale" in bake.warnings,
+                "nonLegIkStaleWarning": "mmd_non_leg_ik_controls_may_be_stale" in bake.warnings,
                 "warnings": list(bake.warnings),
                 "hikInputAfterBake": restored_source,
                 "baselineConnectionsPreserved": connection_deltas["baselinePreserved"],
@@ -446,6 +470,18 @@ def main() -> int:
                 "disabledIkNodesFinal": all(
                     not bool(cmds.getAttr(f"{node}.enabled")) for node in bake.disabled_ik_nodes
                 ),
+                "enabledIkNodes": list(bake.enabled_ik_nodes),
+                "enabledIkNodesFinal": all(
+                    bool(cmds.getAttr(f"{node}.enabled")) for node in bake.enabled_ik_nodes
+                ),
+                "bakedIkControllers": list(bake.baked_ik_controllers),
+                "ikControllerRoutes": dict(bake.ik_controller_routes),
+                "controllerKeyCounts": controller_key_counts,
+                "controllerKeysComplete": bool(controller_key_counts)
+                and all(
+                    count == expected_controller_key_count
+                    for count in controller_key_counts.values()
+                ),
                 "frameErrors": dict(bake.frame_errors),
                 "allFrameMaxError": bake.max_error,
                 "finalWriterGate": final_writer_gate,
@@ -458,13 +494,18 @@ def main() -> int:
                 payload["preBakeRestoreStateRestored"],
                 payload["disabledIkNodes"],
                 payload["disabledIkNodesFinal"],
+                payload["enabledIkNodes"],
+                payload["enabledIkNodesFinal"],
+                len(payload["bakedIkControllers"]) == 2,
+                len(payload["ikControllerRoutes"]) == 6,
+                payload["controllerKeysComplete"],
                 payload["baselineConnectionsPreserved"],
                 payload["onlyExpectedBakeConnectionsAdded"],
                 payload["expectedBakeEdgesPresent"],
                 payload["expectedBakeEdgeCount"] == len(set(bake.routes.values())),
                 payload["neutralInputRestored"],
                 payload["routeCounts"]["mmdCcdIk"] > 0,
-                payload["staleControlWarning"],
+                payload["nonLegIkStaleWarning"],
                 payload["allFrameMaxError"] <= 1.0e-5,
                 all(error <= 1.0e-5 for error in payload["frameErrors"].values()),
                 payload["finalWriterGate"]["passed"],

@@ -14,6 +14,7 @@ from mmd_tools.core.humanik_utils import maya_cmds
 CHANNELS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
 _CHANNELS_BY_PARENT = {"translate": ("translateX", "translateY", "translateZ"), "rotate": ("rotateX", "rotateY", "rotateZ")}
 _OUTPUT_INDEX = re.compile(r"^outputRotate\[(\d+)\](?:[XYZ])?$")
+_FOOT_IK_NODE = re.compile(r"(?:left|right)_leg_ik_mmdccdik$", re.IGNORECASE)
 _RESIDUAL_TOLERANCE = 1.0e-5
 
 
@@ -29,6 +30,9 @@ class HumanIkBakeResult:
     warnings: List[str]
     pre_bake_restore_state_restored: bool = False
     disabled_ik_nodes: List[str] = field(default_factory=list)
+    enabled_ik_nodes: List[str] = field(default_factory=list)
+    baked_ik_controllers: List[str] = field(default_factory=list)
+    ik_controller_routes: Dict[str, str] = field(default_factory=dict)
     frame_errors: Dict[int, float] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -42,6 +46,9 @@ class HumanIkBakeResult:
             "warnings": list(self.warnings),
             "preBakeRestoreStateRestored": bool(self.pre_bake_restore_state_restored),
             "disabledIkNodes": list(self.disabled_ik_nodes),
+            "enabledIkNodes": list(self.enabled_ik_nodes),
+            "bakedIkControllers": list(self.baked_ik_controllers),
+            "ikControllerRoutes": dict(sorted(self.ik_controller_routes.items())),
         }
 
 
@@ -54,6 +61,15 @@ class _BakeRoute:
     kind: str
     node: Optional[str] = None
     parent: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class _FootIkBakeTarget:
+    """Importer foot-IK solver plus its controller and solved target joint."""
+
+    node: str
+    controller: str
+    target: str
 
 
 def bake_humanik_target_preview(
@@ -84,7 +100,11 @@ def bake_humanik_target_preview(
     frames = list(range(int(start), int(end) + 1))
     source_plugs = [f"{joint}.{channel}" for joint in joint_list for channel in channel_list]
     routes = {plug: _resolve_route(preview, plug, cmds) for plug in source_plugs}
+    foot_ik_targets = _resolve_foot_ik_bake_targets(routes.values(), cmds)
     raw_samples: Dict[str, List[float]] = {plug: [] for plug in source_plugs}
+    foot_ik_world_samples: Dict[str, List[Tuple[float, float, float]]] = {
+        target.node: [] for target in foot_ik_targets
+    }
     append_states: Dict[Tuple[str, str, int], Tuple[Tuple[float, float, float], Tuple[float, float, float]]] = {}
     append_state_keys = {
         (route.node, route.parent)
@@ -96,6 +116,10 @@ def bake_humanik_target_preview(
             cmds.currentTime(frame, edit=True)
             for plug in source_plugs:
                 raw_samples[plug].append(_scalar_value(cmds.getAttr(plug), plug))
+            for target in foot_ik_targets:
+                foot_ik_world_samples[target.node].append(
+                    _world_translation(cmds, target.target)
+                )
             for node, parent in append_state_keys:
                 append_states[(node, parent, frame)] = _read_append_state(cmds, node, parent)
     finally:
@@ -114,10 +138,20 @@ def bake_humanik_target_preview(
             if route.kind == "mmdCcdIk" and route.node
         }
     )
+    foot_solver_nodes = {target.node for target in foot_ik_targets}
+    legacy_solver_nodes = sorted(set(solver_nodes) - foot_solver_nodes)
+    controller_routes = _foot_ik_controller_routes(foot_ik_targets)
+    _preflight_routes(cmds, controller_routes.values(), controller_routes)
+    controller_samples = _local_foot_ik_samples(
+        cmds,
+        foot_ik_targets,
+        foot_ik_world_samples,
+        frames,
+    )
     preexisting_curves = _anim_curve_nodes(cmds)
     solver_attrs = _capture_solver_attrs(cmds, solver_nodes)
     hik_connections = _preflight_routes(cmds, routes.values(), source_plugs)
-    route_values = _capture_route_values(cmds, routes.values())
+    route_values = _capture_route_values(cmds, (*routes.values(), *controller_routes.values()))
 
     key_count = 0
     disabled_ik_nodes: List[str] = []
@@ -126,22 +160,45 @@ def bake_humanik_target_preview(
         for destination, sources in hik_connections.items():
             for source in sources:
                 cmds.disconnectAttr(source, destination)
-        for node, before in solver_attrs.items():
+        for node in legacy_solver_nodes:
             cmds.setAttr(f"{node}.enabled", False)
             disabled_ik_nodes.append(node)
-        if solver_nodes:
-            warnings.append("mmd_ik_controls_may_be_stale")
+        for node in sorted(foot_solver_nodes):
+            cmds.setAttr(f"{node}.enabled", True)
+        if legacy_solver_nodes:
+            warnings.append("mmd_non_leg_ik_controls_may_be_stale")
         for source_plug in source_plugs:
             route = routes[source_plug]
             for frame, value in zip(frames, corrected_samples[source_plug]):
                 cmds.setKeyframe(route.destination, time=frame, value=value)
                 key_count += 1
-        if not _verify_disabled_solvers(cmds, solver_nodes):
+        for source_plug, route in controller_routes.items():
+            for frame, value in zip(frames, controller_samples[source_plug]):
+                cmds.setKeyframe(route.destination, time=frame, value=value)
+                key_count += 1
+        if not _verify_disabled_solvers(cmds, legacy_solver_nodes):
             raise RuntimeError("mmdCcdIk solver did not remain disabled after bake authoring")
+        if not _verify_enabled_solvers(cmds, foot_solver_nodes):
+            raise RuntimeError("MMD foot IK solver did not remain enabled after bake authoring")
         frame_errors = _evaluate_all_frames(cmds, raw_samples, source_plugs, frames)
         max_error = max(frame_errors.values(), default=0.0)
         if max_error > _RESIDUAL_TOLERANCE:
-            raise RuntimeError(f"HumanIK bake residual exceeds tolerance: {max_error}")
+            worst_frame = max(frame_errors, key=frame_errors.get)
+            cmds.currentTime(worst_frame, edit=True)
+            worst_index = frames.index(worst_frame)
+            worst_plug = max(
+                source_plugs,
+                key=lambda plug: abs(
+                    _scalar_value(cmds.getAttr(plug), plug) - raw_samples[plug][worst_index]
+                ),
+            )
+            actual = _scalar_value(cmds.getAttr(worst_plug), worst_plug)
+            expected = raw_samples[worst_plug][worst_index]
+            raise RuntimeError(
+                "HumanIK bake residual exceeds tolerance: "
+                f"{max_error} at frame {worst_frame} {worst_plug} "
+                f"(expected={expected}, actual={actual})"
+            )
     except Exception as authoring_error:
         try:
             _rollback_authoring(
@@ -166,6 +223,11 @@ def bake_humanik_target_preview(
         warnings=warnings,
         pre_bake_restore_state_restored=pre_bake_restore_state_restored,
         disabled_ik_nodes=disabled_ik_nodes,
+        enabled_ik_nodes=sorted(foot_solver_nodes),
+        baked_ik_controllers=sorted(target.controller for target in foot_ik_targets),
+        ik_controller_routes={
+            source: route.destination for source, route in controller_routes.items()
+        },
         frame_errors=frame_errors,
     )
 
@@ -275,11 +337,8 @@ def _append_base_sample(current_base, current_output, desired_output, parent: st
 
 
 def _ccd_bone_slot(cmds, node: str, link_index: int) -> int:
-    try:
-        payload = json.loads(cmds.getAttr(f"{node}.chainJson") or "")
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"Malformed mmdCcdIk chainJson: {node}") from exc
-    links = payload.get("links") if isinstance(payload, dict) else None
+    payload = _ccd_chain_payload(cmds, node)
+    links = payload.get("links")
     if not isinstance(links, list) or not 0 <= link_index < len(links):
         raise RuntimeError(f"mmdCcdIk chainJson link index is out of range: {node}[{link_index}]")
     entry = links[link_index]
@@ -287,6 +346,137 @@ def _ccd_bone_slot(cmds, node: str, link_index: int) -> int:
     if isinstance(bone_slot, bool) or not isinstance(bone_slot, int) or bone_slot < 0:
         raise RuntimeError(f"mmdCcdIk chainJson bone_slot is invalid: {node}[{link_index}]")
     return bone_slot
+
+
+def _ccd_chain_payload(cmds, node: str) -> Dict[str, Any]:
+    """Read one importer ``mmdCcdIk`` chain definition or fail closed."""
+    try:
+        payload = json.loads(cmds.getAttr(f"{node}.chainJson") or "")
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Malformed mmdCcdIk chainJson: {node}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Malformed mmdCcdIk chainJson: {node}")
+    return payload
+
+
+def _resolve_foot_ik_bake_targets(
+    routes: Iterable[_BakeRoute],
+    cmds,
+) -> Tuple[_FootIkBakeTarget, ...]:
+    """Resolve only reviewed importer leg/toe IK graphs for controller bake."""
+    nodes = sorted(
+        {
+            str(route.node)
+            for route in routes
+            if route.kind == "mmdCcdIk" and route.node
+        }
+    )
+    targets = []
+    for node in nodes:
+        leaf = node.rsplit("|", 1)[-1].rsplit(":", 1)[-1]
+        if _FOOT_IK_NODE.fullmatch(leaf) is None:
+            continue
+        payload = _ccd_chain_payload(cmds, node)
+        controller_slot = _valid_chain_slot(payload, "controllerBoneSlot", node)
+        target_slot = _valid_chain_slot(payload, "targetBoneSlot", node)
+        controller = _connected_input_transform(cmds, node, "inputTranslate", controller_slot)
+        target = _connected_input_transform(cmds, node, "inputTranslate", target_slot)
+        goal_sources = cmds.listConnections(
+            f"{node}.goalWorldMatrix",
+            source=True,
+            destination=False,
+            plugs=True,
+        ) or []
+        if goal_sources:
+            goal_nodes = {str(source).rsplit(".", 1)[0] for source in goal_sources}
+            if len(goal_nodes) != 1:
+                raise RuntimeError(f"MMD foot IK goal has ambiguous controller: {node}")
+            goal_controller = next(iter(goal_nodes))
+            if goal_controller != controller:
+                raise RuntimeError(
+                    f"MMD foot IK controller inputs disagree: {node} "
+                    f"({controller} != {goal_controller})"
+                )
+        if controller == target:
+            raise RuntimeError(f"MMD foot IK controller and target are identical: {node}")
+        targets.append(_FootIkBakeTarget(node=node, controller=controller, target=target))
+    return tuple(targets)
+
+
+def _valid_chain_slot(payload: Dict[str, Any], key: str, node: str) -> int:
+    slot = payload.get(key)
+    if isinstance(slot, bool) or not isinstance(slot, int) or slot < 0:
+        raise RuntimeError(f"mmdCcdIk {key} is invalid: {node}")
+    return slot
+
+
+def _connected_input_transform(cmds, node: str, parent: str, slot: int) -> str:
+    compound = f"{node}.{parent}[{slot}]"
+    plugs = [compound, *(f"{compound}.{parent}Element{axis}" for axis in "XYZ")]
+    source_nodes = set()
+    for plug in plugs:
+        for source in cmds.listConnections(
+            plug,
+            source=True,
+            destination=False,
+            plugs=True,
+        ) or []:
+            source_nodes.add(str(source).rsplit(".", 1)[0])
+    if len(source_nodes) != 1:
+        raise RuntimeError(f"mmdCcdIk {parent}[{slot}] source is unavailable or ambiguous: {node}")
+    transform = next(iter(source_nodes))
+    if not cmds.objExists(transform):
+        raise RuntimeError(f"mmdCcdIk connected transform does not exist: {transform}")
+    return transform
+
+
+def _foot_ik_controller_routes(
+    targets: Iterable[_FootIkBakeTarget],
+) -> Dict[str, _BakeRoute]:
+    routes = {}
+    for target in targets:
+        for axis in "XYZ":
+            plug = f"{target.controller}.translate{axis}"
+            routes[plug] = _BakeRoute(plug, plug, "mmdIkController", node=target.node)
+    return routes
+
+
+def _world_translation(cmds, node: str) -> Tuple[float, float, float]:
+    return _vector3(
+        cmds.xform(node, query=True, worldSpace=True, translation=True),
+        f"{node}.worldTranslate",
+    )
+
+
+def _local_foot_ik_samples(
+    cmds,
+    targets: Iterable[_FootIkBakeTarget],
+    world_samples: Dict[str, List[Tuple[float, float, float]]],
+    frames: Sequence[int],
+) -> Dict[str, List[float]]:
+    """Convert sampled target points to each MMD IK controller's local translate."""
+    result = {
+        f"{target.controller}.translate{axis}": []
+        for target in targets
+        for axis in "XYZ"
+    }
+    for frame_index, frame in enumerate(frames):
+        cmds.currentTime(frame, edit=True)
+        for target in targets:
+            compound = f"{target.controller}.translate"
+            original = _vector3(cmds.getAttr(compound), compound)
+            try:
+                cmds.xform(
+                    target.controller,
+                    worldSpace=True,
+                    translation=world_samples[target.node][frame_index],
+                )
+                local = _vector3(cmds.getAttr(compound), compound)
+            finally:
+                cmds.setAttr(compound, *original, type="double3")
+            for axis, value in zip("XYZ", local):
+                result[f"{target.controller}.translate{axis}"].append(value)
+    return result
 
 
 def _restore_state_snapshot(preview: HumanIkTargetPreview, node: str, channel: str, parent: str):
@@ -367,6 +557,16 @@ def _verify_disabled_solvers(cmds, nodes: Iterable[str]) -> bool:
     for node in nodes:
         try:
             if bool(cmds.getAttr(f"{node}.enabled")):
+                return False
+        except Exception:
+            return False
+    return True
+
+
+def _verify_enabled_solvers(cmds, nodes: Iterable[str]) -> bool:
+    for node in nodes:
+        try:
+            if not bool(cmds.getAttr(f"{node}.enabled")):
                 return False
         except Exception:
             return False
