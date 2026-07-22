@@ -22,6 +22,7 @@ from mmd_tools.core.humanik_builder import (
 from mmd_tools.core.humanik_constraints import (
     BLOCKING_CLASSIFICATIONS,
     collect_hik_ownership_report,
+    is_supported_mmd_ccdik_feedback_row,
 )
 from mmd_tools.core.humanik_control_rig import (
     HumanIkControlRigBakeResult,
@@ -777,6 +778,7 @@ class HumanIkFrontendSession:
         blockers = [
             row for row in report.get("rows", [])
             if row.get("classification") in BLOCKING_CLASSIFICATIONS
+            and not is_supported_mmd_ccdik_feedback_row(row, target.assignments)
         ]
         if blockers:
             labels = ", ".join(f"{row['node']}:{row['classification']}" for row in blockers)
@@ -789,6 +791,7 @@ class HumanIkFrontendSession:
             target_joints,
             cmds_module=self._cmds,
             mel_module=self._mel,
+            assignments=target.assignments,
         )
         self._target_model_root = key
         self._preview = preview
@@ -1216,6 +1219,7 @@ class HumanIkFrontendSession:
         blockers = [
             row for row in ownership.get("rows", [])
             if row.get("classification") in BLOCKING_CLASSIFICATIONS
+            and not is_supported_mmd_ccdik_feedback_row(row, model_report["assignments"])
         ]
         automatic_stance = dict(model_report.get("automaticStance", {}))
         automatic_stance["ownership"] = {
@@ -1267,6 +1271,10 @@ class HumanIkFrontendSession:
         blockers = [
             row for row in ownership_rows
             if row.get("classification") in BLOCKING_CLASSIFICATIONS
+            and not is_supported_mmd_ccdik_feedback_row(
+                row,
+                target.assignments if target is not None else (),
+            )
         ]
         ownership_counts = (self._ownership_report or {}).get("counts", {})
         selected_summary = selected.to_dict() if selected else None

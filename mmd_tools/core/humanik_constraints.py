@@ -8,7 +8,8 @@ scene nodes.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+import re
+from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 from mmd_tools.core.humanik_utils import maya_cmds
 
@@ -23,6 +24,81 @@ Re-exported from :mod:`mmd_tools.core.humanik_preview` for backward
 compatibility -- this is where the classification strings themselves are
 produced (see :func:`_classify_constraint`), so it is the canonical home.
 """
+
+SUPPORTED_FOOT_HIK_SLOTS = frozenset(
+    {
+        "LeftUpLeg",
+        "LeftLeg",
+        "LeftFoot",
+        "LeftToeBase",
+        "RightUpLeg",
+        "RightLeg",
+        "RightFoot",
+        "RightToeBase",
+    }
+)
+_MMD_CCDIK_FOOT_NAME = re.compile(
+    r"(?P<side>left|right)_(?P<kind>leg|toe)_ik_mmdccdik$",
+    re.IGNORECASE,
+)
+
+
+def is_supported_mmd_ccdik_feedback_row(
+    row: Dict[str, Any],
+    assignments: Iterable[Any],
+) -> bool:
+    """Return whether a row is the narrowly supported importer foot graph.
+
+    Importer-created ``mmdCcdIk`` leg/toe nodes read an external IK goal and
+    write the same-side HIK leg/foot rotations, which the report classifier
+    correctly marks as feedback.  This exact graph is safe to isolate for a
+    reversible stance or TARGET preview.  Callers must provide assignments;
+    ``None``/an empty set remains fail-closed.  Arbitrary feedback, physics,
+    manual writers, non-rotate channels, and cross-side slots are rejected.
+    """
+    if row.get("classification") != "feedback_blocker" or row.get("nodeType") != "mmdCcdIk":
+        return False
+    node = str(row.get("node", ""))
+    match = _MMD_CCDIK_FOOT_NAME.search(node.rsplit("|", 1)[-1].rsplit(":", 1)[-1])
+    if match is None:
+        return False
+    if not row.get("reads") or not row.get("readHikJoints") or not row.get("readOutsideJoints"):
+        return False
+
+    assignments_by_joint = {}
+    for assignment in assignments or ():
+        if isinstance(assignment, Mapping):
+            joint = assignment.get("joint")
+            slot = assignment.get("hikBone", assignment.get("hik_bone"))
+        else:
+            joint = getattr(assignment, "joint", None)
+            slot = getattr(assignment, "hik_bone", getattr(assignment, "hikBone", None))
+        if joint is None or slot is None:
+            continue
+        assignments_by_joint[str(joint)] = str(slot)
+
+    write_slots = set()
+    writes = [str(plug) for plug in row.get("writes", ())]
+    if not writes or not assignments_by_joint:
+        return False
+    for plug in writes:
+        if "." not in plug:
+            return False
+        joint, attribute = plug.rsplit(".", 1)
+        if attribute not in {"rotate", "rotateX", "rotateY", "rotateZ"}:
+            return False
+        slot = assignments_by_joint.get(joint)
+        if slot not in SUPPORTED_FOOT_HIK_SLOTS:
+            return False
+        write_slots.add(slot)
+
+    side = match.group("side").capitalize()
+    allowed = (
+        {f"{side}UpLeg", f"{side}Leg"}
+        if match.group("kind").lower() == "leg"
+        else {f"{side}Foot", f"{side}ToeBase"}
+    )
+    return bool(write_slots) and write_slots.issubset(allowed)
 
 
 @dataclass(frozen=True)

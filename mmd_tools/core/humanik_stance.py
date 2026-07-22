@@ -12,13 +12,13 @@ topology.
 from __future__ import annotations
 
 import math
-import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from mmd_tools.core.humanik_constraints import (
     BLOCKING_CLASSIFICATIONS,
     collect_hik_ownership_report,
+    is_supported_mmd_ccdik_feedback_row,
 )
 from mmd_tools.core.humanik_resolver import HumanIkBoneAssignment
 from mmd_tools.core.humanik_utils import incoming_sources, maya_cmds
@@ -38,22 +38,6 @@ STANCE_USABLE_DIRECTION_TOLERANCE = 2.0 * math.sin(
     STANCE_USABLE_ANGLE_TOLERANCE_RADIANS / 2.0
 )
 REQUIRED_ARM_SLOTS = {"LeftArm": "LeftForeArm", "RightArm": "RightForeArm"}
-SUPPORTED_FOOT_HIK_SLOTS = frozenset(
-    {
-        "LeftUpLeg",
-        "LeftLeg",
-        "LeftFoot",
-        "LeftToeBase",
-        "RightUpLeg",
-        "RightLeg",
-        "RightFoot",
-        "RightToeBase",
-    }
-)
-_MMD_CCDIK_FOOT_NAME = re.compile(
-    r"(?P<side>left|right)_(?P<kind>leg|toe)_ik_mmdccdik$",
-    re.IGNORECASE,
-)
 logger = get_logger(__name__)
 
 
@@ -316,59 +300,7 @@ def _edge_connected(cmds, source: str, destination: str) -> bool:
         return source in incoming_sources(cmds, destination)
 
 
-def _supported_mmd_ccdik_feedback_row(
-    row: Mapping[str, Any],
-    assignments: Iterable[HumanIkBoneAssignment],
-) -> bool:
-    """Return whether a feedback row is the importer-owned foot IK graph.
-
-    ``mmdCcdIk`` leg/toe nodes normally read both the HIK leg chain and an
-    external IK controller, which the report-only classifier correctly marks
-    as ``feedback_blocker``.  During canonical stance we can safely
-    isolate that exact importer graph, but only when every written channel is
-    a rotate channel on the same-side HIK leg/foot slots.  This intentionally
-    rejects arbitrary CCDIK feedback, manual writers, and physics nodes.
-    """
-    if row.get("classification") != "feedback_blocker" or row.get("nodeType") != "mmdCcdIk":
-        return False
-    node = str(row.get("node", ""))
-    match = _MMD_CCDIK_FOOT_NAME.search(node.rsplit("|", 1)[-1].rsplit(":", 1)[-1])
-    if match is None:
-        return False
-    # Keep the exception tied to the classifier's proven feedback shape.  A
-    # hand-authored row with the same node name but no complete read evidence
-    # must remain blocked rather than becoming name-based permission.
-    if not row.get("reads") or not row.get("readHikJoints") or not row.get("readOutsideJoints"):
-        return False
-
-    assignments_by_joint = {
-        str(assignment.joint): str(assignment.hik_bone)
-        for assignment in assignments
-    }
-    write_slots = set()
-    writes = [str(plug) for plug in row.get("writes", ())]
-    if not writes:
-        return False
-    for plug in writes:
-        if "." not in plug:
-            return False
-        joint, attribute = plug.rsplit(".", 1)
-        if attribute not in {"rotate", "rotateX", "rotateY", "rotateZ"}:
-            return False
-        slot = assignments_by_joint.get(joint)
-        if slot not in SUPPORTED_FOOT_HIK_SLOTS:
-            return False
-        write_slots.add(slot)
-
-    side = match.group("side").capitalize()
-    allowed = {
-        f"{side}UpLeg",
-        f"{side}Leg",
-    } if match.group("kind").lower() == "leg" else {
-        f"{side}Foot",
-        f"{side}ToeBase",
-    }
-    return bool(write_slots) and write_slots.issubset(allowed)
+_supported_mmd_ccdik_feedback_row = is_supported_mmd_ccdik_feedback_row
 
 
 @dataclass

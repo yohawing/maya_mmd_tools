@@ -102,6 +102,74 @@ class ResidualReconnectingMel(ReconnectingMel):
 
 
 class TestHumanIkPreview(unittest.TestCase):
+    def test_supported_importer_foot_feedback_isolated_for_preview_and_restored(self):
+        cmds, mel = FakeCmds(), FakeMel()
+        node = "|left_leg_ik_mmdCcdIk"
+        left_leg = "|model|left_leg.rotate"
+        left_knee = "|model|left_knee.rotate"
+        cmds.connections[left_leg] = [f"{node}.outputRotate[0]"]
+        cmds.connections[left_knee] = [f"{node}.outputRotate[1]"]
+        report = {
+            "rows": [{
+                "node": node,
+                "nodeType": "mmdCcdIk",
+                "classification": "feedback_blocker",
+                "reads": ["|model|left_leg.translate", "|model|left_leg_ik.translate"],
+                "readHikJoints": ["|model|left_leg"],
+                "readOutsideJoints": ["|model|left_leg_ik"],
+                "writes": [left_leg, left_knee],
+            }],
+        }
+
+        with patch(
+            "mmd_tools.core.humanik_preview.classify_humanik_constraints",
+            return_value={"rows": [], "counts": {}},
+        ):
+            preview = begin_humanik_target_preview(
+                "owner:target",
+                "Target",
+                "Source",
+                report,
+                {"|model|left_leg", "|model|left_knee"},
+                cmds,
+                mel,
+                assignments=(
+                    {"joint": "|model|left_leg", "hikBone": "LeftUpLeg"},
+                    {"joint": "|model|left_knee", "hikBone": "LeftLeg"},
+                ),
+            )
+
+        self.assertTrue(preview.active)
+        self.assertEqual(cmds.connections[left_leg], [])
+        self.assertEqual(cmds.connections[left_knee], [])
+        self.assertEqual([row["node"] for row in preview.isolated_feedback_rows], [node])
+        stop_humanik_target_preview(preview, cmds, mel)
+        self.assertEqual(cmds.connections[left_leg], [f"{node}.outputRotate[0]"])
+        self.assertEqual(cmds.connections[left_knee], [f"{node}.outputRotate[1]"])
+
+    def test_supported_foot_feedback_without_assignments_remains_blocked(self):
+        cmds, mel = FakeCmds(), FakeMel()
+        node = "|left_leg_ik_mmdCcdIk"
+        destination = "|model|left_leg.rotate"
+        cmds.connections[destination] = [f"{node}.outputRotate[0]"]
+        report = {
+            "rows": [{
+                "node": node,
+                "nodeType": "mmdCcdIk",
+                "classification": "feedback_blocker",
+                "reads": ["|model|left_leg.translate", "|model|left_leg_ik.translate"],
+                "readHikJoints": ["|model|left_leg"],
+                "readOutsideJoints": ["|model|left_leg_ik"],
+                "writes": [destination],
+            }],
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "blocked"):
+            begin_humanik_target_preview(
+                "owner:target", "Target", "Source", report, {"|model|left_leg"}, cmds, mel
+            )
+        self.assertEqual(cmds.connections[destination], [f"{node}.outputRotate[0]"])
+
     def test_begin_mutes_writer_then_stop_restores_neutral(self):
         cmds, mel = FakeCmds(), FakeMel()
         report = {

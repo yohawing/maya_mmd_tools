@@ -455,6 +455,36 @@ class TestHumanIkFrontend(unittest.TestCase):
         self.assertEqual(resolve.call_count, 2)
         ownership.assert_called_once()
 
+    def test_inspect_target_ownership_excludes_supported_importer_foot_feedback(self):
+        session = _session()
+        model_report = {
+            "modelRoot": "|target",
+            "profile": FRONTEND_ASSIGNMENT_PROFILE,
+            "includeFingers": False,
+            "assignments": [
+                {"joint": "|target|left_up_leg", "hikBone": "LeftUpLeg"},
+                {"joint": "|target|left_leg", "hikBone": "LeftLeg"},
+            ],
+            "automaticStance": {"ready": True},
+        }
+        safe_row = {
+            "node": "|left_leg_ik_mmdCcdIk",
+            "nodeType": "mmdCcdIk",
+            "classification": "feedback_blocker",
+            "reads": ["|target|left_leg.translate", "|target|left_leg_ik.translate"],
+            "readHikJoints": ["|target|left_leg"],
+            "readOutsideJoints": ["|target|left_leg_ik"],
+            "writes": ["|target|left_up_leg.rotate", "|target|left_leg.rotate"],
+        }
+        with patch.object(session, "inspect_model", return_value=model_report), patch(
+            "mmd_tools.core.humanik_frontend.collect_hik_ownership_report",
+            return_value={"rows": [safe_row], "counts": {"feedback_blocker": 1}},
+        ):
+            report = session.inspect_target_ownership("|target")
+
+        self.assertEqual(report["blockers"], [])
+        self.assertEqual(report["constraintRows"], [safe_row])
+
     @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
     @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")
     @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())

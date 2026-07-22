@@ -1,11 +1,10 @@
 """Maya standalone probe for a restored MMD foot-IK SOURCE retarget.
 
-The source PMX is imported with ``setup_rig=True`` so its actual
-``mmdCcdIk`` foot controller remains live.  The target is imported without an
-MMD rig, characterized, and driven through HumanIK.  The probe moves the
-source leg IK controller only after ``setup_and_characterize`` has restored
-the temporary stance isolation, then verifies a lower-body target joint and
-the source CCDIK output respond.
+Both PMX files are imported with ``setup_rig=True`` so their actual
+``mmdCcdIk`` foot controllers remain live. TARGET preview must isolate only
+the target's importer-owned foot writer edges for its lifetime; SOURCE remains
+the active HumanIK input. The probe moves the source leg IK controller, then
+restores the preview and verifies the target edges reconnect exactly.
 """
 
 from __future__ import annotations
@@ -141,6 +140,20 @@ def _find_source_foot_controller(source_assignments: Iterable[Any]) -> Mapping[s
     return {"node": node, "controller": controller, "destinations": destinations}
 
 
+def _node_edge_connected(node: str, destination: str) -> bool:
+    """Return whether ``node`` still feeds the destination plug."""
+    return any(
+        str(source).rsplit(".", 1)[0] == str(node)
+        for source in cmds.listConnections(
+            destination,
+            source=True,
+            destination=False,
+            plugs=True,
+        )
+        or []
+    )
+
+
 def run_probe(args: argparse.Namespace) -> Dict[str, Any]:
     source_pmx = Path(args.source_pmx).resolve()
     target_pmx = Path(args.target_pmx or args.source_pmx).resolve()
@@ -168,14 +181,22 @@ def run_probe(args: argparse.Namespace) -> Dict[str, Any]:
         source_topology_after_characterize = _source_ik_topology(source_binding.assignments)
         source_stance = dict(source_binding.stance)
         session.enter_source_mode(source_root)
-        target_root = _import_model(target_pmx, setup_rig=False)
+        target_root = _import_model(target_pmx, setup_rig=True)
         target_binding = session.setup_and_characterize(
             target_root,
             profile=FULL_ASSIGNMENT_PROFILE,
             include_fingers=True,
         )
+        target_topology_before_preview = _source_ik_topology(target_binding.assignments)
+        target_ownership_preflight = session.inspect_target_ownership(target_root)
+        target_preflight_clear = not bool(target_ownership_preflight.get("blockers"))
         preview = session.enter_target_mode(target_root)
-        del preview
+        target_preview_started = bool(preview and preview.active)
+        target_edges_disconnected = bool(target_topology_before_preview) and all(
+            not _node_edge_connected(node, destination)
+            for node, destinations in target_topology_before_preview.items()
+            for destination in destinations
+        )
 
         source_ik = _find_source_foot_controller(source_binding.assignments)
         controller = str(source_ik["controller"])
@@ -210,6 +231,9 @@ def run_probe(args: argparse.Namespace) -> Dict[str, Any]:
             default=0.0,
         )
         target_delta = _max_delta(target_before, target_after)
+        session.restore_mmd_rig()
+        target_topology_after_restore = _source_ik_topology(target_binding.assignments)
+        target_edges_restored = target_topology_after_restore == target_topology_before_preview
         payload.update(
             {
                 "sourceRoot": source_root,
@@ -219,6 +243,12 @@ def run_probe(args: argparse.Namespace) -> Dict[str, Any]:
                 "sourceIk": dict(source_ik),
                 "sourceStance": source_stance,
                 "sourceTopologyAfterCharacterize": source_topology_after_characterize,
+                "targetStance": dict(target_binding.stance),
+                "targetTopologyBeforePreview": target_topology_before_preview,
+                "targetTopologyAfterRestore": target_topology_after_restore,
+                "targetOwnershipPreflight": target_ownership_preflight,
+                "targetPreviewStarted": target_preview_started,
+                "targetFootIkEdgesDisconnected": target_edges_disconnected,
                 "targetFoot": target_foot,
                 "targetFootBefore": list(target_before),
                 "targetFootAfter": list(target_after),
@@ -228,8 +258,13 @@ def run_probe(args: argparse.Namespace) -> Dict[str, Any]:
         )
         payload["checks"] = {
             "sourceSetupRigCharacterized": bool(source_stance.get("restore", {}).get("topologyRestored")),
+            "targetSetupRigCharacterized": bool(target_binding.stance.get("restore", {}).get("topologyRestored")),
+            "targetOwnershipPreflightClear": target_preflight_clear,
+            "targetPreviewStarted": target_preview_started,
+            "targetFootIkEdgesDisconnected": target_edges_disconnected,
             "sourceMmdCcdIkOutputMoved": source_output_delta > float(args.tolerance),
             "targetFootResponded": target_delta > float(args.tolerance),
+            "targetFootIkEdgesRestored": target_edges_restored,
         }
         if not all(payload["checks"].values()):
             raise RuntimeError(f"Source IK retarget acceptance failed: {payload['checks']}")

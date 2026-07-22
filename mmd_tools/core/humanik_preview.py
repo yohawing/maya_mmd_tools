@@ -27,6 +27,7 @@ from mmd_tools.core.humanik_constraints import (
     BLOCKING_CLASSIFICATIONS,
     classify_humanik_constraints,
     collect_humanik_constraint_facts,
+    is_supported_mmd_ccdik_feedback_row,
     split_ownership_rows,
 )
 from mmd_tools.core.humanik_retarget import connect_humanik_source
@@ -56,6 +57,7 @@ class HumanIkTargetPreview:
     disconnected: List[Dict[str, str]]
     retained_nodes: List[str]
     post_report: Dict[str, Any]
+    isolated_feedback_rows: List[Dict[str, Any]]
     active: bool = True
     finger_solving_previous: Optional[int] = None
     left_elbow_kill_pitch_previous: Optional[int] = None
@@ -69,6 +71,7 @@ class HumanIkTargetPreview:
             "disconnected": list(self.disconnected),
             "retainedNodes": list(self.retained_nodes),
             "postReport": self.post_report,
+            "isolatedFeedbackRows": list(self.isolated_feedback_rows),
             "active": self.active,
             "fingerSolvingPreviousValue": self.finger_solving_previous,
             "leftElbowKillPitchPreviousValue": self.left_elbow_kill_pitch_previous,
@@ -83,16 +86,31 @@ def begin_humanik_target_preview(
     hik_joints: Iterable[str],
     cmds_module=None,
     mel_module=None,
+    assignments: Optional[Iterable[Any]] = None,
 ) -> HumanIkTargetPreview:
-    """Start TARGET preview after rejecting all unresolved ownership rows."""
+    """Start TARGET preview after rejecting all unresolved ownership rows.
+
+    ``assignments`` is intentionally optional for backward compatibility with
+    direct callers.  Without it, every feedback blocker remains fail-closed;
+    the narrowly supported importer-owned foot ``mmdCcdIk`` rows are isolated
+    only when the target binding supplies its assigned HIK slots.
+    """
     cmds = cmds_module or maya_cmds()
     blockers, mute_rows, retained_nodes = split_ownership_rows(ownership_report)
+    supported_feedback = [
+        row
+        for row in ownership_report.get("rows", [])
+        if is_supported_mmd_ccdik_feedback_row(row, assignments or ())
+    ]
+    blockers = [row for row in blockers if row not in supported_feedback]
     if blockers:
         labels = ", ".join(f"{row['node']}:{row['classification']}" for row in blockers)
         raise RuntimeError(f"HumanIK TARGET preview blocked: {labels}")
 
-    destinations = sorted({plug for row in mute_rows for plug in row.get("writes", [])})
+    isolated_rows = [*mute_rows, *supported_feedback]
+    destinations = sorted({plug for row in isolated_rows for plug in row.get("writes", [])})
     muted_nodes = sorted({row["node"] for row in mute_rows})
+    feedback_nodes = sorted({row["node"] for row in supported_feedback})
     hik_joint_set = {str(joint) for joint in hik_joints}
     restore_state = capture_humanik_restore_state(
         ownership_id,
@@ -128,7 +146,7 @@ def begin_humanik_target_preview(
             mel_module=mel_module,
             cmds_module=cmds,
         )
-        disconnect_reviewed_writers(cmds, mute_rows, disconnected)
+        disconnect_reviewed_writers(cmds, isolated_rows, disconnected)
         connect_humanik_source(
             target_character,
             source_character,
@@ -157,6 +175,7 @@ def begin_humanik_target_preview(
         post_blockers = [
             row for row in post_report["rows"]
             if row["node"] not in muted_nodes
+            and row["node"] not in feedback_nodes
             and row["classification"] in BLOCKING_CLASSIFICATIONS
         ]
         if post_blockers:
@@ -197,6 +216,7 @@ def begin_humanik_target_preview(
         disconnected=sorted(disconnected, key=lambda row: (row["destination"], row["source"])),
         retained_nodes=retained_nodes,
         post_report=post_report,
+        isolated_feedback_rows=[dict(row) for row in supported_feedback],
         finger_solving_previous=finger_solving_previous,
         left_elbow_kill_pitch_previous=left_elbow_kill_pitch_previous,
     )
