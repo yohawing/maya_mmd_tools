@@ -94,6 +94,10 @@ class TestHumanIkTabGUI(GuiTestBase):
             )
             self.assertGreater(tab.character_combo.width(), 100)
             self.assertGreater(tab.source_combo.width(), 100)
+            margins = tab.layout().contentsMargins()
+            self.assertGreaterEqual(margins.left(), 8)
+            self.assertGreaterEqual(margins.top(), 8)
+            self.assertGreaterEqual(tab.layout().spacing(), 6)
 
             tab.bake_toggle_btn.setChecked(False)
             QApplication.processEvents()

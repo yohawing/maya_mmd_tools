@@ -38,6 +38,7 @@ class _FakeCmds:
         self.connections = {}
         self.calls = []
         self.locked_plugs = set()
+        self.node_types = {}
         self.raise_on_noop_write = False
         for joint in self.matrices:
             self.attrs[f"{joint}.rotate"] = [(0.0, 0.0, 0.0)]
@@ -81,14 +82,21 @@ class _FakeCmds:
         return []
 
     def nodeType(self, node):
-        return "joint"
+        return self.node_types.get(node, "joint")
 
     def ls(self, node=None, **kwargs):
         return [node] if node else []
 
     def listConnections(self, *args, **kwargs):
         destination = args[0] if args else kwargs.get("plug")
-        return list(self.connections.get(destination, []))
+        values = list(self.connections.get(destination, []))
+        if destination.endswith((".translate", ".rotate")):
+            values.extend(
+                source
+                for axis in "XYZ"
+                for source in self.connections.get(f"{destination}{axis}", [])
+            )
+        return sorted(set(values))
 
     def isConnected(self, source, destination):
         return source in self.connections.get(destination, [])
@@ -102,7 +110,9 @@ class _FakeCmds:
         if source not in self.connections.setdefault(destination, []):
             self.connections[destination].append(source)
 
-    def attributeQuery(self, *args, **kwargs):
+    def attributeQuery(self, attribute, node=None, **kwargs):
+        if kwargs.get("exists"):
+            return f"{node}.{attribute}" in self.attrs
         return False
 
     def refresh(self, **kwargs):
@@ -400,6 +410,99 @@ class TestHumanIkStance(unittest.TestCase):
         self.assertEqual(cmds.connections[left_rotate], ["|left_arm_boneMorphAccum.outputRotate"])
         self.assertEqual(cmds.connections[left_translate], ["|left_arm_boneMorphAccum.outputTranslate"])
         self.assertEqual(cmds.connections[forearm_rotate], ["|left_forearm_anim.outputRotate"])
+
+    def test_vmd_animation_isolated_and_rest_pose_applied_before_characterize(self):
+        """VMD-driven descendants enter bind/rest pose, then recover motion exactly."""
+        cmds = _FakeCmds()
+        joint = "|model|left_knee"
+        cmds.attrs[f"{joint}.translate"] = [(0.25, 6.5, -0.5)]
+        cmds.attrs[f"{joint}.rotate"] = [(24.0, 2.0, -1.0)]
+        cmds.attrs[f"{joint}.jointOrient"] = [(0.0, 0.0, 0.0)]
+        cmds.attrs[f"{joint}.mmd_vmd_bind_translate"] = "[0.0, 6.25, 0.0]"
+        curve = "|left_knee_rotateX"
+        destination = f"{joint}.rotateX"
+        cmds.node_types[curve] = "animCurveTA"
+        cmds.connections[destination] = [f"{curve}.output"]
+        tx = HumanIkStanceTransaction(
+            "|model",
+            _leg_assignments(),
+            ownership_report={"rows": [], "counts": {}},
+            cmds_module=cmds,
+            world_matrix_setter=_setter(cmds),
+        )
+
+        tx.enter()
+
+        self.assertEqual(cmds.connections[destination], [])
+        self.assertEqual(cmds.attrs[f"{joint}.translate"], [(0.0, 6.25, 0.0)])
+        self.assertEqual(cmds.attrs[f"{joint}.rotate"], [(0.0, 0.0, 0.0)])
+        self.assertTrue(tx.stance_evidence["restPose"]["applied"])
+        self.assertEqual(
+            [edge["source"] for edge in tx.ownership_snapshot["animationWriterEdges"]],
+            [f"{curve}.output"],
+        )
+
+        restore = tx.restore()
+
+        self.assertTrue(restore["passed"])
+        self.assertEqual(cmds.attrs[f"{joint}.translate"], [(0.25, 6.5, -0.5)])
+        self.assertEqual(cmds.attrs[f"{joint}.rotate"], [(24.0, 2.0, -1.0)])
+        self.assertEqual(cmds.connections[destination], [f"{curve}.output"])
+
+    def test_vmd_animation_layer_writer_is_also_isolated(self):
+        """Maya animation-layer blend nodes are part of the VMD motion graph."""
+        cmds = _FakeCmds()
+        joint = "|model|left_knee"
+        cmds.attrs[f"{joint}.translate"] = [(0.0, 6.5, 0.0)]
+        cmds.attrs[f"{joint}.rotate"] = [(10.0, 0.0, 0.0)]
+        cmds.attrs[f"{joint}.jointOrient"] = [(0.0, 0.0, 0.0)]
+        cmds.attrs[f"{joint}.mmd_vmd_bind_translate"] = "[0.0, 6.25, 0.0]"
+        blend = "|left_knee_rotateX_VMD_Motion"
+        destination = f"{joint}.rotateX"
+        cmds.node_types[blend] = "animBlendNodeAdditiveDA"
+        cmds.connections[destination] = [f"{blend}.output"]
+        tx = HumanIkStanceTransaction(
+            "|model",
+            _leg_assignments(),
+            ownership_report={"rows": [], "counts": {}},
+            cmds_module=cmds,
+            world_matrix_setter=_setter(cmds),
+        )
+
+        tx.enter()
+
+        self.assertEqual(cmds.connections[destination], [])
+        self.assertEqual(
+            tx.ownership_snapshot["animationWriterEdges"][0]["nodeType"],
+            "animBlendNodeAdditiveDA",
+        )
+        tx.restore()
+        self.assertEqual(cmds.connections[destination], [f"{blend}.output"])
+
+    def test_animated_joint_without_vmd_rest_metadata_fails_and_reconnects(self):
+        """An unknown animation graph is never treated as a valid Rest Pose."""
+        cmds = _FakeCmds()
+        joint = "|model|left_knee"
+        cmds.attrs[f"{joint}.translate"] = [(0.0, 6.5, 0.0)]
+        cmds.attrs[f"{joint}.rotate"] = [(10.0, 0.0, 0.0)]
+        cmds.attrs[f"{joint}.jointOrient"] = [(0.0, 0.0, 0.0)]
+        curve = "|left_knee_rotateX"
+        destination = f"{joint}.rotateX"
+        cmds.node_types[curve] = "animCurveTA"
+        cmds.connections[destination] = [f"{curve}.output"]
+        tx = HumanIkStanceTransaction(
+            "|model",
+            _leg_assignments(),
+            ownership_report={"rows": [], "counts": {}},
+            cmds_module=cmds,
+            world_matrix_setter=_setter(cmds),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "no VMD bind-pose metadata"):
+            tx.enter()
+
+        self.assertFalse(tx.active)
+        self.assertEqual(cmds.connections[destination], [f"{curve}.output"])
 
     def test_apply_failure_rolls_back_pose_and_topology(self):
         tx, cmds = self._transaction()

@@ -2,15 +2,16 @@
 
 The implementation is the productionized, single-model form of the stance
 helpers used by ``tests/viewport/humanik_roundtrip_smoke.py``.  It snapshots
-the two arm joints, isolates reviewed ``mute_for_hik`` edges plus direct
-arm-pose writers and the narrowly supported importer-owned mmdCcdIk foot
-feedback edges, uses each arm's current horizontal world direction as its
-target, and restores the snapshot before reconnecting the exact original
-topology.
+the characterized joints, isolates reviewed ``mute_for_hik`` edges, VMD
+animation writers, direct arm-pose writers, and the narrowly supported
+importer-owned mmdCcdIk foot feedback edges.  VMD-driven skeletons enter their
+stored rest pose before the canonical arm stance is applied; the transaction
+then restores the exact motion pose and original topology.
 """
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -38,6 +39,7 @@ STANCE_USABLE_DIRECTION_TOLERANCE = 2.0 * math.sin(
     STANCE_USABLE_ANGLE_TOLERANCE_RADIANS / 2.0
 )
 REQUIRED_ARM_SLOTS = {"LeftArm": "LeftForeArm", "RightArm": "RightForeArm"}
+_VMD_BIND_TRANSLATE_ATTR = "mmd_vmd_bind_translate"
 logger = get_logger(__name__)
 
 
@@ -227,6 +229,24 @@ def _attribute_write_state(cmds, plug: str) -> Tuple[bool, List[str]]:
             pass
         incoming.update(incoming_sources(cmds, candidate))
     return locked, sorted(incoming)
+
+
+def _stored_vmd_bind_translate(cmds, joint: str) -> Optional[Tuple[float, float, float]]:
+    """Read the VMD importer's persisted local rest translation, if present."""
+    try:
+        if not cmds.attributeQuery(_VMD_BIND_TRANSLATE_ATTR, node=joint, exists=True):
+            return None
+        values = json.loads(cmds.getAttr(f"{joint}.{_VMD_BIND_TRANSLATE_ATTR}"))
+        if not isinstance(values, list) or len(values) != 3:
+            return None
+        return tuple(float(value) for value in values)
+    except Exception:
+        return None
+
+
+def _is_animation_writer_type(node_type: str) -> bool:
+    """Return whether a direct writer belongs to Maya's animation graph."""
+    return str(node_type).startswith(("animCurve", "animBlendNode"))
 
 
 def _restore_attribute_if_changed(
@@ -422,13 +442,11 @@ class HumanIkStanceTransaction:
                 slot: {"joint": joint, "child": child, "targetDirection": None}
                 for slot, (joint, child) in chains.items()
             },
+            "restPose": None,
             "pose": None,
             "restore": None,
         }
-        for slot, (joint, child) in chains.items():
-            direction = joint_world_direction(cmds, joint, child)
-            horizontal = (direction[0], 0.0, direction[2])
-            self.stance_evidence["targets"][slot]["targetDirection"] = list(_unit(horizontal))
+        self._refresh_target_directions()
         self.prepared = True
         return self
 
@@ -446,6 +464,8 @@ class HumanIkStanceTransaction:
                 self.cmds.disconnectAttr(edge["source"], edge["destination"])
                 disconnected.append(edge)
             self._verify_isolated_topology()
+            if self._apply_vmd_rest_pose():
+                self._refresh_target_directions()
             rows = []
             for slot, target in self.stance_evidence["targets"].items():
                 joint, child = target["joint"], target["child"]
@@ -734,6 +754,51 @@ class HumanIkStanceTransaction:
                     }
                 )
         pose_writer_edges = []
+        animation_writer_edges = []
+        assignments_by_joint = {
+            _long_name(self.cmds, str(assignment.joint)): str(assignment.hik_bone)
+            for assignment in self.assignments
+        }
+        for joint, slot in assignments_by_joint.items():
+            # VMD imports write the characterized skeleton through animCurves
+            # and, when an animation layer is active, animBlendNodes. Isolate
+            # only those direct animation edges; arbitrary constraints and
+            # third-party writers remain governed by the ownership report.
+            for attribute in ("translate", "rotate"):
+                # Query child plugs first. Maya's listConnections(parentPlug)
+                # also reports child connections, but disconnectAttr requires
+                # the exact child destination rather than the parent compound.
+                destinations = (*(f"{joint}.{attribute}{axis}" for axis in "XYZ"), f"{joint}.{attribute}")
+                component_sources = set()
+                for destination in destinations:
+                    baseline = incoming_sources(self.cmds, destination)
+                    for source in baseline:
+                        if destination == f"{joint}.{attribute}" and source in component_sources:
+                            continue
+                        component_sources.add(source)
+                        source_node = source.rsplit(".", 1)[0]
+                        try:
+                            source_type = str(self.cmds.nodeType(source_node))
+                        except Exception:
+                            source_type = "unknown"
+                        if not _is_animation_writer_type(source_type):
+                            continue
+                        edge = (source, destination)
+                        if edge in seen:
+                            continue
+                        seen.add(edge)
+                        animation_writer_edges.append(
+                            {
+                                "source": source,
+                                "destination": destination,
+                                "node": source_node,
+                                "nodeType": source_type,
+                                "classification": "temporary_animation_writer",
+                                "hikBone": slot,
+                                "attribute": attribute,
+                                "baselineIncomingSources": baseline,
+                            }
+                        )
         for slot, (joint, _) in chains.items():
             # A direct input to an HIK arm's translate/rotate channel can
             # immediately overwrite ``xform`` even though it is neither a
@@ -741,9 +806,14 @@ class HumanIkStanceTransaction:
             # explicitly posed arm channels (including component inputs), not
             # arbitrary descendants or post-HIK deformers.
             for attribute in ("translate", "rotate"):
-                for destination in (f"{joint}.{attribute}", *(f"{joint}.{attribute}{axis}" for axis in "XYZ")):
+                destinations = (*(f"{joint}.{attribute}{axis}" for axis in "XYZ"), f"{joint}.{attribute}")
+                component_sources = set()
+                for destination in destinations:
                     baseline = incoming_sources(self.cmds, destination)
                     for source in baseline:
+                        if destination == f"{joint}.{attribute}" and source in component_sources:
+                            continue
+                        component_sources.add(source)
                         edge = (source, destination)
                         if edge in seen:
                             continue
@@ -770,6 +840,10 @@ class HumanIkStanceTransaction:
             "rows": list(report.get("rows", [])),
             "temporarilyIsolatedFeedbackRows": [dict(row) for row in isolated_rows if row in supported_feedback],
             "edges": sorted(edges, key=lambda item: (item["destination"], item["source"])),
+            "animationWriterEdges": sorted(
+                animation_writer_edges,
+                key=lambda item: (item["destination"], item["source"]),
+            ),
             "poseWriterEdges": sorted(pose_writer_edges, key=lambda item: (item["destination"], item["source"])),
             "topologyIsolated": False,
             "topologyRestored": False,
@@ -780,13 +854,84 @@ class HumanIkStanceTransaction:
         """Return the exact reviewed and direct-pose edges isolated for stance."""
         edges = []
         seen = set()
-        for key in ("edges", "poseWriterEdges"):
+        for key in ("edges", "animationWriterEdges", "poseWriterEdges"):
             for edge in self.ownership_snapshot.get(key, []):
                 identity = (edge["source"], edge["destination"])
                 if identity not in seen:
                     seen.add(identity)
                     edges.append(edge)
         return sorted(edges, key=lambda item: (item["destination"], item["source"]))
+
+    def _refresh_target_directions(self) -> None:
+        """Recompute arm targets from the currently evaluated skeleton pose."""
+        for target in self.stance_evidence.get("targets", {}).values():
+            direction = joint_world_direction(self.cmds, target["joint"], target["child"])
+            horizontal = (direction[0], 0.0, direction[2])
+            target["targetDirection"] = list(_unit(horizontal))
+
+    def _apply_vmd_rest_pose(self) -> bool:
+        """Apply the stored VMD rest pose while animation writers are isolated."""
+        animation_edges = self.ownership_snapshot.get("animationWriterEdges", [])
+        if not animation_edges:
+            self.stance_evidence["restPose"] = {
+                "applied": False,
+                "reason": "no_animation_writers",
+                "rows": [],
+            }
+            return False
+
+        stored_translates = {
+            joint: translate
+            for joint in self.restore_joints
+            if (translate := _stored_vmd_bind_translate(self.cmds, joint)) is not None
+        }
+        if not stored_translates:
+            raise RuntimeError(
+                "Canonical T-pose requires Rest Pose for an animated skeleton, "
+                "but no VMD bind-pose metadata was found"
+            )
+        animated_joints = {
+            str(edge["destination"]).rsplit(".", 1)[0]
+            for edge in animation_edges
+        }
+        missing_bind_joints = sorted(animated_joints - stored_translates.keys())
+        if missing_bind_joints:
+            raise RuntimeError(
+                "Canonical T-pose requires complete VMD Rest Pose metadata for animated joints: "
+                + ", ".join(missing_bind_joints)
+            )
+
+        rows = []
+        for joint, info in self.restore_joints.items():
+            translate = stored_translates.get(joint)
+            for attribute in (("translate", translate), ("rotate", (0.0, 0.0, 0.0))):
+                name, value = attribute
+                if value is None:
+                    continue
+                locked, incoming = _attribute_write_state(self.cmds, f"{joint}.{name}")
+                if locked or incoming:
+                    raise RuntimeError(
+                        "VMD Rest Pose ownership blocked: "
+                        f"{joint}.{name}, locked={locked}, incoming={incoming}"
+                    )
+                self.cmds.setAttr(f"{joint}.{name}", *value)
+            rows.append(
+                {
+                    "hikBone": info["hikBone"],
+                    "joint": joint,
+                    "bindTranslate": list(translate) if translate is not None else None,
+                }
+            )
+        try:
+            self.cmds.refresh(force=True)
+        except Exception:
+            pass
+        self.stance_evidence["restPose"] = {
+            "applied": True,
+            "strategy": "stored-vmd-bind-translate-plus-zero-rotate",
+            "rows": rows,
+        }
+        return True
 
     def _verify_isolated_topology(self):
         mismatches = []

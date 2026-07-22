@@ -118,7 +118,8 @@ class HumanIkTab(BaseTab):
         self._last_state = {}
 
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(5, 5, 5, 5)
+        main_layout.setContentsMargins(8, 8, 8, 8)
+        main_layout.setSpacing(7)
 
         # The window title already carries ``(Experimental)``. Keep this row
         # to the refresh action only so the compact editor does not repeat a
@@ -152,6 +153,8 @@ class HumanIkTab(BaseTab):
         form = QFormLayout()
         form.setRowWrapPolicy(QFormLayout.DontWrapRows)
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form.setHorizontalSpacing(7)
+        form.setVerticalSpacing(6)
 
         self.character_combo_label = QLabel(self.tr("humanik_character", "labels"))
         self.character_combo = QComboBox()
@@ -199,6 +202,8 @@ class HumanIkTab(BaseTab):
         bake_section.setObjectName("HumanIkBakeSection")
         self.bake_section = bake_section
         bake_section_layout = QVBoxLayout(bake_section)
+        bake_section_layout.setContentsMargins(8, 6, 8, 8)
+        bake_section_layout.setSpacing(6)
         self.bake_toggle_btn = QPushButton()
         self.bake_toggle_btn.setCheckable(True)
         self.bake_toggle_btn.setChecked(True)
@@ -208,7 +213,8 @@ class HumanIkTab(BaseTab):
 
         self.bake_content = QWidget()
         bake_content_layout = QVBoxLayout(self.bake_content)
-        bake_content_layout.setContentsMargins(0, 0, 0, 0)
+        bake_content_layout.setContentsMargins(4, 2, 4, 4)
+        bake_content_layout.setSpacing(6)
         bake_section_layout.addWidget(self.bake_content)
 
         bake_row = QHBoxLayout()

@@ -105,6 +105,7 @@ Sourceコンボで項目を選ぶと、以下が自動的に順番に実行さ�
 以前は複数の操作で確認ダイアログが表示されていましたが、設定項目のないものは即実行に変更されました。
 
 - **選択モデルをセットアップ（Setup / Characterize）**: Mayaで選択中のMMDモデルに対する明示操作です。「Body only / Body + fingers / Cancel」の選択ダイアログは廃止され、常にFull（Body + fingers）プロファイルで即実行されます（既存のbindingがある場合はそのプロファイルを維持）。preflight情報はダイアログではなく実行後の情報メッセージとして表示されます。
+  - VMDモーションを読み込み済みでも、その時点のアニメーション姿勢をRest Poseとして誤認しません。セットアップ中だけVMDのanimCurve／Animation Layer接続を退避し、インポート時に保存したRest Poseでcharacterizeした後、元のキー、接続、表示中フレームの姿勢を復元します。
 - **Enter Target Mode**: 「Continue/Cancel」の確認ダイアログは廃止されました。ownership/blockerチェックを通過すれば即実行されます。
 - **Bake to MMD Rig**: 確認ダイアログは廃止されました（設定項目がフレーム範囲のSpinBoxのみのため）。即実行されます。
 - **Create Control Rig**: 確認ダイアログは廃止されました。

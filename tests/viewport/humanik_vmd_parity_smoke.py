@@ -12,11 +12,12 @@ starting from a **fresh Maya scene**:
 * ``baseline``        — VMD import only, no HumanIK at all.  This is the
   reference every other scenario is diffed against.
 * ``char_then_vmd``   — ``setup_and_characterize`` -> VMD import.
-* ``vmd_then_char``   — VMD import -> ``setup_and_characterize``.
+* ``vmd_then_char``   — VMD import -> evaluate a non-rest motion frame ->
+  ``setup_and_characterize``.
 * ``char_source_vmd`` — ``setup_and_characterize`` -> ``enter_source_mode`` ->
   VMD import.
-* ``vmd_then_source`` — VMD import -> ``setup_and_characterize`` ->
-  ``enter_source_mode``.
+* ``vmd_then_source`` — VMD import -> evaluate a non-rest motion frame ->
+  ``setup_and_characterize`` -> ``enter_source_mode``.
 
 An optional sixth scenario, ``char_fail_restore_then_vmd``, runs only when
 ``--inject-restore-failure`` is passed.  It engineers a minimal trigger for
@@ -425,6 +426,14 @@ def _run_scenario(
         _import_motion(motion, model, root)
         ops.append("vmd_import")
 
+    def _evaluate_motion_before_characterize() -> None:
+        # Characterizing only at frame 0 can accidentally exercise a rest-like
+        # pose and miss connected animCurve restore failures. Use the latest
+        # requested frame so VMD-driven translate/rotate channels are live.
+        frame = int(frames[-1])
+        cmds.currentTime(frame, edit=True)
+        ops.append(f"evaluate_motion_frame:{frame}")
+
     if scenario == "baseline":
         _vmd()
     elif scenario == "char_then_vmd":
@@ -432,6 +441,7 @@ def _run_scenario(
         _vmd()
     elif scenario == "vmd_then_char":
         _vmd()
+        _evaluate_motion_before_characterize()
         _characterize()
     elif scenario == "char_source_vmd":
         _characterize()
@@ -439,6 +449,7 @@ def _run_scenario(
         _vmd()
     elif scenario == "vmd_then_source":
         _vmd()
+        _evaluate_motion_before_characterize()
         _characterize()
         _enter_source()
     else:
