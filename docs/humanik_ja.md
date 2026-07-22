@@ -9,8 +9,8 @@ HumanIK (Experimental) は、Maya標準のHumanIK機能を使って、モーシ�
 片方のMMDモデルにインポート済みのVMDモーションを、別のMMDモデルへHumanIK経由で転写できます。また、モーションキャプチャなど**MMDモデルではない外部のHumanIKキャラクター**をSource（リターゲット元）に指定することもできます。
 
 - **対応**: MMDモデル → MMDモデル のリターゲット、および 外部HIKキャラクター（モーキャプ等） → MMDモデル のリターゲット。
-- **Sourceに指定できるもの**: シーン内の他のMMDモデル、または既にcharacterize（Characterize/Lock）済みのHumanIKキャラクター（mmd_toolsの外で作成されたもの。例: モーションキャプチャのパフォーマー）。
-- **外部HIKキャラクターは不可侵**: 外部キャラクターのジョイント・アニメーション・characterization自体はmmd_toolsから一切変更されません（auto-characterizeも実行されません）。TARGET側（Character）は従来通りauto-characterizeされます。
+- **Sourceに指定できるもの**: シーン内でキャラクタライズ済みの他のMMDモデル、または既にcharacterize（Characterize/Lock）済みのHumanIKキャラクター（mmd_toolsの外で作成されたもの。例: モーションキャプチャのパフォーマー）。
+- **外部HIKキャラクターは不可侵**: 外部キャラクターのジョイント・アニメーション・characterization自体はmmd_toolsから一切変更されません。TARGET側のMMDモデルも、Editorの明示的なセットアップ操作で事前にキャラクタライズします。
 - **未対応**: 外部HIKキャラクターをTARGET（Character）に指定すること。TARGETは常にMMDモデルです。
 
 ## 開き方
@@ -27,11 +27,13 @@ HumanIK Editorの最上部右側には `Refresh` ボタンだけを表示しま�
 
 ### Character（キャラクター）コンボ
 
-このウィンドウが現在操作対象としているMMDモデルです。以下の優先順位で自動的に選択されます。
+このウィンドウが現在操作対象としている**キャラクタライズ済みのMMDモデル**です。未キャラクタライズのMMDモデルは候補に表示されません。1体もキャラクタライズされていない場合は「(なし)」と表示されます。
 
-1. **Mayaの選択に追従**: MMDモデルのルート、またはその配下のジョイントを選択すると、そのモデルが自動的にCharacterとして選ばれます。
+キャラクタライズ済みモデルがある場合は、以下の優先順位で選択されます。
+
+1. **Mayaの選択に追従**: キャラクタライズ済みMMDモデルのルート、またはその配下のジョイントを選択すると、そのモデルが自動的にCharacterとして選ばれます。未キャラクタライズモデルを選択しても候補には入りません。
 2. **手動ピック**: Characterコンボを直接操作してモデルを選ぶと、その選択がMayaのシーン選択が変わるまで優先されます。
-3. **1体自動採用**: シーン内にMMDモデルが1体しかない場合は、選択が何もなくてもそのモデルが自動的にCharacterになります。
+3. **1体自動採用**: シーン内にキャラクタライズ済みMMDモデルが1体しかない場合は、選択が何もなくてもそのモデルが自動的にCharacterになります。
 4. 上記のいずれにも該当しない場合は、直前に表示していたモデル（sticky）が維持されます。
 
 ### Source（ソース）コンボ
@@ -39,7 +41,7 @@ HumanIK Editorの最上部右側には `Refresh` ボタンだけを表示しま�
 リターゲット元を指定するコンボです。項目は次の3種類です。
 
 1. 「None」
-2. シーン内の他のMMDモデル（Character以外）
+2. シーン内のキャラクタライズ済みの他のMMDモデル（Character以外）
 3. シーン内の**非MMDのHumanIKキャラクター**（`(HIK)` サフィックス付きで表示、例: 「MocapChar (HIK)」。モーキャプ等、mmd_toolsの外でcharacterizeされたキャラクター）
 
 - **項目を選択する = リターゲット接続のトリガー**です。選択した瞬間に、Source（MMDモデルまたは外部HIKキャラクター）とCharacter（Target）用モデルの接続処理が自動的に始まります。
@@ -74,12 +76,15 @@ Sourceコンボの表示は、ユーザーが最後にクリックした値で�
 
 Character/Sourceは、ラベルを左、残り幅いっぱいのComboを右に置く1行構成です。操作は次の順に並び、設定項目の多いBake欄だけを見出しの矢印で折り畳めます。
 
-1. `Create Control Rig` ボタン（全幅）
-2. `▼ ベイク` 折り畳み欄
+1. `選択モデルをセットアップ` ボタン（全幅）
+   - Mayaで選択中のMMDモデルをFull（Body + fingers）プロファイルでキャラクタライズします。
+   - 成功後、そのモデルがCharacter/Sourceコンボの候補へ追加されます。
+2. `Create Control Rig` ボタン（全幅）
+3. `▼ ベイク` 折り畳み欄
    - 開始フレーム／終了フレームのSpinBox（1行）
    - `Control Rigへベイク`／`MMD Rigへベイク`（横並び）
    - `ベイクを実行` ボタン
-3. `MMDリグを復元` ボタン
+4. `MMDリグを復元` ボタン
 
 詳細な診断はEditor内へ常時表示せず、MMDメニューのHumanIK診断とMaya Script Editorのログから確認します。
 
@@ -87,13 +92,11 @@ Character/Sourceは、ラベルを左、残り幅いっぱいのComboを右に�
 
 ## 接続時に自動で行われること
 
-Sourceコンボで項目を選ぶと、以下が自動的に順番に実行されます。**確認ダイアログは基本的に表示されません**（下記「ポップアップの削減」を参照）。
+Sourceコンボで項目を選ぶと、以下が自動的に順番に実行されます。**確認ダイアログは基本的に表示されません**（下記「ポップアップの削減」を参照）。CharacterとMMD Sourceはどちらも事前にキャラクタライズ済みであることが前提です。
 
-1. **auto-characterize**（自動キャラクタライズ）: MMDモデルがまだキャラクタライズされていない場合、既定の **Full（Body + fingers）プロファイル**で自動的にキャラクタライズされます。SourceがMMDモデルならSource側にも適用されます。**Sourceが外部HIKキャラクターの場合、このステップは実行されません**（外部キャラクターは不可侵。既にcharacterize/lock済みであることが前提です）。
-   - 既に別のプロファイル（例: body-only）でcharacterize済みのモデルは再characterizeされません（既存のbindingが優先されます）。
-2. **既存アニメーションのチェック**（外部Sourceの場合のみ）: 前述のSourceコンボの説明を参照。
-3. **SOURCE設定**（Enter Source Mode / Enter External Source Mode）: Source側をHumanIKのSOURCEとして設定します。
-4. **TARGET preview**（Enter Target Mode）: Character側モデルをTARGETプレビュー状態にします。確認ダイアログは表示されず、ownership（どの制約ノードがミュートされ、どれが保持されるか）のpreflightチェックを通過すれば即座に実行されます。結果の概要はダイアログではなく完了後の情報メッセージとして表示されます。
+1. **既存アニメーションのチェック**（外部Sourceの場合のみ）: 前述のSourceコンボの説明を参照。
+2. **SOURCE設定**（Enter Source Mode / Enter External Source Mode）: Source側をHumanIKのSOURCEとして設定します。
+3. **TARGET preview**（Enter Target Mode）: Character側モデルをTARGETプレビュー状態にします。確認ダイアログは表示されず、ownership（どの制約ノードがミュートされ、どれが保持されるか）のpreflightチェックを通過すれば即座に実行されます。結果の概要はダイアログではなく完了後の情報メッセージとして表示されます。
 
 途中のいずれかのステップが失敗した場合（例: SOURCE/TARGETのプロファイル不一致、blockerの存在など）、詳細はMaya Script Editorへ記録され、Sourceコンボは実際の状態（未接続のまま等）に戻ります。
 
@@ -101,7 +104,7 @@ Sourceコンボで項目を選ぶと、以下が自動的に順番に実行さ�
 
 以前は複数の操作で確認ダイアログが表示されていましたが、設定項目のないものは即実行に変更されました。
 
-- **Setup / Characterize**: 「Body only / Body + fingers / Cancel」の選択ダイアログは廃止されました。常にFull（Body + fingers）プロファイルで即実行されます（既存のbindingがある場合はそのプロファイルを維持）。preflight情報はダイアログではなく実行後の情報メッセージとして表示されます。
+- **選択モデルをセットアップ（Setup / Characterize）**: Mayaで選択中のMMDモデルに対する明示操作です。「Body only / Body + fingers / Cancel」の選択ダイアログは廃止され、常にFull（Body + fingers）プロファイルで即実行されます（既存のbindingがある場合はそのプロファイルを維持）。preflight情報はダイアログではなく実行後の情報メッセージとして表示されます。
 - **Enter Target Mode**: 「Continue/Cancel」の確認ダイアログは廃止されました。ownership/blockerチェックを通過すれば即実行されます。
 - **Bake to MMD Rig**: 確認ダイアログは廃止されました（設定項目がフレーム範囲のSpinBoxのみのため）。即実行されます。
 - **Create Control Rig**: 確認ダイアログは廃止されました。

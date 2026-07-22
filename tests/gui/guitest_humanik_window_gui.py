@@ -37,10 +37,9 @@ class TestHumanIkTabGUI(GuiTestBase):
         try:
             self.assertTrue(tab.status_label.text())
             self.assertFalse(hasattr(tab, "experimental_notice_label"))
-            # HUMANIK-FRONTEND-1 Phase B4: Setup/Characterize, Enter Source
-            # Mode, and Enter Target Mode no longer have a standalone button
-            # on this tab -- the Character/Source combos replace them.
-            for attr in ("setup_characterize_btn", "enter_source_btn", "enter_target_btn"):
+            # Source/Target mode remain combo-driven. Setup is explicit so a
+            # scene with zero characterized models has an obvious entry path.
+            for attr in ("enter_source_btn", "enter_target_btn"):
                 self.assertFalse(hasattr(tab, attr), attr)
             # The verbose status table remains removed. Bake is the one
             # collapsible group because it contains range/destination controls.
@@ -58,6 +57,7 @@ class TestHumanIkTabGUI(GuiTestBase):
             for attr in (
                 "character_combo",
                 "source_combo",
+                "setup_characterize_btn",
                 "status_label",
                 "bake_btn",
                 "create_control_rig_btn",
@@ -127,6 +127,10 @@ class TestHumanIkTabGUI(GuiTestBase):
             tab.set_source_options([("(none)", None)], None)
             QApplication.processEvents()
             self.assertEqual(fired, [])
+
+            tab.set_character_options([("(none)", None)], None)
+            self.assertEqual(tab.character_combo.count(), 1)
+            self.assertIsNone(tab.character_combo.currentData())
         finally:
             tab.deleteLater()
             QApplication.processEvents()
@@ -207,6 +211,59 @@ class TestHumanIkTabGUI(GuiTestBase):
             QApplication.processEvents()
             presenter.refresh()
             QApplication.processEvents()
+        finally:
+            tab.deleteLater()
+            QApplication.processEvents()
+
+    def test_setup_button_promotes_selected_model_into_character_list(self):
+        """Lock the zero-character entry path without running a heavy HIK setup."""
+
+        class FakeSession:
+            def describe_frontend_state(self, model_root=None):
+                return {"mode": "neutral", "source": None, "controlRigs": []}
+
+            def list_source_candidates(self):
+                return []
+
+        class FakeActions:
+            def __init__(self):
+                self.characterized = []
+                self.dispatch_calls = []
+                self.session = FakeSession()
+
+            def get_humanik_session(self):
+                return self.session
+
+            def resolve_selected_model_root_for_display(self, *, cmds_module=None):
+                return "|ImportedOnly"
+
+            def list_characterized_mmd_models(self, *, cmds_module=None):
+                return list(self.characterized)
+
+            def dispatch_action(self, action):
+                self.dispatch_calls.append(action)
+                if action == "setup_and_characterize":
+                    self.characterized.append("|ImportedOnly")
+
+        tab = HumanIkTab()
+        actions = FakeActions()
+        presenter = HumanIkPresenter(
+            tab,
+            SimpleNamespace(current_model_root=None),
+            actions_module=actions,
+            cmds_module=cmds,
+        )
+        try:
+            presenter.on_tab_activated()
+            QApplication.processEvents()
+            self.assertEqual(tab.character_combo.count(), 1)
+            self.assertIsNone(tab.character_combo.currentData())
+
+            tab.setup_characterize_btn.click()
+            QApplication.processEvents()
+
+            self.assertEqual(actions.dispatch_calls, ["setup_and_characterize"])
+            self.assertEqual(tab.character_combo.currentData(), "|ImportedOnly")
         finally:
             tab.deleteLater()
             QApplication.processEvents()

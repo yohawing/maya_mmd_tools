@@ -14,12 +14,13 @@ label, and the action sections were flattened into a compact stack. The Bake
 controls now retain one explicit collapsible section so they can be hidden
 when they are not in use.
 
-The single-model "Enter Source Mode"/"Enter Target Mode"/"Setup / Characterize"
-buttons from the previous layout are gone from this View entirely -- the two
-combos now drive that lifecycle (see ``HumanIkPresenter``). The backend remains
-authoritative for every action guard. Buttons stay clickable and failures are
-written to Maya's Script Editor, keeping detailed state and error prose out of
-this compact UI.
+"Enter Source Mode"/"Enter Target Mode" remain implicit in the Source combo,
+but Setup / Characterize is an explicit button: only already-characterized
+models appear in either combo, and a scene with none shows Character as
+"(none)" until the user selects an MMD model and runs Setup. The backend
+remains authoritative for every action guard. Buttons stay clickable and
+failures are written to Maya's Script Editor, keeping detailed state and
+error prose out of this compact UI.
 """
 
 from ..combo_box_utils import configure_model_combo_width
@@ -44,11 +45,11 @@ from ..base_tab import BaseTab
 from .translation_registry import apply_translation_registry
 
 
-# Action button attribute -> (translation key) for the button text. Only the
-# actions that still have a standalone button on this tab (Setup /
-# Characterize, Enter Source Mode, and Enter Target Mode moved to the
-# Character/Source combos, see the module docstring).
+# Action button attribute -> translation key for each standalone action.
+# Source/Target mode remain combo-driven; Setup is explicit so the empty
+# characterized-model state still has a clear entry point.
 _ACTION_BUTTON_SPECS = (
+    ("setup_characterize_btn", "humanik_setup_selected_model"),
     ("create_control_rig_btn", "humanik_create_control_rig"),
     ("bake_btn", "humanik_bake_execute"),
     ("restore_btn", "humanik_restore"),
@@ -84,6 +85,12 @@ class HumanIkTab(BaseTab):
         ("character_combo_label", "setText", "humanik_character", "labels"),
         ("source_combo_label", "setText", "humanik_source", "labels"),
         ("source_combo", "setToolTip", "humanik_source_tooltip", "messages"),
+        (
+            "setup_characterize_btn",
+            "setToolTip",
+            "humanik_setup_selected_model_tooltip",
+            "messages",
+        ),
         ("bake_start_label", "setText", "humanik_bake_start", "labels"),
         ("bake_end_label", "setText", "humanik_bake_end", "labels"),
         (
@@ -135,13 +142,12 @@ class HumanIkTab(BaseTab):
         """Build the Character/Source combo row pair.
 
         Mirrors Maya's own HumanIK Character Controls panel: "Character" is
-        the MMD model this window currently acts on; "Source" is "None" plus
-        every other scene MMD model -- selecting a model there is the
+        the characterized MMD model this window currently acts on; "Source"
+        is "None" plus every other characterized scene MMD model -- selecting a model there is the
         retarget-connect trigger (see ``HumanIkPresenter``), selecting "None"
-        disconnects. Neither combo carries a leading "(none)" placeholder for
-        Character -- see the presenter's sticky/follow/auto-adopt selection
-        logic for why one is always resolvable whenever the scene has any MMD
-        model.
+        disconnects. Character shows "(none)" when no scene MMD model has
+        been characterized yet; imported-but-uncharacterized models are
+        intentionally absent until explicit Setup succeeds.
         """
         form = QFormLayout()
         form.setRowWrapPolicy(QFormLayout.DontWrapRows)
@@ -175,10 +181,18 @@ class HumanIkTab(BaseTab):
     def _build_actions(self, main_layout):
         """Lay out the action buttons as a flat vertical stack.
 
-        Keep Create Control Rig and Restore as direct actions. Bake owns the
+        Keep Setup, Create Control Rig, and Restore as direct actions. Bake owns the
         only collapsible section because its frame range, two destinations,
         and Execute action are useful as one hideable unit.
         """
+        self._add_action_row(
+            main_layout,
+            "setup_characterize_btn",
+            "humanik_setup_selected_model",
+        )
+        self.setup_characterize_btn.setToolTip(
+            self.tr("humanik_setup_selected_model_tooltip", "messages")
+        )
         self._add_action_row(main_layout, "create_control_rig_btn", "humanik_create_control_rig")
 
         bake_section = QGroupBox()

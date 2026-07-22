@@ -18,6 +18,7 @@ from mmd_tools.core.humanik_frontend import (
     HumanIkFrontendSession,
 )
 from mmd_tools.core.logger import get_logger, install_maya_script_editor_handler
+from mmd_tools.core.humanik_retarget import find_humanik_character_for_model
 from mmd_tools.services.scene_model_service import SceneModelService
 
 
@@ -210,6 +211,32 @@ def list_scene_mmd_models(*, cmds_module=None) -> list:
         return sorted(str(root) for root in service.list_mmd_models())
     except Exception:
         return []
+
+
+def list_characterized_mmd_models(*, cmds_module=None) -> list:
+    """Return scene MMD roots that are connected to a HumanIK character.
+
+    The Character and Source pickers must reflect Maya scene facts rather
+    than the frontend session's process-local binding cache.  This keeps the
+    list correct after scene reopen/plugin reload and prevents an imported,
+    but not yet characterized, MMD model from looking ready for HumanIK.
+
+    Any scene-query failure excludes that model.  A passive UI refresh must
+    never characterize or otherwise mutate a candidate just to list it.
+    """
+    try:
+        cmds = cmds_module or _maya_cmds()
+    except Exception:
+        return []
+    characterized = []
+    for model_root in list_scene_mmd_models(cmds_module=cmds):
+        try:
+            character = find_humanik_character_for_model(model_root, cmds_module=cmds)
+        except Exception:
+            character = None
+        if character:
+            characterized.append(model_root)
+    return characterized
 
 
 def resolve_selected_model_root_for_display(*, cmds_module=None) -> Optional[str]:

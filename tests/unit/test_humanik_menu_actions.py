@@ -755,6 +755,32 @@ class TestHumanIkMenuActions(unittest.TestCase):
         with patch.object(actions, "SceneModelService", side_effect=RuntimeError("boom")):
             self.assertEqual(actions.list_scene_mmd_models(cmds_module=cmds), [])
 
+    @patch.object(actions, "SceneModelService", _FakeModelService)
+    def test_list_characterized_mmd_models_filters_by_scene_hik_connection(self):
+        _FakeModelService.models = ["|ready_root", "|plain_root"]
+        with patch.object(
+            actions,
+            "find_humanik_character_for_model",
+            side_effect=lambda root, cmds_module=None: (
+                "ReadyCharacter" if root == "|ready_root" else None
+            ),
+        ):
+            result = actions.list_characterized_mmd_models(cmds_module=self.cmds)
+
+        self.assertEqual(result, ["|ready_root"])
+
+    @patch.object(actions, "SceneModelService", _FakeModelService)
+    def test_list_characterized_mmd_models_excludes_query_failures(self):
+        _FakeModelService.models = ["|broken_root"]
+        with patch.object(
+            actions,
+            "find_humanik_character_for_model",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = actions.list_characterized_mmd_models(cmds_module=self.cmds)
+
+        self.assertEqual(result, [])
+
     # -- HUMANIK-FRONTEND-1 Phase B4: connect_retarget / disconnect_retarget -
 
     def test_connect_retarget_runs_source_then_target_in_order(self):

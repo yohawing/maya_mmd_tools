@@ -6,7 +6,9 @@ a "Character" combo (the MMD model this window acts on) and a "Source" combo
 picking "None" disconnects) -- plus the existing status header and the
 Control Rig/Bake/Restore action buttons. This presenter owns:
 
-* populating both combos every refresh from the scene's MMD model list;
+* populating both combos every refresh from scene-fact-characterized MMD
+  models only; uncharacterized imports are exposed through the explicit
+  Setup button instead of masquerading as ready Characters/Sources;
 * the Character combo's selection policy (Maya-selection-follow, sticky
   last-picked value while nothing is selected, single-model auto-adopt, and
   "a manual pick wins until the *next* Maya selection change" -- see
@@ -41,8 +43,10 @@ class HumanIkPresenter:
     # separately (see ``_on_bake_clicked``) because it passes the frame-range
     # SpinBox values to the action explicitly. ``setup_and_characterize``/
     # ``enter_source_mode``/``enter_target_mode`` have no button anymore --
-    # the Character/Source combos replace them (HUMANIK-FRONTEND-1 Phase B4).
+    # the Character/Source combos replace them. Setup remains explicit so an
+    # uncharacterized scene has a clear entry point.
     _DISPATCH_ATTR_TO_ACTION = {
+        "setup_characterize_btn": "setup_and_characterize",
         "create_control_rig_btn": "create_control_rig",
         "restore_btn": "restore_mmd_rig",
     }
@@ -203,12 +207,20 @@ class HumanIkPresenter:
     # -- refresh -------------------------------------------------------
 
     def refresh(self, *_args):
-        models = self._list_scene_models()
+        models = self._list_characterized_models()
         selected_root = self._resolve_display_model_root()
         character_root = self._resolve_character_root(selected_root, models)
         self._character_root = character_root
 
-        character_options = [(self._label_for(root), root) for root in models]
+        if models:
+            character_options = [(self._label_for(root), root) for root in models]
+        else:
+            none_label = (
+                self.view.tr("humanik_none", "labels")
+                if hasattr(self.view, "tr")
+                else "None"
+            )
+            character_options = [(none_label, None)]
         self._set_character_options(character_options, character_root)
 
         session = self._actions.get_humanik_session()
@@ -287,14 +299,15 @@ class HumanIkPresenter:
         if setter is not None:
             setter(options, selected_value)
 
-    def _list_scene_models(self):
-        lister = getattr(self._actions, "list_scene_mmd_models", None)
+    def _list_characterized_models(self):
+        """List only MMD models proven characterized by current scene facts."""
+        lister = getattr(self._actions, "list_characterized_mmd_models", None)
         if lister is None:
             return []
         try:
             return list(lister(cmds_module=self._cmds_module))
         except Exception:
-            logger.debug("HumanIK tab could not list scene MMD models", exc_info=True)
+            logger.debug("HumanIK tab could not list characterized MMD models", exc_info=True)
             return []
 
     def _resolve_character_root(self, selected_root, models):
@@ -312,8 +325,9 @@ class HumanIkPresenter:
            a selection already made and no override yet).
         4. The last value shown (``_character_sticky``), if it still exists
            -- "no selection" sticks to whatever was last resolved.
-        5. The scene's only model, if there is exactly one (also the
-           fallback when several models exist and nothing else applies).
+        5. The scene's first characterized model, if any. If none are
+           characterized, Character remains ``None`` until the explicit
+           Setup action succeeds.
         """
         if selected_root != self._last_seen_selection:
             self._character_override = None

@@ -25,6 +25,7 @@ from mmd_tools.ui.presenters.humanik_presenter import HumanIkPresenter
 from mmd_tools.ui.tabs.humanik_tab import HumanIkTab
 
 _ACTION_BUTTON_ATTRS = (
+    "setup_characterize_btn",
     "create_control_rig_btn",
     "bake_btn",
     "restore_btn",
@@ -51,10 +52,19 @@ class _FakeSession:
 class _FakeActionsModule:
     """Stand-in for ``humanik_menu_actions`` with exactly the surface the presenter uses."""
 
-    def __init__(self, session=None, display_model_root=None, scene_models=None):
+    def __init__(
+        self,
+        session=None,
+        display_model_root=None,
+        scene_models=None,
+        characterized_models=None,
+    ):
         self.session = session or _FakeSession()
         self.display_model_root = display_model_root
         self.scene_models = list(scene_models) if scene_models is not None else []
+        self.characterized_models = (
+            list(characterized_models) if characterized_models is not None else None
+        )
         self.dispatch_calls = []
         self.bake_calls = []
         self.bake_control_rig_calls = []
@@ -84,6 +94,10 @@ class _FakeActionsModule:
 
     def list_scene_mmd_models(self, *, cmds_module=None):
         return list(self.scene_models)
+
+    def list_characterized_mmd_models(self, *, cmds_module=None):
+        values = self.scene_models if self.characterized_models is None else self.characterized_models
+        return list(values)
 
     def connect_retarget(self, source_model_root, target_model_root):
         self.connect_calls.append((source_model_root, target_model_root))
@@ -128,6 +142,7 @@ def _make_mock_view():
         view,
         [
             "refresh_btn",
+            "setup_characterize_btn",
             "create_control_rig_btn",
             "bake_btn",
             "bake_execute_btn",
@@ -229,6 +244,7 @@ class TestHumanIkPresenter(unittest.TestCase):
 
     def test_each_action_button_dispatches_its_stable_action_name_and_refreshes(self):
         button_to_action = {
+            "setup_characterize_btn": "setup_and_characterize",
             "create_control_rig_btn": "create_control_rig",
             "restore_btn": "restore_mmd_rig",
         }
@@ -297,6 +313,7 @@ class TestHumanIkPresenterCharacterCombo(unittest.TestCase):
 
     def test_single_scene_model_is_auto_adopted(self):
         self.actions.scene_models = ["|Only"]
+        self.actions.characterized_models = ["|Only"]
 
         self.presenter.refresh()
 
@@ -306,6 +323,7 @@ class TestHumanIkPresenterCharacterCombo(unittest.TestCase):
 
     def test_maya_selection_wins_over_default(self):
         self.actions.scene_models = ["|A", "|B"]
+        self.actions.characterized_models = ["|A", "|B"]
         self.actions.display_model_root = "|B"
 
         self.presenter.refresh()
@@ -315,6 +333,7 @@ class TestHumanIkPresenterCharacterCombo(unittest.TestCase):
 
     def test_no_selection_sticks_to_last_resolved_model(self):
         self.actions.scene_models = ["|A", "|B"]
+        self.actions.characterized_models = ["|A", "|B"]
         self.actions.display_model_root = "|B"
         self.presenter.refresh()
 
@@ -326,6 +345,7 @@ class TestHumanIkPresenterCharacterCombo(unittest.TestCase):
 
     def test_manual_pick_wins_over_unchanged_selection(self):
         self.actions.scene_models = ["|A", "|B"]
+        self.actions.characterized_models = ["|A", "|B"]
         self.actions.display_model_root = "|A"
         self.presenter.refresh()
 
@@ -340,6 +360,7 @@ class TestHumanIkPresenterCharacterCombo(unittest.TestCase):
 
     def test_selection_change_clears_a_manual_override(self):
         self.actions.scene_models = ["|A", "|B"]
+        self.actions.characterized_models = ["|A", "|B"]
         self.actions.display_model_root = None
         self.presenter.refresh()
 
@@ -359,6 +380,7 @@ class TestHumanIkPresenterCharacterCombo(unittest.TestCase):
 
     def test_character_combo_change_ignores_falsy_selection(self):
         self.actions.scene_models = ["|A"]
+        self.actions.characterized_models = ["|A"]
         self.presenter.refresh()
         calls_before = self.view.set_character_options.call_count
 
@@ -368,6 +390,29 @@ class TestHumanIkPresenterCharacterCombo(unittest.TestCase):
 
         # No refresh should have been triggered by a falsy combo value.
         self.assertEqual(self.view.set_character_options.call_count, calls_before)
+
+    def test_uncharacterized_scene_models_are_not_listed(self):
+        self.actions.scene_models = ["|ImportedOnly"]
+        self.actions.characterized_models = []
+        self.actions.display_model_root = "|ImportedOnly"
+
+        self.presenter.refresh()
+
+        options, selected = self._last_character_call().args
+        self.assertEqual(options, [("humanik_none", None)])
+        self.assertIsNone(selected)
+        self.assertEqual(self.session.describe_calls, [None])
+
+    def test_only_characterized_models_are_character_candidates(self):
+        self.actions.scene_models = ["|Ready", "|ImportedOnly"]
+        self.actions.characterized_models = ["|Ready"]
+        self.actions.display_model_root = "|ImportedOnly"
+
+        self.presenter.refresh()
+
+        options, selected = self._last_character_call().args
+        self.assertEqual(options, [("Ready", "|Ready")])
+        self.assertEqual(selected, "|Ready")
 
 
 class TestHumanIkPresenterSourceCombo(unittest.TestCase):
