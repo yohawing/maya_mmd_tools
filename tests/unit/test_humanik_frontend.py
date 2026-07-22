@@ -485,6 +485,71 @@ class TestHumanIkFrontend(unittest.TestCase):
         self.assertEqual(report["blockers"], [])
         self.assertEqual(report["constraintRows"], [safe_row])
 
+    def test_target_preflight_trusts_active_control_rig_disconnected_foot_node(self):
+        class Cmds:
+            def ls(self, node=None, uuid=False, **_kwargs):
+                if uuid and node == "|target:left_leg_ik_mmdCcdIk":
+                    return ["uuid-left-leg-ik"]
+                return []
+
+        session = HumanIkFrontendSession(
+            cmds_module=Cmds(),
+            stance_transaction_factory=FakeStance,
+        )
+        result = HumanIkResolveResult(
+            assignments=(
+                _assignment("Hips", 1, "|target|hips"),
+                _assignment("LeftLeg", 4, "|target|left_leg"),
+            ),
+            missing_mmd_bones=(),
+            unindexed_mmd_bones=(),
+            duplicate_assignments=(),
+        )
+        session._bindings["|source"] = HumanIkFrontendBinding(
+            model_root="|source",
+            character="Character_source",
+            result=result,
+        )
+        session._bindings["|target"] = HumanIkFrontendBinding(
+            model_root="|target",
+            character="Character_target",
+            result=result,
+        )
+        session._source_model_root = "|source"
+        transaction = FakeControlRigTransaction(character="Character_target")
+        transaction.isolated_feedback_nodes = []
+        transaction.disconnected = [{
+            "source": "|target:left_leg_ik_mmdCcdIk.outputRotate[0]",
+            "destination": "|target|left_leg.rotate",
+            "sourceNodeUuid": "uuid-left-leg-ik",
+        }]
+        session._control_rig_transactions["|target"] = transaction
+        report = {
+            "rows": [{
+                "node": "|target:left_leg_ik_mmdCcdIk",
+                "nodeType": "mmdCcdIk",
+                "classification": "manual",
+                "reads": ["|target|left_leg_ik.translate"],
+                "writes": [],
+            }],
+            "counts": {"manual": 1},
+        }
+
+        with patch(
+            "mmd_tools.core.humanik_frontend.collect_hik_ownership_report",
+            return_value=report,
+        ), patch(
+            "mmd_tools.core.humanik_frontend.begin_humanik_target_preview",
+            return_value=FakePreview(),
+        ) as begin:
+            preview = session.enter_target_mode("|target")
+
+        self.assertTrue(preview.active)
+        self.assertIn(
+            "|target:left_leg_ik_mmdCcdIk",
+            begin.call_args.kwargs["preisolated_feedback_nodes"],
+        )
+
     @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition")
     @patch("mmd_tools.core.humanik_frontend.create_humanik_definition", return_value="Character_source")
     @patch("mmd_tools.core.humanik_frontend.resolve_scene_humanik_assignments", return_value=_result())

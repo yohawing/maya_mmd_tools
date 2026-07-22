@@ -8,7 +8,7 @@ tested without opening HumanIK panels.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from mmd_tools.core.humanik_bake import HumanIkBakeResult, bake_humanik_target_preview
 from mmd_tools.core.humanik_builder import (
@@ -24,6 +24,7 @@ from mmd_tools.core.humanik_constraints import (
     collect_hik_ownership_report,
     is_preisolated_mmd_ccdik_feedback_row,
     is_supported_mmd_ccdik_feedback_row,
+    preisolated_mmd_ccdik_nodes_from_disconnected_edges,
 )
 from mmd_tools.core.humanik_control_rig import (
     HumanIkControlRigBakeResult,
@@ -273,6 +274,65 @@ def _assignment_row(assignment: HumanIkBoneAssignment) -> Dict[str, Any]:
         "source": str(assignment.source),
         "boneIndex": assignment.bone_index,
     }
+
+
+def _source_node_uuid(cmds: Any, node: str) -> Optional[str]:
+    """Return one current Maya UUID, or ``None`` when identity is ambiguous."""
+    try:
+        values = cmds.ls(str(node), uuid=True) or []
+    except Exception:
+        return None
+    return str(values[0]) if len(values) == 1 and values[0] else None
+
+
+def _record_disconnected_source_uuids(transaction: Any, cmds: Any) -> None:
+    """Attach current source-node identities before persisting a transaction."""
+    for edge in getattr(transaction, "disconnected", ()) or ():
+        if not isinstance(edge, dict):
+            continue
+        source = str(edge.get("source", ""))
+        if "." not in source:
+            continue
+        source_node = source.rsplit(".", 1)[0]
+        source_uuid = _source_node_uuid(cmds, source_node)
+        if source_uuid is not None:
+            edge["sourceNodeUuid"] = source_uuid
+
+
+def _preisolated_feedback_nodes(
+    transaction: Any,
+    assignments: Iterable[Any],
+    cmds_module: Any,
+) -> Tuple[str, ...]:
+    """Return active Control Rig foot nodes trusted for TARGET preflight.
+
+    Feedback and ``mute_for_hik`` rows both retain their exact writer edges in
+    ``transaction.disconnected``.  Only edges whose persisted source UUID
+    still matches the current Maya node may authorize the post-isolation
+    ``manual`` ownership shape.
+    """
+    if transaction is None or not bool(getattr(transaction, "active", False)):
+        return ()
+    edges = getattr(transaction, "disconnected", ()) or ()
+    source_nodes = {
+        str(edge.get("source", "")).rsplit(".", 1)[0]
+        for edge in edges
+        if isinstance(edge, Mapping) and "." in str(edge.get("source", ""))
+    }
+    try:
+        cmds = cmds_module or maya_cmds()
+    except Exception:
+        return ()
+    node_uuids = {
+        node: source_uuid
+        for node in source_nodes
+        if (source_uuid := _source_node_uuid(cmds, node)) is not None
+    }
+    return preisolated_mmd_ccdik_nodes_from_disconnected_edges(
+        edges,
+        assignments,
+        node_uuids,
+    )
 
 
 @dataclass
@@ -775,10 +835,10 @@ class HumanIkFrontendSession:
         target_joints = tuple(assignment.joint for assignment in target.assignments)
         report = collect_hik_ownership_report(target_joints, cmds_module=self._cmds)
         transaction = self._control_rig_transactions.get(key)
-        preisolated_feedback_nodes = (
-            transaction.isolated_feedback_nodes
-            if transaction is not None and transaction.active
-            else ()
+        preisolated_feedback_nodes = _preisolated_feedback_nodes(
+            transaction,
+            target.assignments,
+            self._cmds,
         )
         self._target_model_root = key
         self._ownership_report = report
@@ -853,6 +913,12 @@ class HumanIkFrontendSession:
             mel_module=self._mel,
             assignments=binding.assignments,
         )
+        try:
+            cmds = self._cmds or maya_cmds()
+        except Exception:
+            cmds = None
+        if cmds is not None:
+            _record_disconnected_source_uuids(transaction, cmds)
         self._control_rig_transactions[key] = transaction
         binding.control_rig_created = True
         self._persist_control_rig_transactions()
@@ -1229,10 +1295,10 @@ class HumanIkFrontendSession:
         target_joints = tuple(row["joint"] for row in model_report["assignments"])
         ownership = collect_hik_ownership_report(target_joints, cmds_module=self._cmds)
         transaction = self._control_rig_transactions.get(key)
-        preisolated_feedback_nodes = (
-            transaction.isolated_feedback_nodes
-            if transaction is not None and transaction.active
-            else ()
+        preisolated_feedback_nodes = _preisolated_feedback_nodes(
+            transaction,
+            model_report["assignments"],
+            self._cmds,
         )
         blockers = [
             row for row in ownership.get("rows", [])
@@ -1294,10 +1360,10 @@ class HumanIkFrontendSession:
             if self._target_model_root is not None
             else None
         )
-        preisolated_feedback_nodes = (
-            transaction.isolated_feedback_nodes
-            if transaction is not None and transaction.active
-            else ()
+        preisolated_feedback_nodes = _preisolated_feedback_nodes(
+            transaction,
+            target.assignments if target is not None else (),
+            self._cmds,
         )
         blockers = [
             row for row in ownership_rows

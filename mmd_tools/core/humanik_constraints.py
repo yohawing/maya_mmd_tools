@@ -43,6 +43,21 @@ _MMD_CCDIK_FOOT_NAME = re.compile(
 )
 
 
+def _assignments_by_joint(assignments: Iterable[Any]) -> Dict[str, str]:
+    """Return a normalized joint-to-HIK-slot map for mixed assignment rows."""
+    result = {}
+    for assignment in assignments or ():
+        if isinstance(assignment, Mapping):
+            joint = assignment.get("joint")
+            slot = assignment.get("hikBone", assignment.get("hik_bone"))
+        else:
+            joint = getattr(assignment, "joint", None)
+            slot = getattr(assignment, "hik_bone", getattr(assignment, "hikBone", None))
+        if joint is not None and slot is not None:
+            result[str(joint)] = str(slot)
+    return result
+
+
 def is_supported_mmd_ccdik_feedback_row(
     row: Dict[str, Any],
     assignments: Iterable[Any],
@@ -65,17 +80,7 @@ def is_supported_mmd_ccdik_feedback_row(
     if not row.get("reads") or not row.get("readHikJoints") or not row.get("readOutsideJoints"):
         return False
 
-    assignments_by_joint = {}
-    for assignment in assignments or ():
-        if isinstance(assignment, Mapping):
-            joint = assignment.get("joint")
-            slot = assignment.get("hikBone", assignment.get("hik_bone"))
-        else:
-            joint = getattr(assignment, "joint", None)
-            slot = getattr(assignment, "hik_bone", getattr(assignment, "hikBone", None))
-        if joint is None or slot is None:
-            continue
-        assignments_by_joint[str(joint)] = str(slot)
+    assignments_by_joint = _assignments_by_joint(assignments)
 
     write_slots = set()
     writes = [str(plug) for plug in row.get("writes", ())]
@@ -119,6 +124,56 @@ def is_preisolated_mmd_ccdik_feedback_row(
         and str(row.get("node", "")) in {str(node) for node in isolated_nodes}
         and not row.get("writes")
     )
+
+
+def preisolated_mmd_ccdik_nodes_from_disconnected_edges(
+    edges: Iterable[Mapping[str, Any]],
+    assignments: Iterable[Any],
+    node_uuids: Mapping[str, str],
+) -> Tuple[str, ...]:
+    """Return strictly recorded importer foot nodes from transaction edges.
+
+    A Control Rig transaction may have classified an importer foot writer as
+    ``mute_for_hik`` before disconnecting it, so the later ownership scan sees
+    ``manual`` with no ``writes`` and has no ``isolated_feedback_nodes`` entry.
+    The transaction's own disconnected edges are authoritative only when the
+    persisted source UUID still matches the current Maya node and the exact
+    importer node/rotate topology targets a same-side HIK foot assignment.
+    Arbitrary or stale nodes/channels remain fail-closed.
+    """
+    nodes = set()
+    assignments_by_joint = _assignments_by_joint(assignments)
+    for edge in edges or ():
+        if not isinstance(edge, Mapping):
+            continue
+        source = str(edge.get("source", ""))
+        destination = str(edge.get("destination", ""))
+        if "." not in source or "." not in destination:
+            continue
+        source_node, source_attribute = source.rsplit(".", 1)
+        destination_joint, destination_attribute = destination.rsplit(".", 1)
+        if not re.fullmatch(r"outputRotate\[\d+\]", source_attribute):
+            continue
+        if destination_attribute not in {"rotate", "rotateX", "rotateY", "rotateZ"}:
+            continue
+        stored_uuid = str(edge.get("sourceNodeUuid", ""))
+        if not stored_uuid or str(node_uuids.get(source_node, "")) != stored_uuid:
+            continue
+        leaf = source_node.rsplit("|", 1)[-1].rsplit(":", 1)[-1]
+        match = _MMD_CCDIK_FOOT_NAME.fullmatch(leaf)
+        if match is None:
+            continue
+        slot = assignments_by_joint.get(destination_joint)
+        side = match.group("side").capitalize()
+        allowed = (
+            {f"{side}UpLeg", f"{side}Leg"}
+            if match.group("kind").lower() == "leg"
+            else {f"{side}Foot", f"{side}ToeBase"}
+        )
+        if slot not in allowed:
+            continue
+        nodes.add(source_node)
+    return tuple(sorted(nodes))
 
 
 @dataclass(frozen=True)

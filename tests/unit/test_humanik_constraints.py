@@ -5,10 +5,64 @@ import unittest
 from mmd_tools.core.humanik_constraints import (
     HumanIkConstraintFacts,
     classify_humanik_constraints,
+    preisolated_mmd_ccdik_nodes_from_disconnected_edges,
 )
 
 
 class TestHumanIkConstraints(unittest.TestCase):
+    def test_preisolated_ccdik_edge_requires_exact_importer_foot_rotate_topology(self):
+        valid_node = "|target:left_leg_ik_mmdCcdIk"
+        valid_edge = {
+            "source": f"{valid_node}.outputRotate[0]",
+            "destination": "|target|left_leg.rotate",
+            "sourceNodeUuid": "uuid-left-leg-ik",
+        }
+        assignments = [{"joint": "|target|left_leg", "hikBone": "LeftLeg"}]
+        node_uuids = {valid_node: "uuid-left-leg-ik"}
+        self.assertEqual(
+            preisolated_mmd_ccdik_nodes_from_disconnected_edges(
+                [valid_edge], assignments, node_uuids
+            ),
+            (valid_node,),
+        )
+
+        invalid_edges = (
+            # (1) A non-foot mmdCcdIk node is never trusted.
+            {
+                "source": "|target:left_arm_ik_mmdCcdIk.outputRotate[0]",
+                "destination": "|target|left_arm.rotate",
+                "sourceNodeUuid": "uuid-left-arm-ik",
+            },
+            # (2) The recorded source must be an outputRotate array plug.
+            {
+                "source": f"{valid_node}.outputTranslate[0]",
+                "destination": "|target|left_leg.rotate",
+                "sourceNodeUuid": "uuid-left-leg-ik",
+            },
+            # (3) The recorded destination must be a rotate channel.
+            {
+                "source": f"{valid_node}.outputRotate[0]",
+                "destination": "|target|left_leg.translate",
+                "sourceNodeUuid": "uuid-left-leg-ik",
+            },
+            # (4) Persisted identity must still match the current Maya node.
+            {**valid_edge, "sourceNodeUuid": "stale-uuid"},
+            # (5) The recorded destination must be a same-side HIK leg slot.
+            {**valid_edge, "destination": "|target|right_leg.rotate"},
+            # (6) Malformed/non-object rows are ignored without guessing.
+            {},
+            None,
+            "not-an-edge",
+        )
+        for edge in invalid_edges:
+            with self.subTest(edge=edge):
+                self.assertEqual(
+                    preisolated_mmd_ccdik_nodes_from_disconnected_edges(
+                        [edge], assignments, node_uuids
+                    ),
+                    (),
+                )
+
     def test_connection_ownership_overrides_misleading_node_names(self):
         report = classify_humanik_constraints(
             [
