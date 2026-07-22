@@ -8,11 +8,11 @@ trigger, picking "None" disconnects), followed by a compact one-line status
 label and a flat, always-visible column of action buttons.
 
 Phase B5 (user feedback) simplified the layout further: the Refresh button
-moved to the top (next to the Experimental notice), the four-row Mode/
+moved to the top, the four-row Mode/
 Source/Target/Control Rigs status table collapsed into a single status
-label, and the three collapsible ``QGroupBox`` action sections were flattened
-into a plain vertical stack of buttons -- there is nothing left to expand or
-collapse.
+label, and the action sections were flattened into a compact stack. The Bake
+controls now retain one explicit collapsible section so they can be hidden
+when they are not in use.
 
 The single-model "Enter Source Mode"/"Enter Target Mode"/"Setup / Characterize"
 buttons from the previous layout are gone from this View entirely -- the two
@@ -33,6 +33,7 @@ from ..qt_compat import (
     QSizePolicy,
     QSpinBox,
     QVBoxLayout,
+    QWidget,
 )
 
 try:  # ``qt_compat`` intentionally exposes only the shared widget surface.
@@ -61,6 +62,21 @@ MODE_TRANSLATION_KEYS = {
 }
 
 
+def _configure_compact_model_combo(combo):
+    """Keep long model names elided while letting the field fill its row."""
+    configure_model_combo_width(combo, minimum_width=0, minimum_contents_length=12)
+    policy = getattr(QComboBox, "AdjustToMinimumContentsLengthWithIcon", None)
+    if policy is None and hasattr(QComboBox, "SizeAdjustPolicy"):
+        policy = getattr(
+            QComboBox.SizeAdjustPolicy,
+            "AdjustToMinimumContentsLengthWithIcon",
+            None,
+        )
+    if policy is not None:
+        combo.setSizeAdjustPolicy(policy)
+    combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+
 class HumanIkTab(BaseTab):
     """Pair-specified HumanIK retarget UI: Character/Source combos + status + actions."""
 
@@ -70,7 +86,6 @@ class HumanIkTab(BaseTab):
         ("source_combo", "setToolTip", "humanik_source_tooltip", "messages"),
         ("bake_start_label", "setText", "humanik_bake_start", "labels"),
         ("bake_end_label", "setText", "humanik_bake_end", "labels"),
-        ("bake_section_label", "setText", "humanik_bake_section", "labels"),
         (
             "bake_to_control_rig_radio",
             "setText",
@@ -85,7 +100,6 @@ class HumanIkTab(BaseTab):
         ),
         ("refresh_btn", "setText", "refresh", "buttons"),
         ("restore_btn", "setToolTip", "humanik_restore_tooltip", "messages"),
-        ("experimental_notice_label", "setText", "humanik_experimental_notice", "messages"),
     )
 
     def __init__(self, parent=None):
@@ -99,15 +113,11 @@ class HumanIkTab(BaseTab):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
 
-        # Top row: Experimental notice (left, stretches) + Refresh button
-        # (right-aligned, same row) -- moved up from the bottom of the tab
-        # per HUMANIK-FRONTEND-1 Phase B5 user feedback so it is reachable
-        # without scrolling past every action button first.
+        # The window title already carries ``(Experimental)``. Keep this row
+        # to the refresh action only so the compact editor does not repeat a
+        # second experimental-feature notice inside its content.
         top_row = QHBoxLayout()
-        self.experimental_notice_label = QLabel(self.tr("humanik_experimental_notice", "messages"))
-        self.experimental_notice_label.setWordWrap(True)
-        self.experimental_notice_label.setStyleSheet("font-weight: bold;")
-        top_row.addWidget(self.experimental_notice_label, 1)
+        top_row.addStretch()
         self.refresh_btn = QPushButton(self.tr("refresh", "buttons"))
         top_row.addWidget(self.refresh_btn)
         main_layout.addLayout(top_row)
@@ -134,18 +144,17 @@ class HumanIkTab(BaseTab):
         model.
         """
         form = QFormLayout()
-        form.setRowWrapPolicy(QFormLayout.WrapAllRows)
+        form.setRowWrapPolicy(QFormLayout.DontWrapRows)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
         self.character_combo_label = QLabel(self.tr("humanik_character", "labels"))
         self.character_combo = QComboBox()
-        configure_model_combo_width(self.character_combo, minimum_width=160, minimum_contents_length=18)
-        self.character_combo.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        _configure_compact_model_combo(self.character_combo)
         form.addRow(self.character_combo_label, self.character_combo)
 
         self.source_combo_label = QLabel(self.tr("humanik_source", "labels"))
         self.source_combo = QComboBox()
-        configure_model_combo_width(self.source_combo, minimum_width=160, minimum_contents_length=18)
-        self.source_combo.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        _configure_compact_model_combo(self.source_combo)
         form.addRow(self.source_combo_label, self.source_combo)
 
         return form
@@ -166,13 +175,9 @@ class HumanIkTab(BaseTab):
     def _build_actions(self, main_layout):
         """Lay out the action buttons as a flat vertical stack.
 
-        HUMANIK-FRONTEND-1 Phase B5 removed the three collapsible
-        ``QGroupBox`` sections (Control Rig / Bake / Restore) --
-        there was nothing to actually collapse in practice, so the buttons
-        are added directly to ``main_layout`` instead: Create Control Rig,
-        then the Bake destination/range section followed by one Execute Bake
-        button, then
-        Restore MMD Rig.
+        Keep Create Control Rig and Restore as direct actions. Bake owns the
+        only collapsible section because its frame range, two destinations,
+        and Execute action are useful as one hideable unit.
         """
         self._add_action_row(main_layout, "create_control_rig_btn", "humanik_create_control_rig")
 
@@ -180,9 +185,17 @@ class HumanIkTab(BaseTab):
         bake_section.setObjectName("HumanIkBakeSection")
         self.bake_section = bake_section
         bake_section_layout = QVBoxLayout(bake_section)
-        self.bake_section_label = QLabel(self.tr("humanik_bake_section", "labels"))
-        self.bake_section_label.setStyleSheet("font-weight: bold;")
-        bake_section_layout.addWidget(self.bake_section_label)
+        self.bake_toggle_btn = QPushButton()
+        self.bake_toggle_btn.setCheckable(True)
+        self.bake_toggle_btn.setChecked(True)
+        self.bake_toggle_btn.setFlat(True)
+        self.bake_toggle_btn.setStyleSheet("text-align: left; font-weight: bold;")
+        bake_section_layout.addWidget(self.bake_toggle_btn)
+
+        self.bake_content = QWidget()
+        bake_content_layout = QVBoxLayout(self.bake_content)
+        bake_content_layout.setContentsMargins(0, 0, 0, 0)
+        bake_section_layout.addWidget(self.bake_content)
 
         bake_row = QHBoxLayout()
         self.bake_start_label = QLabel(self.tr("humanik_bake_start", "labels"))
@@ -201,9 +214,9 @@ class HumanIkTab(BaseTab):
         bake_row.addWidget(self.bake_start_spin)
         bake_row.addWidget(self.bake_end_label)
         bake_row.addWidget(self.bake_end_spin)
-        bake_section_layout.addLayout(bake_row)
+        bake_content_layout.addLayout(bake_row)
 
-        destination_row = QVBoxLayout()
+        destination_row = QHBoxLayout()
         self.bake_to_control_rig_radio = QRadioButton(
             self.tr("humanik_bake_to_control_rig", "labels")
         )
@@ -215,13 +228,21 @@ class HumanIkTab(BaseTab):
         # QRadioButtons sharing a parent are mutually exclusive.  Keep MMD
         # as the safe/default destination, matching the existing Bake action.
         self.bake_to_mmd_rig_radio.setChecked(True)
+        # Maya's default 18px UI font makes the two labels overflow at the
+        # editor's compact width. Match the denser native HumanIK option row.
+        for radio in (self.bake_to_control_rig_radio, self.bake_to_mmd_rig_radio):
+            radio.setStyleSheet("font-size: 13px;")
+        self.bake_to_control_rig_radio.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.bake_to_mmd_rig_radio.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         destination_row.addWidget(self.bake_to_control_rig_radio)
         destination_row.addWidget(self.bake_to_mmd_rig_radio)
-        bake_section_layout.addLayout(destination_row)
-        self._add_action_row(bake_section_layout, "bake_btn", "humanik_bake_execute")
+        bake_content_layout.addLayout(destination_row)
+        self._add_action_row(bake_content_layout, "bake_btn", "humanik_bake_execute")
         # ``bake_btn`` remains the compatibility name used by older callers;
         # the explicit name makes the single Execute action discoverable.
         self.bake_execute_btn = self.bake_btn
+        self.bake_toggle_btn.toggled.connect(self._set_bake_expanded)
+        self._set_bake_expanded(True)
         main_layout.addWidget(bake_section)
 
         self._add_action_row(main_layout, "restore_btn", "humanik_restore")
@@ -234,6 +255,12 @@ class HumanIkTab(BaseTab):
         layout.addWidget(button)
         setattr(self, attr, button)
         self._action_buttons[attr] = button
+
+    def _set_bake_expanded(self, expanded):
+        """Show or hide Bake controls while keeping the section header visible."""
+        self.bake_content.setVisible(bool(expanded))
+        arrow = "▼" if expanded else "▶"
+        self.bake_toggle_btn.setText(f"{arrow} {self.tr('humanik_bake_section', 'labels')}")
 
     # -- state rendering -------------------------------------------------
 
@@ -337,4 +364,5 @@ class HumanIkTab(BaseTab):
             button = self._action_buttons.get(attr)
             if button is not None:
                 button.setText(self.tr(label_key, "buttons"))
+        self._set_bake_expanded(self.bake_toggle_btn.isChecked())
         self.status_label.setText(self._status_text(self._last_mode, self._last_control_rig_count))

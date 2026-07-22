@@ -164,8 +164,11 @@ class HumanIkWindow(QWidget):
             _raise_workspace_control(ws)
         else:
             self.setWindowFlags(Qt.Window)
-            self.resize(self.PREFERRED_WIDTH, 640)
             self.show()
+            # Apply the compact width after the first layout activation;
+            # otherwise Qt can replace the pre-show resize with its wider
+            # content sizeHint on a freshly constructed floating window.
+            self.resize(self.PREFERRED_WIDTH, 640)
             self.raise_()
             self.activateWindow()
 

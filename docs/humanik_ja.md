@@ -23,11 +23,7 @@ HumanIK Editorは、MMD Editor（`MMD > MMD Editor`）とは別の**独立した
 
 ## 画面構成
 
-HumanIK Editorの最上部には、太字の注意書きと `Refresh` ボタンが1行に並んで常時表示されます。
-
-> HumanIK対応は試験的機能です。予告なく変更される場合があります。　　　　　　　　　　[Refresh]
-
-`Refresh` ボタンは以前はEditorの最下部にありましたが、ユーザーfeedbackにより最上部（注意書きの行）に移動しました。押すと、シーンを再スキャンしてCharacter/Sourceコンボとステータス行を最新化します。
+HumanIK Editorの最上部右側には `Refresh` ボタンだけを表示します。Experimental表記はウィンドウタイトルに集約し、画面内には重複表示しません。`Refresh` を押すと、シーンを再スキャンしてCharacter/Sourceコンボとステータス行を最新化します。
 
 ### Character（キャラクター）コンボ
 
@@ -76,12 +72,14 @@ Sourceコンボの表示は、ユーザーが最後にクリックした値で�
 
 ### アクションボタン
 
-以前は3つの折りたたみ可能なセクション（Control Rig / Bake / Restore / Diagnostics）にまとめられていましたが、ユーザーfeedbackにより**フラットな縦積みの操作列**に変更されました。上から順に次のように並びます。
+Character/Sourceは、ラベルを左、残り幅いっぱいのComboを右に置く1行構成です。操作は次の順に並び、設定項目の多いBake欄だけを見出しの矢印で折り畳めます。
 
 1. `Create Control Rig` ボタン（全幅）
-2. 開始フレーム／終了フレームのSpinBox（1行）
-3. `ベイクを実行` ボタン（Bake先とフレーム範囲を同じ欄で指定）
-4. `MMDリグを復元` ボタン
+2. `▼ ベイク` 折り畳み欄
+   - 開始フレーム／終了フレームのSpinBox（1行）
+   - `Control Rigへベイク`／`MMD Rigへベイク`（横並び）
+   - `ベイクを実行` ボタン
+3. `MMDリグを復元` ボタン
 
 詳細な診断はEditor内へ常時表示せず、MMDメニューのHumanIK診断とMaya Script Editorのログから確認します。
 

@@ -35,20 +35,15 @@ class TestHumanIkTabGUI(GuiTestBase):
     def test_shell_structure_and_defaults(self):
         tab = HumanIkTab()
         try:
-            self.assertTrue(tab.experimental_notice_label.text())
-            self.assertTrue(tab.restore_explanation_label.text())
             self.assertTrue(tab.status_label.text())
-            self.assertFalse(tab.orphaned_warning_label.isVisible())
-            self.assertFalse(tab.import_lock_warning_label.isVisible())
+            self.assertFalse(hasattr(tab, "experimental_notice_label"))
             # HUMANIK-FRONTEND-1 Phase B4: Setup/Characterize, Enter Source
             # Mode, and Enter Target Mode no longer have a standalone button
             # on this tab -- the Character/Source combos replace them.
             for attr in ("setup_characterize_btn", "enter_source_btn", "enter_target_btn"):
                 self.assertFalse(hasattr(tab, attr), attr)
-            # Phase B5 (user feedback): the four-row Mode/Source/Target/
-            # Control Rigs status table and the three collapsible action
-            # sections are both gone -- replaced by ``status_label`` and a
-            # flat button stack.
+            # The verbose status table remains removed. Bake is the one
+            # collapsible group because it contains range/destination controls.
             for attr in (
                 "humanik_status_group",
                 "humanik_actions_group",
@@ -57,7 +52,6 @@ class TestHumanIkTabGUI(GuiTestBase):
                 "target_value_label",
                 "control_rigs_value_label",
                 "control_rig_section",
-                "bake_section",
                 "restore_section",
             ):
                 self.assertFalse(hasattr(tab, attr), attr)
@@ -68,13 +62,48 @@ class TestHumanIkTabGUI(GuiTestBase):
                 "bake_btn",
                 "create_control_rig_btn",
                 "restore_btn",
-                "diagnostics_btn",
                 "refresh_btn",
+                "bake_section",
+                "bake_toggle_btn",
+                "bake_content",
             ):
                 self.assertTrue(hasattr(tab, attr), attr)
+            self.assertFalse(hasattr(tab, "diagnostics_btn"))
+            self.assertTrue(tab.bake_toggle_btn.isChecked())
             self.assertEqual(tab.bake_frame_range(), (0, 0))
             tab.set_bake_frame_range(10, 50)
             self.assertEqual(tab.bake_frame_range(), (10, 50))
+        finally:
+            tab.deleteLater()
+            QApplication.processEvents()
+
+    def test_compact_rows_and_bake_collapse(self):
+        tab = HumanIkTab()
+        try:
+            tab.resize(260, 640)
+            tab.show()
+            QApplication.processEvents()
+
+            self.assertLess(
+                abs(tab.character_combo_label.geometry().center().y() - tab.character_combo.geometry().center().y()),
+                8,
+            )
+            self.assertLess(
+                abs(tab.source_combo_label.geometry().center().y() - tab.source_combo.geometry().center().y()),
+                8,
+            )
+            self.assertGreater(tab.character_combo.width(), 100)
+            self.assertGreater(tab.source_combo.width(), 100)
+
+            tab.bake_toggle_btn.setChecked(False)
+            QApplication.processEvents()
+            self.assertFalse(tab.bake_content.isVisible())
+            self.assertIn("▶", tab.bake_toggle_btn.text())
+
+            tab.bake_toggle_btn.setChecked(True)
+            QApplication.processEvents()
+            self.assertTrue(tab.bake_content.isVisible())
+            self.assertIn("▼", tab.bake_toggle_btn.text())
         finally:
             tab.deleteLater()
             QApplication.processEvents()
@@ -133,48 +162,8 @@ class TestHumanIkTabGUI(GuiTestBase):
             # only the mode text and a Control Rig count suffix remain
             # (HUMANIK-FRONTEND-1 Phase B5).
             self.assertIn("1", tab.status_label.text())
-            self.assertFalse(tab.bake_btn.isEnabled())
+            self.assertTrue(tab.bake_btn.isEnabled())
             self.assertTrue(tab.create_control_rig_btn.isEnabled())
-            self.assertFalse(tab.orphaned_warning_label.isVisible())
-            self.assertFalse(tab.import_lock_warning_label.isVisible())
-        finally:
-            tab.deleteLater()
-            QApplication.processEvents()
-
-    def test_set_state_shows_import_lock_warning_when_blocked(self):
-        tab = HumanIkTab()
-        try:
-            # ``isVisible()`` on a child is always False while its top-level
-            # ancestor is hidden, so the tab itself must be shown for the
-            # positive assertion below to be meaningful.
-            tab.show()
-            QApplication.processEvents()
-            state = {
-                "mode": "target_preview",
-                "source": None,
-                "target": None,
-                "controlRigs": [],
-                "restoreHint": {"orphanedControlRigs": []},
-                "actions": {},
-                "importLock": {
-                    "blocked": True,
-                    "reasonCode": "import_blocked_target_preview",
-                    "character": "Character1",
-                    "hasControlRig": False,
-                },
-            }
-
-            tab.set_state(state)
-            QApplication.processEvents()
-
-            self.assertTrue(tab.import_lock_warning_label.isVisible())
-            self.assertIn("Restore MMD Rig", tab.import_lock_warning_label.text())
-
-            state["importLock"] = {"blocked": False, "reasonCode": None}
-            tab.set_state(state)
-            QApplication.processEvents()
-
-            self.assertFalse(tab.import_lock_warning_label.isVisible())
         finally:
             tab.deleteLater()
             QApplication.processEvents()
