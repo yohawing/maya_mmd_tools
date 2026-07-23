@@ -24,6 +24,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_IK_TARGET_INDEX,
     ATTR_MMD_LOCAL_X_AXIS,
     ATTR_MMD_LOCAL_Z_AXIS,
+    ATTR_MMD_MORPH_DATA,
     ATTR_MMD_PMX_REST_POSITION,
 )
 from mmd_tools.core.native.mmd_anim_runtime_types import (
@@ -103,6 +104,46 @@ def _finite_float(node: str, attr: str) -> float:
     if not math.isfinite(value):
         raise ModelDagDescriptorError(f"{node}.{attr}: expected finite float")
     return value
+
+
+def _authoritative_morph_count(root_group: str) -> int | None:
+    """Read the importer-owned source-order morph list when present.
+
+    Older scenes may omit the attribute or contain the legacy dictionary
+    schema.  Those scenes retain the network-metadata fallback.  A non-empty
+    list is authoritative and must carry exact contiguous source indices.
+    """
+    if not _has_attr(root_group, ATTR_MMD_MORPH_DATA):
+        return None
+    raw = cmds.getAttr(f"{root_group}.{ATTR_MMD_MORPH_DATA}")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise ModelDagDescriptorError(
+            f"{root_group}.{ATTR_MMD_MORPH_DATA}: invalid authoritative morph JSON"
+        ) from exc
+    if isinstance(value, dict):
+        # Legacy roots stored a dictionary keyed by morph name/index.
+        return None
+    if not isinstance(value, list):
+        raise ModelDagDescriptorError(
+            f"{root_group}.{ATTR_MMD_MORPH_DATA}: authoritative morph data must be a list"
+        )
+    if not value:
+        return None
+    for expected_index, entry in enumerate(value):
+        if not isinstance(entry, dict):
+            raise ModelDagDescriptorError(
+                f"{root_group}.{ATTR_MMD_MORPH_DATA}: entry {expected_index} must be an object"
+            )
+        index = entry.get("index")
+        if isinstance(index, bool) or not isinstance(index, int) or index != expected_index:
+            raise ModelDagDescriptorError(
+                f"{root_group}.{ATTR_MMD_MORPH_DATA}: entry {expected_index} index must be {expected_index}"
+            )
+    return len(value)
 
 
 def _indexed_joints(root_group: str) -> list[str]:
@@ -223,7 +264,8 @@ def build_model_descriptors_from_dag(root_group: str) -> ModelDagDescriptorSet:
 
     bone_morph_offsets: list[MmdRuntimeModelBoneMorphOffsetDescriptor] = []
     group_morph_offsets: list[MmdRuntimeModelGroupMorphOffsetDescriptor] = []
-    morph_count = 0
+    authoritative_morph_count = _authoritative_morph_count(root_group)
+    morph_count = authoritative_morph_count or 0
     metadata_items = sorted(
         iter_morph_network_metadata(root_group=root_group),
         key=lambda metadata: (-1 if metadata.index is None else metadata.index, metadata.node),
@@ -231,6 +273,11 @@ def build_model_descriptors_from_dag(root_group: str) -> ModelDagDescriptorSet:
     for metadata in metadata_items:
         if metadata.index is None or metadata.index < 0:
             raise ModelDagDescriptorError(f"{metadata.node}: missing valid morph index")
+        if authoritative_morph_count is not None and metadata.index >= authoritative_morph_count:
+            raise ModelDagDescriptorError(
+                f"{metadata.node}: morph index {metadata.index} exceeds authoritative morph count "
+                f"{authoritative_morph_count}"
+            )
         morph_count = max(morph_count, metadata.index + 1)
         if metadata.morph_type == "bone":
             for entry in _json_list(metadata.node, ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON):
@@ -267,6 +314,8 @@ def build_model_descriptors_from_dag(root_group: str) -> ModelDagDescriptorSet:
                     )
                 )
 
+    if authoritative_morph_count is not None:
+        morph_count = authoritative_morph_count
     for offset in group_morph_offsets:
         if offset.child_morph_index >= morph_count:
             raise ModelDagDescriptorError(
