@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from mmd_tools.ui.qt_compat import QApplication, QPixmap, Qt  # noqa: E402
+from mmd_tools.ui.qt_compat import QApplication, QPixmap, QPointF, Qt  # noqa: E402
 from mmd_tools.ui.tabs.animation_tab import AnimationTab  # noqa: E402
 from mmd_tools.ui.widgets.body_picker_widget import BodyPickerWidget  # noqa: E402
 from mmd_tools.ui.widgets.finger_picker_widget import FingerPickerWidget  # noqa: E402
@@ -42,17 +42,25 @@ def main() -> int:
 
     body_picker = BodyPickerWidget()
     finger_picker = FingerPickerWidget()
+    body_picker.resize(420, 530)
+    finger_picker.resize(420, 530)
     assert len(body_picker.region_ids) == 38
     assert len(finger_picker.region_ids) == 32
+    canvas_rect = body_picker._canvas_rect()
+    scaled_head_center = QPointF(
+        canvas_rect.x() + canvas_rect.width() * 134.0 / 268.0,
+        canvas_rect.y() + canvas_rect.height() * 30.0 / 378.0,
+    )
+    assert body_picker._region_at(scaled_head_center) == "head"
     _render(body_picker, args.out_dir / "body.png")
     _render(finger_picker, args.out_dir / "finger.png")
 
     body_tab = AnimationTab()
-    body_tab.resize(420, 700)
+    body_tab.resize(420, 805)
     _render(body_tab, args.out_dir / "animation-tab-body.png")
 
     finger_tab = AnimationTab()
-    finger_tab.resize(420, 700)
+    finger_tab.resize(420, 805)
     finger_tab.picker_tabs.setCurrentIndex(finger_tab.TAB_FINGER)
     _render(finger_tab, args.out_dir / "animation-tab-finger.png")
     return 0

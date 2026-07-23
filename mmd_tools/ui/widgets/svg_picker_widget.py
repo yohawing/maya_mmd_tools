@@ -25,6 +25,7 @@ from ..qt_compat import (
     QPolygonF,
     QRectF,
     QSvgRenderer,
+    QSizePolicy,
     QTransform,
     Qt,
     Signal,
@@ -35,6 +36,8 @@ _SVG_NS = "http://www.w3.org/2000/svg"
 _NUMBER = r"[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?"
 _PATH_TOKEN_RE = re.compile(rf"[A-Za-z]|{_NUMBER}")
 _TRANSFORM_RE = re.compile(r"([A-Za-z]+)\s*\(([^)]*)\)")
+_CANVAS_WIDTH = 268.0
+_CANVAS_HEIGHT = 378.0
 
 
 @dataclass(frozen=True)
@@ -278,8 +281,8 @@ class SvgPickerWidget(QWidget):
     ):
         super().__init__(parent)
         self.setMouseTracking(True)
-        self.setMinimumSize(268, 378)
-        self.setMaximumSize(268, 378)
+        self.setMinimumSize(134, 189)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         svg_text = svg_path.read_text(encoding="utf-8")
         self._renderer = QSvgRenderer(
@@ -308,7 +311,32 @@ class SvgPickerWidget(QWidget):
         self._enabled_regions = set(region_ids) & set(self._region_paths)
         self.update()
 
+    def _canvas_rect(self) -> QRectF:
+        """Fit the authored canvas into all available space without distortion."""
+
+        scale = min(self.width() / _CANVAS_WIDTH, self.height() / _CANVAS_HEIGHT)
+        width = _CANVAS_WIDTH * scale
+        height = _CANVAS_HEIGHT * scale
+        return QRectF(
+            (self.width() - width) * 0.5,
+            (self.height() - height) * 0.5,
+            width,
+            height,
+        )
+
+    def _canvas_point(self, point: QPointF) -> QPointF | None:
+        canvas_rect = self._canvas_rect()
+        if not canvas_rect.contains(point):
+            return None
+        return QPointF(
+            (point.x() - canvas_rect.x()) * _CANVAS_WIDTH / canvas_rect.width(),
+            (point.y() - canvas_rect.y()) * _CANVAS_HEIGHT / canvas_rect.height(),
+        )
+
     def _region_at(self, point: QPointF) -> str | None:
+        point = self._canvas_point(point)
+        if point is None:
+            return None
         for region_id, path in reversed(tuple(self._region_paths.items())):
             if region_id in self._enabled_regions and path.contains(point):
                 return region_id
@@ -317,13 +345,21 @@ class SvgPickerWidget(QWidget):
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
+        canvas_rect = self._canvas_rect()
         if not self._background.isNull():
             painter.drawPixmap(
-                QRectF(0.0, 0.0, 268.0, 378.0),
+                canvas_rect,
                 self._background,
                 QRectF(self._background.rect()),
             )
-        self._renderer.render(painter, QRectF(0.0, 0.0, 268.0, 378.0))
+        self._renderer.render(painter, canvas_rect)
+
+        painter.save()
+        painter.translate(canvas_rect.x(), canvas_rect.y())
+        painter.scale(
+            canvas_rect.width() / _CANVAS_WIDTH,
+            canvas_rect.height() / _CANVAS_HEIGHT,
+        )
 
         if self._region_labels:
             font = QFont()
@@ -346,6 +382,7 @@ class SvgPickerWidget(QWidget):
             painter.setPen(QPen(QColor(color.red(), color.green(), color.blue(), 210), 1.2))
             painter.drawPath(path)
 
+        painter.restore()
         painter.end()
 
     def mouseMoveEvent(self, event) -> None:

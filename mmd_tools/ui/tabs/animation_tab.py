@@ -52,16 +52,14 @@ class AnimationTab(BaseTab):
         body_layout = QVBoxLayout(self.body_page)
         body_layout.setContentsMargins(0, 0, 0, 0)
         self.body_picker = BodyPickerWidget()
-        body_layout.addWidget(self.body_picker, 0, Qt.AlignCenter)
-        body_layout.addStretch()
+        body_layout.addWidget(self.body_picker, 1)
         self.picker_tabs.addTab(self.body_page, "Body")
 
         self.finger_page = QWidget()
         finger_layout = QVBoxLayout(self.finger_page)
         finger_layout.setContentsMargins(0, 0, 0, 0)
         self.finger_picker = FingerPickerWidget()
-        finger_layout.addWidget(self.finger_picker, 0, Qt.AlignCenter)
-        finger_layout.addStretch()
+        finger_layout.addWidget(self.finger_picker, 1)
         self.picker_tabs.addTab(self.finger_page, "Finger")
 
         self.morph_page = QWidget()
