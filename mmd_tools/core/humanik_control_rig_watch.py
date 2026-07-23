@@ -1,87 +1,15 @@
-"""Warn when a HumanIK Control Rig is created outside the mmd_tools plugin path.
+"""Detect unsupported HumanIK Control Rigs without mutating the scene.
 
-``HUMANIK-CONTROL-RIG-CYCLE-1`` fixed the ``hikCreateControlRig()``-induced DG
-cycle (see ``humanik_control_rig.py``'s module docstring) for Control Rig
-creation that goes through mmd_tools' own menu/frontend
-(``HumanIkFrontendSession.create_control_rig`` -> ``humanik_control_rig.begin_humanik_control_rig``).
+The supported plugin path isolates MMD writers before creating a Control Rig.
+Rigs created from Maya's standard HumanIK UI bypass that transaction, so this
+module observes new ``HIKControlSetNode`` nodes and warns for characterized MMD
+models that have no active plugin transaction.
 
-Control Rig creation through **Maya's standard HumanIK UI** (Character
-Controls -> Create Control Rig) or any other raw ``hikCreateControlRig()``/
-``hikSetCurrentCharacter`` MEL call bypasses mmd_tools entirely: the same
-writer-isolation problem exists, but with no mmd_tools code in the call
-stack to fix it proactively. Auto-adopting that rig (retroactively
-capturing restore state/isolating/cycle-gating it) was tried and dropped -- passing
-Maya's own Control Rig UI through the cycle gate is no longer a requirement
-(see ``TODO.md``); this module is now a reactive, read-only detector: it
-warns the user and points them at the supported mmd_tools path, and never
-mutates the scene itself.
-
-A Maya Python API 2.0 node-added callback (``om.MDGMessage.addNodeAddedCallback``)
-watches for node type ``HIKControlSetNode`` -- the single node
-``hikCreateControlRig()`` creates per character to own the Control Rig's
-effector/FK "control set" (named ``"{character}_ControlRig"`` and connected
-directly back to the character's ``HIKCharacterNode``, confirmed empirically
-against Maya 2024 and 2026: characterization alone already creates
-``HIKState2SK``/``HIKSolverNode``/``HIKProperty2State``, so those types fire
-far too early and are not a Control Rig signal; ``HIKControlSetNode`` only
-appears once ``hikCreateControlRig()`` itself runs). ``addNodeAddedCallback``
-is registered against the always-present base type ``dependNode`` rather than
-``HIKControlSetNode`` directly, though: passing a HIK-specific type name
-raises ``kInvalidParameter`` unless that type is already registered in the
-DG, and HIK's own plugin (and therefore its node types) loads lazily on first
-use, not at mmd_tools plugin-load time when this callback is registered
-(also confirmed empirically -- see :func:`register_humanik_control_rig_watch`).
-The raw callback itself does the type-name comparison instead -- a single
-string compare per node the scene ever creates, still cheap.
-``MDGMessage.addNodeAddedCallback`` was chosen over a ``scriptJob`` because
-it is the documented, low-overhead mechanism for "a node was just created",
-avoiding polling or diffing ``cmds.ls(...)`` on every scene change.
-
-The raw callback only enqueues a deferred check via ``maya.utils.executeDeferred``.
-Maya is still mid-DG-mutation when a node-added callback runs (HIK is still
-wiring the Control Rig's connections), so reading connections or the scene at
-all is unsafe there; all real work happens once Maya's idle queue is flushed.
-
-The deferred handler:
-
-1. Resolves which HIK character the new ``HIKControlSetNode`` belongs to (via
-   its connection to the character's ``HIKCharacterNode``). Empirically
-   (repeated E2E reruns against real Maya 2024/2026 -- see
-   ``tests/viewport/e2e_humanik_control_rig_cycle.py``'s ``standard_ui_warning``
-   stage), the ``HIKControlSetNode -> HIKCharacterNode`` connection is not
-   always in place by the time this handler's first idle tick runs -- HIK
-   appears to finish some of its own post-create wiring through its own
-   idle-queue work, which can land on a *later* idle tick than the one that
-   fired ours. A miss on the first attempt therefore reschedules itself (via
-   another ``executeDeferred`` hop) up to ``MAX_CHARACTER_RESOLUTION_RETRIES``
-   times rather than concluding the node is unrelated to HIK and giving up
-   permanently.
-2. If ``humanik_control_rig`` already has an active transaction registered
-   for that character (``humanik_control_rig.get_active_control_rig_transaction``),
-   the plugin path (``begin_humanik_control_rig``) got there first and
-   already owns writer isolation for this rig; this module does nothing.
-   This is what keeps the plugin's own ``hikCreateControlRig()`` call from
-   triggering a redundant warning about its own rig.
-3. Otherwise, if the character is a characterized mmd_tools binding (via the
-   active ``HumanIkFrontendSession`` singleton,
-   ``mmd_tools.ui.humanik_menu_actions.get_humanik_session`` ->
-   ``HumanIkFrontendSession.find_binding_by_character``), this is an
-   out-of-band Control Rig the user created directly through Maya's own UI.
-   This module never mutates the scene for it -- it only logs (project
-   logger + ``cmds.warning``) that the rig may create a DG cycle with the MMD
-   rig (the same ``mmdCcdIk``-writer cycle ``HUMANIK-CONTROL-RIG-CYCLE-1``
-   describes) and that the supported path is the mmd_tools menu: delete the
-   Control Rig via Character Controls, then use MMD > HumanIK > "Create
-   Control Rig" (or, if a Control Rig already exists from that supported
-   path, "Restore MMD Rig" first).
-
-Lifecycle: ``register_humanik_control_rig_watch``/``deregister_humanik_control_rig_watch``
-are called from ``plugin_main.initializePlugin``/``uninitializePlugin``,
-mirroring the existing ``_register_after_open_callback``/
-``_remove_after_open_callback`` pattern for ``MSceneMessage``. Registration
-must not raise in mayapy/batch hosts with no HumanIK UI available -- the
-callback simply never fires there, which is fine; both functions guard every
-Maya API call and log-and-return on failure instead of propagating.
+The callback is registered for ``dependNode`` because HumanIK node types load
+lazily and cannot be used safely as the registration filter. Scene inspection
+is deferred until Maya finishes wiring the new node, with bounded retries while
+its character connection is still unavailable. Registration and teardown are
+fail-soft for batch hosts where HumanIK UI facilities are absent.
 """
 
 from __future__ import annotations

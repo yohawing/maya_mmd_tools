@@ -1,43 +1,14 @@
-"""Transactional wrapper around HumanIK Control Rig creation.
+"""Create, bake, and remove HumanIK Control Rigs transactionally.
 
-``HUMANIK-CONTROL-RIG-CYCLE-1`` (see ``TODO.md``) found that calling
-``hikCreateControlRig()`` directly on a characterized MMD model creates a DG
-cycle: MMD ``mmdAppend``/``mmdCcdIk`` writers still feed the HIK-assigned
-primary joints, so the new ``HIKState2SK -> pairBlend -> joint -> ... ->
-joint`` chain Maya wires up closes a loop through those writers
-(``HIKState2SK.LeftLegT`` / ``pairBlend.outTranslateX`` / joint ``translate``
-and ``parentMatrix`` in the reported evidence,
-``build/reports/humanik_control_rig_cycle_e2e.json``).
+MMD writer nodes can close a DG cycle through the HumanIK chain. Creation
+therefore captures restore state, isolates writers, records the pre-existing
+scene-wide cycle set, creates the rig, isolates any new writers, and rejects
+only newly introduced cycles. Any failure restores connections, values,
+node-state, HIK source/lock state, and removes the partial rig through HumanIK's
+own deletion command.
 
-``humanik_preview.begin_humanik_target_preview`` already solves the
-equivalent problem for TARGET preview by capturing restore state scene state, isolating
-reviewed MMD writers, connecting the HIK source, and re-scanning/re-isolating
-writers that reappeared. This module applies the identical machinery around
-``hikCreateControlRig()`` -- Transaction candidate A from the TODO:
-
-    restore_state -> isolate MMD writers -> pre-cycle gate -> hikCreateControlRig
-    -> re-scan/re-isolate writers -> post-cycle gate
-
-Any failure after the restore_state is captured rolls the scene back: MMD writer
-edges are reconnected, plug values/node state/HIK source+lock are restored
-from the restore_state, and any control-rig nodes ``hikCreateControlRig`` created
-are removed via HIK's own ``hikDeleteControlRig()`` MEL command (never a bare
-``cmds.delete`` first -- see ``_delete_control_rig`` for why a node-diff
-delete is only a fallback).
-
-The same transaction owns the public ``bake_humanik_control_rig`` route. It
-invokes Maya's supported ``hikBakeToControlRig(0)`` over a caller-supplied
-frame range while preserving playback/current-time state; baking leaves the
-Control Rig active for interactive editing until the normal restore path.
-
-Cycle-gate scoping: ``cmds.cycleCheck`` only supports scene-wide queries, so
-this module captures a baseline cycle-plug set *before* mutating (after
-writer isolation, right before ``hikCreateControlRig``) and only fails on
-cycle plugs that are new relative to that baseline. This keeps a pre-existing,
-unrelated cycle -- such as the known ``MMD-PHYSICS-SOLVER-CYCLE-1``
-``mmdPhysicsSolver`` warning present in the Kokomi scene used for evidence
-capture -- from ever blocking Control Rig creation or masquerading as an
-HIK-caused regression.
+Baking preserves playback/current-time state and deliberately leaves the
+Control Rig active for editing until the normal restore path runs.
 """
 
 from __future__ import annotations

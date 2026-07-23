@@ -1262,48 +1262,16 @@ class HumanIkFrontendSession:
         )
 
     def restore_mmd_rig(self, delete_baked_control_rig: bool = False) -> bool:
-        """Restore preview/control-rig transactions, stances, and characters.
+        """Restore tracked HumanIK state and recover eligible orphaned rigs.
 
-        Any active *unbaked* Control Rig transaction is deleted through HIK's own
-        ``hikDeleteControlRig()`` MEL and its MMD writer isolation is
-        reversed here (see ``humanik_control_rig.stop_humanik_control_rig``),
-        so a model returns to the unblocked NEUTRAL/SOURCE state
-        ``describe_humanik_import_lock`` expects before VMD import is
-        permitted again. A transaction that fails to tear down is retried
-        on the next ``restore_mmd_rig`` call, mirroring the pending
-        stance/character retry behavior below.
+        Unbaked transactions are deleted through HumanIK and retried on a
+        later call if teardown fails. Orphaned Control Rigs are removed only
+        when their character resolves to an MMD model; recovery is fail-soft
+        and reports state that cannot be reconstructed without restore data.
 
-        HUMANIK-RESTORE-GAPS-1 slice 1c: after the tracked teardown above,
-        this also runs a best-effort scene-facts recovery pass (see
-        ``_recover_orphaned_control_rigs``) for any ``HIKControlSetNode`` this
-        session has no transaction for -- a scene reopen (the in-memory
-        transaction table is lost even though the Control Rig node survives
-        save/reopen) or a Control Rig created through Maya's standard
-        HumanIK UI / a raw ``hikCreateControlRig()`` call instead of
-        ``create_control_rig``. It is deleted through the same
-        ``hikDeleteControlRig()`` MEL sequence, but **only** when its
-        character's joints resolve back to a real MMD model root in the
-        scene (``_find_mmd_model_root_for_character``) -- a Control Rig for
-        an unrelated, non-MMD HIK character is never touched, matching the
-        "auto-adopt is out of scope" decision in ``TODO.md``. There is no
-        restore_state for this recovery, so muted MMD writer edges and the
-        pre-characterize stance cannot be restored; that limitation is
-        reported as structured warnings (``ORPHAN_RECOVERY_UNRECOVERABLE_WARNINGS``)
-        on each recovered entry, never silently upgraded to a full restore.
-        This pass is fail-soft by design (a MEL failure -- for example the
-        HumanIK Character Controls UI not being available in a batch/mayapy
-        process -- is recorded in the report and logged, never raised) so it
-        can never turn a clean tracked-transaction restore into an
-        exception; the return value stays a plain ``bool`` for backward
-        compatibility, and the detailed per-node outcome is available via
-        ``describe_last_orphan_recovery()`` or ``describe_frontend_state()``'s
-        ``restoreHint.lastOrphanRecovery``.
-
-        By default, a baked Control Rig is preserved through the same
-        non-destructive :meth:`disconnect_retarget` route used by Source=None;
-        this keeps its transaction, preview restore context, writer isolation,
-        and Bake From capability intact.  Callers that explicitly choose the
-        destructive path must pass ``delete_baked_control_rig=True``.
+        Baked rigs use the non-destructive disconnect path by default so Bake
+        From remains available. Pass ``delete_baked_control_rig=True`` to
+        request destructive teardown.
         """
         if not delete_baked_control_rig and self._has_active_baked_control_rig():
             return self.disconnect_retarget()
@@ -1751,32 +1719,12 @@ class HumanIkFrontendSession:
         }
 
     def describe_frontend_state(self, model_root: Optional[str] = None) -> Dict[str, Any]:
-        """Return a JSON-safe, machine-drivable snapshot of the session's lifecycle state.
+        """Return a read-only, JSON-safe snapshot of the frontend lifecycle.
 
-        This is an *additive* UI helper: it does not mutate the scene, does not
-        run :func:`humanik_constraints.classify_humanik_constraints` ownership
-        classification (too expensive to run on every UI refresh -- callers
-        that need it should call ``inspect_target_ownership`` from a button
-        press instead), and does not change the behavior of any existing
-        method.
-
-        The ``actions`` section mirrors the fail-closed guard conditions each
-        mutating method checks *before* touching the scene
-        (``_reject_active_preview_mutation``, ``_require_binding``, the
-        SOURCE/TARGET/profile checks in ``enter_target_mode``, etc.) so a UI
-        can enable/disable buttons and show a reason without invoking the
-        method and catching an exception.  **This mirror is not the source of
-        truth.**  The guards inside each method are authoritative; if a guard
-        condition changes, update the matching branch here in the same
-        change.  A few guard conditions are not captured as a distinct reason
-        code (see the docstring notes below on ``enter_target_mode`` ownership
-        blockers and ``setup_and_characterize`` profile-mismatch-on-existing-
-        binding) because they either require a live Maya scene scan or a
-        ``profile``/``include_fingers`` argument this read-only snapshot does
-        not take; those cases currently report ``allowed=True`` here even
-        though the real call could still raise. Both are exercised by
-        ``diagnostics``/``inspect_target_ownership`` and the method's own
-        docstring, not by this snapshot.
+        ``actions`` cheaply mirrors common fail-closed guards for UI state;
+        mutating methods remain authoritative and may reject conditions that
+        require a scene scan or arguments absent here. Ownership classification
+        is intentionally excluded from refresh-time work.
 
         Args:
             model_root: Optional model root the caller is about to act on.
@@ -1784,30 +1732,8 @@ class HumanIkFrontendSession:
                 model reports ``allowed=False`` with ``REASON_MODEL_REQUIRED``
                 instead of guessing a model.
 
-        ``restoreHint.orphanedControlRigs`` (HUMANIK-RESTORE-GAPS-1) lists any
-        ``HIKControlSetNode`` present in the scene that is not the
-        ``created_nodes`` of an active tracked transaction -- a Control Rig
-        this session's ``_control_rig_transactions`` has nothing registered
-        for, so ``restore_mmd_rig`` cannot tear it down and silently no-ops
-        for it (see that method's docstring). This happens when a scene is
-        reopened (the in-memory transaction table is lost even though the
-        Control Rig node survives the save/reopen) or when a Control Rig is
-        created through Maya's standard HumanIK UI / a raw
-        ``hikCreateControlRig()`` call instead of ``create_control_rig``.
-        Detection is a single light ``cmds.ls(type="HIKControlSetNode")``
-        scan plus a per-node connection lookup for its owning character --
-        never the expensive ownership classification -- and fails soft to an
-        empty list on any query error, matching ``_describe_import_lock``.
-
-        ``restoreHint.lastOrphanRecovery`` (HUMANIK-RESTORE-GAPS-1 slice 1c)
-        reports what the most recent ``restore_mmd_rig`` call did about the
-        rows above: which orphaned Control Rigs it deleted (with structured
-        ``unrecoverableWarnings`` -- there is no restore_state for these, so muted
-        MMD writer edges and the pre-characterize stance were not restored),
-        which it skipped because the character could not be resolved back to
-        an MMD model root (never deletes a non-MMD Control Rig), and which
-        MEL delete attempt failed (fail-soft, never raised). See
-        ``describe_last_orphan_recovery``/``_recover_orphaned_control_rigs``.
+        ``restoreHint`` includes untracked Control Rigs and the most recent
+        fail-soft recovery outcome, including unrecoverable state warnings.
 
         Returns:
             A dict with keys ``mode``, ``source``, ``target``,

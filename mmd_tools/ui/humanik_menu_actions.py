@@ -393,11 +393,7 @@ def _enter_external_source_mode(character: Optional[str] = None):
 
 
 def connect_retarget(source, target_model_root: str):
-    """Bind ``source`` as SOURCE and start a TARGET preview onto ``target_model_root``.
-
-    The composite action the HumanIK tab's Source combo triggers when the
-    user picks an item there (HUMANIK-FRONTEND-1 Phase B4; HUMANIK-EXTERNAL-
-    SOURCE-1 ES-3 for the external branch).
+    """Bind ``source`` as SOURCE and preview it on ``target_model_root``.
 
     Args:
         source: Either a bare MMD model-root string (legacy/MMD-only
@@ -407,24 +403,10 @@ def connect_retarget(source, target_model_root: str):
             ``_normalize_source_selector``.
         target_model_root: The MMD model (Character combo) to retarget onto.
 
-    For an MMD source: auto-characterize + ``enter_source_mode`` on the
-    source, then auto-characterize + ``enter_target_mode`` on the target (no
-    confirmation dialogs -- HUMANIK-FRONTEND-1 Phase B6). For an external
-    source: no auto-characterize of the source (it is never mutated), and --
-    only for this branch -- a one-time check for existing animCurves on the
-    target's HIK-assigned joints, since baking an external retarget onto an
-    already-keyed channel fails (HUMANIK-EXTERNAL-SOURCE-1 ES-2 probe
-    finding). The user is asked whether to clear that animation first, keep
-    it and try anyway, or cancel; MMD-to-MMD connects are unaffected.
-
-    Reuses the already-wrapped ``enter_source_mode``/``enter_target_mode``/
-    ``enter_external_source_mode`` public functions, so a failure at either
-    step is already reported to the user by that step's own ``_run_action``/
-    ``_report_action_failure`` -- this function only decides whether to
-    continue to the next step, never duplicates the error reporting. On any
-    failure (or a mid-flow dialog cancel) this returns ``None`` without
-    raising; callers must re-read ``describe_frontend_state`` to learn the
-    real resulting state rather than trusting that SOURCE ended up bound.
+    MMD sources are characterized automatically. External HumanIK sources are
+    never mutated; if the target already has animation the user chooses
+    whether to clear it, keep it, or cancel. Failures are reported by the
+    wrapped lifecycle actions and return ``None``; callers must refresh state.
     """
     return _run_action("Connect Retarget", lambda: _connect_retarget(source, target_model_root))
 

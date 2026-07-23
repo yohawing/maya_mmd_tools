@@ -69,7 +69,7 @@ class HumanIkWindow(QWidget):
 
     WINDOW_NAME = "MMDHumanIkWindow"
     WORKSPACE_CONTROL_NAME = "MMDHumanIkWorkspaceControl"
-    PREFERRED_WIDTH = 320
+    PREFERRED_WIDTH = 160
 
     def __init__(self, parent=None):
         if parent is None:
@@ -168,7 +168,7 @@ class HumanIkWindow(QWidget):
             # Apply the compact width after the first layout activation;
             # otherwise Qt can replace the pre-show resize with its wider
             # content sizeHint on a freshly constructed floating window.
-            self.resize(self.PREFERRED_WIDTH, 640)
+            self.resize(self.PREFERRED_WIDTH, 280)
             self.raise_()
             self.activateWindow()
 
