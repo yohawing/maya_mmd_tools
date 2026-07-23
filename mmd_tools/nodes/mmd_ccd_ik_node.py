@@ -313,8 +313,21 @@ class MmdCcdIkNode(om.MPxNode):
         return cls._mmd_world_to_maya(matrix)
 
     def _maya_goal_matrix_to_mmd_point(self, matrix: om.MMatrix):
-        """Convert a Maya-space goal through the controller bind correction."""
+        """Convert a Maya-space goal through root-relative bind correction.
+
+        ``inputTranslate`` is sampled from joint-local values, while
+        ``goalWorldMatrix`` is a world-space controller plug.  Normalize the
+        latter by the imported model root before applying the static bind/J-O
+        conversion; otherwise moving the model root makes the solver see a
+        goal offset that is not present in its root-relative input pose.
+        """
         goal_matrix = matrix
+        root_world = self._connected_goal_model_root_world_matrix()
+        if root_world is not None:
+            try:
+                goal_matrix = goal_matrix * root_world.inverse()
+            except Exception:
+                pass
         slot = self._controller_slot
         if 0 <= slot < self._bone_count:
             bind_world = (
@@ -333,6 +346,31 @@ class MmdCcdIkNode(om.MPxNode):
         mmd_matrix = self._maya_world_to_mmd(goal_matrix)
         point = om.MTransformationMatrix(mmd_matrix).translation(om.MSpace.kWorld)
         return point.x, point.y, point.z
+
+    def _connected_goal_model_root_world_matrix(self):
+        """Return the ``*_root`` ancestor of a connected goal DAG node.
+
+        Unit tests commonly connect a top-level locator as an external goal;
+        that has no model-root ancestor and deliberately returns ``None``.
+        Production MMD controllers live below the imported ``Model_root`` DAG
+        node, whose inclusive matrix is the transform omitted by local IK
+        inputs.
+        """
+        try:
+            fn_dep = om.MFnDependencyNode(self.thisMObject())
+            matrix_plug = fn_dep.findPlug("goalWorldMatrix", False)
+            sources = matrix_plug.connectedTo(True, False)
+            if not sources:
+                return None
+            dag_path = om.MDagPath.getAPathTo(sources[0].node())
+            for _ in range(max(0, dag_path.length() - 1)):
+                dag_path.pop()
+                leaf = dag_path.fullPathName().rsplit("|", 1)[-1].lower()
+                if leaf.endswith("_root") or leaf.endswith("root"):
+                    return dag_path.inclusiveMatrix()
+        except Exception:
+            return None
+        return None
 
     def _compute_solved_maya_worlds(self, positions, input_rotations, out_rots):
         world_mmd = [om.MMatrix() for _ in range(self._bone_count)]

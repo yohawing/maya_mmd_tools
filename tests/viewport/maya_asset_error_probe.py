@@ -76,20 +76,63 @@ def run_asset_probe(
         if not plugin_path.is_file():
             raise RuntimeError(f"mmd_tools plugin not found: {plugin_path}")
 
-        def plugin_loaded() -> bool:
+        def loaded_plugin_names() -> list[str]:
             loaded_plugins = cmds.pluginInfo(query=True, listPlugins=True) or []
-            return "plugin_main" in loaded_plugins or "plugin_main.py" in loaded_plugins
+            return [
+                str(name)
+                for name in loaded_plugins
+                if cmds.pluginInfo(name, query=True, loaded=True)
+            ]
 
-        if not plugin_loaded():
+        def canonical_plugin_name() -> Optional[str]:
+            expected = plugin_path.resolve()
+            for name in loaded_plugin_names():
+                try:
+                    loaded_path = Path(cmds.pluginInfo(name, query=True, path=True)).resolve()
+                except Exception:
+                    continue
+                if loaded_path == expected:
+                    return name
+            return None
+
+        def unload_loaded_mmd_plugins() -> None:
+            for name in loaded_plugin_names():
+                try:
+                    loaded_path = Path(cmds.pluginInfo(name, query=True, path=True)).resolve()
+                except Exception:
+                    loaded_path = None
+                is_mmd_plugin = loaded_path is not None and (
+                    loaded_path.name.lower() == "plugin_main.py"
+                    and loaded_path.parent.name.lower() == "mmd_tools"
+                    and (loaded_path.parent / "__init__.py").is_file()
+                )
+                if not is_mmd_plugin:
+                    continue
+                try:
+                    cmds.unloadPlugin(name, force=True)
+                    log(f"mmd_tools plugin unloaded for clean reload: {name}")
+                except Exception as exc:
+                    raise RuntimeError(f"Failed to unload stale mmd_tools plugin {name}: {exc}") from exc
+
+        def purge_mmd_tools_modules() -> None:
+            stale_modules = [
+                name
+                for name in list(sys.modules)
+                if name == "mmd_tools" or name.startswith("mmd_tools.")
+            ]
+            for name in stale_modules:
+                sys.modules.pop(name, None)
+            if stale_modules:
+                log(f"reloaded mmd_tools modules: {len(stale_modules)}")
+
+        if reload_mmd_tools or canonical_plugin_name() is None:
+            unload_loaded_mmd_plugins()
+            purge_mmd_tools_modules()
+
+        if canonical_plugin_name() is None:
             previous = os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE")
             os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "1"
             try:
-                if plugin_loaded():
-                    try:
-                        cmds.unloadPlugin(str(plugin_path), force=True)
-                        log(f"mmd_tools plugin unloaded for clean reload: {plugin_path}")
-                    except Exception as exc:
-                        log(f"WARN unload mmd_tools plugin before reload: {exc}")
                 cmds.loadPlugin(str(plugin_path), quiet=True)
                 log(f"mmd_tools plugin loaded: {plugin_path}")
             finally:
@@ -121,17 +164,6 @@ def run_asset_probe(
         repo = str(Path(repo_root).resolve())
         if repo not in sys.path:
             sys.path.insert(0, repo)
-        if reload_mmd_tools:
-            stale_modules = [
-                name
-                for name in list(sys.modules)
-                if name == "mmd_tools" or name.startswith("mmd_tools.")
-            ]
-            for name in stale_modules:
-                sys.modules.pop(name, None)
-            if stale_modules:
-                log(f"reloaded mmd_tools modules: {len(stale_modules)}")
-
         ensure_mmd_tools_plugin_loaded(Path(repo))
 
         from mmd_tools.core import settings, settings_keys

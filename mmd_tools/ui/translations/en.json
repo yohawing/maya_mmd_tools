@@ -16,7 +16,8 @@
     "import_settings": "Import",
     "export_settings": "Export",
     "rigid_bodies": "Rigid Bodies",
-    "joints": "Joints"
+    "joints": "Joints",
+    "humanik": "HumanIK (Experimental)"
   },
   "menus": {
     "view": "View"
@@ -51,7 +52,11 @@
     "open_command_port": "Open",
     "close_command_port": "Close",
     "set_key": "Set Key",
-    "delete_key": "Delete Key"
+    "delete_key": "Delete Key",
+    "humanik_setup_selected_model": "Set Up Selected Model",
+    "humanik_create_control_rig": "Create Control Rig",
+    "humanik_bake_execute": "Execute Bake",
+    "humanik_restore": "Restore MMD Rig"
   },
   "labels": {
     "file_path": "File Path:",
@@ -89,7 +94,15 @@
     "offset_not_supported": "Offsets: Not supported",
     "log_entries": "Logs",
     "search_results": "results",
-    "not_found": "Not found"
+    "not_found": "Not found",
+    "humanik_character": "Character:",
+    "humanik_source": "SOURCE:",
+    "humanik_bake_start": "Start:",
+    "humanik_bake_end": "End:",
+    "humanik_bake_section": "Bake",
+    "humanik_bake_to_control_rig": "Bake to Control Rig",
+    "humanik_bake_to_mmd_rig": "Bake to MMD Rig",
+    "humanik_none": "(none)"
   },
   "tooltips": {
     "morph_runtime_unsupported": "This morph type is not supported by the current runtime",
@@ -220,7 +233,15 @@
     "loading": "Loading...",
     "saving": "Saving...",
     "processing": "Processing...",
-    "export_dev_mode_required": "Export is available only in Development Mode"
+    "export_dev_mode_required": "Export is available only in Development Mode",
+    "humanik_restore_tooltip": "End the HumanIK Control Rig/target preview and restore the MMD foot IK, append, and constraint connections and enabled states that were temporarily isolated. The HumanIK character definition remains.",
+    "humanik_mode_neutral": "Neutral",
+    "humanik_mode_source": "Source",
+    "humanik_mode_target_preview": "Target Preview",
+    "humanik_mode_control_rig": "Control Rig",
+    "humanik_status_control_rig_suffix": " / Control Rig: {count}",
+    "humanik_setup_selected_model_tooltip": "Set up and characterize the MMD model currently selected in Maya. It appears in the Character and SOURCE lists after setup completes.",
+    "humanik_source_tooltip": "Select a characterized MMD model, or a HumanIK character already defined in the scene, as the retarget SOURCE."
   },
   "options": {
     "none": "None",
@@ -566,7 +587,7 @@
     "dont_show_again": "Don't show again",
     "status_fixed": "Fixed {count} texture(s)",
     "status_repair_summary": "Repaired {resolved} texture(s); {unresolved} remain unresolved.",
-    "status_select_model": "Select the target model in MMD Tools, then run Repair Texture Paths again.",
+    "status_select_model": "Select the target model in MMD Editor, then run Repair Texture Paths again.",
     "fix_texture_path": "Fix Texture Path",
     "status_no_issues": "No texture path issues found.",
     "status_scan_failed": "Failed to scan texture path issues."

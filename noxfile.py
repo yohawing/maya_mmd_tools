@@ -386,6 +386,81 @@ def _convert_mayapy_path_options(mayapy: Path, args: list[str], path_options: se
     return _convert_maya_path_options(mayapy, ROOT, args, path_options)
 
 
+def _probe_passthrough(
+    args: list[str],
+    value_options: set[str],
+    flag_options: set[str] | None = None,
+) -> list[str]:
+    """Keep only options accepted by a probe script, excluding Nox's ``--maya``."""
+    flags = flag_options or set()
+    passthrough: list[str] = []
+    index = 0
+    while index < len(args):
+        option = args[index]
+        if option == "--maya" and index + 1 < len(args):
+            index += 2
+        elif option in value_options and index + 1 < len(args):
+            passthrough.extend((option, args[index + 1]))
+            index += 2
+        elif option in flags:
+            passthrough.append(option)
+            index += 1
+        else:
+            index += 1
+    return passthrough
+
+
+def _clear_probe_report(session: nox.Session, report_path: Path, label: str) -> None:
+    """Remove a stale probe report or fail with a contextual error."""
+    try:
+        report_path.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        session.error(f"Unable to clear stale {label} report {report_path}: {exc}")
+
+
+def _read_probe_report(session: nox.Session, report_path: Path, label: str) -> dict[str, object]:
+    """Load a required JSON object emitted by a probe."""
+    if not report_path.is_file():
+        session.error(f"{label} report missing: {report_path}")
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        session.error(f"Invalid {label} report {report_path}: {exc}")
+    if not isinstance(report, dict):
+        session.error(f"Invalid {label} report root {report_path}: expected object")
+    return report
+
+
+def _run_mayapy_probe(
+    session: nox.Session,
+    mayapy: Path,
+    script: str,
+    args: list[str],
+    path_options: set[str],
+    *,
+    utf8: bool = False,
+    success_codes: tuple[int, ...] | None = None,
+) -> None:
+    """Run a viewport probe with the repository's standard mayapy environment."""
+    extra_env = {"MAYA_SKIP_USERSETUP_PY": "1"}
+    if utf8:
+        extra_env["PYTHONIOENCODING"] = "utf-8"
+    run_options: dict[str, object] = {
+        "env": _mayapy_env(mayapy, **extra_env),
+        "external": True,
+    }
+    if success_codes is not None:
+        run_options["success_codes"] = success_codes
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, script),
+        *_convert_mayapy_path_options(mayapy, args, path_options),
+        **run_options,
+    )
+
+
 def _copy_parity_vmd_for_mayapy(session: nox.Session, args: list[str]) -> list[str]:
     """Copy a non-ASCII --parity-vmd path to an ASCII build path for mayapy argv."""
     if "--parity-vmd" not in args:
@@ -1631,22 +1706,11 @@ def humanik_definition_smoke(session: nox.Session) -> None:
     """
     maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     mayapy = _mayapy(maya_ver)
-    passthrough: list[str] = []
-    args = list(session.posargs)
-    i = 0
-    while i < len(args):
-        if args[i] == "--maya" and i + 1 < len(args):
-            i += 2
-            continue
-        if args[i] in {"--out", "--name", "--fixture"} and i + 1 < len(args):
-            passthrough.extend([args[i], args[i + 1]])
-            i += 2
-            continue
-        if args[i] == "--create-control-rig":
-            passthrough.append(args[i])
-            i += 1
-            continue
-        i += 1
+    passthrough = _probe_passthrough(
+        list(session.posargs),
+        {"--out", "--name", "--fixture"},
+        {"--create-control-rig"},
+    )
     session.run(
         str(mayapy),
         _mayapy_script(mayapy, "tests/viewport/humanik_definition_smoke.py"),
@@ -1654,6 +1718,548 @@ def humanik_definition_smoke(session: nox.Session) -> None:
         env=_mayapy_env(mayapy),
         external=True,
     )
+
+
+@nox.session(venv_backend="none")
+def humanik_retarget_smoke(session: nox.Session) -> None:
+    """Run the direct HumanIK S0 fixture smoke under Maya 2024 mayapy.
+
+    The smoke writes lock state, direct input type, mapped-joint writer census,
+    changed connections, and root-locomotion world-matrix evidence.
+
+    Examples:
+        uvx nox -s humanik_retarget_smoke -- --maya 2024
+        uvx nox -s humanik_retarget_smoke -- --maya 2024 --out build/reports/humanik_retarget_smoke.json
+        uvx nox -s humanik_retarget_smoke -- --maya 2024 --pmx <source.pmx> --target-pmx <target.pmx> --vmd <source.vmd>
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    path_options = {"--pmx", "--target-pmx", "--vmd", "--out"}
+    value_options = path_options | {
+        "--pmx-base64",
+        "--target-pmx-base64",
+        "--vmd-base64",
+        "--name-prefix",
+        "--translation",
+        "--tolerance",
+        "--motion-frames",
+        "--evaluation-modes",
+    }
+    passthrough = _probe_passthrough(list(session.posargs), value_options)
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/humanik_retarget_smoke.py",
+        passthrough,
+        path_options,
+    )
+
+
+@nox.session(venv_backend="none")
+def humanik_constraint_report_smoke(session: nox.Session) -> None:
+    """Classify MMD rig ownership without modifying scene connections."""
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    path_options = {"--pmx", "--out"}
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/humanik_constraint_report_smoke.py",
+        _probe_passthrough(list(session.posargs), path_options),
+        path_options,
+    )
+
+
+@nox.session(venv_backend="none")
+def humanik_transaction_smoke(session: nox.Session) -> None:
+    """Verify S2 HumanIK rollback and idempotent restore under mayapy."""
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    path_options = {"--pmx", "--out"}
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/humanik_transaction_smoke.py",
+        _probe_passthrough(list(session.posargs), path_options),
+        path_options,
+    )
+
+
+@nox.session(venv_backend="none")
+def humanik_target_preview_smoke(session: nox.Session) -> None:
+    """Verify S3 exclusive TARGET preview and NEUTRAL restore."""
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    path_options = {"--pmx", "--out"}
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/humanik_target_preview_smoke.py",
+        _probe_passthrough(list(session.posargs), path_options),
+        path_options,
+    )
+
+
+@nox.session(venv_backend="none")
+def humanik_bake_smoke(session: nox.Session) -> None:
+    """Run the S4 bake smoke in isolated off/serial/parallel Maya scenes."""
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    requested_mode = _option(args, "--evaluation-mode", "")
+    modes = [requested_mode] if requested_mode else ["off", "serial", "parallel"]
+    out_value = _option(args, "--out", str(ROOT / "build/reports/humanik_bake_smoke.json"))
+    value_options = {"--pmx", "--vmd", "--start", "--end"}
+    path_options = {"--pmx", "--vmd", "--out"}
+    passthrough = _probe_passthrough(args, value_options)
+    base_out = Path(out_value)
+    for mode in modes:
+        mode_out = base_out if requested_mode else base_out.with_name(f"{base_out.stem}.{mode}{base_out.suffix}")
+        mode_args = [*passthrough, "--evaluation-mode", mode, "--out", str(mode_out)]
+        _run_mayapy_probe(
+            session,
+            mayapy,
+            "tests/viewport/humanik_bake_smoke.py",
+            mode_args,
+            path_options,
+        )
+
+
+@nox.session(venv_backend="none")
+def humanik_roundtrip_smoke(session: nox.Session) -> None:
+    """Run the S5 self-retarget gate in isolated Maya evaluation modes."""
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    requested_mode = _option(args, "--evaluation-mode", "")
+    modes = [requested_mode] if requested_mode else ["off", "serial", "parallel"]
+    out_value = _option(args, "--out", str(ROOT / "build/reports/humanik_roundtrip_smoke.json"))
+    value_options = {"--pmx", "--vmd", "--start", "--end", "--hik-profile", "--characterization-stance"}
+    path_options = {"--pmx", "--vmd", "--out"}
+    passthrough = _probe_passthrough(args, value_options)
+    base_out = Path(out_value)
+    failed_modes: list[str] = []
+    for mode in modes:
+        mode_out = base_out if requested_mode else base_out.with_name(f"{base_out.stem}.{mode}{base_out.suffix}")
+        _clear_probe_report(session, mode_out, "HumanIK S5")
+        mode_args = [*passthrough, "--evaluation-mode", mode, "--out", str(mode_out)]
+        _run_mayapy_probe(
+            session,
+            mayapy,
+            "tests/viewport/humanik_roundtrip_smoke.py",
+            mode_args,
+            path_options,
+            success_codes=(0, 1),
+        )
+        if not mode_out.is_file():
+            failed_modes.append(f"{mode}: report missing ({mode_out})")
+            continue
+        try:
+            report = json.loads(mode_out.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            failed_modes.append(f"{mode}: invalid report ({exc})")
+            continue
+        if not isinstance(report, dict):
+            failed_modes.append(f"{mode}: report root is not an object")
+            continue
+        if report.get("evaluationMode") != mode:
+            failed_modes.append(
+                f"{mode}: evaluationMode={report.get('evaluationMode', 'missing')}"
+            )
+            continue
+        if report.get("status") != "pass":
+            failed_modes.append(f"{mode}: status={report.get('status', 'missing')}")
+    if failed_modes:
+        session.error("HumanIK S5 round-trip matrix failed: " + "; ".join(failed_modes))
+
+
+@nox.session(venv_backend="none")
+def humanik_aida_wave_probe(session: nox.Session) -> None:
+    """Capture the Aida + wavefile 0..60 SOURCE/TARGET mismatch evidence.
+
+    This is intentionally report-only: the current Aida full-profile result is
+    expected to be ``fail`` while the probe records live/baked matrices,
+    assignment slots, Hips/root status, and incoming writers.  A Maya/runtime
+    error or missing diagnostic fields still fails the Nox session.
+
+    ``--pmx``/``--vmd`` are required: the probe targets local production
+    assets whose absolute paths must stay out of the repository.
+
+    Example:
+        uvx nox -s humanik_aida_wave_probe -- --maya 2024 --pmx <aida.pmx> --vmd <wave.vmd>
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    pmx_value = _option(args, "--pmx", None)
+    vmd_value = _option(args, "--vmd", None)
+    if not pmx_value or not vmd_value:
+        session.error("humanik_aida_wave_probe requires --pmx and --vmd (local asset paths are not committed)")
+    out_value = _option(args, "--out", str(ROOT / "build/reports/humanik_aida_wave_probe.json"))
+    start_value = _option(args, "--start", "0")
+    end_value = _option(args, "--end", "60")
+    evaluation_value = _option(args, "--evaluation-mode", "off")
+    profile_value = _option(args, "--hik-profile", "full")
+    stance_value = _option(args, "--characterization-stance", "bind")
+    report_path = Path(out_value)
+    passthrough = [
+        "--pmx", pmx_value,
+        "--vmd", vmd_value,
+        "--out", out_value,
+        "--start", start_value,
+        "--end", end_value,
+        "--evaluation-mode", evaluation_value,
+        "--hik-profile", profile_value,
+        "--characterization-stance", stance_value,
+    ]
+    _clear_probe_report(session, report_path, "Aida HumanIK")
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/humanik_roundtrip_smoke.py",
+        passthrough,
+        {"--pmx", "--vmd", "--out"},
+        utf8=True,
+        success_codes=(0, 1),
+    )
+    report = _read_probe_report(session, report_path, "Aida HumanIK")
+    required = (
+        "sourceAssignments",
+        "targetAssignments",
+        "sourceWriterCensus",
+        "targetWriterCensusBefore",
+        "targetWriterCensusLive",
+        "liveVsSource",
+        "bakedVsSource",
+        "motion",
+    )
+    missing = [key for key in required if key not in report]
+    if missing:
+        session.error(f"Aida HumanIK report missing diagnostic fields: {missing}")
+    if report.get("status") not in {"pass", "fail"}:
+        session.error(f"Aida HumanIK probe runtime error: {report.get('error')}")
+    session.log(
+        "Aida HumanIK evidence captured: "
+        f"status={report.get('status')}, sourceAssignments={len(report['sourceAssignments'])}, "
+        f"targetAssignments={len(report['targetAssignments'])}, "
+        f"liveMax={report['liveVsSource']['skinMatrix']['max']}, "
+        f"bakedMax={report['bakedVsSource']['skinMatrix']['max']}"
+    )
+
+
+@nox.session(venv_backend="none")
+def humanik_vmd_parity_smoke(session: nox.Session) -> None:
+    """Run the SOURCE/VMD IK reproduction-matrix smoke (HUMANIK-SOURCE-VMD-IK-PARITY-1).
+
+    Diagnosis harness only: reproduces the reported divergence between a clean
+    VMD import and VMD import ordered around HumanIK setup_and_characterize /
+    enter_source_mode.  Expected initial ``status`` is ``"stop"`` (a divergence
+    was found), not ``"pass"``.  Pass ``--allow-stop`` to exit 0 on ``"stop"``
+    so evidence can be captured without failing CI; omit it for a strict gate
+    once the underlying bug is fixed.
+
+    Pass ``--inject-restore-failure`` to also run the optional
+    ``char_fail_restore_then_vmd`` scenario, which engineers a
+    ``HumanIkStanceTransaction.restore()`` failure (see the harness module
+    docstring) and reports the resulting topology/frame divergence under
+    the report's ``injectedScenarios`` key. Off by default; does not affect
+    the default scenario list or report shape.
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    requested_mode = _option(args, "--evaluation", "")
+    modes = [requested_mode] if requested_mode else ["off", "serial", "parallel"]
+    allow_stop = "--allow-stop" in args
+    out_value = _option(args, "--out", str(ROOT / "build/reports/humanik_vmd_parity_smoke.json"))
+    value_options = {"--model", "--motion", "--frames"}
+    path_options = {"--model", "--motion", "--out"}
+    passthrough = _probe_passthrough(args, value_options, {"--inject-restore-failure"})
+    base_out = Path(out_value)
+    failed_modes: list[str] = []
+    stopped_modes: list[str] = []
+    for mode in modes:
+        mode_out = base_out if requested_mode else base_out.with_name(f"{base_out.stem}.{mode}{base_out.suffix}")
+        _clear_probe_report(session, mode_out, "HumanIK VMD parity")
+        mode_args = [*passthrough, "--evaluation", mode, "--out", str(mode_out)]
+        _run_mayapy_probe(
+            session,
+            mayapy,
+            "tests/viewport/humanik_vmd_parity_smoke.py",
+            mode_args,
+            path_options,
+            utf8=True,
+            success_codes=(0, 1, 2),
+        )
+        if not mode_out.is_file():
+            failed_modes.append(f"{mode}: report missing ({mode_out})")
+            continue
+        try:
+            report = json.loads(mode_out.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            failed_modes.append(f"{mode}: invalid report ({exc})")
+            continue
+        if not isinstance(report, dict):
+            failed_modes.append(f"{mode}: report root is not an object")
+            continue
+        status = report.get("status")
+        if status == "pass":
+            continue
+        if status == "stop" and allow_stop:
+            stopped_modes.append(f"{mode}: status=stop")
+            continue
+        failed_modes.append(f"{mode}: status={status}, error={report.get('error')}")
+    if stopped_modes:
+        session.log("HumanIK VMD parity smoke stopped (evidence captured, not failing): " + "; ".join(stopped_modes))
+    if failed_modes:
+        session.error("HumanIK VMD parity smoke failed: " + "; ".join(failed_modes))
+
+
+@nox.session(venv_backend="none")
+def humanik_vmd_import_gate_smoke(session: nox.Session) -> None:
+    """Run the HumanIK VMD-import mode gate smoke (HUMANIK-SOURCE-VMD-IK-PARITY-1).
+
+    Characterizes a Kokomi fixture twice, enters a real HumanIK TARGET preview
+    on the second copy, and verifies VMD import onto the TARGET model is
+    refused fail-closed (naming the blocking mode and ``Restore MMD Rig``)
+    with scene topology/animCurves left untouched, then verifies the same
+    import succeeds once ``HumanIkFrontendSession.restore_mmd_rig()`` runs.
+    Expected ``status`` is ``"pass"``.
+
+    Examples:
+        uvx nox -s humanik_vmd_import_gate_smoke -- --maya 2024
+        uvx nox -s humanik_vmd_import_gate_smoke -- --maya 2024 --model "F:/MMD/pmx/.../model.pmx" --motion tests/data/mmt_test_model_test_motion.vmd
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    out_value = _option(args, "--out", str(ROOT / "build/reports/humanik_vmd_import_gate_smoke.json"))
+    report_path = Path(out_value)
+    path_options = {"--model", "--motion", "--out"}
+    passthrough = _probe_passthrough(args, path_options)
+    if "--out" not in passthrough:
+        passthrough.extend(["--out", out_value])
+    _clear_probe_report(session, report_path, "HumanIK VMD import gate")
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/humanik_vmd_import_gate_smoke.py",
+        passthrough,
+        path_options,
+        utf8=True,
+        success_codes=(0, 1),
+    )
+    report = _read_probe_report(session, report_path, "HumanIK VMD import gate")
+    status = report.get("status")
+    if status != "pass":
+        session.error(
+            "HumanIK VMD import gate smoke failed: "
+            f"status={status}, error={report.get('error')}, "
+            f"gateRaised={report.get('gateRaised')}, "
+            f"topologyUnchangedAfterRefusal={report.get('topologyUnchangedAfterRefusal')}, "
+            f"postRestoreImportSucceeded={report.get('postRestoreImportSucceeded')}"
+        )
+
+
+@nox.session(venv_backend="none")
+def humanik_citlali_stance_smoke(session: nox.Session) -> None:
+    """Run the strict Citlali HumanIK setup/restore regression gate.
+
+    The gate imports the ASCII-path Citlali fixture, characterizes it through
+    the frontend, and verifies rotate, jointOrient, skin-product, and exact
+    writer-topology restoration evidence without changing the source PMX.
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    out_value = _option(args, "--out", str(ROOT / "build/reports/humanik_citlali_stance_smoke.json"))
+    pmx_value = _option(
+        args,
+        "--pmx",
+        str(ROOT / "build/fixtures/citlali_ascii_file/citlali.pmx"),
+    )
+    profile = _option(args, "--profile", "body-only")
+    report_path = Path(out_value)
+    passthrough = [
+        "--pmx", pmx_value,
+        "--out", out_value,
+        "--profile", profile,
+    ]
+    _clear_probe_report(session, report_path, "Citlali HumanIK")
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/humanik_citlali_stance_smoke.py",
+        passthrough,
+        {"--pmx", "--out"},
+        utf8=True,
+    )
+    report = _read_probe_report(session, report_path, "Citlali HumanIK")
+    stance = report.get("stance", {})
+    restore = stance.get("restore") or stance.get("stanceEvidence", {}).get("restore", {})
+    required = {
+        "status": report.get("status"),
+        "restorePassed": restore.get("passed"),
+        "topologyRestored": restore.get("topologyRestored"),
+        "maxRotateResidual": restore.get("maxRotateResidual"),
+        "maxJointOrientResidual": restore.get("maxJointOrientResidual"),
+        "maxSkinMatrixResidual": restore.get("maxSkinMatrixResidual"),
+        "maxAllSkinMatrixResidual": restore.get("maxAllSkinMatrixResidual"),
+        "tolerance": restore.get("tolerance"),
+        "transformDiffCount": len(report.get("transformDiffs", [])),
+    }
+    if (
+        required["status"] != "pass"
+        or required["restorePassed"] is not True
+        or required["topologyRestored"] is not True
+        or required["transformDiffCount"] != 0
+        or any(
+            value is None or float(value) > float(required["tolerance"])
+            for key, value in required.items()
+            if key.endswith("Residual")
+        )
+    ):
+        session.error(f"Citlali HumanIK strict restore gate failed: {required}")
+
+
+@nox.session(venv_backend="none")
+def physics_solver_cycle_probe(session: nox.Session) -> None:
+    """Capture Citlali mmdPhysicsSolver cycle evidence without changing solver code.
+
+    A Maya-reported DG cycle is intentionally accepted as probe evidence; the
+    mayapy script only fails when clean production import or the reversible
+    operation harness itself fails.  The JSON report is the investigation
+    artifact consumed by the MMD-PHYSICS-SOLVER-CYCLE-1 queue item.
+
+    Examples:
+        uvx nox -s physics_solver_cycle_probe -- --maya 2024
+        uvx nox -s physics_solver_cycle_probe -- --maya 2026 --frames 0,1,2,1,0
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    out_value = _option(args, "--out", str(ROOT / "build/reports/physics_solver_cycle_probe.json"))
+    pmx_value = _option(
+        args,
+        "--pmx",
+        str(ROOT / "build/fixtures/citlali_ascii_file/citlali.pmx"),
+    )
+    frames_value = _option(args, "--frames", "0,1,2,1,0")
+    modes_value = _option(args, "--modes", "off,serial,parallel")
+    report_path = Path(out_value)
+    passthrough = [
+        "--pmx", pmx_value,
+        "--out", out_value,
+        "--frames", frames_value,
+        "--modes", modes_value,
+    ]
+    _clear_probe_report(session, report_path, "physics solver cycle probe")
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/physics_solver_cycle_probe.py",
+        passthrough,
+        {"--pmx", "--out"},
+        utf8=True,
+    )
+    report = _read_probe_report(session, report_path, "Physics solver cycle probe")
+    if report.get("status") != "pass":
+        session.error(
+            "Physics solver cycle probe failed: "
+            f"errors={report.get('errors')}, solver={report.get('solver')}"
+        )
+
+
+@nox.session(venv_backend="none")
+def root_move_skin_parity_probe(session: nox.Session) -> None:
+    """Measure Citlali root-motion, skin products, and world-space mesh parity.
+
+    The mayapy probe performs one production import, applies a known non-zero
+    root translation, records major joints/skinClusters/mesh vertices, then
+    saves and reopens the moved scene for parity evidence.  It never zeroes or
+    bakes the root and does not modify source code or the PMX fixture.
+
+    Example:
+        uvx nox -s root_move_skin_parity_probe -- --maya 2024
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    out_value = _option(args, "--out", str(ROOT / "build/reports/root_move_skin_parity_probe.json"))
+    pmx_value = _option(
+        args,
+        "--pmx",
+        str(ROOT / "build/fixtures/citlali_ascii_file/citlali.pmx"),
+    )
+    delta_value = _option(args, "--delta", "17.5,-8.25,11.0")
+    vertices_value = _option(args, "--vertices-per-mesh", "8")
+    tolerance_value = _option(args, "--tolerance", "1.0e-4")
+    report_path = Path(out_value)
+    passthrough = [
+        "--pmx", pmx_value,
+        "--out", out_value,
+        "--delta", delta_value,
+        "--vertices-per-mesh", vertices_value,
+        "--expect-parity",
+        "--tolerance", tolerance_value,
+    ]
+    _clear_probe_report(session, report_path, "root move parity")
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/root_move_skin_parity_probe.py",
+        passthrough,
+        {"--pmx", "--out"},
+        utf8=True,
+    )
+    report = _read_probe_report(session, report_path, "Root move parity")
+    if report.get("status") != "pass":
+        session.error(f"Root move parity probe failed: errors={report.get('errors')}")
+
+
+@nox.session(venv_backend="none")
+def root_move_ik_target_probe(session: nox.Session) -> None:
+    """Diagnose Citlali foot/IK-target drift after a non-zero root move.
+
+    This report-only mayapy probe captures foot joints, mmdCcdIk goal wiring,
+    inferred controllers/targets, native ikHandles, and their parent
+    ``inheritsTransform`` state before and after moving the imported root.
+    It intentionally does not alter production source or reset the root.
+
+    Example:
+        uvx nox -s root_move_ik_target_probe -- --maya 2024
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    out_value = _option(args, "--out", str(ROOT / "build/reports/root_move_ik_target_probe.json"))
+    pmx_value = _option(
+        args,
+        "--pmx",
+        str(ROOT / "build/fixtures/citlali_ascii_file/citlali.pmx"),
+    )
+    delta_value = _option(args, "--delta", "17.5,-8.25,11.0")
+    tolerance_value = _option(args, "--tolerance", "1.0e-4")
+    report_path = Path(out_value)
+    passthrough = [
+        "--pmx", pmx_value,
+        "--out", out_value,
+        "--delta", delta_value,
+        "--expect-root-parity",
+        "--tolerance", tolerance_value,
+    ]
+    _clear_probe_report(session, report_path, "root move IK target")
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/root_move_ik_target_probe.py",
+        passthrough,
+        {"--pmx", "--out"},
+        utf8=True,
+    )
+    report = _read_probe_report(session, report_path, "Root move IK target")
+    if report.get("status") != "pass":
+        session.error(f"Root move IK target probe failed: errors={report.get('errors')}")
 
 
 @nox.session(venv_backend="none")

@@ -35,6 +35,7 @@ _STUBBED_MODULE_NAMES = (
     "maya",
     "maya.cmds",
     "maya.mel",
+    "maya.utils",
     "maya.OpenMaya",
     "maya.OpenMayaMPx",
     "maya.api",
@@ -165,6 +166,8 @@ def install_maya_stub(profile: Optional[str] = None) -> bool:
     _configure_cmds_profile(maya.cmds, profile or "minimal")
     maya.mel = MagicMock(name="maya.mel")
     maya.OpenMaya = MagicMock(name="maya.OpenMaya")
+    maya.utils = MagicMock(name="maya.utils")
+    maya.standalone = MagicMock(name="maya.standalone")
 
     class _StubMPxFileTranslator:
         kImportAccessMode = 0
@@ -193,6 +196,8 @@ def install_maya_stub(profile: Optional[str] = None) -> bool:
     sys.modules["maya"] = maya
     sys.modules["maya.cmds"] = maya.cmds
     sys.modules["maya.mel"] = maya.mel
+    sys.modules["maya.utils"] = maya.utils
+    sys.modules["maya.standalone"] = maya.standalone
     sys.modules["maya.OpenMaya"] = maya.OpenMaya
     sys.modules["maya.OpenMayaMPx"] = maya.OpenMayaMPx
     sys.modules["maya.api"] = api
@@ -252,7 +257,7 @@ _QTWIDGETS_NAMES = [
     "QColorDialog", "QDoubleSpinBox", "QAbstractSpinBox", "QSpinBox", "QGridLayout", "QScrollArea",
     "QListWidgetItem", "QStatusBar", "QProgressBar", "QSplitter", "QTableWidget",
     "QTableWidgetItem", "QHeaderView", "QMessageBox", "QInputDialog", "QToolBar",
-    "QMenuBar", "QMenu",
+    "QMenuBar", "QMenu", "QSizePolicy",
 ]
 
 
@@ -430,6 +435,12 @@ def install_om_double_array_stub() -> None:
 
 class _MTime:
     """Minimal scalar stand-in for ``om.MTime`` in pure-Python tests."""
+
+    # Maya 2024 reports ``MTime.kSeconds == 3``.  Keep the public unit
+    # constant available because production nodes pass it to ``asUnits``;
+    # without it, a test that installs this shared stub makes later physics
+    # tests depend on collection order.
+    kSeconds = 3
 
     def __init__(self, value=0.0, _unit=None):
         self._value = float(value)

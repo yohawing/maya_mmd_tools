@@ -50,6 +50,7 @@ try:
         QToolBar,
         QMenuBar,
         QMenu,
+        QSizePolicy,
     )
     from shiboken6 import wrapInstance  # noqa: F401
 
@@ -101,6 +102,7 @@ except ImportError:
         QAction,
         QMenuBar,
         QMenu,
+        QSizePolicy,
     )
     from shiboken2 import wrapInstance  # noqa: F401
 

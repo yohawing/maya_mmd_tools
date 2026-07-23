@@ -32,6 +32,7 @@ _physics_nodes_registered = False
 _python_physics_solver_registered = False
 _python_physics_driver_registered = False
 _after_open_callback_id = None
+_after_new_callback_id = None
 _MAIN_WINDOW_NAME = "MMDToolsMainWindow"
 _MAIN_WINDOW_WORKSPACE_CONTROL_NAME = "MMDToolsWorkspaceControl"
 
@@ -192,19 +193,58 @@ def repair_current_model_texture_paths():
     return presenter.fix_texture_paths()
 
 
+def _dispatch_humanik_action(action_name):
+    """Lazy-dispatch a HumanIK menu action to the UI module."""
+    from mmd_tools.ui import humanik_menu_actions
+
+    return humanik_menu_actions.dispatch_action(action_name)
+
+
+def _reset_humanik_menu_session():
+    """Restore HumanIK-owned scene state before plugin unload when possible."""
+    try:
+        from mmd_tools.ui import humanik_menu_actions
+
+        return humanik_menu_actions.reset_humanik_session(restore=True)
+    except Exception as exc:
+        om.MGlobal.displayWarning(f"HumanIK session reset during unload failed: {exc}")
+        return False
+
+
+def _close_humanik_window():
+    """Close the standalone HumanIK Editor window before plugin unload.
+
+    Soft-fails like the rest of unload cleanup: an already-torn-down window
+    (or an environment where the Qt UI never loaded) must never abort
+    ``uninitializePlugin``. This runs after ``_reset_humanik_menu_session()``
+    (see ``uninitializePlugin``), which already restored any HumanIK-owned
+    scene state, so this is purely UI/window cleanup -- and drops the
+    presenter's ``humanik_control_rig_watch`` callback subscription via the
+    window's own ``hideEvent``/``closeEvent`` handling.
+    """
+    try:
+        from mmd_tools.ui import humanik_window
+
+        humanik_window.close_humanik_window()
+    except Exception as exc:
+        om.MGlobal.displayWarning(f"HumanIK window close during unload failed: {exc}")
+
+
 def install_mmd_menu():
     """Install the MMD menu in Maya."""
     if not cmds.menu("MMD", exists=True):
-        cmds.menu("MMD", parent="MayaWindow")
+        cmds.menu("MMD", label="MMD", parent="MayaWindow", tearOff=True)
+    else:
+        cmds.menu("MMD", edit=True, label="MMD")
 
-    _LABELS = ("MMD Tools", "Repair Texture Paths", "Animator Toolset")
+    _LABELS = ("MMD Tools", "MMD Editor", "Repair Texture Paths", "Animator Toolset")
     for item in cmds.menu("MMD", query=True, itemArray=True) or []:
         if cmds.menuItem(item, query=True, label=True) in _LABELS:
             cmds.deleteUI(item)
 
     cmds.menuItem(
         "MMDToolsMenuItem",
-        label="MMD Tools",
+        label="MMD Editor",
         command=lambda *args: open_main_window(dockable=False),
         parent="MMD",
     )
@@ -224,6 +264,14 @@ def install_mmd_menu():
             command=lambda *args: open_animator_toolset(dockable=True),
             parent="MMD",
         )
+
+    from mmd_tools.ui.humanik_menu_actions import install_humanik_menu
+
+    install_humanik_menu(
+        parent="MMD",
+        cmds_module=cmds,
+        callback_dispatcher=_dispatch_humanik_action,
+    )
 
 
 def uninstall_mmd_menu():
@@ -305,8 +353,32 @@ def _soft_sync_existing_glsl_diffuse_contracts():
 
 def _after_scene_open(*_args):
     """Run strict existing-scene migration after Maya opens a scene."""
+    _reset_humanik_session_after_scene_change()
     try:
         _soft_sync_existing_glsl_diffuse_contracts()
+    except Exception:
+        pass
+
+
+def _after_scene_new(*_args):
+    """Drop process-owned HumanIK state after Maya creates a new scene."""
+    _reset_humanik_session_after_scene_change()
+
+
+def _reset_humanik_session_after_scene_change():
+    """Replace stale frontend state and refresh an open HumanIK Editor."""
+    try:
+        from mmd_tools.ui import humanik_menu_actions
+
+        # The old scene has already been replaced at kAfterOpen/kAfterNew;
+        # attempting Restore here would act on the new scene with stale names.
+        humanik_menu_actions.reset_humanik_session(restore=False)
+    except Exception:
+        pass
+    try:
+        from mmd_tools.ui import humanik_window
+
+        humanik_window.refresh_humanik_window_for_scene_change()
     except Exception:
         pass
 
@@ -319,28 +391,65 @@ def _scene_file_is_being_read():
         return True
 
 
-def _register_after_open_callback():
-    """Register one scene-open migration callback, tolerating host limitations."""
-    global _after_open_callback_id
-    if _after_open_callback_id is not None:
-        return
+def _register_humanik_control_rig_watch():
+    """Register the out-of-band HumanIK Control Rig detection/adoption watch.
+
+    Best-effort: ``humanik_control_rig_watch`` itself swallows and logs
+    ``OpenMaya`` failures (mayapy/batch hosts with no HumanIK UI simply never
+    fire the callback), so this never raises during plugin initialization.
+    """
     try:
-        _after_open_callback_id = om.MSceneMessage.addCallback(om.MSceneMessage.kAfterOpen, _after_scene_open)
+        from mmd_tools.core import humanik_control_rig_watch
+
+        humanik_control_rig_watch.register_humanik_control_rig_watch()
     except Exception:
-        _after_open_callback_id = None
+        pass
+
+
+def _deregister_humanik_control_rig_watch():
+    """Deregister the HumanIK Control Rig watch callback, if registered."""
+    try:
+        from mmd_tools.core import humanik_control_rig_watch
+
+        humanik_control_rig_watch.deregister_humanik_control_rig_watch()
+    except Exception:
+        pass
+
+
+def _register_after_open_callback():
+    """Register scene-open/new callbacks, tolerating host limitations."""
+    global _after_open_callback_id, _after_new_callback_id
+    if _after_open_callback_id is None:
+        try:
+            _after_open_callback_id = om.MSceneMessage.addCallback(
+                om.MSceneMessage.kAfterOpen,
+                _after_scene_open,
+            )
+        except Exception:
+            _after_open_callback_id = None
+    if _after_new_callback_id is None:
+        try:
+            _after_new_callback_id = om.MSceneMessage.addCallback(
+                om.MSceneMessage.kAfterNew,
+                _after_scene_new,
+            )
+        except Exception:
+            _after_new_callback_id = None
 
 
 def _remove_after_open_callback():
-    """Remove the owned scene-open callback if it exists."""
-    global _after_open_callback_id
-    callback_id = _after_open_callback_id
+    """Remove the owned scene-open/new callbacks if they exist."""
+    global _after_open_callback_id, _after_new_callback_id
+    callback_ids = (_after_open_callback_id, _after_new_callback_id)
     _after_open_callback_id = None
-    if callback_id is None:
-        return
-    try:
-        om.MMessage.removeCallback(callback_id)
-    except Exception:
-        pass
+    _after_new_callback_id = None
+    for callback_id in callback_ids:
+        if callback_id is None:
+            continue
+        try:
+            om.MMessage.removeCallback(callback_id)
+        except Exception:
+            pass
 
 
 def initializePlugin(mobject):
@@ -404,6 +513,7 @@ def initializePlugin(mobject):
         _trace_initialize_step("physics-solver:done")
         _physics_nodes_registered = True
         _register_after_open_callback()
+        _register_humanik_control_rig_watch()
         _trace_initialize_step("initialize:done")
     except Exception as e:
         _trace_initialize_step(f"initialize:error:{type(e).__name__}:{e}")
@@ -418,6 +528,10 @@ def uninitializePlugin(mobject):
     plugin_fn = om.MFnPlugin(mobject)
 
     try:
+        if not _reset_humanik_menu_session():
+            raise RuntimeError("HumanIK session restore failed; plugin unload was aborted")
+        _close_humanik_window()
+        _deregister_humanik_control_rig_watch()
         _remove_after_open_callback()
         close_animator_toolset()
         close_main_window()

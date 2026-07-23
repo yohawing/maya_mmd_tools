@@ -16,7 +16,8 @@
     "import_settings": "匯入設定",
     "export_settings": "匯出設定",
     "rigid_bodies": "剛體",
-    "joints": "關節"
+    "joints": "關節",
+    "humanik": "HumanIK (Experimental)"
   },
   "menus": {
     "view": "檢視"
@@ -51,7 +52,11 @@
     "search": "搜尋",
     "timestamp": "時間戳記",
     "set_key": "設定關鍵幀",
-    "delete_key": "刪除關鍵幀"
+    "delete_key": "刪除關鍵幀",
+    "humanik_setup_selected_model": "設定所選模型",
+    "humanik_create_control_rig": "建立控制裝備",
+    "humanik_bake_execute": "執行烘焙",
+    "humanik_restore": "還原 MMD 裝備"
   },
   "labels": {
     "file_path": "檔案路徑:",
@@ -89,7 +94,15 @@
     "log_entries": "記錄",
     "search_results": "筆",
     "not_found": "找不到",
-    "namespace_placeholder": "自動產生"
+    "namespace_placeholder": "自動產生",
+    "humanik_character": "角色:",
+    "humanik_source": "SOURCE:",
+    "humanik_bake_start": "起始:",
+    "humanik_bake_end": "結束:",
+    "humanik_bake_section": "烘焙",
+    "humanik_bake_to_control_rig": "烘焙到控制裝備",
+    "humanik_bake_to_mmd_rig": "烘焙到 MMD 裝備",
+    "humanik_none": "(無)"
   },
   "tooltips": {
     "morph_runtime_unsupported": "目前執行階段不支援此變形類型",
@@ -161,7 +174,15 @@
     "loading": "載入中...",
     "saving": "儲存中...",
     "processing": "處理中...",
-    "export_dev_mode_required": "匯出僅能在開發模式使用"
+    "export_dev_mode_required": "匯出僅能在開發模式使用",
+    "humanik_restore_tooltip": "結束 HumanIK 控制裝備／目標預覽，並還原暫時隔離的 MMD 足部 IK、附加與約束連線及啟用狀態。HumanIK 角色定義會保留。",
+    "humanik_mode_neutral": "未設定",
+    "humanik_mode_source": "Source",
+    "humanik_mode_target_preview": "Target 預覽",
+    "humanik_mode_control_rig": "控制裝備",
+    "humanik_status_control_rig_suffix": " / 控制裝備: {count}",
+    "humanik_setup_selected_model_tooltip": "為Maya中目前選取的MMD模型設定HumanIK並進行角色化。完成後會顯示在角色和SOURCE清單中。",
+    "humanik_source_tooltip": "可將已角色化的 MMD 模型或場景中已定義的 HumanIK 角色指定為重定向 SOURCE。"
   },
   "options": {
     "none": "無",
@@ -504,7 +525,7 @@
     "dont_show_again": "不再顯示",
     "status_fixed": "已修復 {count} 個貼圖",
     "status_repair_summary": "已修復 {resolved} 個貼圖；仍有 {unresolved} 個未解決。",
-    "status_select_model": "請在MMD Tools中選擇目標模型，然後再次執行修復貼圖路徑。",
+    "status_select_model": "請在 MMD Editor 中選擇目標模型，然後再次執行修復貼圖路徑。",
     "fix_texture_path": "修正貼圖路徑",
     "status_no_issues": "未發現貼圖路徑問題。",
     "status_scan_failed": "無法掃描貼圖路徑問題。"

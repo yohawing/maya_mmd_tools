@@ -10,7 +10,7 @@ from tests.common.maya_stub import install_headless_ui_stubs
 
 install_headless_ui_stubs()
 
-from mmd_tools.ui import drag_drop_importer  # noqa: E402
+from mmd_tools.ui import drag_drop_importer, qt_compat  # noqa: E402
 
 
 class _FakeSettingsService:
@@ -317,8 +317,8 @@ class TestDragDropImporter(unittest.TestCase):
         window = object()
         app = object()
 
-        with patch.object(drag_drop_importer, "_maya_version", return_value=2026), patch(
-            "mmd_tools.ui.qt_compat.QApplication"
+        with patch.object(drag_drop_importer, "_maya_version", return_value=2026), patch.object(
+            qt_compat, "QApplication"
         ) as application:
             application.instance.return_value = app
             self.assertEqual(event_filter._drop_targets(window), [app, window])
@@ -327,8 +327,8 @@ class TestDragDropImporter(unittest.TestCase):
         event_filter = drag_drop_importer._MmdDropEventFilter()
         window = object()
 
-        with patch.object(drag_drop_importer, "_maya_version", return_value=2027), patch(
-            "mmd_tools.ui.qt_compat.QApplication"
+        with patch.object(drag_drop_importer, "_maya_version", return_value=2027), patch.object(
+            qt_compat, "QApplication"
         ) as application:
             self.assertEqual(event_filter._drop_targets(window), [window])
             application.instance.assert_not_called()
