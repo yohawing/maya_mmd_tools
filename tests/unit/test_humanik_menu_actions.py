@@ -1,5 +1,7 @@
 """Unit tests for the HumanIK Maya menu action boundary."""
 
+import sys
+import types
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -156,16 +158,20 @@ class TestHumanIkMenuActions(unittest.TestCase):
         self.assertEqual(len(actions.ACTION_LABELS), 10)
 
     def test_open_humanik_editor_dispatches_to_the_standalone_window(self):
-        with patch("mmd_tools.ui.humanik_window.show_humanik_window") as show_window:
+        window = types.ModuleType("mmd_tools.ui.humanik_window")
+        window.show_humanik_window = MagicMock()
+        with patch.dict(sys.modules, {window.__name__: window}):
             actions.open_humanik_editor()
 
-        show_window.assert_called_once_with(dockable=True)
+        window.show_humanik_window.assert_called_once_with(dockable=True)
 
     def test_dispatch_action_routes_open_humanik_editor(self):
-        with patch("mmd_tools.ui.humanik_window.show_humanik_window") as show_window:
+        window = types.ModuleType("mmd_tools.ui.humanik_window")
+        window.show_humanik_window = MagicMock()
+        with patch.dict(sys.modules, {window.__name__: window}):
             actions.dispatch_action("open_humanik_editor")
 
-        show_window.assert_called_once_with(dockable=True)
+        window.show_humanik_window.assert_called_once_with(dockable=True)
 
     def test_menu_contains_humanik_and_exact_seven_actions(self):
         with patch.object(actions, "install_maya_script_editor_handler") as install_handler:

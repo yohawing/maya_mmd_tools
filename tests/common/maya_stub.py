@@ -257,7 +257,7 @@ _QTWIDGETS_NAMES = [
     "QColorDialog", "QDoubleSpinBox", "QAbstractSpinBox", "QSpinBox", "QGridLayout", "QScrollArea",
     "QListWidgetItem", "QStatusBar", "QProgressBar", "QSplitter", "QTableWidget",
     "QTableWidgetItem", "QHeaderView", "QMessageBox", "QInputDialog", "QToolBar",
-    "QMenuBar", "QMenu",
+    "QMenuBar", "QMenu", "QSizePolicy",
 ]
 
 
