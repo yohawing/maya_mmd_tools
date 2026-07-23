@@ -23,7 +23,9 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import struct
 import sys
 import time
 from collections import Counter, defaultdict
@@ -250,12 +252,62 @@ def _census(cmds: Any, root: str, solver: str | None, worlds: Sequence[str]) -> 
     }
 
 
+def _flatten_numeric_array(value: Any) -> List[float]:
+    """Flatten Maya array/list wrappers into numeric values only."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        values: List[float] = []
+        for item in value:
+            values.extend(_flatten_numeric_array(item))
+        return values
+    try:
+        iterator = iter(value)
+    except TypeError:
+        return [float(value)]
+    values = []
+    for item in iterator:
+        values.extend(_flatten_numeric_array(item))
+    return values
+
+
+def _matrix_fingerprint(cmds: Any, solver: str) -> Dict[str, Any]:
+    """Hash outBoneMatrices as canonical little-endian IEEE-754 doubles."""
+    result: Dict[str, Any] = {
+        "algorithm": "sha256(struct.pack('<d') per element)",
+        "elementCount": 0,
+        "sha256": None,
+        "supported": True,
+        "readAfterStatusCount": True,
+        "evaluationNote": "Reading outBoneMatrices follows status/count reads and may trigger evaluation.",
+    }
+    try:
+        raw = cmds.getAttr(f"{solver}.outBoneMatrices")
+        values = _flatten_numeric_array(raw)
+        digest = hashlib.sha256()
+        for value in values:
+            digest.update(struct.pack("<d", float(value)))
+        result["elementCount"] = len(values)
+        result["sha256"] = digest.hexdigest()
+    except Exception as exc:
+        result.update({"supported": False, "error": str(exc)})
+    return result
+
+
 def _solver_state(cmds: Any, solver: str | None, worlds: Sequence[str]) -> Dict[str, Any]:
     values: Dict[str, Any] = {}
     if solver and cmds.objExists(solver):
         for attr in _SOLVER_ATTRS:
             if cmds.attributeQuery(attr, node=solver, exists=True):
                 values[attr] = _safe_get_attr(cmds, f"{solver}.{attr}")
+        matrix_fingerprint = _matrix_fingerprint(cmds, solver)
+    else:
+        matrix_fingerprint = {
+            "supported": False,
+            "elementCount": 0,
+            "sha256": None,
+            "error": "solver node is unavailable",
+        }
     world_values = []
     for world in worlds:
         world_values.append({
@@ -264,7 +316,12 @@ def _solver_state(cmds: Any, solver: str | None, worlds: Sequence[str]) -> Dict[
             "enable": _safe_get_attr(cmds, f"{world}.enable"),
             "resetGeneration": _safe_get_attr(cmds, f"{world}.resetGeneration"),
         })
-    return {"solver": solver, "values": values, "worlds": world_values}
+    return {
+        "solver": solver,
+        "values": values,
+        "worlds": world_values,
+        "outBoneMatricesFingerprint": matrix_fingerprint,
+    }
 
 
 def _display_support(cmds: Any, requested: str) -> Dict[str, Any]:
