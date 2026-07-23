@@ -69,12 +69,31 @@ _ALPHA_CAPABLE_TEXTURE_EXTENSIONS = {".png", ".tga", ".tif", ".tiff", ".dds"}
 _SHADER_BACKEND_WARNED = set()
 
 
+def _maya_node_exists(name: str) -> bool:
+    """Best-effort object existence check used by deterministic allocators."""
+    try:
+        return bool(cmds.objExists(name))
+    except Exception:
+        return False
+
+
 # DX11 transparency handling modes (drives technique selection).
 TRANSPARENCY_MODE_OPAQUE = "opaque"
 TRANSPARENCY_MODE_CUTOUT = "cutout"
 TRANSPARENCY_MODE_BLEND = "blend"
 TRANSPARENCY_MODES = (TRANSPARENCY_MODE_OPAQUE, TRANSPARENCY_MODE_CUTOUT, TRANSPARENCY_MODE_BLEND)
 _ATTR_MMD_DOUBLE_SIDED = "mmdDoubleSided"
+_MATERIAL_NODE_FAMILY_SUFFIXES = (
+    "",
+    "SG",
+    "_file",
+    "_place2dTexture",
+    "_opacityMultiply",
+    "_texture",
+    "_sphere_texture",
+    "_toon_texture",
+    "_materialMorphEval",
+)
 _DX11_TECHNIQUE_BY_RENDERING = {
     (TRANSPARENCY_MODE_OPAQUE, True, False): "MMDTechnique",
     (TRANSPARENCY_MODE_CUTOUT, True, False): "MMDTechniqueTransparent",
@@ -997,6 +1016,9 @@ class MeshConverter:
         # material_index -> transparency mode ("opaque"/"cutout"/"blend"),
         # precomputed from per-material UV-region texture alpha (atlas-safe).
         self._transparency_modes = {}
+        self._material_name_by_index = {}
+        self._material_name_used = self._scene_name_set()
+        self._material_name_scene_check = True
         self.profile = {
             "mesh_create_sec": 0.0,
             "material_create_sec": 0.0,
@@ -1012,6 +1034,48 @@ class MeshConverter:
         }
         if pmx_filepath:
             self.texture_dir = os.path.dirname(pmx_filepath)
+
+    @staticmethod
+    def _scene_name_set():
+        """Return conservative leaf-name reservations from the current scene."""
+        try:
+            nodes = cmds.ls() or []
+        except Exception:
+            return set()
+        names = set()
+        for node in nodes:
+            leaf = str(node).rsplit("|", 1)[-1]
+            names.add(leaf)
+            names.add(leaf.rsplit(":", 1)[-1])
+        return names
+
+    def _allocate_material_name(self, material, material_index=None):
+        """Allocate one safe base for a material and all derived node names."""
+        key = material_index if material_index is not None else id(material)
+        existing = getattr(self, "_material_name_by_index", None)
+        if existing is None:
+            existing = self._material_name_by_index = {}
+        if key in existing:
+            return existing[key]
+
+        used = getattr(self, "_material_name_used", None)
+        check_scene = bool(getattr(self, "_material_name_scene_check", False))
+        if used is None:
+            used = self._material_name_used = set()
+        raw_name = material.get_name() if hasattr(material, "get_name") else getattr(material, "name", "")
+        fallback = f"material_{material_index if material_index is not None else len(existing)}"
+        while True:
+            candidate = maya_name_utils.sanitize_unique_name(raw_name, used, fallback=fallback)
+            if not any(
+                candidate + suffix in used
+                or (check_scene and _maya_node_exists(candidate + suffix))
+                for suffix in _MATERIAL_NODE_FAMILY_SUFFIXES[1:]
+            ):
+                break
+
+        used.update(candidate + suffix for suffix in _MATERIAL_NODE_FAMILY_SUFFIXES)
+        existing[key] = candidate
+        return candidate
 
     def _mmd_vertex_to_maya(self, position) -> Tuple[float, float, float]:
         """Convert a PMX vertex position to Maya object space with import scale."""
@@ -1562,10 +1626,7 @@ class MeshConverter:
         Returns:
             str: 作成されたシェーダーノード名。
         """
-        sanitized_name = maya_name_utils.sanitize_text(material.get_name())
-        # 名前が空の場合はデフォルト名を使用
-        if not sanitized_name:
-            sanitized_name = f"material_{material_index if material_index is not None else 0}"
+        sanitized_name = self._allocate_material_name(material, material_index)
 
         # create_mmd_shaders設定を確認
         create_mmd_shaders = settings.get(setting_keys.IMPORT_MODEL_CREATE_MMD_SHADERS)
@@ -1692,6 +1753,7 @@ class MeshConverter:
             is_pmd,
             material_index,
             original_texture_path,
+            sanitized_name,
         )
 
         return shader
@@ -1775,11 +1837,12 @@ class MeshConverter:
         is_pmd,
         material_index=None,
         original_texture_path=None,
+        material_name=None,
     ):
         """標準のstandardSurfaceシェーダーを設定"""
 
         # マテリアル名をサニタイズ（テクスチャノード名に使用）
-        sanitized_name = maya_name_utils.sanitize_text(material.name if material.name else "material")
+        sanitized_name = material_name or maya_name_utils.sanitize_text(material.name if material.name else "material")
 
         # 基本色設定（Diffuse）
         maya_attribute_utils.set_attribute(shader, "baseColor", material.diffuse[:3], "double3")

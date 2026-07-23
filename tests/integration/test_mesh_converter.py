@@ -1,10 +1,13 @@
+import re
+from types import SimpleNamespace
+
 from maya import cmds
 
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.settings import settings
 from mmd_tools.converters import mesh_converter as mesh_converter_module
 from mmd_tools.converters import MeshConverter
-from mmd_tools.core import maya_attribute_utils, maya_mesh_utils
+from mmd_tools.core import maya_attribute_utils, maya_material_utils, maya_mesh_utils
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.core.constants import (
@@ -195,6 +198,66 @@ class TestMeshConverter(MayaTestBase):
                     )
                 else:
                     self.fail(f"{material}に{maya_attr}アトリビュートが存在しません")
+
+    def test_material_node_family_is_safe_unique_and_raw_names_are_preserved(self):
+        """Each hazardous material name receives one deterministic node family."""
+        converter = MeshConverter(str(self.fixture_provider.get_pmx_file("mmt_test_model")))
+        texture_name = "diffuse.png"
+
+        def material(name, index):
+            return SimpleNamespace(
+                get_name=lambda: name,
+                name=name,
+                name_english=f"{name}_en",
+                material_index=index,
+                diffuse=(0.8, 0.7, 0.6, 1.0),
+                ambient=(0.1, 0.1, 0.1),
+                specular=(0.2, 0.2, 0.2),
+                specular_coefficient=0.5,
+                toon_texture_index=-1,
+                sphere_mode=0,
+                sphere_texture_index=-1,
+                texture_index=0,
+                draw_flag=0x1F,
+                edge_color=(0.0, 0.0, 0.0, 1.0),
+                edge_size=1.0,
+                memo="",
+                shared_toon_flag=1,
+            )
+
+        materials = [
+            material("1:髪", 0),
+            material("2:髪+", 1),
+            material("a:b", 2),
+            material("ab", 3),
+            material("", 4),
+        ]
+        mesh = cmds.polyCube(name="material_family_mesh", constructionHistory=False)[0]
+        shaders = [
+            converter._create_material(
+                item,
+                texture_path=texture_name,
+                all_textures=[texture_name],
+                material_index=index,
+                original_texture_path=texture_name,
+            )
+            for index, item in enumerate(materials)
+        ]
+
+        identifier = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+        self.assertEqual(len(shaders), len(set(shaders)))
+        self.assertTrue(all(identifier.fullmatch(shader.rsplit("|", 1)[-1]) for shader in shaders))
+        for shader, source in zip(shaders, materials):
+            self.assertEqual(cmds.getAttr(f"{shader}.{ATTR_MMD_MATERIAL_NAME}"), source.name)
+            self.assertEqual(cmds.getAttr(f"{shader}.{ATTR_MMD_MATERIAL_NAME_EN}"), source.name_english)
+            maya_material_utils.assign_material(mesh, shader)
+            self.assertTrue(cmds.objExists(f"{shader}SG"))
+
+        file_nodes = cmds.ls(type="file") or []
+        self.assertEqual(len(file_nodes), len(materials))
+        self.assertTrue(all(identifier.fullmatch(node.rsplit("|", 1)[-1]) for node in file_nodes))
+        self.assertEqual(len(set(file_nodes)), len(file_nodes))
+        cmds.delete(mesh)
 
     def test_ensure_mmd_shader_uniform_attributes_fallback_four_component_colors(self):
         """

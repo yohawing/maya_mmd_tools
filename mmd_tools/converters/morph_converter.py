@@ -28,6 +28,20 @@ from mmd_tools.converters.morph_scene_metadata import (
 _OPT_IMPORT_MORPHS = "import_morphs"
 
 
+def _scene_name_set() -> Set[str]:
+    """Return conservative leaf-name reservations from the current scene."""
+    try:
+        nodes = cmds.ls() or []
+    except Exception:
+        return set()
+    names = set()
+    for node in nodes:
+        leaf = str(node).rsplit("|", 1)[-1]
+        names.add(leaf)
+        names.add(leaf.rsplit(":", 1)[-1])
+    return names
+
+
 class MorphConverter:
     """MMDのモーフデータをMayaのblendShapeに変換するクラス"""
 
@@ -39,6 +53,7 @@ class MorphConverter:
         self.logger = get_logger(__name__)
         self.scale = float(scale)
         self.profile = {}
+        self._morph_node_name_used = _scene_name_set()
 
     def _add_profile_time(self, key: str, start: float) -> None:
         """Accumulate timing in the converter profile."""
@@ -173,7 +188,13 @@ class MorphConverter:
         """Create one fixed-topology controller and connect all supported morph leaves."""
         if not morph_result.get("total_morphs"):
             return None
-        controller = cmds.createNode("mmdMorphController", name=f"{root_group.split('|')[-1]}_morphController")
+        root_leaf = root_group.split("|")[-1].rsplit(":", 1)[-1]
+        controller_name = maya_name_utils.sanitize_unique_name(
+            f"{root_leaf}_morphController",
+            self._morph_node_name_used,
+            fallback="morphController",
+        )
+        controller = cmds.createNode("mmdMorphController", name=controller_name)
         cmds.addAttr(root_group, longName="mmd_morph_controller", attributeType="message")
         cmds.connectAttr(f"{controller}.message", f"{root_group}.mmd_morph_controller")
 
@@ -186,10 +207,12 @@ class MorphConverter:
 
             raw_name = self._raw_morph_name(morph)
             display_name = raw_name or str(getattr(morph, "name_english", "") or "")
-            base_alias = maya_name_utils.sanitize_text(display_name) or f"morph_{morph_index}"
-            alias = self._unique_blendshape_alias_from_existing(base_alias, existing_aliases)
+            alias = maya_name_utils.sanitize_unique_name(
+                display_name,
+                existing_aliases,
+                fallback=f"morph_{morph_index}",
+            )
             cmds.aliasAttr(alias, input_plug)
-            existing_aliases.add(alias)
 
         groups = {
             index: morph
@@ -406,22 +429,12 @@ class MorphConverter:
         aliasAttr が衝突し片方が到達不能になることがある。数値サフィックスで回避する。
         """
         existing = self._existing_blendshape_aliases(blend_shape_node)
-        if base_alias not in existing:
-            return base_alias
-        index = 1
-        while f"{base_alias}_{index}" in existing:
-            index += 1
-        return f"{base_alias}_{index}"
+        return maya_name_utils.sanitize_unique_name(base_alias, existing)
 
     @staticmethod
     def _unique_blendshape_alias_from_existing(base_alias: str, existing: Set[str]) -> str:
         """既に取得済みの alias 集合から一意な alias を返す。"""
-        if base_alias not in existing:
-            return base_alias
-        index = 1
-        while f"{base_alias}_{index}" in existing:
-            index += 1
-        return f"{base_alias}_{index}"
+        return maya_name_utils.sanitize_unique_name(base_alias, existing)
 
     def _load_blendshape_morph_names(self, blend_shape_node: str) -> Dict[str, Dict[str, object]]:
         """blendShape ノードの weight index → 生モーフ名 JSON を読み込む。"""
@@ -555,26 +568,12 @@ class MorphConverter:
 
     def _create_or_get_morph_network_node(self, morph_name: str, morph_kind: str) -> str:
         """Create or reuse a PMX morph network node with a keyable weight attr."""
-        safe_name = maya_name_utils.sanitize_text(morph_name)
-        node_name = f"{safe_name}_{morph_kind}Morph"
-
-        if cmds.objExists(node_name):
-            owned = False
-            if cmds.attributeQuery("mmd_model_root", node=node_name, exists=True):
-                owned = bool(
-                    cmds.listConnections(
-                        f"{node_name}.mmd_model_root",
-                        source=True,
-                        destination=False,
-                    )
-                    or []
-                )
-            # A non-namespaced second model must receive its own metadata node.
-            # Maya will add a numeric suffix while preserving the morph name
-            # stored in the node attributes below.
-            morph_node = cmds.createNode("network", name=node_name) if owned else node_name
-        else:
-            morph_node = cmds.createNode("network", name=node_name)
+        node_name = maya_name_utils.sanitize_unique_name(
+            f"{morph_name}_{morph_kind}Morph",
+            self._morph_node_name_used,
+            fallback=f"morph_{morph_kind}",
+        )
+        morph_node = cmds.createNode("network", name=node_name)
 
         if not cmds.attributeQuery("weight", node=morph_node, exists=True):
             cmds.addAttr(
@@ -613,7 +612,12 @@ class MorphConverter:
         if template_ctx is not None:
             if "target_mesh" not in template_ctx:
                 target_mesh = cmds.duplicate(mesh_node)[0]
-                target_mesh = cmds.rename(target_mesh, "_morph_template")
+                template_name = maya_name_utils.sanitize_unique_name(
+                    "_morph_template",
+                    self._morph_node_name_used,
+                    fallback="morph_template",
+                )
+                target_mesh = cmds.rename(target_mesh, template_name)
                 maya_attribute_utils.set_attribute(target_mesh, "visibility", 0, "bool")
                 sel = om.MSelectionList()
                 sel.add(target_mesh)
@@ -644,14 +648,24 @@ class MorphConverter:
             self._add_profile_time("target_points_sec", target_points_start)
 
             target_mesh = cmds.duplicate(template_ctx["target_mesh"])[0]
-            target_mesh = cmds.rename(target_mesh, f"{morph_name}_target")
+            target_name = maya_name_utils.sanitize_unique_name(
+                f"{morph_name}_target",
+                self._morph_node_name_used,
+                fallback=f"morph_{morph_index}_target",
+            )
+            target_mesh = cmds.rename(target_mesh, target_name)
             maya_attribute_utils.set_attribute(target_mesh, "visibility", 0, "bool")
             blend_shape_node = template_ctx["blend_shape_node"]
             target_index = template_ctx["next_target_index"]
             template_ctx["next_target_index"] = target_index + 1
         else:
             target_mesh = cmds.duplicate(mesh_node)[0]
-            target_mesh = cmds.rename(target_mesh, f"{morph_name}_target")
+            target_name = maya_name_utils.sanitize_unique_name(
+                f"{morph_name}_target",
+                self._morph_node_name_used,
+                fallback=f"morph_{morph_index}_target",
+            )
+            target_mesh = cmds.rename(target_mesh, target_name)
             maya_attribute_utils.set_attribute(target_mesh, "visibility", 0, "bool")
             source_to_local = self._get_mesh_source_vertex_map(mesh_node)
             target_points_start = time.perf_counter()
@@ -678,9 +692,18 @@ class MorphConverter:
 
         existing_aliases = template_ctx.get("existing_aliases") if template_ctx is not None else None
         if existing_aliases is not None:
-            alias = self._unique_blendshape_alias_from_existing(morph_name, existing_aliases)
+            alias = maya_name_utils.sanitize_unique_name(
+                morph_name,
+                existing_aliases,
+                fallback=f"morph_{morph_index}",
+            )
         else:
-            alias = self._unique_blendshape_alias(blend_shape_node, morph_name)
+            existing = self._existing_blendshape_aliases(blend_shape_node)
+            alias = maya_name_utils.sanitize_unique_name(
+                morph_name,
+                existing,
+                fallback=f"morph_{morph_index}",
+            )
         alias_start = time.perf_counter()
         cmds.aliasAttr(alias, f"{blend_shape_node}.w[{target_index}]")
         self._add_profile_time("alias_sec", alias_start)

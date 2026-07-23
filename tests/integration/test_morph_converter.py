@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -240,6 +241,51 @@ class TestMorphConverter(MayaTestBase):
         self.assertEqual(offsets[0]["diffuse"], [0.1, 0.2, 0.3, 0.4])
 
         cmds.delete(mesh_name, morph_node)
+
+    def test_hazardous_network_names_and_controller_aliases_are_safe_and_unique(self):
+        """Material/morph names with namespaces and punctuation stay addressable."""
+        mesh_name = self._create_test_mesh()
+
+        class FakeMaterialMorph:
+            morph_type = PmxMorphType.MaterialMorph
+            name_english = ""
+            panel = 4
+            offsets = [{"material_index": 0, "operation_type": 0}]
+
+            def __init__(self, name):
+                self.name = name
+
+            def get_name(self):
+                return self.name
+
+        morphs = [
+            FakeMaterialMorph("1:髪"),
+            FakeMaterialMorph("2:髪+"),
+            FakeMaterialMorph("にっこり"),
+            FakeMaterialMorph("にやり"),
+        ]
+        fake_data = type("FakePmxData", (), {"morphs": morphs, "faces": [], "materials": []})()
+
+        converter = MorphConverter()
+        result = converter.convert_pmx_morphs(fake_data, mesh_name)
+        self.assertTrue(result.get("success", False))
+        nodes = result.get("material_morph_nodes", [])
+        self.assertEqual(len(nodes), len(morphs))
+        self.assertEqual(len(set(nodes)), len(nodes))
+        identifier = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+        self.assertTrue(all(identifier.fullmatch(node.rsplit("|", 1)[-1]) for node in nodes))
+        self.assertEqual(
+            [cmds.getAttr(f"{node}.mmd_morph_name") for node in nodes],
+            [morph.name for morph in morphs],
+        )
+
+        root = cmds.group(empty=True, name="hazardous_morph_root")
+        controller = converter.build_morph_controller(fake_data, root, result)
+        aliases = set((cmds.aliasAttr(controller, query=True) or [])[0::2])
+        self.assertEqual(len(aliases), len(morphs))
+        self.assertTrue(all(identifier.fullmatch(alias) for alias in aliases))
+
+        cmds.delete(mesh_name, root, *nodes, controller)
 
     def test_successful_per_morph_conversion_logs_at_debug_not_info(self):
         """成功した per-item 変換詳細は debug に出し、info には出さない。"""
