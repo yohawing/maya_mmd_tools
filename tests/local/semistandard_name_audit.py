@@ -6,6 +6,7 @@ import argparse
 import json
 import re
 import time
+import unicodedata
 from collections import defaultdict
 from collections import Counter
 from pathlib import Path
@@ -19,6 +20,7 @@ from mmd_tools.core.mmd_bone_names import (
 )
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.vmd_data import VmdData
+from mmd_tools.core.unicode_converter import get_converter
 
 
 _AUDIT_SUFFIXES = {".pmx", ".vmd"}
@@ -66,6 +68,7 @@ _MODEL_DEPENDENT_MARKERS = (
 )
 _LOW_RISK_SEMISTANDARD_ALIAS_RE = re.compile(r"^[左右](足IK先|腕捩先|手捩先)$")
 _SIDE_PREFIX_RE = re.compile(r"^[左右].+")
+_MAYA_SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _resolve_path(value: str, base_dir: Path) -> Path:
@@ -129,6 +132,195 @@ def _finding(
     return result
 
 
+def _corpus_name_flags(name: str, converted: str) -> list[str]:
+    """Return deterministic hazards for a material or morph name.
+
+    Unicode letters are expected input for MMD names and are therefore not
+    treated as punctuation.  The source spelling is checked for Maya hazards
+    before conversion because ``maya_safe_name`` may replace them silently.
+    """
+    flags: list[str] = []
+    if "HASH" in converted:
+        flags.append("hash_fallback")
+    if converted and not converted.isascii():
+        flags.append("non_ascii_remaining")
+    if not converted:
+        flags.append("empty_result")
+    if name and name[0].isdigit():
+        flags.append("leading_digit")
+    if ":" in name or "|" in name:
+        flags.append("colon_namespace")
+    if any(not (char.isalnum() or char == "_") for char in name):
+        flags.append("unsupported_punctuation")
+    if converted and not _MAYA_SAFE_IDENTIFIER_RE.fullmatch(converted):
+        flags.append("unsafe_maya_identifier")
+    return flags
+
+
+def _name_inventory_record(
+    path: Path,
+    *,
+    category: str,
+    source: str,
+    index: int,
+    name: str,
+    english_name: str = "",
+    morph_type: str | None = None,
+    converter: Any,
+) -> dict[str, Any]:
+    converted = converter.convert(name) or ""
+    flags = _corpus_name_flags(name, converted)
+    return {
+        "category": category,
+        "source_kind": source,
+        "file": str(path),
+        "index": index,
+        "name": name,
+        "english_name": english_name,
+        "converted": converted,
+        "flags": flags,
+        "morph_type": morph_type,
+    }
+
+
+def _corpus_findings(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert per-name hazards into findings without dropping inventory."""
+    findings: list[dict[str, Any]] = []
+    for record in records:
+        for flag in record["flags"]:
+            finding = _finding(
+                "warning",
+                f"{record['category']}_{flag}",
+                Path(record["file"]),
+                source=record["source_kind"],
+                name=record["name"],
+                converted=record["converted"],
+                index=record["index"],
+                english_name=record.get("english_name") or None,
+                detail=f"{record['category']} name conversion hazard: {flag}",
+                count=1,
+            )
+            finding.update(
+                {
+                    "category": record["category"],
+                    "source_kind": record["source_kind"],
+                    "occurrence_count": 1,
+                    "distinct_file_count": 1,
+                    "morph_type": record.get("morph_type"),
+                }
+            )
+            findings.append(finding)
+    return findings
+
+
+def _build_corpus_statistics(
+    records: Iterable[dict[str, Any]],
+    *,
+    category: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Aggregate all names and rank dangerous names by model frequency.
+
+    ``occurrences`` counts every appearance, while ``distinct_files`` counts
+    each PMX once.  ``within_model_repeats`` makes repeated names in one model
+    visible without allowing them to outrank a cross-model occurrence.
+    """
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    all_records = [record for record in records if record["category"] == category]
+    for record in all_records:
+        normalized = unicodedata.normalize("NFKC", str(record.get("name") or "")).strip()
+        grouped[normalized].append(record)
+
+    converted_to_names: dict[str, set[str]] = defaultdict(set)
+    for normalized, entries in grouped.items():
+        for entry in entries:
+            if entry["converted"]:
+                converted_to_names[entry["converted"]].add(normalized)
+    collision_names = {
+        name
+        for names in converted_to_names.values()
+        if len(names) > 1
+        for name in names
+    }
+
+    statistics: list[dict[str, Any]] = []
+    for normalized, entries in grouped.items():
+        file_counts = Counter(str(entry["file"]) for entry in entries)
+        converted_counts = Counter(str(entry.get("converted") or "") for entry in entries)
+        converted = converted_counts.most_common(1)[0][0] if converted_counts else ""
+        flags = set(flag for entry in entries for flag in entry.get("flags", []))
+        if normalized in collision_names:
+            flags.add("conversion_collision")
+        morph_types = sorted({str(entry.get("morph_type")) for entry in entries if entry.get("morph_type")})
+        examples = [
+            {
+                "file": entry["file"],
+                "name": entry["name"],
+                "english_name": entry.get("english_name", ""),
+                "index": entry["index"],
+                "morph_type": entry.get("morph_type"),
+            }
+            for entry in entries[:8]
+        ]
+        row = {
+            "category": category,
+            "source_kind": f"pmx.{category}s",
+            "normalized_name": normalized,
+            "original_name": normalized,
+            "converted": converted,
+            "occurrences": len(entries),
+            "distinct_files": len(file_counts),
+            "distinct_models": len(file_counts),
+            "within_model_repeats": sum(max(count - 1, 0) for count in file_counts.values()),
+            "dangerous": bool(flags),
+            "flags": sorted(flags),
+            "morph_types": morph_types,
+            "examples": examples,
+        }
+        statistics.append(row)
+
+    statistics.sort(
+        key=lambda row: (
+            -int(row["dangerous"]),
+            -int(row["distinct_models"]),
+            -int(row["occurrences"]),
+            str(row["normalized_name"]),
+        )
+    )
+    return statistics, [row for row in statistics if row["dangerous"]]
+
+
+def _corpus_collision_findings(statistics: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    for row in statistics:
+        if "conversion_collision" not in row.get("flags", []):
+            continue
+        example = row["examples"][0] if row.get("examples") else {}
+        finding = _finding(
+            "warning",
+            f"{row['category']}_conversion_collision",
+            Path(example.get("file", "")),
+            source=row["source_kind"],
+            name=row["original_name"],
+            converted=row["converted"],
+            detail="distinct original names convert to the same Maya-safe name",
+            count=row["occurrences"],
+        )
+        finding.update(
+            {
+                "category": row["category"],
+                "source_kind": row["source_kind"],
+                "occurrence_count": row["occurrences"],
+                "distinct_file_count": row["distinct_files"],
+                "distinct_model_count": row["distinct_models"],
+                "flags": row["flags"],
+                "examples": row["examples"],
+                "morph_type": ", ".join(row.get("morph_types") or []),
+            }
+        )
+        findings.append(finding)
+    return findings
+
+
 def _iter_manifest_paths(manifest: Path) -> Iterable[Path]:
     manifest_dir = manifest.parent
     data = json.loads(manifest.read_text(encoding="utf-8"))
@@ -182,6 +374,9 @@ def _audit_pmx(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     started = time.perf_counter()
     findings: list[dict[str, Any]] = []
     converted_buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    converter = get_converter()
+    material_names: list[dict[str, Any]] = []
+    morph_names: list[dict[str, Any]] = []
     semistandard_count = 0
     english_override_count = 0
 
@@ -195,6 +390,8 @@ def _audit_pmx(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
                 "status": "fail",
                 "duration_sec": round(time.perf_counter() - started, 3),
                 "detail": f"parse failed: {exc}",
+                "_material_names": material_names,
+                "_morph_names": morph_names,
             },
             [_finding("error", "parse_error", path, source="pmx", name=path.name, detail=str(exc))],
         )
@@ -271,6 +468,38 @@ def _audit_pmx(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
                 )
             )
 
+    for index, material in enumerate(getattr(pmx, "materials", []) or []):
+        material_names.append(
+            _name_inventory_record(
+                path,
+                category="material",
+                source="pmx.materials",
+                index=index,
+                name=str(getattr(material, "name", "") or ""),
+                english_name=str(getattr(material, "name_english", "") or ""),
+                converter=converter,
+            )
+        )
+    for index, morph in enumerate(getattr(pmx, "morphs", []) or []):
+        morph_type = getattr(getattr(morph, "morph_type", None), "name", None)
+        if morph_type is None:
+            morph_type = str(getattr(morph, "morph_type", ""))
+        morph_names.append(
+            _name_inventory_record(
+                path,
+                category="morph",
+                source="pmx.morphs",
+                index=index,
+                name=str(getattr(morph, "name", "") or ""),
+                english_name=str(getattr(morph, "name_english", "") or ""),
+                morph_type=morph_type,
+                converter=converter,
+            )
+        )
+
+    findings.extend(_corpus_findings(material_names))
+    findings.extend(_corpus_findings(morph_names))
+
     return (
         {
             "file": str(path),
@@ -280,6 +509,10 @@ def _audit_pmx(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
             "bones": len(getattr(pmx, "bones", []) or []),
             "semistandard_bones": semistandard_count,
             "english_overrides": english_override_count,
+            "materials": len(getattr(pmx, "materials", []) or []),
+            "morphs": len(getattr(pmx, "morphs", []) or []),
+            "_material_names": material_names,
+            "_morph_names": morph_names,
         },
         findings,
     )
@@ -450,7 +683,7 @@ def _write_reports(payload: dict[str, Any], out_json: Path, out_md: Path, limit_
 
     summary = payload["summary"]
     lines = [
-        "# Semistandard Bone Name Audit",
+        "# Semistandard Name Audit (Bone / Material / Morph)",
         "",
         f"- Status: {payload['status']}",
         f"- Files scanned: {summary['files_scanned']} / discovered {summary['files_discovered']}",
@@ -459,6 +692,8 @@ def _write_reports(payload: dict[str, Any], out_json: Path, out_md: Path, limit_
         f"- VMD: {summary['vmd_files']}",
         f"- Findings: {summary['findings']} (errors {summary['errors']}, warnings {summary['warnings']})",
         f"- Registration candidates: {summary['registration_candidates']}",
+        f"- Material names: {summary['material_names']} ({summary['dangerous_materials']} dangerous names)",
+        f"- Morph names: {summary['morph_names']} ({summary['dangerous_morphs']} dangerous names)",
         "",
         "| File | Type | Status | Seconds | Detail |",
         "| --- | --- | --- | ---: | --- |",
@@ -486,6 +721,30 @@ def _write_reports(payload: dict[str, Any], out_json: Path, out_md: Path, limit_
                 f"| {row['normalized_name']} | {row['converted']} | {row['files']} | {row['findings']} | {original_names} | {examples} |"
             )
 
+    for title, rows in (
+        ("Material Dangerous Name Ranking", payload["dangerous_materials"]),
+        ("Morph Dangerous Name Ranking", payload["dangerous_morphs"]),
+    ):
+        if not rows:
+            continue
+        lines.extend(
+            [
+                "",
+                f"## {title}",
+                "",
+                "| Original name | Converted | Occurrences | Distinct models | Within-model repeats | Flags | Morph type | Examples |",
+                "| --- | --- | ---: | ---: | ---: | --- | --- | --- |",
+            ]
+        )
+        for row in rows[:limit_findings]:
+            flags = ", ".join(row["flags"])
+            morph_types = ", ".join(row.get("morph_types") or [])
+            examples = ", ".join(Path(example["file"]).name for example in row["examples"])
+            lines.append(
+                f"| {row['original_name']} | {row['converted']} | {row['occurrences']} | "
+                f"{row['distinct_models']} | {row['within_model_repeats']} | {flags} | {morph_types} | {examples} |"
+            )
+
     statistics = payload["name_statistics"]
     if statistics:
         lines.extend(
@@ -511,18 +770,21 @@ def _write_reports(payload: dict[str, Any], out_json: Path, out_md: Path, limit_
                 "",
                 f"## Findings (first {min(limit_findings, len(findings))} of {len(findings)})",
                 "",
-                "| Severity | Kind | Source | Name | Converted | File | Detail |",
-                "| --- | --- | --- | --- | --- | --- | --- |",
+                "| Severity | Kind | Source | Name | Converted | Occurrences | Distinct files | Morph type | File | Detail |",
+                "| --- | --- | --- | --- | --- | ---: | ---: | --- | --- | --- |",
             ]
         )
         for finding in findings[:limit_findings]:
             lines.append(
-                "| {severity} | {kind} | {source} | {name} | {converted} | {file} | {detail} |".format(
+                "| {severity} | {kind} | {source} | {name} | {converted} | {occurrences} | {files} | {morph_type} | {file} | {detail} |".format(
                     severity=finding["severity"],
                     kind=finding["kind"],
                     source=finding["source"],
                     name=finding["name"],
                     converted=finding.get("converted", ""),
+                    occurrences=finding.get("occurrence_count", finding.get("count", 1)),
+                    files=finding.get("distinct_file_count", 1),
+                    morph_type=finding.get("morph_type") or "",
                     file=finding["file"],
                     detail=finding.get("detail", ""),
                 )
@@ -544,6 +806,8 @@ def run_audit(
 ) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     findings: list[dict[str, Any]] = []
+    material_names: list[dict[str, Any]] = []
+    morph_names: list[dict[str, Any]] = []
     for path in paths:
         if not path.exists():
             findings.append(_finding("error", "missing_file", path, source="input", name=path.name, detail="file not found"))
@@ -558,9 +822,15 @@ def run_audit(
             )
             continue
         result, path_findings = _audit_path(path)
+        material_names.extend(result.pop("_material_names", []))
+        morph_names.extend(result.pop("_morph_names", []))
         results.append(result)
         findings.extend(path_findings)
 
+    material_statistics, dangerous_materials = _build_corpus_statistics(material_names, category="material")
+    morph_statistics, dangerous_morphs = _build_corpus_statistics(morph_names, category="morph")
+    findings.extend(_corpus_collision_findings(material_statistics))
+    findings.extend(_corpus_collision_findings(morph_statistics))
     errors = sum(1 for finding in findings if finding["severity"] == "error")
     warnings = sum(1 for finding in findings if finding["severity"] == "warning")
     if not results:
@@ -572,8 +842,9 @@ def run_audit(
     else:
         status = "pass"
 
+    bone_findings = [finding for finding in findings if finding.get("category") not in {"material", "morph"}]
     name_statistics, registration_candidates = _build_name_statistics(
-        findings,
+        bone_findings,
         min_candidate_files=min_candidate_files,
         min_candidate_findings=min_candidate_findings,
     )
@@ -590,6 +861,12 @@ def run_audit(
             "warnings": warnings,
             "name_statistics": len(name_statistics),
             "registration_candidates": len(registration_candidates),
+            "material_names": len(material_names),
+            "morph_names": len(morph_names),
+            "material_statistics": len(material_statistics),
+            "morph_statistics": len(morph_statistics),
+            "dangerous_materials": len(dangerous_materials),
+            "dangerous_morphs": len(dangerous_morphs),
             "min_candidate_files": min_candidate_files,
             "min_candidate_findings": min_candidate_findings,
         },
@@ -597,6 +874,14 @@ def run_audit(
         "registration_candidates": registration_candidates,
         "name_statistics": name_statistics,
         "findings": findings,
+        "name_inventory": {
+            "materials": material_names,
+            "morphs": morph_names,
+        },
+        "material_statistics": material_statistics,
+        "morph_statistics": morph_statistics,
+        "dangerous_materials": dangerous_materials,
+        "dangerous_morphs": dangerous_morphs,
     }
     _write_reports(payload, out_json, out_md, limit_findings)
     return payload
