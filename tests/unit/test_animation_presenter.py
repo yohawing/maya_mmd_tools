@@ -143,6 +143,7 @@ class _FakeTreeWidget:
     def __init__(self):
         self._items = []
         self.itemClicked = _FakeSignal()
+        self.itemPressed = _FakeSignal()
 
     def clear(self):
         self._items.clear()
@@ -249,6 +250,8 @@ class _FakeView:
         self.model_combo = _FakeComboBox()
         self.refresh_btn = _FakeButton()
         self.clear_btn = _FakeButton()
+        self.select_all_btn = _FakeButton()
+        self.finger_body_btn = _FakeButton()
         self.status_label = _FakeLabel()
         self.display_frame_tree = _FakeTreeWidget()
         self.body_picker = _FakeBodyPicker()
@@ -495,10 +498,24 @@ class TestAnimationPresenter(unittest.TestCase):
 
         root_group = view.display_frame_tree.topLevelItem(0)
         child = root_group.child(0)
-        presenter.on_display_frame_item_clicked(child)
+        view.display_frame_tree.itemPressed.emit(child, 0)
 
         self.assertEqual(adapter.selected, ["center"])
         self.assertEqual(view.status_label.text(), "center")
+
+    def test_display_groups_start_collapsed_including_morphs(self):
+        _presenter, view, _, _ = self._make(
+            joints={0: "center"},
+            display_json=SAMPLE_FRAMES_JSON,
+            model_root="test_model",
+        )
+
+        self.assertTrue(
+            all(
+                not view.display_frame_tree.topLevelItem(index)._expanded
+                for index in range(view.display_frame_tree.topLevelItemCount())
+            )
+        )
 
     def test_click_unresolved_item_does_nothing(self):
         presenter, view, _, adapter = self._make(
@@ -681,6 +698,16 @@ class TestBodyPickerPresenter(unittest.TestCase):
             set(view.body_picker.selected_regions),
             {"head", "neck", "left_upper_arm"},
         )
+
+    def test_select_all_selects_every_model_joint(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭", "neck_jnt": "首", "arm_jnt": "左腕"},
+        )
+
+        view.select_all_btn.clicked.emit()
+
+        self.assertEqual(adapter.selected, ["head_jnt", "neck_jnt", "arm_jnt"])
+        self.assertIn("全ボーンを選択", view.status_label.text())
 
     def test_mirror_selection(self):
         presenter, view, _, adapter = self._make_with_bones(
@@ -950,9 +977,10 @@ class TestToolsSection(unittest.TestCase):
         presenter._on_tool_clicked("paste")
         self.assertIn("No pose copied", view.status_label.text())
 
-    def test_reset_pose_zeroes_rotation_only(self):
+    def test_reset_pose_restores_captured_translation_and_zeroes_rotation(self):
         presenter, view, _, adapter = self._make()
         adapter.selected = ["j1"]
+        adapter._transforms["j1"] = ([8, 9, 10], [20, 30, 40])
         presenter._on_tool_clicked("reset")
         t, r = adapter._transforms["j1"]
         self.assertEqual(t, [1, 2, 3])
@@ -968,6 +996,7 @@ class TestToolsSection(unittest.TestCase):
     def test_body_picker_reset_uses_the_shared_reset_action(self):
         _presenter, view, _, adapter = self._make()
         adapter.selected = ["j1"]
+        adapter._transforms["j1"] = ([8, 9, 10], [20, 30, 40])
 
         view.body_picker.reset_pose_clicked.emit()
 

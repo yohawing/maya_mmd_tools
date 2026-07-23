@@ -115,6 +115,7 @@ class _Tree:
     def __init__(self):
         self._items = []
         self.itemClicked = _Signal()
+        self.itemPressed = _Signal()
 
     def clear(self):
         self._items.clear()
@@ -196,6 +197,8 @@ class _View:
         self.model_combo = _Combo()
         self.refresh_btn = _Btn()
         self.clear_btn = _Btn()
+        self.select_all_btn = _Btn()
+        self.finger_body_btn = _Btn()
         self.status_label = _Label()
         self.display_frame_tree = _Tree()
         self.body_picker = _Picker()
@@ -365,6 +368,8 @@ class TestAnimationPresenterE2E(MayaTestBase):
             self.skipTest("No joints")
         target = joints[0]
 
+        bind_translate = cmds.xform(target, query=True, objectSpace=True, translation=True)
+        cmds.xform(target, objectSpace=True, translation=(8, 9, 10))
         cmds.xform(target, rotation=(15, 30, 45))
         cmds.select(target, replace=True)
 
@@ -374,6 +379,9 @@ class TestAnimationPresenterE2E(MayaTestBase):
         self.assertAlmostEqual(r[0], 0, places=3)
         self.assertAlmostEqual(r[1], 0, places=3)
         self.assertAlmostEqual(r[2], 0, places=3)
+        t = cmds.xform(target, query=True, objectSpace=True, translation=True)
+        for actual, expected in zip(t, bind_translate):
+            self.assertAlmostEqual(actual, expected, places=3)
         self.assertIn("Reset", view.status_label.text())
 
     def test_copy_paste_pose_round_trip(self):

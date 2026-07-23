@@ -105,6 +105,7 @@ class PastePoseAction:
 @dataclass
 class ResetPoseRequest:
     joints: list[str]
+    bind_translations: dict[str, tuple[float, float, float]] = field(default_factory=dict)
 
 
 @dataclass
@@ -115,7 +116,7 @@ class ResetPoseResult:
 
 
 class ResetPoseAction:
-    """Reset selected joints to zero rotation (translation is preserved)."""
+    """Reset selected joints to zero rotation and their captured bind translation."""
 
     def __init__(self, maya_adapter: MayaCmdsAdapter):
         self._adapter = maya_adapter
@@ -127,11 +128,21 @@ class ResetPoseAction:
             self._adapter.undo_info(openChunk=True, chunkName="Reset Pose")
             count = 0
             for jnt in request.joints:
+                changed = False
+                bind_translate = request.bind_translations.get(jnt)
+                if bind_translate is not None:
+                    try:
+                        self._adapter.xform(jnt, translation=bind_translate)
+                        changed = True
+                    except Exception:
+                        pass
                 try:
                     self._adapter.xform(jnt, rotation=(0, 0, 0))
-                    count += 1
+                    changed = True
                 except Exception:
-                    continue
+                    pass
+                if changed:
+                    count += 1
             return ResetPoseResult(succeeded=True, reset_count=count)
         except Exception as exc:
             return ResetPoseResult(error=exc)

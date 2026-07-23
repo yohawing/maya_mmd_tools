@@ -57,6 +57,9 @@ class AnimationPresenter:
         self._morph_indices: dict[str, int] = {}
         self._morph_controller: str | None = None
         self._pose_clipboard: dict | None = None
+        self._all_model_joints: list[str] = []
+        self._bind_translations: dict[str, tuple[float, float, float]] = {}
+        self._bind_translation_model: str | None = None
         self.connect_signals()
 
         if self.app_state.current_model_root:
@@ -68,7 +71,11 @@ class AnimationPresenter:
         self.view.model_combo.currentTextChanged.connect(self.on_model_selected)
         self.view.refresh_btn.clicked.connect(self.on_refresh_clicked)
         self.view.clear_btn.clicked.connect(self.on_clear_clicked)
-        self.view.display_frame_tree.itemClicked.connect(self.on_display_frame_item_clicked)
+        display_pressed = getattr(self.view.display_frame_tree, "itemPressed", None)
+        if display_pressed is not None:
+            display_pressed.connect(self.on_display_frame_item_clicked)
+        else:
+            self.view.display_frame_tree.itemClicked.connect(self.on_display_frame_item_clicked)
         self.view.body_picker.region_clicked.connect(self.on_body_region_clicked)
         if hasattr(self.view.body_picker, "regions_selected"):
             self.view.body_picker.regions_selected.connect(self.on_body_regions_selected)
@@ -81,6 +88,10 @@ class AnimationPresenter:
             self.view.finger_picker.regions_selected.connect(self.on_finger_regions_selected)
         self.view.finger_picker.goto_body_clicked.connect(self.on_goto_body)
         self.view.finger_picker.mirror_selection_clicked.connect(self.on_mirror_selection)
+        if hasattr(self.view, "finger_body_btn"):
+            self.view.finger_body_btn.clicked.connect(self.on_goto_body)
+        if hasattr(self.view, "select_all_btn"):
+            self.view.select_all_btn.clicked.connect(self.on_select_all)
         for key, cb in self.view.vis_checkboxes.items():
             cb.stateChanged.connect(
                 lambda state, k=key: self._on_visibility_changed(k, state != 0)
@@ -128,6 +139,20 @@ class AnimationPresenter:
         except Exception:
             pass
         self.view.status_label.setText("")
+
+    def on_select_all(self):
+        """Select every indexed joint belonging to the current MMD model."""
+
+        joints = list(self._all_model_joints)
+        self._set_picker_selection_from_nodes(joints)
+        if not joints:
+            self.view.status_label.setText("(選択できるボーンがありません)")
+            return
+        try:
+            self._select_nodes(joints)
+            self.view.status_label.setText(f"全ボーンを選択 ({len(joints)})")
+        except Exception:
+            self.view.status_label.setText("(全ボーンの選択に失敗)")
 
     def on_display_frame_item_clicked(self, item, _column=0):
         node_name = item.data(0, _USER_ROLE)
@@ -268,6 +293,8 @@ class AnimationPresenter:
 
     def _reload_for_model(self, model_root: str):
         bone_map = self._build_bone_index_map(model_root)
+        self._all_model_joints = [bone_map[index] for index in sorted(bone_map)]
+        self._capture_bind_translations(model_root, self._all_model_joints)
         self._bone_name_to_joint = self._build_bone_name_map(model_root)
         self._sync_picker_regions()
         bone_display_names = self._build_bone_display_name_map(bone_map)
@@ -287,6 +314,39 @@ class AnimationPresenter:
         self._reload_morph_tab(model_root, morph_metadata)
         self._sync_visibility_controls(model_root)
         self.view.status_label.setText("")
+
+    def _capture_bind_translations(self, model_root: str, joints: list[str]) -> None:
+        """Cache a reset baseline, preferring the persisted VMD bind snapshot."""
+
+        if self._bind_translation_model == model_root:
+            return
+        translations: dict[str, tuple[float, float, float]] = {}
+        for joint in joints:
+            value = None
+            try:
+                if self.maya_adapter.attribute_exists("mmd_vmd_bind_translate", joint):
+                    raw = self.maya_adapter.get_attr(f"{joint}.mmd_vmd_bind_translate")
+                    parsed = json.loads(raw) if isinstance(raw, str) else raw
+                    if isinstance(parsed, (list, tuple)) and len(parsed) == 3:
+                        value = tuple(float(component) for component in parsed)
+            except Exception:
+                value = None
+            if value is None:
+                try:
+                    current = self.maya_adapter.xform(
+                        joint,
+                        query=True,
+                        objectSpace=True,
+                        translation=True,
+                    )
+                    if current and len(current) == 3:
+                        value = tuple(float(component) for component in current)
+                except Exception:
+                    value = None
+            if value is not None:
+                translations[joint] = value
+        self._bind_translations = translations
+        self._bind_translation_model = model_root
 
     def _sync_picker_regions(self):
         """Keep missing bones non-interactive while navigation stays available."""
@@ -316,6 +376,9 @@ class AnimationPresenter:
 
     def _clear_all(self):
         self._picker_groups = []
+        self._all_model_joints = []
+        self._bind_translations = {}
+        self._bind_translation_model = None
         self._bone_name_to_joint.clear()
         self._sync_picker_regions()
         self.view.display_frame_tree.clear()
@@ -466,8 +529,7 @@ class AnimationPresenter:
                 group_item.addChild(child)
 
             tree.addTopLevelItem(group_item)
-            if group.special_flag:
-                group_item.setExpanded(True)
+            group_item.setExpanded(False)
 
     @staticmethod
     def _item_display_text(picker_item) -> str:
@@ -627,43 +689,57 @@ class AnimationPresenter:
 
         layout = self.view.morph_groups_layout
         categories = [
-            (PANEL_GROUP_LABELS[1], categorized.eyebrow),
-            (PANEL_GROUP_LABELS[2], categorized.eye),
-            (PANEL_GROUP_LABELS[3], categorized.mouth),
-            (PANEL_GROUP_LABELS[4], categorized.other),
+            (f"{PANEL_GROUP_LABELS[1]}モーフ", categorized.eyebrow),
+            (f"{PANEL_GROUP_LABELS[2]}モーフ", categorized.eye),
+            (f"{PANEL_GROUP_LABELS[3]}モーフ", categorized.mouth),
+            ("その他のモーフ", categorized.other),
         ]
 
         for cat_name, morphs in categories:
             if not morphs:
                 continue
             group = QWidget()
+            group.setObjectName("MorphPickerGroup")
+            group.setStyleSheet(
+                "QWidget#MorphPickerGroup { background: #383838; border: none; }"
+            )
             group_layout = QVBoxLayout()
             group_layout.setContentsMargins(0, 0, 0, 0)
             group_layout.setSpacing(2)
-            header = QPushButton(f"{cat_name} ({len(morphs)})  ▾")
+            header = QPushButton(f"▾  {cat_name}    {len(morphs)}")
             header.setCheckable(True)
             header.setChecked(True)
             header.setStyleSheet(
-                "QPushButton { text-align: left; padding: 4px 6px; background: #3f3f3f; "
-                "color: #d0d0d0; border: none; } "
-                "QPushButton:hover { background: #484848; }"
+                "QPushButton { text-align: left; padding: 5px 7px; background: #454545; "
+                "color: #dedede; border: none; font-weight: 600; } "
+                "QPushButton:hover { background: #505050; }"
             )
             group_layout.addWidget(header)
 
             content = QWidget()
             content_layout = QVBoxLayout(content)
-            content_layout.setContentsMargins(4, 2, 4, 4)
-            content_layout.setSpacing(2)
+            content_layout.setContentsMargins(8, 4, 6, 5)
+            content_layout.setSpacing(3)
 
             for morph in morphs:
                 row = QHBoxLayout()
+                row.setSpacing(8)
                 label = QLabel(morph.name)
-                label.setMinimumWidth(60)
-                label.setMaximumWidth(100)
+                label.setMinimumWidth(72)
+                label.setMaximumWidth(120)
+                if morph.name_english:
+                    label.setToolTip(morph.name_english)
                 row.addWidget(label)
 
                 slider = QSlider(Qt.Horizontal)
                 slider.setRange(0, 100)
+                slider.setStyleSheet(
+                    "QSlider::groove:horizontal { height: 3px; background: #252525; } "
+                    "QSlider::sub-page:horizontal { background: #5d8faa; } "
+                    "QSlider::handle:horizontal { width: 10px; margin: -4px 0; "
+                    "border-radius: 5px; background: #aeb4b8; } "
+                    "QSlider::handle:horizontal:hover { background: #79cfff; }"
+                )
                 initial_value = round(self._morph_value(morph.name) * 100.0)
                 slider.setValue(initial_value)
                 slider.setEnabled(
@@ -674,7 +750,9 @@ class AnimationPresenter:
                 row.addWidget(slider, 1)
 
                 value_label = QLabel(str(initial_value))
-                value_label.setMinimumWidth(25)
+                value_label.setFixedWidth(28)
+                value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                value_label.setStyleSheet("color: #8fc5e8;")
                 row.addWidget(value_label)
 
                 morph_name = morph.name
@@ -697,7 +775,7 @@ class AnimationPresenter:
                 count=len(morphs),
             ):
                 panel.setVisible(expanded)
-                button.setText(f"{title} ({count})  {'▾' if expanded else '▸'}")
+                button.setText(f"{'▾' if expanded else '▸'}  {title}    {count}")
 
             header.toggled.connect(toggle_group)
             insert_pos = max(0, layout.count() - 1)
@@ -813,7 +891,14 @@ class AnimationPresenter:
             self.view.status_label.setText("No joints selected")
             return
         result = ResetPoseAction(self.maya_adapter).execute(
-            ResetPoseRequest(joints=joints)
+            ResetPoseRequest(
+                joints=joints,
+                bind_translations={
+                    joint: self._bind_translations[joint]
+                    for joint in joints
+                    if joint in self._bind_translations
+                },
+            )
         )
         if result.succeeded:
             self.view.status_label.setText(

@@ -26,7 +26,8 @@ class AnimationTab(BaseTab):
     TAB_BODY = 0
     TAB_FINGER = 1
     TAB_MORPH = 2
-    TAB_OTHER = 3
+    TAB_DISPLAY = 3
+    TAB_OTHER = TAB_DISPLAY  # Compatibility for existing presenter tests/extensions.
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -59,6 +60,13 @@ class AnimationTab(BaseTab):
         self.finger_page = QWidget()
         finger_layout = QVBoxLayout(self.finger_page)
         finger_layout.setContentsMargins(0, 0, 0, 0)
+        finger_nav_layout = QHBoxLayout()
+        finger_nav_layout.setContentsMargins(0, 0, 0, 0)
+        self.finger_body_btn = QPushButton("‹  Bodyへ戻る")
+        self.finger_body_btn.setToolTip("全身Pickerへ戻る")
+        finger_nav_layout.addWidget(self.finger_body_btn)
+        finger_nav_layout.addStretch(1)
+        finger_layout.addLayout(finger_nav_layout)
         self.finger_picker = FingerPickerWidget()
         finger_layout.addWidget(self.finger_picker, 0, Qt.AlignTop)
         finger_layout.addStretch(1)
@@ -68,8 +76,12 @@ class AnimationTab(BaseTab):
         morph_outer = QVBoxLayout(self.morph_page)
         morph_outer.setContentsMargins(0, 0, 0, 0)
         morph_scroll = QScrollArea()
+        morph_scroll.setObjectName("MorphPickerScroll")
         morph_scroll.setWidgetResizable(True)
         morph_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        morph_scroll.setStyleSheet(
+            "QScrollArea#MorphPickerScroll { border: none; background: #303030; }"
+        )
         self.morph_scroll_content = QWidget()
         self.morph_groups_layout = QVBoxLayout(self.morph_scroll_content)
         self.morph_groups_layout.setContentsMargins(4, 4, 4, 4)
@@ -92,6 +104,9 @@ class AnimationTab(BaseTab):
         status_layout = QHBoxLayout()
         self.status_label = QLabel("")
         status_layout.addWidget(self.status_label, 1)
+        self.select_all_btn = QPushButton("Select All")
+        self.select_all_btn.setToolTip("現在のMMDモデルの全ボーンを選択")
+        status_layout.addWidget(self.select_all_btn)
         self.clear_btn = QPushButton("Clear")
         status_layout.addWidget(self.clear_btn)
         main_layout.addLayout(status_layout)

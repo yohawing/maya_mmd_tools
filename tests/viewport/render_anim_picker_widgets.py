@@ -60,6 +60,7 @@ def _populate_preview_lists(tab: AnimationTab) -> None:
         "笑い": [("faceBS", 0)],
         "まばたき": [("faceBS", 1)],
         "あ": [("mouthBS", 0)],
+        "涙": [("faceBS", 2)],
     }
     presenter._network_morph_targets = {}
     presenter._morph_indices = {"笑い": 19, "まばたき": 20, "あ": 24}
@@ -70,6 +71,7 @@ def _populate_preview_lists(tab: AnimationTab) -> None:
                 MorphInfo("笑い", "Smile", 2, "vertex", 19),
                 MorphInfo("まばたき", "Blink", 2, "vertex", 20),
                 MorphInfo("あ", "A", 3, "vertex", 24),
+                MorphInfo("涙", "Tears", 4, "vertex", 30),
             ]
         )
     )
