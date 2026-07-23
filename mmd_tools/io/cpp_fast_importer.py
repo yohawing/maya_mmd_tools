@@ -24,8 +24,10 @@ from mmd_tools.core.constants import (
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_NAME_EN,
+    ATTR_MMD_MATERIAL_NAME,
+    ATTR_MMD_MATERIAL_NAME_EN,
 )
-from mmd_tools.core import maya_mesh_utils
+from mmd_tools.core import maya_mesh_utils, maya_name_utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.native.native_pmx_parser import parse_pmx_native
 
@@ -245,12 +247,13 @@ def _apply_basic_materials(filepath: str, mesh_node: str, cmds_module) -> None:
 
         metadata = json.loads(metadata_text)
         materials = metadata.get("materials") or []
+        used_names = _scene_name_set(cmds_module)
         for start_index, index_count, material_index in material_groups:
             if material_index >= len(materials) or index_count <= 0:
                 continue
 
             material = materials[material_index]
-            shader = _create_standard_material(material, material_index, cmds_module)
+            shader = _create_standard_material(material, material_index, cmds_module, used_names)
             if not shader:
                 continue
 
@@ -264,11 +267,16 @@ def _apply_basic_materials(filepath: str, mesh_node: str, cmds_module) -> None:
         logger.debug("Fast material assignment skipped: %s", exc)
 
 
-def _create_standard_material(material: dict, material_index: int, cmds_module) -> Optional[str]:
+def _create_standard_material(
+    material: dict,
+    material_index: int,
+    cmds_module,
+    used_names: Optional[set[str]] = None,
+) -> Optional[str]:
     """Create a Maya standardSurface shader from parsed PMX material metadata."""
     raw_name = material.get("englishName") or material.get("name") or f"material_{material_index}"
-    shader_name = _sanitize_node_name(str(raw_name)) or f"material_{material_index}"
-    shader_name = f"{shader_name}_fast"
+    names = used_names if used_names is not None else _scene_name_set(cmds_module)
+    shader_name = _allocate_fast_material_name(raw_name, material_index, names)
 
     try:
         shader = cmds_module.shadingNode("standardSurface", asShader=True, name=shader_name)
@@ -290,6 +298,9 @@ def _create_standard_material(material: dict, material_index: int, cmds_module) 
         specular = material.get("specular") or []
         if len(specular) >= 3:
             cmds_module.setAttr(f"{shader}.specularColor", float(specular[0]), float(specular[1]), float(specular[2]), type="double3")
+
+        _set_fast_string_attr(cmds_module, shader, ATTR_MMD_MATERIAL_NAME, material.get("name") or "")
+        _set_fast_string_attr(cmds_module, shader, ATTR_MMD_MATERIAL_NAME_EN, material.get("englishName") or "")
 
         return str(shader)
     except Exception as exc:
@@ -398,16 +409,14 @@ def _apply_fast_skeleton_skin(
 
     # ---- build unique bone/joint names ----
     joint_names: list[str] = []
-    used_names: set[str] = set()
+    used_names: set[str] = _scene_name_set(cmds_module)
     for b in bones:
         raw = b.get("englishName") or b.get("name") or f"bone_{len(joint_names)}"
-        name = _sanitize_node_name(str(raw)) or f"bone_{len(joint_names)}"
-        original = name
-        counter = 1
-        while name in used_names:
-            name = f"{original}_{counter}"
-            counter += 1
-        used_names.add(name)
+        name = maya_name_utils.sanitize_unique_name(
+            str(raw),
+            used_names,
+            fallback=f"bone_{len(joint_names)}",
+        )
         joint_names.append(name)
 
     # ---- create skeleton group ----
@@ -526,14 +535,44 @@ def _tag_fast_joint_metadata(cmds_module, joint: str, bone_index: int, bone: dic
 
 
 def _sanitize_node_name(raw: str) -> str:
-    """Return a conservative ASCII Maya node-name fragment."""
-    out = []
-    for ch in raw:
-        if ch.isascii() and (ch.isalnum() or ch == "_"):
-            out.append(ch)
-        else:
-            out.append("_")
-    name = "".join(out).strip("_")
-    if name and name[0].isdigit():
-        name = f"m_{name}"
-    return name
+    """Return a Maya-safe name through the shared Unicode conversion policy."""
+    return maya_name_utils.sanitize_text(raw)
+
+
+def _scene_name_set(cmds_module) -> set[str]:
+    """Collect existing Maya leaf names for deterministic fast-path allocation."""
+    try:
+        nodes = cmds_module.ls() or []
+    except Exception:
+        return set()
+    names: set[str] = set()
+    for node in nodes:
+        leaf = str(node).rsplit("|", 1)[-1]
+        names.add(leaf)
+        names.add(leaf.rsplit(":", 1)[-1])
+    return names
+
+
+def _allocate_fast_material_name(raw_name, material_index: int, used_names: set[str]) -> str:
+    """Allocate a safe shader/SG pair name for one parsed PMX material."""
+    base = str(raw_name or f"material_{material_index}")
+    while True:
+        shader_name = maya_name_utils.sanitize_unique_name(
+            f"{base}_fast",
+            used_names,
+            fallback=f"material_{material_index}_fast",
+        )
+        shading_group_name = f"{shader_name}SG"
+        if shading_group_name not in used_names:
+            used_names.add(shading_group_name)
+            return shader_name
+
+
+def _set_fast_string_attr(cmds_module, node: str, attr: str, value: str) -> None:
+    """Best-effort raw metadata write that works with real Maya and test stubs."""
+    try:
+        if not cmds_module.attributeQuery(attr, node=node, exists=True):
+            cmds_module.addAttr(node, longName=attr, dataType="string")
+        cmds_module.setAttr(f"{node}.{attr}", str(value), type="string")
+    except Exception as exc:
+        logger.debug("Failed to preserve fast-path metadata %s.%s: %s", node, attr, exc)

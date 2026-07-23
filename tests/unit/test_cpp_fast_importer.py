@@ -12,6 +12,7 @@ before importing the modules under test.
 from __future__ import annotations
 
 import json
+import re
 import types
 import unittest
 from pathlib import Path
@@ -29,6 +30,8 @@ from mmd_tools.io import cpp_fast_importer
 from mmd_tools.io.cpp_fast_importer import (
     _apply_basic_materials,
     _apply_fast_skeleton_skin,
+    _allocate_fast_material_name,
+    _create_standard_material,
     _sanitize_node_name,
     fast_import,
 )
@@ -597,13 +600,15 @@ class TestSanitizeNodeName(unittest.TestCase):
         self.assertEqual(_sanitize_node_name("hello"), "hello")
 
     def test_leading_digit_prefixed(self):
-        self.assertEqual(_sanitize_node_name("123bone"), "m_123bone")
+        result = _sanitize_node_name("123bone")
+        self.assertRegex(result, r"^[A-Za-z_][A-Za-z0-9_]*$")
+        self.assertNotEqual(result[0], "1")
 
     def test_unicode_replaced(self):
-        # Full-width katakana and kanji become underscores
+        # Shared conversion may transliterate known terms; it must remain safe.
         result = _sanitize_node_name("\u30bb\u30f3\u30bf\u30fc")
         self.assertNotIn("\u30bb", result)
-        self.assertTrue(all(c in "_" for c in result) or result == "")
+        self.assertRegex(result, r"^[A-Za-z_][A-Za-z0-9_]*$")
 
     def test_mixed(self):
         result = _sanitize_node_name("center_\u30bb\u30f3\u30bf\u30fc")
@@ -611,7 +616,48 @@ class TestSanitizeNodeName(unittest.TestCase):
         self.assertIn("center", result)
 
     def test_empty(self):
-        self.assertEqual(_sanitize_node_name(""), "")
+        self.assertEqual(_sanitize_node_name(""), "unnamed")
+
+    def test_hazardous_names_are_safe_and_collision_free(self):
+        used = set()
+        names = [
+            _allocate_fast_material_name("1:髪", 0, used),
+            _allocate_fast_material_name("2:髪+", 1, used),
+            _allocate_fast_material_name("a:b", 2, used),
+            _allocate_fast_material_name("ab", 3, used),
+            _allocate_fast_material_name("", 4, used),
+        ]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertTrue(all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in names))
+        self.assertTrue(all(f"{name}SG" in used for name in names))
+
+    def test_standard_material_preserves_raw_names(self):
+        cmds = MagicMock()
+        cmds.ls.return_value = []
+        cmds.attributeQuery.return_value = False
+        cmds.shadingNode.side_effect = ["ab_fast", "ab_1_fast"]
+        used = set()
+        first = _create_standard_material(
+            {"name": "a:b", "englishName": "a:b_en", "diffuse": [1, 0, 0, 1]},
+            0,
+            cmds,
+            used,
+        )
+        second = _create_standard_material(
+            {"name": "ab", "englishName": "ab_en", "diffuse": [0, 1, 0, 1]},
+            1,
+            cmds,
+            used,
+        )
+
+        self.assertEqual((first, second), ("ab_fast", "ab_1_fast"))
+        raw_writes = {
+            call[0][0]: call[0][1]
+            for call in cmds.setAttr.call_args_list
+            if len(call[0]) >= 2 and ".mmd_material_name" in call[0][0]
+        }
+        self.assertEqual(raw_writes["ab_fast.mmd_material_name"], "a:b")
+        self.assertEqual(raw_writes["ab_1_fast.mmd_material_name"], "ab")
 
 
 class TestCppFastImporterDebugLogging(unittest.TestCase):
