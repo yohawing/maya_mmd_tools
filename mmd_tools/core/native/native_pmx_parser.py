@@ -55,6 +55,8 @@ _SPHERE_MODE_MAP = {
     "none": PmxSphereMode.DISABLED,
     "disabled": PmxSphereMode.DISABLED,
     "multiply": PmxSphereMode.MULTIPLY,
+    # mmd-anim emits the PMX additive sphere mode as ``add``.
+    "add": PmxSphereMode.ADDITIVE,
     "additive": PmxSphereMode.ADDITIVE,
     "sub_texture": PmxSphereMode.SUB_TEXTURE,
     "subTexture": PmxSphereMode.SUB_TEXTURE,

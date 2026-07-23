@@ -10,6 +10,7 @@ from unittest.mock import patch
 from mmd_tools.core.native.native_pmx_parser import (
     _build_bones,
     _build_joints,
+    _build_materials,
     _build_morphs,
     _build_rigid_bodies,
     _build_vertices,
@@ -19,6 +20,7 @@ from mmd_tools.core.native.native_pmx_parser import (
 from mmd_tools.core.pmx_data import PmxData
 from mmd_tools.core.pmx_data.header import PmxEncoding
 from mmd_tools.core.pmx_data.morph import PmxMorphType
+from mmd_tools.core.pmx_data.material import PmxSphereMode
 from mmd_tools.core.pmx_data.soft_body import PmxSoftBody, _UNSUPPORTED_DETAIL_SIZE
 
 
@@ -64,6 +66,36 @@ def _make_test_soft_body():
 
 
 class TestNativePmxParserBuilders(unittest.TestCase):
+    def test_build_materials_maps_native_sphere_mode_values_and_fails_closed(self):
+        """Native descriptor sphere-mode names preserve PMX semantics."""
+        expected_modes = {
+            "none": PmxSphereMode.DISABLED,
+            "disabled": PmxSphereMode.DISABLED,
+            "multiply": PmxSphereMode.MULTIPLY,
+            "add": PmxSphereMode.ADDITIVE,
+            "subTexture": PmxSphereMode.SUB_TEXTURE,
+        }
+
+        materials = _build_materials(
+            [
+                {
+                    "name": mode,
+                    "sphereMode": mode,
+                    "sphereTexturePath": "sphere.png",
+                }
+                for mode in (*expected_modes, "unrecognized")
+            ],
+            None,
+            0,
+            {},
+            [],
+        )
+
+        self.assertEqual(
+            [material.sphere_mode for material in materials],
+            [*expected_modes.values(), PmxSphereMode.DISABLED],
+        )
+
     def test_build_bones_accepts_native_ik_and_append_schema(self):
         """Rust non-geometry JSON fields compile into PMX bone metadata."""
         bones = _build_bones(

@@ -130,6 +130,23 @@ def test_both_shader_sources_apply_rgba_factors_before_final_opacity():
         assert _main_alpha_contract_holds(source)
 
 
+def test_sphere_mapping_uses_half_range_view_normal_projection_in_both_backends():
+    """Sphere UVs use the normative x/y 0.5 projection coefficients."""
+    sources = {
+        "dx11": (ROOT / "mmd_tools/shaders/MMDShader.fx").read_text(encoding="utf-8"),
+        "glsl": (ROOT / "mmd_tools/shaders/MMDShader.ogsfx").read_text(encoding="utf-8"),
+    }
+    assert "sphereUV.x = sphereNormal.x * 0.5 + 0.5;" in sources["dx11"]
+    assert "sphereUV.y = sphereNormal.y * -0.5 + 0.5;" in sources["dx11"]
+    assert (
+        "vec2 sphereUV = vec2(sphereNormal.x * 0.5 + 0.5, sphereNormal.y * -0.5 + 0.5);"
+        in sources["glsl"]
+    )
+    for source in sources.values():
+        assert "sphereNormal" in source
+        assert "* 0.35" not in source
+
+
 def test_contract_guard_rejects_unfactorized_or_late_main_alpha():
     source = (ROOT / "mmd_tools/shaders/MMDShader.ogsfx").read_text(encoding="utf-8")
     assert not _main_alpha_contract_holds(

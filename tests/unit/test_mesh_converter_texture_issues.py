@@ -19,6 +19,7 @@ from mmd_tools.converters.mesh_converter import (  # noqa: E402
     sync_dx11_generated_uniforms,
 )
 from mmd_tools.converters.material_shader_parameters import ATTR_MMD_DIFFUSE_ALPHA  # noqa: E402
+from mmd_tools.core.constants import ATTR_MMD_SPHERE_MODE  # noqa: E402
 from mmd_tools.core.settings import settings  # noqa: E402
 from mmd_tools.core import maya_material_utils  # noqa: E402
 
@@ -469,6 +470,33 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
             call("new_glsl.DiffuseColorRGB", 0.8, 0.8, 0.8, type="double3"),
             mock_cmds.setAttr.call_args_list,
         )
+
+    def test_sync_restores_authored_sphere_mode_for_dx11_and_glsl(self):
+        for shader_type, shader in (("dx11Shader", "new_dx11"), ("GLSLShader", "new_glsl")):
+            with self.subTest(shader_type=shader_type), patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds:
+                mock_cmds.objExists.return_value = True
+                mock_cmds.nodeType.return_value = shader_type
+                mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr in {
+                    ATTR_MMD_SPHERE_MODE,
+                    "SphereMode",
+                }
+                mock_cmds.getAttr.return_value = 2
+
+                synced = sync_dx11_generated_uniforms([shader])
+
+            self.assertEqual(synced, 1)
+            mock_cmds.setAttr.assert_called_once_with(f"{shader}.SphereMode", 2)
+
+    def test_sync_does_not_write_sphere_mode_without_authored_custom_attribute(self):
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds:
+            mock_cmds.objExists.return_value = True
+            mock_cmds.nodeType.return_value = "dx11Shader"
+            mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr == "SphereMode"
+
+            synced = sync_dx11_generated_uniforms(["shader_without_mmd_mode"])
+
+        self.assertEqual(synced, 0)
+        mock_cmds.setAttr.assert_not_called()
 
     def test_current_glsl_write_failure_does_not_set_contract_marker(self):
         pmx_rgb = (0.12, 0.34, 0.56)

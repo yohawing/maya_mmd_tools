@@ -436,8 +436,8 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     {
         float3 sphereNormal = normalize(mul(float4(normal, 0.0), View).xyz);
         float2 sphereUV;
-        sphereUV.x = sphereNormal.x * 0.35 + 0.5;
-        sphereUV.y = sphereNormal.y * -0.35 + 0.5;
+        sphereUV.x = sphereNormal.x * 0.5 + 0.5;
+        sphereUV.y = sphereNormal.y * -0.5 + 0.5;
         float4 sphereSample = SphereTexture.Sample(LinearSampler, sphereUV);
         float4 factoredSphere = sphereSample * SphereTextureMultiply + SphereTextureAdd;
         sphereColor = factoredSphere.rgb;

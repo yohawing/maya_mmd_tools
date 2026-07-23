@@ -991,6 +991,17 @@ def sync_dx11_generated_uniforms(shader_nodes=None):
                 LOGGER.warning("Failed to sync dx11 EdgeColor uniforms for '%s'", shader, exc_info=True)
 
         if (
+            cmds.attributeQuery(ATTR_MMD_SPHERE_MODE, node=shader, exists=True)
+            and cmds.attributeQuery("SphereMode", node=shader, exists=True)
+        ):
+            try:
+                sphere_mode = int(cmds.getAttr(f"{shader}.{ATTR_MMD_SPHERE_MODE}"))
+                cmds.setAttr(f"{shader}.SphereMode", sphere_mode)
+                synced += 1
+            except Exception:
+                LOGGER.warning("Failed to sync dx11 SphereMode uniform for '%s'", shader, exc_info=True)
+
+        if (
             cmds.attributeQuery(ATTR_MMD_EDGE_SIZE, node=shader, exists=True)
             and cmds.attributeQuery("EdgeSize", node=shader, exists=True)
         ):

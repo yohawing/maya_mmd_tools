@@ -164,7 +164,7 @@ GLSLShader FS
         if (SphereMode > 0 && HasSphereTexture != 0)
         {
             vec3 sphereNormal = normalize((View * vec4(n, 0.0)).xyz);
-            vec2 sphereUV = vec2(sphereNormal.x * 0.35 + 0.5, sphereNormal.y * -0.35 + 0.5);
+            vec2 sphereUV = vec2(sphereNormal.x * 0.5 + 0.5, sphereNormal.y * -0.5 + 0.5);
             vec4 sphereSample = texture2D(SphereSampler, sphereUV);
             vec4 factoredSphere = sphereSample * SphereTextureMultiply + SphereTextureAdd;
             sphereColor = factoredSphere.rgb;
