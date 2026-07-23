@@ -33,6 +33,7 @@ _python_physics_solver_registered = False
 _python_physics_driver_registered = False
 _after_open_callback_id = None
 _after_new_callback_id = None
+_active_view_callback_id = None
 _MAIN_WINDOW_NAME = "MMDToolsMainWindow"
 _MAIN_WINDOW_WORKSPACE_CONTROL_NAME = "MMDToolsWorkspaceControl"
 
@@ -358,11 +359,51 @@ def _after_scene_open(*_args):
         _soft_sync_existing_glsl_diffuse_contracts()
     except Exception:
         pass
+    _soft_sync_dx11_device_pixel_ratio(force=True)
 
 
 def _after_scene_new(*_args):
     """Drop process-owned HumanIK state after Maya creates a new scene."""
     _reset_humanik_session_after_scene_change()
+    _soft_sync_dx11_device_pixel_ratio(force=True)
+
+
+def _soft_sync_dx11_device_pixel_ratio(*_args, force=False):
+    """Refresh screen-space shader scaling without making callbacks fatal."""
+    try:
+        from mmd_tools.core import maya_viewport_utils
+
+        maya_viewport_utils.sync_dx11_shader_device_pixel_ratio(force=force)
+    except Exception:
+        pass
+
+
+def _register_active_view_callback():
+    """Track active-view changes that can cross monitor DPI boundaries."""
+    global _active_view_callback_id
+    if _active_view_callback_id is not None:
+        return
+    try:
+        _active_view_callback_id = om.MEventMessage.addEventCallback(
+            "ActiveViewChanged",
+            _soft_sync_dx11_device_pixel_ratio,
+        )
+        _soft_sync_dx11_device_pixel_ratio(force=True)
+    except Exception:
+        _active_view_callback_id = None
+
+
+def _remove_active_view_callback():
+    """Remove the owned active-view callback if it exists."""
+    global _active_view_callback_id
+    callback_id = _active_view_callback_id
+    _active_view_callback_id = None
+    if callback_id is None:
+        return
+    try:
+        om.MMessage.removeCallback(callback_id)
+    except Exception:
+        pass
 
 
 def _reset_humanik_session_after_scene_change():
@@ -513,6 +554,7 @@ def initializePlugin(mobject):
         _trace_initialize_step("physics-solver:done")
         _physics_nodes_registered = True
         _register_after_open_callback()
+        _register_active_view_callback()
         _register_humanik_control_rig_watch()
         _trace_initialize_step("initialize:done")
     except Exception as e:
@@ -532,6 +574,7 @@ def uninitializePlugin(mobject):
             raise RuntimeError("HumanIK session restore failed; plugin unload was aborted")
         _close_humanik_window()
         _deregister_humanik_control_rig_watch()
+        _remove_active_view_callback()
         _remove_after_open_callback()
         close_animator_toolset()
         close_main_window()

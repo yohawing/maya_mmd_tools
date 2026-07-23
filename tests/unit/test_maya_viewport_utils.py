@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests.common.maya_stub import install_maya_stub
@@ -102,7 +103,72 @@ class _FakeHardwareViewportCmds(_FakeCmds):
                 self.states[panel_name]["displayTextures"] = kwargs["displayTextures"]
 
 
+class _FakeDx11ShaderCmds:
+    def __init__(self, values):
+        self.values = dict(values)
+        self.set_attr_calls = []
+
+    def ls(self, **kwargs):
+        return list(self.values) if kwargs.get("type") == "dx11Shader" else []
+
+    def attributeQuery(self, attr, **kwargs):
+        return attr == "DevicePixelRatio" and kwargs.get("node") in self.values
+
+    def getAttr(self, plug):
+        return self.values[plug.split(".", 1)[0]]
+
+    def setAttr(self, plug, value):
+        shader = plug.split(".", 1)[0]
+        self.values[shader] = value
+        self.set_attr_calls.append((plug, value))
+
+
 class TestMayaViewportUtils(unittest.TestCase):
+    def setUp(self):
+        maya_viewport_utils._LAST_DEVICE_PIXEL_RATIO = None
+
+    def test_device_pixel_ratio_uses_active_view_value(self):
+        view = SimpleNamespace(devicePixelRatio=lambda: 2.0)
+
+        self.assertEqual(maya_viewport_utils.get_device_pixel_ratio(view), 2.0)
+
+    def test_device_pixel_ratio_rejects_invalid_values(self):
+        for value in (0.0, -1.0, float("nan"), float("inf")):
+            with self.subTest(value=value):
+                view = SimpleNamespace(devicePixelRatio=lambda value=value: value)
+                self.assertEqual(maya_viewport_utils.get_device_pixel_ratio(view), 1.0)
+
+    def test_device_pixel_ratio_falls_back_when_view_query_fails(self):
+        view = SimpleNamespace()
+
+        self.assertEqual(maya_viewport_utils.get_device_pixel_ratio(view, default=1.5), 1.5)
+
+    def test_dx11_device_pixel_ratio_sync_updates_all_existing_shaders_once(self):
+        fake_cmds = _FakeDx11ShaderCmds({"shaderA": 1.0, "shaderB": 2.0})
+
+        with patch.object(maya_viewport_utils, "cmds", fake_cmds), patch.object(
+            maya_viewport_utils, "get_device_pixel_ratio", return_value=2.0
+        ):
+            self.assertEqual(maya_viewport_utils.sync_dx11_shader_device_pixel_ratio(), 1)
+            self.assertEqual(maya_viewport_utils.sync_dx11_shader_device_pixel_ratio(), 0)
+
+        self.assertEqual(fake_cmds.set_attr_calls, [("shaderA.DevicePixelRatio", 2.0)])
+
+    def test_forced_dx11_device_pixel_ratio_sync_finds_new_scene_shaders(self):
+        fake_cmds = _FakeDx11ShaderCmds({"shaderA": 2.0})
+
+        with patch.object(maya_viewport_utils, "cmds", fake_cmds), patch.object(
+            maya_viewport_utils, "get_device_pixel_ratio", return_value=2.0
+        ):
+            self.assertEqual(maya_viewport_utils.sync_dx11_shader_device_pixel_ratio(), 0)
+            fake_cmds.values["shaderB"] = 1.0
+            self.assertEqual(
+                maya_viewport_utils.sync_dx11_shader_device_pixel_ratio(force=True),
+                1,
+            )
+
+        self.assertEqual(fake_cmds.values["shaderB"], 2.0)
+
     def test_set_viewport_backface_culling_uses_focused_model_panel(self):
         fake_cmds = _FakeCmds(focus_panel="modelPanel4", focus_type="modelPanel")
 

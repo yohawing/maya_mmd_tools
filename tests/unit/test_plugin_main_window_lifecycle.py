@@ -485,6 +485,30 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
 
         self.assertIsNone(self.plugin_main._after_open_callback_id)
 
+    def test_active_view_callback_registers_once_syncs_and_removes(self):
+        add_callback = MagicMock(return_value=51)
+        remove_callback = MagicMock()
+        self.plugin_main.om = types.SimpleNamespace(
+            MEventMessage=types.SimpleNamespace(addEventCallback=add_callback),
+            MMessage=types.SimpleNamespace(removeCallback=remove_callback),
+        )
+        sync = MagicMock()
+        self.plugin_main._soft_sync_dx11_device_pixel_ratio = sync
+
+        self.plugin_main._register_active_view_callback()
+        self.plugin_main._register_active_view_callback()
+        active_view_callback = add_callback.call_args.args[1]
+        active_view_callback("modelPanel4")
+        self.plugin_main._remove_active_view_callback()
+
+        add_callback.assert_called_once_with("ActiveViewChanged", sync)
+        self.assertEqual(
+            sync.call_args_list,
+            [unittest.mock.call(force=True), unittest.mock.call("modelPanel4")],
+        )
+        remove_callback.assert_called_once_with(51)
+        self.assertIsNone(self.plugin_main._active_view_callback_id)
+
     def test_after_open_callback_migration_failure_is_soft(self):
         self.plugin_main._reset_humanik_session_after_scene_change = MagicMock()
         self.plugin_main._soft_sync_existing_glsl_diffuse_contracts = MagicMock(

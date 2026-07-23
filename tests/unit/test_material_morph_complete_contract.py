@@ -203,7 +203,9 @@ def test_dx11_effect_has_only_sidedness_techniques_with_optional_edge_output():
     assert source.count("pass EdgePass") == 2
     assert "SetRasterizerState(CullFront)" in source
     assert "SetRasterizerState(CullNone)" in source
-    assert "screenNormal / (safeScreenSize * 0.5) * EdgeSize * clipPos.w" in source
+    assert 'float DevicePixelRatio< string UIWidget = "None"; > = 1.0f;' in source
+    assert "logicalEdgeSize = EdgeSize * max(DevicePixelRatio, 1.0e-5)" in source
+    assert "screenNormal / (safeScreenSize * 0.5) * logicalEdgeSize * clipPos.w" in source
     assert "EdgeSize * 4.0" not in source
 
 

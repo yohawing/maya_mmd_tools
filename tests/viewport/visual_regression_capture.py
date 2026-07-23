@@ -587,7 +587,7 @@ def _shader_diag():
             "AmbientColor", "SpecularColor", "Shininess", "Opacity",
             "MMDLightDirection", "MMDLightColor",
             "MmdControllerLightVector", "MmdControllerLightRgb",
-            "SphereMode", "EdgeColorRGB", "EdgeSize",
+            "SphereMode", "EdgeColorRGB", "EdgeSize", "DevicePixelRatio",
             "HasMainTexture", "HasSphereTexture", "HasToonTexture",
             "mmd_texture_path", "mmd_sphere_path", "mmd_draw_flags",
         ]:

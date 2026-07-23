@@ -269,6 +269,12 @@ def _create_backend_replacement(source, backend):
             raise RuntimeError(f"Could not assign {shader_name} to {node_type}")
         if backend == BACKEND_DX11:
             _ensure_dx11_uniform_attributes(replacement)
+            _set_shader_attribute_checked(
+                replacement,
+                "DevicePixelRatio",
+                maya_viewport_utils.get_device_pixel_ratio(),
+                "float",
+            )
             mode = get_transparency_mode(source)
             edge_enabled = False
             if cmds.attributeQuery(ATTR_MMD_SHADER_OUTLINE_ENABLED, node=source, exists=True):
@@ -575,7 +581,7 @@ def bind_dx11_texture_file_node(shader, file_node, texture_attr, has_attr):
     )
 
 
-def _ensure_mmd_shader_uniform_attributes(shader_node):
+def _ensure_mmd_shader_uniform_attributes(shader_node, include_device_pixel_ratio=False):
     """MMD シェーダーで uniform 属性がない場合に補完する。
 
     Maya の standalone 環境では dx11Shader / GLSLShader が OGSFX/uniform を
@@ -609,6 +615,8 @@ def _ensure_mmd_shader_uniform_attributes(shader_node):
         ("MmdControllerLightVector", om.MFnNumericData.kDouble, 3, False, (0.5, -1.0, 0.5)),
         ("MmdControllerLightRgb", om.MFnNumericData.kDouble, 3, True, (1.0, 1.0, 1.0)),
     ]
+    if include_device_pixel_ratio:
+        uniforms.append(("DevicePixelRatio", om.MFnNumericData.kDouble, 1, False, 1.0))
 
     try:
         sel = om.MSelectionList()
@@ -690,7 +698,7 @@ def _ensure_mmd_shader_uniform_attributes(shader_node):
 
 def _ensure_dx11_uniform_attributes(shader_node):
     """Backward-compatible alias for dynamic uniform attr creation."""
-    _ensure_mmd_shader_uniform_attributes(shader_node)
+    _ensure_mmd_shader_uniform_attributes(shader_node, include_device_pixel_ratio=True)
 
 
 _GLSL_DIFFUSE_CONTRACT_MARKER = "mmdDiffuseRgbContractVersion"
@@ -2256,7 +2264,6 @@ class MeshConverter:
         # mayapy standalone では dx11Shader が .fx ファイルから uniform 属性を
         # 自動生成しないため、事前に動的アトリビュートとして作成しておく
         _ensure_dx11_uniform_attributes(shader)
-
         # Prefer the accurate per-material UV-region classification computed up
         # front; fall back to the simple diffuse-alpha rule if unavailable.
         mode = self._transparency_modes.get(material_index)

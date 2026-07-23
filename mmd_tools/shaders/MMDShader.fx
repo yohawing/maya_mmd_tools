@@ -102,6 +102,7 @@ float4x4 Projection : Projection<string UIWidget = "None";>;
 float4x4 ViewProjection : ViewProjection<string UIWidget = "None";>;
 float3 ViewPosition : ViewPosition<string UIWidget = "None";>;
 float2 ScreenSize : ViewportPixelSize<string UIWidget = "None";>;
+float DevicePixelRatio< string UIWidget = "None"; > = 1.0f;
 
 // Per-object parameters
 float4x4 World               : World<string UIWidget = "None";>;
@@ -477,7 +478,9 @@ VS_OUTPUT EdgeVS(VS_INPUT input)
     screenNormal /= max(length(screenNormal), 1.0e-5);
 
     float2 safeScreenSize = max(ScreenSize, float2(1.0, 1.0));
-    clipPos.xy += screenNormal / (safeScreenSize * 0.5) * EdgeSize * clipPos.w;
+    // ViewportPixelSize is physical; authored EdgeSize is in logical pixels.
+    float logicalEdgeSize = EdgeSize * max(DevicePixelRatio, 1.0e-5);
+    clipPos.xy += screenNormal / (safeScreenSize * 0.5) * logicalEdgeSize * clipPos.w;
 
     output.position = clipPos;
     output.worldPosition = worldPos.xyz;
