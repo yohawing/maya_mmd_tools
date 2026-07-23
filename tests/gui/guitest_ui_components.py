@@ -176,6 +176,14 @@ class TestMainWindow(GuiTestBase):
         """表示枠editorはAnimator Toolsetと独立した通常タブとして存在する。"""
         tab = self.window.display_pane_tab
         self.assertEqual(tab.objectName(), "DisplayPaneTab")
+        self.assertEqual(tab.layout().contentsMargins().left(), 5)
+        splitter = tab.layout().itemAt(0).widget()
+        for index in range(splitter.count()):
+            margins = splitter.widget(index).layout().contentsMargins()
+            self.assertEqual(
+                (margins.left(), margins.top(), margins.right(), margins.bottom()),
+                (0, 0, 0, 0),
+            )
         for attr in (
             "frame_list",
             "name_jp_edit",

@@ -27,11 +27,13 @@ class DisplayPaneTab(BaseTab):
         self.setObjectName("DisplayPaneTab")
 
         root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(5, 5, 5, 5)
         splitter = QSplitter(Qt.Horizontal)
         root_layout.addWidget(splitter, 1)
 
         frame_widget = QWidget()
         frame_layout = QVBoxLayout(frame_widget)
+        frame_layout.setContentsMargins(0, 0, 0, 0)
         self.frames_group = QGroupBox()
         frames_group_layout = QVBoxLayout(self.frames_group)
         self.frame_list = QListWidget()
@@ -54,6 +56,7 @@ class DisplayPaneTab(BaseTab):
 
         editor_widget = QWidget()
         editor_layout = QVBoxLayout(editor_widget)
+        editor_layout.setContentsMargins(0, 0, 0, 0)
 
         self.properties_group = QGroupBox()
         properties_layout = QFormLayout(self.properties_group)
