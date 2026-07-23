@@ -97,6 +97,7 @@ class BodyPickerWidget(SvgPickerWidget):
     """Clickable Body picker canvas using the shipped 268×378 artwork."""
 
     region_clicked = Signal(str)
+    regions_selected = Signal(object)
     mirror_selection_clicked = Signal()
     goto_finger_clicked = Signal()
     reset_pose_clicked = Signal()
@@ -107,12 +108,35 @@ class BodyPickerWidget(SvgPickerWidget):
             _ASSET_DIR / "animpicker_body.svg",
             background_path=_ASSET_DIR / "animpicker_bg.png",
             region_sources=_BODY_SOURCES,
-            region_labels={"reset_pose": "Reset Pose", "mirror_sel": "Mirror Sel"},
+            region_labels={
+                "reset_pose": "Reset Pose",
+                "mirror_sel": "Mirror Sel",
+                "left_ik": "L IK",
+                "right_ik": "R IK",
+                "fingers_left": "F",
+                "fingers_right": "F",
+            },
+            tooltip_labels={
+                **{region["id"]: region["bone_name"] for region in _BODY_REGIONS},
+                "reset_pose": "選択ボーンのポーズをリセット",
+                "mirror_sel": "反対側のボーンを選択",
+                "fingers_left": "指Pickerへ移動",
+                "fingers_right": "指Pickerへ移動",
+            },
             removed_element_ids={"bg.png", "alignment-guides"},
             parent=parent,
         )
         self.setObjectName("BodyPickerWidget")
         self.shape_clicked.connect(self._on_shape_clicked)
+        self.shapes_selected.connect(self._on_shapes_selected)
+
+    def _on_shapes_selected(self, region_ids: list[str]) -> None:
+        selectable = [
+            region_id
+            for region_id in region_ids
+            if region_id not in {"reset_pose", "mirror_sel", "fingers_left", "fingers_right"}
+        ]
+        self.regions_selected.emit(selectable)
 
     def _on_shape_clicked(self, region_id: str) -> None:
         if region_id == "mirror_sel":

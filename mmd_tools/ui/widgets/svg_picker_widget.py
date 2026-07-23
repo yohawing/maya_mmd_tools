@@ -26,6 +26,7 @@ from ..qt_compat import (
     QRectF,
     QSvgRenderer,
     QSizePolicy,
+    QToolTip,
     QTransform,
     Qt,
     Signal,
@@ -267,6 +268,7 @@ class SvgPickerWidget(QWidget):
     """Render an SVG overlay and emit semantic IDs from exact vector hit paths."""
 
     shape_clicked = Signal(str)
+    shapes_selected = Signal(object)
 
     def __init__(
         self,
@@ -276,13 +278,14 @@ class SvgPickerWidget(QWidget):
         region_sources: tuple[SvgRegionSource, ...] = (),
         ordered_region_ids: tuple[str, ...] = (),
         region_labels: dict[str, str] | None = None,
+        tooltip_labels: dict[str, str] | None = None,
         removed_element_ids: set[str] | None = None,
         parent=None,
     ):
         super().__init__(parent)
         self.setMouseTracking(True)
         self.setMinimumSize(134, 189)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         svg_text = svg_path.read_text(encoding="utf-8")
         self._renderer = QSvgRenderer(
@@ -295,8 +298,12 @@ class SvgPickerWidget(QWidget):
 
         self._background = QPixmap(str(background_path)) if background_path else QPixmap()
         self._region_labels = region_labels or {}
+        self._tooltip_labels = tooltip_labels or {}
         self._hovered_region: str | None = None
         self._pressed_region: str | None = None
+        self._drag_origin: QPointF | None = None
+        self._selection_rect: QRectF | None = None
+        self._selected_regions: set[str] = set()
         self._enabled_regions = set(self._region_paths)
 
     @property
@@ -309,7 +316,20 @@ class SvgPickerWidget(QWidget):
         """Disable unavailable model regions while keeping the artwork visible."""
 
         self._enabled_regions = set(region_ids) & set(self._region_paths)
+        self._selected_regions &= self._enabled_regions
         self.update()
+
+    def set_selected_regions(self, region_ids) -> None:
+        """Show the current Maya selection immediately on the picker."""
+
+        self._selected_regions = set(region_ids) & self._enabled_regions
+        self.repaint()
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        return max(189, round(width * _CANVAS_HEIGHT / _CANVAS_WIDTH))
 
     def _canvas_rect(self) -> QRectF:
         """Fit the authored canvas into all available space without distortion."""
@@ -342,6 +362,21 @@ class SvgPickerWidget(QWidget):
                 return region_id
         return None
 
+    def _regions_in_rect(self, widget_rect: QRectF) -> list[str]:
+        canvas_rect = widget_rect.intersected(self._canvas_rect())
+        if canvas_rect.isEmpty():
+            return []
+        top_left = self._canvas_point(canvas_rect.topLeft())
+        bottom_right = self._canvas_point(canvas_rect.bottomRight())
+        if top_left is None or bottom_right is None:
+            return []
+        selection = QRectF(top_left, bottom_right).normalized()
+        return [
+            region_id
+            for region_id, path in self._region_paths.items()
+            if region_id in self._enabled_regions and path.intersects(selection)
+        ]
+
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
@@ -360,6 +395,15 @@ class SvgPickerWidget(QWidget):
             canvas_rect.width() / _CANVAS_WIDTH,
             canvas_rect.height() / _CANVAS_HEIGHT,
         )
+
+        for region_id in self._selected_regions:
+            path = self._region_paths[region_id]
+            color = QColor(77, 196, 255, 150)
+            if region_id.startswith("right_"):
+                color = QColor(255, 112, 130, 150)
+            painter.setBrush(QBrush(color))
+            painter.setPen(QPen(QColor(color.red(), color.green(), color.blue(), 255), 2.2))
+            painter.drawPath(path)
 
         if self._region_labels:
             font = QFont()
@@ -383,33 +427,67 @@ class SvgPickerWidget(QWidget):
             painter.drawPath(path)
 
         painter.restore()
+        if self._selection_rect is not None:
+            painter.setBrush(QBrush(QColor(75, 165, 230, 45)))
+            painter.setPen(QPen(QColor(105, 205, 255, 230), 1.0))
+            painter.drawRect(self._selection_rect)
         painter.end()
 
     def mouseMoveEvent(self, event) -> None:
-        hovered = self._region_at(event.position() if hasattr(event, "position") else event.pos())
+        position = event.position() if hasattr(event, "position") else event.pos()
+        if self._drag_origin is not None:
+            distance = abs(position.x() - self._drag_origin.x()) + abs(
+                position.y() - self._drag_origin.y()
+            )
+            if distance >= 4.0:
+                self._selection_rect = QRectF(self._drag_origin, position).normalized()
+                self._hovered_region = None
+                QToolTip.hideText()
+                self.update()
+                super().mouseMoveEvent(event)
+                return
+
+        hovered = self._region_at(position)
         if hovered != self._hovered_region:
             self._hovered_region = hovered
+            label = self._tooltip_labels.get(hovered or "", "")
+            if label:
+                global_position = (
+                    event.globalPosition().toPoint()
+                    if hasattr(event, "globalPosition")
+                    else event.globalPos()
+                )
+                QToolTip.showText(global_position, label, self)
+            else:
+                QToolTip.hideText()
             self.update()
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event) -> None:
         self._hovered_region = None
+        QToolTip.hideText()
         self.update()
         super().leaveEvent(event)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
-            self._pressed_region = self._region_at(
-                event.position() if hasattr(event, "position") else event.pos()
-            )
+            position = event.position() if hasattr(event, "position") else event.pos()
+            self._pressed_region = self._region_at(position)
+            if self._pressed_region:
+                # A picker click is latency-sensitive: commit on press rather
+                # than waiting for release and Maya's next UI cycle.
+                self.shape_clicked.emit(self._pressed_region)
+                self._drag_origin = None
+            else:
+                self._drag_origin = QPointF(position)
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
-            released = self._region_at(
-                event.position() if hasattr(event, "position") else event.pos()
-            )
-            if released and released == self._pressed_region:
-                self.shape_clicked.emit(released)
+            if self._selection_rect is not None:
+                self.shapes_selected.emit(self._regions_in_rect(self._selection_rect))
         self._pressed_region = None
+        self._drag_origin = None
+        self._selection_rect = None
+        self.update()
         super().mouseReleaseEvent(event)

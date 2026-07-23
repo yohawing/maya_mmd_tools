@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 from ...core.constants import (
@@ -9,6 +10,7 @@ from ...core.constants import (
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
+    ATTR_MMD_MORPH_DATA,
 )
 from ...core.display_frame_resolver import PickerGroup, resolve_display_frames
 from ...core.logger import get_logger
@@ -17,9 +19,9 @@ from ...core.morph_metadata_reader import (
     CategorizedMorphs,
     MorphInfo,
     categorize_morphs,
-    parse_blendshape_morph_names,
-    read_morph_list_from_blendshape_json,
-    PANEL_NAMES,
+    parse_blendshape_morph_entries,
+    morph_info_from_presenter_entry,
+    PANEL_GROUP_LABELS,
 )
 from ...core.visibility_state import (
     get_visibility_category,
@@ -37,7 +39,7 @@ _USER_ROLE = 0x0100  # Qt.UserRole
 
 
 class AnimationPresenter:
-    """Drives the AnimationTab (Body/Finger/Morph/Other picker + tools)."""
+    """Drives the AnimationTab (Body/Finger/Morph/Display picker + tools)."""
 
     def __init__(self, view, app_state: ApplicationState, maya_adapter=None):
         self.view = view
@@ -51,6 +53,9 @@ class AnimationPresenter:
         self._bone_name_to_joint: dict[str, str] = {}
         self._morph_sliders: dict[str, object] = {}
         self._morph_targets: dict[str, list[tuple[str, int]]] = {}
+        self._network_morph_targets: dict[str, list[str]] = {}
+        self._morph_indices: dict[str, int] = {}
+        self._morph_controller: str | None = None
         self._pose_clipboard: dict | None = None
         self.connect_signals()
 
@@ -65,11 +70,15 @@ class AnimationPresenter:
         self.view.clear_btn.clicked.connect(self.on_clear_clicked)
         self.view.display_frame_tree.itemClicked.connect(self.on_display_frame_item_clicked)
         self.view.body_picker.region_clicked.connect(self.on_body_region_clicked)
+        if hasattr(self.view.body_picker, "regions_selected"):
+            self.view.body_picker.regions_selected.connect(self.on_body_regions_selected)
         self.view.body_picker.goto_finger_clicked.connect(self.on_goto_finger)
         self.view.body_picker.mirror_selection_clicked.connect(self.on_mirror_selection)
         if hasattr(self.view.body_picker, "reset_pose_clicked"):
             self.view.body_picker.reset_pose_clicked.connect(self._on_reset_pose)
         self.view.finger_picker.region_clicked.connect(self.on_finger_region_clicked)
+        if hasattr(self.view.finger_picker, "regions_selected"):
+            self.view.finger_picker.regions_selected.connect(self.on_finger_regions_selected)
         self.view.finger_picker.goto_body_clicked.connect(self.on_goto_body)
         self.view.finger_picker.mirror_selection_clicked.connect(self.on_mirror_selection)
         for key, cb in self.view.vis_checkboxes.items():
@@ -113,8 +122,9 @@ class AnimationPresenter:
             self._reload_for_model(model)
 
     def on_clear_clicked(self):
+        self._set_picker_selection_from_nodes([])
         try:
-            self.maya_adapter.select([], replace=True)
+            self._select_nodes([])
         except Exception:
             pass
         self.view.status_label.setText("")
@@ -124,46 +134,82 @@ class AnimationPresenter:
         if not node_name:
             return
         try:
-            self.maya_adapter.select([node_name], replace=True)
-            self.view.status_label.setText(node_name)
+            self._set_picker_selection_from_nodes([node_name])
+            self._select_nodes([node_name])
+            self.view.status_label.setText(item.text(0))
         except Exception:
             self.view.status_label.setText(f"(not found: {node_name})")
 
     def on_body_region_clicked(self, region_id: str):
-        from ..widgets.body_picker_widget import _BODY_REGIONS
+        self._select_picker_regions([region_id], picker="body")
 
-        for region in _BODY_REGIONS:
-            if region["id"] == region_id:
-                bone_name = region["bone_name"]
-                normalized = normalize_mmd_bone_name(bone_name) or bone_name
-                joint = self._bone_name_to_joint.get(normalized)
-                if joint:
-                    try:
-                        self.maya_adapter.select([joint], replace=True)
-                        self.view.status_label.setText(joint)
-                    except Exception:
-                        self.view.status_label.setText(f"(not found: {bone_name})")
-                else:
-                    self.view.status_label.setText(f"(unmapped: {bone_name})")
-                return
+    def on_body_regions_selected(self, region_ids: list[str]):
+        self._select_picker_regions(region_ids, picker="body")
 
     def on_finger_region_clicked(self, region_id: str):
+        self._select_picker_regions([region_id], picker="finger")
+
+    def on_finger_regions_selected(self, region_ids: list[str]):
+        self._select_picker_regions(region_ids, picker="finger")
+
+    def _select_picker_regions(self, region_ids: list[str], *, picker: str) -> None:
+        """Resolve one or more picker regions and update the UI before Maya blocks."""
+
+        if picker == "body":
+            from ..widgets.body_picker_widget import _BODY_REGIONS as regions
+        else:
+            from ..widgets.finger_picker_widget import _FINGER_REGIONS as regions
+
+        by_id = {region["id"]: region["bone_name"] for region in regions}
+        labels = [by_id[region_id] for region_id in region_ids if region_id in by_id]
+        joints = []
+        for label in labels:
+            normalized = normalize_mmd_bone_name(label) or label
+            joint = self._bone_name_to_joint.get(normalized)
+            if joint and joint not in joints:
+                joints.append(joint)
+
+        self._set_picker_selection_from_nodes(joints)
+        self.view.status_label.setText("、".join(labels))
+        if not joints:
+            if labels:
+                self.view.status_label.setText(f"(未割当: {'、'.join(labels)})")
+            return
+        try:
+            self._select_nodes(joints)
+        except Exception:
+            self.view.status_label.setText(f"(選択失敗: {'、'.join(labels)})")
+
+    def _set_picker_selection_from_nodes(self, nodes: list[str]) -> None:
+        """Reflect Maya joint names as strong picker highlights synchronously."""
+
+        from ..widgets.body_picker_widget import _BODY_REGIONS
         from ..widgets.finger_picker_widget import _FINGER_REGIONS
 
-        for region in _FINGER_REGIONS:
-            if region["id"] == region_id:
-                bone_name = region["bone_name"]
-                normalized = normalize_mmd_bone_name(bone_name) or bone_name
-                joint = self._bone_name_to_joint.get(normalized)
-                if joint:
-                    try:
-                        self.maya_adapter.select([joint], replace=True)
-                        self.view.status_label.setText(joint)
-                    except Exception:
-                        self.view.status_label.setText(f"(not found: {bone_name})")
-                else:
-                    self.view.status_label.setText(f"(unmapped: {bone_name})")
-                return
+        joint_to_bone = {joint: bone for bone, joint in self._bone_name_to_joint.items()}
+        selected_bones = {joint_to_bone[node] for node in nodes if node in joint_to_bone}
+
+        def selected_ids(regions):
+            return [
+                region["id"]
+                for region in regions
+                if (normalize_mmd_bone_name(region["bone_name"]) or region["bone_name"])
+                in selected_bones
+            ]
+
+        if hasattr(self.view.body_picker, "set_selected_regions"):
+            self.view.body_picker.set_selected_regions(selected_ids(_BODY_REGIONS))
+        if hasattr(self.view.finger_picker, "set_selected_regions"):
+            self.view.finger_picker.set_selected_regions(selected_ids(_FINGER_REGIONS))
+
+    def _select_nodes(self, nodes: list[str]) -> None:
+        """Use the API 2.0 selection path when the production adapter exposes it."""
+
+        select_fast = getattr(self.maya_adapter, "select_fast", None)
+        if callable(select_fast):
+            select_fast(nodes, replace=True)
+        else:
+            self.maya_adapter.select(nodes, replace=True)
 
     def on_goto_finger(self):
         self.view.picker_tabs.setCurrentIndex(self.view.TAB_FINGER)
@@ -197,8 +243,10 @@ class AnimationPresenter:
                 mirrored.append(node)
         if mirrored:
             try:
-                self.maya_adapter.select(mirrored, replace=True)
-                self.view.status_label.setText(", ".join(mirrored))
+                self._set_picker_selection_from_nodes(mirrored)
+                self._select_nodes(mirrored)
+                selected_names = [joint_to_bone.get(node, node) for node in mirrored]
+                self.view.status_label.setText("、".join(selected_names))
             except Exception:
                 pass
 
@@ -222,10 +270,21 @@ class AnimationPresenter:
         bone_map = self._build_bone_index_map(model_root)
         self._bone_name_to_joint = self._build_bone_name_map(model_root)
         self._sync_picker_regions()
+        bone_display_names = self._build_bone_display_name_map(bone_map)
+        morph_metadata = self._read_morph_metadata(model_root)
+        self._morph_controller = self._find_morph_controller(model_root)
+        morph_display_names = {
+            index: info.name for index, info in morph_metadata.items()
+        }
         display_json = self._read_display_frames_json(model_root)
-        self._picker_groups = resolve_display_frames(display_json, bone_map)
+        self._picker_groups = resolve_display_frames(
+            display_json,
+            bone_map,
+            bone_display_name_map=bone_display_names,
+            morph_display_name_map=morph_display_names,
+        )
         self._populate_display_frame_tree(self._picker_groups)
-        self._reload_morph_tab(model_root)
+        self._reload_morph_tab(model_root, morph_metadata)
         self._sync_visibility_controls(model_root)
         self.view.status_label.setText("")
 
@@ -328,10 +387,64 @@ class AnimationPresenter:
                 continue
         return name_map
 
+    def _build_bone_display_name_map(self, bone_map: dict[int, str]) -> dict[int, str]:
+        names = {}
+        for index, joint in bone_map.items():
+            try:
+                if self.maya_adapter.attribute_exists(ATTR_MMD_BONE_NAME, joint):
+                    name = self.maya_adapter.get_attr(f"{joint}.{ATTR_MMD_BONE_NAME}")
+                    if name:
+                        names[index] = str(name)
+            except Exception:
+                continue
+        return names
+
+    def _read_morph_metadata(self, model_root: str) -> dict[int, MorphInfo]:
+        """Read authoritative PMX morph names/panels keyed by global index."""
+
+        try:
+            if not self.maya_adapter.attribute_exists(ATTR_MMD_MORPH_DATA, model_root):
+                return {}
+            raw = self.maya_adapter.get_attr(f"{model_root}.{ATTR_MMD_MORPH_DATA}")
+            parsed = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError, OSError):
+            return {}
+
+        entries = []
+        if isinstance(parsed, list):
+            entries = [(str(position), entry, True) for position, entry in enumerate(parsed)]
+        elif isinstance(parsed, dict):
+            entries = [(str(key), entry, False) for key, entry in parsed.items()]
+
+        result = {}
+        for fallback_key, raw_entry, is_raw_pmx in entries:
+            if not isinstance(raw_entry, dict):
+                continue
+            entry = dict(raw_entry)
+            if is_raw_pmx:
+                entry["_pmx_type_raw"] = True
+            name = str(entry.get("name_jp") or entry.get("name") or fallback_key)
+            info = morph_info_from_presenter_entry(name, entry)
+            index = info.index
+            if index < 0:
+                try:
+                    index = int(fallback_key)
+                except (TypeError, ValueError):
+                    continue
+                info = MorphInfo(
+                    name=info.name,
+                    name_english=info.name_english,
+                    panel=info.panel,
+                    morph_type=info.morph_type,
+                    index=index,
+                )
+            result[index] = info
+        return result
+
     def _read_display_frames_json(self, model_root: str) -> str | None:
         try:
             if not self.maya_adapter.attribute_exists(ATTR_MMD_DISPLAY_FRAMES_JSON, model_root):
-                return None
+                return {}
             return self.maya_adapter.get_attr(f"{model_root}.{ATTR_MMD_DISPLAY_FRAMES_JSON}")
         except Exception:
             return None
@@ -343,9 +456,7 @@ class AnimationPresenter:
         tree.clear()
 
         for group in groups:
-            label = group.name
-            if group.name_english and group.name_english != group.name:
-                label = f"{group.name} ({group.name_english})"
+            label = group.name or group.name_english
             group_item = QTreeWidgetItem([label])
 
             for picker_item in group.items:
@@ -360,6 +471,8 @@ class AnimationPresenter:
 
     @staticmethod
     def _item_display_text(picker_item) -> str:
+        if picker_item.display_name:
+            return picker_item.display_name
         name = picker_item.resolved_name
         if not name:
             kind = "bone" if picker_item.element_type == 0 else "morph"
@@ -369,15 +482,21 @@ class AnimationPresenter:
 
     # -- Morph tab ---------------------------------------------------------
 
-    def _reload_morph_tab(self, model_root: str):
+    def _reload_morph_tab(
+        self,
+        model_root: str,
+        morph_metadata: dict[int, MorphInfo] | None = None,
+    ):
         self._clear_morph_tab()
-        morph_infos = self._collect_morph_infos(model_root)
+        morph_infos = self._collect_morph_infos(model_root, morph_metadata or {})
         categorized = categorize_morphs(morph_infos)
         self._populate_morph_groups(categorized)
 
     def _clear_morph_tab(self):
         self._morph_sliders.clear()
         self._morph_targets.clear()
+        self._network_morph_targets.clear()
+        self._morph_indices.clear()
         layout = self.view.morph_groups_layout
         while layout.count() > 1:
             child = layout.takeAt(0)
@@ -385,21 +504,81 @@ class AnimationPresenter:
             if widget:
                 widget.deleteLater()
 
-    def _collect_morph_infos(self, model_root: str) -> list[MorphInfo]:
+    def _collect_morph_infos(
+        self,
+        model_root: str,
+        morph_metadata: dict[int, MorphInfo] | None = None,
+    ) -> list[MorphInfo]:
+        metadata = morph_metadata or {}
+        self._morph_indices.update({info.name: info.index for info in metadata.values()})
+        metadata_by_name = {info.name: info for info in metadata.values()}
         blend_nodes = self._find_blend_shape_nodes(model_root)
         seen_names: set[str] = set()
         unique_morphs: list[MorphInfo] = []
         for bs_node in blend_nodes:
-            names_json = self._read_blend_morph_names(bs_node)
-            if names_json:
-                morphs = read_morph_list_from_blendshape_json(names_json, panel=4)
-                for m in morphs:
-                    targets = self._morph_targets.setdefault(m.name, [])
-                    targets.append((bs_node, m.index))
-                    if m.name not in seen_names:
-                        seen_names.add(m.name)
-                        unique_morphs.append(m)
+            entries = self._read_blend_morph_entries(bs_node)
+            for weight_index, entry in entries.items():
+                raw_name = str(entry.get("name", ""))
+                global_index = entry.get("index")
+                info = metadata.get(global_index) if isinstance(global_index, int) else None
+                info = info or metadata_by_name.get(raw_name)
+                if info is None:
+                    info = MorphInfo(raw_name, "", 4, "vertex", weight_index)
+                self._morph_targets.setdefault(info.name, []).append((bs_node, weight_index))
+                if info.name not in seen_names:
+                    seen_names.add(info.name)
+                    unique_morphs.append(info)
+
+        self._collect_network_morph_targets(model_root, metadata, unique_morphs, seen_names)
+        for info in sorted(metadata.values(), key=lambda item: item.index):
+            if info.name not in seen_names:
+                seen_names.add(info.name)
+                unique_morphs.append(info)
         return unique_morphs
+
+    def _find_morph_controller(self, model_root: str) -> str | None:
+        try:
+            if not self.maya_adapter.attribute_exists("mmd_morph_controller", model_root):
+                return None
+            controllers = self.maya_adapter.list_connections(
+                f"{model_root}.mmd_morph_controller",
+                source=True,
+                destination=False,
+            ) or []
+            return controllers[0] if len(controllers) == 1 else None
+        except Exception:
+            return None
+
+    def _collect_network_morph_targets(
+        self,
+        model_root: str,
+        metadata: dict[int, MorphInfo],
+        morphs: list[MorphInfo],
+        seen_names: set[str],
+    ) -> None:
+        try:
+            network_nodes = self.maya_adapter.ls(type="network") or []
+        except Exception:
+            return
+        for node in network_nodes:
+            try:
+                if not self.maya_adapter.attribute_exists("mmd_morph_type", node):
+                    continue
+                if self.maya_adapter.attribute_exists("mmd_model_root", node):
+                    roots = self.maya_adapter.list_connections(f"{node}.mmd_model_root") or []
+                    if roots and model_root not in roots:
+                        continue
+                name = self.maya_adapter.get_attr(f"{node}.mmd_morph_name") or node
+                index = -1
+                if self.maya_adapter.attribute_exists("mmd_morph_index", node):
+                    index = int(self.maya_adapter.get_attr(f"{node}.mmd_morph_index"))
+                info = metadata.get(index) or MorphInfo(str(name), "", 4, "other", index)
+                self._network_morph_targets.setdefault(info.name, []).append(f"{node}.weight")
+                if info.name not in seen_names:
+                    seen_names.add(info.name)
+                    morphs.append(info)
+            except Exception:
+                continue
 
     def _find_blend_shape_nodes(self, model_root: str) -> list[str]:
         try:
@@ -420,51 +599,61 @@ class AnimationPresenter:
         except Exception:
             return []
 
-    def _read_blend_morph_names(self, bs_node: str) -> dict[str, str] | None:
+    def _read_blend_morph_entries(self, bs_node: str) -> dict[int, dict[str, object]]:
         try:
             if not self.maya_adapter.attribute_exists(
                 ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, bs_node
             ):
-                return None
-            import json
-
+                return {}
             raw = self.maya_adapter.get_attr(
                 f"{bs_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}"
             )
             if not raw:
-                return None
-            parsed = parse_blendshape_morph_names(json.loads(raw))
-            return {str(index): name for index, name in parsed.items()} or None
+                return {}
+            return parse_blendshape_morph_entries(json.loads(raw))
         except Exception:
-            return None
+            return {}
 
     def _populate_morph_groups(self, categorized: CategorizedMorphs):
         from ..qt_compat import (
-            QGroupBox,
             QHBoxLayout,
             QLabel,
+            QPushButton,
             QSlider,
             QVBoxLayout,
+            QWidget,
             Qt,
         )
 
         layout = self.view.morph_groups_layout
         categories = [
-            (PANEL_NAMES[1], categorized.eyebrow),
-            (PANEL_NAMES[2], categorized.eye),
-            (PANEL_NAMES[3], categorized.mouth),
-            (PANEL_NAMES[4], categorized.other),
+            (PANEL_GROUP_LABELS[1], categorized.eyebrow),
+            (PANEL_GROUP_LABELS[2], categorized.eye),
+            (PANEL_GROUP_LABELS[3], categorized.mouth),
+            (PANEL_GROUP_LABELS[4], categorized.other),
         ]
 
         for cat_name, morphs in categories:
             if not morphs:
                 continue
-            group = QGroupBox(f"{cat_name} ({len(morphs)})")
-            group.setCheckable(True)
-            group.setChecked(True)
+            group = QWidget()
             group_layout = QVBoxLayout()
-            group_layout.setContentsMargins(4, 4, 4, 4)
+            group_layout.setContentsMargins(0, 0, 0, 0)
             group_layout.setSpacing(2)
+            header = QPushButton(f"{cat_name} ({len(morphs)})  ▾")
+            header.setCheckable(True)
+            header.setChecked(True)
+            header.setStyleSheet(
+                "QPushButton { text-align: left; padding: 4px 6px; background: #3f3f3f; "
+                "color: #d0d0d0; border: none; } "
+                "QPushButton:hover { background: #484848; }"
+            )
+            group_layout.addWidget(header)
+
+            content = QWidget()
+            content_layout = QVBoxLayout(content)
+            content_layout.setContentsMargins(4, 2, 4, 4)
+            content_layout.setSpacing(2)
 
             for morph in morphs:
                 row = QHBoxLayout()
@@ -475,10 +664,16 @@ class AnimationPresenter:
 
                 slider = QSlider(Qt.Horizontal)
                 slider.setRange(0, 100)
-                slider.setValue(0)
+                initial_value = round(self._morph_value(morph.name) * 100.0)
+                slider.setValue(initial_value)
+                slider.setEnabled(
+                    (self._morph_controller is not None and morph.index >= 0)
+                    or bool(self._morph_targets.get(morph.name))
+                    or bool(self._network_morph_targets.get(morph.name))
+                )
                 row.addWidget(slider, 1)
 
-                value_label = QLabel("0")
+                value_label = QLabel(str(initial_value))
                 value_label.setMinimumWidth(25)
                 row.addWidget(value_label)
 
@@ -489,23 +684,72 @@ class AnimationPresenter:
                     )
                 )
                 self._morph_sliders[morph_name] = slider
-                group_layout.addLayout(row)
+                content_layout.addLayout(row)
 
             group.setLayout(group_layout)
+            group_layout.addWidget(content)
+
+            def toggle_group(
+                expanded,
+                panel=content,
+                button=header,
+                title=cat_name,
+                count=len(morphs),
+            ):
+                panel.setVisible(expanded)
+                button.setText(f"{title} ({count})  {'▾' if expanded else '▸'}")
+
+            header.toggled.connect(toggle_group)
             insert_pos = max(0, layout.count() - 1)
             layout.insertWidget(insert_pos, group)
 
     def _on_morph_slider_changed(self, morph_name: str, value: int, label):
         label.setText(str(value))
         weight = value / 100.0
-        targets = self._morph_targets.get(morph_name)
-        if not targets:
+        morph_index = self._morph_indices.get(morph_name, -1)
+        if self._morph_controller and morph_index >= 0:
+            try:
+                self.maya_adapter.set_attr(
+                    f"{self._morph_controller}.inputWeight[{morph_index}]",
+                    weight,
+                )
+            except Exception as exc:
+                logger.debug("Morph controller weight set failed for %s: %s", morph_name, exc)
             return
+        targets = self._morph_targets.get(morph_name, [])
         for bs_node, weight_idx in targets:
             try:
                 self.maya_adapter.set_attr(f"{bs_node}.weight[{weight_idx}]", weight)
             except Exception as exc:
                 logger.debug("Morph slider set failed for %s: %s", morph_name, exc)
+        for plug in self._network_morph_targets.get(morph_name, []):
+            try:
+                self.maya_adapter.set_attr(plug, weight)
+            except Exception as exc:
+                logger.debug("Morph network weight set failed for %s: %s", morph_name, exc)
+
+    def _morph_value(self, morph_name: str) -> float:
+        morph_index = self._morph_indices.get(morph_name, -1)
+        if self._morph_controller and morph_index >= 0:
+            try:
+                return float(
+                    self.maya_adapter.get_attr(
+                        f"{self._morph_controller}.inputWeight[{morph_index}]"
+                    )
+                )
+            except Exception:
+                pass
+        targets = self._morph_targets.get(morph_name, [])
+        plugs = [f"{node}.weight[{index}]" for node, index in targets]
+        plugs.extend(self._network_morph_targets.get(morph_name, []))
+        for plug in plugs:
+            try:
+                value = self.maya_adapter.get_attr(plug)
+                if value is not None:
+                    return float(value)
+            except Exception:
+                continue
+        return 0.0
 
     # -- Tools section ----------------------------------------------------
 

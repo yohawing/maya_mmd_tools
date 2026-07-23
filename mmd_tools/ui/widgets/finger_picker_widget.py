@@ -74,6 +74,7 @@ class FingerPickerWidget(SvgPickerWidget):
     """Clickable Finger picker canvas using the shipped 268×378 artwork."""
 
     region_clicked = Signal(str)
+    regions_selected = Signal(object)
     mirror_selection_clicked = Signal()
     goto_body_clicked = Signal()
 
@@ -81,7 +82,9 @@ class FingerPickerWidget(SvgPickerWidget):
         super().__init__(
             _ASSET_DIR / "animpicker_finger.svg",
             ordered_region_ids=_FINGER_SHAPE_REGION_IDS,
+            tooltip_labels={region["id"]: region["bone_name"] for region in _FINGER_REGIONS},
             parent=parent,
         )
         self.setObjectName("FingerPickerWidget")
         self.shape_clicked.connect(self.region_clicked.emit)
+        self.shapes_selected.connect(self.regions_selected.emit)

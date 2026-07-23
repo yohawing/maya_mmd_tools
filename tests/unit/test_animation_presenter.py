@@ -192,17 +192,27 @@ class _FakeLayout:
 class _FakeBodyPicker:
     def __init__(self):
         self.region_clicked = _FakeSignal()
+        self.regions_selected = _FakeSignal()
         self.goto_finger_clicked = _FakeSignal()
         self.mirror_selection_clicked = _FakeSignal()
         self.reset_pose_clicked = _FakeSignal()
         self.ik_toggled = _FakeSignal()
+        self.selected_regions = []
+
+    def set_selected_regions(self, region_ids):
+        self.selected_regions = list(region_ids)
 
 
 class _FakeFingerPicker:
     def __init__(self):
         self.region_clicked = _FakeSignal()
+        self.regions_selected = _FakeSignal()
         self.goto_body_clicked = _FakeSignal()
         self.mirror_selection_clicked = _FakeSignal()
+        self.selected_regions = []
+
+    def set_selected_regions(self, region_ids):
+        self.selected_regions = list(region_ids)
 
 
 class _FakeTabWidget:
@@ -247,7 +257,7 @@ class _FakeView:
         self.picker_tabs = _FakeTabWidget()
         self.vis_checkboxes = {
             k: _FakeCheckBox(k)
-            for k in ("mesh", "joints", "morphs", "colliders")
+            for k in ("mesh", "joints", "colliders")
         }
         self.tool_buttons = {
             k: _FakeButton()
@@ -275,11 +285,12 @@ class _FakeAppState:
 
 class _FakeAdapter:
     def __init__(self, joints_by_index=None, display_json=None,
-                 blend_shapes=None, bone_names=None):
+                 blend_shapes=None, bone_names=None, morph_data=None):
         self._joints_by_index = joints_by_index or {}
         self._display_json = display_json
         self._blend_shapes = blend_shapes or {}
         self._bone_names = bone_names or {}
+        self._morph_data = morph_data
         self.selected = []
         self._set_attrs = {}
         self._attrs: dict[tuple[str, str], object] = {}
@@ -336,6 +347,8 @@ class _FakeAdapter:
             for mesh_bs in self._blend_shapes.values():
                 if node in mesh_bs and "morph_json" in mesh_bs[node]:
                     return True
+        if attr == "mmdMorphData":
+            return self._morph_data is not None
         if (node, attr) in self._attrs:
             return True
         return False
@@ -357,6 +370,8 @@ class _FakeAdapter:
             for mesh_bs in self._blend_shapes.values():
                 if node in mesh_bs and "morph_json" in mesh_bs[node]:
                     return json.dumps(mesh_bs[node]["morph_json"])
+        if attr == "mmdMorphData":
+            return json.dumps(self._morph_data, ensure_ascii=False)
         return None
 
     def set_attr(self, attr_path, value):
@@ -409,10 +424,22 @@ _USER_ROLE = 0x0100
 
 
 class TestAnimationPresenter(unittest.TestCase):
-    def _make(self, joints=None, display_json=None, model_root=None):
+    def _make(
+        self,
+        joints=None,
+        display_json=None,
+        model_root=None,
+        bone_names=None,
+        morph_data=None,
+    ):
         view = _FakeView()
         app_state = _FakeAppState(model_root=model_root)
-        adapter = _FakeAdapter(joints_by_index=joints or {}, display_json=display_json)
+        adapter = _FakeAdapter(
+            joints_by_index=joints or {},
+            display_json=display_json,
+            bone_names=bone_names,
+            morph_data=morph_data,
+        )
         presenter = AnimationPresenter(view, app_state, maya_adapter=adapter)
         return presenter, view, app_state, adapter
 
@@ -557,6 +584,27 @@ class TestAnimationPresenter(unittest.TestCase):
         child = view.display_frame_tree.topLevelItem(0).child(0)
         self.assertEqual(child.text(0), "center_jnt")
 
+    def test_display_uses_japanese_bone_and_morph_metadata_names(self):
+        with patch(
+            "mmd_tools.ui.presenters.animation_presenter"
+            ".AnimationPresenter._populate_morph_groups"
+        ):
+            _presenter, view, _, _ = self._make(
+                joints={0: "|root|ns:center_jnt"},
+                bone_names={"|root|ns:center_jnt": "センター"},
+                display_json=SAMPLE_FRAMES_JSON,
+                morph_data=[
+                    {"index": 0, "name_jp": "笑い", "name_en": "Smile", "panel": 2, "type": 1},
+                    {"index": 1, "name_jp": "まばたき", "name_en": "Blink", "panel": 2, "type": 1},
+                ],
+                model_root="test_model",
+            )
+
+        self.assertEqual(view.display_frame_tree.topLevelItem(0).child(0).text(0), "センター")
+        expressions = view.display_frame_tree.topLevelItem(1)
+        self.assertEqual(expressions.child(0).text(0), "笑い")
+        self.assertEqual(expressions.child(1).text(0), "まばたき")
+
     def test_model_combo_updated_on_model_list_signal(self):
         presenter, view, app_state, _ = self._make()
 
@@ -593,13 +641,14 @@ class TestBodyPickerPresenter(unittest.TestCase):
         )
         presenter.on_body_region_clicked("head")
         self.assertEqual(adapter.selected, ["head_jnt"])
-        self.assertEqual(view.status_label.text(), "head_jnt")
+        self.assertEqual(view.status_label.text(), "頭")
+        self.assertEqual(view.body_picker.selected_regions, ["head"])
 
     def test_region_click_unmapped_bone(self):
         presenter, view, _, adapter = self._make_with_bones(bone_names={})
         presenter.on_body_region_clicked("head")
         self.assertEqual(adapter.selected, [])
-        self.assertIn("unmapped", view.status_label.text())
+        self.assertIn("未割当", view.status_label.text())
 
     def test_goto_finger_switches_tab(self):
         presenter, view, _, _ = self._make_with_bones()
@@ -617,7 +666,21 @@ class TestBodyPickerPresenter(unittest.TestCase):
         )
         presenter.on_finger_region_clicked("left_thumb_0")
         self.assertEqual(adapter.selected, ["left_thumb_jnt"])
-        self.assertEqual(view.status_label.text(), "left_thumb_jnt")
+        self.assertEqual(view.status_label.text(), "左親指０")
+        self.assertEqual(view.finger_picker.selected_regions, ["left_thumb_0"])
+
+    def test_rectangle_selection_selects_multiple_bones(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭", "neck_jnt": "首", "arm_jnt": "左腕"},
+        )
+
+        view.body_picker.regions_selected.emit(["head", "neck", "left_upper_arm"])
+
+        self.assertEqual(adapter.selected, ["head_jnt", "neck_jnt", "arm_jnt"])
+        self.assertEqual(
+            set(view.body_picker.selected_regions),
+            {"head", "neck", "left_upper_arm"},
+        )
 
     def test_mirror_selection(self):
         presenter, view, _, adapter = self._make_with_bones(
@@ -657,10 +720,15 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         ".AnimationPresenter._populate_morph_groups"
     )
 
-    def _make_with_morphs(self, blend_shapes=None, model_root="test_model"):
+    def _make_with_morphs(
+        self,
+        blend_shapes=None,
+        model_root="test_model",
+        morph_data=None,
+    ):
         view = _FakeView()
         app_state = _FakeAppState(model_root=model_root)
-        adapter = _FakeAdapter(blend_shapes=blend_shapes or {})
+        adapter = _FakeAdapter(blend_shapes=blend_shapes or {}, morph_data=morph_data)
         with patch(self._POPULATE_PATH):
             presenter = AnimationPresenter(view, app_state, maya_adapter=adapter)
         adapter._set_attrs.clear()
@@ -676,6 +744,28 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         self.assertIn("笑い", names)
         self.assertIn("怒り", names)
         self.assertIn("まばたき", names)
+
+    def test_authoritative_morph_metadata_supplies_panel_and_global_index(self):
+        morph_data = [
+            {"index": 19, "name_jp": "笑い", "name_en": "Smile", "panel": 2, "type": 1},
+        ]
+        blend_shapes = {
+            "body_mesh": {
+                "blendShape1": {
+                    "type": "blendShape",
+                    "morph_json": {"0": {"name": "笑い", "index": 19}},
+                }
+            }
+        }
+        presenter, _, _, _ = self._make_with_morphs(
+            blend_shapes=blend_shapes,
+            morph_data=morph_data,
+        )
+
+        info = presenter._read_morph_metadata("test_model")[19]
+        self.assertEqual(info.name, "笑い")
+        self.assertEqual(info.panel, 2)
+        self.assertEqual(presenter._morph_targets["笑い"], [("blendShape1", 0)])
 
     def test_morph_targets_tracked(self):
         presenter, _, _, _ = self._make_with_morphs(

@@ -162,10 +162,15 @@ class _Layout:
 class _Picker:
     def __init__(self):
         self.region_clicked = _Signal()
+        self.regions_selected = _Signal()
         self.goto_finger_clicked = _Signal()
         self.goto_body_clicked = _Signal()
         self.mirror_selection_clicked = _Signal()
         self.ik_toggled = _Signal()
+        self.selected_regions = []
+
+    def set_selected_regions(self, region_ids):
+        self.selected_regions = list(region_ids)
 
 
 class _CheckBox:
@@ -199,7 +204,7 @@ class _View:
         self.picker_tabs = _TabWidget()
         self.vis_checkboxes = {
             k: _CheckBox()
-            for k in ("mesh", "joints", "morphs", "colliders")
+            for k in ("mesh", "joints", "colliders")
         }
         self.tool_buttons = {
             k: _Btn()
@@ -331,6 +336,25 @@ class TestAnimationPresenterE2E(MayaTestBase):
             self.skipTest("頭 bone not in this model")
         sel = cmds.ls(selection=True) or []
         self.assertTrue(len(sel) > 0, "Should select a joint for head region")
+
+    def test_morph_picker_uses_japanese_metadata_and_drives_weight(self):
+        root = self._import_model("test_morph_model")
+        presenter, _, _ = self._make_presenter(root)
+
+        metadata = presenter._read_morph_metadata(root)
+        self.assertTrue(metadata, "Morph fixture should expose authoritative metadata")
+        self.assertTrue(all(info.name for info in metadata.values()))
+        self.assertTrue(presenter._morph_targets, "Vertex morph targets should resolve")
+
+        morph_name = next(iter(presenter._morph_targets))
+        blend_shape, weight_index = presenter._morph_targets[morph_name][0]
+        presenter._on_morph_slider_changed(morph_name, 50, _Label("0"))
+
+        self.assertAlmostEqual(
+            cmds.getAttr(f"{blend_shape}.weight[{weight_index}]"),
+            0.5,
+            places=4,
+        )
 
     def test_reset_pose_via_tool(self):
         root = self._import_model()
