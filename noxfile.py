@@ -386,6 +386,81 @@ def _convert_mayapy_path_options(mayapy: Path, args: list[str], path_options: se
     return _convert_maya_path_options(mayapy, ROOT, args, path_options)
 
 
+def _probe_passthrough(
+    args: list[str],
+    value_options: set[str],
+    flag_options: set[str] | None = None,
+) -> list[str]:
+    """Keep only options accepted by a probe script, excluding Nox's ``--maya``."""
+    flags = flag_options or set()
+    passthrough: list[str] = []
+    index = 0
+    while index < len(args):
+        option = args[index]
+        if option == "--maya" and index + 1 < len(args):
+            index += 2
+        elif option in value_options and index + 1 < len(args):
+            passthrough.extend((option, args[index + 1]))
+            index += 2
+        elif option in flags:
+            passthrough.append(option)
+            index += 1
+        else:
+            index += 1
+    return passthrough
+
+
+def _clear_probe_report(session: nox.Session, report_path: Path, label: str) -> None:
+    """Remove a stale probe report or fail with a contextual error."""
+    try:
+        report_path.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        session.error(f"Unable to clear stale {label} report {report_path}: {exc}")
+
+
+def _read_probe_report(session: nox.Session, report_path: Path, label: str) -> dict[str, object]:
+    """Load a required JSON object emitted by a probe."""
+    if not report_path.is_file():
+        session.error(f"{label} report missing: {report_path}")
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        session.error(f"Invalid {label} report {report_path}: {exc}")
+    if not isinstance(report, dict):
+        session.error(f"Invalid {label} report root {report_path}: expected object")
+    return report
+
+
+def _run_mayapy_probe(
+    session: nox.Session,
+    mayapy: Path,
+    script: str,
+    args: list[str],
+    path_options: set[str],
+    *,
+    utf8: bool = False,
+    success_codes: tuple[int, ...] | None = None,
+) -> None:
+    """Run a viewport probe with the repository's standard mayapy environment."""
+    extra_env = {"MAYA_SKIP_USERSETUP_PY": "1"}
+    if utf8:
+        extra_env["PYTHONIOENCODING"] = "utf-8"
+    run_options: dict[str, object] = {
+        "env": _mayapy_env(mayapy, **extra_env),
+        "external": True,
+    }
+    if success_codes is not None:
+        run_options["success_codes"] = success_codes
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, script),
+        *_convert_mayapy_path_options(mayapy, args, path_options),
+        **run_options,
+    )
+
+
 def _copy_parity_vmd_for_mayapy(session: nox.Session, args: list[str]) -> list[str]:
     """Copy a non-ASCII --parity-vmd path to an ASCII build path for mayapy argv."""
     if "--parity-vmd" not in args:
@@ -1631,22 +1706,11 @@ def humanik_definition_smoke(session: nox.Session) -> None:
     """
     maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     mayapy = _mayapy(maya_ver)
-    passthrough: list[str] = []
-    args = list(session.posargs)
-    i = 0
-    while i < len(args):
-        if args[i] == "--maya" and i + 1 < len(args):
-            i += 2
-            continue
-        if args[i] in {"--out", "--name", "--fixture"} and i + 1 < len(args):
-            passthrough.extend([args[i], args[i + 1]])
-            i += 2
-            continue
-        if args[i] == "--create-control-rig":
-            passthrough.append(args[i])
-            i += 1
-            continue
-        i += 1
+    passthrough = _probe_passthrough(
+        list(session.posargs),
+        {"--out", "--name", "--fixture"},
+        {"--create-control-rig"},
+    )
     session.run(
         str(mayapy),
         _mayapy_script(mayapy, "tests/viewport/humanik_definition_smoke.py"),
@@ -1670,7 +1734,6 @@ def humanik_retarget_smoke(session: nox.Session) -> None:
     """
     maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     mayapy = _mayapy(maya_ver)
-    passthrough: list[str] = []
     path_options = {"--pmx", "--target-pmx", "--vmd", "--out"}
     value_options = path_options | {
         "--pmx-base64",
@@ -1682,23 +1745,13 @@ def humanik_retarget_smoke(session: nox.Session) -> None:
         "--motion-frames",
         "--evaluation-modes",
     }
-    args = list(session.posargs)
-    i = 0
-    while i < len(args):
-        if args[i] == "--maya" and i + 1 < len(args):
-            i += 2
-            continue
-        if args[i] in value_options and i + 1 < len(args):
-            passthrough.extend([args[i], args[i + 1]])
-            i += 2
-            continue
-        i += 1
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/viewport/humanik_retarget_smoke.py"),
-        *_convert_mayapy_path_options(mayapy, passthrough, path_options),
-        env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1"),
-        external=True,
+    passthrough = _probe_passthrough(list(session.posargs), value_options)
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/humanik_retarget_smoke.py",
+        passthrough,
+        path_options,
     )
 
 
@@ -1707,24 +1760,13 @@ def humanik_constraint_report_smoke(session: nox.Session) -> None:
     """Classify MMD rig ownership without modifying scene connections."""
     maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     mayapy = _mayapy(maya_ver)
-    passthrough: list[str] = []
-    args = list(session.posargs)
-    i = 0
-    while i < len(args):
-        if args[i] == "--maya" and i + 1 < len(args):
-            i += 2
-            continue
-        if args[i] in {"--pmx", "--out"} and i + 1 < len(args):
-            passthrough.extend([args[i], args[i + 1]])
-            i += 2
-            continue
-        i += 1
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/viewport/humanik_constraint_report_smoke.py"),
-        *_convert_mayapy_path_options(mayapy, passthrough, {"--pmx", "--out"}),
-        env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1"),
-        external=True,
+    path_options = {"--pmx", "--out"}
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/humanik_constraint_report_smoke.py",
+        _probe_passthrough(list(session.posargs), path_options),
+        path_options,
     )
 
 
@@ -1733,24 +1775,13 @@ def humanik_transaction_smoke(session: nox.Session) -> None:
     """Verify S2 HumanIK rollback and idempotent restore under mayapy."""
     maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     mayapy = _mayapy(maya_ver)
-    passthrough: list[str] = []
-    args = list(session.posargs)
-    i = 0
-    while i < len(args):
-        if args[i] == "--maya" and i + 1 < len(args):
-            i += 2
-            continue
-        if args[i] in {"--pmx", "--out"} and i + 1 < len(args):
-            passthrough.extend([args[i], args[i + 1]])
-            i += 2
-            continue
-        i += 1
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/viewport/humanik_transaction_smoke.py"),
-        *_convert_mayapy_path_options(mayapy, passthrough, {"--pmx", "--out"}),
-        env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1"),
-        external=True,
+    path_options = {"--pmx", "--out"}
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/humanik_transaction_smoke.py",
+        _probe_passthrough(list(session.posargs), path_options),
+        path_options,
     )
 
 
@@ -1759,24 +1790,13 @@ def humanik_target_preview_smoke(session: nox.Session) -> None:
     """Verify S3 exclusive TARGET preview and NEUTRAL restore."""
     maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     mayapy = _mayapy(maya_ver)
-    passthrough: list[str] = []
-    args = list(session.posargs)
-    i = 0
-    while i < len(args):
-        if args[i] == "--maya" and i + 1 < len(args):
-            i += 2
-            continue
-        if args[i] in {"--pmx", "--out"} and i + 1 < len(args):
-            passthrough.extend([args[i], args[i + 1]])
-            i += 2
-            continue
-        i += 1
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/viewport/humanik_target_preview_smoke.py"),
-        *_convert_mayapy_path_options(mayapy, passthrough, {"--pmx", "--out"}),
-        env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1"),
-        external=True,
+    path_options = {"--pmx", "--out"}
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/humanik_target_preview_smoke.py",
+        _probe_passthrough(list(session.posargs), path_options),
+        path_options,
     )
 
 
@@ -1789,29 +1809,19 @@ def humanik_bake_smoke(session: nox.Session) -> None:
     requested_mode = _option(args, "--evaluation-mode", "")
     modes = [requested_mode] if requested_mode else ["off", "serial", "parallel"]
     out_value = _option(args, "--out", str(ROOT / "build/reports/humanik_bake_smoke.json"))
-    passthrough: list[str] = []
     value_options = {"--pmx", "--vmd", "--start", "--end"}
     path_options = {"--pmx", "--vmd", "--out"}
-    i = 0
-    while i < len(args):
-        if args[i] in {"--maya", "--evaluation-mode", "--out"} and i + 1 < len(args):
-            i += 2
-            continue
-        if args[i] in value_options and i + 1 < len(args):
-            passthrough.extend([args[i], args[i + 1]])
-            i += 2
-            continue
-        i += 1
+    passthrough = _probe_passthrough(args, value_options)
     base_out = Path(out_value)
     for mode in modes:
         mode_out = base_out if requested_mode else base_out.with_name(f"{base_out.stem}.{mode}{base_out.suffix}")
         mode_args = [*passthrough, "--evaluation-mode", mode, "--out", str(mode_out)]
-        session.run(
-            str(mayapy),
-            _mayapy_script(mayapy, "tests/viewport/humanik_bake_smoke.py"),
-            *_convert_mayapy_path_options(mayapy, mode_args, path_options),
-            env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1"),
-            external=True,
+        _run_mayapy_probe(
+            session,
+            mayapy,
+            "tests/viewport/humanik_bake_smoke.py",
+            mode_args,
+            path_options,
         )
 
 
@@ -1824,37 +1834,22 @@ def humanik_roundtrip_smoke(session: nox.Session) -> None:
     requested_mode = _option(args, "--evaluation-mode", "")
     modes = [requested_mode] if requested_mode else ["off", "serial", "parallel"]
     out_value = _option(args, "--out", str(ROOT / "build/reports/humanik_roundtrip_smoke.json"))
-    passthrough: list[str] = []
     value_options = {"--pmx", "--vmd", "--start", "--end", "--hik-profile", "--characterization-stance"}
     path_options = {"--pmx", "--vmd", "--out"}
-    i = 0
-    while i < len(args):
-        if args[i] in {"--maya", "--evaluation-mode", "--out"} and i + 1 < len(args):
-            i += 2
-            continue
-        if args[i] in value_options and i + 1 < len(args):
-            passthrough.extend([args[i], args[i + 1]])
-            i += 2
-            continue
-        i += 1
+    passthrough = _probe_passthrough(args, value_options)
     base_out = Path(out_value)
     failed_modes: list[str] = []
     for mode in modes:
         mode_out = base_out if requested_mode else base_out.with_name(f"{base_out.stem}.{mode}{base_out.suffix}")
-        try:
-            mode_out.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            session.error(f"Unable to clear stale HumanIK S5 report {mode_out}: {exc}")
+        _clear_probe_report(session, mode_out, "HumanIK S5")
         mode_args = [*passthrough, "--evaluation-mode", mode, "--out", str(mode_out)]
-        session.run(
-            str(mayapy),
-            _mayapy_script(mayapy, "tests/viewport/humanik_roundtrip_smoke.py"),
-            *_convert_mayapy_path_options(mayapy, mode_args, path_options),
-            env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1"),
+        _run_mayapy_probe(
+            session,
+            mayapy,
+            "tests/viewport/humanik_roundtrip_smoke.py",
+            mode_args,
+            path_options,
             success_codes=(0, 1),
-            external=True,
         )
         if not mode_out.is_file():
             failed_modes.append(f"{mode}: report missing ({mode_out})")
@@ -1917,26 +1912,17 @@ def humanik_aida_wave_probe(session: nox.Session) -> None:
         "--hik-profile", profile_value,
         "--characterization-stance", stance_value,
     ]
-    try:
-        report_path.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        session.error(f"Unable to clear stale Aida HumanIK report {report_path}: {exc}")
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/viewport/humanik_roundtrip_smoke.py"),
-        *_convert_mayapy_path_options(mayapy, passthrough, {"--pmx", "--vmd", "--out"}),
-        env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1", PYTHONIOENCODING="utf-8"),
+    _clear_probe_report(session, report_path, "Aida HumanIK")
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/humanik_roundtrip_smoke.py",
+        passthrough,
+        {"--pmx", "--vmd", "--out"},
+        utf8=True,
         success_codes=(0, 1),
-        external=True,
     )
-    if not report_path.is_file():
-        session.error(f"Aida HumanIK report missing: {report_path}")
-    try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        session.error(f"Invalid Aida HumanIK report {report_path}: {exc}")
+    report = _read_probe_report(session, report_path, "Aida HumanIK")
     required = (
         "sourceAssignments",
         "targetAssignments",
@@ -1986,42 +1972,24 @@ def humanik_vmd_parity_smoke(session: nox.Session) -> None:
     modes = [requested_mode] if requested_mode else ["off", "serial", "parallel"]
     allow_stop = "--allow-stop" in args
     out_value = _option(args, "--out", str(ROOT / "build/reports/humanik_vmd_parity_smoke.json"))
-    passthrough: list[str] = []
     value_options = {"--model", "--motion", "--frames"}
     path_options = {"--model", "--motion", "--out"}
-    i = 0
-    while i < len(args):
-        if args[i] in {"--maya", "--evaluation", "--out", "--allow-stop"}:
-            i += 1 if args[i] == "--allow-stop" else 2
-            continue
-        if args[i] == "--inject-restore-failure":
-            passthrough.append(args[i])
-            i += 1
-            continue
-        if args[i] in value_options and i + 1 < len(args):
-            passthrough.extend([args[i], args[i + 1]])
-            i += 2
-            continue
-        i += 1
+    passthrough = _probe_passthrough(args, value_options, {"--inject-restore-failure"})
     base_out = Path(out_value)
     failed_modes: list[str] = []
     stopped_modes: list[str] = []
     for mode in modes:
         mode_out = base_out if requested_mode else base_out.with_name(f"{base_out.stem}.{mode}{base_out.suffix}")
-        try:
-            mode_out.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            session.error(f"Unable to clear stale HumanIK VMD parity report {mode_out}: {exc}")
+        _clear_probe_report(session, mode_out, "HumanIK VMD parity")
         mode_args = [*passthrough, "--evaluation", mode, "--out", str(mode_out)]
-        session.run(
-            str(mayapy),
-            _mayapy_script(mayapy, "tests/viewport/humanik_vmd_parity_smoke.py"),
-            *_convert_mayapy_path_options(mayapy, mode_args, path_options),
-            env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1", PYTHONIOENCODING="utf-8"),
+        _run_mayapy_probe(
+            session,
+            mayapy,
+            "tests/viewport/humanik_vmd_parity_smoke.py",
+            mode_args,
+            path_options,
+            utf8=True,
             success_codes=(0, 1, 2),
-            external=True,
         )
         if not mode_out.is_file():
             failed_modes.append(f"{mode}: report missing ({mode_out})")
@@ -2068,39 +2036,20 @@ def humanik_vmd_import_gate_smoke(session: nox.Session) -> None:
     out_value = _option(args, "--out", str(ROOT / "build/reports/humanik_vmd_import_gate_smoke.json"))
     report_path = Path(out_value)
     path_options = {"--model", "--motion", "--out"}
-    passthrough: list[str] = []
-    i = 0
-    while i < len(args):
-        if args[i] == "--maya" and i + 1 < len(args):
-            i += 2
-            continue
-        if args[i] in path_options and i + 1 < len(args):
-            passthrough.extend([args[i], args[i + 1]])
-            i += 2
-            continue
-        i += 1
+    passthrough = _probe_passthrough(args, path_options)
     if "--out" not in passthrough:
         passthrough.extend(["--out", out_value])
-    try:
-        report_path.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        session.error(f"Unable to clear stale HumanIK VMD import gate report {report_path}: {exc}")
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/viewport/humanik_vmd_import_gate_smoke.py"),
-        *_convert_mayapy_path_options(mayapy, passthrough, path_options),
-        env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1", PYTHONIOENCODING="utf-8"),
+    _clear_probe_report(session, report_path, "HumanIK VMD import gate")
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/humanik_vmd_import_gate_smoke.py",
+        passthrough,
+        path_options,
+        utf8=True,
         success_codes=(0, 1),
-        external=True,
     )
-    if not report_path.is_file():
-        session.error(f"HumanIK VMD import gate report missing: {report_path}")
-    try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        session.error(f"Invalid HumanIK VMD import gate report {report_path}: {exc}")
+    report = _read_probe_report(session, report_path, "HumanIK VMD import gate")
     status = report.get("status")
     if status != "pass":
         session.error(
@@ -2136,29 +2085,16 @@ def humanik_citlali_stance_smoke(session: nox.Session) -> None:
         "--out", out_value,
         "--profile", profile,
     ]
-    try:
-        report_path.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        session.error(f"Unable to clear stale Citlali HumanIK report {report_path}: {exc}")
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/viewport/humanik_citlali_stance_smoke.py"),
-        *_convert_mayapy_path_options(mayapy, passthrough, {"--pmx", "--out"}),
-        env=_mayapy_env(
-            mayapy,
-            MAYA_SKIP_USERSETUP_PY="1",
-            PYTHONIOENCODING="utf-8",
-        ),
-        external=True,
+    _clear_probe_report(session, report_path, "Citlali HumanIK")
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/humanik_citlali_stance_smoke.py",
+        passthrough,
+        {"--pmx", "--out"},
+        utf8=True,
     )
-    if not report_path.is_file():
-        session.error(f"Citlali HumanIK report missing: {report_path}")
-    try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        session.error(f"Invalid Citlali HumanIK report {report_path}: {exc}")
+    report = _read_probe_report(session, report_path, "Citlali HumanIK")
     stance = report.get("stance", {})
     restore = stance.get("restore") or stance.get("stanceEvidence", {}).get("restore", {})
     required = {
@@ -2217,29 +2153,16 @@ def physics_solver_cycle_probe(session: nox.Session) -> None:
         "--frames", frames_value,
         "--modes", modes_value,
     ]
-    try:
-        report_path.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        session.error(f"Unable to clear stale physics cycle probe report {report_path}: {exc}")
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/viewport/physics_solver_cycle_probe.py"),
-        *_convert_mayapy_path_options(mayapy, passthrough, {"--pmx", "--out"}),
-        env=_mayapy_env(
-            mayapy,
-            MAYA_SKIP_USERSETUP_PY="1",
-            PYTHONIOENCODING="utf-8",
-        ),
-        external=True,
+    _clear_probe_report(session, report_path, "physics solver cycle probe")
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/physics_solver_cycle_probe.py",
+        passthrough,
+        {"--pmx", "--out"},
+        utf8=True,
     )
-    if not report_path.is_file():
-        session.error(f"Physics solver cycle probe report missing: {report_path}")
-    try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        session.error(f"Invalid physics solver cycle probe report {report_path}: {exc}")
+    report = _read_probe_report(session, report_path, "Physics solver cycle probe")
     if report.get("status") != "pass":
         session.error(
             "Physics solver cycle probe failed: "
@@ -2280,29 +2203,16 @@ def root_move_skin_parity_probe(session: nox.Session) -> None:
         "--expect-parity",
         "--tolerance", tolerance_value,
     ]
-    try:
-        report_path.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        session.error(f"Unable to clear stale root move parity report {report_path}: {exc}")
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/viewport/root_move_skin_parity_probe.py"),
-        *_convert_mayapy_path_options(mayapy, passthrough, {"--pmx", "--out"}),
-        env=_mayapy_env(
-            mayapy,
-            MAYA_SKIP_USERSETUP_PY="1",
-            PYTHONIOENCODING="utf-8",
-        ),
-        external=True,
+    _clear_probe_report(session, report_path, "root move parity")
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/root_move_skin_parity_probe.py",
+        passthrough,
+        {"--pmx", "--out"},
+        utf8=True,
     )
-    if not report_path.is_file():
-        session.error(f"Root move parity report missing: {report_path}")
-    try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        session.error(f"Invalid root move parity report {report_path}: {exc}")
+    report = _read_probe_report(session, report_path, "Root move parity")
     if report.get("status") != "pass":
         session.error(f"Root move parity probe failed: errors={report.get('errors')}")
 
@@ -2338,29 +2248,16 @@ def root_move_ik_target_probe(session: nox.Session) -> None:
         "--expect-root-parity",
         "--tolerance", tolerance_value,
     ]
-    try:
-        report_path.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        session.error(f"Unable to clear stale root move IK target report {report_path}: {exc}")
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/viewport/root_move_ik_target_probe.py"),
-        *_convert_mayapy_path_options(mayapy, passthrough, {"--pmx", "--out"}),
-        env=_mayapy_env(
-            mayapy,
-            MAYA_SKIP_USERSETUP_PY="1",
-            PYTHONIOENCODING="utf-8",
-        ),
-        external=True,
+    _clear_probe_report(session, report_path, "root move IK target")
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/root_move_ik_target_probe.py",
+        passthrough,
+        {"--pmx", "--out"},
+        utf8=True,
     )
-    if not report_path.is_file():
-        session.error(f"Root move IK target report missing: {report_path}")
-    try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        session.error(f"Invalid root move IK target report {report_path}: {exc}")
+    report = _read_probe_report(session, report_path, "Root move IK target")
     if report.get("status") != "pass":
         session.error(f"Root move IK target probe failed: errors={report.get('errors')}")
 
