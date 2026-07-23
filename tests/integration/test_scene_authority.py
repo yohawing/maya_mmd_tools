@@ -8,6 +8,7 @@ from maya import cmds
 from mmd_tools.converters.light_converter import (
     _get_or_create_light_direction_node,
     create_mmd_light_controller,
+    set_mmd_light_direction,
 )
 from mmd_tools.converters.physics_scene_builder import build_physics_live_graph
 from mmd_tools.core.constants import ATTR_MMD_LIGHT
@@ -49,6 +50,18 @@ class TestSceneAuthority(MayaTestBase):
                 light = create_mmd_light_controller()
                 lights.append(light)
                 direction_nodes.append(_get_or_create_light_direction_node(light))
+                if namespace == "modelA":
+                    initial_color = cmds.getAttr(f"{light}.mmd_light_color")[0]
+                    self.assertTrue(
+                        all(abs(value - (154.0 / 255.0)) <= 1.0e-6 for value in initial_color)
+                    )
+                    cmds.setAttr(
+                        f"{light}.mmd_light_color",
+                        0.2,
+                        0.3,
+                        0.4,
+                        type="float3",
+                    )
 
         world_shapes = cmds.ls(type="mmdPhysicsWorldShape", long=True) or []
         self.assertEqual(world_shapes, ["|MMD_PhysicsWorld|MMD_PhysicsWorldShape"])
@@ -65,6 +78,18 @@ class TestSceneAuthority(MayaTestBase):
         self.assertEqual(
             cmds.ls(f"*.{ATTR_MMD_LIGHT}", objectsOnly=True, long=True) or [],
             ["|mmd_light"],
+        )
+        self.assertEqual(
+            tuple(round(value, 6) for value in cmds.getAttr("|mmd_light.mmd_light_color")[0]),
+            (0.2, 0.3, 0.4),
+        )
+        self.assertEqual(
+            set_mmd_light_direction((0.25, -1.0, 0.75), color=(0.6, 0.7, 0.8)),
+            "|mmd_light",
+        )
+        self.assertEqual(
+            tuple(round(value, 6) for value in cmds.getAttr("|mmd_light.mmd_light_color")[0]),
+            (0.6, 0.7, 0.8),
         )
         self.assertEqual(direction_nodes, ["mmd_light_dirVP", "mmd_light_dirVP"])
         self.assertEqual(cmds.ls(type="vectorProduct", long=True), ["mmd_light_dirVP"])

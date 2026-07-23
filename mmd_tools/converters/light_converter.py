@@ -36,6 +36,11 @@ logger = get_logger("mmd_tools.converters.light_converter")
 # (-x, y, -z)（ノート §13、GoldenOracle ゴールデン検証済みの harness と同一規約）。
 _MMD_DEFAULT_DIRECTION = (0.5, -1.0, 0.5)
 
+# MMD's default directional-light color is 154/255 on each RGB channel. Keep
+# this as the creation-time default only: get-or-create must preserve any
+# authored or animated color on an existing controller.
+_MMD_DEFAULT_LIGHT_COLOR = 154.0 / 255.0
+
 
 def _direction_to_euler(dx: float, dy: float, dz: float):
     """Maya ライトのローカル -Z を (dx,dy,dz) へ向ける (rx, ry, 0) を degrees で返す。
@@ -107,7 +112,13 @@ def create_mmd_light_controller() -> str:
         cmds.addAttr(ctrl, longName="mmd_light_colorR", attributeType="float", parent="mmd_light_color")
         cmds.addAttr(ctrl, longName="mmd_light_colorG", attributeType="float", parent="mmd_light_color")
         cmds.addAttr(ctrl, longName="mmd_light_colorB", attributeType="float", parent="mmd_light_color")
-        cmds.setAttr(f"{ctrl}.mmd_light_color", 1.0, 1.0, 1.0, type="float3")
+        cmds.setAttr(
+            f"{ctrl}.mmd_light_color",
+            _MMD_DEFAULT_LIGHT_COLOR,
+            _MMD_DEFAULT_LIGHT_COLOR,
+            _MMD_DEFAULT_LIGHT_COLOR,
+            type="float3",
+        )
         try:
             cmds.connectAttr(f"{ctrl}.mmd_light_color", f"{light_shape}.color", force=True)
         except Exception:
