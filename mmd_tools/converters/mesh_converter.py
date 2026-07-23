@@ -1849,9 +1849,37 @@ class MeshConverter:
                     asUtility=True,
                     name=sanitized_name + "_place2dTexture",
                 )
-                # 標準的なUV接続
+
+                # Keep the file node connected even while its path is
+                # unresolved: the texture repair path discovers standard
+                # materials through this connection and can update the same
+                # node in place.  A repaired file path then immediately
+                # benefits from the alpha network below.
                 cmds.connectAttr(place_uv_node + ".outUV", file_node + ".uvCoord")
                 cmds.connectAttr(file_node + ".outColor", shader + ".baseColor")
+
+                # Preserve PMX diffuse alpha while applying per-pixel texture
+                # alpha. StandardSurface opacity is a color compound, so
+                # drive all channels from one scalar product.
+                opacity_multiply = cmds.shadingNode(
+                    "multiplyDivide",
+                    asUtility=True,
+                    name=sanitized_name + "_opacityMultiply",
+                )
+                maya_attribute_utils.set_attribute(opacity_multiply, "operation", 1, "long")
+                maya_attribute_utils.set_attribute(
+                    opacity_multiply,
+                    "input2X",
+                    float(material.diffuse[3]) if len(material.diffuse) > 3 else 1.0,
+                    "float",
+                )
+                cmds.connectAttr(file_node + ".outAlpha", opacity_multiply + ".input1X", force=True)
+                for channel in "RGB":
+                    cmds.connectAttr(
+                        opacity_multiply + ".outputX",
+                        shader + f".opacity{channel}",
+                        force=True,
+                    )
 
                 maya_attribute_utils.set_attribute(file_node, "fileTextureName", file_texture_path, "string")
                 maya_material_utils.mark_mmd_texture_file_node(
