@@ -143,10 +143,11 @@ class _FakeAppState:
 
 
 class _FakeSceneModelService:
-    def __init__(self, models=None, display_names=None, error=None):
+    def __init__(self, models=None, display_names=None, error=None, attrs=None):
         self.models = models or []
         self.display_names = display_names or {}
         self.error = error
+        self.attrs = dict(attrs or {})
 
     def list_mmd_models(self):
         if self.error:
@@ -155,6 +156,21 @@ class _FakeSceneModelService:
 
     def get_model_display_name(self, model_root):
         return self.display_names.get(model_root, model_root)
+
+    def get_attr_safe(self, node, attr, default=None):
+        return self.attrs.get(node, {}).get(attr, default)
+
+
+class _RecordingReadmeAdapter:
+    def __init__(self, events=None):
+        self.calls = []
+        self.events = events
+
+    def show(self, readme, *, model_path="", parent=None):
+        self.calls.append((readme, model_path, parent))
+        if self.events is not None:
+            self.events.append("readme")
+        return True
 
 
 class _FakeMayaAdapter:
@@ -570,6 +586,124 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertIn(100, app_state.progress)
         self.assertEqual(view.model_items, [])
         self.assertEqual(recorded_history, ["model.pmx"])
+
+    def test_import_file_success_shows_japanese_and_english_model_readme_once(self):
+        view = _FakeView()
+        app_state = _FakeAppState(
+            _FakeSceneModelService(
+                attrs={
+                    "model_root": {
+                        "mmd_comment": "JP comment",
+                        "mmd_comment_en": "EN comment",
+                    }
+                }
+            )
+        )
+        adapter = _RecordingReadmeAdapter()
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=_RecordingImportModelAction(
+                ImportModelResult(root_node="model_root", succeeded=True, outcome="success")
+            ),
+            import_vmd_action=_FailingImportVmdAction(),
+            model_readme_adapter=adapter,
+        )
+
+        presenter.import_file()
+
+        self.assertEqual(len(adapter.calls), 1)
+        self.assertEqual(
+            adapter.calls[0][0].to_plain_text(),
+            "Japanese (JP):\nJP comment\n\nEnglish (EN):\nEN comment",
+        )
+        self.assertEqual(adapter.calls[0][1], "model.pmx")
+
+    def test_import_file_empty_model_readme_is_not_shown(self):
+        view = _FakeView()
+        app_state = _FakeAppState(
+            _FakeSceneModelService(
+                attrs={"model_root": {"mmd_comment": " \n", "mmd_comment_en": "\t"}}
+            )
+        )
+        adapter = _RecordingReadmeAdapter()
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=_RecordingImportModelAction(
+                ImportModelResult(root_node="model_root", succeeded=True, outcome="success")
+            ),
+            import_vmd_action=_FailingImportVmdAction(),
+            model_readme_adapter=adapter,
+        )
+
+        presenter.import_file()
+
+        self.assertEqual(adapter.calls, [])
+
+    def test_import_file_partial_shows_model_readme_after_existing_modals(self):
+        events = []
+        texture = {"file_node": "file1", "material": "mat1", "reason": "missing"}
+        non_texture = {"code": "node_type_unavailable", "reason": "node_type_unavailable"}
+        view = _FakeView()
+        app_state = _FakeAppState(
+            _FakeSceneModelService(
+                attrs={"model_root": {"mmd_comment": "JP", "mmd_comment_en": "EN"}}
+            )
+        )
+
+        class _PartialAction:
+            def execute(self, request):
+                request.options.setdefault("profile", {})["texture_issues"] = [texture]
+                return ImportModelResult(
+                    root_node="model_root",
+                    succeeded=True,
+                    warnings=[non_texture, texture],
+                    outcome="partial",
+                )
+
+        adapter = _RecordingReadmeAdapter(events)
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=_PartialAction(),
+            import_vmd_action=_FailingImportVmdAction(),
+            model_readme_adapter=adapter,
+        )
+        with patch.object(
+            presenter,
+            "_show_import_partial_warning",
+            side_effect=lambda *_args: events.append("warning"),
+        ), patch.object(
+            presenter,
+            "_show_texture_issue_dialog",
+            side_effect=lambda *_args, **_kwargs: events.append("texture"),
+        ):
+            presenter.import_file()
+
+        self.assertEqual(events, ["warning", "texture", "readme"])
+
+    def test_import_file_fatal_does_not_show_model_readme(self):
+        view = _FakeView()
+        app_state = _FakeAppState(
+            _FakeSceneModelService(
+                attrs={"model_root": {"mmd_comment": "JP", "mmd_comment_en": "EN"}}
+            )
+        )
+        adapter = _RecordingReadmeAdapter()
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=_RecordingImportModelAction(
+                ImportModelResult(root_node=None, succeeded=False, outcome="fatal")
+            ),
+            import_vmd_action=_FailingImportVmdAction(),
+            model_readme_adapter=adapter,
+        )
+
+        presenter.import_file()
+
+        self.assertEqual(adapter.calls, [])
 
     def test_import_file_model_partial_retains_root_and_one_warning_outcome(self):
         recorded_history = []
