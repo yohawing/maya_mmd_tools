@@ -88,6 +88,8 @@ _MATERIAL_NODE_FAMILY_SUFFIXES = (
     "SG",
     "_file",
     "_place2dTexture",
+    "_diffuseMultiply",
+    "_ambientMultiply",
     "_opacityMultiply",
     "_texture",
     "_sphere_texture",
@@ -1870,13 +1872,13 @@ class MeshConverter:
             if specular_coef is not None:
                 maya_attribute_utils.set_attribute(shader, "specularColor", material.specular[:3], "double3")
 
-        # アンビエント設定（StandardSurfaceでは間接光の強度として使用）
+        # アンビエント設定（StandardSurfaceでは加算発光項として使用）
         if hasattr(material, "ambient"):
-            # アンビエント色の平均値を間接光の強度として使用
-            ambient_intensity = (material.ambient[0] + material.ambient[1] + material.ambient[2]) / 3.0
-            # エミッションとして微弱に設定（アンビエント光の表現）
-            maya_attribute_utils.set_attribute(shader, "emission", ambient_intensity * 0.1, "float")
-            maya_attribute_utils.set_attribute(shader, "emissionColor", material.ambient[:3], "double3")
+            # StandardSurface has no PMX-style ambient color input. The
+            # texture path below drives an ambient*texture emission term;
+            # keep the weight explicit so the fallback follows the MMD parity
+            # equation instead of reducing ambient to a weak average.
+            maya_attribute_utils.set_attribute(shader, "emission", 1.0, "float")
 
         # 非金属マテリアルとして設定（MMDは基本的に非金属）
         maya_attribute_utils.set_attribute(shader, "metalness", 0.0, "float")
@@ -1913,13 +1915,10 @@ class MeshConverter:
                     name=sanitized_name + "_place2dTexture",
                 )
 
-                # Keep the file node connected even while its path is
-                # unresolved: the texture repair path discovers standard
-                # materials through this connection and can update the same
-                # node in place.  A repaired file path then immediately
-                # benefits from the alpha network below.
+                # Keep the file node in the graph even while its path is
+                # unresolved. Texture repair walks the diffuse multiply
+                # utility to find and update this node in place.
                 cmds.connectAttr(place_uv_node + ".outUV", file_node + ".uvCoord")
-                cmds.connectAttr(file_node + ".outColor", shader + ".baseColor")
 
                 # Preserve PMX diffuse alpha while applying per-pixel texture
                 # alpha. StandardSurface opacity is a color compound, so
@@ -1974,6 +1973,47 @@ class MeshConverter:
                             f"Texture path needs resolution ({issue.get('reason', 'unreadable_path')}): "
                             f"{full_texture_path}"
                         )
+                diffuse_multiply = cmds.shadingNode(
+                    "multiplyDivide",
+                    asUtility=True,
+                    name=sanitized_name + "_diffuseMultiply",
+                )
+                maya_attribute_utils.set_attribute(diffuse_multiply, "operation", 1, "long")
+                for channel, value in zip("XYZ", material.diffuse[:3]):
+                    maya_attribute_utils.set_attribute(
+                        diffuse_multiply,
+                        f"input2{channel}",
+                        float(value),
+                        "float",
+                    )
+                cmds.connectAttr(file_node + ".outColor", diffuse_multiply + ".input1", force=True)
+                cmds.connectAttr(diffuse_multiply + ".output", shader + ".baseColor", force=True)
+
+                if hasattr(material, "ambient"):
+                    ambient_multiply = cmds.shadingNode(
+                        "multiplyDivide",
+                        asUtility=True,
+                        name=sanitized_name + "_ambientMultiply",
+                    )
+                    maya_attribute_utils.set_attribute(ambient_multiply, "operation", 1, "long")
+                    for channel, value in zip("XYZ", material.ambient[:3]):
+                        maya_attribute_utils.set_attribute(
+                            ambient_multiply,
+                            f"input2{channel}",
+                            float(value),
+                            "float",
+                        )
+                    cmds.connectAttr(file_node + ".outColor", ambient_multiply + ".input1", force=True)
+                    cmds.connectAttr(ambient_multiply + ".output", shader + ".emissionColor", force=True)
+
+        elif hasattr(material, "ambient"):
+            # No texture node exists, so ambient remains an additive constant.
+            maya_attribute_utils.set_attribute(
+                shader,
+                "emissionColor",
+                tuple(float(value) for value in material.ambient[:3]),
+                "double3",
+            )
 
     def _setup_glsl_shader(
         self,

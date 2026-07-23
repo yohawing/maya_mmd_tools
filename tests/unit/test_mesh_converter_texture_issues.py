@@ -19,6 +19,7 @@ from mmd_tools.converters.mesh_converter import (  # noqa: E402
     sync_dx11_generated_uniforms,
 )
 from mmd_tools.core.settings import settings  # noqa: E402
+from mmd_tools.core import maya_material_utils  # noqa: E402
 
 
 class TestMeshConverterTextureIssues(unittest.TestCase):
@@ -1190,10 +1191,105 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
             call("Face_opacityMultiply", "input2X", 0.25, "float"),
             mock_set_attribute.call_args_list,
         )
-        self.assertIn(
-            call("Face_file.outColor", "Face_shader.baseColor"),
-            mock_cmds.connectAttr.call_args_list,
+        mock_cmds.connectAttr.assert_any_call(
+            "Face_file.outColor",
+            "Face_diffuseMultiply.input1",
+            force=True,
         )
+        mock_cmds.connectAttr.assert_any_call(
+            "Face_diffuseMultiply.output",
+            "Face_shader.baseColor",
+            force=True,
+        )
+        self.assertIn(
+            call("Face_diffuseMultiply", "operation", 1, "long"),
+            mock_set_attribute.call_args_list,
+        )
+        for channel, value in zip("XYZ", (0.8, 0.7, 0.6)):
+            self.assertIn(
+                call("Face_diffuseMultiply", f"input2{channel}", value, "float"),
+                mock_set_attribute.call_args_list,
+            )
+        self.assertIn(
+            call("Face_shader", "emission", 1.0, "float"),
+            mock_set_attribute.call_args_list,
+        )
+        mock_cmds.connectAttr.assert_any_call(
+            "Face_file.outColor",
+            "Face_ambientMultiply.input1",
+            force=True,
+        )
+        mock_cmds.connectAttr.assert_any_call(
+            "Face_ambientMultiply.output",
+            "Face_shader.emissionColor",
+            force=True,
+        )
+        self.assertIn(
+            call("Face_ambientMultiply", "operation", 1, "long"),
+            mock_set_attribute.call_args_list,
+        )
+        for channel, value in zip("XYZ", (0.1, 0.1, 0.1)):
+            self.assertIn(
+                call("Face_ambientMultiply", f"input2{channel}", value, "float"),
+                mock_set_attribute.call_args_list,
+            )
+
+    def test_standard_surface_texture_repair_discovers_file_through_diffuse_multiply(self):
+        """Texture repair must find the file node behind the tint utility."""
+        def node_type(node):
+            return {
+                "Face_shader": "standardSurface",
+                "Face_diffuseMultiply": "multiplyDivide",
+                "Face_file": "file",
+            }.get(node, "transform")
+
+        def list_connections(plug, **_kwargs):
+            return {
+                "Face_shader.baseColor": ["Face_diffuseMultiply.output"],
+                "Face_diffuseMultiply.input1": ["Face_file.outColor"],
+            }.get(plug, [])
+
+        with patch.object(maya_material_utils, "cmds") as mock_cmds:
+            mock_cmds.nodeType.side_effect = node_type
+            mock_cmds.attributeQuery.return_value = False
+            mock_cmds.listConnections.side_effect = list_connections
+
+            file_node = maya_material_utils.find_material_texture_file_node("Face_shader")
+
+        self.assertEqual(file_node, "Face_file")
+
+    def test_setup_standard_shader_without_texture_keeps_ambient_as_additive_color(self):
+        """A textureless fallback uses PMX ambient directly as its additive term."""
+        converter = MeshConverter(str(self.model))
+        material = self._material(ambient=[0.12, 0.23, 0.34])
+
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
+        ) as mock_set_attribute, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
+        ):
+            converter._setup_standard_shader(
+                "Face_shader",
+                material,
+                None,
+                [],
+                is_pmd=False,
+                material_index=0,
+            )
+
+        self.assertIn(
+            call("Face_shader", "baseColor", [0.8, 0.7, 0.6], "double3"),
+            mock_set_attribute.call_args_list,
+        )
+        self.assertIn(
+            call("Face_shader", "emission", 1.0, "float"),
+            mock_set_attribute.call_args_list,
+        )
+        self.assertIn(
+            call("Face_shader", "emissionColor", (0.12, 0.23, 0.34), "double3"),
+            mock_set_attribute.call_args_list,
+        )
+        mock_cmds.shadingNode.assert_not_called()
 
     def test_setup_standard_shader_keeps_unresolved_texture_repair_connections(self):
         """Unresolved standard textures stay discoverable by the repair path."""
@@ -1225,7 +1321,28 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         )
         mock_cmds.connectAttr.assert_any_call(
             "Face_file.outColor",
+            "Face_diffuseMultiply.input1",
+            force=True,
+        )
+        mock_cmds.connectAttr.assert_any_call(
+            "Face_diffuseMultiply.output",
             "Face_shader.baseColor",
+            force=True,
+        )
+        for channel, value in zip("XYZ", (0.8, 0.7, 0.6)):
+            self.assertIn(
+                call("Face_diffuseMultiply", f"input2{channel}", value, "float"),
+                mock_set_attribute.call_args_list,
+            )
+        mock_cmds.connectAttr.assert_any_call(
+            "Face_file.outColor",
+            "Face_ambientMultiply.input1",
+            force=True,
+        )
+        mock_cmds.connectAttr.assert_any_call(
+            "Face_ambientMultiply.output",
+            "Face_shader.emissionColor",
+            force=True,
         )
         mock_cmds.connectAttr.assert_any_call(
             "Face_file.outAlpha",
