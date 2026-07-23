@@ -24,7 +24,7 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 | Maya name resolution | ✅ | Names are converted to ASCII-safe Maya names. Japanese and Chinese texture paths are also resolved automatically to safe paths. |
 | Edge / outline flags | 🔶 | Can be enabled as an option, subject to Viewport 2.0 constraints. |
 | Bones, skeleton & rig (IK / append / local axis) | 🔶 | Partially supported. Some complex models still have known issues. |
-| Display frames (表示枠) | 🔶 | Not supported |
+| Display frames (表示枠) | 🔶 | Imported frame metadata can be edited in a dedicated tab and preserved through the development PMX round-trip path. |
 | Morphs (vertex / bone / material / group / UV) | 🔶 | Vertex, bone, material, and UV morphs are supported. Flip and Impulse morphs are not supported. |
 | Physics (rigid bodies & joints) | 🔶 | PMX/PMD physics import is enabled by default, with editable authoring and PMX round-trip support; native bake is experimental. Live simulation is unsupported. |
 | Soft body (PMX 2.1) | ⛔ | Not supported |
