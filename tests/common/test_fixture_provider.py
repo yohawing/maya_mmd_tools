@@ -1,10 +1,11 @@
-"""
-テストフィクスチャプロバイダーを提供するモジュール
-"""
+"""Test fixture discovery and integrity verification helpers."""
 
+import hashlib
+import json
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from typing import List, Dict
 
 from mmd_tools.core.mmd_parser import parse_pmx_file
@@ -14,6 +15,12 @@ from mmd_tools.core.pmd_data import PmdData
 
 class TestFixtureProvider:
     """テストフィクスチャを提供するクラス"""
+
+    # Manifest names are intentionally explicit.  A fixture is not considered
+    # registered merely because a similarly named PMX happens to be present.
+    _FIXTURE_MANIFESTS = {
+        "yw_test_model": "yw_test_model.fixture.json",
+    }
 
     def __init__(self, data_dir: str = None):
         """TestFixtureProviderを初期化
@@ -28,6 +35,99 @@ class TestFixtureProvider:
 
         # 初期化時に一度だけファイル探索を実行
         self._scan_files()
+
+    def get_registered_fixture_names(self) -> List[str]:
+        """Return stable names for manifest-backed regression fixtures."""
+        return sorted(self._FIXTURE_MANIFESTS)
+
+    def get_fixture_manifest(self, name: str) -> Dict:
+        """Load a registered fixture manifest from ``tests/data``.
+
+        Missing manifests are errors rather than optional skips: a registered
+        fixture must fail closed when its declaration is not available.
+
+        Args:
+            name: Stable fixture name.
+
+        Returns:
+            Parsed manifest dictionary.
+
+        Raises:
+            KeyError: If ``name`` is not registered.
+            FileNotFoundError: If the registered manifest is missing.
+            ValueError: If the manifest is malformed or names another fixture.
+        """
+        try:
+            filename = self._FIXTURE_MANIFESTS[name]
+        except KeyError as exc:
+            raise KeyError(f"Unknown fixture '{name}'") from exc
+        manifest_path = Path(self._data_dir) / filename
+        if not manifest_path.is_file():
+            raise FileNotFoundError(f"Fixture manifest not found: {manifest_path}")
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"Invalid fixture manifest: {manifest_path}") from exc
+        if not isinstance(manifest, dict) or manifest.get("name") != name:
+            raise ValueError(f"Fixture manifest name mismatch: {manifest_path}")
+        if not isinstance(manifest.get("files"), list) or not manifest["files"]:
+            raise ValueError(f"Fixture manifest has no files: {manifest_path}")
+        return manifest
+
+    def get_verified_fixture(self, name: str) -> Dict:
+        """Verify every manifest file and return its resolved paths.
+
+        Paths are resolved relative to the provider data directory and are
+        rejected if they escape it.  Both size and SHA-256 are checked so a
+        local replacement cannot silently satisfy the regression gate.
+
+        Args:
+            name: Stable fixture name.
+
+        Returns:
+            A dictionary containing the parsed ``manifest`` and ``files`` map.
+
+        Raises:
+            FileNotFoundError: If a declared file is absent.
+            ValueError: If a path, size, or digest does not match.
+        """
+        manifest = self.get_fixture_manifest(name)
+        root = Path(self._data_dir).resolve()
+        resolved_files = {}
+        for entry in manifest["files"]:
+            if not isinstance(entry, dict):
+                raise ValueError(f"Malformed file entry in fixture '{name}'")
+            relative = entry.get("path")
+            expected_size = entry.get("size")
+            expected_sha256 = entry.get("sha256")
+            if not isinstance(relative, str) or not isinstance(expected_size, int) or not isinstance(expected_sha256, str):
+                raise ValueError(f"Malformed file entry in fixture '{name}': {entry!r}")
+            candidate = (root / relative).resolve()
+            if candidate != root and root not in candidate.parents:
+                raise ValueError(f"Fixture path escapes data directory: {relative}")
+            if not candidate.is_file():
+                raise FileNotFoundError(f"Fixture file not found: {candidate}")
+            if candidate.stat().st_size != expected_size:
+                raise ValueError(
+                    f"Fixture size mismatch for {relative}: "
+                    f"expected {expected_size}, got {candidate.stat().st_size}"
+                )
+            digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+            if digest.lower() != expected_sha256.lower():
+                raise ValueError(
+                    f"Fixture SHA-256 mismatch for {relative}: "
+                    f"expected {expected_sha256}, got {digest}"
+                )
+            resolved_files[relative] = str(candidate)
+        return {"manifest": manifest, "files": resolved_files}
+
+    def get_verified_pmx_file(self, name: str = "yw_test_model") -> str:
+        """Return the PMX path after manifest and hash verification."""
+        verified = self.get_verified_fixture(name)
+        for entry in verified["manifest"]["files"]:
+            if entry.get("kind") == "pmx":
+                return verified["files"][entry["path"]]
+        raise ValueError(f"Fixture '{name}' has no PMX file entry")
 
     def _get_default_data_dir(self) -> str:
         """デフォルトのデータディレクトリを取得

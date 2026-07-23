@@ -1,0 +1,120 @@
+{
+  "schema": 1,
+  "name": "yw_test_model",
+  "description": "Small CC0 regression model for PMX parse and production import coverage.",
+  "license": {
+    "identifier": "CC0",
+    "evidence": {
+      "source": "PMX header comment",
+      "comment": "CC0. Creative Commons",
+      "comment_english": "CC0"
+    }
+  },
+  "provenance": {
+    "record": "The license evidence is copied from the embedded PMX header; no author identity or separate ownership claim is made."
+  },
+  "files": [
+    {
+      "path": "yw_test_model.pmx",
+      "kind": "pmx",
+      "size": 580654,
+      "sha256": "7b80003330f5042e248cedb2952cc0c10fdcfcfcc287ccfd56256d70d8243d22"
+    },
+    {
+      "path": "tex/diffuse.png",
+      "kind": "texture",
+      "size": 683,
+      "sha256": "a2eeedf2b9b944c85597183235d665a7f5da8020f6872a84b8bb23782675e76d"
+    },
+    {
+      "path": "tex/sph.png",
+      "kind": "texture",
+      "size": 9598,
+      "sha256": "ff68212c16c2c255feef1e5fa72c3aefb7a9adbbe90ef8c8e7d4b6ef46f6ce20"
+    },
+    {
+      "path": "tex/toon_skin.bmp",
+      "kind": "texture",
+      "size": 824,
+      "sha256": "48b04e38f6a559f0ebdb748ea65addeafd529a988b0b9b3cddcdcdf7d7e8000f"
+    }
+  ],
+  "pmx": {
+    "header": {
+      "model_name": "YWテスト用モデル",
+      "model_name_english": "YW_TestModel",
+      "comment": "CC0. Creative Commons",
+      "comment_english": "CC0"
+    },
+    "counts": {
+      "vertices": 8339,
+      "faces": 13030,
+      "materials": 1,
+      "bones": 118,
+      "morphs": 0,
+      "display_frames": 9,
+      "rigid_bodies": 35,
+      "joints": 14,
+      "textures": 2,
+      "toon_textures": 0
+    },
+    "texture_refs": ["tex/diffuse.png", "tex/sph.png"],
+    "auxiliary_assets": ["tex/toon_skin.bmp"],
+    "rig_contract": {
+      "ik_bones": 4,
+      "ik_links": 6,
+      "grant_bones": 28
+    }
+  },
+  "import": {
+    "options": {
+      "use_namespace": true,
+      "setup_rig": true,
+      "import_physics": true,
+      "create_mmd_shaders": false,
+      "use_native_pmx_parse": false,
+      "require_native_pmx_parse": false
+    },
+    "node_types": {
+      "mesh": 2,
+      "joint": 118,
+      "mmdCcdIk": 4,
+      "mmdAppend": 28,
+      "mmdRigidBodyShape": 35,
+      "mmdPhysicsJointShape": 14,
+      "mmdPhysicsSolver": 1,
+      "mmdPhysicsWorldShape": 1,
+      "file": 1,
+      "mmd_material_nodes": 1,
+      "blendShape": 0
+    },
+    "required_root_children": ["Geometry", "Skeleton", "Physics"],
+    "texture_resolution": {
+      "referenced": ["tex/diffuse.png"],
+      "non_ascii_reference": false
+    },
+    "contract": {
+      "all_descriptor_nodes_have_connections": true,
+      "root_metadata": ["mmd_model_name", "mmd_model_name_en", "mmd_comment", "mmd_comment_en"],
+      "indexed_bones": 118,
+      "indexed_materials": 1,
+      "indexed_physics_shapes": 49
+    }
+  },
+  "scene_reopen": {
+    "node_types": {
+      "mesh": 2,
+      "joint": 118,
+      "mmdCcdIk": 4,
+      "mmdAppend": 28,
+      "mmdRigidBodyShape": 35,
+      "mmdPhysicsJointShape": 14,
+      "mmdPhysicsSolver": 1,
+      "mmdPhysicsWorldShape": 1,
+      "file": 1,
+      "mmd_material_nodes": 1,
+      "blendShape": 0
+    },
+    "required_root_children": ["Geometry", "Skeleton", "Physics"]
+  }
+}

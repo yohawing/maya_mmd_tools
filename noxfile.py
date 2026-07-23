@@ -1439,6 +1439,57 @@ def maya_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def yw_test_model_fixture_gate(session: nox.Session) -> None:
+    """Run the checked-in YW test-model gate under Maya 2024 and 2026.
+
+    The default matrix is intentionally both supported Maya versions.  Pass
+    ``--maya 2024`` (or ``--maya 2026``) for a focused local rerun.  Reports
+    and reopened Maya ASCII scenes are written below ``build/``.
+
+    Examples:
+        uvx nox -s yw_test_model_fixture_gate
+        uvx nox -s yw_test_model_fixture_gate -- --maya 2024
+        uvx nox -s yw_test_model_fixture_gate -- --out-dir build/yw-test-model-fixture
+    """
+    args = list(session.posargs)
+    requested_versions = _options(args, "--maya")
+    versions = requested_versions or ["2024", "2026"]
+    unsupported = [version for version in versions if version not in {"2024", "2026"}]
+    if unsupported:
+        session.error("--maya must be 2024 or 2026 for the YW test-model gate")
+    manifest = _option(args, "--manifest", "tests/data/yw_test_model.fixture.json")
+    manifest_path = Path(manifest)
+    if not manifest_path.is_absolute():
+        manifest_path = ROOT / manifest_path
+    manifest_path = manifest_path.resolve()
+    if not manifest_path.is_file():
+        session.error(f"Fixture manifest not found: {manifest_path}")
+    out_dir = _require_build_path(
+        session,
+        _option(args, "--out-dir", "build/yw-test-model-fixture"),
+        "--out-dir",
+    )
+    for version in versions:
+        mayapy = _mayapy(version)
+        if not mayapy.exists():
+            session.error(f"mayapy not found for Maya {version}: {mayapy}")
+        out_path = out_dir / f"maya-{version}.json"
+        env = _mayapy_env(mayapy, MAYA_VERSION=version, preserve_pythonpath=True)
+        session.run(
+            str(mayapy),
+            _mayapy_script(mayapy, "tests/viewport/yw_test_model_fixture_gate.py"),
+            "--manifest",
+            _mayapy_arg_path(mayapy, manifest_path),
+            "--out",
+            _mayapy_arg_path(mayapy, out_path),
+            env=env,
+            external=True,
+        )
+        if not out_path.is_file():
+            session.error(f"Fixture gate did not write report: {out_path}")
+
+
+@nox.session(venv_backend="none")
 def maya_viewport_capture(session: nox.Session) -> None:
     """Minimal mayapy offscreen viewport capture smoke (no GUI, no plugin).
 
