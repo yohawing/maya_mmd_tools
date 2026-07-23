@@ -3,6 +3,8 @@
 This script launches a fresh Maya GUI process, opens a Python commandPort,
 imports selected GoldenOracle render-manifest fixtures with hardware shaders
 materials, captures Viewport 2.0 PNGs, and writes report-only diagnostics.
+It refuses to reuse an already-open commandPort unless ``--attach-existing``
+is explicit, and records selected shader plug-in lifecycle state around cases.
 
 The harness intentionally copies MMDShader.fx to a unique path per run before
 assigning it to dx11Shader nodes. Maya can cache effects by .fx path inside a
@@ -201,6 +203,22 @@ def _device_matches_backend(backend: str, device_information: object) -> bool:
     return "opengl" in text or "gl core" in text or "glcore" in text
 
 
+def _preflight_command_port(port: int, attach_existing: bool) -> None:
+    """Refuse to launch against a commandPort owned by another Maya session.
+
+    A fresh capture owns the Maya process and may quit it during cleanup.  An
+    already-open port is therefore unsafe unless the caller explicitly opted
+    into ``--attach-existing``.
+    """
+    if attach_existing:
+        return
+    if maya_commandport.is_port_open(port):
+        raise RuntimeError(
+            f"commandPort :{port} is already open; refusing to attach without "
+            "--attach-existing (choose a free --port or opt in explicitly)"
+        )
+
+
 def _monitor_log(log_path: Path, timeout: int) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.touch(exist_ok=True)
@@ -245,6 +263,8 @@ def _build_maya_code(
         "debug_lambert_control": debug_lambert_control,
         "hide_orig_shapes": hide_orig_shapes,
         "shader_backend": shader_backend,
+        "shader_node_type": BACKEND_CONFIG[shader_backend]["node_type"],
+        "shader_plugin": BACKEND_CONFIG[shader_backend]["plugin"],
         "display_textures": bool(display_textures),
         "completion_marker": COMPLETION_MARKER,
     }
@@ -268,7 +288,8 @@ _debug_lambert_control = bool(_payload["debug_lambert_control"])
 _hide_orig_shapes = bool(_payload["hide_orig_shapes"])
 _shader_backend = _payload["shader_backend"]
 _display_textures = bool(_payload.get("display_textures", True))
-_shader_node_type = "dx11Shader" if _shader_backend == "dx11" else "GLSLShader"
+_shader_node_type = _payload["shader_node_type"]
+_shader_plugin_name = _payload["shader_plugin"]
 _completion_marker = _payload["completion_marker"]
 
 _output_dir.mkdir(parents=True, exist_ok=True)
@@ -608,6 +629,16 @@ def _shader_diag():
         items.append(item)
     return items
 
+def _shader_plugin_diag():
+    # Collect selected shader plug-in lifecycle state without changing it.
+    state = {{"name": _shader_plugin_name}}
+    for key in ["loaded", "autoload", "registered", "path"]:
+        try:
+            state[key] = cmds.pluginInfo(_shader_plugin_name, query=True, **{{key: True}})
+        except Exception as exc:
+            state[key] = "ERR: " + str(exc)
+    return state
+
 def _scene_diag(capture_panel=None):
     meshes = []
     no_intermediate = cmds.ls(type="mesh", long=True, noIntermediate=True) or []
@@ -746,10 +777,6 @@ def _capture_case(case):
     cmds.file(new=True, force=True)
     settings.set("import.model.create_mmd_shaders", True)
     settings.set("import.model.mmd_shader_backend", _shader_backend)
-    try:
-        cmds.loadPlugin("dx11Shader" if _shader_backend == "dx11" else "glslShader", quiet=True)
-    except Exception:
-        pass
 
     root = mmd_importer.import_mmd_file(case["model"])
     if root is None:
@@ -853,6 +880,7 @@ def _main():
         "output_dir": str(_output_dir),
         "deviceInformation": None,
         "vp2_device_valid": False,
+        "shader_plugin": {{"name": _shader_plugin_name, "before": None, "after": None}},
         "results": [],
         "errors": [],
     }}
@@ -864,6 +892,14 @@ def _main():
     except Exception as exc:
         report["deviceInformation"] = "ERR: " + str(exc)
 
+    # Load the selected hardware-shader plug-in once before the baseline
+    # snapshot so the before/after report can prove it remained available for
+    # the full capture.  This is intentionally not an autoload change.
+    try:
+        cmds.loadPlugin(_shader_plugin_name, quiet=True)
+    except Exception as exc:
+        report["shader_plugin"]["preload_error"] = str(exc)
+    report["shader_plugin"]["before"] = _shader_plugin_diag()
     for case in _cases:
         _log("CAPTURE " + case["name"])
         try:
@@ -874,6 +910,8 @@ def _main():
             error = {{"name": case.get("name"), "error": str(exc), "traceback": traceback.format_exc()}}
             report["errors"].append(error)
             _log("  ERROR " + str(exc))
+
+    report["shader_plugin"]["after"] = _shader_plugin_diag()
 
     report_path = _output_dir / "visual-regression-report.json"
     with open(report_path, "w", encoding="utf-8") as f:
@@ -907,6 +945,8 @@ def main() -> int:
     LOGGER.info("Cases: %d", len(cases))
     LOGGER.info("Shader backend: %s", args.shader_backend)
     LOGGER.info("Unique shader: %s", shader_fx)
+
+    _preflight_command_port(args.port, args.attach_existing)
 
     proc: subprocess.Popen | None = None
     try:
