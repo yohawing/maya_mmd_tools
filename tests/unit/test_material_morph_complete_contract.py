@@ -2,15 +2,26 @@
 
 from pathlib import Path
 import re
+from types import SimpleNamespace
 
 from mmd_tools.converters.material_shader_parameters import (
     hardware_morph_route_for_uniform,
     hardware_morph_routes,
     iter_hardware_shader_values,
+    material_base_parameter_values,
 )
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _shader_uniform_values(material, shader_type):
+    values = material_base_parameter_values(material)
+    return {
+        binding.attribute: value
+        for binding, value in iter_hardware_shader_values(values, shader_type)
+        if binding.attribute in {"DiffuseColorA", "Opacity"}
+    }
 
 
 def _main_alpha_contract_holds(source):
@@ -87,6 +98,20 @@ def test_dx11_three_component_edge_color_defaults_alpha_to_one():
         "EdgeColorRGB": [0.1, 0.2, 0.3],
         "EdgeColorA": 1.0,
     }
+
+
+def test_hardware_alpha_contract_keeps_opacity_neutral_for_both_backends():
+    """PMX alpha is bound once while texture alpha remains multiplicative."""
+    for pmx_alpha in (0.0, 0.58, 1.0):
+        material = SimpleNamespace(diffuse=(0.8, 0.7, 0.6, pmx_alpha))
+        for shader_type in ("dx11Shader", "GLSLShader"):
+            uniforms = _shader_uniform_values(material, shader_type)
+            assert uniforms["DiffuseColorA"] == pmx_alpha
+            assert uniforms["Opacity"] == 1.0
+            for texture_alpha in (0.0, 0.25, 0.58, 1.0):
+                expected = texture_alpha * pmx_alpha
+                actual = texture_alpha * uniforms["DiffuseColorA"] * uniforms["Opacity"]
+                assert abs(actual - expected) <= 1.0e-12
 
 
 def test_both_shader_sources_apply_rgba_factors_before_final_opacity():

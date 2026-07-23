@@ -18,6 +18,7 @@ from mmd_tools.converters.mesh_converter import (  # noqa: E402
     migrate_legacy_glsl_diffuse_contracts,
     sync_dx11_generated_uniforms,
 )
+from mmd_tools.converters.material_shader_parameters import ATTR_MMD_DIFFUSE_ALPHA  # noqa: E402
 from mmd_tools.core.settings import settings  # noqa: E402
 from mmd_tools.core import maya_material_utils  # noqa: E402
 
@@ -432,12 +433,15 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
                 "DiffuseColorA",
                 "diffuse_color",
                 "Opacity",
+                ATTR_MMD_DIFFUSE_ALPHA,
             }
             mock_cmds.getAttr.side_effect = lambda plug, **kwargs: (
                 False
                 if kwargs.get("lock")
                 else [pmx_rgb]
                 if plug.endswith(".diffuse_color")
+                else pmx_alpha
+                if plug.endswith(f".{ATTR_MMD_DIFFUSE_ALPHA}")
                 else pmx_alpha
                 if plug.endswith(".Opacity")
                 else [pmx_rgb]
@@ -456,6 +460,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
             mock_cmds.setAttr.call_args_list,
         )
         self.assertIn(call("new_glsl.DiffuseColorA", pmx_alpha), mock_cmds.setAttr.call_args_list)
+        self.assertIn(call("new_glsl.Opacity", 1.0), mock_cmds.setAttr.call_args_list)
         self.assertIn(
             call("new_glsl.mmdDiffuseRgbContractVersion", 1),
             mock_cmds.setAttr.call_args_list,

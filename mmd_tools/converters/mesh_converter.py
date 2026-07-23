@@ -951,12 +951,27 @@ def sync_dx11_generated_uniforms(shader_nodes=None):
         if cmds.attributeQuery(ATTR_MMD_DIFFUSE_COLOR, node=shader, exists=True):
             try:
                 diffuse = list(cmds.getAttr(f"{shader}.{ATTR_MMD_DIFFUSE_COLOR}")[0])
-                opacity = 1.0
+                # PMX alpha is authored in the split diffuse-alpha custom
+                # attribute.  Opacity is only a neutral runtime multiplier;
+                # using it as the legacy DiffuseColorA source would reapply
+                # the material alpha in ``texColor.a * DiffuseColorA * Opacity``.
+                if cmds.attributeQuery(ATTR_MMD_DIFFUSE_ALPHA, node=shader, exists=True):
+                    diffuse_alpha = float(cmds.getAttr(f"{shader}.{ATTR_MMD_DIFFUSE_ALPHA}"))
+                elif cmds.attributeQuery("DiffuseColorA", node=shader, exists=True):
+                    diffuse_alpha = float(cmds.getAttr(f"{shader}.DiffuseColorA"))
+                else:
+                    diffuse_alpha = 1.0
+                    if cmds.attributeQuery("Opacity", node=shader, exists=True):
+                        diffuse_alpha = float(cmds.getAttr(f"{shader}.Opacity"))
                 if cmds.attributeQuery("Opacity", node=shader, exists=True):
-                    opacity = float(cmds.getAttr(f"{shader}.Opacity"))
-                _set_dx11_color_uniform(shader, "DiffuseColor", diffuse + [opacity])
+                    incoming_opacity = cmds.listConnections(
+                        f"{shader}.Opacity", source=True, destination=False, plugs=True
+                    ) or []
+                    if not incoming_opacity:
+                        cmds.setAttr(f"{shader}.Opacity", 1.0)
+                _set_dx11_color_uniform(shader, "DiffuseColor", diffuse + [diffuse_alpha])
                 if cmds.nodeType(shader) == "GLSLShader" and _glsl_split_diffuse_matches(
-                    shader, diffuse, opacity
+                    shader, diffuse, diffuse_alpha
                 ):
                     _mark_glsl_diffuse_contract(shader)
                 synced += 1

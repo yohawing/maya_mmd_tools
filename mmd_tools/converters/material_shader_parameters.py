@@ -131,7 +131,11 @@ def material_base_parameter_values(material: Any) -> dict[str, Any]:
     values: dict[str, Any] = {
         "diffuse_rgb": diffuse[:3],
         "diffuse_alpha": alpha,
-        "opacity": alpha,
+        # The shader multiplies texture alpha, DiffuseColorA (the PMX
+        # material/morph alpha), and Opacity.  Opacity is a neutral runtime
+        # multiplier for ordinary materials; keeping PMX alpha only in
+        # DiffuseColorA avoids applying it twice.
+        "opacity": 1.0,
         "edge_size": 0.0,
         "sphere_mode": int(getattr(material, "sphere_mode", 0)),
     }
