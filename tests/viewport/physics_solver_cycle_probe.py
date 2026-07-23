@@ -11,14 +11,17 @@ Usage (inside Maya's Python interpreter)::
 
     mayapy tests/viewport/physics_solver_cycle_probe.py
 
-The command exits zero when the clean production import completed.  A cycle
-reported by Maya is evidence, not a probe failure.
+The command exits non-zero when Maya reports a solver cycle warning, even if
+the final ``cycleCheck`` query is empty.  Maya command output is captured in
+memory per isolated evaluation-mode run so transient warnings cannot be
+confused with older appended session output.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple
@@ -29,6 +32,11 @@ DEFAULT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PMX = "build/fixtures/citlali_ascii_file/citlali.pmx"
 DEFAULT_REPORT = "build/reports/physics_solver_cycle_probe.json"
 _EVALUATION_MODES = {"off", "serial", "parallel"}
+_SOLVER_CYCLE_WARNING_RE = re.compile(
+    r"(?=.*mmdPhysicsSolver)(?=.*outSolved)"
+    r"(?=.*(?:cycle|cycleCheck|サイクル|循環))",
+    re.IGNORECASE,
+)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -471,9 +479,50 @@ def _topology_set(mode_report: Mapping[str, Any]) -> List[str]:
     return sorted(values)
 
 
+def _start_command_output_capture() -> Dict[str, Any]:
+    """Capture Maya command output for one isolated mode run."""
+    messages: List[Dict[str, Any]] = []
+    try:
+        import maya.api.OpenMaya as om
+
+        def _callback(message, message_type, _client_data):
+            messages.append({"type": int(message_type), "message": str(message)})
+
+        callback_id = om.MCommandMessage.addCommandOutputCallback(_callback)
+    except Exception as exc:
+        return {"enabled": False, "messages": messages, "callback": None, "error": str(exc)}
+    return {"enabled": True, "messages": messages, "callback": callback_id, "error": None}
+
+
+def _stop_command_output_capture(state: Mapping[str, Any]) -> Dict[str, Any]:
+    """Remove the callback and return solver-cycle messages seen this run."""
+    callback_id = state.get("callback")
+    remove_error = None
+    if callback_id is not None:
+        try:
+            import maya.api.OpenMaya as om
+
+            om.MMessage.removeCallback(callback_id)
+        except Exception as exc:
+            remove_error = str(exc)
+    messages = list(state.get("messages") or [])
+    warnings = [
+        str(item.get("message", ""))
+        for item in messages
+        if _SOLVER_CYCLE_WARNING_RE.search(str(item.get("message", "")))
+    ]
+    return {
+        "enabled": bool(state.get("enabled")),
+        "messageCount": len(messages),
+        "warnings": warnings[-200:],
+        "warningCount": len(warnings),
+        "error": state.get("error"),
+        "removeError": remove_error,
+    }
+
+
 def _run_mode(
     *,
-    args: argparse.Namespace,
     pmx: Path,
     mode: str,
     scene_path: Path,
@@ -489,8 +538,11 @@ def _run_mode(
         "operations": [],
         "errors": [],
         "evaluationMode": {},
+        "mayaCommandOutput": {},
     }
     mode_before = _evaluation_state()
+    command_capture = _start_command_output_capture()
+    report["_commandCapture"] = command_capture
     try:
         report["evaluationMode"]["set"] = _set_evaluation_mode(mode)
         cmds.file(new=True, force=True)
@@ -636,6 +688,28 @@ def _run_mode(
         if report["status"] == "pass" and not report["evaluationMode"]["restored"]:
             report["status"] = "error"
             report["errors"].append("evaluationManager mode was not restored")
+        command_state = report.pop("_commandCapture", None)
+        if command_state:
+            command_report = _stop_command_output_capture(command_state)
+            report["mayaCommandOutput"] = command_report
+            if not command_report.get("enabled"):
+                report["status"] = "error"
+                report["errors"].append(
+                    "Maya command output capture could not be registered: "
+                    f"{command_report.get('error') or 'unknown error'}"
+                )
+            elif command_report.get("removeError"):
+                report["status"] = "error"
+                report["errors"].append(
+                    "Maya command output callback could not be removed: "
+                    f"{command_report['removeError']}"
+                )
+            elif command_report.get("warningCount", 0):
+                report["status"] = "error"
+                report["errors"].append(
+                    "Maya command output reported an mmdPhysicsSolver/outSolved "
+                    f"cycle warning ({command_report['warningCount']} line(s))"
+                )
     return report
 
 
@@ -671,7 +745,6 @@ def _run(args: argparse.Namespace) -> Dict[str, Any]:
                 str(Path(args.out).with_name(Path(args.out).stem + f"_{mode}_scene.ma"))
             )
             mode_report = _run_mode(
-                args=args,
                 pmx=pmx,
                 mode=mode,
                 scene_path=scene_path,
