@@ -173,6 +173,23 @@ def test_toon_coordinate_matches_full_shader_half_lambert_in_both_backends():
         assert "1.0 - rampCoord" not in source
 
 
+def test_surface_composition_matches_full_shader_sphere_toon_specular_order():
+    """Sphere affects the surface before toon while specular remains untinted."""
+    sources = {
+        "dx11": (ROOT / "mmd_tools/shaders/MMDShader.fx").read_text(encoding="utf-8"),
+        "glsl": (ROOT / "mmd_tools/shaders/MMDShader.ogsfx").read_text(encoding="utf-8"),
+    }
+    for source in sources.values():
+        sphere_multiply_position = source.index("surfaceColor *= sphereColor")
+        sphere_add_position = source.index("surfaceColor += sphereColor")
+        toon_position = source.index("surfaceColor *= toonColor")
+        specular_position = source.index("diffuse + specular")
+        assert sphere_multiply_position < toon_position < specular_position
+        assert sphere_add_position < toon_position < specular_position
+        assert "lighting *= sphereColor" not in source
+        assert "litColor *= sphereColor" not in source
+
+
 def test_dx11_effect_has_only_sidedness_techniques_with_optional_edge_output():
     """Transparency and no-edge variants do not multiply effect techniques."""
     source = (ROOT / "mmd_tools/shaders/MMDShader.fx").read_text(encoding="utf-8")

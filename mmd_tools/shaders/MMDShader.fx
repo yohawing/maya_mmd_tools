@@ -405,26 +405,7 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     }
     // MMD's untextured-toon path is intentionally flat: N.L only selects a
     // toon-ramp sample and must not become an implicit gray diffuse ramp.
-    // Ambient is part of the material base for both paths, before toon.
     float3 materialBase = saturate(DiffuseColorRGB * lightColor + AmbientColor) * texColor.rgb;
-    // Projected shadows attenuate both paths. "Flat" only means bypassing the
-    // N.L-driven toon ramp; it does not mean ignoring cast shadows.
-    float3 diffuse = materialBase * shadow;
-    if (HasToonTexture != 0)
-    {
-        diffuse *= toonColor;
-    }
-
-    // MMD skips specular completely when the authored power is non-positive.
-    // Positive powers use the Blinn-Phong half vector without an extra N.L gate.
-    float3 specular = float3(0.0, 0.0, 0.0);
-    if (Shininess > 0.0)
-    {
-        float3 halfVec = normalize(lightDir + viewDir);
-        float NdotH = saturate(dot(normal, halfVec));
-        float specFactor = pow(NdotH, Shininess);
-        specular = SpecularColor * specFactor * lightColor * shadow;
-    }
 
     // Sphere mapping
     float3 sphereColor = float3(1.0, 1.0, 1.0);
@@ -439,14 +420,31 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
         sphereColor = factoredSphere.rgb;
     }
 
-    // Combine lighting
-    float3 litColor = diffuse + specular;
-
-    // Apply sphere map
+    // FullShader order: base/texture -> sphere -> toon -> specular. Applying
+    // sphere after specular incorrectly tints highlights in multiply mode.
+    float3 surfaceColor = materialBase;
     if (SphereMode == 1 && HasSphereTexture != 0) // Multiply
-        litColor *= sphereColor;
+        surfaceColor *= sphereColor;
     else if (SphereMode == 2 && HasSphereTexture != 0) // Add
-        litColor += sphereColor;
+        surfaceColor += sphereColor;
+    if (HasToonTexture != 0)
+        surfaceColor *= toonColor;
+
+    // Projected shadows remain a separate Maya viewport factor.
+    float3 diffuse = surfaceColor * shadow;
+
+    // MMD skips specular completely when the authored power is non-positive.
+    // Positive powers use the Blinn-Phong half vector without an extra N.L gate.
+    float3 specular = float3(0.0, 0.0, 0.0);
+    if (Shininess > 0.0)
+    {
+        float3 halfVec = normalize(lightDir + viewDir);
+        float NdotH = saturate(dot(normal, halfVec));
+        float specFactor = pow(NdotH, Shininess);
+        specular = SpecularColor * specFactor * lightColor * shadow;
+    }
+
+    float3 litColor = diffuse + specular;
 
     // Apply opacity
     float opacity = texColor.a * DiffuseColorA * Opacity;

@@ -145,25 +145,7 @@ GLSLShader FS
             vec4 factoredToon = toonSample * ToonTextureMultiply + ToonTextureAdd;
             toonColor = factoredToon.rgb;
         }
-        // No toon means flat MMD diffuse. N.L is used only to select a ramp
-        // sample when a toon texture is actually bound.
         vec3 materialBase = clamp(DiffuseColorRGB * lightColor + AmbientColor, 0.0, 1.0) * texColor.rgb;
-        // Flat bypasses only the N.L ramp; cast-shadow attenuation remains a
-        // separate factor shared by toon-present and toon-absent materials.
-        vec3 diffuse = materialBase * ShadowAttenuation;
-        if (HasToonTexture != 0)
-        {
-            diffuse *= toonColor;
-        }
-        vec3 specular = vec3(0.0);
-        if (Shininess > 0.0)
-        {
-            vec3 halfVec = normalize(lightDir + normalize(psIn.ViewDir));
-            float specFactor = pow(max(dot(n, halfVec), 0.0), Shininess);
-            specular = SpecularColor * specFactor * lightColor;
-        }
-        vec3 lighting = diffuse + specular;
-
         vec3 sphereColor = vec3(1.0);
         if (SphereMode > 0 && HasSphereTexture != 0)
         {
@@ -173,14 +155,29 @@ GLSLShader FS
             vec4 factoredSphere = sphereSample * SphereTextureMultiply + SphereTextureAdd;
             sphereColor = factoredSphere.rgb;
         }
+        vec3 surfaceColor = materialBase;
         if (SphereMode == 1 && HasSphereTexture != 0)
         {
-            lighting *= sphereColor;
+            surfaceColor *= sphereColor;
         }
         else if (SphereMode == 2 && HasSphereTexture != 0)
         {
-            lighting += sphereColor;
+            surfaceColor += sphereColor;
         }
+        if (HasToonTexture != 0)
+        {
+            surfaceColor *= toonColor;
+        }
+
+        vec3 diffuse = surfaceColor * ShadowAttenuation;
+        vec3 specular = vec3(0.0);
+        if (Shininess > 0.0)
+        {
+            vec3 halfVec = normalize(lightDir + normalize(psIn.ViewDir));
+            float specFactor = pow(max(dot(n, halfVec), 0.0), Shininess);
+            specular = SpecularColor * specFactor * lightColor;
+        }
+        vec3 lighting = diffuse + specular;
 
         float opacity = texColor.a * DiffuseColorA * Opacity;
         // Cut out transparent texture texels without discarding intentionally
