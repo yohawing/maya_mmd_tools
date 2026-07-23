@@ -692,7 +692,7 @@ class AnimationPresenter:
             (f"{PANEL_GROUP_LABELS[1]}モーフ", categorized.eyebrow),
             (f"{PANEL_GROUP_LABELS[2]}モーフ", categorized.eye),
             (f"{PANEL_GROUP_LABELS[3]}モーフ", categorized.mouth),
-            ("その他のモーフ", categorized.other),
+            ("未分類（PMX: その他）", categorized.other),
         ]
 
         for cat_name, morphs in categories:

@@ -399,8 +399,6 @@ class SvgPickerWidget(QWidget):
         for region_id in self._selected_regions:
             path = self._region_paths[region_id]
             color = QColor(77, 196, 255, 150)
-            if region_id.startswith("right_"):
-                color = QColor(255, 112, 130, 150)
             painter.setBrush(QBrush(color))
             painter.setPen(QPen(QColor(color.red(), color.green(), color.blue(), 255), 2.2))
             painter.drawPath(path)
@@ -420,8 +418,6 @@ class SvgPickerWidget(QWidget):
         if self._hovered_region:
             path = self._region_paths[self._hovered_region]
             color = QColor(110, 194, 255, 80)
-            if self._hovered_region.startswith("right_"):
-                color = QColor(255, 140, 150, 80)
             painter.setBrush(QBrush(color))
             painter.setPen(QPen(QColor(color.red(), color.green(), color.blue(), 210), 1.2))
             painter.drawPath(path)
