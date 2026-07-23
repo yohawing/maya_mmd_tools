@@ -75,6 +75,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     parser.add_argument("--shader-backend", choices=sorted(BACKEND_CONFIG), default="dx11")
     parser.add_argument(
+        "--display-textures",
+        choices=["on", "off"],
+        default="on",
+        help="Set Maya model-panel displayTextures for the capture (default: on).",
+    )
+    parser.add_argument(
         "--vp2-device",
         choices=["default", "gl", "glcore", "dx11"],
         default="default",
@@ -225,6 +231,7 @@ def _build_maya_code(
     debug_lambert_control: bool,
     hide_orig_shapes: bool,
     shader_backend: str,
+    display_textures: bool = True,
 ) -> str:
     payload = {
         "project_root": str(project_root),
@@ -238,6 +245,7 @@ def _build_maya_code(
         "debug_lambert_control": debug_lambert_control,
         "hide_orig_shapes": hide_orig_shapes,
         "shader_backend": shader_backend,
+        "display_textures": bool(display_textures),
         "completion_marker": COMPLETION_MARKER,
     }
     encoded = base64.b64encode(json.dumps(payload, ensure_ascii=False).encode("utf-8")).decode("ascii")
@@ -259,6 +267,7 @@ _compare = bool(_payload["compare"])
 _debug_lambert_control = bool(_payload["debug_lambert_control"])
 _hide_orig_shapes = bool(_payload["hide_orig_shapes"])
 _shader_backend = _payload["shader_backend"]
+_display_textures = bool(_payload.get("display_textures", True))
 _shader_node_type = "dx11Shader" if _shader_backend == "dx11" else "GLSLShader"
 _completion_marker = _payload["completion_marker"]
 
@@ -449,7 +458,7 @@ def _make_camera(camera):
     cmds.setAttr(shape + ".farClipPlane", float(camera.get("far", 1000)))
     return cam
 
-def _setup_panel(camera):
+def _setup_panel(camera, display_textures=True):
     visible = cmds.getPanel(visiblePanels=True) or []
     visible_model_panels = [p for p in visible if cmds.getPanel(typeOf=p) == "modelPanel"]
     focused = cmds.getPanel(withFocus=True)
@@ -465,7 +474,7 @@ def _setup_panel(camera):
         e=True,
         rendererName="vp2Renderer",
         displayAppearance="smoothShaded",
-        displayTextures=True,
+        displayTextures=bool(display_textures),
         wireframeOnShaded=False,
         useDefaultMaterial=False,
         selectionHiliteDisplay=False,
@@ -754,7 +763,7 @@ def _capture_case(case):
 
     camera = _make_camera(case["camera"])
     _setup_color_management()
-    capture_panel = _setup_panel(camera)
+    capture_panel = _setup_panel(camera, _display_textures)
     frame = int(case.get("frame", 0))
     cmds.currentTime(frame)
     cmds.select(clear=True)
@@ -808,6 +817,7 @@ def _capture_case(case):
         "diff": diff,
         "shader_backend": _shader_backend,
         "shader_node_type": _shader_node_type,
+        "display_textures": _display_textures,
         "shader_issues": shader_issues,
         "debug_actions": debug_actions,
         "scene": _scene_diag(capture_panel),
@@ -826,6 +836,7 @@ def _capture_case(case):
         "center_sample": center_sample,
         "shader_backend": _shader_backend,
         "shader_issues": shader_issues,
+        "display_textures": _display_textures,
         "diff": diff,
     }}
 
@@ -924,6 +935,7 @@ def main() -> int:
             debug_lambert_control=args.debug_lambert_control,
             hide_orig_shapes=args.hide_orig_shapes,
             shader_backend=args.shader_backend,
+            display_textures=args.display_textures == "on",
         )
         maya_commandport.send_python(args.port, code, label="<maya-visual-regression>")
         _monitor_log(log_path, args.timeout)

@@ -79,6 +79,29 @@ class _FakeTransparencyCmds(_FakeCmds):
             self.current = value
 
 
+class _FakeHardwareViewportCmds(_FakeCmds):
+    def __init__(self, model_panels, states=None, failing_panels=None):
+        super().__init__(focus_panel="modelPanel4", focus_type="modelPanel", model_panels=model_panels)
+        self.states = {
+            panel: {"displayAppearance": "wireframe", "displayTextures": False}
+            for panel in self.model_panels
+        }
+        self.states.update(states or {})
+        self.failing_panels = set(failing_panels or [])
+
+    def modelEditor(self, panel_name, **kwargs):
+        self.model_editor_calls.append((panel_name, kwargs))
+        if panel_name in self.failing_panels:
+            raise RuntimeError(f"panel unavailable: {panel_name}")
+        if kwargs.get("query") or kwargs.get("q"):
+            if kwargs.get("displayTextures"):
+                return self.states[panel_name]["displayTextures"]
+            return None
+        if kwargs.get("edit"):
+            if "displayTextures" in kwargs:
+                self.states[panel_name]["displayTextures"] = kwargs["displayTextures"]
+
+
 class TestMayaViewportUtils(unittest.TestCase):
     def test_set_viewport_backface_culling_uses_focused_model_panel(self):
         fake_cmds = _FakeCmds(focus_panel="modelPanel4", focus_type="modelPanel")
@@ -131,6 +154,69 @@ class TestMayaViewportUtils(unittest.TestCase):
             self.assertFalse(maya_viewport_utils.setup_mmd_transparency())
 
         self.assertEqual(fake_cmds.set_attr_calls, [])
+
+    def test_setup_mmd_hardware_viewport_updates_every_model_panel(self):
+        fake_cmds = _FakeHardwareViewportCmds(["modelPanel1", "modelPanel4", "modelPanel5"])
+
+        with patch.object(maya_viewport_utils, "cmds", fake_cmds):
+            changed = maya_viewport_utils.setup_mmd_hardware_viewport()
+
+        self.assertEqual(changed, 3)
+        self.assertEqual(
+            {
+                panel: state
+                for panel, state in fake_cmds.states.items()
+            },
+            {
+                "modelPanel1": {"displayAppearance": "wireframe", "displayTextures": True},
+                "modelPanel4": {"displayAppearance": "wireframe", "displayTextures": True},
+                "modelPanel5": {"displayAppearance": "wireframe", "displayTextures": True},
+            },
+        )
+        edit_calls = [kwargs for _, kwargs in fake_cmds.model_editor_calls if kwargs.get("edit")]
+        self.assertEqual(edit_calls, [{"edit": True, "displayTextures": True}] * 3)
+
+    def test_setup_mmd_hardware_viewport_skips_panels_already_enabled(self):
+        panels = ["modelPanel1", "modelPanel4"]
+        states = {
+            panel: {"displayAppearance": "wireframe", "displayTextures": True}
+            for panel in panels
+        }
+        fake_cmds = _FakeHardwareViewportCmds(panels, states=states)
+
+        with patch.object(maya_viewport_utils, "cmds", fake_cmds):
+            changed = maya_viewport_utils.setup_mmd_hardware_viewport()
+
+        self.assertEqual(changed, 0)
+        self.assertFalse(any(call[1].get("edit") for call in fake_cmds.model_editor_calls))
+
+    def test_setup_mmd_hardware_viewport_continues_after_panel_error(self):
+        fake_cmds = _FakeHardwareViewportCmds(
+            ["modelPanel1", "modelPanel4", "modelPanel5"],
+            failing_panels={"modelPanel4"},
+        )
+
+        with patch.object(maya_viewport_utils, "cmds", fake_cmds):
+            changed = maya_viewport_utils.setup_mmd_hardware_viewport()
+
+        self.assertEqual(changed, 2)
+        self.assertEqual(
+            fake_cmds.states["modelPanel1"],
+            {"displayAppearance": "wireframe", "displayTextures": True},
+        )
+        self.assertEqual(
+            fake_cmds.states["modelPanel5"],
+            {"displayAppearance": "wireframe", "displayTextures": True},
+        )
+
+    def test_setup_mmd_hardware_viewport_returns_zero_without_model_panels(self):
+        fake_cmds = _FakeHardwareViewportCmds([])
+
+        with patch.object(maya_viewport_utils, "cmds", fake_cmds):
+            changed = maya_viewport_utils.setup_mmd_hardware_viewport()
+
+        self.assertEqual(changed, 0)
+        self.assertEqual(fake_cmds.model_editor_calls, [])
 
 
 if __name__ == "__main__":

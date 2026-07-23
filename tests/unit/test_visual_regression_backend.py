@@ -41,3 +41,24 @@ def test_maya_payload_compiles_for_both_backends(tmp_path):
     }
     for backend in ("dx11", "glsl"):
         compile(_build_maya_code(**kwargs, shader_backend=backend), "<maya-visual-regression>", "exec")
+
+
+def test_maya_payload_carries_display_texture_state(tmp_path):
+    kwargs = {
+        "project_root": tmp_path,
+        "cases": [],
+        "shader_fx": Path("shader.fx"),
+        "output_dir": tmp_path,
+        "log_path": tmp_path / "capture.log",
+        "width": 64,
+        "height": 64,
+        "compare": False,
+        "debug_lambert_control": False,
+        "hide_orig_shapes": False,
+        "shader_backend": "dx11",
+        "display_textures": False,
+    }
+
+    source = _build_maya_code(**kwargs)
+    assert '_display_textures = bool(_payload.get("display_textures", True))' in source
+    assert 'capture_panel = _setup_panel(camera, _display_textures)' in source

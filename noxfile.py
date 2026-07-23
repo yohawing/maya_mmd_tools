@@ -2554,6 +2554,9 @@ def maya_visual_regression(session: nox.Session) -> None:
     vp2_device = _option(session.posargs, "--vp2-device", "default")
     if vp2_device not in {"default", "gl", "glcore", "dx11"}:
         session.error(f"Unsupported --vp2-device: {vp2_device}")
+    display_textures = _option(session.posargs, "--display-textures", "on")
+    if display_textures not in {"on", "off"}:
+        session.error(f"Unsupported --display-textures: {display_textures}")
     out = _option(session.posargs, "--out", f"build/visual-regression/maya-{shader_backend}")
     out_path = _require_build_path(session, out, "--out")
     port = _option(session.posargs, "--port", "7721")
@@ -2601,6 +2604,8 @@ def maya_visual_regression(session: nox.Session) -> None:
         shader_backend,
         "--vp2-device",
         vp2_device,
+        "--display-textures",
+        display_textures,
     ]
     cmd.extend(forwarded)
     session.run(*cmd, external=True)

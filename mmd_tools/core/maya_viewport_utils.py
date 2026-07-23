@@ -40,6 +40,47 @@ def set_viewport_backface_culling(enabled=True, panel_name=None) -> bool:
         return False
 
 
+def setup_mmd_hardware_viewport() -> int:
+    """Enable the viewport state required by MMD hardware shaders.
+
+    Maya's ``displayTextures`` toggle controls whether hardware shader texture
+    samplers are evaluated in VP2.  A material imported with a DX11/GLSL MMD
+    shader therefore needs every model panel to have textures enabled.  The
+    user's existing shading appearance is preserved.  Panel failures are
+    isolated so a stale/unsupported panel cannot make the model import fail.
+
+    Returns:
+        int: Number of model panels whose display state was changed.
+    """
+    try:
+        panels = cmds.getPanel(type="modelPanel") or []
+    except Exception:
+        logger.debug("Failed to enumerate model panels for MMD hardware viewport setup", exc_info=True)
+        return 0
+
+    changed = 0
+    for panel_name in panels:
+        try:
+            display_textures = cmds.modelEditor(panel_name, query=True, displayTextures=True)
+            if bool(display_textures):
+                continue
+            cmds.modelEditor(panel_name, edit=True, displayTextures=True)
+            changed += 1
+        except Exception:
+            logger.debug(
+                "Failed to configure model panel for MMD hardware viewport: %s",
+                panel_name,
+                exc_info=True,
+            )
+
+    logger.debug(
+        "MMD hardware viewport setup changed %d/%d model panel(s)",
+        changed,
+        len(panels),
+    )
+    return changed
+
+
 def setup_mmd_color_management(
     rendering_space="scene-linear Rec.709-sRGB",
     view_transform="Un-tone-mapped (sRGB)",
