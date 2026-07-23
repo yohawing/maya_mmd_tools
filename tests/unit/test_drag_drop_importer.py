@@ -34,9 +34,10 @@ class _FakeSettingsService:
 
 
 class _FakeSceneModelService:
-    def __init__(self, *, parent_root=None, models=None):
+    def __init__(self, *, parent_root=None, models=None, attrs=None):
         self.parent_root = parent_root
         self.models = list(models or [])
+        self.attrs = dict(attrs or {})
 
     def get_parent_mmd_root(self, _node):
         return self.parent_root
@@ -49,6 +50,18 @@ class _FakeSceneModelService:
 
     def list_mmd_models(self):
         return list(self.models)
+
+    def get_attr_safe(self, node, attr, default=None):
+        return self.attrs.get(node, {}).get(attr, default)
+
+
+class _RecordingReadmeAdapter:
+    def __init__(self):
+        self.calls = []
+
+    def show(self, readme, *, model_path="", parent=None):
+        self.calls.append((readme, model_path, parent))
+        return True
 
 
 class TestDragDropImporter(unittest.TestCase):
@@ -167,6 +180,37 @@ class TestDragDropImporter(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(calls[0][0], ".pmd")
         self.assertEqual(calls[0][1]["scale"], 2.5)
+
+    @patch.object(drag_drop_importer, "_display_info")
+    def test_import_dropped_pmx_and_pmd_show_each_model_readme_once(self, _display_info):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pmx = root / "model.pmx"
+            pmd = root / "legacy.pmd"
+            pmx.write_text("", encoding="utf-8")
+            pmd.write_text("", encoding="utf-8")
+            importer = MagicMock(side_effect=["|pmx_root", "|pmd_root"])
+            scene_service = _FakeSceneModelService(
+                attrs={
+                    "|pmx_root": {"mmd_comment": "PMX JP", "mmd_comment_en": "PMX EN"},
+                    "|pmd_root": {"mmd_comment": "PMD JP", "mmd_comment_en": ""},
+                }
+            )
+            readme_adapter = _RecordingReadmeAdapter()
+
+            result = drag_drop_importer.import_dropped_files(
+                [str(pmx), str(pmd)],
+                importer=importer,
+                settings_service=_FakeSettingsService(),
+                scene_model_service=scene_service,
+                model_readme_adapter=readme_adapter,
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(len(readme_adapter.calls), 2)
+        self.assertEqual(readme_adapter.calls[0][0].to_plain_text(), "Japanese (JP):\nPMX JP\n\nEnglish (EN):\nPMX EN")
+        self.assertEqual(readme_adapter.calls[1][0].to_plain_text(), "Japanese (JP):\nPMD JP")
+        self.assertEqual([call[1] for call in readme_adapter.calls], [str(pmx), str(pmd)])
 
     @patch.object(drag_drop_importer, "_selected_model_root", return_value="|selected_model")
     @patch.object(drag_drop_importer, "_display_info")

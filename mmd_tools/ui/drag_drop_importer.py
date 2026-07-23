@@ -21,6 +21,7 @@ from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.io.vpd_importer import import_vpd_file
 from mmd_tools.services.scene_model_service import SceneModelService
 from mmd_tools.services.settings_service import SettingsService
+from mmd_tools.ui.model_readme_dialog import ModelReadmeDialogAdapter, read_model_readme
 
 logger = get_logger(__name__)
 
@@ -112,6 +113,8 @@ def import_dropped_files(
     pose_importer: Optional[Callable[..., object]] = None,
     parser: Optional[Callable[[str], object]] = None,
     settings_service: Optional[SettingsService] = None,
+    scene_model_service: Optional[SceneModelService] = None,
+    model_readme_adapter: Optional[ModelReadmeDialogAdapter] = None,
 ) -> bool:
     """Import dropped PMX/PMD/VMD files and apply dropped VPD pose files.
 
@@ -130,6 +133,10 @@ def import_dropped_files(
     pose_importer = pose_importer or import_vpd_file
     parser = parser or parse_mmd_file
     settings_service = settings_service or SettingsService()
+    scene_model_service = scene_model_service or SceneModelService()
+    model_readme_adapter = model_readme_adapter or ModelReadmeDialogAdapter(
+        development_mode_getter=getattr(settings_service, "is_development_mode", lambda: False),
+    )
     model_files = [p for p in files if Path(p).suffix.lower() in _MODEL_EXTENSIONS]
     motion_files = [p for p in files if Path(p).suffix.lower() in _MOTION_EXTENSIONS]
     pose_files = [p for p in files if Path(p).suffix.lower() in _POSE_EXTENSIONS]
@@ -153,6 +160,12 @@ def import_dropped_files(
             except Exception:
                 pass
             _display_info(f"Maya MMD Tools: imported model {Path(model_path).name}")
+            readme = read_model_readme(scene_model_service, root)
+            if readme is not None:
+                try:
+                    model_readme_adapter.show(readme, model_path=model_path)
+                except Exception as exc:
+                    logger.error("Failed to show model readme for dropped model: %s", exc, exc_info=True)
         else:
             _display_warning(f"Maya MMD Tools: model import failed: {model_path}")
 
