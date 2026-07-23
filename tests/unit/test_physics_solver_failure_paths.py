@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+import json
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -59,6 +60,7 @@ class _World:
         self.reset_result, self.step_result = reset, step
     def reset(self, _instance): return self.reset_result
     def step_runtime(self, _instance, _dt): return self.step_result
+    def free(self): pass
 
 
 class _Instance:
@@ -68,6 +70,7 @@ class _Instance:
     def evaluate_rest_pose(self): return True
     def evaluate_current_pose_after_physics(self): return self.post
     def get_world_matrices(self): return self.matrices
+    def free(self): pass
 
 
 def _module(name, **attrs):
@@ -143,6 +146,127 @@ class TestInitializationFailures(unittest.TestCase):
         with patch.dict(sys.modules, modules):
             self.assertFalse(self.node._try_initialize())
         self.assertEqual(World.calls, 0)
+
+    @staticmethod
+    def _warning_payloads(warning):
+        return [json.loads(call.args[1]) for call in warning.call_args_list]
+
+    def test_descriptor_exception_is_structured_and_deduplicated_until_version_change(self):
+        def descriptor(_root, **_kwargs):
+            raise ValueError("descriptor boom")
+
+        modules = _runtime_modules(_World, object, object, descriptor)
+        with patch.dict(sys.modules, modules), patch.object(solver.logger, "warning") as warning:
+            self.assertFalse(self.node._try_initialize(descriptor_version=4))
+            self.assertFalse(self.node._try_initialize(descriptor_version=4))
+            self.assertFalse(self.node._try_initialize(descriptor_version=5))
+
+        payloads = self._warning_payloads(warning)
+        self.assertEqual(len(payloads), 2)
+        self.assertEqual(payloads[0]["stage"], "build physics descriptors")
+        self.assertEqual(payloads[0]["errorType"], "ValueError")
+        self.assertEqual(payloads[0]["reason"], "descriptor boom")
+        self.assertEqual(payloads[0]["modelRoot"], "|model")
+        self.assertEqual(payloads[0]["descriptorVersion"], 4)
+        self.assertEqual(payloads[1]["descriptorVersion"], 5)
+
+    def test_different_failure_stage_and_reason_relog_once(self):
+        phase = {"value": "physics"}
+
+        class World(_World):
+            @classmethod
+            def from_descriptors(cls, *_args):
+                return cls()
+
+        def descriptor(_root, **_kwargs):
+            if phase["value"] == "physics":
+                raise RuntimeError("physics descriptor boom")
+            return SimpleNamespace(rigid_bodies=[], joints=[], validation_errors=[])
+
+        def model_descriptors(_root):
+            raise LookupError("model descriptor boom")
+
+        modules = _runtime_modules(World, SimpleNamespace(from_descriptors=model_descriptors), object, descriptor)
+        with patch.dict(sys.modules, modules), patch.object(solver.logger, "warning") as warning:
+            self.assertFalse(self.node._try_initialize(descriptor_version=8))
+            phase["value"] = "model"
+            self.assertFalse(self.node._try_initialize(descriptor_version=8))
+            self.assertFalse(self.node._try_initialize(descriptor_version=8))
+
+        payloads = self._warning_payloads(warning)
+        self.assertEqual(len(payloads), 2)
+        self.assertEqual(payloads[0]["stage"], "build physics descriptors")
+        self.assertEqual(payloads[0]["reason"], "physics descriptor boom")
+        self.assertEqual(payloads[1]["stage"], "create runtime model")
+        self.assertEqual(payloads[1]["reason"], "model descriptor boom")
+
+    def test_success_clears_failure_dedupe_state(self):
+        phase = {"value": "failure"}
+
+        def descriptor(_root, **_kwargs):
+            if phase["value"] == "failure":
+                raise RuntimeError("retryable descriptor boom")
+            return SimpleNamespace(rigid_bodies=[], joints=[], validation_errors=[])
+
+        class World(_World):
+            @classmethod
+            def from_descriptors(cls, *_args):
+                return cls()
+
+        model = SimpleNamespace(from_descriptors=lambda _desc: SimpleNamespace(free=lambda: None))
+        instance = SimpleNamespace(for_model=lambda _model: _Instance())
+        modules = _runtime_modules(World, model, instance, descriptor)
+        with patch.dict(sys.modules, modules), patch.object(solver.logger, "warning") as warning:
+            self.assertFalse(self.node._try_initialize(descriptor_version=9))
+            phase["value"] = "success"
+            self.assertTrue(self.node._try_initialize(descriptor_version=9))
+            self.node._world = self.node._model = self.node._instance = None
+            self.node._initialized = False
+            phase["value"] = "failure"
+            self.assertFalse(self.node._try_initialize(descriptor_version=9))
+
+        payloads = self._warning_payloads(warning)
+        self.assertEqual(len(payloads), 2)
+        self.assertEqual(payloads[0]["reason"], "retryable descriptor boom")
+        self.assertEqual(payloads[1]["reason"], "retryable descriptor boom")
+
+    def test_validation_error_preserves_structured_detail(self):
+        validation = SimpleNamespace(index=4, kind="missing-parent", field="bone[4]", message="parent index is invalid")
+
+        def descriptor(_root, **_kwargs):
+            return SimpleNamespace(rigid_bodies=[], joints=[], validation_errors=[validation])
+
+        modules = _runtime_modules(_World, object, object, descriptor)
+        with patch.dict(sys.modules, modules), patch.object(solver.logger, "warning") as warning:
+            self.assertFalse(self.node._try_initialize(descriptor_version=10))
+
+        payload = self._warning_payloads(warning)[0]
+        self.assertEqual(payload["stage"], "validate physics descriptors")
+        self.assertEqual(payload["errorType"], "ValidationError")
+        self.assertEqual(payload["validationErrors"], [{
+            "index": 4,
+            "kind": "missing-parent",
+            "field": "bone[4]",
+            "message": "parent index is invalid",
+        }])
+
+    def test_repeated_validation_failure_deduplicates_before_details_build(self):
+        validation = SimpleNamespace(index=7, kind="invalid-parent", field="parent", message="target missing")
+
+        def descriptor(_root, **_kwargs):
+            return SimpleNamespace(rigid_bodies=[], joints=[], validation_errors=[validation])
+
+        modules = _runtime_modules(_World, object, object, descriptor)
+        with patch.dict(sys.modules, modules), patch.object(solver.logger, "warning"):
+            with patch.object(
+                self.node,
+                "_validation_error_details",
+                wraps=self.node._validation_error_details,
+            ) as details:
+                self.assertFalse(self.node._try_initialize(descriptor_version=11))
+                self.assertFalse(self.node._try_initialize(descriptor_version=11))
+
+        details.assert_called_once()
 
 
 def _prepare_node(*, world, instance, time=0.0, last_time=None):
