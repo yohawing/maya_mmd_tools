@@ -30,6 +30,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_MODEL_NAME_EN,
     ATTR_MMD_COMMENT,
     ATTR_MMD_COMMENT_EN,
+    ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
 )
 from mmd_tools.core import maya_mesh_utils, maya_name_utils
 from mmd_tools.core.logger import get_logger
@@ -218,6 +219,8 @@ def fast_import(
 
     metadata = _apply_basic_materials(filepath, mesh_node, cmds) if mesh_node else None
     _apply_fast_root_metadata(filepath, transform_node, metadata, cmds)
+    if include_morphs and mesh_node:
+        _apply_fast_morph_metadata(filepath, mesh_node, cmds)
 
     if not mesh_only and mesh_node:
         # attempt skeleton + skin; any failure falls back to mesh-only result
@@ -271,6 +274,296 @@ def _apply_basic_materials(filepath: str, mesh_node: str, cmds_module) -> Option
     except Exception as exc:
         logger.debug("Fast material assignment skipped: %s", exc)
         return None
+
+
+def _apply_fast_morph_metadata(filepath: str, mesh_node: str, cmds_module) -> None:
+    """Replace C++ vertex-morph aliases and persist their raw PMX mapping.
+
+    ``mmdFastLoad`` intentionally only has the C++ byte-level sanitizer.  The
+    Python fast wrapper is the common naming boundary, so it can apply the
+    shared Unicode dictionary and retain the original PMX names used by VMD
+    and export paths.  This helper is deliberately transactional: all source
+    metadata, target ordering, aliases, and JSON are validated before the
+    first Maya mutation.  If a Maya mutation fails, already-applied aliases
+    and the metadata attribute are restored on a best-effort basis.
+    """
+    try:
+        source = _load_fast_morph_source(filepath)
+        if source is None:
+            return
+
+        blend_shapes = []
+        for history_node in cmds_module.listHistory(mesh_node, pruneDagObjects=True) or []:
+            if cmds_module.nodeType(history_node) == "blendShape":
+                if history_node not in blend_shapes:
+                    blend_shapes.append(history_node)
+        if not blend_shapes:
+            return
+        if len(blend_shapes) != 1:
+            logger.debug("Fast morph metadata skipped: expected one blendShape, got %d", len(blend_shapes))
+            return
+
+        blend_shape = blend_shapes[0]
+        weight_count = int(cmds_module.blendShape(blend_shape, query=True, weightCount=True) or 0)
+        if weight_count == 0:
+            return
+
+        candidates = _fast_vertex_morph_candidates(source)
+        if candidates is None or len(candidates) != weight_count:
+            logger.debug(
+                "Fast morph metadata skipped: C++ target count %d does not match parsed candidates %s",
+                weight_count,
+                None if candidates is None else len(candidates),
+            )
+            return
+
+        alias_plan = []
+        used_names = set()
+        raw_mapping = {}
+        for weight_index, candidate in enumerate(candidates):
+            raw_name = str(candidate.get("name") or "")
+            alias = maya_name_utils.sanitize_unique_name(
+                raw_name,
+                used_names,
+                fallback=f"morph_{weight_index}",
+            )
+            plug = f"{blend_shape}.weight[{weight_index}]"
+            old_alias = cmds_module.aliasAttr(plug, query=True) or None
+            alias_plan.append((plug, old_alias, alias))
+            if raw_name:
+                raw_mapping[str(weight_index)] = {
+                    "name": raw_name,
+                    "index": int(candidate["index"]),
+                }
+
+        serialized_mapping = (
+            json.dumps(
+                raw_mapping,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if raw_mapping
+            else None
+        )
+        _commit_fast_morph_aliases(
+            cmds_module,
+            blend_shape,
+            alias_plan,
+            serialized_mapping,
+        )
+    except Exception as exc:
+        logger.debug("Fast morph metadata skipped: %s", exc)
+
+
+def _load_fast_morph_source(filepath: str) -> Optional[dict]:
+    """Read parsed morph metadata and optional runtime vertex-morph spans."""
+    parsed = None
+    try:
+        pmx_bytes = Path(filepath).read_bytes()
+        parsed_model_cls = _mmd_parsed_model_class()
+        parsed = parsed_model_cls.from_pmx_bytes(pmx_bytes)
+    except Exception as exc:
+        logger.debug("Parsed-model morph metadata unavailable: %s", exc)
+    else:
+        if parsed is not None:
+            try:
+                try:
+                    metadata_text = parsed.metadata_json
+                    vertex_count = int(getattr(parsed, "vertex_count", 0) or 0)
+                    spans = getattr(parsed, "vertex_morph_spans", None)
+                    names = getattr(parsed, "vertex_morph_names", None)
+                finally:
+                    parsed.free()
+
+                if metadata_text and vertex_count > 0:
+                    metadata = json.loads(metadata_text)
+                    morphs = metadata.get("morphs") if isinstance(metadata, dict) else None
+                    if isinstance(morphs, list):
+                        return {
+                            "morphs": morphs,
+                            "vertex_count": vertex_count,
+                            "spans": list(spans) if isinstance(spans, (list, tuple)) else None,
+                            "names": list(names) if isinstance(names, (list, tuple)) else None,
+                        }
+            except Exception as exc:
+                logger.debug("Parsed-model morph metadata extraction skipped: %s", exc)
+        else:
+            logger.debug("Parsed-model morph metadata unavailable; trying native PMX fallback")
+
+    return _load_fast_morph_source_native(filepath)
+
+
+def _load_fast_morph_source_native(filepath: str) -> Optional[dict]:
+    """Convert the native PMX object into the fast morph source schema."""
+    try:
+        pmx = parse_pmx_native(filepath)
+        if pmx is None:
+            return None
+        vertices = getattr(pmx, "vertices", None)
+        morphs = getattr(pmx, "morphs", None)
+        if isinstance(pmx, dict):
+            vertices = pmx.get("vertices", vertices)
+            morphs = pmx.get("morphs", morphs)
+        if not isinstance(vertices, (list, tuple)) or not isinstance(morphs, (list, tuple)):
+            return None
+
+        converted_morphs = []
+        for morph in morphs:
+            morph_type = _fast_morph_field(morph, "morph_type", _fast_morph_field(morph, "type", ""))
+            is_vertex = morph_type == "vertex"
+            try:
+                is_vertex = is_vertex or int(morph_type) == 1
+            except (TypeError, ValueError):
+                pass
+
+            offsets = _fast_morph_field(morph, "offsets", None)
+            if offsets is None:
+                offsets = _fast_morph_field(morph, "vertexOffsets", [])
+            vertex_offsets = []
+            if is_vertex and isinstance(offsets, (list, tuple)):
+                for offset in offsets:
+                    vertex_index = _fast_morph_field(offset, "vertex_index", None)
+                    if vertex_index is None:
+                        vertex_index = _fast_morph_field(offset, "vertexIndex", None)
+                    vertex_offsets.append({"vertexIndex": vertex_index})
+
+            converted_morphs.append({
+                "name": str(_fast_morph_field(morph, "name", "") or ""),
+                "type": "vertex" if is_vertex else "other",
+                "vertexOffsets": vertex_offsets,
+            })
+
+        return {
+            "morphs": converted_morphs,
+            "vertex_count": len(vertices),
+            "spans": None,
+            "names": None,
+        }
+    except Exception as exc:
+        logger.debug("Native PMX morph metadata fallback skipped: %s", exc)
+        return None
+
+
+def _fast_morph_field(value, field: str, default=None):
+    """Read a PMX morph field from either an object or a mapping."""
+    if isinstance(value, dict):
+        return value.get(field, default)
+    return getattr(value, field, default)
+
+
+def _fast_vertex_morph_candidates(source: dict) -> Optional[list[dict]]:
+    """Mirror C++'s created-target filtering in PMX/global morph order."""
+    morphs = source.get("morphs")
+    vertex_count = int(source.get("vertex_count", 0) or 0)
+    if not isinstance(morphs, list) or vertex_count <= 0:
+        return None
+
+    def candidate_for_index(global_index: int) -> Optional[dict]:
+        if global_index < 0 or global_index >= len(morphs):
+            return None
+        morph = morphs[global_index]
+        if not isinstance(morph, dict) or morph.get("type") != "vertex":
+            return None
+        offsets = morph.get("vertexOffsets")
+        if not isinstance(offsets, list):
+            return None
+        has_valid_offset = False
+        for offset in offsets:
+            if not isinstance(offset, dict):
+                continue
+            try:
+                vertex_index = int(offset.get("vertexIndex"))
+            except (TypeError, ValueError):
+                continue
+            if 0 <= vertex_index < vertex_count:
+                has_valid_offset = True
+                break
+        if not has_valid_offset:
+            return None
+        return {"name": str(morph.get("name") or ""), "index": global_index}
+
+    spans = source.get("spans")
+    if spans:
+        candidates = []
+        for span in spans:
+            if not isinstance(span, (list, tuple)) or len(span) < 3:
+                return None
+            try:
+                global_index = int(span[2])
+            except (TypeError, ValueError):
+                return None
+            candidate = candidate_for_index(global_index)
+            if candidate is not None:
+                candidates.append(candidate)
+        return candidates
+
+    return [
+        candidate
+        for global_index in range(len(morphs))
+        for candidate in [candidate_for_index(global_index)]
+        if candidate is not None
+    ]
+
+
+def _commit_fast_morph_aliases(
+    cmds_module,
+    blend_shape: str,
+    alias_plan: list[tuple[str, Optional[str], str]],
+    serialized_mapping: Optional[str],
+) -> None:
+    """Apply alias/JSON changes with best-effort rollback on Maya failures."""
+    attr = f"{blend_shape}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}"
+    attr_exists = False
+    old_mapping = None
+    if serialized_mapping is not None:
+        attr_exists = bool(cmds_module.attributeQuery(
+            ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
+            node=blend_shape,
+            exists=True,
+        ))
+        old_mapping = cmds_module.getAttr(attr) if attr_exists else None
+    applied = []
+    try:
+        for plug, old_alias, new_alias in alias_plan:
+            # Record the intended operation before either Maya mutation so a
+            # failure while removing/replacing the current alias can restore
+            # that plug as well as earlier plugs.
+            applied.append((plug, old_alias, new_alias))
+            if old_alias:
+                _remove_fast_alias(cmds_module, blend_shape, old_alias)
+            cmds_module.aliasAttr(new_alias, plug)
+
+        if serialized_mapping is not None:
+            if not attr_exists:
+                cmds_module.addAttr(
+                    blend_shape,
+                    longName=ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
+                    dataType="string",
+                )
+            cmds_module.setAttr(attr, serialized_mapping, type="string")
+    except Exception:
+        for plug, old_alias, new_alias in reversed(applied):
+            try:
+                _remove_fast_alias(cmds_module, blend_shape, new_alias)
+                if old_alias:
+                    cmds_module.aliasAttr(old_alias, plug)
+            except Exception as rollback_exc:
+                logger.debug("Fast morph alias rollback failed for %s: %s", plug, rollback_exc)
+        try:
+            if serialized_mapping is not None:
+                if attr_exists:
+                    cmds_module.setAttr(attr, old_mapping or "", type="string")
+                else:
+                    cmds_module.deleteAttr(attr)
+        except Exception as rollback_exc:
+            logger.debug("Fast morph mapping rollback failed for %s: %s", attr, rollback_exc)
+        raise
+
+
+def _remove_fast_alias(cmds_module, blend_shape: str, alias: str) -> None:
+    """Remove a Maya alias using the node-qualified form required by Maya."""
+    cmds_module.aliasAttr(f"{blend_shape}.{alias}", remove=True)
 
 
 def _apply_fast_root_metadata(

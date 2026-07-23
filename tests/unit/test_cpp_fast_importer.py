@@ -30,6 +30,7 @@ from mmd_tools.core.settings import settings
 from mmd_tools.io import cpp_fast_importer
 from mmd_tools.io.cpp_fast_importer import (
     _apply_basic_materials,
+    _apply_fast_morph_metadata,
     _apply_fast_skeleton_skin,
     _apply_fast_root_metadata,
     _allocate_fast_material_name,
@@ -655,6 +656,243 @@ class TestSanitizeNodeName(unittest.TestCase):
         self.assertEqual(len(names), len(set(names)))
         self.assertTrue(all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in names))
         self.assertTrue(all(f"{name}SG" in used for name in names))
+
+
+class TestFastMorphMetadata(unittest.TestCase):
+    """Verify the Python-side alias/raw-name transaction for C++ morphs."""
+
+    @staticmethod
+    def _cmds(weight_count, aliases=None):
+        cmds = MagicMock()
+        cmds.listHistory.return_value = ["blendShape1"]
+        cmds.nodeType.return_value = "blendShape"
+        cmds.blendShape.return_value = weight_count
+        aliases = aliases or {}
+        alias_state = {
+            f"blendShape1.weight[{index}]": alias
+            for index, alias in aliases.items()
+        }
+
+        def alias_attr(*args, **kwargs):
+            if kwargs.get("query"):
+                return alias_state.get(args[0])
+            if kwargs.get("remove"):
+                old_alias = args[0].split(".", 1)[-1]
+                for plug, alias in list(alias_state.items()):
+                    if alias == old_alias:
+                        alias_state.pop(plug, None)
+                return None
+            alias_state[args[1]] = args[0]
+            return None
+
+        cmds.aliasAttr.side_effect = alias_attr
+        cmds.attributeQuery.return_value = False
+        cmds._alias_state = alias_state
+        return cmds
+
+    @staticmethod
+    def _source():
+        return {
+            "vertex_count": 4,
+            "spans": [(0, 1, 0), (0, 1, 2), (0, 1, 3), (0, 1, 4)],
+            "names": ["1:髪", "a:b", "a_b", ""],
+            "morphs": [
+                {"name": "1:髪", "type": "vertex", "vertexOffsets": [{"vertexIndex": 0}]},
+                {"name": "bone", "type": "bone", "vertexOffsets": []},
+                {"name": "a:b", "type": "vertex", "vertexOffsets": [{"vertexIndex": 1}]},
+                {"name": "a_b", "type": "vertex", "vertexOffsets": [{"vertexIndex": 2}]},
+                {"name": "", "type": "vertex", "vertexOffsets": [{"vertexIndex": 3}]},
+            ],
+        }
+
+    @patch("mmd_tools.io.cpp_fast_importer._load_fast_morph_source")
+    def test_hazard_collision_aliases_and_raw_global_indices(self, mock_source):
+        mock_source.return_value = self._source()
+        cmds = self._cmds(4, {0: "1____", 1: "a_b", 2: "a_b_1", 3: "morph_3"})
+
+        _apply_fast_morph_metadata("model.pmx", "meshShape1", cmds)
+
+        aliases = [
+            cmds._alias_state.get(f"blendShape1.weight[{index}]")
+            for index in range(4)
+        ]
+        self.assertEqual(len(aliases), len(set(aliases)))
+        self.assertTrue(all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", alias) for alias in aliases))
+        mapping_call = next(
+            call for call in cmds.setAttr.call_args_list
+            if call.args and ".mmd_blendshape_morph_names_json" in call.args[0]
+        )
+        mapping = json.loads(mapping_call.args[1])
+        self.assertEqual(
+            mapping,
+            {
+                "0": {"name": "1:髪", "index": 0},
+                "1": {"name": "a:b", "index": 2},
+                "2": {"name": "a_b", "index": 3},
+            },
+        )
+
+    @patch("mmd_tools.io.cpp_fast_importer._load_fast_morph_source")
+    def test_count_mismatch_does_not_mutate_aliases_or_json(self, mock_source):
+        mock_source.return_value = self._source()
+        cmds = self._cmds(3, {0: "cpp_a", 1: "cpp_b", 2: "cpp_c"})
+
+        _apply_fast_morph_metadata("model.pmx", "meshShape1", cmds)
+
+        self.assertEqual(
+            cmds._alias_state,
+            {
+                "blendShape1.weight[0]": "cpp_a",
+                "blendShape1.weight[1]": "cpp_b",
+                "blendShape1.weight[2]": "cpp_c",
+            },
+        )
+        self.assertFalse(any(
+            call.args and ".mmd_blendshape_morph_names_json" in call.args[0]
+            for call in cmds.setAttr.call_args_list
+        ))
+        self.assertFalse(any(call.kwargs.get("remove") for call in cmds.aliasAttr.call_args_list))
+
+    @patch("mmd_tools.io.cpp_fast_importer._load_fast_morph_source")
+    def test_parser_exception_does_not_mutate(self, mock_source):
+        mock_source.side_effect = RuntimeError("parser unavailable")
+        cmds = self._cmds(1, {0: "cpp_alias"})
+
+        _apply_fast_morph_metadata("model.pmx", "meshShape1", cmds)
+
+        self.assertEqual(cmds._alias_state, {"blendShape1.weight[0]": "cpp_alias"})
+        self.assertFalse(cmds.addAttr.called)
+
+    @patch("mmd_tools.io.cpp_fast_importer.parse_pmx_native")
+    @patch("mmd_tools.io.cpp_fast_importer._mmd_parsed_model_class")
+    @patch("mmd_tools.io.cpp_fast_importer.Path.read_bytes", return_value=b"fake pmx")
+    def test_parsed_model_unavailable_uses_native_morph_fallback(
+        self,
+        _read_bytes,
+        parsed_class,
+        parse_native,
+    ):
+        parsed_class.return_value.from_pmx_bytes.return_value = None
+        parse_native.return_value = SimpleNamespace(
+            vertices=[object(), object()],
+            morphs=[
+                SimpleNamespace(
+                    name="native_vertex",
+                    morph_type=1,
+                    offsets=[{"vertex_index": 1}],
+                ),
+                SimpleNamespace(name="native_bone", morph_type=2, offsets=[]),
+            ],
+        )
+
+        source = cpp_fast_importer._load_fast_morph_source("model.pmx")
+
+        self.assertEqual(source["vertex_count"], 2)
+        self.assertIsNone(source["spans"])
+        self.assertEqual(source["morphs"][0], {
+            "name": "native_vertex",
+            "type": "vertex",
+            "vertexOffsets": [{"vertexIndex": 1}],
+        })
+        parsed_class.return_value.from_pmx_bytes.assert_called_once_with(b"fake pmx")
+        parse_native.assert_called_once_with("model.pmx")
+
+    @patch("mmd_tools.io.cpp_fast_importer.parse_pmx_native", side_effect=RuntimeError("native parser unavailable"))
+    @patch("mmd_tools.io.cpp_fast_importer._mmd_parsed_model_class")
+    @patch("mmd_tools.io.cpp_fast_importer.Path.read_bytes", return_value=b"fake pmx")
+    def test_parser_and_native_fallback_exception_does_not_mutate(
+        self,
+        _read_bytes,
+        parsed_class,
+        _parse_native,
+    ):
+        parsed_class.return_value.from_pmx_bytes.side_effect = RuntimeError("ffi unavailable")
+        cmds = self._cmds(1, {0: "cpp_alias"})
+
+        _apply_fast_morph_metadata("model.pmx", "meshShape1", cmds)
+
+        self.assertEqual(cmds._alias_state, {"blendShape1.weight[0]": "cpp_alias"})
+        self.assertFalse(cmds.addAttr.called)
+
+    @patch("mmd_tools.io.cpp_fast_importer._load_fast_morph_source")
+    def test_alias_failure_rolls_back_previous_aliases(self, mock_source):
+        mock_source.return_value = self._source()
+        cmds = self._cmds(4, {0: "cpp_a", 1: "cpp_b", 2: "cpp_c", 3: "cpp_d"})
+        original_alias_attr = cmds.aliasAttr.side_effect
+
+        def fail_weight_one(*args, **kwargs):
+            if (
+                not kwargs.get("query")
+                and not kwargs.get("remove")
+                and args[1] == "blendShape1.weight[1]"
+                and args[0] != "cpp_b"
+            ):
+                raise RuntimeError("alias write failed")
+            return original_alias_attr(*args, **kwargs)
+
+        cmds.aliasAttr.side_effect = fail_weight_one
+
+        _apply_fast_morph_metadata("model.pmx", "meshShape1", cmds)
+
+        self.assertEqual(
+            cmds._alias_state,
+            {
+                "blendShape1.weight[0]": "cpp_a",
+                "blendShape1.weight[1]": "cpp_b",
+                "blendShape1.weight[2]": "cpp_c",
+                "blendShape1.weight[3]": "cpp_d",
+            },
+        )
+        self.assertFalse(any(
+            call.args and ".mmd_blendshape_morph_names_json" in call.args[0]
+            for call in cmds.setAttr.call_args_list
+        ))
+
+    @patch("mmd_tools.io.cpp_fast_importer._load_fast_morph_source")
+    def test_empty_raw_names_keep_aliases_without_creating_mapping(self, mock_source):
+        mock_source.return_value = {
+            "vertex_count": 1,
+            "spans": [(0, 1, 0)],
+            "names": [""],
+            "morphs": [{"name": "", "type": "vertex", "vertexOffsets": [{"vertexIndex": 0}]}],
+        }
+        cmds = self._cmds(1, {0: "cpp_alias"})
+
+        _apply_fast_morph_metadata("model.pmx", "meshShape1", cmds)
+
+        self.assertRegex(cmds._alias_state["blendShape1.weight[0]"], r"^[A-Za-z_][A-Za-z0-9_]*$")
+        cmds.addAttr.assert_not_called()
+        self.assertFalse(any(
+            call.args and ".mmd_blendshape_morph_names_json" in call.args[0]
+            for call in cmds.setAttr.call_args_list
+        ))
+
+    @patch("mmd_tools.io.cpp_fast_importer._apply_fast_morph_metadata")
+    @patch("mmd_tools.io.cpp_fast_importer._apply_fast_root_metadata")
+    @patch("mmd_tools.io.cpp_fast_importer._apply_basic_materials")
+    @patch("mmd_tools.io.cpp_fast_importer._candidate_plugin_paths")
+    @patch("mmd_tools.io.cpp_fast_importer._setup_plugin_directory")
+    def test_include_morphs_false_skips_post_pass(
+        self,
+        _setup,
+        candidates,
+        basic_materials,
+        root_metadata,
+        morph_metadata,
+    ):
+        plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
+        candidates.return_value = [plugin_path]
+        basic_materials.return_value = None
+        cmds = types.SimpleNamespace(
+            loadPlugin=MagicMock(),
+            mmdFastLoad=MagicMock(return_value=["root", "mesh"]),
+        )
+        with patch.object(Path, "exists", return_value=True), patch.dict(
+            "sys.modules", {"maya.cmds": cmds}
+        ):
+            fast_import("model.pmx", include_morphs=False)
+
+        morph_metadata.assert_not_called()
 
     def test_standard_material_preserves_raw_names(self):
         cmds = MagicMock()
