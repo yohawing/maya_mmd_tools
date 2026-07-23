@@ -153,10 +153,6 @@ class TestHumanIkMenuActions(unittest.TestCase):
         actions._confirm_dialog = None
         actions._error_reporter = None
 
-    def test_action_labels_lead_with_open_humanik_editor_plus_nine_staged_actions(self):
-        self.assertEqual(actions.ACTION_LABELS[0], ("open_humanik_editor", "HumanIK Editor..."))
-        self.assertEqual(len(actions.ACTION_LABELS), 10)
-
     def test_open_humanik_editor_dispatches_to_the_standalone_window(self):
         window = types.ModuleType("mmd_tools.ui.humanik_window")
         window.show_humanik_window = MagicMock()
@@ -173,42 +169,31 @@ class TestHumanIkMenuActions(unittest.TestCase):
 
         window.show_humanik_window.assert_called_once_with(dockable=True)
 
-    def test_menu_contains_humanik_and_exact_seven_actions(self):
+    def test_menu_item_opens_humanik_editor_without_child_actions(self):
         with patch.object(actions, "install_maya_script_editor_handler") as install_handler:
-            submenu = actions.install_humanik_menu(parent="MMD", cmds_module=self.cmds)
+            menu_item = actions.install_humanik_menu(parent="MMD", cmds_module=self.cmds)
 
         install_handler.assert_called_once_with()
-
-        self.assertEqual(submenu, "MMDHumanIKMenu")
-        labels = [
-            call.kwargs.get("label")
-            for call in self.cmds.menuItem.call_args_list
-            if call.kwargs.get("parent") == submenu
-        ]
-        self.assertEqual(labels, [label for _action, label in actions.ACTION_LABELS])
-
-    def test_menu_submenu_label_marks_humanik_as_experimental(self):
-        actions.install_humanik_menu(parent="MMD", cmds_module=self.cmds)
-
-        submenu_calls = [
+        self.assertEqual(menu_item, actions.HUMANIK_MENU_NAME)
+        item_calls = [
             call
             for call in self.cmds.menuItem.call_args_list
-            if call.kwargs.get("subMenu")
+            if call.args and call.args[0] == actions.HUMANIK_MENU_NAME and not call.kwargs.get("exists")
         ]
-        self.assertEqual(len(submenu_calls), 1)
-        self.assertEqual(submenu_calls[0].kwargs.get("label"), "HumanIK (Experimental)")
-        # The menu id/name stays stable for backward compatibility even though
-        # the displayed label now flags the feature as experimental.
-        self.assertEqual(submenu_calls[0].args[0], actions.HUMANIK_MENU_NAME)
+        self.assertEqual(len(item_calls), 1)
+        self.assertEqual(item_calls[0].kwargs.get("label"), actions.HUMANIK_MENU_LABEL)
+        self.assertEqual(item_calls[0].kwargs.get("parent"), "MMD")
+        self.assertNotIn("subMenu", item_calls[0].kwargs)
+        self.assertFalse(any(call.kwargs.get("parent") == menu_item for call in self.cmds.menuItem.call_args_list))
 
-    def test_menu_reinstall_removes_previous_submenu_before_recreating(self):
+    def test_menu_reinstall_removes_previous_item_before_recreating(self):
         existing = False
 
         def menu_item(*args, **kwargs):
             nonlocal existing
             if kwargs.get("exists"):
                 return existing
-            if kwargs.get("subMenu"):
+            if args and args[0] == actions.HUMANIK_MENU_NAME:
                 existing = True
             return args[0] if args else "menuItem"
 
@@ -226,12 +211,12 @@ class TestHumanIkMenuActions(unittest.TestCase):
             callback_dispatcher=lambda action: calls.append(action),
         )
 
-        callbacks = [
-            call.kwargs["command"]
+        menu_call = next(
+            call
             for call in self.cmds.menuItem.call_args_list
-            if call.kwargs.get("parent") == "MMDHumanIKMenu"
-        ]
-        callbacks[0]("ignored")
+            if call.args and call.args[0] == actions.HUMANIK_MENU_NAME and "command" in call.kwargs
+        )
+        menu_call.kwargs["command"]("ignored")
         self.assertEqual(calls, ["open_humanik_editor"])
 
     @patch.object(actions, "SceneModelService", _FakeModelService)

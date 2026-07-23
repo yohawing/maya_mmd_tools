@@ -23,6 +23,7 @@ from mmd_tools.services.scene_model_service import SceneModelService
 
 
 HUMANIK_MENU_NAME = "MMDHumanIKMenu"
+HUMANIK_MENU_LABEL = "HumanIK (Experimental)"
 DIAGNOSTICS_WINDOW_NAME = "MMDHumanIKDiagnosticsWindow"
 
 # HUMANIK-EXTERNAL-SOURCE-1 ES-3: the Source combo's item data distinguishes
@@ -32,22 +33,6 @@ DIAGNOSTICS_WINDOW_NAME = "MMDHumanIKDiagnosticsWindow"
 # callers) for backward compatibility -- see ``_normalize_source_selector``.
 SOURCE_KIND_MMD = "mmd"
 SOURCE_KIND_EXTERNAL = "external"
-ACTION_LABELS = (
-    ("open_humanik_editor", "HumanIK Editor..."),
-    ("setup_and_characterize", "Setup / Characterize"),
-    ("enter_source_mode", "Enter Source Mode"),
-    ("enter_target_mode", "Enter Target Mode"),
-    ("create_control_rig", "Create Control Rig"),
-    ("bake_to_mmd_rig", "Bake to MMD Rig"),
-    ("bake_to_control_rig", "Bake to Control Rig"),
-    ("bake_from_control_rig", "Bake From Control Rig"),
-    ("restore_mmd_rig", "Restore MMD Rig"),
-    ("diagnostics", "Diagnostics"),
-)
-_ACTION_MENU_IDS = {
-    action: f"MMDHumanIK{index}MenuItem"
-    for index, (action, _label) in enumerate(ACTION_LABELS, start=1)
-}
 
 _session: Optional[HumanIkFrontendSession] = None
 _cmds_module = None
@@ -280,30 +265,20 @@ def _choose_model_from_scene(available_models) -> Optional[str]:
 
 
 def install_humanik_menu(parent="MMD", *, cmds_module=None, callback_dispatcher=None):
-    """Install the HumanIK submenu with the "Open HumanIK Editor" entry plus
-    its nine staged workflow actions."""
+    """Install one HumanIK menu item that opens the standalone editor."""
     global _cmds_module
     cmds = cmds_module or _maya_cmds()
     _cmds_module = cmds
     install_maya_script_editor_handler()
     if _ui_exists(cmds, HUMANIK_MENU_NAME):
         cmds.deleteUI(HUMANIK_MENU_NAME)
-    submenu = cmds.menuItem(
-        HUMANIK_MENU_NAME,
-        label="HumanIK (Experimental)",
-        parent=parent,
-        subMenu=True,
-    )
     dispatcher = callback_dispatcher or dispatch_action
-    for action, label in ACTION_LABELS:
-        menu_id = _ACTION_MENU_IDS[action]
-        cmds.menuItem(
-            menu_id,
-            label=label,
-            parent=submenu,
-            command=lambda *_args, _action=action: dispatcher(_action),
-        )
-    return submenu
+    return cmds.menuItem(
+        HUMANIK_MENU_NAME,
+        label=HUMANIK_MENU_LABEL,
+        parent=parent,
+        command=lambda *_args: dispatcher("open_humanik_editor"),
+    )
 
 
 def dispatch_action(action: str):

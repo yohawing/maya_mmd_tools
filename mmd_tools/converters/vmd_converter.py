@@ -719,8 +719,8 @@ class VmdConverter:
         own vocabulary (``humanik_view.MODE_TRANSLATION_KEYS`` /
         ``describe_frontend_state``'s ``FRONTEND_MODE_TARGET_PREVIEW`` /
         ``FRONTEND_MODE_CONTROL_RIG``): "TARGET preview" / "Control Rig", plus
-        the exact menu path to clear it ("MMD menu > HumanIK (Experimental) >
-        Restore MMD Rig", see ``humanik_menu_actions.install_humanik_menu``).
+        recovery path: open ``MMD > HumanIK (Experimental)`` and use
+        ``Restore MMD Rig`` in the editor.
         The raised exception also carries a ``reason_code`` attribute
         (``_IMPORT_LOCK_REASON_CODE_BY_BLOCKED``) mirroring
         ``humanik_frontend.REASON_IMPORT_BLOCKED_TARGET_PREVIEW`` /
@@ -751,8 +751,8 @@ class VmdConverter:
         reason_code = _IMPORT_LOCK_REASON_CODE_BY_BLOCKED.get(lock.blocked)
         message = (
             f"VMD import is blocked: {target_model} (HumanIK character={lock.character}) "
-            f"is currently in {mode_label} mode. Use MMD menu > HumanIK (Experimental) > "
-            "Restore MMD Rig to clear this before importing VMD motion; VMD import does "
+            f"is currently in {mode_label} mode. Open MMD menu > HumanIK (Experimental), "
+            "then use Restore MMD Rig in the editor before importing VMD motion; VMD import does "
             "not implicitly switch HumanIK modes."
         )
         self.logger.error(message)

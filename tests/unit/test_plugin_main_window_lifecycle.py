@@ -222,7 +222,7 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         ]
         self.assertEqual(len(repair_calls), 1)
 
-    def test_install_menu_creates_tearoff_top_menu_and_installs_humanik_submenu(self):
+    def test_install_menu_creates_tearoff_top_menu_and_installs_humanik_item(self):
         self.plugin_main.cmds.menu.side_effect = lambda *_args, **kwargs: (
             False if kwargs.get("exists") else [] if kwargs.get("query") else "MMD"
         )
@@ -278,7 +278,7 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
 
         dispatch.assert_called_once_with("diagnostics")
 
-    def test_humanik_submenu_has_direct_dispatch_callbacks_for_every_action_and_reinstalls(self):
+    def test_humanik_item_dispatches_editor_open_and_reinstalls(self):
         humanik = importlib.import_module("mmd_tools.ui.humanik_menu_actions")
         existing = False
 
@@ -286,7 +286,7 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             nonlocal existing
             if kwargs.get("exists"):
                 return existing
-            if kwargs.get("subMenu"):
+            if args and args[0] == humanik.HUMANIK_MENU_NAME:
                 existing = True
             return args[0] if args else "menuItem"
 
@@ -298,18 +298,13 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             cmds_module=self.plugin_main.cmds,
             callback_dispatcher=dispatch,
         )
-        callbacks = [
-            call.kwargs["command"]
+        menu_call = next(
+            call
             for call in self.plugin_main.cmds.menuItem.call_args_list
-            if call.kwargs.get("parent") == "MMDHumanIKMenu"
-        ]
-        self.assertEqual(len(callbacks), len(humanik.ACTION_LABELS))
-        for callback in callbacks:
-            callback("menu-click")
-        self.assertEqual(
-            [call.args[0] for call in dispatch.call_args_list],
-            [action for action, _label in humanik.ACTION_LABELS],
+            if call.args and call.args[0] == humanik.HUMANIK_MENU_NAME and "command" in call.kwargs
         )
+        menu_call.kwargs["command"]("menu-click")
+        dispatch.assert_called_once_with("open_humanik_editor")
 
         humanik.install_humanik_menu(
             parent="MMD",
