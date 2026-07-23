@@ -26,6 +26,10 @@ from mmd_tools.core.constants import (
     ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
+    ATTR_MMD_MODEL_NAME,
+    ATTR_MMD_MODEL_NAME_EN,
+    ATTR_MMD_COMMENT,
+    ATTR_MMD_COMMENT_EN,
 )
 from mmd_tools.core import maya_mesh_utils, maya_name_utils
 from mmd_tools.core.logger import get_logger
@@ -212,8 +216,8 @@ def fast_import(
     transform_node = str(result[0])
     mesh_node = str(result[1]) if len(result) >= 2 else None
 
-    if mesh_node:
-        _apply_basic_materials(filepath, mesh_node, cmds)
+    metadata = _apply_basic_materials(filepath, mesh_node, cmds) if mesh_node else None
+    _apply_fast_root_metadata(filepath, transform_node, metadata, cmds)
 
     if not mesh_only and mesh_node:
         # attempt skeleton + skin; any failure falls back to mesh-only result
@@ -226,15 +230,15 @@ def fast_import(
     return transform_node
 
 
-def _apply_basic_materials(filepath: str, mesh_node: str, cmds_module) -> None:
-    """Assign standardSurface materials using mmd-anim parsed metadata."""
+def _apply_basic_materials(filepath: str, mesh_node: str, cmds_module) -> Optional[dict]:
+    """Assign materials and return the parsed metadata for root attributes."""
     try:
         pmx_bytes = Path(filepath).read_bytes()
         parsed_model_cls = _mmd_parsed_model_class()
         parsed = parsed_model_cls.from_pmx_bytes(pmx_bytes)
         if parsed is None:
             logger.debug("Native parsed-model metadata unavailable; skipping fast material assignment")
-            return
+            return None
         try:
             metadata_text = parsed.metadata_json
             material_groups = parsed.material_groups or []
@@ -243,7 +247,7 @@ def _apply_basic_materials(filepath: str, mesh_node: str, cmds_module) -> None:
 
         if not metadata_text or not material_groups:
             logger.debug("No parsed material metadata/groups; skipping fast material assignment")
-            return
+            return json.loads(metadata_text) if metadata_text else None
 
         metadata = json.loads(metadata_text)
         materials = metadata.get("materials") or []
@@ -263,8 +267,44 @@ def _apply_basic_materials(filepath: str, mesh_node: str, cmds_module) -> None:
                 continue
 
             cmds_module.sets(f"{mesh_node}.f[{face_start}:{face_end}]", edit=True, forceElement=f"{shader}SG")
+        return metadata
     except Exception as exc:
         logger.debug("Fast material assignment skipped: %s", exc)
+        return None
+
+
+def _apply_fast_root_metadata(
+    filepath: str,
+    root_node: str,
+    metadata: Optional[dict],
+    cmds_module,
+) -> None:
+    """Preserve PMX header names/comments on a successful fast-import root."""
+    header = metadata.get("metadata") if isinstance(metadata, dict) else None
+    if not isinstance(header, dict):
+        try:
+            pmx = parse_pmx_native(filepath)
+            header = getattr(pmx, "header", None)
+        except Exception as exc:
+            logger.debug("Fast root metadata parse skipped: %s", exc)
+            return
+        if header is None:
+            return
+        values = {
+            "name": getattr(header, "model_name", ""),
+            "englishName": getattr(header, "model_name_english", ""),
+            "comment": getattr(header, "comment", ""),
+            "englishComment": getattr(header, "comment_english", ""),
+        }
+    else:
+        values = header
+    for attr, key in (
+        (ATTR_MMD_MODEL_NAME, "name"),
+        (ATTR_MMD_MODEL_NAME_EN, "englishName"),
+        (ATTR_MMD_COMMENT, "comment"),
+        (ATTR_MMD_COMMENT_EN, "englishComment"),
+    ):
+        _set_fast_string_attr(cmds_module, root_node, attr, values.get(key, "") or "")
 
 
 def _create_standard_material(

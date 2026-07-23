@@ -16,6 +16,7 @@ import re
 import types
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from tests.common.maya_stub import install_maya_stub
@@ -30,6 +31,7 @@ from mmd_tools.io import cpp_fast_importer
 from mmd_tools.io.cpp_fast_importer import (
     _apply_basic_materials,
     _apply_fast_skeleton_skin,
+    _apply_fast_root_metadata,
     _allocate_fast_material_name,
     _create_standard_material,
     _sanitize_node_name,
@@ -453,6 +455,29 @@ class TestFastSkeletonSkin(unittest.TestCase):
             ],
         )
 
+    def test_basic_materials_returns_header_metadata_from_single_parsed_model(self):
+        """Root metadata reuses the parsed-model JSON instead of reparsing PMX."""
+        mock_parsed = MagicMock()
+        mock_parsed.metadata_json = json.dumps(
+            {
+                "metadata": {
+                    "name": "モデルJP",
+                    "englishName": "Model EN",
+                    "comment": "コメントJP",
+                    "englishComment": "Comment EN",
+                },
+                "materials": [],
+            }
+        )
+        mock_parsed.material_groups = []
+        self.mock_parsed_cls.from_pmx_bytes.return_value = mock_parsed
+
+        metadata = _apply_basic_materials("model.pmx", "mesh1", MagicMock())
+
+        self.assertEqual(metadata["metadata"]["comment"], "コメントJP")
+        self.mock_parsed_cls.from_pmx_bytes.assert_called_once_with(b"fake pmx bytes")
+        mock_parsed.free.assert_called_once_with()
+
     @patch("mmd_tools.io.cpp_fast_importer.parse_pmx_native")
     def test_skeleton_skin_falls_back_to_native_pmx_parser(self, mock_parse_native: MagicMock):
         """ParsedModel ABI がない環境では native PMX parser から skeleton/skin を作る。"""
@@ -658,6 +683,58 @@ class TestSanitizeNodeName(unittest.TestCase):
         }
         self.assertEqual(raw_writes["ab_fast.mmd_material_name"], "a:b")
         self.assertEqual(raw_writes["ab_1_fast.mmd_material_name"], "ab")
+
+    def test_root_metadata_preserves_japanese_english_and_empty_comments(self):
+        cmds = MagicMock()
+        cmds.attributeQuery.return_value = False
+        metadata = {
+            "metadata": {
+                "name": "モデルJP",
+                "englishName": "Model EN",
+                "comment": "コメントJP",
+                "englishComment": "Comment EN",
+            }
+        }
+        _apply_fast_root_metadata("model.pmx", "root", metadata, cmds)
+
+        writes = {call[0][0]: call[0][1] for call in cmds.setAttr.call_args_list if len(call[0]) >= 2}
+        self.assertEqual(writes["root.mmd_model_name"], "モデルJP")
+        self.assertEqual(writes["root.mmd_model_name_en"], "Model EN")
+        self.assertEqual(writes["root.mmd_comment"], "コメントJP")
+        self.assertEqual(writes["root.mmd_comment_en"], "Comment EN")
+
+        cmds.reset_mock()
+        _apply_fast_root_metadata(
+            "model.pmx",
+            "empty_root",
+            {"metadata": {"name": "", "englishName": "", "comment": "", "englishComment": ""}},
+            cmds,
+        )
+        empty_writes = {call[0][0]: call[0][1] for call in cmds.setAttr.call_args_list if len(call[0]) >= 2}
+        self.assertEqual(empty_writes["empty_root.mmd_comment"], "")
+        self.assertEqual(empty_writes["empty_root.mmd_comment_en"], "")
+
+    @patch("mmd_tools.io.cpp_fast_importer.parse_pmx_native")
+    def test_root_metadata_native_parser_fallback_is_called_once(self, mock_parse_native):
+        mock_parse_native.return_value = SimpleNamespace(
+            header=SimpleNamespace(
+                model_name="Native JP",
+                model_name_english="Native EN",
+                comment="Native comment",
+                comment_english="Native comment EN",
+            )
+        )
+        cmds = MagicMock()
+        cmds.attributeQuery.return_value = False
+
+        _apply_fast_root_metadata("model.pmx", "root", None, cmds)
+
+        mock_parse_native.assert_called_once_with("model.pmx")
+        self.assertTrue(any("root.mmd_comment" in call[0][0] for call in cmds.setAttr.call_args_list))
+
+    @patch("mmd_tools.io.cpp_fast_importer.parse_pmx_native", side_effect=RuntimeError("parser unavailable"))
+    def test_root_metadata_parser_exception_is_best_effort(self, _mock_parse_native):
+        _apply_fast_root_metadata("model.pmx", "root", None, MagicMock())
 
 
 class TestCppFastImporterDebugLogging(unittest.TestCase):
