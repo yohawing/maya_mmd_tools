@@ -2171,6 +2171,82 @@ def physics_solver_cycle_probe(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def black_pmx_evaluation_profile(session: nox.Session) -> None:
+    """Profile Black.pmx evaluation conditions in a real Maya mayapy process.
+
+    The probe is intentionally measurement-only.  It records static/scrub/
+    playback-like sequences, solver/world enable states, evaluation-manager
+    modes, Maya Profiler sampling events, and bounded status/timing evidence.
+    Display rows remain explicit ``unsupported`` when mayapy has no model panel.
+
+    Examples:
+        uvx nox -s black_pmx_evaluation_profile -- --maya 2024
+        uvx nox -s black_pmx_evaluation_profile -- --maya 2026 --repeats 3
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    out_value = _option(args, "--out", str(ROOT / "build/reports/black_pmx_evaluation_profile.json"))
+    pmx_value = _option(
+        args,
+        "--pmx",
+        r"F:\MMD\pmx\Sour式初音ミクVer.1.02\Black.pmx",
+    )
+    # Maya's mayapy command line can decode non-ASCII Windows argv using the
+    # host code page.  Pass the original path through a UTF-8 file whose own
+    # path is ASCII, preserving the PMX directory and its relative textures.
+    pmx_source = Path(pmx_value)
+    if (
+        "--pmx-path-file" not in args
+        and pmx_source.is_file()
+        and any(ord(char) > 127 for char in str(pmx_source))
+    ):
+        pmx_path_file = ROOT / "build" / "fixtures" / "black_pmx_profile" / "source_path.txt"
+        pmx_path_file.parent.mkdir(parents=True, exist_ok=True)
+        pmx_path_file.write_text(str(pmx_source.resolve()), encoding="utf-8")
+    else:
+        pmx_path_file = None
+    report_path = _require_build_path(session, out_value, "--out")
+    value_options = {
+        "--pmx",
+        "--pmx-path-file",
+        "--out",
+        "--modes",
+        "--physics",
+        "--sequences",
+        "--profiler",
+        "--display",
+        "--frames",
+        "--repeats",
+    }
+    passthrough = _probe_passthrough(args, value_options)
+    if pmx_path_file is not None:
+        if "--pmx" in passthrough:
+            pmx_index = passthrough.index("--pmx")
+            del passthrough[pmx_index : pmx_index + 2]
+        passthrough.extend(("--pmx-path-file", str(pmx_path_file)))
+    elif "--pmx" not in passthrough and "--pmx-path-file" not in passthrough:
+        passthrough.extend(("--pmx", pmx_value))
+    if "--out" not in passthrough:
+        passthrough.extend(("--out", str(report_path)))
+    _clear_probe_report(session, report_path, "Black PMX evaluation profile")
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/black_pmx_evaluation_profile.py",
+        passthrough,
+        {"--pmx", "--pmx-path-file", "--out"},
+        utf8=True,
+    )
+    report = _read_probe_report(session, report_path, "Black PMX evaluation profile")
+    if report.get("status") != "pass":
+        session.error(
+            "Black PMX evaluation profile failed: "
+            f"errors={report.get('errors')}, modes={report.get('modes')}"
+        )
+
+
+@nox.session(venv_backend="none")
 def root_move_skin_parity_probe(session: nox.Session) -> None:
     """Measure Citlali root-motion, skin products, and world-space mesh parity.
 
