@@ -436,6 +436,12 @@ def install_om_double_array_stub() -> None:
 class _MTime:
     """Minimal scalar stand-in for ``om.MTime`` in pure-Python tests."""
 
+    # Maya 2024 reports ``MTime.kSeconds == 3``.  Keep the public unit
+    # constant available because production nodes pass it to ``asUnits``;
+    # without it, a test that installs this shared stub makes later physics
+    # tests depend on collection order.
+    kSeconds = 3
+
     def __init__(self, value=0.0, _unit=None):
         self._value = float(value)
 
