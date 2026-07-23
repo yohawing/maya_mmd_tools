@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 import unittest
 from types import ModuleType, SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from tests.common.maya_stub import install_maya_stub
 
@@ -165,6 +165,40 @@ def _compute(node, data):
 
 
 class TestEvaluationFailures(unittest.TestCase):
+    def test_world_off_short_circuits_initialization_and_preserves_versions(self):
+        node = solver.MmdPhysicsSolverNode()
+        node._read_world_settings = Mock(return_value=(False, 7))
+        node._try_initialize = Mock(return_value=True)
+        node._last_world_settings_version = 3
+        node._last_descriptor_version = 5
+        node._last_time = 12.0
+        data = _Data(time=13.0)
+        data.inputs[solver.MmdPhysicsSolverNode.aInWorldSettingsVersion] = 4
+        data.inputs[solver.MmdPhysicsSolverNode.aInDescriptorVersion] = 6
+
+        solved, status, matrices = _compute(node, data)
+
+        self.assertFalse(solved)
+        self.assertEqual(status, "disabled")
+        self.assertEqual(matrices, [])
+        node._try_initialize.assert_not_called()
+        self.assertEqual(node._last_world_settings_version, 3)
+        self.assertEqual(node._last_descriptor_version, 5)
+        self.assertIsNone(node._last_time)
+
+        # Re-enabling with the versions changed while OFF must still take the
+        # normal invalidation path before initialization.
+        node._read_world_settings.return_value = (True, 7)
+        node._free_handles = Mock()
+        node._try_initialize.reset_mock()
+        node._try_initialize.return_value = False
+        _compute(node, data)
+
+        node._free_handles.assert_called_once_with()
+        node._try_initialize.assert_called_once_with()
+        self.assertEqual(node._last_world_settings_version, 4)
+        self.assertEqual(node._last_descriptor_version, 6)
+
     def test_reset_failure_clears_cache(self):
         instance = _Instance()
         instance.set_physics_mode = lambda _mode: False

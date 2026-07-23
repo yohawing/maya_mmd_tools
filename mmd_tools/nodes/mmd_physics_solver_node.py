@@ -99,6 +99,17 @@ class MmdPhysicsSolverNode(om.MPxNode):
             self._write_outputs(data, solved=False, status="disabled")
             return
 
+        # The world toggle is the production physics OFF control.  Check it
+        # before descriptor collection/native world construction so a disabled
+        # world remains cheap even when the solver node itself stays enabled.
+        # Intentionally do not consume either version here: edits made while
+        # OFF must invalidate the next enabled evaluation.
+        world_enable, reset_gen = self._read_world_settings()
+        if not world_enable:
+            self._last_time = None
+            self._write_outputs(data, solved=False, status="disabled")
+            return
+
         world_settings_changed = (
             self._last_world_settings_version is not None
             and world_settings_version != self._last_world_settings_version
@@ -123,6 +134,9 @@ class MmdPhysicsSolverNode(om.MPxNode):
             self._write_outputs(data, solved=False, status="no physics data")
             return
 
+        # Preserve the original post-initialization check as well: a world
+        # toggle can change while initialization is in progress, and the
+        # enabled path must retain its existing reset/disable semantics.
         world_enable, reset_gen = self._read_world_settings()
         if not world_enable:
             self._last_time = None
