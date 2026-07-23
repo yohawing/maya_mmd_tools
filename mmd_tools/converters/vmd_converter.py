@@ -716,7 +716,7 @@ class VmdConverter:
         import to proceed unchanged.
 
         The refusal message and mode names deliberately match the HumanIK tab's
-        own vocabulary (``humanik_tab.MODE_TRANSLATION_KEYS`` /
+        own vocabulary (``humanik_view.MODE_TRANSLATION_KEYS`` /
         ``describe_frontend_state``'s ``FRONTEND_MODE_TARGET_PREVIEW`` /
         ``FRONTEND_MODE_CONTROL_RIG``): "TARGET preview" / "Control Rig", plus
         the exact menu path to clear it ("MMD menu > HumanIK (Experimental) >

@@ -3,7 +3,7 @@
 HUMANIK-FRONTEND-1 Phase B3: the HumanIK workflow used to live as a tab
 inside ``MainWindow`` (the MMD Editor). It is now its own dockable window so
 it can stay open independently of the MMD Editor. This module intentionally
-does not touch the View (``mmd_tools.ui.tabs.humanik_tab.HumanIkTab``) or the
+does not touch the View (``mmd_tools.ui.humanik_view.HumanIkView``) or the
 Presenter (``mmd_tools.ui.presenters.humanik_presenter.HumanIkPresenter``) --
 both are hosted here unmodified, mirroring the dockable
 ``workspaceControl``/floating-window pattern already used by
@@ -37,7 +37,7 @@ except ImportError:  # non-Maya test process
 
 from .qt_compat import QVBoxLayout, QWidget, Qt, wrapInstance
 from .application_state import ApplicationState
-from .tabs.humanik_tab import HumanIkTab
+from .humanik_view import HumanIkView
 from .presenters.humanik_presenter import HumanIkPresenter
 from .translations import UITranslator
 from ..core.logger import get_logger
@@ -61,7 +61,7 @@ def _raise_workspace_control(name: str) -> None:
 class HumanIkWindow(QWidget):
     """Dockable HumanIK (Experimental) window, independent of the MMD Editor.
 
-    Hosts the existing ``HumanIkTab``/``HumanIkPresenter`` pair as-is; this
+    Hosts the existing ``HumanIkView``/``HumanIkPresenter`` pair as-is; this
     class's own responsibility is window chrome (title, dockable show/hide)
     and mapping Qt visibility events onto the presenter's activate/deactivate
     lifecycle.
@@ -69,6 +69,7 @@ class HumanIkWindow(QWidget):
 
     WINDOW_NAME = "MMDHumanIkWindow"
     WORKSPACE_CONTROL_NAME = "MMDHumanIkWorkspaceControl"
+    MINIMUM_WIDTH = 120
     PREFERRED_WIDTH = 160
 
     def __init__(self, parent=None):
@@ -78,19 +79,16 @@ class HumanIkWindow(QWidget):
 
         super().__init__(parent)
         self.setObjectName(self.WINDOW_NAME)
+        self.setMinimumWidth(self.MINIMUM_WIDTH)
         self.setWindowTitle(self._window_title())
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.app_state = ApplicationState()
-        # Kept as ``HumanIkTab``/its existing attribute name so the widget
-        # keeps behaving exactly like it did as a MainWindow tab (same class,
-        # same presenter wiring); it is simply the central widget of a
-        # standalone window now instead of a QTabWidget page.
-        self.humanik_tab = HumanIkTab()
-        self.humanik_presenter = HumanIkPresenter(self.humanik_tab, self.app_state)
-        layout.addWidget(self.humanik_tab)
+        self.humanik_view = HumanIkView()
+        self.humanik_presenter = HumanIkPresenter(self.humanik_view, self.app_state)
+        layout.addWidget(self.humanik_view)
 
         # Tracks whether the presenter currently believes this window is
         # active, so a spurious extra showEvent/hideEvent (Qt can deliver
@@ -125,10 +123,10 @@ class HumanIkWindow(QWidget):
         super().closeEvent(event)
 
     def retranslateUi(self):
-        """Re-apply the window title and the hosted tab's own translations."""
+        """Re-apply the window title and the hosted view's translations."""
         self.setWindowTitle(self._window_title())
-        if hasattr(self.humanik_tab, "retranslateUi"):
-            self.humanik_tab.retranslateUi()
+        if hasattr(self.humanik_view, "retranslateUi"):
+            self.humanik_view.retranslateUi()
 
     # -- show/close, mirroring MainWindow.show_window / AnimatorToolsetWindow --
 
@@ -150,8 +148,9 @@ class HumanIkWindow(QWidget):
                 label=self._window_title(),
                 tabToControl=["AttributeEditor", -1],
                 initialWidth=self.PREFERRED_WIDTH,
+                minimumWidth=self.MINIMUM_WIDTH,
                 initialHeight=640,
-                widthProperty="preferred",
+                widthProperty="free",
                 retain=False,
                 floating=False,
             )

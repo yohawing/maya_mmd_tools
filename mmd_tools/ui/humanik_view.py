@@ -1,4 +1,4 @@
-"""HumanIK tab UI shell.
+"""HumanIK editor view.
 
 Pair-specified retarget layout (HUMANIK-FRONTEND-1 Phase B4), modeled after
 Maya's own HumanIK "Character Controls" panel: a "Character" combo (the MMD
@@ -23,8 +23,8 @@ failures are written to Maya's Script Editor, keeping detailed state and
 error prose out of this compact UI.
 """
 
-from ..combo_box_utils import configure_model_combo_width
-from ..qt_compat import (
+from .combo_box_utils import configure_model_combo_width
+from .qt_compat import (
     QComboBox,
     QFormLayout,
     QGroupBox,
@@ -41,8 +41,8 @@ try:  # ``qt_compat`` intentionally exposes only the shared widget surface.
     from PySide6.QtWidgets import QRadioButton
 except ImportError:  # pragma: no cover - exercised only on Maya/PySide2.
     from PySide2.QtWidgets import QRadioButton
-from ..base_tab import BaseTab
-from .translation_registry import apply_translation_registry
+from .base_tab import BaseTab
+from .tabs.translation_registry import apply_translation_registry
 
 
 # Action button attribute -> translation key for each standalone action.
@@ -78,7 +78,7 @@ def _configure_compact_model_combo(combo):
     combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
 
-class HumanIkTab(BaseTab):
+class HumanIkView(BaseTab):
     """Pair-specified HumanIK retarget UI: Character/Source combos + status + actions."""
 
     _TRANSLATION_REGISTRY = (
@@ -111,7 +111,9 @@ class HumanIkTab(BaseTab):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setObjectName("HumanIkTab")
+        self.setObjectName("HumanIkView")
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         self._action_buttons = {}
         self._last_mode = "neutral"
         self._last_control_rig_count = 0
@@ -172,7 +174,7 @@ class HumanIkTab(BaseTab):
         """Build the single-line status label (HUMANIK-FRONTEND-1 Phase B5).
 
         Replaces the previous four-row Mode/Source/Target/Control Rigs
-        status table: SOURCE/TARGET are already visible via the Character/
+        status display: SOURCE/TARGET are already visible via the Character/
         Source combos above, so the only information this label still needs
         to carry is the current mode plus, when at least one Control Rig
         exists, a compact count suffix (see ``_status_text``).
@@ -182,21 +184,38 @@ class HumanIkTab(BaseTab):
         return self.status_label
 
     def _build_actions(self, main_layout):
-        """Lay out the action buttons as a flat vertical stack.
+        """Lay out primary actions in one row and Bake in its own section.
 
-        Keep Setup, Create Control Rig, and Restore as direct actions. Bake owns the
-        only collapsible section because its frame range, two destinations,
-        and Execute action are useful as one hideable unit.
+        Setup, Create Control Rig, and Restore stay visible in one compact row.
+        Bake owns the only collapsible section because its frame range, two
+        destinations, and Execute action are useful as one hideable unit.
         """
+        primary_actions = QHBoxLayout()
+        primary_actions.setSpacing(4)
+        self.primary_actions_layout = primary_actions
         self._add_action_row(
-            main_layout,
+            primary_actions,
             "setup_characterize_btn",
             "humanik_setup_selected_model",
+            compact=True,
         )
         self.setup_characterize_btn.setToolTip(
             self.tr("humanik_setup_selected_model_tooltip", "messages")
         )
-        self._add_action_row(main_layout, "create_control_rig_btn", "humanik_create_control_rig")
+        self._add_action_row(
+            primary_actions,
+            "create_control_rig_btn",
+            "humanik_create_control_rig",
+            compact=True,
+        )
+        self._add_action_row(
+            primary_actions,
+            "restore_btn",
+            "humanik_restore",
+            compact=True,
+        )
+        self.restore_btn.setToolTip(self.tr("humanik_restore_tooltip", "messages"))
+        main_layout.addLayout(primary_actions)
 
         bake_section = QGroupBox()
         bake_section.setObjectName("HumanIkBakeSection")
@@ -222,13 +241,13 @@ class HumanIkTab(BaseTab):
         self.bake_start_spin = QSpinBox()
         self.bake_start_spin.setRange(-1_000_000, 1_000_000)
         self.bake_start_spin.setSuffix(" F")
-        self.bake_start_spin.setMinimumWidth(72)
+        self.bake_start_spin.setMinimumWidth(40)
         self.bake_start_spin.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.bake_end_label = QLabel(self.tr("humanik_bake_end", "labels"))
         self.bake_end_spin = QSpinBox()
         self.bake_end_spin.setRange(-1_000_000, 1_000_000)
         self.bake_end_spin.setSuffix(" F")
-        self.bake_end_spin.setMinimumWidth(72)
+        self.bake_end_spin.setMinimumWidth(40)
         self.bake_end_spin.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         bake_row.addWidget(self.bake_start_label)
         bake_row.addWidget(self.bake_start_spin)
@@ -265,13 +284,11 @@ class HumanIkTab(BaseTab):
         self._set_bake_expanded(True)
         main_layout.addWidget(bake_section)
 
-        self._add_action_row(main_layout, "restore_btn", "humanik_restore")
-        self.restore_btn.setToolTip(self.tr("humanik_restore_tooltip", "messages"))
-
-    def _add_action_row(self, layout, attr, label_key):
-        """Add one full-width action button without inline state prose."""
+    def _add_action_row(self, layout, attr, label_key, compact=False):
+        """Add an action button, optionally ignoring its text size hint."""
         button = QPushButton(self.tr(label_key, "buttons"))
-        button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        horizontal_policy = QSizePolicy.Ignored if compact else QSizePolicy.Expanding
+        button.setSizePolicy(horizontal_policy, QSizePolicy.Fixed)
         layout.addWidget(button)
         setattr(self, attr, button)
         self._action_buttons[attr] = button
@@ -304,7 +321,7 @@ class HumanIkTab(BaseTab):
         return text
 
     def set_state(self, state):
-        """Render a ``describe_frontend_state()`` snapshot (or ``{}``) onto the tab."""
+        """Render a ``describe_frontend_state()`` snapshot onto the view."""
         state = state or {}
         self._last_state = state
         mode = state.get("mode", "neutral")
@@ -313,7 +330,7 @@ class HumanIkTab(BaseTab):
         self._last_control_rig_count = len(control_rigs)
         self.status_label.setText(self._status_text(mode, self._last_control_rig_count))
 
-        # Keep action guards in one place: the backend operation.  The tab no
+        # Keep action guards in one place: the backend operation. The view no
         # longer duplicates them as disabled buttons and inline error prose.
         for button in self._action_buttons.values():
             button.setEnabled(True)

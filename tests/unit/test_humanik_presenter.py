@@ -1,6 +1,6 @@
-"""Unit tests for the HumanIK tab presenter and the tab's static display maps.
+"""Unit tests for the HumanIK view presenter and its static display maps.
 
-The HumanIK tab is a thin status display over
+The HumanIK view is a thin status display over
 ``HumanIkFrontendSession.describe_frontend_state()`` plus a Character/Source
 combo pair (HUMANIK-FRONTEND-1 Phase B4) and the remaining action
 buttons, all dispatching to the already-tested ``humanik_menu_actions``
@@ -9,10 +9,10 @@ not re-verify menu action behavior, only that the presenter:
 
 * wires the remaining buttons to dispatch + refresh correctly;
 * resolves the Character combo's selection per the sticky/follow/override
-  policy the tab's docstring documents;
+  policy the view's docstring documents;
 * re-syncs the Source combo from backend truth every refresh, and dispatches
   a user change there to ``connect_retarget``/``disconnect_retarget``;
-* renders state without scanning the scene while the tab is inactive.
+* renders state without scanning the scene while the view is inactive.
 """
 
 import unittest
@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, Mock
 from tests.common.mock_ui import attach_mocks
 
 from mmd_tools.ui.presenters.humanik_presenter import HumanIkPresenter
-from mmd_tools.ui.tabs.humanik_tab import HumanIkTab
+from mmd_tools.ui.humanik_view import HumanIkView
 
 _ACTION_BUTTON_ATTRS = (
     "setup_characterize_btn",
@@ -137,7 +137,7 @@ class _FakeCmds:
 
 
 def _make_mock_view():
-    view = MagicMock(spec=HumanIkTab)
+    view = MagicMock(spec=HumanIkView)
     attach_mocks(
         view,
         [
@@ -560,35 +560,35 @@ class TestHumanIkPresenterSourceCombo(unittest.TestCase):
         self.assertGreaterEqual(self.view.set_state.call_count, 2)
 
 
-class TestHumanIkTabSetState(unittest.TestCase):
+class TestHumanIkViewSetState(unittest.TestCase):
     """The compact view renders status but never duplicates backend guards."""
 
-    def _make_fake_tab(self):
+    def _make_fake_view(self):
         fake = SimpleNamespace()
         fake.tr = lambda key, category=None: key
         fake.status_label = Mock()
         fake._action_buttons = {attr: Mock() for attr in _ACTION_BUTTON_ATTRS}
         fake._last_mode = "neutral"
         fake._last_control_rig_count = 0
-        fake._mode_text = HumanIkTab._mode_text.__get__(fake)
-        fake._status_text = HumanIkTab._status_text.__get__(fake)
+        fake._mode_text = HumanIkView._mode_text.__get__(fake)
+        fake._status_text = HumanIkView._status_text.__get__(fake)
         return fake
 
     def test_status_keeps_only_mode_and_control_rig_count(self):
-        fake = self._make_fake_tab()
+        fake = self._make_fake_view()
         state = {
             "mode": "target_preview",
             "controlRigs": [{"modelRoot": "|Target"}],
         }
 
-        HumanIkTab.set_state(fake, state)
+        HumanIkView.set_state(fake, state)
 
         fake.status_label.setText.assert_called_once_with(
             "humanik_mode_target_previewhumanik_status_control_rig_suffix"
         )
 
     def test_backend_blocked_actions_stay_clickable_without_inline_reason(self):
-        fake = self._make_fake_tab()
+        fake = self._make_fake_view()
         state = {
             "mode": "neutral",
             "actions": {
@@ -600,7 +600,7 @@ class TestHumanIkTabSetState(unittest.TestCase):
             },
         }
 
-        HumanIkTab.set_state(fake, state)
+        HumanIkView.set_state(fake, state)
 
         for button in fake._action_buttons.values():
             button.setEnabled.assert_called_once_with(True)

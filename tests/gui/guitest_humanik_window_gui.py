@@ -1,6 +1,6 @@
-"""HumanIkTab / HumanIkWindow GUI smoke tests.
+"""HumanIkView / HumanIkWindow GUI smoke tests.
 
-The tab-shell tests below only check that ``HumanIkTab`` can be constructed
+The view tests below only check that ``HumanIkView`` can be constructed
 and rendered without raising -- scene-level HumanIK lifecycle behavior
 (characterize/source/target/bake/restore) is already covered by
 ``tests/unit/test_humanik_menu_actions.py`` and the HumanIK E2E harnesses;
@@ -23,17 +23,17 @@ from maya import cmds
 
 from tests.common.gui_test_base import GuiTestBase, requires_gui
 from mmd_tools.ui.presenters.humanik_presenter import HumanIkPresenter
-from mmd_tools.ui.tabs.humanik_tab import HumanIkTab
+from mmd_tools.ui.humanik_view import HumanIkView
 from mmd_tools.ui.qt_compat import QApplication
 from mmd_tools.ui.translations import UITranslator
 
 
 @requires_gui
-class TestHumanIkTabGUI(GuiTestBase):
-    """Lock the HumanIK tab widget contract."""
+class TestHumanIkViewGUI(GuiTestBase):
+    """Lock the HumanIK view widget contract."""
 
     def test_shell_structure_and_defaults(self):
-        tab = HumanIkTab()
+        tab = HumanIkView()
         try:
             self.assertTrue(tab.status_label.text())
             self.assertFalse(hasattr(tab, "experimental_notice_label"))
@@ -69,6 +69,11 @@ class TestHumanIkTabGUI(GuiTestBase):
             ):
                 self.assertTrue(hasattr(tab, attr), attr)
             self.assertFalse(hasattr(tab, "diagnostics_btn"))
+            self.assertEqual(tab.primary_actions_layout.count(), 3)
+            self.assertEqual(
+                [tab.primary_actions_layout.itemAt(index).widget() for index in range(3)],
+                [tab.setup_characterize_btn, tab.create_control_rig_btn, tab.restore_btn],
+            )
             self.assertTrue(tab.bake_toggle_btn.isChecked())
             self.assertEqual(tab.bake_frame_range(), (0, 0))
             tab.set_bake_frame_range(10, 50)
@@ -78,7 +83,7 @@ class TestHumanIkTabGUI(GuiTestBase):
             QApplication.processEvents()
 
     def test_compact_rows_and_bake_collapse(self):
-        tab = HumanIkTab()
+        tab = HumanIkView()
         try:
             tab.resize(260, 640)
             tab.show()
@@ -113,7 +118,7 @@ class TestHumanIkTabGUI(GuiTestBase):
             QApplication.processEvents()
 
     def test_character_and_source_combos_populate_and_select(self):
-        tab = HumanIkTab()
+        tab = HumanIkView()
         try:
             tab.set_character_options([("ModelA", "|A"), ("ModelB", "|B")], "|B")
             self.assertEqual(tab.character_combo.count(), 2)
@@ -140,7 +145,7 @@ class TestHumanIkTabGUI(GuiTestBase):
             QApplication.processEvents()
 
     def test_set_state_renders_mode_status_and_blocked_reason(self):
-        tab = HumanIkTab()
+        tab = HumanIkView()
         try:
             state = {
                 "mode": "source",
@@ -177,7 +182,7 @@ class TestHumanIkTabGUI(GuiTestBase):
             QApplication.processEvents()
 
     def test_set_state_with_no_data_does_not_raise(self):
-        tab = HumanIkTab()
+        tab = HumanIkView()
         try:
             tab.set_state({})
             tab.set_state(None)
@@ -189,7 +194,7 @@ class TestHumanIkTabGUI(GuiTestBase):
     def test_retranslate_ui_en_ja(self):
         translator = UITranslator.instance()
         previous_language = translator.get_language()
-        tab = HumanIkTab()
+        tab = HumanIkView()
         try:
             translator.set_language("en")
             tab.retranslateUi()
@@ -207,7 +212,7 @@ class TestHumanIkTabGUI(GuiTestBase):
 
     def test_presenter_refresh_against_a_real_scene_does_not_raise(self):
         cmds.file(new=True, force=True)
-        tab = HumanIkTab()
+        tab = HumanIkView()
         app_state = SimpleNamespace(current_model_root=None)
         presenter = HumanIkPresenter(tab, app_state)
         try:
@@ -249,7 +254,7 @@ class TestHumanIkTabGUI(GuiTestBase):
                 if action == "setup_and_characterize":
                     self.characterized.append("|ImportedOnly")
 
-        tab = HumanIkTab()
+        tab = HumanIkView()
         actions = FakeActions()
         presenter = HumanIkPresenter(
             tab,
@@ -292,14 +297,15 @@ class TestHumanIkWindowGUI(GuiTestBase):
         QApplication.processEvents()
         super().tearDown()
 
-    def test_construction_hosts_the_humanik_tab(self):
+    def test_construction_hosts_the_humanik_view(self):
         from mmd_tools.ui.humanik_window import HumanIkWindow
 
         window = HumanIkWindow()
         try:
-            self.assertIsInstance(window.humanik_tab, HumanIkTab)
+            self.assertIsInstance(window.humanik_view, HumanIkView)
             self.assertIsInstance(window.humanik_presenter, HumanIkPresenter)
             self.assertTrue(window.windowTitle())
+            self.assertEqual(window.minimumWidth(), window.MINIMUM_WIDTH)
         finally:
             window.close()
             window.deleteLater()
