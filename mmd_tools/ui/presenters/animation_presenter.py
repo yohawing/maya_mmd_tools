@@ -67,6 +67,8 @@ class AnimationPresenter:
         self.view.body_picker.region_clicked.connect(self.on_body_region_clicked)
         self.view.body_picker.goto_finger_clicked.connect(self.on_goto_finger)
         self.view.body_picker.mirror_selection_clicked.connect(self.on_mirror_selection)
+        if hasattr(self.view.body_picker, "reset_pose_clicked"):
+            self.view.body_picker.reset_pose_clicked.connect(self._on_reset_pose)
         self.view.finger_picker.region_clicked.connect(self.on_finger_region_clicked)
         self.view.finger_picker.goto_body_clicked.connect(self.on_goto_body)
         self.view.finger_picker.mirror_selection_clicked.connect(self.on_mirror_selection)
@@ -219,6 +221,7 @@ class AnimationPresenter:
     def _reload_for_model(self, model_root: str):
         bone_map = self._build_bone_index_map(model_root)
         self._bone_name_to_joint = self._build_bone_name_map(model_root)
+        self._sync_picker_regions()
         display_json = self._read_display_frames_json(model_root)
         self._picker_groups = resolve_display_frames(display_json, bone_map)
         self._populate_display_frame_tree(self._picker_groups)
@@ -226,9 +229,36 @@ class AnimationPresenter:
         self._sync_visibility_controls(model_root)
         self.view.status_label.setText("")
 
+    def _sync_picker_regions(self):
+        """Keep missing bones non-interactive while navigation stays available."""
+
+        from ..widgets.body_picker_widget import _BODY_REGIONS
+        from ..widgets.finger_picker_widget import _FINGER_REGIONS
+
+        available_names = set(self._bone_name_to_joint)
+        body_ids = {
+            region["id"]
+            for region in _BODY_REGIONS
+            if (normalize_mmd_bone_name(region["bone_name"]) or region["bone_name"])
+            in available_names
+        }
+        body_ids.update({"reset_pose", "mirror_sel", "fingers_left", "fingers_right"})
+        if hasattr(self.view.body_picker, "set_enabled_regions"):
+            self.view.body_picker.set_enabled_regions(body_ids)
+
+        finger_ids = {
+            region["id"]
+            for region in _FINGER_REGIONS
+            if (normalize_mmd_bone_name(region["bone_name"]) or region["bone_name"])
+            in available_names
+        }
+        if hasattr(self.view.finger_picker, "set_enabled_regions"):
+            self.view.finger_picker.set_enabled_regions(finger_ids)
+
     def _clear_all(self):
         self._picker_groups = []
         self._bone_name_to_joint.clear()
+        self._sync_picker_regions()
         self.view.display_frame_tree.clear()
         self._clear_morph_tab()
         self.view.status_label.setText("")

@@ -194,6 +194,7 @@ class _FakeBodyPicker:
         self.region_clicked = _FakeSignal()
         self.goto_finger_clicked = _FakeSignal()
         self.mirror_selection_clicked = _FakeSignal()
+        self.reset_pose_clicked = _FakeSignal()
         self.ik_toggled = _FakeSignal()
 
 
@@ -873,6 +874,16 @@ class TestToolsSection(unittest.TestCase):
         adapter.selected = ["j1"]
         presenter._on_tool_clicked("reset")
         self.assertIn("Reset Pose", adapter._undo_chunks)
+
+    def test_body_picker_reset_uses_the_shared_reset_action(self):
+        _presenter, view, _, adapter = self._make()
+        adapter.selected = ["j1"]
+
+        view.body_picker.reset_pose_clicked.emit()
+
+        translate, rotate = adapter._transforms["j1"]
+        self.assertEqual(translate, [1, 2, 3])
+        self.assertEqual(rotate, [0, 0, 0])
 
     def test_mirror_stub_shows_error(self):
         presenter, view, _, adapter = self._make()

@@ -245,9 +245,10 @@ class _StubSignal:
 
 # qt_compat が QtCore/QtGui/QtWidgets から名前付きで import する識別子。
 # QObject/Signal 以外は「呼べる/継承できるダミークラス」で十分。
-_QTCORE_NAMES = ["Qt", "QSettings", "QTimer"]
+_QTCORE_NAMES = ["Qt", "QSettings", "QTimer", "QByteArray", "QPointF", "QRectF"]
 _QTGUI_NAMES = [
     "QAction", "QDoubleValidator", "QColor", "QTextCursor", "QTextCharFormat",
+    "QBrush", "QFont", "QPainter", "QPainterPath", "QPen", "QPixmap", "QPolygonF", "QTransform",
 ]
 _QTWIDGETS_NAMES = [
     "QApplication", "QMainWindow", "QTabWidget", "QDockWidget", "QPushButton",
@@ -349,16 +350,21 @@ def install_qt_stub() -> bool:
         setattr(qtwidgets, n, _make_stub_qclass(n))
     qtwidgets.QListWidgetItem = _StubQListWidgetItem  # override with data-aware version
 
+    qtsvg = ModuleType("PySide6.QtSvg")
+    qtsvg.QSvgRenderer = _make_stub_qclass("QSvgRenderer")
+
     shiboken6 = ModuleType("shiboken6")
     shiboken6.wrapInstance = MagicMock(name="shiboken6.wrapInstance")
 
     pyside6.QtCore = qtcore
     pyside6.QtGui = qtgui
+    pyside6.QtSvg = qtsvg
     pyside6.QtWidgets = qtwidgets
 
     sys.modules["PySide6"] = pyside6
     sys.modules["PySide6.QtCore"] = qtcore
     sys.modules["PySide6.QtGui"] = qtgui
+    sys.modules["PySide6.QtSvg"] = qtsvg
     sys.modules["PySide6.QtWidgets"] = qtwidgets
     sys.modules["shiboken6"] = shiboken6
     return True

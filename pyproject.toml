@@ -23,6 +23,12 @@ dev = [
     "flip-evaluator>=1.7,<2; python_version >= '3.8'",
 ]
 
+[tool.setuptools.package-data]
+mmd_tools = ["ui/assets/animator_toolset/*.png", "ui/assets/animator_toolset/*.svg"]
+
+[tool.setuptools.packages.find]
+include = ["mmd_tools*"]
+
 [tool.ruff]
 line-length = 128
 indent-width = 4

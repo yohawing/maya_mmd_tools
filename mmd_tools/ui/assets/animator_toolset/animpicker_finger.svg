@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="_レイヤー_1" data-name="レイヤー 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 268 378">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: #3a5878;
+      }
+
+      .cls-2 {
+        fill: #2b2b2b;
+      }
+    </style>
+  </defs>
+  <g id="bg.png">
+    <g id="canvas-preview" data-layer="preview-background">
+      <path id="canvas-background" class="cls-2" d="M0,0h268v378H0V0Z"/>
+    </g>
+  </g>
+  <g>
+    <polygon class="cls-1" points="52.3 111.47 100 111.47 115.11 159.72 77.84 170.34 49.17 168.57 52.3 111.47"/>
+    <rect class="cls-1" x="46.26" y="176.54" width="11.47" height="27.95" transform="translate(6.61 -1.68) rotate(1.98)"/>
+    <rect class="cls-1" x="19.01" y="148.67" width="15.53" height="27.56" transform="translate(45.7 -1.1) rotate(15.96)"/>
+    <rect class="cls-1" x="11.64" y="178.88" width="11.48" height="24.04" transform="translate(53.16 2.58) rotate(15.96)"/>
+    <rect class="cls-1" x="66.39" y="177.69" width="12.1" height="30.41"/>
+    <rect class="cls-1" x="45.09" y="210.52" width="11.47" height="27.95" transform="translate(7.79 -1.62) rotate(1.98)"/>
+    <rect class="cls-1" x="43.43" y="244.03" width="11.47" height="27.95" transform="translate(8.95 -1.55) rotate(1.98)"/>
+    <rect class="cls-1" x="66.39" y="213.43" width="12.1" height="30.41"/>
+    <rect class="cls-1" x="65.72" y="247.73" width="12.1" height="30.41"/>
+    <rect class="cls-1" x="86.2" y="175.81" width="11.32" height="26.69" transform="translate(-8.34 4.28) rotate(-2.55)"/>
+    <rect class="cls-1" x="87.61" y="207.57" width="11.32" height="26.69" transform="translate(-9.76 4.38) rotate(-2.55)"/>
+    <rect class="cls-1" x="89.03" y="239.43" width="11.32" height="26.69" transform="translate(-11.17 4.47) rotate(-2.55)"/>
+    <rect class="cls-1" x="103.61" y="168.06" width="11.06" height="25.91" transform="translate(-17.83 12.03) rotate(-5.83)"/>
+    <rect class="cls-1" x="107.34" y="198.3" width="10.44" height="25.91" transform="translate(-20.89 12.54) rotate(-5.83)"/>
+    <rect class="cls-1" x="110.85" y="228.53" width="10.87" height="25.91" transform="translate(-23.94 13.07) rotate(-5.83)"/>
+    <rect class="cls-1" x="26.53" y="117.14" width="17.41" height="29.18" transform="translate(32.86 -4.61) rotate(13.98)"/>
+  </g>
+  <g>
+    <polygon class="cls-1" points="214.58 111.81 165.66 111.81 150.16 160.05 188.38 170.67 217.79 168.9 214.58 111.81"/>
+    <polygon class="cls-1" points="220.27 176.68 208.51 177.08 209.5 205.01 221.26 204.61 220.27 176.68"/>
+    <polygon class="cls-1" points="244.53 147.41 229.22 151.67 236.99 178.17 252.3 173.9 244.53 147.41"/>
+    <polygon class="cls-1" points="252.67 178.1 241.34 181.26 248.12 204.38 259.45 201.22 252.67 178.1"/>
+    <rect class="cls-1" x="187.72" y="178.03" width="12.41" height="30.41" transform="translate(387.85 386.47) rotate(-180)"/>
+    <polygon class="cls-1" points="221.48 210.66 209.72 211.06 210.71 238.99 222.47 238.59 221.48 210.66"/>
+    <polygon class="cls-1" points="223.17 244.18 211.41 244.57 212.4 272.5 224.16 272.11 223.17 244.18"/>
+    <rect class="cls-1" x="187.72" y="213.77" width="12.41" height="30.41" transform="translate(387.85 457.94) rotate(-180)"/>
+    <rect class="cls-1" x="188.4" y="248.07" width="12.41" height="30.41" transform="translate(389.21 526.54) rotate(-180)"/>
+    <polygon class="cls-1" points="180.44 176.41 168.85 175.91 167.63 202.58 179.22 203.08 180.44 176.41"/>
+    <polygon class="cls-1" points="178.99 208.17 167.4 207.67 166.18 234.33 177.77 234.84 178.99 208.17"/>
+    <polygon class="cls-1" points="177.53 240.03 165.94 239.53 164.72 266.19 176.31 266.7 177.53 240.03"/>
+    <polygon class="cls-1" points="163.28 169.03 151.99 167.9 149.29 193.68 160.58 194.81 163.28 169.03"/>
+    <polygon class="cls-1" points="159.45 199.23 148.8 198.17 146.1 223.95 156.75 225.01 159.45 199.23"/>
+    <polygon class="cls-1" points="155.85 229.48 144.76 228.38 142.06 254.16 153.15 255.26 155.85 229.48"/>
+    <polygon class="cls-1" points="227.03 148.32 244.36 144.11 237.13 115.8 219.8 120.01 227.03 148.32"/>
+  </g>
+</svg>
