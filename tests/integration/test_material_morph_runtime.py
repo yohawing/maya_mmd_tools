@@ -897,11 +897,11 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         if not techniques and cmds.attributeQuery("technique", node=shader, exists=True):
             # Fallback: known opaque technique from MMDShader.fx when listTechniques
             # is empty before first evaluation.
-            techniques = ["MMDTechniqueNoEdge"]
+            techniques = ["MMDTechnique"]
         if not techniques:
             self.skipTest("dx11Shader has no techniques after loading MMDShader.fx")
 
-        preferred = "MMDTechniqueNoEdge"
+        preferred = "MMDTechnique"
         technique = preferred if preferred in techniques else techniques[0]
         try:
             cmds.setAttr(f"{shader}.technique", technique, type="string")

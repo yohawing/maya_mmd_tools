@@ -186,4 +186,4 @@ def test_dx11_replacement_assigns_fx_and_valid_technique_only():
     assert shader_call.args[2].endswith("MMDShader.fx")
     assert not shader_call.args[2].endswith(".ogsfx")
     technique_call = next(call for call in set_checked.call_args_list if call.args[1] == "technique")
-    assert technique_call.args[2] == "MMDTechniqueNoEdge"
+    assert technique_call.args[2] == "MMDTechnique"

@@ -44,6 +44,7 @@ from mmd_tools.core.constants import (
 )
 from mmd_tools.converters.mesh_material_properties import (
     PMX_DOUBLE_SIDED_DRAW_FLAG as _PMX_DOUBLE_SIDED_DRAW_FLAG,
+    material_has_outline as _material_has_outline,
     material_is_double_sided as _material_is_double_sided,
 )
 from mmd_tools.converters.material_shader_parameters import (
@@ -96,21 +97,10 @@ _MATERIAL_NODE_FAMILY_SUFFIXES = (
     "_toon_texture",
     "_materialMorphEval",
 )
-_DX11_TECHNIQUE_BY_RENDERING = {
-    (TRANSPARENCY_MODE_OPAQUE, True, False): "MMDTechnique",
-    (TRANSPARENCY_MODE_CUTOUT, True, False): "MMDTechniqueTransparent",
-    (TRANSPARENCY_MODE_BLEND, True, False): "MMDTechniqueTranslucent",
-    (TRANSPARENCY_MODE_OPAQUE, False, False): "MMDTechniqueNoEdge",
-    (TRANSPARENCY_MODE_CUTOUT, False, False): "MMDTechniqueNoEdgeTransparent",
-    (TRANSPARENCY_MODE_BLEND, False, False): "MMDTechniqueNoEdgeTranslucent",
-    (TRANSPARENCY_MODE_OPAQUE, True, True): "MMDTechniqueDoubleSided",
-    (TRANSPARENCY_MODE_CUTOUT, True, True): "MMDTechniqueTransparentDoubleSided",
-    (TRANSPARENCY_MODE_BLEND, True, True): "MMDTechniqueTranslucentDoubleSided",
-    (TRANSPARENCY_MODE_OPAQUE, False, True): "MMDTechniqueNoEdgeDoubleSided",
-    (TRANSPARENCY_MODE_CUTOUT, False, True): "MMDTechniqueNoEdgeTransparentDoubleSided",
-    (TRANSPARENCY_MODE_BLEND, False, True): "MMDTechniqueNoEdgeTranslucentDoubleSided",
+_DX11_TECHNIQUE_BY_SIDEDNESS = {
+    False: "MMDTechnique",
+    True: "MMDTechniqueDoubleSided",
 }
-_DX11_RENDERING_BY_TECHNIQUE = {name: key for key, name in _DX11_TECHNIQUE_BY_RENDERING.items()}
 
 
 def _ensure_shader_plugin(plugin_name) -> bool:
@@ -438,16 +428,18 @@ def _classify_material_transparency(material, texture_path=None) -> str:
 
 
 def _technique_for_transparency(mode: str, edge_enabled: bool, double_sided: bool = False) -> str:
-    """Map dx11Shader rendering state to a technique name."""
-    mode = mode if mode in TRANSPARENCY_MODES else TRANSPARENCY_MODE_OPAQUE
-    return _DX11_TECHNIQUE_BY_RENDERING[(mode, bool(edge_enabled), bool(double_sided))]
+    """Select one of the two opaque DX11 techniques.
+
+    ``mode`` and ``edge_enabled`` remain accepted for scene/UI compatibility,
+    but the renderer no longer creates transparent or no-edge variants.  PMX
+    alpha metadata is preserved separately while every material uses the edge
+    pass and differs only by authored single/double-sided drawing.
+    """
+    return _DX11_TECHNIQUE_BY_SIDEDNESS[bool(double_sided)]
 
 
 def _dx11_rendering_from_technique(technique: str) -> Tuple[str, bool, bool]:
-    """Return transparency mode, edge flag, and double-sided flag from a technique name."""
-    rendering = _DX11_RENDERING_BY_TECHNIQUE.get(technique)
-    if rendering:
-        return rendering
+    """Return legacy rendering metadata while treating edge as always enabled."""
     if "Translucent" in technique:
         mode = TRANSPARENCY_MODE_BLEND
     elif "Transparent" in technique:
@@ -523,7 +515,8 @@ def get_transparency_mode(shader: str) -> str:
 def apply_transparency_mode(shader: str, mode: str) -> str:
     """Re-apply a transparency mode to an existing dx11Shader (UI entry point).
 
-    Keeps the shader's current edge (NoEdge) variant. Returns the technique set.
+    Transparency metadata is retained, but rendering remains opaque/cutout and
+    the selected technique changes only when sidedness changes.
     """
     if mode not in TRANSPARENCY_MODES:
         raise ValueError(f"Unknown transparency mode: {mode!r}")
@@ -538,21 +531,26 @@ def apply_transparency_mode(shader: str, mode: str) -> str:
 
 
 def get_shader_outline_enabled(shader: str) -> bool:
-    """Return whether the dx11Shader technique currently renders outlines."""
+    """Return whether the mandatory edge pass is enabled for this material."""
+    if cmds.attributeQuery(ATTR_MMD_SHADER_OUTLINE_ENABLED, node=shader, exists=True):
+        return bool(cmds.getAttr(f"{shader}.{ATTR_MMD_SHADER_OUTLINE_ENABLED}"))
     technique = _shader_technique(shader)
     _, edge_enabled, _ = _dx11_rendering_from_technique(technique)
     return bool(technique) and edge_enabled
 
 
 def apply_shader_outline(shader: str, enabled: bool, edge_size: Optional[float] = None) -> str:
-    """Enable/disable the dx11Shader outline pass while preserving transparency mode."""
+    """Keep the mandatory outline pass while applying its authored size."""
     mode = get_transparency_mode(shader)
     double_sided = _shader_is_double_sided(shader)
-    new_technique = _technique_for_transparency(mode, enabled, double_sided)
+    new_technique = _technique_for_transparency(mode, True, double_sided)
     cmds.setAttr(f"{shader}.technique", new_technique, type="string")
     _store_shader_double_sided_attr(shader, double_sided)
-    if edge_size is not None and cmds.attributeQuery("EdgeSize", node=shader, exists=True):
-        cmds.setAttr(f"{shader}.EdgeSize", max(0.0, min(2.0, float(edge_size))) if enabled else 0.0)
+    if cmds.attributeQuery("EdgeSize", node=shader, exists=True):
+        if not enabled:
+            cmds.setAttr(f"{shader}.EdgeSize", 0.0)
+        elif edge_size is not None:
+            cmds.setAttr(f"{shader}.EdgeSize", max(0.0, min(2.0, float(edge_size))))
     if not cmds.attributeQuery(ATTR_MMD_SHADER_OUTLINE_ENABLED, node=shader, exists=True):
         maya_attribute_utils.set_custom_attributes(shader, {ATTR_MMD_SHADER_OUTLINE_ENABLED: bool(enabled)})
     else:
@@ -1835,7 +1833,7 @@ class MeshConverter:
 
         if is_pmd:
             custom_attrs[ATTR_MMD_EDGE_FLAG] = int(material.edge_flag)
-            custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = False
+            custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = _material_has_outline(material, is_pmd=True)
         else:
             custom_attrs[ATTR_MMD_SPHERE_MODE] = int(material.sphere_mode)
             custom_attrs[ATTR_MMD_SPHERE_TEXTURE_INDEX] = material.sphere_texture_index
@@ -1846,7 +1844,7 @@ class MeshConverter:
                 float(material.edge_color[3]) if len(material.edge_color) > 3 else 1.0
             )
             custom_attrs[ATTR_MMD_EDGE_SIZE] = material.edge_size
-            custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = False
+            custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = _material_has_outline(material)
             custom_attrs[_ATTR_MMD_DOUBLE_SIDED] = _material_is_double_sided(material)
             custom_attrs[ATTR_MMD_MEMO] = material.memo
             custom_attrs[ATTR_MMD_SHARED_TOON_FLAG] = int(material.shared_toon_flag)
@@ -2265,7 +2263,7 @@ class MeshConverter:
         if mode is None:
             mode = _classify_material_transparency(material, texture_path)
         double_sided = _material_is_double_sided(material)
-        technique = _technique_for_transparency(mode, False, double_sided)
+        technique = _technique_for_transparency(mode, True, double_sided)
         cmds.setAttr(f"{shader}.technique", technique, type="string")
         _store_transparency_mode_attr(shader, mode)
         _store_shader_double_sided_attr(shader, double_sided)
@@ -2282,7 +2280,10 @@ class MeshConverter:
         if not is_pmd:
             # エッジ色
             _set_dx11_color_uniform(shader, "EdgeColor", material.edge_color)
-        maya_attribute_utils.set_attribute(shader, "EdgeSize", 0.0, "float")
+        outline_enabled = _material_has_outline(material, is_pmd=is_pmd)
+        authored_edge_size = float(getattr(material, "edge_size", 1.0))
+        edge_size = authored_edge_size if outline_enabled else 0.0
+        maya_attribute_utils.set_attribute(shader, "EdgeSize", edge_size, "float")
 
         # スフィアモード設定
         sphere_mode = getattr(material, "sphere_mode", 0)

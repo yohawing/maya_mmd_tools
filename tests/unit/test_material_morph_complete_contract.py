@@ -147,6 +147,49 @@ def test_sphere_mapping_uses_half_range_view_normal_projection_in_both_backends(
         assert "* 0.35" not in source
 
 
+def test_specular_power_gate_matches_mmd_contract_in_both_backends():
+    """Non-positive PMX specular power produces no highlight."""
+    sources = {
+        "dx11": (ROOT / "mmd_tools/shaders/MMDShader.fx").read_text(encoding="utf-8"),
+        "glsl": (ROOT / "mmd_tools/shaders/MMDShader.ogsfx").read_text(encoding="utf-8"),
+    }
+    for source in sources.values():
+        assert "if (Shininess > 0.0)" in source
+        assert "max(Shininess, 1.0)" not in source
+        assert "step(0.0, NdotL)" not in source
+        assert "step(0.0, ndotl)" not in source
+    assert "float UIMin = 0.0;" in sources["dx11"]
+
+
+def test_toon_coordinate_matches_full_shader_half_lambert_in_both_backends():
+    """Both backends express FullShader's V=0.5-0.5*N.L directly."""
+    dx11 = (ROOT / "mmd_tools/shaders/MMDShader.fx").read_text(encoding="utf-8")
+    glsl = (ROOT / "mmd_tools/shaders/MMDShader.ogsfx").read_text(encoding="utf-8")
+    assert "float toonV = saturate(0.5 - NdotL * 0.5);" in dx11
+    assert "float2(0.5, toonV)" in dx11
+    assert "float toonV = clamp(0.5 - ndotl * 0.5, 0.0, 1.0);" in glsl
+    assert "vec2(0.5, toonV)" in glsl
+    for source in (dx11, glsl):
+        assert "1.0 - rampCoord" not in source
+
+
+def test_dx11_effect_has_only_sidedness_techniques_with_optional_edge_output():
+    """Transparency and no-edge variants do not multiply effect techniques."""
+    source = (ROOT / "mmd_tools/shaders/MMDShader.fx").read_text(encoding="utf-8")
+    assert re.findall(r"technique11\s+(\w+)", source) == [
+        "MMDTechnique",
+        "MMDTechniqueDoubleSided",
+    ]
+    assert "BlendEnable[0] = TRUE" not in source
+    assert "int isTransparent = 1" not in source
+    assert "clip(EdgeSize - 1.0e-5);" in source
+    assert source.count("pass EdgePass") == 2
+    assert "SetRasterizerState(CullFront)" in source
+    assert "SetRasterizerState(CullNone)" in source
+    assert "screenNormal / (safeScreenSize * 0.5) * EdgeSize * clipPos.w" in source
+    assert "EdgeSize * 4.0" not in source
+
+
 def test_contract_guard_rejects_unfactorized_or_late_main_alpha():
     source = (ROOT / "mmd_tools/shaders/MMDShader.ogsfx").read_text(encoding="utf-8")
     assert not _main_alpha_contract_holds(
