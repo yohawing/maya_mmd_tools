@@ -2,9 +2,9 @@
 
 This script intentionally uses the public C header contract through ``ctypes``
 instead of importing a Python wrapper.  It supplies a deterministic two-bone,
-31-sample hierarchy and records the reduction report plus every Unity scalar
-curve descriptor/key.  The output is evidence for the Maya bake integration
-slice; it does not modify the external mmd-anim checkout.
+31-sample hierarchy and records the reduction report plus every runtime-neutral
+generic curve descriptor/key.  The output is evidence for the Maya bake
+integration slice; it does not modify the external mmd-anim checkout.
 
 Examples:
     python tests/release/reduction_abi_probe.py
@@ -26,12 +26,30 @@ from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 STATUS_OK = 0
 STATUS_BUFFER_TOO_SMALL = 3
-EXPECTED_ABI_VERSION = 2
+CURRENT_ABI_VERSION = 3
+SUPPORTED_ABI_VERSIONS = (2, CURRENT_ABI_VERSION)
+# Compatibility alias for downstream probe consumers that imported the old
+# constant.  Validation uses SUPPORTED_ABI_VERSIONS, not this singular value.
+EXPECTED_ABI_VERSION = CURRENT_ABI_VERSION
 TARGET_DCC_CUBIC = 2
+FEATURE_REDUCED_POSE_GENERIC_CURVES = 1 << 4
+GENERIC_CURVE_BONE_LOCAL = 0
+GENERIC_CURVE_MORPH_WEIGHT = 1
+GENERIC_VALUE_TRANSLATION = 1 << 0
+GENERIC_VALUE_QUATERNION = 1 << 1
+GENERIC_VALUE_SCALAR = 1 << 2
+GENERIC_ROTATION_BASIS_NONE = 0
+GENERIC_ROTATION_BASIS_RUNTIME_QUATERNION = 1
+GENERIC_ABI_VERSION = 1
 SEMANTIC_TRANSLATION = 0
 SEMANTIC_EULER = 1
 SEMANTIC_MORPH = 2
 AXIS_NONE = 3
+
+
+def _f32(value: float) -> float:
+    """Quantize a probe expectation exactly as the native c_float ABI does."""
+    return ctypes.c_float(value).value
 
 
 class ReductionTolerances(ctypes.Structure):
@@ -63,7 +81,12 @@ class ReductionReport(ctypes.Structure):
 
 
 class CurveDescriptor(ctypes.Structure):
-    """C layout of mmd_runtime_ffi_unity_curve_descriptor_t."""
+    """Legacy C layout retained for fixture compatibility only.
+
+    ABI 3 removed the Unity curve enumeration functions.  The probe no longer
+    binds or calls those symbols; generic curve structures below are the only
+    reduction output consumed at runtime.
+    """
 
     _fields_ = [
         ("semantic", ctypes.c_uint32),
@@ -74,13 +97,70 @@ class CurveDescriptor(ctypes.Structure):
 
 
 class CurveKey(ctypes.Structure):
-    """C layout of mmd_runtime_ffi_unity_curve_key_t."""
+    """Legacy Unity key layout retained for old fixture imports only."""
 
     _fields_ = [
         ("time_seconds", ctypes.c_float),
         ("value", ctypes.c_float),
         ("in_tangent", ctypes.c_float),
         ("out_tangent", ctypes.c_float),
+    ]
+
+
+class GenericCurveInfo(ctypes.Structure):
+    """C layout of mmd_runtime_ffi_generic_curve_info_t."""
+
+    _fields_ = [
+        ("struct_size", ctypes.c_uint32),
+        ("abi_version", ctypes.c_uint32),
+        ("reduction_target", ctypes.c_uint32),
+        ("coordinate_system", ctypes.c_uint32),
+        ("length_unit", ctypes.c_uint32),
+        ("angle_unit", ctypes.c_uint32),
+        ("time_unit", ctypes.c_uint32),
+        ("tangent_unit", ctypes.c_uint32),
+        ("model_identity", ctypes.c_uint64),
+        ("start_frame", ctypes.c_float),
+        ("frame_step", ctypes.c_float),
+        ("frame_count", ctypes.c_size_t),
+        ("bone_count", ctypes.c_size_t),
+        ("morph_count", ctypes.c_size_t),
+    ]
+
+
+class GenericCurveDescriptor(ctypes.Structure):
+    """C layout of mmd_runtime_ffi_generic_curve_descriptor_t."""
+
+    _fields_ = [
+        ("struct_size", ctypes.c_uint32),
+        ("abi_version", ctypes.c_uint32),
+        ("kind", ctypes.c_uint32),
+        ("target_index", ctypes.c_uint32),
+        ("parent_index", ctypes.c_int32),
+        ("value_flags", ctypes.c_uint32),
+        ("interpolation", ctypes.c_uint32),
+        ("rotation_basis", ctypes.c_uint32),
+        ("key_count", ctypes.c_size_t),
+    ]
+
+
+class GenericCurveKey(ctypes.Structure):
+    """C layout of mmd_runtime_ffi_generic_curve_key_t."""
+
+    _fields_ = [
+        ("sample_index", ctypes.c_size_t),
+        ("frame", ctypes.c_float),
+        ("translation_xyz", ctypes.c_float * 3),
+        ("rotation_xyzw", ctypes.c_float * 4),
+        ("scalar", ctypes.c_float),
+        ("segment_prev_out_translation_xyz", ctypes.c_float * 3),
+        ("segment_current_in_translation_xyz", ctypes.c_float * 3),
+        ("segment_from_previous_start_euler_xyz", ctypes.c_float * 3),
+        ("segment_from_previous_end_euler_xyz", ctypes.c_float * 3),
+        ("segment_prev_out_rotation_xyz", ctypes.c_float * 3),
+        ("segment_current_in_rotation_xyz", ctypes.c_float * 3),
+        ("segment_prev_out_scalar", ctypes.c_float),
+        ("segment_current_in_scalar", ctypes.c_float),
     ]
 
 
@@ -174,9 +254,10 @@ def _load_library(path: Path) -> ctypes.CDLL:
     c_void_p = ctypes.c_void_p
     library.mmd_runtime_abi_version.restype = ctypes.c_uint32
     abi_version = int(library.mmd_runtime_abi_version())
-    if abi_version != EXPECTED_ABI_VERSION:
+    if abi_version not in SUPPORTED_ABI_VERSIONS:
         raise RuntimeError(
-            f"mmd-anim runtime ABI mismatch: expected={EXPECTED_ABI_VERSION}, actual={abi_version}"
+            "mmd-anim runtime ABI unsupported: "
+            f"current={CURRENT_ABI_VERSION}, supported={SUPPORTED_ABI_VERSIONS}, actual={abi_version}"
         )
     library.mmd_runtime_model_create.restype = c_void_p
     library.mmd_runtime_model_create.argtypes = [
@@ -184,6 +265,7 @@ def _load_library(path: Path) -> ctypes.CDLL:
         ctypes.POINTER(ctypes.c_float),
         ctypes.c_size_t,
     ]
+    library.mmd_runtime_model_free.restype = None
     library.mmd_runtime_model_free.argtypes = [c_void_p]
     library.mmd_runtime_reduced_pose_create_from_dense.restype = ctypes.c_uint32
     library.mmd_runtime_reduced_pose_create_from_dense.argtypes = [
@@ -200,6 +282,7 @@ def _load_library(path: Path) -> ctypes.CDLL:
         ReductionTolerances,
         ctypes.POINTER(c_void_p),
     ]
+    library.mmd_runtime_reduced_pose_free.restype = None
     library.mmd_runtime_reduced_pose_free.argtypes = [c_void_p]
     library.mmd_runtime_reduced_pose_report.restype = ctypes.c_uint32
     library.mmd_runtime_reduced_pose_report.argtypes = [c_void_p, ctypes.POINTER(ReductionReport)]
@@ -207,65 +290,95 @@ def _load_library(path: Path) -> ctypes.CDLL:
     library.mmd_runtime_reduced_pose_bone_count.argtypes = [c_void_p]
     library.mmd_runtime_reduced_pose_morph_count.restype = ctypes.c_size_t
     library.mmd_runtime_reduced_pose_morph_count.argtypes = [c_void_p]
-    library.mmd_runtime_reduced_pose_unity_curve_count.restype = ctypes.c_uint32
-    library.mmd_runtime_reduced_pose_unity_curve_count.argtypes = [
+    library.mmd_runtime_feature_flags.restype = ctypes.c_uint32
+    library.mmd_runtime_reduced_pose_generic_curve_info.restype = ctypes.c_uint32
+    library.mmd_runtime_reduced_pose_generic_curve_info.argtypes = [
         c_void_p,
-        ctypes.c_float,
-        ctypes.c_bool,
+        ctypes.POINTER(GenericCurveInfo),
+    ]
+    library.mmd_runtime_reduced_pose_generic_curve_count.restype = ctypes.c_uint32
+    library.mmd_runtime_reduced_pose_generic_curve_count.argtypes = [
+        c_void_p,
         ctypes.POINTER(ctypes.c_size_t),
     ]
-    library.mmd_runtime_reduced_pose_unity_curve_descriptor.restype = ctypes.c_uint32
-    library.mmd_runtime_reduced_pose_unity_curve_descriptor.argtypes = [
+    library.mmd_runtime_reduced_pose_generic_curve_descriptor.restype = ctypes.c_uint32
+    library.mmd_runtime_reduced_pose_generic_curve_descriptor.argtypes = [
         c_void_p,
-        ctypes.c_float,
-        ctypes.c_bool,
         ctypes.c_size_t,
-        ctypes.POINTER(CurveDescriptor),
+        ctypes.POINTER(GenericCurveDescriptor),
     ]
-    library.mmd_runtime_reduced_pose_unity_curve_keys.restype = ctypes.c_uint32
-    library.mmd_runtime_reduced_pose_unity_curve_keys.argtypes = [
+    library.mmd_runtime_reduced_pose_generic_curve_keys.restype = ctypes.c_uint32
+    library.mmd_runtime_reduced_pose_generic_curve_keys.argtypes = [
         c_void_p,
-        ctypes.c_float,
-        ctypes.c_bool,
         ctypes.c_size_t,
-        ctypes.POINTER(CurveKey),
+        ctypes.POINTER(GenericCurveKey),
+        ctypes.c_size_t,
         ctypes.c_size_t,
         ctypes.POINTER(ctypes.c_size_t),
     ]
     return library
 
 
-def _curve_keys(
+def _generic_curve_keys(
     library: ctypes.CDLL,
     pose: ctypes.c_void_p,
-    frames_per_second: float,
-    flip_z: bool,
     curve_index: int,
-) -> Tuple[int, int, List[CurveKey]]:
-    """Retrieve one curve with the ABI's required two-call protocol."""
+) -> Tuple[int, int, int, List[GenericCurveKey], bool]:
+    """Retrieve one runtime-neutral curve using its stride-aware two-call ABI."""
     required = ctypes.c_size_t()
-    first_status = library.mmd_runtime_reduced_pose_unity_curve_keys(
+    first_status = library.mmd_runtime_reduced_pose_generic_curve_keys(
         pose,
-        frames_per_second,
-        flip_z,
         curve_index,
         None,
         0,
+        ctypes.sizeof(GenericCurveKey),
         ctypes.byref(required),
     )
     if first_status != STATUS_BUFFER_TOO_SMALL:
-        return first_status, -1, []
-    keys = (CurveKey * required.value)()
-    second_status = library.mmd_runtime_reduced_pose_unity_curve_keys(
+        return int(first_status), -1, -1, [], False
+    # A short buffer must fail closed without partially writing keys.
+    short_status = -1
+    short_buffer_unchanged = True
+    if required.value > 1:
+        short_keys = (GenericCurveKey * (required.value - 1))()
+        ctypes.memset(ctypes.addressof(short_keys), 0xA5, ctypes.sizeof(short_keys))
+        sentinel = ctypes.string_at(ctypes.addressof(short_keys), ctypes.sizeof(short_keys))
+        short_required = ctypes.c_size_t()
+        short_status = int(
+            library.mmd_runtime_reduced_pose_generic_curve_keys(
+                pose,
+                curve_index,
+                short_keys,
+                required.value - 1,
+                ctypes.sizeof(GenericCurveKey),
+                ctypes.byref(short_required),
+            )
+        )
+        short_buffer_unchanged = (
+            ctypes.string_at(ctypes.addressof(short_keys), ctypes.sizeof(short_keys)) == sentinel
+        )
+        if (
+            short_status != STATUS_BUFFER_TOO_SMALL
+            or short_required.value != required.value
+            or not short_buffer_unchanged
+        ):
+            return int(first_status), short_status, short_status, [], short_buffer_unchanged
+    keys = (GenericCurveKey * required.value)()
+    second_status = library.mmd_runtime_reduced_pose_generic_curve_keys(
         pose,
-        frames_per_second,
-        flip_z,
         curve_index,
         keys,
         required.value,
+        ctypes.sizeof(GenericCurveKey),
         ctypes.byref(required),
     )
-    return first_status, second_status, list(keys) if second_status == STATUS_OK else []
+    return (
+        int(first_status),
+        int(second_status),
+        short_status,
+        list(keys) if second_status == STATUS_OK else [],
+        short_buffer_unchanged,
+    )
 
 
 def _report_to_dict(report: ReductionReport) -> Dict[str, Any]:
@@ -314,44 +427,6 @@ def run_probe(library_path: Path) -> Dict[str, Any]:
     report = ReductionReport()
     report_status = library.mmd_runtime_reduced_pose_report(reduced, ctypes.byref(report))
     report_data = _report_to_dict(report)
-    curve_count = ctypes.c_size_t()
-    curve_status = library.mmd_runtime_reduced_pose_unity_curve_count(
-        reduced,
-        fixture["frames_per_second"],
-        False,
-        ctypes.byref(curve_count),
-    )
-    descriptors: List[Dict[str, Any]] = []
-    all_keys: List[List[CurveKey]] = []
-    curve_key_statuses: List[Dict[str, int]] = []
-    for curve_index in range(curve_count.value if curve_status == STATUS_OK else 0):
-        descriptor = CurveDescriptor()
-        descriptor_status = library.mmd_runtime_reduced_pose_unity_curve_descriptor(
-            reduced,
-            fixture["frames_per_second"],
-            False,
-            curve_index,
-            ctypes.byref(descriptor),
-        )
-        first_key_status, key_status, keys = _curve_keys(
-            library,
-            reduced,
-            fixture["frames_per_second"],
-            False,
-            curve_index,
-        )
-        descriptors.append(
-            {
-                "index": curve_index,
-                "status": descriptor_status,
-                "semantic": int(descriptor.semantic),
-                "target_index": int(descriptor.target_index),
-                "axis": int(descriptor.axis),
-                "key_count": int(descriptor.key_count),
-            }
-        )
-        curve_key_statuses.append({"first_call": first_key_status, "second_call": key_status})
-        all_keys.append(keys)
 
     library.mmd_runtime_model_free(model)
     # The reduced handle owns its skeleton snapshot; post-free access is part of
@@ -361,85 +436,133 @@ def run_probe(library_path: Path) -> Dict[str, Any]:
         reduced,
         ctypes.byref(post_free_report),
     )
-    post_free_curve_count = ctypes.c_size_t()
-    post_free_status = library.mmd_runtime_reduced_pose_unity_curve_count(
-        reduced,
-        fixture["frames_per_second"],
-        False,
-        ctypes.byref(post_free_curve_count),
-    )
     reduced_bone_count = int(library.mmd_runtime_reduced_pose_bone_count(reduced))
     reduced_morph_count = int(library.mmd_runtime_reduced_pose_morph_count(reduced))
 
-    finite_tangents = all(
-        math.isfinite(key.in_tangent) and math.isfinite(key.out_tangent)
-        for keys in all_keys
-        for key in keys
+    feature_flags = int(library.mmd_runtime_feature_flags())
+    generic_info = GenericCurveInfo()
+    generic_info.struct_size = ctypes.sizeof(GenericCurveInfo)
+    generic_info_status = int(
+        library.mmd_runtime_reduced_pose_generic_curve_info(
+            reduced,
+            ctypes.byref(generic_info),
+        )
     )
-    nonzero_tangent = any(
-        abs(key.in_tangent) > 1.0e-6 or abs(key.out_tangent) > 1.0e-6
-        for keys in all_keys
-        for key in keys
+    generic_curve_count = ctypes.c_size_t()
+    generic_curve_count_status = int(
+        library.mmd_runtime_reduced_pose_generic_curve_count(
+            reduced,
+            ctypes.byref(generic_curve_count),
+        )
     )
-    expected_first_time = fixture["start_frame"] / fixture["frames_per_second"]
-    expected_last_time = (
-        fixture["start_frame"] + fixture["frame_step"] * (fixture["frame_count"] - 1)
-    ) / fixture["frames_per_second"]
-    curve_times_are_frame_based = bool(all_keys) and all(
-        keys
-        and abs(keys[0].time_seconds - expected_first_time) <= 1.0e-5
-        and abs(keys[-1].time_seconds - expected_last_time) <= 1.0e-5
-        and all(
-            math.isfinite(key.time_seconds)
-            and abs(
-                (
-                    (key.time_seconds * fixture["frames_per_second"])
-                    - fixture["start_frame"]
-                )
-                / fixture["frame_step"]
-                - round(
-                    (
-                        (key.time_seconds * fixture["frames_per_second"])
-                        - fixture["start_frame"]
-                    )
-                    / fixture["frame_step"]
-                )
+    generic_descriptors: List[Dict[str, Any]] = []
+    generic_all_keys: List[List[GenericCurveKey]] = []
+    generic_key_statuses: List[Dict[str, Any]] = []
+    for curve_index in range(generic_curve_count.value if generic_curve_count_status == STATUS_OK else 0):
+        descriptor = GenericCurveDescriptor()
+        descriptor.struct_size = ctypes.sizeof(GenericCurveDescriptor)
+        descriptor_status = int(
+            library.mmd_runtime_reduced_pose_generic_curve_descriptor(
+                reduced,
+                curve_index,
+                ctypes.byref(descriptor),
             )
-            < 1.0e-4
+        )
+        first_status, second_status, short_status, keys, short_buffer_unchanged = _generic_curve_keys(
+            library,
+            reduced,
+            curve_index,
+        )
+        generic_descriptors.append(
+            {
+                "index": curve_index,
+                "status": descriptor_status,
+                "struct_size": int(descriptor.struct_size),
+                "abi_version": int(descriptor.abi_version),
+                "kind": int(descriptor.kind),
+                "target_index": int(descriptor.target_index),
+                "parent_index": int(descriptor.parent_index),
+                "value_flags": int(descriptor.value_flags),
+                "interpolation": int(descriptor.interpolation),
+                "rotation_basis": int(descriptor.rotation_basis),
+                "key_count": int(descriptor.key_count),
+            }
+        )
+        generic_key_statuses.append(
+            {
+                "first_call": first_status,
+                "short_call": short_status,
+                "short_buffer_unchanged": short_buffer_unchanged,
+                "second_call": second_status,
+            }
+        )
+        generic_all_keys.append(keys)
+
+    expected_start_frame = _f32(fixture["start_frame"])
+    expected_frame_step = _f32(fixture["frame_step"])
+    expected_last_frame = _f32(
+        expected_start_frame + _f32(expected_frame_step * (fixture["frame_count"] - 1))
+    )
+    generic_frame_contract_ok = bool(generic_all_keys) and all(
+        keys
+        and keys[0].frame >= expected_start_frame
+        and keys[-1].frame <= expected_last_frame
+        and all(
+            key.sample_index < fixture["frame_count"]
+            and math.isfinite(key.frame)
+            and abs(
+                key.frame
+                - _f32(expected_start_frame + _f32(expected_frame_step * key.sample_index))
+            )
+            <= 1.0e-4
             for key in keys
         )
-        for keys in all_keys
+        for keys in generic_all_keys
     )
-    frame_times = [key.time_seconds for keys in all_keys for key in keys]
-    euler_steps = [
-        abs(right.value - left.value)
-        for descriptor, keys in zip(descriptors, all_keys)
-        if descriptor["semantic"] == SEMANTIC_EULER
-        for left, right in zip(keys, keys[1:])
-    ]
-    max_euler_step = max(euler_steps, default=0.0)
-
-    # The root Z translation is curve index 2 (translation XYZ per bone).
-    flip_first_status, flip_keys_status, flip_keys = _curve_keys(
-        library,
-        reduced,
-        fixture["frames_per_second"],
-        True,
-        2,
+    generic_quaternions_normalized = all(
+        abs(sum(value * value for value in key.rotation_xyzw) - 1.0) <= 2.0e-3
+        for descriptor, keys in zip(generic_descriptors, generic_all_keys)
+        if descriptor["kind"] == GENERIC_CURVE_BONE_LOCAL
+        for key in keys
     )
-    normal_keys = all_keys[2] if len(all_keys) > 2 else []
-    flip_z_pairs = list(zip(normal_keys, flip_keys))
-    flip_z_signs = [
-        abs(flipped.time_seconds - normal.time_seconds) <= 1.0e-6
-        and abs(flipped.value + normal.value) <= 2.0e-5
-        for normal, flipped in flip_z_pairs
+    expected_generic_descriptors = [
+        (GENERIC_CURVE_BONE_LOCAL, bone_index, parent_index, GENERIC_VALUE_TRANSLATION | GENERIC_VALUE_QUATERNION, GENERIC_ROTATION_BASIS_RUNTIME_QUATERNION)
+        for bone_index, parent_index in enumerate(fixture["parents"])
     ]
-    flip_z_conversion_ok = (
-        flip_first_status == STATUS_BUFFER_TOO_SMALL
-        and flip_keys_status == STATUS_OK
-        and len(flip_keys) == len(normal_keys)
-        and bool(flip_z_signs)
-        and all(flip_z_signs)
+    expected_generic_descriptors.append(
+        (GENERIC_CURVE_MORPH_WEIGHT, 0, -1, GENERIC_VALUE_SCALAR, GENERIC_ROTATION_BASIS_NONE)
+    )
+    generic_descriptor_order_ok = len(generic_descriptors) == len(expected_generic_descriptors) and all(
+        descriptor["status"] == STATUS_OK
+        and descriptor["struct_size"] >= ctypes.sizeof(GenericCurveDescriptor)
+        and descriptor["abi_version"] == GENERIC_ABI_VERSION
+        and descriptor["key_count"] == len(keys)
+        and (
+            descriptor["kind"],
+            descriptor["target_index"],
+            descriptor["parent_index"],
+            descriptor["value_flags"],
+            descriptor["rotation_basis"],
+        )
+        == expected
+        for descriptor, keys, expected in zip(generic_descriptors, generic_all_keys, expected_generic_descriptors)
+    )
+    generic_info_ok = (
+        generic_info_status == STATUS_OK
+        and int(generic_info.struct_size) >= ctypes.sizeof(GenericCurveInfo)
+        and int(generic_info.abi_version) == GENERIC_ABI_VERSION
+        and int(generic_info.reduction_target) == TARGET_DCC_CUBIC
+        and int(generic_info.coordinate_system) == 0
+        and int(generic_info.length_unit) == 0
+        and int(generic_info.angle_unit) == 0
+        and int(generic_info.time_unit) == 0
+        and int(generic_info.tangent_unit) == 0
+        and int(generic_info.model_identity) == 0xBA6E0001
+        and abs(float(generic_info.start_frame) - expected_start_frame) <= 1.0e-4
+        and abs(float(generic_info.frame_step) - expected_frame_step) <= 1.0e-4
+        and int(generic_info.frame_count) == fixture["frame_count"]
+        and int(generic_info.bone_count) == 2
+        and int(generic_info.morph_count) == 1
     )
 
     library.mmd_runtime_reduced_pose_free(reduced)
@@ -450,47 +573,31 @@ def run_probe(library_path: Path) -> Dict[str, Any]:
         "world_rotation_radians": report.max_world_rotation_error_radians <= tolerances.world_rotation_radians,
         "morph_weight": report.max_morph_weight_error <= tolerances.morph_weight,
     }
-    expected_descriptors = [
-        (semantic, bone_index, axis)
-        for bone_index in range(2)
-        for semantic in (SEMANTIC_TRANSLATION, SEMANTIC_EULER)
-        for axis in range(3)
-    ]
-    expected_descriptors.append((SEMANTIC_MORPH, 0, AXIS_NONE))
-    descriptor_order_ok = len(descriptors) == len(expected_descriptors) and all(
-        descriptor["status"] == STATUS_OK
-        and descriptor["key_count"] == len(keys)
-        and (
-            descriptor["semantic"],
-            descriptor["target_index"],
-            descriptor["axis"],
-        )
-        == expected
-        for descriptor, keys, expected in zip(descriptors, all_keys, expected_descriptors)
-    )
     checks = {
-        "abi_version_ok": abi_version == EXPECTED_ABI_VERSION,
+        "abi_version_supported": abi_version in SUPPORTED_ABI_VERSIONS,
+        "abi_version_current_or_compat": abi_version in (CURRENT_ABI_VERSION, 2),
+        "generic_feature_bit_ok": bool(feature_flags & FEATURE_REDUCED_POSE_GENERIC_CURVES),
         "dcc_cubic_status_ok": status == STATUS_OK,
         "report_status_ok": report_status == STATUS_OK,
-        "curve_count_status_ok": curve_status == STATUS_OK,
-        "curve_count_matches_layout": curve_count.value == 2 * 6 + 1,
-        "curve_descriptor_order_and_counts": descriptor_order_ok,
-        "curve_two_call_status_ok": all(
-            item["first_call"] == STATUS_BUFFER_TOO_SMALL
-            and item["second_call"] == STATUS_OK
-            for item in curve_key_statuses
-        ),
-        "post_model_free_report_and_curve_access": post_free_report_status == STATUS_OK
+        "post_model_free_report": post_free_report_status == STATUS_OK
         and _report_to_dict(post_free_report) == report_data
-        and post_free_status == STATUS_OK
-        and post_free_curve_count.value == curve_count.value,
+        ,
         "report_within_tolerances": all(tolerance_checks.values()),
         "reduced_key_count": report.reduced_bone_key_count < report.source_bone_key_count
         and report.reduced_morph_key_count < report.source_morph_key_count,
-        "frame_times_preserve_endpoints_and_sample_grid": curve_times_are_frame_based,
-        "hermite_tangents_finite_and_nonzero": finite_tangents and nonzero_tangent,
-        "euler_unwrap_continuity": max_euler_step <= 180.0 + 1.0e-3,
-        "flip_z_translation_conversion": flip_z_conversion_ok,
+        "generic_info_contract_ok": generic_info_ok,
+        "generic_curve_count_status_ok": generic_curve_count_status == STATUS_OK
+        and generic_curve_count.value == 3,
+        "generic_curve_descriptor_order_and_counts": generic_descriptor_order_ok,
+        "generic_curve_two_call_status_ok": all(
+            item["first_call"] == STATUS_BUFFER_TOO_SMALL
+            and item["second_call"] == STATUS_OK
+            and (item["short_call"] in (-1, STATUS_BUFFER_TOO_SMALL))
+            and item["short_buffer_unchanged"]
+            for item in generic_key_statuses
+        ),
+        "generic_curve_frame_contract": generic_frame_contract_ok,
+        "generic_curve_quaternions_normalized": generic_quaternions_normalized,
     }
     overall = all(checks.values())
     resolved_library = _resolve_library(library_path)
@@ -499,6 +606,13 @@ def run_probe(library_path: Path) -> Dict[str, Any]:
         "library": str(resolved_library),
         "library_sha256": hashlib.sha256(resolved_library.read_bytes()).hexdigest(),
         "abi_version": abi_version,
+        "abi_compatibility": {
+            "actual": abi_version,
+            "current": CURRENT_ABI_VERSION,
+            "supported": list(SUPPORTED_ABI_VERSIONS),
+            "is_current": abi_version == CURRENT_ABI_VERSION,
+            "is_compatible": abi_version in SUPPORTED_ABI_VERSIONS,
+        },
         "fixture": {
             "bone_count": 2,
             "morph_count": 1,
@@ -513,18 +627,12 @@ def run_probe(library_path: Path) -> Dict[str, Any]:
             "report": report_data,
             "bone_count": reduced_bone_count,
             "morph_count": reduced_morph_count,
-            "curve_count": int(curve_count.value),
-            "curve_descriptors": descriptors,
-            "curve_key_statuses": curve_key_statuses,
-            "first_key_time_seconds": min(frame_times, default=None),
-            "last_key_time_seconds": max(frame_times, default=None),
-            "expected_first_time_seconds": expected_first_time,
-            "expected_last_time_seconds": expected_last_time,
-            "max_euler_step_degrees": max_euler_step,
-            "flip_z_root_translation_sample": {
-                "normal": [key.value for key in normal_keys[:2]],
-                "flip_z": [key.value for key in flip_keys[:2]],
+            "generic_curve_info": {
+                name: getattr(generic_info, name) for name, _ in generic_info._fields_
             },
+            "generic_curve_count": int(generic_curve_count.value),
+            "generic_curve_descriptors": generic_descriptors,
+            "generic_curve_key_statuses": generic_key_statuses,
         },
         "checks": checks,
         "maya_adaptation": {
@@ -534,26 +642,26 @@ def run_probe(library_path: Path) -> Dict[str, Any]:
             },
             "frame_time": {
                 "status": "available",
-                "evidence": "start_frame/frame_step are preserved and curve keys are seconds at caller-supplied FPS.",
+                "evidence": "start_frame/frame_step are preserved as source sample-frame coordinates.",
             },
             "hermite": {
                 "status": "available",
-                "evidence": "DCC_CUBIC curve keys expose finite in_tangent/out_tangent values; tangents are per-second.",
+                "evidence": "Generic curve keys expose finite DCC cubic segment tangent fields in runtime units.",
             },
             "euler_unwrap": {
-                "status": "available_for_unity_curves",
-                "evidence": "Unity curve output applies Euler filtering and degree conversion; no Maya rotate-order output is exposed.",
+                "status": "diagnostic_only",
+                "evidence": "Generic curve Euler segment fields remain runtime diagnostics; Maya channels are adapted by the host.",
             },
             "coordinate_conversion": {
-                "status": "partial",
-                "evidence": "flip_z converts Unity curve handedness; no Maya-specific axis/unit conversion is in this reduction ABI.",
+                "status": "runtime_neutral",
+                "evidence": "Generic curves preserve runtime-native model units and radians for the Maya adapter.",
             },
             "joint_orient_and_bind": {
-                "status": "not_mapped_to_maya_channels",
-                "evidence": "the model ABI can accept inverse-bind matrices, but Unity curve enumeration exposes no jointOrient, rotateOrder, bind-basis semantic, or Maya local-channel adapter.",
+                "status": "host_adapter_required",
+                "evidence": "The generic ABI exposes parent indices and local quaternions; Maya jointOrient/rotateOrder conversion remains host-owned.",
             },
         },
-        "abi_verdict": "blocked_for_generic_maya_bake_until_maya_channel_adapter_exists",
+        "abi_verdict": "generic_runtime_curves_available_for_maya_adapter",
     }
 
 
@@ -570,6 +678,7 @@ def write_reports(payload: Dict[str, Any], out_json: Path | None, out_md: Path |
             "",
             f"- Status: `{payload.get('status')}`",
             f"- ABI version: `{payload.get('abi_version')}`",
+            f"- ABI compatibility: current=`{payload.get('abi_compatibility', {}).get('current')}`, supported=`{payload.get('abi_compatibility', {}).get('supported')}`",
             f"- Verdict: `{payload.get('abi_verdict')}`",
             "",
             "| Check | Result |",

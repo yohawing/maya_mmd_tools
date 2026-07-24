@@ -76,6 +76,14 @@ _MORPH_TYPE_MAP = {
     "impulse": PmxMorphType.ImpulseMorph,
 }
 
+_MORPH_PANEL_MAP = {
+    "system": 0,
+    "brow": 1,
+    "eye": 2,
+    "mouth": 3,
+    "other": 4,
+}
+
 _MATERIAL_MORPH_OPERATION_MAP = {
     "multiply": 0,
     "add": 1,
@@ -88,6 +96,30 @@ def _get_any(data: dict, *keys: str, default=None):
         if key in data:
             return data[key]
     return default
+
+
+def _parse_morph_panel(value: Any) -> int:
+    """Normalize ABI3 panel labels and preserve valid legacy integer values.
+
+    mmd-anim ABI3 emits the PMX panel as a semantic label, while older JSON
+    producers used the numeric PMX value directly.  Invalid or out-of-range
+    values are kept in the user-visible ``Other`` panel rather than allowing
+    malformed metadata to escape into ``PmxMorph``.
+    """
+    if isinstance(value, bool):
+        return _MORPH_PANEL_MAP["other"]
+    if isinstance(value, int):
+        return value if 0 <= value <= 4 else _MORPH_PANEL_MAP["other"]
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _MORPH_PANEL_MAP:
+            return _MORPH_PANEL_MAP[normalized]
+        try:
+            numeric = int(normalized)
+        except ValueError:
+            return _MORPH_PANEL_MAP["other"]
+        return numeric if 0 <= numeric <= 4 else _MORPH_PANEL_MAP["other"]
+    return _MORPH_PANEL_MAP["other"]
 
 
 def is_native_parser_available() -> bool:
@@ -692,7 +724,7 @@ def _build_morphs(morphs_json: list) -> List[PmxMorph]:
 
         m.name = mj.get("name", "")
         m.name_english = mj.get("englishName", "")
-        m.panel = int(mj.get("panel", 4))
+        m.panel = _parse_morph_panel(mj.get("panel", 4))
         morph_type_name = mj.get("type", "vertex")
         if morph_type_name == "additionalUv":
             add_uv_offsets = mj.get("additionalUvOffsets", [])

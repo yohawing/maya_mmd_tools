@@ -71,7 +71,6 @@ class _FakeSettingsService:
             return float(self.get("import.general.scale_factor", 1.0))
         return 1.0
 
-
 class _FakeWidget:
     def __init__(self):
         self.visible = None
@@ -84,9 +83,18 @@ class _FakeWidget:
         self.enabled = enabled
 
 
+class _FakeLabel:
+    def __init__(self):
+        self.text = ""
+
+    def setText(self, text):
+        self.text = text
+
+
 class _FakeSpinBox:
     def __init__(self, value=1.0):
         self.value = value
+        self.enabled = None
         self.blocked = False
         self.block_calls = []
         self.set_value_calls = []
@@ -100,6 +108,18 @@ class _FakeSpinBox:
     def setValue(self, value):
         self.set_value_calls.append((value, self.blocked))
         self.value = value
+
+    def setEnabled(self, enabled):
+        self.enabled = enabled
+
+
+class _FakeSlider(_FakeSpinBox):
+    def __init__(self, value=100):
+        super().__init__(value)
+        self.visible = None
+
+    def setVisible(self, visible):
+        self.visible = visible
 
 
 class _FakePresenter:
@@ -310,6 +330,81 @@ class TestImportExportTabNativePhysicsBakeVisibility(unittest.TestCase):
 
         import_export_tab.ImportExportTab._sync_native_physics_bake_enabled(tab, True)
         self.assertTrue(tab.native_physics_bake_check.enabled)
+
+
+class TestImportExportTabReducedBakeVisibility(unittest.TestCase):
+    def test_reduce_bake_keys_control_follows_motion_bake(self):
+        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
+        tab.reduce_bake_keys_check = _FakeWidget()
+
+        import_export_tab.ImportExportTab._sync_reduce_bake_keys_enabled(tab, False)
+        self.assertFalse(tab.reduce_bake_keys_check.enabled)
+        import_export_tab.ImportExportTab._sync_reduce_bake_keys_enabled(tab, True)
+        self.assertTrue(tab.reduce_bake_keys_check.enabled)
+
+    def test_quality_control_reloads_persisted_quality_without_writing(self):
+        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
+        tab.reduce_quality_slider = _FakeSlider(value=100)
+        tab.reduce_quality_value_label = _FakeLabel()
+        tab.settings_service = _FakeSettingsService(
+            {
+                "ui.general.development_mode": False,
+                "import.animation.reduce_quality": 0.333,
+            }
+        )
+
+        import_export_tab.ImportExportTab._sync_reduce_bake_quality_control(tab)
+
+        self.assertEqual(tab.reduce_quality_slider.value, 33)
+        self.assertEqual(tab.reduce_quality_value_label.text, "0.33")
+        self.assertEqual(tab.settings_service.get("import.animation.reduce_quality"), 0.333)
+
+    def test_quality_control_clamps_saved_quality(self):
+        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
+        tab.reduce_quality_slider = _FakeSlider(value=100)
+        tab.reduce_quality_value_label = _FakeLabel()
+        tab.settings_service = _FakeSettingsService(
+            {"import.animation.reduce_quality": -2.0}
+        )
+
+        import_export_tab.ImportExportTab._sync_reduce_bake_quality_control(tab)
+
+        self.assertEqual(tab.reduce_quality_slider.value, 0)
+        self.assertEqual(tab.reduce_quality_value_label.text, "0.00")
+
+    def test_quality_slider_persists_01_grid_value(self):
+        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
+        tab.settings_service = _FakeSettingsService()
+        tab.reduce_quality_value_label = _FakeLabel()
+
+        import_export_tab.ImportExportTab._on_reduce_quality_changed(tab, 33)
+
+        self.assertEqual(tab.settings_service.get("import.animation.reduce_quality"), 0.33)
+        self.assertEqual(tab.reduce_quality_value_label.text, "0.33")
+
+    def test_quality_control_visible_only_for_bake_and_reduction(self):
+        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
+        tab.bake_mode_check = _FakeWidget()
+        tab.reduce_bake_keys_check = _FakeWidget()
+        tab.reduce_quality_row = _FakeWidget()
+        tab.reduce_quality_slider = _FakeSlider()
+
+        tab.bake_mode_check.isChecked = lambda: False
+        tab.reduce_bake_keys_check.isChecked = lambda: True
+        import_export_tab.ImportExportTab._sync_reduce_bake_quality_enabled(tab)
+        self.assertFalse(tab.reduce_quality_slider.enabled)
+        self.assertFalse(tab.reduce_quality_row.visible)
+
+        tab.bake_mode_check.isChecked = lambda: True
+        tab.reduce_bake_keys_check.isChecked = lambda: False
+        import_export_tab.ImportExportTab._sync_reduce_bake_quality_enabled(tab)
+        self.assertFalse(tab.reduce_quality_slider.enabled)
+        self.assertFalse(tab.reduce_quality_row.visible)
+
+        tab.reduce_bake_keys_check.isChecked = lambda: True
+        import_export_tab.ImportExportTab._sync_reduce_bake_quality_enabled(tab)
+        self.assertTrue(tab.reduce_quality_slider.enabled)
+        self.assertTrue(tab.reduce_quality_row.visible)
 
 
 class TestImportExportTabExportVisibility(unittest.TestCase):

@@ -235,6 +235,22 @@ class _RecordingImportVmdAction:
         return self.result
 
 
+class _RecordingReducedImportVmdAction(_RecordingImportVmdAction):
+    def execute(self, request):
+        self.requests.append(request)
+        request.options["profile"] = {
+            "vmd_converter": {
+                "reduced_bake_keys": {
+                    "used": True,
+                    "source_key_count": 100,
+                    "reduced_key_count": 60,
+                    "reduction_ratio": 0.4,
+                }
+            }
+        }
+        return self.result
+
+
 class _FailingImportVmdAction:
     def execute(self, _request):
         raise AssertionError("vmd action must not be used")
@@ -282,6 +298,88 @@ class TestImportExportPresenter(unittest.TestCase):
         settings.set("import.rig.bake_mode", self._old_bake_mode)
         settings.set("ui.general.development_mode", self._old_dev_mode)
         settings.set("import.model.show_texture_issue_dialog", self._old_texture_dialog)
+
+    def test_vmd_reduction_summary_is_localized_and_concise(self):
+        presenter = ImportExportPresenter(_FakeView(), _FakeAppState())
+        profile = {
+            "vmd_converter": {
+                "reduced_bake_keys": {
+                    "used": True,
+                    "source_key_count": 100,
+                    "reduced_key_count": 60,
+                    "reduction_ratio": 0.4,
+                }
+            }
+        }
+
+        summary = presenter._vmd_reduction_summary(profile)
+
+        self.assertEqual(summary, "Reduced keys: 100 -> 60 (40.0% reduced)")
+
+    def test_vmd_success_appends_reduction_summary_and_keeps_generic_status_without_profile(self):
+        view = _FakeView()
+        app_state = _FakeAppState()
+        action = _RecordingReducedImportVmdAction(ImportVmdResult(root_node=True, succeeded=True))
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        presenter.import_vmd_file()
+
+        self.assertIn(
+            "VMD import complete: motion.vmd — Reduced keys: 100 -> 60 (40.0% reduced)",
+            app_state.statuses,
+        )
+
+        view = _FakeView()
+        app_state = _FakeAppState()
+        action = _RecordingImportVmdAction(ImportVmdResult(root_node=True, succeeded=True))
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        presenter.import_vmd_file()
+
+        self.assertIn("VMD import complete: motion.vmd", app_state.statuses)
+
+    def test_import_file_vmd_partial_keeps_reduction_summary_once(self):
+        view = _FakeView()
+        view.import_path_edit = _FakeLineEdit("motion.vmd")
+        app_state = _FakeAppState()
+        action = _RecordingReducedImportVmdAction(
+            ImportVmdResult(
+                root_node=True,
+                succeeded=True,
+                warnings=[{"message": "runtime fallback"}],
+                outcome="partial",
+            )
+        )
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        presenter.import_file()
+
+        reduced_statuses = [status for status in app_state.statuses if "Reduced keys:" in status]
+        self.assertEqual(reduced_statuses, [
+            "VMD import completed with warnings (1): motion.vmd — Reduced keys: 100 -> 60 (40.0% reduced)"
+        ])
+        self.assertFalse(any("VMD import complete:" in status for status in app_state.statuses))
+
+    def test_import_vmd_file_partial_keeps_reduction_summary_once(self):
+        view = _FakeView()
+        app_state = _FakeAppState()
+        action = _RecordingReducedImportVmdAction(
+            ImportVmdResult(
+                root_node=True,
+                succeeded=True,
+                warnings=[{"message": "runtime fallback"}],
+                outcome="partial",
+            )
+        )
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        presenter.import_vmd_file()
+
+        reduced_statuses = [status for status in app_state.statuses if "Reduced keys:" in status]
+        self.assertEqual(reduced_statuses, [
+            "VMD import completed with warnings (1): motion.vmd — Reduced keys: 100 -> 60 (40.0% reduced)"
+        ])
+        self.assertFalse(any("VMD import complete:" in status for status in app_state.statuses))
 
     def test_import_file_leaves_rig_options_unset_when_bake_mode_enabled(self):
         # bake_mode only controls VMD animation import; model import still builds rig by default.

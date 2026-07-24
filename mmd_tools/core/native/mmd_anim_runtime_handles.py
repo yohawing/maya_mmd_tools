@@ -15,12 +15,28 @@ from mmd_tools.core.native.mmd_anim_runtime_types import (
     MMD_RUNTIME_PHYSICS_FRAME_ACTION_SEED,
     MMD_RUNTIME_PHYSICS_FRAME_ACTION_STEP,
     MMD_RUNTIME_FEATURE_MODEL_DESCRIPTOR,
+    MMD_RUNTIME_FEATURE_REDUCED_POSE_GENERIC_CURVES,
+    MMD_RUNTIME_GENERIC_CURVE_BONE_LOCAL,
+    MMD_RUNTIME_GENERIC_CURVE_MORPH_WEIGHT,
+    MMD_RUNTIME_GENERIC_ROTATION_BASIS_NONE,
+    MMD_RUNTIME_GENERIC_ROTATION_BASIS_RUNTIME_QUATERNION,
+    MMD_RUNTIME_GENERIC_VALUE_QUATERNION,
+    MMD_RUNTIME_GENERIC_VALUE_SCALAR,
+    MMD_RUNTIME_GENERIC_VALUE_TRANSLATION,
+    MMD_RUNTIME_REDUCED_POSE_GENERIC_CURVE_ABI_VERSION_V1,
+    MMD_RUNTIME_REDUCTION_TARGET_DCC_CUBIC,
     MMD_RUNTIME_MODEL_DESCRIPTOR_FLAGS_NONE,
     MMD_RUNTIME_MODEL_DESCRIPTOR_VERSION_V1,
     MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS,
     MMD_RUNTIME_STATUS_OK,
+    MMD_RUNTIME_STATUS_BUFFER_TOO_SMALL,
     MMD_RUNTIME_STATUS_UNSUPPORTED,
     MmdRuntimeBatchEvaluation,
+    MmdRuntimeFfiGenericCurveDescriptor,
+    MmdRuntimeFfiGenericCurveInfo,
+    MmdRuntimeFfiGenericCurveKey,
+    MmdRuntimeFfiPoseReductionReport,
+    MmdRuntimeFfiReductionTolerances,
     MmdRuntimeFfiPhysicsJointDesc,
     MmdRuntimeFfiHostPoseView,
     MmdRuntimeFfiPhysicsRigidbodyBinding,
@@ -34,6 +50,13 @@ from mmd_tools.core.native.mmd_anim_runtime_types import (
     MmdRuntimeModelGroupMorphOffsetDescriptor,
     MmdRuntimeModelIkLinkDescriptor,
     MmdRuntimeModelIkSolverDescriptor,
+    MmdRuntimeGenericCurve,
+    MmdRuntimeGenericCurveDescriptor,
+    MmdRuntimeGenericCurveInfo,
+    MmdRuntimeGenericCurveKey,
+    MmdRuntimePoseReductionReport,
+    MmdRuntimeReducedPoseResult,
+    MmdRuntimeReductionTolerances,
 )
 
 logger = get_logger(__name__)
@@ -53,6 +76,18 @@ def _as_finite_float(value) -> Optional[float]:
     if not math.isfinite(number):
         return None
     return number
+
+
+def _as_finite_f32(value) -> Optional[float]:
+    """Return a finite value after the ABI's ``c_float`` quantization."""
+    number = _as_finite_float(value)
+    if number is None:
+        return None
+    try:
+        quantized = c_float(number).value
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return quantized if math.isfinite(quantized) else None
 
 
 def _as_positive_integral_count(value) -> Optional[int]:
@@ -239,6 +274,510 @@ class MmdRuntimeModel:
 
     def __repr__(self):
         return f"<MmdRuntimeModel handle={self._handle}>"
+
+    def reduce_dense_pose(self, dense_batch: MmdRuntimeBatchEvaluation, **kwargs):
+        """Return detached generic reduced curves for this model.
+
+        This convenience method keeps native handle ownership inside the
+        reduction wrapper and returns ``None`` for unsupported runtimes.
+        """
+        return reduce_dense_pose(self, dense_batch, **kwargs)
+
+
+class MmdRuntimeReducedPose:
+    """Owned native dense-pose reduction handle and generic curve snapshotter.
+
+    Generic curve values stay in mmd-anim's runtime-native basis (model units,
+    radians, sample frames, and normalized local quaternions).  The Euler
+    segment fields are copied only as diagnostic fit data; they are not Maya
+    channel rotations.
+    """
+
+    _get_library: Callable[[], Optional[CDLL]] = staticmethod(get_mmd_runtime_library)
+
+    def __init__(self, lib: CDLL, handle: c_void_p):
+        self._lib = lib
+        self._handle = handle
+        self._expected_model_identity = None
+        self._expected_start_frame = None
+        self._expected_frame_step = None
+        self._expected_frame_count = None
+        self._expected_bone_count = None
+        self._expected_morph_count = None
+        self._expected_target = None
+
+    @classmethod
+    def from_dense(
+        cls,
+        model: MmdRuntimeModel,
+        dense_batch: MmdRuntimeBatchEvaluation,
+        *,
+        model_identity: int = 0,
+        start_frame: float = 0.0,
+        frame_step: float = 1.0,
+        target: int = MMD_RUNTIME_REDUCTION_TARGET_DCC_CUBIC,
+        tolerances: Optional[object] = None,
+    ) -> Optional["MmdRuntimeReducedPose"]:
+        """Reduce an owned dense runtime batch when the generic ABI is available.
+
+        ``None`` is returned for unsupported/malformed inputs so bake callers
+        can retain their dense-key fallback without catching native exceptions.
+        """
+        try:
+            lib = model._lib
+            model_handle = model.handle
+        except Exception:
+            return None
+        flags_func = getattr(lib, "mmd_runtime_feature_flags", None) if lib else None
+        create_func = getattr(lib, "mmd_runtime_reduced_pose_create_from_dense", None) if lib else None
+        if not model_handle or lib is None or flags_func is None or create_func is None:
+            return None
+        required_symbols = (
+            "mmd_runtime_reduced_pose_free",
+            "mmd_runtime_reduced_pose_report",
+            "mmd_runtime_reduced_pose_generic_curve_info",
+            "mmd_runtime_reduced_pose_generic_curve_count",
+            "mmd_runtime_reduced_pose_generic_curve_descriptor",
+            "mmd_runtime_reduced_pose_generic_curve_keys",
+        )
+        if any(getattr(lib, name, None) is None for name in required_symbols):
+            return None
+        try:
+            if not int(flags_func()) & MMD_RUNTIME_FEATURE_REDUCED_POSE_GENERIC_CURVES:
+                return None
+        except Exception as exc:
+            logger.debug("mmd_runtime_feature_flags failed for generic reduction: %s", exc)
+            return None
+
+        try:
+            frame_count = _as_positive_integral_count(getattr(dense_batch, "frame_count", None))
+            bone_count = _as_positive_integral_count(getattr(dense_batch, "bone_count", None))
+            if frame_count is None or bone_count is None:
+                return None
+            morph_count_raw = getattr(dense_batch, "morph_count", None)
+            if isinstance(morph_count_raw, bool):
+                return None
+            morph_count = int(morph_count_raw)
+            if morph_count < 0 or float(morph_count) != float(morph_count_raw):
+                return None
+            world_values = _finite_floats(
+                getattr(dense_batch, "world_matrices", ()), frame_count * bone_count * 16
+            )
+            morph_values = _finite_floats(
+                getattr(dense_batch, "morph_weights", ()), frame_count * morph_count
+            )
+            # The native ABI stores both values as f32.  Keep the quantized
+            # values as the validation authority so metadata round-trips do
+            # not compare a Python f64 input against a native f32 value.
+            start = _as_finite_f32(start_frame)
+            step = _as_finite_f32(frame_step)
+            if world_values is None or morph_values is None or start is None or step is None or step <= 0.0:
+                return None
+            identity = int(model_identity)
+            if identity < 0 or identity >= 1 << 64 or identity != model_identity:
+                return None
+            target_value = int(target)
+            if target_value < 0 or target_value > 0xFFFFFFFF:
+                return None
+            tolerance = cls._coerce_tolerances(tolerances)
+            if tolerance is None:
+                return None
+            world_array = (c_float * len(world_values))(*world_values)
+            morph_array = (c_float * len(morph_values))(*morph_values) if morph_values else None
+            out_pose = c_void_p()
+            status = int(
+                create_func(
+                    model_handle,
+                    identity,
+                    world_array,
+                    len(world_values),
+                    morph_array,
+                    len(morph_values),
+                    frame_count,
+                    start,
+                    step,
+                    target_value,
+                    tolerance,
+                    ctypes.byref(out_pose),
+                )
+            )
+            if status != MMD_RUNTIME_STATUS_OK or not out_pose.value:
+                logger.debug("mmd_runtime_reduced_pose_create_from_dense failed: status=%s", status)
+                return None
+            result = cls(lib, out_pose)
+            result._expected_model_identity = identity
+            result._expected_start_frame = start
+            result._expected_frame_step = step
+            result._expected_frame_count = frame_count
+            result._expected_bone_count = bone_count
+            result._expected_morph_count = morph_count
+            result._expected_target = target_value
+            return result
+        except (TypeError, ValueError, OverflowError) as exc:
+            logger.debug("invalid generic reduction input: %s", exc)
+            return None
+        except Exception as exc:
+            logger.error("MmdRuntimeReducedPose.from_dense failed: %s", exc, exc_info=True)
+            return None
+
+    create_from_dense = from_dense
+
+    @staticmethod
+    def _coerce_tolerances(value: Optional[object]) -> Optional[MmdRuntimeFfiReductionTolerances]:
+        if value is None:
+            value = MmdRuntimeReductionTolerances()
+        fields = ("local_position", "local_rotation_radians", "world_position", "world_rotation_radians", "morph_weight")
+        try:
+            values = [_as_finite_float(getattr(value, field)) for field in fields]
+        except (AttributeError, TypeError):
+            try:
+                values = [_as_finite_float(item) for item in value]  # type: ignore[union-attr]
+            except (TypeError, ValueError):
+                return None
+        if len(values) != len(fields) or any(item is None or item < 0.0 for item in values):
+            return None
+        return MmdRuntimeFfiReductionTolerances(*values)
+
+    @staticmethod
+    def _report_dto(report: MmdRuntimeFfiPoseReductionReport) -> MmdRuntimePoseReductionReport:
+        return MmdRuntimePoseReductionReport(
+            int(report.source_bone_key_count),
+            int(report.reduced_bone_key_count),
+            int(report.source_morph_key_count),
+            int(report.reduced_morph_key_count),
+            float(report.max_local_position_error),
+            float(report.max_local_rotation_error_radians),
+            float(report.max_world_position_error),
+            float(report.max_world_rotation_error_radians),
+            float(report.max_morph_weight_error),
+        )
+
+    @staticmethod
+    def _info_dto(info: MmdRuntimeFfiGenericCurveInfo) -> MmdRuntimeGenericCurveInfo:
+        return MmdRuntimeGenericCurveInfo(
+            int(info.struct_size),
+            int(info.abi_version),
+            int(info.reduction_target),
+            int(info.coordinate_system),
+            int(info.length_unit),
+            int(info.angle_unit),
+            int(info.time_unit),
+            int(info.tangent_unit),
+            int(info.model_identity),
+            float(info.start_frame),
+            float(info.frame_step),
+            int(info.frame_count),
+            int(info.bone_count),
+            int(info.morph_count),
+        )
+
+    def get_report(self) -> Optional[MmdRuntimePoseReductionReport]:
+        """Copy the native reduction report, or return ``None`` on ABI failure."""
+        func = getattr(self._lib, "mmd_runtime_reduced_pose_report", None)
+        if func is None or not self._handle:
+            return None
+        report = MmdRuntimeFfiPoseReductionReport()
+        try:
+            status = int(func(self._handle, ctypes.byref(report)))
+            if status != MMD_RUNTIME_STATUS_OK:
+                return None
+            values = self._report_dto(report)
+            if not all(math.isfinite(value) for value in values[4:]):
+                return None
+            return values
+        except Exception as exc:
+            logger.debug("generic reduction report failed: %s", exc)
+            return None
+
+    report = get_report
+
+    def get_generic_curve_info(self) -> Optional[MmdRuntimeGenericCurveInfo]:
+        """Read and validate generic curve metadata before enumeration."""
+        func = getattr(self._lib, "mmd_runtime_reduced_pose_generic_curve_info", None)
+        if func is None or not self._handle:
+            return None
+        info = MmdRuntimeFfiGenericCurveInfo()
+        info.struct_size = ctypes.sizeof(MmdRuntimeFfiGenericCurveInfo)
+        try:
+            if int(func(self._handle, ctypes.byref(info))) != MMD_RUNTIME_STATUS_OK:
+                return None
+            if int(info.struct_size) < ctypes.sizeof(MmdRuntimeFfiGenericCurveInfo):
+                return None
+            if int(info.abi_version) != MMD_RUNTIME_REDUCED_POSE_GENERIC_CURVE_ABI_VERSION_V1:
+                return None
+            result = self._info_dto(info)
+            if not math.isfinite(result.start_frame) or not math.isfinite(result.frame_step) or result.frame_step <= 0.0:
+                return None
+            if result.frame_count <= 0 or result.bone_count <= 0 or result.morph_count < 0:
+                return None
+            if any(
+                value != 0
+                for value in (
+                    result.coordinate_system,
+                    result.length_unit,
+                    result.angle_unit,
+                    result.time_unit,
+                    result.tangent_unit,
+                )
+            ):
+                return None
+            expected_values = (
+                (self._expected_model_identity, result.model_identity),
+                (self._expected_frame_count, result.frame_count),
+                (self._expected_bone_count, result.bone_count),
+                (self._expected_morph_count, result.morph_count),
+                (self._expected_target, result.reduction_target),
+            )
+            if any(expected is not None and expected != actual for expected, actual in expected_values):
+                return None
+            if self._expected_start_frame is not None and abs(result.start_frame - self._expected_start_frame) > 1.0e-3:
+                return None
+            if self._expected_frame_step is not None and abs(result.frame_step - self._expected_frame_step) > 1.0e-3:
+                return None
+            return result
+        except Exception as exc:
+            logger.debug("generic reduction curve info failed: %s", exc)
+            return None
+
+    info = get_generic_curve_info
+
+    def _get_descriptor(self, curve_index: int) -> Optional[MmdRuntimeGenericCurveDescriptor]:
+        func = getattr(self._lib, "mmd_runtime_reduced_pose_generic_curve_descriptor", None)
+        if func is None or not self._handle or curve_index < 0:
+            return None
+        native = MmdRuntimeFfiGenericCurveDescriptor()
+        native.struct_size = ctypes.sizeof(MmdRuntimeFfiGenericCurveDescriptor)
+        try:
+            if int(func(self._handle, curve_index, ctypes.byref(native))) != MMD_RUNTIME_STATUS_OK:
+                return None
+            if int(native.struct_size) < ctypes.sizeof(MmdRuntimeFfiGenericCurveDescriptor):
+                return None
+            if int(native.abi_version) != MMD_RUNTIME_REDUCED_POSE_GENERIC_CURVE_ABI_VERSION_V1:
+                return None
+            return MmdRuntimeGenericCurveDescriptor(
+                int(native.struct_size),
+                int(native.abi_version),
+                int(native.kind),
+                int(native.target_index),
+                int(native.parent_index),
+                int(native.value_flags),
+                int(native.interpolation),
+                int(native.rotation_basis),
+                int(native.key_count),
+            )
+        except Exception as exc:
+            logger.debug("generic reduction curve descriptor failed: %s", exc)
+            return None
+
+    def _get_keys(
+        self, curve_index: int, descriptor: MmdRuntimeGenericCurveDescriptor, info: MmdRuntimeGenericCurveInfo
+    ) -> Optional[Tuple[MmdRuntimeGenericCurveKey, ...]]:
+        func = getattr(self._lib, "mmd_runtime_reduced_pose_generic_curve_keys", None)
+        if func is None or not self._handle or descriptor.key_count <= 0:
+            return None
+        required = c_size_t()
+        try:
+            first_status = int(func(self._handle, curve_index, None, 0, ctypes.sizeof(MmdRuntimeFfiGenericCurveKey), ctypes.byref(required)))
+            if first_status != MMD_RUNTIME_STATUS_BUFFER_TOO_SMALL or int(required.value) != descriptor.key_count:
+                return None
+            native_keys = (MmdRuntimeFfiGenericCurveKey * descriptor.key_count)()
+            second_status = int(
+                func(
+                    self._handle,
+                    curve_index,
+                    native_keys,
+                    descriptor.key_count,
+                    ctypes.sizeof(MmdRuntimeFfiGenericCurveKey),
+                    ctypes.byref(required),
+                )
+            )
+            if second_status != MMD_RUNTIME_STATUS_OK or int(required.value) != descriptor.key_count:
+                return None
+            result = []
+            previous_sample = -1
+            for native in native_keys:
+                sample_index = int(native.sample_index)
+                if sample_index < 0 or sample_index >= info.frame_count or sample_index <= previous_sample:
+                    return None
+                frame = float(native.frame)
+                # Match the native f32 arithmetic (multiply and add each
+                # quantized operand) before comparing the returned c_float.
+                frame_product = _as_finite_f32(info.frame_step * sample_index)
+                expected_frame = (
+                    _as_finite_f32(info.start_frame + frame_product)
+                    if frame_product is not None
+                    else None
+                )
+                if expected_frame is None or not math.isfinite(frame) or abs(frame - expected_frame) > 1.0e-3:
+                    return None
+                vectors = [
+                    tuple(float(item) for item in native.translation_xyz),
+                    tuple(float(item) for item in native.rotation_xyzw),
+                    tuple(float(item) for item in native.segment_prev_out_translation_xyz),
+                    tuple(float(item) for item in native.segment_current_in_translation_xyz),
+                    tuple(float(item) for item in native.segment_from_previous_start_euler_xyz),
+                    tuple(float(item) for item in native.segment_from_previous_end_euler_xyz),
+                    tuple(float(item) for item in native.segment_prev_out_rotation_xyz),
+                    tuple(float(item) for item in native.segment_current_in_rotation_xyz),
+                ]
+                scalar_values = [
+                    float(native.scalar),
+                    float(native.segment_prev_out_scalar),
+                    float(native.segment_current_in_scalar),
+                ]
+                if any(not math.isfinite(item) for vector in vectors for item in vector) or any(
+                    not math.isfinite(item) for item in scalar_values
+                ):
+                    return None
+                if descriptor.kind == MMD_RUNTIME_GENERIC_CURVE_BONE_LOCAL:
+                    norm_sq = sum(item * item for item in vectors[1])
+                    if abs(norm_sq - 1.0) > 2.0e-3:
+                        return None
+                result.append(
+                    MmdRuntimeGenericCurveKey(
+                        sample_index,
+                        frame,
+                        vectors[0],
+                        vectors[1],
+                        scalar_values[0],
+                        vectors[2],
+                        vectors[3],
+                        vectors[4],
+                        vectors[5],
+                        vectors[6],
+                        vectors[7],
+                        scalar_values[1],
+                        scalar_values[2],
+                    )
+                )
+                previous_sample = sample_index
+            return tuple(result)
+        except Exception as exc:
+            logger.debug("generic reduction curve keys failed: %s", exc)
+            return None
+
+    def snapshot(self) -> Optional["MmdRuntimeReducedPoseResult"]:
+        """Copy validated generic curves and report while the handle is live."""
+        info = self.get_generic_curve_info()
+        if info is None:
+            return None
+        count_func = getattr(self._lib, "mmd_runtime_reduced_pose_generic_curve_count", None)
+        if count_func is None or not self._handle:
+            return None
+        try:
+            count = c_size_t()
+            if int(count_func(self._handle, ctypes.byref(count))) != MMD_RUNTIME_STATUS_OK:
+                return None
+            expected_count = info.bone_count + info.morph_count
+            if int(count.value) != expected_count:
+                return None
+            curves = []
+            for index in range(int(count.value)):
+                descriptor = self._get_descriptor(index)
+                if descriptor is None:
+                    return None
+                expected_kind = (
+                    MMD_RUNTIME_GENERIC_CURVE_BONE_LOCAL
+                    if index < info.bone_count
+                    else MMD_RUNTIME_GENERIC_CURVE_MORPH_WEIGHT
+                )
+                expected_target_index = index if index < info.bone_count else index - info.bone_count
+                if (
+                    descriptor.kind != expected_kind
+                    or descriptor.target_index != expected_target_index
+                    or descriptor.interpolation != info.reduction_target
+                ):
+                    return None
+                if descriptor.kind == MMD_RUNTIME_GENERIC_CURVE_BONE_LOCAL:
+                    if descriptor.target_index >= info.bone_count or descriptor.parent_index < -1 or descriptor.parent_index >= info.bone_count:
+                        return None
+                    if descriptor.value_flags != MMD_RUNTIME_GENERIC_VALUE_TRANSLATION | MMD_RUNTIME_GENERIC_VALUE_QUATERNION:
+                        return None
+                    if descriptor.rotation_basis != MMD_RUNTIME_GENERIC_ROTATION_BASIS_RUNTIME_QUATERNION:
+                        return None
+                elif descriptor.kind == MMD_RUNTIME_GENERIC_CURVE_MORPH_WEIGHT:
+                    if descriptor.target_index >= info.morph_count or descriptor.parent_index != -1:
+                        return None
+                    if descriptor.value_flags != MMD_RUNTIME_GENERIC_VALUE_SCALAR or descriptor.rotation_basis != MMD_RUNTIME_GENERIC_ROTATION_BASIS_NONE:
+                        return None
+                else:
+                    return None
+                keys = self._get_keys(index, descriptor, info)
+                if keys is None:
+                    return None
+                curves.append(MmdRuntimeGenericCurve(descriptor, keys))
+            report = self.get_report()
+            if report is None:
+                return None
+            if (
+                report.source_bone_key_count != info.frame_count * info.bone_count
+                or report.source_morph_key_count != info.frame_count * info.morph_count
+                or report.reduced_bone_key_count <= 0
+                or report.reduced_bone_key_count > report.source_bone_key_count
+                or report.reduced_morph_key_count < 0
+                or report.reduced_morph_key_count > report.source_morph_key_count
+            ):
+                return None
+            return MmdRuntimeReducedPoseResult(info, tuple(curves), report)
+        except Exception as exc:
+            logger.debug("generic reduction snapshot failed: %s", exc)
+            return None
+
+    get_generic_curves = snapshot
+
+    def free(self) -> None:
+        """Release the native reduced-pose handle exactly once."""
+        if self._handle and self._lib:
+            try:
+                free_func = getattr(self._lib, "mmd_runtime_reduced_pose_free", None)
+                if free_func is not None:
+                    free_func(self._handle)
+            except Exception as exc:
+                logger.debug("mmd_runtime_reduced_pose_free failed: %s", exc)
+            self._handle = None
+
+    @property
+    def handle(self) -> c_void_p:
+        """Raw reduced-pose handle for advanced integrations."""
+        return self._handle
+
+    def __del__(self):
+        self.free()
+
+    def __repr__(self):
+        return f"<MmdRuntimeReducedPose handle={self._handle}>"
+
+
+def reduce_dense_pose(
+    model: MmdRuntimeModel,
+    dense_batch: MmdRuntimeBatchEvaluation,
+    *,
+    model_identity: int = 0,
+    start_frame: float = 0.0,
+    frame_step: float = 1.0,
+    target: int = MMD_RUNTIME_REDUCTION_TARGET_DCC_CUBIC,
+    tolerances: Optional[object] = None,
+) -> Optional["MmdRuntimeReducedPoseResult"]:
+    """Return detached generic reduced curves, freeing the native handle.
+
+    A ``None`` result is an explicit unsupported/failure outcome for callers
+    that must retain their dense bake path.
+    """
+    reduced = MmdRuntimeReducedPose.from_dense(
+        model,
+        dense_batch,
+        model_identity=model_identity,
+        start_frame=start_frame,
+        frame_step=frame_step,
+        target=target,
+        tolerances=tolerances,
+    )
+    if reduced is None:
+        return None
+    try:
+        return reduced.snapshot()
+    finally:
+        reduced.free()
 
 
 class MmdRuntimeClip:

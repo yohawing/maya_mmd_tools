@@ -526,6 +526,23 @@ class TestNativePmxParserBuilders(unittest.TestCase):
         self.assertEqual(morphs[4].offsets[0]["impulse"], (0.1, 0.2, 0.3))
         self.assertEqual(morphs[4].offsets[0]["torque"], (0.4, 0.5, 0.6))
 
+    def test_build_morphs_maps_abi3_panel_labels_and_preserves_numeric_values(self):
+        morphs = _build_morphs(
+            [
+                {"name": "system", "panel": "system"},
+                {"name": "brow", "panel": "brow"},
+                {"name": "eye", "panel": "eye"},
+                {"name": "mouth", "panel": "mouth"},
+                {"name": "other", "panel": "other"},
+                {"name": "numeric", "panel": 2},
+                {"name": "missing"},
+                {"name": "unknown", "panel": "not-a-panel"},
+                {"name": "out-of-range", "panel": 99},
+            ]
+        )
+
+        self.assertEqual([morph.panel for morph in morphs], [0, 1, 2, 3, 4, 2, 4, 4, 4])
+
 
 if __name__ == "__main__":
     unittest.main()

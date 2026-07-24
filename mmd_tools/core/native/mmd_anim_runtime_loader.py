@@ -19,7 +19,14 @@ from mmd_tools.core.native.mmd_anim_runtime_signatures import setup_function_sig
 
 logger = get_logger(__name__)
 
-MMD_RUNTIME_ABI_VERSION = 2
+# ABI 3 removes the deprecated Unity reduced-pose enumeration surface, while
+# retaining the runtime-neutral generic-curve ABI introduced in ABI 2.  The
+# wrapper does not call the removed symbols, so both versions are safe to
+# consume.  Keep the singular name as a compatibility alias for callers that
+# used it as the current-version constant.
+MMD_RUNTIME_ABI_VERSION_CURRENT = 3
+MMD_RUNTIME_ABI_VERSIONS_SUPPORTED = (2, MMD_RUNTIME_ABI_VERSION_CURRENT)
+MMD_RUNTIME_ABI_VERSION = MMD_RUNTIME_ABI_VERSION_CURRENT
 
 if platform.system() == "Windows":
     _LIB_NAMES = ["mmd_runtime_ffi.dll", "mmd_anim_ffi.dll"]
@@ -98,18 +105,25 @@ def get_mmd_runtime_library() -> Optional[CDLL]:
         setup_function_signatures(lib)
 
         abi = lib.mmd_runtime_abi_version()
-        if abi != MMD_RUNTIME_ABI_VERSION:
+        if abi not in MMD_RUNTIME_ABI_VERSIONS_SUPPORTED:
             logger.error(
-                "Rejected mmd-anim runtime library due to ABI version mismatch: path=%s, got=%s, expected=%s",
+                "Rejected mmd-anim runtime library due to unsupported ABI version: path=%s, got=%s, current=%s, supported=%s",
                 path,
                 abi,
-                MMD_RUNTIME_ABI_VERSION,
+                MMD_RUNTIME_ABI_VERSION_CURRENT,
+                MMD_RUNTIME_ABI_VERSIONS_SUPPORTED,
             )
             _runtime_lib = False
             _runtime_lib_path = None
             return None
         else:
-            logger.info("Loaded mmd-anim runtime library: %s (ABI %s)", path, abi)
+            logger.info(
+                "Loaded mmd-anim runtime library: %s (ABI %s; current=%s; supported=%s)",
+                path,
+                abi,
+                MMD_RUNTIME_ABI_VERSION_CURRENT,
+                MMD_RUNTIME_ABI_VERSIONS_SUPPORTED,
+            )
 
         _runtime_lib = lib
         _runtime_lib_path = path

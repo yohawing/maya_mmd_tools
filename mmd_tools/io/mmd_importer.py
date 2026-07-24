@@ -116,6 +116,7 @@ def import_mmd_file(
             return fast_root
         logger.info("C++ fast import failed/excluded – falling back to Python parser")
 
+    parse_completed = False
     try:
         # 汎用パーサーでファイルを解析
         with vmd_profile.scope("vmd_parse" if suffix == ".vmd" else "model_parse"):
@@ -124,6 +125,7 @@ def import_mmd_file(
                 use_native_pmx_parse=strategy.use_native_pmx_parse,
                 require_native_pmx_parse=strategy.require_native_pmx_parse,
             )
+        parse_completed = True
         if suffix == ".vmd":
             vmd_profile.set_extra("vmd_path", str(Path(filepath).resolve()))
             for attr in ("bone_frames", "morph_frames", "camera_frames", "light_frames"):
@@ -164,7 +166,7 @@ def import_mmd_file(
             raise MMDImportException(f"Unsupported data type returned from parser: {type(parsed_data)}")
 
     except Exception as e:
-        if suffix == ".vmd" and options.get("bake_mode", False):
+        if suffix == ".vmd" and options.get("bake_mode", False) and not parse_completed:
             logger.warning(
                 "VMD parser failed in bake mode; attempting runtime bake from raw bytes: %s",
                 e,
