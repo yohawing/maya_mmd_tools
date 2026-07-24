@@ -70,8 +70,13 @@ class FakeCmds:
         self.current_time = 0.0
         self.blendshape_weights = {}
         self.aliases = {}
+        self.current_unit = "ntsc"
 
-    def ls(self, pattern=None, type=None, objectsOnly=False):  # noqa: A002,N803
+    def ls(self, pattern=None, type=None, objectsOnly=False, long=False, uuid=False):  # noqa: A002,N803
+        if pattern and not type and not objectsOnly:
+            if uuid:
+                return [str(pattern)] if pattern in self.node_types else []
+            return [pattern] if pattern in self.node_types else []
         if objectsOnly and isinstance(pattern, str) and pattern.startswith("*."):
             attr = pattern[2:]
             return [node for node, node_attr in self.attrs if node_attr == attr]
@@ -138,6 +143,12 @@ class FakeCmds:
             self.current_time = float(time)
         return self.current_time
 
+    def currentUnit(self, time=None, query=False):  # noqa: N802
+        if query:
+            return self.current_unit
+        self.current_unit = time
+        return self.current_unit
+
     def xform(self, node, query=False, worldSpace=False, translation=False):  # noqa: N802,N803
         if query and worldSpace and translation:
             return self.translations.get((node, self.current_time), self.translations.get(node, (0.0, 0.0, 0.0)))
@@ -164,10 +175,13 @@ class TestVmdSceneCollector(unittest.TestCase):
     def setUp(self):
         self.cmds = FakeCmds()
         self.original_cmds = collector_module.cmds
+        self.original_read_control_rig_metadata = collector_module.read_mmd_control_rig_metadata
         collector_module.cmds = self.cmds
+        collector_module.read_mmd_control_rig_metadata = lambda _target_model: None
 
     def tearDown(self):
         collector_module.cmds = self.original_cmds
+        collector_module.read_mmd_control_rig_metadata = self.original_read_control_rig_metadata
 
     def test_collects_bone_frames_from_mmd_named_joints(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
@@ -211,6 +225,122 @@ class TestVmdSceneCollector(unittest.TestCase):
         )
 
         self.assertEqual(result["bone_frames"][0]["position"], (1.0, 2.0, 3.0))
+
+    def test_converts_maya_60fps_time_to_fixed_30fps_vmd_frames_for_all_tracks(self):
+        self.cmds.current_unit = "ntscf"
+        self.cmds.node_types.update(
+            {
+                "center_joint": "joint",
+                "face_bs": "blendShape",
+                "mmd_camera": "transform",
+                "mmd_light": "transform",
+            }
+        )
+        self.cmds.attrs.update(
+            {
+                ("center_joint", ATTR_MMD_BONE_NAME): "センター",
+                ("face_bs", ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON): json.dumps({"0": "笑い"}),
+                ("mmd_camera", ATTR_MMD_CAMERA): True,
+                ("mmd_light", ATTR_MMD_LIGHT): True,
+            }
+        )
+        self.cmds.blendshape_weights["face_bs"] = 1
+        self.cmds.keys[("center_joint", "translateX")] = {20.0: 1.0}
+        self.cmds.keys[("face_bs", "weight[0]")] = {20.0: 0.5}
+        self.cmds.keys[("mmd_camera", "translateX")] = {20.0: 1.0}
+        self.cmds.keys[("mmd_light", "mmd_light_colorR")] = {20.0: 0.1}
+
+        result = VmdSceneCollector().collect(
+            {
+                "joints": ["center_joint"],
+                "blend_shapes": ["face_bs"],
+                "cameras": ["mmd_camera"],
+                "lights": ["mmd_light"],
+            }
+        )
+
+        self.assertEqual(result["bone_frames"][0]["frame_number"], 10)
+        self.assertEqual(result["morph_frames"][0]["frame_number"], 10)
+        self.assertEqual(result["camera_frames"][0]["frame_number"], 10)
+        self.assertEqual(result["light_frames"][0]["frame_number"], 10)
+
+    def test_keeps_maya_30fps_time_as_same_vmd_frame(self):
+        self.cmds.current_unit = "ntsc"
+        self.cmds.node_types["center_joint"] = "joint"
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
+        self.cmds.keys[("center_joint", "translateX")] = {20.0: 1.0}
+
+        result = VmdSceneCollector().collect({"joints": ["center_joint"]})
+
+        self.assertEqual(result["bone_frames"][0]["frame_number"], 20)
+
+    def test_collects_constant_off_ik_baseline_in_requested_range(self):
+        self.cmds.attrs[("ik_solver", "enabled")] = False
+        original_collect = collector_module.collect_ik_nodes_by_bone_name
+        collector_module.collect_ik_nodes_by_bone_name = lambda **_kwargs: {"左足ＩＫ": "ik_solver"}
+        try:
+            result = VmdSceneCollector().collect(
+                {
+                    "target_model": "model_root",
+                    "start_frame": 10.0,
+                    "end_frame": 20.0,
+                }
+            )
+        finally:
+            collector_module.collect_ik_nodes_by_bone_name = original_collect
+
+        self.assertEqual(
+            result["ik_show_hide_frames"],
+            [
+                {
+                    "frame_number": 10,
+                    "visible": True,
+                    "ik_states": [("左足ＩＫ", False)],
+                }
+            ],
+        )
+
+    def test_collects_ik_baseline_before_later_enabled_key(self):
+        self.cmds.attrs[("ik_solver", "enabled")] = False
+        self.cmds.keys[("ik_solver", "enabled")] = {20.0: 1.0}
+        original_collect = collector_module.collect_ik_nodes_by_bone_name
+        collector_module.collect_ik_nodes_by_bone_name = lambda **_kwargs: {"左足ＩＫ": "ik_solver"}
+        try:
+            result = VmdSceneCollector().collect({"target_model": "model_root"})
+        finally:
+            collector_module.collect_ik_nodes_by_bone_name = original_collect
+
+        self.assertEqual(
+            result["ik_show_hide_frames"],
+            [
+                {
+                    "frame_number": 0,
+                    "visible": True,
+                    "ik_states": [("左足ＩＫ", False)],
+                },
+                {
+                    "frame_number": 20,
+                    "visible": True,
+                    "ik_states": [("左足ＩＫ", True)],
+                },
+            ],
+        )
+
+    def test_does_not_emit_negative_ik_baseline_for_end_only_range(self):
+        self.cmds.attrs[("ik_solver", "enabled")] = False
+        original_collect = collector_module.collect_ik_nodes_by_bone_name
+        collector_module.collect_ik_nodes_by_bone_name = lambda **_kwargs: {"左足ＩＫ": "ik_solver"}
+        try:
+            result = VmdSceneCollector().collect(
+                {
+                    "target_model": "model_root",
+                    "end_frame": -1.0,
+                }
+            )
+        finally:
+            collector_module.collect_ik_nodes_by_bone_name = original_collect
+
+        self.assertEqual(result["ik_show_hide_frames"], [])
 
     def test_collects_bone_rotation_with_vmd_quaternion_signs(self):
         self.cmds.node_types["arm_joint"] = "joint"

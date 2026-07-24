@@ -35,6 +35,9 @@ from mmd_tools.converters.vmd_append_decomposition import collect_append_info
 from mmd_tools.converters.vmd_ik_enabled_animation import collect_ik_nodes_by_bone_name
 from mmd_tools.converters.vmd_ik_passthrough import collect_mmd_ik_passthrough_info
 from mmd_tools.converters.vmd_import_state import get_stored_bind_translate
+from mmd_tools.converters.vmd_runtime_sampling import (
+    maya_time_to_vmd_frame as _maya_time_to_vmd_frame_at_fps,
+)
 
 
 _BONE_EXPORT_ATTRS = (
@@ -68,6 +71,15 @@ _ATTR_MMD_CAMERA_RIG_TYPE = "mmd_camera_rig_type"
 _MMD_CAMERA_AIM_ROLL_RIG_TYPE = "mmd_aim_roll"
 _TRANSFORM_EXPORT_ATTRS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
 _CAMERA_SHAPE_EXPORT_ATTRS = ("focalLength", "orthographic", "orthographicWidth")
+_MAYA_TIME_UNIT_FPS = {
+    "game": 15.0,
+    "film": 24.0,
+    "pal": 25.0,
+    "ntsc": 30.0,
+    "show": 48.0,
+    "palf": 50.0,
+    "ntscf": 60.0,
+}
 
 
 class VmdSceneCollector:
@@ -91,6 +103,7 @@ class VmdSceneCollector:
         end_frame = _optional_float(options.get("end_frame"))
         motion_scale = float(options.get("motion_scale", 1.0) or 1.0)
         bone_bind_poses = options.get("bone_bind_poses") or {}
+        maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
         control_rig_routes = self._control_rig_export_routes(target_model)
         authored_routes = self._scene_authored_input_routes(joints)
         for joint, attrs in control_rig_routes.items():
@@ -106,14 +119,31 @@ class VmdSceneCollector:
                 bone_bind_poses=bone_bind_poses,
                 input_routes=authored_routes,
                 dense_sample=bool(control_rig_routes),
+                time_converter=maya_time_to_vmd,
             ),
-            "morph_frames": self.collect_morph_frames(blend_shapes, start_frame, end_frame),
-            "camera_frames": self.collect_camera_frames(cameras, start_frame, end_frame),
-            "light_frames": self.collect_light_frames(lights, start_frame, end_frame),
+            "morph_frames": self.collect_morph_frames(
+                blend_shapes,
+                start_frame,
+                end_frame,
+                time_converter=maya_time_to_vmd,
+            ),
+            "camera_frames": self.collect_camera_frames(
+                cameras,
+                start_frame,
+                end_frame,
+                time_converter=maya_time_to_vmd,
+            ),
+            "light_frames": self.collect_light_frames(
+                lights,
+                start_frame,
+                end_frame,
+                time_converter=maya_time_to_vmd,
+            ),
             "ik_show_hide_frames": self.collect_ik_show_hide_frames(
                 target_model,
                 start_frame,
                 end_frame,
+                time_converter=maya_time_to_vmd,
             ),
         }
 
@@ -126,10 +156,12 @@ class VmdSceneCollector:
         bone_bind_poses: Optional[Mapping[str, Sequence[float]]] = None,
         input_routes: Optional[Mapping[str, Mapping[str, tuple[str, str]]]] = None,
         dense_sample: bool = False,
+        time_converter=None,
     ) -> list[dict]:
         """Collect keyed local joint transform frames."""
         bone_bind_poses = bone_bind_poses or {}
         input_routes = input_routes or {}
+        time_converter = time_converter or _scene_maya_time_to_vmd_frame()
         rotation_context = _build_rotation_export_context(joints)
         frames = []
         dense_frames = None
@@ -166,7 +198,7 @@ class VmdSceneCollector:
                 frames.append(
                     {
                         "bone_name": bone_name,
-                        "frame_number": int(round(frame_number)),
+                        "frame_number": _vmd_frame_number(frame_number, time_converter),
                         "position": _maya_translate_to_vmd_position(
                             (
                                 _routed_plug_float(joint, "translateX", frame_number, route),
@@ -179,41 +211,62 @@ class VmdSceneCollector:
                         "rotation": rotation,
                     }
                 )
-        frames.sort(key=lambda item: (item["bone_name"], item["frame_number"]))
-        return frames
+        return _deduplicate_frames(frames, ("bone_name", "frame_number"))
 
     def collect_ik_show_hide_frames(
         self,
         target_model: Optional[str],
         start_frame: Optional[float] = None,
         end_frame: Optional[float] = None,
+        time_converter=None,
     ) -> list[dict]:
         """Collect keyed owned ``mmdCcdIk.enabled`` values as VMD properties."""
         if not target_model:
             return []
+        time_converter = time_converter or _scene_maya_time_to_vmd_frame()
         nodes_by_name = collect_ik_nodes_by_bone_name(target_model=target_model)
+        all_keyed_frames = sorted(
+            {
+                frame
+                for node in nodes_by_name.values()
+                for frame in _key_times(node, ("enabled",))
+            }
+        )
         keyed_frames = _filter_frame_range(
-            sorted(
-                {
-                    frame
-                    for node in nodes_by_name.values()
-                    for frame in _key_times(node, ("enabled",))
-                }
-            ),
+            all_keyed_frames,
             start_frame,
             end_frame,
         )
-        return [
-            {
-                "frame_number": int(round(frame)),
-                "visible": True,
-                "ik_states": [
-                    (name, bool(_plug_float(node, "enabled", frame)))
-                    for name, node in sorted(nodes_by_name.items())
-                ],
-            }
-            for frame in keyed_frames
-        ]
+        frames = []
+        baseline_time = _ik_baseline_time(start_frame, end_frame)
+        if nodes_by_name and baseline_time is not None and baseline_time not in all_keyed_frames:
+            baseline_frame = _vmd_frame_number(baseline_time, time_converter)
+            if baseline_frame >= 0:
+                frames.append(
+                    {
+                        "frame_number": baseline_frame,
+                        "visible": True,
+                        "ik_states": [
+                            (name, bool(_plug_float(node, "enabled", baseline_time)))
+                            for name, node in sorted(nodes_by_name.items())
+                        ],
+                    }
+                )
+        for frame in keyed_frames:
+            vmd_frame = _vmd_frame_number(frame, time_converter)
+            if vmd_frame < 0:
+                continue
+            frames.append(
+                {
+                    "frame_number": vmd_frame,
+                    "visible": True,
+                    "ik_states": [
+                        (name, bool(_plug_float(node, "enabled", frame)))
+                        for name, node in sorted(nodes_by_name.items())
+                    ],
+                }
+            )
+        return _deduplicate_frames(frames, ("frame_number",))
 
     def _control_rig_export_routes(
         self,
@@ -272,8 +325,10 @@ class VmdSceneCollector:
         blend_shapes: Sequence[str],
         start_frame: Optional[float] = None,
         end_frame: Optional[float] = None,
+        time_converter=None,
     ) -> list[dict]:
         """Collect keyed blendShape weight frames."""
+        time_converter = time_converter or _scene_maya_time_to_vmd_frame()
         frames = []
         for blend_shape in blend_shapes:
             for weight_index, morph_name in self._blendshape_morph_names(blend_shape).items():
@@ -287,20 +342,21 @@ class VmdSceneCollector:
                     frames.append(
                         {
                             "morph_name": morph_name,
-                            "frame_number": int(round(frame_number)),
+                            "frame_number": _vmd_frame_number(frame_number, time_converter),
                             "weight": _plug_float(blend_shape, attr, frame_number),
                         }
                     )
-        frames.sort(key=lambda item: (item["morph_name"], item["frame_number"]))
-        return frames
+        return _deduplicate_frames(frames, ("morph_name", "frame_number"))
 
     def collect_camera_frames(
         self,
         cameras: Sequence[str],
         start_frame: Optional[float] = None,
         end_frame: Optional[float] = None,
+        time_converter=None,
     ) -> list[dict]:
         """Collect keyed MMD camera controller frames."""
+        time_converter = time_converter or _scene_maya_time_to_vmd_frame()
         frames = []
         restore_time = None
         try:
@@ -382,7 +438,7 @@ class VmdSceneCollector:
                         perspective = int(round(_plug_float(camera, "mmd_camera_perspective", frame_number)))
                     frames.append(
                         {
-                            "frame_number": int(round(frame_number)),
+                            "frame_number": _vmd_frame_number(frame_number, time_converter),
                             "distance": distance,
                             "position": position,
                             "rotation": rotation,
@@ -401,8 +457,10 @@ class VmdSceneCollector:
         lights: Sequence[str],
         start_frame: Optional[float] = None,
         end_frame: Optional[float] = None,
+        time_converter=None,
     ) -> list[dict]:
         """Collect keyed MMD light controller frames."""
+        time_converter = time_converter or _scene_maya_time_to_vmd_frame()
         frames = []
         for light in lights:
             keyed_frames = _filter_frame_range(
@@ -413,7 +471,7 @@ class VmdSceneCollector:
             for frame_number in keyed_frames:
                 frames.append(
                     {
-                        "frame_number": int(round(frame_number)),
+                        "frame_number": _vmd_frame_number(frame_number, time_converter),
                         "color": tuple(_plug_float(light, attr, frame_number) for attr in _LIGHT_COLOR_ATTRS),
                         "position": _maya_light_rotation_to_vmd_direction(
                             _plug_float(light, "rotateX", frame_number),
@@ -557,6 +615,64 @@ def _query_current_time() -> Optional[float]:
         return float(cmds.currentTime(query=True))
     except Exception:
         return None
+
+
+def _scene_maya_fps() -> float:
+    """Return the current Maya UI FPS used to evaluate scene key times."""
+    try:
+        unit = cmds.currentUnit(query=True, time=True)
+    except Exception:
+        return 30.0
+    if isinstance(unit, (int, float)):
+        return float(unit) if float(unit) > 0.0 else 30.0
+    unit_name = str(unit).strip().lower()
+    fps = _MAYA_TIME_UNIT_FPS.get(unit_name)
+    if fps is not None:
+        return fps
+    if unit_name.endswith("fps"):
+        try:
+            parsed = float(unit_name[:-3])
+        except ValueError:
+            parsed = 0.0
+        if parsed > 0.0:
+            return parsed
+    return 30.0
+
+
+def _scene_maya_time_to_vmd_frame():
+    """Build a converter from current Maya time values to fixed-30fps VMD frames."""
+    fps = _scene_maya_fps()
+    return lambda maya_time: _maya_time_to_vmd_frame_at_fps(maya_time, fps)
+
+
+def _vmd_frame_number(maya_time: float, time_converter) -> int:
+    """Convert a Maya time to one integer VMD frame number."""
+    return int(round(float(time_converter(maya_time))))
+
+
+def _deduplicate_frames(frames: Iterable[dict], key_fields: Sequence[str]) -> list[dict]:
+    """Keep the first Maya sample for each VMD output key."""
+    unique = {}
+    for frame in frames:
+        key = tuple(frame[field] for field in key_fields)
+        unique.setdefault(key, frame)
+    return sorted(unique.values(), key=lambda item: tuple(item[field] for field in key_fields))
+
+
+def _ik_baseline_time(
+    start_frame: Optional[float],
+    end_frame: Optional[float],
+) -> Optional[float]:
+    """Return an in-range Maya time for an unkeyed IK baseline property."""
+    if start_frame is not None:
+        candidate = float(start_frame)
+    else:
+        candidate = 0.0
+    if candidate < 0.0:
+        return None
+    if end_frame is not None and candidate > float(end_frame):
+        return None
+    return candidate
 
 
 def _filter_frame_range(
