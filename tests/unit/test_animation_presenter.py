@@ -731,6 +731,63 @@ class TestBodyPickerPresenter(unittest.TestCase):
         self.assertEqual(view.status_label.text(), "頭")
         self.assertEqual(view.body_picker.selected_regions, ["head"])
 
+    def test_body_picker_targets_joint_when_control_rig_is_not_editing(self):
+        presenter, _view, _app_state, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        metadata = {
+            "state": "ATTACHED",
+            "controls": {"master": "master-control-uuid"},
+            "bindings": {"master": {"joint": "head_jnt"}},
+        }
+
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            return_value=metadata,
+        ):
+            for state in ("ATTACHED", "BAKED"):
+                metadata["state"] = state
+                presenter.on_body_region_clicked("head")
+                self.assertEqual(adapter.selected, ["head_jnt"])
+
+    def test_body_picker_targets_owned_control_only_in_edit(self):
+        presenter, _view, _app_state, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        metadata = {
+            "state": "EDIT",
+            "controls": {"master": "master-control-uuid"},
+            "bindings": {"master": {"joint": "head_jnt"}},
+        }
+
+        def resolve_node(node, **_kwargs):
+            return {
+                "head_jnt": ["|model|head_jnt"],
+                "master-control-uuid": ["|MMD_CONTROLS_GRP|master_ctrl"],
+            }.get(node, [node])
+
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            return_value=metadata,
+        ), patch("maya.cmds.ls", side_effect=resolve_node):
+            presenter.on_body_region_clicked("head")
+
+        self.assertEqual(adapter.selected, ["|MMD_CONTROLS_GRP|master_ctrl"])
+
+    def test_body_picker_falls_back_to_joint_for_missing_or_invalid_metadata(self):
+        presenter, _view, _app_state, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            side_effect=(None, {"state": "UNKNOWN"}),
+        ):
+            presenter.on_body_region_clicked("head")
+            self.assertEqual(adapter.selected, ["head_jnt"])
+            presenter.on_body_region_clicked("head")
+            self.assertEqual(adapter.selected, ["head_jnt"])
+
     def test_picker_tooltip_uses_english_metadata_outside_japanese(self):
         presenter, view, _, adapter = self._make_with_bones(
             bone_names={"head_jnt": "頭"},

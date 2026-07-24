@@ -374,10 +374,16 @@ class AnimationPresenter:
         try:
             from maya import cmds
 
-            from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
+            from ...core.mmd_control_rig_builder import (
+                CONTROL_RIG_EDIT,
+                read_mmd_control_rig_metadata,
+            )
 
             metadata = read_mmd_control_rig_metadata(root)
-            if not metadata:
+            # Controls are display-only in ATTACHED and have no live input
+            # connection after BAKED.  Selecting either state must therefore
+            # continue to target the joint; only EDIT owns the input channel.
+            if not metadata or metadata.get("state") != CONTROL_RIG_EDIT:
                 return joint
             target = (cmds.ls(joint, long=True) or [joint])[0]
             for role, binding in metadata.get("bindings", {}).items():
