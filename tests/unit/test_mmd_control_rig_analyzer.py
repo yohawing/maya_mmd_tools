@@ -17,6 +17,7 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
 )
 from mmd_tools.core.mmd_control_rig_builder import (
     _apply_fallback_role_aliases,
+    _control_curve_templates,
     _upgrade_binding_authority,
     _parent_zero_groups,
     _should_build_role_control,
@@ -58,6 +59,20 @@ class _HierarchyFake:
                 raise AssertionError(f"self-parent cycle: {child} -> {parent}")
             ancestor = self.parent_by_child[ancestor]
         self.parent_by_child[child] = parent
+
+
+class MmdControlRigCurveTemplateTest(unittest.TestCase):
+    """Validate the bundled artist-authored controller shape snapshot."""
+
+    def test_curve_library_has_mvp_roles_and_unwired_finger_shape(self):
+        templates = _control_curve_templates()
+
+        self.assertEqual(len(templates["center"]), 4)
+        self.assertEqual(len(templates["upper_body"]), 2)
+        self.assertIn("finger", templates)
+        self.assertNotIn("groove", templates)
+        self.assertTrue(all(shape["points"] for shapes in templates.values() for shape in shapes))
+        self.assertTrue(all(shape["knots"] for shapes in templates.values() for shape in shapes))
 
 
 class _UuidBindingFake:

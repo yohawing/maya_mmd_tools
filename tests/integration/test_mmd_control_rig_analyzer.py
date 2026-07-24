@@ -176,6 +176,16 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             self.assertTrue(cmds.listRelatives(control, shapes=True, type="nurbsCurve"), role)
             self.assertEqual(cmds.getAttr(f"{control}.translate")[0], (0.0, 0.0, 0.0))
             self.assertEqual(cmds.getAttr(f"{control}.rotate")[0], (0.0, 0.0, 0.0))
+        self.assertEqual(len(cmds.listRelatives(result.controls["center"], shapes=True) or []), 4)
+        self.assertEqual(len(cmds.listRelatives(result.controls["upper_body"], shapes=True) or []), 2)
+        self.assertEqual(
+            cmds.getAttr(f"{(cmds.listRelatives(result.controls['lower_body'], shapes=True) or [])[0]}.degree"),
+            3,
+        )
+        self.assertEqual(
+            cmds.getAttr(f"{(cmds.listRelatives(result.controls['groove'], shapes=True) or [])[0]}.degree"),
+            1,
+        )
         self.assertEqual(
             {
                 joint: tuple(cmds.getAttr(f"{joint}.worldMatrix[0]"))

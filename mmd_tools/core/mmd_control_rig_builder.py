@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import lru_cache
 import json
+from pathlib import Path
 import re
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -50,7 +52,7 @@ class MmdControlRigBuildResult:
     created: bool = True
 
 
-_ROLE_SHAPES = {
+_ROLE_FALLBACK_SHAPES = {
     "master": "circle",
     "center": "square",
     "groove": "diamond",
@@ -167,7 +169,7 @@ def build_mmd_control_rig(
                 control = _create_control_curve(
                     cmds,
                     f"{prefix}_{role}_CTRL",
-                    _ROLE_SHAPES[role],
+                    role,
                     scale,
                 )
                 created_roots.append(control)
@@ -351,7 +353,80 @@ def _resolve_owned_nodes(cmds, metadata: Mapping[str, Any]) -> Dict[str, str]:
     return resolved
 
 
-def _create_control_curve(cmds, name: str, shape: str, scale: float) -> str:
+@lru_cache(maxsize=1)
+def _control_curve_templates() -> Mapping[str, Tuple[Mapping[str, Any], ...]]:
+    """Load the artist-authored controller shape library bundled with the plug-in."""
+
+    path = Path(__file__).resolve().parents[1] / "config" / "mmd_control_rig_curve_shapes.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return {}
+    if payload.get("schema") != "mmd_tools.mmd_control_rig_curve_shapes" or payload.get("version") != 1:
+        return {}
+    templates = payload.get("templates")
+    if not isinstance(templates, dict):
+        return {}
+    return {
+        str(role): tuple(shape for shape in shapes if isinstance(shape, dict))
+        for role, shapes in templates.items()
+        if isinstance(shapes, list)
+    }
+
+
+def _create_control_curve(cmds, name: str, role: str, scale: float) -> str:
+    templates = _control_curve_templates().get(role, ())
+    if templates:
+        return _create_template_control_curve(cmds, name, templates, scale)
+    return _create_fallback_control_curve(cmds, name, _ROLE_FALLBACK_SHAPES[role], scale)
+
+
+def _create_template_control_curve(
+    cmds,
+    name: str,
+    templates: Tuple[Mapping[str, Any], ...],
+    scale: float,
+) -> str:
+    """Create one transform containing every NURBS shape in a role template."""
+
+    control = None
+    temporary = None
+    try:
+        for index, template in enumerate(templates):
+            points = template.get("points")
+            knots = template.get("knots")
+            degree = int(template.get("degree", 1))
+            if not isinstance(points, list) or not points:
+                raise MmdControlRigBuildError(f"invalid control curve template: {name}[{index}]")
+            scaled = [tuple(float(value) * scale for value in point) for point in points]
+            kwargs = {
+                "name": name if control is None else f"{name}_SHAPE_TMP",
+                "degree": degree,
+                "point": scaled,
+                "periodic": bool(template.get("periodic", False)),
+            }
+            if isinstance(knots, list) and knots:
+                kwargs["knot"] = [float(value) for value in knots]
+            created = str(cmds.curve(**kwargs))
+            if control is None:
+                control = created
+                continue
+            temporary = created
+            for shape in cmds.listRelatives(temporary, shapes=True, fullPath=True) or []:
+                cmds.parent(shape, control, shape=True, relative=True)
+            cmds.delete(temporary)
+            temporary = None
+        if control is None:
+            raise MmdControlRigBuildError(f"empty control curve template: {name}")
+        return str(control)
+    except Exception:
+        for node in (temporary, control):
+            if node and cmds.objExists(node):
+                cmds.delete(node)
+        raise
+
+
+def _create_fallback_control_curve(cmds, name: str, shape: str, scale: float) -> str:
     if shape == "circle":
         points = [
             (1.0, 0.0, 0.0),
