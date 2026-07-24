@@ -1,10 +1,11 @@
 """Maya PMX fixture gate for the checked-in ``yw_test_model`` asset.
 
 The gate verifies the manifest and parser census before exercising the
-production importer.  It then saves a Maya ASCII scene, reopens it in the
-same mayapy process, and checks the representative MMD rig/physics contracts
-again.  The script is intentionally deterministic and never regenerates the
-fixture or its textures.
+production importer.  It characterizes the imported root through the
+production HumanIK frontend, then saves a Maya ASCII scene, reopens it in the
+same mayapy process, and checks the representative MMD rig/physics/HumanIK
+contracts again.  The script is intentionally deterministic and never
+regenerates the fixture or its textures.
 """
 
 from __future__ import annotations
@@ -24,6 +25,14 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", default="tests/data/yw_test_model.fixture.json")
     parser.add_argument("--out", default="build/yw-test-model-fixture/maya-report.json")
     return parser.parse_args()
+
+
+class _ReportableGateError(AssertionError):
+    """Assertion carrying the partial report needed to diagnose a gate failure."""
+
+    def __init__(self, message: str, report: Mapping[str, Any]):
+        super().__init__(message)
+        self.report = dict(report)
 
 
 def _write_report(path: Path, report: Mapping[str, Any]) -> None:
@@ -145,6 +154,189 @@ def _assert_texture_resolution(files: Mapping[str, str], manifest: Mapping[str, 
     return {"referenced": [str(expected_path)], "non_ascii_reference": False}
 
 
+def _assert_humanik_assignment_contract(
+    assignments: Iterable[Any],
+    expected: Mapping[str, Any],
+    *,
+    missing_mmd_bones: Iterable[str] = (),
+    duplicate_assignment_count: int = 0,
+) -> Dict[str, Any]:
+    """Validate and summarize stable HumanIK assignment coverage facts."""
+    from mmd_tools.core.humanik_frontend import is_humanik_finger_assignment
+
+    resolved_assignments = tuple(assignments)
+    resolved_slots = sorted(str(assignment.hik_bone) for assignment in resolved_assignments)
+    required_slots = sorted(str(slot) for slot in expected["required_slots"])
+    missing_required_slots = sorted(set(required_slots) - set(resolved_slots))
+    finger_count = sum(is_humanik_finger_assignment(assignment) for assignment in resolved_assignments)
+    body_count = len(resolved_assignments) - finger_count
+    missing_mmd = tuple(str(name) for name in missing_mmd_bones)
+    duplicate_count = int(duplicate_assignment_count)
+    if len(resolved_assignments) != int(expected["assignment_count"]):
+        raise AssertionError(
+            "HumanIK assignment count mismatch: "
+            f"{len(resolved_assignments)} != {expected['assignment_count']}"
+        )
+    if body_count != int(expected["body_assignment_count"]):
+        raise AssertionError(
+            "HumanIK body assignment count mismatch: "
+            f"{body_count} != {expected['body_assignment_count']}"
+        )
+    if finger_count != int(expected["finger_assignment_count"]):
+        raise AssertionError(
+            "HumanIK finger assignment count mismatch: "
+            f"{finger_count} != {expected['finger_assignment_count']}"
+        )
+    if missing_required_slots:
+        raise AssertionError(f"HumanIK required slots are unresolved: {missing_required_slots}")
+    if missing_mmd or duplicate_count:
+        raise AssertionError(
+            "HumanIK assignment resolver reported gaps: "
+            f"missing={missing_mmd}, duplicates={duplicate_count}"
+        )
+    return {
+        "assignmentCount": len(resolved_assignments),
+        "bodyAssignmentCount": body_count,
+        "fingerAssignmentCount": finger_count,
+        "requiredSlots": required_slots,
+        "resolvedSlots": resolved_slots,
+        "missingRequiredSlots": missing_required_slots,
+        "missingMmdBones": list(missing_mmd),
+        "duplicateAssignmentCount": duplicate_count,
+    }
+
+
+def _maya_node_matches_assignment(actual_node: Any, expected_joint: str) -> bool:
+    """Match Maya's short/long ``hikGetSkNode`` spelling to an expected joint."""
+    if actual_node is None or not str(actual_node).strip():
+        return False
+    actual = str(actual_node)
+    expected = str(expected_joint)
+    return actual == expected or _leaf_name(actual) == _leaf_name(expected)
+
+
+def _humanik_slot_connections(character: str, assignments: Iterable[Any]) -> Dict[str, Any]:
+    """Compare every expected HIK slot with Maya's persisted skeleton readback."""
+    from mmd_tools.core.humanik_utils import maya_mel, mel_string
+
+    mel = maya_mel()
+    mismatches = []
+    matched = 0
+    resolved_assignments = tuple(assignments)
+    for assignment in resolved_assignments:
+        expected_joint = str(assignment.joint)
+        actual_node = None
+        error = None
+        try:
+            actual_node = mel.eval(
+                f"hikGetSkNode({mel_string(character)}, {int(assignment.hik_index)});"
+            )
+        except Exception as exc:  # pragma: no cover - Maya MEL error path
+            error = f"{type(exc).__name__}: {exc}"
+        if error is None and _maya_node_matches_assignment(actual_node, expected_joint):
+            matched += 1
+            continue
+        mismatch = {
+            "hikSlot": str(assignment.hik_bone),
+            "hikIndex": int(assignment.hik_index),
+            "expectedJoint": _leaf_name(expected_joint),
+            "actualJoint": _leaf_name(actual_node) if actual_node else "",
+            "reason": "readback_error" if error else "wrong_or_missing_connection",
+        }
+        if error:
+            mismatch["error"] = error
+        mismatches.append(mismatch)
+    return {
+        "compared": len(resolved_assignments),
+        "matched": matched,
+        "mismatchCount": len(mismatches),
+        "mismatches": mismatches,
+    }
+
+
+def _characterize_humanik(root: str, manifest: Mapping[str, Any]) -> Dict[str, Any]:
+    """Characterize ``root`` through the production HumanIK frontend.
+
+    The report intentionally contains only stable HIK slot facts.  Maya's
+    generated character and joint paths are useful diagnostics, but are not a
+    fixture contract and therefore are not persisted in the baseline.
+    """
+    from mmd_tools.core.humanik_builder import get_humanik_definition_lock_state
+    from mmd_tools.core.humanik_frontend import (
+        HumanIkFrontendSession,
+    )
+
+    expected = manifest["import"]["humanik"]
+    session = HumanIkFrontendSession()
+    binding = session.setup_and_characterize(root, profile=expected["profile"])
+    character = str(binding.character)
+    locked = bool(get_humanik_definition_lock_state(character))
+    if not locked:
+        raise AssertionError(f"HumanIK character did not lock: {character}")
+    if character and cmds.nodeType(character) != "HIKCharacterNode":
+        raise AssertionError(f"unexpected HumanIK character node type: {character}")
+    assignment_contract = _assert_humanik_assignment_contract(
+        binding.assignments,
+        expected,
+        missing_mmd_bones=binding.result.missing_mmd_bones,
+        duplicate_assignment_count=len(binding.result.duplicate_assignments),
+    )
+    return {
+        "status": "pass",
+        "characterExists": bool(cmds.objExists(character)),
+        "characterType": cmds.nodeType(character),
+        "locked": locked,
+        "profile": str(binding.profile),
+        **assignment_contract,
+    }
+
+
+def _humanik_reopen_contract(root: str, manifest: Mapping[str, Any]) -> Dict[str, Any]:
+    """Read back the persisted HumanIK character after scene reopen."""
+    from mmd_tools.core.humanik_builder import (
+        get_humanik_definition_lock_state,
+        resolve_scene_humanik_assignments,
+    )
+    from mmd_tools.core.humanik_retarget import find_humanik_character_for_model
+
+    expected = manifest["import"]["humanik"]
+    character = find_humanik_character_for_model(root)
+    if not character:
+        return {
+            "status": "not_persisted",
+            "persisted": False,
+            "reason": "no HIKCharacterNode remained associated with the reopened model root",
+            "slotConnections": {
+                "compared": 0,
+                "matched": 0,
+                "mismatchCount": 1,
+                "mismatches": [{"reason": "character_missing"}],
+            },
+        }
+    locked = bool(get_humanik_definition_lock_state(character))
+    result = resolve_scene_humanik_assignments(root)
+    assignment_contract = _assert_humanik_assignment_contract(
+        result.assignments,
+        expected,
+        missing_mmd_bones=result.missing_mmd_bones,
+        duplicate_assignment_count=len(result.duplicate_assignments),
+    )
+    slot_connections = _humanik_slot_connections(character, result.assignments)
+    persisted = (
+        locked
+        and slot_connections["mismatchCount"] == 0
+    )
+    return {
+        "status": "pass" if persisted else "mismatch",
+        "persisted": persisted,
+        "characterExists": bool(cmds.objExists(character)),
+        "characterType": cmds.nodeType(character),
+        "locked": locked,
+        **assignment_contract,
+        "slotConnections": slot_connections,
+    }
+
+
 def _run_gate(args: argparse.Namespace) -> Dict[str, Any]:
     manifest_path = Path(args.manifest).resolve()
     manifest = _load_manifest(manifest_path)
@@ -218,6 +410,7 @@ def _run_gate(args: argparse.Namespace) -> Dict[str, Any]:
     _assert_root_contract(root, manifest)
     zero_connections = _assert_connections()
     texture_resolution = _assert_texture_resolution(files, manifest)
+    humanik = _characterize_humanik(root, manifest)
 
     out_path = Path(args.out).resolve()
     scene_path = out_path.with_suffix(".ma")
@@ -232,11 +425,12 @@ def _run_gate(args: argparse.Namespace) -> Dict[str, Any]:
     _assert_root_contract(reopened_root, manifest)
     reopen_zero_connections = _assert_connections()
     reopen_texture_resolution = _assert_texture_resolution(files, manifest)
+    humanik_reopen = _humanik_reopen_contract(reopened_root, manifest)
     if set(_leaf_name(child) for child in (cmds.listRelatives(reopened_root, children=True, fullPath=True) or [])) != set(
         manifest["scene_reopen"]["required_root_children"]
     ):
         raise AssertionError("scene reopen lost a required root child")
-    return {
+    report = {
         "status": "pass",
         "fixture": manifest["name"],
         "manifest": str(manifest_path),
@@ -248,6 +442,7 @@ def _run_gate(args: argparse.Namespace) -> Dict[str, Any]:
             "census": import_census,
             "zero_connection_counts": zero_connections,
             "texture_resolution": texture_resolution,
+            "humanik": humanik,
         },
         "scene_reopen": {
             "scene": str(scene_path),
@@ -255,8 +450,17 @@ def _run_gate(args: argparse.Namespace) -> Dict[str, Any]:
             "census": reopen_census,
             "zero_connection_counts": reopen_zero_connections,
             "texture_resolution": reopen_texture_resolution,
+            "humanik": humanik_reopen,
         },
     }
+    if not humanik_reopen["persisted"]:
+        report["status"] = "fail"
+        raise _ReportableGateError(
+            "scene reopen did not preserve the HumanIK characterization contract: "
+            f"{humanik_reopen}",
+            report,
+        )
+    return report
 
 
 def main() -> int:
@@ -271,6 +475,8 @@ def main() -> int:
     try:
         report = _run_gate(args)
     except Exception as error:
+        if isinstance(error, _ReportableGateError):
+            report.update(error.report)
         report["error"] = f"{type(error).__name__}: {error}"
         return_code = 1
     else:

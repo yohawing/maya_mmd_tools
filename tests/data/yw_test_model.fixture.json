@@ -93,6 +93,24 @@
       "referenced": ["tex/diffuse.png"],
       "non_ascii_reference": false
     },
+    "humanik": {
+      "profile": "full",
+      "assignment_count": 55,
+      "body_assignment_count": 25,
+      "finger_assignment_count": 30,
+      "required_slots": [
+        "Hips",
+        "Spine",
+        "Neck",
+        "Head",
+        "LeftUpLeg",
+        "RightUpLeg",
+        "LeftArm",
+        "RightArm",
+        "LeftHand",
+        "RightHand"
+      ]
+    },
     "contract": {
       "all_descriptor_nodes_have_connections": true,
       "root_metadata": ["mmd_model_name", "mmd_model_name_en", "mmd_comment", "mmd_comment_en"],

@@ -39,6 +39,13 @@ class TestRegisteredFixtureManifest(unittest.TestCase):
             Path(provider.get_verified_pmx_file()).name,
             "yw_test_model.pmx",
         )
+        humanik = verified["manifest"]["import"]["humanik"]
+        self.assertEqual(humanik["profile"], "full")
+        self.assertEqual(humanik["assignment_count"], 55)
+        self.assertEqual(humanik["body_assignment_count"], 25)
+        self.assertEqual(humanik["finger_assignment_count"], 30)
+        self.assertIn("Hips", humanik["required_slots"])
+        self.assertIn("LeftHand", humanik["required_slots"])
 
     def test_manifest_hash_mismatch_is_an_error(self):
         with tempfile.TemporaryDirectory() as data_dir:
