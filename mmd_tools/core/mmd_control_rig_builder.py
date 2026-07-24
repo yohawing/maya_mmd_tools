@@ -71,6 +71,10 @@ _ROLE_FALLBACK_SHAPES = {
     "right_arm": "circle",
     "right_elbow": "circle",
     "right_wrist": "circle",
+    "left_leg": "circle",
+    "left_knee": "diamond",
+    "right_leg": "circle",
+    "right_knee": "diamond",
 }
 _ROLE_COLORS = {
     "master": 17,
@@ -91,6 +95,10 @@ _ROLE_COLORS = {
     "right_arm": 13,
     "right_elbow": 13,
     "right_wrist": 13,
+    "left_leg": 6,
+    "left_knee": 6,
+    "right_leg": 13,
+    "right_knee": 13,
 }
 
 _ROLE_PARENTS = {
@@ -111,6 +119,10 @@ _ROLE_PARENTS = {
     "right_arm": "right_shoulder",
     "right_elbow": "right_arm",
     "right_wrist": "right_elbow",
+    "left_leg": "groove",
+    "left_knee": "left_leg",
+    "right_leg": "groove",
+    "right_knee": "right_leg",
 }
 
 
@@ -537,7 +549,7 @@ def _binding_metadata(
 def _authored_plug_refs(cmds, plugs) -> List[Dict[str, str]]:
     refs = []
     for plug in plugs:
-        node, attribute = str(plug).rsplit(".", 1)
+        node, attribute = str(plug).split(".", 1)
         refs.append(
             {
                 "nodeUuid": _node_uuid(cmds, node),

@@ -24,6 +24,7 @@ from mmd_tools.core.mmd_control_rig_motion import (
 from mmd_tools.core.mmd_control_rig_analyzer import (
     INPUT_APPEND_BASE,
     INPUT_IK_CONTROLLER,
+    INPUT_IK_LINK_INPUT,
     INPUT_SOLVER_OUTPUT,
     STATUS_READY,
     analyze_mmd_control_rig,
@@ -168,7 +169,17 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
 
         self.assertTrue(result.created)
         self.assertTrue(
-            {"master", "center", "groove", "left_foot_ik", "right_foot_ik"}
+            {
+                "master",
+                "center",
+                "groove",
+                "left_foot_ik",
+                "right_foot_ik",
+                "left_leg",
+                "left_knee",
+                "right_leg",
+                "right_knee",
+            }
             .issubset(result.controls)
         )
         self.assertFalse(cmds.listRelatives(result.control_group, parent=True))
@@ -221,6 +232,48 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             )
         )
         self.assertFalse(remove_mmd_control_rig(reopened_root))
+
+
+    def test_leg_controls_own_pre_solver_thigh_and_knee_rotation(self):
+        root = self._import_fixture()
+        spec = analyze_mmd_control_rig(root)
+        left_role = spec.roles_by_name["left_leg"]
+        knee_role = spec.roles_by_name["left_knee"]
+
+        self.assertEqual(left_role.status, STATUS_READY)
+        self.assertEqual(left_role.binding.input_kind, INPUT_IK_LINK_INPUT)
+        self.assertEqual(len(left_role.binding.authored_plugs), 3)
+        self.assertEqual(knee_role.status, STATUS_READY)
+        self.assertEqual(knee_role.binding.input_kind, INPUT_IK_LINK_INPUT)
+
+        rig = build_mmd_control_rig(root)
+        metadata = enter_mmd_control_rig_edit(root)
+        control = rig.controls["left_leg"]
+        target_x = metadata["bindings"]["left_leg"]["authoredPlugs"][0]
+        solver = target_x.split(".", 1)[0]
+        thigh = left_role.binding.joint
+        knee_joint = knee_role.binding.joint
+
+        control_source = (cmds.listConnections(target_x, source=True, destination=False, plugs=True) or [""])[0]
+        self.assertEqual(control_source.rsplit(".", 1)[-1], "rotateX")
+        self.assertEqual(cmds.ls(control_source.split(".", 1)[0], long=True)[0], control)
+        self.assertTrue(
+            (cmds.listConnections(f"{thigh}.rotate", source=True, destination=False, plugs=True) or [""])[0]
+            .startswith(f"{solver}.outputRotate[")
+        )
+
+        goal_before = tuple(cmds.getAttr(f"{solver}.goalWorldMatrix"))
+        knee_before = tuple(cmds.getAttr(f"{knee_joint}.worldMatrix[0]"))
+        cmds.setAttr(f"{control}.rotateX", 7.5)
+        self.assertAlmostEqual(cmds.getAttr(target_x), 7.5, places=6)
+        goal_after = tuple(cmds.getAttr(f"{solver}.goalWorldMatrix"))
+        knee_after = tuple(cmds.getAttr(f"{knee_joint}.worldMatrix[0]"))
+        self.assertLess(max(abs(a - b) for a, b in zip(goal_before, goal_after)), 1.0e-9)
+        self.assertGreater(max(abs(a - b) for a, b in zip(knee_before, knee_after)), 1.0e-4)
+        baked = bake_mmd_control_rig(root)
+        self.assertEqual(baked["state"], "BAKED")
+        self.assertFalse(cmds.listConnections(target_x, source=True, destination=False, plugs=True) or [])
+        self.assertAlmostEqual(cmds.getAttr(target_x), 7.5, places=6)
 
     def test_existing_vmd_edit_and_bake_preserve_world_and_anim_curves(self):
         root = self._import_fixture()

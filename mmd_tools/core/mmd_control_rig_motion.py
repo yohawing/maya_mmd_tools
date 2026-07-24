@@ -287,6 +287,8 @@ def _control_channel_for_target(target: str) -> str:
         return f"rotate{channel[-1]}"
     if channel.startswith("baseTranslate") and channel[-1:] in "XYZ":
         return f"translate{channel[-1]}"
+    if channel.startswith("inputRotateElement") and channel[-1:] in "XYZ":
+        return f"rotate{channel[-1]}"
     return channel
 
 

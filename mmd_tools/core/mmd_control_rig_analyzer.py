@@ -9,6 +9,8 @@ connections, or claims solver-owned output channels as controller inputs.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from mmd_tools.core.constants import (
@@ -29,6 +31,7 @@ CONTROL_RIG_SPEC_VERSION = 1
 INPUT_DIRECT_CHANNEL = "direct_channel"
 INPUT_APPEND_BASE = "append_base"
 INPUT_IK_CONTROLLER = "ik_controller"
+INPUT_IK_LINK_INPUT = "ik_link_input"
 INPUT_SOLVER_OUTPUT = "solver_output"
 INPUT_UNSUPPORTED = "unsupported"
 
@@ -82,6 +85,7 @@ class MmdControlRigBoneFact:
     pmx_flags: int = 0
     incoming: Tuple[MmdControlRigConnectionFact, ...] = ()
     ik_solvers: Tuple[str, ...] = ()
+    solver_input_plugs: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -197,6 +201,7 @@ class _RoleDefinition:
     fallback_role: Optional[str] = None
     fallback_model_root: bool = False
     requires_ik_solver: bool = False
+    uses_solver_input: bool = False
 
 
 _MVP_ROLE_DEFINITIONS = (
@@ -222,6 +227,10 @@ _OPTIONAL_FK_ROLE_DEFINITIONS = (
     _RoleDefinition("right_arm", ("右腕",)),
     _RoleDefinition("right_elbow", ("右ひじ", "右肘")),
     _RoleDefinition("right_wrist", ("右手首",)),
+    _RoleDefinition("left_leg", ("左足",), uses_solver_input=True),
+    _RoleDefinition("left_knee", ("左ひざ", "左膝"), uses_solver_input=True),
+    _RoleDefinition("right_leg", ("右足",), uses_solver_input=True),
+    _RoleDefinition("right_knee", ("右ひざ", "右膝"), uses_solver_input=True),
 )
 
 
@@ -336,6 +345,7 @@ def analyze_mmd_control_rig(model_root: str, cmds_module=None) -> MmdControlRigS
                     (),
                 )
             ),
+            solver_input_plugs=_solver_input_rotate_plugs(cmds, row["incoming"]),
         )
         for row in bone_rows
     ]
@@ -535,6 +545,25 @@ def _resolve_role(
     binding = bindings_by_joint[winner.joint]
     warnings = []
     blockers = list(binding.blockers)
+    if definition.uses_solver_input:
+        if winner.solver_input_plugs:
+            binding = MmdControlRigBoneBinding(
+                joint=winner.joint,
+                mmd_name=winner.mmd_name,
+                bone_index=winner.bone_index,
+                pmx_flags=winner.pmx_flags,
+                input_kind=INPUT_IK_LINK_INPUT,
+                authored_plugs=winner.solver_input_plugs,
+                ik_solvers=tuple(
+                    sorted({plug.split(".", 1)[0] for plug in winner.solver_input_plugs})
+                ),
+                incoming=winner.incoming,
+            )
+            blockers = []
+        else:
+            blockers.append(
+                f"{definition.role}: MMD IK link has no solver pre-rotation input"
+            )
     if len(candidates) > 1:
         duplicates = ", ".join(candidate.joint for candidate in candidates[1:])
         warnings.append(
@@ -552,6 +581,39 @@ def _resolve_role(
         warnings=tuple(warnings),
         blockers=tuple(_unique_sorted(blockers)),
     )
+
+
+def _solver_input_rotate_plugs(
+    cmds,
+    incoming: Iterable[MmdControlRigConnectionFact],
+) -> Tuple[str, ...]:
+    """Resolve an IK link's writable pre-solver rotation children."""
+
+    plugs = []
+    for row in incoming:
+        if row.source_node_type != "mmdCcdIk" or ".outputRotate[" not in row.source_plug:
+            continue
+        node, attribute = row.source_plug.split(".", 1)
+        match = re.search(r"outputRotate\[(\d+)\]", attribute)
+        if match is None:
+            continue
+        try:
+            chain = json.loads(cmds.getAttr(f"{node}.chainJson") or "{}")
+            links = chain.get("links") or []
+            link_index = int(match.group(1))
+            slot = int(links[link_index].get("bone_slot", link_index))
+        except (
+            AttributeError,
+            IndexError,
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ):
+            continue
+        base = f"{node}.inputRotate[{slot}]"
+        plugs.extend(f"{base}.inputRotateElement{axis}" for axis in "XYZ")
+    return tuple(_unique_sorted(plugs))
 
 
 def _collect_incoming_connections(cmds, joint: str) -> Tuple[MmdControlRigConnectionFact, ...]:

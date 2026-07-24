@@ -6,6 +6,7 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
     INPUT_APPEND_BASE,
     INPUT_DIRECT_CHANNEL,
     INPUT_IK_CONTROLLER,
+    INPUT_IK_LINK_INPUT,
     INPUT_SOLVER_OUTPUT,
     INPUT_UNSUPPORTED,
     STATUS_BLOCKED,
@@ -28,7 +29,7 @@ from mmd_tools.core.mmd_control_rig_builder import (
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
 
-def _bone(index, name, *, pmx_flags=0, incoming=(), ik_solvers=()):
+def _bone(index, name, *, pmx_flags=0, incoming=(), ik_solvers=(), solver_input_plugs=()):
     return MmdControlRigBoneFact(
         joint=f"|model|bone_{index}",
         mmd_name=name,
@@ -36,6 +37,7 @@ def _bone(index, name, *, pmx_flags=0, incoming=(), ik_solvers=()):
         pmx_flags=pmx_flags,
         incoming=tuple(incoming),
         ik_solvers=tuple(ik_solvers),
+        solver_input_plugs=tuple(solver_input_plugs),
     )
 
 
@@ -70,6 +72,10 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
         self.assertEqual(len(templates["center"]), 4)
         self.assertEqual(len(templates["upper_body"]), 2)
         self.assertIn("finger", templates)
+        self.assertEqual(len(templates["left_leg"]), 1)
+        self.assertEqual(len(templates["left_knee"]), 1)
+        self.assertEqual(len(templates["right_leg"]), 1)
+        self.assertEqual(len(templates["right_knee"]), 1)
         self.assertNotIn("groove", templates)
         self.assertTrue(all(shape["points"] for shapes in templates.values() for shape in shapes))
         self.assertTrue(all(shape["knots"] for shapes in templates.values() for shape in shapes))
@@ -321,6 +327,33 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
         self.assertEqual(by_name["髪1"].input_kind, INPUT_UNSUPPORTED)
         self.assertEqual(by_name["補助"].input_kind, INPUT_UNSUPPORTED)
         self.assertTrue(all(binding.blocked for binding in by_name.values()))
+
+    def test_thigh_role_uses_pre_solver_input_without_claiming_solver_output(self):
+        thigh = _bone(
+            0,
+            "左足",
+            incoming=(
+                _connection(
+                    "left_leg_ik_mmdCcdIk.outputRotate[1]",
+                    "|model|bone_0.rotate",
+                    "mmdCcdIk",
+                ),
+            ),
+            solver_input_plugs=tuple(
+                f"left_leg_ik_mmdCcdIk.inputRotate[7].inputRotateElement{axis}"
+                for axis in "XYZ"
+            ),
+        )
+
+        spec = classify_mmd_control_rig("|model", [thigh])
+        role = spec.roles_by_name["left_leg"]
+        bone = next(binding for binding in spec.bones if binding.mmd_name == "左足")
+
+        self.assertEqual(bone.input_kind, INPUT_SOLVER_OUTPUT)
+        self.assertTrue(bone.blocked)
+        self.assertEqual(role.status, STATUS_READY)
+        self.assertEqual(role.binding.input_kind, INPUT_IK_LINK_INPUT)
+        self.assertEqual(role.binding.authored_plugs, thigh.solver_input_plugs)
 
     def test_animation_stack_remains_a_direct_authored_channel(self):
         center = _bone(
