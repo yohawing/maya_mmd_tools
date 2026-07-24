@@ -417,6 +417,11 @@ class SettingsPresenter:
         main_window = self.view.window()
         if hasattr(main_window, "retranslate_all_tabs"):
             main_window.retranslate_all_tabs()
+        from ..qt_compat import QApplication
+
+        for widget in QApplication.topLevelWidgets():
+            if widget is not main_window and hasattr(widget, "retranslateUi"):
+                widget.retranslateUi()
         self.refresh_command_port_status()
 
         # ステータスメッセージ

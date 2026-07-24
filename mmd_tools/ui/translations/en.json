@@ -1,4 +1,7 @@
 {
+  "animation_toolset": {
+    "window_title": "Animator Toolset", "refresh": "Refresh", "body": "Body", "finger": "Finger", "morph": "Morph", "display": "Display", "back_to_body": "Back to Body", "back_to_body_tooltip": "Return to the body picker", "select_all": "Select All", "select_all_tooltip": "Select every bone in the current MMD model", "clear": "Clear", "visibility": "Visibility", "mesh": "Mesh", "joints": "Joints", "colliders": "Colliders", "tools": "Tools", "copy": "Copy", "paste": "Paste", "mirror": "Mirror", "reset": "Rest Pose", "return_to_motion": "Return to Motion", "clean": "Clean", "bake": "Bake", "rest_pose_tooltip": "Display model Rest Pose", "return_to_motion_tooltip": "Return to Motion", "category_brow": "Brow Morphs", "category_eye": "Eye Morphs", "category_mouth": "Mouth Morphs", "category_other": "Uncategorized (PMX: Other)"
+  },
   "tabs": {
     "file_io": "File I/O",
     "info": "Info",

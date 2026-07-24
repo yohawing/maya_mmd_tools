@@ -7,6 +7,7 @@ from .qt_compat import QVBoxLayout, QWidget, Qt, wrapInstance
 from .application_state import ApplicationState
 from .tabs.animation_tab import AnimationTab
 from .presenters.animation_presenter import AnimationPresenter
+from .translations import UITranslator
 
 
 def _raise_workspace_control(name: str) -> None:
@@ -35,7 +36,7 @@ class AnimatorToolsetWindow(QWidget):
 
         super().__init__(parent)
         self.setObjectName(self.WINDOW_NAME)
-        self.setWindowTitle("Animator Toolset")
+        self.retranslateUi()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -48,6 +49,13 @@ class AnimatorToolsetWindow(QWidget):
         layout.addWidget(self.animation_tab)
 
         self.app_state.refresh_model_list()
+
+    def retranslateUi(self):
+        """Translate standalone window chrome and its tab in place."""
+        translator = UITranslator.instance()
+        self.setWindowTitle(translator.translate("window_title", "animation_toolset"))
+        if hasattr(self, "animation_tab"):
+            self.animation_tab.retranslateUi()
 
     def show_window(self, dockable=True):
         """Show as a dockable Maya panel or a floating window."""
@@ -64,7 +72,7 @@ class AnimatorToolsetWindow(QWidget):
 
             cmds.workspaceControl(
                 ws,
-                label="Animator Toolset",
+                label=self.windowTitle(),
                 initialWidth=420,
                 initialHeight=700,
                 widthProperty="preferred",

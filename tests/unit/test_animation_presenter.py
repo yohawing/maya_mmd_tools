@@ -286,6 +286,9 @@ class _FakeView:
             for k in ("copy", "paste", "mirror", "reset", "clean", "bake")
         }
 
+    def tr(self, key, _category=None):
+        return key
+
 
 class _FakeAppState:
     def __init__(self, model_root=None):

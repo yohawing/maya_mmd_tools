@@ -168,7 +168,29 @@ class AnimationTab(BaseTab):
 
         self.tools_group.setLayout(tools_layout)
         main_layout.addWidget(self.tools_group)
+        self.retranslateUi()
 
     def _set_visibility_expanded(self, expanded: bool) -> None:
         self.visibility_content.setVisible(expanded)
-        self.visibility_toggle.setText("Visibility  ▾" if expanded else "Visibility  ▸")
+        label = self.tr("visibility", "animation_toolset")
+        self.visibility_toggle.setText(f"{label}  {'▾' if expanded else '▸'}")
+
+    def retranslateUi(self):
+        """Update static Animator Toolset text without rebuilding picker state."""
+        tr = lambda key: self.tr(key, "animation_toolset")
+        self.refresh_btn.setText(tr("refresh"))
+        for index, key in enumerate(("body", "finger", "morph", "display")):
+            self.picker_tabs.setTabText(index, tr(key))
+        self.finger_body_btn.setText(f"‹  {tr('back_to_body')}")
+        self.finger_body_btn.setToolTip(tr("back_to_body_tooltip"))
+        self.select_all_btn.setText(tr("select_all"))
+        self.select_all_btn.setToolTip(tr("select_all_tooltip"))
+        self.clear_btn.setText(tr("clear"))
+        self.visibility_toggle.setText(
+            f"{tr('visibility')}  {'▾' if self.visibility_toggle.isChecked() else '▸'}"
+        )
+        for key in ("mesh", "joints", "colliders"):
+            self.vis_checkboxes[key].setText(tr(key))
+        self.tools_group.setTitle(tr("tools"))
+        for key, button in self.tool_buttons.items():
+            button.setText(tr(key))

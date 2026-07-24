@@ -22,7 +22,6 @@ from ...core.morph_metadata_reader import (
     categorize_morphs,
     parse_blendshape_morph_entries,
     morph_info_from_presenter_entry,
-    PANEL_GROUP_LABELS,
 )
 from ...core.visibility_state import (
     get_visibility_category,
@@ -680,10 +679,10 @@ class AnimationPresenter:
 
         layout = self.view.morph_groups_layout
         categories = [
-            (f"{PANEL_GROUP_LABELS[1]}モーフ", categorized.eyebrow),
-            (f"{PANEL_GROUP_LABELS[2]}モーフ", categorized.eye),
-            (f"{PANEL_GROUP_LABELS[3]}モーフ", categorized.mouth),
-            ("未分類（PMX: その他）", categorized.other),
+            (self.view.tr("category_brow", "animation_toolset"), categorized.eyebrow),
+            (self.view.tr("category_eye", "animation_toolset"), categorized.eye),
+            (self.view.tr("category_mouth", "animation_toolset"), categorized.mouth),
+            (self.view.tr("category_other", "animation_toolset"), categorized.other),
         ]
 
         for cat_name, morphs in categories:
@@ -997,7 +996,8 @@ class AnimationPresenter:
         """Synchronize Animation Toolset controls with the shared session."""
         reset_button = self.view.tool_buttons.get("reset")
         if reset_button is not None and hasattr(reset_button, "setText"):
-            reset_button.setText("Return to Motion" if result.active else "Rest Pose")
+            key = "return_to_motion" if result.active else "reset"
+            reset_button.setText(self.view.tr(key, "animation_toolset"))
         if hasattr(self.view.picker_tabs, "setEnabled"):
             self.view.picker_tabs.setEnabled(not result.active)
         for key, button in self.view.tool_buttons.items():
@@ -1005,7 +1005,10 @@ class AnimationPresenter:
                 button.setEnabled(not result.active)
         if hasattr(self.view.body_picker, "setToolTip"):
             self.view.body_picker.setToolTip(
-                "Return to Motion" if result.active else "Display model Rest Pose"
+                self.view.tr(
+                    "return_to_motion_tooltip" if result.active else "rest_pose_tooltip",
+                    "animation_toolset",
+                )
             )
 
     def _on_mirror_pose(self):

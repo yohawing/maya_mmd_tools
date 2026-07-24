@@ -1,4 +1,7 @@
 {
+  "animation_toolset": {
+    "window_title": "アニメーターツールセット", "refresh": "更新", "body": "ボディ", "finger": "指", "morph": "モーフ", "display": "表示枠", "back_to_body": "ボディへ戻る", "back_to_body_tooltip": "全身ピッカーへ戻る", "select_all": "すべて選択", "select_all_tooltip": "現在のMMDモデルの全ボーンを選択", "clear": "クリア", "visibility": "表示", "mesh": "メッシュ", "joints": "ボーン", "colliders": "コライダー", "tools": "ツール", "copy": "コピー", "paste": "貼り付け", "mirror": "ミラー", "reset": "レストポーズ", "return_to_motion": "モーションへ戻る", "clean": "整理", "bake": "ベイク", "rest_pose_tooltip": "モデルをレストポーズ表示", "return_to_motion_tooltip": "モーション表示へ戻る", "category_brow": "眉モーフ", "category_eye": "目モーフ", "category_mouth": "口モーフ", "category_other": "未分類（PMX: その他）"
+  },
   "tabs": {
     "file_io": "ファイルI/O",
     "info": "情報",
