@@ -512,21 +512,10 @@ class BoneConverter:
         )[0]
         self._add_profile_time("skin_cluster_create_sec", skin_cluster_create_start)
 
-        # Preserve user normals on every MMD deformer.  Only meshes with a
-        # locked authored-vs-geometric difference need the per-deformer GPU
-        # block; the default remains unchanged for ordinary geometric normals.
-        for attribute, value in (("deformUserNormals", True),):
-            if not cmds.attributeQuery(attribute, node=skin_cluster, exists=True):
-                continue
-            try:
-                cmds.setAttr(f"{skin_cluster}.{attribute}", value)
-            except (RuntimeError, TypeError, ValueError):
-                self.logger.warning("Failed to set %s on skinCluster '%s'", attribute, skin_cluster, exc_info=True)
-        if has_authored_normal_difference and cmds.attributeQuery("blockGPU", node=skin_cluster, exists=True):
-            try:
-                cmds.setAttr(f"{skin_cluster}.blockGPU", True)
-            except (RuntimeError, TypeError, ValueError):
-                self.logger.warning("Failed to set blockGPU on skinCluster '%s'", skin_cluster, exc_info=True)
+        maya_mesh_utils.configure_authored_normal_skin_policy(
+            skin_cluster,
+            has_authored_normal_difference,
+        )
 
         return skin_cluster
 

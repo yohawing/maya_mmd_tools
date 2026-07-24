@@ -413,9 +413,13 @@ class TestFastSkeletonSkin(unittest.TestCase):
 
         cmds = self._make_cmds_mock()
 
-        _apply_fast_skeleton_skin(
-            "model.pmx", "mesh1", "root1", "my_model", cmds
-        )
+        with patch(
+            "mmd_tools.io.cpp_fast_importer.maya_mesh_utils.has_materially_different_authored_normals",
+            return_value=False,
+        ) as mock_normal_difference:
+            _apply_fast_skeleton_skin(
+                "model.pmx", "mesh1", "root1", "my_model", cmds
+            )
 
         # ---- assertions ----
         # Skeleton group created
@@ -443,6 +447,15 @@ class TestFastSkeletonSkin(unittest.TestCase):
         joints_arg = skin_call[0][0]
         self.assertEqual(len(joints_arg), 2)
 
+        mock_normal_difference.assert_called_once_with("mesh1")
+        cmds.setAttr.assert_any_call("skinCluster1.deformUserNormals", True)
+        self.assertFalse(
+            any(
+                call.args == ("skinCluster1.blockGPU", True)
+                for call in cmds.setAttr.call_args_list
+            )
+        )
+
         # segmentScaleCompensate set to False on both
         ssc_calls = [c for c in cmds.setAttr.call_args_list
                      if "segmentScaleCompensate" in str(c)]
@@ -455,6 +468,35 @@ class TestFastSkeletonSkin(unittest.TestCase):
                 [1.0, 0.0],
             ],
         )
+
+    def test_skeleton_skin_blocks_gpu_for_authored_normal_difference(self):
+        """Only a materially different authored normal opts the deformer out of GPU."""
+        metadata_json = json.dumps({
+            "bones": [{
+                "name": "center",
+                "englishName": "center",
+                "parentIndex": -1,
+                "position": [0.0, 0.0, 0.0],
+            }]
+        })
+        mock_parsed = MagicMock()
+        mock_parsed.metadata_json = metadata_json
+        mock_parsed.skin_indices = [(0, 0, 0, 0)]
+        mock_parsed.skin_weights = [(1.0, 0.0, 0.0, 0.0)]
+        self.mock_parsed_cls.from_pmx_bytes.return_value = mock_parsed
+
+        cmds = self._make_cmds_mock()
+        with patch(
+            "mmd_tools.io.cpp_fast_importer.maya_mesh_utils.has_materially_different_authored_normals",
+            return_value=True,
+        ) as mock_normal_difference:
+            _apply_fast_skeleton_skin(
+                "model.pmx", "mesh1", "root1", "my_model", cmds
+            )
+
+        mock_normal_difference.assert_called_once_with("mesh1")
+        cmds.setAttr.assert_any_call("skinCluster1.deformUserNormals", True)
+        cmds.setAttr.assert_any_call("skinCluster1.blockGPU", True)
 
     def test_basic_materials_returns_header_metadata_from_single_parsed_model(self):
         """Root metadata reuses the parsed-model JSON instead of reparsing PMX."""

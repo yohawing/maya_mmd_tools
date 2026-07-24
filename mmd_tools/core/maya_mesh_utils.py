@@ -7,7 +7,10 @@ from maya.api import OpenMaya as om
 from maya.api import OpenMayaAnim as oma
 
 from mmd_tools.core import settings_keys as setting_keys
+from mmd_tools.core.logger import get_logger
 from mmd_tools.core.settings import settings
+
+logger = get_logger(__name__)
 
 
 # A dot product below this bound represents a meaningful authored-vs-geometric
@@ -97,6 +100,38 @@ def has_materially_different_authored_normals(mesh_node):
         return False
     except (RuntimeError, TypeError, ValueError, IndexError, AttributeError):
         return False
+
+
+def configure_authored_normal_skin_policy(
+    skin_cluster,
+    has_authored_normal_difference,
+    cmds_module=None,
+):
+    """Preserve authored normals and selectively opt a skinCluster out of GPU.
+
+    Args:
+        skin_cluster: Maya skinCluster node name.
+        has_authored_normal_difference: Whether locked authored normals differ
+            materially from the mesh's geometric normals.
+        cmds_module: Optional maya.cmds-compatible adapter used by tests.
+    """
+    maya_cmds = cmds if cmds_module is None else cmds_module
+    attributes = [("deformUserNormals", True)]
+    if has_authored_normal_difference:
+        attributes.append(("blockGPU", True))
+
+    for attribute, value in attributes:
+        if not maya_cmds.attributeQuery(attribute, node=skin_cluster, exists=True):
+            continue
+        try:
+            maya_cmds.setAttr(f"{skin_cluster}.{attribute}", value)
+        except (RuntimeError, TypeError, ValueError):
+            logger.warning(
+                "Failed to set %s on skinCluster '%s'",
+                attribute,
+                skin_cluster,
+                exc_info=True,
+            )
 
 
 def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_uv_connects, normals=None):

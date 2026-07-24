@@ -801,6 +801,12 @@ def _apply_fast_skeleton_skin(
         logger.debug("No valid joints for skinCluster; skipping")
         return
 
+    # Evaluate authored-normal state before creating the deformer so Maya's
+    # skinCluster initialization cannot alter the predicate's mesh snapshot.
+    has_authored_normal_difference = maya_mesh_utils.has_materially_different_authored_normals(
+        mesh_node
+    )
+
     skin_cluster = cmds_module.skinCluster(
         existing_joints,
         mesh_node,
@@ -809,6 +815,12 @@ def _apply_fast_skeleton_skin(
         maximumInfluences=4,
         name=f"{base_name}_skinCluster_fast",
     )[0]
+
+    maya_mesh_utils.configure_authored_normal_skin_policy(
+        skin_cluster,
+        has_authored_normal_difference,
+        cmds_module=cmds_module,
+    )
 
     # ---- apply vertex weights ----
     n_verts = len(skin_indices)

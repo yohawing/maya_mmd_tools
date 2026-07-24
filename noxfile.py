@@ -1522,7 +1522,7 @@ def ccdik_cache_smoke(session: nox.Session) -> None:
 
 @nox.session(venv_backend="none")
 def fast_load_normals_smoke(session: nox.Session) -> None:
-    """Verify authored normals and lock state in both mmdFastLoad paths."""
+    """Verify authored normals in mmdFastLoad and its skinned import path."""
     version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
     mayapy = _mayapy(version)
@@ -1544,6 +1544,12 @@ def fast_load_normals_smoke(session: nox.Session) -> None:
     session.run(
         str(mayapy),
         _mayapy_script(mayapy, "tests/cpp/focused_fast_load_normals.py"),
+        env=env,
+        external=True,
+    )
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/cpp/focused_fast_importer_skin.py"),
         env=env,
         external=True,
     )
