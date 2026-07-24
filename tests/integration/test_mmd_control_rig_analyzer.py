@@ -2,10 +2,18 @@
 
 import os
 from pathlib import Path
+from unittest import mock
 
 from maya import cmds
 
 from mmd_tools.core import settings
+from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX, ATTR_MMD_CONTROL_RIG_JSON
+from mmd_tools.core.mmd_control_rig_builder import (
+    MmdControlRigBuildError,
+    build_mmd_control_rig,
+    read_mmd_control_rig_metadata,
+    remove_mmd_control_rig,
+)
 from mmd_tools.core.mmd_control_rig_analyzer import (
     INPUT_IK_CONTROLLER,
     INPUT_SOLVER_OUTPUT,
@@ -34,11 +42,12 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         )
         os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "1"
         root = Path(__file__).resolve().parents[2]
-        cpp_plugin = root / "plug-ins" / "2024" / "Debug" / "mmd_tools_cpp.mll"
+        maya_version = str(cmds.about(version=True)).split(".", 1)[0]
+        cpp_plugin = root / "plug-ins" / maya_version / "Debug" / "mmd_tools_cpp.mll"
         if not cpp_plugin.exists():
             raise RuntimeError(
-                "Maya 2024 Debug C++ plugin is required; run "
-                "'uvx nox -s cpp_build -- --maya 2024 --config Debug'"
+                f"Maya {maya_version} Debug C++ plugin is required; run "
+                f"'uvx nox -s cpp_build -- --maya {maya_version} --config Debug'"
             )
         python_plugin = root / "mmd_tools" / "plugin_main.py"
         owned_plugins = []
@@ -79,16 +88,19 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         settings.set("import.rig.add_semi_standard_bones", self._add_semistandard)
         super().tearDown()
 
-    def test_mmt_rig_fixture_classifies_mvp_without_mutating_scene(self):
-        root = import_mmd_file(
-            _PMX_PATH,
-            options={
-                "setup_rig": True,
-                "setup_bone_orientation": True,
-                "import_physics": False,
-            },
-        )
+    def _import_fixture(self, **extra_options):
+        options = {
+            "setup_rig": True,
+            "setup_bone_orientation": True,
+            "import_physics": False,
+        }
+        options.update(extra_options)
+        root = import_mmd_file(_PMX_PATH, options=options)
         self.assertTrue(root)
+        return root
+
+    def test_mmt_rig_fixture_classifies_mvp_without_mutating_scene(self):
+        root = self._import_fixture()
         nodes_before = set(cmds.ls(long=True) or [])
 
         spec = analyze_mmd_control_rig(root)
@@ -117,6 +129,185 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         ]
         self.assertTrue(solver_outputs)
         self.assertTrue(all(binding.blocked for binding in solver_outputs))
+
+    def test_builder_is_detached_idempotent_reopenable_and_removable(self):
+        root = self._import_fixture()
+        root = (cmds.ls(root, long=True) or [root])[0]
+        joints = [
+            joint
+            for joint in cmds.listRelatives(
+                root,
+                allDescendents=True,
+                type="joint",
+                fullPath=True,
+            )
+            or []
+            if cmds.attributeQuery(ATTR_MMD_BONE_INDEX, node=joint, exists=True)
+        ]
+        matrices_before = {
+            joint: tuple(cmds.getAttr(f"{joint}.worldMatrix[0]"))
+            for joint in joints
+        }
+        cycles_before = sorted(cmds.cycleCheck(all=True, list=True) or [])
+
+        result = build_mmd_control_rig(root)
+
+        self.assertTrue(result.created)
+        self.assertEqual(
+            set(result.controls),
+            {"master", "center", "groove", "left_foot_ik", "right_foot_ik"},
+        )
+        self.assertFalse(cmds.listRelatives(result.control_group, parent=True))
+        for role, control in result.controls.items():
+            self.assertTrue(cmds.listRelatives(control, shapes=True, type="nurbsCurve"), role)
+            self.assertEqual(cmds.getAttr(f"{control}.translate")[0], (0.0, 0.0, 0.0))
+            self.assertEqual(cmds.getAttr(f"{control}.rotate")[0], (0.0, 0.0, 0.0))
+        self.assertEqual(
+            {
+                joint: tuple(cmds.getAttr(f"{joint}.worldMatrix[0]"))
+                for joint in joints
+            },
+            matrices_before,
+        )
+        self.assertEqual(sorted(cmds.cycleCheck(all=True, list=True) or []), cycles_before)
+
+        nodes_before_second_build = set(cmds.ls(long=True) or [])
+        second = build_mmd_control_rig(root)
+        self.assertFalse(second.created)
+        self.assertEqual(second.controls, result.controls)
+        self.assertEqual(set(cmds.ls(long=True) or []), nodes_before_second_build)
+
+        scene_path = self.get_temp_filename("mmd_control_rig_reopen.ma")
+        cmds.file(rename=scene_path)
+        cmds.file(save=True, type="mayaAscii", force=True)
+        cmds.file(scene_path, open=True, force=True)
+        reopened_root = (cmds.ls(root, long=True) or [root])[0]
+        reopened = build_mmd_control_rig(reopened_root)
+        self.assertFalse(reopened.created)
+        self.assertEqual(set(reopened.controls), set(result.controls))
+        self.assertTrue(read_mmd_control_rig_metadata(reopened_root))
+
+        self.assertTrue(remove_mmd_control_rig(reopened_root))
+        self.assertFalse(cmds.objExists(reopened.control_group))
+        self.assertFalse(
+            cmds.attributeQuery(
+                ATTR_MMD_CONTROL_RIG_JSON,
+                node=reopened_root,
+                exists=True,
+            )
+        )
+        self.assertFalse(remove_mmd_control_rig(reopened_root))
+
+    def test_remove_fails_closed_when_user_node_is_parented_under_control_group(self):
+        root = self._import_fixture()
+        result = build_mmd_control_rig(root)
+        user_node = cmds.createNode(
+            "transform",
+            name="user_authored_control_note",
+            parent=result.control_group,
+        )
+
+        with self.assertRaisesRegex(MmdControlRigBuildError, "topology changed"):
+            remove_mmd_control_rig(root)
+
+        self.assertTrue(cmds.objExists(user_node))
+        cmds.delete(user_node)
+        self.assertTrue(remove_mmd_control_rig(root))
+
+    def test_remove_rejects_reparented_owned_control(self):
+        root = self._import_fixture()
+        result = build_mmd_control_rig(root)
+        control = result.controls["center"]
+        control_uuid = cmds.ls(control, uuid=True)[0]
+        zero = result.zero_groups["center"]
+        cmds.parent(control, world=True)
+
+        with self.assertRaisesRegex(MmdControlRigBuildError, "topology changed"):
+            remove_mmd_control_rig(root)
+
+        moved_control = cmds.ls(control_uuid, long=True)[0]
+        self.assertTrue(cmds.objExists(moved_control))
+        cmds.parent(moved_control, zero)
+        self.assertTrue(remove_mmd_control_rig(root))
+
+    def test_duplicated_model_metadata_cannot_delete_original_controls(self):
+        root = self._import_fixture()
+        result = build_mmd_control_rig(root)
+        duplicate = cmds.duplicate(root, returnRootsOnly=True)[0]
+
+        with self.assertRaisesRegex(MmdControlRigBuildError, "model UUID mismatch"):
+            remove_mmd_control_rig(duplicate)
+
+        self.assertTrue(cmds.objExists(result.control_group))
+        self.assertTrue(read_mmd_control_rig_metadata(root))
+
+    def test_build_and_remove_are_single_undo_steps(self):
+        root = self._import_fixture()
+        result = build_mmd_control_rig(root)
+        control_group_uuid = cmds.ls(result.control_group, uuid=True)[0]
+
+        cmds.undo()
+        self.assertFalse(cmds.ls(control_group_uuid, long=True))
+        self.assertFalse(
+            cmds.attributeQuery(ATTR_MMD_CONTROL_RIG_JSON, node=root, exists=True)
+        )
+        cmds.redo()
+        restored = build_mmd_control_rig(root)
+        self.assertFalse(restored.created)
+
+        self.assertTrue(remove_mmd_control_rig(root))
+        self.assertFalse(cmds.objExists(restored.control_group))
+        cmds.undo()
+        restored_after_remove = build_mmd_control_rig(root)
+        self.assertFalse(restored_after_remove.created)
+        self.assertTrue(cmds.objExists(restored_after_remove.control_group))
+
+    def test_build_failure_rolls_back_nodes_and_metadata(self):
+        root = self._import_fixture()
+        nodes_before = set(cmds.ls(long=True) or [])
+
+        with mock.patch.object(
+            cmds,
+            "curve",
+            side_effect=RuntimeError("simulated curve creation failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "simulated curve"):
+                build_mmd_control_rig(root)
+
+        self.assertEqual(set(cmds.ls(long=True) or []), nodes_before)
+        self.assertFalse(
+            cmds.attributeQuery(ATTR_MMD_CONTROL_RIG_JSON, node=root, exists=True)
+        )
+
+    def test_parent_failure_does_not_leave_an_unowned_curve(self):
+        root = self._import_fixture()
+        nodes_before = set(cmds.ls(long=True) or [])
+
+        with mock.patch.object(
+            cmds,
+            "parent",
+            side_effect=RuntimeError("simulated parent failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "simulated parent"):
+                build_mmd_control_rig(root)
+
+        self.assertEqual(set(cmds.ls(long=True) or []), nodes_before)
+        self.assertFalse(
+            cmds.attributeQuery(ATTR_MMD_CONTROL_RIG_JSON, node=root, exists=True)
+        )
+
+    def test_multiple_namespaced_models_receive_separate_control_groups(self):
+        root_a = self._import_fixture(use_namespace=True)
+        root_b = self._import_fixture(use_namespace=True)
+
+        rig_a = build_mmd_control_rig(root_a)
+        rig_b = build_mmd_control_rig(root_b)
+
+        self.assertNotEqual(rig_a.model_root, rig_b.model_root)
+        self.assertNotEqual(rig_a.control_group, rig_b.control_group)
+        self.assertTrue(cmds.objExists(rig_a.control_group))
+        self.assertTrue(cmds.objExists(rig_b.control_group))
+        self.assertEqual(set(rig_a.controls), set(rig_b.controls))
 
 
 if __name__ == "__main__":
