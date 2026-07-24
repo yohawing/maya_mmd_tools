@@ -12,6 +12,7 @@ from ...core.constants import (
     ATTR_MMD_DISPLAY_FRAMES_JSON,
     ATTR_MMD_MORPH_DATA,
 )
+from ...actions.rest_pose_action import get_rest_pose_manager
 from ...core.display_frame_resolver import PickerGroup, resolve_display_frames
 from ...core.logger import get_logger
 from ...core.mmd_bone_names import normalize_mmd_bone_name
@@ -41,7 +42,13 @@ _USER_ROLE = 0x0100  # Qt.UserRole
 class AnimationPresenter:
     """Drives the AnimationTab (Body/Finger/Morph/Display picker + tools)."""
 
-    def __init__(self, view, app_state: ApplicationState, maya_adapter=None):
+    def __init__(
+        self,
+        view,
+        app_state: ApplicationState,
+        maya_adapter=None,
+        rest_pose_manager=None,
+    ):
         self.view = view
         self.app_state = app_state
         if maya_adapter is None:
@@ -58,9 +65,10 @@ class AnimationPresenter:
         self._morph_controller: str | None = None
         self._pose_clipboard: dict | None = None
         self._all_model_joints: list[str] = []
-        self._bind_translations: dict[str, tuple[float, float, float]] = {}
-        self._bind_translation_model: str | None = None
+        self.rest_pose_manager = rest_pose_manager or get_rest_pose_manager()
+        self.rest_pose_manager.add_listener(self._on_rest_pose_state_changed)
         self.connect_signals()
+        self._on_rest_pose_state_changed(self.rest_pose_manager.state())
 
         if self.app_state.current_model_root:
             self._reload_for_model(self.app_state.current_model_root)
@@ -102,6 +110,7 @@ class AnimationPresenter:
             )
 
     def disconnect_signals(self):
+        self.rest_pose_manager.remove_listener(self._on_rest_pose_state_changed)
         try:
             self.app_state.current_model_changed.disconnect(self.on_current_model_changed)
         except (RuntimeError, TypeError):
@@ -114,6 +123,7 @@ class AnimationPresenter:
     # -- Signal handlers -----------------------------------------------
 
     def on_current_model_changed(self, model_root: str):
+        self.rest_pose_manager.ensure_model(model_root or "")
         if model_root:
             self._reload_for_model(model_root)
         else:
@@ -294,7 +304,6 @@ class AnimationPresenter:
     def _reload_for_model(self, model_root: str):
         bone_map = self._build_bone_index_map(model_root)
         self._all_model_joints = [bone_map[index] for index in sorted(bone_map)]
-        self._capture_bind_translations(model_root, self._all_model_joints)
         self._bone_name_to_joint = self._build_bone_name_map(model_root)
         self._sync_picker_regions()
         bone_display_names = self._build_bone_display_name_map(bone_map)
@@ -314,39 +323,6 @@ class AnimationPresenter:
         self._reload_morph_tab(model_root, morph_metadata)
         self._sync_visibility_controls(model_root)
         self.view.status_label.setText("")
-
-    def _capture_bind_translations(self, model_root: str, joints: list[str]) -> None:
-        """Cache a reset baseline, preferring the persisted VMD bind snapshot."""
-
-        if self._bind_translation_model == model_root:
-            return
-        translations: dict[str, tuple[float, float, float]] = {}
-        for joint in joints:
-            value = None
-            try:
-                if self.maya_adapter.attribute_exists("mmd_vmd_bind_translate", joint):
-                    raw = self.maya_adapter.get_attr(f"{joint}.mmd_vmd_bind_translate")
-                    parsed = json.loads(raw) if isinstance(raw, str) else raw
-                    if isinstance(parsed, (list, tuple)) and len(parsed) == 3:
-                        value = tuple(float(component) for component in parsed)
-            except Exception:
-                value = None
-            if value is None:
-                try:
-                    current = self.maya_adapter.xform(
-                        joint,
-                        query=True,
-                        objectSpace=True,
-                        translation=True,
-                    )
-                    if current and len(current) == 3:
-                        value = tuple(float(component) for component in current)
-                except Exception:
-                    value = None
-            if value is not None:
-                translations[joint] = value
-        self._bind_translations = translations
-        self._bind_translation_model = model_root
 
     def _sync_picker_regions(self):
         """Keep missing bones non-interactive while navigation stays available."""
@@ -377,8 +353,6 @@ class AnimationPresenter:
     def _clear_all(self):
         self._picker_groups = []
         self._all_model_joints = []
-        self._bind_translations = {}
-        self._bind_translation_model = None
         self._bone_name_to_joint.clear()
         self._sync_picker_regions()
         self.view.display_frame_tree.clear()
@@ -884,28 +858,27 @@ class AnimationPresenter:
             self.view.status_label.setText(f"Paste failed: {result.error}")
 
     def _on_reset_pose(self):
-        from ...actions.pose_actions import ResetPoseAction, ResetPoseRequest
-
-        joints = self._selected_joints()
-        if not joints:
-            self.view.status_label.setText("No joints selected")
-            return
-        result = ResetPoseAction(self.maya_adapter).execute(
-            ResetPoseRequest(
-                joints=joints,
-                bind_translations={
-                    joint: self._bind_translations[joint]
-                    for joint in joints
-                    if joint in self._bind_translations
-                },
-            )
-        )
+        result = self.rest_pose_manager.toggle(self.app_state.current_model_root or "")
         if result.succeeded:
-            self.view.status_label.setText(
-                f"Reset pose ({result.reset_count} joints)"
-            )
+            action = "Rest Pose" if result.active else "Motion"
+            self.view.status_label.setText(f"{action} ({result.joint_count} joints)")
         else:
-            self.view.status_label.setText(f"Reset failed: {result.error}")
+            self.view.status_label.setText(f"Rest Pose failed: {result.error}")
+
+    def _on_rest_pose_state_changed(self, result):
+        """Synchronize Animation Toolset controls with the shared session."""
+        reset_button = self.view.tool_buttons.get("reset")
+        if reset_button is not None and hasattr(reset_button, "setText"):
+            reset_button.setText("Return to Motion" if result.active else "Rest Pose")
+        if hasattr(self.view.picker_tabs, "setEnabled"):
+            self.view.picker_tabs.setEnabled(not result.active)
+        for key, button in self.view.tool_buttons.items():
+            if key != "reset" and hasattr(button, "setEnabled"):
+                button.setEnabled(not result.active)
+        if hasattr(self.view.body_picker, "setToolTip"):
+            self.view.body_picker.setToolTip(
+                "Return to Motion" if result.active else "Display model Rest Pose"
+            )
 
     def _on_mirror_pose(self):
         from ...actions.pose_actions import MirrorPoseAction, MirrorPoseRequest

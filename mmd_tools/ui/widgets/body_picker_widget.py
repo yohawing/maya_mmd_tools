@@ -118,7 +118,7 @@ class BodyPickerWidget(SvgPickerWidget):
             },
             tooltip_labels={
                 **{region["id"]: region["bone_name"] for region in _BODY_REGIONS},
-                "reset_pose": "選択ボーンのポーズをリセット",
+                "reset_pose": "モデル全体をRest Pose表示へ切り替え",
                 "mirror_sel": "反対側のボーンを選択",
                 "fingers_left": "指Pickerへ移動",
                 "fingers_right": "指Pickerへ移動",

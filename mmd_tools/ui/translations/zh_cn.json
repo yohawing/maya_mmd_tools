@@ -30,6 +30,8 @@
     "browse": "浏览...",
     "refresh": "刷新",
     "reset": "重置",
+    "rest_pose": "静止姿势",
+    "return_to_motion": "返回动作",
     "add": "添加",
     "remove": "移除",
     "create": "创建",

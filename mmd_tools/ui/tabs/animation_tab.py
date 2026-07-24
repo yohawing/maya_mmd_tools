@@ -155,7 +155,7 @@ class AnimationTab(BaseTab):
                 ("copy", "Copy"),
                 ("paste", "Paste"),
                 ("mirror", "Mirror"),
-                ("reset", "Reset"),
+                ("reset", "Rest Pose"),
                 ("clean", "Clean"),
                 ("bake", "Bake"),
             ]

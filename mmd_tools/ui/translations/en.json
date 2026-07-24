@@ -30,6 +30,8 @@
     "browse": "Browse...",
     "refresh": "Refresh",
     "reset": "Reset",
+    "rest_pose": "Rest Pose",
+    "return_to_motion": "Return to Motion",
     "add": "Add",
     "remove": "Remove",
     "create": "Create",

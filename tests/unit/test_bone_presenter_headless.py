@@ -177,6 +177,7 @@ class _FakeView:
     def __init__(self):
         self.bone_list = _FakeList()
         self.refresh_btn = _FakeButton()
+        self.rest_pose_btn = _FakeButton()
         self.search_edit = _FakeLineEdit()
         self.select_ik_target_btn = _FakeButton()
         self.select_grant_parent_btn = _FakeButton()
@@ -238,9 +239,13 @@ class _FakeView:
 
         self.ik_links_table = _FakeTable()
         self.details_enabled = None
+        self.rest_pose_active = None
 
     def set_bone_details_enabled(self, enabled):
         self.details_enabled = enabled
+
+    def set_rest_pose_state(self, active):
+        self.rest_pose_active = active
 
 
 class _FakeAppState:
@@ -292,6 +297,45 @@ class _FakeMayaAdapter:
         return True
 
 
+class _FakeRestPoseResult:
+    def __init__(
+        self, *, succeeded=True, active=False, error="", model_root="", joint_count=0
+    ):
+        self.succeeded = succeeded
+        self.active = active
+        self.error = error
+        self.model_root = model_root
+        self.joint_count = joint_count
+
+
+class _FakeRestPoseManager:
+    def __init__(self):
+        self.active = False
+        self.listeners = []
+        self.toggle_models = []
+
+    def add_listener(self, callback):
+        self.listeners.append(callback)
+
+    def remove_listener(self, callback):
+        if callback in self.listeners:
+            self.listeners.remove(callback)
+
+    def state(self):
+        return _FakeRestPoseResult(active=self.active)
+
+    def toggle(self, model_root):
+        self.toggle_models.append(model_root)
+        self.active = not self.active
+        result = _FakeRestPoseResult(active=self.active, model_root=model_root)
+        for listener in self.listeners:
+            listener(result)
+        return result
+
+    def ensure_model(self, _model_root):
+        return self.state()
+
+
 def _make_presenter(adapter=None):
     view = _FakeView()
     app_state = _FakeAppState()
@@ -308,6 +352,26 @@ def _attr_getter(values):
 
 
 class TestBonePresenterHeadless(unittest.TestCase):
+    def test_rest_pose_button_toggles_shared_model_session_and_locks_editor(self):
+        view = _FakeView()
+        app_state = _FakeAppState(TEST_MODEL)
+        manager = _FakeRestPoseManager()
+        presenter = BonePresenter(
+            view,
+            app_state,
+            maya_adapter=_FakeMayaAdapter(),
+            rest_pose_manager=manager,
+        )
+
+        presenter.toggle_rest_pose()
+
+        self.assertEqual(manager.toggle_models, [TEST_MODEL])
+        self.assertTrue(view.rest_pose_active)
+        self.assertFalse(view.details_enabled)
+
+        presenter.disconnect_signals()
+        self.assertEqual(manager.listeners, [])
+
     def test_load_bones_clears_and_returns_when_no_model(self):
         presenter, view, _, adapter = _make_presenter()
 

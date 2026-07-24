@@ -94,3 +94,11 @@ class AnimatorToolsetWindow(QWidget):
         self.close()
         self.setParent(None)
         self.deleteLater()
+
+    def closeEvent(self, event):
+        """Restore motion even when Maya closes the widget directly."""
+        from ..actions.rest_pose_action import get_rest_pose_manager
+
+        get_rest_pose_manager().return_to_motion()
+        self.animation_presenter.disconnect_signals()
+        super().closeEvent(event)

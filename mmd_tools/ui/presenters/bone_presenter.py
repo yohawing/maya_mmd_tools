@@ -1,5 +1,6 @@
 import math
 from mmd_tools.adapters import MayaCmdsAdapter
+from mmd_tools.actions.rest_pose_action import get_rest_pose_manager
 from ...core.logger import get_logger
 from ...core.maya_attribute_utils import (
     set_custom_attributes,
@@ -47,7 +48,7 @@ logger = get_logger(__name__)
 
 
 class BonePresenter:
-    def __init__(self, view, app_state, maya_adapter=None):
+    def __init__(self, view, app_state, maya_adapter=None, rest_pose_manager=None):
         self.view = view
         self.app_state = app_state
         self.maya_adapter = maya_adapter or MayaCmdsAdapter()
@@ -56,8 +57,11 @@ class BonePresenter:
         self.bone_list_items = {}  # Map bone name to list item
         self.all_bones = []  # All bones list
         self.is_updating = False  # Prevent feedback loops
+        self.rest_pose_manager = rest_pose_manager or get_rest_pose_manager()
+        self.rest_pose_manager.add_listener(self._on_rest_pose_state_changed)
 
         self.connect_signals()
+        self._on_rest_pose_state_changed(self.rest_pose_manager.state())
 
         # 既に選択されているモデルがある場合はロード
         if self.app_state.current_model_root:
@@ -72,6 +76,8 @@ class BonePresenter:
         self.view.bone_list.currentItemChanged.connect(self.on_bone_selected)
         self.view.bone_list.itemSelectionChanged.connect(self.on_selection_changed_maya)
         self.view.refresh_btn.clicked.connect(self.load_bones)
+        if hasattr(self.view, "rest_pose_btn"):
+            self.view.rest_pose_btn.clicked.connect(self.toggle_rest_pose)
         self.view.search_edit.textChanged.connect(self.filter_bones)
 
         # ボーン選択ボタン
@@ -97,10 +103,36 @@ class BonePresenter:
         self.view.apply_btn.clicked.connect(self.apply_changes)
         self.view.reset_btn.clicked.connect(self.reset_changes)
 
+    def disconnect_signals(self):
+        """Release scene-wide listeners when the owning window closes."""
+        self.rest_pose_manager.remove_listener(self._on_rest_pose_state_changed)
+
     def on_current_model_changed(self, model_root):
         """現在のモデルが変更されたときの処理"""
+        self.rest_pose_manager.ensure_model(model_root or "")
         self.current_bone = None
         reload_for_current_model_change(logger, "BonePresenter", model_root, self.load_bones)
+
+    def toggle_rest_pose(self):
+        """Toggle the shared model-wide Rest Pose display session."""
+        result = self.rest_pose_manager.toggle(self.app_state.current_model_root or "")
+        if result.succeeded:
+            action = "Rest Pose" if result.active else "Motion"
+            self.app_state.emit_status(
+                f"{action}: {result.model_root or self.app_state.current_model_root} "
+                f"({result.joint_count} joints)"
+            )
+        else:
+            self.app_state.emit_status(f"Rest Pose failed: {result.error}")
+
+    def _on_rest_pose_state_changed(self, result):
+        """Synchronize the Bone editor with the global Rest Pose session."""
+        if hasattr(self.view, "set_rest_pose_state"):
+            self.view.set_rest_pose_state(result.active)
+        if result.active:
+            self.view.set_bone_details_enabled(False)
+        elif self.current_bone:
+            self.view.set_bone_details_enabled(True)
 
     def load_bones(self):
         """ボーンリストをロード"""
