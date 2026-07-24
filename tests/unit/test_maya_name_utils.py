@@ -34,6 +34,11 @@ class TestMayaNameUtils(unittest.TestCase):
             "メガネ": "glasses",
             "ｳｨﾝｸ２右": "wink_2_right",
             "光消": "highlight_off",
+            "ハイライト": "highlight",
+            "汗": "sweat",
+            "赤面": "blush",
+            "呼吸": "breathing",
+            "深呼吸": "deep_breath",
         }
         identifier = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
         for source, target in expected.items():
