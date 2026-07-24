@@ -245,10 +245,10 @@ class _StubSignal:
 
 # qt_compat が QtCore/QtGui/QtWidgets から名前付きで import する識別子。
 # QObject/Signal 以外は「呼べる/継承できるダミークラス」で十分。
-_QTCORE_NAMES = ["Qt", "QSettings", "QTimer", "QByteArray", "QPointF", "QRectF"]
+_QTCORE_NAMES = ["Qt", "QSettings", "QTimer", "QByteArray", "QPointF", "QRectF", "QSize"]
 _QTGUI_NAMES = [
     "QAction", "QDoubleValidator", "QColor", "QTextCursor", "QTextCharFormat",
-    "QBrush", "QFont", "QPainter", "QPainterPath", "QPen", "QPixmap", "QPolygonF", "QTransform",
+    "QBrush", "QFont", "QIcon", "QPainter", "QPainterPath", "QPen", "QPixmap", "QPolygonF", "QTransform",
 ]
 _QTWIDGETS_NAMES = [
     "QApplication", "QMainWindow", "QTabWidget", "QDockWidget", "QPushButton",

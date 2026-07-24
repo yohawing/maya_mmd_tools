@@ -1,6 +1,7 @@
 """PMX表示枠をモデル単位で編集するメインUIタブ。"""
 
 from ..base_tab import BaseTab
+from ..components.symbol_tool_button import MaterialSymbolToolButton
 from ..qt_compat import (
     QCheckBox,
     QFormLayout,
@@ -102,7 +103,7 @@ class DisplayPaneTab(BaseTab):
         footer = QHBoxLayout()
         self.status_label = QLabel()
         footer.addWidget(self.status_label, 1)
-        self.refresh_btn = QPushButton()
+        self.refresh_btn = MaterialSymbolToolButton("refresh")
         self.apply_btn = QPushButton()
         self.reset_btn = QPushButton()
         footer.addWidget(self.refresh_btn)

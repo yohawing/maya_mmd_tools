@@ -20,6 +20,7 @@ from ..qt_compat import (
 )
 from ..base_tab import BaseTab
 from .translation_registry import apply_translation_registry
+from ..components.symbol_tool_button import MaterialSymbolToolButton
 
 
 class BoneTab(BaseTab):
@@ -110,8 +111,7 @@ class BoneTab(BaseTab):
 
         # ツールバー
         toolbar_layout = QHBoxLayout()
-        self.refresh_btn = QPushButton(self.tr("refresh", "buttons"))
-        self.refresh_btn.setMaximumWidth(60)
+        self.refresh_btn = MaterialSymbolToolButton("refresh", self.tr("refresh", "buttons"))
         self.rest_pose_btn = QPushButton()
         self._rest_pose_active = False
         self.set_rest_pose_state(False)

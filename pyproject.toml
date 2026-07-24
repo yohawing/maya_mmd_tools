@@ -28,6 +28,7 @@ mmd_tools = [
     "ui/assets/animator_toolset/*.png",
     "ui/assets/animator_toolset/*.svg",
     "ui/assets/morph_types/*.svg",
+    "ui/assets/symbols/*.svg",
 ]
 
 [tool.setuptools.packages.find]

@@ -18,6 +18,7 @@ from ..qt_compat import (
     QSlider,
 )
 from ..base_tab import BaseTab
+from ..components.symbol_tool_button import MaterialSymbolToolButton
 
 
 class MaterialTab(BaseTab):
@@ -60,8 +61,7 @@ class MaterialTab(BaseTab):
 
         # ツールバー
         toolbar_layout = QHBoxLayout()
-        self.refresh_btn = QPushButton(self.tr("refresh", "buttons"))
-        self.refresh_btn.setMaximumWidth(60)
+        self.refresh_btn = MaterialSymbolToolButton("refresh", self.tr("refresh", "buttons"))
 
         toolbar_layout.addWidget(self.refresh_btn)
         toolbar_layout.addStretch()

@@ -7,13 +7,14 @@ QT_BINDING = ""
 
 try:
     from PySide6 import QtCore  # noqa: F401
-    from PySide6.QtCore import QByteArray, QObject, QPointF, QRectF, Signal, Qt, QSettings, QTimer  # noqa: F401
+    from PySide6.QtCore import QByteArray, QObject, QPointF, QRectF, QSize, Signal, Qt, QSettings, QTimer  # noqa: F401
     from PySide6.QtGui import (  # noqa: F401
         QAction,
         QBrush,
         QColor,
         QDoubleValidator,
         QFont,
+        QIcon,
         QPainter,
         QPainterPath,
         QPen,
@@ -74,12 +75,13 @@ try:
 
 except ImportError:
     from PySide2 import QtCore  # noqa: F401
-    from PySide2.QtCore import QByteArray, QObject, QPointF, QRectF, Signal, Qt, QSettings, QTimer  # noqa: F401
+    from PySide2.QtCore import QByteArray, QObject, QPointF, QRectF, QSize, Signal, Qt, QSettings, QTimer  # noqa: F401
     from PySide2.QtGui import (  # noqa: F401
         QBrush,
         QColor,
         QDoubleValidator,
         QFont,
+        QIcon,
         QPainter,
         QPainterPath,
         QPen,

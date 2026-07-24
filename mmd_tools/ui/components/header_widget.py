@@ -13,6 +13,7 @@ from ..qt_compat import (
     QComboBox,
 )
 from ..translations import UITranslator
+from .symbol_tool_button import MaterialSymbolToolButton
 
 logger = get_logger(__name__)
 
@@ -47,8 +48,7 @@ class HeaderWidget(QWidget):
         main_layout.addWidget(self.model_combo)
 
         # リフレッシュボタン
-        self.refresh_btn = QPushButton("🔄")
-        self.refresh_btn.setMaximumWidth(30)
+        self.refresh_btn = MaterialSymbolToolButton("refresh", "Refresh")
         main_layout.addWidget(self.refresh_btn)
 
         # 右側のスペース

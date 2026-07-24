@@ -1,7 +1,6 @@
 """Animator Toolset tab — dev-mode gated, 4-tab picker + tools."""
 
 from ..qt_compat import (
-    QCheckBox,
     QComboBox,
     QGridLayout,
     QGroupBox,
@@ -18,6 +17,7 @@ from ..qt_compat import (
 from ..base_tab import BaseTab
 from ..widgets.body_picker_widget import BodyPickerWidget
 from ..widgets.finger_picker_widget import FingerPickerWidget
+from ..components.symbol_tool_button import MaterialSymbolToolButton
 
 
 class AnimationTab(BaseTab):
@@ -41,8 +41,18 @@ class AnimationTab(BaseTab):
         self.model_combo = QComboBox()
         self.model_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         selector_layout.addWidget(self.model_combo, 1)
-        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn = MaterialSymbolToolButton("refresh", "Refresh")
         selector_layout.addWidget(self.refresh_btn)
+        self.vis_checkboxes = {}
+        for key, symbol in (
+            ("mesh", "view_in_ar"),
+            ("joints", "account_tree"),
+            ("colliders", "shield"),
+        ):
+            button = MaterialSymbolToolButton(symbol, key, checkable=True)
+            button.setChecked(True)
+            selector_layout.addWidget(button)
+            self.vis_checkboxes[key] = button
         main_layout.addLayout(selector_layout)
 
         # --- Picker sub-tabs ---
@@ -111,38 +121,6 @@ class AnimationTab(BaseTab):
         status_layout.addWidget(self.clear_btn)
         main_layout.addLayout(status_layout)
 
-        # --- Collapsible visibility toggles ---
-        self.visibility_toggle = QPushButton("Visibility  ▸")
-        self.visibility_toggle.setCheckable(True)
-        self.visibility_toggle.setChecked(False)
-        self.visibility_toggle.setStyleSheet(
-            "QPushButton { text-align: left; padding: 5px 8px; background: #3f3f3f; "
-            "color: #d0d0d0; border: 1px solid #2c2c2c; } "
-            "QPushButton:hover { background: #484848; }"
-        )
-        main_layout.addWidget(self.visibility_toggle)
-
-        self.visibility_content = QWidget()
-        vis_layout = QHBoxLayout()
-        vis_layout.setContentsMargins(4, 4, 4, 4)
-        vis_layout.setSpacing(8)
-
-        self.vis_checkboxes: dict[str, QCheckBox] = {}
-        for key, label in [
-            ("mesh", "Mesh"),
-            ("joints", "Joints"),
-            ("colliders", "Colliders"),
-        ]:
-            cb = QCheckBox(label)
-            cb.setChecked(True)
-            vis_layout.addWidget(cb)
-            self.vis_checkboxes[key] = cb
-
-        self.visibility_content.setLayout(vis_layout)
-        self.visibility_content.setVisible(False)
-        main_layout.addWidget(self.visibility_content)
-        self.visibility_toggle.toggled.connect(self._set_visibility_expanded)
-
         # --- Tools section ---
         self.tools_group = QGroupBox("Tools")
         tools_layout = QGridLayout()
@@ -150,30 +128,24 @@ class AnimationTab(BaseTab):
         tools_layout.setSpacing(4)
 
         self.tool_buttons: dict[str, QPushButton] = {}
-        for i, (key, label) in enumerate(
+        for i, (key, label, symbol) in enumerate(
             [
-                ("copy", "Copy"),
-                ("paste", "Paste"),
-                ("mirror", "Mirror"),
-                ("reset", "Rest Pose"),
-                ("clean", "Clean"),
-                ("bake", "Bake"),
+                ("copy", "Copy", "content_copy"),
+                ("paste", "Paste", "content_paste"),
+                ("mirror", "Mirror", "flip"),
+                ("reset", "Rest Pose", "restart_alt"),
+                ("clean", "Clean", "cleaning_services"),
+                ("bake", "Bake", "animation"),
             ]
         ):
-            btn = QPushButton(label)
-            btn.setMinimumHeight(28)
-            row, col = divmod(i, 5)
+            btn = MaterialSymbolToolButton(symbol, label)
+            row, col = divmod(i, 6)
             tools_layout.addWidget(btn, row, col)
             self.tool_buttons[key] = btn
 
         self.tools_group.setLayout(tools_layout)
         main_layout.addWidget(self.tools_group)
         self.retranslateUi()
-
-    def _set_visibility_expanded(self, expanded: bool) -> None:
-        self.visibility_content.setVisible(expanded)
-        label = self.tr("visibility", "animation_toolset")
-        self.visibility_toggle.setText(f"{label}  {'▾' if expanded else '▸'}")
 
     def retranslateUi(self):
         """Update static Animator Toolset text without rebuilding picker state."""
@@ -186,9 +158,6 @@ class AnimationTab(BaseTab):
         self.select_all_btn.setText(tr("select_all"))
         self.select_all_btn.setToolTip(tr("select_all_tooltip"))
         self.clear_btn.setText(tr("clear"))
-        self.visibility_toggle.setText(
-            f"{tr('visibility')}  {'▾' if self.visibility_toggle.isChecked() else '▸'}"
-        )
         for key in ("mesh", "joints", "colliders"):
             self.vis_checkboxes[key].setText(tr(key))
         self.tools_group.setTitle(tr("tools"))

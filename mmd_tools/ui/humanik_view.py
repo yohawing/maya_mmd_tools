@@ -42,6 +42,7 @@ try:  # ``qt_compat`` intentionally exposes only the shared widget surface.
 except ImportError:  # pragma: no cover - exercised only on Maya/PySide2.
     from PySide2.QtWidgets import QRadioButton
 from .base_tab import BaseTab
+from .components.symbol_tool_button import MaterialSymbolToolButton
 from .tabs.translation_registry import apply_translation_registry
 
 
@@ -128,7 +129,7 @@ class HumanIkView(BaseTab):
         # second experimental-feature notice inside its content.
         top_row = QHBoxLayout()
         top_row.addStretch()
-        self.refresh_btn = QPushButton(self.tr("refresh", "buttons"))
+        self.refresh_btn = MaterialSymbolToolButton("refresh", self.tr("refresh", "buttons"))
         top_row.addWidget(self.refresh_btn)
         main_layout.addLayout(top_row)
 
