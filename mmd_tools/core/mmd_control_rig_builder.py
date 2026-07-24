@@ -53,6 +53,19 @@ _ROLE_SHAPES = {
     "groove": "diamond",
     "left_foot_ik": "foot",
     "right_foot_ik": "foot",
+    "lower_body": "square",
+    "upper_body": "circle",
+    "upper_body2": "circle",
+    "neck": "circle",
+    "head": "circle",
+    "left_shoulder": "circle",
+    "left_arm": "circle",
+    "left_elbow": "circle",
+    "left_wrist": "circle",
+    "right_shoulder": "circle",
+    "right_arm": "circle",
+    "right_elbow": "circle",
+    "right_wrist": "circle",
 }
 _ROLE_COLORS = {
     "master": 17,
@@ -60,6 +73,39 @@ _ROLE_COLORS = {
     "groove": 14,
     "left_foot_ik": 6,
     "right_foot_ik": 13,
+    "lower_body": 14,
+    "upper_body": 17,
+    "upper_body2": 17,
+    "neck": 17,
+    "head": 17,
+    "left_shoulder": 6,
+    "left_arm": 6,
+    "left_elbow": 6,
+    "left_wrist": 6,
+    "right_shoulder": 13,
+    "right_arm": 13,
+    "right_elbow": 13,
+    "right_wrist": 13,
+}
+
+_ROLE_PARENTS = {
+    "center": "master",
+    "groove": "center",
+    "left_foot_ik": "master",
+    "right_foot_ik": "master",
+    "lower_body": "groove",
+    "upper_body": "groove",
+    "upper_body2": "upper_body",
+    "neck": "upper_body2",
+    "head": "neck",
+    "left_shoulder": "upper_body2",
+    "left_arm": "left_shoulder",
+    "left_elbow": "left_arm",
+    "left_wrist": "left_elbow",
+    "right_shoulder": "upper_body2",
+    "right_arm": "right_shoulder",
+    "right_elbow": "right_arm",
+    "right_wrist": "right_elbow",
 }
 
 
@@ -98,8 +144,8 @@ def build_mmd_control_rig(
             bindings: Dict[str, Dict[str, Any]] = {}
             for role_binding in rig_spec.roles:
                 binding = role_binding.binding
-                if binding is None:
-                    raise MmdControlRigBuildError(f"{role_binding.role}: missing binding")
+                if binding is None or binding.blocked:
+                    continue
                 role = role_binding.role
                 zero = cmds.createNode(
                     "transform",
@@ -134,6 +180,11 @@ def build_mmd_control_rig(
                     "ikSolvers": list(binding.ik_solvers),
                     "fallback": role_binding.fallback,
                 }
+
+            for role, zero in zero_groups.items():
+                parent_role = _available_parent_role(role, controls)
+                if parent_role:
+                    cmds.parent(zero, controls[parent_role])
 
             nodes = _owned_nodes(cmds, control_group, selection_set)
             metadata = {
@@ -320,6 +371,13 @@ def _color_control(cmds, control: str, color: int) -> None:
     for shape in cmds.listRelatives(control, shapes=True, fullPath=True) or []:
         cmds.setAttr(f"{shape}.overrideEnabled", True)
         cmds.setAttr(f"{shape}.overrideColor", int(color))
+
+
+def _available_parent_role(role: str, controls: Mapping[str, str]) -> Optional[str]:
+    parent = _ROLE_PARENTS.get(role)
+    while parent and parent not in controls:
+        parent = _ROLE_PARENTS.get(parent)
+    return parent
 
 
 def _controller_scale(cmds, root: str) -> float:

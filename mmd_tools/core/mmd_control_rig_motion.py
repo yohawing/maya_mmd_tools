@@ -31,7 +31,10 @@ _SAFE_ANIMATION_NODES = frozenset({"pairBlend", "unitConversion"})
 def control_rig_edit_routes_for_joints(joints, *, cmds_module=None) -> Dict[str, Dict[str, Tuple[str, str]]]:
     """Return VMD key destinations for joints owned by control rigs in EDIT."""
     cmds = cmds_module or maya_cmds()
-    wanted = set(joints)
+    wanted = set()
+    for joint in joints:
+        matches = cmds.ls(joint, long=True) or []
+        wanted.add(str(matches[0]) if len(matches) == 1 else str(joint))
     routes: Dict[str, Dict[str, Tuple[str, str]]] = {}
     roots = cmds.ls(f"*.{ATTR_MMD_CONTROL_RIG_JSON}", objectsOnly=True, long=True) or []
     for root in roots:

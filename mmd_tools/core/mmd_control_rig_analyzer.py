@@ -167,6 +167,7 @@ class MmdControlRigSpec:
             and role.binding is not None
             and not role.binding.blocked
             for role in self.roles
+            if role.role in _MVP_ROLE_NAMES
         )
 
     @property
@@ -205,6 +206,23 @@ _MVP_ROLE_DEFINITIONS = (
     _RoleDefinition("left_foot_ik", ("左足IK",), requires_ik_solver=True),
     _RoleDefinition("right_foot_ik", ("右足IK",), requires_ik_solver=True),
 )
+_MVP_ROLE_NAMES = frozenset(definition.role for definition in _MVP_ROLE_DEFINITIONS)
+
+_OPTIONAL_FK_ROLE_DEFINITIONS = (
+    _RoleDefinition("lower_body", ("下半身",)),
+    _RoleDefinition("upper_body", ("上半身",)),
+    _RoleDefinition("upper_body2", ("上半身2",)),
+    _RoleDefinition("neck", ("首",)),
+    _RoleDefinition("head", ("頭",)),
+    _RoleDefinition("left_shoulder", ("左肩",)),
+    _RoleDefinition("left_arm", ("左腕",)),
+    _RoleDefinition("left_elbow", ("左ひじ", "左肘")),
+    _RoleDefinition("left_wrist", ("左手首",)),
+    _RoleDefinition("right_shoulder", ("右肩",)),
+    _RoleDefinition("right_arm", ("右腕",)),
+    _RoleDefinition("right_elbow", ("右ひじ", "右肘")),
+    _RoleDefinition("right_wrist", ("右手首",)),
+)
 
 
 def classify_mmd_control_rig(
@@ -237,6 +255,18 @@ def classify_mmd_control_rig(
         resolved_roles[role.role] = role
         report_warnings.extend(role.warnings)
         report_blockers.extend(role.blockers)
+
+    for definition in _OPTIONAL_FK_ROLE_DEFINITIONS:
+        role = _resolve_role(
+            definition,
+            facts_by_name,
+            bindings_by_joint,
+            resolved_roles,
+            model_root,
+        )
+        roles.append(role)
+        resolved_roles[role.role] = role
+        report_warnings.extend(role.warnings)
 
     return MmdControlRigSpec(
         model_root=str(model_root),
