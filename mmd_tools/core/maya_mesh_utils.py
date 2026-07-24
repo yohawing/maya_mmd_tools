@@ -1,11 +1,35 @@
 """Maya mesh helpers used by MMD import and morph conversion."""
 
+import math
+
 from maya import cmds
 from maya.api import OpenMaya as om
 from maya.api import OpenMayaAnim as oma
 
 from mmd_tools.core import settings_keys as setting_keys
 from mmd_tools.core.settings import settings
+
+
+def _normalize_normal(normal):
+    """Return a finite unit normal, or ``None`` when the input is invalid."""
+    try:
+        x = float(normal[0])
+        y = float(normal[1])
+        z = float(normal[2])
+    except (IndexError, TypeError, ValueError, OverflowError):
+        return None
+
+    if not all(math.isfinite(component) for component in (x, y, z)):
+        return None
+
+    length = math.hypot(math.hypot(x, y), z)
+    if not math.isfinite(length) or length <= 0.0:
+        return None
+
+    normalized = (x / length, y / length, z / length)
+    if not all(math.isfinite(component) for component in normalized):
+        return None
+    return normalized
 
 
 def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_uv_connects, normals=None):
@@ -26,29 +50,35 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
 
     mesh_obj = mesh_fn.create(points, face_counts_array, face_connects_array)
 
-    if normals and len(normals) == len(vertices):
+    if normals:
         normal_array = om.MVectorArray()
         normal_vertex_ids = om.MIntArray()
-        for vertex_id, normal in enumerate(normals):
-            normal_array.append(om.MVector(normal[0], normal[1], normal[2]))
-            normal_vertex_ids.append(vertex_id)
-        mesh_fn.setVertexNormals(normal_array, normal_vertex_ids)
-    elif normals:
-        normal_array = om.MVectorArray()
-        normal_face_ids = om.MIntArray()
-        normal_vertex_ids = om.MIntArray()
-        face_id = 0
-        cursor = 0
-        for count in face_counts:
-            for _ in range(count):
-                vertex_id = face_connects[cursor]
-                normal = normals[cursor]
-                normal_array.append(om.MVector(normal[0], normal[1], normal[2]))
-                normal_face_ids.append(face_id)
+        if len(normals) == len(vertices):
+            for vertex_id, normal in enumerate(normals):
+                normalized = _normalize_normal(normal)
+                if normalized is None:
+                    continue
+                normal_array.append(om.MVector(*normalized))
                 normal_vertex_ids.append(vertex_id)
-                cursor += 1
-            face_id += 1
-        mesh_fn.setFaceVertexNormals(normal_array, normal_face_ids, normal_vertex_ids)
+            if len(normal_vertex_ids):
+                # The bulk setter creates locked user normals. A second lock
+                # can recompute mixed valid/fallback entries in Maya 2024.
+                mesh_fn.setVertexNormals(normal_array, normal_vertex_ids)
+        else:
+            normal_face_ids = om.MIntArray()
+            cursor = 0
+            for face_id, count in enumerate(face_counts):
+                for _ in range(count):
+                    normalized = _normalize_normal(normals[cursor]) if cursor < len(normals) else None
+                    if normalized is not None:
+                        normal_array.append(om.MVector(*normalized))
+                        normal_face_ids.append(face_id)
+                        normal_vertex_ids.append(face_connects[cursor])
+                    cursor += 1
+            if len(normal_face_ids):
+                # setFaceVertexNormals creates locked user normals. Calling
+                # lockFaceVertexNormals again resets their values in Maya 2024.
+                mesh_fn.setFaceVertexNormals(normal_array, normal_face_ids, normal_vertex_ids)
 
     if uvs and face_uv_connects:
         uv_set_name = settings.get(setting_keys.IMPORT_MODEL_UV_SET_NAME).replace("#", "1")

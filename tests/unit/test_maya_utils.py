@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from maya import cmds
+from maya.api import OpenMaya as om
 
 from mmd_tools.core import (
     maya_animation_utils,
@@ -41,6 +42,69 @@ class TestMayaUtils(MayaTestBase):
         uv_coords = cmds.polyEditUV(shape + ".map[*]", query=True)
         self.assertIsNotNone(uv_coords)
         self.assertEqual(len(uv_coords), 8)
+
+    def test_create_mesh_with_authored_vertex_normals_locks_valid_entries(self):
+        """有効な頂点法線は正規化して保持し、Mayaの再計算から保護する。"""
+        vertices = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        mesh_transform = maya_mesh_utils.create_mesh_with_uvs(
+            "authored_vertex_normals",
+            vertices,
+            [3],
+            [0, 1, 2],
+            [],
+            [],
+            normals=[(0, 2, 0), (float("nan"), 0, 0), (0, 0, 0)],
+        )
+
+        shape = cmds.listRelatives(mesh_transform, shapes=True, fullPath=True)[0]
+        selection = om.MSelectionList()
+        selection.add(shape)
+        mesh_fn = om.MFnMesh(selection.getDagPath(0))
+        normal_ids = list(mesh_fn.getNormalIds()[1])
+        mesh_normals = list(mesh_fn.getNormals(om.MSpace.kObject))
+        self.assertAlmostEqual(mesh_normals[normal_ids[0]].x, 0.0, places=6)
+        self.assertAlmostEqual(mesh_normals[normal_ids[0]].y, 1.0, places=6)
+        self.assertAlmostEqual(mesh_normals[normal_ids[0]].z, 0.0, places=6)
+        self.assertTrue(mesh_fn.isNormalLocked(normal_ids[0]))
+
+        # NaN and zero-length inputs remain Maya's geometric +Z normal and unlocked.
+        for vertex_id in (1, 2):
+            normal_id = normal_ids[vertex_id]
+            self.assertAlmostEqual(mesh_normals[normal_id].x, 0.0, places=6)
+            self.assertAlmostEqual(mesh_normals[normal_id].y, 0.0, places=6)
+            self.assertAlmostEqual(mesh_normals[normal_id].z, 1.0, places=6)
+            self.assertFalse(mesh_fn.isNormalLocked(normal_id))
+
+    def test_create_mesh_with_face_vertex_normals_locks_valid_entries(self):
+        """face-vertex形式の法線も正規化してロックする。"""
+        vertices = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
+        face_counts = [3, 3]
+        face_connects = [0, 1, 2, 0, 2, 3]
+        mesh_transform = maya_mesh_utils.create_mesh_with_uvs(
+            "authored_face_vertex_normals",
+            vertices,
+            face_counts,
+            face_connects,
+            [],
+            [],
+            normals=[(2, 0, 0)] * len(face_connects),
+        )
+
+        shape = cmds.listRelatives(mesh_transform, shapes=True, fullPath=True)[0]
+        selection = om.MSelectionList()
+        selection.add(shape)
+        mesh_fn = om.MFnMesh(selection.getDagPath(0))
+        _, normal_ids = mesh_fn.getNormalIds()
+        cursor = 0
+        for face_id, count in enumerate(face_counts):
+            face_normals = mesh_fn.getFaceVertexNormals(face_id, om.MSpace.kObject)
+            for local_index in range(count):
+                normal = face_normals[local_index]
+                self.assertAlmostEqual(normal.x, 1.0, places=6)
+                self.assertAlmostEqual(normal.y, 0.0, places=6)
+                self.assertAlmostEqual(normal.z, 0.0, places=6)
+                self.assertTrue(mesh_fn.isNormalLocked(normal_ids[cursor]))
+                cursor += 1
 
     def test_create_material(self):
         """マテリアルを作成できるか"""
