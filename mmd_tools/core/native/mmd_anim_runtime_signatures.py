@@ -8,14 +8,18 @@ classes and Maya scene utilities.
 
 from __future__ import annotations
 
-from ctypes import CDLL, POINTER, c_bool, c_char_p, c_float, c_int32, c_size_t, c_uint8, c_uint32, c_void_p
+from ctypes import CDLL, POINTER, c_bool, c_char_p, c_float, c_int32, c_size_t, c_uint8, c_uint32, c_uint64, c_void_p
 from typing import Any, List
 
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.native.mmd_anim_runtime_types import (
     MmdRuntimeFfiAppendConfig,
     MmdRuntimeFfiByteBuffer,
+    MmdRuntimeFfiGenericCurveDescriptor,
+    MmdRuntimeFfiGenericCurveInfo,
+    MmdRuntimeFfiGenericCurveKey,
     MmdRuntimeFfiIkSolveStats,
+    MmdRuntimeFfiPoseReductionReport,
     MmdRuntimeFfiPhysicsJointDesc,
     MmdRuntimeFfiHostPoseView,
     MmdRuntimeFfiPhysicsRigidbodyBinding,
@@ -23,6 +27,7 @@ from mmd_tools.core.native.mmd_anim_runtime_types import (
     MmdRuntimeFfiPhysicsStepStats,
     MmdRuntimeFfiPhysicsTickConfig,
     MmdRuntimeFfiPhysicsWorldStepReport,
+    MmdRuntimeFfiReductionTolerances,
     MmdRuntimeFfiRigBone,
     MmdRuntimeFfiRigBoneLocalAxisV2,
     MmdRuntimeFfiRigIkLink,
@@ -197,6 +202,76 @@ def setup_function_signatures(lib: CDLL) -> None:
     setup_parsed_model_signatures(lib)
     setup_rig_primitive_signatures(lib)
     setup_physics_signatures(lib)
+    setup_reduction_signatures(lib)
+
+
+def setup_reduction_signatures(lib: CDLL) -> None:
+    """Safely bind optional dense-pose reduction and generic curve symbols.
+
+    The generic curve ABI was added after the v0.3.1 runtime shipped.  Every
+    symbol is therefore optional so loading an older DLL remains successful and
+    callers can choose their dense-bake fallback explicitly.
+    """
+
+    set_sig(
+        lib,
+        "mmd_runtime_reduced_pose_create_from_dense",
+        c_uint32,
+        [
+            c_void_p,
+            c_uint64,
+            POINTER(c_float),
+            c_size_t,
+            POINTER(c_float),
+            c_size_t,
+            c_size_t,
+            c_float,
+            c_float,
+            c_uint32,
+            MmdRuntimeFfiReductionTolerances,
+            POINTER(c_void_p),
+        ],
+    )
+    set_sig(lib, "mmd_runtime_reduced_pose_free", None, [c_void_p])
+    set_sig(lib, "mmd_runtime_reduced_pose_bone_count", c_size_t, [c_void_p])
+    set_sig(lib, "mmd_runtime_reduced_pose_morph_count", c_size_t, [c_void_p])
+    set_sig(
+        lib,
+        "mmd_runtime_reduced_pose_report",
+        c_uint32,
+        [c_void_p, POINTER(MmdRuntimeFfiPoseReductionReport)],
+    )
+    set_sig(
+        lib,
+        "mmd_runtime_reduced_pose_generic_curve_info",
+        c_uint32,
+        [c_void_p, POINTER(MmdRuntimeFfiGenericCurveInfo)],
+    )
+    set_sig(
+        lib,
+        "mmd_runtime_reduced_pose_generic_curve_count",
+        c_uint32,
+        [c_void_p, POINTER(c_size_t)],
+    )
+    set_sig(
+        lib,
+        "mmd_runtime_reduced_pose_generic_curve_descriptor",
+        c_uint32,
+        [c_void_p, c_size_t, POINTER(MmdRuntimeFfiGenericCurveDescriptor)],
+    )
+    set_sig(
+        lib,
+        "mmd_runtime_reduced_pose_generic_curve_keys",
+        c_uint32,
+        [
+            c_void_p,
+            c_size_t,
+            POINTER(MmdRuntimeFfiGenericCurveKey),
+            c_size_t,
+            c_size_t,
+            POINTER(c_size_t),
+        ],
+    )
 
 
 def setup_physics_signatures(lib: CDLL) -> None:

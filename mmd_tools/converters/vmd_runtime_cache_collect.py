@@ -30,6 +30,9 @@ class RuntimeBakeCache:
     append_elapsed: float
     # Routing outcome for native physics bake (opt-in). Empty when not requested.
     physics_bake: Dict[str, Any] = field(default_factory=dict)
+    # Exact batch object consumed by cache collection; retained for optional
+    # generic pose reduction so the reducer sees identical runtime samples.
+    dense_batch_result: Any = None
 
 
 def _is_uniform_step(values: List[float], *, eps: float = 1e-9) -> bool:
@@ -260,6 +263,7 @@ def _collect_runtime_bake_cache(
     local_elapsed = 0.0
     append_elapsed = 0.0
     physics_bake: Dict[str, Any] = {"requested": bool(use_native_physics_bake), "used": False}
+    dense_batch_result = None
 
     try:
         if not context.outer_refresh_suspended:
@@ -298,6 +302,7 @@ def _collect_runtime_bake_cache(
             eval_copy_elapsed += time.perf_counter() - batch_start
 
         if batch_result is not None:
+            dense_batch_result = batch_result
             batch_mode = True
             if not physics_bake.get("used"):
                 context.logger.info(
@@ -393,6 +398,7 @@ def _collect_runtime_bake_cache(
         local_elapsed=local_elapsed,
         append_elapsed=append_elapsed,
         physics_bake=physics_bake,
+        dense_batch_result=dense_batch_result,
     )
 
 

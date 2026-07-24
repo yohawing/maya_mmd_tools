@@ -8,6 +8,7 @@ from ..qt_compat import (
     QPushButton,
     QCheckBox,
     QComboBox,
+    QSlider,
     QSpinBox,
     QDoubleSpinBox,
     QLabel,
@@ -22,9 +23,12 @@ from ..base_tab import BaseTab
 from ..combo_box_utils import add_combo_item_with_tooltip, configure_model_combo_width
 from ..import_export_view_state import ImportExportViewState
 from ...core import settings_keys as setting_keys
-from ...services.settings_service import SettingsService
+from ...services.settings_service import SettingsService, normalize_reduce_bake_quality
 from ...actions.import_vmd_action import VMD_TARGET_AUTO, VMD_TARGET_CAMERA
 import os
+
+
+_REDUCE_BAKE_QUALITY_DEFAULT = 1.0
 
 
 def _format_target_model_label(model_root, display_name):
@@ -313,8 +317,26 @@ class ImportExportTab(BaseTab):
             anim_settings_layout,
             tooltip_key="native_physics_bake",
         )
+        self.reduce_bake_keys_check = self._bind_checkbox(
+            "reduce_bake_keys",
+            setting_keys.IMPORT_ANIMATION_REDUCE_BAKE_KEYS,
+            False,
+            anim_settings_layout,
+            tooltip_key="reduce_bake_keys",
+        )
+        (
+            self.reduce_quality_row,
+            self.reduce_quality_slider,
+            self.reduce_quality_value_label,
+        ) = self._create_reduction_quality_row()
+        anim_settings_layout.addWidget(self.reduce_quality_row)
         self.bake_mode_check.toggled.connect(self._sync_native_physics_bake_enabled)
+        self.bake_mode_check.toggled.connect(self._sync_reduce_bake_keys_enabled)
+        self.bake_mode_check.toggled.connect(self._sync_reduce_bake_quality_enabled)
+        self.reduce_bake_keys_check.toggled.connect(self._sync_reduce_bake_quality_enabled)
         self._sync_native_physics_bake_enabled(self.bake_mode_check.isChecked())
+        self._sync_reduce_bake_keys_enabled(self.bake_mode_check.isChecked())
+        self._sync_reduce_bake_quality_enabled()
 
         self.animation_settings_group.setLayout(anim_settings_layout)
         model_settings_layout.addWidget(self.animation_settings_group)
@@ -516,6 +538,55 @@ class ImportExportTab(BaseTab):
         """Native physics bake is a VMD bake-mode option, not a model import option."""
         self.native_physics_bake_check.setEnabled(bool(bake_mode_enabled))
 
+    def _sync_reduce_bake_keys_enabled(self, bake_mode_enabled):
+        """Reduce Bake Keys is an opt-in control available only for Bake Motion."""
+        self.reduce_bake_keys_check.setEnabled(bool(bake_mode_enabled))
+
+    def _sync_reduce_bake_quality_enabled(self, *_args):
+        """Enable Reduce Quality only for Bake Motion with key reduction enabled."""
+        enabled = self.bake_mode_check.isChecked() and self.reduce_bake_keys_check.isChecked()
+        row = getattr(self, "reduce_quality_row", None)
+        slider = getattr(self, "reduce_quality_slider", None)
+        if row is not None:
+            row.setVisible(enabled)
+        if slider is not None:
+            slider.setEnabled(enabled)
+
+    def _create_reduction_quality_row(self):
+        """Create the embedded 0..1 Reduce Quality slider row."""
+        row = QWidget(self.animation_settings_group)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        label = QLabel(self.tr("reduce_quality", "fields"), row)
+        layout.addWidget(label)
+        slider = QSlider(Qt.Horizontal, row)
+        slider.setRange(0, 100)
+        quality = normalize_reduce_bake_quality(
+            self.settings_service.get(setting_keys.IMPORT_ANIMATION_REDUCE_QUALITY, _REDUCE_BAKE_QUALITY_DEFAULT)
+        )
+        slider.setValue(int(round(quality * 100.0)))
+        value_label = QLabel(row)
+        value_label.setMinimumWidth(38)
+        value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        layout.addWidget(slider)
+        layout.addWidget(value_label)
+        layout.addStretch()
+        slider.valueChanged.connect(self._on_reduce_quality_changed)
+        self._set_reduce_quality_value_label(value_label, slider.value())
+        slider.setToolTip(self.tr("reduce_quality", "tooltips"))
+        setattr(self, "reduce_quality_label", label)
+        return row, slider, value_label
+
+    def _set_reduce_quality_value_label(self, label, slider_value):
+        """Display the slider's quality value with stable two-decimal precision."""
+        label.setText(f"{float(slider_value) / 100.0:.2f}")
+
+    def _on_reduce_quality_changed(self, slider_value):
+        """Persist slider quality and keep its compact value label in sync."""
+        quality = normalize_reduce_bake_quality(float(slider_value) / 100.0)
+        self.settings_service.set(setting_keys.IMPORT_ANIMATION_REDUCE_QUALITY, quality)
+        self._set_reduce_quality_value_label(self.reduce_quality_value_label, slider_value)
+
     def _apply_dev_mode_visibility(self):
         """dev-only UI controls の表示/非表示を development_mode 設定に合わせる。"""
         is_dev = self.settings_service.get(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, False)
@@ -523,6 +594,7 @@ class ImportExportTab(BaseTab):
             widget.setVisible(is_dev)
         # Import scale: normal mode displays 1.0 without overwriting the persisted value.
         self._sync_import_scale_control(is_dev)
+        self._sync_reduce_bake_quality_control()
         # Export entry also depends on develop mode.
         self._apply_export_visibility()
 
@@ -547,6 +619,21 @@ class ImportExportTab(BaseTab):
             self.scale_spin.setValue(value)
         finally:
             self.scale_spin.blockSignals(blocked)
+
+    def _sync_reduce_bake_quality_control(self):
+        """Reload persisted Reduce Quality without writing it back."""
+        if not hasattr(self, "reduce_quality_slider"):
+            return
+        quality = normalize_reduce_bake_quality(
+            self.settings_service.get(setting_keys.IMPORT_ANIMATION_REDUCE_QUALITY, _REDUCE_BAKE_QUALITY_DEFAULT)
+        )
+        blocked = self.reduce_quality_slider.blockSignals(True)
+        try:
+            slider_value = int(round(quality * 100.0))
+            self.reduce_quality_slider.setValue(slider_value)
+            self._set_reduce_quality_value_label(self.reduce_quality_value_label, slider_value)
+        finally:
+            self.reduce_quality_slider.blockSignals(blocked)
 
     def _on_export_format_changed(self, export_format):
         """エクスポート形式を保存し、利用可能な export UI だけを表示する。"""
@@ -695,6 +782,9 @@ class ImportExportTab(BaseTab):
         self.import_physics_check.setText(self.tr("import_physics", "checkboxes"))
         self.bake_mode_check.setText(self.tr("bake_mode", "checkboxes"))
         self.native_physics_bake_check.setText(self.tr("native_physics_bake", "checkboxes"))
+        self.reduce_bake_keys_check.setText(self.tr("reduce_bake_keys", "checkboxes"))
+        if hasattr(self, "reduce_quality_label"):
+            self.reduce_quality_label.setText(self.tr("reduce_quality", "fields"))
         self.clear_existing_motion_check.setText(self.tr("clear_existing_motion", "checkboxes"))
         self.use_cpp_rig_nodes_check.setText(self.tr("use_cpp_rig_nodes", "checkboxes"))
         self.apply_scale_check.setText(self.tr("apply_scale", "checkboxes"))
@@ -711,6 +801,9 @@ class ImportExportTab(BaseTab):
         self.import_physics_check.setToolTip(self.tr("import_physics", "tooltips"))
         self.bake_mode_check.setToolTip(self.tr("bake_mode", "tooltips"))
         self.native_physics_bake_check.setToolTip(self.tr("native_physics_bake", "tooltips"))
+        self.reduce_bake_keys_check.setToolTip(self.tr("reduce_bake_keys", "tooltips"))
+        if hasattr(self, "reduce_quality_slider"):
+            self.reduce_quality_slider.setToolTip(self.tr("reduce_quality", "tooltips"))
         self.clear_existing_motion_check.setToolTip(self.tr("clear_existing_motion", "tooltips"))
         self.use_cpp_rig_nodes_check.setToolTip(self.tr("use_cpp_rig_nodes", "tooltips"))
         if hasattr(self, "animation_start_frame"):

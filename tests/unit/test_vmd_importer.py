@@ -53,6 +53,9 @@ class TestVmdImporter(MayaTestBase):
         self.assertEqual(kwargs["vmd_bytes"], b"Vocaloid Motion Data 0002\x00")
         self.assertTrue(kwargs["clear_existing_motion"])
         self.assertEqual(kwargs["target_model"], target_model)
+        self.assertEqual(kwargs["reduce_translate_tolerance"], 5.0e-4)
+        self.assertEqual(kwargs["reduce_rotate_tolerance"], 1.0e-4)
+        self.assertEqual(kwargs["reduce_morph_tolerance"], 1.0e-3)
 
     def test_route_detail_logs_are_debug_while_start_completion_remain_info(self):
         """Internal route/detail messages are DEBUG; start/completion stay INFO.
