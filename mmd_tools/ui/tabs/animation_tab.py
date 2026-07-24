@@ -18,6 +18,7 @@ from ..base_tab import BaseTab
 from ..widgets.body_picker_widget import BodyPickerWidget
 from ..widgets.finger_picker_widget import FingerPickerWidget
 from ..components.symbol_tool_button import MaterialSymbolToolButton
+from ...services.settings_service import SettingsService
 
 
 class AnimationTab(BaseTab):
@@ -47,6 +48,8 @@ class AnimationTab(BaseTab):
 
         visibility_layout = QHBoxLayout()
         visibility_layout.setContentsMargins(0, 0, 0, 0)
+        self.visibility_label = QLabel("Visibility:")
+        visibility_layout.addWidget(self.visibility_label)
         self.vis_checkboxes = {}
         for key, symbol in (
             ("mesh", "view_in_ar"),
@@ -152,7 +155,13 @@ class AnimationTab(BaseTab):
 
         self.tools_group.setLayout(tools_layout)
         main_layout.addWidget(self.tools_group)
+        self.refresh_development_mode_visibility()
         self.retranslateUi()
+
+    def refresh_development_mode_visibility(self):
+        """Show unfinished pose tools only in Development Mode."""
+
+        self.tools_group.setVisible(SettingsService().is_development_mode())
 
     def retranslateUi(self):
         """Update static Animator Toolset text without rebuilding picker state."""
@@ -167,6 +176,23 @@ class AnimationTab(BaseTab):
         self.select_all_btn.setText(tr("select_all"))
         self.select_all_btn.setToolTip(tr("select_all_tooltip"))
         self.clear_btn.setText(tr("clear"))
+        self.visibility_label.setText(f"{tr('visibility')}：")
+        self.body_picker.update_region_texts(
+            labels={
+                "select_all": "ALL",
+                "clear_selection": tr("clear"),
+                "reset_pose": tr("reset"),
+                "mirror_sel": tr("mirror_selection"),
+            },
+            tooltips={
+                "select_all": tr("select_all_tooltip"),
+                "clear_selection": tr("clear_tooltip"),
+                "reset_pose": tr("picker_rest_pose_tooltip"),
+                "mirror_sel": tr("mirror_selection_tooltip"),
+                "fingers_left": tr("finger_picker_tooltip"),
+                "fingers_right": tr("finger_picker_tooltip"),
+            },
+        )
         for key in ("mesh", "joints", "colliders"):
             self.vis_checkboxes[key].setText(tr(key))
         self.tools_group.setTitle(tr("tools"))

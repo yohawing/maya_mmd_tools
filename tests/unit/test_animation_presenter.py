@@ -210,6 +210,7 @@ class _FakeBodyPicker:
         self.ik_toggled = _FakeSignal()
         self.selected_regions = []
         self.tooltip = ""
+        self.additive_selection = False
 
     def set_selected_regions(self, region_ids):
         self.selected_regions = list(region_ids)
@@ -225,6 +226,7 @@ class _FakeFingerPicker:
         self.goto_body_clicked = _FakeSignal()
         self.mirror_selection_clicked = _FakeSignal()
         self.selected_regions = []
+        self.additive_selection = False
 
     def set_selected_regions(self, region_ids):
         self.selected_regions = list(region_ids)
@@ -289,7 +291,33 @@ class _FakeView:
         }
 
     def tr(self, key, _category=None):
-        return key
+        return {
+            "reset": "Rest Pose",
+            "return_to_motion": "Return to Motion",
+            "rest_pose_tooltip": "Display model Rest Pose",
+            "return_to_motion_tooltip": "Return to Motion",
+            "no_selectable_bones": "No selectable bones",
+            "selected_all_bones": "Selected all bones ({count})",
+            "select_all_failed": "Failed to select all bones",
+            "node_not_found": "Not found: {name}",
+            "unassigned_bones": "Unassigned: {names}",
+            "selection_failed": "Selection failed: {names}",
+            "no_joints_selected": "No joints selected",
+            "copied_pose": "Copied pose ({count} joints)",
+            "copy_failed": "Copy failed: {error}",
+            "no_pose_copied": "No pose copied",
+            "pasted_pose": "Pasted pose ({count} joints)",
+            "paste_failed": "Paste failed: {error}",
+            "rest_pose_applied": "Rest Pose ({count} joints)",
+            "motion_restored": "Motion restored ({count} joints)",
+            "rest_pose_failed": "Rest Pose failed: {error}",
+            "mirrored_pose": "Mirrored pose",
+            "mirror_failed": "Mirror failed: {error}",
+            "baked_animation": "Baked animation",
+            "bake_failed": "Bake failed: {error}",
+            "cleaned_curves": "Cleaned curves",
+            "clean_failed": "Clean failed: {error}",
+        }.get(key, key)
 
 
 class _FakeAppState:
@@ -423,7 +451,10 @@ class _FakeAdapter:
         return []
 
     def select(self, nodes, replace=True):
-        self.selected = list(nodes)
+        if replace:
+            self.selected = list(nodes)
+        else:
+            self.selected = list(dict.fromkeys([*self.selected, *nodes]))
 
     def xform(self, node, **kwargs):
         if kwargs.get("query"):
@@ -689,7 +720,7 @@ class TestBodyPickerPresenter(unittest.TestCase):
         presenter, view, _, adapter = self._make_with_bones(bone_names={})
         presenter.on_body_region_clicked("head")
         self.assertEqual(adapter.selected, [])
-        self.assertIn("未割当", view.status_label.text())
+        self.assertIn("Unassigned", view.status_label.text())
 
     def test_goto_finger_switches_tab(self):
         presenter, view, _, _ = self._make_with_bones()
@@ -731,7 +762,30 @@ class TestBodyPickerPresenter(unittest.TestCase):
         view.select_all_btn.clicked.emit()
 
         self.assertEqual(adapter.selected, ["head_jnt", "neck_jnt", "arm_jnt"])
-        self.assertIn("全ボーンを選択", view.status_label.text())
+        self.assertIn("Selected all bones", view.status_label.text())
+
+    def test_shift_click_adds_picker_bone_to_current_selection(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭", "neck_jnt": "首"},
+        )
+        adapter.selected = ["head_jnt"]
+        view.body_picker.additive_selection = True
+
+        view.body_picker.region_clicked.emit("neck")
+
+        self.assertEqual(adapter.selected, ["head_jnt", "neck_jnt"])
+        self.assertEqual(set(view.body_picker.selected_regions), {"head", "neck"})
+
+    def test_shift_rectangle_adds_regions_to_current_selection(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭", "neck_jnt": "首", "arm_jnt": "左腕"},
+        )
+        adapter.selected = ["head_jnt"]
+        view.body_picker.additive_selection = True
+
+        view.body_picker.regions_selected.emit(["neck", "left_upper_arm"])
+
+        self.assertEqual(adapter.selected, ["head_jnt", "neck_jnt", "arm_jnt"])
 
     def test_body_picker_all_button_selects_every_model_joint(self):
         presenter, view, _, adapter = self._make_with_bones(

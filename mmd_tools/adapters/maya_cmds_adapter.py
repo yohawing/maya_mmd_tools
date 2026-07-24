@@ -209,16 +209,14 @@ class MayaCmdsAdapter:
         the regular ``cmds.select`` behavior.
         """
 
-        if not replace:
-            return self.select(nodes, replace=False)
-
         from maya.api import OpenMaya as om
 
         node_list = [nodes] if isinstance(nodes, str) else list(nodes or [])
         selection = om.MSelectionList()
         for node in node_list:
             selection.add(node)
-        om.MGlobal.setActiveSelectionList(selection, om.MGlobal.kReplaceList)
+        mode = om.MGlobal.kReplaceList if replace else om.MGlobal.kAddToList
+        om.MGlobal.setActiveSelectionList(selection, mode)
         return node_list
 
     def undo_info(self, **kwargs):

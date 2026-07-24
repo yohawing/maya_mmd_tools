@@ -305,12 +305,33 @@ class SvgPickerWidget(QWidget):
         self._selection_rect: QRectF | None = None
         self._selected_regions: set[str] = set()
         self._enabled_regions = set(self._region_paths)
+        self._additive_selection = False
 
     @property
     def region_ids(self) -> tuple[str, ...]:
         """Return semantic region IDs in front-to-back hit-test order."""
 
         return tuple(self._region_paths)
+
+    @property
+    def additive_selection(self) -> bool:
+        """Whether the currently emitted picker action has Shift held."""
+
+        return self._additive_selection
+
+    def update_region_texts(
+        self,
+        *,
+        labels: dict[str, str] | None = None,
+        tooltips: dict[str, str] | None = None,
+    ) -> None:
+        """Update localized overlay text without rebuilding picker geometry."""
+
+        if labels:
+            self._region_labels.update(labels)
+        if tooltips:
+            self._tooltip_labels.update(tooltips)
+        self.update()
 
     def set_enabled_regions(self, region_ids) -> None:
         """Disable unavailable model regions while keeping the artwork visible."""
@@ -472,7 +493,9 @@ class SvgPickerWidget(QWidget):
             if self._pressed_region:
                 # A picker click is latency-sensitive: commit on press rather
                 # than waiting for release and Maya's next UI cycle.
+                self._additive_selection = bool(event.modifiers() & Qt.ShiftModifier)
                 self.shape_clicked.emit(self._pressed_region)
+                self._additive_selection = False
                 self._drag_origin = None
             else:
                 self._drag_origin = QPointF(position)
@@ -481,7 +504,9 @@ class SvgPickerWidget(QWidget):
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
             if self._selection_rect is not None:
+                self._additive_selection = bool(event.modifiers() & Qt.ShiftModifier)
                 self.shapes_selected.emit(self._regions_in_rect(self._selection_rect))
+                self._additive_selection = False
         self._pressed_region = None
         self._drag_origin = None
         self._selection_rect = None

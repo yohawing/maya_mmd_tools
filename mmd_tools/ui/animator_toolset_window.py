@@ -56,6 +56,14 @@ class AnimatorToolsetWindow(QWidget):
         self.setWindowTitle(translator.translate("window_title", "animation_toolset"))
         if hasattr(self, "animation_tab"):
             self.animation_tab.retranslateUi()
+        if hasattr(self, "animation_presenter"):
+            self.animation_presenter.retranslate_ui()
+
+    def refresh_development_mode_visibility(self):
+        """Refresh Development Mode-only controls in the standalone window."""
+
+        if hasattr(self, "animation_tab"):
+            self.animation_tab.refresh_development_mode_visibility()
 
     def show_window(self, dockable=True):
         """Show as a dockable Maya panel or a floating window."""

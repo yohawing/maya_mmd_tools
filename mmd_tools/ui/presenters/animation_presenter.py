@@ -59,6 +59,7 @@ class AnimationPresenter:
         self._bone_name_to_joint: dict[str, str] = {}
         self._morph_sliders: dict[str, object] = {}
         self._morph_rows: dict[str, object] = {}
+        self._morph_group_headers: list[tuple[object, str, int]] = []
         self._morph_targets: dict[str, list[tuple[str, int]]] = {}
         self._network_morph_targets: dict[str, list[str]] = {}
         self._morph_indices: dict[str, int] = {}
@@ -132,6 +133,15 @@ class AnimationPresenter:
         except (RuntimeError, TypeError):
             pass
 
+    def retranslate_ui(self):
+        """Retranslate presenter-owned dynamic controls without reloading the model."""
+
+        self._on_rest_pose_state_changed(self.rest_pose_manager.state())
+        for header, category_key, count in self._morph_group_headers:
+            expanded = header.isChecked()
+            title = self.view.tr(category_key, "animation_toolset")
+            header.setText(f"{'▾' if expanded else '▸'}  {title}    {count}")
+
     # -- Signal handlers -----------------------------------------------
 
     def on_current_model_changed(self, model_root: str):
@@ -162,19 +172,25 @@ class AnimationPresenter:
             pass
         self.view.status_label.setText("")
 
+    def _set_status(self, key: str, **values) -> None:
+        """Show a localized Animator status message."""
+
+        message = self.view.tr(key, "animation_toolset")
+        self.view.status_label.setText(message.format(**values))
+
     def on_select_all(self):
         """Select every indexed joint belonging to the current MMD model."""
 
         joints = list(self._all_model_joints)
         self._set_picker_selection_from_nodes(joints)
         if not joints:
-            self.view.status_label.setText("(選択できるボーンがありません)")
+            self._set_status("no_selectable_bones")
             return
         try:
             self._select_nodes(joints)
-            self.view.status_label.setText(f"全ボーンを選択 ({len(joints)})")
+            self._set_status("selected_all_bones", count=len(joints))
         except Exception:
-            self.view.status_label.setText("(全ボーンの選択に失敗)")
+            self._set_status("select_all_failed")
 
     def on_display_frame_item_clicked(self, item, _column=0):
         node_name = item.data(0, _USER_ROLE)
@@ -185,21 +201,31 @@ class AnimationPresenter:
             self._select_nodes([node_name])
             self.view.status_label.setText(item.text(0))
         except Exception:
-            self.view.status_label.setText(f"(not found: {node_name})")
+            self._set_status("node_not_found", name=node_name)
 
     def on_body_region_clicked(self, region_id: str):
-        self._select_picker_regions([region_id], picker="body")
+        self._select_picker_regions(
+            [region_id], picker="body", additive=self.view.body_picker.additive_selection
+        )
 
     def on_body_regions_selected(self, region_ids: list[str]):
-        self._select_picker_regions(region_ids, picker="body")
+        self._select_picker_regions(
+            region_ids, picker="body", additive=self.view.body_picker.additive_selection
+        )
 
     def on_finger_region_clicked(self, region_id: str):
-        self._select_picker_regions([region_id], picker="finger")
+        self._select_picker_regions(
+            [region_id], picker="finger", additive=self.view.finger_picker.additive_selection
+        )
 
     def on_finger_regions_selected(self, region_ids: list[str]):
-        self._select_picker_regions(region_ids, picker="finger")
+        self._select_picker_regions(
+            region_ids, picker="finger", additive=self.view.finger_picker.additive_selection
+        )
 
-    def _select_picker_regions(self, region_ids: list[str], *, picker: str) -> None:
+    def _select_picker_regions(
+        self, region_ids: list[str], *, picker: str, additive: bool = False
+    ) -> None:
         """Resolve one or more picker regions and update the UI before Maya blocks."""
 
         if picker == "body":
@@ -216,16 +242,23 @@ class AnimationPresenter:
             if joint and joint not in joints:
                 joints.append(joint)
 
-        self._set_picker_selection_from_nodes(joints)
+        current = []
+        if additive:
+            try:
+                current = self.maya_adapter.ls(selection=True) or []
+            except Exception:
+                current = []
+        combined = list(dict.fromkeys([*current, *joints]))
+        self._set_picker_selection_from_nodes(combined)
         self.view.status_label.setText("、".join(labels))
         if not joints:
             if labels:
-                self.view.status_label.setText(f"(未割当: {'、'.join(labels)})")
+                self._set_status("unassigned_bones", names="、".join(labels))
             return
         try:
-            self._select_nodes(joints)
+            self._select_nodes(joints, replace=not additive)
         except Exception:
-            self.view.status_label.setText(f"(選択失敗: {'、'.join(labels)})")
+            self._set_status("selection_failed", names="、".join(labels))
 
     def _set_picker_selection_from_nodes(self, nodes: list[str]) -> None:
         """Reflect Maya joint names as strong picker highlights synchronously."""
@@ -249,14 +282,14 @@ class AnimationPresenter:
         if hasattr(self.view.finger_picker, "set_selected_regions"):
             self.view.finger_picker.set_selected_regions(selected_ids(_FINGER_REGIONS))
 
-    def _select_nodes(self, nodes: list[str]) -> None:
+    def _select_nodes(self, nodes: list[str], *, replace: bool = True) -> None:
         """Use the API 2.0 selection path when the production adapter exposes it."""
 
         select_fast = getattr(self.maya_adapter, "select_fast", None)
         if callable(select_fast):
-            select_fast(nodes, replace=True)
+            select_fast(nodes, replace=replace)
         else:
-            self.maya_adapter.select(nodes, replace=True)
+            self.maya_adapter.select(nodes, replace=replace)
 
     def on_goto_finger(self):
         self.view.picker_tabs.setCurrentIndex(self.view.TAB_FINGER)
@@ -554,6 +587,7 @@ class AnimationPresenter:
         self._last_morph_refresh_time = None
         self._morph_sliders.clear()
         self._morph_rows.clear()
+        self._morph_group_headers.clear()
         self._morph_targets.clear()
         self._network_morph_targets.clear()
         self._morph_indices.clear()
@@ -692,15 +726,16 @@ class AnimationPresenter:
 
         layout = self.view.morph_groups_layout
         categories = [
-            (self.view.tr("category_brow", "animation_toolset"), categorized.eyebrow),
-            (self.view.tr("category_eye", "animation_toolset"), categorized.eye),
-            (self.view.tr("category_mouth", "animation_toolset"), categorized.mouth),
-            (self.view.tr("category_other", "animation_toolset"), categorized.other),
+            ("category_brow", categorized.eyebrow),
+            ("category_eye", categorized.eye),
+            ("category_mouth", categorized.mouth),
+            ("category_other", categorized.other),
         ]
 
-        for cat_name, morphs in categories:
+        for category_key, morphs in categories:
             if not morphs:
                 continue
+            cat_name = self.view.tr(category_key, "animation_toolset")
             group = QWidget()
             group.setObjectName("MorphPickerGroup")
             group.setStyleSheet(
@@ -712,6 +747,7 @@ class AnimationPresenter:
             header = QPushButton(f"▾  {cat_name}    {len(morphs)}")
             header.setCheckable(True)
             header.setChecked(True)
+            self._morph_group_headers.append((header, category_key, len(morphs)))
             header.setStyleSheet(
                 "QPushButton { text-align: left; padding: 5px 7px; background: #454545; "
                 "color: #dedede; border: none; font-weight: 600; } "
@@ -785,10 +821,11 @@ class AnimationPresenter:
                 expanded,
                 panel=content,
                 button=header,
-                title=cat_name,
+                title_key=category_key,
                 count=len(morphs),
             ):
                 panel.setVisible(expanded)
+                title = self.view.tr(title_key, "animation_toolset")
                 button.setText(f"{'▾' if expanded else '▸'}  {title}    {count}")
 
             header.toggled.connect(toggle_group)
@@ -970,40 +1007,40 @@ class AnimationPresenter:
 
         joints = self._selected_joints()
         if not joints:
-            self.view.status_label.setText("No joints selected")
+            self._set_status("no_joints_selected")
             return
         result = CopyPoseAction(self.maya_adapter).execute(
             CopyPoseRequest(joints=joints)
         )
         if result.succeeded:
             self._pose_clipboard = result.pose
-            self.view.status_label.setText(f"Copied pose ({len(result.pose)} joints)")
+            self._set_status("copied_pose", count=len(result.pose))
         else:
-            self.view.status_label.setText(f"Copy failed: {result.error}")
+            self._set_status("copy_failed", error=result.error)
 
     def _on_paste_pose(self):
         from ...actions.pose_actions import PastePoseAction, PastePoseRequest
 
         if not self._pose_clipboard:
-            self.view.status_label.setText("No pose copied")
+            self._set_status("no_pose_copied")
             return
         result = PastePoseAction(self.maya_adapter).execute(
             PastePoseRequest(pose=self._pose_clipboard)
         )
         if result.succeeded:
-            self.view.status_label.setText(
-                f"Pasted pose ({result.applied_count} joints)"
-            )
+            self._set_status("pasted_pose", count=result.applied_count)
         else:
-            self.view.status_label.setText(f"Paste failed: {result.error}")
+            self._set_status("paste_failed", error=result.error)
 
     def _on_reset_pose(self):
         result = self.rest_pose_manager.toggle(self.app_state.current_model_root or "")
         if result.succeeded:
-            action = "Rest Pose" if result.active else "Motion"
-            self.view.status_label.setText(f"{action} ({result.joint_count} joints)")
+            self._set_status(
+                "rest_pose_applied" if result.active else "motion_restored",
+                count=result.joint_count,
+            )
         else:
-            self.view.status_label.setText(f"Rest Pose failed: {result.error}")
+            self._set_status("rest_pose_failed", error=result.error)
 
     def _on_rest_pose_state_changed(self, result):
         """Synchronize Animation Toolset controls with the shared session."""
@@ -1029,42 +1066,42 @@ class AnimationPresenter:
 
         joints = self._selected_joints()
         if not joints:
-            self.view.status_label.setText("No joints selected")
+            self._set_status("no_joints_selected")
             return
         result = MirrorPoseAction(self.maya_adapter).execute(
             MirrorPoseRequest(joints=joints)
         )
         if result.succeeded:
-            self.view.status_label.setText("Mirrored pose")
+            self._set_status("mirrored_pose")
         else:
-            self.view.status_label.setText(f"Mirror: {result.error}")
+            self._set_status("mirror_failed", error=result.error)
 
     def _on_bake_animation(self):
         from ...actions.pose_actions import BakeAnimationAction, BakeAnimationRequest
 
         joints = self._selected_joints()
         if not joints:
-            self.view.status_label.setText("No joints selected")
+            self._set_status("no_joints_selected")
             return
         result = BakeAnimationAction(self.maya_adapter).execute(
             BakeAnimationRequest(joints=joints)
         )
         if result.succeeded:
-            self.view.status_label.setText("Baked animation")
+            self._set_status("baked_animation")
         else:
-            self.view.status_label.setText(f"Bake: {result.error}")
+            self._set_status("bake_failed", error=result.error)
 
     def _on_clean_curves(self):
         from ...actions.pose_actions import CleanCurvesAction, CleanCurvesRequest
 
         joints = self._selected_joints()
         if not joints:
-            self.view.status_label.setText("No joints selected")
+            self._set_status("no_joints_selected")
             return
         result = CleanCurvesAction(self.maya_adapter).execute(
             CleanCurvesRequest(joints=joints)
         )
         if result.succeeded:
-            self.view.status_label.setText("Cleaned curves")
+            self._set_status("cleaned_curves")
         else:
-            self.view.status_label.setText(f"Clean: {result.error}")
+            self._set_status("clean_failed", error=result.error)

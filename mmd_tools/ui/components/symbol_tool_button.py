@@ -19,9 +19,9 @@ class MaterialSymbolToolButton(QPushButton):
         self._has_icon = path.is_file()
         if self._has_icon:
             self.setIcon(QIcon(str(path)))
-            self.setIconSize(QSize(22, 22))
+            self.setIconSize(QSize(44, 44))
         super().setText("" if self._has_icon else text)
-        self.setFixedSize(32, 32)
+        self.setFixedSize(52, 52)
         self.setCheckable(checkable)
         self.setToolTip(text)
         self.setAccessibleName(text)
