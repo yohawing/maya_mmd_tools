@@ -143,6 +143,7 @@ class _FakeListItem:
     def __init__(self, text, data=None):
         self._text = text
         self._data = data
+        self._tooltip = ""
         self.hidden = None
 
     def text(self):
@@ -153,6 +154,12 @@ class _FakeListItem:
 
     def data(self, _role):
         return self._data
+
+    def setToolTip(self, tooltip):
+        self._tooltip = tooltip
+
+    def toolTip(self):
+        return self._tooltip
 
     def setHidden(self, hidden):
         self.hidden = hidden
@@ -397,6 +404,31 @@ class TestBonePresenterHeadless(unittest.TestCase):
         )
         self.assertEqual([item.text() for item in view.bone_list.items], ["2:足（leg_jnt）"])
 
+    def test_load_bones_hides_namespace_and_path_but_preserves_full_node(self):
+        joint = "|root|outer:model:manipulation_center"
+        relatives = {
+            (TEST_MODEL, (("allDescendents", True), ("type", "joint"))): [joint],
+        }
+        adapter = _FakeMayaAdapter(relatives=relatives)
+        presenter, view, app_state, _ = _make_presenter(adapter=adapter)
+        app_state.current_model_root = TEST_MODEL
+        attrs = {
+            (joint, ATTR_MMD_BONE_INDEX): 0,
+            (joint, ATTR_MMD_BONE_NAME): "操作中心",
+            (joint, ATTR_MMD_BONE_NAME_EN): "Manipulation Center",
+        }
+
+        with patch.object(bone_presenter_module, "get_attribute", side_effect=_attr_getter(attrs)):
+            presenter.load_bones()
+
+        item = view.bone_list.items[0]
+        self.assertEqual(
+            item.text(),
+            "0:操作中心（manipulation_center） [Manipulation Center]",
+        )
+        self.assertEqual(item.data(bone_presenter_module.Qt.UserRole), joint)
+        self.assertEqual(item.toolTip(), joint)
+
     def test_filter_bones_uses_display_japanese_english_and_joint_names(self):
         presenter, _, _, _ = _make_presenter()
         center_item = _FakeListItem("0:センター（center_jnt）", "center_jnt")
@@ -550,6 +582,7 @@ class TestBonePresenterHeadless(unittest.TestCase):
                     self.assertNotIn(ATTR_MMD_GRANT_PARENT, attributes)
                     self.assertNotIn(ATTR_MMD_GRANT_RATE, attributes)
                     self.assertEqual(list_item.text(), "3:センター（center_jnt） [Center]")
+                    self.assertEqual(list_item.toolTip(), TEST_BONE)
                     self.assertEqual(app_state.status_messages, ["Applied bone changes: center_jnt"])
 
 

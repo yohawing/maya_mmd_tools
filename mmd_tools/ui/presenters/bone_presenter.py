@@ -36,6 +36,7 @@ from ..qt_compat import (
 )
 from .list_presenter_helpers import (
     apply_list_filter,
+    format_indexed_node_label,
     reload_for_current_model_change,
     select_existing_user_role_nodes,
     tr_message,
@@ -154,17 +155,12 @@ class BonePresenter:
             name_en = get_attribute(joint, ATTR_MMD_BONE_NAME_EN)
             bone_index = get_attribute(joint, ATTR_MMD_BONE_INDEX)
 
-            # リストアイテムの表示形式: "インデックス:日本語名（Maya名）"
-            if bone_index is not None and bone_index >= 0:
-                display_text = f"{bone_index}:{name_jp}（{joint}）"
-            else:
-                display_text = f"-:{name_jp}（{joint}）"
-
-            if name_en:
-                display_text += f" [{name_en}]"
+            index_label = bone_index if bone_index is not None and bone_index >= 0 else "-"
+            display_text = format_indexed_node_label(index_label, name_jp, joint, name_en)
 
             item = QListWidgetItem(display_text)
             item.setData(Qt.UserRole, joint)  # 実際のジョイント名を保存
+            item.setToolTip(joint)
             self.view.bone_list.addItem(item)
             self.bone_list_items[joint] = item
 
@@ -747,15 +743,16 @@ class BonePresenter:
                 name_jp = self.view.bone_name_jp_edit.text()
                 name_en = self.view.bone_name_en_edit.text()
 
-                # 表示フォーマット更新
-                if bone_index >= 0:
-                    display_text = f"{bone_index}:{name_jp}（{self.current_bone}）"
-                else:
-                    display_text = f"-:{name_jp}（{self.current_bone}）"
-
-                if name_en:
-                    display_text += f" [{name_en}]"
-                item.setText(display_text)
+                index_label = bone_index if bone_index is not None and bone_index >= 0 else "-"
+                item.setText(
+                    format_indexed_node_label(
+                        index_label,
+                        name_jp,
+                        self.current_bone,
+                        name_en,
+                    )
+                )
+                item.setToolTip(self.current_bone)
 
             logger.info(f"Applied changes to bone '{self.current_bone}'")
             self.app_state.emit_status(tr_message_format("bone_changes_applied", bone=self.current_bone))

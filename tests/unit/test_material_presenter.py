@@ -7,6 +7,7 @@ from tests.common.mock_ui import attach_mocks
 install_headless_ui_stubs()
 
 from mmd_tools.ui.presenters.material_presenter import MaterialPresenter  # noqa: E402
+from mmd_tools.ui.qt_compat import Qt  # noqa: E402
 from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
@@ -201,6 +202,33 @@ class TestMaterialPresenter(unittest.TestCase):
         info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
         self.assertIn(expected, debug_messages)
         self.assertNotIn(expected, info_messages)
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_load_materials_hides_namespace_and_path_but_preserves_full_node(
+        self,
+        mock_maya_attribute_utils,
+    ):
+        material = "|root|outer:model:face_material"
+        self.mock_app_state.current_model_root = "test_model"
+        self.mock_maya_adapter.object_exists.return_value = True
+        self.mock_maya_adapter.list_relatives.return_value = ["meshShape"]
+        self.mock_maya_adapter.list_connections.side_effect = lambda nodes, **kwargs: (
+            ["SG"] if kwargs.get("type") == "shadingEngine" else [material]
+        )
+        self.mock_maya_adapter.ls.return_value = [material]
+        self.mock_maya_adapter.attribute_exists.return_value = True
+        mock_maya_attribute_utils.get_attribute.side_effect = lambda node, attr: {
+            ATTR_MMD_MATERIAL_NAME: "顔材質",
+            ATTR_MMD_MATERIAL_NAME_EN: "Face",
+        }.get(attr, "")
+        self.mock_view.material_list.count.return_value = 1
+
+        self.presenter.load_materials()
+
+        item = self.mock_view.material_list.addItem.call_args[0][0]
+        self.assertEqual(item.text(), "1:顔材質（face_material） [Face]")
+        self.assertEqual(item.data(Qt.UserRole), material)
+        self.assertEqual(item.toolTip(), material)
 
     @patch("mmd_tools.ui.presenters.material_presenter.logger")
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
