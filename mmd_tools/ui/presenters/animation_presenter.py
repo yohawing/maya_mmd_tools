@@ -9,6 +9,7 @@ from ...core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_BONE_NAME,
+    ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
     ATTR_MMD_MORPH_DATA,
 )
@@ -57,6 +58,10 @@ class AnimationPresenter:
         self.maya_adapter = maya_adapter
         self._picker_groups: list[PickerGroup] = []
         self._bone_name_to_joint: dict[str, str] = {}
+        self._picker_english_tooltips: dict[str, dict[str, str]] = {
+            "body": {},
+            "finger": {},
+        }
         self._morph_sliders: dict[str, object] = {}
         self._morph_rows: dict[str, object] = {}
         self._morph_group_headers: list[tuple[object, str, int]] = []
@@ -158,6 +163,7 @@ class AnimationPresenter:
             expanded = header.isChecked()
             title = self.view.tr(category_key, "animation_toolset")
             header.setText(f"{'▾' if expanded else '▸'}  {title}    {count}")
+        self._retranslate_picker_bone_tooltips()
 
     # -- Signal handlers -----------------------------------------------
 
@@ -368,6 +374,8 @@ class AnimationPresenter:
         self._all_model_joints = [bone_map[index] for index in sorted(bone_map)]
         self._bone_name_to_joint = self._build_bone_name_map(model_root)
         self._sync_picker_regions()
+        self._build_picker_english_tooltips()
+        self._retranslate_picker_bone_tooltips()
         bone_display_names = self._build_bone_display_name_map(bone_map)
         morph_metadata = self._read_morph_metadata(model_root)
         self._morph_controller = self._find_morph_controller(model_root)
@@ -420,6 +428,50 @@ class AnimationPresenter:
         }
         if hasattr(self.view.finger_picker, "set_enabled_regions"):
             self.view.finger_picker.set_enabled_regions(finger_ids)
+
+    def _build_picker_english_tooltips(self) -> None:
+        """Cache PMX English bone names for locale-aware picker tooltips."""
+
+        from ..widgets.body_picker_widget import _BODY_REGIONS
+        from ..widgets.finger_picker_widget import _FINGER_REGIONS
+
+        for picker, regions in (("body", _BODY_REGIONS), ("finger", _FINGER_REGIONS)):
+            english = {}
+            for region in regions:
+                normalized = normalize_mmd_bone_name(region["bone_name"]) or region["bone_name"]
+                joint = self._bone_name_to_joint.get(normalized)
+                if not joint:
+                    continue
+                try:
+                    if self.maya_adapter.attribute_exists(ATTR_MMD_BONE_NAME_EN, joint):
+                        name = self.maya_adapter.get_attr(f"{joint}.{ATTR_MMD_BONE_NAME_EN}")
+                        if name:
+                            english[region["id"]] = str(name)
+                except Exception:
+                    continue
+            self._picker_english_tooltips[picker] = english
+
+    def _retranslate_picker_bone_tooltips(self) -> None:
+        """Use PMX English names outside Japanese, falling back to PMX Japanese."""
+
+        from ..widgets.body_picker_widget import _BODY_REGIONS
+        from ..widgets.finger_picker_widget import _FINGER_REGIONS
+
+        language = self.view.current_language()
+        for picker, widget, regions in (
+            ("body", self.view.body_picker, _BODY_REGIONS),
+            ("finger", self.view.finger_picker, _FINGER_REGIONS),
+        ):
+            english = self._picker_english_tooltips[picker]
+            tooltips = {
+                region["id"]: (
+                    english.get(region["id"], region["bone_name"])
+                    if language != "ja"
+                    else region["bone_name"]
+                )
+                for region in regions
+            }
+            widget.update_region_texts(tooltips=tooltips)
 
     def _clear_all(self):
         self._picker_groups = []

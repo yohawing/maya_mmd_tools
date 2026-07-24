@@ -215,12 +215,16 @@ class _FakeBodyPicker:
         self.selected_regions = []
         self.tooltip = ""
         self.additive_selection = False
+        self.region_tooltips = {}
 
     def set_selected_regions(self, region_ids):
         self.selected_regions = list(region_ids)
 
     def setToolTip(self, text):
         self.tooltip = text
+
+    def update_region_texts(self, *, labels=None, tooltips=None):
+        self.region_tooltips.update(tooltips or {})
 
 
 class _FakeFingerPicker:
@@ -231,9 +235,13 @@ class _FakeFingerPicker:
         self.mirror_selection_clicked = _FakeSignal()
         self.selected_regions = []
         self.additive_selection = False
+        self.region_tooltips = {}
 
     def set_selected_regions(self, region_ids):
         self.selected_regions = list(region_ids)
+
+    def update_region_texts(self, *, labels=None, tooltips=None):
+        self.region_tooltips.update(tooltips or {})
 
 
 class _FakeTabWidget:
@@ -322,6 +330,9 @@ class _FakeView:
             "cleaned_curves": "Cleaned curves",
             "clean_failed": "Clean failed: {error}",
         }.get(key, key)
+
+    def current_language(self):
+        return "en"
 
 
 class _FakeAppState:
@@ -719,6 +730,21 @@ class TestBodyPickerPresenter(unittest.TestCase):
         self.assertEqual(adapter.selected, ["head_jnt"])
         self.assertEqual(view.status_label.text(), "頭")
         self.assertEqual(view.body_picker.selected_regions, ["head"])
+
+    def test_picker_tooltip_uses_english_metadata_outside_japanese(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        adapter._attrs[("head_jnt", "mmd_bone_name_en")] = "Head"
+
+        presenter._build_picker_english_tooltips()
+        presenter._retranslate_picker_bone_tooltips()
+
+        self.assertEqual(view.body_picker.region_tooltips["head"], "Head")
+
+        view.current_language = lambda: "ja"
+        presenter._retranslate_picker_bone_tooltips()
+        self.assertEqual(view.body_picker.region_tooltips["head"], "頭")
 
     def test_region_click_unmapped_bone(self):
         presenter, view, _, adapter = self._make_with_bones(bone_names={})

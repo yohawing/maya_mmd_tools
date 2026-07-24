@@ -163,6 +163,11 @@ class AnimationTab(BaseTab):
 
         self.tools_group.setVisible(SettingsService().is_development_mode())
 
+    def current_language(self) -> str:
+        """Return the active UI locale for presenter-owned dynamic text."""
+
+        return self._translator.get_language()
+
     def retranslateUi(self):
         """Update static Animator Toolset text without rebuilding picker state."""
         def tr(key):
