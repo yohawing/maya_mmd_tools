@@ -53,7 +53,7 @@ def control_rig_edit_routes_for_joints(joints, *, cmds_module=None) -> Dict[str,
                 continue
             control = _resolve_uuid(cmds, control_uuid)
             for target in _expanded_authored_plugs(binding):
-                channel = target.rsplit(".", 1)[-1]
+                channel = _control_channel_for_target(target)
                 if channel in _CHANNELS:
                     routes.setdefault(joint, {})[channel] = (control, channel)
     return routes
@@ -89,7 +89,7 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                     if target in claimed_targets:
                         continue
                     claimed_targets.add(target)
-                    channel = target.rsplit(".", 1)[-1]
+                    channel = _control_channel_for_target(target)
                     if channel not in _CHANNELS:
                         raise MmdControlRigBuildError(f"unsupported authored channel: {target}")
                     control_plug = f"{control}.{channel}"
@@ -250,13 +250,23 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
 def _expanded_authored_plugs(binding: Mapping[str, Any]) -> Tuple[str, ...]:
     plugs = []
     for plug in binding.get("authoredPlugs", []):
-        if plug.endswith(".translate"):
+        if plug.endswith((".translate", ".baseTranslate")):
             plugs.extend(f"{plug}{axis}" for axis in "XYZ")
-        elif plug.endswith(".rotate"):
+        elif plug.endswith((".rotate", ".baseRotate")):
             plugs.extend(f"{plug}{axis}" for axis in "XYZ")
         else:
             plugs.append(str(plug))
     return tuple(plugs)
+
+
+def _control_channel_for_target(target: str) -> str:
+    """Map MMD append child names onto the equivalent control channel."""
+    channel = target.rsplit(".", 1)[-1]
+    if channel.startswith("baseRotate") and channel[-1:] in "XYZ":
+        return f"rotate{channel[-1]}"
+    if channel.startswith("baseTranslate") and channel[-1:] in "XYZ":
+        return f"translate{channel[-1]}"
+    return channel
 
 
 def _require_animation_source(cmds, source: str, target: str) -> None:

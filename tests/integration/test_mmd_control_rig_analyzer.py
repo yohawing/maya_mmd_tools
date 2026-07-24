@@ -253,6 +253,96 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertTrue(cmds.ls(original_curve_uuid, long=True))
         self.assertTrue(cmds.isConnected(source, target))
 
+    def test_append_compound_authored_plugs_enter_edit_and_bake(self):
+        """Expand mmdAppend compound inputs while transferring ownership."""
+        root = self._import_fixture()
+        rig = build_mmd_control_rig(root)
+        append_node = (cmds.ls(type="mmdAppend") or [None])[0]
+        self.assertTrue(append_node)
+        append_joint = (
+            cmds.listConnections(
+                f"{append_node}.outputRotate",
+                source=False,
+                destination=True,
+                type="joint",
+            )
+            or []
+        )[0]
+        append_targets = (
+            f"{append_node}.baseRotate",
+            f"{append_node}.baseTranslate",
+        )
+        cmds.setKeyframe(append_node, attribute="baseRotateX", time=0, value=0.0)
+        cmds.setKeyframe(append_node, attribute="baseRotateX", time=10, value=15.0)
+        cmds.setKeyframe(append_node, attribute="baseTranslateX", time=0, value=0.0)
+        cmds.setKeyframe(append_node, attribute="baseTranslateX", time=10, value=0.5)
+        original_sources = {}
+        for target in append_targets:
+            source = (
+                cmds.listConnections(
+                    f"{target}X",
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                )
+                or []
+            )
+            self.assertEqual(len(source), 1)
+            original_sources[target] = source[0]
+
+        metadata = read_mmd_control_rig_metadata(root)
+        binding = metadata["bindings"]["groove"]
+        binding["joint"] = (cmds.ls(append_joint, long=True) or [append_joint])[0]
+        binding["inputKind"] = INPUT_APPEND_BASE
+        binding["authoredPlugs"] = list(append_targets)
+        cmds.setAttr(
+            f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}",
+            json.dumps(metadata, ensure_ascii=False),
+            type="string",
+        )
+
+        edit = enter_mmd_control_rig_edit(root)
+
+        self.assertEqual(edit["state"], "EDIT")
+        control = rig.controls["groove"]
+        for source_name, control_name in (
+            ("baseRotate", "rotate"),
+            ("baseTranslate", "translate"),
+        ):
+            for axis in "XYZ":
+                self.assertTrue(
+                    cmds.isConnected(
+                        f"{control}.{control_name}{axis}",
+                        f"{append_node}.{source_name}{axis}",
+                    )
+                )
+        source = (
+            cmds.listConnections(
+                f"{append_node}.baseRotateX",
+                source=True,
+                destination=False,
+                plugs=True,
+            )
+            or []
+        )
+        self.assertEqual(len(source), 1)
+        self.assertEqual(source[0].rsplit(".", 1)[-1], "rotateX")
+        self.assertEqual(
+            cmds.ls(source[0].split(".", 1)[0], uuid=True),
+            cmds.ls(control, uuid=True),
+        )
+
+        baked = bake_mmd_control_rig(root)
+
+        self.assertEqual(baked["state"], "BAKED")
+        for target, control_name in zip(append_targets, ("rotate", "translate")):
+            self.assertTrue(
+                cmds.isConnected(original_sources[target], f"{target}X")
+            )
+            self.assertFalse(
+                cmds.isConnected(f"{control}.{control_name}X", f"{target}X")
+            )
+
     def test_bake_failure_restores_edit_graph_and_metadata(self):
         root = self._import_fixture()
         self.assertTrue(
