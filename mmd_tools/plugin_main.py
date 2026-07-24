@@ -246,6 +246,9 @@ def install_mmd_menu():
     cmds.menuItem(
         "MMDToolsMenuItem",
         label="MMD Editor",
+        image=os.path.join(
+            os.path.dirname(__file__), "ui", "assets", "app", "mmd_editor.svg"
+        ),
         command=lambda *args: open_main_window(dockable=False),
         parent="MMD",
     )
@@ -523,6 +526,9 @@ def initializePlugin(mobject):
         mmd_material_morph_eval_node.register(plugin_fn)
         _trace_initialize_step("material-morph:done")
         mmd_morph_controller_node.register(plugin_fn)
+        from mmd_tools.ui import morph_controller_ae
+
+        morph_controller_ae.install()
         _trace_initialize_step("morph-controller:done")
         if not _scene_file_is_being_read():
             _soft_sync_existing_glsl_diffuse_contracts()
