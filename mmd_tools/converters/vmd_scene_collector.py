@@ -31,7 +31,10 @@ from mmd_tools.converters.vmd_camera_animation import (
     MMD_CAMERA_EXPR_SCALE_ATTR,
     mmd_camera_rotation_from_maya_forward_up,
 )
+from mmd_tools.converters.vmd_append_decomposition import collect_append_info
 from mmd_tools.converters.vmd_ik_enabled_animation import collect_ik_nodes_by_bone_name
+from mmd_tools.converters.vmd_ik_passthrough import collect_mmd_ik_passthrough_info
+from mmd_tools.converters.vmd_import_state import get_stored_bind_translate
 
 
 _BONE_EXPORT_ATTRS = (
@@ -89,6 +92,9 @@ class VmdSceneCollector:
         motion_scale = float(options.get("motion_scale", 1.0) or 1.0)
         bone_bind_poses = options.get("bone_bind_poses") or {}
         control_rig_routes = self._control_rig_export_routes(target_model)
+        authored_routes = self._scene_authored_input_routes(joints)
+        for joint, attrs in control_rig_routes.items():
+            authored_routes.setdefault(joint, {}).update(attrs)
 
         return {
             "model_name": str(options.get("model_name") or self._model_name(target_model)),
@@ -98,7 +104,8 @@ class VmdSceneCollector:
                 end_frame,
                 motion_scale=motion_scale,
                 bone_bind_poses=bone_bind_poses,
-                input_routes=control_rig_routes,
+                input_routes=authored_routes,
+                dense_sample=bool(control_rig_routes),
             ),
             "morph_frames": self.collect_morph_frames(blend_shapes, start_frame, end_frame),
             "camera_frames": self.collect_camera_frames(cameras, start_frame, end_frame),
@@ -118,27 +125,43 @@ class VmdSceneCollector:
         motion_scale: float = 1.0,
         bone_bind_poses: Optional[Mapping[str, Sequence[float]]] = None,
         input_routes: Optional[Mapping[str, Mapping[str, tuple[str, str]]]] = None,
+        dense_sample: bool = False,
     ) -> list[dict]:
         """Collect keyed local joint transform frames."""
         bone_bind_poses = bone_bind_poses or {}
         input_routes = input_routes or {}
+        rotation_context = _build_rotation_export_context(joints)
         frames = []
+        dense_frames = None
+        if dense_sample:
+            all_keyed = []
+            for joint in joints:
+                long_names = cmds.ls(joint, long=True) or [joint]
+                route = input_routes.get(str(long_names[0]), {})
+                all_keyed.extend(_routed_key_times(joint, route))
+            ranged = _filter_frame_range(all_keyed, start_frame, end_frame)
+            if ranged:
+                dense_frames = list(
+                    range(int(math.floor(min(ranged))), int(math.ceil(max(ranged))) + 1)
+                )
         for joint in joints:
             bone_name = self._mmd_bone_name(joint)
             bind_pose = _resolve_bind_pose(bone_bind_poses, bone_name, joint)
             long_names = cmds.ls(joint, long=True) or [joint]
             route = input_routes.get(str(long_names[0]), {})
-            keyed_frames = _filter_frame_range(
+            sparse_frames = _filter_frame_range(
                 _routed_key_times(joint, route),
                 start_frame,
                 end_frame,
             )
+            keyed_frames = dense_frames if dense_frames is not None and sparse_frames else sparse_frames
             for frame_number in keyed_frames:
                 rotation = _maya_joint_rotate_to_vmd_quaternion(
                     joint,
                     _routed_plug_float(joint, "rotateX", frame_number, route),
                     _routed_plug_float(joint, "rotateY", frame_number, route),
                     _routed_plug_float(joint, "rotateZ", frame_number, route),
+                    rotation_context.get(str(long_names[0])),
                 )
                 frames.append(
                     {
@@ -216,6 +239,32 @@ class VmdSceneCollector:
                     for axis in "XYZ":
                         attr = f"{base_attr}{axis}"
                         routes.setdefault(joint, {})[attr] = (node, attr)
+        return routes
+
+    def _scene_authored_input_routes(
+        self,
+        joints: Sequence[str],
+    ) -> dict[str, dict[str, tuple[str, str]]]:
+        routes = {}
+        append_info = collect_append_info()
+        ik_info = collect_mmd_ik_passthrough_info()
+        for joint_name in joints:
+            long_names = cmds.ls(joint_name, long=True) or [joint_name]
+            joint = str(long_names[0])
+            append = append_info.get(joint)
+            if append:
+                node = str(append["node"])
+                for source_attr, target_attr in append.get("attr_map", {}).items():
+                    routes.setdefault(joint, {})[source_attr] = (node, target_attr)
+            ik = ik_info.get(joint)
+            if ik:
+                node = str(ik["node"])
+                slot = int(ik["input_slot"])
+                for axis in "XYZ":
+                    routes.setdefault(joint, {})[f"rotate{axis}"] = (
+                        node,
+                        f"inputRotate[{slot}].inputRotateElement{axis}",
+                    )
         return routes
 
     def collect_morph_frames(
@@ -437,7 +486,49 @@ def _key_times(node: str, attrs: Iterable[str]) -> list[float]:
         except Exception:
             values = []
         times.extend(float(value) for value in values)
+        for source_node in _upstream_anim_curves(plug):
+            try:
+                values = cmds.keyframe(source_node, query=True, timeChange=True) or []
+                times.extend(float(value) for value in values)
+            except Exception:
+                continue
     return sorted(set(times))
+
+
+def _upstream_anim_curves(plug: str) -> set[str]:
+    curves = set()
+    try:
+        queue = list(
+            cmds.listConnections(
+                plug, source=True, destination=False, plugs=True
+            )
+            or []
+        )
+    except (RuntimeError, ValueError):
+        return curves
+    visited = set()
+    while queue:
+        source = str(queue.pop())
+        node = source.split(".", 1)[0]
+        if node in visited:
+            continue
+        visited.add(node)
+        node_type = str(cmds.nodeType(node))
+        if node_type.startswith("animCurve"):
+            curves.add(node)
+            continue
+        if not (
+            node_type in {"pairBlend", "blendWeighted", "unitConversion"}
+            or node_type.startswith("animBlendNode")
+        ):
+            continue
+        queue.extend(
+            cmds.listConnections(
+                node, source=True, destination=False, plugs=True
+            )
+            or []
+        )
+    return curves
 
 
 def _routed_key_times(
@@ -523,7 +614,9 @@ def _resolve_bind_pose(
     bone_name: str,
     joint: str,
 ) -> tuple[float, float, float]:
-    value = bind_poses.get(bone_name, bind_poses.get(joint, (0.0, 0.0, 0.0)))
+    value = bind_poses.get(bone_name, bind_poses.get(joint))
+    if value is None:
+        value = get_stored_bind_translate(joint) or (0.0, 0.0, 0.0)
     if len(value) != 3:
         raise ValueError("bone bind pose must contain 3 numbers")
     return (float(value[0]), float(value[1]), float(value[2]))
@@ -542,13 +635,110 @@ def _maya_translate_to_vmd_position(
     return ((tx - bx) / scale, (ty - by) / scale, -(tz - bz) / scale)
 
 
+def _build_rotation_export_context(
+    joints: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    canonical = {
+        int(cmds.getAttr(f"{joint}.mmd_bone_index")): str(
+            (cmds.ls(joint, long=True) or [joint])[0]
+        )
+        for joint in joints
+        if _has_attr(joint, "mmd_bone_index")
+    }
+    index_by_joint = {joint: index for index, joint in canonical.items()}
+    parent_by_index = {}
+    for index, joint in canonical.items():
+        parent = (cmds.listRelatives(joint, parent=True, fullPath=True) or [None])[0]
+        parent_by_index[index] = index_by_joint.get(parent)
+
+    bind_worlds = {}
+
+    def bind_world(index: int) -> om.MMatrix:
+        if index in bind_worlds:
+            return bind_worlds[index]
+        joint = canonical[index]
+        translate = get_stored_bind_translate(joint)
+        if translate is None:
+            translate = cmds.getAttr(f"{joint}.translate")[0]
+        transform = om.MTransformationMatrix()
+        transform.setTranslation(om.MVector(*translate), om.MSpace.kTransform)
+        orient = _joint_orient_quaternion(joint)
+        transform.setRotation(orient)
+        local = transform.asMatrix()
+        parent_index = parent_by_index[index]
+        result = local * bind_world(parent_index) if parent_index is not None else local
+        bind_worlds[index] = result
+        return result
+
+    for index in canonical:
+        bind_world(index)
+
+    no_orient = {}
+    for index, matrix in bind_worlds.items():
+        value = om.MMatrix()
+        value[12], value[13], value[14] = matrix[12], matrix[13], matrix[14]
+        no_orient[index] = value
+
+    result = {}
+    for index, joint in canonical.items():
+        parent_index = parent_by_index[index]
+        parent_bind = bind_worlds[parent_index] if parent_index is not None else om.MMatrix()
+        parent_no_orient = no_orient[parent_index] if parent_index is not None else om.MMatrix()
+        result[joint] = {
+            "jointOrient": _joint_orient_quaternion(joint),
+            "rotateOrder": int(cmds.getAttr(f"{joint}.rotateOrder")),
+            "bindCorrection": om.MTransformationMatrix(
+                bind_worlds[index] * no_orient[index].inverse()
+            ).rotation(asQuaternion=True),
+            "parentCorrection": om.MTransformationMatrix(
+                parent_no_orient * parent_bind.inverse()
+            ).rotation(asQuaternion=True),
+        }
+    return result
+
+
+def _joint_orient_quaternion(joint: str) -> om.MQuaternion:
+    values = cmds.getAttr(f"{joint}.jointOrient")[0]
+    return om.MEulerRotation(
+        math.radians(float(values[0])),
+        math.radians(float(values[1])),
+        math.radians(float(values[2])),
+    ).asQuaternion()
+
+
 def _maya_joint_rotate_to_vmd_quaternion(
     joint: str,
     rx: float,
     ry: float,
     rz: float,
+    export_context: Optional[Mapping[str, Any]] = None,
 ) -> tuple[float, float, float, float]:
     """Convert Maya XYZ joint.rotate degrees to a JO-aware VMD quaternion."""
+    if export_context:
+        order = int(export_context["rotateOrder"])
+        order_map = (
+            om.MEulerRotation.kXYZ,
+            om.MEulerRotation.kYZX,
+            om.MEulerRotation.kZXY,
+            om.MEulerRotation.kXZY,
+            om.MEulerRotation.kYXZ,
+            om.MEulerRotation.kZYX,
+        )
+        euler = om.MEulerRotation(
+            math.radians(rx),
+            math.radians(ry),
+            math.radians(rz),
+            order_map[order] if 0 <= order < len(order_map) else order_map[0],
+        )
+        q_rotate = euler.asQuaternion()
+        q_total = q_rotate * export_context["jointOrient"]
+        q_maya = (
+            export_context["bindCorrection"].inverse()
+            * q_total
+            * export_context["parentCorrection"].inverse()
+        )
+        q_maya.normalizeIt()
+        return (-q_maya.x, -q_maya.y, q_maya.z, q_maya.w)
     joint_orient = _joint_orient_values(joint)
     if joint_orient is not None:
         openmaya_result = _openmaya_joint_rotate_to_vmd_quaternion(rx, ry, rz, joint_orient)

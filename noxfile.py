@@ -1246,6 +1246,23 @@ def tests(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def mmd_control_rig_vmd_roundtrip_smoke(session: nox.Session) -> None:
+    """Run the focused MMD control-rig import/edit/bake/VMD round-trip gate."""
+    maya_version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    session.run(
+        sys.executable,
+        "tests/run_tests.py",
+        "--type",
+        "integration",
+        "--test",
+        "test_mmd_control_rig_analyzer",
+        "--maya",
+        maya_version,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def gui_tests(session: nox.Session) -> None:
     """Run existing Maya GUI tests."""
     args = session.posargs or ["--maya_version", DEFAULT_MAYA_VERSION]

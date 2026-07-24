@@ -27,6 +27,7 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
     analyze_mmd_control_rig,
 )
 from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
+from mmd_tools.converters.vmd_ik_enabled_animation import collect_ik_nodes_by_bone_name
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.io.vmd_exporter import VmdExporter
@@ -334,6 +335,80 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         }
         self.assertTrue({"左足ＩＫ", "右足ＩＫ"}.intersection(exported_ik) or {"左足IK", "右足IK"}.intersection(exported_ik))
 
+    def test_control_rig_vmd_roundtrip_preserves_world_matrices_and_ik(self):
+        root = self._import_fixture()
+        self.assertTrue(
+            import_mmd_file(
+                _VMD_PATH,
+                options={"target_model": root, "pmx_path": _PMX_PATH},
+            )
+        )
+        rig = build_mmd_control_rig(root)
+        enter_mmd_control_rig_edit(root)
+        frame = 3
+        center = rig.controls["center"]
+        edited_tx = float(cmds.getAttr(f"{center}.translateX", time=frame)) + 1.25
+        keyed = cmds.setKeyframe(
+            center, attribute="translateX", time=frame, value=edited_tx
+        )
+        self.assertTrue(keyed)
+        self.assertIn(
+            frame,
+            cmds.keyframe(
+                center, attribute="translateX", query=True, timeChange=True
+            )
+            or [],
+        )
+        left_ik = rig.controls["left_foot_ik"]
+        cmds.setKeyframe(left_ik, attribute="ikEnabled", time=frame, value=0)
+        bake_mmd_control_rig(root)
+
+        frames = (0, 1, 3, 5)
+        source_world = self._capture_indexed_world_matrices(root, frames)
+        source_ik = self._capture_ik_states(root, frames)
+        collected = VmdSceneCollector().collect({"target_model": root})
+        collected_bone_times = {
+            item["frame_number"] for item in collected["bone_frames"]
+        }
+        self.assertIn(frame, collected_bone_times)
+        output_path = self.get_temp_filename("mmd_control_rig_roundtrip.vmd")
+        VmdExporter().export_vmd_animation(output_path, collected)
+        parsed = VmdData().parse_file(output_path)
+        self.assertTrue(any(item.frame_number == frame for item in parsed.bone_frames))
+        self.assertTrue(any(item.frame_number == frame for item in parsed.ik_show_hide_frames))
+
+        cmds.file(new=True, force=True)
+        fresh_root = self._import_fixture()
+        self.assertTrue(
+            import_mmd_file(
+                output_path,
+                options={"target_model": fresh_root, "pmx_path": _PMX_PATH},
+            )
+        )
+        fresh_world = self._capture_indexed_world_matrices(fresh_root, frames)
+        fresh_ik = self._capture_ik_states(fresh_root, frames)
+
+        self.assertEqual(set(source_world), set(fresh_world))
+        self.assertEqual(source_ik, fresh_ik)
+        matrix_errors = [
+            (abs(actual - expected), key, index, actual, expected)
+            for key in source_world
+            for index, (actual, expected) in enumerate(
+                zip(source_world[key], fresh_world[key])
+            )
+        ]
+        self.assertLess(
+            max(matrix_errors)[0],
+            5e-3,
+            {
+                "largest": sorted(matrix_errors, reverse=True)[:10],
+                "earliest": sorted(
+                    (item for item in matrix_errors if item[0] > 1e-4),
+                    key=lambda item: (item[1], item[2]),
+                )[:20],
+            },
+        )
+
     def _capture_edit_graph(self, journal):
         plugs = {
             row[key]
@@ -394,6 +469,18 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         finally:
             cmds.currentTime(restore, edit=True)
         return result
+
+    def _capture_ik_states(self, root, frames):
+        nodes = collect_ik_nodes_by_bone_name(target_model=root)
+        restore = cmds.currentTime(query=True)
+        try:
+            return {
+                (name, frame): bool(cmds.getAttr(f"{node}.enabled", time=frame))
+                for name, node in nodes.items()
+                for frame in frames
+            }
+        finally:
+            cmds.currentTime(restore, edit=True)
 
     def test_remove_fails_closed_when_user_node_is_parented_under_control_group(self):
         root = self._import_fixture()
