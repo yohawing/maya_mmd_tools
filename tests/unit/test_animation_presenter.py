@@ -49,6 +49,10 @@ class _FakeSignal:
     def connect(self, cb):
         self.callbacks.append(cb)
 
+    def disconnect(self, cb):
+        if cb in self.callbacks:
+            self.callbacks.remove(cb)
+
     def emit(self, *args):
         for cb in self.callbacks:
             cb(*args)
@@ -1227,6 +1231,46 @@ class TestToolsSection(unittest.TestCase):
         view.body_picker.reset_pose_clicked.emit()
 
         self.assertEqual(presenter.rest_pose_manager.toggle_calls, ["test_model"])
+
+    def test_disconnect_is_idempotent_and_removes_rest_pose_listener(self):
+        presenter, _, _, _ = self._make()
+        manager = presenter.rest_pose_manager
+
+        presenter.disconnect_signals()
+        presenter.disconnect_signals()
+
+        self.assertEqual(manager.listeners, [])
+
+    def test_deleted_qt_control_unsubscribes_stale_rest_pose_listener(self):
+        presenter, view, _, _ = self._make()
+        manager = presenter.rest_pose_manager
+
+        def raise_deleted(_text):
+            raise RuntimeError("Internal C++ object already deleted")
+
+        view.tool_buttons["reset"].setText = raise_deleted
+        manager.toggle("test_model")
+
+        self.assertEqual(manager.listeners, [])
+
+    def test_new_presenter_can_subscribe_after_previous_one_disconnects(self):
+        presenter, _, _, _ = self._make()
+        manager = presenter.rest_pose_manager
+        presenter.disconnect_signals()
+        replacement_view = _FakeView()
+
+        with patch(self._POPULATE_PATH):
+            replacement = AnimationPresenter(
+                replacement_view,
+                _FakeAppState(model_root="test_model"),
+                maya_adapter=_FakeAdapter(),
+                rest_pose_manager=manager,
+            )
+
+        self.assertEqual(manager.listeners, [replacement._on_rest_pose_state_changed])
+        manager.toggle("test_model")
+        self.assertEqual(replacement_view.tool_buttons["reset"].text, "Return to Motion")
+        replacement.disconnect_signals()
 
     def test_mirror_stub_shows_error(self):
         presenter, view, _, adapter = self._make()

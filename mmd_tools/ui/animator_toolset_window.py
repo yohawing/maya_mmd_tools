@@ -47,8 +47,28 @@ class AnimatorToolsetWindow(QWidget):
             self.animation_tab, self.app_state
         )
         layout.addWidget(self.animation_tab)
+        self._cleanup_done = False
+        self.animation_tab.destroyed.connect(
+            self.animation_presenter.disconnect_signals
+        )
+        self.destroyed.connect(self._on_destroyed)
 
         self.app_state.refresh_model_list()
+
+    def _cleanup(self, restore_motion=True):
+        """Detach presenter listeners before Maya destroys docked Qt children."""
+        if self._cleanup_done:
+            return
+        self._cleanup_done = True
+        self.animation_presenter.disconnect_signals()
+        if restore_motion:
+            from ..actions.rest_pose_action import get_rest_pose_manager
+
+            get_rest_pose_manager().return_to_motion()
+
+    def _on_destroyed(self, *_args):
+        """Cover workspaceControl teardown paths that skip ``closeEvent``."""
+        self._cleanup()
 
     def retranslateUi(self):
         """Translate standalone window chrome and its tab in place."""
@@ -103,6 +123,7 @@ class AnimatorToolsetWindow(QWidget):
 
     def close_window(self):
         """Close and clean up the workspace control."""
+        self._cleanup()
         ws = self.WORKSPACE_CONTROL_NAME
         if cmds.workspaceControl(ws, exists=True):
             cmds.workspaceControl(ws, e=True, close=True)
@@ -113,8 +134,5 @@ class AnimatorToolsetWindow(QWidget):
 
     def closeEvent(self, event):
         """Restore motion even when Maya closes the widget directly."""
-        from ..actions.rest_pose_action import get_rest_pose_manager
-
-        get_rest_pose_manager().return_to_motion()
-        self.animation_presenter.disconnect_signals()
+        self._cleanup()
         super().closeEvent(event)

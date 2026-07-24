@@ -439,6 +439,13 @@ class RestPoseManager:
         for callback in tuple(self._listeners):
             try:
                 callback(result)
+            except RuntimeError as exc:
+                message = str(exc)
+                if "Internal C++ object" in message and "already deleted" in message:
+                    self.remove_listener(callback)
+                    logger.warning("Removed deleted Qt Rest Pose listener: %s", message)
+                    continue
+                logger.error("Rest Pose listener failed", exc_info=True)
             except Exception:
                 logger.error("Rest Pose listener failed", exc_info=True)
 

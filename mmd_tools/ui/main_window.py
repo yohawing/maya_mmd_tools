@@ -148,8 +148,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         from ..actions.rest_pose_action import get_rest_pose_manager
 
-        get_rest_pose_manager().return_to_motion()
         self.bone_presenter.disconnect_signals()
+        get_rest_pose_manager().return_to_motion()
         self.save_settings()
         super().closeEvent(event)
 

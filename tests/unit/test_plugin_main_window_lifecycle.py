@@ -264,6 +264,7 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             unittest.mock.call(
                 "MMDToolsMenuItem",
                 label="MMD Editor",
+                image=unittest.mock.ANY,
                 command=unittest.mock.ANY,
                 parent="MMD",
             ),

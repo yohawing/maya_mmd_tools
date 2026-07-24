@@ -69,6 +69,7 @@ class AnimationPresenter:
         self._last_morph_refresh_time: float | None = None
         self._pose_clipboard: dict | None = None
         self._all_model_joints: list[str] = []
+        self._disposed = False
         self.rest_pose_manager = rest_pose_manager or get_rest_pose_manager()
         self.rest_pose_manager.add_listener(self._on_rest_pose_state_changed)
         self.connect_signals()
@@ -119,11 +120,27 @@ class AnimationPresenter:
             )
 
     def disconnect_signals(self):
+        """Release shared listeners and timers exactly once.
+
+        Maya may destroy a docked view through its workspaceControl before the
+        Python window receives ``closeEvent``.  Mark the presenter disposed
+        first so a Rest Pose notification racing with teardown cannot touch
+        already-deleted Qt objects.
+        """
+        if self._disposed:
+            return
+        self._disposed = True
         self._end_morph_edit()
         if self._morph_refresh_timer is not None:
-            self._morph_refresh_timer.stop()
+            try:
+                self._morph_refresh_timer.stop()
+            except RuntimeError:
+                pass
             self._morph_refresh_timer = None
-        self.rest_pose_manager.remove_listener(self._on_rest_pose_state_changed)
+        try:
+            self.rest_pose_manager.remove_listener(self._on_rest_pose_state_changed)
+        except (RuntimeError, TypeError):
+            pass
         try:
             self.app_state.current_model_changed.disconnect(self.on_current_model_changed)
         except (RuntimeError, TypeError):
@@ -1044,22 +1061,31 @@ class AnimationPresenter:
 
     def _on_rest_pose_state_changed(self, result):
         """Synchronize Animation Toolset controls with the shared session."""
-        reset_button = self.view.tool_buttons.get("reset")
-        if reset_button is not None and hasattr(reset_button, "setText"):
-            key = "return_to_motion" if result.active else "reset"
-            reset_button.setText(self.view.tr(key, "animation_toolset"))
-        if hasattr(self.view.picker_tabs, "setEnabled"):
-            self.view.picker_tabs.setEnabled(not result.active)
-        for key, button in self.view.tool_buttons.items():
-            if key != "reset" and hasattr(button, "setEnabled"):
-                button.setEnabled(not result.active)
-        if hasattr(self.view.body_picker, "setToolTip"):
-            self.view.body_picker.setToolTip(
-                self.view.tr(
-                    "return_to_motion_tooltip" if result.active else "rest_pose_tooltip",
-                    "animation_toolset",
+        if self._disposed:
+            return
+        try:
+            reset_button = self.view.tool_buttons.get("reset")
+            if reset_button is not None and hasattr(reset_button, "setText"):
+                key = "return_to_motion" if result.active else "reset"
+                reset_button.setText(self.view.tr(key, "animation_toolset"))
+            if hasattr(self.view.picker_tabs, "setEnabled"):
+                self.view.picker_tabs.setEnabled(not result.active)
+            for key, button in self.view.tool_buttons.items():
+                if key != "reset" and hasattr(button, "setEnabled"):
+                    button.setEnabled(not result.active)
+            if hasattr(self.view.body_picker, "setToolTip"):
+                self.view.body_picker.setToolTip(
+                    self.view.tr(
+                        "return_to_motion_tooltip" if result.active else "rest_pose_tooltip",
+                        "animation_toolset",
+                    )
                 )
-            )
+        except RuntimeError:
+            # A workspaceControl can delete its Qt children without delivering
+            # closeEvent to this Python wrapper.  Treat a dead view as a final
+            # lifecycle signal and unsubscribe immediately.
+            logger.debug("Animator Toolset view was deleted during Rest Pose update")
+            self.disconnect_signals()
 
     def _on_mirror_pose(self):
         from ...actions.pose_actions import MirrorPoseAction, MirrorPoseRequest

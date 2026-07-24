@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from mmd_tools.actions.rest_pose_action import RestPoseManager
+from mmd_tools.actions.rest_pose_action import RestPoseManager, RestPoseResult
 
 
 class _FakeCmds:
@@ -163,6 +163,26 @@ class TestRestPoseManager(unittest.TestCase):
         self.manager.return_to_motion()
 
         self.assertEqual(states, [(True, "modelA"), (False, "modelA")])
+
+    def test_notify_prunes_deleted_qt_listener_and_continues(self):
+        received = []
+
+        def deleted_listener(_result):
+            raise RuntimeError(
+                "Internal C++ object (MaterialSymbolToolButton) already deleted."
+            )
+
+        def live_listener(result):
+            received.append(result.active)
+
+        self.manager.add_listener(deleted_listener)
+        self.manager.add_listener(live_listener)
+
+        self.manager._notify(RestPoseResult(True, True))
+
+        self.assertNotIn(deleted_listener, self.manager._listeners)
+        self.assertIn(live_listener, self.manager._listeners)
+        self.assertEqual(received, [True])
 
     def test_before_scene_change_returns_motion_before_save_or_open(self):
         with patch(
