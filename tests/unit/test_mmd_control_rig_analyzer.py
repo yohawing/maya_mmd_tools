@@ -17,8 +17,12 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
 )
 from mmd_tools.core.mmd_control_rig_builder import (
     _apply_fallback_role_aliases,
+    _upgrade_binding_authority,
     _parent_zero_groups,
     _should_build_role_control,
+    resolve_mmd_control_rig_binding_authored_plugs,
+    resolve_mmd_control_rig_binding_ik_solvers,
+    resolve_mmd_control_rig_binding_joint,
 )
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
@@ -56,7 +60,98 @@ class _HierarchyFake:
         self.parent_by_child[child] = parent
 
 
+class _UuidBindingFake:
+    """Resolve renamed scene nodes from stable UUIDs in binding metadata."""
+
+    def __init__(self):
+        self.uuid_to_node = {
+            "joint-uuid": "|model_NS|center_RENAMED",
+            "solver-uuid": "|model_NS|ik_RENAMED",
+            "append-uuid": "|model_NS|append_RENAMED",
+        }
+        self.node_to_uuid = {
+            node: uuid for uuid, node in self.uuid_to_node.items()
+        }
+
+    def ls(self, value, long=False, uuid=False):  # noqa: A002
+        if uuid:
+            return [self.node_to_uuid[value]] if value in self.node_to_uuid else []
+        if value in self.uuid_to_node:
+            return [self.uuid_to_node[value]]
+        if value in self.node_to_uuid:
+            return [value]
+        return []
+
+
 class TestMmdControlRigAnalyzer(unittest.TestCase):
+    def test_legacy_binding_metadata_upgrades_to_uuid_authority(self):
+        cmds = _UuidBindingFake()
+        metadata = {
+            "version": 1,
+            "bindings": {
+                "center": {
+                    "joint": "|model_NS|center_RENAMED",
+                    "ikSolvers": ["|model_NS|ik_RENAMED"],
+                    "authoredPlugs": ["|model_NS|append_RENAMED.baseRotate"],
+                }
+            },
+        }
+
+        _upgrade_binding_authority(cmds, metadata)
+
+        binding = metadata["bindings"]["center"]
+        self.assertEqual(metadata["version"], 2)
+        self.assertEqual(binding["jointUuid"], "joint-uuid")
+        self.assertEqual(binding["ikSolverUuids"], ["solver-uuid"])
+        self.assertEqual(
+            binding["authoredPlugRefs"],
+            [{"nodeUuid": "append-uuid", "attribute": "baseRotate"}],
+        )
+
+    def test_binding_uuid_fields_resolve_renamed_nodes_and_legacy_names_remain_supported(self):
+        cmds = _UuidBindingFake()
+        binding = {
+            "joint": "|model_NS|center_OLD",
+            "jointUuid": "joint-uuid",
+            "ikSolvers": ["|model_NS|ik_OLD"],
+            "ikSolverUuids": ["solver-uuid"],
+            "authoredPlugs": ["|model_NS|append_OLD.baseRotate"],
+            "authoredPlugRefs": [
+                {"nodeUuid": "append-uuid", "attribute": "baseRotate"}
+            ],
+        }
+
+        self.assertEqual(
+            resolve_mmd_control_rig_binding_joint(cmds, binding),
+            "|model_NS|center_RENAMED",
+        )
+        self.assertEqual(
+            resolve_mmd_control_rig_binding_ik_solvers(cmds, binding),
+            ("|model_NS|ik_RENAMED",),
+        )
+        self.assertEqual(
+            resolve_mmd_control_rig_binding_authored_plugs(cmds, binding),
+            ("|model_NS|append_RENAMED.baseRotate",),
+        )
+
+        legacy = {
+            "joint": "|model_NS|center_RENAMED",
+            "ikSolvers": ["|model_NS|ik_RENAMED"],
+            "authoredPlugs": ["|model_NS|append_RENAMED.baseRotate"],
+        }
+        self.assertEqual(
+            resolve_mmd_control_rig_binding_joint(cmds, legacy),
+            "|model_NS|center_RENAMED",
+        )
+        self.assertEqual(
+            resolve_mmd_control_rig_binding_ik_solvers(cmds, legacy),
+            ("|model_NS|ik_RENAMED",),
+        )
+        self.assertEqual(
+            resolve_mmd_control_rig_binding_authored_plugs(cmds, legacy),
+            ("|model_NS|append_RENAMED.baseRotate",),
+        )
+
     def test_resolves_mvp_roles_and_semistandard_fallbacks(self):
         facts = [
             _bone(0, "センター"),

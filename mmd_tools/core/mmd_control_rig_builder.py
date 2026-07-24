@@ -25,7 +25,8 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
 
 
 CONTROL_RIG_METADATA_SCHEMA = "mmd_tools.mmd_control_rig"
-CONTROL_RIG_METADATA_VERSION = 1
+CONTROL_RIG_METADATA_VERSION = 2
+_LEGACY_CONTROL_RIG_METADATA_VERSIONS = frozenset({1})
 CONTROL_RIG_ATTACHED = "ATTACHED"
 CONTROL_RIG_EDIT = "EDIT"
 CONTROL_RIG_BAKED = "BAKED"
@@ -176,7 +177,7 @@ def build_mmd_control_rig(
                 cmds.sets(control, add=selection_set)
                 controls[role] = str(control)
                 zero_groups[role] = str(zero)
-                bindings[role] = _binding_metadata(role_binding)
+                bindings[role] = _binding_metadata(role_binding, cmds_module=cmds)
 
             # Parent only concrete nodes.  Semantic fallback aliases are
             # added afterwards and must never be interpreted as new DAG
@@ -188,6 +189,7 @@ def build_mmd_control_rig(
                 controls,
                 zero_groups,
                 bindings,
+                cmds_module=cmds,
             )
 
             nodes = _owned_nodes(cmds, control_group, selection_set)
@@ -310,13 +312,11 @@ def _read_metadata(cmds, root: str) -> Optional[Dict[str, Any]]:
         raise MmdControlRigBuildError("invalid MMD control-rig metadata JSON") from exc
     if not isinstance(metadata, dict):
         raise MmdControlRigBuildError("MMD control-rig metadata must be an object")
-    required = {
-        "schema": CONTROL_RIG_METADATA_SCHEMA,
-        "version": CONTROL_RIG_METADATA_VERSION,
-    }
-    for key, expected in required.items():
-        if metadata.get(key) != expected:
-            raise MmdControlRigBuildError(f"unsupported control-rig metadata {key}")
+    if metadata.get("schema") != CONTROL_RIG_METADATA_SCHEMA:
+        raise MmdControlRigBuildError("unsupported control-rig metadata schema")
+    version = metadata.get("version")
+    if version not in _LEGACY_CONTROL_RIG_METADATA_VERSIONS | {CONTROL_RIG_METADATA_VERSION}:
+        raise MmdControlRigBuildError("unsupported control-rig metadata version")
     if metadata.get("state") not in CONTROL_RIG_STATES:
         raise MmdControlRigBuildError("unsupported control-rig metadata state")
     for key in ("modelRootUuid", "controlGroupUuid", "selectionSetUuid"):
@@ -324,6 +324,7 @@ def _read_metadata(cmds, root: str) -> Optional[Dict[str, Any]]:
             raise MmdControlRigBuildError(f"control-rig metadata missing {key}")
     if not isinstance(metadata.get("nodes"), list):
         raise MmdControlRigBuildError("control-rig metadata nodes must be an array")
+    _upgrade_binding_authority(cmds, metadata)
     return metadata
 
 
@@ -423,20 +424,142 @@ def _fallback_alias_target(role_binding: MmdControlRigRoleBinding) -> Optional[s
     return str(fallback)
 
 
-def _binding_metadata(role_binding: MmdControlRigRoleBinding) -> Dict[str, Any]:
+def _binding_metadata(
+    role_binding: MmdControlRigRoleBinding,
+    *,
+    cmds_module=None,
+) -> Dict[str, Any]:
     """Serialize one role binding for persisted control-rig metadata."""
     binding = role_binding.binding
     if binding is None:
         raise MmdControlRigBuildError(
             f"control-rig role has no binding: {role_binding.role}"
         )
-    return {
+    metadata = {
         "joint": binding.joint,
         "inputKind": binding.input_kind,
         "authoredPlugs": list(binding.authored_plugs),
         "ikSolvers": list(binding.ik_solvers),
         "fallback": role_binding.fallback,
     }
+    if cmds_module is not None:
+        metadata.update(
+            {
+                "jointUuid": _node_uuid(cmds_module, binding.joint),
+                "ikSolverUuids": [
+                    _node_uuid(cmds_module, solver) for solver in binding.ik_solvers
+                ],
+                "authoredPlugRefs": _authored_plug_refs(
+                    cmds_module, binding.authored_plugs
+                ),
+            }
+        )
+    return metadata
+
+
+def _authored_plug_refs(cmds, plugs) -> List[Dict[str, str]]:
+    refs = []
+    for plug in plugs:
+        node, attribute = str(plug).rsplit(".", 1)
+        refs.append(
+            {
+                "nodeUuid": _node_uuid(cmds, node),
+                "attribute": attribute,
+            }
+        )
+    return refs
+
+
+def _upgrade_binding_authority(cmds, metadata: Dict[str, Any]) -> None:
+    """Add UUID authority to v1 metadata while retaining its name fields."""
+    for binding in metadata.get("bindings", {}).values():
+        if not isinstance(binding, dict):
+            continue
+        if "jointUuid" not in binding:
+            uuid = _try_node_uuid(cmds, binding.get("joint"))
+            if uuid:
+                binding["jointUuid"] = uuid
+        if "ikSolverUuids" not in binding:
+            solver_uuids = [
+                _try_node_uuid(cmds, solver)
+                for solver in binding.get("ikSolvers", [])
+            ]
+            if all(solver_uuids):
+                binding["ikSolverUuids"] = solver_uuids
+        if "authoredPlugRefs" not in binding:
+            try:
+                binding["authoredPlugRefs"] = _authored_plug_refs(
+                    cmds, binding.get("authoredPlugs", [])
+                )
+            except (MmdControlRigBuildError, ValueError):
+                pass
+    metadata["version"] = CONTROL_RIG_METADATA_VERSION
+
+
+def resolve_mmd_control_rig_binding_joint(cmds, binding: Mapping[str, Any]) -> str:
+    """Resolve a binding joint by UUID, falling back to legacy DAG names."""
+    uuid = binding.get("jointUuid")
+    if uuid:
+        return _resolve_uuid_node(cmds, str(uuid), "binding joint")
+    return _resolve_named_node(cmds, str(binding.get("joint", "")), "binding joint")
+
+
+def resolve_mmd_control_rig_binding_ik_solvers(
+    cmds,
+    binding: Mapping[str, Any],
+) -> Tuple[str, ...]:
+    """Resolve all solver nodes by UUID, falling back to legacy DAG names."""
+    uuids = binding.get("ikSolverUuids")
+    if uuids is not None:
+        return tuple(
+            _resolve_uuid_node(cmds, str(uuid), "IK solver") for uuid in uuids
+        )
+    return tuple(
+        _resolve_named_node(cmds, str(solver), "IK solver")
+        for solver in binding.get("ikSolvers", [])
+    )
+
+
+def resolve_mmd_control_rig_binding_authored_plugs(
+    cmds,
+    binding: Mapping[str, Any],
+) -> Tuple[str, ...]:
+    """Resolve authored input plugs, preferring UUID-backed node references."""
+    refs = binding.get("authoredPlugRefs")
+    if refs is not None and (refs or not binding.get("authoredPlugs")):
+        plugs = []
+        for ref in refs:
+            if not isinstance(ref, Mapping):
+                raise MmdControlRigBuildError("invalid authored plug reference")
+            uuid = ref.get("nodeUuid", ref.get("uuid"))
+            attribute = ref.get("attribute")
+            if not uuid or not attribute:
+                raise MmdControlRigBuildError("incomplete authored plug reference")
+            node = _resolve_uuid_node(cmds, str(uuid), "authored plug node")
+            plugs.append(f"{node}.{attribute}")
+        return tuple(plugs)
+    return tuple(str(plug) for plug in binding.get("authoredPlugs", []))
+
+
+def _try_node_uuid(cmds, node: Any) -> Optional[str]:
+    if not node:
+        return None
+    values = cmds.ls(str(node), uuid=True) or []
+    return str(values[0]) if len(values) == 1 else None
+
+
+def _resolve_uuid_node(cmds, uuid: str, description: str) -> str:
+    nodes = cmds.ls(uuid, long=True) or []
+    if len(nodes) != 1:
+        raise MmdControlRigBuildError(f"{description} UUID is missing: {uuid}")
+    return str(nodes[0])
+
+
+def _resolve_named_node(cmds, name: str, description: str) -> str:
+    nodes = cmds.ls(name, long=True) or []
+    if len(nodes) != 1:
+        raise MmdControlRigBuildError(f"expected one {description}: {name}")
+    return str(nodes[0])
 
 
 def _apply_fallback_role_aliases(
@@ -444,6 +567,8 @@ def _apply_fallback_role_aliases(
     controls: Dict[str, str],
     zero_groups: Dict[str, str],
     bindings: Dict[str, Dict[str, Any]],
+    *,
+    cmds_module=None,
 ) -> None:
     """Alias semantic fallback roles to existing controls without new nodes."""
     pending = {
@@ -460,7 +585,7 @@ def _apply_fallback_role_aliases(
                 continue
             controls[role] = controls[target]
             zero_groups[role] = zero_groups[target]
-            bindings[role] = _binding_metadata(role_binding)
+            bindings[role] = _binding_metadata(role_binding, cmds_module=cmds_module)
             del pending[role]
             applied = True
         if applied:

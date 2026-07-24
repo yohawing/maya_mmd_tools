@@ -22,7 +22,10 @@ from mmd_tools.core.constants import (
 )
 from mmd_tools.core.mmd_control_rig_builder import (
     CONTROL_RIG_EDIT,
+    MmdControlRigBuildError,
     read_mmd_control_rig_metadata,
+    resolve_mmd_control_rig_binding_authored_plugs,
+    resolve_mmd_control_rig_binding_joint,
 )
 from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_names
 from mmd_tools.converters.vmd_camera_animation import (
@@ -281,17 +284,25 @@ class VmdSceneCollector:
             raise ValueError("Bake the MMD control rig before VMD export")
         routes = {}
         for binding in metadata.get("bindings", {}).values():
-            joint_names = cmds.ls(binding.get("joint"), long=True) or []
-            if len(joint_names) != 1:
+            try:
+                joint = resolve_mmd_control_rig_binding_joint(cmds, binding)
+                authored_plugs = resolve_mmd_control_rig_binding_authored_plugs(
+                    cmds, binding
+                )
+            except MmdControlRigBuildError:
                 continue
-            joint = str(joint_names[0])
-            for plug in binding.get("authoredPlugs", []):
-                if plug.endswith((".translate", ".rotate")):
-                    base_attr = plug.rsplit(".", 1)[-1]
+            for plug in authored_plugs:
+                base_attr = plug.rsplit(".", 1)[-1]
+                if base_attr in {"translate", "rotate", "baseTranslate", "baseRotate"}:
                     node = plug.rsplit(".", 1)[0]
+                    control_attr = {
+                        "baseTranslate": "translate",
+                        "baseRotate": "rotate",
+                    }.get(base_attr, base_attr)
                     for axis in "XYZ":
-                        attr = f"{base_attr}{axis}"
-                        routes.setdefault(joint, {})[attr] = (node, attr)
+                        attr = f"{control_attr}{axis}"
+                        target_attr = f"{base_attr}{axis}"
+                        routes.setdefault(joint, {})[attr] = (node, target_attr)
         return routes
 
     def _scene_authored_input_routes(

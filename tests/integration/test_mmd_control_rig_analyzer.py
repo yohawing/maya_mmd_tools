@@ -17,6 +17,7 @@ from mmd_tools.core.mmd_control_rig_builder import (
 )
 from mmd_tools.core.mmd_control_rig_motion import (
     bake_mmd_control_rig,
+    control_rig_edit_routes_for_joints,
     enter_mmd_control_rig_edit,
 )
 from mmd_tools.core.mmd_control_rig_analyzer import (
@@ -295,6 +296,7 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         binding["joint"] = (cmds.ls(append_joint, long=True) or [append_joint])[0]
         binding["inputKind"] = INPUT_APPEND_BASE
         binding["authoredPlugs"] = list(append_targets)
+        binding.pop("authoredPlugRefs", None)
         cmds.setAttr(
             f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}",
             json.dumps(metadata, ensure_ascii=False),
@@ -342,6 +344,85 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             self.assertFalse(
                 cmds.isConnected(f"{control}.{control_name}X", f"{target}X")
             )
+
+    def test_binding_uuid_authority_survives_joint_solver_and_append_renames(self):
+        """Resolve persisted binding nodes by UUID after DAG renames."""
+        root = self._import_fixture()
+        build_mmd_control_rig(root)
+        metadata = read_mmd_control_rig_metadata(root)
+        append_node = (cmds.ls(type="mmdAppend") or [None])[0]
+        self.assertTrue(append_node)
+        append_joint = (
+            cmds.listConnections(
+                f"{append_node}.outputRotate",
+                source=False,
+                destination=True,
+                type="joint",
+            )
+            or []
+        )[0]
+        append_role = "groove"
+        append_binding = metadata["bindings"][append_role]
+        append_binding.update(
+            {
+                "joint": (cmds.ls(append_joint, long=True) or [append_joint])[0],
+                "jointUuid": cmds.ls(append_joint, uuid=True)[0],
+                "inputKind": INPUT_APPEND_BASE,
+                "authoredPlugs": [f"{append_node}.baseRotate"],
+                "authoredPlugRefs": [
+                    {
+                        "nodeUuid": cmds.ls(append_node, uuid=True)[0],
+                        "attribute": "baseRotate",
+                    }
+                ],
+            }
+        )
+        self.assertTrue(append_binding["jointUuid"])
+        self.assertTrue(append_binding["authoredPlugRefs"])
+        append_joint = (
+            cmds.ls(append_binding["jointUuid"], long=True) or []
+        )[0]
+        append_node = (
+            cmds.ls(append_binding["authoredPlugRefs"][0]["nodeUuid"], long=True)
+            or []
+        )[0]
+        solver_binding = metadata["bindings"]["left_foot_ik"]
+        self.assertTrue(solver_binding["ikSolverUuids"])
+        solver = (cmds.ls(solver_binding["ikSolverUuids"][0], long=True) or [])[0]
+        cmds.setAttr(
+            f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}",
+            json.dumps(metadata, ensure_ascii=False),
+            type="string",
+        )
+
+        renamed_joint = cmds.rename(append_joint, "mmd_control_append_joint_RENAMED")
+        renamed_append = cmds.rename(append_node, "mmd_control_append_RENAMED")
+        renamed_solver = cmds.rename(solver, "mmd_control_solver_RENAMED")
+        renamed_joint = (cmds.ls(renamed_joint, long=True) or [renamed_joint])[0]
+        renamed_append = (cmds.ls(renamed_append, long=True) or [renamed_append])[0]
+        renamed_solver = (cmds.ls(renamed_solver, long=True) or [renamed_solver])[0]
+
+        edit = enter_mmd_control_rig_edit(root)
+
+        self.assertEqual(edit["state"], "EDIT")
+        routes = control_rig_edit_routes_for_joints([renamed_joint])
+        self.assertIn(renamed_joint, routes)
+        append_targets = {
+            row["target"]
+            for row in edit["journal"]["channels"]
+            if row["target"].startswith(f"{renamed_append}.")
+        }
+        self.assertTrue(append_targets)
+        solver_targets = {
+            row["target"]
+            for row in edit["journal"]["ikEnabled"]
+            if row["target"].startswith(f"{renamed_solver}.")
+        }
+        self.assertTrue(solver_targets)
+
+        bake_mmd_control_rig(root)
+        collected = VmdSceneCollector().collect({"target_model": root})
+        self.assertIsInstance(collected["bone_frames"], list)
 
     def test_bake_failure_restores_edit_graph_and_metadata(self):
         root = self._import_fixture()

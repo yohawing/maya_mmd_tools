@@ -21,6 +21,9 @@ from mmd_tools.core.mmd_control_rig_builder import (
     CONTROL_RIG_EDIT,
     MmdControlRigBuildError,
     read_mmd_control_rig_metadata,
+    resolve_mmd_control_rig_binding_authored_plugs,
+    resolve_mmd_control_rig_binding_ik_solvers,
+    resolve_mmd_control_rig_binding_joint,
 )
 
 
@@ -43,16 +46,18 @@ def control_rig_edit_routes_for_joints(joints, *, cmds_module=None) -> Dict[str,
         if not metadata or metadata["state"] != CONTROL_RIG_EDIT:
             continue
         for role, binding in metadata.get("bindings", {}).items():
-            joint = str(binding.get("joint", ""))
-            matches = cmds.ls(joint, long=True) or []
-            joint = str(matches[0]) if len(matches) == 1 else joint
+            try:
+                joint = resolve_mmd_control_rig_binding_joint(cmds, binding)
+                authored_plugs = _expanded_authored_plugs(binding, cmds_module=cmds)
+            except MmdControlRigBuildError:
+                continue
             if joint not in wanted:
                 continue
             control_uuid = metadata.get("controls", {}).get(role)
             if not control_uuid:
                 continue
             control = _resolve_uuid(cmds, control_uuid)
-            for target in _expanded_authored_plugs(binding):
+            for target in authored_plugs:
                 channel = _control_channel_for_target(target)
                 if channel in _CHANNELS:
                     routes.setdefault(joint, {})[channel] = (control, channel)
@@ -85,7 +90,7 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                 control = controls.get(role)
                 if control is None:
                     raise MmdControlRigBuildError(f"missing owned control for {role}")
-                for target in _expanded_authored_plugs(binding):
+                for target in _expanded_authored_plugs(binding, cmds_module=cmds):
                     if target in claimed_targets:
                         continue
                     claimed_targets.add(target)
@@ -247,9 +252,16 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
     return metadata
 
 
-def _expanded_authored_plugs(binding: Mapping[str, Any]) -> Tuple[str, ...]:
+def _expanded_authored_plugs(
+    binding: Mapping[str, Any], *, cmds_module=None
+) -> Tuple[str, ...]:
     plugs = []
-    for plug in binding.get("authoredPlugs", []):
+    authored_plugs = (
+        resolve_mmd_control_rig_binding_authored_plugs(cmds_module, binding)
+        if cmds_module is not None
+        else tuple(str(plug) for plug in binding.get("authoredPlugs", []))
+    )
+    for plug in authored_plugs:
         if plug.endswith((".translate", ".baseTranslate")):
             plugs.extend(f"{plug}{axis}" for axis in "XYZ")
         elif plug.endswith((".rotate", ".baseRotate")):
@@ -280,7 +292,7 @@ def _require_animation_source(cmds, source: str, target: str) -> None:
 
 
 def _connect_ik_enabled(cmds, control, binding, journal, operations) -> None:
-    solvers = binding.get("ikSolvers", [])
+    solvers = resolve_mmd_control_rig_binding_ik_solvers(cmds, binding)
     if not solvers:
         return
     if not cmds.attributeQuery("ikEnabled", node=control, exists=True):
