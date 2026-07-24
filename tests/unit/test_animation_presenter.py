@@ -239,6 +239,9 @@ class _FakeTabWidget:
     def setCurrentIndex(self, idx):
         self._current = idx
 
+    def currentIndex(self):
+        return self._current
+
     def setEnabled(self, enabled):
         self.enabled = enabled
 
@@ -842,6 +845,93 @@ class TestAnimationPresenterMorph(unittest.TestCase):
 
         self.assertIn("blendShape1.weight[0]", adapter._set_attrs)
         self.assertAlmostEqual(adapter._set_attrs["blendShape1.weight[0]"], 0.5)
+        self.assertEqual(adapter._undo_chunks, ["Edit MMD Morph"])
+
+    def test_controller_plug_is_primary_authority_over_blendshape_fallback(self):
+        presenter, _, _, adapter = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        presenter._morph_controller = "morphController"
+        presenter._morph_indices["笑い"] = 19
+
+        presenter._on_morph_weight_changed("笑い", 0.375)
+
+        self.assertEqual(
+            adapter._set_attrs["morphController.inputWeight[19]"], 0.375
+        )
+        self.assertNotIn("blendShape1.weight[0]", adapter._set_attrs)
+
+    def test_animation_state_distinguishes_current_key_and_interpolation(self):
+        presenter, _, _, adapter = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        adapter.current_time = lambda: 12.0
+        current_key = {"value": True}
+
+        def keyframe(target, **kwargs):
+            if kwargs.get("name"):
+                return ["animCurve1"]
+            if kwargs.get("keyframeCount"):
+                return 1 if current_key["value"] else 0
+            return []
+
+        adapter.keyframe = keyframe
+        plug = "blendShape1.weight[0]"
+
+        self.assertEqual(presenter._morph_animation_state(plug), "key")
+        current_key["value"] = False
+        self.assertEqual(presenter._morph_animation_state(plug), "animated")
+
+        adapter.keyframe = lambda *_args, **_kwargs: []
+        self.assertEqual(presenter._morph_animation_state(plug), "static")
+
+    def test_animation_state_checks_every_split_legacy_target(self):
+        presenter, _, _, adapter = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        adapter.current_time = lambda: 12.0
+
+        def keyframe(target, **kwargs):
+            if kwargs.get("name"):
+                return ["animCurveSecond"] if target == "second.weight[0]" else []
+            if kwargs.get("keyframeCount"):
+                return 1
+            return []
+
+        adapter.keyframe = keyframe
+        self.assertEqual(
+            presenter._morph_animation_state(
+                ("first.weight[0]", "second.weight[0]")
+            ),
+            "key",
+        )
+
+    def test_refresh_does_not_overwrite_uncommitted_numeric_input(self):
+        presenter, view, _, adapter = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+
+        class EditingRow:
+            plugs = ()
+
+            class Editor:
+                is_editing = True
+
+            editor = Editor()
+
+            def set_value(self, _value):
+                raise AssertionError("editing value was overwritten")
+
+            def set_animation_state(self, _state):
+                pass
+
+        presenter._morph_rows = {"笑い": EditingRow()}
+        view.isVisible = lambda: True
+        view.picker_tabs.setCurrentIndex(view.TAB_MORPH)
+        adapter.current_time = lambda: 1.0
+        presenter._last_morph_refresh_time = 1.0
+
+        presenter._refresh_morph_rows()
 
     def test_morph_slider_unknown_morph_noop(self):
         presenter, _, _, adapter = self._make_with_morphs(
@@ -857,6 +947,7 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         with patch(self._POPULATE_PATH):
             app_state.current_model_changed.emit("")
         self.assertEqual(len(presenter._morph_targets), 0)
+        self.assertEqual(len(presenter._morph_rows), 0)
 
     def test_split_morph_drives_all_nodes(self):
         split_bs = {

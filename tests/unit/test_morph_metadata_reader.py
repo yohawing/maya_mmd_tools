@@ -7,6 +7,7 @@ from mmd_tools.core.morph_metadata_reader import (
     MORPH_TAB_GROUP_ORDER,
     MorphInfo,
     PANEL_GROUP_LABELS,
+    PMX_MORPH_TYPE_NAMES,
     categorize_morphs,
     group_morph_names_by_panel,
     morph_info_from_presenter_entry,
@@ -155,6 +156,11 @@ class TestPanelDisplayGroup(unittest.TestCase):
 
 
 class TestMorphInfoFromPresenterEntry(unittest.TestCase):
+    def test_raw_pmx_uv_channels_keep_distinct_icon_types(self):
+        self.assertEqual(PMX_MORPH_TYPE_NAMES[3], "uv")
+        self.assertEqual(PMX_MORPH_TYPE_NAMES[4], "additional_uv1")
+        self.assertEqual(PMX_MORPH_TYPE_NAMES[7], "additional_uv4")
+
     def test_reads_panel_and_network_type_across_morph_kinds(self):
         cases = [
             ("vertex_a", {"panel": 1, "type": 0}, "vertex", 1),

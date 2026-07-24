@@ -59,16 +59,21 @@ class AnimationPresenter:
         self._picker_groups: list[PickerGroup] = []
         self._bone_name_to_joint: dict[str, str] = {}
         self._morph_sliders: dict[str, object] = {}
+        self._morph_rows: dict[str, object] = {}
         self._morph_targets: dict[str, list[tuple[str, int]]] = {}
         self._network_morph_targets: dict[str, list[str]] = {}
         self._morph_indices: dict[str, int] = {}
         self._morph_controller: str | None = None
+        self._morph_edit_open = False
+        self._morph_refresh_timer = None
+        self._last_morph_refresh_time: float | None = None
         self._pose_clipboard: dict | None = None
         self._all_model_joints: list[str] = []
         self.rest_pose_manager = rest_pose_manager or get_rest_pose_manager()
         self.rest_pose_manager.add_listener(self._on_rest_pose_state_changed)
         self.connect_signals()
         self._on_rest_pose_state_changed(self.rest_pose_manager.state())
+        self._start_morph_refresh_timer()
 
         if self.app_state.current_model_root:
             self._reload_for_model(self.app_state.current_model_root)
@@ -110,6 +115,10 @@ class AnimationPresenter:
             )
 
     def disconnect_signals(self):
+        self._end_morph_edit()
+        if self._morph_refresh_timer is not None:
+            self._morph_refresh_timer.stop()
+            self._morph_refresh_timer = None
         self.rest_pose_manager.remove_listener(self._on_rest_pose_state_changed)
         try:
             self.app_state.current_model_changed.disconnect(self.on_current_model_changed)
@@ -529,7 +538,10 @@ class AnimationPresenter:
         self._populate_morph_groups(categorized)
 
     def _clear_morph_tab(self):
+        self._end_morph_edit()
+        self._last_morph_refresh_time = None
         self._morph_sliders.clear()
+        self._morph_rows.clear()
         self._morph_targets.clear()
         self._network_morph_targets.clear()
         self._morph_indices.clear()
@@ -652,13 +664,18 @@ class AnimationPresenter:
 
     def _populate_morph_groups(self, categorized: CategorizedMorphs):
         from ..qt_compat import (
-            QHBoxLayout,
-            QLabel,
+            QGridLayout,
             QPushButton,
             QSlider,
             QVBoxLayout,
             QWidget,
             Qt,
+        )
+        from ..widgets.morph_editor_widgets import (
+            ElidedMorphLabel,
+            MorphRowWidgets,
+            MorphWeightSpinBox,
+            create_morph_type_icon,
         )
 
         layout = self.view.morph_groups_layout
@@ -691,19 +708,23 @@ class AnimationPresenter:
             group_layout.addWidget(header)
 
             content = QWidget()
-            content_layout = QVBoxLayout(content)
+            content_layout = QGridLayout(content)
             content_layout.setContentsMargins(8, 4, 6, 5)
-            content_layout.setSpacing(3)
+            content_layout.setHorizontalSpacing(7)
+            content_layout.setVerticalSpacing(3)
+            content_layout.setColumnMinimumWidth(0, 22)
+            content_layout.setColumnMinimumWidth(1, 116)
+            content_layout.setColumnMinimumWidth(3, 72)
+            content_layout.setColumnStretch(2, 1)
 
-            for morph in morphs:
-                row = QHBoxLayout()
-                row.setSpacing(8)
-                label = QLabel(morph.name)
-                label.setMinimumWidth(72)
-                label.setMaximumWidth(120)
+            for row_index, morph in enumerate(morphs):
+                tooltip_parts = [morph.name]
                 if morph.name_english:
-                    label.setToolTip(morph.name_english)
-                row.addWidget(label)
+                    tooltip_parts.append(morph.name_english)
+                tooltip_parts.append(f"Type: {morph.morph_type}")
+                tooltip = "\n".join(tooltip_parts)
+                icon = create_morph_type_icon(morph.morph_type)
+                label = ElidedMorphLabel(morph.name, tooltip)
 
                 slider = QSlider(Qt.Horizontal)
                 slider.setRange(0, 100)
@@ -714,29 +735,36 @@ class AnimationPresenter:
                     "border-radius: 5px; background: #aeb4b8; } "
                     "QSlider::handle:horizontal:hover { background: #79cfff; }"
                 )
-                initial_value = round(self._morph_value(morph.name) * 100.0)
-                slider.setValue(initial_value)
-                slider.setEnabled(
-                    (self._morph_controller is not None and morph.index >= 0)
-                    or bool(self._morph_targets.get(morph.name))
-                    or bool(self._network_morph_targets.get(morph.name))
-                )
-                row.addWidget(slider, 1)
-
-                value_label = QLabel(str(initial_value))
-                value_label.setFixedWidth(28)
-                value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                value_label.setStyleSheet("color: #8fc5e8;")
-                row.addWidget(value_label)
+                editor = MorphWeightSpinBox()
+                plugs = self._morph_plugs(morph.name)
+                enabled = bool(plugs)
+                slider.setEnabled(enabled)
+                editor.setEnabled(enabled)
 
                 morph_name = morph.name
+                slider.sliderPressed.connect(self._begin_morph_edit)
+                slider.sliderReleased.connect(self._end_morph_edit)
                 slider.valueChanged.connect(
-                    lambda val, name=morph_name, lbl=value_label: self._on_morph_slider_changed(
-                        name, val, lbl
+                    lambda value, name=morph_name: self._on_morph_weight_changed(
+                        name, value / 100.0
                     )
                 )
+                editor.edit_started.connect(self._begin_morph_edit)
+                editor.edit_finished.connect(self._end_morph_edit)
+                editor.valueChanged.connect(
+                    lambda value, name=morph_name: self._on_morph_weight_changed(
+                        name, value
+                    )
+                )
+                row_widgets = MorphRowWidgets(icon, label, slider, editor, plugs)
+                row_widgets.set_value(self._morph_value(morph_name))
+                row_widgets.set_animation_state(self._morph_animation_state(plugs))
                 self._morph_sliders[morph_name] = slider
-                content_layout.addLayout(row)
+                self._morph_rows[morph_name] = row_widgets
+                content_layout.addWidget(icon, row_index, 0)
+                content_layout.addWidget(label, row_index, 1)
+                content_layout.addWidget(slider, row_index, 2)
+                content_layout.addWidget(editor, row_index, 3)
 
             group.setLayout(group_layout)
             group_layout.addWidget(content)
@@ -756,8 +784,20 @@ class AnimationPresenter:
             layout.insertWidget(insert_pos, group)
 
     def _on_morph_slider_changed(self, morph_name: str, value: int, label):
-        label.setText(str(value))
-        weight = value / 100.0
+        """Compatibility entry point for existing extensions and tests."""
+        if label is not None:
+            label.setText(str(value))
+        self._on_morph_weight_changed(morph_name, value / 100.0)
+
+    def _on_morph_weight_changed(self, morph_name: str, weight: float):
+        implicit_chunk = not self._morph_edit_open
+        if implicit_chunk:
+            self._begin_morph_edit()
+        self._set_morph_weight(morph_name, max(0.0, min(1.0, float(weight))))
+        if implicit_chunk:
+            self._end_morph_edit()
+
+    def _set_morph_weight(self, morph_name: str, weight: float) -> None:
         morph_index = self._morph_indices.get(morph_name, -1)
         if self._morph_controller and morph_index >= 0:
             try:
@@ -779,6 +819,16 @@ class AnimationPresenter:
                 self.maya_adapter.set_attr(plug, weight)
             except Exception as exc:
                 logger.debug("Morph network weight set failed for %s: %s", morph_name, exc)
+
+    def _morph_plugs(self, morph_name: str) -> tuple[str, ...]:
+        """Resolve controller authority or every split legacy target."""
+        morph_index = self._morph_indices.get(morph_name, -1)
+        if self._morph_controller and morph_index >= 0:
+            return (f"{self._morph_controller}.inputWeight[{morph_index}]",)
+        targets = self._morph_targets.get(morph_name, [])
+        plugs = [f"{node}.weight[{index}]" for node, index in targets]
+        plugs.extend(self._network_morph_targets.get(morph_name, []))
+        return tuple(plugs)
 
     def _morph_value(self, morph_name: str) -> float:
         morph_index = self._morph_indices.get(morph_name, -1)
@@ -802,6 +852,84 @@ class AnimationPresenter:
             except Exception:
                 continue
         return 0.0
+
+    def _start_morph_refresh_timer(self) -> None:
+        """Poll evaluated values only for a visible real Qt view."""
+        if not hasattr(self.view, "isVisible"):
+            return
+        from ..qt_compat import QTimer
+
+        self._morph_refresh_timer = QTimer(self.view)
+        self._morph_refresh_timer.setInterval(200)
+        self._morph_refresh_timer.timeout.connect(self._refresh_morph_rows)
+        self._morph_refresh_timer.start()
+
+    def _refresh_morph_rows(self) -> None:
+        if (
+            not self._morph_rows
+            or not self.view.isVisible()
+            or self.view.picker_tabs.currentIndex() != self.view.TAB_MORPH
+        ):
+            return
+        try:
+            current_time = float(self.maya_adapter.current_time())
+        except Exception:
+            current_time = None
+        refresh_animation = current_time != self._last_morph_refresh_time
+        self._last_morph_refresh_time = current_time
+        for morph_name, row in tuple(self._morph_rows.items()):
+            if not row.editor.is_editing:
+                row.set_value(self._morph_value(morph_name))
+            if refresh_animation:
+                row.set_animation_state(self._morph_animation_state(row.plugs))
+
+    def _morph_animation_state(self, plugs) -> str:
+        if isinstance(plugs, str):
+            plugs = (plugs,)
+        if not plugs or not hasattr(self.maya_adapter, "keyframe"):
+            return "static"
+        try:
+            curves = []
+            for plug in plugs:
+                for curve in self.maya_adapter.keyframe(
+                    plug, query=True, name=True
+                ) or []:
+                    if curve not in curves:
+                        curves.append(curve)
+            if not curves:
+                return "static"
+            time = self.maya_adapter.current_time()
+            for curve in curves:
+                count = self.maya_adapter.keyframe(
+                    curve,
+                    query=True,
+                    time=(time, time),
+                    keyframeCount=True,
+                )
+                if count:
+                    return "key"
+            return "animated"
+        except Exception:
+            return "static"
+
+    def _begin_morph_edit(self) -> None:
+        if self._morph_edit_open:
+            return
+        try:
+            self.maya_adapter.undo_info(openChunk=True, chunkName="Edit MMD Morph")
+        except Exception:
+            return
+        self._morph_edit_open = True
+
+    def _end_morph_edit(self) -> None:
+        if not self._morph_edit_open:
+            return
+        try:
+            self.maya_adapter.undo_info(closeChunk=True)
+        except Exception:
+            logger.debug("Could not close morph edit undo chunk", exc_info=True)
+        finally:
+            self._morph_edit_open = False
 
     # -- Tools section ----------------------------------------------------
 
