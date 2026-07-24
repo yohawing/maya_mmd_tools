@@ -154,14 +154,32 @@ class AnimationTab(BaseTab):
             self.tool_buttons[key] = btn
 
         self.tools_group.setLayout(tools_layout)
-        main_layout.addWidget(self.tools_group)
-        self.refresh_development_mode_visibility()
+        self.picker_tabs.currentChanged.connect(self._update_tools_placement)
+        self._update_tools_placement(self.picker_tabs.currentIndex())
         self.retranslateUi()
+
+    def _update_tools_placement(self, tab_index: int) -> None:
+        """Keep Tools inside Body/Finger pages and absent from data editors."""
+
+        target_page = {
+            self.TAB_BODY: self.body_page,
+            self.TAB_FINGER: self.finger_page,
+        }.get(tab_index)
+        if target_page is not None:
+            for page in (self.body_page, self.finger_page):
+                page.layout().removeWidget(self.tools_group)
+            self.tools_group.setParent(target_page)
+            target_layout = target_page.layout()
+            target_layout.insertWidget(max(0, target_layout.count() - 1), self.tools_group)
+        self.refresh_development_mode_visibility()
 
     def refresh_development_mode_visibility(self):
         """Show unfinished pose tools only in Development Mode."""
 
-        self.tools_group.setVisible(SettingsService().is_development_mode())
+        picker_tab = self.picker_tabs.currentIndex() in (self.TAB_BODY, self.TAB_FINGER)
+        self.tools_group.setVisible(
+            picker_tab and SettingsService().is_development_mode()
+        )
 
     def current_language(self) -> str:
         """Return the active UI locale for presenter-owned dynamic text."""

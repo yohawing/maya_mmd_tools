@@ -2,6 +2,7 @@
 
 import json
 import unittest
+from unittest.mock import patch
 
 from maya import cmds
 
@@ -95,6 +96,26 @@ class TestAnimationMorphEditor(GuiTestBase):
         self.presenter._refresh_morph_rows()
         self.assertEqual(rows[0].slider.value(), 25)
         self.assertAlmostEqual(rows[0].editor.value(), 0.25)
+
+    def test_tools_live_inside_picker_pages_only(self):
+        with patch(
+            "mmd_tools.ui.tabs.animation_tab.SettingsService.is_development_mode",
+            return_value=True,
+        ):
+            self.tab.picker_tabs.setCurrentIndex(self.tab.TAB_BODY)
+            QApplication.processEvents()
+            self.assertIs(self.tab.tools_group.parent(), self.tab.body_page)
+            self.assertTrue(self.tab.tools_group.isVisible())
+
+            self.tab.picker_tabs.setCurrentIndex(self.tab.TAB_FINGER)
+            QApplication.processEvents()
+            self.assertIs(self.tab.tools_group.parent(), self.tab.finger_page)
+            self.assertTrue(self.tab.tools_group.isVisible())
+
+            for tab_index in (self.tab.TAB_MORPH, self.tab.TAB_DISPLAY):
+                self.tab.picker_tabs.setCurrentIndex(tab_index)
+                QApplication.processEvents()
+                self.assertFalse(self.tab.tools_group.isVisible())
 
     def test_key_and_interpolated_states_are_accessible(self):
         plug = f"{self.controller}.inputWeight[0]"
