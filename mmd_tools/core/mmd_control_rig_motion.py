@@ -209,15 +209,41 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
             _require_animation_source(cmds, source, row["target"])
         sources_by_control[row["control"]] = source
 
-    with _undo_chunk(cmds, "Bake MMD Control Rig"):
-        for row in reversed(journal.get("ikEnabled", [])):
-            _commit_control_input(cmds, row, sources_by_control[row["control"]])
-        for row in reversed(journal.get("channels", [])):
-            _commit_control_input(cmds, row, sources_by_control[row["control"]])
-        _restore_offsets(cmds, journal.get("offsetParentMatrix", []))
-        metadata.pop("journal", None)
-        metadata["state"] = CONTROL_RIG_BAKED
-        _write_metadata(cmds, root, metadata)
+    transaction_plugs = {
+        str(row[key])
+        for row in rows
+        for key in ("control", "target")
+    }
+    transaction_plugs.update(
+        str(row["control"])
+        for row in journal.get("offsetParentMatrix", [])
+    )
+    plug_states = _capture_plug_states(cmds, transaction_plugs)
+    metadata_before = cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}")
+
+    try:
+        with _undo_chunk(cmds, "Bake MMD Control Rig"):
+            for row in reversed(journal.get("ikEnabled", [])):
+                _commit_control_input(cmds, row, sources_by_control[row["control"]])
+            for row in reversed(journal.get("channels", [])):
+                _commit_control_input(cmds, row, sources_by_control[row["control"]])
+            _restore_offsets(cmds, journal.get("offsetParentMatrix", []))
+            metadata.pop("journal", None)
+            metadata["state"] = CONTROL_RIG_BAKED
+            _write_metadata(cmds, root, metadata)
+    except Exception as exc:
+        try:
+            _restore_plug_states(cmds, plug_states)
+            cmds.setAttr(
+                f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}",
+                metadata_before,
+                type="string",
+            )
+        except Exception as rollback_exc:
+            raise MmdControlRigBuildError(
+                f"control-rig bake failed and rollback was incomplete: {rollback_exc}"
+            ) from exc
+        raise
     return metadata
 
 
@@ -328,6 +354,46 @@ def _commit_control_input(cmds, row: Mapping[str, Any], source: Optional[str]) -
             cmds.connectAttr(source, target, force=False)
     else:
         cmds.setAttr(target, value)
+
+
+def _capture_plug_states(cmds, plugs) -> Dict[str, Dict[str, Any]]:
+    states = {}
+    for plug in sorted(set(plugs)):
+        states[plug] = {
+            "incoming": list(
+                cmds.listConnections(
+                    plug, source=True, destination=False, plugs=True
+                )
+                or []
+            ),
+            "type": str(cmds.getAttr(plug, type=True)),
+            "value": cmds.getAttr(plug),
+        }
+    return states
+
+
+def _restore_plug_states(cmds, states: Mapping[str, Mapping[str, Any]]) -> None:
+    for plug in states:
+        for source in cmds.listConnections(
+            plug, source=True, destination=False, plugs=True
+        ) or []:
+            cmds.disconnectAttr(source, plug)
+    for plug, state in states.items():
+        incoming = state["incoming"]
+        if not incoming:
+            _set_plug_value(cmds, plug, state["value"], state["type"])
+        for source in incoming:
+            if not cmds.isConnected(source, plug):
+                cmds.connectAttr(source, plug, force=False)
+
+
+def _set_plug_value(cmds, plug: str, value: Any, attr_type: str) -> None:
+    if attr_type == "matrix":
+        cmds.setAttr(plug, *list(value), type="matrix")
+    elif attr_type == "bool":
+        cmds.setAttr(plug, bool(value))
+    else:
+        cmds.setAttr(plug, value)
 
 
 def _resolve_uuid(cmds, uuid: str) -> str:

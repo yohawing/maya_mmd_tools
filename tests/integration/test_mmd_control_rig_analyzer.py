@@ -247,6 +247,55 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertTrue(cmds.ls(original_curve_uuid, long=True))
         self.assertTrue(cmds.isConnected(source, target))
 
+    def test_bake_failure_restores_edit_graph_and_metadata(self):
+        root = self._import_fixture()
+        self.assertTrue(
+            import_mmd_file(
+                _VMD_PATH,
+                options={"target_model": root, "pmx_path": _PMX_PATH},
+            )
+        )
+        build_mmd_control_rig(root)
+        edit = enter_mmd_control_rig_edit(root)
+        graph_before = self._capture_edit_graph(edit["journal"])
+        metadata_before = cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}")
+        connect_attr = cmds.connectAttr
+        failures = [RuntimeError("simulated bake connection failure")]
+
+        def fail_once(*args, **kwargs):
+            if failures:
+                raise failures.pop()
+            return connect_attr(*args, **kwargs)
+
+        with mock.patch.object(cmds, "connectAttr", side_effect=fail_once):
+            with self.assertRaisesRegex(RuntimeError, "simulated bake"):
+                bake_mmd_control_rig(root)
+
+        self.assertEqual(cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}"), metadata_before)
+        self.assertEqual(self._capture_edit_graph(edit["journal"]), graph_before)
+        self.assertEqual(read_mmd_control_rig_metadata(root)["state"], "EDIT")
+
+    def _capture_edit_graph(self, journal):
+        plugs = {
+            row[key]
+            for section in ("channels", "ikEnabled")
+            for row in journal.get(section, [])
+            for key in ("control", "target")
+        }
+        plugs.update(row["control"] for row in journal.get("offsetParentMatrix", []))
+        return {
+            plug: (
+                tuple(
+                    cmds.listConnections(
+                        plug, source=True, destination=False, plugs=True
+                    )
+                    or []
+                ),
+                cmds.getAttr(plug),
+            )
+            for plug in sorted(plugs)
+        }
+
     def _first_animated_control_binding(self, metadata):
         for role, binding in metadata["bindings"].items():
             for compound in binding["authoredPlugs"]:
