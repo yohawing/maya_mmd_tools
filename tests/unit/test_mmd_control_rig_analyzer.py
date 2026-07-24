@@ -1,0 +1,202 @@
+"""Pure-Python tests for MMD-native control-rig input classification."""
+
+import unittest
+
+from mmd_tools.core.mmd_control_rig_analyzer import (
+    INPUT_APPEND_BASE,
+    INPUT_DIRECT_CHANNEL,
+    INPUT_IK_CONTROLLER,
+    INPUT_SOLVER_OUTPUT,
+    INPUT_UNSUPPORTED,
+    STATUS_BLOCKED,
+    STATUS_FALLBACK,
+    STATUS_READY,
+    MmdControlRigBoneFact,
+    MmdControlRigConnectionFact,
+    classify_mmd_control_rig,
+)
+from mmd_tools.core.pmx_data.bone import PmxBoneFlag
+
+
+def _bone(index, name, *, pmx_flags=0, incoming=(), ik_solvers=()):
+    return MmdControlRigBoneFact(
+        joint=f"|model|bone_{index}",
+        mmd_name=name,
+        bone_index=index,
+        pmx_flags=pmx_flags,
+        incoming=tuple(incoming),
+        ik_solvers=tuple(ik_solvers),
+    )
+
+
+def _connection(source, destination, node_type):
+    return MmdControlRigConnectionFact(source, destination, node_type)
+
+
+class TestMmdControlRigAnalyzer(unittest.TestCase):
+    def test_resolves_mvp_roles_and_semistandard_fallbacks(self):
+        facts = [
+            _bone(0, "センター"),
+            _bone(1, "左足ＩＫ", ik_solvers=("left_leg_ik_mmdCcdIk",)),
+            _bone(2, "右足IK", ik_solvers=("right_leg_ik_mmdCcdIk",)),
+        ]
+
+        spec = classify_mmd_control_rig("|model", facts)
+        roles = spec.roles_by_name
+
+        self.assertEqual(roles["master"].status, STATUS_FALLBACK)
+        self.assertEqual(roles["master"].fallback, "model_root")
+        self.assertEqual(roles["groove"].status, STATUS_FALLBACK)
+        self.assertEqual(roles["groove"].fallback, "center")
+        self.assertEqual(roles["left_foot_ik"].status, STATUS_READY)
+        self.assertEqual(
+            roles["left_foot_ik"].binding.input_kind,
+            INPUT_IK_CONTROLLER,
+        )
+        self.assertTrue(spec.can_build_mvp)
+
+    def test_append_output_routes_controller_to_base_plugs(self):
+        upper = _bone(
+            3,
+            "上半身",
+            incoming=(
+                _connection(
+                    "upper_mmdAppend.outputRotate",
+                    "|model|bone_3.rotate",
+                    "mmdAppend",
+                ),
+                _connection(
+                    "upper_mmdAppend.outputTranslate",
+                    "|model|bone_3.translate",
+                    "mmdAppend",
+                ),
+            ),
+        )
+
+        spec = classify_mmd_control_rig("|model", [upper])
+        binding = spec.bones[0]
+
+        self.assertEqual(binding.input_kind, INPUT_APPEND_BASE)
+        self.assertEqual(
+            binding.authored_plugs,
+            ("upper_mmdAppend.baseRotate", "upper_mmdAppend.baseTranslate"),
+        )
+        self.assertFalse(binding.blocked)
+
+    def test_solver_outputs_physics_and_external_writers_fail_closed(self):
+        solver_link = _bone(
+            0,
+            "左ひざ",
+            incoming=(
+                _connection(
+                    "left_leg_ik_mmdCcdIk.outputRotate[0]",
+                    "|model|bone_0.rotate",
+                    "mmdCcdIk",
+                ),
+            ),
+        )
+        physics = _bone(
+            1,
+            "髪1",
+            incoming=(
+                _connection(
+                    "hair_driver.outputRotate",
+                    "|model|bone_1.rotate",
+                    "mmdPhysicsBoneDriver",
+                ),
+            ),
+        )
+        external = _bone(
+            2,
+            "補助",
+            incoming=(
+                _connection(
+                    "external_constraint.constraintRotate",
+                    "|model|bone_2.rotate",
+                    "parentConstraint",
+                ),
+            ),
+        )
+
+        spec = classify_mmd_control_rig("|model", [solver_link, physics, external])
+        by_name = {binding.mmd_name: binding for binding in spec.bones}
+
+        self.assertEqual(by_name["左ひざ"].input_kind, INPUT_SOLVER_OUTPUT)
+        self.assertEqual(by_name["髪1"].input_kind, INPUT_UNSUPPORTED)
+        self.assertEqual(by_name["補助"].input_kind, INPUT_UNSUPPORTED)
+        self.assertTrue(all(binding.blocked for binding in by_name.values()))
+
+    def test_animation_stack_remains_a_direct_authored_channel(self):
+        center = _bone(
+            0,
+            "センター",
+            incoming=(
+                _connection(
+                    "center_translate.output",
+                    "|model|bone_0.translateX",
+                    "animCurveTL",
+                ),
+                _connection(
+                    "center_layer.output",
+                    "|model|bone_0.rotateX",
+                    "animBlendNodeAdditiveRotation",
+                ),
+            ),
+        )
+
+        spec = classify_mmd_control_rig("|model", [center])
+
+        self.assertEqual(spec.bones[0].input_kind, INPUT_DIRECT_CHANNEL)
+        self.assertFalse(spec.bones[0].blocked)
+
+    def test_after_physics_metadata_blocks_control_ownership(self):
+        physics_helper = _bone(
+            0,
+            "物理補助",
+            pmx_flags=int(PmxBoneFlag.DEFORM_AFTER_PHYSICS),
+        )
+
+        spec = classify_mmd_control_rig("|model", [physics_helper])
+
+        self.assertEqual(spec.bones[0].input_kind, INPUT_UNSUPPORTED)
+        self.assertIn("after-physics bone", spec.bones[0].blockers[0])
+
+    def test_display_frame_metadata_is_preserved_in_spec(self):
+        frames = (
+            {
+                "name": "ＩＫ",
+                "name_english": "IK",
+                "special_flag": 0,
+                "elements": [{"type": 0, "index": 1}],
+            },
+        )
+
+        spec = classify_mmd_control_rig(
+            "|model",
+            [_bone(1, "センター")],
+            display_frames=frames,
+        )
+
+        self.assertEqual(spec.to_dict()["displayFrames"], list(frames))
+
+    def test_missing_solver_and_duplicate_role_are_reported_deterministically(self):
+        facts = [
+            _bone(8, "左足IK"),
+            _bone(2, "左足ＩＫ"),
+            _bone(3, "右足IK", ik_solvers=("right_leg_ik_mmdCcdIk",)),
+            _bone(1, "センター"),
+        ]
+
+        spec = classify_mmd_control_rig("|model", facts)
+        left = spec.roles_by_name["left_foot_ik"]
+
+        self.assertEqual(left.binding.bone_index, 2)
+        self.assertEqual(left.status, STATUS_BLOCKED)
+        self.assertIn("duplicate MMD bone candidates", left.warnings[0])
+        self.assertIn("no owned mmdCcdIk solver", left.blockers[0])
+        self.assertFalse(spec.can_build_mvp)
+        self.assertEqual(spec.to_dict()["schema"], "mmd_tools.mmd_control_rig_spec")
+
+
+if __name__ == "__main__":
+    unittest.main()
