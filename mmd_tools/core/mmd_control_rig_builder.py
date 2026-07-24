@@ -142,6 +142,7 @@ def build_mmd_control_rig(
             selection_set = cmds.sets(empty=True, name=f"{prefix}_MMD_CONTROLS_SET")
             created_roots.append(selection_set)
             scale = _controller_scale(cmds, root)
+            display_reference_time = _current_time(cmds)
             controls: Dict[str, str] = {}
             zero_groups: Dict[str, str] = {}
             bindings: Dict[str, Dict[str, Any]] = {}
@@ -197,6 +198,7 @@ def build_mmd_control_rig(
                 "schema": CONTROL_RIG_METADATA_SCHEMA,
                 "version": CONTROL_RIG_METADATA_VERSION,
                 "state": CONTROL_RIG_ATTACHED,
+                "displayReferenceTime": display_reference_time,
                 "modelRootUuid": _node_uuid(cmds, root),
                 "controlGroupUuid": _node_uuid(cmds, control_group),
                 "selectionSetUuid": _node_uuid(cmds, selection_set),
@@ -633,6 +635,14 @@ def _raw_metadata(cmds, root: str) -> Optional[str]:
     if not cmds.attributeQuery(ATTR_MMD_CONTROL_RIG_JSON, node=root, exists=True):
         return None
     return cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}") or None
+
+
+def _current_time(cmds) -> float:
+    """Return the Maya time used as the deterministic control display reference."""
+    try:
+        return float(cmds.currentTime(query=True))
+    except (TypeError, ValueError, RuntimeError):
+        return 0.0
 
 
 def _restore_raw_metadata(cmds, root: str, raw: Optional[str]) -> None:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+import math
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import maya.api.OpenMaya as om
@@ -83,6 +84,8 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
     operations: List[Tuple[str, str, str]] = []
     journal: Dict[str, Any] = {"channels": [], "offsetParentMatrix": [], "ikEnabled": []}
     claimed_targets = set()
+    display_reference_time = _display_reference_time(metadata)
+    offset_controls = set()
 
     with _undo_chunk(cmds, "Enter MMD Control Rig Edit"):
         try:
@@ -125,11 +128,17 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                         {"source": source, "control": control_plug, "target": target, "value": value}
                     )
 
-                _zero_control_display_offset(cmds, control, journal)
+                offset_controls.add(control)
 
                 if role in {"left_foot_ik", "right_foot_ik"}:
                     _connect_ik_enabled(cmds, control, binding, journal, operations)
 
+            _zero_control_display_offsets(
+                cmds,
+                sorted(offset_controls),
+                journal,
+                reference_time=display_reference_time,
+            )
             metadata["journal"] = journal
             metadata["state"] = CONTROL_RIG_EDIT
             _write_metadata(cmds, root, metadata)
@@ -330,19 +339,50 @@ def _connect_ik_enabled(cmds, control, binding, journal, operations) -> None:
         )
 
 
-def _zero_control_display_offset(cmds, control: str, journal: Dict[str, Any]) -> None:
-    """Cancel the current authored local value visually through OPM."""
-    plug = f"{control}.offsetParentMatrix"
-    if not cmds.objExists(plug):
+def _display_reference_time(metadata: Mapping[str, Any]) -> Optional[float]:
+    """Resolve the build-time display reference, or preserve legacy entry-time behavior."""
+    if "displayReferenceTime" not in metadata:
+        return None
+    try:
+        value = float(metadata.get("displayReferenceTime", 0.0))
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _zero_control_display_offsets(
+    cmds,
+    controls: List[str],
+    journal: Dict[str, Any],
+    *,
+    reference_time: Optional[float] = None,
+) -> None:
+    """Cancel authored local values for unique controls in one time-sampling batch."""
+    plugs = []
+    for control in controls:
+        plug = f"{control}.offsetParentMatrix"
+        if not cmds.objExists(plug):
+            continue
+        incoming = cmds.listConnections(plug, source=True, destination=False, plugs=True) or []
+        if incoming:
+            raise MmdControlRigBuildError(f"control offsetParentMatrix is already driven: {control}")
+        plugs.append((control, plug))
+    if not plugs:
         return
-    incoming = cmds.listConnections(plug, source=True, destination=False, plugs=True) or []
-    if incoming:
-        raise MmdControlRigBuildError(f"control offsetParentMatrix is already driven: {control}")
-    previous = list(cmds.getAttr(plug))
-    local = om.MMatrix(cmds.xform(control, query=True, objectSpace=True, matrix=True))
-    inverse = list(local.inverse())
-    cmds.setAttr(plug, *inverse, type="matrix")
-    journal["offsetParentMatrix"].append({"control": plug, "value": previous})
+    restore_time = None
+    try:
+        restore_time = float(cmds.currentTime(query=True))
+        if reference_time is not None:
+            cmds.currentTime(reference_time, edit=True)
+        for control, plug in plugs:
+            previous = list(cmds.getAttr(plug))
+            local = om.MMatrix(cmds.xform(control, query=True, objectSpace=True, matrix=True))
+            inverse = list(local.inverse())
+            cmds.setAttr(plug, *inverse, type="matrix")
+            journal["offsetParentMatrix"].append({"control": plug, "value": previous})
+    finally:
+        if restore_time is not None:
+            cmds.currentTime(restore_time, edit=True)
 
 
 def _rollback(cmds, operations) -> None:

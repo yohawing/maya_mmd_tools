@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from unittest import mock
 
+import maya.api.OpenMaya as om
 from maya import cmds
 
 from mmd_tools.core import settings
@@ -26,6 +27,7 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
     INPUT_SOLVER_OUTPUT,
     STATUS_READY,
     analyze_mmd_control_rig,
+    INPUT_DIRECT_CHANNEL,
 )
 from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
 from mmd_tools.converters.vmd_ik_enabled_animation import collect_ik_nodes_by_bone_name
@@ -253,6 +255,113 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertEqual(before, self._capture_indexed_world_matrices(root, frames))
         self.assertTrue(cmds.ls(original_curve_uuid, long=True))
         self.assertTrue(cmds.isConnected(source, target))
+
+    def test_edit_display_offset_uses_build_reference_after_scrubbing(self):
+        """Controls retain the build-time FK basis when EDIT starts elsewhere."""
+        root = self._import_fixture()
+        self.assertTrue(
+            import_mmd_file(
+                _VMD_PATH,
+                options={"target_model": root, "pmx_path": _PMX_PATH},
+            )
+        )
+        cmds.currentTime(0, edit=True)
+        rig = build_mmd_control_rig(root)
+        metadata = read_mmd_control_rig_metadata(root)
+        self.assertEqual(metadata["displayReferenceTime"], 0.0)
+
+        direct_roles = [
+            role
+            for role, binding in sorted(metadata["bindings"].items())
+            if binding.get("inputKind") == INPUT_DIRECT_CHANNEL
+            and role not in {"left_foot_ik", "right_foot_ik"}
+            and role in rig.controls
+        ]
+        self.assertGreaterEqual(len(direct_roles), 2)
+        joints = {
+            role: (cmds.ls(metadata["bindings"][role]["joint"], long=True) or [None])[0]
+            for role in direct_roles
+        }
+        self.assertTrue(all(joints.values()))
+
+        cmds.currentTime(20, edit=True)
+        edit = enter_mmd_control_rig_edit(root)
+        self.assertEqual(edit["state"], "EDIT")
+        self.assertEqual(float(cmds.currentTime(query=True)), 20.0)
+
+        def relative_matrix(role):
+            control_matrix = om.MMatrix(
+                cmds.getAttr(f"{rig.controls[role]}.worldMatrix[0]")
+            )
+            joint_matrix = om.MMatrix(
+                cmds.getAttr(f"{joints[role]}.worldMatrix[0]")
+            )
+            return control_matrix * joint_matrix.inverse()
+
+        cmds.currentTime(0, edit=True)
+        cmds.refresh(force=True)
+        reference = {role: relative_matrix(role) for role in direct_roles}
+        drift = []
+        for frame in (1, 3, 5, 10, 20):
+            cmds.currentTime(frame, edit=True)
+            cmds.refresh(force=True)
+            for role in direct_roles:
+                current = relative_matrix(role)
+                drift.append(
+                    max(
+                        abs(float(current[index]) - float(reference[role][index]))
+                        for index in range(16)
+                    )
+                )
+        self.assertLess(max(drift), 1.0e-6, {"roles": direct_roles, "maxDrift": max(drift)})
+
+    def test_legacy_metadata_uses_edit_entry_time_for_display_offset(self):
+        """Legacy metadata without a reference samples offsets at EDIT entry."""
+        root = self._import_fixture()
+        self.assertTrue(
+            import_mmd_file(
+                _VMD_PATH,
+                options={"target_model": root, "pmx_path": _PMX_PATH},
+            )
+        )
+        cmds.currentTime(0, edit=True)
+        rig = build_mmd_control_rig(root)
+        metadata = read_mmd_control_rig_metadata(root)
+        metadata.pop("displayReferenceTime", None)
+        cmds.setAttr(
+            f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}",
+            json.dumps(metadata, ensure_ascii=False),
+            type="string",
+        )
+
+        cmds.currentTime(20, edit=True)
+
+        class _CurrentTimeSpy:
+            def __init__(self, delegate):
+                self._delegate = delegate
+                self.calls = []
+
+            def currentTime(self, *args, **kwargs):
+                self.calls.append((args, kwargs))
+                return self._delegate.currentTime(*args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._delegate, name)
+
+        spy = _CurrentTimeSpy(cmds)
+        edit = enter_mmd_control_rig_edit(root, cmds_module=spy)
+
+        self.assertEqual(edit["state"], "EDIT")
+        self.assertEqual(float(cmds.currentTime(query=True)), 20.0)
+        self.assertEqual(len(spy.calls), 2)
+        self.assertTrue(any(kwargs.get("query") for _, kwargs in spy.calls))
+        self.assertTrue(
+            any(args and float(args[0]) == 20.0 for args, _ in spy.calls)
+        )
+        self.assertFalse(
+            any(args and float(args[0]) == 0.0 for args, _ in spy.calls)
+        )
+        self.assertTrue(rig.controls)
 
     def test_append_compound_authored_plugs_enter_edit_and_bake(self):
         """Expand mmdAppend compound inputs while transferring ownership."""
