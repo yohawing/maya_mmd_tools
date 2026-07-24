@@ -1315,6 +1315,41 @@ def native_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def reduction_abi_probe(session: nox.Session) -> None:
+    """Probe mmd-anim dense-pose reduction and its Maya bake boundary.
+
+    Examples:
+        uvx nox -s reduction_abi_probe
+        uvx nox -s reduction_abi_probe -- --ffi-path build/mmd-anim-unlocked-target/release
+    """
+    args = list(session.posargs)
+    ffi_path = _resolve_existing_or_repo_path(
+        _option(args, "--ffi-path", "external/mmd-anim/target/release")
+    )
+    out_json = _require_build_path(
+        session,
+        _option(args, "--out-json", "build/reports/reduction_abi_probe.json"),
+        "--out-json",
+    )
+    out_md = _require_build_path(
+        session,
+        _option(args, "--out-md", "build/reports/reduction_abi_probe.md"),
+        "--out-md",
+    )
+    session.run(
+        sys.executable,
+        "tests/release/reduction_abi_probe.py",
+        "--ffi-path",
+        str(ffi_path),
+        "--out-json",
+        str(out_json),
+        "--out-md",
+        str(out_md),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def bundled_native_smoke(session: nox.Session) -> None:
     """Verify only the native binaries bundled in release distribution paths."""
     out_json = _require_build_path(
