@@ -43,6 +43,10 @@ class AnimationTab(BaseTab):
         selector_layout.addWidget(self.model_combo, 1)
         self.refresh_btn = MaterialSymbolToolButton("refresh", "Refresh")
         selector_layout.addWidget(self.refresh_btn)
+        main_layout.addLayout(selector_layout)
+
+        visibility_layout = QHBoxLayout()
+        visibility_layout.setContentsMargins(0, 0, 0, 0)
         self.vis_checkboxes = {}
         for key, symbol in (
             ("mesh", "view_in_ar"),
@@ -51,9 +55,10 @@ class AnimationTab(BaseTab):
         ):
             button = MaterialSymbolToolButton(symbol, key, checkable=True)
             button.setChecked(True)
-            selector_layout.addWidget(button)
+            visibility_layout.addWidget(button)
             self.vis_checkboxes[key] = button
-        main_layout.addLayout(selector_layout)
+        visibility_layout.addStretch(1)
+        main_layout.addLayout(visibility_layout)
 
         # --- Picker sub-tabs ---
         self.picker_tabs = QTabWidget()
@@ -114,11 +119,13 @@ class AnimationTab(BaseTab):
         status_layout = QHBoxLayout()
         self.status_label = QLabel("")
         status_layout.addWidget(self.status_label, 1)
-        self.select_all_btn = QPushButton("Select All")
+        # Kept as hidden compatibility endpoints; the visible actions live in
+        # the two blue Body picker buttons.
+        self.select_all_btn = QPushButton("Select All", self)
         self.select_all_btn.setToolTip("現在のMMDモデルの全ボーンを選択")
-        status_layout.addWidget(self.select_all_btn)
-        self.clear_btn = QPushButton("Clear")
-        status_layout.addWidget(self.clear_btn)
+        self.select_all_btn.hide()
+        self.clear_btn = QPushButton("Clear", self)
+        self.clear_btn.hide()
         main_layout.addLayout(status_layout)
 
         # --- Tools section ---
@@ -149,7 +156,9 @@ class AnimationTab(BaseTab):
 
     def retranslateUi(self):
         """Update static Animator Toolset text without rebuilding picker state."""
-        tr = lambda key: self.tr(key, "animation_toolset")
+        def tr(key):
+            return self.tr(key, "animation_toolset")
+
         self.refresh_btn.setText(tr("refresh"))
         for index, key in enumerate(("body", "finger", "morph", "display")):
             self.picker_tabs.setTabText(index, tr(key))

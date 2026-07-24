@@ -85,6 +85,8 @@ _BODY_SOURCES = tuple(
         ("left_ik", "left_ik"),
         ("right_ik", "right_ik"),
         ("master", "master"),
+        ("some_function", "select_all"),
+        ("some_function-2", "clear_selection"),
         ("reset_pose", "reset_pose"),
         ("mirror_sel", "mirror_sel"),
         ("fingers_left", "fingers_left"),
@@ -101,6 +103,8 @@ class BodyPickerWidget(SvgPickerWidget):
     mirror_selection_clicked = Signal()
     goto_finger_clicked = Signal()
     reset_pose_clicked = Signal()
+    select_all_clicked = Signal()
+    clear_selection_clicked = Signal()
     ik_toggled = Signal(str, bool)
 
     def __init__(self, parent=None):
@@ -109,6 +113,8 @@ class BodyPickerWidget(SvgPickerWidget):
             background_path=_ASSET_DIR / "animpicker_bg.png",
             region_sources=_BODY_SOURCES,
             region_labels={
+                "select_all": "ALL",
+                "clear_selection": "CLEAR",
                 "reset_pose": "Reset Pose",
                 "mirror_sel": "Mirror Sel",
                 "left_ik": "L IK",
@@ -118,6 +124,8 @@ class BodyPickerWidget(SvgPickerWidget):
             },
             tooltip_labels={
                 **{region["id"]: region["bone_name"] for region in _BODY_REGIONS},
+                "select_all": "現在のMMDモデルの全ボーンを選択",
+                "clear_selection": "選択をクリア",
                 "reset_pose": "モデル全体をRest Pose表示へ切り替え",
                 "mirror_sel": "反対側のボーンを選択",
                 "fingers_left": "指Pickerへ移動",
@@ -134,12 +142,24 @@ class BodyPickerWidget(SvgPickerWidget):
         selectable = [
             region_id
             for region_id in region_ids
-            if region_id not in {"reset_pose", "mirror_sel", "fingers_left", "fingers_right"}
+            if region_id
+            not in {
+                "select_all",
+                "clear_selection",
+                "reset_pose",
+                "mirror_sel",
+                "fingers_left",
+                "fingers_right",
+            }
         ]
         self.regions_selected.emit(selectable)
 
     def _on_shape_clicked(self, region_id: str) -> None:
-        if region_id == "mirror_sel":
+        if region_id == "select_all":
+            self.select_all_clicked.emit()
+        elif region_id == "clear_selection":
+            self.clear_selection_clicked.emit()
+        elif region_id == "mirror_sel":
             self.mirror_selection_clicked.emit()
         elif region_id in {"fingers_left", "fingers_right"}:
             self.goto_finger_clicked.emit()

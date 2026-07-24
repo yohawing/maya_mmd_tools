@@ -205,6 +205,8 @@ class _FakeBodyPicker:
         self.goto_finger_clicked = _FakeSignal()
         self.mirror_selection_clicked = _FakeSignal()
         self.reset_pose_clicked = _FakeSignal()
+        self.select_all_clicked = _FakeSignal()
+        self.clear_selection_clicked = _FakeSignal()
         self.ik_toggled = _FakeSignal()
         self.selected_regions = []
         self.tooltip = ""
@@ -730,6 +732,25 @@ class TestBodyPickerPresenter(unittest.TestCase):
 
         self.assertEqual(adapter.selected, ["head_jnt", "neck_jnt", "arm_jnt"])
         self.assertIn("全ボーンを選択", view.status_label.text())
+
+    def test_body_picker_all_button_selects_every_model_joint(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭", "neck_jnt": "首"},
+        )
+
+        view.body_picker.select_all_clicked.emit()
+
+        self.assertEqual(adapter.selected, ["head_jnt", "neck_jnt"])
+
+    def test_body_picker_clear_button_clears_selection(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        adapter.selected = ["head_jnt"]
+
+        view.body_picker.clear_selection_clicked.emit()
+
+        self.assertEqual(adapter.selected, [])
 
     def test_mirror_selection(self):
         presenter, view, _, adapter = self._make_with_bones(

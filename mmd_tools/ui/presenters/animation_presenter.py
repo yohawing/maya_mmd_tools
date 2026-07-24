@@ -95,6 +95,10 @@ class AnimationPresenter:
         self.view.body_picker.mirror_selection_clicked.connect(self.on_mirror_selection)
         if hasattr(self.view.body_picker, "reset_pose_clicked"):
             self.view.body_picker.reset_pose_clicked.connect(self._on_reset_pose)
+        if hasattr(self.view.body_picker, "select_all_clicked"):
+            self.view.body_picker.select_all_clicked.connect(self.on_select_all)
+        if hasattr(self.view.body_picker, "clear_selection_clicked"):
+            self.view.body_picker.clear_selection_clicked.connect(self.on_clear_clicked)
         self.view.finger_picker.region_clicked.connect(self.on_finger_region_clicked)
         if hasattr(self.view.finger_picker, "regions_selected"):
             self.view.finger_picker.regions_selected.connect(self.on_finger_regions_selected)
@@ -345,7 +349,16 @@ class AnimationPresenter:
             if (normalize_mmd_bone_name(region["bone_name"]) or region["bone_name"])
             in available_names
         }
-        body_ids.update({"reset_pose", "mirror_sel", "fingers_left", "fingers_right"})
+        body_ids.update(
+            {
+                "select_all",
+                "clear_selection",
+                "reset_pose",
+                "mirror_sel",
+                "fingers_left",
+                "fingers_right",
+            }
+        )
         if hasattr(self.view.body_picker, "set_enabled_regions"):
             self.view.body_picker.set_enabled_regions(body_ids)
 
