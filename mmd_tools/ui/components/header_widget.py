@@ -54,6 +54,10 @@ class HeaderWidget(QWidget):
         # 右側のスペース
         main_layout.addStretch()
         self.retranslateUi()
+        add_combo_item_with_tooltip(
+            self.model_combo,
+            self.tr("no_mmd_models", "placeholders"),
+        )
 
     def tr(self, key, category=None):
         """現在の UI 言語で翻訳する。"""
@@ -79,6 +83,7 @@ class HeaderWidget(QWidget):
     def refresh_model_list(self):
         """モデルリストを更新"""
         self.app_state.refresh_model_list()
+        self.app_state.select_model_from_maya_selection()
 
     def on_model_list_updated(self, models):
         """モデルリストが更新されたときの処理"""

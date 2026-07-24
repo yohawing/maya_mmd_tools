@@ -59,9 +59,17 @@ class _FakeCombo:
 class _FakeAppState:
     def __init__(self):
         self.current_model_root = None
+        self.refresh_calls = 0
+        self.selection_sync_calls = 0
 
     def get_model_info(self, _model):
         return None
+
+    def refresh_model_list(self):
+        self.refresh_calls += 1
+
+    def select_model_from_maya_selection(self):
+        self.selection_sync_calls += 1
 
 
 class TestHeaderWidgetTranslation(unittest.TestCase):
@@ -96,6 +104,12 @@ class TestHeaderWidgetTranslation(unittest.TestCase):
         HeaderWidget.retranslateUi(self.widget)
 
         self.assertEqual(self.widget.model_combo.items, [["No MMD models found", None]])
+
+    def test_refresh_updates_list_then_resyncs_maya_selection(self):
+        HeaderWidget.refresh_model_list(self.widget)
+
+        self.assertEqual(self.widget.app_state.refresh_calls, 1)
+        self.assertEqual(self.widget.app_state.selection_sync_calls, 1)
 
 
 class TestHeaderWidgetModelSelectionLogging(unittest.TestCase):

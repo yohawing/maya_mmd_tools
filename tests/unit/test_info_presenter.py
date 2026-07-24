@@ -20,6 +20,7 @@ from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_MODEL_NAME_EN,
 )
 from mmd_tools.ui.presenters.info_presenter import InfoPresenter  # noqa: E402
+from mmd_tools.ui.components.header_widget import HeaderWidget  # noqa: E402
 
 _MOD = "mmd_tools.ui.presenters.info_presenter"
 TEST_MODEL = "test_mmd_model"
@@ -53,9 +54,6 @@ class _FakeAppState:
         self._current_model_root = current_model_root
         self.scene_model_service = scene_model_service or _FakeSceneModelService()
         self.current_model_changed = _FakeSignal()
-        self.model_list_updated = _FakeSignal()
-        self._refresh_calls = 0
-        self._select_calls = 0
 
     @property
     def current_model_root(self):
@@ -64,12 +62,6 @@ class _FakeAppState:
     @current_model_root.setter
     def current_model_root(self, value):
         self._current_model_root = value
-
-    def refresh_model_list(self):
-        self._refresh_calls += 1
-
-    def select_model_from_maya_selection(self):
-        self._select_calls += 1
 
     def clear_cache(self):
         pass
@@ -100,11 +92,7 @@ class _FakeSceneModelService:
 
 def _make_mock_view():
     view = Mock()
-    attach_mocks(view, ["model_combo", "refresh_button", "set_fields_enabled"])
-    view.model_combo.currentTextChanged = MagicMock()
-    view.model_combo.currentTextChanged.connect = Mock()
-    view.refresh_button.clicked = MagicMock()
-    view.refresh_button.clicked.connect = Mock()
+    attach_mocks(view, ["set_fields_enabled"])
 
     for attr in ("model_name_jp_edit", "model_name_en_edit", "comment_jp_edit", "comment_en_edit"):
         widget = Mock()
@@ -139,8 +127,6 @@ class TestInitialization(unittest.TestCase):
 
     def test_signal_connections(self):
         _, view, _ = _make_presenter_with_model()
-        view.model_combo.currentTextChanged.connect.assert_called()
-        view.refresh_button.clicked.connect.assert_called()
         for attr in ("model_name_jp_edit", "model_name_en_edit", "comment_jp_edit", "comment_en_edit"):
             getattr(view, attr).textChanged.connect.assert_called()
 
@@ -180,6 +166,7 @@ class TestLoadModelInfo(unittest.TestCase):
         self.app_state.scene_model_service.exists = False
         self.presenter.load_model_info()
 
+        self.view.set_fields_enabled.assert_called_with(False)
         self.view.model_name_jp_edit.clear.assert_called()
 
     def test_uses_empty_string_when_attrs_are_missing_or_none(self):
@@ -237,6 +224,27 @@ class TestUpdateModelInfo(unittest.TestCase):
 
         mock_set.assert_not_called()
 
+    def test_header_namespaced_selection_drives_info_write_target(self):
+        selected = "outer:model:root"
+        header = HeaderWidget.__new__(HeaderWidget)
+        header.app_state = self.app_state
+        header.is_updating = False
+        header.model_combo = Mock()
+        header.model_combo.currentIndex.return_value = 0
+        header.model_combo.itemData.return_value = selected
+        HeaderWidget.on_combo_selection_changed(header, "Selected [outer:model:root]")
+
+        self.view.model_name_jp_edit.text.return_value = "選択中"
+        self.view.model_name_en_edit.text.return_value = "Selected"
+        self.view.comment_jp_edit.toPlainText.return_value = ""
+        self.view.comment_en_edit.toPlainText.return_value = ""
+
+        with patch(f"{_MOD}.set_custom_attributes") as mock_set:
+            self.presenter.update_model_info()
+
+        mock_set.assert_called_once()
+        self.assertEqual(mock_set.call_args[0][0], selected)
+
 
 class TestCurrentModelChanged(unittest.TestCase):
     def setUp(self):
@@ -267,61 +275,6 @@ class TestCurrentModelChanged(unittest.TestCase):
 
         self.view.set_fields_enabled.assert_called_with(False)
         self.view.model_name_jp_edit.clear.assert_called()
-
-
-class TestModelCombo(unittest.TestCase):
-    def setUp(self):
-        self.presenter, self.view, self.app_state = _make_presenter_with_model()
-
-    def test_update_combo_adds_item_per_model(self):
-        self.presenter.update_model_combo(["model1", "model2"])
-
-        self.view.model_combo.clear.assert_called()
-        self.assertEqual(self.view.model_combo.addItem.call_count, 2)
-        self.view.set_fields_enabled.assert_called_with(True)
-
-    def test_update_combo_no_models_shows_placeholder(self):
-        self.presenter.update_model_combo([])
-
-        self.view.model_combo.addItem.assert_called_with("No MMD models found")
-        self.view.set_fields_enabled.assert_called_with(False)
-
-
-class TestRefreshAndSelect(unittest.TestCase):
-    def setUp(self):
-        self.presenter, self.view, self.app_state = _make_presenter_with_model()
-
-    def test_refresh_clicked_triggers_app_state_refresh(self):
-        self.presenter.on_refresh_clicked()
-        self.assertEqual(self.app_state._refresh_calls, 1)
-        self.assertEqual(self.app_state._select_calls, 1)
-
-    def test_model_selected_valid_updates_app_state(self):
-        self.view.model_combo.currentIndex.return_value = 0
-        self.view.model_combo.itemData.return_value = TEST_MODEL
-
-        self.app_state.scene_model_service.exists = True
-        with patch(f"{_MOD}.logger") as mock_logger:
-            self.presenter.on_model_selected("Test Model (test_mmd_model)")
-
-        self.assertEqual(self.app_state.current_model_root, TEST_MODEL)
-
-        # 選択ログは DEBUG のみ（INFO には出さない）
-        # Python 3.7 互換: call[0] で位置引数タプルを取る（_Call.args は使わない）
-        expected = f"Selected MMD model: {TEST_MODEL}"
-        debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list if call[0]]
-        info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
-        self.assertIn(expected, debug_messages)
-        self.assertNotIn(expected, info_messages)
-
-    def test_model_selected_invalid_sets_none(self):
-        self.view.model_combo.currentIndex.return_value = 0
-        self.view.model_combo.itemData.return_value = "non_existent"
-
-        self.app_state.scene_model_service.exists = False
-        self.presenter.on_model_selected("Non Existent Model")
-
-        self.assertIsNone(self.app_state.current_model_root)
 
 
 if __name__ == "__main__":

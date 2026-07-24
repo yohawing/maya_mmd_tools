@@ -281,6 +281,15 @@ class TestMainWindow(GuiTestBase):
         # ヘッダーウィジェットが存在する
         self.assertIsNotNone(self.window.header_widget)
 
+    def test_info_tab_uses_header_as_the_only_model_selector(self):
+        """Infoタブ内に重複したモデル選択UIを持たない。"""
+        info_tab = self.window.info_presenter.view
+        self.assertTrue(hasattr(self.window.header_widget, "model_combo"))
+        self.assertTrue(hasattr(self.window.header_widget, "refresh_btn"))
+        self.assertFalse(hasattr(info_tab, "model_combo"))
+        self.assertFalse(hasattr(info_tab, "refresh_button"))
+        self.assertFalse(hasattr(info_tab, "current_model_label"))
+
     def test_application_state_signals(self):
         """
         ApplicationStateのシグナルが接続されているかをテストする
