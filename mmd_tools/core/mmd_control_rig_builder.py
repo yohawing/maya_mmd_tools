@@ -225,7 +225,7 @@ def remove_mmd_control_rig(model_root: str, *, cmds_module=None) -> bool:
     metadata = _read_metadata(cmds, root)
     if metadata is None:
         return False
-    if metadata["state"] != CONTROL_RIG_ATTACHED:
+    if metadata["state"] not in {CONTROL_RIG_ATTACHED, CONTROL_RIG_BAKED}:
         raise MmdControlRigBuildError("return the control rig to ATTACHED before removal")
     if _node_uuid(cmds, root) != metadata.get("modelRootUuid"):
         raise MmdControlRigBuildError("control-rig metadata model UUID mismatch")

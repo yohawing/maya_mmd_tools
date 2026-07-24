@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
-from typing import Any, Dict, List, Mapping, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import maya.api.OpenMaya as om
 
@@ -17,6 +17,7 @@ from mmd_tools.core.constants import ATTR_MMD_CONTROL_RIG_JSON
 from mmd_tools.core.humanik_utils import maya_cmds
 from mmd_tools.core.mmd_control_rig_builder import (
     CONTROL_RIG_ATTACHED,
+    CONTROL_RIG_BAKED,
     CONTROL_RIG_EDIT,
     MmdControlRigBuildError,
     read_mmd_control_rig_metadata,
@@ -67,7 +68,7 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
         raise MmdControlRigBuildError("build the MMD control rig before entering EDIT")
     if metadata["state"] == CONTROL_RIG_EDIT:
         return metadata
-    if metadata["state"] != CONTROL_RIG_ATTACHED:
+    if metadata["state"] not in {CONTROL_RIG_ATTACHED, CONTROL_RIG_BAKED}:
         raise MmdControlRigBuildError(f"cannot enter EDIT from {metadata['state']}")
 
     controls = {
@@ -177,6 +178,45 @@ def restore_mmd_control_rig_attached(model_root: str, *, cmds_module=None) -> Di
     return metadata
 
 
+def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]:
+    """Commit controller animation edges back to MMD authored inputs."""
+    cmds = cmds_module or maya_cmds()
+    root = _canonical_node(cmds, model_root)
+    metadata = read_mmd_control_rig_metadata(root, cmds_module=cmds)
+    if metadata is None or metadata.get("state") != CONTROL_RIG_EDIT:
+        state = metadata.get("state") if metadata else "missing"
+        raise MmdControlRigBuildError(f"cannot bake MMD control rig from {state}")
+    journal = metadata.get("journal")
+    if not isinstance(journal, dict):
+        raise MmdControlRigBuildError("EDIT connection journal is missing")
+
+    rows = list(journal.get("ikEnabled", [])) + list(journal.get("channels", []))
+    sources_by_control = {}
+    for row in rows:
+        incoming = cmds.listConnections(
+            row["control"], source=True, destination=False, plugs=True
+        ) or []
+        if len(incoming) > 1:
+            raise MmdControlRigBuildError(
+                f"multiple controller animation inputs: {row['control']}"
+            )
+        source = str(incoming[0]) if incoming else None
+        if source:
+            _require_animation_source(cmds, source, row["target"])
+        sources_by_control[row["control"]] = source
+
+    with _undo_chunk(cmds, "Bake MMD Control Rig"):
+        for row in reversed(journal.get("ikEnabled", [])):
+            _commit_control_input(cmds, row, sources_by_control[row["control"]])
+        for row in reversed(journal.get("channels", [])):
+            _commit_control_input(cmds, row, sources_by_control[row["control"]])
+        _restore_offsets(cmds, journal.get("offsetParentMatrix", []))
+        metadata.pop("journal", None)
+        metadata["state"] = CONTROL_RIG_BAKED
+        _write_metadata(cmds, root, metadata)
+    return metadata
+
+
 def _expanded_authored_plugs(binding: Mapping[str, Any]) -> Tuple[str, ...]:
     plugs = []
     for plug in binding.get("authoredPlugs", []):
@@ -270,6 +310,20 @@ def _restore_offsets(cmds, rows) -> None:
             cmds.setAttr(row["control"], *row["value"], type="matrix")
         except Exception:
             pass
+
+
+def _commit_control_input(cmds, row: Mapping[str, Any], source: Optional[str]) -> None:
+    control, target = row["control"], row["target"]
+    value = cmds.getAttr(control)
+    if cmds.isConnected(control, target):
+        cmds.disconnectAttr(control, target)
+    if source:
+        if cmds.isConnected(source, control):
+            cmds.disconnectAttr(source, control)
+        if not cmds.isConnected(source, target):
+            cmds.connectAttr(source, target, force=False)
+    else:
+        cmds.setAttr(target, value)
 
 
 def _resolve_uuid(cmds, uuid: str) -> str:
