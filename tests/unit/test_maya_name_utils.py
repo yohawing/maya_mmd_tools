@@ -26,6 +26,23 @@ class TestMayaNameUtils(unittest.TestCase):
             with self.subTest(source=source):
                 self.assertRegex(maya_name_utils.sanitize_text(source), identifier)
 
+    def test_sanitize_text_adopted_corpus_vocabulary(self):
+        """Adopted Material/Morph terms remain exact, safe Maya identifiers."""
+        expected = {
+            "体": "body",
+            "髮": "hair",
+            "メガネ": "glasses",
+            "ｳｨﾝｸ２右": "wink_2_right",
+            "光消": "highlight_off",
+        }
+        identifier = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+        for source, target in expected.items():
+            with self.subTest(source=source):
+                converted = maya_name_utils.sanitize_text(source)
+                self.assertEqual(converted, target)
+                self.assertRegex(converted, identifier)
+                self.assertNotIn("HASH", converted)
+
     def test_sanitize_unique_name_is_deterministic_and_preserves_raw_input(self):
         used = set()
         names = [

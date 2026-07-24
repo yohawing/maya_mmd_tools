@@ -137,7 +137,12 @@
     "左手持ちダミー": "left_hand_dummy",
     "右手持ちダミー": "right_hand_dummy",
     "左胸": "left_breast",
-    "右胸": "right_breast"
+    "右胸": "right_breast",
+    "体": "body",
+    "髮": "hair",
+    "メガネ": "glasses",
+    "ｳｨﾝｸ２右": "wink_2_right",
+    "光消": "highlight_off"
   },
   "dictionary": [
     ["なし", "none", "无", "無"],

@@ -116,6 +116,24 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
         self.assertEqual(self.converter.convert("头部"), "head")
         self.assertEqual(self.converter.convert("颜"), "face")
 
+    def test_semantic_corpus_vocabulary_avoids_hash_fallback(self):
+        """Adopted multi-model Material/Morph vocabulary stays deterministic."""
+        converter = UnicodeToAsciiConverter()
+        expected = {
+            "体": "body",
+            "髮": "hair",
+            "メガネ": "glasses",
+            "ｳｨﾝｸ２右": "wink_2_right",
+            "光消": "highlight_off",
+        }
+        for source, target in expected.items():
+            with self.subTest(source=source):
+                converted = converter.convert(source)
+                self.assertEqual(converted, target)
+                self.assertTrue(converted.isascii())
+                self.assertNotIn("HASH", converted)
+                self.assertEqual(converter.get_encoding_type(converted), "dictionary")
+
     def test_hash_conversion(self):
         """辞書にない文字列のハッシュ変換をテスト"""
         test_text = "未知の文字列"
