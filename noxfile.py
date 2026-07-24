@@ -1540,6 +1540,40 @@ def maya_viewport_capture(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def model_readme_dialog_e2e(session: nox.Session) -> None:
+    """Run the real Maya GUI model-readme modal gate for Maya 2024/2026."""
+    args = list(session.posargs)
+    versions = _options(args, "--maya") or ["2024", "2026"]
+    unsupported = [version for version in versions if version not in {"2024", "2026"}]
+    if unsupported:
+        session.error("--maya must be 2024 or 2026 for the model-readme GUI gate")
+    model = _option(args, "--model", "tests/data/yw_test_model.pmx")
+    out_dir = _require_build_path(
+        session,
+        _option(args, "--out-dir", "build/reports/model-readme-dialog-e2e"),
+        "--out-dir",
+    )
+    for index, version in enumerate(versions):
+        report = out_dir / f"maya-{version}.json"
+        session.run(
+            sys.executable,
+            str(ROOT / "tests/viewport/model_readme_dialog_e2e.py"),
+            "--maya",
+            version,
+            "--model",
+            model,
+            "--out",
+            str(report),
+            "--port",
+            str(7731 + index),
+            external=True,
+        )
+        result = json.loads(report.read_text(encoding="utf-8"))
+        if result.get("status") != "pass":
+            session.error(f"Maya {version} model-readme GUI gate failed: {result}")
+
+
+@nox.session(venv_backend="none")
 def native_physics_bake_capture(session: nox.Session) -> None:
     """Import PMX+VMD with native physics bake and capture a mayapy PNG + report.
 
