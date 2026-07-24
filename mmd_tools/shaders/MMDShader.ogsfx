@@ -9,6 +9,7 @@
 // Uniform parameters
 //**********
 uniform mat4 World : WORLD < string UIWidget = "None"; >;
+uniform mat4 WorldInverseTranspose : WorldInverseTranspose < string UIWidget = "None"; >;
 uniform mat4 View : VIEW < string UIWidget = "None"; >;
 uniform mat4 WorldViewProjection : WorldViewProjection < string UIWidget = "None"; >;
 uniform vec3 ViewPosition : ViewPosition < string UIWidget = "None"; >;
@@ -106,7 +107,7 @@ GLSLShader VS
     void main()
     {
         vec4 world_pos = World * vec4(Position, 1.0);
-        vsOut.NormalWS = normalize((World * vec4(Normal, 0.0)).xyz);
+        vsOut.NormalWS = normalize((WorldInverseTranspose * vec4(Normal, 0.0)).xyz);
         vsOut.ViewDir = normalize(ViewPosition - world_pos.xyz);
         vsOut.UVset0 = vec2(UVset0.x, 1.0 - UVset0.y);
         gl_Position = WorldViewProjection * vec4(Position, 1.0);

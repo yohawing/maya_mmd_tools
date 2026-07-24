@@ -147,6 +147,14 @@ def test_sphere_mapping_uses_half_range_view_normal_projection_in_both_backends(
         assert "* 0.35" not in source
 
 
+def test_glsl_normal_transform_uses_inverse_transpose_for_non_uniform_scale():
+    """GLSL world normals use Maya's inverse-transpose matrix semantic."""
+    source = (ROOT / "mmd_tools/shaders/MMDShader.ogsfx").read_text(encoding="utf-8")
+    assert "uniform mat4 WorldInverseTranspose : WorldInverseTranspose" in source
+    assert "vsOut.NormalWS = normalize((WorldInverseTranspose * vec4(Normal, 0.0)).xyz);" in source
+    assert "vsOut.NormalWS = normalize((World * vec4(Normal, 0.0)).xyz);" not in source
+
+
 def test_specular_power_gate_matches_mmd_contract_in_both_backends():
     """Non-positive PMX specular power produces no highlight."""
     sources = {
