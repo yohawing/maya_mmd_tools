@@ -10,6 +10,11 @@ from mmd_tools.core import settings_keys as setting_keys
 from mmd_tools.core.settings import settings
 
 
+# A dot product below this bound represents a meaningful authored-vs-geometric
+# normal difference (approximately 0.8 degrees for unit vectors).
+_AUTHORED_NORMAL_DOT_TOLERANCE = 1.0e-4
+
+
 def _normalize_normal(normal):
     """Return a finite unit normal, or ``None`` when the input is invalid."""
     try:
@@ -30,6 +35,68 @@ def _normalize_normal(normal):
     if not all(math.isfinite(component) for component in normalized):
         return None
     return normalized
+
+
+def has_materially_different_authored_normals(mesh_node):
+    """Return whether a mesh has locked authored normals that differ materially.
+
+    The comparison uses Maya's locked face-vertex normal pool against its
+    unweighted geometric per-vertex normals. Missing, malformed, or invalid
+    mesh data fails closed so callers can safely leave GPU deformation enabled.
+
+    Args:
+        mesh_node: Mesh shape or transform name/path.
+
+    Returns:
+        ``True`` when at least one locked authored face-vertex normal differs
+        beyond the documented dot-product tolerance; otherwise ``False``.
+    """
+    try:
+        selection = om.MSelectionList()
+        selection.add(mesh_node)
+        dag_path = selection.getDagPath(0)
+        if dag_path.node().hasFn(om.MFn.kTransform):
+            shape_nodes = cmds.listRelatives(mesh_node, shapes=True, type="mesh", fullPath=True) or []
+            if not shape_nodes:
+                return False
+            shape_selection = om.MSelectionList()
+            shape_selection.add(shape_nodes[0])
+            dag_path = shape_selection.getDagPath(0)
+        if not dag_path.node().hasFn(om.MFn.kMesh):
+            return False
+
+        mesh_fn = om.MFnMesh(dag_path)
+        normal_counts, normal_ids = mesh_fn.getNormalIds()
+        vertex_counts, vertex_ids = mesh_fn.getVertices()
+        authored_normals = mesh_fn.getNormals(om.MSpace.kObject)
+        geometric_normals = mesh_fn.getVertexNormals(False, om.MSpace.kObject)
+
+        if len(normal_counts) != len(vertex_counts) or len(normal_ids) != len(vertex_ids):
+            return False
+        if len(authored_normals) == 0 or len(geometric_normals) == 0:
+            return False
+
+        for normal_id, vertex_id in zip(normal_ids, vertex_ids):
+            if normal_id < 0 or normal_id >= len(authored_normals):
+                return False
+            if vertex_id < 0 or vertex_id >= len(geometric_normals):
+                return False
+            if not mesh_fn.isNormalLocked(normal_id):
+                continue
+
+            authored = _normalize_normal(authored_normals[normal_id])
+            geometric = _normalize_normal(geometric_normals[vertex_id])
+            if authored is None or geometric is None:
+                return False
+            dot = sum(authored[index] * geometric[index] for index in range(3))
+            if not math.isfinite(dot):
+                return False
+            if dot < 1.0 - _AUTHORED_NORMAL_DOT_TOLERANCE:
+                return True
+
+        return False
+    except (RuntimeError, TypeError, ValueError, IndexError, AttributeError):
+        return False
 
 
 def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_uv_connects, normals=None):

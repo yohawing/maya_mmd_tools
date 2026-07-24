@@ -106,6 +106,32 @@ class TestMayaUtils(MayaTestBase):
                 self.assertTrue(mesh_fn.isNormalLocked(normal_ids[cursor]))
                 cursor += 1
 
+    def test_has_materially_different_authored_normals(self):
+        """ロック済みの差分法線だけをGPUブロック対象として判定する。"""
+        vertices = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        authored_mesh = maya_mesh_utils.create_mesh_with_uvs(
+            "authored_normal_predicate",
+            vertices,
+            [3],
+            [0, 1, 2],
+            [],
+            [],
+            normals=[(0, 1, 0)] * len(vertices),
+        )
+        self.assertTrue(maya_mesh_utils.has_materially_different_authored_normals(authored_mesh))
+        authored_shape = cmds.listRelatives(authored_mesh, shapes=True, fullPath=True)[0]
+        self.assertTrue(maya_mesh_utils.has_materially_different_authored_normals(authored_shape))
+
+        geometric_mesh = maya_mesh_utils.create_mesh_with_uvs(
+            "geometric_normal_predicate",
+            vertices,
+            [3],
+            [0, 1, 2],
+            [],
+            [],
+        )
+        self.assertFalse(maya_mesh_utils.has_materially_different_authored_normals(geometric_mesh))
+
     def test_create_material(self):
         """マテリアルを作成できるか"""
         material_name = "test_material"

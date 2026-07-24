@@ -4,7 +4,7 @@ import maya.cmds as cmds
 import maya.api.OpenMaya as om
 
 from mmd_tools.converters.bone_converter import BoneConverter
-from mmd_tools.core import maya_attribute_utils
+from mmd_tools.core import maya_attribute_utils, maya_mesh_utils
 from mmd_tools.core.constants import (
     ATTR_MMD_BONE_FLAGS,
     ATTR_MMD_BONE_INDEX,
@@ -458,6 +458,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         """スキンクラスター作成のテスト（実際のMaya環境）"""
         # テスト用のジョイントを作成
         cmds.select(clear=True)
+        evaluator_modes_before = cmds.evaluationManager(query=True, mode=True)
         joint1 = cmds.joint(name="joint1", position=[0, 0, 0])
         joint2 = cmds.joint(name="joint2", position=[0, 5, 0])
         joint3 = cmds.joint(name="joint3", position=[0, 10, 0])
@@ -476,6 +477,33 @@ class TestBoneConverterMaya(unittest.TestCase):
         # 最大影響数の確認
         max_inf = cmds.getAttr(f"{skin_cluster}.maxInfluences")
         self.assertEqual(max_inf, 4)
+
+        # Every MMD skinCluster preserves user normals, while ordinary
+        # geometric normals keep the default GPU policy.
+        self.assertTrue(cmds.attributeQuery("deformUserNormals", node=skin_cluster, exists=True))
+        self.assertTrue(cmds.attributeQuery("blockGPU", node=skin_cluster, exists=True))
+        self.assertTrue(cmds.getAttr(f"{skin_cluster}.deformUserNormals"))
+        self.assertFalse(cmds.getAttr(f"{skin_cluster}.blockGPU"))
+
+        authored_mesh = maya_mesh_utils.create_mesh_with_uvs(
+            "authored_skin_mesh",
+            [(0, 0, 0), (1, 0, 0), (0, 1, 0)],
+            [3],
+            [0, 1, 2],
+            [],
+            [],
+            normals=[(0, 1, 0)] * 3,
+        )
+        self.assertTrue(maya_mesh_utils.has_materially_different_authored_normals(authored_mesh))
+        authored_skin = self.converter._create_skin_cluster(maya_joints, authored_mesh, max_influence=4)
+        self.assertTrue(cmds.getAttr(f"{authored_skin}.deformUserNormals"))
+        self.assertTrue(cmds.getAttr(f"{authored_skin}.blockGPU"))
+        self.assertEqual(cmds.evaluationManager(query=True, mode=True), evaluator_modes_before)
+
+        # A skinCluster created outside BoneConverter remains unblocked.
+        unrelated_mesh = cmds.polySphere(name="unrelated_mesh")[0]
+        unrelated_skin = cmds.skinCluster([joint1], unrelated_mesh, name="unrelated_skinCluster")[0]
+        self.assertFalse(cmds.getAttr(f"{unrelated_skin}.blockGPU"))
 
     def test_get_pmx_vertex_weights_bdef1(self):
         """BDEF1ウェイトの取得テスト"""

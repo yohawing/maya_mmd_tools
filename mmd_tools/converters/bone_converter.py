@@ -498,6 +498,7 @@ class BoneConverter:
         if not mesh_node or not cmds.objExists(mesh_node):
             self.logger.warning(f"Mesh node '{mesh_node}' does not exist. Skin cluster will not be created.")
             return None
+        has_authored_normal_difference = maya_mesh_utils.has_materially_different_authored_normals(mesh_node)
 
         # skin_cluster = skin_cluster_result[0] if skin_cluster_result else None
         skin_cluster_create_start = time.perf_counter()
@@ -510,6 +511,22 @@ class BoneConverter:
             name="skinCluster",
         )[0]
         self._add_profile_time("skin_cluster_create_sec", skin_cluster_create_start)
+
+        # Preserve user normals on every MMD deformer.  Only meshes with a
+        # locked authored-vs-geometric difference need the per-deformer GPU
+        # block; the default remains unchanged for ordinary geometric normals.
+        for attribute, value in (("deformUserNormals", True),):
+            if not cmds.attributeQuery(attribute, node=skin_cluster, exists=True):
+                continue
+            try:
+                cmds.setAttr(f"{skin_cluster}.{attribute}", value)
+            except (RuntimeError, TypeError, ValueError):
+                self.logger.warning("Failed to set %s on skinCluster '%s'", attribute, skin_cluster, exc_info=True)
+        if has_authored_normal_difference and cmds.attributeQuery("blockGPU", node=skin_cluster, exists=True):
+            try:
+                cmds.setAttr(f"{skin_cluster}.blockGPU", True)
+            except (RuntimeError, TypeError, ValueError):
+                self.logger.warning("Failed to set blockGPU on skinCluster '%s'", skin_cluster, exc_info=True)
 
         return skin_cluster
 
