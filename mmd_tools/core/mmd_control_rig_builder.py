@@ -17,7 +17,9 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from mmd_tools.core.constants import ATTR_MMD_CONTROL_RIG_JSON
 from mmd_tools.core.humanik_utils import maya_cmds
 from mmd_tools.core.mmd_control_rig_analyzer import (
+    MmdControlRigRoleBinding,
     MmdControlRigSpec,
+    STATUS_FALLBACK,
     analyze_mmd_control_rig,
 )
 
@@ -143,9 +145,10 @@ def build_mmd_control_rig(
             zero_groups: Dict[str, str] = {}
             bindings: Dict[str, Dict[str, Any]] = {}
             for role_binding in rig_spec.roles:
-                binding = role_binding.binding
-                if binding is None or binding.blocked:
+                if not _should_build_role_control(role_binding):
                     continue
+                binding = role_binding.binding
+                assert binding is not None
                 role = role_binding.role
                 zero = cmds.createNode(
                     "transform",
@@ -173,18 +176,19 @@ def build_mmd_control_rig(
                 cmds.sets(control, add=selection_set)
                 controls[role] = str(control)
                 zero_groups[role] = str(zero)
-                bindings[role] = {
-                    "joint": binding.joint,
-                    "inputKind": binding.input_kind,
-                    "authoredPlugs": list(binding.authored_plugs),
-                    "ikSolvers": list(binding.ik_solvers),
-                    "fallback": role_binding.fallback,
-                }
+                bindings[role] = _binding_metadata(role_binding)
 
-            for role, zero in zero_groups.items():
-                parent_role = _available_parent_role(role, controls)
-                if parent_role:
-                    cmds.parent(zero, controls[parent_role])
+            # Parent only concrete nodes.  Semantic fallback aliases are
+            # added afterwards and must never be interpreted as new DAG
+            # edges (e.g. groove_ZERO aliasing center_ZERO would otherwise
+            # attempt to parent center_ZERO below its own child).
+            _parent_zero_groups(cmds, zero_groups, controls)
+            _apply_fallback_role_aliases(
+                rig_spec.roles,
+                controls,
+                zero_groups,
+                bindings,
+            )
 
             nodes = _owned_nodes(cmds, control_group, selection_set)
             metadata = {
@@ -378,6 +382,96 @@ def _available_parent_role(role: str, controls: Mapping[str, str]) -> Optional[s
     while parent and parent not in controls:
         parent = _ROLE_PARENTS.get(parent)
     return parent
+
+
+def _parent_zero_groups(
+    cmds,
+    zero_groups: Mapping[str, str],
+    controls: Mapping[str, str],
+) -> None:
+    """Parent concrete zero groups below their nearest available control."""
+    for role, zero in zero_groups.items():
+        parent_role = _available_parent_role(role, controls)
+        if parent_role:
+            cmds.parent(zero, controls[parent_role])
+
+
+def _should_build_role_control(role_binding: MmdControlRigRoleBinding) -> bool:
+    """Return whether a role deserves its own curve control.
+
+    A semantic fallback to another role reuses that role's authored input.  A
+    second curve would therefore be inert and, once motion routing is enabled,
+    would also compete for the same destination channels.  The model-root
+    fallback is different: it is the only concrete binding for ``master`` and
+    must still receive a control.
+    """
+    binding = role_binding.binding
+    if binding is None or binding.blocked:
+        return False
+    if role_binding.status == STATUS_FALLBACK:
+        return role_binding.fallback == "model_root"
+    return True
+
+
+def _fallback_alias_target(role_binding: MmdControlRigRoleBinding) -> Optional[str]:
+    """Return the concrete role whose control a semantic fallback aliases."""
+    if role_binding.status != STATUS_FALLBACK:
+        return None
+    fallback = role_binding.fallback
+    if not fallback or fallback == "model_root":
+        return None
+    return str(fallback)
+
+
+def _binding_metadata(role_binding: MmdControlRigRoleBinding) -> Dict[str, Any]:
+    """Serialize one role binding for persisted control-rig metadata."""
+    binding = role_binding.binding
+    if binding is None:
+        raise MmdControlRigBuildError(
+            f"control-rig role has no binding: {role_binding.role}"
+        )
+    return {
+        "joint": binding.joint,
+        "inputKind": binding.input_kind,
+        "authoredPlugs": list(binding.authored_plugs),
+        "ikSolvers": list(binding.ik_solvers),
+        "fallback": role_binding.fallback,
+    }
+
+
+def _apply_fallback_role_aliases(
+    role_bindings,
+    controls: Dict[str, str],
+    zero_groups: Dict[str, str],
+    bindings: Dict[str, Dict[str, Any]],
+) -> None:
+    """Alias semantic fallback roles to existing controls without new nodes."""
+    pending = {
+        role_binding.role: role_binding
+        for role_binding in role_bindings
+        if _fallback_alias_target(role_binding) is not None
+    }
+    while pending:
+        applied = False
+        for role in sorted(tuple(pending)):
+            role_binding = pending[role]
+            target = _fallback_alias_target(role_binding)
+            if target not in controls:
+                continue
+            controls[role] = controls[target]
+            zero_groups[role] = zero_groups[target]
+            bindings[role] = _binding_metadata(role_binding)
+            del pending[role]
+            applied = True
+        if applied:
+            continue
+        unresolved = ", ".join(
+            f"{role}->{_fallback_alias_target(pending[role])}"
+            for role in sorted(pending)
+        )
+        raise MmdControlRigBuildError(
+            f"control-rig fallback alias target is unavailable: {unresolved}"
+        )
 
 
 def _controller_scale(cmds, root: str) -> float:

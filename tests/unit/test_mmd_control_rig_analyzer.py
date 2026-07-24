@@ -15,6 +15,11 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
     MmdControlRigConnectionFact,
     classify_mmd_control_rig,
 )
+from mmd_tools.core.mmd_control_rig_builder import (
+    _apply_fallback_role_aliases,
+    _parent_zero_groups,
+    _should_build_role_control,
+)
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
 
@@ -31,6 +36,24 @@ def _bone(index, name, *, pmx_flags=0, incoming=(), ik_solvers=()):
 
 def _connection(source, destination, node_type):
     return MmdControlRigConnectionFact(source, destination, node_type)
+
+
+class _HierarchyFake:
+    """Minimal parent graph that rejects introducing a descendant cycle."""
+
+    def __init__(self):
+        self.parent_by_child = {
+            "master_CTRL": "master_ZERO",
+            "center_CTRL": "center_ZERO",
+        }
+
+    def parent(self, child, parent):
+        ancestor = parent
+        while ancestor in self.parent_by_child:
+            if ancestor == child:
+                raise AssertionError(f"self-parent cycle: {child} -> {parent}")
+            ancestor = self.parent_by_child[ancestor]
+        self.parent_by_child[child] = parent
 
 
 class TestMmdControlRigAnalyzer(unittest.TestCase):
@@ -54,6 +77,69 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
             INPUT_IK_CONTROLLER,
         )
         self.assertTrue(spec.can_build_mvp)
+
+    def test_role_control_builder_aliases_semantic_fallback_but_keeps_model_root(self):
+        facts = [_bone(0, "センター")]
+
+        spec = classify_mmd_control_rig("|model", facts)
+        roles = spec.roles_by_name
+        controls = {"master": "master_CTRL", "center": "center_CTRL"}
+        zero_groups = {"master": "master_ZERO", "center": "center_ZERO"}
+        bindings = {
+            "master": {"joint": "|model"},
+            "center": {"joint": "|model|bone_0"},
+        }
+
+        _apply_fallback_role_aliases(
+            spec.roles,
+            controls,
+            zero_groups,
+            bindings,
+        )
+
+        self.assertFalse(_should_build_role_control(roles["groove"]))
+        self.assertTrue(_should_build_role_control(roles["master"]))
+        self.assertEqual(controls["groove"], controls["center"])
+        self.assertEqual(zero_groups["groove"], zero_groups["center"])
+        self.assertEqual(bindings["groove"]["joint"], bindings["center"]["joint"])
+        self.assertEqual(len(set(controls.values())), 2)
+
+    def test_fallback_aliases_are_added_after_concrete_hierarchy_parenting(self):
+        spec = classify_mmd_control_rig("|model", [_bone(0, "センター")])
+        concrete_controls = {"master": "master_CTRL", "center": "center_CTRL"}
+        concrete_zeros = {"master": "master_ZERO", "center": "center_ZERO"}
+        bindings = {
+            "master": {"joint": "|model"},
+            "center": {"joint": "|model|bone_0"},
+        }
+
+        fake = _HierarchyFake()
+        _parent_zero_groups(fake, concrete_zeros, concrete_controls)
+        _apply_fallback_role_aliases(
+            spec.roles,
+            concrete_controls,
+            concrete_zeros,
+            bindings,
+        )
+
+        self.assertEqual(concrete_zeros["groove"], "center_ZERO")
+        self.assertEqual(concrete_controls["groove"], "center_CTRL")
+
+        aliased_fake = _HierarchyFake()
+        aliased_controls = {"master": "master_CTRL", "center": "center_CTRL"}
+        aliased_zeros = {"master": "master_ZERO", "center": "center_ZERO"}
+        aliased_bindings = {
+            "master": {"joint": "|model"},
+            "center": {"joint": "|model|bone_0"},
+        }
+        _apply_fallback_role_aliases(
+            spec.roles,
+            aliased_controls,
+            aliased_zeros,
+            aliased_bindings,
+        )
+        with self.assertRaises(AssertionError):
+            _parent_zero_groups(aliased_fake, aliased_zeros, aliased_controls)
 
     def test_append_output_routes_controller_to_base_plugs(self):
         upper = _bone(
