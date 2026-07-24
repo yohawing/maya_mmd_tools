@@ -36,6 +36,12 @@ class TestVmdExport(TestBase):
         tmp_path = os.path.join(self.temp_dir, "exporter_data.vmd")
         exported = VmdExporter().export_vmd_animation(tmp_path, vmd_data)
 
+        # ネイティブエクスポータを使う環境でも、出力は VMD2 シグネチャである必要がある。
+        with open(tmp_path, "rb") as handle:
+            self.assertEqual(
+                handle.read(30),
+                b"Vocaloid Motion Data 0002" + b"\x00" * 5,
+            )
         parsed = VmdData().parse_file(tmp_path)
         self.assertIs(exported, vmd_data)
         self.assertEqual(parsed.header.model_name, "ExporterModel")
@@ -197,6 +203,11 @@ class TestVmdExport(TestBase):
         VmdExporter(native_exporter=lambda payload: None).export_vmd_animation(tmp_path, vmd_data)
 
         parsed = VmdData().parse_file(tmp_path)
+        with open(tmp_path, "rb") as handle:
+            self.assertEqual(
+                handle.read(30),
+                b"Vocaloid Motion Data 0002" + b"\x00" * 5,
+            )
         self.assertEqual(parsed.header.model_name, "FallbackModel")
         self.assertEqual(parsed.morph_frames[0].morph_name, "笑い")
         self.assertAlmostEqual(parsed.morph_frames[0].value, 0.5)
