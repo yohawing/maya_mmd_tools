@@ -25,6 +25,9 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
 CONTROL_RIG_METADATA_SCHEMA = "mmd_tools.mmd_control_rig"
 CONTROL_RIG_METADATA_VERSION = 1
 CONTROL_RIG_ATTACHED = "ATTACHED"
+CONTROL_RIG_EDIT = "EDIT"
+CONTROL_RIG_BAKED = "BAKED"
+CONTROL_RIG_STATES = frozenset({CONTROL_RIG_ATTACHED, CONTROL_RIG_EDIT, CONTROL_RIG_BAKED})
 
 
 class MmdControlRigBuildError(RuntimeError):
@@ -128,6 +131,7 @@ def build_mmd_control_rig(
                     "joint": binding.joint,
                     "inputKind": binding.input_kind,
                     "authoredPlugs": list(binding.authored_plugs),
+                    "ikSolvers": list(binding.ik_solvers),
                     "fallback": role_binding.fallback,
                 }
 
@@ -170,6 +174,8 @@ def remove_mmd_control_rig(model_root: str, *, cmds_module=None) -> bool:
     metadata = _read_metadata(cmds, root)
     if metadata is None:
         return False
+    if metadata["state"] != CONTROL_RIG_ATTACHED:
+        raise MmdControlRigBuildError("return the control rig to ATTACHED before removal")
     if _node_uuid(cmds, root) != metadata.get("modelRootUuid"):
         raise MmdControlRigBuildError("control-rig metadata model UUID mismatch")
     resolved = _resolve_owned_nodes(cmds, metadata)
@@ -252,11 +258,12 @@ def _read_metadata(cmds, root: str) -> Optional[Dict[str, Any]]:
     required = {
         "schema": CONTROL_RIG_METADATA_SCHEMA,
         "version": CONTROL_RIG_METADATA_VERSION,
-        "state": CONTROL_RIG_ATTACHED,
     }
     for key, expected in required.items():
         if metadata.get(key) != expected:
             raise MmdControlRigBuildError(f"unsupported control-rig metadata {key}")
+    if metadata.get("state") not in CONTROL_RIG_STATES:
+        raise MmdControlRigBuildError("unsupported control-rig metadata state")
     for key in ("modelRootUuid", "controlGroupUuid", "selectionSetUuid"):
         if not isinstance(metadata.get(key), str) or not metadata[key]:
             raise MmdControlRigBuildError(f"control-rig metadata missing {key}")

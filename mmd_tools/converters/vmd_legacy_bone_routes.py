@@ -7,6 +7,7 @@ from typing import Dict, List
 
 import maya.cmds as cmds
 
+from ..core.mmd_control_rig_motion import control_rig_edit_routes_for_joints
 from .vmd_runtime_rig_helper import _ls_mmd_ccd_ik_nodes
 
 
@@ -57,6 +58,7 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
     """Build per-joint key routes for legacy sparse VMD bone animation."""
     append_info = converter._collect_append_info()
     ik_link_joints = converter._collect_ik_link_joints()
+    control_routes = control_rig_edit_routes_for_joints(converter.bone_name_mapping.values())
     routes: Dict[str, dict] = {}
 
     for joint in set(converter.bone_name_mapping.values()):
@@ -72,6 +74,10 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
             for src_attr, dst_attr in info.get("attr_map", {}).items():
                 if append_node:
                     route["attr_targets"][src_attr] = (append_node, dst_attr)
+
+        # In EDIT, the owned curve is the authored animation input. Unsupported
+        # bones and solver-output links retain the established legacy route.
+        route["attr_targets"].update(control_routes.get(joint, {}))
 
         if route["attr_targets"] or route["skip_rotate"] or ik_info:
             routes[joint] = route
