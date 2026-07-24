@@ -20,6 +20,10 @@ from mmd_tools.core.constants import (
     ATTR_MMD_LIGHT,
     ATTR_MMD_MODEL_NAME,
 )
+from mmd_tools.core.mmd_control_rig_builder import (
+    CONTROL_RIG_EDIT,
+    read_mmd_control_rig_metadata,
+)
 from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_names
 from mmd_tools.converters.vmd_camera_animation import (
     ATTR_MMD_CAMERA_ROOT_NODE,
@@ -27,6 +31,7 @@ from mmd_tools.converters.vmd_camera_animation import (
     MMD_CAMERA_EXPR_SCALE_ATTR,
     mmd_camera_rotation_from_maya_forward_up,
 )
+from mmd_tools.converters.vmd_ik_enabled_animation import collect_ik_nodes_by_bone_name
 
 
 _BONE_EXPORT_ATTRS = (
@@ -83,6 +88,7 @@ class VmdSceneCollector:
         end_frame = _optional_float(options.get("end_frame"))
         motion_scale = float(options.get("motion_scale", 1.0) or 1.0)
         bone_bind_poses = options.get("bone_bind_poses") or {}
+        control_rig_routes = self._control_rig_export_routes(target_model)
 
         return {
             "model_name": str(options.get("model_name") or self._model_name(target_model)),
@@ -92,10 +98,16 @@ class VmdSceneCollector:
                 end_frame,
                 motion_scale=motion_scale,
                 bone_bind_poses=bone_bind_poses,
+                input_routes=control_rig_routes,
             ),
             "morph_frames": self.collect_morph_frames(blend_shapes, start_frame, end_frame),
             "camera_frames": self.collect_camera_frames(cameras, start_frame, end_frame),
             "light_frames": self.collect_light_frames(lights, start_frame, end_frame),
+            "ik_show_hide_frames": self.collect_ik_show_hide_frames(
+                target_model,
+                start_frame,
+                end_frame,
+            ),
         }
 
     def collect_bone_frames(
@@ -105,24 +117,28 @@ class VmdSceneCollector:
         end_frame: Optional[float] = None,
         motion_scale: float = 1.0,
         bone_bind_poses: Optional[Mapping[str, Sequence[float]]] = None,
+        input_routes: Optional[Mapping[str, Mapping[str, tuple[str, str]]]] = None,
     ) -> list[dict]:
         """Collect keyed local joint transform frames."""
         bone_bind_poses = bone_bind_poses or {}
+        input_routes = input_routes or {}
         frames = []
         for joint in joints:
             bone_name = self._mmd_bone_name(joint)
             bind_pose = _resolve_bind_pose(bone_bind_poses, bone_name, joint)
+            long_names = cmds.ls(joint, long=True) or [joint]
+            route = input_routes.get(str(long_names[0]), {})
             keyed_frames = _filter_frame_range(
-                _key_times(joint, _BONE_EXPORT_ATTRS),
+                _routed_key_times(joint, route),
                 start_frame,
                 end_frame,
             )
             for frame_number in keyed_frames:
                 rotation = _maya_joint_rotate_to_vmd_quaternion(
                     joint,
-                    _plug_float(joint, "rotateX", frame_number),
-                    _plug_float(joint, "rotateY", frame_number),
-                    _plug_float(joint, "rotateZ", frame_number),
+                    _routed_plug_float(joint, "rotateX", frame_number, route),
+                    _routed_plug_float(joint, "rotateY", frame_number, route),
+                    _routed_plug_float(joint, "rotateZ", frame_number, route),
                 )
                 frames.append(
                     {
@@ -130,9 +146,9 @@ class VmdSceneCollector:
                         "frame_number": int(round(frame_number)),
                         "position": _maya_translate_to_vmd_position(
                             (
-                                _plug_float(joint, "translateX", frame_number),
-                                _plug_float(joint, "translateY", frame_number),
-                                _plug_float(joint, "translateZ", frame_number),
+                                _routed_plug_float(joint, "translateX", frame_number, route),
+                                _routed_plug_float(joint, "translateY", frame_number, route),
+                                _routed_plug_float(joint, "translateZ", frame_number, route),
                             ),
                             bind_pose,
                             motion_scale,
@@ -142,6 +158,65 @@ class VmdSceneCollector:
                 )
         frames.sort(key=lambda item: (item["bone_name"], item["frame_number"]))
         return frames
+
+    def collect_ik_show_hide_frames(
+        self,
+        target_model: Optional[str],
+        start_frame: Optional[float] = None,
+        end_frame: Optional[float] = None,
+    ) -> list[dict]:
+        """Collect keyed owned ``mmdCcdIk.enabled`` values as VMD properties."""
+        if not target_model:
+            return []
+        nodes_by_name = collect_ik_nodes_by_bone_name(target_model=target_model)
+        keyed_frames = _filter_frame_range(
+            sorted(
+                {
+                    frame
+                    for node in nodes_by_name.values()
+                    for frame in _key_times(node, ("enabled",))
+                }
+            ),
+            start_frame,
+            end_frame,
+        )
+        return [
+            {
+                "frame_number": int(round(frame)),
+                "visible": True,
+                "ik_states": [
+                    (name, bool(_plug_float(node, "enabled", frame)))
+                    for name, node in sorted(nodes_by_name.items())
+                ],
+            }
+            for frame in keyed_frames
+        ]
+
+    def _control_rig_export_routes(
+        self,
+        target_model: Optional[str],
+    ) -> dict[str, dict[str, tuple[str, str]]]:
+        if not target_model:
+            return {}
+        metadata = read_mmd_control_rig_metadata(target_model)
+        if not metadata:
+            return {}
+        if metadata["state"] == CONTROL_RIG_EDIT:
+            raise ValueError("Bake the MMD control rig before VMD export")
+        routes = {}
+        for binding in metadata.get("bindings", {}).values():
+            joint_names = cmds.ls(binding.get("joint"), long=True) or []
+            if len(joint_names) != 1:
+                continue
+            joint = str(joint_names[0])
+            for plug in binding.get("authoredPlugs", []):
+                if plug.endswith((".translate", ".rotate")):
+                    base_attr = plug.rsplit(".", 1)[-1]
+                    node = plug.rsplit(".", 1)[0]
+                    for axis in "XYZ":
+                        attr = f"{base_attr}{axis}"
+                        routes.setdefault(joint, {})[attr] = (node, attr)
+        return routes
 
     def collect_morph_frames(
         self,
@@ -363,6 +438,27 @@ def _key_times(node: str, attrs: Iterable[str]) -> list[float]:
             values = []
         times.extend(float(value) for value in values)
     return sorted(set(times))
+
+
+def _routed_key_times(
+    joint: str,
+    route: Mapping[str, tuple[str, str]],
+) -> list[float]:
+    times = []
+    for attr in _BONE_EXPORT_ATTRS:
+        node, target_attr = route.get(attr, (joint, attr))
+        times.extend(_key_times(node, (target_attr,)))
+    return sorted(set(times))
+
+
+def _routed_plug_float(
+    joint: str,
+    attr: str,
+    frame_number: float,
+    route: Mapping[str, tuple[str, str]],
+) -> float:
+    node, target_attr = route.get(attr, (joint, attr))
+    return _plug_float(node, target_attr, frame_number)
 
 
 def _query_current_time() -> Optional[float]:

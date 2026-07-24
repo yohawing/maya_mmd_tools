@@ -1,5 +1,6 @@
 """Maya integration coverage for the report-only MMD control-rig analyzer."""
 
+import json
 import os
 from pathlib import Path
 from unittest import mock
@@ -19,12 +20,16 @@ from mmd_tools.core.mmd_control_rig_motion import (
     enter_mmd_control_rig_edit,
 )
 from mmd_tools.core.mmd_control_rig_analyzer import (
+    INPUT_APPEND_BASE,
     INPUT_IK_CONTROLLER,
     INPUT_SOLVER_OUTPUT,
     STATUS_READY,
     analyze_mmd_control_rig,
 )
+from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
+from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.io.mmd_importer import import_mmd_file
+from mmd_tools.io.vmd_exporter import VmdExporter
 from tests.common.maya_test_base import MayaTestBase
 
 
@@ -274,6 +279,60 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertEqual(cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}"), metadata_before)
         self.assertEqual(self._capture_edit_graph(edit["journal"]), graph_before)
         self.assertEqual(read_mmd_control_rig_metadata(root)["state"], "EDIT")
+
+    def test_baked_collector_exports_append_inputs_and_ik_states(self):
+        root = self._import_fixture()
+        self.assertTrue(
+            import_mmd_file(
+                _VMD_PATH,
+                options={"target_model": root, "pmx_path": _PMX_PATH},
+            )
+        )
+        build_mmd_control_rig(root)
+        enter_mmd_control_rig_edit(root)
+        bake_mmd_control_rig(root)
+        metadata = read_mmd_control_rig_metadata(root)
+        append_node = (cmds.ls(type="mmdAppend") or [None])[0]
+        self.assertTrue(append_node)
+        append_joint = (
+            cmds.listConnections(
+                f"{append_node}.outputRotate",
+                source=False,
+                destination=True,
+                type="joint",
+            )
+            or []
+        )[0]
+        append_bone = cmds.getAttr(f"{append_joint}.mmd_bone_name")
+        cmds.setKeyframe(append_node, attribute="baseRotateX", time=0, value=0.0)
+        cmds.setKeyframe(append_node, attribute="baseRotateX", time=10, value=15.0)
+        metadata["bindings"]["append_export_probe"] = {
+            "joint": (cmds.ls(append_joint, long=True) or [append_joint])[0],
+            "inputKind": INPUT_APPEND_BASE,
+            "authoredPlugs": [f"{append_node}.baseRotate"],
+            "ikSolvers": [],
+            "fallback": None,
+        }
+        cmds.setAttr(
+            f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}",
+            json.dumps(metadata, ensure_ascii=False),
+            type="string",
+        )
+
+        collected = VmdSceneCollector().collect({"target_model": root})
+        output_path = self.get_temp_filename("mmd_control_rig_baked.vmd")
+        VmdExporter().export_vmd_animation(output_path, collected)
+        parsed = VmdData().parse_file(output_path)
+
+        exported_bones = {frame.bone_name for frame in parsed.bone_frames}
+        self.assertIn(append_bone, exported_bones)
+        self.assertTrue(parsed.ik_show_hide_frames)
+        exported_ik = {
+            name
+            for frame in parsed.ik_show_hide_frames
+            for name, _enabled in frame.ik_states
+        }
+        self.assertTrue({"左足ＩＫ", "右足ＩＫ"}.intersection(exported_ik) or {"左足IK", "右足IK"}.intersection(exported_ik))
 
     def _capture_edit_graph(self, journal):
         plugs = {
