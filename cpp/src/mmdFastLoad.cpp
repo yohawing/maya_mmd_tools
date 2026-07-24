@@ -6,6 +6,7 @@
  * Reads a PMX file and builds Maya mesh(es) using the mmd-anim-ffi
  * typed-buffer ABI:
  *   - Geometry  : mmd_runtime_parse_pmx_positions/uvs/indices_buffer
+ *   - Normals   : mmd_runtime_parse_pmx_normals_buffer (authored, optional)
  *   - Materials : split via mmd_runtime_pmx_material_split_* (one mesh / material)
  *   - Morphs    : mmd_runtime_parse_pmx_non_geometry_json -> morphs[].vertexOffsets
  *
@@ -39,6 +40,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <set>
@@ -262,6 +264,7 @@ struct BuiltMesh {
  * The new transform is renamed to desiredTransformName (uniqued by Maya).
  */
 BuiltMesh buildMesh(const std::vector<float>&    positions,
+                    const std::vector<float>&    normals,
                     const std::vector<float>&    uvs,
                     const std::vector<uint32_t>& indices,
                     double                       scale,
@@ -307,6 +310,29 @@ BuiltMesh buildMesh(const std::vector<float>&    positions,
         &status);
     if (!status) {
         return result;
+    }
+
+    // ---- Authored normals: (x, y, z) -> (x, y, -z), no position scale ----
+    // Invalid or missing entries are intentionally omitted so Maya keeps its
+    // geometric fallback for those vertices without poisoning valid entries.
+    MVectorArray authoredNormals;
+    MIntArray    authoredVertexIds;
+    const size_t normalCount = normals.size() / 3U;
+    const size_t assignCount = std::min(vertCount, normalCount);
+    for (size_t i = 0; i < assignCount; ++i) {
+        const double x = static_cast<double>(normals[i * 3]);
+        const double y = static_cast<double>(normals[i * 3 + 1]);
+        const double z = static_cast<double>(normals[i * 3 + 2]);
+        const double length = std::sqrt(x * x + y * y + z * z);
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) ||
+            !std::isfinite(length) || length <= 0.0) {
+            continue;
+        }
+        authoredNormals.append(MVector(x / length, y / length, -z / length));
+        authoredVertexIds.append(static_cast<int>(i));
+    }
+    if (authoredVertexIds.length() > 0) {
+        meshFn.setVertexNormals(authoredNormals, authoredVertexIds, MSpace::kObject);
     }
 
     MDagPath dagPath;
@@ -553,6 +579,8 @@ MStatus MmdFastLoad::loadSingle(const std::string& safeName,
     // ---- Geometry from typed buffers ----
     std::vector<float>    positions = bufferToFloatsAndFree(
         mmd_runtime_parse_pmx_positions_buffer(data, len));
+    std::vector<float>    normals = bufferToFloatsAndFree(
+        mmd_runtime_parse_pmx_normals_buffer(data, len));
     std::vector<float>    uvs = bufferToFloatsAndFree(
         mmd_runtime_parse_pmx_uvs_buffer(data, len));
     std::vector<uint32_t> indices = bufferToU32AndFree(
@@ -565,7 +593,7 @@ MStatus MmdFastLoad::loadSingle(const std::string& safeName,
         return MS::kFailure;
     }
 
-    BuiltMesh mesh = buildMesh(positions, uvs, indices, scale_,
+    BuiltMesh mesh = buildMesh(positions, normals, uvs, indices, scale_,
                                MString((safeName + "_fast").c_str()));
     if (!mesh.ok) {
         MGlobal::displayError("[mmdFastLoad] MFnMesh::create failed.");
@@ -657,6 +685,8 @@ MStatus MmdFastLoad::loadSplit(const std::string& safeName,
     for (size_t i = 0; i < meshCount; ++i) {
         std::vector<float>    positions = bufferToFloatsAndFree(
             mmd_runtime_pmx_material_split_positions_buffer(split, i));
+        std::vector<float>    normals = bufferToFloatsAndFree(
+            mmd_runtime_pmx_material_split_normals_buffer(split, i));
         std::vector<float>    uvs = bufferToFloatsAndFree(
             mmd_runtime_pmx_material_split_uvs_buffer(split, i));
         std::vector<uint32_t> indices = bufferToU32AndFree(
@@ -682,7 +712,7 @@ MStatus MmdFastLoad::loadSplit(const std::string& safeName,
         const std::string meshNodeName =
             uniqueName(safeName + "_" + matName, usedNames);
 
-        BuiltMesh mesh = buildMesh(positions, uvs, indices, scale_,
+        BuiltMesh mesh = buildMesh(positions, normals, uvs, indices, scale_,
                                    MString(meshNodeName.c_str()));
         if (!mesh.ok) {
             MGlobal::displayWarning(
