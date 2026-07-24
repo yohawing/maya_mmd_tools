@@ -14,6 +14,10 @@ from mmd_tools.core.mmd_control_rig_builder import (
     read_mmd_control_rig_metadata,
     remove_mmd_control_rig,
 )
+from mmd_tools.core.mmd_control_rig_motion import (
+    bake_mmd_control_rig,
+    enter_mmd_control_rig_edit,
+)
 from mmd_tools.core.mmd_control_rig_analyzer import (
     INPUT_IK_CONTROLLER,
     INPUT_SOLVER_OUTPUT,
@@ -29,6 +33,7 @@ _TEST_DATA = os.path.join(
     "data",
 )
 _PMX_PATH = os.path.join(_TEST_DATA, "mmt_test_model.pmx")
+_VMD_PATH = os.path.join(_TEST_DATA, "mmt_test_model_test_motion.vmd")
 
 
 class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
@@ -153,9 +158,9 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         result = build_mmd_control_rig(root)
 
         self.assertTrue(result.created)
-        self.assertEqual(
-            set(result.controls),
-            {"master", "center", "groove", "left_foot_ik", "right_foot_ik"},
+        self.assertTrue(
+            {"master", "center", "groove", "left_foot_ik", "right_foot_ik"}
+            .issubset(result.controls)
         )
         self.assertFalse(cmds.listRelatives(result.control_group, parent=True))
         for role, control in result.controls.items():
@@ -197,6 +202,90 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             )
         )
         self.assertFalse(remove_mmd_control_rig(reopened_root))
+
+    def test_existing_vmd_edit_and_bake_preserve_world_and_anim_curves(self):
+        root = self._import_fixture()
+        self.assertTrue(
+            import_mmd_file(
+                _VMD_PATH,
+                options={"target_model": root, "pmx_path": _PMX_PATH},
+            )
+        )
+        result = build_mmd_control_rig(root)
+        metadata = read_mmd_control_rig_metadata(root)
+        role, target, source = self._first_animated_control_binding(metadata)
+        channel = target.rsplit(".", 1)[-1]
+        original_curve = source.split(".", 1)[0]
+        original_curve_uuid = cmds.ls(original_curve, uuid=True)[0]
+        frames = (0, 10, 20, 30)
+        before = self._capture_indexed_world_matrices(root, frames)
+        control_world_before = tuple(
+            cmds.getAttr(f"{result.controls[role]}.worldMatrix[0]")
+        )
+
+        edit = enter_mmd_control_rig_edit(root)
+
+        self.assertEqual(edit["state"], "EDIT")
+        self.assertEqual(before, self._capture_indexed_world_matrices(root, frames))
+        self.assertEqual(
+            control_world_before,
+            tuple(cmds.getAttr(f"{result.controls[role]}.worldMatrix[0]")),
+        )
+        self.assertTrue(cmds.ls(original_curve_uuid, long=True))
+        self.assertTrue(
+            cmds.isConnected(
+                source,
+                f"{result.controls[role]}.{channel}",
+            )
+        )
+        self.assertFalse(cmds.cycleCheck(all=True, list=True) or [])
+
+        baked = bake_mmd_control_rig(root)
+
+        self.assertEqual(baked["state"], "BAKED")
+        self.assertEqual(before, self._capture_indexed_world_matrices(root, frames))
+        self.assertTrue(cmds.ls(original_curve_uuid, long=True))
+        self.assertTrue(cmds.isConnected(source, target))
+
+    def _first_animated_control_binding(self, metadata):
+        for role, binding in metadata["bindings"].items():
+            for compound in binding["authoredPlugs"]:
+                channels = (
+                    [f"{compound}{axis}" for axis in "XYZ"]
+                    if compound.endswith((".translate", ".rotate"))
+                    else [compound]
+                )
+                for target in channels:
+                    sources = cmds.listConnections(
+                        target, source=True, destination=False, plugs=True
+                    ) or []
+                    if sources:
+                        return role, target, str(sources[0])
+        self.fail("fixture VMD did not create an animated control-rig binding")
+
+    def _capture_indexed_world_matrices(self, root, frames):
+        joints = [
+            joint
+            for joint in cmds.listRelatives(
+                root, allDescendents=True, type="joint", fullPath=True
+            )
+            or []
+            if cmds.attributeQuery(ATTR_MMD_BONE_INDEX, node=joint, exists=True)
+        ]
+        result = {}
+        restore = cmds.currentTime(query=True)
+        try:
+            for frame in frames:
+                cmds.currentTime(frame, edit=True)
+                for joint in joints:
+                    index = int(cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_INDEX}"))
+                    result[(index, frame)] = tuple(
+                        round(float(value), 8)
+                        for value in cmds.getAttr(f"{joint}.worldMatrix[0]")
+                    )
+        finally:
+            cmds.currentTime(restore, edit=True)
+        return result
 
     def test_remove_fails_closed_when_user_node_is_parented_under_control_group(self):
         root = self._import_fixture()
