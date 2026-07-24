@@ -63,6 +63,26 @@ class AnimationTab(BaseTab):
         visibility_layout.addStretch(1)
         main_layout.addLayout(visibility_layout)
 
+        self.control_rig_group = QGroupBox("MMD Control Rig")
+        control_rig_layout = QGridLayout()
+        self.control_rig_buttons: dict[str, QPushButton] = {}
+        for index, (key, label) in enumerate(
+            (
+                ("create", "Create"),
+                ("edit", "Attach / Edit"),
+                ("bake_mmd", "Bake to MMD"),
+                ("restore", "Restore"),
+                ("delete", "Delete Rig"),
+                ("diagnostics", "Diagnostics"),
+            )
+        ):
+            button = QPushButton(label)
+            row, column = divmod(index, 3)
+            control_rig_layout.addWidget(button, row, column)
+            self.control_rig_buttons[key] = button
+        self.control_rig_group.setLayout(control_rig_layout)
+        main_layout.addWidget(self.control_rig_group)
+
         # --- Picker sub-tabs ---
         self.picker_tabs = QTabWidget()
         self.picker_tabs.setObjectName("PickerTabs")
@@ -180,6 +200,7 @@ class AnimationTab(BaseTab):
         self.tools_group.setVisible(
             picker_tab and SettingsService().is_development_mode()
         )
+        self.control_rig_group.setVisible(SettingsService().is_development_mode())
 
     def current_language(self) -> str:
         """Return the active UI locale for presenter-owned dynamic text."""

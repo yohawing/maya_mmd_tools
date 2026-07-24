@@ -123,6 +123,10 @@ class AnimationPresenter:
             btn.clicked.connect(
                 lambda _checked=False, k=key: self._on_tool_clicked(k)
             )
+        for key, btn in getattr(self.view, "control_rig_buttons", {}).items():
+            btn.clicked.connect(
+                lambda _checked=False, k=key: self._on_control_rig_clicked(k)
+            )
 
     def disconnect_signals(self):
         """Release shared listeners and timers exactly once.
@@ -195,6 +199,53 @@ class AnimationPresenter:
             pass
         self.view.status_label.setText("")
 
+    def _on_control_rig_clicked(self, action: str) -> None:
+        """Run one explicit MMD-native control-rig state action."""
+        root = self.app_state.current_model_root
+        if not root:
+            self.view.status_label.setText("MMDモデルを選択してください")
+            return
+        try:
+            from ...core.mmd_control_rig_builder import (
+                build_mmd_control_rig,
+                read_mmd_control_rig_metadata,
+                remove_mmd_control_rig,
+            )
+            from ...core.mmd_control_rig_motion import (
+                bake_mmd_control_rig,
+                enter_mmd_control_rig_edit,
+                restore_mmd_control_rig_attached,
+            )
+
+            if action == "create":
+                result = build_mmd_control_rig(root)
+                message = f"MMD Control Rig: {result.state}"
+            elif action == "edit":
+                metadata = enter_mmd_control_rig_edit(root)
+                message = f"MMD Control Rig: {metadata['state']}"
+            elif action == "bake_mmd":
+                metadata = bake_mmd_control_rig(root)
+                message = f"MMD Control Rig: {metadata['state']}"
+            elif action == "restore":
+                metadata = restore_mmd_control_rig_attached(root)
+                message = f"MMD Control Rig: {metadata['state']}"
+            elif action == "delete":
+                removed = remove_mmd_control_rig(root)
+                message = "MMD Control Rig: deleted" if removed else "MMD Control Rig: not found"
+            else:
+                metadata = read_mmd_control_rig_metadata(root)
+                if not metadata:
+                    message = "MMD Control Rig: not found"
+                else:
+                    message = (
+                        f"MMD Control Rig: {metadata['state']} / "
+                        f"{len(metadata.get('controls', {}))} controls"
+                    )
+            self.view.status_label.setText(message)
+        except Exception as exc:
+            logger.error("MMD Control Rig action failed", exc_info=True)
+            self.view.status_label.setText(f"MMD Control Rig error: {exc}")
+
     def _set_status(self, key: str, **values) -> None:
         """Show a localized Animator status message."""
 
@@ -263,7 +314,7 @@ class AnimationPresenter:
             normalized = normalize_mmd_bone_name(label) or label
             joint = self._bone_name_to_joint.get(normalized)
             if joint and joint not in joints:
-                joints.append(joint)
+                joints.append(self._preferred_rig_control(joint))
 
         current = []
         if additive:
@@ -289,6 +340,7 @@ class AnimationPresenter:
         from ..widgets.body_picker_widget import _BODY_REGIONS
         from ..widgets.finger_picker_widget import _FINGER_REGIONS
 
+        nodes = [self._joint_for_rig_control(node) for node in nodes]
         joint_to_bone = {joint: bone for bone, joint in self._bone_name_to_joint.items()}
         selected_bones = {joint_to_bone[node] for node in nodes if node in joint_to_bone}
 
@@ -313,6 +365,51 @@ class AnimationPresenter:
             select_fast(nodes, replace=replace)
         else:
             self.maya_adapter.select(nodes, replace=replace)
+
+    def _preferred_rig_control(self, joint: str) -> str:
+        """Prefer the owned curve corresponding to a picker joint."""
+        root = self.app_state.current_model_root
+        if not root:
+            return joint
+        try:
+            from maya import cmds
+
+            from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
+
+            metadata = read_mmd_control_rig_metadata(root)
+            if not metadata:
+                return joint
+            target = (cmds.ls(joint, long=True) or [joint])[0]
+            for role, binding in metadata.get("bindings", {}).items():
+                bound = (cmds.ls(binding.get("joint"), long=True) or [None])[0]
+                if bound != target:
+                    continue
+                nodes = cmds.ls(metadata["controls"][role], long=True) or []
+                if len(nodes) == 1:
+                    return str(nodes[0])
+        except Exception:
+            logger.debug("MMD Control Rig picker lookup failed", exc_info=True)
+        return joint
+
+    def _joint_for_rig_control(self, node: str) -> str:
+        root = self.app_state.current_model_root
+        if not root:
+            return node
+        try:
+            from maya import cmds
+
+            from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
+
+            metadata = read_mmd_control_rig_metadata(root)
+            if not metadata:
+                return node
+            selected = (cmds.ls(node, uuid=True) or [None])[0]
+            for role, uuid in metadata.get("controls", {}).items():
+                if uuid == selected:
+                    return str(metadata["bindings"][role]["joint"])
+        except Exception:
+            logger.debug("MMD Control Rig reverse picker lookup failed", exc_info=True)
+        return node
 
     def on_goto_finger(self):
         self.view.picker_tabs.setCurrentIndex(self.view.TAB_FINGER)

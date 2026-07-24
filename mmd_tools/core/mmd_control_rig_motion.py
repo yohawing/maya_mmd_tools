@@ -144,6 +144,10 @@ def restore_mmd_control_rig_attached(model_root: str, *, cmds_module=None) -> Di
         raise MmdControlRigBuildError("MMD control rig metadata is missing")
     if metadata["state"] == CONTROL_RIG_ATTACHED:
         return metadata
+    if metadata["state"] == CONTROL_RIG_BAKED:
+        metadata["state"] = CONTROL_RIG_ATTACHED
+        _write_metadata(cmds, root, metadata)
+        return metadata
     if metadata["state"] != CONTROL_RIG_EDIT:
         raise MmdControlRigBuildError(f"cannot restore ATTACHED from {metadata['state']}")
 
