@@ -1263,6 +1263,100 @@ def mmd_control_rig_vmd_roundtrip_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def mmd_control_rig_gui_e2e(session: nox.Session) -> None:
+    """Run GUI control-rig E2E followed by the mandatory mesh oracle gate.
+
+    Example::
+
+        uvx nox -s mmd_control_rig_gui_e2e -- --maya 2024
+    """
+
+    args = list(session.posargs) or ["--maya", DEFAULT_MAYA_VERSION]
+    maya_version = _option(args, "--maya", DEFAULT_MAYA_VERSION)
+    out_dir = _require_build_path(
+        session,
+        _option(args, "--out-dir", "build/e2e"),
+        "--out-dir",
+    )
+    model = _option(args, "--model", "tests/data/mmt_test_model.pmx")
+    gui_report = out_dir / f"mmd_control_rig_e2e_maya{maya_version}.json"
+    exported_vmd = out_dir / f"mmd_control_rig_e2e_maya{maya_version}.vmd"
+    session.run(
+        sys.executable,
+        str(ROOT / "tests" / "viewport" / "e2e_mmd_control_rig.py"),
+        *args,
+        external=True,
+    )
+    gui_report_data = _read_probe_report(session, gui_report, "MMD control-rig GUI E2E")
+    if gui_report_data.get("status") != "pass":
+        session.error(f"Maya GUI control-rig E2E did not pass: {gui_report_data}")
+    if not exported_vmd.is_file() or exported_vmd.stat().st_size == 0:
+        session.error(f"GUI E2E did not produce a canonical exported VMD: {exported_vmd}")
+
+    mayapy = _mayapy(maya_version)
+    if not mayapy.exists():
+        session.error(f"mayapy not found for Maya {maya_version}: {mayapy}")
+    ffi_path = (ROOT / "external" / "mmd-anim" / "target" / "release").resolve()
+    if not ffi_path.is_dir():
+        session.error(
+            "mmd-anim FFI release directory is required for the external oracle: "
+            f"{ffi_path}"
+        )
+    oracle_report = out_dir / f"mmd_anim_mesh_oracle_compare_maya{maya_version}.json"
+    _clear_probe_report(session, oracle_report, "mmd-anim mesh oracle")
+    oracle_args = [
+        "--pmx",
+        _mayapy_arg_path(mayapy, model),
+        "--vmd",
+        _mayapy_arg_path(mayapy, exported_vmd),
+        "--out",
+        _mayapy_arg_path(mayapy, oracle_report),
+        "--mode",
+        "rig",
+        "--bind-source",
+        "pmx",
+        "--threshold",
+        "0.01",
+    ]
+    for frame in range(6):
+        oracle_args.extend(("--frame", str(frame)))
+    oracle_env = _mayapy_env(
+        mayapy,
+        MAYA_VERSION=maya_version,
+        MAYA_SKIP_USERSETUP_PY="1",
+        MMD_TOOLS_CPP_PLUGIN=_mayapy_arg_path(
+            mayapy,
+            ROOT / "plug-ins" / maya_version / "Debug" / "mmd_tools_cpp.mll",
+        ),
+        MMD_ANIM_FFI_PATH=str(ffi_path),
+    )
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/mmd_anim_mesh_oracle_compare.py"),
+        *oracle_args,
+        env=oracle_env,
+        external=True,
+        success_codes=(0, 1, 2),
+    )
+    external_report = _read_probe_report(session, oracle_report, "mmd-anim mesh oracle")
+    external_pass = external_report.get("status") == "passed"
+    gui_report_data["externalOracle"] = {
+        "identity": "mmd_anim_mesh_oracle_compare_rig_pmx_bind",
+        "status": "pass" if external_pass else "fail",
+        "report": str(oracle_report),
+        "threshold": 0.01,
+        "frames": list(range(6)),
+        "comparison": external_report.get("comparison"),
+    }
+    gui_report.write_text(
+        json.dumps(gui_report_data, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    if not external_pass:
+        session.error(f"External mmd-anim mesh oracle failed: {external_report}")
+
+
+@nox.session(venv_backend="none")
 def gui_tests(session: nox.Session) -> None:
     """Run existing Maya GUI tests."""
     args = session.posargs or ["--maya_version", DEFAULT_MAYA_VERSION]
