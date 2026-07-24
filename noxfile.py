@@ -1439,6 +1439,24 @@ def maya_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def ccdik_dirty_smoke(session: nox.Session) -> None:
+    """Run the focused mmdCcdIk goal-child dirty propagation regression."""
+    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
+    mayapy = _mayapy(version)
+    if not mayapy.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy}")
+
+    env = _mayapy_env(mayapy, MAYA_VERSION=version, MMD_TOOLS_CPP_CONFIG=config)
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/cpp/focused_ccdik_goal_dirty.py"),
+        env=env,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def yw_test_model_fixture_gate(session: nox.Session) -> None:
     """Run the checked-in YW test-model gate under Maya 2024 and 2026.
 

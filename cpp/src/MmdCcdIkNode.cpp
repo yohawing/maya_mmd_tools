@@ -1335,12 +1335,22 @@ MStatus MmdCcdIkNode::initialize() {
     attributeAffects(aChainJson, aSolved);
     attributeAffects(aChainJson, aOutputLinkAngles);
     attributeAffects(aChainJson, aOutputLinkRotates);
-    attributeAffects(aGoalX, aOutputRotateX);
-    attributeAffects(aGoalY, aOutputRotateY);
-    attributeAffects(aGoalZ, aOutputRotateZ);
-    attributeAffects(aGoalX, aSolved);
-    attributeAffects(aGoalY, aSolved);
-    attributeAffects(aGoalZ, aSolved);
+    // goal is a vector input to the solver.  Every goal component can change
+    // every Euler component (and every link) of the result, so do not map a
+    // source child to only the same-named output child.  In particular, Maya
+    // dirties array output children independently; declaring the complete
+    // child-to-child matrix keeps sibling outputRotate elements from staying
+    // cached after a single goal-axis edit.
+    const MObject goalChildren[] = {aGoalX, aGoalY, aGoalZ};
+    const MObject outputRotateChildren[] = {aOutputRotateX, aOutputRotateY, aOutputRotateZ};
+    for (const MObject& goalChild : goalChildren) {
+        for (const MObject& outputChild : outputRotateChildren) {
+            attributeAffects(goalChild, outputChild);
+        }
+        attributeAffects(goalChild, aSolved);
+        attributeAffects(goalChild, aOutputLinkAngles);
+        attributeAffects(goalChild, aOutputLinkRotates);
+    }
     attributeAffects(aGoalWorldMatrix, aOutputRotateX);
     attributeAffects(aGoalWorldMatrix, aOutputRotateY);
     attributeAffects(aGoalWorldMatrix, aOutputRotateZ);
