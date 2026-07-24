@@ -37,6 +37,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,8 @@ namespace {
 constexpr double kPi = 3.14159265358979323846;
 using nlohmann::json;
 
+struct CcdIkChainConfig;
+
 using IkChainCreateV2Fn = mmd_runtime_ik_chain_t* (*)(
     const mmd_runtime_ffi_rig_bone_t*,
     size_t,
@@ -59,6 +62,10 @@ using IkChainCreateV2Fn = mmd_runtime_ik_chain_t* (*)(
     size_t,
     uint32_t,
     float);
+
+// CcdIkChainConfig に対応する native chain を一度だけ生成する。
+// chain の所有権は MmdCcdIkNode::ChainCache に移され、solve ごとには解放しない。
+mmd_runtime_ik_chain_t* createNativeIkChain(const CcdIkChainConfig& cfg);
 
 IkChainCreateV2Fn resolveIkChainCreateV2()
 {
@@ -110,6 +117,29 @@ struct CcdIkChainConfig {
     uint32_t iterationCount = 40;
     float limitAngle = 0.0628f;
 };
+
+mmd_runtime_ik_chain_t* createNativeIkChain(const CcdIkChainConfig& cfg)
+{
+    const IkChainCreateV2Fn createV2 = cfg.hasLocalAxes ? resolveIkChainCreateV2() : nullptr;
+    return createV2
+        ? createV2(
+              cfg.bones.data(),
+              cfg.bones.size(),
+              cfg.localAxes.data(),
+              cfg.targetBoneSlot,
+              cfg.links.data(),
+              cfg.links.size(),
+              cfg.iterationCount,
+              cfg.limitAngle)
+        : mmd_runtime_ik_chain_create(
+              cfg.bones.data(),
+              cfg.bones.size(),
+              cfg.targetBoneSlot,
+              cfg.links.data(),
+              cfg.links.size(),
+              cfg.iterationCount,
+              cfg.limitAngle);
+}
 
 bool readJsonVec3(const json& obj, const char* key, std::array<float, 3>& out, const std::array<float, 3>& fallback)
 {
@@ -418,7 +448,10 @@ void setOutputRotateElementZero(
 {
     MStatus status;
     MArrayDataHandle outArray = data.outputArrayValue(arrayAttr, &status);
-    MArrayDataBuilder builder = outArray.builder(&status);
+    // 新しい builder で置き換え、chainJson のリンク数が減った際に旧要素を
+    // 残さない。builder() は既存要素を引き継ぐため、output shape の stale
+    // を許してしまう。
+    MArrayDataBuilder builder(&data, arrayAttr, 1, &status);
     MDataHandle elem = builder.addElement(0, &status);
     elem.child(childX).setMAngle(MAngle(outXDeg * kPi / 180.0, MAngle::kRadians));
     elem.child(childY).setMAngle(MAngle(outYDeg * kPi / 180.0, MAngle::kRadians));
@@ -437,7 +470,11 @@ void setOutputRotateElements(
 {
     MStatus status;
     MArrayDataHandle outArray = data.outputArrayValue(arrayAttr, &status);
-    MArrayDataBuilder builder = outArray.builder(&status);
+    MArrayDataBuilder builder(
+        &data,
+        arrayAttr,
+        static_cast<unsigned int>(radians.size()),
+        &status);
     for (size_t i = 0; i < radians.size(); ++i) {
         MDataHandle elem = builder.addElement(static_cast<unsigned int>(i), &status);
         elem.child(childX).setMAngle(MAngle(radians[i][0], MAngle::kRadians));
@@ -606,31 +643,13 @@ std::array<float, 3> readGoalPositionMmd(
 
 bool solveChainJsonIk(
     const CcdIkChainConfig& cfg,
+    mmd_runtime_ik_chain_t* chain,
     MDataBlock& data,
     bool useGoalWorldMatrix,
     bool goalHasInputConnection,
     bool& outSolved,
     std::vector<std::array<double, 3>>& outEulerRadians)
 {
-    const IkChainCreateV2Fn createV2 = cfg.hasLocalAxes ? resolveIkChainCreateV2() : nullptr;
-    mmd_runtime_ik_chain_t* chain = createV2
-        ? createV2(
-              cfg.bones.data(),
-              cfg.bones.size(),
-              cfg.localAxes.data(),
-              cfg.targetBoneSlot,
-              cfg.links.data(),
-              cfg.links.size(),
-              cfg.iterationCount,
-              cfg.limitAngle)
-        : mmd_runtime_ik_chain_create(
-              cfg.bones.data(),
-              cfg.bones.size(),
-              cfg.targetBoneSlot,
-              cfg.links.data(),
-              cfg.links.size(),
-              cfg.iterationCount,
-              cfg.limitAngle);
     if (!chain) {
         return false;
     }
@@ -749,7 +768,6 @@ bool solveChainJsonIk(
         if (std::abs(fkTarget[0] - goal[0]) <= kGoalMatchEpsilon &&
             std::abs(fkTarget[1] - goal[1]) <= kGoalMatchEpsilon &&
             std::abs(fkTarget[2] - goal[2]) <= kGoalMatchEpsilon) {
-            mmd_runtime_ik_chain_free(chain);
             copyInputRotateLinksToOutput(cfg, data, outEulerRadians);
             outSolved = false;
             return true;
@@ -769,7 +787,6 @@ bool solveChainJsonIk(
         outQuats.data(),
         outQuats.size(),
         &stats);
-    mmd_runtime_ik_chain_free(chain);
     if (!ok) {
         return false;
     }
@@ -856,6 +873,21 @@ bool solveChainJsonIk(
 }
 }
 
+struct MmdCcdIkNode::ChainCache {
+    CcdIkChainConfig config;
+    std::string chainJson;
+    mmd_runtime_ik_chain_t* nativeChain = nullptr;
+    bool valid = false;
+
+    ~ChainCache()
+    {
+        if (nativeChain) {
+            mmd_runtime_ik_chain_free(nativeChain);
+            nativeChain = nullptr;
+        }
+    }
+};
+
 const MTypeId MmdCcdIkNode::id(0x00128002);
 
 // --- 入力: inputRoot ---
@@ -929,6 +961,48 @@ MObject MmdCcdIkNode::aOutputLinkRotates;
 
 MmdCcdIkNode::MmdCcdIkNode() = default;
 MmdCcdIkNode::~MmdCcdIkNode() = default;
+
+bool MmdCcdIkNode::ensureChainCache(const MString& chainJson)
+{
+    const std::string text = chainJson.asChar();
+    if (!chainCache_) {
+        chainCache_ = std::make_unique<ChainCache>();
+    }
+
+    // 内容が同一なら、成功した config/native chain も、失敗した malformed
+    // 結果も再利用する。失敗結果を記録することで output plug ごとの再parse
+    // を防ぎ、直前の有効 config が stale のまま残ることも避ける。
+    if (chainCache_->chainJson == text) {
+        return chainCache_->valid;
+    }
+
+    CcdIkChainConfig parsed;
+    const bool parsedOk = parseCcdIkChainJson(chainJson, parsed);
+
+    // 置換前に旧 native chain を解放し、parse/create 失敗時は必ず無効化する。
+    // この順序により malformed config が直前の有効 chain を再利用しない。
+    if (chainCache_->nativeChain) {
+        mmd_runtime_ik_chain_free(chainCache_->nativeChain);
+        chainCache_->nativeChain = nullptr;
+    }
+    chainCache_->config = CcdIkChainConfig{};
+    chainCache_->chainJson = text;
+    chainCache_->valid = false;
+
+    if (!parsedOk) {
+        return false;
+    }
+
+    mmd_runtime_ik_chain_t* nativeChain = createNativeIkChain(parsed);
+    if (!nativeChain) {
+        return false;
+    }
+
+    chainCache_->config = std::move(parsed);
+    chainCache_->nativeChain = nativeChain;
+    chainCache_->valid = true;
+    return true;
+}
 
 void* MmdCcdIkNode::creator() {
     return new MmdCcdIkNode();
@@ -1332,6 +1406,7 @@ MStatus MmdCcdIkNode::initialize() {
     attributeAffects(aChainJson, aOutputRotateX);
     attributeAffects(aChainJson, aOutputRotateY);
     attributeAffects(aChainJson, aOutputRotateZ);
+    attributeAffects(aChainJson, aOutputAngle);
     attributeAffects(aChainJson, aSolved);
     attributeAffects(aChainJson, aOutputLinkAngles);
     attributeAffects(aChainJson, aOutputLinkRotates);
@@ -1398,8 +1473,13 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
     MDoubleArray outLinkRotates;
     const double eps = 1e-12;
 
-    CcdIkChainConfig chainCfg;
-    if (parseCcdIkChainJson(data.inputValue(aChainJson, &status).asString(), chainCfg)) {
+    // chainJson の parse/native chain create はノードインスタンス内で内容変更時
+    // のみ実行する。compute が re-entrant になっても chain の置換と solve が
+    // 同時に走らないよう、cache の mutex を solve 完了まで保持する。
+    std::unique_lock<std::mutex> chainCacheLock(chainCacheMutex_);
+    const MString chainJson = data.inputValue(aChainJson, &status).asString();
+    if (ensureChainCache(chainJson)) {
+        const CcdIkChainConfig& chainCfg = chainCache_->config;
         std::vector<std::array<double, 3>> chainRotationsRadians;
         bool chainSolved = false;
         bool chainPathHandled = false;
@@ -1410,6 +1490,7 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
             const bool goalConnected = goalWorldConnected || plugOrChildrenHasInputConnection(thisNode, aGoal);
             chainPathHandled = solveChainJsonIk(
                 chainCfg,
+                chainCache_->nativeChain,
                 data,
                 goalWorldConnected,
                 goalConnected,
@@ -1433,51 +1514,51 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
         }
 
         if (chainPathHandled) {
-            if (isRotate) {
-                setOutputRotateElements(
-                    data,
-                    aOutputRotate,
-                    aOutputRotateX,
-                    aOutputRotateY,
-                    aOutputRotateZ,
-                    chainRotationsRadians);
+            // どの output plug が要求された場合でも、一度の solve 結果で関連
+            // output を全て書き込み clean にする。これにより sibling plug の
+            // 要求ごとに parse/create/solve が再実行されない。
+            setOutputRotateElements(
+                data,
+                aOutputRotate,
+                aOutputRotateX,
+                aOutputRotateY,
+                aOutputRotateZ,
+                chainRotationsRadians);
+
+            MDataHandle hAngle = data.outputValue(aOutputAngle, &status);
+            hAngle.set(0.0); // chain path の outputAngle は neutral contract
+            hAngle.setClean();
+
+            MDataHandle hSolved = data.outputValue(aSolved, &status);
+            hSolved.set(chainSolved);
+            hSolved.setClean();
+
+            for (const auto& eulerRadians : chainRotationsRadians) {
+                outLinkAngles.append(eulerRadians[2] * 180.0 / kPi);
+                outLinkRotates.append(eulerRadians[0] * 180.0 / kPi);
+                outLinkRotates.append(eulerRadians[1] * 180.0 / kPi);
+                outLinkRotates.append(eulerRadians[2] * 180.0 / kPi);
             }
-            if (isAngle) {
-                MDataHandle hAngle = data.outputValue(aOutputAngle, &status);
-                hAngle.set(0.0);
-                hAngle.setClean();
-            }
-            if (isSolved) {
-                MDataHandle hSolved = data.outputValue(aSolved, &status);
-                hSolved.set(chainSolved);
-                hSolved.setClean();
-            }
-            if (isLinkAngles || isLinkRotates) {
-                for (const auto& eulerRadians : chainRotationsRadians) {
-                    outLinkAngles.append(eulerRadians[2] * 180.0 / kPi);
-                    outLinkRotates.append(eulerRadians[0] * 180.0 / kPi);
-                    outLinkRotates.append(eulerRadians[1] * 180.0 / kPi);
-                    outLinkRotates.append(eulerRadians[2] * 180.0 / kPi);
-                }
-            }
-            if (isLinkAngles) {
-                MFnDoubleArrayData dataObject;
-                MObject linkAnglesObj = dataObject.create(outLinkAngles, &status);
-                MDataHandle hLinkAngles = data.outputValue(aOutputLinkAngles, &status);
-                hLinkAngles.setMObject(linkAnglesObj);
-                hLinkAngles.setClean();
-            }
-            if (isLinkRotates) {
-                MFnDoubleArrayData dataObject;
-                MObject linkRotatesObj = dataObject.create(outLinkRotates, &status);
-                MDataHandle hLinkRotates = data.outputValue(aOutputLinkRotates, &status);
-                hLinkRotates.setMObject(linkRotatesObj);
-                hLinkRotates.setClean();
-            }
+
+            MFnDoubleArrayData dataObject;
+            MObject linkAnglesObj = dataObject.create(outLinkAngles, &status);
+            MDataHandle hLinkAngles = data.outputValue(aOutputLinkAngles, &status);
+            hLinkAngles.setMObject(linkAnglesObj);
+            hLinkAngles.setClean();
+
+            MObject linkRotatesObj = dataObject.create(outLinkRotates, &status);
+            MDataHandle hLinkRotates = data.outputValue(aOutputLinkRotates, &status);
+            hLinkRotates.setMObject(linkRotatesObj);
+            hLinkRotates.setClean();
+
             data.setClean(plug);
             return MS::kSuccess;
         }
     }
+
+    // malformed/empty chainJson は legacy path へ戻すが、キャッシュは既に
+    // invalidated 済みなので、旧 native chain が残ることはない。
+    chainCacheLock.unlock();
 
     if (enabled) {
         MDataHandle chainHandle = data.inputValue(aInputChain, &status);
@@ -1595,45 +1676,37 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
         }
     }
 
-    if (isRotate) {
-        setOutputRotateElementZero(
-            data,
-            aOutputRotate,
-            aOutputRotateX,
-            aOutputRotateY,
-            aOutputRotateZ,
-            outRotX,
-            outRotY,
-            outRotZ);
-    }
+    // Legacy path でも chain path と同じく、一度の compute で全関連 output を
+    // 書き込み clean にする。requested plug ごとの条件分岐を残すと、同一
+    // evaluation 内で sibling output が古い値を保持する。
+    setOutputRotateElementZero(
+        data,
+        aOutputRotate,
+        aOutputRotateX,
+        aOutputRotateY,
+        aOutputRotateZ,
+        outRotX,
+        outRotY,
+        outRotZ);
 
-    if (isAngle) {
-        MDataHandle hAngle = data.outputValue(aOutputAngle, &status);
-        hAngle.set(outAngleDeg);
-        hAngle.setClean();
-    }
+    MDataHandle hAngle = data.outputValue(aOutputAngle, &status);
+    hAngle.set(outAngleDeg);
+    hAngle.setClean();
 
-    if (isSolved) {
-        MDataHandle hSolved = data.outputValue(aSolved, &status);
-        hSolved.set(outSolved);
-        hSolved.setClean();
-    }
+    MDataHandle hSolved = data.outputValue(aSolved, &status);
+    hSolved.set(outSolved);
+    hSolved.setClean();
 
-    if (isLinkAngles) {
-        MFnDoubleArrayData dataObject;
-        MObject linkAnglesObj = dataObject.create(outLinkAngles, &status);
-        MDataHandle hLinkAngles = data.outputValue(aOutputLinkAngles, &status);
-        hLinkAngles.setMObject(linkAnglesObj);
-        hLinkAngles.setClean();
-    }
+    MFnDoubleArrayData dataObject;
+    MObject linkAnglesObj = dataObject.create(outLinkAngles, &status);
+    MDataHandle hLinkAngles = data.outputValue(aOutputLinkAngles, &status);
+    hLinkAngles.setMObject(linkAnglesObj);
+    hLinkAngles.setClean();
 
-    if (isLinkRotates) {
-        MFnDoubleArrayData dataObject;
-        MObject linkRotatesObj = dataObject.create(outLinkRotates, &status);
-        MDataHandle hLinkRotates = data.outputValue(aOutputLinkRotates, &status);
-        hLinkRotates.setMObject(linkRotatesObj);
-        hLinkRotates.setClean();
-    }
+    MObject linkRotatesObj = dataObject.create(outLinkRotates, &status);
+    MDataHandle hLinkRotates = data.outputValue(aOutputLinkRotates, &status);
+    hLinkRotates.setMObject(linkRotatesObj);
+    hLinkRotates.setClean();
 
     data.setClean(plug);
     return MS::kSuccess;
