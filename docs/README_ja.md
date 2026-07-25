@@ -33,13 +33,13 @@ Maya MMD Toolsは、Autodesk MayaでMikuMikuDance (MMD) のPMD/PMXモデルとVM
 
 | 機能 | 状態 | 備考 |
 |---|---|---|
-| ボーンアニメーション | 🔶 | MayaDGでのMMDリグに対応しています。 ベイクモードは [mmd-anim](https://github.com/yohawing/mmd-anim) による最終姿勢ベイクです。 |
+| ボーンアニメーション | 🔶 | MayaDGでのMMDリグに対応しています。 ベイクモードは [mmd-anim](https://github.com/yohawing/mmd-anim) による最終姿勢ベイクで、許容誤差内でキーを削減する `ベイクキーを削減` オプションを任意で使えます。 |
 | VPD | ✅ | ドラッグ＆ドロップのみの対応 |
 | モーフアニメーション | 🔶 | 頂点・ボーン・マテリアル・UVモーフ対応済み。Flip、Impulse モーフは未対応です。 |
 | カメラアニメーション | ✅ | `mmd_camera` を作成・キー設定。　ライティングは`mmd_light` コントローラを駆動。 セルフ影は未対応。 |
 | IK オン／オフフレーム | 🔶 | インポート・ベイクに対応。ランタイムベイクでは最終姿勢に反映され、リグモードでは `mmdCcdIk.enabled` にキーを設定します。 |
 | 物理 | 🧪 | mmd-animによるネイティブ物理ベイクに試験対応しています。リアルタイム／ライブ物理演算は未対応で、物理はデフォルトでOFFです。 |
-| HumanIK・リターゲット | 🧪 | MMDモデル同士のリターゲットに試験対応。詳細は [HumanIK (Experimental)](./humanik_ja.md) を参照。 |
+| HumanIK・リターゲット | 🧪 | MMDモデル同士のリターゲットに試験対応。`MMD > HumanIK (Experimental)` からお試しください。 |
 | エクスポート | ⛔ | 未対応（インポートの機能が出揃い、編集機能が充実してきたら、部分的に公開する予定です） |
 
 ## 既知の制限

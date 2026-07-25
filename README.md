@@ -34,19 +34,21 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 
 | Feature | Status | Notes |
 |---|---|---|
-| Bone animation | 🔶 | MMD rigs are supported through the Maya DG. Bake mode uses [mmd-anim](https://github.com/yohawing/mmd-anim) final-pose evaluation. |
+| Bone animation | 🔶 | MMD rigs are supported through the Maya DG. Bake mode uses [mmd-anim](https://github.com/yohawing/mmd-anim) final-pose evaluation, with an optional `Reduce Bake Keys` pass that thins dense baked keys within a tolerance. |
 | VPD | ✅ | Available through drag and drop only |
 | Morph animation | 🔶 | Vertex, bone, material, and UV morphs are supported. Flip and Impulse morphs are not supported. |
 | Camera animation | ✅ | Creates and keys `mmd_camera`. Lighting drives the `mmd_light` controller. Self-shadow is not supported. |
 | IK on/off frames | 🔶 | Supported for import/bake. Runtime bake applies the state to the baked pose; rig mode keys `mmdCcdIk.enabled`. |
 | Physics | 🧪 | Native mmd-anim physics bake is supported experimentally. Real-time/live physics evaluation is unsupported, and physics is off by default. |
-| HumanIK / retargeting | ⛔ | Not supported |
+| HumanIK / retargeting | 🧪 | Experimental support for retargeting between imported MMD models. Try it from `MMD > HumanIK (Experimental)`. |
 | Export | ⛔ | Not supported. Partial public support is planned after import and editing features mature. |
 
 ## Known Limitations
 
+- **Detailed documentation is not written yet.** This is an alpha release, and development speed is prioritized over documentation maintenance.
 - **Various features are still incomplete.** This is an experimental alpha release; feedback is welcome.
 - **Parity is not guaranteed for complex rigs or motions.** Editable `mmdCcdIk` / `mmdAppend` nodes are preserved, but cases involving joint orientation, IK, append transforms, or local axes may not exactly match Bake mode or MMD mesh deformation.
+- **HumanIK is published as an experimental feature.** Only the minimum workflow is exposed. Try it from `MMD > HumanIK (Experimental)`.
 
 ## System Requirements
 
