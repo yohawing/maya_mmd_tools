@@ -76,36 +76,6 @@ _FINGER_ROLE_PARENTS = {
     for index, role in enumerate(chain)
 }
 
-_ROLE_FALLBACK_SHAPES = {
-    "master": "circle",
-    "center": "square",
-    "groove": "diamond",
-    "left_foot_ik": "foot",
-    "right_foot_ik": "foot",
-    "waist": "circle",
-    "left_foot_ik_parent": "circle",
-    "right_foot_ik_parent": "circle",
-    "left_toe_ik": "circle",
-    "right_toe_ik": "circle",
-    "lower_body": "square",
-    "upper_body": "circle",
-    "upper_body2": "circle",
-    "neck": "circle",
-    "head": "circle",
-    "left_shoulder": "circle",
-    "left_arm": "circle",
-    "left_elbow": "circle",
-    "left_wrist": "circle",
-    "right_shoulder": "circle",
-    "right_arm": "circle",
-    "right_elbow": "circle",
-    "right_wrist": "circle",
-    "left_leg": "circle",
-    "left_knee": "diamond",
-    "right_leg": "circle",
-    "right_knee": "diamond",
-    **{role: "circle" for role in _FINGER_ROLES},
-}
 _ROLE_COLORS = {
     "master": 17,
     "center": 17,
@@ -475,13 +445,13 @@ def _control_curve_templates() -> Mapping[str, Tuple[Mapping[str, Any], ...]]:
     path = Path(__file__).resolve().parents[1] / "config" / "mmd_control_rig_curve_shapes.json"
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, TypeError, ValueError):
-        return {}
+    except (OSError, TypeError, ValueError) as exc:
+        raise MmdControlRigBuildError(f"could not load control curve templates: {path}") from exc
     if payload.get("schema") != "mmd_tools.mmd_control_rig_curve_shapes" or payload.get("version") != 1:
-        return {}
+        raise MmdControlRigBuildError("unsupported control curve template schema")
     templates = payload.get("templates")
     if not isinstance(templates, dict):
-        return {}
+        raise MmdControlRigBuildError("control curve templates must be an object")
     return {
         str(role): tuple(shape for shape in shapes if isinstance(shape, dict))
         for role, shapes in templates.items()
@@ -498,18 +468,12 @@ def _create_control_curve(
     shape_rotation=None,
 ) -> str:
     templates = _control_curve_templates().get(_control_curve_template_role(role), ())
-    if templates:
-        return _create_template_control_curve(
-            cmds,
-            name,
-            templates,
-            scale,
-            shape_rotation=shape_rotation,
-        )
-    return _create_fallback_control_curve(
+    if not templates:
+        raise MmdControlRigBuildError(f"missing control curve template: {role}")
+    return _create_template_control_curve(
         cmds,
         name,
-        _ROLE_FALLBACK_SHAPES[role],
+        templates,
         scale,
         shape_rotation=shape_rotation,
     )
@@ -568,38 +532,6 @@ def _create_template_control_curve(
             if node and cmds.objExists(node):
                 cmds.delete(node)
         raise
-
-
-def _create_fallback_control_curve(
-    cmds,
-    name: str,
-    shape: str,
-    scale: float,
-    *,
-    shape_rotation=None,
-) -> str:
-    if shape == "circle":
-        points = [
-            (1.0, 0.0, 0.0),
-            (0.707, 0.0, 0.707),
-            (0.0, 0.0, 1.0),
-            (-0.707, 0.0, 0.707),
-            (-1.0, 0.0, 0.0),
-            (-0.707, 0.0, -0.707),
-            (0.0, 0.0, -1.0),
-            (0.707, 0.0, -0.707),
-            (1.0, 0.0, 0.0),
-        ]
-    elif shape == "diamond":
-        points = [(0, 0, 1), (1, 0, 0), (0, 0, -1), (-1, 0, 0), (0, 0, 1)]
-    elif shape == "foot":
-        points = [(-0.6, 0, 1.2), (0.6, 0, 1.2), (0.8, 0, -1), (-0.8, 0, -1), (-0.6, 0, 1.2)]
-    else:
-        points = [(-1, 0, -1), (-1, 0, 1), (1, 0, 1), (1, 0, -1), (-1, 0, -1)]
-    scaled = [(x * scale, y * scale, z * scale) for x, y, z in points]
-    if shape_rotation is not None:
-        scaled = [_rotate_shape_point(point, shape_rotation) for point in scaled]
-    return str(cmds.curve(name=name, degree=1, point=scaled))
 
 
 def _control_shape_rotation(cmds, root, role, binding, indexed_joints):

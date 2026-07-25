@@ -99,7 +99,7 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
         self.assertEqual(len(templates["left_knee"]), 1)
         self.assertEqual(len(templates["right_leg"]), 1)
         self.assertEqual(len(templates["right_knee"]), 1)
-        self.assertNotIn("groove", templates)
+        self.assertEqual(len(templates["groove"]), 1)
         self.assertEqual(_control_curve_template_role("left_middle_1"), "finger")
         self.assertEqual(_control_curve_template_role("right_thumb_2"), "finger")
         for role in (
