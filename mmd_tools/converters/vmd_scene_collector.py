@@ -22,10 +22,7 @@ from mmd_tools.core.constants import (
 )
 from mmd_tools.core.mmd_control_rig_builder import (
     CONTROL_RIG_EDIT,
-    MmdControlRigBuildError,
     read_mmd_control_rig_metadata,
-    resolve_mmd_control_rig_binding_authored_plugs,
-    resolve_mmd_control_rig_binding_joint,
 )
 from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_names
 from mmd_tools.converters.vmd_camera_animation import (
@@ -107,10 +104,8 @@ class VmdSceneCollector:
         motion_scale = float(options.get("motion_scale", 1.0) or 1.0)
         bone_bind_poses = options.get("bone_bind_poses") or {}
         maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
-        control_rig_routes = self._control_rig_export_routes(target_model)
+        dense_control_rig_export = self._control_rig_dense_export(target_model)
         authored_routes = self._scene_authored_input_routes(joints)
-        for joint, attrs in control_rig_routes.items():
-            authored_routes.setdefault(joint, {}).update(attrs)
 
         return {
             "model_name": str(options.get("model_name") or self._model_name(target_model)),
@@ -121,7 +116,7 @@ class VmdSceneCollector:
                 motion_scale=motion_scale,
                 bone_bind_poses=bone_bind_poses,
                 input_routes=authored_routes,
-                dense_sample=bool(control_rig_routes),
+                dense_sample=dense_control_rig_export,
                 time_converter=maya_time_to_vmd,
             ),
             "morph_frames": self.collect_morph_frames(
@@ -271,39 +266,19 @@ class VmdSceneCollector:
             )
         return _deduplicate_frames(frames, ("frame_number",))
 
-    def _control_rig_export_routes(
+    def _control_rig_dense_export(
         self,
         target_model: Optional[str],
-    ) -> dict[str, dict[str, tuple[str, str]]]:
+    ) -> bool:
+        """Reject EDIT and request dense sampling for an attached control rig."""
         if not target_model:
-            return {}
+            return False
         metadata = read_mmd_control_rig_metadata(target_model)
         if not metadata:
-            return {}
+            return False
         if metadata["state"] == CONTROL_RIG_EDIT:
             raise ValueError("Bake the MMD control rig before VMD export")
-        routes = {}
-        for binding in metadata.get("bindings", {}).values():
-            try:
-                joint = resolve_mmd_control_rig_binding_joint(cmds, binding)
-                authored_plugs = resolve_mmd_control_rig_binding_authored_plugs(
-                    cmds, binding
-                )
-            except MmdControlRigBuildError:
-                continue
-            for plug in authored_plugs:
-                base_attr = plug.rsplit(".", 1)[-1]
-                if base_attr in {"translate", "rotate", "baseTranslate", "baseRotate"}:
-                    node = plug.rsplit(".", 1)[0]
-                    control_attr = {
-                        "baseTranslate": "translate",
-                        "baseRotate": "rotate",
-                    }.get(base_attr, base_attr)
-                    for axis in "XYZ":
-                        attr = f"{control_attr}{axis}"
-                        target_attr = f"{base_attr}{axis}"
-                        routes.setdefault(joint, {})[attr] = (node, target_attr)
-        return routes
+        return True
 
     def _scene_authored_input_routes(
         self,

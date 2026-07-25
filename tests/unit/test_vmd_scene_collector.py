@@ -209,6 +209,14 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertAlmostEqual(result["bone_frames"][1]["rotation"][2], 0.7071067811865476)
         self.assertAlmostEqual(result["bone_frames"][1]["rotation"][3], 0.7071067811865476)
 
+    def test_rejects_control_rig_export_while_editing(self):
+        collector_module.read_mmd_control_rig_metadata = lambda _target_model: {
+            "state": "EDIT"
+        }
+
+        with self.assertRaisesRegex(ValueError, "Bake the MMD control rig"):
+            VmdSceneCollector().collect({"target_model": "model_root"})
+
     def test_collects_bone_translate_as_bind_relative_scaled_vmd_offset(self):
         self.cmds.node_types["center_joint"] = "joint"
         self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"

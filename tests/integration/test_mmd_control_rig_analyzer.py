@@ -753,7 +753,6 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         build_mmd_control_rig(root)
         enter_mmd_control_rig_edit(root)
         bake_mmd_control_rig(root)
-        metadata = read_mmd_control_rig_metadata(root)
         append_node = (cmds.ls(type="mmdAppend") or [None])[0]
         self.assertTrue(append_node)
         append_joint = (
@@ -768,27 +767,6 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         append_bone = cmds.getAttr(f"{append_joint}.mmd_bone_name")
         cmds.setKeyframe(append_node, attribute="baseRotateX", time=0, value=0.0)
         cmds.setKeyframe(append_node, attribute="baseRotateX", time=10, value=15.0)
-        metadata["bindings"]["append_export_probe"] = {
-            "joint": (cmds.ls(append_joint, long=True) or [append_joint])[0],
-            "jointUuid": cmds.ls(append_joint, uuid=True)[0],
-            "inputKind": INPUT_APPEND_BASE,
-            "authoredPlugs": [f"{append_node}.baseRotate"],
-            "authoredPlugRefs": [
-                {
-                    "nodeUuid": cmds.ls(append_node, uuid=True)[0],
-                    "attribute": "baseRotate",
-                }
-            ],
-            "ikSolvers": [],
-            "ikSolverUuids": [],
-            "fallback": None,
-        }
-        cmds.setAttr(
-            f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}",
-            json.dumps(metadata, ensure_ascii=False),
-            type="string",
-        )
-
         collected = VmdSceneCollector().collect({"target_model": root})
         output_path = self.get_temp_filename("mmd_control_rig_baked.vmd")
         VmdExporter().export_vmd_animation(output_path, collected)
