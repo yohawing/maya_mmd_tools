@@ -80,6 +80,19 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
         self.assertTrue(all(shape["points"] for shapes in templates.values() for shape in shapes))
         self.assertTrue(all(shape["knots"] for shapes in templates.values() for shape in shapes))
 
+    def test_arm_curve_template_uses_x_primary_circle(self):
+        templates = _control_curve_templates()
+
+        for role in ("left_arm", "right_arm"):
+            with self.subTest(role=role):
+                shape = templates[role][0]
+                self.assertEqual(shape["degree"], 3)
+                self.assertTrue(shape["periodic"])
+                self.assertEqual(len(shape["points"]), 11)
+                self.assertTrue(all(abs(point[0]) < 1.0e-12 for point in shape["points"]))
+                self.assertAlmostEqual(max(abs(point[1]) for point in shape["points"]), 1.1081941875543881)
+                self.assertAlmostEqual(max(abs(point[2]) for point in shape["points"]), 1.1081941875543884)
+
 
 class _UuidBindingFake:
     """Resolve renamed scene nodes from stable UUIDs in binding metadata."""
