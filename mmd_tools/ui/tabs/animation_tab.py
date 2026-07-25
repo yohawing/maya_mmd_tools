@@ -196,11 +196,14 @@ class AnimationTab(BaseTab):
     def refresh_development_mode_visibility(self):
         """Show unfinished pose tools only in Development Mode."""
 
+        development_mode = SettingsService().is_development_mode()
         picker_tab = self.picker_tabs.currentIndex() in (self.TAB_BODY, self.TAB_FINGER)
-        self.tools_group.setVisible(
-            picker_tab and SettingsService().is_development_mode()
-        )
-        self.control_rig_group.setVisible(SettingsService().is_development_mode())
+        self.tools_group.setVisible(picker_tab and development_mode)
+        # The MMD Control Rig is unsupported outside Development Mode, so the
+        # group is disabled as well as hidden: hiding alone still leaves the
+        # buttons clickable through a re-parented or scripted view.
+        self.control_rig_group.setVisible(development_mode)
+        self.control_rig_group.setEnabled(development_mode)
 
     def current_language(self) -> str:
         """Return the active UI locale for presenter-owned dynamic text."""
