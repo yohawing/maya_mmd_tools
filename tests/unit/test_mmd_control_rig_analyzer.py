@@ -80,7 +80,7 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
         self.assertTrue(all(shape["points"] for shapes in templates.values() for shape in shapes))
         self.assertTrue(all(shape["knots"] for shapes in templates.values() for shape in shapes))
 
-    def test_arm_curve_template_uses_x_primary_circle(self):
+    def test_arm_curve_template_uses_mmd_z_primary_circle(self):
         templates = _control_curve_templates()
 
         for role in ("left_arm", "right_arm"):
@@ -89,9 +89,29 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
                 self.assertEqual(shape["degree"], 3)
                 self.assertTrue(shape["periodic"])
                 self.assertEqual(len(shape["points"]), 11)
-                self.assertTrue(all(abs(point[0]) < 1.0e-12 for point in shape["points"]))
+                self.assertTrue(all(abs(point[2]) < 1.0e-12 for point in shape["points"]))
+                self.assertAlmostEqual(max(abs(point[0]) for point in shape["points"]), 1.1081941875543884)
                 self.assertAlmostEqual(max(abs(point[1]) for point in shape["points"]), 1.1081941875543881)
-                self.assertAlmostEqual(max(abs(point[2]) for point in shape["points"]), 1.1081941875543884)
+
+    def test_leg_curve_template_uses_edited_thigh_basis(self):
+        templates = _control_curve_templates()
+        left_points = templates["left_leg"][0]["points"]
+        right_points = templates["right_leg"][0]["points"]
+
+        self.assertEqual(left_points[0], [-0.466608285, 2.472883346, 0.891672144])
+        self.assertEqual(len(left_points), 23)
+        self.assertEqual(
+            right_points,
+            [[-point[0], point[1], point[2]] for point in left_points],
+        )
+
+    def test_lower_body_curve_template_uses_edited_basis(self):
+        shape = _control_curve_templates()["lower_body"][0]
+
+        self.assertEqual(shape["degree"], 3)
+        self.assertTrue(shape["periodic"])
+        self.assertEqual(len(shape["points"]), 11)
+        self.assertEqual(shape["points"][0], [-2.223043634, 1.366914501, 0.199426674])
 
 
 class _UuidBindingFake:
