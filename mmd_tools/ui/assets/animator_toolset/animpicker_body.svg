@@ -72,8 +72,8 @@
   <g id="body-art" data-layer="editable-body-art">
     <path id="head" class="cls-7" d="M134,19.78c-13.19,0-23.22,7.71-23.22,17.86s10.03,2.42,23.22,2.42,23.22,7.97,23.22-2.42-10.03-17.86-23.22-17.86Z" data-bone-name="頭"/>
     <path id="neck" class="cls-7" d="M128.74,69.59h10.52l.58,9.54h-11.68l.58-9.54Z" data-bone-name="首"/>
-    <path id="upper_body" data-name="upper body" class="cls-7" d="M121.99,95.63c3.2-1.6,8-2,12.01-2s8.8.4,12.01,2l4,19.21-4.8,5.2h-22.41l-4.8-5.2,4-19.21Z" data-bone-name="上半身"/>
-    <path id="upper_body_2" data-name="upper body 2" class="cls-7" d="M123.39,126.27h21.21l1.52,12.92-4.55,4.52h-15.15l-4.55-4.52,1.52-12.92Z" data-bone-name="上半身2"/>
+    <path id="upper_body" data-name="upper body 2" class="cls-7" d="M121.99,95.63c3.2-1.6,8-2,12.01-2s8.8.4,12.01,2l4,19.21-4.8,5.2h-22.41l-4.8-5.2,4-19.21Z" data-bone-name="上半身2"/>
+    <path id="upper_body_2" data-name="upper body" class="cls-7" d="M123.39,126.27h21.21l1.52,12.92-4.55,4.52h-15.15l-4.55-4.52,1.52-12.92Z" data-bone-name="上半身"/>
     <path id="left_shoulder" data-name="left shoulder" class="cls-9" d="M157.71,83.18c4.85-1.15,10.19-.57,14.07,2.87l1.46,7.47-14.07,1.72-1.46-12.07Z" data-bone-name="右肩"/>
     <path id="left_upper_arm" data-name="left upper arm" class="cls-9" d="M169.34,98.38l-4.17,1.06c-2.16.75-3.19,3.13-2.21,5.13l11.27,23.06c.84,1.73,2.91,2.55,4.78,1.9l2.28-.79c2.16-.75,3.19-3.13,2.21-5.13l-9.39-23.34c-.84-1.73-2.91-2.55-4.78-1.9Z" data-bone-name="右腕"/>
     <path id="left_lower_arm" data-name="left lower arm" class="cls-9" d="M185.28,132.46l-6.76,2.1c-1.6.35-2.46,1.64-1.89,2.84l18.26,33.49c.53,1.11,2.1,1.74,3.6,1.44l4.78-.97c1.63-.33,2.52-1.63,1.95-2.84l-16.28-34.62c-.53-1.13-2.14-1.76-3.65-1.43Z" data-bone-name="右ひじ"/>
@@ -90,7 +90,7 @@
     <path id="left_lower_leg-2" data-name="left lower leg" class="cls-9" d="M118.26,271.57l-.5,50.3-10.44.12-4.12-51.11,1.1-7.51,12.35.26,1.62,7.94Z" data-bone-name="右ひざ"/>
     <path id="left_foot-2" data-name="left foot" class="cls-9" d="M119.07,349.38l-13.73-.09,2.49-22.12h9.96s1.27,22.2,1.27,22.2Z" data-bone-name="右足首"/>
     <path id="left_toe-2" data-name="left toe" class="cls-9" d="M118.7,363.6h-10s-3.18-11-3.18-11l13.35.13-.18,10.87Z" data-bone-name="右つま先"/>
-    <path id="lower_body" data-name="lower body" class="cls-7" d="M111.29,165.49h45.43l3.24,5.64-9.73,12.92h-32.45l-9.73-12.92,3.24-5.64Z" data-bone-name="上半身2"/>
+    <path id="lower_body" data-name="lower body" class="cls-7" d="M111.29,165.49h45.43l3.24,5.64-9.73,12.92h-32.45l-9.73-12.92,3.24-5.64Z" data-bone-name="下半身"/>
   </g>
   <g id="ui-controls" data-layer="ui-overlay-reference">
     <path id="center" class="cls-1" d="M124.17,220.47h19.67v12h-19.67v-12Z" data-bone-name="センター"/>
