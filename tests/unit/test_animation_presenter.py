@@ -738,12 +738,13 @@ class TestBodyPickerPresenter(unittest.TestCase):
         metadata = {
             "state": "ATTACHED",
             "controls": {"master": "master-control-uuid"},
-            "bindings": {"master": {"joint": "head_jnt"}},
+            "bindings": {"master": {"jointUuid": "head-joint-uuid"}},
         }
 
         def resolve_node(node, **_kwargs):
             return {
                 "head_jnt": ["|model|head_jnt"],
+                "head-joint-uuid": ["|model|head_jnt"],
                 "master-control-uuid": ["|MMD_CONTROLS_GRP|master_ctrl"],
             }.get(node, [node])
 
