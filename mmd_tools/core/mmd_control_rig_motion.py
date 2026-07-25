@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
-import math
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import maya.api.OpenMaya as om
@@ -85,7 +84,7 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
     operations: List[Tuple[str, str, str]] = []
     journal: Dict[str, Any] = {"channels": [], "offsetParentMatrix": [], "ikEnabled": []}
     claimed_targets = set()
-    display_reference_time = _display_reference_time(metadata)
+    display_reference_time = float(metadata["displayReferenceTime"])
     offset_controls = set()
 
     with _undo_chunk(cmds, "Enter MMD Control Rig Edit"):
@@ -382,10 +381,9 @@ def _journal_plug_row(
 def _resolve_plug_reference(
     cmds,
     reference: Any,
-    fallback: Any,
     description: str,
 ) -> str:
-    """Resolve a journal plug by UUID, retaining legacy name-only support."""
+    """Resolve a journal plug from its authoritative UUID reference."""
     if isinstance(reference, Mapping):
         node_uuid = reference.get("nodeUuid")
         attribute = reference.get("attribute")
@@ -399,9 +397,7 @@ def _resolve_plug_reference(
             if not cmds.objExists(plug):
                 raise MmdControlRigBuildError(f"{description} plug is missing: {plug}")
             return str(plug)
-    if fallback and cmds.objExists(str(fallback)):
-        return str(fallback)
-    raise MmdControlRigBuildError(f"{description} plug is missing: {fallback}")
+    raise MmdControlRigBuildError(f"{description} UUID reference is missing")
 
 
 def _resolve_journal_plug_row(cmds, row: Mapping[str, Any]) -> Dict[str, Any]:
@@ -410,13 +406,11 @@ def _resolve_journal_plug_row(cmds, row: Mapping[str, Any]) -> Dict[str, Any]:
     resolved["control"] = _resolve_plug_reference(
         cmds,
         row.get("controlRef"),
-        row.get("control"),
         "journal control",
     )
     resolved["target"] = _resolve_plug_reference(
         cmds,
         row.get("targetRef"),
-        row.get("target"),
         "journal target",
     )
     source = row.get("source")
@@ -424,7 +418,6 @@ def _resolve_journal_plug_row(cmds, row: Mapping[str, Any]) -> Dict[str, Any]:
         _resolve_plug_reference(
             cmds,
             row.get("sourceRef"),
-            source,
             "journal source",
         )
         if source
@@ -439,7 +432,6 @@ def _resolve_journal_offset_row(cmds, row: Mapping[str, Any]) -> Dict[str, Any]:
     resolved["control"] = _resolve_plug_reference(
         cmds,
         row.get("controlRef"),
-        row.get("control"),
         "journal offset",
     )
     return resolved
@@ -488,17 +480,6 @@ def _connect_ik_enabled(cmds, control, binding, journal, operations) -> None:
                 value=value,
             )
         )
-
-
-def _display_reference_time(metadata: Mapping[str, Any]) -> Optional[float]:
-    """Resolve the build-time display reference, or preserve legacy entry-time behavior."""
-    if "displayReferenceTime" not in metadata:
-        return None
-    try:
-        value = float(metadata.get("displayReferenceTime", 0.0))
-    except (TypeError, ValueError):
-        return None
-    return value if math.isfinite(value) else None
 
 
 def _zero_control_display_offsets(

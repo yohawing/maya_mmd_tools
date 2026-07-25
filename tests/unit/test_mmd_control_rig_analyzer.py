@@ -19,6 +19,7 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
     classify_mmd_control_rig,
 )
 from mmd_tools.core.mmd_control_rig_builder import (
+    MmdControlRigBuildError,
     _apply_fallback_role_aliases,
     _control_curve_templates,
     _control_curve_template_role,
@@ -26,7 +27,6 @@ from mmd_tools.core.mmd_control_rig_builder import (
     _control_shape_rotation,
     _rotate_shape_point,
     _shortest_arc_from_positive_z,
-    _upgrade_binding_authority,
     _parent_zero_groups,
     _should_build_role_control,
     resolve_mmd_control_rig_binding_authored_plugs,
@@ -300,31 +300,7 @@ class _UuidBindingFake:
 
 
 class TestMmdControlRigAnalyzer(unittest.TestCase):
-    def test_legacy_binding_metadata_upgrades_to_uuid_authority(self):
-        cmds = _UuidBindingFake()
-        metadata = {
-            "version": 1,
-            "bindings": {
-                "center": {
-                    "joint": "|model_NS|center_RENAMED",
-                    "ikSolvers": ["|model_NS|ik_RENAMED"],
-                    "authoredPlugs": ["|model_NS|append_RENAMED.baseRotate"],
-                }
-            },
-        }
-
-        _upgrade_binding_authority(cmds, metadata)
-
-        binding = metadata["bindings"]["center"]
-        self.assertEqual(metadata["version"], 2)
-        self.assertEqual(binding["jointUuid"], "joint-uuid")
-        self.assertEqual(binding["ikSolverUuids"], ["solver-uuid"])
-        self.assertEqual(
-            binding["authoredPlugRefs"],
-            [{"nodeUuid": "append-uuid", "attribute": "baseRotate"}],
-        )
-
-    def test_binding_uuid_fields_resolve_renamed_nodes_and_legacy_names_remain_supported(self):
+    def test_binding_uuid_fields_resolve_renamed_nodes(self):
         cmds = _UuidBindingFake()
         binding = {
             "joint": "|model_NS|center_OLD",
@@ -350,23 +326,8 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
             ("|model_NS|append_RENAMED.baseRotate",),
         )
 
-        legacy = {
-            "joint": "|model_NS|center_RENAMED",
-            "ikSolvers": ["|model_NS|ik_RENAMED"],
-            "authoredPlugs": ["|model_NS|append_RENAMED.baseRotate"],
-        }
-        self.assertEqual(
-            resolve_mmd_control_rig_binding_joint(cmds, legacy),
-            "|model_NS|center_RENAMED",
-        )
-        self.assertEqual(
-            resolve_mmd_control_rig_binding_ik_solvers(cmds, legacy),
-            ("|model_NS|ik_RENAMED",),
-        )
-        self.assertEqual(
-            resolve_mmd_control_rig_binding_authored_plugs(cmds, legacy),
-            ("|model_NS|append_RENAMED.baseRotate",),
-        )
+        with self.assertRaises(MmdControlRigBuildError):
+            resolve_mmd_control_rig_binding_joint(cmds, {"joint": "|model_NS|center_RENAMED"})
 
     def test_resolves_mvp_roles_and_semistandard_fallbacks(self):
         facts = [

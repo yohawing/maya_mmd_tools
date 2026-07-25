@@ -464,54 +464,6 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
                 )
         self.assertLess(max(drift), 1.0e-6, {"roles": direct_roles, "maxDrift": max(drift)})
 
-    def test_legacy_metadata_uses_edit_entry_time_for_display_offset(self):
-        """Legacy metadata without a reference samples offsets at EDIT entry."""
-        root = self._import_fixture()
-        self.assertTrue(
-            import_mmd_file(
-                _VMD_PATH,
-                options={"target_model": root, "pmx_path": _PMX_PATH},
-            )
-        )
-        cmds.currentTime(0, edit=True)
-        rig = build_mmd_control_rig(root)
-        metadata = read_mmd_control_rig_metadata(root)
-        metadata.pop("displayReferenceTime", None)
-        cmds.setAttr(
-            f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}",
-            json.dumps(metadata, ensure_ascii=False),
-            type="string",
-        )
-
-        cmds.currentTime(20, edit=True)
-
-        class _CurrentTimeSpy:
-            def __init__(self, delegate):
-                self._delegate = delegate
-                self.calls = []
-
-            def currentTime(self, *args, **kwargs):
-                self.calls.append((args, kwargs))
-                return self._delegate.currentTime(*args, **kwargs)
-
-            def __getattr__(self, name):
-                return getattr(self._delegate, name)
-
-        spy = _CurrentTimeSpy(cmds)
-        edit = enter_mmd_control_rig_edit(root, cmds_module=spy)
-
-        self.assertEqual(edit["state"], "EDIT")
-        self.assertEqual(float(cmds.currentTime(query=True)), 20.0)
-        self.assertEqual(len(spy.calls), 2)
-        self.assertTrue(any(kwargs.get("query") for _, kwargs in spy.calls))
-        self.assertTrue(
-            any(args and float(args[0]) == 20.0 for args, _ in spy.calls)
-        )
-        self.assertFalse(
-            any(args and float(args[0]) == 0.0 for args, _ in spy.calls)
-        )
-        self.assertTrue(rig.controls)
-
     def test_append_compound_authored_plugs_enter_edit_and_bake(self):
         """Expand mmdAppend compound inputs while transferring ownership."""
         root = self._import_fixture()
@@ -552,9 +504,16 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         metadata = read_mmd_control_rig_metadata(root)
         binding = metadata["bindings"]["groove"]
         binding["joint"] = (cmds.ls(append_joint, long=True) or [append_joint])[0]
+        binding["jointUuid"] = cmds.ls(append_joint, uuid=True)[0]
         binding["inputKind"] = INPUT_APPEND_BASE
         binding["authoredPlugs"] = list(append_targets)
-        binding.pop("authoredPlugRefs", None)
+        binding["authoredPlugRefs"] = [
+            {
+                "nodeUuid": cmds.ls(append_node, uuid=True)[0],
+                "attribute": target.rsplit(".", 1)[-1],
+            }
+            for target in append_targets
+        ]
         cmds.setAttr(
             f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}",
             json.dumps(metadata, ensure_ascii=False),
@@ -811,9 +770,17 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         cmds.setKeyframe(append_node, attribute="baseRotateX", time=10, value=15.0)
         metadata["bindings"]["append_export_probe"] = {
             "joint": (cmds.ls(append_joint, long=True) or [append_joint])[0],
+            "jointUuid": cmds.ls(append_joint, uuid=True)[0],
             "inputKind": INPUT_APPEND_BASE,
             "authoredPlugs": [f"{append_node}.baseRotate"],
+            "authoredPlugRefs": [
+                {
+                    "nodeUuid": cmds.ls(append_node, uuid=True)[0],
+                    "attribute": "baseRotate",
+                }
+            ],
             "ikSolvers": [],
+            "ikSolverUuids": [],
             "fallback": None,
         }
         cmds.setAttr(
