@@ -34,8 +34,7 @@ from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
 
 CONTROL_RIG_METADATA_SCHEMA = "mmd_tools.mmd_control_rig"
-CONTROL_RIG_METADATA_VERSION = 2
-_LEGACY_CONTROL_RIG_METADATA_VERSIONS = frozenset({1})
+CONTROL_RIG_METADATA_VERSION = 3
 CONTROL_RIG_ATTACHED = "ATTACHED"
 CONTROL_RIG_EDIT = "EDIT"
 CONTROL_RIG_BAKED = "BAKED"
@@ -77,36 +76,6 @@ _FINGER_ROLE_PARENTS = {
     for index, role in enumerate(chain)
 }
 
-_ROLE_FALLBACK_SHAPES = {
-    "master": "circle",
-    "center": "square",
-    "groove": "diamond",
-    "left_foot_ik": "foot",
-    "right_foot_ik": "foot",
-    "waist": "circle",
-    "left_foot_ik_parent": "circle",
-    "right_foot_ik_parent": "circle",
-    "left_toe_ik": "circle",
-    "right_toe_ik": "circle",
-    "lower_body": "square",
-    "upper_body": "circle",
-    "upper_body2": "circle",
-    "neck": "circle",
-    "head": "circle",
-    "left_shoulder": "circle",
-    "left_arm": "circle",
-    "left_elbow": "circle",
-    "left_wrist": "circle",
-    "right_shoulder": "circle",
-    "right_arm": "circle",
-    "right_elbow": "circle",
-    "right_wrist": "circle",
-    "left_leg": "circle",
-    "left_knee": "diamond",
-    "right_leg": "circle",
-    "right_knee": "diamond",
-    **{role: "circle" for role in _FINGER_ROLES},
-}
 _ROLE_COLORS = {
     "master": 17,
     "center": 17,
@@ -170,6 +139,10 @@ _ROLE_PARENTS = {
 
 _ROLE_TEMPLATE_ALIASES = {
     **{role: "finger" for role in _FINGER_ROLES},
+    "left_arm": "circle",
+    "right_arm": "circle",
+    "right_elbow": "left_elbow",
+    "right_wrist": "left_wrist",
     "waist": "circle",
     "left_foot_ik_parent": "circle",
     "right_foot_ik_parent": "circle",
@@ -430,7 +403,7 @@ def _read_metadata(cmds, root: str) -> Optional[Dict[str, Any]]:
     if metadata.get("schema") != CONTROL_RIG_METADATA_SCHEMA:
         raise MmdControlRigBuildError("unsupported control-rig metadata schema")
     version = metadata.get("version")
-    if version not in _LEGACY_CONTROL_RIG_METADATA_VERSIONS | {CONTROL_RIG_METADATA_VERSION}:
+    if version != CONTROL_RIG_METADATA_VERSION:
         raise MmdControlRigBuildError("unsupported control-rig metadata version")
     if metadata.get("state") not in CONTROL_RIG_STATES:
         raise MmdControlRigBuildError("unsupported control-rig metadata state")
@@ -439,7 +412,12 @@ def _read_metadata(cmds, root: str) -> Optional[Dict[str, Any]]:
             raise MmdControlRigBuildError(f"control-rig metadata missing {key}")
     if not isinstance(metadata.get("nodes"), list):
         raise MmdControlRigBuildError("control-rig metadata nodes must be an array")
-    _upgrade_binding_authority(cmds, metadata)
+    try:
+        display_reference_time = float(metadata["displayReferenceTime"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise MmdControlRigBuildError("control-rig display reference is missing") from exc
+    if not math.isfinite(display_reference_time):
+        raise MmdControlRigBuildError("control-rig display reference must be finite")
     return metadata
 
 
@@ -471,13 +449,13 @@ def _control_curve_templates() -> Mapping[str, Tuple[Mapping[str, Any], ...]]:
     path = Path(__file__).resolve().parents[1] / "config" / "mmd_control_rig_curve_shapes.json"
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, TypeError, ValueError):
-        return {}
+    except (OSError, TypeError, ValueError) as exc:
+        raise MmdControlRigBuildError(f"could not load control curve templates: {path}") from exc
     if payload.get("schema") != "mmd_tools.mmd_control_rig_curve_shapes" or payload.get("version") != 1:
-        return {}
+        raise MmdControlRigBuildError("unsupported control curve template schema")
     templates = payload.get("templates")
     if not isinstance(templates, dict):
-        return {}
+        raise MmdControlRigBuildError("control curve templates must be an object")
     return {
         str(role): tuple(shape for shape in shapes if isinstance(shape, dict))
         for role, shapes in templates.items()
@@ -494,18 +472,12 @@ def _create_control_curve(
     shape_rotation=None,
 ) -> str:
     templates = _control_curve_templates().get(_control_curve_template_role(role), ())
-    if templates:
-        return _create_template_control_curve(
-            cmds,
-            name,
-            templates,
-            scale,
-            shape_rotation=shape_rotation,
-        )
-    return _create_fallback_control_curve(
+    if not templates:
+        raise MmdControlRigBuildError(f"missing control curve template: {role}")
+    return _create_template_control_curve(
         cmds,
         name,
-        _ROLE_FALLBACK_SHAPES[role],
+        templates,
         scale,
         shape_rotation=shape_rotation,
     )
@@ -564,38 +536,6 @@ def _create_template_control_curve(
             if node and cmds.objExists(node):
                 cmds.delete(node)
         raise
-
-
-def _create_fallback_control_curve(
-    cmds,
-    name: str,
-    shape: str,
-    scale: float,
-    *,
-    shape_rotation=None,
-) -> str:
-    if shape == "circle":
-        points = [
-            (1.0, 0.0, 0.0),
-            (0.707, 0.0, 0.707),
-            (0.0, 0.0, 1.0),
-            (-0.707, 0.0, 0.707),
-            (-1.0, 0.0, 0.0),
-            (-0.707, 0.0, -0.707),
-            (0.0, 0.0, -1.0),
-            (0.707, 0.0, -0.707),
-            (1.0, 0.0, 0.0),
-        ]
-    elif shape == "diamond":
-        points = [(0, 0, 1), (1, 0, 0), (0, 0, -1), (-1, 0, 0), (0, 0, 1)]
-    elif shape == "foot":
-        points = [(-0.6, 0, 1.2), (0.6, 0, 1.2), (0.8, 0, -1), (-0.8, 0, -1), (-0.6, 0, 1.2)]
-    else:
-        points = [(-1, 0, -1), (-1, 0, 1), (1, 0, 1), (1, 0, -1), (-1, 0, -1)]
-    scaled = [(x * scale, y * scale, z * scale) for x, y, z in points]
-    if shape_rotation is not None:
-        scaled = [_rotate_shape_point(point, shape_rotation) for point in scaled]
-    return str(cmds.curve(name=name, degree=1, point=scaled))
 
 
 def _control_shape_rotation(cmds, root, role, binding, indexed_joints):
@@ -805,53 +745,24 @@ def _authored_plug_refs(cmds, plugs) -> List[Dict[str, str]]:
     return refs
 
 
-def _upgrade_binding_authority(cmds, metadata: Dict[str, Any]) -> None:
-    """Add UUID authority to v1 metadata while retaining its name fields."""
-    for binding in metadata.get("bindings", {}).values():
-        if not isinstance(binding, dict):
-            continue
-        if "jointUuid" not in binding:
-            uuid = _try_node_uuid(cmds, binding.get("joint"))
-            if uuid:
-                binding["jointUuid"] = uuid
-        if "ikSolverUuids" not in binding:
-            solver_uuids = [
-                _try_node_uuid(cmds, solver)
-                for solver in binding.get("ikSolvers", [])
-            ]
-            if all(solver_uuids):
-                binding["ikSolverUuids"] = solver_uuids
-        if "authoredPlugRefs" not in binding:
-            try:
-                binding["authoredPlugRefs"] = _authored_plug_refs(
-                    cmds, binding.get("authoredPlugs", [])
-                )
-            except (MmdControlRigBuildError, ValueError):
-                pass
-    metadata["version"] = CONTROL_RIG_METADATA_VERSION
-
-
 def resolve_mmd_control_rig_binding_joint(cmds, binding: Mapping[str, Any]) -> str:
-    """Resolve a binding joint by UUID, falling back to legacy DAG names."""
+    """Resolve a binding joint from its authoritative UUID."""
     uuid = binding.get("jointUuid")
-    if uuid:
-        return _resolve_uuid_node(cmds, str(uuid), "binding joint")
-    return _resolve_named_node(cmds, str(binding.get("joint", "")), "binding joint")
+    if not uuid:
+        raise MmdControlRigBuildError("binding joint UUID is missing")
+    return _resolve_uuid_node(cmds, str(uuid), "binding joint")
 
 
 def resolve_mmd_control_rig_binding_ik_solvers(
     cmds,
     binding: Mapping[str, Any],
 ) -> Tuple[str, ...]:
-    """Resolve all solver nodes by UUID, falling back to legacy DAG names."""
+    """Resolve all solver nodes from their authoritative UUIDs."""
     uuids = binding.get("ikSolverUuids")
-    if uuids is not None:
-        return tuple(
-            _resolve_uuid_node(cmds, str(uuid), "IK solver") for uuid in uuids
-        )
+    if uuids is None:
+        raise MmdControlRigBuildError("IK solver UUID metadata is missing")
     return tuple(
-        _resolve_named_node(cmds, str(solver), "IK solver")
-        for solver in binding.get("ikSolvers", [])
+        _resolve_uuid_node(cmds, str(uuid), "IK solver") for uuid in uuids
     )
 
 
@@ -861,39 +772,25 @@ def resolve_mmd_control_rig_binding_authored_plugs(
 ) -> Tuple[str, ...]:
     """Resolve authored input plugs, preferring UUID-backed node references."""
     refs = binding.get("authoredPlugRefs")
-    if refs is not None and (refs or not binding.get("authoredPlugs")):
-        plugs = []
-        for ref in refs:
-            if not isinstance(ref, Mapping):
-                raise MmdControlRigBuildError("invalid authored plug reference")
-            uuid = ref.get("nodeUuid", ref.get("uuid"))
-            attribute = ref.get("attribute")
-            if not uuid or not attribute:
-                raise MmdControlRigBuildError("incomplete authored plug reference")
-            node = _resolve_uuid_node(cmds, str(uuid), "authored plug node")
-            plugs.append(f"{node}.{attribute}")
-        return tuple(plugs)
-    return tuple(str(plug) for plug in binding.get("authoredPlugs", []))
-
-
-def _try_node_uuid(cmds, node: Any) -> Optional[str]:
-    if not node:
-        return None
-    values = cmds.ls(str(node), uuid=True) or []
-    return str(values[0]) if len(values) == 1 else None
+    if refs is None:
+        raise MmdControlRigBuildError("authored plug UUID metadata is missing")
+    plugs = []
+    for ref in refs:
+        if not isinstance(ref, Mapping):
+            raise MmdControlRigBuildError("invalid authored plug reference")
+        uuid = ref.get("nodeUuid")
+        attribute = ref.get("attribute")
+        if not uuid or not attribute:
+            raise MmdControlRigBuildError("incomplete authored plug reference")
+        node = _resolve_uuid_node(cmds, str(uuid), "authored plug node")
+        plugs.append(f"{node}.{attribute}")
+    return tuple(plugs)
 
 
 def _resolve_uuid_node(cmds, uuid: str, description: str) -> str:
     nodes = cmds.ls(uuid, long=True) or []
     if len(nodes) != 1:
         raise MmdControlRigBuildError(f"{description} UUID is missing: {uuid}")
-    return str(nodes[0])
-
-
-def _resolve_named_node(cmds, name: str, description: str) -> str:
-    nodes = cmds.ls(name, long=True) or []
-    if len(nodes) != 1:
-        raise MmdControlRigBuildError(f"expected one {description}: {name}")
     return str(nodes[0])
 
 

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
-import math
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import maya.api.OpenMaya as om
@@ -85,7 +84,7 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
     operations: List[Tuple[str, str, str]] = []
     journal: Dict[str, Any] = {"channels": [], "offsetParentMatrix": [], "ikEnabled": []}
     claimed_targets = set()
-    display_reference_time = _display_reference_time(metadata)
+    display_reference_time = float(metadata["displayReferenceTime"])
     offset_controls = set()
 
     with _undo_chunk(cmds, "Enter MMD Control Rig Edit"):
@@ -172,65 +171,40 @@ def restore_mmd_control_rig_attached(model_root: str, *, cmds_module=None) -> Di
     if metadata["state"] != CONTROL_RIG_EDIT:
         raise MmdControlRigBuildError(f"cannot restore ATTACHED from {metadata['state']}")
 
-    journal = metadata.get("journal")
-    if not isinstance(journal, dict):
-        raise MmdControlRigBuildError("EDIT connection journal is missing")
-    ik_rows = [_resolve_journal_plug_row(cmds, row) for row in journal.get("ikEnabled", [])]
-    channel_rows = [
-        _resolve_journal_plug_row(cmds, row) for row in journal.get("channels", [])
-    ]
-    offset_rows = [
-        _resolve_journal_offset_row(cmds, row)
-        for row in journal.get("offsetParentMatrix", [])
-    ]
-    transaction_plugs = {
-        str(row[key])
-        for row in (*ik_rows, *channel_rows)
-        for key in ("control", "target")
-    }
-    transaction_plugs.update(str(row["control"]) for row in offset_rows)
-    plug_states = _capture_plug_states(cmds, transaction_plugs)
-    metadata_before = cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}")
+    ik_rows, channel_rows, offset_rows = _resolve_edit_journal(cmds, metadata)
 
-    try:
-        with _undo_chunk(cmds, "Restore MMD Control Rig Attached"):
-            for row in reversed(ik_rows):
-                source, target = row["control"], row["target"]
-                if cmds.isConnected(source, target):
-                    cmds.disconnectAttr(source, target)
-                prior = row.get("source")
-                if prior:
-                    cmds.connectAttr(prior, target, force=False)
-                else:
-                    cmds.setAttr(target, bool(row["value"]))
-            for row in reversed(channel_rows):
-                control, target = row["control"], row["target"]
-                if cmds.isConnected(control, target):
-                    cmds.disconnectAttr(control, target)
-                source = row.get("source")
-                if source:
-                    if cmds.isConnected(source, control):
-                        cmds.disconnectAttr(source, control)
-                    cmds.connectAttr(source, target, force=False)
-                else:
-                    cmds.setAttr(target, float(row["value"]))
-            _restore_offsets(cmds, offset_rows, strict=True)
-            metadata.pop("journal", None)
-            metadata["state"] = CONTROL_RIG_ATTACHED
-            _write_metadata(cmds, root, metadata)
-    except Exception as exc:
-        try:
-            _restore_plug_states(cmds, plug_states)
-            cmds.setAttr(
-                f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}",
-                metadata_before,
-                type="string",
-            )
-        except Exception as rollback_exc:
-            raise MmdControlRigBuildError(
-                f"control-rig restore failed and rollback was incomplete: {rollback_exc}"
-            ) from exc
-        raise
+    with _edit_exit_transaction(
+        cmds,
+        root,
+        "Restore MMD Control Rig Attached",
+        "restore",
+        ik_rows + channel_rows,
+        offset_rows,
+    ):
+        for row in reversed(ik_rows):
+            source, target = row["control"], row["target"]
+            if cmds.isConnected(source, target):
+                cmds.disconnectAttr(source, target)
+            prior = row.get("source")
+            if prior:
+                cmds.connectAttr(prior, target, force=False)
+            else:
+                cmds.setAttr(target, bool(row["value"]))
+        for row in reversed(channel_rows):
+            control, target = row["control"], row["target"]
+            if cmds.isConnected(control, target):
+                cmds.disconnectAttr(control, target)
+            source = row.get("source")
+            if source:
+                if cmds.isConnected(source, control):
+                    cmds.disconnectAttr(source, control)
+                cmds.connectAttr(source, target, force=False)
+            else:
+                cmds.setAttr(target, float(row["value"]))
+        _restore_offsets(cmds, offset_rows, strict=True)
+        metadata.pop("journal", None)
+        metadata["state"] = CONTROL_RIG_ATTACHED
+        _write_metadata(cmds, root, metadata)
     return metadata
 
 
@@ -242,18 +216,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
     if metadata is None or metadata.get("state") != CONTROL_RIG_EDIT:
         state = metadata.get("state") if metadata else "missing"
         raise MmdControlRigBuildError(f"cannot bake MMD control rig from {state}")
-    journal = metadata.get("journal")
-    if not isinstance(journal, dict):
-        raise MmdControlRigBuildError("EDIT connection journal is missing")
-
-    ik_rows = [_resolve_journal_plug_row(cmds, row) for row in journal.get("ikEnabled", [])]
-    channel_rows = [
-        _resolve_journal_plug_row(cmds, row) for row in journal.get("channels", [])
-    ]
-    offset_rows = [
-        _resolve_journal_offset_row(cmds, row)
-        for row in journal.get("offsetParentMatrix", [])
-    ]
+    ik_rows, channel_rows, offset_rows = _resolve_edit_journal(cmds, metadata)
     rows = ik_rows + channel_rows
     sources_by_control = {}
     for row in rows:
@@ -269,28 +232,55 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
             _require_animation_source(cmds, source, row["target"])
         sources_by_control[row["control"]] = source
 
+    with _edit_exit_transaction(
+        cmds,
+        root,
+        "Bake MMD Control Rig",
+        "bake",
+        rows,
+        offset_rows,
+    ):
+        for row in reversed(ik_rows):
+            _commit_control_input(cmds, row, sources_by_control[row["control"]])
+        for row in reversed(channel_rows):
+            _commit_control_input(cmds, row, sources_by_control[row["control"]])
+        _restore_offsets(cmds, offset_rows, strict=True)
+        metadata.pop("journal", None)
+        metadata["state"] = CONTROL_RIG_BAKED
+        _write_metadata(cmds, root, metadata)
+    return metadata
+
+
+def _resolve_edit_journal(cmds, metadata: Mapping[str, Any]):
+    """Resolve an EDIT journal into rename-stable transaction rows."""
+    journal = metadata.get("journal")
+    if not isinstance(journal, dict):
+        raise MmdControlRigBuildError("EDIT connection journal is missing")
+    ik_rows = [_resolve_journal_plug_row(cmds, row) for row in journal.get("ikEnabled", [])]
+    channel_rows = [
+        _resolve_journal_plug_row(cmds, row) for row in journal.get("channels", [])
+    ]
+    offset_rows = [
+        _resolve_journal_offset_row(cmds, row)
+        for row in journal.get("offsetParentMatrix", [])
+    ]
+    return ik_rows, channel_rows, offset_rows
+
+
+@contextmanager
+def _edit_exit_transaction(cmds, root, label, action, rows, offset_rows):
+    """Snapshot EDIT plugs and roll back a failed state transition."""
     transaction_plugs = {
         str(row[key])
         for row in rows
         for key in ("control", "target")
     }
-    transaction_plugs.update(
-        str(row["control"])
-        for row in offset_rows
-    )
+    transaction_plugs.update(str(row["control"]) for row in offset_rows)
     plug_states = _capture_plug_states(cmds, transaction_plugs)
     metadata_before = cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}")
-
     try:
-        with _undo_chunk(cmds, "Bake MMD Control Rig"):
-            for row in reversed(ik_rows):
-                _commit_control_input(cmds, row, sources_by_control[row["control"]])
-            for row in reversed(channel_rows):
-                _commit_control_input(cmds, row, sources_by_control[row["control"]])
-            _restore_offsets(cmds, offset_rows, strict=True)
-            metadata.pop("journal", None)
-            metadata["state"] = CONTROL_RIG_BAKED
-            _write_metadata(cmds, root, metadata)
+        with _undo_chunk(cmds, label):
+            yield
     except Exception as exc:
         try:
             _restore_plug_states(cmds, plug_states)
@@ -301,10 +291,9 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
             )
         except Exception as rollback_exc:
             raise MmdControlRigBuildError(
-                f"control-rig bake failed and rollback was incomplete: {rollback_exc}"
+                f"control-rig {action} failed and rollback was incomplete: {rollback_exc}"
             ) from exc
         raise
-    return metadata
 
 
 def _expanded_authored_plugs(
@@ -382,10 +371,9 @@ def _journal_plug_row(
 def _resolve_plug_reference(
     cmds,
     reference: Any,
-    fallback: Any,
     description: str,
 ) -> str:
-    """Resolve a journal plug by UUID, retaining legacy name-only support."""
+    """Resolve a journal plug from its authoritative UUID reference."""
     if isinstance(reference, Mapping):
         node_uuid = reference.get("nodeUuid")
         attribute = reference.get("attribute")
@@ -399,9 +387,7 @@ def _resolve_plug_reference(
             if not cmds.objExists(plug):
                 raise MmdControlRigBuildError(f"{description} plug is missing: {plug}")
             return str(plug)
-    if fallback and cmds.objExists(str(fallback)):
-        return str(fallback)
-    raise MmdControlRigBuildError(f"{description} plug is missing: {fallback}")
+    raise MmdControlRigBuildError(f"{description} UUID reference is missing")
 
 
 def _resolve_journal_plug_row(cmds, row: Mapping[str, Any]) -> Dict[str, Any]:
@@ -410,13 +396,11 @@ def _resolve_journal_plug_row(cmds, row: Mapping[str, Any]) -> Dict[str, Any]:
     resolved["control"] = _resolve_plug_reference(
         cmds,
         row.get("controlRef"),
-        row.get("control"),
         "journal control",
     )
     resolved["target"] = _resolve_plug_reference(
         cmds,
         row.get("targetRef"),
-        row.get("target"),
         "journal target",
     )
     source = row.get("source")
@@ -424,7 +408,6 @@ def _resolve_journal_plug_row(cmds, row: Mapping[str, Any]) -> Dict[str, Any]:
         _resolve_plug_reference(
             cmds,
             row.get("sourceRef"),
-            source,
             "journal source",
         )
         if source
@@ -439,7 +422,6 @@ def _resolve_journal_offset_row(cmds, row: Mapping[str, Any]) -> Dict[str, Any]:
     resolved["control"] = _resolve_plug_reference(
         cmds,
         row.get("controlRef"),
-        row.get("control"),
         "journal offset",
     )
     return resolved
@@ -488,17 +470,6 @@ def _connect_ik_enabled(cmds, control, binding, journal, operations) -> None:
                 value=value,
             )
         )
-
-
-def _display_reference_time(metadata: Mapping[str, Any]) -> Optional[float]:
-    """Resolve the build-time display reference, or preserve legacy entry-time behavior."""
-    if "displayReferenceTime" not in metadata:
-        return None
-    try:
-        value = float(metadata.get("displayReferenceTime", 0.0))
-    except (TypeError, ValueError):
-        return None
-    return value if math.isfinite(value) else None
 
 
 def _zero_control_display_offsets(
