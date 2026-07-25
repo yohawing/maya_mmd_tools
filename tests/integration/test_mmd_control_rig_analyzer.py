@@ -1,5 +1,6 @@
 """Maya integration coverage for the report-only MMD control-rig analyzer."""
 
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -20,15 +21,18 @@ from mmd_tools.core.mmd_control_rig_motion import (
     bake_mmd_control_rig,
     control_rig_edit_routes_for_joints,
     enter_mmd_control_rig_edit,
+    restore_mmd_control_rig_attached,
 )
 from mmd_tools.core.mmd_control_rig_analyzer import (
     INPUT_APPEND_BASE,
+    INPUT_DIRECT_CHANNEL,
     INPUT_IK_CONTROLLER,
     INPUT_IK_LINK_INPUT,
     INPUT_SOLVER_OUTPUT,
+    MmdControlRigBoneBinding,
+    STATUS_FALLBACK,
     STATUS_READY,
     analyze_mmd_control_rig,
-    INPUT_DIRECT_CHANNEL,
 )
 from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
 from mmd_tools.converters.vmd_ik_enabled_animation import collect_ik_nodes_by_bone_name
@@ -279,6 +283,41 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             )
         )
         self.assertFalse(remove_mmd_control_rig(reopened_root))
+
+    def test_model_root_master_fallback_stays_outside_driven_hierarchy(self):
+        root = (cmds.ls(self._import_fixture(), long=True) or [None])[0]
+        spec = analyze_mmd_control_rig(root)
+        fallback_binding = MmdControlRigBoneBinding(
+            joint=root,
+            mmd_name="model_root",
+            bone_index=None,
+            pmx_flags=0,
+            input_kind=INPUT_DIRECT_CHANNEL,
+            authored_plugs=(f"{root}.translate", f"{root}.rotate"),
+        )
+        roles = tuple(
+            replace(
+                role,
+                status=STATUS_FALLBACK,
+                binding=fallback_binding,
+                fallback="model_root",
+                warnings=(),
+                blockers=(),
+            )
+            if role.role == "master"
+            else role
+            for role in spec.roles
+        )
+        fallback_spec = replace(spec, roles=roles)
+        cycles_before = sorted(cmds.cycleCheck(all=True, list=True) or [])
+
+        rig = build_mmd_control_rig(root, spec=fallback_spec)
+
+        self.assertFalse(cmds.listRelatives(rig.control_group, parent=True) or [])
+        enter_mmd_control_rig_edit(root)
+        self.assertEqual(sorted(cmds.cycleCheck(all=True, list=True) or []), cycles_before)
+        restored = restore_mmd_control_rig_attached(root)
+        self.assertEqual(restored["state"], "ATTACHED")
 
 
     def test_leg_controls_own_pre_solver_thigh_and_knee_rotation(self):
@@ -669,6 +708,79 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
 
         self.assertEqual(cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}"), metadata_before)
         self.assertEqual(self._capture_edit_graph(edit["journal"]), graph_before)
+        self.assertEqual(read_mmd_control_rig_metadata(root)["state"], "EDIT")
+
+    def test_restore_resolves_renamed_animation_source_by_uuid(self):
+        root = self._import_fixture()
+        self.assertTrue(
+            import_mmd_file(
+                _VMD_PATH,
+                options={"target_model": root, "pmx_path": _PMX_PATH},
+            )
+        )
+        build_mmd_control_rig(root)
+        edit = enter_mmd_control_rig_edit(root)
+        row = next(row for row in edit["journal"]["channels"] if row["source"])
+        source_attribute = row["sourceRef"]["attribute"]
+        source_uuid = row["sourceRef"]["nodeUuid"]
+        renamed = cmds.rename(row["source"].split(".", 1)[0], "renamedControlRigAnim")
+        renamed = (cmds.ls(renamed, long=True) or [renamed])[0]
+
+        restored = restore_mmd_control_rig_attached(root)
+
+        resolved_source = f"{(cmds.ls(source_uuid, long=True) or [renamed])[0]}.{source_attribute}"
+        self.assertEqual(restored["state"], "ATTACHED")
+        self.assertTrue(cmds.isConnected(resolved_source, row["target"]))
+
+    def test_restore_failure_restores_edit_graph_and_metadata(self):
+        root = self._import_fixture()
+        self.assertTrue(
+            import_mmd_file(
+                _VMD_PATH,
+                options={"target_model": root, "pmx_path": _PMX_PATH},
+            )
+        )
+        build_mmd_control_rig(root)
+        edit = enter_mmd_control_rig_edit(root)
+        graph_before = self._capture_edit_graph(edit["journal"])
+        metadata_before = cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}")
+        connect_attr = cmds.connectAttr
+        failures = [RuntimeError("simulated restore connection failure")]
+
+        def fail_once(*args, **kwargs):
+            if failures:
+                raise failures.pop()
+            return connect_attr(*args, **kwargs)
+
+        with mock.patch.object(cmds, "connectAttr", side_effect=fail_once):
+            with self.assertRaisesRegex(RuntimeError, "simulated restore"):
+                restore_mmd_control_rig_attached(root)
+
+        self.assertEqual(cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}"), metadata_before)
+        self.assertEqual(self._capture_edit_graph(edit["journal"]), graph_before)
+        self.assertEqual(read_mmd_control_rig_metadata(root)["state"], "EDIT")
+
+    def test_restore_missing_animation_source_fails_before_graph_mutation(self):
+        root = self._import_fixture()
+        self.assertTrue(
+            import_mmd_file(
+                _VMD_PATH,
+                options={"target_model": root, "pmx_path": _PMX_PATH},
+            )
+        )
+        build_mmd_control_rig(root)
+        edit = enter_mmd_control_rig_edit(root)
+        row = next(row for row in edit["journal"]["channels"] if row["source"])
+        metadata_before = cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}")
+        cmds.delete(row["source"].split(".", 1)[0])
+        control_to_target = cmds.isConnected(row["control"], row["target"])
+
+        with self.assertRaisesRegex(MmdControlRigBuildError, "journal source node is missing"):
+            restore_mmd_control_rig_attached(root)
+
+        self.assertTrue(control_to_target)
+        self.assertTrue(cmds.isConnected(row["control"], row["target"]))
+        self.assertEqual(cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}"), metadata_before)
         self.assertEqual(read_mmd_control_rig_metadata(root)["state"], "EDIT")
 
     def test_baked_collector_exports_append_inputs_and_ik_states(self):

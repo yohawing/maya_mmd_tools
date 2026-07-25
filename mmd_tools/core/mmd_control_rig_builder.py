@@ -227,11 +227,14 @@ def build_mmd_control_rig(
     with _undo_chunk(cmds, "Build MMD Control Rig"):
         try:
             namespace = _namespace_prefix(root)
-            control_group = cmds.group(
-                empty=True,
-                name=f"{namespace}Controls",
-                parent=root,
-            )
+            group_kwargs = {
+                "empty": True,
+                "name": f"{namespace}Controls",
+            }
+            control_group_parent = _control_group_parent(rig_spec, root)
+            if control_group_parent is not None:
+                group_kwargs["parent"] = control_group_parent
+            control_group = cmds.group(**group_kwargs)
             created_roots.append(control_group)
             selection_set = cmds.sets(empty=True, name=f"{namespace}Controls_SET")
             created_roots.append(selection_set)
@@ -732,6 +735,18 @@ def _should_build_role_control(role_binding: MmdControlRigRoleBinding) -> bool:
     if role_binding.status == STATUS_FALLBACK:
         return role_binding.fallback == "model_root"
     return True
+
+
+def _control_group_parent(spec: MmdControlRigSpec, root: str) -> Optional[str]:
+    """Keep a model-root fallback master outside the DAG it will drive."""
+    master = spec.roles_by_name.get("master")
+    if (
+        master is not None
+        and master.status == STATUS_FALLBACK
+        and master.fallback == "model_root"
+    ):
+        return None
+    return root
 
 
 def _fallback_alias_target(role_binding: MmdControlRigRoleBinding) -> Optional[str]:

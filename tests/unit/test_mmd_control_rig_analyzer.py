@@ -22,6 +22,7 @@ from mmd_tools.core.mmd_control_rig_builder import (
     _apply_fallback_role_aliases,
     _control_curve_templates,
     _control_curve_template_role,
+    _control_group_parent,
     _control_shape_rotation,
     _rotate_shape_point,
     _shortest_arc_from_positive_z,
@@ -409,6 +410,14 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
 
         self.assertFalse(_should_build_role_control(roles["groove"]))
         self.assertTrue(_should_build_role_control(roles["master"]))
+
+        spec = classify_mmd_control_rig("|model", facts)
+        self.assertIsNone(_control_group_parent(spec, "|model"))
+        ready_spec = classify_mmd_control_rig(
+            "|model",
+            [_bone(0, "全ての親"), _bone(1, "センター")],
+        )
+        self.assertEqual(_control_group_parent(ready_spec, "|model"), "|model")
         self.assertEqual(controls["groove"], controls["center"])
         self.assertEqual(zero_groups["groove"], zero_groups["center"])
         self.assertEqual(bindings["groove"]["joint"], bindings["center"]["joint"])
