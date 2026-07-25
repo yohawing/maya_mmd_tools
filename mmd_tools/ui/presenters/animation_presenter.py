@@ -341,8 +341,21 @@ class AnimationPresenter:
         from ..widgets.finger_picker_widget import _FINGER_REGIONS
 
         nodes = [self._joint_for_rig_control(node) for node in nodes]
-        joint_to_bone = {joint: bone for bone, joint in self._bone_name_to_joint.items()}
-        selected_bones = {joint_to_bone[node] for node in nodes if node in joint_to_bone}
+
+        # Maya may return a short name while UUID-backed rig resolution returns
+        # a full DAG path (or vice versa).  The picker map belongs to one model,
+        # so its namespace-preserving leaf name is the stable comparison key.
+        def node_key(node: str) -> str:
+            return str(node).rsplit("|", 1)[-1]
+
+        joint_to_bone = {
+            node_key(joint): bone for bone, joint in self._bone_name_to_joint.items()
+        }
+        selected_bones = {
+            joint_to_bone[node_key(node)]
+            for node in nodes
+            if node_key(node) in joint_to_bone
+        }
 
         def selected_ids(regions):
             return [
@@ -374,7 +387,10 @@ class AnimationPresenter:
         try:
             from maya import cmds
 
-            from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
+            from ...core.mmd_control_rig_builder import (
+                read_mmd_control_rig_metadata,
+                resolve_mmd_control_rig_binding_joint,
+            )
 
             metadata = read_mmd_control_rig_metadata(root)
             # Selection and animation-input ownership are separate concerns.
@@ -384,10 +400,11 @@ class AnimationPresenter:
                 return joint
             target = (cmds.ls(joint, long=True) or [joint])[0]
             for role, binding in metadata.get("bindings", {}).items():
-                bound = (cmds.ls(binding.get("joint"), long=True) or [None])[0]
+                bound = resolve_mmd_control_rig_binding_joint(cmds, binding)
                 if bound != target:
                     continue
-                nodes = cmds.ls(metadata["controls"][role], long=True) or []
+                control_uuid = metadata.get("controls", {}).get(role)
+                nodes = cmds.ls(control_uuid, long=True) if control_uuid else []
                 if len(nodes) == 1:
                     return str(nodes[0])
         except Exception:
@@ -401,7 +418,10 @@ class AnimationPresenter:
         try:
             from maya import cmds
 
-            from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
+            from ...core.mmd_control_rig_builder import (
+                read_mmd_control_rig_metadata,
+                resolve_mmd_control_rig_binding_joint,
+            )
 
             metadata = read_mmd_control_rig_metadata(root)
             if not metadata:
@@ -409,7 +429,9 @@ class AnimationPresenter:
             selected = (cmds.ls(node, uuid=True) or [None])[0]
             for role, uuid in metadata.get("controls", {}).items():
                 if uuid == selected:
-                    return str(metadata["bindings"][role]["joint"])
+                    binding = metadata.get("bindings", {}).get(role)
+                    if binding:
+                        return resolve_mmd_control_rig_binding_joint(cmds, binding)
         except Exception:
             logger.debug("MMD Control Rig reverse picker lookup failed", exc_info=True)
         return node

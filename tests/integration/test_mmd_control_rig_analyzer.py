@@ -145,6 +145,39 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertTrue(solver_outputs)
         self.assertTrue(all(binding.blocked for binding in solver_outputs))
 
+    def test_anim_picker_selects_owned_center_control(self):
+        """Keep the Picker-to-controller selection path live in Maya."""
+
+        from unittest.mock import patch
+
+        from mmd_tools.adapters.maya_cmds_adapter import MayaCmdsAdapter
+        from mmd_tools.ui.presenters.animation_presenter import AnimationPresenter
+        from tests.integration.test_animation_presenter_e2e import _AppState, _View
+
+        root = self._import_fixture()
+        rig = build_mmd_control_rig(root)
+        view = _View()
+        app_state = _AppState(root=root)
+        with patch(
+            "mmd_tools.ui.presenters.animation_presenter.AnimationPresenter._populate_morph_groups"
+        ):
+            presenter = AnimationPresenter(view, app_state, maya_adapter=MayaCmdsAdapter())
+        try:
+            presenter.on_body_region_clicked("center")
+            selected = cmds.ls(selection=True, long=True) or []
+            expected = cmds.ls(rig.controls["center"], long=True) or []
+            self.assertEqual(selected, expected)
+            self.assertEqual(
+                view.body_picker.selected_regions,
+                ["center"],
+                (
+                    presenter._joint_for_rig_control(expected[0]),
+                    presenter._bone_name_to_joint.get("センター"),
+                ),
+            )
+        finally:
+            presenter.disconnect_signals()
+
     def test_builder_is_detached_idempotent_reopenable_and_removable(self):
         root = self._import_fixture()
         root = (cmds.ls(root, long=True) or [root])[0]

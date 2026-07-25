@@ -30,6 +30,10 @@ class _Signal:
     def connect(self, cb):
         self._cbs.append(cb)
 
+    def disconnect(self, cb):
+        if cb in self._cbs:
+            self._cbs.remove(cb)
+
     def emit(self, *a):
         for cb in self._cbs:
             cb(*a)
@@ -169,9 +173,13 @@ class _Picker:
         self.mirror_selection_clicked = _Signal()
         self.ik_toggled = _Signal()
         self.selected_regions = []
+        self.additive_selection = False
 
     def set_selected_regions(self, region_ids):
         self.selected_regions = list(region_ids)
+
+    def update_region_texts(self, **_kwargs):
+        pass
 
 
 class _CheckBox:
@@ -213,6 +221,11 @@ class _View:
             k: _Btn()
             for k in ("copy", "paste", "mirror", "reset", "clean", "bake")
         }
+
+    def current_language(self):
+        """Match the locale endpoint exposed by the production AnimationTab."""
+
+        return "ja"
 
 
 class _AppState:
@@ -339,6 +352,7 @@ class TestAnimationPresenterE2E(MayaTestBase):
             self.skipTest("頭 bone not in this model")
         sel = cmds.ls(selection=True) or []
         self.assertTrue(len(sel) > 0, "Should select a joint for head region")
+        self.assertEqual(view.body_picker.selected_regions, ["head"])
 
     def test_morph_picker_uses_japanese_metadata_and_drives_weight(self):
         root = self._import_model("test_morph_model")
