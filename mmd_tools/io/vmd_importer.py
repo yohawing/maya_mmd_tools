@@ -209,16 +209,21 @@ def import_vmd_file(
                 _try_recover_physics_drivers(target_model, logger, profile)
                 from ..core.collider_authoring import refresh_collider_authoring_pose
 
-                collider_shapes = (
-                    cmds.listRelatives(
-                        target_model,
-                        allDescendents=True,
-                        fullPath=True,
-                        type="mmdRigidBodyShape",
-                    )
-                    if cmds.objExists(target_model)
-                    else []
-                ) or []
+                try:
+                    collider_shapes = (
+                        cmds.listRelatives(
+                            target_model,
+                            allDescendents=True,
+                            fullPath=True,
+                            type="mmdRigidBodyShape",
+                        )
+                        if cmds.objExists(target_model)
+                        else []
+                    ) or []
+                except RuntimeError:
+                    # mayapy can import/animate a rig without loading the
+                    # optional Python collider-shape registration.
+                    collider_shapes = []
                 for shape in collider_shapes:
                     transforms = cmds.listRelatives(shape, parent=True, fullPath=True) or []
                     if transforms:

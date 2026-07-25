@@ -259,15 +259,12 @@ def install_mmd_menu():
         parent="MMD",
     )
 
-    from mmd_tools.services.settings_service import SettingsService
-
-    if SettingsService().is_development_mode():
-        cmds.menuItem(
-            "MMDAnimatorToolsetMenuItem",
-            label="Animator Toolset",
-            command=lambda *args: open_animator_toolset(dockable=True),
-            parent="MMD",
-        )
+    cmds.menuItem(
+        "MMDAnimatorToolsetMenuItem",
+        label="Animator Toolset",
+        command=lambda *args: open_animator_toolset(dockable=True),
+        parent="MMD",
+    )
 
     from mmd_tools.ui.humanik_menu_actions import install_humanik_menu
 

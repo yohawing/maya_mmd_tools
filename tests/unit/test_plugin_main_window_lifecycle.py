@@ -222,6 +222,13 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         ]
         self.assertEqual(len(repair_calls), 1)
 
+        animator_calls = [
+            call
+            for call in self.plugin_main.cmds.menuItem.call_args_list
+            if call[1].get("label") == "Animator Toolset"
+        ]
+        self.assertEqual(len(animator_calls), 1)
+
     def test_install_menu_creates_tearoff_top_menu_and_installs_humanik_item(self):
         self.plugin_main.cmds.menu.side_effect = lambda *_args, **kwargs: (
             False if kwargs.get("exists") else [] if kwargs.get("query") else "MMD"

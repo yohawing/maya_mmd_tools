@@ -1153,7 +1153,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         self.assertIn("uniform vec3 MmdControllerLightVector", source)
         self.assertIn("uniform vec3 MmdControllerLightRgb", source)
         self.assertIn("vec3 lightDir = -normalize(MmdControllerLightVector)", source)
-        self.assertIn("float halfLambert = ndotl * 0.5 + 0.5", source)
+        self.assertIn("float toonV = clamp(0.5 - ndotl * 0.5, 0.0, 1.0)", source)
         self.assertIn("vec3 srgbToLinear(vec3 color)", source)
         self.assertIn("colorOut = vec4(srgbToLinear(lighting), opacity)", source)
         self.assertIn("if (texColor.a < 0.003 || opacity <= 0.0)", source)
@@ -1169,8 +1169,8 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         )
         self.assertIn("toonColor = float3(1.0, 1.0, 1.0)", dx11)
         self.assertNotIn("toonColor = rampCoord.xxx", dx11)
-        self.assertIn("float3 diffuse = materialBase * shadow", dx11)
-        self.assertIn("diffuse *= toonColor;", dx11)
+        self.assertIn("float3 diffuse = surfaceColor * shadow", dx11)
+        self.assertIn("surfaceColor *= toonColor;", dx11)
         self.assertNotIn("diffuse *= toonColor * shadow", dx11)
         self.assertIn(
             "clamp(DiffuseColorRGB * lightColor + AmbientColor, 0.0, 1.0) * texColor.rgb",
@@ -1179,8 +1179,8 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         self.assertIn("toonColor = vec3(1.0)", glsl)
         self.assertNotIn("toonColor = vec3(rampCoord)", glsl)
         self.assertIn("uniform float ShadowAttenuation = 1.0", glsl)
-        self.assertIn("vec3 diffuse = materialBase * ShadowAttenuation", glsl)
-        self.assertIn("diffuse *= toonColor;", glsl)
+        self.assertIn("vec3 diffuse = surfaceColor * ShadowAttenuation", glsl)
+        self.assertIn("surfaceColor *= toonColor;", glsl)
 
     def test_setup_standard_shader_multiplies_texture_alpha_by_pmx_alpha(self):
         """Resolved fallback textures must drive opacity through PMX alpha."""

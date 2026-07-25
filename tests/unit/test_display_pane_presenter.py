@@ -3,6 +3,10 @@
 import json
 import unittest
 
+from tests.common.maya_stub import install_headless_ui_stubs
+
+install_headless_ui_stubs()
+
 from mmd_tools.ui.presenters.display_pane_presenter import DisplayPanePresenter
 
 

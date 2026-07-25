@@ -53,8 +53,9 @@ _BODY_SOURCES = tuple(
     for element_id, region_id in (
         ("head", "head"),
         ("neck", "neck"),
-        ("upper_body", "upper_body"),
-        ("upper_body_2", "upper_body_2"),
+        # Illustrator's chest path is 上半身2; the smaller abdomen path is 上半身.
+        ("upper_body", "upper_body_2"),
+        ("upper_body_2", "upper_body"),
         ("lower_body", "lower_body"),
         ("left_shoulder", "left_shoulder"),
         ("right_shoulder", "right_shoulder"),

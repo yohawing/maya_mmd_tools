@@ -30,7 +30,7 @@ jobs:
           enable-cache: true
 
       - name: Lint
-        run: uvx ruff check --no-fix .
+        run: uvx --from ruff==0.16.0 ruff check --no-fix .
 
       - name: Resolve package version
         id: version

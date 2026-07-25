@@ -20,12 +20,26 @@ from mmd_tools.core.constants import (
     ATTR_MMD_LIGHT,
     ATTR_MMD_MODEL_NAME,
 )
+from mmd_tools.core.mmd_control_rig_builder import (
+    CONTROL_RIG_EDIT,
+    MmdControlRigBuildError,
+    read_mmd_control_rig_metadata,
+    resolve_mmd_control_rig_binding_authored_plugs,
+    resolve_mmd_control_rig_binding_joint,
+)
 from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_names
 from mmd_tools.converters.vmd_camera_animation import (
     ATTR_MMD_CAMERA_ROOT_NODE,
     ATTR_MMD_CAMERA_TARGET_NODE,
     MMD_CAMERA_EXPR_SCALE_ATTR,
     mmd_camera_rotation_from_maya_forward_up,
+)
+from mmd_tools.converters.vmd_append_decomposition import collect_append_info
+from mmd_tools.converters.vmd_ik_enabled_animation import collect_ik_nodes_by_bone_name
+from mmd_tools.converters.vmd_ik_passthrough import collect_mmd_ik_passthrough_info
+from mmd_tools.converters.vmd_import_state import get_stored_bind_translate
+from mmd_tools.converters.vmd_runtime_sampling import (
+    maya_time_to_vmd_frame as _maya_time_to_vmd_frame_at_fps,
 )
 
 
@@ -60,6 +74,15 @@ _ATTR_MMD_CAMERA_RIG_TYPE = "mmd_camera_rig_type"
 _MMD_CAMERA_AIM_ROLL_RIG_TYPE = "mmd_aim_roll"
 _TRANSFORM_EXPORT_ATTRS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
 _CAMERA_SHAPE_EXPORT_ATTRS = ("focalLength", "orthographic", "orthographicWidth")
+_MAYA_TIME_UNIT_FPS = {
+    "game": 15.0,
+    "film": 24.0,
+    "pal": 25.0,
+    "ntsc": 30.0,
+    "show": 48.0,
+    "palf": 50.0,
+    "ntscf": 60.0,
+}
 
 
 class VmdSceneCollector:
@@ -83,6 +106,11 @@ class VmdSceneCollector:
         end_frame = _optional_float(options.get("end_frame"))
         motion_scale = float(options.get("motion_scale", 1.0) or 1.0)
         bone_bind_poses = options.get("bone_bind_poses") or {}
+        maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
+        control_rig_routes = self._control_rig_export_routes(target_model)
+        authored_routes = self._scene_authored_input_routes(joints)
+        for joint, attrs in control_rig_routes.items():
+            authored_routes.setdefault(joint, {}).update(attrs)
 
         return {
             "model_name": str(options.get("model_name") or self._model_name(target_model)),
@@ -92,10 +120,34 @@ class VmdSceneCollector:
                 end_frame,
                 motion_scale=motion_scale,
                 bone_bind_poses=bone_bind_poses,
+                input_routes=authored_routes,
+                dense_sample=bool(control_rig_routes),
+                time_converter=maya_time_to_vmd,
             ),
-            "morph_frames": self.collect_morph_frames(blend_shapes, start_frame, end_frame),
-            "camera_frames": self.collect_camera_frames(cameras, start_frame, end_frame),
-            "light_frames": self.collect_light_frames(lights, start_frame, end_frame),
+            "morph_frames": self.collect_morph_frames(
+                blend_shapes,
+                start_frame,
+                end_frame,
+                time_converter=maya_time_to_vmd,
+            ),
+            "camera_frames": self.collect_camera_frames(
+                cameras,
+                start_frame,
+                end_frame,
+                time_converter=maya_time_to_vmd,
+            ),
+            "light_frames": self.collect_light_frames(
+                lights,
+                start_frame,
+                end_frame,
+                time_converter=maya_time_to_vmd,
+            ),
+            "ik_show_hide_frames": self.collect_ik_show_hide_frames(
+                target_model,
+                start_frame,
+                end_frame,
+                time_converter=maya_time_to_vmd,
+            ),
         }
 
     def collect_bone_frames(
@@ -105,34 +157,56 @@ class VmdSceneCollector:
         end_frame: Optional[float] = None,
         motion_scale: float = 1.0,
         bone_bind_poses: Optional[Mapping[str, Sequence[float]]] = None,
+        input_routes: Optional[Mapping[str, Mapping[str, tuple[str, str]]]] = None,
+        dense_sample: bool = False,
+        time_converter=None,
     ) -> list[dict]:
         """Collect keyed local joint transform frames."""
         bone_bind_poses = bone_bind_poses or {}
+        input_routes = input_routes or {}
+        time_converter = time_converter or _scene_maya_time_to_vmd_frame()
+        rotation_context = _build_rotation_export_context(joints)
         frames = []
+        dense_frames = None
+        if dense_sample:
+            all_keyed = []
+            for joint in joints:
+                long_names = cmds.ls(joint, long=True) or [joint]
+                route = input_routes.get(str(long_names[0]), {})
+                all_keyed.extend(_routed_key_times(joint, route))
+            ranged = _filter_frame_range(all_keyed, start_frame, end_frame)
+            if ranged:
+                dense_frames = list(
+                    range(int(math.floor(min(ranged))), int(math.ceil(max(ranged))) + 1)
+                )
         for joint in joints:
             bone_name = self._mmd_bone_name(joint)
             bind_pose = _resolve_bind_pose(bone_bind_poses, bone_name, joint)
-            keyed_frames = _filter_frame_range(
-                _key_times(joint, _BONE_EXPORT_ATTRS),
+            long_names = cmds.ls(joint, long=True) or [joint]
+            route = input_routes.get(str(long_names[0]), {})
+            sparse_frames = _filter_frame_range(
+                _routed_key_times(joint, route),
                 start_frame,
                 end_frame,
             )
+            keyed_frames = dense_frames if dense_frames is not None and sparse_frames else sparse_frames
             for frame_number in keyed_frames:
                 rotation = _maya_joint_rotate_to_vmd_quaternion(
                     joint,
-                    _plug_float(joint, "rotateX", frame_number),
-                    _plug_float(joint, "rotateY", frame_number),
-                    _plug_float(joint, "rotateZ", frame_number),
+                    _routed_plug_float(joint, "rotateX", frame_number, route),
+                    _routed_plug_float(joint, "rotateY", frame_number, route),
+                    _routed_plug_float(joint, "rotateZ", frame_number, route),
+                    rotation_context.get(str(long_names[0])),
                 )
                 frames.append(
                     {
                         "bone_name": bone_name,
-                        "frame_number": int(round(frame_number)),
+                        "frame_number": _vmd_frame_number(frame_number, time_converter),
                         "position": _maya_translate_to_vmd_position(
                             (
-                                _plug_float(joint, "translateX", frame_number),
-                                _plug_float(joint, "translateY", frame_number),
-                                _plug_float(joint, "translateZ", frame_number),
+                                _routed_plug_float(joint, "translateX", frame_number, route),
+                                _routed_plug_float(joint, "translateY", frame_number, route),
+                                _routed_plug_float(joint, "translateZ", frame_number, route),
                             ),
                             bind_pose,
                             motion_scale,
@@ -140,16 +214,132 @@ class VmdSceneCollector:
                         "rotation": rotation,
                     }
                 )
-        frames.sort(key=lambda item: (item["bone_name"], item["frame_number"]))
-        return frames
+        return _deduplicate_frames(frames, ("bone_name", "frame_number"))
+
+    def collect_ik_show_hide_frames(
+        self,
+        target_model: Optional[str],
+        start_frame: Optional[float] = None,
+        end_frame: Optional[float] = None,
+        time_converter=None,
+    ) -> list[dict]:
+        """Collect keyed owned ``mmdCcdIk.enabled`` values as VMD properties."""
+        if not target_model:
+            return []
+        time_converter = time_converter or _scene_maya_time_to_vmd_frame()
+        nodes_by_name = collect_ik_nodes_by_bone_name(target_model=target_model)
+        all_keyed_frames = sorted(
+            {
+                frame
+                for node in nodes_by_name.values()
+                for frame in _key_times(node, ("enabled",))
+            }
+        )
+        keyed_frames = _filter_frame_range(
+            all_keyed_frames,
+            start_frame,
+            end_frame,
+        )
+        frames = []
+        baseline_time = _ik_baseline_time(start_frame, end_frame)
+        if nodes_by_name and baseline_time is not None and baseline_time not in all_keyed_frames:
+            baseline_frame = _vmd_frame_number(baseline_time, time_converter)
+            if baseline_frame >= 0:
+                frames.append(
+                    {
+                        "frame_number": baseline_frame,
+                        "visible": True,
+                        "ik_states": [
+                            (name, bool(_plug_float(node, "enabled", baseline_time)))
+                            for name, node in sorted(nodes_by_name.items())
+                        ],
+                    }
+                )
+        for frame in keyed_frames:
+            vmd_frame = _vmd_frame_number(frame, time_converter)
+            if vmd_frame < 0:
+                continue
+            frames.append(
+                {
+                    "frame_number": vmd_frame,
+                    "visible": True,
+                    "ik_states": [
+                        (name, bool(_plug_float(node, "enabled", frame)))
+                        for name, node in sorted(nodes_by_name.items())
+                    ],
+                }
+            )
+        return _deduplicate_frames(frames, ("frame_number",))
+
+    def _control_rig_export_routes(
+        self,
+        target_model: Optional[str],
+    ) -> dict[str, dict[str, tuple[str, str]]]:
+        if not target_model:
+            return {}
+        metadata = read_mmd_control_rig_metadata(target_model)
+        if not metadata:
+            return {}
+        if metadata["state"] == CONTROL_RIG_EDIT:
+            raise ValueError("Bake the MMD control rig before VMD export")
+        routes = {}
+        for binding in metadata.get("bindings", {}).values():
+            try:
+                joint = resolve_mmd_control_rig_binding_joint(cmds, binding)
+                authored_plugs = resolve_mmd_control_rig_binding_authored_plugs(
+                    cmds, binding
+                )
+            except MmdControlRigBuildError:
+                continue
+            for plug in authored_plugs:
+                base_attr = plug.rsplit(".", 1)[-1]
+                if base_attr in {"translate", "rotate", "baseTranslate", "baseRotate"}:
+                    node = plug.rsplit(".", 1)[0]
+                    control_attr = {
+                        "baseTranslate": "translate",
+                        "baseRotate": "rotate",
+                    }.get(base_attr, base_attr)
+                    for axis in "XYZ":
+                        attr = f"{control_attr}{axis}"
+                        target_attr = f"{base_attr}{axis}"
+                        routes.setdefault(joint, {})[attr] = (node, target_attr)
+        return routes
+
+    def _scene_authored_input_routes(
+        self,
+        joints: Sequence[str],
+    ) -> dict[str, dict[str, tuple[str, str]]]:
+        routes = {}
+        append_info = collect_append_info()
+        ik_info = collect_mmd_ik_passthrough_info()
+        for joint_name in joints:
+            long_names = cmds.ls(joint_name, long=True) or [joint_name]
+            joint = str(long_names[0])
+            append = append_info.get(joint)
+            if append:
+                node = str(append["node"])
+                for source_attr, target_attr in append.get("attr_map", {}).items():
+                    routes.setdefault(joint, {})[source_attr] = (node, target_attr)
+            ik = ik_info.get(joint)
+            if ik:
+                node = str(ik["node"])
+                slot = int(ik["input_slot"])
+                for axis in "XYZ":
+                    routes.setdefault(joint, {})[f"rotate{axis}"] = (
+                        node,
+                        f"inputRotate[{slot}].inputRotateElement{axis}",
+                    )
+        return routes
 
     def collect_morph_frames(
         self,
         blend_shapes: Sequence[str],
         start_frame: Optional[float] = None,
         end_frame: Optional[float] = None,
+        time_converter=None,
     ) -> list[dict]:
         """Collect keyed blendShape weight frames."""
+        time_converter = time_converter or _scene_maya_time_to_vmd_frame()
         frames = []
         for blend_shape in blend_shapes:
             for weight_index, morph_name in self._blendshape_morph_names(blend_shape).items():
@@ -163,20 +353,21 @@ class VmdSceneCollector:
                     frames.append(
                         {
                             "morph_name": morph_name,
-                            "frame_number": int(round(frame_number)),
+                            "frame_number": _vmd_frame_number(frame_number, time_converter),
                             "weight": _plug_float(blend_shape, attr, frame_number),
                         }
                     )
-        frames.sort(key=lambda item: (item["morph_name"], item["frame_number"]))
-        return frames
+        return _deduplicate_frames(frames, ("morph_name", "frame_number"))
 
     def collect_camera_frames(
         self,
         cameras: Sequence[str],
         start_frame: Optional[float] = None,
         end_frame: Optional[float] = None,
+        time_converter=None,
     ) -> list[dict]:
         """Collect keyed MMD camera controller frames."""
+        time_converter = time_converter or _scene_maya_time_to_vmd_frame()
         frames = []
         restore_time = None
         try:
@@ -258,7 +449,7 @@ class VmdSceneCollector:
                         perspective = int(round(_plug_float(camera, "mmd_camera_perspective", frame_number)))
                     frames.append(
                         {
-                            "frame_number": int(round(frame_number)),
+                            "frame_number": _vmd_frame_number(frame_number, time_converter),
                             "distance": distance,
                             "position": position,
                             "rotation": rotation,
@@ -277,8 +468,10 @@ class VmdSceneCollector:
         lights: Sequence[str],
         start_frame: Optional[float] = None,
         end_frame: Optional[float] = None,
+        time_converter=None,
     ) -> list[dict]:
         """Collect keyed MMD light controller frames."""
+        time_converter = time_converter or _scene_maya_time_to_vmd_frame()
         frames = []
         for light in lights:
             keyed_frames = _filter_frame_range(
@@ -289,7 +482,7 @@ class VmdSceneCollector:
             for frame_number in keyed_frames:
                 frames.append(
                     {
-                        "frame_number": int(round(frame_number)),
+                        "frame_number": _vmd_frame_number(frame_number, time_converter),
                         "color": tuple(_plug_float(light, attr, frame_number) for attr in _LIGHT_COLOR_ATTRS),
                         "position": _maya_light_rotation_to_vmd_direction(
                             _plug_float(light, "rotateX", frame_number),
@@ -362,7 +555,70 @@ def _key_times(node: str, attrs: Iterable[str]) -> list[float]:
         except Exception:
             values = []
         times.extend(float(value) for value in values)
+        for source_node in _upstream_anim_curves(plug):
+            try:
+                values = cmds.keyframe(source_node, query=True, timeChange=True) or []
+                times.extend(float(value) for value in values)
+            except Exception:
+                continue
     return sorted(set(times))
+
+
+def _upstream_anim_curves(plug: str) -> set[str]:
+    curves = set()
+    try:
+        queue = list(
+            cmds.listConnections(
+                plug, source=True, destination=False, plugs=True
+            )
+            or []
+        )
+    except (RuntimeError, ValueError):
+        return curves
+    visited = set()
+    while queue:
+        source = str(queue.pop())
+        node = source.split(".", 1)[0]
+        if node in visited:
+            continue
+        visited.add(node)
+        node_type = str(cmds.nodeType(node))
+        if node_type.startswith("animCurve"):
+            curves.add(node)
+            continue
+        if not (
+            node_type in {"pairBlend", "blendWeighted", "unitConversion"}
+            or node_type.startswith("animBlendNode")
+        ):
+            continue
+        queue.extend(
+            cmds.listConnections(
+                node, source=True, destination=False, plugs=True
+            )
+            or []
+        )
+    return curves
+
+
+def _routed_key_times(
+    joint: str,
+    route: Mapping[str, tuple[str, str]],
+) -> list[float]:
+    times = []
+    for attr in _BONE_EXPORT_ATTRS:
+        node, target_attr = route.get(attr, (joint, attr))
+        times.extend(_key_times(node, (target_attr,)))
+    return sorted(set(times))
+
+
+def _routed_plug_float(
+    joint: str,
+    attr: str,
+    frame_number: float,
+    route: Mapping[str, tuple[str, str]],
+) -> float:
+    node, target_attr = route.get(attr, (joint, attr))
+    return _plug_float(node, target_attr, frame_number)
 
 
 def _query_current_time() -> Optional[float]:
@@ -370,6 +626,64 @@ def _query_current_time() -> Optional[float]:
         return float(cmds.currentTime(query=True))
     except Exception:
         return None
+
+
+def _scene_maya_fps() -> float:
+    """Return the current Maya UI FPS used to evaluate scene key times."""
+    try:
+        unit = cmds.currentUnit(query=True, time=True)
+    except Exception:
+        return 30.0
+    if isinstance(unit, (int, float)):
+        return float(unit) if float(unit) > 0.0 else 30.0
+    unit_name = str(unit).strip().lower()
+    fps = _MAYA_TIME_UNIT_FPS.get(unit_name)
+    if fps is not None:
+        return fps
+    if unit_name.endswith("fps"):
+        try:
+            parsed = float(unit_name[:-3])
+        except ValueError:
+            parsed = 0.0
+        if parsed > 0.0:
+            return parsed
+    return 30.0
+
+
+def _scene_maya_time_to_vmd_frame():
+    """Build a converter from current Maya time values to fixed-30fps VMD frames."""
+    fps = _scene_maya_fps()
+    return lambda maya_time: _maya_time_to_vmd_frame_at_fps(maya_time, fps)
+
+
+def _vmd_frame_number(maya_time: float, time_converter) -> int:
+    """Convert a Maya time to one integer VMD frame number."""
+    return int(round(float(time_converter(maya_time))))
+
+
+def _deduplicate_frames(frames: Iterable[dict], key_fields: Sequence[str]) -> list[dict]:
+    """Keep the first Maya sample for each VMD output key."""
+    unique = {}
+    for frame in frames:
+        key = tuple(frame[field] for field in key_fields)
+        unique.setdefault(key, frame)
+    return sorted(unique.values(), key=lambda item: tuple(item[field] for field in key_fields))
+
+
+def _ik_baseline_time(
+    start_frame: Optional[float],
+    end_frame: Optional[float],
+) -> Optional[float]:
+    """Return an in-range Maya time for an unkeyed IK baseline property."""
+    if start_frame is not None:
+        candidate = float(start_frame)
+    else:
+        candidate = 0.0
+    if candidate < 0.0:
+        return None
+    if end_frame is not None and candidate > float(end_frame):
+        return None
+    return candidate
 
 
 def _filter_frame_range(
@@ -427,7 +741,9 @@ def _resolve_bind_pose(
     bone_name: str,
     joint: str,
 ) -> tuple[float, float, float]:
-    value = bind_poses.get(bone_name, bind_poses.get(joint, (0.0, 0.0, 0.0)))
+    value = bind_poses.get(bone_name, bind_poses.get(joint))
+    if value is None:
+        value = get_stored_bind_translate(joint) or (0.0, 0.0, 0.0)
     if len(value) != 3:
         raise ValueError("bone bind pose must contain 3 numbers")
     return (float(value[0]), float(value[1]), float(value[2]))
@@ -446,13 +762,110 @@ def _maya_translate_to_vmd_position(
     return ((tx - bx) / scale, (ty - by) / scale, -(tz - bz) / scale)
 
 
+def _build_rotation_export_context(
+    joints: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    canonical = {
+        int(cmds.getAttr(f"{joint}.mmd_bone_index")): str(
+            (cmds.ls(joint, long=True) or [joint])[0]
+        )
+        for joint in joints
+        if _has_attr(joint, "mmd_bone_index")
+    }
+    index_by_joint = {joint: index for index, joint in canonical.items()}
+    parent_by_index = {}
+    for index, joint in canonical.items():
+        parent = (cmds.listRelatives(joint, parent=True, fullPath=True) or [None])[0]
+        parent_by_index[index] = index_by_joint.get(parent)
+
+    bind_worlds = {}
+
+    def bind_world(index: int) -> om.MMatrix:
+        if index in bind_worlds:
+            return bind_worlds[index]
+        joint = canonical[index]
+        translate = get_stored_bind_translate(joint)
+        if translate is None:
+            translate = cmds.getAttr(f"{joint}.translate")[0]
+        transform = om.MTransformationMatrix()
+        transform.setTranslation(om.MVector(*translate), om.MSpace.kTransform)
+        orient = _joint_orient_quaternion(joint)
+        transform.setRotation(orient)
+        local = transform.asMatrix()
+        parent_index = parent_by_index[index]
+        result = local * bind_world(parent_index) if parent_index is not None else local
+        bind_worlds[index] = result
+        return result
+
+    for index in canonical:
+        bind_world(index)
+
+    no_orient = {}
+    for index, matrix in bind_worlds.items():
+        value = om.MMatrix()
+        value[12], value[13], value[14] = matrix[12], matrix[13], matrix[14]
+        no_orient[index] = value
+
+    result = {}
+    for index, joint in canonical.items():
+        parent_index = parent_by_index[index]
+        parent_bind = bind_worlds[parent_index] if parent_index is not None else om.MMatrix()
+        parent_no_orient = no_orient[parent_index] if parent_index is not None else om.MMatrix()
+        result[joint] = {
+            "jointOrient": _joint_orient_quaternion(joint),
+            "rotateOrder": int(cmds.getAttr(f"{joint}.rotateOrder")),
+            "bindCorrection": om.MTransformationMatrix(
+                bind_worlds[index] * no_orient[index].inverse()
+            ).rotation(asQuaternion=True),
+            "parentCorrection": om.MTransformationMatrix(
+                parent_no_orient * parent_bind.inverse()
+            ).rotation(asQuaternion=True),
+        }
+    return result
+
+
+def _joint_orient_quaternion(joint: str) -> om.MQuaternion:
+    values = cmds.getAttr(f"{joint}.jointOrient")[0]
+    return om.MEulerRotation(
+        math.radians(float(values[0])),
+        math.radians(float(values[1])),
+        math.radians(float(values[2])),
+    ).asQuaternion()
+
+
 def _maya_joint_rotate_to_vmd_quaternion(
     joint: str,
     rx: float,
     ry: float,
     rz: float,
+    export_context: Optional[Mapping[str, Any]] = None,
 ) -> tuple[float, float, float, float]:
     """Convert Maya XYZ joint.rotate degrees to a JO-aware VMD quaternion."""
+    if export_context:
+        order = int(export_context["rotateOrder"])
+        order_map = (
+            om.MEulerRotation.kXYZ,
+            om.MEulerRotation.kYZX,
+            om.MEulerRotation.kZXY,
+            om.MEulerRotation.kXZY,
+            om.MEulerRotation.kYXZ,
+            om.MEulerRotation.kZYX,
+        )
+        euler = om.MEulerRotation(
+            math.radians(rx),
+            math.radians(ry),
+            math.radians(rz),
+            order_map[order] if 0 <= order < len(order_map) else order_map[0],
+        )
+        q_rotate = euler.asQuaternion()
+        q_total = q_rotate * export_context["jointOrient"]
+        q_maya = (
+            export_context["bindCorrection"].inverse()
+            * q_total
+            * export_context["parentCorrection"].inverse()
+        )
+        q_maya.normalizeIt()
+        return (-q_maya.x, -q_maya.y, q_maya.z, q_maya.w)
     joint_orient = _joint_orient_values(joint)
     if joint_orient is not None:
         openmaya_result = _openmaya_joint_rotate_to_vmd_quaternion(rx, ry, rz, joint_orient)

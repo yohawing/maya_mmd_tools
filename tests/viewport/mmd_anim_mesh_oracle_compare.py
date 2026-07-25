@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
 import sys
 from pathlib import Path
@@ -22,6 +23,7 @@ import maya.standalone
 from mesh_oracle_utils import distance, mesh_points, source_indices, visible_mesh_transforms
 
 ROOT = Path(__file__).resolve().parents[2]
+_DLL_DIRECTORY_HANDLES: list[Any] = []
 
 
 def _parse_args() -> argparse.Namespace:
@@ -29,7 +31,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--pmx", default="tests/data/mmt_test_model.pmx")
     parser.add_argument("--vmd", default="tests/data/mmt_test_model_test_motion.vmd")
     parser.add_argument("--out", default="build/reports/mmd_anim_mesh_oracle_compare.json")
-    parser.add_argument("--frame", action="append", type=int, default=[0, 30, 60])
+    parser.add_argument(
+        "--frame",
+        action="append",
+        type=int,
+        default=None,
+        help="Frame to compare; repeat for multiple frames (default: 0,30,60)",
+    )
     parser.add_argument("--threshold", type=float, default=0.1)
     parser.add_argument("--mode", choices=["bake", "rig"], default="bake")
     parser.add_argument(
@@ -49,6 +57,27 @@ def _initialize() -> None:
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
 
+
+def _load_rig_plugins() -> None:
+    """Load the native rig nodes before importing a ``mode=rig`` scene."""
+
+    maya_major = str(cmds.about(version=True)).split(".", 1)[0]
+    configured = os.environ.get("MMD_TOOLS_CPP_PLUGIN", "")
+    cpp_plugin = Path(configured) if configured else (
+        ROOT / "plug-ins" / maya_major / "Debug" / "mmd_tools_cpp.mll"
+    )
+    if not cpp_plugin.is_file():
+        raise RuntimeError(
+            "Native rig plugin is required for mode=rig mesh oracle: "
+            f"{cpp_plugin}"
+        )
+    plugin_dir = str(cpp_plugin.parent)
+    if plugin_dir not in os.environ.get("PATH", "").split(os.pathsep):
+        os.environ["PATH"] = plugin_dir + os.pathsep + os.environ.get("PATH", "")
+    if hasattr(os, "add_dll_directory"):
+        _DLL_DIRECTORY_HANDLES.append(os.add_dll_directory(plugin_dir))
+    if not cmds.pluginInfo(str(cpp_plugin), query=True, loaded=True):
+        cmds.loadPlugin(str(cpp_plugin), quiet=True)
 
 def _maya_point_from_mmd(point: tuple[float, float, float]) -> tuple[float, float, float]:
     return (point[0], point[1], -point[2])
@@ -213,6 +242,8 @@ def _import_scene(pmx_path: Path, vmd_path: Path, mode: str, bone_count: int) ->
     from mmd_tools.io.mmd_importer import import_mmd_file
 
     cmds.file(new=True, force=True)
+    if mode == "rig":
+        _load_rig_plugins()
     settings.set("import.model.create_mmd_shaders", False)
     settings.set("import.rig.add_semi_standard_bones", False)
     root = import_mmd_file(
@@ -299,7 +330,7 @@ def main() -> int:
     _initialize()
     pmx_path = (ROOT / args.pmx).resolve() if not Path(args.pmx).is_absolute() else Path(args.pmx)
     vmd_path = (ROOT / args.vmd).resolve() if not Path(args.vmd).is_absolute() else Path(args.vmd)
-    frames = list(dict.fromkeys(args.frame))
+    frames = list(dict.fromkeys(args.frame if args.frame is not None else [0, 30, 60]))
     from mmd_tools.core.mmd_parser import parse_pmx_file
 
     bone_count = len(parse_pmx_file(str(pmx_path)).bones)
@@ -310,6 +341,12 @@ def main() -> int:
     comparison = _compare(maya_points, oracle, frames, args.threshold)
     report = {
         "status": "passed" if comparison["passed"] else "failed",
+        "oracle": {
+            "identity": "mmd_anim_mesh_oracle_compare",
+            "runtime": "mmd-anim",
+            "mode": args.mode,
+            "bind_source": args.bind_source,
+        },
         "pmx": str(pmx_path),
         "vmd": str(vmd_path),
         "mode": args.mode,

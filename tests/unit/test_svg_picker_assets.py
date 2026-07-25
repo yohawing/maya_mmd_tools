@@ -44,6 +44,14 @@ def test_body_semantic_regions_have_unique_ids_and_bone_names():
     assert {"下半身", "左足ＩＫ", "右足ＩＫ"} <= set(bone_names)
 
 
+def test_body_torso_art_maps_chest_to_upper_body_2_and_abdomen_to_upper_body():
+    source_map = {source.element_id: source.region_id for source in _BODY_SOURCES}
+
+    assert source_map["upper_body"] == "upper_body_2"
+    assert source_map["upper_body_2"] == "upper_body"
+    assert source_map["lower_body"] == "lower_body"
+
+
 def test_finger_svg_shape_order_matches_32_semantic_regions():
     root = _svg_root("animpicker_finger.svg")
     shapes = [

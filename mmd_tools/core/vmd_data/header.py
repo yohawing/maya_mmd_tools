@@ -6,7 +6,10 @@ from mmd_tools.core import utils
 class VmdHeader:
     """VMDファイルのヘッダ情報を保持するクラス。"""
 
-    SIGNATURE = b"Vocaloid Motion Data"
+    # VMD 2の標準シグネチャ。固定30バイトの残りはゼロパディングする。
+    SIGNATURE = b"Vocaloid Motion Data 0002"
+    # 旧ライターが出力した20バイトプレフィックスは読み込みのみ引き続き許容する。
+    LEGACY_SIGNATURE = b"Vocaloid Motion Data"
 
     def __init__(self):
         self.magic = b""
@@ -20,7 +23,10 @@ class VmdHeader:
             f (file-like object): VMDファイルのバイナリデータを読み込むためのファイルオブジェクト。
         """
         self.magic = struct.unpack("<30s", f.read(30))[0]
-        if not self.magic.startswith(self.SIGNATURE):
+        if not (
+            self.magic.startswith(self.SIGNATURE)
+            or self.magic.startswith(self.LEGACY_SIGNATURE)
+        ):
             raise ValueError("Unsupported MMD file format: Invalid magic number")
         self.model_name = utils.decodePMDString(struct.unpack("<20s", f.read(20))[0])
 

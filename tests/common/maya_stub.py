@@ -276,6 +276,7 @@ class _StubQt:
     AlignCenter = 4
     Horizontal = 1
     Vertical = 2
+    ItemIsEditable = 2
 
 
 class _StubQListWidgetItem:
@@ -284,6 +285,7 @@ class _StubQListWidgetItem:
     def __init__(self, *args, **kwargs):
         self._role_data: dict = {}
         self._text = args[0] if args else ""
+        self._tooltip = ""
 
     def text(self):
         return self._text
@@ -297,11 +299,53 @@ class _StubQListWidgetItem:
     def data(self, role):
         return self._role_data.get(role)
 
+    def setToolTip(self, tooltip):
+        self._tooltip = tooltip
+
+    def toolTip(self):
+        return self._tooltip
+
     def setHidden(self, hidden):
         pass
 
     def isHidden(self):
         return False
+
+
+class _StubQTableWidgetItem:
+    """QTableWidgetItem stub with text and item-flag support."""
+
+    def __init__(self, *args, **kwargs):
+        self._text = args[0] if args else ""
+        self._flags = _StubQt.ItemIsEditable
+
+    def text(self):
+        return self._text
+
+    def setText(self, text):
+        self._text = text
+
+    def flags(self):
+        return self._flags
+
+    def setFlags(self, flags):
+        self._flags = flags
+
+
+class _StubQTimer:
+    """QTimer stub that executes queued work without a Qt event loop."""
+
+    @staticmethod
+    def singleShot(_delay, callback):
+        callback()
+
+
+class _StubQApplication:
+    """QApplication stub exposing the top-level widget query contract."""
+
+    @staticmethod
+    def topLevelWidgets():
+        return []
 
 
 def _qt_already_available() -> bool:
@@ -340,6 +384,7 @@ def install_qt_stub() -> bool:
     for n in _QTCORE_NAMES:
         setattr(qtcore, n, _make_stub_qclass(n))
     qtcore.Qt = _StubQt  # override with constant-bearing version
+    qtcore.QTimer = _StubQTimer
 
     qtgui = ModuleType("PySide6.QtGui")
     for n in _QTGUI_NAMES:
@@ -349,6 +394,8 @@ def install_qt_stub() -> bool:
     for n in _QTWIDGETS_NAMES:
         setattr(qtwidgets, n, _make_stub_qclass(n))
     qtwidgets.QListWidgetItem = _StubQListWidgetItem  # override with data-aware version
+    qtwidgets.QTableWidgetItem = _StubQTableWidgetItem
+    qtwidgets.QApplication = _StubQApplication
 
     qtsvg = ModuleType("PySide6.QtSvg")
     qtsvg.QSvgRenderer = _make_stub_qclass("QSvgRenderer")
