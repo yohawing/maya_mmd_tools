@@ -1,5 +1,7 @@
 """Pure-Python tests for MMD-native control-rig input classification."""
 
+import math
+from types import SimpleNamespace
 import unittest
 
 from mmd_tools.core.mmd_control_rig_analyzer import (
@@ -19,6 +21,10 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
 from mmd_tools.core.mmd_control_rig_builder import (
     _apply_fallback_role_aliases,
     _control_curve_templates,
+    _control_curve_template_role,
+    _control_shape_rotation,
+    _rotate_shape_point,
+    _shortest_arc_from_positive_z,
     _upgrade_binding_authority,
     _parent_zero_groups,
     _should_build_role_control,
@@ -45,6 +51,22 @@ def _connection(source, destination, node_type):
     return MmdControlRigConnectionFact(source, destination, node_type)
 
 
+class _ShapeOrientationFake:
+    """Minimal PMX metadata reader for display-only orientation tests."""
+
+    def __init__(self, values):
+        self.values = values
+
+    def attributeQuery(self, attribute, *, node, exists):
+        return exists and f"{node}.{attribute}" in self.values
+
+    def getAttr(self, plug):
+        return self.values[plug]
+
+    def listRelatives(self, node, **kwargs):
+        return []
+
+
 class _HierarchyFake:
     """Minimal parent graph that rejects introducing a descendant cycle."""
 
@@ -66,7 +88,7 @@ class _HierarchyFake:
 class MmdControlRigCurveTemplateTest(unittest.TestCase):
     """Validate the bundled artist-authored controller shape snapshot."""
 
-    def test_curve_library_has_mvp_roles_and_unwired_finger_shape(self):
+    def test_curve_library_has_mvp_roles_and_shared_finger_shape(self):
         templates = _control_curve_templates()
 
         self.assertEqual(len(templates["center"]), 4)
@@ -77,21 +99,117 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
         self.assertEqual(len(templates["right_leg"]), 1)
         self.assertEqual(len(templates["right_knee"]), 1)
         self.assertNotIn("groove", templates)
+        self.assertEqual(_control_curve_template_role("left_middle_1"), "finger")
+        self.assertEqual(_control_curve_template_role("right_thumb_2"), "finger")
+        for role in (
+            "waist",
+            "left_foot_ik_parent",
+            "right_foot_ik_parent",
+            "left_toe_ik",
+            "right_toe_ik",
+        ):
+            with self.subTest(role=role):
+                self.assertEqual(_control_curve_template_role(role), "circle")
+        self.assertEqual(templates["circle"], templates["left_arm"])
+        self.assertEqual(
+            templates["finger"][0]["points"][0],
+            [0.109158265, 0.055801374, 0.031276997],
+        )
+        self.assertEqual(len(templates["finger"][0]["points"]), 21)
         self.assertTrue(all(shape["points"] for shapes in templates.values() for shape in shapes))
         self.assertTrue(all(shape["knots"] for shapes in templates.values() for shape in shapes))
 
-    def test_arm_curve_template_uses_mmd_z_primary_circle(self):
-        templates = _control_curve_templates()
+    def test_shape_only_shortest_arc_aligns_positive_z_without_scaling(self):
+        direction = (2.0, 3.0, -4.0)
+        rotation = _shortest_arc_from_positive_z(direction)
 
-        for role in ("left_arm", "right_arm"):
-            with self.subTest(role=role):
-                shape = templates[role][0]
-                self.assertEqual(shape["degree"], 3)
-                self.assertTrue(shape["periodic"])
-                self.assertEqual(len(shape["points"]), 11)
-                self.assertTrue(all(abs(point[2]) < 1.0e-12 for point in shape["points"]))
-                self.assertAlmostEqual(max(abs(point[0]) for point in shape["points"]), 1.1081941875543884)
-                self.assertAlmostEqual(max(abs(point[1]) for point in shape["points"]), 1.1081941875543881)
+        aligned = _rotate_shape_point((0.0, 0.0, 1.0), rotation)
+        direction_length = math.sqrt(sum(value * value for value in direction))
+        expected = tuple(value / direction_length for value in direction)
+
+        for actual, target in zip(aligned, expected):
+            self.assertAlmostEqual(actual, target, places=12)
+        arbitrary = (0.25, -0.5, 2.0)
+        rotated = _rotate_shape_point(arbitrary, rotation)
+        self.assertAlmostEqual(
+            sum(value * value for value in rotated),
+            sum(value * value for value in arbitrary),
+            places=12,
+        )
+
+    def test_shape_only_shortest_arc_handles_aligned_opposite_and_zero(self):
+        aligned = _shortest_arc_from_positive_z((0.0, 0.0, 5.0))
+        opposite = _shortest_arc_from_positive_z((0.0, 0.0, -2.0))
+
+        self.assertEqual(_rotate_shape_point((1.0, 2.0, 3.0), aligned), (1.0, 2.0, 3.0))
+        self.assertEqual(_rotate_shape_point((0.0, 0.0, 1.0), opposite), (0.0, 0.0, -1.0))
+        self.assertIsNone(_shortest_arc_from_positive_z((0.0, 0.0, 0.0)))
+
+    def test_fk_without_local_axis_uses_pmx_tail_but_world_controls_do_not(self):
+        values = {
+            "arm.mmd_bone_flags": 0,
+            "arm.mmd_connect_index": 11,
+            "arm.mmd_pmx_rest_position": [(0.0, 0.0, 0.0)],
+            "elbow.mmd_pmx_rest_position": [(2.0, 0.0, 0.0)],
+        }
+        cmds = _ShapeOrientationFake(values)
+        binding = SimpleNamespace(joint="arm", bone_index=10, pmx_flags=0)
+
+        rotation = _control_shape_rotation(
+            cmds,
+            "root",
+            "left_arm",
+            binding,
+            {10: "arm", 11: "elbow"},
+        )
+
+        aligned = _rotate_shape_point((0.0, 0.0, 1.0), rotation)
+        self.assertAlmostEqual(aligned[0], 1.0)
+        self.assertAlmostEqual(aligned[1], 0.0)
+        self.assertAlmostEqual(aligned[2], 0.0)
+        self.assertIsNone(
+            _control_shape_rotation(
+                cmds,
+                "root",
+                "center",
+                binding,
+                {10: "arm", 11: "elbow"},
+            )
+        )
+
+        local_axis_binding = SimpleNamespace(
+            joint="arm",
+            bone_index=10,
+            pmx_flags=int(PmxBoneFlag.LOCAL_AXIS),
+        )
+        self.assertIsNone(
+            _control_shape_rotation(
+                cmds,
+                "root",
+                "left_arm",
+                local_axis_binding,
+                {10: "arm", 11: "elbow"},
+            )
+        )
+
+    def test_arm_chain_uses_sized_mmd_z_primary_circles(self):
+        templates = _control_curve_templates()
+        expected_first_points = {
+            "arm": [0.7836116248912245, 0.7836116248912245, 0],
+            "elbow": [0.61712993, 0.61712993, 0.0],
+            "wrist": [0.541400314, 0.541400314, 0.0],
+        }
+
+        for part, first_point in expected_first_points.items():
+            left = templates[f"left_{part}"][0]
+            right = templates[f"right_{part}"][0]
+            with self.subTest(part=part):
+                self.assertEqual(left, right)
+                self.assertEqual(left["degree"], 3)
+                self.assertTrue(left["periodic"])
+                self.assertEqual(len(left["points"]), 11)
+                self.assertEqual(left["points"][0], first_point)
+                self.assertTrue(all(abs(point[2]) < 1.0e-12 for point in left["points"]))
 
     def test_leg_curve_template_uses_edited_thigh_basis(self):
         templates = _control_curve_templates()
@@ -105,13 +223,56 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
             [[-point[0], point[1], point[2]] for point in left_points],
         )
 
+    def test_knee_curve_template_uses_edited_basis(self):
+        templates = _control_curve_templates()
+        left_points = templates["left_knee"][0]["points"]
+        right_points = templates["right_knee"][0]["points"]
+
+        self.assertEqual(left_points[0], [-0.819720666, 0.767543818, 0.019164612])
+        self.assertEqual(len(left_points), 23)
+        self.assertEqual(
+            right_points,
+            [[-point[0], point[1], point[2]] for point in left_points],
+        )
+
     def test_lower_body_curve_template_uses_edited_basis(self):
         shape = _control_curve_templates()["lower_body"][0]
 
         self.assertEqual(shape["degree"], 3)
         self.assertTrue(shape["periodic"])
         self.assertEqual(len(shape["points"]), 11)
-        self.assertEqual(shape["points"][0], [-2.223043634, 1.366914501, 0.199426674])
+        self.assertEqual(shape["points"][0], [-2.223043634, 2.000169001, 0.199426674])
+
+    def test_upper_body_templates_use_edited_x_rotated_basis(self):
+        templates = _control_curve_templates()
+
+        self.assertEqual(templates["upper_body"][0]["points"][0], [1.617431786, 1.618510388, 0.067250332])
+        self.assertEqual(templates["upper_body"][1]["points"][0], [1.617431786, 1.618510388, 0.109333963])
+        self.assertEqual(templates["upper_body2"][0]["points"][0], [1.312549415, 1.429059275, -0.067284223])
+        self.assertEqual(templates["upper_body2"][1]["points"][0], [1.312549415, 1.429059275, -0.033129316])
+
+    def test_neck_and_head_templates_use_edited_x_rotated_basis(self):
+        templates = _control_curve_templates()
+        neck = templates["neck"]
+        head = templates["head"]
+
+        self.assertEqual(neck[0]["points"][0], [0.628942094, 0.650968315, 0.43873122])
+        self.assertEqual(neck[1]["points"][0], [0.628942094, 0.650968315, 0.472886127])
+        self.assertTrue(all(point[2] == neck[0]["points"][0][2] for point in neck[0]["points"]))
+        self.assertEqual(head[0]["points"][0], [1.694039627, 1.782582108, 1.960093697])
+        self.assertEqual(head[1]["points"][0], [1.693861783, 1.782391893, 2.001040239])
+
+    def test_shoulder_template_uses_edited_basis_and_exact_mirror(self):
+        templates = _control_curve_templates()
+        left_points = templates["left_shoulder"][0]["points"]
+        right_points = templates["right_shoulder"][0]["points"]
+
+        self.assertEqual(left_points[0], [0.647078708, 0.274496301, 0.284784447])
+        self.assertEqual(len(left_points), 21)
+        self.assertEqual(
+            right_points,
+            [[-point[0], point[1], point[2]] for point in left_points],
+        )
 
 
 class _UuidBindingFake:
@@ -289,6 +450,98 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
         )
         with self.assertRaises(AssertionError):
             _parent_zero_groups(aliased_fake, aliased_zeros, aliased_controls)
+
+    def test_finger_roles_resolve_variants_and_parent_as_fk_chains(self):
+        facts = [
+            _bone(10, "左親指０"),
+            _bone(11, "左人差指１"),
+            _bone(12, "右人指３"),
+        ]
+
+        spec = classify_mmd_control_rig("|model", facts)
+        roles = spec.roles_by_name
+
+        self.assertEqual(roles["left_thumb_0"].status, STATUS_READY)
+        self.assertEqual(roles["left_index_1"].status, STATUS_READY)
+        self.assertEqual(roles["right_index_3"].status, STATUS_READY)
+        self.assertEqual(
+            len(
+                [
+                    role
+                    for role in roles
+                    if role.startswith(
+                        (
+                            "left_thumb_",
+                            "left_index_",
+                            "left_middle_",
+                            "left_ring_",
+                            "left_pinky_",
+                            "right_thumb_",
+                            "right_index_",
+                            "right_middle_",
+                            "right_ring_",
+                            "right_pinky_",
+                        )
+                    )
+                ]
+            ),
+            30,
+        )
+
+        fake = _HierarchyFake()
+        controls = {
+            "left_wrist": "left_wrist_CTRL",
+            "left_middle_1": "left_middle_1_CTRL",
+            "left_middle_2": "left_middle_2_CTRL",
+            "left_middle_3": "left_middle_3_CTRL",
+        }
+        zero_groups = {
+            role: control.replace("_CTRL", "_ZERO")
+            for role, control in controls.items()
+        }
+        _parent_zero_groups(fake, zero_groups, controls)
+
+        self.assertEqual(fake.parent_by_child["left_middle_1_ZERO"], "left_wrist_CTRL")
+        self.assertEqual(fake.parent_by_child["left_middle_2_ZERO"], "left_middle_1_CTRL")
+        self.assertEqual(fake.parent_by_child["left_middle_3_ZERO"], "left_middle_2_CTRL")
+
+    def test_p0_optional_roles_resolve_and_parent_through_available_chains(self):
+        facts = [
+            _bone(20, "腰"),
+            _bone(21, "左足IK親"),
+            _bone(22, "左つま先ＩＫ", ik_solvers=("left_toe_mmdCcdIk",)),
+        ]
+
+        roles = classify_mmd_control_rig("|model", facts).roles_by_name
+
+        self.assertEqual(roles["waist"].status, STATUS_READY)
+        self.assertEqual(roles["left_foot_ik_parent"].status, STATUS_READY)
+        self.assertEqual(roles["left_toe_ik"].status, STATUS_READY)
+        self.assertEqual(roles["left_toe_ik"].binding.input_kind, INPUT_IK_CONTROLLER)
+
+        fake = _HierarchyFake()
+        controls = {
+            "master": "master_CTRL",
+            "groove": "groove_CTRL",
+            "waist": "waist_CTRL",
+            "upper_body": "upper_body_CTRL",
+            "lower_body": "lower_body_CTRL",
+            "left_foot_ik_parent": "left_foot_ik_parent_CTRL",
+            "left_foot_ik": "left_foot_ik_CTRL",
+            "left_toe_ik": "left_toe_ik_CTRL",
+        }
+        zero_groups = {
+            role: control.replace("_CTRL", "_ZERO")
+            for role, control in controls.items()
+        }
+        _parent_zero_groups(fake, zero_groups, controls)
+
+        self.assertEqual(fake.parent_by_child["waist_ZERO"], "groove_CTRL")
+        self.assertEqual(fake.parent_by_child["upper_body_ZERO"], "waist_CTRL")
+        self.assertEqual(fake.parent_by_child["lower_body_ZERO"], "waist_CTRL")
+        self.assertEqual(fake.parent_by_child["left_foot_ik_parent_ZERO"], "master_CTRL")
+        self.assertEqual(fake.parent_by_child["left_foot_ik_ZERO"], "left_foot_ik_parent_CTRL")
+        self.assertEqual(fake.parent_by_child["left_toe_ik_ZERO"], "left_foot_ik_CTRL")
 
     def test_append_output_routes_controller_to_base_plugs(self):
         upper = _bone(

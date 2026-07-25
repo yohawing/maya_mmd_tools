@@ -12,11 +12,17 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 import json
+import math
 from pathlib import Path
-import re
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
-from mmd_tools.core.constants import ATTR_MMD_CONTROL_RIG_JSON
+from mmd_tools.core.constants import (
+    ATTR_MMD_BONE_FLAGS,
+    ATTR_MMD_BONE_OFFSET,
+    ATTR_MMD_CONNECT_INDEX,
+    ATTR_MMD_CONTROL_RIG_JSON,
+    ATTR_MMD_PMX_REST_POSITION,
+)
 from mmd_tools.core.humanik_utils import maya_cmds
 from mmd_tools.core.mmd_control_rig_analyzer import (
     MmdControlRigRoleBinding,
@@ -24,6 +30,7 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
     STATUS_FALLBACK,
     analyze_mmd_control_rig,
 )
+from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
 
 CONTROL_RIG_METADATA_SCHEMA = "mmd_tools.mmd_control_rig"
@@ -52,12 +59,35 @@ class MmdControlRigBuildResult:
     created: bool = True
 
 
+_FINGER_ROLE_CHAINS = tuple(
+    tuple(f"{side}_{finger}_{index}" for index in indexes)
+    for side in ("left", "right")
+    for finger, indexes in (
+        ("thumb", (0, 1, 2)),
+        ("index", (1, 2, 3)),
+        ("middle", (1, 2, 3)),
+        ("ring", (1, 2, 3)),
+        ("pinky", (1, 2, 3)),
+    )
+)
+_FINGER_ROLES = tuple(role for chain in _FINGER_ROLE_CHAINS for role in chain)
+_FINGER_ROLE_PARENTS = {
+    role: (f"{role.split('_', 1)[0]}_wrist" if index == 0 else chain[index - 1])
+    for chain in _FINGER_ROLE_CHAINS
+    for index, role in enumerate(chain)
+}
+
 _ROLE_FALLBACK_SHAPES = {
     "master": "circle",
     "center": "square",
     "groove": "diamond",
     "left_foot_ik": "foot",
     "right_foot_ik": "foot",
+    "waist": "circle",
+    "left_foot_ik_parent": "circle",
+    "right_foot_ik_parent": "circle",
+    "left_toe_ik": "circle",
+    "right_toe_ik": "circle",
     "lower_body": "square",
     "upper_body": "circle",
     "upper_body2": "circle",
@@ -75,6 +105,7 @@ _ROLE_FALLBACK_SHAPES = {
     "left_knee": "diamond",
     "right_leg": "circle",
     "right_knee": "diamond",
+    **{role: "circle" for role in _FINGER_ROLES},
 }
 _ROLE_COLORS = {
     "master": 17,
@@ -82,6 +113,11 @@ _ROLE_COLORS = {
     "groove": 14,
     "left_foot_ik": 6,
     "right_foot_ik": 13,
+    "waist": 14,
+    "left_foot_ik_parent": 6,
+    "right_foot_ik_parent": 13,
+    "left_toe_ik": 6,
+    "right_toe_ik": 13,
     "lower_body": 14,
     "upper_body": 17,
     "upper_body2": 17,
@@ -99,15 +135,21 @@ _ROLE_COLORS = {
     "left_knee": 6,
     "right_leg": 13,
     "right_knee": 13,
+    **{role: 6 if role.startswith("left_") else 13 for role in _FINGER_ROLES},
 }
 
 _ROLE_PARENTS = {
     "center": "master",
     "groove": "center",
-    "left_foot_ik": "master",
-    "right_foot_ik": "master",
-    "lower_body": "groove",
-    "upper_body": "groove",
+    "left_foot_ik_parent": "master",
+    "right_foot_ik_parent": "master",
+    "left_foot_ik": "left_foot_ik_parent",
+    "right_foot_ik": "right_foot_ik_parent",
+    "left_toe_ik": "left_foot_ik",
+    "right_toe_ik": "right_foot_ik",
+    "waist": "groove",
+    "lower_body": "waist",
+    "upper_body": "waist",
     "upper_body2": "upper_body",
     "neck": "upper_body2",
     "head": "neck",
@@ -123,7 +165,41 @@ _ROLE_PARENTS = {
     "left_knee": "left_leg",
     "right_leg": "groove",
     "right_knee": "right_leg",
+    **_FINGER_ROLE_PARENTS,
 }
+
+_ROLE_TEMPLATE_ALIASES = {
+    **{role: "finger" for role in _FINGER_ROLES},
+    "waist": "circle",
+    "left_foot_ik_parent": "circle",
+    "right_foot_ik_parent": "circle",
+    "left_toe_ik": "circle",
+    "right_toe_ik": "circle",
+}
+
+_AUTO_ORIENT_SHAPE_ROLES = frozenset(
+    {
+        "waist",
+        "lower_body",
+        "upper_body",
+        "upper_body2",
+        "neck",
+        "head",
+        "left_shoulder",
+        "left_arm",
+        "left_elbow",
+        "left_wrist",
+        "right_shoulder",
+        "right_arm",
+        "right_elbow",
+        "right_wrist",
+        "left_leg",
+        "left_knee",
+        "right_leg",
+        "right_knee",
+        *_FINGER_ROLES,
+    }
+)
 
 
 def build_mmd_control_rig(
@@ -150,16 +226,25 @@ def build_mmd_control_rig(
     created_roots: List[str] = []
     with _undo_chunk(cmds, "Build MMD Control Rig"):
         try:
-            prefix = _safe_prefix(root)
-            control_group = cmds.group(empty=True, name=f"{prefix}_MMD_CONTROLS_GRP")
+            namespace = _namespace_prefix(root)
+            control_group = cmds.group(
+                empty=True,
+                name=f"{namespace}Controls",
+                parent=root,
+            )
             created_roots.append(control_group)
-            selection_set = cmds.sets(empty=True, name=f"{prefix}_MMD_CONTROLS_SET")
+            selection_set = cmds.sets(empty=True, name=f"{namespace}Controls_SET")
             created_roots.append(selection_set)
             scale = _controller_scale(cmds, root)
             display_reference_time = _current_time(cmds)
             controls: Dict[str, str] = {}
             zero_groups: Dict[str, str] = {}
             bindings: Dict[str, Dict[str, Any]] = {}
+            indexed_joints = {
+                bone.bone_index: bone.joint
+                for bone in rig_spec.bones
+                if bone.bone_index is not None
+            }
             for role_binding in rig_spec.roles:
                 if not _should_build_role_control(role_binding):
                     continue
@@ -168,7 +253,7 @@ def build_mmd_control_rig(
                 role = role_binding.role
                 zero = cmds.createNode(
                     "transform",
-                    name=f"{prefix}_{role}_ZERO",
+                    name=f"{namespace}{role}_ZERO",
                     parent=control_group,
                 )
                 matrix = cmds.xform(
@@ -180,12 +265,23 @@ def build_mmd_control_rig(
                 cmds.xform(zero, worldSpace=True, matrix=matrix)
                 control = _create_control_curve(
                     cmds,
-                    f"{prefix}_{role}_CTRL",
+                    f"{namespace}{role}_CTRL",
                     role,
                     scale,
+                    shape_rotation=_control_shape_rotation(
+                        cmds,
+                        root,
+                        role,
+                        binding,
+                        indexed_joints,
+                    ),
                 )
                 created_roots.append(control)
-                cmds.parent(control, zero)
+                parented = cmds.parent(control, zero)
+                if parented:
+                    control = str(parented[0])
+                control = str(cmds.rename(control, f"{namespace}{role}_CTRL"))
+                _rename_control_shapes(cmds, control, namespace, role)
                 cmds.setAttr(f"{control}.translate", 0.0, 0.0, 0.0, type="double3")
                 cmds.setAttr(f"{control}.rotate", 0.0, 0.0, 0.0, type="double3")
                 _color_control(cmds, control, _ROLE_COLORS[role])
@@ -386,11 +482,36 @@ def _control_curve_templates() -> Mapping[str, Tuple[Mapping[str, Any], ...]]:
     }
 
 
-def _create_control_curve(cmds, name: str, role: str, scale: float) -> str:
-    templates = _control_curve_templates().get(role, ())
+def _create_control_curve(
+    cmds,
+    name: str,
+    role: str,
+    scale: float,
+    *,
+    shape_rotation=None,
+) -> str:
+    templates = _control_curve_templates().get(_control_curve_template_role(role), ())
     if templates:
-        return _create_template_control_curve(cmds, name, templates, scale)
-    return _create_fallback_control_curve(cmds, name, _ROLE_FALLBACK_SHAPES[role], scale)
+        return _create_template_control_curve(
+            cmds,
+            name,
+            templates,
+            scale,
+            shape_rotation=shape_rotation,
+        )
+    return _create_fallback_control_curve(
+        cmds,
+        name,
+        _ROLE_FALLBACK_SHAPES[role],
+        scale,
+        shape_rotation=shape_rotation,
+    )
+
+
+def _control_curve_template_role(role: str) -> str:
+    """Return the shared artist template key for one concrete control role."""
+
+    return _ROLE_TEMPLATE_ALIASES.get(role, role)
 
 
 def _create_template_control_curve(
@@ -398,6 +519,8 @@ def _create_template_control_curve(
     name: str,
     templates: Tuple[Mapping[str, Any], ...],
     scale: float,
+    *,
+    shape_rotation=None,
 ) -> str:
     """Create one transform containing every NURBS shape in a role template."""
 
@@ -411,6 +534,8 @@ def _create_template_control_curve(
             if not isinstance(points, list) or not points:
                 raise MmdControlRigBuildError(f"invalid control curve template: {name}[{index}]")
             scaled = [tuple(float(value) * scale for value in point) for point in points]
+            if shape_rotation is not None:
+                scaled = [_rotate_shape_point(point, shape_rotation) for point in scaled]
             kwargs = {
                 "name": name if control is None else f"{name}_SHAPE_TMP",
                 "degree": degree,
@@ -438,7 +563,14 @@ def _create_template_control_curve(
         raise
 
 
-def _create_fallback_control_curve(cmds, name: str, shape: str, scale: float) -> str:
+def _create_fallback_control_curve(
+    cmds,
+    name: str,
+    shape: str,
+    scale: float,
+    *,
+    shape_rotation=None,
+) -> str:
     if shape == "circle":
         points = [
             (1.0, 0.0, 0.0),
@@ -458,13 +590,112 @@ def _create_fallback_control_curve(cmds, name: str, shape: str, scale: float) ->
     else:
         points = [(-1, 0, -1), (-1, 0, 1), (1, 0, 1), (1, 0, -1), (-1, 0, -1)]
     scaled = [(x * scale, y * scale, z * scale) for x, y, z in points]
+    if shape_rotation is not None:
+        scaled = [_rotate_shape_point(point, shape_rotation) for point in scaled]
     return str(cmds.curve(name=name, degree=1, point=scaled))
+
+
+def _control_shape_rotation(cmds, root, role, binding, indexed_joints):
+    """Infer a display-only curve rotation for a PMX chain without LocalAxis.
+
+    Controller and ZERO transforms remain in the authored animation basis.  The
+    returned shortest-arc rotation is applied only to curve CV positions.
+    """
+    if role not in _AUTO_ORIENT_SHAPE_ROLES:
+        return None
+    if binding.pmx_flags & int(PmxBoneFlag.LOCAL_AXIS):
+        return None
+    if _joint_chain_has_local_axis(cmds, binding.joint, root):
+        return None
+    direction = _pmx_tail_direction(cmds, binding, indexed_joints)
+    if direction is None:
+        return None
+    maya_direction = (direction[0], direction[1], -direction[2])
+    return _shortest_arc_from_positive_z(maya_direction)
+
+
+def _joint_chain_has_local_axis(cmds, joint: str, root: str) -> bool:
+    """Return whether an indexed ancestor contributes a PMX LocalAxis basis."""
+    current = str(joint)
+    while current and current != root:
+        if cmds.attributeQuery(ATTR_MMD_BONE_FLAGS, node=current, exists=True):
+            flags = int(cmds.getAttr(f"{current}.{ATTR_MMD_BONE_FLAGS}") or 0)
+            if flags & int(PmxBoneFlag.LOCAL_AXIS):
+                return True
+        parents = cmds.listRelatives(current, parent=True, fullPath=True, type="joint") or []
+        current = str(parents[0]) if parents else ""
+    return False
+
+
+def _pmx_tail_direction(cmds, binding, indexed_joints):
+    """Return one bone's PMX-space tail vector from preserved import metadata."""
+    joint = binding.joint
+    if cmds.attributeQuery(ATTR_MMD_CONNECT_INDEX, node=joint, exists=True):
+        target_index = int(cmds.getAttr(f"{joint}.{ATTR_MMD_CONNECT_INDEX}"))
+        target = indexed_joints.get(target_index)
+        source_position = _vector_attribute(cmds, joint, ATTR_MMD_PMX_REST_POSITION)
+        target_position = _vector_attribute(cmds, target, ATTR_MMD_PMX_REST_POSITION)
+        if source_position is not None and target_position is not None:
+            return tuple(target - source for source, target in zip(source_position, target_position))
+    return _vector_attribute(cmds, joint, ATTR_MMD_BONE_OFFSET)
+
+
+def _vector_attribute(cmds, node, attribute):
+    if not node or not cmds.attributeQuery(attribute, node=node, exists=True):
+        return None
+    value = cmds.getAttr(f"{node}.{attribute}")
+    if isinstance(value, (list, tuple)) and len(value) == 1:
+        value = value[0]
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        return None
+    vector = tuple(float(component) for component in value)
+    return vector if all(math.isfinite(component) for component in vector) else None
+
+
+def _shortest_arc_from_positive_z(direction):
+    """Return an axis/cos/sin tuple rotating local +Z onto ``direction``."""
+    length = math.sqrt(sum(float(component) ** 2 for component in direction))
+    if not math.isfinite(length) or length <= 1.0e-8:
+        return None
+    target = tuple(float(component) / length for component in direction)
+    cosine = max(-1.0, min(1.0, target[2]))
+    if cosine >= 1.0 - 1.0e-10:
+        return ((0.0, 1.0, 0.0), 1.0, 0.0)
+    if cosine <= -1.0 + 1.0e-10:
+        return ((0.0, 1.0, 0.0), -1.0, 0.0)
+    axis = (-target[1], target[0], 0.0)
+    sine = math.sqrt(axis[0] ** 2 + axis[1] ** 2)
+    axis = (axis[0] / sine, axis[1] / sine, 0.0)
+    return (axis, cosine, sine)
+
+
+def _rotate_shape_point(point, rotation):
+    """Apply a Rodrigues rotation tuple to one controller CV position."""
+    axis, cosine, sine = rotation
+    x, y, z = (float(component) for component in point)
+    ax, ay, az = axis
+    cross = (ay * z - az * y, az * x - ax * z, ax * y - ay * x)
+    dot = ax * x + ay * y + az * z
+    one_minus_cosine = 1.0 - cosine
+    return (
+        x * cosine + cross[0] * sine + ax * dot * one_minus_cosine,
+        y * cosine + cross[1] * sine + ay * dot * one_minus_cosine,
+        z * cosine + cross[2] * sine + az * dot * one_minus_cosine,
+    )
 
 
 def _color_control(cmds, control: str, color: int) -> None:
     for shape in cmds.listRelatives(control, shapes=True, fullPath=True) or []:
         cmds.setAttr(f"{shape}.overrideEnabled", True)
         cmds.setAttr(f"{shape}.overrideColor", int(color))
+
+
+def _rename_control_shapes(cmds, control: str, namespace: str, role: str) -> None:
+    """Give every generated curve shape a short, deterministic scene name."""
+    shapes = cmds.listRelatives(control, shapes=True, fullPath=True) or []
+    for index, shape in enumerate(shapes, start=1):
+        suffix = "Shape" if index == 1 else f"Shape{index}"
+        cmds.rename(shape, f"{namespace}{role}_CTRL{suffix}")
 
 
 def _available_parent_role(role: str, controls: Mapping[str, str]) -> Optional[str]:
@@ -756,9 +987,12 @@ def _node_uuid(cmds, node: str) -> str:
     return str(values[0])
 
 
-def _safe_prefix(root: str) -> str:
-    leaf = root.rsplit("|", 1)[-1].replace(":", "_")
-    return re.sub(r"[^A-Za-z0-9_]+", "_", leaf).strip("_") or "MMDModel"
+def _namespace_prefix(root: str) -> str:
+    """Return an absolute Maya namespace prefix for generated node names."""
+    leaf = root.rsplit("|", 1)[-1]
+    if ":" not in leaf:
+        return ":"
+    return f":{leaf.rsplit(':', 1)[0]}:"
 
 
 @contextmanager

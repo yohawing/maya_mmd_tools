@@ -182,7 +182,21 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             }
             .issubset(result.controls)
         )
-        self.assertFalse(cmds.listRelatives(result.control_group, parent=True))
+        self.assertEqual(
+            cmds.ls(cmds.listRelatives(result.control_group, parent=True), long=True),
+            [root],
+        )
+        self.assertEqual(result.control_group.rsplit("|", 1)[-1].rsplit(":", 1)[-1], "Controls")
+        for role, control in result.controls.items():
+            self.assertEqual(
+                control.rsplit("|", 1)[-1].rsplit(":", 1)[-1],
+                f"{role}_CTRL",
+            )
+        for role, zero in result.zero_groups.items():
+            self.assertEqual(
+                zero.rsplit("|", 1)[-1].rsplit(":", 1)[-1],
+                f"{role}_ZERO",
+            )
         for role, control in result.controls.items():
             self.assertTrue(cmds.listRelatives(control, shapes=True, type="nurbsCurve"), role)
             self.assertEqual(cmds.getAttr(f"{control}.translate")[0], (0.0, 0.0, 0.0))
@@ -935,6 +949,22 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertTrue(cmds.objExists(rig_a.control_group))
         self.assertTrue(cmds.objExists(rig_b.control_group))
         self.assertEqual(set(rig_a.controls), set(rig_b.controls))
+
+    def test_builder_uses_absolute_model_namespace_when_it_is_current(self):
+        root = self._import_fixture(use_namespace=True)
+        root = (cmds.ls(root, long=True) or [root])[0]
+        root_leaf = root.rsplit("|", 1)[-1]
+        namespace = root_leaf.rsplit(":", 1)[0]
+
+        cmds.namespace(set=f":{namespace}")
+        try:
+            rig = build_mmd_control_rig(root)
+        finally:
+            cmds.namespace(set=":")
+
+        control_group_leaf = rig.control_group.rsplit("|", 1)[-1]
+        self.assertEqual(control_group_leaf, f"{namespace}:Controls")
+        self.assertNotIn(f"{namespace}:{namespace}:", control_group_leaf)
 
 
 if __name__ == "__main__":

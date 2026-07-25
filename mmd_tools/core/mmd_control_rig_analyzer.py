@@ -213,7 +213,29 @@ _MVP_ROLE_DEFINITIONS = (
 )
 _MVP_ROLE_NAMES = frozenset(definition.role for definition in _MVP_ROLE_DEFINITIONS)
 
+_FINGER_DEFINITIONS = (
+    ("thumb", ("親指",), (0, 1, 2)),
+    ("index", ("人指", "人差指"), (1, 2, 3)),
+    ("middle", ("中指",), (1, 2, 3)),
+    ("ring", ("薬指",), (1, 2, 3)),
+    ("pinky", ("小指",), (1, 2, 3)),
+)
+_FINGER_ROLE_DEFINITIONS = tuple(
+    _RoleDefinition(
+        f"{side}_{finger}_{index}",
+        tuple(f"{mmd_side}{mmd_finger}{index}" for mmd_finger in mmd_fingers),
+    )
+    for side, mmd_side in (("left", "左"), ("right", "右"))
+    for finger, mmd_fingers, indexes in _FINGER_DEFINITIONS
+    for index in indexes
+)
+
 _OPTIONAL_FK_ROLE_DEFINITIONS = (
+    _RoleDefinition("waist", ("腰",)),
+    _RoleDefinition("left_foot_ik_parent", ("左足IK親",)),
+    _RoleDefinition("right_foot_ik_parent", ("右足IK親",)),
+    _RoleDefinition("left_toe_ik", ("左つま先IK",), requires_ik_solver=True),
+    _RoleDefinition("right_toe_ik", ("右つま先IK",), requires_ik_solver=True),
     _RoleDefinition("lower_body", ("下半身",)),
     _RoleDefinition("upper_body", ("上半身",)),
     _RoleDefinition("upper_body2", ("上半身2",)),
@@ -231,7 +253,7 @@ _OPTIONAL_FK_ROLE_DEFINITIONS = (
     _RoleDefinition("left_knee", ("左ひざ", "左膝"), uses_solver_input=True),
     _RoleDefinition("right_leg", ("右足",), uses_solver_input=True),
     _RoleDefinition("right_knee", ("右ひざ", "右膝"), uses_solver_input=True),
-)
+) + _FINGER_ROLE_DEFINITIONS
 
 
 def classify_mmd_control_rig(

@@ -26,6 +26,7 @@ from mmd_tools.core.mmd_control_rig_builder import (
     resolve_mmd_control_rig_binding_ik_solvers,
     resolve_mmd_control_rig_binding_joint,
 )
+from mmd_tools.core.mmd_control_rig_analyzer import INPUT_IK_CONTROLLER
 
 
 _CHANNELS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
@@ -130,7 +131,7 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
 
                 offset_controls.add(control)
 
-                if role in {"left_foot_ik", "right_foot_ik"}:
+                if binding.get("inputKind") == INPUT_IK_CONTROLLER:
                     _connect_ik_enabled(cmds, control, binding, journal, operations)
 
             _zero_control_display_offsets(
