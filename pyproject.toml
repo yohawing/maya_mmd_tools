@@ -21,6 +21,7 @@ classifiers = [
 [project.optional-dependencies]
 dev = [
     "flip-evaluator>=1.7,<2; python_version >= '3.8'",
+    "ruff==0.16.0",
 ]
 
 [tool.setuptools.package-data]
@@ -41,6 +42,11 @@ line-length = 128
 indent-width = 4
 target-version = "py310"
 fix = true
+
+[tool.ruff.lint]
+# Ruff 0.16 expanded its implicit defaults substantially. Keep the established
+# error-focused baseline explicit so tool upgrades do not rewrite the project.
+select = ["E4", "E7", "E9", "F"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["E402"]

@@ -9,7 +9,6 @@ from ..qt_compat import (
     QWidget,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QComboBox,
 )
 from ..translations import UITranslator

@@ -3337,7 +3337,10 @@ def release_gate(session: nox.Session) -> None:
             )
 
     tier0_commands = [
-        ("tier0:ruff", ["uvx", "ruff", "check", "--no-fix", "."]),
+        (
+            "tier0:ruff",
+            ["uvx", "--from", "ruff==0.16.0", "ruff", "check", "--no-fix", "."],
+        ),
         ("tier0:diff-check", ["git", "diff", "--check"]),
     ]
     for name, command in tier0_commands:

@@ -3,8 +3,6 @@
 from pathlib import Path
 from unittest import mock
 
-import pytest
-
 from tests.viewport.visual_regression_capture import (
     _build_maya_code,
     _device_matches_backend,
@@ -31,6 +29,8 @@ def test_device_validation_is_backend_specific():
 
 
 def test_open_port_requires_explicit_attach_opt_in():
+    import pytest
+
     with mock.patch(
         "tests.viewport.visual_regression_capture.maya_commandport.is_port_open",
         return_value=True,
