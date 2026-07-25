@@ -229,6 +229,33 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         ]
         self.assertEqual(len(animator_calls), 1)
 
+    def test_install_menu_resolves_icons_without_module_file_binding(self):
+        """Maya's scripted plug-in loader can exec plugin_main with no __file__.
+
+        The editor menu item used ``os.path.dirname(__file__)`` for its icon,
+        so ``initializePlugin`` raised NameError before any rig node was
+        registered on mayapy/batch hosts.
+        """
+        self.plugin_main.cmds.menu.side_effect = lambda *_args, **kwargs: (
+            False if kwargs.get("exists") else [] if kwargs.get("query") else "MMD"
+        )
+        self.assertNotIn("__file__", self.plugin_main.install_mmd_menu.__code__.co_names)
+
+        module_file = self.plugin_main.__dict__.pop("__file__", None)
+        try:
+            self.plugin_main.install_mmd_menu()
+        finally:
+            if module_file is not None:
+                self.plugin_main.__dict__["__file__"] = module_file
+
+        editor_calls = [
+            call
+            for call in self.plugin_main.cmds.menuItem.call_args_list
+            if call[1].get("label") == "MMD Editor"
+        ]
+        self.assertEqual(len(editor_calls), 1)
+        self.assertTrue(editor_calls[0][1]["image"].endswith("mmd_editor.svg"))
+
     def test_install_menu_creates_tearoff_top_menu_and_installs_humanik_item(self):
         self.plugin_main.cmds.menu.side_effect = lambda *_args, **kwargs: (
             False if kwargs.get("exists") else [] if kwargs.get("query") else "MMD"

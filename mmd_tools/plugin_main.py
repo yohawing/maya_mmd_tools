@@ -3,6 +3,7 @@ import traceback
 
 from maya import cmds
 import maya.api.OpenMaya as om
+import mmd_tools
 from mmd_tools import __version__
 from mmd_tools.view import shader_override as mmd_shader
 from mmd_tools.ui.drag_drop_importer import (
@@ -36,6 +37,10 @@ _after_new_callback_id = None
 _active_view_callback_id = None
 _MAIN_WINDOW_NAME = "MMDToolsMainWindow"
 _MAIN_WINDOW_WORKSPACE_CONTROL_NAME = "MMDToolsWorkspaceControl"
+# Maya's scripted plug-in loader can execute this file without binding
+# ``__file__`` (mayapy / batch hosts). Resolving asset paths from the imported
+# package keeps ``initializePlugin`` from aborting before node registration.
+_PACKAGE_DIR = os.path.dirname(os.path.abspath(mmd_tools.__file__))
 
 
 def _trace_initialize_step(step):
@@ -246,9 +251,7 @@ def install_mmd_menu():
     cmds.menuItem(
         "MMDToolsMenuItem",
         label="MMD Editor",
-        image=os.path.join(
-            os.path.dirname(__file__), "ui", "assets", "app", "mmd_editor.svg"
-        ),
+        image=os.path.join(_PACKAGE_DIR, "ui", "assets", "app", "mmd_editor.svg"),
         command=lambda *args: open_main_window(dockable=False),
         parent="MMD",
     )
