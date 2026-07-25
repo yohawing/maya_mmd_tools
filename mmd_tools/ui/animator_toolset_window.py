@@ -1,4 +1,4 @@
-"""Standalone dockable window for the Animator Toolset (dev-mode only)."""
+"""Standalone dockable window for the publicly available Animator Toolset."""
 
 from maya import cmds
 import maya.OpenMayaUI as mui

@@ -1,4 +1,4 @@
-"""Animator Toolset tab — dev-mode gated, 4-tab picker + tools."""
+"""Animator Toolset tab with a public picker and development-only pose tools."""
 
 from ..qt_compat import (
     QComboBox,
