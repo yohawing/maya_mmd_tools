@@ -162,7 +162,9 @@ class TestDx11TechniqueSelection(unittest.TestCase):
 
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
             "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
-        ) as mock_set_attribute:
+        ) as mock_set_attribute, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
+        ):
             mock_cmds.attributeQuery.side_effect = attribute_exists
             mock_cmds.getAttr.return_value = "MMDTechnique"
 
@@ -175,6 +177,8 @@ class TestDx11TechniqueSelection(unittest.TestCase):
     def test_disabling_outline_without_size_still_suppresses_edge(self):
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
             "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
+        ), patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
         ):
             mock_cmds.attributeQuery.side_effect = lambda *args, **kwargs: args[0] in {
                 "technique",
