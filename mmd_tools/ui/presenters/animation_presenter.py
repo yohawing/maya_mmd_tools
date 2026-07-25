@@ -374,16 +374,13 @@ class AnimationPresenter:
         try:
             from maya import cmds
 
-            from ...core.mmd_control_rig_builder import (
-                CONTROL_RIG_EDIT,
-                read_mmd_control_rig_metadata,
-            )
+            from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
 
             metadata = read_mmd_control_rig_metadata(root)
-            # Controls are display-only in ATTACHED and have no live input
-            # connection after BAKED.  Selecting either state must therefore
-            # continue to target the joint; only EDIT owns the input channel.
-            if not metadata or metadata.get("state") != CONTROL_RIG_EDIT:
+            # Selection and animation-input ownership are separate concerns.
+            # Prefer the visible owned curve in every valid rig state; the
+            # state machine still controls whether moving it affects the bone.
+            if not metadata:
                 return joint
             target = (cmds.ls(joint, long=True) or [joint])[0]
             for role, binding in metadata.get("bindings", {}).items():
