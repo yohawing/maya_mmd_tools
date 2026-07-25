@@ -102,6 +102,10 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
         self.assertEqual(len(templates["groove"]), 1)
         self.assertEqual(_control_curve_template_role("left_middle_1"), "finger")
         self.assertEqual(_control_curve_template_role("right_thumb_2"), "finger")
+        self.assertEqual(_control_curve_template_role("left_arm"), "circle")
+        self.assertEqual(_control_curve_template_role("right_arm"), "circle")
+        self.assertEqual(_control_curve_template_role("right_elbow"), "left_elbow")
+        self.assertEqual(_control_curve_template_role("right_wrist"), "left_wrist")
         for role in (
             "waist",
             "left_foot_ik_parent",
@@ -111,7 +115,10 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
         ):
             with self.subTest(role=role):
                 self.assertEqual(_control_curve_template_role(role), "circle")
-        self.assertEqual(templates["circle"], templates["left_arm"])
+        self.assertEqual(
+            templates["circle"],
+            templates[_control_curve_template_role("left_arm")],
+        )
         self.assertEqual(
             templates["finger"][0]["points"][0],
             [0.109158265, 0.055801374, 0.031276997],
@@ -202,8 +209,10 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
         }
 
         for part, first_point in expected_first_points.items():
-            left = templates[f"left_{part}"][0]
-            right = templates[f"right_{part}"][0]
+            left_role = _control_curve_template_role(f"left_{part}")
+            right_role = _control_curve_template_role(f"right_{part}")
+            left = templates[left_role][0]
+            right = templates[right_role][0]
             with self.subTest(part=part):
                 self.assertEqual(left, right)
                 self.assertEqual(left["degree"], 3)

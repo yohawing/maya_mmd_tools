@@ -139,6 +139,10 @@ _ROLE_PARENTS = {
 
 _ROLE_TEMPLATE_ALIASES = {
     **{role: "finger" for role in _FINGER_ROLES},
+    "left_arm": "circle",
+    "right_arm": "circle",
+    "right_elbow": "left_elbow",
+    "right_wrist": "left_wrist",
     "waist": "circle",
     "left_foot_ik_parent": "circle",
     "right_foot_ik_parent": "circle",
