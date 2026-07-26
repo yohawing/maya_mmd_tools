@@ -270,6 +270,19 @@ def run_capture(
                 raise RuntimeError(f"known authored normal mismatch: {authored_report['first']}")
         report["authoredNormal"] = authored_report
 
+        influences = cmds.skinCluster(skin_clusters[0], query=True, influence=True) or []
+        if not influences:
+            raise RuntimeError("A/B/C gate requires a skinned joint influence")
+        driven_joint = influences[-1]
+        cmds.setAttr(f"{driven_joint}.rotate", 0.0, 0.0, 0.0, type="double3")
+        cmds.setKeyframe(driven_joint, attribute="rotate", time=0.0)
+        cmds.setAttr(f"{driven_joint}.rotate", 23.0, -17.0, 11.0, type="double3")
+        cmds.setKeyframe(driven_joint, attribute="rotate", time=1.0)
+        report["deformation"] = {
+            "joint": driven_joint,
+            "rotate": [23.0, -17.0, 11.0],
+        }
+
         # Fixed camera/light and mesh-only VP2 model panel shared by all cases.
         bbox = cmds.exactWorldBoundingBox(meshes)
         center = [(bbox[i] + bbox[i + 3]) * 0.5 for i in range(3)]
@@ -325,8 +338,8 @@ def run_capture(
                 if cmds.attributeQuery("blockGPU", node=cluster, exists=True):
                     cmds.setAttr(f"{cluster}.blockGPU", block_gpu)
             cmds.evaluationManager(mode="parallel")
-            cmds.currentTime(0)
-            cmds.dgdirty(all=True)
+            cmds.currentTime(1)
+            cmds.dgdirty(allPlugs=True)
             cmds.refresh(force=True)
             time.sleep(1.5)
             base = output / f"{name}.png"
@@ -335,7 +348,7 @@ def run_capture(
                     old.unlink()
                 except OSError:
                     pass
-            cmds.playblast(filename=str(base.with_suffix("")), frame=0, format="image", compression="png", offScreen=True, offScreenViewportUpdate=True, viewer=False, width=width, height=height, forceOverwrite=True, showOrnaments=False, percent=100)
+            cmds.playblast(filename=str(base.with_suffix("")), frame=1, format="image", compression="png", offScreen=True, offScreenViewportUpdate=True, viewer=False, width=width, height=height, forceOverwrite=True, showOrnaments=False, percent=100)
             actual = _resolve_png(base)
             result = diagnostics()
             result.update({"path": str(actual), "bytes": actual.stat().st_size, "blockGPU": block_gpu})
