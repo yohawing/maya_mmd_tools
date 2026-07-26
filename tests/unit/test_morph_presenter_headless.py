@@ -267,6 +267,7 @@ class _FakeMayaAdapter:
         self.aliases = {}
         self.node_types = {}
         self.connections = {}
+        self.connection_errors = set()
 
     def object_exists(self, node):
         self.calls.append(("object_exists", node))
@@ -310,6 +311,8 @@ class _FakeMayaAdapter:
 
     def list_connections(self, node, **kwargs):
         self.calls.append(("list_connections", node, kwargs))
+        if node in self.connection_errors:
+            raise RuntimeError(f"No object matches name: {node}")
         result = []
         source = kwargs.get("source", True)
         destination = kwargs.get("destination", True)
@@ -591,6 +594,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         presenter, view, _, adapter = _make_presenter()
         presenter._morph_controller = "controller"
         data = {"type": 8, "_pmx_type_raw": True, "index": 7}
+        adapter.existing.add("controller.outputWeight[7]")
         adapter.connections["controller.outputWeight[7]"] = [
             {
                 "source": "controller.outputWeight[7]",
@@ -602,6 +606,17 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         presenter.on_morph_selected(_FakeItem("material", "material"), None)
 
         self.assertEqual(view.controls_enabled_calls[-1], (True, ""))
+
+    def test_sparse_output_weight_failure_is_unsupported_not_startup_error(self):
+        presenter, _, _, adapter = _make_presenter()
+        presenter._morph_controller = "controller"
+        plug = "controller.outputWeight[85]"
+        adapter.existing.add(plug)
+        adapter.connection_errors.add(plug)
+        data = {"type": 8, "_pmx_type_raw": True, "index": 85}
+
+        self.assertFalse(presenter._morph_controls_supported(data))
+        self.assertIn(("object_exists", plug), adapter.calls)
 
     def test_cached_material_capability_does_not_depend_on_shader_route(self):
         presenter, _, _, adapter = _make_presenter()

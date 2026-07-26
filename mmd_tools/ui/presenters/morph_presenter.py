@@ -386,6 +386,25 @@ class MorphPresenter:
             return cached
         return self._evaluate_morph_controls_supported(data)
 
+    def _output_weight_connections(self, index):
+        """Return destinations for one generated controller element fail-soft."""
+
+        if not self._morph_controller or index < 0:
+            return []
+        plug = f"{self._morph_controller}.outputWeight[{index}]"
+        try:
+            if not self.maya_adapter.object_exists(plug):
+                return []
+            return self.maya_adapter.list_connections(
+                plug,
+                source=False,
+                destination=True,
+            ) or []
+        except Exception:
+            # Sparse multi elements can be absent on old or partially built
+            # controllers.  Capability discovery treats them as unsupported.
+            return []
+
     def _evaluate_morph_controls_supported(self, data):
         """Compute capability; callers should normally use the cached wrapper."""
         raw_type = self._raw_pmx_type(data)
@@ -394,11 +413,7 @@ class MorphPresenter:
                 index = int(data.get("index", -1))
             except (TypeError, ValueError):
                 index = -1
-            if self._morph_controller and index >= 0 and self.maya_adapter.list_connections(
-                f"{self._morph_controller}.outputWeight[{index}]",
-                source=False,
-                destination=True,
-            ):
+            if self._output_weight_connections(index):
                 return True
             morph_node = data.get("morph_node")
             return bool(morph_node and self.maya_adapter.object_exists(morph_node))
@@ -418,11 +433,7 @@ class MorphPresenter:
             for target, sources in topology.items():
                 if not any(int(group) == source_index for group, _rate in sources):
                     continue
-                if self.maya_adapter.list_connections(
-                    f"{self._morph_controller}.outputWeight[{int(target)}]",
-                    source=False,
-                    destination=True,
-                ):
+                if self._output_weight_connections(int(target)):
                     return True
             return False
 

@@ -74,7 +74,20 @@ def _set_angle_vector_degrees(node, attr, values):
 
 
 def _resolve_message_name(shape, attr):
-    connections = cmds.listConnections(f"{shape}.{attr}", source=True, destination=False) or []
+    """Resolve an optional message input without rejecting legacy scene nodes."""
+    plug = f"{shape}.{attr}"
+    try:
+        if not cmds.objExists(plug):
+            return ""
+        connections = cmds.listConnections(
+            plug,
+            source=True,
+            destination=False,
+        ) or []
+    except Exception:
+        # Startup list population is capability discovery.  Missing attributes
+        # on old or partially generated physics nodes mean "unbound".
+        return ""
     return connections[0] if connections else ""
 
 
