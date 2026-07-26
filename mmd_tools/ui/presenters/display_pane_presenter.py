@@ -15,6 +15,7 @@ from ...core.constants import (
 )
 from ...core.display_frame_metadata import display_frames_from_json, display_frames_to_json
 from ...core.logger import get_logger
+from .list_presenter_helpers import format_indexed_name_label
 
 logger = get_logger(__name__)
 
@@ -154,7 +155,7 @@ class DisplayPanePresenter:
         frame["special_flag"] = 1 if self.view.special_frame_check.isChecked() else 0
         item = self.view.frame_list.item(row)
         if item is not None:
-            item.setText(self._frame_label(frame))
+            item.setText(self._frame_label(frame, row))
 
     def add_item(self, element_type: int) -> None:
         """候補ダイアログからボーンまたはモーフを追加する。"""
@@ -319,8 +320,8 @@ class DisplayPanePresenter:
         self._loading = True
         try:
             self.view.frame_list.clear()
-            for frame in self.frames:
-                self.view.frame_list.addItem(self._frame_label(frame))
+            for index, frame in enumerate(self.frames):
+                self.view.frame_list.addItem(self._frame_label(frame, index))
         finally:
             self._loading = False
         if self.frames:
@@ -346,9 +347,14 @@ class DisplayPanePresenter:
             self.view.item_table.selectRow(select_row)
 
     @staticmethod
-    def _frame_label(frame: dict) -> str:
-        name = frame["name"] or frame["name_english"] or "(unnamed)"
-        return f"★ {name}" if frame["special_flag"] else name
+    def _frame_label(frame: dict, index: int) -> str:
+        prefix = "★ " if frame["special_flag"] else ""
+        return format_indexed_name_label(
+            index,
+            frame["name"],
+            frame["name_english"],
+            prefix=prefix,
+        )
 
     def _valid_frame_row(self, row: int) -> bool:
         return 0 <= row < len(self.frames)

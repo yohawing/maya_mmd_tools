@@ -39,6 +39,22 @@ def format_indexed_node_label(
     return label
 
 
+def format_indexed_name_label(
+    index: object,
+    name_jp: object,
+    name_en: object = "",
+    prefix: str = "",
+) -> str:
+    """Format a non-node PMX list entry consistently with Bone/Material lists."""
+    japanese = str(name_jp or "")
+    english = str(name_en or "")
+    primary = japanese or english or "(unnamed)"
+    label = f"{index}:{prefix}{primary}"
+    if japanese and english:
+        label += f" [{english}]"
+    return label
+
+
 def apply_list_filter(
     items: Iterable[object],
     query: str,

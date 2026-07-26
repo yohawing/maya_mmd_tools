@@ -425,7 +425,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertEqual(presenter.blend_shape_node, "faceBlendShape")
         self.assertEqual(presenter.morph_data["smile"]["blend_shape_node"], "faceBlendShape")
         self.assertNotIn("blink", presenter.morph_data)
-        self.assertEqual([item.text() for item in view.morph_list.items], ["000:V|笑顔"])
+        self.assertEqual([item.text() for item in view.morph_list.items], ["0:V|笑顔 [smile]"])
         self.assertEqual([item.data(256) for item in view.morph_list.items], ["smile"])
 
     def test_list_metadata_preserves_duplicate_and_empty_names(self):
@@ -454,7 +454,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
 
         self.assertEqual(
             [item.text() for item in view.morph_list.items],
-            ["004:V|同名", "007:B|同名", "---:M|同名"],
+            ["4:V|同名", "7:B|同名", "-:M|同名"],
         )
         self.assertEqual(
             [item.data(256) for item in view.morph_list.items],
@@ -746,7 +746,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         presenter.current_morph = "笑顔"
         presenter.on_morph_slider_changed(65)
 
-        self.assertEqual([item.text() for item in view.morph_list.items], ["000:V|笑顔"])
+        self.assertEqual([item.text() for item in view.morph_list.items], ["0:V|笑顔"])
         self.assertEqual(presenter.morph_data["笑顔"]["name_jp"], "笑顔")
         self.assertEqual(
             presenter.morph_data["笑顔"]["blend_shape_targets"],
@@ -835,11 +835,11 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         presenter, view, _, _ = _make_presenter(model=TEST_MODEL, adapter=adapter)
 
         presenter.load_morphs()
-        presenter.on_morph_selected(_FakeItem("---:B|ボーン笑い", "ボーン笑い"), None)
+        presenter.on_morph_selected(_FakeItem("-:B|ボーン笑い [bone_smile]", "ボーン笑い"), None)
 
         self.assertEqual(
             [item.text() for item in view.morph_list.items],
-            ["---:G|グループ表情", "---:B|ボーン笑い", "---:M|材質点滅"],
+            ["-:G|グループ表情", "-:B|ボーン笑い [bone_smile]", "-:M|材質点滅"],
         )
         self.assertEqual(presenter.morph_data["ボーン笑い"]["type"], 10)
         self.assertEqual(presenter.morph_data["ボーン笑い"]["name_en"], "bone_smile")
@@ -896,7 +896,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
 
         presenter.load_morphs()
 
-        self.assertEqual([item.text() for item in view.morph_list.items], ["---:G|グループ表情"])
+        self.assertEqual([item.text() for item in view.morph_list.items], ["-:G|グループ表情"])
         self.assertEqual(presenter.morph_data["グループ表情"]["type"], 12)
         self.assertEqual(presenter.morph_data["グループ表情"]["panel"], 2)
         self.assertEqual(presenter.morph_data["グループ表情"]["morph_node"], "groupPoseNode")
@@ -1217,7 +1217,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
 
         presenter.load_morphs()
 
-        self.assertEqual([item.text() for item in view.morph_list.items], ["000:V|笑顔"])
+        self.assertEqual([item.text() for item in view.morph_list.items], ["0:V|笑顔"])
         data = presenter.morph_data["笑顔"]
         self.assertEqual(data["panel"], 4)  # invent Other, never System
         self.assertEqual(data["index"], 0)  # first-seen weight index retained
@@ -1228,7 +1228,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
                 {"node": "faceBlendShapeB", "target": "smile_b", "weight_attr": "weight[3]"},
             ],
         )
-        self.assertEqual([item.text() for item in view.morph_list.items], ["000:V|笑顔"])
+        self.assertEqual([item.text() for item in view.morph_list.items], ["0:V|笑顔"])
 
     def test_existing_panel_metadata_not_overwritten_by_fallback_load(self):
         adapter = _FakeMayaAdapter()
@@ -1320,7 +1320,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
             }
         }
 
-        presenter.on_morph_selected(_FakeItem("000:V|笑顔", "smile"), None)
+        presenter.on_morph_selected(_FakeItem("0:V|笑顔 [smile]", "smile"), None)
 
         self.assertEqual(presenter.current_morph, "smile")
         self.assertEqual(view.details_enabled_calls, [True])

@@ -238,7 +238,10 @@ class TestDisplayPanePresenter(unittest.TestCase):
     def test_refresh_loads_metadata_and_resolves_items(self):
         self.assertEqual([frame["name"] for frame in self.presenter.frames], ["Root", "表情", "操作"])
         self.assertEqual(len(self.view.frame_list.items), 3)
-        self.assertEqual(self.view.frame_list.items[0].value, "★ Root")
+        self.assertEqual(
+            [item.value for item in self.view.frame_list.items],
+            ["0:★ Root [Root]", "1:★ 表情 [Facial]", "2:操作 [Controls]"],
+        )
         self.assertTrue(self.view.enabled)
         self.assertEqual(len(self.view.item_table.rows), 1)
 

@@ -23,6 +23,7 @@ from ..qt_compat import Qt
 from ..translations import UITranslator
 from .list_presenter_helpers import (
     apply_list_filter,
+    format_indexed_name_label,
     reload_for_current_model_change,
     select_existing_user_role_nodes,
 )
@@ -514,7 +515,13 @@ class PhysicsPresenter:
             )
             if not bone_name and bone:
                 bone_name = bone.rsplit("|", 1)[-1].rsplit(":", 1)[-1]
-            display = f"{index}: G{group} {name_jp or name_en or transform.rsplit('|', 1)[-1]} - [{bone_name or '-'}]"
+            display = format_indexed_name_label(
+                index,
+                name_jp or ("" if name_en else transform.rsplit("|", 1)[-1]),
+                name_en,
+                prefix=f"G{group} ",
+            )
+            display += f" - [{bone_name or '-'}]"
             item = QListWidgetItem(display)
             item.setData(Qt.UserRole, shape)
             rb_list.addItem(item)
@@ -527,9 +534,11 @@ class PhysicsPresenter:
             index = int(_get_attr(shape, "pmxIndex", -1))
             name_jp = _get_attr(shape, "nameJp", "") or ""
             name_en = _get_attr(shape, "nameEn", "") or ""
-            display = f"{index}: {name_jp}"
-            if name_en:
-                display += f" [{name_en}]"
+            display = format_indexed_name_label(
+                index,
+                name_jp or ("" if name_en else transform.rsplit("|", 1)[-1]),
+                name_en,
+            )
             item = QListWidgetItem(display)
             item.setData(Qt.UserRole, shape)
             jt_list.addItem(item)

@@ -15,7 +15,12 @@ from ...core.morph_metadata_reader import (
 )
 from ...converters.morph_runtime_common import parse_morph_offsets_json
 from ..qt_compat import Qt, QTimer, QListWidgetItem
-from .list_presenter_helpers import apply_list_filter, reload_for_current_model_change, tr_message_format
+from .list_presenter_helpers import (
+    apply_list_filter,
+    format_indexed_name_label,
+    reload_for_current_model_change,
+    tr_message_format,
+)
 
 logger = get_logger(__name__)
 
@@ -694,8 +699,15 @@ class MorphPresenter:
                 raw_type = UI_INDEX_TO_PMX_TYPE.get(int(raw_type), 1)
             type_letter = _MORPH_TYPE_LETTERS.get(int(raw_type), "?")
             name = data.get("name_jp") or morph_key
-            index_text = f"{index:03d}" if index >= 0 else "---"
-            item = QListWidgetItem(f"{index_text}:{type_letter}|{name}")
+            index_text = str(index) if index >= 0 else "-"
+            item = QListWidgetItem(
+                format_indexed_name_label(
+                    index_text,
+                    name,
+                    data.get("name_en", ""),
+                    prefix=f"{type_letter}|",
+                )
+            )
             item.setData(Qt.UserRole, morph_key)
             self.view.morph_list.addItem(item)
 
