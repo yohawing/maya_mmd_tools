@@ -227,6 +227,15 @@ class _View:
 
         return "ja"
 
+    def tr(self, key, _category=None):
+        """Return stable test messages through the production translation API."""
+
+        return {
+            "copied_pose": "Copied pose ({count} joints)",
+            "pasted_pose": "Pasted pose ({count} joints)",
+            "rest_pose_applied": "Rest Pose ({count} joints)",
+        }.get(key, key)
+
 
 class _AppState:
     def __init__(self, root=None):
@@ -396,7 +405,7 @@ class TestAnimationPresenterE2E(MayaTestBase):
         t = cmds.xform(target, query=True, objectSpace=True, translation=True)
         for actual, expected in zip(t, bind_translate):
             self.assertAlmostEqual(actual, expected, places=3)
-        self.assertIn("Reset", view.status_label.text())
+        self.assertIn("Rest Pose", view.status_label.text())
 
     def test_copy_paste_pose_round_trip(self):
         root = self._import_model()
