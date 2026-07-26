@@ -3,43 +3,45 @@
 [日本語ドキュメント](docs/README_ja.md)
 
 ![feature](docs/assets/feature.png)
+
 > Credits — Model: [Sour](https://bowlroll.net/file/146103) / Motion: [mobiusP](https://www.nicovideo.jp/watch/sm42576784)
 
 Maya MMD Tools is a tool for importing MikuMikuDance (MMD) PMD/PMX models and VMD motions into Autodesk Maya.
 
 Its long-term goal is to provide a complete workflow for editing and exporting models and animations.
 
+> [!WARNING]
 > Maya MMD Tools is currently in alpha, and its UI and workflows may change. Comprehensive guides for individual features are not yet available. See the feature support matrix below for details.
 
 ## Feature Support Matrix
 
-Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-in) · ⛔ Not supported yet
+Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental · ⛔ Not supported
 
 ### Model (PMX, PMD)
 
 | Feature | Status | Notes |
 |---|---|---|
 | Mesh | ✅ | |
-| Materials & textures | 🔶 | MMD toon shading through DX11 and OpenGL shaders. MMD shader fidelity is limited by Viewport 2.0 constraints. |
-| Maya name resolution | ✅ | Names are converted to ASCII-safe Maya names. Japanese and Chinese texture paths are also resolved automatically to safe paths. |
-| Edge / outline flags | 🔶 | Can be enabled as an option, subject to Viewport 2.0 constraints. |
-| Bones, skeleton & rig (IK / append / local axis) | 🔶 | Partially supported. Some complex models still have known issues. |
-| Display frames (表示枠) | 🔶 | Imported frame metadata can be edited in a dedicated tab and preserved through the development PMX round-trip path. |
-| Morphs (vertex / bone / material / group / UV) | 🔶 | Vertex, bone, material, and UV morphs are supported. Flip and Impulse morphs are not supported. |
-| Physics (rigid bodies & joints) | 🔶 | PMX/PMD physics import is enabled by default, with editable authoring and PMX round-trip support; native bake is experimental. Live simulation is unsupported. |
+| Materials & textures | ℹ️ | MMD toon shaders are implemented for DX11 and OpenGL. Reproduction fidelity is limited by Viewport 2.0 constraints. |
+| Maya name resolution | ✅ | Names are converted to safe Maya names using a dictionary or a hash. Texture paths are also resolved automatically to safe paths. |
+| Edge / outline flags | ℹ️ | Can be enabled as an option, subject to Viewport 2.0 constraints. |
+| Bones, skeleton & rig (IK / append / local axis) | ℹ️ | Partially supported. Some complex models still have known issues. |
+| Display frames (表示枠) | ℹ️ | Display-frame names, special-frame flags, and ordered bone/morph items can be edited. |
+| Morphs (vertex / bone / material / group / UV) | ℹ️ | Vertex, bone, material, and UV morphs are supported. Flip and Impulse morphs are not supported. |
+| Physics (rigid bodies & joints) | ℹ️ | Some physics editing operations remain unsupported. PMX/PMD physics data is imported by default; object creation, duplication, and deletion are not yet supported. |
 | Soft body (PMX 2.1) | ⛔ | Not supported |
-| Export | ⛔ | Not supported |
+| Export | ⛔ | Not supported. Partial public support is planned after import and editing features mature. |
 
 ### Animation (VMD)
 
 | Feature | Status | Notes |
 |---|---|---|
-| Bone animation | 🔶 | MMD rigs are supported through the Maya DG. Bake mode uses [mmd-anim](https://github.com/yohawing/mmd-anim) final-pose evaluation, with an optional `Reduce Bake Keys` pass that thins dense baked keys within a tolerance. |
-| VPD | ✅ | Available through drag and drop only |
-| Morph animation | 🔶 | Vertex, bone, material, and UV morphs are supported. Flip and Impulse morphs are not supported. |
+| Bone animation | ℹ️ | Basic MMD rigs are supported, but complex mechanisms are not. Bake mode uses [mmd-anim](https://github.com/yohawing/mmd-anim) for high-accuracy baking. |
+| VPD | ✅ | Drag-and-drop import only |
+| Morph animation | ℹ️ | Vertex, bone, material, and UV morphs are supported. Flip and Impulse morphs are not supported. |
 | Camera animation | ✅ | Creates and keys `mmd_camera`. Lighting drives the `mmd_light` controller. Self-shadow is not supported. |
-| IK on/off frames | 🔶 | Supported for import/bake. Runtime bake applies the state to the baked pose; rig mode keys `mmdCcdIk.enabled`. |
-| Physics | 🧪 | Native mmd-anim physics bake is supported experimentally. Real-time/live physics evaluation is unsupported, and physics is off by default. |
+| IK on/off frames | ℹ️ | Supported for import and bake. Runtime bake applies the state to the final pose; rig mode keys `mmdCcdIk.enabled`. |
+| Physics | ℹ️ | Supports mmd-anim-backed real-time physics and physics bake. Live evaluation is off by default and can be enabled from the Physics tab. Accuracy is still limited. |
 | HumanIK / retargeting | 🧪 | Experimental support for retargeting between imported MMD models. Try it from `MMD > HumanIK (Experimental)`. |
 | Export | ⛔ | Not supported. Partial public support is planned after import and editing features mature. |
 
@@ -73,24 +75,6 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 4. Restart Maya.
 
 The installer copies all Maya MMD Tools files into Maya's user `modules` folder, then writes a `maya_mmd_tools.mod` file next to that copy.
-
-On Windows, the installed copy is placed under:
-
-```text
-C:\Users\<User Name>\Documents\maya\modules\maya_mmd_tools
-```
-
-On macOS, the installed copy is placed under:
-
-```text
-~/Documents/maya/modules/maya_mmd_tools
-```
-
-The generated module file is written next to that folder:
-
-```text
-C:\Users\<User Name>\Documents\maya\modules\maya_mmd_tools.mod
-```
 
 ### Enable the Plugin
 
@@ -129,6 +113,18 @@ If textures fail to load due to multi-byte characters in the path, enable the au
 1. In the Import/Export tab, choose a VMD file.
 2. Click `Import Animation`.
 3. The animation is applied to the matching model in the scene.
+
+### Use HumanIK (Experimental)
+
+![HumanIK window](docs/assets/humanik.png)
+
+1. Select `MMD > HumanIK (Experimental)` from Maya's menu bar to open the standalone window.
+2. Select the MMD character's ModelRoot and click `Set Up Selected Model` to create its character definition.
+3. Import two characters and set up both. Choose the character that contains the motion from the SOURCE list to retarget its motion.
+4. The retargeted motion can be baked to a Control Rig.
+5. Use `Restore MMD Rig` to return from the Control Rig to the MMD rig state.
+
+Using Maya's HumanIK features directly can break the MMD rig in some workflows.
 
 ## Viewport Setup
 

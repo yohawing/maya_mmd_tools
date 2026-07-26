@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.6.0] - 2026-07-26
 
 ### Added
+- Added opt-in real-time physics playback backed by `mmd-anim`. The Physics tab can enable per-frame Maya timeline evaluation, with bounded fixed-step catch-up for forward jumps and deterministic reset behavior for backward or oversized jumps.
 - Added experimental HumanIK retargeting between imported MMD models: a standalone dockable HumanIK Editor with pair-based Character/Source selection, automatic characterization from the rest pose, a full finger profile, external HIK characters as retarget sources, and baking retargeted motion back to the MMD rig including MMD leg IK. Setup, target preview, Control Rig, Bake, and Restore run as reversible transactions with journaled ownership.
 - Published the Animator Toolset as a standalone dockable window on the MMD menu, with SVG-based Body and Finger pickers, a Morph picker and editor, a non-destructive rest pose toggle, and English/Japanese/Chinese localization.
 - Restored a dedicated Display Frames tab for editing PMX frame names, special-frame flags, and ordered bone/morph items with validation, undo, and metadata round-trip support; Animator Toolset remains a separate read-only picker surface.
@@ -38,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Reduce Bake Keys` is off by default and applies only to Bake Motion; rig-mode imports are unaffected.
 - User-facing PMX/PMD/VMD export remains unavailable; current writer and round-trip paths are development-only.
 - Additional UV, Flip, Impulse, and PMX 2.1 soft-body workflows remain unsupported.
-- Native VMD physics bake remains experimental and opt-in; real-time/live physics simulation is unsupported.
+- Native VMD physics bake and real-time physics playback remain experimental and opt-in. Live physics currently supports Spring 6DOF joints only; backward or oversized time jumps reset the simulation, and physics caching is unsupported.
 - Bake mode remains the recommended fidelity path for complex VMD motion; rig mode may differ for jointOrient, IK, append, and local-axis cases.
 
 ## [0.5.0] - 2026-07-19
