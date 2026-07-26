@@ -21,9 +21,15 @@ it when the C++ plugin is loaded (mutual-exclusion pattern).
 
 from __future__ import annotations
 
+import json
+
 import maya.api.OpenMaya as om
 
+from mmd_tools.core.logger import get_logger
 from mmd_tools.core.native.mmd_anim_runtime import is_native_physics_available
+
+
+logger = get_logger(__name__)
 
 
 def maya_useNewAPI():
@@ -78,6 +84,8 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._last_reset_generation = -1
         self._last_world_settings_version = None
         self._last_descriptor_version = None
+        self._initialization_failure_signatures: set[tuple] = set()
+        self._initialization_failure_descriptor_version = None
 
     def compute(self, plug, data):
         attr = plug.attribute()
@@ -96,6 +104,17 @@ class MmdPhysicsSolverNode(om.MPxNode):
 
         enable = data.inputValue(self.aEnable).asBool()
         if not enable:
+            self._write_outputs(data, solved=False, status="disabled")
+            return
+
+        # The world toggle is the production physics OFF control.  Check it
+        # before descriptor collection/native world construction so a disabled
+        # world remains cheap even when the solver node itself stays enabled.
+        # Intentionally do not consume either version here: edits made while
+        # OFF must invalidate the next enabled evaluation.
+        world_enable, reset_gen = self._read_world_settings()
+        if not world_enable:
+            self._last_time = None
             self._write_outputs(data, solved=False, status="disabled")
             return
 
@@ -123,6 +142,9 @@ class MmdPhysicsSolverNode(om.MPxNode):
             self._write_outputs(data, solved=False, status="no physics data")
             return
 
+        # Preserve the original post-initialization check as well: a world
+        # toggle can change while initialization is in progress, and the
+        # enabled path must retain its existing reset/disable semantics.
         world_enable, reset_gen = self._read_world_settings()
         if not world_enable:
             self._last_time = None
@@ -225,11 +247,108 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._cached_flat = flat
         return True
 
-    def _try_initialize(self) -> bool:
+    @staticmethod
+    def _validation_error_details(validation_errors) -> list:
+        """Return stable, useful fields from descriptor validation errors."""
+        details = []
+        for error in validation_errors or []:
+            fields = {}
+            for name in ("index", "kind", "field", "message"):
+                try:
+                    value = getattr(error, name)
+                except Exception:
+                    continue
+                if value is not None:
+                    fields[name] = value if isinstance(value, (bool, int, float, str)) else str(value)
+            details.append(fields or str(error))
+        return details
+
+    @staticmethod
+    def _validation_error_signature(validation_errors) -> tuple:
+        """Build a cheap repeat-failure key without serializing full details."""
+        fields = ("index", "kind", "field", "message")
+        return tuple(
+            tuple(str(getattr(error, name, "")) for name in fields)
+            for error in validation_errors or []
+        )
+
+    def _record_initialization_failure(
+        self,
+        *,
+        model_root,
+        descriptor_version,
+        stage: str,
+        error_type: str,
+        reason: str,
+        validation_errors=None,
+    ) -> None:
+        """Emit one structured diagnostic for each unique initialization failure."""
+        if descriptor_version != self._initialization_failure_descriptor_version:
+            self._initialization_failure_signatures.clear()
+            self._initialization_failure_descriptor_version = descriptor_version
+        validation_errors = tuple(validation_errors or ())
+        validation_signature = self._validation_error_signature(validation_errors)
+        payload = {
+            "event": "mmd_physics_solver_initialization_failed",
+            "modelRoot": model_root,
+            "descriptorVersion": descriptor_version,
+            "stage": stage,
+            "errorType": error_type,
+            "reason": reason,
+        }
+        signature = (
+            model_root,
+            descriptor_version,
+            stage,
+            error_type,
+            reason,
+            validation_signature,
+        )
+        if signature in self._initialization_failure_signatures:
+            return
+        self._initialization_failure_signatures.add(signature)
+        details = self._validation_error_details(validation_errors)
+        if details:
+            payload["validationErrors"] = details
+        logger.warning(
+            "mmdPhysicsSolver initialization failure %s",
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str),
+        )
+
+    def _fail_initialization(
+        self,
+        *,
+        model_root,
+        descriptor_version,
+        stage: str,
+        error_type: str,
+        reason: str,
+        validation_errors=None,
+    ) -> bool:
+        """Record a non-exception failure, release partial handles, and stop."""
+        self._record_initialization_failure(
+            model_root=model_root,
+            descriptor_version=descriptor_version,
+            stage=stage,
+            error_type=error_type,
+            reason=reason,
+            validation_errors=validation_errors,
+        )
+        self._free_handles()
+        return False
+
+    def _try_initialize(self, descriptor_version=None) -> bool:
+        if descriptor_version is None:
+            descriptor_version = self._last_descriptor_version
         model_root = self._get_connected_model_root()
         if not model_root:
-            self._free_handles()
-            return False
+            return self._fail_initialization(
+                model_root=None,
+                descriptor_version=descriptor_version,
+                stage="model root connection",
+                error_type="MissingModelRoot",
+                reason="modelRoot input has no connected node",
+            )
 
         from mmd_tools.core.physics_solver import _collect_bone_joints
         from mmd_tools.core.model_dag_descriptor import build_model_descriptors_from_dag
@@ -240,50 +359,90 @@ class MmdPhysicsSolverNode(om.MPxNode):
             MmdRuntimePhysicsWorld,
         )
 
+        stage = "collect bone joints"
         try:
             bone_joints = _collect_bone_joints(model_root)
             self._bone_count = len(bone_joints)
             self._bone_joints = bone_joints
+
+            stage = "build physics descriptors"
             world_descriptors = build_descriptors_from_dag(
                 model_root,
                 bone_joints=bone_joints,
                 bone_count=len(bone_joints),
             )
+
+            stage = "validate physics descriptors"
             if world_descriptors.validation_errors:
-                self._free_handles()
-                return False
+                return self._fail_initialization(
+                    model_root=model_root,
+                    descriptor_version=descriptor_version,
+                    stage=stage,
+                    error_type="ValidationError",
+                    reason="physics descriptor validation failed",
+                    validation_errors=world_descriptors.validation_errors,
+                )
+
+            stage = "build model descriptors"
             model_descriptors = build_model_descriptors_from_dag(model_root)
-        except Exception:
-            self._free_handles()
-            return False
 
-        world = MmdRuntimePhysicsWorld.from_descriptors(
-            world_descriptors.rigid_bodies, world_descriptors.joints
-        )
-        if world is None:
-            self._free_handles()
-            return False
-        self._world = world
+            stage = "create physics world"
+            world = MmdRuntimePhysicsWorld.from_descriptors(
+                world_descriptors.rigid_bodies, world_descriptors.joints
+            )
+            if world is None:
+                return self._fail_initialization(
+                    model_root=model_root,
+                    descriptor_version=descriptor_version,
+                    stage=stage,
+                    error_type="FactoryReturnedNone",
+                    reason="MmdRuntimePhysicsWorld.from_descriptors returned None",
+                )
+            self._world = world
 
-        model = MmdRuntimeModel.from_descriptors(model_descriptors)
-        if model is None:
-            self._free_handles()
-            return False
-        self._model = model
+            stage = "create runtime model"
+            model = MmdRuntimeModel.from_descriptors(model_descriptors)
+            if model is None:
+                return self._fail_initialization(
+                    model_root=model_root,
+                    descriptor_version=descriptor_version,
+                    stage=stage,
+                    error_type="FactoryReturnedNone",
+                    reason="MmdRuntimeModel.from_descriptors returned None",
+                )
+            self._model = model
 
-        instance = MmdRuntimeInstance.for_model(model)
-        if instance is None:
-            self._free_handles()
-            return False
-        self._instance = instance
+            stage = "create runtime instance"
+            instance = MmdRuntimeInstance.for_model(model)
+            if instance is None:
+                return self._fail_initialization(
+                    model_root=model_root,
+                    descriptor_version=descriptor_version,
+                    stage=stage,
+                    error_type="FactoryReturnedNone",
+                    reason="MmdRuntimeInstance.for_model returned None",
+                )
+            self._instance = instance
 
-        try:
+            stage = "build kinematic pose data"
             self._build_kinematic_pose_data(model_root)
+
+            stage = "build rigid body mapping"
             self._build_rigid_body_shape_mapping(model_root)
-        except Exception:
+        except Exception as exc:
+            self._record_initialization_failure(
+                model_root=model_root,
+                descriptor_version=descriptor_version,
+                stage=stage,
+                error_type=type(exc).__name__,
+                reason=str(exc) or type(exc).__name__,
+            )
             self._free_handles()
             return False
+
         self._initialized = True
+        self._initialization_failure_signatures.clear()
+        self._initialization_failure_descriptor_version = descriptor_version
         return True
 
     def _build_kinematic_pose_data(self, model_root: str) -> None:

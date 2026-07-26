@@ -177,20 +177,20 @@ class NamespaceUtils:
                 logger.debug(f"Namespace does not exist: {namespace_name}")
                 return
 
-            # namespace内のオブジェクトを確認
-            objects = cmds.ls(f"{namespace_name}:*", long=True)
-
-            if objects:
-                if force:
-                    # 強制削除モード：namespace内のオブジェクトを削除
-                    logger.warning(f"Force deleting {len(objects)} objects in namespace: {namespace_name}")
-                    cmds.delete(objects)
-                else:
-                    # マージモード：親namespaceにマージ
-                    logger.debug(f"Merging namespace: {namespace_name}")
-
-            # namespaceを削除
-            cmds.namespace(removeNamespace=namespace_name, mergeNamespaceWithParent=not force)
+            if force:
+                # Mayaの再帰削除を使い、子namespaceに残ったnon-DAG nodeも含めて
+                # 失敗importの全内容を一度に除去する。
+                logger.warning(f"Force deleting namespace contents recursively: {namespace_name}")
+                cmds.namespace(
+                    removeNamespace=namespace_name,
+                    deleteNamespaceContent=True,
+                )
+            else:
+                logger.debug(f"Merging namespace: {namespace_name}")
+                cmds.namespace(
+                    removeNamespace=namespace_name,
+                    mergeNamespaceWithParent=True,
+                )
             logger.debug(f"Cleaned up namespace: {namespace_name}")
 
         except Exception as e:

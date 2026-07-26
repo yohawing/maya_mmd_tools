@@ -1,10 +1,94 @@
 """Viewport helpers for Maya panel state."""
 
+import math
+
 from maya import cmds
 
 from .logger import get_logger
 
 logger = get_logger(__name__)
+_LAST_DEVICE_PIXEL_RATIO = None
+
+
+def get_device_pixel_ratio(view=None, default=1.0) -> float:
+    """Return the active Maya viewport's physical-to-logical pixel ratio.
+
+    Maya's shader ``ViewportPixelSize`` semantic reports physical pixels.  The
+    ratio lets screen-space effects retain a logical-pixel width on HiDPI
+    displays.  Headless sessions have no active view, so they use ``default``.
+
+    Args:
+        view: Optional ``M3dView`` instance, primarily for focused tests.
+        default: Value returned when no valid viewport ratio is available.
+
+    Returns:
+        A finite positive device pixel ratio.
+    """
+    try:
+        fallback = float(default)
+    except (TypeError, ValueError):
+        fallback = 1.0
+    if not math.isfinite(fallback) or fallback <= 0.0:
+        fallback = 1.0
+
+    try:
+        if view is None:
+            from maya import OpenMayaUI as omui
+
+            view = omui.M3dView.active3dView()
+        ratio = float(view.devicePixelRatio())
+        if math.isfinite(ratio) and ratio > 0.0:
+            return ratio
+    except Exception:
+        logger.debug("Could not query the active viewport device pixel ratio", exc_info=True)
+    return fallback
+
+
+def sync_dx11_shader_device_pixel_ratio(force=False) -> int:
+    """Synchronize logical-pixel scaling across existing MMD DX11 shaders.
+
+    The cached ratio keeps frequent active-view callbacks cheap.  ``force`` is
+    used after scene open and import because those operations can add shader
+    nodes without changing the display ratio.
+
+    Args:
+        force: Update newly-created shaders even when the ratio is unchanged.
+
+    Returns:
+        Number of shader nodes whose ratio changed.
+    """
+    global _LAST_DEVICE_PIXEL_RATIO
+
+    ratio = get_device_pixel_ratio()
+    if not force and _LAST_DEVICE_PIXEL_RATIO is not None and math.isclose(
+        ratio,
+        _LAST_DEVICE_PIXEL_RATIO,
+        rel_tol=0.0,
+        abs_tol=1.0e-6,
+    ):
+        return 0
+
+    try:
+        shaders = cmds.ls(type="dx11Shader") or []
+    except Exception:
+        logger.debug("Could not enumerate DX11 shaders for DPI synchronization", exc_info=True)
+        return 0
+
+    changed = 0
+    for shader in shaders:
+        try:
+            if not cmds.attributeQuery("DevicePixelRatio", node=shader, exists=True):
+                continue
+            current = float(cmds.getAttr(f"{shader}.DevicePixelRatio"))
+            if math.isclose(current, ratio, rel_tol=0.0, abs_tol=1.0e-6):
+                continue
+            cmds.setAttr(f"{shader}.DevicePixelRatio", ratio)
+            changed += 1
+        except Exception:
+            logger.debug("Could not synchronize DX11 shader DPI for '%s'", shader, exc_info=True)
+
+    _LAST_DEVICE_PIXEL_RATIO = ratio
+    return changed
 
 
 def set_viewport_backface_culling(enabled=True, panel_name=None) -> bool:
@@ -38,6 +122,48 @@ def set_viewport_backface_culling(enabled=True, panel_name=None) -> bool:
     except Exception as e:
         logger.error(f"Failed to set backface culling: {e}")
         return False
+
+
+def setup_mmd_hardware_viewport() -> int:
+    """Enable the viewport state required by MMD hardware shaders.
+
+    Maya's ``displayTextures`` toggle controls whether hardware shader texture
+    samplers are evaluated in VP2.  A material imported with a DX11/GLSL MMD
+    shader therefore needs every model panel to have textures enabled.  The
+    user's existing shading appearance is preserved.  Panel failures are
+    isolated so a stale/unsupported panel cannot make the model import fail.
+
+    Returns:
+        int: Number of model panels whose display state was changed.
+    """
+    try:
+        panels = cmds.getPanel(type="modelPanel") or []
+    except Exception:
+        logger.debug("Failed to enumerate model panels for MMD hardware viewport setup", exc_info=True)
+        return 0
+
+    changed = 0
+    for panel_name in panels:
+        try:
+            display_textures = cmds.modelEditor(panel_name, query=True, displayTextures=True)
+            if bool(display_textures):
+                continue
+            cmds.modelEditor(panel_name, edit=True, displayTextures=True)
+            changed += 1
+        except Exception:
+            logger.debug(
+                "Failed to configure model panel for MMD hardware viewport: %s",
+                panel_name,
+                exc_info=True,
+            )
+
+    logger.debug(
+        "MMD hardware viewport setup changed %d/%d model panel(s)",
+        changed,
+        len(panels),
+    )
+    sync_dx11_shader_device_pixel_ratio(force=True)
+    return changed
 
 
 def setup_mmd_color_management(

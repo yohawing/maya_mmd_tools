@@ -168,7 +168,7 @@ def _native_runtime_smoke_code() -> str:
     """Return Python code that verifies the runtime ABI and required features."""
     return (
         "from mmd_tools.core.native.mmd_anim_runtime import "
-        "get_mmd_runtime_library, get_runtime_library_path; "
+        "MMD_RUNTIME_ABI_VERSION_CURRENT, get_mmd_runtime_library, get_runtime_library_path; "
         "required = "
         f"{MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS}; "
         "lib = get_mmd_runtime_library(); "
@@ -176,8 +176,10 @@ def _native_runtime_smoke_code() -> str:
         "flags = lib.mmd_runtime_feature_flags() if lib and hasattr(lib, 'mmd_runtime_feature_flags') else 0; "
         "abi = lib.mmd_runtime_abi_version() if lib else 0; "
         "print(path); "
-        "print({'abi': abi, 'featureFlags': hex(flags), 'requiredFeatureFlags': hex(required)}); "
-        "raise SystemExit(0 if lib and abi == 2 and (flags & required) == required else 1)"
+        "print({'abi': abi, 'expectedAbi': MMD_RUNTIME_ABI_VERSION_CURRENT, "
+        "'featureFlags': hex(flags), 'requiredFeatureFlags': hex(required)}); "
+        "raise SystemExit(0 if lib and abi == MMD_RUNTIME_ABI_VERSION_CURRENT "
+        "and (flags & required) == required else 1)"
     )
 
 
@@ -384,6 +386,81 @@ def _mayapy_arg_path(mayapy: Path, value: str | Path) -> str:
 def _convert_mayapy_path_options(mayapy: Path, args: list[str], path_options: set[str]) -> list[str]:
     """Convert values following path-like options for a mayapy child process."""
     return _convert_maya_path_options(mayapy, ROOT, args, path_options)
+
+
+def _probe_passthrough(
+    args: list[str],
+    value_options: set[str],
+    flag_options: set[str] | None = None,
+) -> list[str]:
+    """Keep only options accepted by a probe script, excluding Nox's ``--maya``."""
+    flags = flag_options or set()
+    passthrough: list[str] = []
+    index = 0
+    while index < len(args):
+        option = args[index]
+        if option == "--maya" and index + 1 < len(args):
+            index += 2
+        elif option in value_options and index + 1 < len(args):
+            passthrough.extend((option, args[index + 1]))
+            index += 2
+        elif option in flags:
+            passthrough.append(option)
+            index += 1
+        else:
+            index += 1
+    return passthrough
+
+
+def _clear_probe_report(session: nox.Session, report_path: Path, label: str) -> None:
+    """Remove a stale probe report or fail with a contextual error."""
+    try:
+        report_path.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        session.error(f"Unable to clear stale {label} report {report_path}: {exc}")
+
+
+def _read_probe_report(session: nox.Session, report_path: Path, label: str) -> dict[str, object]:
+    """Load a required JSON object emitted by a probe."""
+    if not report_path.is_file():
+        session.error(f"{label} report missing: {report_path}")
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        session.error(f"Invalid {label} report {report_path}: {exc}")
+    if not isinstance(report, dict):
+        session.error(f"Invalid {label} report root {report_path}: expected object")
+    return report
+
+
+def _run_mayapy_probe(
+    session: nox.Session,
+    mayapy: Path,
+    script: str,
+    args: list[str],
+    path_options: set[str],
+    *,
+    utf8: bool = False,
+    success_codes: tuple[int, ...] | None = None,
+) -> None:
+    """Run a viewport probe with the repository's standard mayapy environment."""
+    extra_env = {"MAYA_SKIP_USERSETUP_PY": "1"}
+    if utf8:
+        extra_env["PYTHONIOENCODING"] = "utf-8"
+    run_options: dict[str, object] = {
+        "env": _mayapy_env(mayapy, **extra_env),
+        "external": True,
+    }
+    if success_codes is not None:
+        run_options["success_codes"] = success_codes
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, script),
+        *_convert_mayapy_path_options(mayapy, args, path_options),
+        **run_options,
+    )
 
 
 def _copy_parity_vmd_for_mayapy(session: nox.Session, args: list[str]) -> list[str]:
@@ -1171,6 +1248,117 @@ def tests(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def mmd_control_rig_vmd_roundtrip_smoke(session: nox.Session) -> None:
+    """Run the focused MMD control-rig import/edit/bake/VMD round-trip gate."""
+    maya_version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    session.run(
+        sys.executable,
+        "tests/run_tests.py",
+        "--type",
+        "integration",
+        "--test",
+        "test_mmd_control_rig_analyzer",
+        "--maya",
+        maya_version,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def mmd_control_rig_gui_e2e(session: nox.Session) -> None:
+    """Run GUI control-rig E2E followed by the mandatory mesh oracle gate.
+
+    Example::
+
+        uvx nox -s mmd_control_rig_gui_e2e -- --maya 2024
+    """
+
+    args = list(session.posargs) or ["--maya", DEFAULT_MAYA_VERSION]
+    maya_version = _option(args, "--maya", DEFAULT_MAYA_VERSION)
+    out_dir = _require_build_path(
+        session,
+        _option(args, "--out-dir", "build/e2e"),
+        "--out-dir",
+    )
+    model = _option(args, "--model", "tests/data/mmt_test_model.pmx")
+    gui_report = out_dir / f"mmd_control_rig_e2e_maya{maya_version}.json"
+    exported_vmd = out_dir / f"mmd_control_rig_e2e_maya{maya_version}.vmd"
+    session.run(
+        sys.executable,
+        str(ROOT / "tests" / "viewport" / "e2e_mmd_control_rig.py"),
+        *args,
+        external=True,
+    )
+    gui_report_data = _read_probe_report(session, gui_report, "MMD control-rig GUI E2E")
+    if gui_report_data.get("status") != "pass":
+        session.error(f"Maya GUI control-rig E2E did not pass: {gui_report_data}")
+    if not exported_vmd.is_file() or exported_vmd.stat().st_size == 0:
+        session.error(f"GUI E2E did not produce a canonical exported VMD: {exported_vmd}")
+
+    mayapy = _mayapy(maya_version)
+    if not mayapy.exists():
+        session.error(f"mayapy not found for Maya {maya_version}: {mayapy}")
+    ffi_path = (ROOT / "external" / "mmd-anim" / "target" / "release").resolve()
+    if not ffi_path.is_dir():
+        session.error(
+            "mmd-anim FFI release directory is required for the external oracle: "
+            f"{ffi_path}"
+        )
+    oracle_report = out_dir / f"mmd_anim_mesh_oracle_compare_maya{maya_version}.json"
+    _clear_probe_report(session, oracle_report, "mmd-anim mesh oracle")
+    oracle_args = [
+        "--pmx",
+        _mayapy_arg_path(mayapy, model),
+        "--vmd",
+        _mayapy_arg_path(mayapy, exported_vmd),
+        "--out",
+        _mayapy_arg_path(mayapy, oracle_report),
+        "--mode",
+        "rig",
+        "--bind-source",
+        "pmx",
+        "--threshold",
+        "0.01",
+    ]
+    for frame in range(6):
+        oracle_args.extend(("--frame", str(frame)))
+    oracle_env = _mayapy_env(
+        mayapy,
+        MAYA_VERSION=maya_version,
+        MAYA_SKIP_USERSETUP_PY="1",
+        MMD_TOOLS_CPP_PLUGIN=_mayapy_arg_path(
+            mayapy,
+            ROOT / "plug-ins" / maya_version / "Debug" / "mmd_tools_cpp.mll",
+        ),
+        MMD_ANIM_FFI_PATH=str(ffi_path),
+    )
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/mmd_anim_mesh_oracle_compare.py"),
+        *oracle_args,
+        env=oracle_env,
+        external=True,
+        success_codes=(0, 1, 2),
+    )
+    external_report = _read_probe_report(session, oracle_report, "mmd-anim mesh oracle")
+    external_pass = external_report.get("status") == "passed"
+    gui_report_data["externalOracle"] = {
+        "identity": "mmd_anim_mesh_oracle_compare_rig_pmx_bind",
+        "status": "pass" if external_pass else "fail",
+        "report": str(oracle_report),
+        "threshold": 0.01,
+        "frames": list(range(6)),
+        "comparison": external_report.get("comparison"),
+    }
+    gui_report.write_text(
+        json.dumps(gui_report_data, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    if not external_pass:
+        session.error(f"External mmd-anim mesh oracle failed: {external_report}")
+
+
+@nox.session(venv_backend="none")
 def gui_tests(session: nox.Session) -> None:
     """Run existing Maya GUI tests."""
     args = session.posargs or ["--maya_version", DEFAULT_MAYA_VERSION]
@@ -1237,6 +1425,41 @@ def native_smoke(session: nox.Session) -> None:
     if ffi_path:
         env["MMD_ANIM_FFI_PATH"] = str(_resolve_existing_or_repo_path(ffi_path))
     session.run(sys.executable, "-c", _native_runtime_smoke_code(), env=env, external=True)
+
+
+@nox.session(venv_backend="none")
+def reduction_abi_probe(session: nox.Session) -> None:
+    """Probe mmd-anim dense-pose reduction and its Maya bake boundary.
+
+    Examples:
+        uvx nox -s reduction_abi_probe
+        uvx nox -s reduction_abi_probe -- --ffi-path build/mmd-anim-unlocked-target/release
+    """
+    args = list(session.posargs)
+    ffi_path = _resolve_existing_or_repo_path(
+        _option(args, "--ffi-path", "external/mmd-anim/target/release")
+    )
+    out_json = _require_build_path(
+        session,
+        _option(args, "--out-json", "build/reports/reduction_abi_probe.json"),
+        "--out-json",
+    )
+    out_md = _require_build_path(
+        session,
+        _option(args, "--out-md", "build/reports/reduction_abi_probe.md"),
+        "--out-md",
+    )
+    session.run(
+        sys.executable,
+        "tests/release/reduction_abi_probe.py",
+        "--ffi-path",
+        str(ffi_path),
+        "--out-json",
+        str(out_json),
+        "--out-md",
+        str(out_md),
+        external=True,
+    )
 
 
 @nox.session(venv_backend="none")
@@ -1364,6 +1587,168 @@ def maya_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def ccdik_dirty_smoke(session: nox.Session) -> None:
+    """Run the focused mmdCcdIk goal-child dirty propagation regression."""
+    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
+    mayapy = _mayapy(version)
+    if not mayapy.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy}")
+
+    env = _mayapy_env(mayapy, MAYA_VERSION=version, MMD_TOOLS_CPP_CONFIG=config)
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/cpp/focused_ccdik_goal_dirty.py"),
+        env=env,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def ccdik_cache_smoke(session: nox.Session) -> None:
+    """Run the focused mmdCcdIk cache/output-coherence regression."""
+    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
+    mayapy = _mayapy(version)
+    if not mayapy.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy}")
+
+    plugin = ROOT / "plug-ins" / version / config / "mmd_tools_cpp.mll"
+    if not plugin.exists():
+        session.error(
+            f"C++ plugin not found at {plugin}; run 'uvx nox -s cpp_build "
+            f"-- --maya {version} --config {config}' first."
+        )
+    env = _mayapy_env(
+        mayapy,
+        MAYA_VERSION=version,
+        MMD_TOOLS_CPP_CONFIG=config,
+        MMD_TOOLS_CPP_PLUGIN=_mayapy_arg_path(mayapy, plugin),
+    )
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/cpp/focused_ccdik_cache.py"),
+        env=env,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def fast_load_normals_smoke(session: nox.Session) -> None:
+    """Verify authored normals in mmdFastLoad and its skinned import path."""
+    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
+    mayapy = _mayapy(version)
+    if not mayapy.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy}")
+
+    plugin = ROOT / "plug-ins" / version / config / "mmd_tools_cpp.mll"
+    if not plugin.exists():
+        session.error(
+            f"C++ plugin not found at {plugin}; run 'uvx nox -s cpp_build "
+            f"-- --maya {version} --config {config}' first."
+        )
+    env = _mayapy_env(
+        mayapy,
+        MAYA_VERSION=version,
+        MMD_TOOLS_CPP_CONFIG=config,
+        MMD_TOOLS_CPP_PLUGIN=_mayapy_arg_path(mayapy, plugin),
+    )
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/cpp/focused_fast_load_normals.py"),
+        env=env,
+        external=True,
+    )
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/cpp/focused_fast_importer_skin.py"),
+        env=env,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def ccdik_ancestor_residual_smoke(session: nox.Session) -> None:
+    """Run the deterministic rotated-ancestor CCD residual probe."""
+    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
+    mayapy = _mayapy(version)
+    if not mayapy.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy}")
+
+    plugin = ROOT / "plug-ins" / version / config / "mmd_tools_cpp.mll"
+    if not plugin.exists():
+        session.error(
+            f"C++ plugin not found at {plugin}; run 'uvx nox -s cpp_build "
+            f"-- --maya {version} --config {config}' first."
+        )
+    env = _mayapy_env(
+        mayapy,
+        MAYA_VERSION=version,
+        MMD_TOOLS_CPP_CONFIG=config,
+        MMD_TOOLS_CPP_PLUGIN=_mayapy_arg_path(mayapy, plugin),
+    )
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/cpp/focused_ccdik_ancestor_residual.py"),
+        env=env,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def yw_test_model_fixture_gate(session: nox.Session) -> None:
+    """Run the checked-in YW test-model gate under Maya 2024 and 2026.
+
+    The default matrix is intentionally both supported Maya versions.  Pass
+    ``--maya 2024`` (or ``--maya 2026``) for a focused local rerun.  Reports
+    and reopened Maya ASCII scenes are written below ``build/``.
+
+    Examples:
+        uvx nox -s yw_test_model_fixture_gate
+        uvx nox -s yw_test_model_fixture_gate -- --maya 2024
+        uvx nox -s yw_test_model_fixture_gate -- --out-dir build/yw-test-model-fixture
+    """
+    args = list(session.posargs)
+    requested_versions = _options(args, "--maya")
+    versions = requested_versions or ["2024", "2026"]
+    unsupported = [version for version in versions if version not in {"2024", "2026"}]
+    if unsupported:
+        session.error("--maya must be 2024 or 2026 for the YW test-model gate")
+    manifest = _option(args, "--manifest", "tests/data/yw_test_model.fixture.json")
+    manifest_path = Path(manifest)
+    if not manifest_path.is_absolute():
+        manifest_path = ROOT / manifest_path
+    manifest_path = manifest_path.resolve()
+    if not manifest_path.is_file():
+        session.error(f"Fixture manifest not found: {manifest_path}")
+    out_dir = _require_build_path(
+        session,
+        _option(args, "--out-dir", "build/yw-test-model-fixture"),
+        "--out-dir",
+    )
+    for version in versions:
+        mayapy = _mayapy(version)
+        if not mayapy.exists():
+            session.error(f"mayapy not found for Maya {version}: {mayapy}")
+        out_path = out_dir / f"maya-{version}.json"
+        env = _mayapy_env(mayapy, MAYA_VERSION=version, preserve_pythonpath=True)
+        session.run(
+            str(mayapy),
+            _mayapy_script(mayapy, "tests/viewport/yw_test_model_fixture_gate.py"),
+            "--manifest",
+            _mayapy_arg_path(mayapy, manifest_path),
+            "--out",
+            _mayapy_arg_path(mayapy, out_path),
+            env=env,
+            external=True,
+        )
+        if not out_path.is_file():
+            session.error(f"Fixture gate did not write report: {out_path}")
+
+
+@nox.session(venv_backend="none")
 def maya_viewport_capture(session: nox.Session) -> None:
     """Minimal mayapy offscreen viewport capture smoke (no GUI, no plugin).
 
@@ -1411,6 +1796,40 @@ def maya_viewport_capture(session: nox.Session) -> None:
         env=env,
         external=True,
     )
+
+
+@nox.session(venv_backend="none")
+def model_readme_dialog_e2e(session: nox.Session) -> None:
+    """Run the real Maya GUI model-readme modal gate for Maya 2024/2026."""
+    args = list(session.posargs)
+    versions = _options(args, "--maya") or ["2024", "2026"]
+    unsupported = [version for version in versions if version not in {"2024", "2026"}]
+    if unsupported:
+        session.error("--maya must be 2024 or 2026 for the model-readme GUI gate")
+    model = _option(args, "--model", "tests/data/yw_test_model.pmx")
+    out_dir = _require_build_path(
+        session,
+        _option(args, "--out-dir", "build/reports/model-readme-dialog-e2e"),
+        "--out-dir",
+    )
+    for index, version in enumerate(versions):
+        report = out_dir / f"maya-{version}.json"
+        session.run(
+            sys.executable,
+            str(ROOT / "tests/viewport/model_readme_dialog_e2e.py"),
+            "--maya",
+            version,
+            "--model",
+            model,
+            "--out",
+            str(report),
+            "--port",
+            str(7731 + index),
+            external=True,
+        )
+        result = json.loads(report.read_text(encoding="utf-8"))
+        if result.get("status") != "pass":
+            session.error(f"Maya {version} model-readme GUI gate failed: {result}")
 
 
 @nox.session(venv_backend="none")
@@ -1631,22 +2050,11 @@ def humanik_definition_smoke(session: nox.Session) -> None:
     """
     maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     mayapy = _mayapy(maya_ver)
-    passthrough: list[str] = []
-    args = list(session.posargs)
-    i = 0
-    while i < len(args):
-        if args[i] == "--maya" and i + 1 < len(args):
-            i += 2
-            continue
-        if args[i] in {"--out", "--name", "--fixture"} and i + 1 < len(args):
-            passthrough.extend([args[i], args[i + 1]])
-            i += 2
-            continue
-        if args[i] == "--create-control-rig":
-            passthrough.append(args[i])
-            i += 1
-            continue
-        i += 1
+    passthrough = _probe_passthrough(
+        list(session.posargs),
+        {"--out", "--name", "--fixture"},
+        {"--create-control-rig"},
+    )
     session.run(
         str(mayapy),
         _mayapy_script(mayapy, "tests/viewport/humanik_definition_smoke.py"),
@@ -1654,6 +2062,404 @@ def humanik_definition_smoke(session: nox.Session) -> None:
         env=_mayapy_env(mayapy),
         external=True,
     )
+
+
+@nox.session(venv_backend="none")
+def humanik_retarget_smoke(session: nox.Session) -> None:
+    """Run the direct HumanIK S0 fixture smoke under Maya 2024 mayapy.
+
+    The smoke writes lock state, direct input type, mapped-joint writer census,
+    changed connections, and root-locomotion world-matrix evidence.
+
+    Examples:
+        uvx nox -s humanik_retarget_smoke -- --maya 2024
+        uvx nox -s humanik_retarget_smoke -- --maya 2024 --out build/reports/humanik_retarget_smoke.json
+        uvx nox -s humanik_retarget_smoke -- --maya 2024 --pmx <source.pmx> --target-pmx <target.pmx> --vmd <source.vmd>
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    path_options = {"--pmx", "--target-pmx", "--vmd", "--out"}
+    value_options = path_options | {
+        "--pmx-base64",
+        "--target-pmx-base64",
+        "--vmd-base64",
+        "--name-prefix",
+        "--translation",
+        "--tolerance",
+        "--motion-frames",
+        "--evaluation-modes",
+    }
+    passthrough = _probe_passthrough(list(session.posargs), value_options)
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/humanik_retarget_smoke.py",
+        passthrough,
+        path_options,
+    )
+
+
+@nox.session(venv_backend="none")
+def humanik_roundtrip_smoke(session: nox.Session) -> None:
+    """Run the S5 self-retarget gate in isolated Maya evaluation modes."""
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    requested_mode = _option(args, "--evaluation-mode", "")
+    modes = [requested_mode] if requested_mode else ["off", "serial", "parallel"]
+    out_value = _option(args, "--out", str(ROOT / "build/reports/humanik_roundtrip_smoke.json"))
+    value_options = {"--pmx", "--vmd", "--start", "--end", "--hik-profile", "--characterization-stance"}
+    path_options = {"--pmx", "--vmd", "--out"}
+    passthrough = _probe_passthrough(args, value_options)
+    base_out = Path(out_value)
+    failed_modes: list[str] = []
+    for mode in modes:
+        mode_out = base_out if requested_mode else base_out.with_name(f"{base_out.stem}.{mode}{base_out.suffix}")
+        _clear_probe_report(session, mode_out, "HumanIK S5")
+        mode_args = [*passthrough, "--evaluation-mode", mode, "--out", str(mode_out)]
+        _run_mayapy_probe(
+            session,
+            mayapy,
+            "tests/viewport/humanik_roundtrip_smoke.py",
+            mode_args,
+            path_options,
+            success_codes=(0, 1),
+        )
+        if not mode_out.is_file():
+            failed_modes.append(f"{mode}: report missing ({mode_out})")
+            continue
+        try:
+            report = json.loads(mode_out.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            failed_modes.append(f"{mode}: invalid report ({exc})")
+            continue
+        if not isinstance(report, dict):
+            failed_modes.append(f"{mode}: report root is not an object")
+            continue
+        if report.get("evaluationMode") != mode:
+            failed_modes.append(
+                f"{mode}: evaluationMode={report.get('evaluationMode', 'missing')}"
+            )
+            continue
+        if report.get("status") != "pass":
+            failed_modes.append(f"{mode}: status={report.get('status', 'missing')}")
+    if failed_modes:
+        session.error("HumanIK S5 round-trip matrix failed: " + "; ".join(failed_modes))
+
+
+@nox.session(venv_backend="none")
+def humanik_vmd_parity_smoke(session: nox.Session) -> None:
+    """Run the SOURCE/VMD IK reproduction-matrix smoke (HUMANIK-SOURCE-VMD-IK-PARITY-1).
+
+    Diagnosis harness only: reproduces the reported divergence between a clean
+    VMD import and VMD import ordered around HumanIK setup_and_characterize /
+    enter_source_mode.  Expected initial ``status`` is ``"stop"`` (a divergence
+    was found), not ``"pass"``.  Pass ``--allow-stop`` to exit 0 on ``"stop"``
+    so evidence can be captured without failing CI; omit it for a strict gate
+    once the underlying bug is fixed.
+
+    Pass ``--inject-restore-failure`` to also run the optional
+    ``char_fail_restore_then_vmd`` scenario, which engineers a
+    ``HumanIkStanceTransaction.restore()`` failure (see the harness module
+    docstring) and reports the resulting topology/frame divergence under
+    the report's ``injectedScenarios`` key. Off by default; does not affect
+    the default scenario list or report shape.
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    requested_mode = _option(args, "--evaluation", "")
+    modes = [requested_mode] if requested_mode else ["off", "serial", "parallel"]
+    allow_stop = "--allow-stop" in args
+    out_value = _option(args, "--out", str(ROOT / "build/reports/humanik_vmd_parity_smoke.json"))
+    value_options = {"--model", "--motion", "--frames"}
+    path_options = {"--model", "--motion", "--out"}
+    passthrough = _probe_passthrough(args, value_options, {"--inject-restore-failure"})
+    base_out = Path(out_value)
+    failed_modes: list[str] = []
+    stopped_modes: list[str] = []
+    for mode in modes:
+        mode_out = base_out if requested_mode else base_out.with_name(f"{base_out.stem}.{mode}{base_out.suffix}")
+        _clear_probe_report(session, mode_out, "HumanIK VMD parity")
+        mode_args = [*passthrough, "--evaluation", mode, "--out", str(mode_out)]
+        _run_mayapy_probe(
+            session,
+            mayapy,
+            "tests/viewport/humanik_vmd_parity_smoke.py",
+            mode_args,
+            path_options,
+            utf8=True,
+            success_codes=(0, 1, 2),
+        )
+        if not mode_out.is_file():
+            failed_modes.append(f"{mode}: report missing ({mode_out})")
+            continue
+        try:
+            report = json.loads(mode_out.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            failed_modes.append(f"{mode}: invalid report ({exc})")
+            continue
+        if not isinstance(report, dict):
+            failed_modes.append(f"{mode}: report root is not an object")
+            continue
+        status = report.get("status")
+        if status == "pass":
+            continue
+        if status == "stop" and allow_stop:
+            stopped_modes.append(f"{mode}: status=stop")
+            continue
+        failed_modes.append(f"{mode}: status={status}, error={report.get('error')}")
+    if stopped_modes:
+        session.log("HumanIK VMD parity smoke stopped (evidence captured, not failing): " + "; ".join(stopped_modes))
+    if failed_modes:
+        session.error("HumanIK VMD parity smoke failed: " + "; ".join(failed_modes))
+
+
+@nox.session(venv_backend="none")
+def humanik_vmd_import_gate_smoke(session: nox.Session) -> None:
+    """Run the HumanIK VMD-import mode gate smoke (HUMANIK-SOURCE-VMD-IK-PARITY-1).
+
+    Characterizes a Kokomi fixture twice, enters a real HumanIK TARGET preview
+    on the second copy, and verifies VMD import onto the TARGET model is
+    refused fail-closed (naming the blocking mode and ``Restore MMD Rig``)
+    with scene topology/animCurves left untouched, then verifies the same
+    import succeeds once ``HumanIkFrontendSession.restore_mmd_rig()`` runs.
+    Expected ``status`` is ``"pass"``.
+
+    Examples:
+        uvx nox -s humanik_vmd_import_gate_smoke -- --maya 2024
+        uvx nox -s humanik_vmd_import_gate_smoke -- --maya 2024 --model "F:/MMD/pmx/.../model.pmx" --motion tests/data/mmt_test_model_test_motion.vmd
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    out_value = _option(args, "--out", str(ROOT / "build/reports/humanik_vmd_import_gate_smoke.json"))
+    report_path = Path(out_value)
+    path_options = {"--model", "--motion", "--out"}
+    passthrough = _probe_passthrough(args, path_options)
+    if "--out" not in passthrough:
+        passthrough.extend(["--out", out_value])
+    _clear_probe_report(session, report_path, "HumanIK VMD import gate")
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/humanik_vmd_import_gate_smoke.py",
+        passthrough,
+        path_options,
+        utf8=True,
+        success_codes=(0, 1),
+    )
+    report = _read_probe_report(session, report_path, "HumanIK VMD import gate")
+    status = report.get("status")
+    if status != "pass":
+        session.error(
+            "HumanIK VMD import gate smoke failed: "
+            f"status={status}, error={report.get('error')}, "
+            f"gateRaised={report.get('gateRaised')}, "
+            f"topologyUnchangedAfterRefusal={report.get('topologyUnchangedAfterRefusal')}, "
+            f"postRestoreImportSucceeded={report.get('postRestoreImportSucceeded')}"
+        )
+
+
+@nox.session(venv_backend="none")
+def humanik_citlali_stance_smoke(session: nox.Session) -> None:
+    """Run the strict Citlali HumanIK setup/restore regression gate.
+
+    The gate imports the ASCII-path Citlali fixture, characterizes it through
+    the frontend, and verifies rotate, jointOrient, skin-product, and exact
+    writer-topology restoration evidence without changing the source PMX.
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    out_value = _option(args, "--out", str(ROOT / "build/reports/humanik_citlali_stance_smoke.json"))
+    pmx_value = _option(
+        args,
+        "--pmx",
+        str(ROOT / "build/fixtures/citlali_ascii_file/citlali.pmx"),
+    )
+    profile = _option(args, "--profile", "body-only")
+    report_path = Path(out_value)
+    passthrough = [
+        "--pmx", pmx_value,
+        "--out", out_value,
+        "--profile", profile,
+    ]
+    _clear_probe_report(session, report_path, "Citlali HumanIK")
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/humanik_citlali_stance_smoke.py",
+        passthrough,
+        {"--pmx", "--out"},
+        utf8=True,
+    )
+    report = _read_probe_report(session, report_path, "Citlali HumanIK")
+    stance = report.get("stance", {})
+    restore = stance.get("restore") or stance.get("stanceEvidence", {}).get("restore", {})
+    required = {
+        "status": report.get("status"),
+        "restorePassed": restore.get("passed"),
+        "topologyRestored": restore.get("topologyRestored"),
+        "maxRotateResidual": restore.get("maxRotateResidual"),
+        "maxJointOrientResidual": restore.get("maxJointOrientResidual"),
+        "maxSkinMatrixResidual": restore.get("maxSkinMatrixResidual"),
+        "maxAllSkinMatrixResidual": restore.get("maxAllSkinMatrixResidual"),
+        "tolerance": restore.get("tolerance"),
+        "transformDiffCount": len(report.get("transformDiffs", [])),
+    }
+    if (
+        required["status"] != "pass"
+        or required["restorePassed"] is not True
+        or required["topologyRestored"] is not True
+        or required["transformDiffCount"] != 0
+        or any(
+            value is None or float(value) > float(required["tolerance"])
+            for key, value in required.items()
+            if key.endswith("Residual")
+        )
+    ):
+        session.error(f"Citlali HumanIK strict restore gate failed: {required}")
+
+
+@nox.session(venv_backend="none")
+def physics_solver_cycle_probe(session: nox.Session) -> None:
+    """Capture Citlali mmdPhysicsSolver cycle evidence without changing solver code.
+
+    A Maya-reported DG cycle is intentionally accepted as probe evidence; the
+    mayapy script only fails when clean production import or the reversible
+    operation harness itself fails.  The JSON report is the investigation
+    artifact consumed by the MMD-PHYSICS-SOLVER-CYCLE-1 queue item.
+
+    Examples:
+        uvx nox -s physics_solver_cycle_probe -- --maya 2024
+        uvx nox -s physics_solver_cycle_probe -- --maya 2026 --frames 0,1,2,1,0
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    out_value = _option(args, "--out", str(ROOT / "build/reports/physics_solver_cycle_probe.json"))
+    pmx_value = _option(
+        args,
+        "--pmx",
+        str(ROOT / "build/fixtures/citlali_ascii_file/citlali.pmx"),
+    )
+    frames_value = _option(args, "--frames", "0,1,2,1,0")
+    modes_value = _option(args, "--modes", "off,serial,parallel")
+    report_path = Path(out_value)
+    passthrough = [
+        "--pmx", pmx_value,
+        "--out", out_value,
+        "--frames", frames_value,
+        "--modes", modes_value,
+    ]
+    _clear_probe_report(session, report_path, "physics solver cycle probe")
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/physics_solver_cycle_probe.py",
+        passthrough,
+        {"--pmx", "--out"},
+        utf8=True,
+    )
+    report = _read_probe_report(session, report_path, "Physics solver cycle probe")
+    if report.get("status") != "pass":
+        session.error(
+            "Physics solver cycle probe failed: "
+            f"errors={report.get('errors')}, solver={report.get('solver')}"
+        )
+
+
+@nox.session(venv_backend="none")
+def root_move_skin_parity_probe(session: nox.Session) -> None:
+    """Measure Citlali root-motion, skin products, and world-space mesh parity.
+
+    The mayapy probe performs one production import, applies a known non-zero
+    root translation, records major joints/skinClusters/mesh vertices, then
+    saves and reopens the moved scene for parity evidence.  It never zeroes or
+    bakes the root and does not modify source code or the PMX fixture.
+
+    Example:
+        uvx nox -s root_move_skin_parity_probe -- --maya 2024
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    out_value = _option(args, "--out", str(ROOT / "build/reports/root_move_skin_parity_probe.json"))
+    pmx_value = _option(
+        args,
+        "--pmx",
+        str(ROOT / "build/fixtures/citlali_ascii_file/citlali.pmx"),
+    )
+    delta_value = _option(args, "--delta", "17.5,-8.25,11.0")
+    vertices_value = _option(args, "--vertices-per-mesh", "8")
+    tolerance_value = _option(args, "--tolerance", "1.0e-4")
+    report_path = Path(out_value)
+    passthrough = [
+        "--pmx", pmx_value,
+        "--out", out_value,
+        "--delta", delta_value,
+        "--vertices-per-mesh", vertices_value,
+        "--expect-parity",
+        "--tolerance", tolerance_value,
+    ]
+    _clear_probe_report(session, report_path, "root move parity")
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/root_move_skin_parity_probe.py",
+        passthrough,
+        {"--pmx", "--out"},
+        utf8=True,
+    )
+    report = _read_probe_report(session, report_path, "Root move parity")
+    if report.get("status") != "pass":
+        session.error(f"Root move parity probe failed: errors={report.get('errors')}")
+
+
+@nox.session(venv_backend="none")
+def root_move_ik_target_probe(session: nox.Session) -> None:
+    """Diagnose Citlali foot/IK-target drift after a non-zero root move.
+
+    This report-only mayapy probe captures foot joints, mmdCcdIk goal wiring,
+    inferred controllers/targets, native ikHandles, and their parent
+    ``inheritsTransform`` state before and after moving the imported root.
+    It intentionally does not alter production source or reset the root.
+
+    Example:
+        uvx nox -s root_move_ik_target_probe -- --maya 2024
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    out_value = _option(args, "--out", str(ROOT / "build/reports/root_move_ik_target_probe.json"))
+    pmx_value = _option(
+        args,
+        "--pmx",
+        str(ROOT / "build/fixtures/citlali_ascii_file/citlali.pmx"),
+    )
+    delta_value = _option(args, "--delta", "17.5,-8.25,11.0")
+    tolerance_value = _option(args, "--tolerance", "1.0e-4")
+    report_path = Path(out_value)
+    passthrough = [
+        "--pmx", pmx_value,
+        "--out", out_value,
+        "--delta", delta_value,
+        "--expect-root-parity",
+        "--tolerance", tolerance_value,
+    ]
+    _clear_probe_report(session, report_path, "root move IK target")
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/root_move_ik_target_probe.py",
+        passthrough,
+        {"--pmx", "--out"},
+        utf8=True,
+    )
+    report = _read_probe_report(session, report_path, "Root move IK target")
+    if report.get("status") != "pass":
+        session.error(f"Root move IK target probe failed: errors={report.get('errors')}")
 
 
 @nox.session(venv_backend="none")
@@ -1821,6 +2627,9 @@ def maya_visual_regression(session: nox.Session) -> None:
     vp2_device = _option(session.posargs, "--vp2-device", "default")
     if vp2_device not in {"default", "gl", "glcore", "dx11"}:
         session.error(f"Unsupported --vp2-device: {vp2_device}")
+    display_textures = _option(session.posargs, "--display-textures", "on")
+    if display_textures not in {"on", "off"}:
+        session.error(f"Unsupported --display-textures: {display_textures}")
     out = _option(session.posargs, "--out", f"build/visual-regression/maya-{shader_backend}")
     out_path = _require_build_path(session, out, "--out")
     port = _option(session.posargs, "--port", "7721")
@@ -1829,7 +2638,14 @@ def maya_visual_regression(session: nox.Session) -> None:
     timeout = _option(session.posargs, "--timeout", "420")
 
     forwarded: list[str] = []
-    passthrough_flags = {"--keep-maya", "--no-compare", "--attach-existing", "--debug-lambert-control", "--hide-orig-shapes"}
+    passthrough_flags = {
+        "--keep-maya",
+        "--no-compare",
+        "--attach-existing",
+        "--debug-lambert-control",
+        "--debug-outline-sentinel",
+        "--hide-orig-shapes",
+    }
     passthrough_options = {"--case", "--tag", "--limit", "--launch-mode", "--shader-fx"}
     i = 0
     while i < len(session.posargs):
@@ -1868,6 +2684,8 @@ def maya_visual_regression(session: nox.Session) -> None:
         shader_backend,
         "--vp2-device",
         vp2_device,
+        "--display-textures",
+        display_textures,
     ]
     cmd.extend(forwarded)
     session.run(*cmd, external=True)
@@ -1887,57 +2705,78 @@ def maya_visual_regression(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
-def maya_asset_probe(session: nox.Session) -> None:
-    """Collect Maya GUI Script Editor/log output while importing PMX assets.
+def shader_visual_semantic_gate(session: nox.Session) -> None:
+    """Guard DX11 outline-color leakage and disappearing hair geometry."""
+    from tests.viewport.shader_visual_semantic_gate import CASE_MIN_FOREGROUND
 
-    This is the stable local-asset diagnostic entrypoint for real Maya sessions.
-    It can attach to an already-open commandPort, or launch Maya GUI and open one.
-
-    Examples:
-        uvx nox -s maya_asset_probe -- --attach-existing --port 7721 --asset F:/MMD/pmx/model.pmx
-        uvx nox -s maya_asset_probe -- --maya 2026 --asset-list .ai/local_pmx_assets.txt --out-dir build/asset-error-probe/local
-    """
     version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    out = _option(session.posargs, "--out-dir", "build/asset-error-probe")
-    out_path = _require_build_path(session, out, "--out-dir")
-
-    forwarded: list[str] = []
-    flags = {"--attach-existing", "--keep-maya", "--no-physics", "--reload-mmd-tools"}
-    options = {
-        "--asset",
-        "--asset-list",
-        "--port",
-        "--timeout",
-        "--startup-timeout",
-        "--shader-backend",
-        "--launch-mode",
-    }
-    i = 0
-    while i < len(session.posargs):
-        arg = session.posargs[i]
-        if arg in {"--maya", "--out-dir"}:
-            i += 2
-            continue
-        if arg in flags:
-            forwarded.append(arg)
-            i += 1
-            continue
-        if arg in options:
-            if i + 1 >= len(session.posargs):
-                session.error(f"{arg} requires a value")
-            forwarded.extend([arg, session.posargs[i + 1]])
-            i += 2
-            continue
-        i += 1
-
-    session.run(
+    manifest = _option(session.posargs, "--manifest", "")
+    if not manifest:
+        session.error("--manifest <fixture.render.json> is required")
+    out_path = _require_build_path(
+        session,
+        _option(session.posargs, "--out", "build/visual-regression/shader-semantic"),
+        "--out",
+    )
+    port = _option(session.posargs, "--port", "7721")
+    timeout = _option(session.posargs, "--timeout", "240")
+    capture_cmd = [
         sys.executable,
-        "tests/viewport/maya_asset_error_probe.py",
+        "tests/viewport/visual_regression_capture.py",
         "--maya",
         version,
-        "--out-dir",
+        "--manifest",
+        manifest,
+        "--out",
         str(out_path),
-        *forwarded,
+        "--port",
+        port,
+        "--timeout",
+        timeout,
+        "--shader-backend",
+        "dx11",
+        "--vp2-device",
+        "dx11",
+        "--display-textures",
+        "on",
+        "--debug-outline-sentinel",
+        "--no-compare",
+    ]
+    for case_name in CASE_MIN_FOREGROUND:
+        capture_cmd.extend(["--case", case_name])
+    session.run(*capture_cmd, external=True)
+    session.run(
+        sys.executable,
+        "tests/viewport/shader_visual_semantic_gate.py",
+        "--capture-report",
+        str(out_path / "visual-regression-report.json"),
+        "--out",
+        str(out_path / "shader-semantic-report.json"),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def visual_regression_gallery(session: nox.Session) -> None:
+    """Build a local HTML gallery from visual-regression run reports.
+
+    Examples:
+        uvx nox -s visual_regression_gallery
+        uvx nox -s visual_regression_gallery -- --root build/visual-regression --out build/visual-regression/gallery.html
+    """
+    root = _require_build_path(session, _option(session.posargs, "--root", "build/visual-regression"), "--root")
+    output = _require_build_path(
+        session,
+        _option(session.posargs, "--out", "build/visual-regression/visual-regression-gallery.html"),
+        "--out",
+    )
+    session.run(
+        sys.executable,
+        "scripts/visual-regression/generate_gallery.py",
+        "--root",
+        str(root),
+        "--out",
+        str(output),
         external=True,
     )
 
@@ -2283,7 +3122,10 @@ def release_gate(session: nox.Session) -> None:
             )
 
     tier0_commands = [
-        ("tier0:ruff", ["uvx", "ruff", "check", "--no-fix", "."]),
+        (
+            "tier0:ruff",
+            ["uvx", "--from", "ruff==0.16.0", "ruff", "check", "--no-fix", "."],
+        ),
         ("tier0:diff-check", ["git", "diff", "--check"]),
     ]
     for name, command in tier0_commands:

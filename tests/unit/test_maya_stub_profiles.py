@@ -87,6 +87,14 @@ class MayaStubProfilesTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             maya_stub.install_maya_stub(profile="unknown")
 
+    def test_mtime_stub_exposes_maya_seconds_unit(self):
+        self.assertTrue(maya_stub.install_maya_stub(profile="minimal"))
+        maya_stub.install_om_mtime_array_stub()
+
+        import maya.api.OpenMaya as om
+
+        self.assertEqual(om.MTime.kSeconds, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,6 @@
 import math
 from mmd_tools.adapters import MayaCmdsAdapter
+from mmd_tools.actions.go_to_bind_pose_action import GoToBindPoseAction
 from ...core.logger import get_logger
 from ...core.maya_attribute_utils import (
     set_custom_attributes,
@@ -36,6 +37,7 @@ from ..qt_compat import (
 )
 from .list_presenter_helpers import (
     apply_list_filter,
+    format_indexed_node_label,
     reload_for_current_model_change,
     select_existing_user_role_nodes,
     tr_message,
@@ -46,7 +48,7 @@ logger = get_logger(__name__)
 
 
 class BonePresenter:
-    def __init__(self, view, app_state, maya_adapter=None):
+    def __init__(self, view, app_state, maya_adapter=None, bind_pose_action=None):
         self.view = view
         self.app_state = app_state
         self.maya_adapter = maya_adapter or MayaCmdsAdapter()
@@ -55,6 +57,7 @@ class BonePresenter:
         self.bone_list_items = {}  # Map bone name to list item
         self.all_bones = []  # All bones list
         self.is_updating = False  # Prevent feedback loops
+        self.bind_pose_action = bind_pose_action or GoToBindPoseAction()
 
         self.connect_signals()
 
@@ -71,6 +74,8 @@ class BonePresenter:
         self.view.bone_list.currentItemChanged.connect(self.on_bone_selected)
         self.view.bone_list.itemSelectionChanged.connect(self.on_selection_changed_maya)
         self.view.refresh_btn.clicked.connect(self.load_bones)
+        if hasattr(self.view, "bind_pose_btn"):
+            self.view.bind_pose_btn.clicked.connect(self.go_to_bind_pose)
         self.view.search_edit.textChanged.connect(self.filter_bones)
 
         # ボーン選択ボタン
@@ -96,10 +101,24 @@ class BonePresenter:
         self.view.apply_btn.clicked.connect(self.apply_changes)
         self.view.reset_btn.clicked.connect(self.reset_changes)
 
+    def disconnect_signals(self):
+        """Release presenter-owned resources when the owning window closes."""
+
     def on_current_model_changed(self, model_root):
         """現在のモデルが変更されたときの処理"""
         self.current_bone = None
         reload_for_current_model_change(logger, "BonePresenter", model_root, self.load_bones)
+
+    def go_to_bind_pose(self):
+        """Run the Bone Editor's one-shot model-wide bind-pose restore."""
+        result = self.bind_pose_action.execute(self.app_state.current_model_root or "")
+        if result.succeeded:
+            self.app_state.emit_status(
+                f"Go to Bind Pose: {result.model_root or self.app_state.current_model_root} "
+                f"({result.joint_count} joints)"
+            )
+        else:
+            self.app_state.emit_status(f"Go to Bind Pose failed: {result.error}")
 
     def load_bones(self):
         """ボーンリストをロード"""
@@ -154,17 +173,12 @@ class BonePresenter:
             name_en = get_attribute(joint, ATTR_MMD_BONE_NAME_EN)
             bone_index = get_attribute(joint, ATTR_MMD_BONE_INDEX)
 
-            # リストアイテムの表示形式: "インデックス:日本語名（Maya名）"
-            if bone_index is not None and bone_index >= 0:
-                display_text = f"{bone_index}:{name_jp}（{joint}）"
-            else:
-                display_text = f"-:{name_jp}（{joint}）"
-
-            if name_en:
-                display_text += f" [{name_en}]"
+            index_label = bone_index if bone_index is not None and bone_index >= 0 else "-"
+            display_text = format_indexed_node_label(index_label, name_jp, joint, name_en)
 
             item = QListWidgetItem(display_text)
             item.setData(Qt.UserRole, joint)  # 実際のジョイント名を保存
+            item.setToolTip(joint)
             self.view.bone_list.addItem(item)
             self.bone_list_items[joint] = item
 
@@ -747,15 +761,16 @@ class BonePresenter:
                 name_jp = self.view.bone_name_jp_edit.text()
                 name_en = self.view.bone_name_en_edit.text()
 
-                # 表示フォーマット更新
-                if bone_index >= 0:
-                    display_text = f"{bone_index}:{name_jp}（{self.current_bone}）"
-                else:
-                    display_text = f"-:{name_jp}（{self.current_bone}）"
-
-                if name_en:
-                    display_text += f" [{name_en}]"
-                item.setText(display_text)
+                index_label = bone_index if bone_index is not None and bone_index >= 0 else "-"
+                item.setText(
+                    format_indexed_node_label(
+                        index_label,
+                        name_jp,
+                        self.current_bone,
+                        name_en,
+                    )
+                )
+                item.setToolTip(self.current_bone)
 
             logger.info(f"Applied changes to bone '{self.current_bone}'")
             self.app_state.emit_status(tr_message_format("bone_changes_applied", bone=self.current_bone))

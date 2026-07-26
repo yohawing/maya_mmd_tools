@@ -5,7 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-07-26
+
+### Added
+- Added opt-in real-time physics playback backed by `mmd-anim`. The Physics tab can enable per-frame Maya timeline evaluation, with bounded fixed-step catch-up for forward jumps and deterministic reset behavior for backward or oversized jumps.
+- Added experimental HumanIK retargeting between imported MMD models: a standalone dockable HumanIK Editor with pair-based Character/Source selection, automatic characterization from the rest pose, a full finger profile, external HIK characters as retarget sources, and baking retargeted motion back to the MMD rig including MMD leg IK. Setup, target preview, Control Rig, Bake, and Restore run as reversible transactions with journaled ownership.
+- Published the Animator Toolset as a standalone dockable window on the MMD menu, with SVG-based Body and Finger pickers, a Morph picker and editor, a non-destructive rest pose toggle, and English/Japanese/Chinese localization.
+- Restored a dedicated Display Frames tab for editing PMX frame names, special-frame flags, and ordered bone/morph items with validation, undo, and metadata round-trip support; Animator Toolset remains a separate read-only picker surface.
+- Added an opt-in `Reduce Bake Keys` option for Bake Motion that thins dense baked keys through the bundled `mmd-anim` pose reducer, with a quality slider that trades key count against replay tolerance.
+- Added a model README dialog after menu and drag-and-drop imports, with a display policy setting.
+- Allowed the MMD Tools menu to be torn off.
+
+### Changed
+- Expanded the reviewed, corpus-driven MMD name vocabulary so more Japanese bone, material, and morph names resolve to readable ASCII-safe Maya names.
+- Refused VMD import while a HumanIK TARGET or HumanIK Control Rig owns the MMD rig, instead of writing conflicting keys.
+- Updated the bundled `mmd-anim` runtime to 0.3.2 (native ABI 3) for pose reduction and DCC curve output.
+- Cached native IK chain configuration to avoid rebuilding it on every evaluation.
+- Standardized product icon buttons and hid namespaces in editor model lists.
+
+### Fixed
+- Preserved PMX authored vertex normals end to end: normal and fast import no longer average, unlock, or recompute them; only skinClusters whose authored normals actually differ from the geometric normals are kept off the GPU deformer path; and the GLSL shader transforms normals with the inverse transpose matrix.
+- Fixed MMD shader appearance on both backends: sphere texture composition order, additive sphere shading, default light color, texture enablement for hardware shaders, hardware material alpha squaring, fallback texture and PMX color composition, texture alpha on fallback materials, and outline scaling on high-DPI viewports.
+- Aligned fast import with the normal import path for morph names, model README data, node naming, and material/morph name sanitization.
+- Preserved the full PMX morph index range instead of dropping high indices.
+- Invalidated all IK outputs when a goal is edited, and kept IK targets and skin deformation aligned when the model root is moved.
+- Recursively cleaned up namespaces left behind by failed imports and preflighted morph controller availability so partial failures report instead of leaving broken scene state.
+- Reported physics initialization failures once instead of repeatedly, and skipped Black PMX initialization while physics is off.
+- Resolved the MMD plug-in path in `userSetup` and surfaced plug-in startup failures instead of failing silently.
+
+### Known Issues
+- HumanIK retargeting is experimental and limited to MMD-to-MMD retargeting between imported models. Characterization can leave a residual stance offset on some models, lower-body and locomotion results may need manual correction, and HumanIK-owned scene state must be released through the HumanIK Editor rather than by deleting nodes.
+- The MMD-native Control Rig (NURBS curve controllers layered over the imported MMD rig) is Development Mode only and unsupported in this release; its baked output does not yet match the external `mmd-anim` oracle within tolerance.
+- `Reduce Bake Keys` is off by default and applies only to Bake Motion; rig-mode imports are unaffected.
+- User-facing PMX/PMD/VMD export remains unavailable; current writer and round-trip paths are development-only.
+- Additional UV, Flip, Impulse, and PMX 2.1 soft-body workflows remain unsupported.
+- Native VMD physics bake and real-time physics playback remain experimental and opt-in. Live physics currently supports Spring 6DOF joints only; backward or oversized time jumps reset the simulation, and physics caching is unsupported.
+- Bake mode remains the recommended fidelity path for complex VMD motion; rig mode may differ for jointOrient, IK, append, and local-axis cases.
 
 ## [0.5.0] - 2026-07-19
 
@@ -60,7 +95,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Known Issues
 - Native physics motion bake remains experimental and opt-in; interactive scene physics is unavailable.
-- Display frames are preserved for PMX round-trip but do not yet have a dedicated editing UI.
+- Display frames are preserved for PMX round-trip; releases through 0.5.0 do not include the dedicated editing UI added under Unreleased.
 - User-facing PMX/PMD/VMD export remains unavailable; current writer and round-trip paths are development-only.
 - Additional UV, Flip, Impulse, and PMX 2.1 soft-body workflows remain unsupported.
 - Bake mode remains the recommended fidelity path for complex VMD motion; rig mode may differ for jointOrient, IK, append, and local-axis cases.

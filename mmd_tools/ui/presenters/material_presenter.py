@@ -25,10 +25,6 @@ from mmd_tools.core.constants import (
 )
 from mmd_tools.actions import (
     apply_sphere_map,
-    apply_shader_settings,
-    shader_outline_enabled,
-    transparency_mode_from_index,
-    transparency_mode_index,
 )
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.logger import get_logger
@@ -36,6 +32,7 @@ from ..qt_compat import QColorDialog, QFileDialog, QColor, Qt
 from ..translations import UITranslator
 from .list_presenter_helpers import (
     apply_list_filter,
+    format_indexed_node_label,
     reload_for_current_model_change,
     select_existing_user_role_nodes,
     tr_message_format,
@@ -89,7 +86,6 @@ class MaterialPresenter:
         self.view.edge_size_spin.valueChanged.connect(self._on_value_changed)
         self.view.sphere_mode_combo.currentIndexChanged.connect(self._on_value_changed)
         self.view.toon_texture_combo.currentIndexChanged.connect(self._on_value_changed)
-        self.view.transparency_mode_combo.currentIndexChanged.connect(self._on_value_changed)
 
         # Slider connections for transparency and specular coefficient
         self.view.transparency_slider.valueChanged.connect(lambda v: self.view.transparency_spin.setValue(v / 100.0))
@@ -112,7 +108,6 @@ class MaterialPresenter:
             self.view.vertex_color_check,
             self.view.point_draw_check,
             self.view.line_draw_check,
-            self.view.shader_outline_check,
         ]:
             checkbox.stateChanged.connect(self._on_value_changed)
 
@@ -120,8 +115,6 @@ class MaterialPresenter:
         self.view.apply_btn.clicked.connect(self.apply_changes)
         self.view.reset_btn.clicked.connect(self.reset_changes)
 
-        # Batch-apply transparency mode to all selected materials
-        self.view.transparency_mode_apply_btn.clicked.connect(self.apply_transparency_mode_to_selected)
 
     def on_current_model_changed(self, model_root):
         """現在のモデルが変更されたときの処理"""
@@ -169,20 +162,14 @@ class MaterialPresenter:
                 jp_name = maya_attribute_utils.get_attribute(mat, ATTR_MMD_MATERIAL_NAME)
                 en_name = maya_attribute_utils.get_attribute(mat, ATTR_MMD_MATERIAL_NAME_EN)
 
-                # リストアイテムの表示形式: "番号:日本語名（Maya名）[英語名]"
-                if jp_name:
-                    display_text = f"{idx + 1}:{jp_name}（{mat}）"
-                else:
-                    display_text = f"{idx + 1}:（{mat}）"
-
-                if en_name:
-                    display_text += f" [{en_name}]"
+                display_text = format_indexed_node_label(idx + 1, jp_name, mat, en_name)
 
                 # リストに追加
                 from ..qt_compat import QListWidgetItem
 
                 item = QListWidgetItem(display_text)
                 item.setData(Qt.UserRole, mat)  # 実際のマテリアル名を保存
+                item.setToolTip(mat)
                 self.view.material_list.addItem(item)
 
             # Show placeholder if no materials
@@ -530,29 +517,6 @@ class MaterialPresenter:
         self.material_data["toon_index"] = toon_index
         self.view.toon_texture_combo.setCurrentIndex(toon_index)
 
-        # Transparency mode (DX11 technique selection: opaque/cutout/blend)
-        mode_index = 0
-        try:
-            if self.maya_adapter.node_type(material_name) == "dx11Shader":
-                mode_index = transparency_mode_index(material_name)
-        except Exception:
-            mode_index = 0
-        self.material_data["transparency_mode"] = mode_index
-        self.view.transparency_mode_combo.setCurrentIndex(mode_index)
-
-        # Shader outline is an opt-in viewport rendering setting. Keep the
-        # authored MMD draw flag separately in edge_draw_check.
-        outline_enabled = False
-        try:
-            if self.maya_adapter.node_type(material_name) == "dx11Shader":
-                outline_enabled = shader_outline_enabled(material_name)
-            else:
-                outline_enabled = bool(self._get_attr_safe(material_name, ATTR_MMD_SHADER_OUTLINE_ENABLED, False))
-        except Exception:
-            outline_enabled = False
-        self.material_data["shader_outline_enabled"] = outline_enabled
-        self.view.shader_outline_check.setChecked(outline_enabled)
-
         # Draw flags
         draw_flags = self._get_attr_safe(material_name, ATTR_MMD_DRAW_FLAGS, 0x1F)
         self.material_data["draw_flags"] = draw_flags
@@ -865,19 +829,6 @@ class MaterialPresenter:
             # Apply MMD-specific attributes
             self._apply_mmd_attributes()
 
-            # Apply transparency mode (DX11 technique) if applicable
-            try:
-                if self.maya_adapter.node_type(self.current_material) == "dx11Shader":
-                    idx = self.view.transparency_mode_combo.currentIndex()
-                    apply_shader_settings(
-                        self.current_material,
-                        transparency_mode_index_value=idx,
-                        outline_enabled=self.view.shader_outline_check.isChecked(),
-                        edge_size=self.view.edge_size_spin.value(),
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to apply transparency mode: {e}")
-
             # Apply sphere map if specified
             sphere_path = self.view.sphere_map_path_edit.text()
             sphere_mode = self.view.sphere_mode_combo.currentIndex()
@@ -907,16 +858,15 @@ class MaterialPresenter:
                     # 現在のインデックスを取得
                     idx = i + 1  # 1ベースのインデックス
 
-                    # 表示テキストを更新
-                    if jp_name:
-                        display_text = f"{idx}:{jp_name}（{self.current_material}）"
-                    else:
-                        display_text = f"{idx}:（{self.current_material}）"
-
-                    if en_name:
-                        display_text += f" [{en_name}]"
-
-                    item.setText(display_text)
+                    item.setText(
+                        format_indexed_node_label(
+                            idx,
+                            jp_name,
+                            self.current_material,
+                            en_name,
+                        )
+                    )
+                    item.setToolTip(self.current_material)
                     break
 
             if diffuse_changed:
@@ -1100,13 +1050,6 @@ class MaterialPresenter:
             edge_size_value,
             "float",
         )
-        maya_attribute_utils.set_attribute(
-            self.current_material,
-            ATTR_MMD_SHADER_OUTLINE_ENABLED,
-            self.view.shader_outline_check.isChecked(),
-            "bool",
-        )
-
     def _ensure_mmd_attributes(self, material):
         """Ensure MMD attributes exist on material"""
         # デフォルト値を設定
@@ -1130,52 +1073,6 @@ class MaterialPresenter:
         # 一括で作成・設定
         if attrs_to_create:
             maya_attribute_utils.set_custom_attributes(material, attrs_to_create)
-
-    def apply_transparency_mode_to_selected(self):
-        """Apply the chosen transparency and outline settings to selected materials."""
-        idx = self.view.transparency_mode_combo.currentIndex()
-        mode = transparency_mode_from_index(idx)
-        if mode is None:
-            return
-        outline_enabled = self.view.shader_outline_check.isChecked()
-        edge_size = self.view.edge_size_spin.value()
-
-        targets = [
-            item.data(Qt.UserRole)
-            for item in self.view.material_list.selectedItems()
-            if item.data(Qt.UserRole)
-        ]
-        if not targets and self.current_material:
-            targets = [self.current_material]
-
-        applied = 0
-        for material in targets:
-            if not material or not self.maya_adapter.object_exists(material) or self.maya_adapter.node_type(material) != "dx11Shader":
-                continue
-            try:
-                apply_shader_settings(
-                    material,
-                    transparency_mode_index_value=idx,
-                    outline_enabled=outline_enabled,
-                    edge_size=edge_size,
-                )
-                applied += 1
-            except Exception as e:
-                logger.warning(f"Failed to apply transparency mode to {material}: {e}")
-
-        # Reflect the change on the currently shown material's combo.
-        if self.current_material in targets:
-            self.material_data["transparency_mode"] = idx
-            self.material_data["shader_outline_enabled"] = outline_enabled
-            self.material_data["edge_size"] = edge_size
-        self.app_state.emit_status(tr_message_format("shader_material_settings_applied", count=applied))
-        logger.info(
-            "Batch-applied material shader settings mode='%s' outline=%s edge_size=%.3f to %d materials",
-            mode,
-            outline_enabled,
-            edge_size,
-            applied,
-        )
 
     def reset_changes(self):
         """Reset material properties to original values"""

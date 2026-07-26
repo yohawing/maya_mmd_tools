@@ -3,7 +3,52 @@
 import unittest
 from unittest.mock import MagicMock
 
-from mmd_tools.ui.presenters.list_presenter_helpers import reload_for_current_model_change
+from mmd_tools.ui.presenters.list_presenter_helpers import (
+    format_indexed_name_label,
+    format_indexed_node_label,
+    maya_node_leaf_name,
+    reload_for_current_model_change,
+)
+
+
+class TestNodeListLabels(unittest.TestCase):
+    """Material/Bone list labels hide Maya qualification consistently."""
+
+    def test_leaf_name_removes_dag_path_and_nested_namespace(self):
+        cases = {
+            "model:node": "node",
+            "outer:model:node": "node",
+            "|root|model:node": "node",
+            "plain_node": "plain_node",
+        }
+        for node, expected in cases.items():
+            with self.subTest(node=node):
+                self.assertEqual(maya_node_leaf_name(node), expected)
+
+    def test_indexed_label_uses_leaf_and_keeps_pmx_names(self):
+        self.assertEqual(
+            format_indexed_node_label(
+                0,
+                "操作中心",
+                "|root|Sangonomiya_Kokomi:manipulation_center",
+                "Manipulation Center",
+            ),
+            "0:操作中心（manipulation_center） [Manipulation Center]",
+        )
+
+    def test_non_node_label_uses_the_same_index_and_english_name_style(self):
+        self.assertEqual(
+            format_indexed_name_label(2, "笑顔", "Smile", prefix="V|"),
+            "2:V|笑顔 [Smile]",
+        )
+        self.assertEqual(format_indexed_name_label("-", "", "Blink"), "-:Blink")
+
+    def test_same_leaf_nodes_remain_distinguishable_by_index(self):
+        first = format_indexed_node_label(3, "材質", "model_a:body", "")
+        second = format_indexed_node_label(9, "材質", "model_b:body", "")
+        self.assertNotEqual(first, second)
+        self.assertIn("（body）", first)
+        self.assertIn("（body）", second)
 
 
 def _msgs(mock_log):

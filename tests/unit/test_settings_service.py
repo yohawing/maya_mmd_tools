@@ -8,7 +8,10 @@ from unittest.mock import mock_open, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from mmd_tools.services.settings_service import SettingsService  # noqa: E402
+from mmd_tools.services.settings_service import (  # noqa: E402
+    SettingsService,
+    resolve_reduce_bake_tolerances_from_quality,
+)
 
 
 class _FakeSettingsStore:
@@ -20,7 +23,6 @@ class _FakeSettingsStore:
                     "import_models": False,
                     "create_mmd_shaders": False,
                     "separate_meshes_by_material": True,
-                    "auto_classify_transparency": True,
                     "auto_resolve_textures": True,
                     "disable_backface_culling": False,
                     "uv_set_name": "customUV",
@@ -203,7 +205,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertFalse(options["separate_meshes_by_material"])
         self.assertNotIn("split_meshes_by_morph_groups", options)
         self.assertNotIn("hide_hidden_geometry", options)
-        self.assertFalse(options["auto_classify_transparency"])
+        self.assertNotIn("auto_classify_transparency", options)
         self.assertTrue(options["auto_resolve_textures"])
         self.assertTrue(options["disable_backface_culling"])
         self.assertEqual(options["uv_set_name"], "map#")
@@ -231,7 +233,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertTrue(options["separate_meshes_by_material"])
         self.assertNotIn("split_meshes_by_morph_groups", options)
         self.assertNotIn("hide_hidden_geometry", options)
-        self.assertTrue(options["auto_classify_transparency"])
+        self.assertNotIn("auto_classify_transparency", options)
         self.assertTrue(options["auto_resolve_textures"])
         self.assertFalse(options["disable_backface_culling"])
         self.assertEqual(options["uv_set_name"], "customUV")
@@ -290,6 +292,54 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertFalse(options["bake_mode"])
         self.assertTrue(options["use_native_physics_bake"])
         self.assertIsNone(options["target_model"])
+
+    def test_reduce_bake_keys_is_bake_only_and_quality_resolves_tolerances(self):
+        self.service.set("import.animation.reduce_bake_keys", True)
+        self.service.set("import.animation.reduce_quality", 0.25)
+        expected = resolve_reduce_bake_tolerances_from_quality(0.25)
+
+        normal = self.service.build_vmd_import_options()
+        self.assertFalse(normal["reduce_bake_keys"])
+        self.assertEqual(normal["reduce_translate_tolerance"], expected["translate"])
+        self.assertEqual(normal["reduce_rotate_tolerance"], expected["rotate"])
+        self.assertEqual(normal["reduce_morph_tolerance"], expected["morph"])
+
+        self.service.set("import.rig.bake_mode", True)
+        self.service.set("ui.general.development_mode", True)
+        dev = self.service.build_vmd_import_options()
+        self.assertTrue(dev["reduce_bake_keys"])
+        self.assertEqual(dev["reduce_translate_tolerance"], expected["translate"])
+        self.assertEqual(dev["reduce_rotate_tolerance"], expected["rotate"])
+        self.assertEqual(dev["reduce_morph_tolerance"], expected["morph"])
+
+    def test_reduce_quality_is_persisted_in_both_modes(self):
+        self.service.set("import.animation.reduce_quality", 0.333)
+        self.assertEqual(self.service.get("import.animation.reduce_quality"), 0.33)
+        expected = resolve_reduce_bake_tolerances_from_quality(0.33)
+        self.assertEqual(self.service.resolve_reduce_bake_tolerances(), expected)
+        self.service.set("ui.general.development_mode", True)
+        self.assertEqual(self.service.resolve_reduce_bake_tolerances(), expected)
+
+    def test_reduce_quality_mapping_has_exact_endpoints_and_clamps(self):
+        self.assertEqual(
+            resolve_reduce_bake_tolerances_from_quality(1.0),
+            {"translate": 5.0e-4, "rotate": 1.0e-4, "morph": 1.0e-3},
+        )
+        self.assertEqual(
+            resolve_reduce_bake_tolerances_from_quality(0.0),
+            {"translate": 0.1, "rotate": 0.05, "morph": 0.05},
+        )
+        midpoint = resolve_reduce_bake_tolerances_from_quality(0.5)
+        self.assertGreater(midpoint["translate"], 5.0e-4)
+        self.assertLess(midpoint["translate"], 0.1)
+        self.assertEqual(
+            resolve_reduce_bake_tolerances_from_quality(-1.0),
+            resolve_reduce_bake_tolerances_from_quality(0.0),
+        )
+        self.assertEqual(
+            resolve_reduce_bake_tolerances_from_quality(2.0),
+            resolve_reduce_bake_tolerances_from_quality(1.0),
+        )
 
     def test_build_export_options_and_texture_dialog_setting(self):
         options = self.service.build_export_options("out.pmx")

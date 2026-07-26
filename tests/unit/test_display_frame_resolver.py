@@ -67,6 +67,20 @@ class TestResolveDisplayFrames(unittest.TestCase):
         self.assertEqual(exp_group.items[0].resolved_name, "smile")
         self.assertEqual(exp_group.items[1].resolved_name, "wink")
 
+    def test_japanese_display_names_are_independent_from_resolved_nodes(self):
+        groups = resolve_display_frames(
+            _make_json(SAMPLE_FRAMES),
+            BONE_MAP,
+            MORPH_MAP,
+            bone_display_name_map={0: "センター"},
+            morph_display_name_map={0: "笑い", 1: "ウィンク"},
+        )
+
+        self.assertEqual(groups[0].items[0].resolved_name, "center")
+        self.assertEqual(groups[0].items[0].display_name, "センター")
+        self.assertEqual(groups[1].items[0].resolved_name, "smile")
+        self.assertEqual(groups[1].items[0].display_name, "笑い")
+
     def test_unresolved_index_returns_empty_string(self):
         groups = resolve_display_frames(
             _make_json([{"name": "G", "name_english": "G", "special_flag": 0, "elements": [{"type": 0, "index": 999}]}]),

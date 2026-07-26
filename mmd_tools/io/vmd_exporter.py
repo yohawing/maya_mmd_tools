@@ -13,6 +13,7 @@ from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.core.vmd_data.bone_frame import DEFAULT_BONE_INTERPOLATION, VmdBoneFrame
 from mmd_tools.core.vmd_data.camera_frame import DEFAULT_CAMERA_INTERPOLATION, VmdCameraFrame
 from mmd_tools.core.vmd_data.light_frame import VmdLightFrame
+from mmd_tools.core.vmd_data.ik_show_hide_frame import VmdIKShowHideFrame
 from mmd_tools.core.vmd_data.morph_frame import VmdMorphFrame
 from mmd_tools.core.vmd_data.shadow_frame import VmdShadowFrame
 from mmd_tools.core.native import export_vmd_animation_json
@@ -73,7 +74,10 @@ class VmdExporter:
         vmd_data.shadow_frames = [
             self._coerce_shadow_frame(frame) for frame in self._get_frames(maya_data, "shadow_frames")
         ]
-        vmd_data.ik_show_hide_frames = list(self._get_frames(maya_data, "ik_show_hide_frames"))
+        vmd_data.ik_show_hide_frames = [
+            self._coerce_ik_show_hide_frame(frame)
+            for frame in self._get_frames(maya_data, "ik_show_hide_frames")
+        ]
         return vmd_data
 
     def to_native_json_payload(self, vmd_data: VmdData) -> dict:
@@ -240,6 +244,21 @@ class VmdExporter:
         frame.frame_number = int(data.get("frame_number", data.get("frame", 0)))
         frame.mode = int(data.get("mode", 0))
         frame.distance = float(data.get("distance", 0.0))
+        return frame
+
+    @staticmethod
+    def _coerce_ik_show_hide_frame(frame_data: Any) -> VmdIKShowHideFrame:
+        if isinstance(frame_data, VmdIKShowHideFrame):
+            return frame_data
+        data = _require_mapping(frame_data, "IK show/hide frame")
+        frame = VmdIKShowHideFrame()
+        frame.frame_number = int(data.get("frame_number", data.get("frame", 0)))
+        frame.visible = int(bool(data.get("visible", True)))
+        frame.ik_states = [
+            (str(name), int(bool(enabled)))
+            for name, enabled in data.get("ik_states", ())
+        ]
+        frame.ik_count = len(frame.ik_states)
         return frame
 
 

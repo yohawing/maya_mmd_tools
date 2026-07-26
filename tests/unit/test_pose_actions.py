@@ -137,15 +137,28 @@ class TestResetPoseAction(unittest.TestCase):
         self.assertTrue(result.succeeded)
         self.assertEqual(result.reset_count, 0)
 
-    def test_reset_zeroes_rotation_preserves_translation(self):
+    def test_reset_restores_bind_translation_and_zeroes_rotation(self):
         adapter = _FakeAdapter()
         adapter.set_joint("j1", t=(5, 5, 5), r=(45, 45, 45))
-        result = ResetPoseAction(adapter).execute(ResetPoseRequest(joints=["j1"]))
+        result = ResetPoseAction(adapter).execute(
+            ResetPoseRequest(
+                joints=["j1"],
+                bind_translations={"j1": (1, 2, 3)},
+            )
+        )
         self.assertTrue(result.succeeded)
         self.assertEqual(result.reset_count, 1)
         t, r = adapter._transforms["j1"]
-        self.assertEqual(t, [5, 5, 5])
+        self.assertEqual(t, [1, 2, 3])
         self.assertEqual(r, [0, 0, 0])
+
+    def test_reset_without_bind_translation_does_not_collapse_joint(self):
+        adapter = _FakeAdapter()
+        adapter.set_joint("j1", t=(5, 5, 5), r=(45, 45, 45))
+
+        ResetPoseAction(adapter).execute(ResetPoseRequest(joints=["j1"]))
+
+        self.assertEqual(adapter._transforms["j1"], ([5, 5, 5], [0, 0, 0]))
 
     def test_reset_opens_undo_chunk(self):
         adapter = _FakeAdapter()

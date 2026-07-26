@@ -80,6 +80,27 @@ def test_morphs_load_when_their_main_tab_activates():
     presenter.ensure_morphs_loaded.assert_called_once_with()
 
 
+def test_display_frames_refresh_when_their_main_tab_activates():
+    display_pane_tab = object()
+    other_tab = object()
+    presenter = Mock()
+    window = type(
+        "Window",
+        (),
+        {
+            "display_pane_tab": display_pane_tab,
+            "display_pane_presenter": presenter,
+            "tab_widget": _Tabs([other_tab, display_pane_tab]),
+        },
+    )()
+
+    MainWindow._on_main_tab_changed(window, 0)
+    presenter.refresh.assert_not_called()
+
+    MainWindow._on_main_tab_changed(window, 1)
+    presenter.refresh.assert_called_once_with()
+
+
 def test_development_visibility_refresh_keeps_always_present_physics_tab():
     physics_tab = object()
     physics_presenter = object()

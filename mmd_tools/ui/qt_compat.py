@@ -7,8 +7,24 @@ QT_BINDING = ""
 
 try:
     from PySide6 import QtCore  # noqa: F401
-    from PySide6.QtCore import QObject, Signal, Qt, QSettings, QTimer  # noqa: F401
-    from PySide6.QtGui import QAction, QDoubleValidator, QColor, QTextCursor, QTextCharFormat  # noqa: F401
+    from PySide6.QtCore import QByteArray, QObject, QPointF, QRectF, QSize, Signal, Qt, QSettings, QTimer  # noqa: F401
+    from PySide6.QtGui import (  # noqa: F401
+        QAction,
+        QBrush,
+        QColor,
+        QDoubleValidator,
+        QFont,
+        QIcon,
+        QPainter,
+        QPainterPath,
+        QPen,
+        QPixmap,
+        QPolygonF,
+        QTextCharFormat,
+        QTextCursor,
+        QTransform,
+    )
+    from PySide6.QtSvg import QSvgRenderer  # noqa: F401
     from PySide6.QtWidgets import (  # noqa: F401
         QApplication,
         QMainWindow,
@@ -48,8 +64,10 @@ try:
         QMessageBox,
         QInputDialog,
         QToolBar,
+        QToolTip,
         QMenuBar,
         QMenu,
+        QSizePolicy,
     )
     from shiboken6 import wrapInstance  # noqa: F401
 
@@ -57,8 +75,23 @@ try:
 
 except ImportError:
     from PySide2 import QtCore  # noqa: F401
-    from PySide2.QtCore import QObject, Signal, Qt, QSettings, QTimer  # noqa: F401
-    from PySide2.QtGui import QDoubleValidator, QColor, QTextCursor, QTextCharFormat  # noqa: F401
+    from PySide2.QtCore import QByteArray, QObject, QPointF, QRectF, QSize, Signal, Qt, QSettings, QTimer  # noqa: F401
+    from PySide2.QtGui import (  # noqa: F401
+        QBrush,
+        QColor,
+        QDoubleValidator,
+        QFont,
+        QIcon,
+        QPainter,
+        QPainterPath,
+        QPen,
+        QPixmap,
+        QPolygonF,
+        QTextCharFormat,
+        QTextCursor,
+        QTransform,
+    )
+    from PySide2.QtSvg import QSvgRenderer  # noqa: F401
     from PySide2.QtWidgets import (  # noqa: F401
         QApplication,
         QMainWindow,
@@ -98,9 +131,11 @@ except ImportError:
         QMessageBox,
         QInputDialog,
         QToolBar,
+        QToolTip,
         QAction,
         QMenuBar,
         QMenu,
+        QSizePolicy,
     )
     from shiboken2 import wrapInstance  # noqa: F401
 

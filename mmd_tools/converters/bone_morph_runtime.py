@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+import maya.api.OpenMaya as om
 from maya import cmds
 
 from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX
@@ -314,6 +316,7 @@ def _collect_contributions_by_joint(
     skipped: List[str],
 ) -> Dict[str, List[Dict[str, Any]]]:
     contributions_by_joint: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    bind_orientations: Dict[str, om.MQuaternion] = {}
     for morph_node in morph_nodes:
         offsets = _parse_offsets_json(morph_node)
         if offsets is None:
@@ -329,6 +332,11 @@ def _collect_contributions_by_joint(
             if joint is None:
                 skipped.append(f"missing_joint:{morph_node}:{contribution['bone_index']}")
                 continue
+            contribution["rotate_quat"] = _pmx_quat_to_joint_rotate(
+                contribution["rotate_quat"],
+                joint,
+                bind_orientations,
+            )
             contributions_by_joint[joint].append(contribution)
 
     return dict(contributions_by_joint)
@@ -372,6 +380,63 @@ def _pmx_translate_to_maya(values) -> Tuple[float, float, float]:
 
 def _pmx_quat_to_maya(values) -> Tuple[float, float, float, float]:
     return (-float(values[0]), -float(values[1]), float(values[2]), float(values[3]))
+
+
+def _pmx_quat_to_joint_rotate(
+    maya_quat: Tuple[float, float, float, float],
+    joint: str,
+    bind_orientations: Optional[Dict[str, om.MQuaternion]] = None,
+) -> Tuple[float, float, float, float]:
+    """Map a reflected PMX offset into the joint's bind-oriented rotate basis.
+
+    PMX bone rotations are expressed in the model basis. Imported Maya joints
+    use ``jointOrient`` to represent their bind axes, so an offset must be
+    conjugated by the joint's bind-world orientation before it can be composed
+    with the existing ``joint.rotate`` animation. This is the same basis change
+    used by the VMD runtime path and remains a homomorphism, preserving PMX
+    morph-index multiplication order.
+    """
+    q_offset = om.MQuaternion(*maya_quat)
+    try:
+        q_offset.normalizeIt()
+        q_bind = bind_orientations.get(joint) if bind_orientations is not None else None
+        if q_bind is None:
+            q_bind = _joint_bind_world_orientation(joint)
+            if bind_orientations is not None:
+                bind_orientations[joint] = q_bind
+        q_rotate = q_bind * q_offset * q_bind.inverse()
+        q_rotate.normalizeIt()
+        return (q_rotate.x, q_rotate.y, q_rotate.z, q_rotate.w)
+    except Exception:
+        logger.warning(
+            "Failed to map PMX bone morph rotation into bind space for %s; "
+            "using reflected model-space quaternion",
+            joint,
+            exc_info=True,
+        )
+        return maya_quat
+
+
+def _joint_bind_world_orientation(joint: str) -> om.MQuaternion:
+    """Return the static bind-world orientation from the jointOrient chain."""
+    chain = []
+    current = joint
+    while current and cmds.objExists(current) and cmds.nodeType(current) == "joint":
+        chain.append(current)
+        parents = cmds.listRelatives(current, parent=True, type="joint", fullPath=True) or []
+        current = parents[0] if parents else ""
+
+    q_world = om.MQuaternion()
+    for current in reversed(chain):
+        values = cmds.getAttr(f"{current}.jointOrient")[0]
+        q_local = om.MEulerRotation(
+            math.radians(float(values[0])),
+            math.radians(float(values[1])),
+            math.radians(float(values[2])),
+        ).asQuaternion()
+        q_world = q_local * q_world
+    q_world.normalizeIt()
+    return q_world
 
 
 def _collect_existing_accumulators() -> Dict[str, str]:

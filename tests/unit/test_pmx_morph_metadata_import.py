@@ -9,7 +9,11 @@ from tests.common.maya_stub import install_headless_ui_stubs
 install_headless_ui_stubs()
 
 from mmd_tools.core.pmx_data.morph import PmxMorphType  # noqa: E402
-from mmd_tools.io.pmx_importer import _serialize_pmx_morph_data  # noqa: E402
+from mmd_tools.converters.morph_converter import MorphConverter  # noqa: E402
+from mmd_tools.io.pmx_importer import (  # noqa: E402
+    _serialize_pmx_morph_data,
+    _validate_morph_runtime_requirements,
+)
 from mmd_tools.core.morph_metadata_reader import morph_info_from_presenter_entry  # noqa: E402
 from mmd_tools.converters.morph_scene_metadata import (  # noqa: E402
     read_blendshape_morph_entries,
@@ -30,6 +34,33 @@ class _Morph:
 
 
 class TestPmxMorphMetadataImport(unittest.TestCase):
+    @patch("mmd_tools.io.pmx_importer.cmds.allNodeTypes", return_value=["mmdMorphController"])
+    @patch("mmd_tools.io.pmx_importer.logger")
+    def test_mixed_module_session_uses_compatibility_preflight(self, logger, _all_node_types):
+        legacy_converter = type("LegacyMorphConverter", (), {"settings": {"import_morphs": True}})()
+        pmx_data = type("PmxData", (), {"morphs": [object()]})()
+
+        _validate_morph_runtime_requirements(legacy_converter, pmx_data)
+
+        logger.warning.assert_called_once()
+
+    @patch("mmd_tools.converters.morph_converter.cmds.allNodeTypes", return_value=[])
+    def test_morph_runtime_preflight_rejects_missing_controller_before_import(self, _all_node_types):
+        converter = MorphConverter()
+        converter.settings = {"import_morphs": True}
+        pmx_data = type("PmxData", (), {"morphs": [object()]})()
+
+        with self.assertRaisesRegex(RuntimeError, "Load or reload.*plugin"):
+            converter.validate_runtime_requirements(pmx_data)
+
+    @patch("mmd_tools.converters.morph_converter.cmds.allNodeTypes", return_value=[])
+    def test_morph_runtime_preflight_skips_when_morph_import_is_disabled(self, _all_node_types):
+        converter = MorphConverter()
+        converter.settings = {"import_morphs": False}
+        pmx_data = type("PmxData", (), {"morphs": [object()]})()
+
+        converter.validate_runtime_requirements(pmx_data)
+
     def test_serializes_all_authoritative_fields_without_custom_group(self):
         encoded = _serialize_pmx_morph_data(
             [

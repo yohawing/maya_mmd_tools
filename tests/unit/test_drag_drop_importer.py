@@ -10,7 +10,7 @@ from tests.common.maya_stub import install_headless_ui_stubs
 
 install_headless_ui_stubs()
 
-from mmd_tools.ui import drag_drop_importer  # noqa: E402
+from mmd_tools.ui import drag_drop_importer, qt_compat  # noqa: E402
 
 
 class _FakeSettingsService:
@@ -34,9 +34,10 @@ class _FakeSettingsService:
 
 
 class _FakeSceneModelService:
-    def __init__(self, *, parent_root=None, models=None):
+    def __init__(self, *, parent_root=None, models=None, attrs=None):
         self.parent_root = parent_root
         self.models = list(models or [])
+        self.attrs = dict(attrs or {})
 
     def get_parent_mmd_root(self, _node):
         return self.parent_root
@@ -49,6 +50,18 @@ class _FakeSceneModelService:
 
     def list_mmd_models(self):
         return list(self.models)
+
+    def get_attr_safe(self, node, attr, default=None):
+        return self.attrs.get(node, {}).get(attr, default)
+
+
+class _RecordingReadmeAdapter:
+    def __init__(self):
+        self.calls = []
+
+    def show(self, readme, *, model_path="", parent=None):
+        self.calls.append((readme, model_path, parent))
+        return True
 
 
 class TestDragDropImporter(unittest.TestCase):
@@ -167,6 +180,37 @@ class TestDragDropImporter(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(calls[0][0], ".pmd")
         self.assertEqual(calls[0][1]["scale"], 2.5)
+
+    @patch.object(drag_drop_importer, "_display_info")
+    def test_import_dropped_pmx_and_pmd_show_each_model_readme_once(self, _display_info):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pmx = root / "model.pmx"
+            pmd = root / "legacy.pmd"
+            pmx.write_text("", encoding="utf-8")
+            pmd.write_text("", encoding="utf-8")
+            importer = MagicMock(side_effect=["|pmx_root", "|pmd_root"])
+            scene_service = _FakeSceneModelService(
+                attrs={
+                    "|pmx_root": {"mmd_comment": "PMX JP", "mmd_comment_en": "PMX EN"},
+                    "|pmd_root": {"mmd_comment": "PMD JP", "mmd_comment_en": ""},
+                }
+            )
+            readme_adapter = _RecordingReadmeAdapter()
+
+            result = drag_drop_importer.import_dropped_files(
+                [str(pmx), str(pmd)],
+                importer=importer,
+                settings_service=_FakeSettingsService(),
+                scene_model_service=scene_service,
+                model_readme_adapter=readme_adapter,
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(len(readme_adapter.calls), 2)
+        self.assertEqual(readme_adapter.calls[0][0].to_plain_text(), "Japanese (JP):\nPMX JP\n\nEnglish (EN):\nPMX EN")
+        self.assertEqual(readme_adapter.calls[1][0].to_plain_text(), "Japanese (JP):\nPMD JP")
+        self.assertEqual([call[1] for call in readme_adapter.calls], [str(pmx), str(pmd)])
 
     @patch.object(drag_drop_importer, "_selected_model_root", return_value="|selected_model")
     @patch.object(drag_drop_importer, "_display_info")
@@ -306,19 +350,49 @@ class TestDragDropImporter(unittest.TestCase):
             with patch.object(drag_drop_importer.cmds, "ls", return_value=["|model_root|joint1"]):
                 self.assertEqual(drag_drop_importer._selected_model_root(), "|model_root")
 
-    def test_selected_model_root_falls_back_to_first_mmd_model(self):
+    def test_selected_model_root_rejects_ambiguous_loaded_models(self):
         service = _FakeSceneModelService(models=["|first_model", "|second_model"])
         with patch.object(drag_drop_importer, "SceneModelService", return_value=service):
             with patch.object(drag_drop_importer.cmds, "ls", return_value=[]):
-                self.assertEqual(drag_drop_importer._selected_model_root(), "|first_model")
+                self.assertIsNone(drag_drop_importer._selected_model_root())
+
+    def test_selected_model_root_falls_back_to_sole_mmd_model(self):
+        service = _FakeSceneModelService(models=["|only_model"])
+        with patch.object(drag_drop_importer.cmds, "ls", return_value=[]):
+            self.assertEqual(drag_drop_importer._selected_model_root(service), "|only_model")
+
+    @patch.object(drag_drop_importer, "_display_warning")
+    @patch.object(drag_drop_importer, "_display_info")
+    def test_import_dropped_vmd_requires_selection_when_multiple_models_are_loaded(
+        self,
+        _display_info,
+        display_warning,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            motion = Path(tmp) / "motion.vmd"
+            motion.write_text("", encoding="utf-8")
+            importer = MagicMock(return_value=True)
+            service = _FakeSceneModelService(models=["|model_a", "|ns:model_b"])
+            with patch.object(drag_drop_importer.cmds, "ls", return_value=[]):
+                result = drag_drop_importer.import_dropped_files(
+                    [str(motion)],
+                    importer=importer,
+                    settings_service=_FakeSettingsService(),
+                    scene_model_service=service,
+                )
+
+        self.assertFalse(result)
+        importer.assert_not_called()
+        self.assertIn("select one MMD model", display_warning.call_args.args[0])
+        self.assertIn("2 models", display_warning.call_args.args[0])
 
     def test_drop_filter_uses_global_qt_filter_on_maya_2026(self):
         event_filter = drag_drop_importer._MmdDropEventFilter()
         window = object()
         app = object()
 
-        with patch.object(drag_drop_importer, "_maya_version", return_value=2026), patch(
-            "mmd_tools.ui.qt_compat.QApplication"
+        with patch.object(drag_drop_importer, "_maya_version", return_value=2026), patch.object(
+            qt_compat, "QApplication"
         ) as application:
             application.instance.return_value = app
             self.assertEqual(event_filter._drop_targets(window), [app, window])
@@ -327,8 +401,8 @@ class TestDragDropImporter(unittest.TestCase):
         event_filter = drag_drop_importer._MmdDropEventFilter()
         window = object()
 
-        with patch.object(drag_drop_importer, "_maya_version", return_value=2027), patch(
-            "mmd_tools.ui.qt_compat.QApplication"
+        with patch.object(drag_drop_importer, "_maya_version", return_value=2027), patch.object(
+            qt_compat, "QApplication"
         ) as application:
             self.assertEqual(event_filter._drop_targets(window), [window])
             application.instance.assert_not_called()

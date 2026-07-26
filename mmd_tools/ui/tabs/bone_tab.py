@@ -20,6 +20,7 @@ from ..qt_compat import (
 )
 from ..base_tab import BaseTab
 from .translation_registry import apply_translation_registry
+from ..components.symbol_tool_button import MaterialSymbolToolButton
 
 
 class BoneTab(BaseTab):
@@ -110,10 +111,11 @@ class BoneTab(BaseTab):
 
         # ツールバー
         toolbar_layout = QHBoxLayout()
-        self.refresh_btn = QPushButton(self.tr("refresh", "buttons"))
-        self.refresh_btn.setMaximumWidth(60)
+        self.refresh_btn = MaterialSymbolToolButton("refresh", self.tr("refresh", "buttons"))
+        self.bind_pose_btn = QPushButton(self.tr("go_to_bind_pose", "buttons"))
 
         toolbar_layout.addWidget(self.refresh_btn)
+        toolbar_layout.addWidget(self.bind_pose_btn)
         toolbar_layout.addStretch()
 
         bone_tree_layout.addLayout(toolbar_layout)
@@ -581,6 +583,7 @@ class BoneTab(BaseTab):
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""
         apply_translation_registry(self, self._TRANSLATION_REGISTRY)
+        self.bind_pose_btn.setText(self.tr("go_to_bind_pose", "buttons"))
 
         # ComboBox items - Connection type
         self.connection_type_combo.clear()

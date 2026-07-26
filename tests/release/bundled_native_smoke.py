@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 MAYA_VERSIONS = ("2024", "2025", "2026", "2027")
+CURRENT_ABI_VERSION = 3
 REQUIRED_FEATURE_FLAGS = 0x3
 RUNTIME_NAME = "mmd_runtime_ffi.dll"
 PLUGIN_NAME = "mmd_tools_cpp.mll"
@@ -67,12 +68,17 @@ def _runtime_probe(path: Path) -> dict[str, object]:
     loaded_path = _windows_module_path(RUNTIME_NAME)
     expected = os.path.normcase(str(path.resolve()))
     actual = os.path.normcase(str(Path(loaded_path).resolve())) if loaded_path else ""
-    ok = abi == 2 and (flags & REQUIRED_FEATURE_FLAGS) == REQUIRED_FEATURE_FLAGS and actual == expected
+    ok = (
+        abi == CURRENT_ABI_VERSION
+        and (flags & REQUIRED_FEATURE_FLAGS) == REQUIRED_FEATURE_FLAGS
+        and actual == expected
+    )
     return {
         "status": "pass" if ok else "fail",
         "path": str(path),
         "loadedPath": loaded_path,
         "abi": abi,
+        "expectedAbi": CURRENT_ABI_VERSION,
         "featureFlags": flags,
         "requiredFeatureFlags": REQUIRED_FEATURE_FLAGS,
     }

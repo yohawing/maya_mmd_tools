@@ -12,7 +12,6 @@ from mmd_tools.io.mmd_importer import _scoped_settings_override, import_mmd_file
 
 _ALL_KEYS = (
     "import.model.separate_meshes_by_material",
-    "import.model.auto_classify_transparency",
     "import.model.auto_resolve_textures",
     "import.model.disable_backface_culling",
     "import.model.uv_set_name",
@@ -32,7 +31,6 @@ class TestScopedSettingsOverride(unittest.TestCase):
 
     def test_settings_forced_inside_context(self):
         settings.set("import.model.separate_meshes_by_material", True)
-        settings.set("import.model.auto_classify_transparency", True)
         settings.set("import.model.auto_resolve_textures", True)
         settings.set("import.model.disable_backface_culling", False)
         settings.set("import.model.uv_set_name", "myUV")
@@ -41,7 +39,6 @@ class TestScopedSettingsOverride(unittest.TestCase):
 
         options = {
             "separate_meshes_by_material": False,
-            "auto_classify_transparency": False,
             "auto_resolve_textures": False,
             "disable_backface_culling": True,
             "uv_set_name": "map#",
@@ -52,7 +49,6 @@ class TestScopedSettingsOverride(unittest.TestCase):
 
         with _scoped_settings_override(options):
             self.assertFalse(settings.get("import.model.separate_meshes_by_material"))
-            self.assertFalse(settings.get("import.model.auto_classify_transparency"))
             self.assertFalse(settings.get("import.model.auto_resolve_textures"))
             self.assertTrue(settings.get("import.model.disable_backface_culling"))
             self.assertEqual(settings.get("import.model.uv_set_name"), "map#")

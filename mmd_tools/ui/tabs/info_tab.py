@@ -5,12 +5,8 @@ from ..qt_compat import (
     QGroupBox,
     QTextEdit,
     QLabel,
-    QComboBox,
-    QPushButton,
-    QHBoxLayout,
 )
 from ..base_tab import BaseTab
-from ..combo_box_utils import add_combo_item_with_tooltip, configure_model_combo_width
 
 
 class InfoTab(BaseTab):
@@ -19,18 +15,6 @@ class InfoTab(BaseTab):
         self.setObjectName("InfoTab")
 
         main_layout = QVBoxLayout(self)
-
-        # モデル選択セクション
-        model_select_layout = QHBoxLayout()
-        self.current_model_label = QLabel(self.tr("current_model", "fields"))
-        model_select_layout.addWidget(self.current_model_label)
-        self.model_combo = QComboBox()
-        configure_model_combo_width(self.model_combo)
-        self.refresh_button = QPushButton(self.tr("refresh", "buttons"))
-        self.refresh_button.setMaximumWidth(100)
-        model_select_layout.addWidget(self.model_combo)
-        model_select_layout.addWidget(self.refresh_button)
-        main_layout.addLayout(model_select_layout)
 
         # モデル情報セクション
         self.info_group = QGroupBox(self.tr("model_information", "groups"))
@@ -71,9 +55,6 @@ class InfoTab(BaseTab):
         # 初期状態では編集不可
         self.set_fields_enabled(False)
 
-        # モデルコンボボックスの初期状態
-        add_combo_item_with_tooltip(self.model_combo, self.tr("no_mmd_models", "placeholders"))
-
     def set_fields_enabled(self, enabled):
         """フィールドの編集可否を設定"""
         self.model_name_jp_edit.setEnabled(enabled)
@@ -87,15 +68,10 @@ class InfoTab(BaseTab):
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""
         # Labels
-        if hasattr(self, "current_model_label"):
-            self.current_model_label.setText(self.tr("current_model", "fields"))
         if hasattr(self, "comment_jp_label"):
             self.comment_jp_label.setText(self.tr("comment_jp", "fields"))
         if hasattr(self, "comment_en_label"):
             self.comment_en_label.setText(self.tr("comment_en", "fields"))
-
-        # Buttons
-        self.refresh_button.setText(self.tr("refresh", "buttons"))
 
         # GroupBox
         if hasattr(self, "info_group"):
@@ -114,7 +90,3 @@ class InfoTab(BaseTab):
 
         # Info label
         self.info_label.setText(self.tr("no_model_loaded", "placeholders"))
-
-        # Refresh combo box placeholder text if no models
-        if self.model_combo.count() == 1 and self.model_combo.currentData() is None:
-            self.model_combo.setItemText(0, self.tr("no_mmd_models", "placeholders"))

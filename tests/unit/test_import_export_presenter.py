@@ -143,10 +143,11 @@ class _FakeAppState:
 
 
 class _FakeSceneModelService:
-    def __init__(self, models=None, display_names=None, error=None):
+    def __init__(self, models=None, display_names=None, error=None, attrs=None):
         self.models = models or []
         self.display_names = display_names or {}
         self.error = error
+        self.attrs = dict(attrs or {})
 
     def list_mmd_models(self):
         if self.error:
@@ -155,6 +156,21 @@ class _FakeSceneModelService:
 
     def get_model_display_name(self, model_root):
         return self.display_names.get(model_root, model_root)
+
+    def get_attr_safe(self, node, attr, default=None):
+        return self.attrs.get(node, {}).get(attr, default)
+
+
+class _RecordingReadmeAdapter:
+    def __init__(self, events=None):
+        self.calls = []
+        self.events = events
+
+    def show(self, readme, *, model_path="", parent=None):
+        self.calls.append((readme, model_path, parent))
+        if self.events is not None:
+            self.events.append("readme")
+        return True
 
 
 class _FakeMayaAdapter:
@@ -219,6 +235,22 @@ class _RecordingImportVmdAction:
         return self.result
 
 
+class _RecordingReducedImportVmdAction(_RecordingImportVmdAction):
+    def execute(self, request):
+        self.requests.append(request)
+        request.options["profile"] = {
+            "vmd_converter": {
+                "reduced_bake_keys": {
+                    "used": True,
+                    "source_key_count": 100,
+                    "reduced_key_count": 60,
+                    "reduction_ratio": 0.4,
+                }
+            }
+        }
+        return self.result
+
+
 class _FailingImportVmdAction:
     def execute(self, _request):
         raise AssertionError("vmd action must not be used")
@@ -266,6 +298,88 @@ class TestImportExportPresenter(unittest.TestCase):
         settings.set("import.rig.bake_mode", self._old_bake_mode)
         settings.set("ui.general.development_mode", self._old_dev_mode)
         settings.set("import.model.show_texture_issue_dialog", self._old_texture_dialog)
+
+    def test_vmd_reduction_summary_is_localized_and_concise(self):
+        presenter = ImportExportPresenter(_FakeView(), _FakeAppState())
+        profile = {
+            "vmd_converter": {
+                "reduced_bake_keys": {
+                    "used": True,
+                    "source_key_count": 100,
+                    "reduced_key_count": 60,
+                    "reduction_ratio": 0.4,
+                }
+            }
+        }
+
+        summary = presenter._vmd_reduction_summary(profile)
+
+        self.assertEqual(summary, "Reduced keys: 100 -> 60 (40.0% reduced)")
+
+    def test_vmd_success_appends_reduction_summary_and_keeps_generic_status_without_profile(self):
+        view = _FakeView()
+        app_state = _FakeAppState()
+        action = _RecordingReducedImportVmdAction(ImportVmdResult(root_node=True, succeeded=True))
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        presenter.import_vmd_file()
+
+        self.assertIn(
+            "VMD import complete: motion.vmd — Reduced keys: 100 -> 60 (40.0% reduced)",
+            app_state.statuses,
+        )
+
+        view = _FakeView()
+        app_state = _FakeAppState()
+        action = _RecordingImportVmdAction(ImportVmdResult(root_node=True, succeeded=True))
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        presenter.import_vmd_file()
+
+        self.assertIn("VMD import complete: motion.vmd", app_state.statuses)
+
+    def test_import_file_vmd_partial_keeps_reduction_summary_once(self):
+        view = _FakeView()
+        view.import_path_edit = _FakeLineEdit("motion.vmd")
+        app_state = _FakeAppState()
+        action = _RecordingReducedImportVmdAction(
+            ImportVmdResult(
+                root_node=True,
+                succeeded=True,
+                warnings=[{"message": "runtime fallback"}],
+                outcome="partial",
+            )
+        )
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        presenter.import_file()
+
+        reduced_statuses = [status for status in app_state.statuses if "Reduced keys:" in status]
+        self.assertEqual(reduced_statuses, [
+            "VMD import completed with warnings (1): motion.vmd — Reduced keys: 100 -> 60 (40.0% reduced)"
+        ])
+        self.assertFalse(any("VMD import complete:" in status for status in app_state.statuses))
+
+    def test_import_vmd_file_partial_keeps_reduction_summary_once(self):
+        view = _FakeView()
+        app_state = _FakeAppState()
+        action = _RecordingReducedImportVmdAction(
+            ImportVmdResult(
+                root_node=True,
+                succeeded=True,
+                warnings=[{"message": "runtime fallback"}],
+                outcome="partial",
+            )
+        )
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        presenter.import_vmd_file()
+
+        reduced_statuses = [status for status in app_state.statuses if "Reduced keys:" in status]
+        self.assertEqual(reduced_statuses, [
+            "VMD import completed with warnings (1): motion.vmd — Reduced keys: 100 -> 60 (40.0% reduced)"
+        ])
+        self.assertFalse(any("VMD import complete:" in status for status in app_state.statuses))
 
     def test_import_file_leaves_rig_options_unset_when_bake_mode_enabled(self):
         # bake_mode only controls VMD animation import; model import still builds rig by default.
@@ -570,6 +684,124 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertIn(100, app_state.progress)
         self.assertEqual(view.model_items, [])
         self.assertEqual(recorded_history, ["model.pmx"])
+
+    def test_import_file_success_shows_japanese_and_english_model_readme_once(self):
+        view = _FakeView()
+        app_state = _FakeAppState(
+            _FakeSceneModelService(
+                attrs={
+                    "model_root": {
+                        "mmd_comment": "JP comment",
+                        "mmd_comment_en": "EN comment",
+                    }
+                }
+            )
+        )
+        adapter = _RecordingReadmeAdapter()
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=_RecordingImportModelAction(
+                ImportModelResult(root_node="model_root", succeeded=True, outcome="success")
+            ),
+            import_vmd_action=_FailingImportVmdAction(),
+            model_readme_adapter=adapter,
+        )
+
+        presenter.import_file()
+
+        self.assertEqual(len(adapter.calls), 1)
+        self.assertEqual(
+            adapter.calls[0][0].to_plain_text(),
+            "Japanese (JP):\nJP comment\n\nEnglish (EN):\nEN comment",
+        )
+        self.assertEqual(adapter.calls[0][1], "model.pmx")
+
+    def test_import_file_empty_model_readme_is_not_shown(self):
+        view = _FakeView()
+        app_state = _FakeAppState(
+            _FakeSceneModelService(
+                attrs={"model_root": {"mmd_comment": " \n", "mmd_comment_en": "\t"}}
+            )
+        )
+        adapter = _RecordingReadmeAdapter()
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=_RecordingImportModelAction(
+                ImportModelResult(root_node="model_root", succeeded=True, outcome="success")
+            ),
+            import_vmd_action=_FailingImportVmdAction(),
+            model_readme_adapter=adapter,
+        )
+
+        presenter.import_file()
+
+        self.assertEqual(adapter.calls, [])
+
+    def test_import_file_partial_shows_model_readme_after_existing_modals(self):
+        events = []
+        texture = {"file_node": "file1", "material": "mat1", "reason": "missing"}
+        non_texture = {"code": "node_type_unavailable", "reason": "node_type_unavailable"}
+        view = _FakeView()
+        app_state = _FakeAppState(
+            _FakeSceneModelService(
+                attrs={"model_root": {"mmd_comment": "JP", "mmd_comment_en": "EN"}}
+            )
+        )
+
+        class _PartialAction:
+            def execute(self, request):
+                request.options.setdefault("profile", {})["texture_issues"] = [texture]
+                return ImportModelResult(
+                    root_node="model_root",
+                    succeeded=True,
+                    warnings=[non_texture, texture],
+                    outcome="partial",
+                )
+
+        adapter = _RecordingReadmeAdapter(events)
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=_PartialAction(),
+            import_vmd_action=_FailingImportVmdAction(),
+            model_readme_adapter=adapter,
+        )
+        with patch.object(
+            presenter,
+            "_show_import_partial_warning",
+            side_effect=lambda *_args: events.append("warning"),
+        ), patch.object(
+            presenter,
+            "_show_texture_issue_dialog",
+            side_effect=lambda *_args, **_kwargs: events.append("texture"),
+        ):
+            presenter.import_file()
+
+        self.assertEqual(events, ["warning", "texture", "readme"])
+
+    def test_import_file_fatal_does_not_show_model_readme(self):
+        view = _FakeView()
+        app_state = _FakeAppState(
+            _FakeSceneModelService(
+                attrs={"model_root": {"mmd_comment": "JP", "mmd_comment_en": "EN"}}
+            )
+        )
+        adapter = _RecordingReadmeAdapter()
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=_RecordingImportModelAction(
+                ImportModelResult(root_node=None, succeeded=False, outcome="fatal")
+            ),
+            import_vmd_action=_FailingImportVmdAction(),
+            model_readme_adapter=adapter,
+        )
+
+        presenter.import_file()
+
+        self.assertEqual(adapter.calls, [])
 
     def test_import_file_model_partial_retains_root_and_one_warning_outcome(self):
         recorded_history = []
@@ -1464,7 +1696,6 @@ class TestDevModeBehaviorGating(unittest.TestCase):
         "import.model.import_models",
         "import.physics.import_physics",
         "import.model.separate_meshes_by_material",
-        "import.model.auto_classify_transparency",
         "import.model.auto_resolve_textures",
         "import.model.disable_backface_culling",
         "import.model.uv_set_name",
@@ -1587,12 +1818,6 @@ class TestDevModeBehaviorGating(unittest.TestCase):
         settings.set("import.model.texture_search_path", "/some/path")
         opts = self._run_import()
         self.assertEqual(opts["texture_search_path"], "")
-
-    def test_normal_mode_forces_auto_classify_transparency_false(self):
-        settings.set("ui.general.development_mode", False)
-        settings.set("import.model.auto_classify_transparency", True)
-        opts = self._run_import()
-        self.assertFalse(opts["auto_classify_transparency"])
 
     def test_normal_mode_preserves_auto_resolve_textures_option(self):
         settings.set("ui.general.development_mode", False)

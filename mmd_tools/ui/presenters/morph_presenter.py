@@ -15,7 +15,12 @@ from ...core.morph_metadata_reader import (
 )
 from ...converters.morph_runtime_common import parse_morph_offsets_json
 from ..qt_compat import Qt, QTimer, QListWidgetItem
-from .list_presenter_helpers import apply_list_filter, reload_for_current_model_change, tr_message_format
+from .list_presenter_helpers import (
+    apply_list_filter,
+    format_indexed_name_label,
+    reload_for_current_model_change,
+    tr_message_format,
+)
 
 logger = get_logger(__name__)
 
@@ -386,6 +391,25 @@ class MorphPresenter:
             return cached
         return self._evaluate_morph_controls_supported(data)
 
+    def _output_weight_connections(self, index):
+        """Return destinations for one generated controller element fail-soft."""
+
+        if not self._morph_controller or index < 0:
+            return []
+        plug = f"{self._morph_controller}.outputWeight[{index}]"
+        try:
+            if not self.maya_adapter.object_exists(plug):
+                return []
+            return self.maya_adapter.list_connections(
+                plug,
+                source=False,
+                destination=True,
+            ) or []
+        except Exception:
+            # Sparse multi elements can be absent on old or partially built
+            # controllers.  Capability discovery treats them as unsupported.
+            return []
+
     def _evaluate_morph_controls_supported(self, data):
         """Compute capability; callers should normally use the cached wrapper."""
         raw_type = self._raw_pmx_type(data)
@@ -394,11 +418,7 @@ class MorphPresenter:
                 index = int(data.get("index", -1))
             except (TypeError, ValueError):
                 index = -1
-            if self._morph_controller and index >= 0 and self.maya_adapter.list_connections(
-                f"{self._morph_controller}.outputWeight[{index}]",
-                source=False,
-                destination=True,
-            ):
+            if self._output_weight_connections(index):
                 return True
             morph_node = data.get("morph_node")
             return bool(morph_node and self.maya_adapter.object_exists(morph_node))
@@ -418,11 +438,7 @@ class MorphPresenter:
             for target, sources in topology.items():
                 if not any(int(group) == source_index for group, _rate in sources):
                     continue
-                if self.maya_adapter.list_connections(
-                    f"{self._morph_controller}.outputWeight[{int(target)}]",
-                    source=False,
-                    destination=True,
-                ):
+                if self._output_weight_connections(int(target)):
                     return True
             return False
 
@@ -683,8 +699,15 @@ class MorphPresenter:
                 raw_type = UI_INDEX_TO_PMX_TYPE.get(int(raw_type), 1)
             type_letter = _MORPH_TYPE_LETTERS.get(int(raw_type), "?")
             name = data.get("name_jp") or morph_key
-            index_text = f"{index:03d}" if index >= 0 else "---"
-            item = QListWidgetItem(f"{index_text}:{type_letter}|{name}")
+            index_text = str(index) if index >= 0 else "-"
+            item = QListWidgetItem(
+                format_indexed_name_label(
+                    index_text,
+                    name,
+                    data.get("name_en", ""),
+                    prefix=f"{type_letter}|",
+                )
+            )
             item.setData(Qt.UserRole, morph_key)
             self.view.morph_list.addItem(item)
 

@@ -4,7 +4,7 @@ mmd-anim (Rust) の C ABI を ctypes でラップするモジュール。
 このファイルは Maya 環境で mmd-anim-ffi の共有ライブラリをロードし、
 PMX モデルと VMD モーションの忠実なランタイム評価を提供します。
 
-対応する主な機能 (mmd-anim-ffi ABI 2 基準):
+対応する主な機能 (mmd-anim-ffi ABI 3 / 互換 ABI 2):
 - PMX バイト列からのモデル構築
 - VMD バイト列 + モデルからのクリップ構築
 - 任意フレーム (float) での評価
@@ -33,7 +33,10 @@ from mmd_tools.core.logger import get_logger
 from mmd_tools.core.native import mmd_anim_runtime_loader as _runtime_loader
 from mmd_tools.core.native.mmd_anim_runtime_types import (
     MMD_RUNTIME_FEATURE_PHYSICS_BULLET_NATIVE as _MMD_RUNTIME_FEATURE_PHYSICS_BULLET_NATIVE,
+    MMD_RUNTIME_FEATURE_REDUCED_POSE_GENERIC_CURVES as _MMD_RUNTIME_FEATURE_REDUCED_POSE_GENERIC_CURVES,
     MMD_RUNTIME_FEATURE_SPLIT_PHYSICS_EVALUATION as _MMD_RUNTIME_FEATURE_SPLIT_PHYSICS_EVALUATION,
+    MMD_RUNTIME_REDUCED_POSE_GENERIC_CURVE_ABI_VERSION_V1 as _MMD_RUNTIME_REDUCED_POSE_GENERIC_CURVE_ABI_VERSION_V1,
+    MMD_RUNTIME_REDUCTION_TARGET_DCC_CUBIC as _MMD_RUNTIME_REDUCTION_TARGET_DCC_CUBIC,
     MMD_RUNTIME_PHYSICS_MODE_LIVE as _MMD_RUNTIME_PHYSICS_MODE_LIVE,
     MMD_RUNTIME_RIG_BONE_FIXED_AXIS as _MMD_RUNTIME_RIG_BONE_FIXED_AXIS,
     MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS as _MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS,
@@ -61,6 +64,8 @@ from mmd_tools.core.native.mmd_anim_runtime_handles import (
     MmdRuntimeInstance,
     MmdRuntimeModel,
     MmdRuntimePhysicsWorld,
+    MmdRuntimeReducedPose as _MmdRuntimeReducedPose,
+    reduce_dense_pose as _reduce_dense_pose,
 )
 from mmd_tools.core.native import mmd_anim_runtime_local_channels as _runtime_local_channels
 from mmd_tools.core.native.mmd_anim_runtime_parsed_model import MmdParsedModel
@@ -79,9 +84,18 @@ MMD_RUNTIME_RIG_BONE_FIXED_AXIS = _MMD_RUNTIME_RIG_BONE_FIXED_AXIS
 # ------------------------------------------------------------------
 # ABI 定数 (mmd_runtime.h より)
 # ------------------------------------------------------------------
-MMD_RUNTIME_ABI_VERSION = 2
+MMD_RUNTIME_ABI_VERSION_CURRENT = _runtime_loader.MMD_RUNTIME_ABI_VERSION_CURRENT
+MMD_RUNTIME_ABI_VERSIONS_SUPPORTED = _runtime_loader.MMD_RUNTIME_ABI_VERSIONS_SUPPORTED
+# Backward-compatible alias; this denotes the current wrapper ABI, not the
+# only ABI accepted by the loader.
+MMD_RUNTIME_ABI_VERSION = MMD_RUNTIME_ABI_VERSION_CURRENT
 MMD_RUNTIME_FEATURE_SPLIT_PHYSICS_EVALUATION = _MMD_RUNTIME_FEATURE_SPLIT_PHYSICS_EVALUATION
 MMD_RUNTIME_FEATURE_PHYSICS_BULLET_NATIVE = _MMD_RUNTIME_FEATURE_PHYSICS_BULLET_NATIVE
+MMD_RUNTIME_FEATURE_REDUCED_POSE_GENERIC_CURVES = _MMD_RUNTIME_FEATURE_REDUCED_POSE_GENERIC_CURVES
+MMD_RUNTIME_REDUCED_POSE_GENERIC_CURVE_ABI_VERSION_V1 = _MMD_RUNTIME_REDUCED_POSE_GENERIC_CURVE_ABI_VERSION_V1
+MMD_RUNTIME_REDUCTION_TARGET_DCC_CUBIC = _MMD_RUNTIME_REDUCTION_TARGET_DCC_CUBIC
+MmdRuntimeReducedPose = _MmdRuntimeReducedPose
+reduce_dense_pose = _reduce_dense_pose
 MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS = _MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS
 MMD_RUNTIME_PHYSICS_MODE_LIVE = _MMD_RUNTIME_PHYSICS_MODE_LIVE
 MMD_RUNTIME_STATUS_OK = _MMD_RUNTIME_STATUS_OK
@@ -89,6 +103,19 @@ MMD_RUNTIME_STATUS_INVALID_INPUT = _MMD_RUNTIME_STATUS_INVALID_INPUT
 MMD_RUNTIME_STATUS_UNSUPPORTED = _MMD_RUNTIME_STATUS_UNSUPPORTED
 MMD_RUNTIME_STATUS_BUFFER_TOO_SMALL = _MMD_RUNTIME_STATUS_BUFFER_TOO_SMALL
 MMD_RUNTIME_STATUS_ERROR = _MMD_RUNTIME_STATUS_ERROR
+
+# The generic DCC curve reduction path is optional in the native ABI.  Keep
+# this list at the wrapper boundary so callers can fail closed before they
+# disconnect a Maya rig or clear existing keys.
+_MMD_RUNTIME_REDUCED_POSE_REQUIRED_SYMBOLS = (
+    "mmd_runtime_reduced_pose_create_from_dense",
+    "mmd_runtime_reduced_pose_free",
+    "mmd_runtime_reduced_pose_report",
+    "mmd_runtime_reduced_pose_generic_curve_info",
+    "mmd_runtime_reduced_pose_generic_curve_count",
+    "mmd_runtime_reduced_pose_generic_curve_descriptor",
+    "mmd_runtime_reduced_pose_generic_curve_keys",
+)
 
 def _find_library() -> Optional[Path]:
     """Compatibility wrapper for runtime library discovery."""
@@ -205,6 +232,30 @@ def get_runtime_feature_flags() -> int:
     except Exception as exc:
         logger.error("mmd_runtime_feature_flags failed: %s", exc, exc_info=True)
         return 0
+
+
+def is_native_reduced_pose_available() -> bool:
+    """Return whether the generic native pose reducer can be used safely.
+
+    This is deliberately a cheap capability check: it only inspects the
+    loaded DLL's feature flag and exported symbols.  It does not create a
+    model, evaluate a clip, or mutate a Maya scene, so Bake callers can reject
+    an explicit ``Reduce Bake Keys`` request before clearing or disconnecting
+    any existing animation.
+    """
+    lib = get_mmd_runtime_library()
+    if lib is None:
+        return False
+    if any(getattr(lib, name, None) is None for name in _MMD_RUNTIME_REDUCED_POSE_REQUIRED_SYMBOLS):
+        return False
+    flags_func = getattr(lib, "mmd_runtime_feature_flags", None)
+    if flags_func is None:
+        return False
+    try:
+        return bool(int(flags_func()) & MMD_RUNTIME_FEATURE_REDUCED_POSE_GENERIC_CURVES)
+    except Exception as exc:
+        logger.debug("mmd_runtime_feature_flags failed for generic reduction preflight: %s", exc)
+        return False
 
 
 def is_native_physics_available() -> bool:

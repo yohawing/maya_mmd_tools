@@ -73,6 +73,65 @@ class TestModelImportPipelineLogging(unittest.TestCase):
             pipeline.sync_dx11_uniforms(converter, refresh_if_dx11=True)
         self.assertEqual(order, ["refresh", "sync"])
 
+    def test_hardware_shader_viewport_setup_runs_after_hardware_sync(self):
+        for backend in ("dx11", "glsl"):
+            with self.subTest(backend=backend):
+                logger = MagicMock()
+                pipeline = self._make_pipeline(logger)
+                converter = SimpleNamespace(
+                    has_dx11_shaders=backend == "dx11",
+                    has_glsl_shaders=backend == "glsl",
+                    created_shaders=[],
+                )
+                with patch.object(
+                    model_import_pipeline,
+                    "sync_dx11_generated_uniforms",
+                    return_value=0,
+                ), patch.object(
+                    model_import_pipeline.maya_viewport_utils,
+                    "setup_mmd_color_management",
+                ), patch.object(
+                    model_import_pipeline.maya_viewport_utils,
+                    "setup_mmd_transparency",
+                ), patch.object(
+                    model_import_pipeline.maya_viewport_utils,
+                    "setup_mmd_hardware_viewport",
+                    return_value=2,
+                ) as setup_hardware:
+                    pipeline.sync_dx11_uniforms(converter)
+                    changed = pipeline.setup_view()
+
+                setup_hardware.assert_called_once_with()
+                self.assertEqual(changed, 2)
+
+    def test_standard_shader_view_does_not_change_hardware_panels(self):
+        logger = MagicMock()
+        pipeline = self._make_pipeline(logger)
+        converter = SimpleNamespace(
+            has_dx11_shaders=False,
+            has_glsl_shaders=False,
+            created_shaders=[],
+        )
+        with patch.object(
+            model_import_pipeline,
+            "sync_dx11_generated_uniforms",
+            return_value=0,
+        ), patch.object(
+            model_import_pipeline.maya_viewport_utils,
+            "setup_mmd_color_management",
+        ), patch.object(
+            model_import_pipeline.maya_viewport_utils,
+            "setup_mmd_transparency",
+        ), patch.object(
+            model_import_pipeline.maya_viewport_utils,
+            "setup_mmd_hardware_viewport",
+        ) as setup_hardware:
+            pipeline.sync_dx11_uniforms(converter)
+            changed = pipeline.setup_view()
+
+        setup_hardware.assert_not_called()
+        self.assertEqual(changed, 0)
+
     def test_texture_nodes_receive_instance_root_ownership(self):
         pipeline = self._make_pipeline(MagicMock())
         with patch.object(model_import_pipeline.cmds, "attributeQuery", return_value=False) as query, patch.object(

@@ -30,6 +30,10 @@ class _Signal:
     def connect(self, cb):
         self._cbs.append(cb)
 
+    def disconnect(self, cb):
+        if cb in self._cbs:
+            self._cbs.remove(cb)
+
     def emit(self, *a):
         for cb in self._cbs:
             cb(*a)
@@ -115,6 +119,7 @@ class _Tree:
     def __init__(self):
         self._items = []
         self.itemClicked = _Signal()
+        self.itemPressed = _Signal()
 
     def clear(self):
         self._items.clear()
@@ -162,10 +167,20 @@ class _Layout:
 class _Picker:
     def __init__(self):
         self.region_clicked = _Signal()
+        self.regions_selected = _Signal()
         self.goto_finger_clicked = _Signal()
         self.goto_body_clicked = _Signal()
         self.mirror_selection_clicked = _Signal()
         self.ik_toggled = _Signal()
+        self.ik_enable_toggle_clicked = _Signal()
+        self.selected_regions = []
+        self.additive_selection = False
+
+    def set_selected_regions(self, region_ids):
+        self.selected_regions = list(region_ids)
+
+    def update_region_texts(self, **_kwargs):
+        pass
 
 
 class _CheckBox:
@@ -191,6 +206,7 @@ class _View:
         self.model_combo = _Combo()
         self.refresh_btn = _Btn()
         self.clear_btn = _Btn()
+        self.select_all_btn = _Btn()
         self.status_label = _Label()
         self.display_frame_tree = _Tree()
         self.body_picker = _Picker()
@@ -199,12 +215,26 @@ class _View:
         self.picker_tabs = _TabWidget()
         self.vis_checkboxes = {
             k: _CheckBox()
-            for k in ("mesh", "joints", "morphs", "colliders")
+            for k in ("mesh", "joints", "colliders")
         }
         self.tool_buttons = {
             k: _Btn()
             for k in ("copy", "paste", "mirror", "reset", "clean", "bake")
         }
+
+    def current_language(self):
+        """Match the locale endpoint exposed by the production AnimationTab."""
+
+        return "ja"
+
+    def tr(self, key, _category=None):
+        """Return stable test messages through the production translation API."""
+
+        return {
+            "copied_pose": "Copied pose ({count} joints)",
+            "pasted_pose": "Pasted pose ({count} joints)",
+            "reset_pose_applied": "Reset Pose ({count} joints)",
+        }.get(key, key)
 
 
 class _AppState:
@@ -331,6 +361,26 @@ class TestAnimationPresenterE2E(MayaTestBase):
             self.skipTest("頭 bone not in this model")
         sel = cmds.ls(selection=True) or []
         self.assertTrue(len(sel) > 0, "Should select a joint for head region")
+        self.assertEqual(view.body_picker.selected_regions, ["head"])
+
+    def test_morph_picker_uses_japanese_metadata_and_drives_weight(self):
+        root = self._import_model("test_morph_model")
+        presenter, _, _ = self._make_presenter(root)
+
+        metadata = presenter._read_morph_metadata(root)
+        self.assertTrue(metadata, "Morph fixture should expose authoritative metadata")
+        self.assertTrue(all(info.name for info in metadata.values()))
+        self.assertTrue(presenter._morph_targets, "Vertex morph targets should resolve")
+
+        morph_name = next(iter(presenter._morph_targets))
+        blend_shape, weight_index = presenter._morph_targets[morph_name][0]
+        presenter._on_morph_slider_changed(morph_name, 50, _Label("0"))
+
+        self.assertAlmostEqual(
+            cmds.getAttr(f"{blend_shape}.weight[{weight_index}]"),
+            0.5,
+            places=4,
+        )
 
     def test_reset_pose_via_tool(self):
         root = self._import_model()
@@ -341,6 +391,8 @@ class TestAnimationPresenterE2E(MayaTestBase):
             self.skipTest("No joints")
         target = joints[0]
 
+        bind_translate = cmds.xform(target, query=True, objectSpace=True, translation=True)
+        cmds.xform(target, objectSpace=True, translation=(8, 9, 10))
         cmds.xform(target, rotation=(15, 30, 45))
         cmds.select(target, replace=True)
 
@@ -350,7 +402,10 @@ class TestAnimationPresenterE2E(MayaTestBase):
         self.assertAlmostEqual(r[0], 0, places=3)
         self.assertAlmostEqual(r[1], 0, places=3)
         self.assertAlmostEqual(r[2], 0, places=3)
-        self.assertIn("Reset", view.status_label.text())
+        t = cmds.xform(target, query=True, objectSpace=True, translation=True)
+        for actual, expected in zip(t, bind_translate):
+            self.assertAlmostEqual(actual, expected, places=3)
+        self.assertIn("Reset Pose", view.status_label.text())
 
     def test_copy_paste_pose_round_trip(self):
         root = self._import_model()

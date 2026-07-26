@@ -18,7 +18,10 @@ from mmd_tools.converters.mesh_converter import (  # noqa: E402
     migrate_legacy_glsl_diffuse_contracts,
     sync_dx11_generated_uniforms,
 )
+from mmd_tools.converters.material_shader_parameters import ATTR_MMD_DIFFUSE_ALPHA  # noqa: E402
+from mmd_tools.core.constants import ATTR_MMD_SPHERE_MODE  # noqa: E402
 from mmd_tools.core.settings import settings  # noqa: E402
+from mmd_tools.core import maya_material_utils  # noqa: E402
 
 
 class TestMeshConverterTextureIssues(unittest.TestCase):
@@ -431,12 +434,15 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
                 "DiffuseColorA",
                 "diffuse_color",
                 "Opacity",
+                ATTR_MMD_DIFFUSE_ALPHA,
             }
             mock_cmds.getAttr.side_effect = lambda plug, **kwargs: (
                 False
                 if kwargs.get("lock")
                 else [pmx_rgb]
                 if plug.endswith(".diffuse_color")
+                else pmx_alpha
+                if plug.endswith(f".{ATTR_MMD_DIFFUSE_ALPHA}")
                 else pmx_alpha
                 if plug.endswith(".Opacity")
                 else [pmx_rgb]
@@ -455,6 +461,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
             mock_cmds.setAttr.call_args_list,
         )
         self.assertIn(call("new_glsl.DiffuseColorA", pmx_alpha), mock_cmds.setAttr.call_args_list)
+        self.assertIn(call("new_glsl.Opacity", 1.0), mock_cmds.setAttr.call_args_list)
         self.assertIn(
             call("new_glsl.mmdDiffuseRgbContractVersion", 1),
             mock_cmds.setAttr.call_args_list,
@@ -463,6 +470,33 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
             call("new_glsl.DiffuseColorRGB", 0.8, 0.8, 0.8, type="double3"),
             mock_cmds.setAttr.call_args_list,
         )
+
+    def test_sync_restores_authored_sphere_mode_for_dx11_and_glsl(self):
+        for shader_type, shader in (("dx11Shader", "new_dx11"), ("GLSLShader", "new_glsl")):
+            with self.subTest(shader_type=shader_type), patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds:
+                mock_cmds.objExists.return_value = True
+                mock_cmds.nodeType.return_value = shader_type
+                mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr in {
+                    ATTR_MMD_SPHERE_MODE,
+                    "SphereMode",
+                }
+                mock_cmds.getAttr.return_value = 2
+
+                synced = sync_dx11_generated_uniforms([shader])
+
+            self.assertEqual(synced, 1)
+            mock_cmds.setAttr.assert_called_once_with(f"{shader}.SphereMode", 2)
+
+    def test_sync_does_not_write_sphere_mode_without_authored_custom_attribute(self):
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds:
+            mock_cmds.objExists.return_value = True
+            mock_cmds.nodeType.return_value = "dx11Shader"
+            mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr == "SphereMode"
+
+            synced = sync_dx11_generated_uniforms(["shader_without_mmd_mode"])
+
+        self.assertEqual(synced, 0)
+        mock_cmds.setAttr.assert_not_called()
 
     def test_current_glsl_write_failure_does_not_set_contract_marker(self):
         pmx_rgb = (0.12, 0.34, 0.56)
@@ -1119,7 +1153,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         self.assertIn("uniform vec3 MmdControllerLightVector", source)
         self.assertIn("uniform vec3 MmdControllerLightRgb", source)
         self.assertIn("vec3 lightDir = -normalize(MmdControllerLightVector)", source)
-        self.assertIn("float halfLambert = ndotl * 0.5 + 0.5", source)
+        self.assertIn("float toonV = clamp(0.5 - ndotl * 0.5, 0.0, 1.0)", source)
         self.assertIn("vec3 srgbToLinear(vec3 color)", source)
         self.assertIn("colorOut = vec4(srgbToLinear(lighting), opacity)", source)
         self.assertIn("if (texColor.a < 0.003 || opacity <= 0.0)", source)
@@ -1135,8 +1169,8 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         )
         self.assertIn("toonColor = float3(1.0, 1.0, 1.0)", dx11)
         self.assertNotIn("toonColor = rampCoord.xxx", dx11)
-        self.assertIn("float3 diffuse = materialBase * shadow", dx11)
-        self.assertIn("diffuse *= toonColor;", dx11)
+        self.assertIn("float3 diffuse = surfaceColor * shadow", dx11)
+        self.assertIn("surfaceColor *= toonColor;", dx11)
         self.assertNotIn("diffuse *= toonColor * shadow", dx11)
         self.assertIn(
             "clamp(DiffuseColorRGB * lightColor + AmbientColor, 0.0, 1.0) * texColor.rgb",
@@ -1145,8 +1179,262 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         self.assertIn("toonColor = vec3(1.0)", glsl)
         self.assertNotIn("toonColor = vec3(rampCoord)", glsl)
         self.assertIn("uniform float ShadowAttenuation = 1.0", glsl)
-        self.assertIn("vec3 diffuse = materialBase * ShadowAttenuation", glsl)
-        self.assertIn("diffuse *= toonColor;", glsl)
+        self.assertIn("vec3 diffuse = surfaceColor * ShadowAttenuation", glsl)
+        self.assertIn("surfaceColor *= toonColor;", glsl)
+
+    def test_setup_standard_shader_multiplies_texture_alpha_by_pmx_alpha(self):
+        """Resolved fallback textures must drive opacity through PMX alpha."""
+        converter = MeshConverter(str(self.model))
+        converter._transparency_modes[0] = "blend"
+        material = self._material(diffuse=[0.8, 0.7, 0.6, 0.25])
+
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
+        ) as mock_set_attribute, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
+        ), patch(
+            "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
+        ):
+            mock_cmds.shadingNode.side_effect = lambda _type, **kwargs: kwargs["name"]
+
+            converter._setup_standard_shader(
+                "Face_shader",
+                material,
+                self.ascii_texture.name,
+                [self.ascii_texture.name],
+                is_pmd=False,
+                material_index=0,
+            )
+
+        mock_cmds.connectAttr.assert_any_call(
+            "Face_file.outAlpha",
+            "Face_opacityMultiply.input1X",
+            force=True,
+        )
+        for channel in "RGB":
+            mock_cmds.connectAttr.assert_any_call(
+                "Face_opacityMultiply.outputX",
+                f"Face_shader.opacity{channel}",
+                force=True,
+            )
+        self.assertIn(
+            call("Face_opacityMultiply", "operation", 1, "long"),
+            mock_set_attribute.call_args_list,
+        )
+        self.assertIn(
+            call("Face_opacityMultiply", "input2X", 0.25, "float"),
+            mock_set_attribute.call_args_list,
+        )
+        mock_cmds.connectAttr.assert_any_call(
+            "Face_file.outColor",
+            "Face_shader.baseColor",
+            force=True,
+        )
+        self.assertIn(
+            call("Face_file", "colorGain", (0.8, 0.7, 0.6), "double3"),
+            mock_set_attribute.call_args_list,
+        )
+        self.assertNotIn(
+            call("multiplyDivide", asUtility=True, name="Face_diffuseMultiply"),
+            mock_cmds.shadingNode.call_args_list,
+        )
+
+    def test_transparency_precompute_always_scans_texture_alpha(self):
+        """Material transparency classification no longer requires a setting."""
+        converter = MeshConverter(str(self.model))
+        converter.texture_dir = str(self.root)
+        vertices = [
+            SimpleNamespace(uv=(0.0, 0.0)),
+            SimpleNamespace(uv=(1.0, 0.0)),
+            SimpleNamespace(uv=(0.0, 1.0)),
+        ]
+        faces = [SimpleNamespace(indices=(0, 1, 2))]
+        materials = [self._material(face_count=3, texture_index=0)]
+
+        with patch(
+            "mmd_tools.converters.texture_alpha.classify_material", return_value="opaque"
+        ) as classify_material:
+            converter._precompute_transparency_modes(
+                vertices,
+                faces,
+                materials,
+                [self.ascii_texture.name],
+            )
+
+        self.assertEqual(converter._transparency_modes, {0: "opaque"})
+        classify_material.assert_called_once()
+
+    def test_setup_standard_shader_keeps_classified_opaque_texture_disconnected(self):
+        """Opaque fallback materials must not enter VP2's transparent queue."""
+        converter = MeshConverter(str(self.model))
+        converter._transparency_modes[0] = "opaque"
+        material = self._material(diffuse=[0.8, 0.7, 0.6, 0.999])
+
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
+        ) as mock_set_attribute, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
+        ), patch(
+            "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
+        ):
+            mock_cmds.shadingNode.side_effect = lambda _type, **kwargs: kwargs["name"]
+            converter._setup_standard_shader(
+                "Face_shader",
+                material,
+                self.ascii_texture.name,
+                [self.ascii_texture.name],
+                is_pmd=False,
+                material_index=0,
+            )
+
+        self.assertIn(
+            call("Face_shader", "opacity", (1.0, 1.0, 1.0), "double3"),
+            mock_set_attribute.call_args_list,
+        )
+        alpha_connections = [
+            args
+            for args, _kwargs in mock_cmds.connectAttr.call_args_list
+            if args and args[0] == "Face_file.outAlpha"
+        ]
+        self.assertEqual(alpha_connections, [])
+        self.assertIn(
+            call("Face_shader", "emission", 1.0, "float"),
+            mock_set_attribute.call_args_list,
+        )
+        mock_cmds.connectAttr.assert_any_call(
+            "Face_file.outColor",
+            "Face_ambientMultiply.input1",
+            force=True,
+        )
+        mock_cmds.connectAttr.assert_any_call(
+            "Face_ambientMultiply.output",
+            "Face_shader.emissionColor",
+            force=True,
+        )
+        self.assertIn(
+            call("Face_ambientMultiply", "operation", 1, "long"),
+            mock_set_attribute.call_args_list,
+        )
+        for channel, value in zip("XYZ", (0.1, 0.1, 0.1)):
+            self.assertIn(
+                call("Face_ambientMultiply", f"input2{channel}", value, "float"),
+                mock_set_attribute.call_args_list,
+            )
+
+    def test_standard_surface_texture_repair_discovers_direct_file_connection(self):
+        """Texture repair must find the file node on the stock baseColor route."""
+        def node_type(node):
+            return {
+                "Face_shader": "standardSurface",
+                "Face_file": "file",
+            }.get(node, "transform")
+
+        def list_connections(plug, **_kwargs):
+            return {
+                "Face_shader.baseColor": ["Face_file.outColor"],
+            }.get(plug, [])
+
+        with patch.object(maya_material_utils, "cmds") as mock_cmds:
+            mock_cmds.nodeType.side_effect = node_type
+            mock_cmds.attributeQuery.return_value = False
+            mock_cmds.listConnections.side_effect = list_connections
+
+            file_node = maya_material_utils.find_material_texture_file_node("Face_shader")
+
+        self.assertEqual(file_node, "Face_file")
+
+    def test_setup_standard_shader_without_texture_keeps_ambient_as_additive_color(self):
+        """A textureless fallback uses PMX ambient directly as its additive term."""
+        converter = MeshConverter(str(self.model))
+        material = self._material(ambient=[0.12, 0.23, 0.34])
+
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
+        ) as mock_set_attribute, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
+        ):
+            converter._setup_standard_shader(
+                "Face_shader",
+                material,
+                None,
+                [],
+                is_pmd=False,
+                material_index=0,
+            )
+
+        self.assertIn(
+            call("Face_shader", "baseColor", [0.8, 0.7, 0.6], "double3"),
+            mock_set_attribute.call_args_list,
+        )
+        self.assertIn(
+            call("Face_shader", "emission", 1.0, "float"),
+            mock_set_attribute.call_args_list,
+        )
+        self.assertIn(
+            call("Face_shader", "emissionColor", (0.12, 0.23, 0.34), "double3"),
+            mock_set_attribute.call_args_list,
+        )
+        mock_cmds.shadingNode.assert_not_called()
+
+    def test_setup_standard_shader_keeps_unresolved_texture_repair_connections(self):
+        """Unresolved standard textures stay discoverable by the repair path."""
+        settings.set("import.model.auto_resolve_textures", False)
+        converter = MeshConverter(str(self.model))
+        material = self._material()
+
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
+        ) as mock_set_attribute, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
+        ), patch(
+            "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
+        ):
+            mock_cmds.shadingNode.side_effect = lambda _type, **kwargs: kwargs["name"]
+
+            converter._setup_standard_shader(
+                "Face_shader",
+                material,
+                "missing.png",
+                ["missing.png"],
+                is_pmd=False,
+                material_index=0,
+            )
+
+        mock_cmds.connectAttr.assert_any_call(
+            "Face_place2dTexture.outUV",
+            "Face_file.uvCoord",
+        )
+        mock_cmds.connectAttr.assert_any_call(
+            "Face_file.outColor",
+            "Face_shader.baseColor",
+            force=True,
+        )
+        self.assertIn(
+            call("Face_file", "colorGain", (0.8, 0.7, 0.6), "double3"),
+            mock_set_attribute.call_args_list,
+        )
+        mock_cmds.connectAttr.assert_any_call(
+            "Face_file.outColor",
+            "Face_ambientMultiply.input1",
+            force=True,
+        )
+        mock_cmds.connectAttr.assert_any_call(
+            "Face_ambientMultiply.output",
+            "Face_shader.emissionColor",
+            force=True,
+        )
+        alpha_connections = [
+            args
+            for args, _kwargs in mock_cmds.connectAttr.call_args_list
+            if args and args[0] == "Face_file.outAlpha"
+        ]
+        self.assertEqual(alpha_connections, [])
+        self.assertNotIn(
+            call("Face_opacityMultiply", "input2X", 1.0, "float"),
+            mock_set_attribute.call_args_list,
+        )
+        self.assertEqual(converter.unresolved_texture_count, 1)
+        self.assertEqual(converter.profile["unresolved_textures"][0]["reason"], "missing_file")
 
     @staticmethod
     def _material(**overrides):

@@ -19,6 +19,42 @@ def text_matches_query(query: str, terms: Iterable[object]) -> bool:
     return any(query in term for term in _normalise_terms(terms))
 
 
+def maya_node_leaf_name(node: object) -> str:
+    """Return a Maya node's leaf name without its DAG path or namespace."""
+    leaf = str(node or "").rsplit("|", 1)[-1]
+    return leaf.rsplit(":", 1)[-1]
+
+
+def format_indexed_node_label(
+    index: object,
+    name_jp: object,
+    node: object,
+    name_en: object = "",
+) -> str:
+    """Format a Material/Bone list label using a namespace-free Maya leaf."""
+    leaf = maya_node_leaf_name(node)
+    label = f"{index}:{name_jp}（{leaf}）" if name_jp else f"{index}:（{leaf}）"
+    if name_en:
+        label += f" [{name_en}]"
+    return label
+
+
+def format_indexed_name_label(
+    index: object,
+    name_jp: object,
+    name_en: object = "",
+    prefix: str = "",
+) -> str:
+    """Format a non-node PMX list entry consistently with Bone/Material lists."""
+    japanese = str(name_jp or "")
+    english = str(name_en or "")
+    primary = japanese or english or "(unnamed)"
+    label = f"{index}:{prefix}{primary}"
+    if japanese and english:
+        label += f" [{english}]"
+    return label
+
+
 def apply_list_filter(
     items: Iterable[object],
     query: str,

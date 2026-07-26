@@ -36,6 +36,12 @@ class TestVmdExport(TestBase):
         tmp_path = os.path.join(self.temp_dir, "exporter_data.vmd")
         exported = VmdExporter().export_vmd_animation(tmp_path, vmd_data)
 
+        # ネイティブエクスポータを使う環境でも、出力は VMD2 シグネチャである必要がある。
+        with open(tmp_path, "rb") as handle:
+            self.assertEqual(
+                handle.read(30),
+                b"Vocaloid Motion Data 0002" + b"\x00" * 5,
+            )
         parsed = VmdData().parse_file(tmp_path)
         self.assertIs(exported, vmd_data)
         self.assertEqual(parsed.header.model_name, "ExporterModel")
@@ -75,6 +81,13 @@ class TestVmdExport(TestBase):
                 }
             ],
             "shadow_frames": [{"frame": 20, "mode": 1, "distance": 9999.0}],
+            "ik_show_hide_frames": [
+                {
+                    "frame": 20,
+                    "visible": True,
+                    "ik_states": [("左足IK", True), ("右足IK", False)],
+                }
+            ],
         }
 
         tmp_path = os.path.join(self.temp_dir, "exporter_mapping.vmd")
@@ -91,6 +104,11 @@ class TestVmdExport(TestBase):
         self.assertEqual(parsed.camera_frames[0].viewing_angle, 45)
         self.assertEqual(parsed.light_frames[0].position, (10.0, 20.0, 30.0))
         self.assertEqual(parsed.shadow_frames[0].mode, 1)
+        self.assertEqual(parsed.ik_show_hide_frames[0].frame_number, 20)
+        self.assertEqual(
+            parsed.ik_show_hide_frames[0].ik_states,
+            [("左足IK", 1), ("右足IK", 0)],
+        )
 
     def test_exporter_uses_native_writer_when_available(self):
         """native writer が bytes を返す場合は従来 writer ではなくその bytes を書く。"""
@@ -185,6 +203,11 @@ class TestVmdExport(TestBase):
         VmdExporter(native_exporter=lambda payload: None).export_vmd_animation(tmp_path, vmd_data)
 
         parsed = VmdData().parse_file(tmp_path)
+        with open(tmp_path, "rb") as handle:
+            self.assertEqual(
+                handle.read(30),
+                b"Vocaloid Motion Data 0002" + b"\x00" * 5,
+            )
         self.assertEqual(parsed.header.model_name, "FallbackModel")
         self.assertEqual(parsed.morph_frames[0].morph_name, "笑い")
         self.assertAlmostEqual(parsed.morph_frames[0].value, 0.5)

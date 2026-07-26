@@ -9,10 +9,10 @@ from ..qt_compat import (
     QWidget,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QComboBox,
 )
 from ..translations import UITranslator
+from .symbol_tool_button import MaterialSymbolToolButton
 
 logger = get_logger(__name__)
 
@@ -47,13 +47,16 @@ class HeaderWidget(QWidget):
         main_layout.addWidget(self.model_combo)
 
         # リフレッシュボタン
-        self.refresh_btn = QPushButton("🔄")
-        self.refresh_btn.setMaximumWidth(30)
+        self.refresh_btn = MaterialSymbolToolButton("refresh", "Refresh")
         main_layout.addWidget(self.refresh_btn)
 
         # 右側のスペース
         main_layout.addStretch()
         self.retranslateUi()
+        add_combo_item_with_tooltip(
+            self.model_combo,
+            self.tr("no_mmd_models", "placeholders"),
+        )
 
     def tr(self, key, category=None):
         """現在の UI 言語で翻訳する。"""
@@ -79,6 +82,7 @@ class HeaderWidget(QWidget):
     def refresh_model_list(self):
         """モデルリストを更新"""
         self.app_state.refresh_model_list()
+        self.app_state.select_model_from_maya_selection()
 
     def on_model_list_updated(self, models):
         """モデルリストが更新されたときの処理"""

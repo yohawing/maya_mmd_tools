@@ -102,6 +102,7 @@ float4x4 Projection : Projection<string UIWidget = "None";>;
 float4x4 ViewProjection : ViewProjection<string UIWidget = "None";>;
 float3 ViewPosition : ViewPosition<string UIWidget = "None";>;
 float2 ScreenSize : ViewportPixelSize<string UIWidget = "None";>;
+float DevicePixelRatio< string UIWidget = "None"; > = 1.0f;
 
 // Per-object parameters
 float4x4 World               : World<string UIWidget = "None";>;
@@ -145,7 +146,7 @@ float Shininess<
     string UIGroup = "Material";
     string UIName = "Shininess";
     string UIWidget = "Slider";
-    float UIMin = 1.0;
+    float UIMin = 0.0;
     float UIMax = 100.0;
     int UIOrder = 203;
 > = 20.0f;
@@ -392,43 +393,20 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     // Calculate shadow
     float shadow = CalculateShadow(input.shadowCoord, Light0ShadowMap);
 
-    // Diffuse light (Half-Lambert for toon shading)
+    // FullShader samples its vertical toon ramp at 0.5 - 0.5 * N.L.
     float NdotL = dot(normal, lightDir);
-    float halfLambert = NdotL * 0.5 + 0.5;
-
-    // Sample toon texture. MMD toon ramps are conventionally vertical strips;
-    // use RGB as the ramp color rather than a scalar red-channel factor.
-    float rampCoord = saturate(halfLambert);
+    float toonV = saturate(0.5 - NdotL * 0.5);
     float3 toonColor = float3(1.0, 1.0, 1.0);
     if (HasToonTexture != 0)
     {
-        // Sample the full toon ramp so the shadow side reaches the dark band.
-        // The previous 0.25..0.75 mid-band squeeze flattened all shading into a
-        // washed mid-tone with no real shadow contrast.
-        float4 toonSample = ToonTexture.Sample(ToonSampler, float2(0.5, 1.0 - rampCoord));
+        // U remains centered for Maya's vertical 1D texture representation.
+        float4 toonSample = ToonTexture.Sample(ToonSampler, float2(0.5, toonV));
         float4 factoredToon = toonSample * ToonTextureMultiply + ToonTextureAdd;
         toonColor = factoredToon.rgb;
     }
     // MMD's untextured-toon path is intentionally flat: N.L only selects a
     // toon-ramp sample and must not become an implicit gray diffuse ramp.
-    // Ambient is part of the material base for both paths, before toon.
     float3 materialBase = saturate(DiffuseColorRGB * lightColor + AmbientColor) * texColor.rgb;
-    // Projected shadows attenuate both paths. "Flat" only means bypassing the
-    // N.L-driven toon ramp; it does not mean ignoring cast shadows.
-    float3 diffuse = materialBase * shadow;
-    if (HasToonTexture != 0)
-    {
-        diffuse *= toonColor;
-    }
-
-    // Specular light
-    float3 halfVec = normalize(lightDir + viewDir);
-    float NdotH = saturate(dot(normal, halfVec));
-    // Gate specular to the lit hemisphere (NdotL > 0). The previous version
-    // added highlights even on faces turned away from the light, producing the
-    // bright rim/bloom on sleeves and limbs.
-    float specFactor = pow(NdotH, max(Shininess, 1.0)) * step(0.0, NdotL);
-    float3 specular = SpecularColor * specFactor * lightColor * shadow;
 
     // Sphere mapping
     float3 sphereColor = float3(1.0, 1.0, 1.0);
@@ -436,21 +414,38 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     {
         float3 sphereNormal = normalize(mul(float4(normal, 0.0), View).xyz);
         float2 sphereUV;
-        sphereUV.x = sphereNormal.x * 0.35 + 0.5;
-        sphereUV.y = sphereNormal.y * -0.35 + 0.5;
+        sphereUV.x = sphereNormal.x * 0.5 + 0.5;
+        sphereUV.y = sphereNormal.y * -0.5 + 0.5;
         float4 sphereSample = SphereTexture.Sample(LinearSampler, sphereUV);
         float4 factoredSphere = sphereSample * SphereTextureMultiply + SphereTextureAdd;
         sphereColor = factoredSphere.rgb;
     }
 
-    // Combine lighting
-    float3 litColor = diffuse + specular;
-
-    // Apply sphere map
+    // FullShader order: base/texture -> sphere -> toon -> specular. Applying
+    // sphere after specular incorrectly tints highlights in multiply mode.
+    float3 surfaceColor = materialBase;
     if (SphereMode == 1 && HasSphereTexture != 0) // Multiply
-        litColor *= sphereColor;
+        surfaceColor *= sphereColor;
     else if (SphereMode == 2 && HasSphereTexture != 0) // Add
-        litColor += sphereColor;
+        surfaceColor += sphereColor;
+    if (HasToonTexture != 0)
+        surfaceColor *= toonColor;
+
+    // Projected shadows remain a separate Maya viewport factor.
+    float3 diffuse = surfaceColor * shadow;
+
+    // MMD skips specular completely when the authored power is non-positive.
+    // Positive powers use the Blinn-Phong half vector without an extra N.L gate.
+    float3 specular = float3(0.0, 0.0, 0.0);
+    if (Shininess > 0.0)
+    {
+        float3 halfVec = normalize(lightDir + viewDir);
+        float NdotH = saturate(dot(normal, halfVec));
+        float specFactor = pow(NdotH, Shininess);
+        specular = SpecularColor * specFactor * lightColor * shadow;
+    }
+
+    float3 litColor = diffuse + specular;
 
     // Apply opacity
     float opacity = texColor.a * DiffuseColorA * Opacity;
@@ -483,7 +478,9 @@ VS_OUTPUT EdgeVS(VS_INPUT input)
     screenNormal /= max(length(screenNormal), 1.0e-5);
 
     float2 safeScreenSize = max(ScreenSize, float2(1.0, 1.0));
-    clipPos.xy += screenNormal / (safeScreenSize * 0.5) * EdgeSize * 4.0 * clipPos.w;
+    // ViewportPixelSize is physical; authored EdgeSize is in logical pixels.
+    float logicalEdgeSize = EdgeSize * max(DevicePixelRatio, 1.0e-5);
+    clipPos.xy += screenNormal / (safeScreenSize * 0.5) * logicalEdgeSize * clipPos.w;
 
     output.position = clipPos;
     output.worldPosition = worldPos.xyz;
@@ -496,6 +493,9 @@ VS_OUTPUT EdgeVS(VS_INPUT input)
 //--------------------------------------------------------------------------------------
 float4 EdgePS(VS_OUTPUT input) : SV_TARGET
 {
+    // All techniques contain the edge pass. A material opts out in shader
+    // space by setting EdgeSize to zero, avoiding separate NoEdge techniques.
+    clip(EdgeSize - 1.0e-5);
     // EdgeColorRGB is an authored gamma-space color; decode to linear so the
     // view transform re-encode displays it as authored (no-op for pure black).
     return float4(SrgbToLinear(EdgeColorRGB), EdgeColorA);
@@ -522,18 +522,6 @@ RasterizerState CullNone
 //--------------------------------------------------------------------------------------
 // Blend States
 //--------------------------------------------------------------------------------------
-BlendState AlphaBlend
-{
-    BlendEnable[0] = TRUE;
-    SrcBlend = SRC_ALPHA;
-    DestBlend = INV_SRC_ALPHA;
-    BlendOp = ADD;
-    SrcBlendAlpha = ONE;
-    DestBlendAlpha = INV_SRC_ALPHA;
-    BlendOpAlpha = ADD;
-    RenderTargetWriteMask[0] = 0x0F;
-};
-
 BlendState NoBlend
 {
     BlendEnable[0] = FALSE;
@@ -542,11 +530,8 @@ BlendState NoBlend
 //--------------------------------------------------------------------------------------
 // Depth Stencil States
 //--------------------------------------------------------------------------------------
-// MMD parity (see mmd-shading-notes §11): opaque and cutout materials draw in
-// material order with depth-write ON and a STRICT-less depth test. Strict-less
-// keeps coincident double-sided sheets single-layered (LEqual double-draws them
-// and over-saturates); depth-write lets cutout layers (hair/ribbons) occlude
-// what is behind them instead of bleeding through.
+// Main surfaces are opaque/cutout only. Fully transparent fragments are
+// discarded in MainPS; every surviving fragment writes depth.
 DepthStencilState EnableDepth
 {
     DepthEnable = TRUE;
@@ -554,15 +539,8 @@ DepthStencilState EnableDepth
     DepthFunc = LESS;
 };
 
-// Genuinely translucent materials (diffuse alpha < 1, e.g. a sheer skirt) use
-// this state: they still depth-TEST against opaque geometry (so the body
-// correctly occludes them), but do NOT depth-WRITE, so a nearer translucent
-// material cannot depth-reject a farther one. Overlapping *different*
-// translucent materials then blend (the MMD look) instead of one punching the
-// other through to the background. VP2 Object Sorting draws them back-to-front.
-// NOTE: only translucent materials use this -- cutout (hard-edged alpha
-// textures) stay on EnableDepth so layered hair strands keep occluding.
-DepthStencilState EnableDepthNoWrite
+// The inverted-hull edge tests depth but must not alter the surface depth.
+DepthStencilState EdgeDepthReadOnly
 {
     DepthEnable = TRUE;
     DepthWriteMask = ZERO;
@@ -573,7 +551,7 @@ DepthStencilState EnableDepthNoWrite
 // Techniques
 //--------------------------------------------------------------------------------------
 
-// Standard technique with edge rendering
+// Single-sided material: inverted-hull edge plus back-face-culling main pass.
 technique11 MMDTechnique<
     int isTransparent = 0;
 >
@@ -585,7 +563,7 @@ technique11 MMDTechnique<
         SetPixelShader(CompileShader(ps_5_0, EdgePS()));
         SetRasterizerState(CullFront);
         SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepthNoWrite, 0);
+        SetDepthStencilState(EdgeDepthReadOnly, 0);
     }
     pass MainPass
     {
@@ -598,6 +576,7 @@ technique11 MMDTechnique<
     }
 }
 
+// Double-sided material: the same edge pass plus a cull-none main pass.
 technique11 MMDTechniqueDoubleSided<
     int isTransparent = 0;
 >
@@ -609,7 +588,7 @@ technique11 MMDTechniqueDoubleSided<
         SetPixelShader(CompileShader(ps_5_0, EdgePS()));
         SetRasterizerState(CullFront);
         SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepthNoWrite, 0);
+        SetDepthStencilState(EdgeDepthReadOnly, 0);
     }
     pass MainPass
     {
@@ -619,193 +598,5 @@ technique11 MMDTechniqueDoubleSided<
         SetRasterizerState(CullNone);
         SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
         SetDepthStencilState(EnableDepth, 0);
-    }
-}
-
-technique11 MMDTechniqueTransparent<
-    int isTransparent = 1;
->
-{
-    pass EdgePass
-    {
-        SetVertexShader(CompileShader(vs_5_0, EdgeVS()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
-        SetRasterizerState(CullFront);
-        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepthNoWrite, 0);
-    }
-    pass MainPass
-    {
-        SetVertexShader(CompileShader(vs_5_0, MainVS()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, MainPS()));
-        SetRasterizerState(CullFront);
-        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepth, 0);
-    }
-}
-
-technique11 MMDTechniqueTransparentDoubleSided<
-    int isTransparent = 1;
->
-{
-    pass EdgePass
-    {
-        SetVertexShader(CompileShader(vs_5_0, EdgeVS()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
-        SetRasterizerState(CullFront);
-        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepthNoWrite, 0);
-    }
-    pass MainPass
-    {
-        SetVertexShader(CompileShader(vs_5_0, MainVS()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, MainPS()));
-        SetRasterizerState(CullNone);
-        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepth, 0);
-    }
-}
-
-technique11 MMDTechniqueTranslucent<
-    int isTransparent = 1;
->
-{
-    pass EdgePass
-    {
-        SetVertexShader(CompileShader(vs_5_0, EdgeVS()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
-        SetRasterizerState(CullFront);
-        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepthNoWrite, 0);
-    }
-    pass MainPass
-    {
-        SetVertexShader(CompileShader(vs_5_0, MainVS()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, MainPS()));
-        SetRasterizerState(CullFront);
-        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepthNoWrite, 0);
-    }
-}
-
-technique11 MMDTechniqueTranslucentDoubleSided<
-    int isTransparent = 1;
->
-{
-    pass EdgePass
-    {
-        SetVertexShader(CompileShader(vs_5_0, EdgeVS()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
-        SetRasterizerState(CullFront);
-        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepthNoWrite, 0);
-    }
-    pass MainPass
-    {
-        SetVertexShader(CompileShader(vs_5_0, MainVS()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, MainPS()));
-        SetRasterizerState(CullNone);
-        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepthNoWrite, 0);
-    }
-}
-
-// Technique without edge for performance
-technique11 MMDTechniqueNoEdge<
-    int isTransparent = 0;
->
-{
-    pass MainPass
-    {
-        SetVertexShader(CompileShader(vs_5_0, MainVS()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, MainPS()));
-        SetRasterizerState(CullFront);
-        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepth, 0);
-    }
-}
-
-technique11 MMDTechniqueNoEdgeDoubleSided<
-    int isTransparent = 0;
->
-{
-    pass MainPass
-    {
-        SetVertexShader(CompileShader(vs_5_0, MainVS()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, MainPS()));
-        SetRasterizerState(CullNone);
-        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepth, 0);
-    }
-}
-
-technique11 MMDTechniqueNoEdgeTransparent<
-    int isTransparent = 1;
->
-{
-    pass MainPass
-    {
-        SetVertexShader(CompileShader(vs_5_0, MainVS()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, MainPS()));
-        SetRasterizerState(CullFront);
-        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepth, 0);
-    }
-}
-
-technique11 MMDTechniqueNoEdgeTransparentDoubleSided<
-    int isTransparent = 1;
->
-{
-    pass MainPass
-    {
-        SetVertexShader(CompileShader(vs_5_0, MainVS()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, MainPS()));
-        SetRasterizerState(CullNone);
-        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepth, 0);
-    }
-}
-
-// Translucent without edge (alpha-blended, depth-test but no depth-write).
-technique11 MMDTechniqueNoEdgeTranslucent<
-    int isTransparent = 1;
->
-{
-    pass MainPass
-    {
-        SetVertexShader(CompileShader(vs_5_0, MainVS()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, MainPS()));
-        SetRasterizerState(CullFront);
-        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepthNoWrite, 0);
-    }
-}
-
-technique11 MMDTechniqueNoEdgeTranslucentDoubleSided<
-    int isTransparent = 1;
->
-{
-    pass MainPass
-    {
-        SetVertexShader(CompileShader(vs_5_0, MainVS()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, MainPS()));
-        SetRasterizerState(CullNone);
-        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepthNoWrite, 0);
     }
 }

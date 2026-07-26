@@ -69,27 +69,50 @@ _ALPHA_CAPABLE_TEXTURE_EXTENSIONS = {".png", ".tga", ".tif", ".tiff", ".dds"}
 _SHADER_BACKEND_WARNED = set()
 
 
+def _maya_node_exists(name: str) -> bool:
+    """Best-effort object existence check used by deterministic allocators."""
+    try:
+        return bool(cmds.objExists(name))
+    except Exception:
+        return False
+
+
 # DX11 transparency handling modes (drives technique selection).
 TRANSPARENCY_MODE_OPAQUE = "opaque"
 TRANSPARENCY_MODE_CUTOUT = "cutout"
 TRANSPARENCY_MODE_BLEND = "blend"
 TRANSPARENCY_MODES = (TRANSPARENCY_MODE_OPAQUE, TRANSPARENCY_MODE_CUTOUT, TRANSPARENCY_MODE_BLEND)
+_OPAQUE_MATERIAL_ALPHA_THRESHOLD = 0.999
 _ATTR_MMD_DOUBLE_SIDED = "mmdDoubleSided"
-_DX11_TECHNIQUE_BY_RENDERING = {
-    (TRANSPARENCY_MODE_OPAQUE, True, False): "MMDTechnique",
-    (TRANSPARENCY_MODE_CUTOUT, True, False): "MMDTechniqueTransparent",
-    (TRANSPARENCY_MODE_BLEND, True, False): "MMDTechniqueTranslucent",
-    (TRANSPARENCY_MODE_OPAQUE, False, False): "MMDTechniqueNoEdge",
-    (TRANSPARENCY_MODE_CUTOUT, False, False): "MMDTechniqueNoEdgeTransparent",
-    (TRANSPARENCY_MODE_BLEND, False, False): "MMDTechniqueNoEdgeTranslucent",
-    (TRANSPARENCY_MODE_OPAQUE, True, True): "MMDTechniqueDoubleSided",
-    (TRANSPARENCY_MODE_CUTOUT, True, True): "MMDTechniqueTransparentDoubleSided",
-    (TRANSPARENCY_MODE_BLEND, True, True): "MMDTechniqueTranslucentDoubleSided",
-    (TRANSPARENCY_MODE_OPAQUE, False, True): "MMDTechniqueNoEdgeDoubleSided",
-    (TRANSPARENCY_MODE_CUTOUT, False, True): "MMDTechniqueNoEdgeTransparentDoubleSided",
-    (TRANSPARENCY_MODE_BLEND, False, True): "MMDTechniqueNoEdgeTranslucentDoubleSided",
+_MATERIAL_NODE_FAMILY_SUFFIXES = (
+    "",
+    "SG",
+    "_file",
+    "_place2dTexture",
+    "_diffuseMultiply",
+    "_ambientMultiply",
+    "_opacityMultiply",
+    "_texture",
+    "_sphere_texture",
+    "_toon_texture",
+    "_materialMorphEval",
+)
+_DX11_TECHNIQUE_BY_SIDEDNESS = {
+    False: "MMDTechnique",
+    True: "MMDTechniqueDoubleSided",
 }
-_DX11_RENDERING_BY_TECHNIQUE = {name: key for key, name in _DX11_TECHNIQUE_BY_RENDERING.items()}
+
+
+def _normalized_material_opacity(material) -> float:
+    """Return clamped PMX opacity, snapping near-opaque values to exactly one."""
+    try:
+        opacity = float(material.diffuse[3]) if len(material.diffuse) > 3 else 1.0
+    except (AttributeError, TypeError, ValueError):
+        return 1.0
+    opacity = min(1.0, max(0.0, opacity))
+    if opacity >= _OPAQUE_MATERIAL_ALPHA_THRESHOLD:
+        return 1.0
+    return opacity
 
 
 def _ensure_shader_plugin(plugin_name) -> bool:
@@ -258,6 +281,12 @@ def _create_backend_replacement(source, backend):
             raise RuntimeError(f"Could not assign {shader_name} to {node_type}")
         if backend == BACKEND_DX11:
             _ensure_dx11_uniform_attributes(replacement)
+            _set_shader_attribute_checked(
+                replacement,
+                "DevicePixelRatio",
+                maya_viewport_utils.get_device_pixel_ratio(),
+                "float",
+            )
             mode = get_transparency_mode(source)
             edge_enabled = False
             if cmds.attributeQuery(ATTR_MMD_SHADER_OUTLINE_ENABLED, node=source, exists=True):
@@ -417,16 +446,18 @@ def _classify_material_transparency(material, texture_path=None) -> str:
 
 
 def _technique_for_transparency(mode: str, edge_enabled: bool, double_sided: bool = False) -> str:
-    """Map dx11Shader rendering state to a technique name."""
-    mode = mode if mode in TRANSPARENCY_MODES else TRANSPARENCY_MODE_OPAQUE
-    return _DX11_TECHNIQUE_BY_RENDERING[(mode, bool(edge_enabled), bool(double_sided))]
+    """Select one of the two opaque DX11 techniques.
+
+    ``mode`` and ``edge_enabled`` remain accepted for scene/UI compatibility,
+    but the renderer no longer creates transparent or no-edge variants. PMX
+    alpha metadata is preserved separately while every material uses the edge
+    pass and differs only by authored single/double-sided drawing.
+    """
+    return _DX11_TECHNIQUE_BY_SIDEDNESS[bool(double_sided)]
 
 
 def _dx11_rendering_from_technique(technique: str) -> Tuple[str, bool, bool]:
-    """Return transparency mode, edge flag, and double-sided flag from a technique name."""
-    rendering = _DX11_RENDERING_BY_TECHNIQUE.get(technique)
-    if rendering:
-        return rendering
+    """Return legacy rendering metadata while treating edge as always enabled."""
     if "Translucent" in technique:
         mode = TRANSPARENCY_MODE_BLEND
     elif "Transparent" in technique:
@@ -502,7 +533,8 @@ def get_transparency_mode(shader: str) -> str:
 def apply_transparency_mode(shader: str, mode: str) -> str:
     """Re-apply a transparency mode to an existing dx11Shader (UI entry point).
 
-    Keeps the shader's current edge (NoEdge) variant. Returns the technique set.
+    Transparency metadata is retained, but rendering remains opaque/cutout and
+    the selected technique changes only when sidedness changes.
     """
     if mode not in TRANSPARENCY_MODES:
         raise ValueError(f"Unknown transparency mode: {mode!r}")
@@ -517,21 +549,26 @@ def apply_transparency_mode(shader: str, mode: str) -> str:
 
 
 def get_shader_outline_enabled(shader: str) -> bool:
-    """Return whether the dx11Shader technique currently renders outlines."""
+    """Return whether the mandatory edge pass is enabled for this material."""
+    if cmds.attributeQuery(ATTR_MMD_SHADER_OUTLINE_ENABLED, node=shader, exists=True):
+        return bool(cmds.getAttr(f"{shader}.{ATTR_MMD_SHADER_OUTLINE_ENABLED}"))
     technique = _shader_technique(shader)
     _, edge_enabled, _ = _dx11_rendering_from_technique(technique)
     return bool(technique) and edge_enabled
 
 
 def apply_shader_outline(shader: str, enabled: bool, edge_size: Optional[float] = None) -> str:
-    """Enable/disable the dx11Shader outline pass while preserving transparency mode."""
+    """Keep the mandatory outline pass while applying its authored size."""
     mode = get_transparency_mode(shader)
     double_sided = _shader_is_double_sided(shader)
-    new_technique = _technique_for_transparency(mode, enabled, double_sided)
+    new_technique = _technique_for_transparency(mode, True, double_sided)
     cmds.setAttr(f"{shader}.technique", new_technique, type="string")
     _store_shader_double_sided_attr(shader, double_sided)
-    if edge_size is not None and cmds.attributeQuery("EdgeSize", node=shader, exists=True):
-        cmds.setAttr(f"{shader}.EdgeSize", max(0.0, min(2.0, float(edge_size))) if enabled else 0.0)
+    if cmds.attributeQuery("EdgeSize", node=shader, exists=True):
+        if not enabled:
+            cmds.setAttr(f"{shader}.EdgeSize", 0.0)
+        elif edge_size is not None:
+            cmds.setAttr(f"{shader}.EdgeSize", max(0.0, min(2.0, float(edge_size))))
     if not cmds.attributeQuery(ATTR_MMD_SHADER_OUTLINE_ENABLED, node=shader, exists=True):
         maya_attribute_utils.set_custom_attributes(shader, {ATTR_MMD_SHADER_OUTLINE_ENABLED: bool(enabled)})
     else:
@@ -556,7 +593,7 @@ def bind_dx11_texture_file_node(shader, file_node, texture_attr, has_attr):
     )
 
 
-def _ensure_mmd_shader_uniform_attributes(shader_node):
+def _ensure_mmd_shader_uniform_attributes(shader_node, include_device_pixel_ratio=False):
     """MMD シェーダーで uniform 属性がない場合に補完する。
 
     Maya の standalone 環境では dx11Shader / GLSLShader が OGSFX/uniform を
@@ -590,6 +627,8 @@ def _ensure_mmd_shader_uniform_attributes(shader_node):
         ("MmdControllerLightVector", om.MFnNumericData.kDouble, 3, False, (0.5, -1.0, 0.5)),
         ("MmdControllerLightRgb", om.MFnNumericData.kDouble, 3, True, (1.0, 1.0, 1.0)),
     ]
+    if include_device_pixel_ratio:
+        uniforms.append(("DevicePixelRatio", om.MFnNumericData.kDouble, 1, False, 1.0))
 
     try:
         sel = om.MSelectionList()
@@ -671,7 +710,7 @@ def _ensure_mmd_shader_uniform_attributes(shader_node):
 
 def _ensure_dx11_uniform_attributes(shader_node):
     """Backward-compatible alias for dynamic uniform attr creation."""
-    _ensure_mmd_shader_uniform_attributes(shader_node)
+    _ensure_mmd_shader_uniform_attributes(shader_node, include_device_pixel_ratio=True)
 
 
 _GLSL_DIFFUSE_CONTRACT_MARKER = "mmdDiffuseRgbContractVersion"
@@ -930,12 +969,27 @@ def sync_dx11_generated_uniforms(shader_nodes=None):
         if cmds.attributeQuery(ATTR_MMD_DIFFUSE_COLOR, node=shader, exists=True):
             try:
                 diffuse = list(cmds.getAttr(f"{shader}.{ATTR_MMD_DIFFUSE_COLOR}")[0])
-                opacity = 1.0
+                # PMX alpha is authored in the split diffuse-alpha custom
+                # attribute.  Opacity is only a neutral runtime multiplier;
+                # using it as the legacy DiffuseColorA source would reapply
+                # the material alpha in ``texColor.a * DiffuseColorA * Opacity``.
+                if cmds.attributeQuery(ATTR_MMD_DIFFUSE_ALPHA, node=shader, exists=True):
+                    diffuse_alpha = float(cmds.getAttr(f"{shader}.{ATTR_MMD_DIFFUSE_ALPHA}"))
+                elif cmds.attributeQuery("DiffuseColorA", node=shader, exists=True):
+                    diffuse_alpha = float(cmds.getAttr(f"{shader}.DiffuseColorA"))
+                else:
+                    diffuse_alpha = 1.0
+                    if cmds.attributeQuery("Opacity", node=shader, exists=True):
+                        diffuse_alpha = float(cmds.getAttr(f"{shader}.Opacity"))
                 if cmds.attributeQuery("Opacity", node=shader, exists=True):
-                    opacity = float(cmds.getAttr(f"{shader}.Opacity"))
-                _set_dx11_color_uniform(shader, "DiffuseColor", diffuse + [opacity])
+                    incoming_opacity = cmds.listConnections(
+                        f"{shader}.Opacity", source=True, destination=False, plugs=True
+                    ) or []
+                    if not incoming_opacity:
+                        cmds.setAttr(f"{shader}.Opacity", 1.0)
+                _set_dx11_color_uniform(shader, "DiffuseColor", diffuse + [diffuse_alpha])
                 if cmds.nodeType(shader) == "GLSLShader" and _glsl_split_diffuse_matches(
-                    shader, diffuse, opacity
+                    shader, diffuse, diffuse_alpha
                 ):
                     _mark_glsl_diffuse_contract(shader)
                 synced += 1
@@ -953,6 +1007,17 @@ def sync_dx11_generated_uniforms(shader_nodes=None):
                 _set_dx11_color_uniform(shader, "EdgeColor", edge_color + [edge_alpha])
             except Exception:
                 LOGGER.warning("Failed to sync dx11 EdgeColor uniforms for '%s'", shader, exc_info=True)
+
+        if (
+            cmds.attributeQuery(ATTR_MMD_SPHERE_MODE, node=shader, exists=True)
+            and cmds.attributeQuery("SphereMode", node=shader, exists=True)
+        ):
+            try:
+                sphere_mode = int(cmds.getAttr(f"{shader}.{ATTR_MMD_SPHERE_MODE}"))
+                cmds.setAttr(f"{shader}.SphereMode", sphere_mode)
+                synced += 1
+            except Exception:
+                LOGGER.warning("Failed to sync dx11 SphereMode uniform for '%s'", shader, exc_info=True)
 
         if (
             cmds.attributeQuery(ATTR_MMD_EDGE_SIZE, node=shader, exists=True)
@@ -997,6 +1062,9 @@ class MeshConverter:
         # material_index -> transparency mode ("opaque"/"cutout"/"blend"),
         # precomputed from per-material UV-region texture alpha (atlas-safe).
         self._transparency_modes = {}
+        self._material_name_by_index = {}
+        self._material_name_used = self._scene_name_set()
+        self._material_name_scene_check = True
         self.profile = {
             "mesh_create_sec": 0.0,
             "material_create_sec": 0.0,
@@ -1012,6 +1080,48 @@ class MeshConverter:
         }
         if pmx_filepath:
             self.texture_dir = os.path.dirname(pmx_filepath)
+
+    @staticmethod
+    def _scene_name_set():
+        """Return conservative leaf-name reservations from the current scene."""
+        try:
+            nodes = cmds.ls() or []
+        except Exception:
+            return set()
+        names = set()
+        for node in nodes:
+            leaf = str(node).rsplit("|", 1)[-1]
+            names.add(leaf)
+            names.add(leaf.rsplit(":", 1)[-1])
+        return names
+
+    def _allocate_material_name(self, material, material_index=None):
+        """Allocate one safe base for a material and all derived node names."""
+        key = material_index if material_index is not None else id(material)
+        existing = getattr(self, "_material_name_by_index", None)
+        if existing is None:
+            existing = self._material_name_by_index = {}
+        if key in existing:
+            return existing[key]
+
+        used = getattr(self, "_material_name_used", None)
+        check_scene = bool(getattr(self, "_material_name_scene_check", False))
+        if used is None:
+            used = self._material_name_used = set()
+        raw_name = material.get_name() if hasattr(material, "get_name") else getattr(material, "name", "")
+        fallback = f"material_{material_index if material_index is not None else len(existing)}"
+        while True:
+            candidate = maya_name_utils.sanitize_unique_name(raw_name, used, fallback=fallback)
+            if not any(
+                candidate + suffix in used
+                or (check_scene and _maya_node_exists(candidate + suffix))
+                for suffix in _MATERIAL_NODE_FAMILY_SUFFIXES[1:]
+            ):
+                break
+
+        used.update(candidate + suffix for suffix in _MATERIAL_NODE_FAMILY_SUFFIXES)
+        existing[key] = candidate
+        return candidate
 
     def _mmd_vertex_to_maya(self, position) -> Tuple[float, float, float]:
         """Convert a PMX vertex position to Maya object space with import scale."""
@@ -1086,16 +1196,9 @@ class MeshConverter:
         diffuse-alpha fallback in ``_setup_dx11_shader`` applies.
         """
         self._transparency_modes = {}
-        if not settings.get(setting_keys.IMPORT_MODEL_CREATE_MMD_SHADERS):
-            return
-        # Default is opaque: texture-based cutout/blend auto-classification is
-        # opt-in, because diffuse-texture alpha cannot reliably tell an occluding
-        # translucent material (hair) from a see-through one (skirt frill) -- that
-        # is a semantic choice the user makes per material in the Material tab.
-        # When off, _setup_dx11_shader falls back to diffuse-alpha only
-        # (alpha < 1 -> blend, otherwise opaque).
-        if not settings.get(setting_keys.IMPORT_MODEL_AUTO_CLASSIFY_TRANSPARENCY, False):
-            return
+        # Every material is classified automatically. This keeps opaque
+        # standardSurface materials out of VP2's transparent queue and selects
+        # the appropriate hardware-shader technique without a user-facing mode.
         texture_dir = getattr(self, "texture_dir", None)
         if not texture_dir:
             return
@@ -1104,7 +1207,6 @@ class MeshConverter:
         except Exception:
             return
 
-        opaque_threshold = int(settings.get(setting_keys.IMPORT_MODEL_TRANSPARENCY_OPAQUE_THRESHOLD, 255))
         classify_start = time.perf_counter()
         alpha_cache = {}
         cursor = 0
@@ -1116,12 +1218,8 @@ class MeshConverter:
             start_tri, end_tri = cursor, cursor + triangle_count
             cursor = end_tri
             try:
-                opacity = (
-                    material.diffuse[3]
-                    if hasattr(material, "diffuse") and len(material.diffuse) > 3
-                    else 1.0
-                )
-                if opacity < 0.999:
+                opacity = _normalized_material_opacity(material)
+                if opacity < 1.0:
                     self._transparency_modes[material_index] = TRANSPARENCY_MODE_BLEND
                     continue
 
@@ -1140,7 +1238,7 @@ class MeshConverter:
                     uv2 = all_vertices[i2].uv
                     triangles.append((uv0[0], uv0[1], uv1[0], uv1[1], uv2[0], uv2[1]))
                 self._transparency_modes[material_index] = texture_alpha.classify_material(
-                    resolved, triangles, alpha_cache=alpha_cache, opaque_threshold=opaque_threshold
+                    resolved, triangles, alpha_cache=alpha_cache
                 )
             except Exception:
                 self.logger.debug("Failed to classify transparency (material %s)", material_index, exc_info=True)
@@ -1170,6 +1268,11 @@ class MeshConverter:
 
         # ジオメトリグループを作成
         geo_group = cmds.group(empty=True, name=GEOMETRY_GROUP, parent=root_group)
+        # Keep Geometry under the model root for ownership/visibility, but do
+        # not apply the root transform a second time.  SkinCluster evaluates
+        # joint.worldMatrix against bindPreMatrix; inheriting the model-root
+        # transform here as well causes root translation to double on meshes.
+        cmds.setAttr(f"{geo_group}.inheritsTransform", False)
 
         # 設定からマテリアルごとのメッシュ分割設定を取得
         separate_by_material = settings.get(setting_keys.IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL, False)
@@ -1557,10 +1660,7 @@ class MeshConverter:
         Returns:
             str: 作成されたシェーダーノード名。
         """
-        sanitized_name = maya_name_utils.sanitize_text(material.get_name())
-        # 名前が空の場合はデフォルト名を使用
-        if not sanitized_name:
-            sanitized_name = f"material_{material_index if material_index is not None else 0}"
+        sanitized_name = self._allocate_material_name(material, material_index)
 
         # create_mmd_shaders設定を確認
         create_mmd_shaders = settings.get(setting_keys.IMPORT_MODEL_CREATE_MMD_SHADERS)
@@ -1687,6 +1787,7 @@ class MeshConverter:
             is_pmd,
             material_index,
             original_texture_path,
+            sanitized_name,
         )
 
         return shader
@@ -1770,20 +1871,22 @@ class MeshConverter:
         is_pmd,
         material_index=None,
         original_texture_path=None,
+        material_name=None,
     ):
         """標準のstandardSurfaceシェーダーを設定"""
 
         # マテリアル名をサニタイズ（テクスチャノード名に使用）
-        sanitized_name = maya_name_utils.sanitize_text(material.name if material.name else "material")
+        sanitized_name = material_name or maya_name_utils.sanitize_text(material.name if material.name else "material")
 
         # 基本色設定（Diffuse）
         maya_attribute_utils.set_attribute(shader, "baseColor", material.diffuse[:3], "double3")
 
         # AlphaをOpacityに変換（StandardSurfaceではopacityを使用）
+        material_opacity = _normalized_material_opacity(material)
         maya_attribute_utils.set_attribute(
             shader,
             "opacity",
-            (material.diffuse[3], material.diffuse[3], material.diffuse[3]),
+            (material_opacity, material_opacity, material_opacity),
             "double3",
         )
 
@@ -1802,13 +1905,13 @@ class MeshConverter:
             if specular_coef is not None:
                 maya_attribute_utils.set_attribute(shader, "specularColor", material.specular[:3], "double3")
 
-        # アンビエント設定（StandardSurfaceでは間接光の強度として使用）
+        # アンビエント設定（StandardSurfaceでは加算発光項として使用）
         if hasattr(material, "ambient"):
-            # アンビエント色の平均値を間接光の強度として使用
-            ambient_intensity = (material.ambient[0] + material.ambient[1] + material.ambient[2]) / 3.0
-            # エミッションとして微弱に設定（アンビエント光の表現）
-            maya_attribute_utils.set_attribute(shader, "emission", ambient_intensity * 0.1, "float")
-            maya_attribute_utils.set_attribute(shader, "emissionColor", material.ambient[:3], "double3")
+            # StandardSurface has no PMX-style ambient color input. The
+            # texture path below drives an ambient*texture emission term;
+            # keep the weight explicit so the fallback follows the MMD parity
+            # equation instead of reducing ambient to a weak average.
+            maya_attribute_utils.set_attribute(shader, "emission", 1.0, "float")
 
         # 非金属マテリアルとして設定（MMDは基本的に非金属）
         maya_attribute_utils.set_attribute(shader, "metalness", 0.0, "float")
@@ -1844,9 +1947,38 @@ class MeshConverter:
                     asUtility=True,
                     name=sanitized_name + "_place2dTexture",
                 )
-                # 標準的なUV接続
+
+                # Keep the file node in the graph even while its path is
+                # unresolved. Texture repair walks the diffuse multiply
+                # utility to find and update this node in place.
                 cmds.connectAttr(place_uv_node + ".outUV", file_node + ".uvCoord")
-                cmds.connectAttr(file_node + ".outColor", shader + ".baseColor")
+
+                transparency_mode = self._transparency_modes.get(
+                    material_index, TRANSPARENCY_MODE_OPAQUE
+                )
+                if transparency_mode != TRANSPARENCY_MODE_OPAQUE:
+                    # Preserve PMX diffuse alpha while applying per-pixel
+                    # texture alpha. Opaque materials deliberately have no
+                    # opacity connection so VP2 keeps them in the opaque queue.
+                    opacity_multiply = cmds.shadingNode(
+                        "multiplyDivide",
+                        asUtility=True,
+                        name=sanitized_name + "_opacityMultiply",
+                    )
+                    maya_attribute_utils.set_attribute(opacity_multiply, "operation", 1, "long")
+                    maya_attribute_utils.set_attribute(
+                        opacity_multiply,
+                        "input2X",
+                        material_opacity,
+                        "float",
+                    )
+                    cmds.connectAttr(file_node + ".outAlpha", opacity_multiply + ".input1X", force=True)
+                    for channel in "RGB":
+                        cmds.connectAttr(
+                            opacity_multiply + ".outputX",
+                            shader + f".opacity{channel}",
+                            force=True,
+                        )
 
                 maya_attribute_utils.set_attribute(file_node, "fileTextureName", file_texture_path, "string")
                 maya_material_utils.mark_mmd_texture_file_node(
@@ -1878,6 +2010,44 @@ class MeshConverter:
                             f"Texture path needs resolution ({issue.get('reason', 'unreadable_path')}): "
                             f"{full_texture_path}"
                         )
+                # Keep Maya's stock file-to-standardSurface contract intact so
+                # VP2 can provide its normal untextured fallback when panel
+                # texture display is disabled. file.colorGain applies the same
+                # Texture * PMX Diffuse multiplication without an intermediate
+                # arithmetic node on the baseColor connection.
+                maya_attribute_utils.set_attribute(
+                    file_node,
+                    "colorGain",
+                    tuple(float(value) for value in material.diffuse[:3]),
+                    "double3",
+                )
+                cmds.connectAttr(file_node + ".outColor", shader + ".baseColor", force=True)
+
+                if hasattr(material, "ambient"):
+                    ambient_multiply = cmds.shadingNode(
+                        "multiplyDivide",
+                        asUtility=True,
+                        name=sanitized_name + "_ambientMultiply",
+                    )
+                    maya_attribute_utils.set_attribute(ambient_multiply, "operation", 1, "long")
+                    for channel, value in zip("XYZ", material.ambient[:3]):
+                        maya_attribute_utils.set_attribute(
+                            ambient_multiply,
+                            f"input2{channel}",
+                            float(value),
+                            "float",
+                        )
+                    cmds.connectAttr(file_node + ".outColor", ambient_multiply + ".input1", force=True)
+                    cmds.connectAttr(ambient_multiply + ".output", shader + ".emissionColor", force=True)
+
+        elif hasattr(material, "ambient"):
+            # No texture node exists, so ambient remains an additive constant.
+            maya_attribute_utils.set_attribute(
+                shader,
+                "emissionColor",
+                tuple(float(value) for value in material.ambient[:3]),
+                "double3",
+            )
 
     def _setup_glsl_shader(
         self,
@@ -2096,14 +2266,13 @@ class MeshConverter:
         # mayapy standalone では dx11Shader が .fx ファイルから uniform 属性を
         # 自動生成しないため、事前に動的アトリビュートとして作成しておく
         _ensure_dx11_uniform_attributes(shader)
-
         # Prefer the accurate per-material UV-region classification computed up
         # front; fall back to the simple diffuse-alpha rule if unavailable.
         mode = self._transparency_modes.get(material_index)
         if mode is None:
             mode = _classify_material_transparency(material, texture_path)
         double_sided = _material_is_double_sided(material)
-        technique = _technique_for_transparency(mode, False, double_sided)
+        technique = _technique_for_transparency(mode, True, double_sided)
         cmds.setAttr(f"{shader}.technique", technique, type="string")
         _store_transparency_mode_attr(shader, mode)
         _store_shader_double_sided_attr(shader, double_sided)

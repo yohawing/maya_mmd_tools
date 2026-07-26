@@ -201,6 +201,24 @@ class MayaCmdsAdapter:
         """Pass through to maya.cmds.select."""
         return self._cmds.select(nodes, replace=replace)
 
+    def select_fast(self, nodes, replace=True):
+        """Update Maya's active selection directly through API 2.0.
+
+        Animator pickers call this latency-sensitive path instead of entering
+        the command engine for every click. Unsupported selection modes retain
+        the regular ``cmds.select`` behavior.
+        """
+
+        from maya.api import OpenMaya as om
+
+        node_list = [nodes] if isinstance(nodes, str) else list(nodes or [])
+        selection = om.MSelectionList()
+        for node in node_list:
+            selection.add(node)
+        mode = om.MGlobal.kReplaceList if replace else om.MGlobal.kAddToList
+        om.MGlobal.setActiveSelectionList(selection, mode)
+        return node_list
+
     def undo_info(self, **kwargs):
         """Pass through to maya.cmds.undoInfo."""
         return self._cmds.undoInfo(**kwargs)

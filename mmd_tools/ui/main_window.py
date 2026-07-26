@@ -27,6 +27,8 @@ from .tabs.bone_tab import BoneTab
 from .presenters.bone_presenter import BonePresenter
 from .tabs.morph_tab import MorphTab
 from .presenters.morph_presenter import MorphPresenter
+from .tabs.display_pane_tab import DisplayPaneTab
+from .presenters.display_pane_presenter import DisplayPanePresenter
 from .tabs.physics_tab import PhysicsTab
 from .presenters.physics_presenter import PhysicsPresenter
 from .tabs.settings_tab import SettingsTab
@@ -138,6 +140,7 @@ class MainWindow(QMainWindow):
         self.show_window(dockable=dockable)
 
     def closeEvent(self, event):
+        self.bone_presenter.disconnect_signals()
         self.save_settings()
         super().closeEvent(event)
 
@@ -247,6 +250,12 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(morph_tab, translator.translate("morph", "tabs"))
         self.morph_tab = morph_tab
 
+        # Display Pane Tab (PMX display-frame editor; independent of Animator Toolset)
+        display_pane_tab = DisplayPaneTab()
+        self.display_pane_presenter = DisplayPanePresenter(display_pane_tab, self.app_state)
+        self.tab_widget.addTab(display_pane_tab, translator.translate("display_pane", "tabs"))
+        self.display_pane_tab = display_pane_tab
+
         # Physics Tab
         self._add_physics_tab()
 
@@ -262,6 +271,7 @@ class MainWindow(QMainWindow):
             material_tab,
             bone_tab,
             morph_tab,
+            display_pane_tab,
             self.physics_tab,
             settings_tab,
         ]
@@ -284,6 +294,15 @@ class MainWindow(QMainWindow):
         morph_presenter = getattr(self, "morph_presenter", None)
         if morph_tab is not None and morph_presenter is not None and active_tab is morph_tab:
             morph_presenter.ensure_morphs_loaded()
+
+        display_pane_tab = getattr(self, "display_pane_tab", None)
+        display_pane_presenter = getattr(self, "display_pane_presenter", None)
+        if (
+            display_pane_tab is not None
+            and display_pane_presenter is not None
+            and active_tab is display_pane_tab
+        ):
+            display_pane_presenter.refresh()
 
         physics_tab = getattr(self, "physics_tab", None)
         presenter = getattr(self, "physics_presenter", None)

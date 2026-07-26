@@ -10,7 +10,6 @@
       "_comment": "Settings for model geometry, materials, and structure",
       "import_models": true,
       "separate_meshes_by_material": false,
-      "auto_classify_transparency": false,
       "auto_resolve_textures": true,
       "create_mmd_shaders": true,
       "mmd_shader_backend": "auto",
@@ -30,7 +29,7 @@
     "rig": {
       "_comment": "Settings for rigging system setup",
       "add_semi_standard_bones": false,
-      "bake_mode": true
+      "bake_mode": false
     },
     "animation": {
       "_comment": "Settings for importing VMD animation files",
@@ -42,6 +41,8 @@
       "clear_existing_motion": false,
       "resample_curves": false,
       "use_native_physics_bake": false,
+      "reduce_bake_keys": false,
+      "reduce_quality": 1.0,
       "import_camera_animation": true,
       "import_light_animation": true,
       "use_mmd_runtime_bake": true,

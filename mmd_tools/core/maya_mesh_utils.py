@@ -1,11 +1,137 @@
 """Maya mesh helpers used by MMD import and morph conversion."""
 
+import math
+
 from maya import cmds
 from maya.api import OpenMaya as om
 from maya.api import OpenMayaAnim as oma
 
 from mmd_tools.core import settings_keys as setting_keys
+from mmd_tools.core.logger import get_logger
 from mmd_tools.core.settings import settings
+
+logger = get_logger(__name__)
+
+
+# A dot product below this bound represents a meaningful authored-vs-geometric
+# normal difference (approximately 0.8 degrees for unit vectors).
+_AUTHORED_NORMAL_DOT_TOLERANCE = 1.0e-4
+
+
+def _normalize_normal(normal):
+    """Return a finite unit normal, or ``None`` when the input is invalid."""
+    try:
+        x = float(normal[0])
+        y = float(normal[1])
+        z = float(normal[2])
+    except (IndexError, TypeError, ValueError, OverflowError):
+        return None
+
+    if not all(math.isfinite(component) for component in (x, y, z)):
+        return None
+
+    length = math.hypot(math.hypot(x, y), z)
+    if not math.isfinite(length) or length <= 0.0:
+        return None
+
+    normalized = (x / length, y / length, z / length)
+    if not all(math.isfinite(component) for component in normalized):
+        return None
+    return normalized
+
+
+def has_materially_different_authored_normals(mesh_node):
+    """Return whether a mesh has locked authored normals that differ materially.
+
+    The comparison uses Maya's locked face-vertex normal pool against its
+    unweighted geometric per-vertex normals. Missing, malformed, or invalid
+    mesh data fails closed so callers can safely leave GPU deformation enabled.
+
+    Args:
+        mesh_node: Mesh shape or transform name/path.
+
+    Returns:
+        ``True`` when at least one locked authored face-vertex normal differs
+        beyond the documented dot-product tolerance; otherwise ``False``.
+    """
+    try:
+        selection = om.MSelectionList()
+        selection.add(mesh_node)
+        dag_path = selection.getDagPath(0)
+        if dag_path.node().hasFn(om.MFn.kTransform):
+            shape_nodes = cmds.listRelatives(mesh_node, shapes=True, type="mesh", fullPath=True) or []
+            if not shape_nodes:
+                return False
+            shape_selection = om.MSelectionList()
+            shape_selection.add(shape_nodes[0])
+            dag_path = shape_selection.getDagPath(0)
+        if not dag_path.node().hasFn(om.MFn.kMesh):
+            return False
+
+        mesh_fn = om.MFnMesh(dag_path)
+        normal_counts, normal_ids = mesh_fn.getNormalIds()
+        vertex_counts, vertex_ids = mesh_fn.getVertices()
+        authored_normals = mesh_fn.getNormals(om.MSpace.kObject)
+        geometric_normals = mesh_fn.getVertexNormals(False, om.MSpace.kObject)
+
+        if len(normal_counts) != len(vertex_counts) or len(normal_ids) != len(vertex_ids):
+            return False
+        if len(authored_normals) == 0 or len(geometric_normals) == 0:
+            return False
+
+        for normal_id, vertex_id in zip(normal_ids, vertex_ids):
+            if normal_id < 0 or normal_id >= len(authored_normals):
+                return False
+            if vertex_id < 0 or vertex_id >= len(geometric_normals):
+                return False
+            if not mesh_fn.isNormalLocked(normal_id):
+                continue
+
+            authored = _normalize_normal(authored_normals[normal_id])
+            geometric = _normalize_normal(geometric_normals[vertex_id])
+            if authored is None or geometric is None:
+                return False
+            dot = sum(authored[index] * geometric[index] for index in range(3))
+            if not math.isfinite(dot):
+                return False
+            if dot < 1.0 - _AUTHORED_NORMAL_DOT_TOLERANCE:
+                return True
+
+        return False
+    except (RuntimeError, TypeError, ValueError, IndexError, AttributeError):
+        return False
+
+
+def configure_authored_normal_skin_policy(
+    skin_cluster,
+    has_authored_normal_difference,
+    cmds_module=None,
+):
+    """Preserve authored normals and selectively opt a skinCluster out of GPU.
+
+    Args:
+        skin_cluster: Maya skinCluster node name.
+        has_authored_normal_difference: Whether locked authored normals differ
+            materially from the mesh's geometric normals.
+        cmds_module: Optional maya.cmds-compatible adapter used by tests.
+    """
+    maya_cmds = cmds if cmds_module is None else cmds_module
+    attributes = [("deformUserNormals", True)]
+    if has_authored_normal_difference:
+        attributes.append(("blockGPU", True))
+
+    for attribute, value in attributes:
+        if not maya_cmds.attributeQuery(attribute, node=skin_cluster, exists=True):
+            continue
+        try:
+            maya_cmds.setAttr(f"{skin_cluster}.{attribute}", value)
+        except (RuntimeError, TypeError, ValueError):
+            logger.warning(
+                "Failed to set %s on skinCluster '%s'",
+                attribute,
+                skin_cluster,
+                exc_info=True,
+            )
 
 
 def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_uv_connects, normals=None):
@@ -26,29 +152,35 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
 
     mesh_obj = mesh_fn.create(points, face_counts_array, face_connects_array)
 
-    if normals and len(normals) == len(vertices):
+    if normals:
         normal_array = om.MVectorArray()
         normal_vertex_ids = om.MIntArray()
-        for vertex_id, normal in enumerate(normals):
-            normal_array.append(om.MVector(normal[0], normal[1], normal[2]))
-            normal_vertex_ids.append(vertex_id)
-        mesh_fn.setVertexNormals(normal_array, normal_vertex_ids)
-    elif normals:
-        normal_array = om.MVectorArray()
-        normal_face_ids = om.MIntArray()
-        normal_vertex_ids = om.MIntArray()
-        face_id = 0
-        cursor = 0
-        for count in face_counts:
-            for _ in range(count):
-                vertex_id = face_connects[cursor]
-                normal = normals[cursor]
-                normal_array.append(om.MVector(normal[0], normal[1], normal[2]))
-                normal_face_ids.append(face_id)
+        if len(normals) == len(vertices):
+            for vertex_id, normal in enumerate(normals):
+                normalized = _normalize_normal(normal)
+                if normalized is None:
+                    continue
+                normal_array.append(om.MVector(*normalized))
                 normal_vertex_ids.append(vertex_id)
-                cursor += 1
-            face_id += 1
-        mesh_fn.setFaceVertexNormals(normal_array, normal_face_ids, normal_vertex_ids)
+            if len(normal_vertex_ids):
+                # The bulk setter creates locked user normals. A second lock
+                # can recompute mixed valid/fallback entries in Maya 2024.
+                mesh_fn.setVertexNormals(normal_array, normal_vertex_ids)
+        else:
+            normal_face_ids = om.MIntArray()
+            cursor = 0
+            for face_id, count in enumerate(face_counts):
+                for _ in range(count):
+                    normalized = _normalize_normal(normals[cursor]) if cursor < len(normals) else None
+                    if normalized is not None:
+                        normal_array.append(om.MVector(*normalized))
+                        normal_face_ids.append(face_id)
+                        normal_vertex_ids.append(face_connects[cursor])
+                    cursor += 1
+            if len(normal_face_ids):
+                # setFaceVertexNormals creates locked user normals. Calling
+                # lockFaceVertexNormals again resets their values in Maya 2024.
+                mesh_fn.setFaceVertexNormals(normal_array, normal_face_ids, normal_vertex_ids)
 
     if uvs and face_uv_connects:
         uv_set_name = settings.get(setting_keys.IMPORT_MODEL_UV_SET_NAME).replace("#", "1")

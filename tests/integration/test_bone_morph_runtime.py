@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from unittest import mock
 
+import maya.api.OpenMaya as om
 from maya import cmds
 
 from mmd_tools.converters import bone_morph_runtime
@@ -183,9 +184,15 @@ class TestBoneMorphRuntime(MayaTestBase):
             [{"bone_index": 0, "translation": [0.0, 6.0, 2.0], "rotation": [0.0, 0.0, 0.0, 1.0]}],
         )
 
-        result = build_bone_morph_graph(root)
+        with mock.patch.object(
+            bone_morph_runtime,
+            "_joint_bind_world_orientation",
+            wraps=bone_morph_runtime._joint_bind_world_orientation,
+        ) as bind_orientation:
+            result = build_bone_morph_graph(root)
         self.assertTrue(result["success"])
         self.assertEqual(result["contributions"], 2)
+        self.assertEqual(bind_orientation.call_count, 1)
 
         cmds.setAttr(f"{morph_a}.weight", 0.0)
         cmds.setAttr(f"{morph_b}.weight", 0.0)
@@ -211,7 +218,13 @@ class TestBoneMorphRuntime(MayaTestBase):
         bone_morph = self._create_bone_morph_node(
             "move_target_boneMorph",
             3,
-            [{"bone_index": 0, "translation": [4.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]}],
+            [
+                {
+                    "bone_index": 0,
+                    "translation": [4.0, 0.0, 0.0],
+                    "rotation": [0.0, 0.0, math.sqrt(0.5), math.sqrt(0.5)],
+                }
+            ],
         )
         self._create_group_morph_node(
             "move_group_groupMorph",
@@ -229,6 +242,7 @@ class TestBoneMorphRuntime(MayaTestBase):
 
         cmds.setAttr(f"{controller}.inputWeight[4]", 0.5)
         self.assertListAlmostEqual(cmds.getAttr(f"{joint}.translate")[0], (0.5, 0.0, 0.0), places=5)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.rotateZ"), 11.25, delta=0.1)
 
     def test_root_scoped_discovery_isolates_same_index_and_skips_legacy_network(self):
         """Building model B isolates its Controller-driven bone leaf and warns for legacy data."""
@@ -354,6 +368,102 @@ class TestBoneMorphRuntime(MayaTestBase):
         full_rotate = cmds.getAttr(f"{joint}.rotate")[0]
         self.assertAlmostEqual(full_rotate[0], -90.0, delta=0.1)
 
+    def test_asymmetric_rotation_preserves_base_order_in_joint_orient_basis(self):
+        """Bind-basis offsets compose after nonzero base rotation for every rotateOrder."""
+        self._require_accumulator_node()
+        raw_axis = om.MVector(0.31, -0.57, 0.76).normal()
+        raw_angle = math.radians(73.0)
+        raw_quat = om.MQuaternion(raw_angle, raw_axis)
+        reflected = om.MQuaternion(-raw_quat.x, -raw_quat.y, raw_quat.z, raw_quat.w)
+        second_quat = om.MQuaternion(math.radians(41.0), om.MVector(-0.42, 0.81, 0.39).normal())
+        second_reflected = om.MQuaternion(
+            -second_quat.x,
+            -second_quat.y,
+            second_quat.z,
+            second_quat.w,
+        )
+        orders = (
+            om.MEulerRotation.kXYZ,
+            om.MEulerRotation.kYZX,
+            om.MEulerRotation.kZXY,
+            om.MEulerRotation.kXZY,
+            om.MEulerRotation.kYXZ,
+            om.MEulerRotation.kZYX,
+        )
+
+        for rotate_order, maya_order in enumerate(orders):
+            with self.subTest(rotate_order=rotate_order):
+                cmds.file(new=True, force=True)
+                root = cmds.group(empty=True, name=f"model_root_{rotate_order}")
+                parent = cmds.createNode("joint", name=f"parent_{rotate_order}", parent=root)
+                joint = cmds.createNode("joint", name=f"target_{rotate_order}", parent=parent)
+                cmds.setAttr(f"{parent}.jointOrient", 18.0, -27.0, 11.0, type="double3")
+                cmds.setAttr(f"{joint}.jointOrient", -21.0, 13.0, 34.0, type="double3")
+                cmds.setAttr(f"{joint}.rotateOrder", rotate_order)
+                cmds.setAttr(f"{joint}.rotate", 17.0, -23.0, 31.0, type="double3")
+                cmds.addAttr(joint, longName="mmd_bone_index", attributeType="long")
+                cmds.setAttr(f"{joint}.mmd_bone_index", 0)
+                self._current_model_root = root
+                morph = self._create_bone_morph_node(
+                    f"asymmetric_{rotate_order}_boneMorph",
+                    1,
+                    [
+                        {
+                            "bone_index": 0,
+                            "translation": [0.0, 0.0, 0.0],
+                            "rotation": [raw_quat.x, raw_quat.y, raw_quat.z, raw_quat.w],
+                        }
+                    ],
+                )
+                earlier_morph = self._create_bone_morph_node(
+                    f"earlier_{rotate_order}_boneMorph",
+                    0,
+                    [
+                        {
+                            "bone_index": 0,
+                            "translation": [0.0, 0.0, 0.0],
+                            "rotation": [
+                                second_quat.x,
+                                second_quat.y,
+                                second_quat.z,
+                                second_quat.w,
+                            ],
+                        }
+                    ],
+                )
+
+                result = build_bone_morph_graph(root)
+                self.assertTrue(result["success"])
+                cmds.setAttr(f"{morph}.weight", 0.5)
+                cmds.setAttr(f"{earlier_morph}.weight", 0.25)
+
+                actual_values = cmds.getAttr(f"{joint}.rotate")[0]
+                actual = om.MEulerRotation(
+                    *(math.radians(value) for value in actual_values),
+                    maya_order,
+                ).asQuaternion()
+                base = om.MEulerRotation(
+                    math.radians(17.0),
+                    math.radians(-23.0),
+                    math.radians(31.0),
+                    maya_order,
+                ).asQuaternion()
+                bind = bone_morph_runtime._joint_bind_world_orientation(joint)
+                offset = bind * reflected * bind.inverse()
+                earlier_offset = bind * second_reflected * bind.inverse()
+                expected = (
+                    base
+                    * om.MQuaternion.slerp(om.MQuaternion(), earlier_offset, 0.25)
+                    * om.MQuaternion.slerp(om.MQuaternion(), offset, 0.5)
+                )
+                dot = abs(
+                    actual.x * expected.x
+                    + actual.y * expected.y
+                    + actual.z * expected.z
+                    + actual.w * expected.w
+                )
+                self.assertAlmostEqual(dot, 1.0, places=6)
+
     def test_accumulator_inserts_upstream_of_mmd_append_when_present(self):
         """When mmdAppend drives a joint, bone morph output feeds append base attrs."""
         self._require_accumulator_node()
@@ -364,12 +474,22 @@ class TestBoneMorphRuntime(MayaTestBase):
 
         root, joint = self._create_indexed_joint()
         cmds.setAttr(f"{append_node}.affectTranslation", True)
+        cmds.setAttr(f"{append_node}.affectRotation", True)
         cmds.setAttr(f"{append_node}.baseTranslate", 3.0, 0.0, 0.0, type="double3")
+        cmds.setAttr(f"{append_node}.baseRotate", 5.0, 0.0, 0.0, type="double3")
         cmds.connectAttr(f"{append_node}.outputTranslate", f"{joint}.translate")
+        cmds.connectAttr(f"{append_node}.outputRotate", f"{joint}.rotate")
+        half_sqrt = math.sqrt(0.5)
         morph = self._create_bone_morph_node(
             "append_upstream_boneMorph",
             0,
-            [{"bone_index": 0, "translation": [1.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]}],
+            [
+                {
+                    "bone_index": 0,
+                    "translation": [1.0, 0.0, 0.0],
+                    "rotation": [half_sqrt, 0.0, 0.0, half_sqrt],
+                }
+            ],
         )
 
         result = build_bone_morph_graph(root)
@@ -386,6 +506,7 @@ class TestBoneMorphRuntime(MayaTestBase):
 
         cmds.setAttr(f"{morph}.weight", 1.0)
         self.assertListAlmostEqual(cmds.getAttr(f"{append_node}.baseTranslate")[0], (4.0, 0.0, 0.0), places=5)
+        self.assertAlmostEqual(cmds.getAttr(f"{append_node}.baseRotateX"), -85.0, delta=0.1)
 
     def test_accumulator_feeds_mmd_ccd_ik_input_not_joint_rotate(self):
         """When mmdCcdIk drives joint.rotate, bone morph feeds inputRotate[bone_slot]."""

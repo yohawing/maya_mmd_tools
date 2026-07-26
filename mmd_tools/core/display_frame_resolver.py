@@ -15,6 +15,7 @@ class PickerItem:
     element_type: int
     index: int
     resolved_name: str
+    display_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,8 @@ def resolve_display_frames(
     display_frames_json: Optional[str],
     bone_index_map: Dict[int, str],
     morph_index_map: Optional[Dict[int, str]] = None,
+    bone_display_name_map: Optional[Dict[int, str]] = None,
+    morph_display_name_map: Optional[Dict[int, str]] = None,
 ) -> List[PickerGroup]:
     """Build picker groups from display-frame metadata.
 
@@ -45,12 +48,20 @@ def resolve_display_frames(
     """
     frames = display_frames_from_json(display_frames_json)
     if not frames:
-        return _fallback_flat_list(bone_index_map)
+        return _fallback_flat_list(bone_index_map, bone_display_name_map)
 
     morph_map: Dict[int, str] = morph_index_map or {}
+    bone_labels: Dict[int, str] = bone_display_name_map or {}
+    morph_labels: Dict[int, str] = morph_display_name_map or {}
     groups: List[PickerGroup] = []
     for frame in frames:
-        items = _resolve_elements(frame.get("elements", []), bone_index_map, morph_map)
+        items = _resolve_elements(
+            frame.get("elements", []),
+            bone_index_map,
+            morph_map,
+            bone_labels,
+            morph_labels,
+        )
         groups.append(
             PickerGroup(
                 name=frame.get("name", ""),
@@ -76,6 +87,8 @@ def _resolve_elements(
     elements: list,
     bone_map: Dict[int, str],
     morph_map: Dict[int, str],
+    bone_labels: Dict[int, str],
+    morph_labels: Dict[int, str],
 ) -> List[PickerItem]:
     items: List[PickerItem] = []
     for elem in elements:
@@ -85,19 +98,36 @@ def _resolve_elements(
         index = elem.get("index", -1)
         if elem_type == 0:
             resolved = bone_map.get(index, "")
+            display = bone_labels.get(index, "")
         elif elem_type == 1:
             resolved = morph_map.get(index, "")
+            display = morph_labels.get(index, "")
         else:
             continue
-        items.append(PickerItem(element_type=elem_type, index=index, resolved_name=resolved))
+        items.append(
+            PickerItem(
+                element_type=elem_type,
+                index=index,
+                resolved_name=resolved,
+                display_name=display,
+            )
+        )
     return items
 
 
-def _fallback_flat_list(bone_index_map: Dict[int, str]) -> List[PickerGroup]:
+def _fallback_flat_list(
+    bone_index_map: Dict[int, str],
+    bone_display_name_map: Optional[Dict[int, str]] = None,
+) -> List[PickerGroup]:
     if not bone_index_map:
         return []
     items = tuple(
-        PickerItem(element_type=0, index=idx, resolved_name=name)
+        PickerItem(
+            element_type=0,
+            index=idx,
+            resolved_name=name,
+            display_name=bone_display_name_map.get(idx, "") if bone_display_name_map else "",
+        )
         for idx, name in sorted(bone_index_map.items())
     )
     return [

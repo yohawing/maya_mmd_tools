@@ -143,6 +143,7 @@ class _FakeListItem:
     def __init__(self, text, data=None):
         self._text = text
         self._data = data
+        self._tooltip = ""
         self.hidden = None
 
     def text(self):
@@ -153,6 +154,12 @@ class _FakeListItem:
 
     def data(self, _role):
         return self._data
+
+    def setToolTip(self, tooltip):
+        self._tooltip = tooltip
+
+    def toolTip(self):
+        return self._tooltip
 
     def setHidden(self, hidden):
         self.hidden = hidden
@@ -170,6 +177,7 @@ class _FakeView:
     def __init__(self):
         self.bone_list = _FakeList()
         self.refresh_btn = _FakeButton()
+        self.bind_pose_btn = _FakeButton()
         self.search_edit = _FakeLineEdit()
         self.select_ik_target_btn = _FakeButton()
         self.select_grant_parent_btn = _FakeButton()
@@ -235,7 +243,6 @@ class _FakeView:
     def set_bone_details_enabled(self, enabled):
         self.details_enabled = enabled
 
-
 class _FakeAppState:
     def __init__(self, current_model_root=None):
         self.current_model_root = current_model_root
@@ -285,6 +292,25 @@ class _FakeMayaAdapter:
         return True
 
 
+class _FakeBindPoseResult:
+    def __init__(
+        self, *, succeeded=True, error="", model_root="", joint_count=0
+    ):
+        self.succeeded = succeeded
+        self.error = error
+        self.model_root = model_root
+        self.joint_count = joint_count
+
+
+class _FakeBindPoseAction:
+    def __init__(self):
+        self.models = []
+
+    def execute(self, model_root):
+        self.models.append(model_root)
+        return _FakeBindPoseResult(model_root=model_root, joint_count=3)
+
+
 def _make_presenter(adapter=None):
     view = _FakeView()
     app_state = _FakeAppState()
@@ -301,6 +327,24 @@ def _attr_getter(values):
 
 
 class TestBonePresenterHeadless(unittest.TestCase):
+    def test_bind_pose_button_runs_one_shot_action_without_locking_editor(self):
+        view = _FakeView()
+        app_state = _FakeAppState()
+        action = _FakeBindPoseAction()
+        presenter = BonePresenter(
+            view,
+            app_state,
+            maya_adapter=_FakeMayaAdapter(),
+            bind_pose_action=action,
+        )
+        app_state.current_model_root = TEST_MODEL
+
+        presenter.go_to_bind_pose()
+
+        self.assertEqual(action.models, [TEST_MODEL])
+        self.assertIn("Go to Bind Pose", app_state.status_messages[-1])
+        self.assertIsNone(view.details_enabled)
+
     def test_load_bones_clears_and_returns_when_no_model(self):
         presenter, view, _, adapter = _make_presenter()
 
@@ -396,6 +440,31 @@ class TestBonePresenterHeadless(unittest.TestCase):
             ],
         )
         self.assertEqual([item.text() for item in view.bone_list.items], ["2:足（leg_jnt）"])
+
+    def test_load_bones_hides_namespace_and_path_but_preserves_full_node(self):
+        joint = "|root|outer:model:manipulation_center"
+        relatives = {
+            (TEST_MODEL, (("allDescendents", True), ("type", "joint"))): [joint],
+        }
+        adapter = _FakeMayaAdapter(relatives=relatives)
+        presenter, view, app_state, _ = _make_presenter(adapter=adapter)
+        app_state.current_model_root = TEST_MODEL
+        attrs = {
+            (joint, ATTR_MMD_BONE_INDEX): 0,
+            (joint, ATTR_MMD_BONE_NAME): "操作中心",
+            (joint, ATTR_MMD_BONE_NAME_EN): "Manipulation Center",
+        }
+
+        with patch.object(bone_presenter_module, "get_attribute", side_effect=_attr_getter(attrs)):
+            presenter.load_bones()
+
+        item = view.bone_list.items[0]
+        self.assertEqual(
+            item.text(),
+            "0:操作中心（manipulation_center） [Manipulation Center]",
+        )
+        self.assertEqual(item.data(bone_presenter_module.Qt.UserRole), joint)
+        self.assertEqual(item.toolTip(), joint)
 
     def test_filter_bones_uses_display_japanese_english_and_joint_names(self):
         presenter, _, _, _ = _make_presenter()
@@ -550,6 +619,7 @@ class TestBonePresenterHeadless(unittest.TestCase):
                     self.assertNotIn(ATTR_MMD_GRANT_PARENT, attributes)
                     self.assertNotIn(ATTR_MMD_GRANT_RATE, attributes)
                     self.assertEqual(list_item.text(), "3:センター（center_jnt） [Center]")
+                    self.assertEqual(list_item.toolTip(), TEST_BONE)
                     self.assertEqual(app_state.status_messages, ["Applied bone changes: center_jnt"])
 
 

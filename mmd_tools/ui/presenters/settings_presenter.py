@@ -239,7 +239,14 @@ class SettingsPresenter:
         main_window = self.view.window()
         if hasattr(main_window, "refresh_development_mode_visibility"):
             main_window.refresh_development_mode_visibility()
-            return
+
+        from ..qt_compat import QApplication
+
+        for widget in QApplication.topLevelWidgets():
+            if widget is not main_window and hasattr(
+                widget, "refresh_development_mode_visibility"
+            ):
+                widget.refresh_development_mode_visibility()
 
         # Unit tests and older host windows may only expose the Import/Export tab.
         import_export_tab = getattr(main_window, "import_export_tab", None)
@@ -417,6 +424,11 @@ class SettingsPresenter:
         main_window = self.view.window()
         if hasattr(main_window, "retranslate_all_tabs"):
             main_window.retranslate_all_tabs()
+        from ..qt_compat import QApplication
+
+        for widget in QApplication.topLevelWidgets():
+            if widget is not main_window and hasattr(widget, "retranslateUi"):
+                widget.retranslateUi()
         self.refresh_command_port_status()
 
         # ステータスメッセージ

@@ -1,12 +1,13 @@
-"""Standalone dockable window for the Animator Toolset (dev-mode only)."""
+"""Standalone dockable window for the publicly available Animator Toolset."""
 
 from maya import cmds
 import maya.OpenMayaUI as mui
 
-from .qt_compat import QVBoxLayout, QWidget, Qt, wrapInstance
+from .qt_compat import QSettings, QTimer, QVBoxLayout, QWidget, Qt, wrapInstance
 from .application_state import ApplicationState
 from .tabs.animation_tab import AnimationTab
 from .presenters.animation_presenter import AnimationPresenter
+from .translations import UITranslator
 
 
 def _raise_workspace_control(name: str) -> None:
@@ -27,6 +28,11 @@ class AnimatorToolsetWindow(QWidget):
 
     WINDOW_NAME = "MMDAnimatorToolsetWindow"
     WORKSPACE_CONTROL_NAME = "MMDAnimatorToolsetWorkspaceControl"
+    MINIMUM_WIDTH = 150
+    PREFERRED_WIDTH = 350
+    DEFAULT_HEIGHT = 700
+    SETTINGS_WIDTH_KEY = "animator_toolset/width"
+    SETTINGS_HEIGHT_KEY = "animator_toolset/height"
 
     def __init__(self, parent=None):
         if parent is None:
@@ -34,8 +40,16 @@ class AnimatorToolsetWindow(QWidget):
             parent = wrapInstance(int(main_window_ptr), QWidget)
 
         super().__init__(parent)
+        self._size_tracking_enabled = False
+        self._settings = QSettings("yohawing", "maya_mmd_tools")
+        self._window_width = self._setting_int(
+            self.SETTINGS_WIDTH_KEY, self.PREFERRED_WIDTH, self.MINIMUM_WIDTH
+        )
+        self._window_height = self._setting_int(
+            self.SETTINGS_HEIGHT_KEY, self.DEFAULT_HEIGHT, 1
+        )
         self.setObjectName(self.WINDOW_NAME)
-        self.setWindowTitle("Animator Toolset")
+        self.retranslateUi()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -46,8 +60,69 @@ class AnimatorToolsetWindow(QWidget):
             self.animation_tab, self.app_state
         )
         layout.addWidget(self.animation_tab)
+        self._cleanup_done = False
+        self.animation_tab.destroyed.connect(
+            self.animation_presenter.disconnect_signals
+        )
+        self.destroyed.connect(self._on_destroyed)
 
         self.app_state.refresh_model_list()
+
+    def _setting_int(self, key: str, default: int, minimum: int) -> int:
+        """Read a persisted integer while rejecting missing or invalid values."""
+
+        try:
+            return max(minimum, int(self._settings.value(key, default)))
+        except (TypeError, ValueError):
+            return default
+
+    def _save_window_size(self) -> None:
+        """Persist the most recent floating size for the next invocation."""
+
+        self._settings.setValue(self.SETTINGS_WIDTH_KEY, self._window_width)
+        self._settings.setValue(self.SETTINGS_HEIGHT_KEY, self._window_height)
+
+    def _cleanup(self):
+        """Detach presenter listeners before Maya destroys docked Qt children."""
+        if self._cleanup_done:
+            return
+        self._cleanup_done = True
+        self._save_window_size()
+        self.animation_presenter.disconnect_signals()
+
+    def _on_destroyed(self, *_args):
+        """Cover workspaceControl teardown paths that skip ``closeEvent``."""
+        self._cleanup()
+
+    def retranslateUi(self):
+        """Translate standalone window chrome and its tab in place."""
+        translator = UITranslator.instance()
+        self.setWindowTitle(translator.translate("window_title", "animation_toolset"))
+        if hasattr(self, "animation_tab"):
+            self.animation_tab.retranslateUi()
+        if hasattr(self, "animation_presenter"):
+            self.animation_presenter.retranslate_ui()
+
+    def refresh_development_mode_visibility(self):
+        """Refresh Development Mode-only controls in the standalone window."""
+
+        if hasattr(self, "animation_tab"):
+            self.animation_tab.refresh_development_mode_visibility()
+
+    def _apply_floating_window_size(self) -> None:
+        """Restore the saved size on Maya's floating Qt wrapper.
+
+        ``workspaceControl(resizeWidth=...)`` does not resize the native
+        floating wrapper on Maya 2026.  After reparenting, ``window()`` resolves
+        that wrapper, so update it directly on the next Qt event-loop turn.
+        """
+
+        top_level = self.window()
+        if top_level is None:
+            return
+        top_level.setMinimumWidth(self.MINIMUM_WIDTH)
+        top_level.resize(self._window_width, self._window_height)
+        self._size_tracking_enabled = True
 
     def show_window(self, dockable=True):
         """Show as a dockable Maya panel or a floating window."""
@@ -64,15 +139,27 @@ class AnimatorToolsetWindow(QWidget):
 
             cmds.workspaceControl(
                 ws,
-                label="Animator Toolset",
-                initialWidth=420,
-                initialHeight=700,
-                widthProperty="preferred",
+                label=self.windowTitle(),
+                initialWidth=self._window_width,
+                minimumWidth=self.MINIMUM_WIDTH,
+                initialHeight=self._window_height,
+                widthProperty="free",
                 retain=False,
                 floating=True,
             )
             cmds.control(self.WINDOW_NAME, e=True, parent=ws)
             self.show()
+            # Maya can restore an older floating workspace width even after
+            # deleteUI().  initialWidth does not override that restored state;
+            # resizeWidth does.
+            cmds.workspaceControl(
+                ws,
+                e=True,
+                widthProperty="free",
+                minimumWidth=self.MINIMUM_WIDTH,
+                resizeWidth=self._window_width,
+            )
+            QTimer.singleShot(0, self._apply_floating_window_size)
             try:
                 cmds.control(self.WINDOW_NAME, e=True, visible=True)
             except Exception:
@@ -80,13 +167,15 @@ class AnimatorToolsetWindow(QWidget):
             _raise_workspace_control(ws)
         else:
             self.setWindowFlags(Qt.Window)
-            self.resize(420, 700)
+            self.resize(self._window_width, self._window_height)
+            self._size_tracking_enabled = True
             self.show()
             self.raise_()
             self.activateWindow()
 
     def close_window(self):
         """Close and clean up the workspace control."""
+        self._cleanup()
         ws = self.WORKSPACE_CONTROL_NAME
         if cmds.workspaceControl(ws, exists=True):
             cmds.workspaceControl(ws, e=True, close=True)
@@ -94,3 +183,20 @@ class AnimatorToolsetWindow(QWidget):
         self.close()
         self.setParent(None)
         self.deleteLater()
+
+    def closeEvent(self, event):
+        """Restore motion even when Maya closes the widget directly."""
+        self._cleanup()
+        super().closeEvent(event)
+
+    def resizeEvent(self, event):
+        """Remember user-driven size changes without writing settings per pixel."""
+
+        super().resizeEvent(event)
+        if not self._size_tracking_enabled:
+            return
+        top_level = self.window()
+        if top_level is None:
+            return
+        self._window_width = max(self.MINIMUM_WIDTH, top_level.width())
+        self._window_height = max(1, top_level.height())

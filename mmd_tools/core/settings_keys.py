@@ -6,13 +6,11 @@ IMPORT_GENERAL_USE_NAMESPACE = "import.general.use_namespace"
 IMPORT_MODEL_IMPORT_MODELS = "import.model.import_models"
 IMPORT_MODEL_CREATE_MMD_SHADERS = "import.model.create_mmd_shaders"
 IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL = "import.model.separate_meshes_by_material"
-IMPORT_MODEL_AUTO_CLASSIFY_TRANSPARENCY = "import.model.auto_classify_transparency"
 IMPORT_MODEL_AUTO_RESOLVE_TEXTURES = "import.model.auto_resolve_textures"
 IMPORT_MODEL_DISABLE_BACKFACE_CULLING = "import.model.disable_backface_culling"
 IMPORT_MODEL_UV_SET_NAME = "import.model.uv_set_name"
 IMPORT_MODEL_TEXTURE_SEARCH_PATH = "import.model.texture_search_path"
 IMPORT_MODEL_SHOW_TEXTURE_ISSUE_DIALOG = "import.model.show_texture_issue_dialog"
-IMPORT_MODEL_TRANSPARENCY_OPAQUE_THRESHOLD = "import.model.transparency_opaque_threshold"
 IMPORT_MODEL_MMD_SHADER_BACKEND = "import.model.mmd_shader_backend"
 
 IMPORT_PHYSICS_IMPORT_PHYSICS = "import.physics.import_physics"
@@ -37,6 +35,8 @@ IMPORT_ANIMATION_IMPORT_MORPH_ANIMATION = "import.animation.import_morph_animati
 IMPORT_ANIMATION_IMPORT_CAMERA_ANIMATION = "import.animation.import_camera_animation"
 IMPORT_ANIMATION_IMPORT_LIGHT_ANIMATION = "import.animation.import_light_animation"
 IMPORT_ANIMATION_USE_NATIVE_PHYSICS_BAKE = "import.animation.use_native_physics_bake"
+IMPORT_ANIMATION_REDUCE_BAKE_KEYS = "import.animation.reduce_bake_keys"
+IMPORT_ANIMATION_REDUCE_QUALITY = "import.animation.reduce_quality"
 IMPORT_ANIMATION_MOTION_SCALE = "import.animation.motion_scale"
 IMPORT_ANIMATION_CLEAR_EXISTING_MOTION = "import.animation.clear_existing_motion"
 IMPORT_ANIMATION_RESAMPLE_CURVES = "import.animation.resample_curves"
@@ -61,7 +61,6 @@ LOGGING_LOG_FILE_PATH = "logging.log_file_path"
 # Option-dict keys that must be mirrored into global settings while importing.
 MODEL_OPTION_TO_SETTINGS_KEY = {
     "separate_meshes_by_material": IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL,
-    "auto_classify_transparency": IMPORT_MODEL_AUTO_CLASSIFY_TRANSPARENCY,
     "auto_resolve_textures": IMPORT_MODEL_AUTO_RESOLVE_TEXTURES,
     "disable_backface_culling": IMPORT_MODEL_DISABLE_BACKFACE_CULLING,
     "uv_set_name": IMPORT_MODEL_UV_SET_NAME,

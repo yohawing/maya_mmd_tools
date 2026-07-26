@@ -267,6 +267,7 @@ class _FakeMayaAdapter:
         self.aliases = {}
         self.node_types = {}
         self.connections = {}
+        self.connection_errors = set()
 
     def object_exists(self, node):
         self.calls.append(("object_exists", node))
@@ -310,6 +311,8 @@ class _FakeMayaAdapter:
 
     def list_connections(self, node, **kwargs):
         self.calls.append(("list_connections", node, kwargs))
+        if node in self.connection_errors:
+            raise RuntimeError(f"No object matches name: {node}")
         result = []
         source = kwargs.get("source", True)
         destination = kwargs.get("destination", True)
@@ -422,7 +425,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertEqual(presenter.blend_shape_node, "faceBlendShape")
         self.assertEqual(presenter.morph_data["smile"]["blend_shape_node"], "faceBlendShape")
         self.assertNotIn("blink", presenter.morph_data)
-        self.assertEqual([item.text() for item in view.morph_list.items], ["000:V|笑顔"])
+        self.assertEqual([item.text() for item in view.morph_list.items], ["0:V|笑顔 [smile]"])
         self.assertEqual([item.data(256) for item in view.morph_list.items], ["smile"])
 
     def test_list_metadata_preserves_duplicate_and_empty_names(self):
@@ -451,7 +454,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
 
         self.assertEqual(
             [item.text() for item in view.morph_list.items],
-            ["004:V|同名", "007:B|同名", "---:M|同名"],
+            ["4:V|同名", "7:B|同名", "-:M|同名"],
         )
         self.assertEqual(
             [item.data(256) for item in view.morph_list.items],
@@ -591,6 +594,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         presenter, view, _, adapter = _make_presenter()
         presenter._morph_controller = "controller"
         data = {"type": 8, "_pmx_type_raw": True, "index": 7}
+        adapter.existing.add("controller.outputWeight[7]")
         adapter.connections["controller.outputWeight[7]"] = [
             {
                 "source": "controller.outputWeight[7]",
@@ -602,6 +606,17 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         presenter.on_morph_selected(_FakeItem("material", "material"), None)
 
         self.assertEqual(view.controls_enabled_calls[-1], (True, ""))
+
+    def test_sparse_output_weight_failure_is_unsupported_not_startup_error(self):
+        presenter, _, _, adapter = _make_presenter()
+        presenter._morph_controller = "controller"
+        plug = "controller.outputWeight[85]"
+        adapter.existing.add(plug)
+        adapter.connection_errors.add(plug)
+        data = {"type": 8, "_pmx_type_raw": True, "index": 85}
+
+        self.assertFalse(presenter._morph_controls_supported(data))
+        self.assertIn(("object_exists", plug), adapter.calls)
 
     def test_cached_material_capability_does_not_depend_on_shader_route(self):
         presenter, _, _, adapter = _make_presenter()
@@ -731,7 +746,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         presenter.current_morph = "笑顔"
         presenter.on_morph_slider_changed(65)
 
-        self.assertEqual([item.text() for item in view.morph_list.items], ["000:V|笑顔"])
+        self.assertEqual([item.text() for item in view.morph_list.items], ["0:V|笑顔"])
         self.assertEqual(presenter.morph_data["笑顔"]["name_jp"], "笑顔")
         self.assertEqual(
             presenter.morph_data["笑顔"]["blend_shape_targets"],
@@ -820,11 +835,11 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         presenter, view, _, _ = _make_presenter(model=TEST_MODEL, adapter=adapter)
 
         presenter.load_morphs()
-        presenter.on_morph_selected(_FakeItem("---:B|ボーン笑い", "ボーン笑い"), None)
+        presenter.on_morph_selected(_FakeItem("-:B|ボーン笑い [bone_smile]", "ボーン笑い"), None)
 
         self.assertEqual(
             [item.text() for item in view.morph_list.items],
-            ["---:G|グループ表情", "---:B|ボーン笑い", "---:M|材質点滅"],
+            ["-:G|グループ表情", "-:B|ボーン笑い [bone_smile]", "-:M|材質点滅"],
         )
         self.assertEqual(presenter.morph_data["ボーン笑い"]["type"], 10)
         self.assertEqual(presenter.morph_data["ボーン笑い"]["name_en"], "bone_smile")
@@ -881,7 +896,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
 
         presenter.load_morphs()
 
-        self.assertEqual([item.text() for item in view.morph_list.items], ["---:G|グループ表情"])
+        self.assertEqual([item.text() for item in view.morph_list.items], ["-:G|グループ表情"])
         self.assertEqual(presenter.morph_data["グループ表情"]["type"], 12)
         self.assertEqual(presenter.morph_data["グループ表情"]["panel"], 2)
         self.assertEqual(presenter.morph_data["グループ表情"]["morph_node"], "groupPoseNode")
@@ -1202,7 +1217,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
 
         presenter.load_morphs()
 
-        self.assertEqual([item.text() for item in view.morph_list.items], ["000:V|笑顔"])
+        self.assertEqual([item.text() for item in view.morph_list.items], ["0:V|笑顔"])
         data = presenter.morph_data["笑顔"]
         self.assertEqual(data["panel"], 4)  # invent Other, never System
         self.assertEqual(data["index"], 0)  # first-seen weight index retained
@@ -1213,7 +1228,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
                 {"node": "faceBlendShapeB", "target": "smile_b", "weight_attr": "weight[3]"},
             ],
         )
-        self.assertEqual([item.text() for item in view.morph_list.items], ["000:V|笑顔"])
+        self.assertEqual([item.text() for item in view.morph_list.items], ["0:V|笑顔"])
 
     def test_existing_panel_metadata_not_overwritten_by_fallback_load(self):
         adapter = _FakeMayaAdapter()
@@ -1305,7 +1320,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
             }
         }
 
-        presenter.on_morph_selected(_FakeItem("000:V|笑顔", "smile"), None)
+        presenter.on_morph_selected(_FakeItem("0:V|笑顔 [smile]", "smile"), None)
 
         self.assertEqual(presenter.current_morph, "smile")
         self.assertEqual(view.details_enabled_calls, [True])

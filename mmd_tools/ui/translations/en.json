@@ -1,4 +1,19 @@
 {
+    "animation_picker": {
+        "head": "Head", "neck": "Neck", "upper_body": "Upper Body", "upper_body_2": "Upper Body 2", "lower_body": "Lower Body",
+        "left_shoulder": "Left Shoulder", "left_upper_arm": "Left Arm", "left_lower_arm": "Left Elbow", "left_wrist": "Left Wrist",
+        "right_shoulder": "Right Shoulder", "right_upper_arm": "Right Arm", "right_lower_arm": "Right Elbow", "right_wrist": "Right Wrist",
+        "left_upper_leg": "Left Leg", "left_lower_leg": "Left Knee", "left_foot": "Left Ankle", "left_toe": "Left Toe",
+        "right_upper_leg": "Right Leg", "right_lower_leg": "Right Knee", "right_foot": "Right Ankle", "right_toe": "Right Toe",
+        "center": "Center", "groove": "Groove", "waist": "Waist", "both_eyes": "Both Eyes",
+        "left_shoulder_p": "Left Shoulder P", "right_shoulder_p": "Right Shoulder P", "left_toe_ik": "Left Toe IK", "right_toe_ik": "Right Toe IK",
+        "left_ik": "Left Leg IK", "right_ik": "Right Leg IK", "master": "Master"
+    },
+    "ik_enable_side_tooltip": "Toggle leg IK for this side",
+  "animation_toolset": {
+    "control_rig": "Control Rig",
+    "window_title": "Animator Toolset", "refresh": "Refresh", "body": "Body", "finger": "Finger", "morph": "Morph", "display": "Display", "back_to_body": "Back to Body", "back_to_body_tooltip": "Return to the body picker", "select_all": "Select All", "select_all_tooltip": "Select every bone in the current MMD model", "clear": "Clear", "clear_tooltip": "Clear the current selection", "visibility": "Visibility", "mesh": "Mesh", "joints": "Joints", "colliders": "Colliders", "ik_enable_toggle_tooltip": "Toggle both leg IK solvers", "tools": "Tools", "copy": "Copy", "paste": "Paste", "mirror": "Mirror", "mirror_selection": "Mirror Sel", "reset": "Reset Pose", "clean": "Clean", "bake": "Bake", "reset_pose_tooltip": "Reset selected joints to their bind pose", "mirror_selection_tooltip": "Select the bones on the opposite side", "finger_picker_tooltip": "Open the finger picker", "category_brow": "Brow Morphs", "category_eye": "Eye Morphs", "category_mouth": "Mouth Morphs", "category_other": "Uncategorized (PMX: Other)", "no_selectable_bones": "No selectable bones", "selected_all_bones": "Selected all bones ({count})", "select_all_failed": "Failed to select all bones", "node_not_found": "Not found: {name}", "unassigned_bones": "Unassigned: {names}", "selection_failed": "Selection failed: {names}", "ik_not_found": "{side} IK was not found", "ik_enabled": "{side} IK enabled", "ik_disabled": "{side} IK disabled", "ik_toggle_failed": "IK toggle failed: {error}", "no_joints_selected": "No joints selected", "copied_pose": "Copied pose ({count} joints)", "copy_failed": "Copy failed: {error}", "no_pose_copied": "No pose copied", "pasted_pose": "Pasted pose ({count} joints)", "paste_failed": "Paste failed: {error}", "reset_pose_applied": "Reset Pose ({count} joints)", "reset_pose_failed": "Reset Pose failed: {error}", "mirrored_pose": "Mirrored pose", "mirror_failed": "Mirror failed: {error}", "baked_animation": "Baked animation", "bake_failed": "Bake failed: {error}", "cleaned_curves": "Cleaned curves", "clean_failed": "Clean failed: {error}"
+  },
   "tabs": {
     "file_io": "File I/O",
     "info": "Info",
@@ -16,7 +31,8 @@
     "import_settings": "Import",
     "export_settings": "Export",
     "rigid_bodies": "Rigid Bodies",
-    "joints": "Joints"
+    "joints": "Joints",
+    "humanik": "HumanIK (Experimental)"
   },
   "menus": {
     "view": "View"
@@ -29,6 +45,7 @@
     "browse": "Browse...",
     "refresh": "Refresh",
     "reset": "Reset",
+    "go_to_bind_pose": "Go to Bind Pose",
     "add": "Add",
     "remove": "Remove",
     "create": "Create",
@@ -36,6 +53,11 @@
     "delete": "Delete",
     "up": "Up",
     "down": "Down",
+    "add_frame": "Add Frame",
+    "delete_frame": "Delete Frame",
+    "add_bone": "Add Bone",
+    "add_morph": "Add Morph",
+    "delete_item": "Delete Item",
     "select": "Select",
     "clear": "Clear",
     "save": "Save",
@@ -51,7 +73,11 @@
     "open_command_port": "Open",
     "close_command_port": "Close",
     "set_key": "Set Key",
-    "delete_key": "Delete Key"
+    "delete_key": "Delete Key",
+    "humanik_setup_selected_model": "Set Up Selected Model",
+    "humanik_create_control_rig": "Create Control Rig",
+    "humanik_bake_execute": "Execute Bake",
+    "humanik_restore": "Restore MMD Rig"
   },
   "labels": {
     "file_path": "File Path:",
@@ -89,7 +115,15 @@
     "offset_not_supported": "Offsets: Not supported",
     "log_entries": "Logs",
     "search_results": "results",
-    "not_found": "Not found"
+    "not_found": "Not found",
+    "humanik_character": "Character:",
+    "humanik_source": "SOURCE:",
+    "humanik_bake_start": "Start:",
+    "humanik_bake_end": "End:",
+    "humanik_bake_section": "Bake",
+    "humanik_bake_to_control_rig": "Bake to Control Rig",
+    "humanik_bake_to_mmd_rig": "Bake to MMD Rig",
+    "humanik_none": "(none)"
   },
   "tooltips": {
     "morph_runtime_unsupported": "This morph type is not supported by the current runtime",
@@ -108,12 +142,13 @@
     "auto_resolve_textures": "Auto-fix non-ASCII texture paths by creating ASCII-named cached copies",
     "bake_mode": "Bake all frames to keyframes. IK/append rigs are not created",
     "native_physics_bake": "Bake PMX physics with the native runtime. Requires Bake Motion",
+    "reduce_bake_keys": "Reduce sparse Bake Motion keys while preserving replay tolerance",
+    "reduce_quality": "Reduce Bake Keys quality: 1.0 keeps the highest fidelity; 0.0 applies the strongest reduction",
     "clear_existing_motion": "Remove existing VMD keys and the VMD_Motion layer on the target model before import",
     "start_frame": "Starting frame on the Maya timeline for the VMD animation",
     "vmd_fps": "Frame rate for the VMD file. MMD standard is 30 fps",
     "motion_scale": "Scale VMD bone translations and camera position/distance",
     "separate_meshes": "Split mesh per material",
-    "auto_classify_transparency": "Auto-classify transparent materials via UV alpha scan",
     "disable_backface_culling": "Disable backface culling for double-sided rendering",
     "import_physics": "Create rigid bodies and joints from PMX physics data",
     "use_cpp_rig_nodes": "Use experimental C++ rig nodes for IK/append constraints. Falls back to Python nodes when unavailable"
@@ -180,6 +215,7 @@
     "select_vmd_target_model": "Select a target model, or choose Camera Motion.",
     "importing_vmd": "Importing VMD: {file_path}",
     "vmd_import_complete": "VMD import complete: {file_path}",
+    "vmd_reduction_summary": "Reduced keys: {source_key_count} -> {reduced_key_count} ({reduction_percent}% reduced)",
     "vmd_import_partial": "VMD import completed with warnings ({warning_count}): {file_path}",
     "vmd_import_partial_title": "VMD import warnings",
     "vmd_import_failed": "VMD import failed",
@@ -220,7 +256,16 @@
     "loading": "Loading...",
     "saving": "Saving...",
     "processing": "Processing...",
-    "export_dev_mode_required": "Export is available only in Development Mode"
+    "export_dev_mode_required": "Export is available only in Development Mode",
+    "humanik_restore_tooltip": "End the HumanIK Control Rig/target preview and restore the MMD foot IK, append, and constraint connections and enabled states that were temporarily isolated. The HumanIK character definition remains.",
+    "humanik_mode_neutral": "Neutral",
+    "humanik_mode_source": "Source",
+    "humanik_mode_target_preview": "Target Preview",
+    "humanik_mode_control_rig": "Control Rig",
+    "humanik_status_control_rig_suffix": " / Control Rig: {count}",
+    "humanik_setup_selected_model_tooltip": "Set up and characterize the MMD model currently selected in Maya. It appears in the Character and SOURCE lists after setup completes.",
+    "humanik_create_control_rig_tooltip": "Create an MMD Control Rig for the current HumanIK character.",
+    "humanik_source_tooltip": "Select a characterized MMD model, or a HumanIK character already defined in the scene, as the retarget SOURCE."
   },
   "options": {
     "none": "None",
@@ -263,6 +308,9 @@
   },
   "groups": {
     "general": "General",
+    "display_frames": "Display Frames",
+    "display_frame_properties": "Frame Properties",
+    "display_frame_items": "Contained Bones / Morphs",
     "model": "Model",
     "morph": "Morph",
     "other": "Other",
@@ -317,6 +365,7 @@
     "import_physics": "Import Physics",
     "bake_mode": "Bake Motion",
     "native_physics_bake": "Bake Physics",
+    "reduce_bake_keys": "Reduce Bake Keys",
     "clear_existing_motion": "Clear Existing Motion",
     "use_cpp_rig_nodes": "Use C++ Rig Nodes (Experimental)",
     "apply_scale": "Apply Scale",
@@ -326,12 +375,17 @@
     "development_mode": "Development Mode",
     "show_advanced_options": "Show Advanced Options",
     "enable_logging": "Enable Logging",
-    "auto_classify_transparency": "Auto-classify transparency (scan texture alpha)",
     "auto_resolve_textures": "Auto-resolve textures",
     "show_colliders": "Show Colliders",
     "enable_physics": "Enable Physics"
   },
   "fields": {
+    "display_frame_name_jp": "Japanese Name:",
+    "display_frame_name_en": "English Name:",
+    "special_display_frame": "Special frame (Root / Facial)",
+    "element_type": "Type",
+    "element_name": "Name",
+    "element_index": "Index",
     "import_scale": "Import Scale:",
     "root_bone_name": "Root Bone Name:",
     "texture_search_path": "Texture Search Path:",
@@ -339,6 +393,7 @@
     "start_frame": "Start Frame:",
     "vmd_fps": "Frame Rate:",
     "motion_scale": "Motion Scale:",
+    "reduce_quality": "Reduce Quality:",
     "format": "Format:",
     "vmd_file": "VMD File:",
     "target_model": "Target Model:",
@@ -395,7 +450,6 @@
     "command_port": "Command Port:",
     "export_format": "Export Format:",
     "transparency_mode": "Transparency Mode:",
-    "transparency_opaque_threshold": "Opaque alpha threshold:",
     "original_texture_path": "Original Texture Path:",
     "name": "Name:",
     "name_english": "English Name:",
@@ -566,7 +620,7 @@
     "dont_show_again": "Don't show again",
     "status_fixed": "Fixed {count} texture(s)",
     "status_repair_summary": "Repaired {resolved} texture(s); {unresolved} remain unresolved.",
-    "status_select_model": "Select the target model in MMD Tools, then run Repair Texture Paths again.",
+    "status_select_model": "Select the target model in MMD Editor, then run Repair Texture Paths again.",
     "fix_texture_path": "Fix Texture Path",
     "status_no_issues": "No texture path issues found.",
     "status_scan_failed": "Failed to scan texture path issues."

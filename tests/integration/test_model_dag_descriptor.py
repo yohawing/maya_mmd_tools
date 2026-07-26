@@ -19,6 +19,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_IK_TARGET_INDEX,
     ATTR_MMD_LOCAL_X_AXIS,
     ATTR_MMD_LOCAL_Z_AXIS,
+    ATTR_MMD_MORPH_DATA,
     ATTR_MMD_PMX_REST_POSITION,
 )
 from mmd_tools.core.model_dag_descriptor import ModelDagDescriptorError, build_model_descriptors_from_dag
@@ -98,6 +99,15 @@ class TestModelDagDescriptor(MayaTestBase):
             cmds.connectAttr(f"{root}.message", f"{node}.mmd_model_root")
         return root
 
+    @staticmethod
+    def _set_authoritative_morph_data(root, count):
+        cmds.addAttr(root, longName=ATTR_MMD_MORPH_DATA, dataType="string")
+        cmds.setAttr(
+            f"{root}.{ATTR_MMD_MORPH_DATA}",
+            json.dumps([{"index": index} for index in range(count)]),
+            type="string",
+        )
+
     def test_compiles_complete_scene_metadata(self):
         descriptors = build_model_descriptors_from_dag(self._scene())
         self.assertEqual(len(descriptors.bones), 2)
@@ -156,6 +166,80 @@ class TestModelDagDescriptor(MayaTestBase):
             type="string",
         )
         with self.assertRaisesRegex(ModelDagDescriptorError, "exceeds morph count"):
+            build_model_descriptors_from_dag(root)
+
+    def test_authoritative_source_morph_count_preserves_high_group_child(self):
+        root = self._scene()
+        self._set_authoritative_morph_data(root, 131)
+        cmds.setAttr("bone_morph.mmd_morph_index", 128)
+        cmds.setAttr("group_morph.mmd_morph_index", 29)
+        cmds.setAttr(
+            "group_morph.mmd_group_morph_offsets_json",
+            json.dumps([{"morph_index": 130, "morph_rate": 1.0}]),
+            type="string",
+        )
+
+        descriptors = build_model_descriptors_from_dag(root)
+
+        self.assertEqual(descriptors.morph_count, 131)
+        self.assertEqual(descriptors.group_morph_offsets[0].morph_index, 29)
+        self.assertEqual(descriptors.group_morph_offsets[0].child_morph_index, 130)
+
+    def test_legacy_morph_data_schemas_preserve_network_fallback_count(self):
+        for label, raw in (
+            ("empty string", ""),
+            ("empty list", "[]"),
+            ("legacy dict", json.dumps({"0": "base", "1": "group"})),
+        ):
+            with self.subTest(schema=label):
+                root = self._scene()
+                cmds.addAttr(root, longName=ATTR_MMD_MORPH_DATA, dataType="string")
+                cmds.setAttr(f"{root}.{ATTR_MMD_MORPH_DATA}", raw, type="string")
+
+                descriptors = build_model_descriptors_from_dag(root)
+
+                self.assertEqual(descriptors.morph_count, 2)
+
+    def test_authoritative_source_morph_count_rejects_group_child_131(self):
+        root = self._scene()
+        self._set_authoritative_morph_data(root, 131)
+        cmds.setAttr(
+            "group_morph.mmd_group_morph_offsets_json",
+            json.dumps([{"morph_index": 131, "morph_rate": 1.0}]),
+            type="string",
+        )
+
+        with self.assertRaisesRegex(ModelDagDescriptorError, "exceeds morph count 131"):
+            build_model_descriptors_from_dag(root)
+
+    def test_authoritative_source_morph_count_rejects_network_index_131(self):
+        root = self._scene()
+        self._set_authoritative_morph_data(root, 131)
+        node = cmds.createNode("network", name="network_morph_131")
+        maya_attribute_utils.set_custom_attributes(
+            node,
+            {
+                "mmd_morph_type": "bone",
+                "mmd_morph_index": 131,
+                ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON: "[]",
+            },
+        )
+        cmds.addAttr(node, longName="mmd_model_root", attributeType="message")
+        cmds.connectAttr(f"{root}.message", f"{node}.mmd_model_root")
+
+        with self.assertRaisesRegex(ModelDagDescriptorError, "exceeds authoritative morph count 131"):
+            build_model_descriptors_from_dag(root)
+
+    def test_rejects_malformed_authoritative_morph_list(self):
+        root = self._scene()
+        self._set_authoritative_morph_data(root, 1)
+        cmds.setAttr(
+            f"{root}.{ATTR_MMD_MORPH_DATA}",
+            json.dumps([{"index": 1}]),
+            type="string",
+        )
+
+        with self.assertRaisesRegex(ModelDagDescriptorError, "entry 0 index must be 0"):
             build_model_descriptors_from_dag(root)
 
 

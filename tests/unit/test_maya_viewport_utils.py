@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests.common.maya_stub import install_maya_stub
@@ -79,7 +80,95 @@ class _FakeTransparencyCmds(_FakeCmds):
             self.current = value
 
 
+class _FakeHardwareViewportCmds(_FakeCmds):
+    def __init__(self, model_panels, states=None, failing_panels=None):
+        super().__init__(focus_panel="modelPanel4", focus_type="modelPanel", model_panels=model_panels)
+        self.states = {
+            panel: {"displayAppearance": "wireframe", "displayTextures": False}
+            for panel in self.model_panels
+        }
+        self.states.update(states or {})
+        self.failing_panels = set(failing_panels or [])
+
+    def modelEditor(self, panel_name, **kwargs):
+        self.model_editor_calls.append((panel_name, kwargs))
+        if panel_name in self.failing_panels:
+            raise RuntimeError(f"panel unavailable: {panel_name}")
+        if kwargs.get("query") or kwargs.get("q"):
+            if kwargs.get("displayTextures"):
+                return self.states[panel_name]["displayTextures"]
+            return None
+        if kwargs.get("edit"):
+            if "displayTextures" in kwargs:
+                self.states[panel_name]["displayTextures"] = kwargs["displayTextures"]
+
+
+class _FakeDx11ShaderCmds:
+    def __init__(self, values):
+        self.values = dict(values)
+        self.set_attr_calls = []
+
+    def ls(self, **kwargs):
+        return list(self.values) if kwargs.get("type") == "dx11Shader" else []
+
+    def attributeQuery(self, attr, **kwargs):
+        return attr == "DevicePixelRatio" and kwargs.get("node") in self.values
+
+    def getAttr(self, plug):
+        return self.values[plug.split(".", 1)[0]]
+
+    def setAttr(self, plug, value):
+        shader = plug.split(".", 1)[0]
+        self.values[shader] = value
+        self.set_attr_calls.append((plug, value))
+
+
 class TestMayaViewportUtils(unittest.TestCase):
+    def setUp(self):
+        maya_viewport_utils._LAST_DEVICE_PIXEL_RATIO = None
+
+    def test_device_pixel_ratio_uses_active_view_value(self):
+        view = SimpleNamespace(devicePixelRatio=lambda: 2.0)
+
+        self.assertEqual(maya_viewport_utils.get_device_pixel_ratio(view), 2.0)
+
+    def test_device_pixel_ratio_rejects_invalid_values(self):
+        for value in (0.0, -1.0, float("nan"), float("inf")):
+            with self.subTest(value=value):
+                view = SimpleNamespace(devicePixelRatio=lambda value=value: value)
+                self.assertEqual(maya_viewport_utils.get_device_pixel_ratio(view), 1.0)
+
+    def test_device_pixel_ratio_falls_back_when_view_query_fails(self):
+        view = SimpleNamespace()
+
+        self.assertEqual(maya_viewport_utils.get_device_pixel_ratio(view, default=1.5), 1.5)
+
+    def test_dx11_device_pixel_ratio_sync_updates_all_existing_shaders_once(self):
+        fake_cmds = _FakeDx11ShaderCmds({"shaderA": 1.0, "shaderB": 2.0})
+
+        with patch.object(maya_viewport_utils, "cmds", fake_cmds), patch.object(
+            maya_viewport_utils, "get_device_pixel_ratio", return_value=2.0
+        ):
+            self.assertEqual(maya_viewport_utils.sync_dx11_shader_device_pixel_ratio(), 1)
+            self.assertEqual(maya_viewport_utils.sync_dx11_shader_device_pixel_ratio(), 0)
+
+        self.assertEqual(fake_cmds.set_attr_calls, [("shaderA.DevicePixelRatio", 2.0)])
+
+    def test_forced_dx11_device_pixel_ratio_sync_finds_new_scene_shaders(self):
+        fake_cmds = _FakeDx11ShaderCmds({"shaderA": 2.0})
+
+        with patch.object(maya_viewport_utils, "cmds", fake_cmds), patch.object(
+            maya_viewport_utils, "get_device_pixel_ratio", return_value=2.0
+        ):
+            self.assertEqual(maya_viewport_utils.sync_dx11_shader_device_pixel_ratio(), 0)
+            fake_cmds.values["shaderB"] = 1.0
+            self.assertEqual(
+                maya_viewport_utils.sync_dx11_shader_device_pixel_ratio(force=True),
+                1,
+            )
+
+        self.assertEqual(fake_cmds.values["shaderB"], 2.0)
+
     def test_set_viewport_backface_culling_uses_focused_model_panel(self):
         fake_cmds = _FakeCmds(focus_panel="modelPanel4", focus_type="modelPanel")
 
@@ -131,6 +220,69 @@ class TestMayaViewportUtils(unittest.TestCase):
             self.assertFalse(maya_viewport_utils.setup_mmd_transparency())
 
         self.assertEqual(fake_cmds.set_attr_calls, [])
+
+    def test_setup_mmd_hardware_viewport_updates_every_model_panel(self):
+        fake_cmds = _FakeHardwareViewportCmds(["modelPanel1", "modelPanel4", "modelPanel5"])
+
+        with patch.object(maya_viewport_utils, "cmds", fake_cmds):
+            changed = maya_viewport_utils.setup_mmd_hardware_viewport()
+
+        self.assertEqual(changed, 3)
+        self.assertEqual(
+            {
+                panel: state
+                for panel, state in fake_cmds.states.items()
+            },
+            {
+                "modelPanel1": {"displayAppearance": "wireframe", "displayTextures": True},
+                "modelPanel4": {"displayAppearance": "wireframe", "displayTextures": True},
+                "modelPanel5": {"displayAppearance": "wireframe", "displayTextures": True},
+            },
+        )
+        edit_calls = [kwargs for _, kwargs in fake_cmds.model_editor_calls if kwargs.get("edit")]
+        self.assertEqual(edit_calls, [{"edit": True, "displayTextures": True}] * 3)
+
+    def test_setup_mmd_hardware_viewport_skips_panels_already_enabled(self):
+        panels = ["modelPanel1", "modelPanel4"]
+        states = {
+            panel: {"displayAppearance": "wireframe", "displayTextures": True}
+            for panel in panels
+        }
+        fake_cmds = _FakeHardwareViewportCmds(panels, states=states)
+
+        with patch.object(maya_viewport_utils, "cmds", fake_cmds):
+            changed = maya_viewport_utils.setup_mmd_hardware_viewport()
+
+        self.assertEqual(changed, 0)
+        self.assertFalse(any(call[1].get("edit") for call in fake_cmds.model_editor_calls))
+
+    def test_setup_mmd_hardware_viewport_continues_after_panel_error(self):
+        fake_cmds = _FakeHardwareViewportCmds(
+            ["modelPanel1", "modelPanel4", "modelPanel5"],
+            failing_panels={"modelPanel4"},
+        )
+
+        with patch.object(maya_viewport_utils, "cmds", fake_cmds):
+            changed = maya_viewport_utils.setup_mmd_hardware_viewport()
+
+        self.assertEqual(changed, 2)
+        self.assertEqual(
+            fake_cmds.states["modelPanel1"],
+            {"displayAppearance": "wireframe", "displayTextures": True},
+        )
+        self.assertEqual(
+            fake_cmds.states["modelPanel5"],
+            {"displayAppearance": "wireframe", "displayTextures": True},
+        )
+
+    def test_setup_mmd_hardware_viewport_returns_zero_without_model_panels(self):
+        fake_cmds = _FakeHardwareViewportCmds([])
+
+        with patch.object(maya_viewport_utils, "cmds", fake_cmds):
+            changed = maya_viewport_utils.setup_mmd_hardware_viewport()
+
+        self.assertEqual(changed, 0)
+        self.assertEqual(fake_cmds.model_editor_calls, [])
 
 
 if __name__ == "__main__":

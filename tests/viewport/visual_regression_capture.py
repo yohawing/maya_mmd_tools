@@ -3,6 +3,8 @@
 This script launches a fresh Maya GUI process, opens a Python commandPort,
 imports selected GoldenOracle render-manifest fixtures with hardware shaders
 materials, captures Viewport 2.0 PNGs, and writes report-only diagnostics.
+It refuses to reuse an already-open commandPort unless ``--attach-existing``
+is explicit, and records selected shader plug-in lifecycle state around cases.
 
 The harness intentionally copies MMDShader.fx to a unique path per run before
 assigning it to dx11Shader nodes. Maya can cache effects by .fx path inside a
@@ -75,6 +77,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     parser.add_argument("--shader-backend", choices=sorted(BACKEND_CONFIG), default="dx11")
     parser.add_argument(
+        "--display-textures",
+        choices=["on", "off"],
+        default="on",
+        help="Set Maya model-panel displayTextures for the capture (default: on).",
+    )
+    parser.add_argument(
         "--vp2-device",
         choices=["default", "gl", "glcore", "dx11"],
         default="default",
@@ -105,6 +113,11 @@ def _parse_args() -> argparse.Namespace:
         "--debug-lambert-control",
         action="store_true",
         help="Temporarily assign a red lambert to visible mesh transforms before capture.",
+    )
+    parser.add_argument(
+        "--debug-outline-sentinel",
+        action="store_true",
+        help="Set a vivid edge color without changing DX11 technique or EdgeSize.",
     )
     parser.add_argument(
         "--hide-orig-shapes",
@@ -195,6 +208,22 @@ def _device_matches_backend(backend: str, device_information: object) -> bool:
     return "opengl" in text or "gl core" in text or "glcore" in text
 
 
+def _preflight_command_port(port: int, attach_existing: bool) -> None:
+    """Refuse to launch against a commandPort owned by another Maya session.
+
+    A fresh capture owns the Maya process and may quit it during cleanup.  An
+    already-open port is therefore unsafe unless the caller explicitly opted
+    into ``--attach-existing``.
+    """
+    if attach_existing:
+        return
+    if maya_commandport.is_port_open(port):
+        raise RuntimeError(
+            f"commandPort :{port} is already open; refusing to attach without "
+            "--attach-existing (choose a free --port or opt in explicitly)"
+        )
+
+
 def _monitor_log(log_path: Path, timeout: int) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.touch(exist_ok=True)
@@ -225,6 +254,8 @@ def _build_maya_code(
     debug_lambert_control: bool,
     hide_orig_shapes: bool,
     shader_backend: str,
+    display_textures: bool = True,
+    debug_outline_sentinel: bool = False,
 ) -> str:
     payload = {
         "project_root": str(project_root),
@@ -236,8 +267,12 @@ def _build_maya_code(
         "height": height,
         "compare": compare,
         "debug_lambert_control": debug_lambert_control,
+        "debug_outline_sentinel": debug_outline_sentinel,
         "hide_orig_shapes": hide_orig_shapes,
         "shader_backend": shader_backend,
+        "shader_node_type": BACKEND_CONFIG[shader_backend]["node_type"],
+        "shader_plugin": BACKEND_CONFIG[shader_backend]["plugin"],
+        "display_textures": bool(display_textures),
         "completion_marker": COMPLETION_MARKER,
     }
     encoded = base64.b64encode(json.dumps(payload, ensure_ascii=False).encode("utf-8")).decode("ascii")
@@ -257,9 +292,12 @@ _width = int(_payload["width"])
 _height = int(_payload["height"])
 _compare = bool(_payload["compare"])
 _debug_lambert_control = bool(_payload["debug_lambert_control"])
+_debug_outline_sentinel = bool(_payload["debug_outline_sentinel"])
 _hide_orig_shapes = bool(_payload["hide_orig_shapes"])
 _shader_backend = _payload["shader_backend"]
-_shader_node_type = "dx11Shader" if _shader_backend == "dx11" else "GLSLShader"
+_display_textures = bool(_payload.get("display_textures", True))
+_shader_node_type = _payload["shader_node_type"]
+_shader_plugin_name = _payload["shader_plugin"]
 _completion_marker = _payload["completion_marker"]
 
 _output_dir.mkdir(parents=True, exist_ok=True)
@@ -449,7 +487,7 @@ def _make_camera(camera):
     cmds.setAttr(shape + ".farClipPlane", float(camera.get("far", 1000)))
     return cam
 
-def _setup_panel(camera):
+def _setup_panel(camera, display_textures=True):
     visible = cmds.getPanel(visiblePanels=True) or []
     visible_model_panels = [p for p in visible if cmds.getPanel(typeOf=p) == "modelPanel"]
     focused = cmds.getPanel(withFocus=True)
@@ -465,7 +503,7 @@ def _setup_panel(camera):
         e=True,
         rendererName="vp2Renderer",
         displayAppearance="smoothShaded",
-        displayTextures=True,
+        displayTextures=bool(display_textures),
         wireframeOnShaded=False,
         useDefaultMaterial=False,
         selectionHiliteDisplay=False,
@@ -557,7 +595,7 @@ def _shader_diag():
             "AmbientColor", "SpecularColor", "Shininess", "Opacity",
             "MMDLightDirection", "MMDLightColor",
             "MmdControllerLightVector", "MmdControllerLightRgb",
-            "SphereMode", "EdgeColorRGB", "EdgeSize",
+            "SphereMode", "EdgeColorRGB", "EdgeSize", "DevicePixelRatio",
             "HasMainTexture", "HasSphereTexture", "HasToonTexture",
             "mmd_texture_path", "mmd_sphere_path", "mmd_draw_flags",
         ]:
@@ -598,6 +636,16 @@ def _shader_diag():
             item["assignments"].append(assignment)
         items.append(item)
     return items
+
+def _shader_plugin_diag():
+    # Collect selected shader plug-in lifecycle state without changing it.
+    state = {{"name": _shader_plugin_name}}
+    for key in ["loaded", "autoload", "registered", "path"]:
+        try:
+            state[key] = cmds.pluginInfo(_shader_plugin_name, query=True, **{{key: True}})
+        except Exception as exc:
+            state[key] = "ERR: " + str(exc)
+    return state
 
 def _scene_diag(capture_panel=None):
     meshes = []
@@ -668,6 +716,24 @@ def _assign_debug_lambert():
             assigned.append("ERR: " + target + ": " + str(exc))
     return {{"shader": shader, "shadingEngine": sg, "assigned": assigned}}
 
+def _apply_outline_sentinel():
+    # Make accidental edge-pass execution visually unmistakable.
+    changed = []
+    if _shader_backend != "dx11":
+        return changed
+    for shader in cmds.ls(type=_shader_node_type) or []:
+        item = {{"shader": shader}}
+        try:
+            item["technique"] = cmds.getAttr(shader + ".technique")
+            cmds.setAttr(shader + ".EdgeColorRGB", 1.0, 0.0, 1.0, type="double3")
+            cmds.setAttr(shader + ".EdgeColorA", 1.0)
+            item["edgeColorRGB"] = [1.0, 0.0, 1.0]
+            item["edgeSize"] = cmds.getAttr(shader + ".EdgeSize")
+        except Exception as exc:
+            item["error"] = str(exc)
+        changed.append(item)
+    return changed
+
 def _color_management_diag():
     result = {{}}
     for query in ["cmEnabled", "viewTransformName", "displayName", "renderingSpaceName"]:
@@ -737,10 +803,6 @@ def _capture_case(case):
     cmds.file(new=True, force=True)
     settings.set("import.model.create_mmd_shaders", True)
     settings.set("import.model.mmd_shader_backend", _shader_backend)
-    try:
-        cmds.loadPlugin("dx11Shader" if _shader_backend == "dx11" else "glslShader", quiet=True)
-    except Exception:
-        pass
 
     root = mmd_importer.import_mmd_file(case["model"])
     if root is None:
@@ -751,10 +813,12 @@ def _capture_case(case):
         debug_actions["hideOrigShapes"] = _mark_orig_shapes_intermediate()
     if _debug_lambert_control:
         debug_actions["lambertControl"] = _assign_debug_lambert()
+    if _debug_outline_sentinel:
+        debug_actions["outlineSentinel"] = _apply_outline_sentinel()
 
     camera = _make_camera(case["camera"])
     _setup_color_management()
-    capture_panel = _setup_panel(camera)
+    capture_panel = _setup_panel(camera, _display_textures)
     frame = int(case.get("frame", 0))
     cmds.currentTime(frame)
     cmds.select(clear=True)
@@ -808,6 +872,7 @@ def _capture_case(case):
         "diff": diff,
         "shader_backend": _shader_backend,
         "shader_node_type": _shader_node_type,
+        "display_textures": _display_textures,
         "shader_issues": shader_issues,
         "debug_actions": debug_actions,
         "scene": _scene_diag(capture_panel),
@@ -826,6 +891,7 @@ def _capture_case(case):
         "center_sample": center_sample,
         "shader_backend": _shader_backend,
         "shader_issues": shader_issues,
+        "display_textures": _display_textures,
         "diff": diff,
     }}
 
@@ -842,6 +908,7 @@ def _main():
         "output_dir": str(_output_dir),
         "deviceInformation": None,
         "vp2_device_valid": False,
+        "shader_plugin": {{"name": _shader_plugin_name, "before": None, "after": None}},
         "results": [],
         "errors": [],
     }}
@@ -853,6 +920,14 @@ def _main():
     except Exception as exc:
         report["deviceInformation"] = "ERR: " + str(exc)
 
+    # Load the selected hardware-shader plug-in once before the baseline
+    # snapshot so the before/after report can prove it remained available for
+    # the full capture.  This is intentionally not an autoload change.
+    try:
+        cmds.loadPlugin(_shader_plugin_name, quiet=True)
+    except Exception as exc:
+        report["shader_plugin"]["preload_error"] = str(exc)
+    report["shader_plugin"]["before"] = _shader_plugin_diag()
     for case in _cases:
         _log("CAPTURE " + case["name"])
         try:
@@ -863,6 +938,8 @@ def _main():
             error = {{"name": case.get("name"), "error": str(exc), "traceback": traceback.format_exc()}}
             report["errors"].append(error)
             _log("  ERROR " + str(exc))
+
+    report["shader_plugin"]["after"] = _shader_plugin_diag()
 
     report_path = _output_dir / "visual-regression-report.json"
     with open(report_path, "w", encoding="utf-8") as f:
@@ -897,6 +974,8 @@ def main() -> int:
     LOGGER.info("Shader backend: %s", args.shader_backend)
     LOGGER.info("Unique shader: %s", shader_fx)
 
+    _preflight_command_port(args.port, args.attach_existing)
+
     proc: subprocess.Popen | None = None
     try:
         if args.attach_existing:
@@ -922,8 +1001,10 @@ def main() -> int:
             height=args.height,
             compare=not args.no_compare,
             debug_lambert_control=args.debug_lambert_control,
+            debug_outline_sentinel=args.debug_outline_sentinel,
             hide_orig_shapes=args.hide_orig_shapes,
             shader_backend=args.shader_backend,
+            display_textures=args.display_textures == "on",
         )
         maya_commandport.send_python(args.port, code, label="<maya-visual-regression>")
         _monitor_log(log_path, args.timeout)

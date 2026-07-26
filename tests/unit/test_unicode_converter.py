@@ -5,6 +5,7 @@ Unicode文字列変換機能のテスト
 
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -14,7 +15,7 @@ from unittest.mock import MagicMock
 # テスト対象モジュールのパスを追加
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from mmd_tools.core import utils
+from mmd_tools.core import maya_name_utils, utils
 from mmd_tools.core.mmd_bone_names import (
     convert_mmd_bone_name_to_ascii,
     convert_semistandard_mmd_bone_name_to_ascii,
@@ -31,6 +32,119 @@ from mmd_tools.core.unicode_converter import (
 def _msgs(mock_log):
     # call[0] is args tuple (Py3.7-safe; _Call.args is 3.8+).
     return [c[0][0] for c in mock_log.call_args_list if c[0]]
+
+
+CORPUS_EXPECTED_MAPPINGS = {
+    'HL消1': 'highlight_off_1',
+    'ぐるぐる': 'dizzy',
+    'たくらむ': 'scheming',
+    'はぁと': 'heart',
+    'ほっぺ': 'cheek_puff',
+    'むすっ': 'annoyed',
+    'やや驚く': 'slightly_surprised',
+    'イライラ': 'annoyed',
+    'ガーン': 'shock',
+    'キラキラ': 'sparkle',
+    'グルグル': 'dizzy',
+    'コッチミンナ': 'look_at_me',
+    'シャツ': 'shirt',
+    'ツインテール': 'twin_tail',
+    'デフォ': 'default',
+    'デフォ2': 'default_2',
+    'ニカッ': 'grin',
+    'ニッ': 'grin',
+    'ハイライト←': 'highlight_left',
+    'ハイライト↑': 'highlight_up',
+    'ハイライト→': 'highlight_right',
+    'ハイライト↓': 'highlight_down',
+    'ハイライト下': 'highlight_down',
+    'ハイライト拡大': 'highlight_expand',
+    'ハイライト除去': 'highlight_off',
+    'ハート': 'heart',
+    'ブーツ': 'boots',
+    'ベルト': 'belt',
+    'マジメ': 'serious',
+    '上がる': 'up',
+    '下がる': 'down',
+    '下まぶた': 'lower_eyelid',
+    '下瞼上げ': 'lower_eyelid_up',
+    '下瞼上げ2': 'lower_eyelid_up_2',
+    '下瞼上げ2右': 'lower_eyelid_up_2_right',
+    '下瞼上げ2左': 'lower_eyelid_up_2_left',
+    '下瞼上げ右': 'lower_eyelid_up_right',
+    '下瞼上げ左': 'lower_eyelid_up_left',
+    '不機嫌': 'cranky',
+    '体2': 'body_2',
+    '体饰': 'body_decoration',
+    '前发': 'front_hair',
+    '前進': 'forward',
+    '发': 'hair',
+    '发轮廓线': 'hair_outline',
+    '发饰': 'hair_accessory',
+    '叫び': 'shout',
+    '右六芒星': 'hexagram_right',
+    '后发': 'back_hair',
+    '嘲笑': 'sneer',
+    '尾': 'tail',
+    '左六芒星': 'hexagram_left',
+    '帽': 'hat',
+    '帽子': 'hat',
+    '帽子非表示': 'hat_hide',
+    '平行': 'brow_flat',
+    '平行右': 'brow_flat_right',
+    '平行左': 'brow_flat_left',
+    '影化': 'shadow_shade',
+    '後退': 'backward',
+    '怒': 'angry',
+    '怒る': 'angry',
+    '怒る右': 'angry_right',
+    '怒る左': 'angry_left',
+    '悲しむ': 'sad',
+    '惊': 'surprised',
+    '披风': 'cape',
+    '指甲': 'fingernail',
+    '涙2': 'tears_2',
+    '涙3': 'tears_3',
+    '涙右': 'tears_right',
+    '涙左': 'tears_left',
+    '照れ': 'blush',
+    '照れ2': 'blush_2',
+    '照れ斜線': 'blush_line',
+    '照れ消': 'blush_off',
+    '爪': 'fingernail',
+    '牙': 'teeth',
+    '白': 'white',
+    '眇める': 'squint',
+    '笑': 'smile',
+    '絶望': 'despair',
+    '耳': 'ear',
+    '脸': 'face',
+    '袜': 'socks',
+    '裙': 'skirt',
+    '裙2': 'skirt_2',
+    '裙带': 'skirt_band',
+    '裙饰': 'skirt_decoration',
+    '裤': 'pants',
+    '襟': 'collar',
+    '見開き': 'eyes_wide',
+    '見開く': 'eyes_wide',
+    '赤面2': 'blush_2',
+    '金属': 'metal',
+    '青ざめ': 'pale',
+    '青ざめる': 'pale',
+    '面': 'face',
+    '面1': 'face_1',
+    '面2': 'face_2',
+    '鞋': 'shoes',
+    '饰': 'decoration',
+    '驚く': 'surprised',
+    '驚く右': 'surprised_right',
+    '驚く左': 'surprised_left',
+    '高さ調整': 'height_adjust',
+    '髮+': 'hair_plus',
+    '鼻上': 'nose_up',
+    '鼻下': 'nose_down',
+}
 
 
 class TestUnicodeToAsciiConverter(unittest.TestCase):
@@ -115,6 +229,52 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
         # 中国語 -> ASCII
         self.assertEqual(self.converter.convert("头部"), "head")
         self.assertEqual(self.converter.convert("颜"), "face")
+
+    def test_semantic_corpus_vocabulary_avoids_hash_fallback(self):
+        """Adopted multi-model Material/Morph vocabulary stays deterministic."""
+        converter = UnicodeToAsciiConverter()
+        expected = {
+            "体": "body",
+            "髮": "hair",
+            "メガネ": "glasses",
+            "ｳｨﾝｸ２右": "wink_2_right",
+            "光消": "highlight_off",
+            "ハイライト": "highlight",
+            "汗": "sweat",
+            "赤面": "blush",
+            "呼吸": "breathing",
+            "深呼吸": "deep_breath",
+        }
+        for source, target in expected.items():
+            with self.subTest(source=source):
+                converted = converter.convert(source)
+                self.assertEqual(converted, target)
+                self.assertTrue(converted.isascii())
+                self.assertNotIn("HASH", converted)
+                self.assertEqual(converter.get_encoding_type(converted), "dictionary")
+
+    def test_expanded_semantic_corpus_vocabulary_is_safe_and_exact(self):
+        """All reviewed Material/Morph mappings remain exact and Maya-safe."""
+        self.assertEqual(len(CORPUS_EXPECTED_MAPPINGS), 109)
+        converter = UnicodeToAsciiConverter()
+        identifier = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+        for source, expected in CORPUS_EXPECTED_MAPPINGS.items():
+            with self.subTest(source=source):
+                converted = converter.convert(source)
+                self.assertEqual(converted, expected)
+                self.assertEqual(maya_name_utils.sanitize_text(source), expected)
+                self.assertTrue(converted.isascii())
+                self.assertRegex(converted, identifier)
+                self.assertNotIn("HASH", converted)
+                self.assertEqual(converter.get_encoding_type(converted), "dictionary")
+
+        # Synonyms intentionally share a token; numbered/directional variants
+        # must retain their distinct suffixes instead of collapsing to a base.
+        for source, synonym in (("面", "脸"), ("帽", "帽子"), ("怒", "怒る"), ("惊", "驚く")):
+            self.assertEqual(CORPUS_EXPECTED_MAPPINGS[source], CORPUS_EXPECTED_MAPPINGS[synonym])
+        for source, expected in (("照れ2", "blush_2"), ("下瞼上げ2右", "lower_eyelid_up_2_right"), ("ハイライト↓", "highlight_down")):
+            self.assertEqual(CORPUS_EXPECTED_MAPPINGS[source], expected)
 
     def test_hash_conversion(self):
         """辞書にない文字列のハッシュ変換をテスト"""

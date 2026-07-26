@@ -65,6 +65,8 @@ def import_vmd_file(
             - pmx_bytes: 生 PMX バイト
             - bake_mode: True の場合はリグ経由ではなく runtime bake を優先
             - use_native_physics_bake: True かつ bake_mode のとき native physics bake を試行する（default False）
+            - reduce_bake_keys: True かつ bake_mode のとき runtime pose reduction を試行する（default False）
+            - reduce_translate_tolerance / reduce_rotate_tolerance / reduce_morph_tolerance: reduction tolerances
             - vmd_fps: VMDインポート時のMayaシーンFPS (30 or 60, default 30)。VMDフレーム番号はリスケールせず、シーンのタイムユニットのみ変更。
         progress_callback (Callable[[int], None]): フェーズ進捗通知コールバック。
 
@@ -166,6 +168,17 @@ def import_vmd_file(
             profile = {}
             options["profile"] = profile
         use_native_physics_bake = bool(options.get("use_native_physics_bake", False))
+        reduce_bake_keys = bool(options.get("reduce_bake_keys", False))
+        def _reduction_tolerance(name, default):
+            try:
+                value = float(options.get(name, default))
+                return value if value >= 0.0 else default
+            except (TypeError, ValueError, OverflowError):
+                return default
+
+        reduce_translate_tolerance = _reduction_tolerance("reduce_translate_tolerance", 5.0e-4)
+        reduce_rotate_tolerance = _reduction_tolerance("reduce_rotate_tolerance", 1.0e-4)
+        reduce_morph_tolerance = _reduction_tolerance("reduce_morph_tolerance", 1.0e-3)
         model_target_kwargs = {} if scene_animation_only else {"target_model": target_model}
         try:
             with vmd_profile.scope("vmd_converter_convert"):
@@ -180,6 +193,10 @@ def import_vmd_file(
                     profile=profile,
                     progress_callback=progress_callback,
                     use_native_physics_bake=use_native_physics_bake,
+                    reduce_bake_keys=reduce_bake_keys,
+                    reduce_translate_tolerance=reduce_translate_tolerance,
+                    reduce_rotate_tolerance=reduce_rotate_tolerance,
+                    reduce_morph_tolerance=reduce_morph_tolerance,
                     scene_animation_only=scene_animation_only,
                     **model_target_kwargs,
                 )
@@ -192,16 +209,21 @@ def import_vmd_file(
                 _try_recover_physics_drivers(target_model, logger, profile)
                 from ..core.collider_authoring import refresh_collider_authoring_pose
 
-                collider_shapes = (
-                    cmds.listRelatives(
-                        target_model,
-                        allDescendents=True,
-                        fullPath=True,
-                        type="mmdRigidBodyShape",
-                    )
-                    if cmds.objExists(target_model)
-                    else []
-                ) or []
+                try:
+                    collider_shapes = (
+                        cmds.listRelatives(
+                            target_model,
+                            allDescendents=True,
+                            fullPath=True,
+                            type="mmdRigidBodyShape",
+                        )
+                        if cmds.objExists(target_model)
+                        else []
+                    ) or []
+                except RuntimeError:
+                    # mayapy can import/animate a rig without loading the
+                    # optional Python collider-shape registration.
+                    collider_shapes = []
                 for shape in collider_shapes:
                     transforms = cmds.listRelatives(shape, parent=True, fullPath=True) or []
                     if transforms:

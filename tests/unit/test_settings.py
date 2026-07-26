@@ -7,6 +7,8 @@ reset・デフォルト値読み込みを検証する。Maya が存在しない�
 
 import sys
 import os
+import json
+from pathlib import Path
 import unittest
 
 # プロジェクトルートを sys.path に追加
@@ -82,6 +84,17 @@ class TestSettingsDefaults(unittest.TestCase):
     def test_create_mmd_shaders_default(self):
         """MMDシェーダー作成が既定で有効なことを確認する。"""
         self.assertTrue(self.settings.get("import.model.create_mmd_shaders", False))
+
+    def test_bake_motion_default_is_false(self):
+        """モーションのベイクは初回起動時に無効であることを確認する。"""
+        config_path = (
+            Path(__file__).resolve().parents[2]
+            / "mmd_tools"
+            / "config"
+            / "default_settings.json"
+        )
+        defaults = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertFalse(defaults["import"]["rig"]["bake_mode"])
 
     def test_logging_enabled_default(self):
         """logging.enabled のデフォルト値が bool であることを確認する。"""

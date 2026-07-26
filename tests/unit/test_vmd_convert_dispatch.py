@@ -75,6 +75,9 @@ class TestVmdConvertDispatch(unittest.TestCase):
         self.assertIs(context.progress_callback, progress_callback)
         self.assertFalse(context.import_camera_animation)
         self.assertTrue(context.import_light_animation)
+        self.assertEqual(context.reduce_translate_tolerance, 5.0e-4)
+        self.assertEqual(context.reduce_rotate_tolerance, 1.0e-4)
+        self.assertEqual(context.reduce_morph_tolerance, 1.0e-3)
 
     def test_split_helper_context_factories_bind_current_converter_state(self):
         """VMD helper contexts expose explicit state and callables for split modules."""
@@ -183,6 +186,84 @@ class TestVmdConvertDispatch(unittest.TestCase):
         self.assertTrue(warning["bake_mode"])
         self.assertTrue(warning["has_vmd_bytes"])
         self.assertTrue(warning["has_pmx_bytes"])
+
+    def test_reduce_bake_keys_requires_bake_mode_before_scene_mutation(self):
+        """The explicit reduction opt-in cannot fall through to live/legacy import."""
+        vmd_data = _fake_vmd_data(bone_frames=[object()])
+
+        with ExitStack() as stack:
+            suspend = stack.enter_context(patch.object(self.converter, "_suspend_import_scene_updates"))
+            clear_motion = stack.enter_context(patch.object(self.converter, "_clear_existing_motion"))
+            result = self.converter.convert(
+                vmd_data,
+                bake_mode=False,
+                reduce_bake_keys=True,
+                target_model="model_root",
+            )
+
+        self.assertFalse(result)
+        suspend.assert_not_called()
+        clear_motion.assert_not_called()
+
+    def test_reduce_bake_keys_rejects_unavailable_runtime_before_scene_mutation(self):
+        """A missing runtime source is an explicit opt-in error, not dense fallback."""
+        vmd_data = _fake_vmd_data(bone_frames=[object()])
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(self.converter, "_should_use_mmd_runtime_bake", return_value=False))
+            stack.enter_context(patch("mmd_tools.converters.vmd_converter.is_native_reduced_pose_available", return_value=True))
+            suspend = stack.enter_context(patch.object(self.converter, "_suspend_import_scene_updates"))
+            clear_motion = stack.enter_context(patch.object(self.converter, "_clear_existing_motion"))
+            result = self.converter.convert(
+                vmd_data,
+                bake_mode=True,
+                reduce_bake_keys=True,
+                vmd_bytes=b"vmd",
+                pmx_bytes=b"pmx",
+                target_model="model_root",
+            )
+
+        self.assertFalse(result)
+        suspend.assert_not_called()
+        clear_motion.assert_not_called()
+
+    def test_reduce_bake_keys_rejects_old_runtime_dll_before_scene_mutation(self):
+        """A runtime without generic reducer symbols must not clear existing keys."""
+        vmd_data = _fake_vmd_data(bone_frames=[object()])
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(self.converter, "_should_use_mmd_runtime_bake", return_value=True))
+            stack.enter_context(patch("mmd_tools.converters.vmd_converter.is_native_reduced_pose_available", return_value=False))
+            suspend = stack.enter_context(patch.object(self.converter, "_suspend_import_scene_updates"))
+            clear_motion = stack.enter_context(patch.object(self.converter, "_clear_existing_motion"))
+            result = self.converter.convert(
+                vmd_data,
+                bake_mode=True,
+                reduce_bake_keys=True,
+                vmd_bytes=b"vmd",
+                pmx_bytes=b"pmx",
+                target_model="model_root",
+            )
+
+        self.assertFalse(result)
+        suspend.assert_not_called()
+        clear_motion.assert_not_called()
+
+    def test_reduce_bake_keys_rejects_camera_light_only_import(self):
+        """Reduction targets model channels; camera/light-only import remains unsupported."""
+        frame = type("FrameStub", (), {"frame_number": 1})()
+        vmd_data = _fake_vmd_data(camera_frames=[frame])
+
+        with patch.object(self.converter, "_convert_scene_animation_only") as scene_only:
+            result = self.converter.convert(
+                vmd_data,
+                scene_animation_only=True,
+                bake_mode=True,
+                reduce_bake_keys=True,
+            )
+
+        self.assertFalse(result)
+        scene_only.assert_not_called()
 
     def test_bake_mode_passes_vmd_bytes_to_camera_and_light_samplers(self):
         """Bake mode passes raw VMD bytes to camera/light native samplers."""

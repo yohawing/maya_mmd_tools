@@ -5,6 +5,7 @@ while preserving the existing optionVar-backed storage behavior.
 """
 
 import json
+import math
 
 from ..core import settings_keys as setting_keys
 from ..core.constants import DEFAULT_IMPORT_PHYSICS, DEFAULT_SCALE_FACTOR
@@ -18,13 +19,50 @@ _SETTINGS_EXPORT_CATEGORIES = ("import", "export", "logging", "ui")
 _NORMAL_MODE_IMPORT_OVERRIDES = {
     "import_models": True,
     "separate_meshes_by_material": False,
-    "auto_classify_transparency": False,
     "disable_backface_culling": True,
     "uv_set_name": "map#",
     "texture_search_path": "",
     "add_semi_standard_bones": False,
     "translate_names": True,
 }
+
+_REDUCE_BAKE_TOLERANCE_ENDPOINTS = {
+    "translate": (0.1, 5.0e-4),
+    "rotate": (0.05, 1.0e-4),
+    "morph": (0.05, 1.0e-3),
+}
+
+
+def normalize_reduce_bake_quality(quality):
+    """Clamp and quantize Reduce Quality to the UI's 0.01 slider grid."""
+    try:
+        quality = float(quality)
+    except (TypeError, ValueError):
+        quality = 1.0
+    if not math.isfinite(quality):
+        quality = 1.0
+    return round(max(0.0, min(1.0, quality)), 2)
+
+
+def resolve_reduce_bake_tolerances_from_quality(quality):
+    """Map the user-facing quality scalar to deterministic channel tolerances.
+
+    Quality ``1`` is the conservative, highest-fidelity endpoint and quality
+    ``0`` is the strongest reduction endpoint.  Log interpolation keeps the
+    relative scale of each channel useful across the deliberately wide ranges.
+    Non-finite or invalid values fall back to the conservative default.
+    """
+    quality = normalize_reduce_bake_quality(quality)
+
+    tolerances = {}
+    for channel, (max_tolerance, min_tolerance) in _REDUCE_BAKE_TOLERANCE_ENDPOINTS.items():
+        if quality <= 0.0:
+            tolerances[channel] = max_tolerance
+        elif quality >= 1.0:
+            tolerances[channel] = min_tolerance
+        else:
+            tolerances[channel] = max_tolerance * (min_tolerance / max_tolerance) ** quality
+    return tolerances
 
 
 class SettingsService:
@@ -44,6 +82,8 @@ class SettingsService:
 
     def set(self, key_path, value):
         """Write a setting by dot-separated key path."""
+        if key_path == setting_keys.IMPORT_ANIMATION_REDUCE_QUALITY:
+            value = normalize_reduce_bake_quality(value)
         self._settings.set(key_path, value)
 
     def save(self):
@@ -68,6 +108,11 @@ class SettingsService:
         if self.is_development_mode():
             return float(self.get(setting_keys.IMPORT_GENERAL_SCALE_FACTOR, DEFAULT_SCALE_FACTOR))
         return float(DEFAULT_SCALE_FACTOR)
+
+    def resolve_reduce_bake_tolerances(self):
+        """Return effective reduction tolerances from persisted quality."""
+        quality = self.get(setting_keys.IMPORT_ANIMATION_REDUCE_QUALITY, 1.0)
+        return resolve_reduce_bake_tolerances_from_quality(quality)
 
     def set_development_mode_log_levels(self, enabled):
         """Set the logging level for Development Mode and return the level."""
@@ -127,6 +172,8 @@ class SettingsService:
     def build_vmd_import_options(self, target_model=None):
         """Build VMD import options from persisted settings."""
         is_dev = self.is_development_mode()
+        bake_mode = bool(self.get(setting_keys.IMPORT_RIG_BAKE_MODE, False))
+        tolerances = self.resolve_reduce_bake_tolerances()
         return {
             "start_frame": self.get(setting_keys.IMPORT_ANIMATION_START_FRAME, 1),
             "vmd_fps": self.get(setting_keys.IMPORT_ANIMATION_VMD_FPS, 30),
@@ -137,8 +184,12 @@ class SettingsService:
             "motion_scale": self.get(setting_keys.IMPORT_ANIMATION_MOTION_SCALE, 1.0),
             "clear_existing_motion": self.get(setting_keys.IMPORT_ANIMATION_CLEAR_EXISTING_MOTION, False),
             "resample_curves": self.get(setting_keys.IMPORT_ANIMATION_RESAMPLE_CURVES, False) if is_dev else False,
-            "bake_mode": self.get(setting_keys.IMPORT_RIG_BAKE_MODE, False),
+            "bake_mode": bake_mode,
             "use_native_physics_bake": self.get(setting_keys.IMPORT_ANIMATION_USE_NATIVE_PHYSICS_BAKE, False),
+            "reduce_bake_keys": self.get(setting_keys.IMPORT_ANIMATION_REDUCE_BAKE_KEYS, False) if bake_mode else False,
+            "reduce_translate_tolerance": tolerances["translate"],
+            "reduce_rotate_tolerance": tolerances["rotate"],
+            "reduce_morph_tolerance": tolerances["morph"],
             "target_model": target_model,
         }
 
@@ -152,7 +203,6 @@ class SettingsService:
             "import_models": self.get(setting_keys.IMPORT_MODEL_IMPORT_MODELS, True),
             "create_mmd_shaders": self.get(setting_keys.IMPORT_MODEL_CREATE_MMD_SHADERS, True),
             "separate_meshes_by_material": self.get(setting_keys.IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL, False),
-            "auto_classify_transparency": self.get(setting_keys.IMPORT_MODEL_AUTO_CLASSIFY_TRANSPARENCY, False),
             "auto_resolve_textures": self.get(setting_keys.IMPORT_MODEL_AUTO_RESOLVE_TEXTURES, True),
             "disable_backface_culling": self.get(setting_keys.IMPORT_MODEL_DISABLE_BACKFACE_CULLING, True),
             "uv_set_name": self.get(setting_keys.IMPORT_MODEL_UV_SET_NAME, "map#"),

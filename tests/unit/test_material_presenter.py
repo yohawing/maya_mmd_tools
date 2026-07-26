@@ -7,6 +7,7 @@ from tests.common.mock_ui import attach_mocks
 install_headless_ui_stubs()
 
 from mmd_tools.ui.presenters.material_presenter import MaterialPresenter  # noqa: E402
+from mmd_tools.ui.qt_compat import Qt  # noqa: E402
 from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
@@ -45,7 +46,6 @@ class TestMaterialPresenter(unittest.TestCase):
                 "specular_coefficient_spin",
                 "transparency_spin",
                 "edge_size_spin",
-                "shader_outline_check",
                 "search_edit",
                 "refresh_btn",
                 "apply_btn",
@@ -114,8 +114,6 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_view.sphere_mode_combo.currentIndex.return_value = 0
         self.mock_view.toon_texture_combo.currentIndex.return_value = 0
         self.mock_view.edge_size_spin.value.return_value = 1.5
-        self.mock_view.shader_outline_check.isChecked.return_value = False
-        self.mock_view.transparency_mode_combo.currentIndex.return_value = 0
         for checkbox in [
             self.mock_view.both_face_check,
             self.mock_view.ground_shadow_check,
@@ -204,6 +202,33 @@ class TestMaterialPresenter(unittest.TestCase):
         info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
         self.assertIn(expected, debug_messages)
         self.assertNotIn(expected, info_messages)
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_load_materials_hides_namespace_and_path_but_preserves_full_node(
+        self,
+        mock_maya_attribute_utils,
+    ):
+        material = "|root|outer:model:face_material"
+        self.mock_app_state.current_model_root = "test_model"
+        self.mock_maya_adapter.object_exists.return_value = True
+        self.mock_maya_adapter.list_relatives.return_value = ["meshShape"]
+        self.mock_maya_adapter.list_connections.side_effect = lambda nodes, **kwargs: (
+            ["SG"] if kwargs.get("type") == "shadingEngine" else [material]
+        )
+        self.mock_maya_adapter.ls.return_value = [material]
+        self.mock_maya_adapter.attribute_exists.return_value = True
+        mock_maya_attribute_utils.get_attribute.side_effect = lambda node, attr: {
+            ATTR_MMD_MATERIAL_NAME: "顔材質",
+            ATTR_MMD_MATERIAL_NAME_EN: "Face",
+        }.get(attr, "")
+        self.mock_view.material_list.count.return_value = 1
+
+        self.presenter.load_materials()
+
+        item = self.mock_view.material_list.addItem.call_args[0][0]
+        self.assertEqual(item.text(), "1:顔材質（face_material） [Face]")
+        self.assertEqual(item.data(Qt.UserRole), material)
+        self.assertEqual(item.toolTip(), material)
 
     @patch("mmd_tools.ui.presenters.material_presenter.logger")
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
@@ -348,7 +373,6 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_view.sphere_map_path_edit.text.return_value = "sphere.spa"
         self.mock_view.sphere_mode_combo.currentIndex.return_value = 1
         self.mock_view.edge_size_spin.value.return_value = 1.5
-        self.mock_view.shader_outline_check.isChecked.return_value = True
 
         # チェックボックスの状態を設定
         self.mock_view.both_face_check.isChecked.return_value = True
@@ -378,14 +402,10 @@ class TestMaterialPresenter(unittest.TestCase):
         # 変更フラグがリセットされることを確認
         self.assertFalse(self.presenter.has_unsaved_changes)
 
-    @patch("mmd_tools.converters.mesh_converter.apply_shader_outline")
-    @patch("mmd_tools.converters.mesh_converter.apply_transparency_mode")
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
     def test_apply_changes_skips_dx11_missing_specular_and_transparency(
         self,
         mock_maya_attribute_utils,
-        mock_apply_mode,
-        mock_apply_outline,
     ):
         """dx11Shaderに無い標準属性を避け、MMD edge alphaも保持する。"""
         self._configure_apply_inputs()
@@ -406,8 +426,6 @@ class TestMaterialPresenter(unittest.TestCase):
         mock_maya_attribute_utils.set_attribute.assert_any_call(
             "test_material", "mmd_edge_alpha", 1.0, "float"
         )
-        mock_apply_mode.assert_called_once()
-        mock_apply_outline.assert_called_once_with("test_material", False, 1.5)
         self.assertFalse(self.presenter.has_unsaved_changes)
 
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
@@ -1082,24 +1100,6 @@ class TestMaterialPresenter(unittest.TestCase):
         self.assertTrue(any("missing.spa" in status for status in statuses))
         self.assertFalse(self.presenter.has_unsaved_changes)
 
-    @patch("mmd_tools.converters.mesh_converter.apply_shader_outline")
-    @patch("mmd_tools.converters.mesh_converter.apply_transparency_mode")
-    def test_apply_transparency_mode_to_selected_applies_outline(self, mock_apply_mode, mock_apply_outline):
-        """選択マテリアルへの透過モード適用時にアウトライン設定も反映される"""
-        item = Mock()
-        item.data.return_value = "dx11_mat"
-        self.mock_view.material_list.selectedItems.return_value = [item]
-        self.mock_view.transparency_mode_combo.currentIndex.return_value = 2
-        self.mock_view.shader_outline_check.isChecked.return_value = True
-        self.mock_view.edge_size_spin.value.return_value = 1.25
-        self.mock_maya_adapter.object_exists.return_value = True
-        self.mock_maya_adapter.node_type.return_value = "dx11Shader"
-
-        self.presenter.apply_transparency_mode_to_selected()
-
-        mock_apply_mode.assert_called_once()
-        mock_apply_outline.assert_called_once_with("dx11_mat", True, 1.25)
-
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
     def test_apply_mmd_attributes_preserves_raw_edge_size_when_spin_unchanged(self, mock_maya_attribute_utils):
         """UI上限を超える元のエッジサイズは未変更なら保持する"""
@@ -1109,7 +1109,6 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_view.sphere_map_path_edit.text.return_value = ""
         self.mock_view.sphere_mode_combo.currentIndex.return_value = 0
         self.mock_view.toon_texture_combo.currentIndex.return_value = 0
-        self.mock_view.shader_outline_check.isChecked.return_value = False
         for checkbox in [
             self.mock_view.both_face_check,
             self.mock_view.ground_shadow_check,

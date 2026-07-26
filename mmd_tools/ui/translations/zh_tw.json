@@ -1,4 +1,19 @@
 {
+    "animation_picker": {
+        "head": "頭", "neck": "頸", "upper_body": "上半身", "upper_body_2": "上半身2", "lower_body": "下半身",
+        "left_shoulder": "左肩", "left_upper_arm": "左臂", "left_lower_arm": "左肘", "left_wrist": "左手腕",
+        "right_shoulder": "右肩", "right_upper_arm": "右臂", "right_lower_arm": "右肘", "right_wrist": "右手腕",
+        "left_upper_leg": "左腿", "left_lower_leg": "左膝", "left_foot": "左腳踝", "left_toe": "左腳趾",
+        "right_upper_leg": "右腿", "right_lower_leg": "右膝", "right_foot": "右腳踝", "right_toe": "右腳趾",
+        "center": "中心", "groove": "凹槽", "waist": "腰", "both_eyes": "雙眼",
+        "left_shoulder_p": "左肩P", "right_shoulder_p": "右肩P", "left_toe_ik": "左腳趾IK", "right_toe_ik": "右腳趾IK",
+        "left_ik": "左腿IK", "right_ik": "右腿IK", "master": "全域父級"
+    },
+    "ik_enable_side_tooltip": "切換單側腿部IK解算器",
+  "animation_toolset": {
+    "control_rig": "控制綁定",
+    "window_title": "動畫工具集", "refresh": "重新整理", "body": "身體", "finger": "手指", "morph": "變形", "display": "顯示框", "back_to_body": "返回身體", "back_to_body_tooltip": "返回全身選擇器", "select_all": "全選", "select_all_tooltip": "選擇目前MMD模型的所有骨骼", "clear": "清除", "clear_tooltip": "清除目前選取", "visibility": "可見性", "mesh": "網格", "joints": "骨骼", "colliders": "碰撞體", "ik_enable_toggle_tooltip": "切換雙腿IK解算器", "tools": "工具", "copy": "複製", "paste": "貼上", "mirror": "鏡像", "mirror_selection": "鏡像選取", "reset": "重設姿勢", "clean": "清理", "bake": "烘焙", "reset_pose_tooltip": "將選取的骨骼重設為綁定姿勢", "mirror_selection_tooltip": "選取另一側的骨骼", "finger_picker_tooltip": "開啟手指選擇器", "category_brow": "眉毛變形", "category_eye": "眼睛變形", "category_mouth": "嘴部變形", "category_other": "未分類（PMX：其他）", "no_selectable_bones": "沒有可選取的骨骼", "selected_all_bones": "已選取全部骨骼（{count}）", "select_all_failed": "選取全部骨骼失敗", "node_not_found": "找不到: {name}", "unassigned_bones": "未指派: {names}", "selection_failed": "選取失敗: {names}", "ik_not_found": "找不到{side} IK", "ik_enabled": "已啟用{side} IK", "ik_disabled": "已關閉{side} IK", "ik_toggle_failed": "IK切換失敗: {error}", "no_joints_selected": "未選取骨骼", "copied_pose": "已複製姿勢（{count}個骨骼）", "copy_failed": "複製失敗: {error}", "no_pose_copied": "沒有已複製的姿勢", "pasted_pose": "已貼上姿勢（{count}個骨骼）", "paste_failed": "貼上失敗: {error}", "reset_pose_applied": "已重設姿勢（{count}個骨骼）", "reset_pose_failed": "重設姿勢失敗: {error}", "mirrored_pose": "已鏡像姿勢", "mirror_failed": "鏡像失敗: {error}", "baked_animation": "已烘焙動畫", "bake_failed": "烘焙失敗: {error}", "cleaned_curves": "已清理曲線", "clean_failed": "清理失敗: {error}"
+  },
   "tabs": {
     "file_io": "檔案I/O",
     "info": "資訊",
@@ -16,7 +31,8 @@
     "import_settings": "匯入設定",
     "export_settings": "匯出設定",
     "rigid_bodies": "剛體",
-    "joints": "關節"
+    "joints": "關節",
+    "humanik": "HumanIK (Experimental)"
   },
   "menus": {
     "view": "檢視"
@@ -29,6 +45,7 @@
     "browse": "瀏覽...",
     "refresh": "重新整理",
     "reset": "重設",
+    "go_to_bind_pose": "前往綁定姿勢",
     "add": "新增",
     "remove": "移除",
     "create": "建立",
@@ -36,6 +53,11 @@
     "delete": "刪除",
     "up": "上移",
     "down": "下移",
+    "add_frame": "新增顯示框",
+    "delete_frame": "刪除顯示框",
+    "add_bone": "新增骨骼",
+    "add_morph": "新增變形",
+    "delete_item": "刪除項目",
     "select": "選擇",
     "clear": "清除",
     "save": "儲存",
@@ -51,7 +73,11 @@
     "search": "搜尋",
     "timestamp": "時間戳記",
     "set_key": "設定關鍵幀",
-    "delete_key": "刪除關鍵幀"
+    "delete_key": "刪除關鍵幀",
+    "humanik_setup_selected_model": "設定所選模型",
+    "humanik_create_control_rig": "建立控制裝備",
+    "humanik_bake_execute": "執行烘焙",
+    "humanik_restore": "還原 MMD 裝備"
   },
   "labels": {
     "file_path": "檔案路徑:",
@@ -89,7 +115,15 @@
     "log_entries": "記錄",
     "search_results": "筆",
     "not_found": "找不到",
-    "namespace_placeholder": "自動產生"
+    "namespace_placeholder": "自動產生",
+    "humanik_character": "角色:",
+    "humanik_source": "SOURCE:",
+    "humanik_bake_start": "起始:",
+    "humanik_bake_end": "結束:",
+    "humanik_bake_section": "烘焙",
+    "humanik_bake_to_control_rig": "烘焙到控制裝備",
+    "humanik_bake_to_mmd_rig": "烘焙到 MMD 裝備",
+    "humanik_none": "(無)"
   },
   "tooltips": {
     "morph_runtime_unsupported": "目前執行階段不支援此變形類型",
@@ -108,10 +142,11 @@
     "auto_resolve_textures": "自動修復非 ASCII 貼圖路徑，建立 ASCII 名稱的快取副本",
     "bake_mode": "將所有影格烘焙為關鍵影格。不建立 IK/附加綁定",
     "native_physics_bake": "使用原生執行階段烘焙 PMX 物理。需要烘焙動作",
+    "reduce_bake_keys": "在容差內減少烘焙關鍵影格",
+    "reduce_quality": "烘焙關鍵影格縮減品質：1.0 保留最高保真度，0.0 進行最強縮減",
     "start_frame": "VMD 動畫在 Maya 時間軸上的起始影格",
     "vmd_fps": "VMD 檔案的影格率。MMD 標準為 30 fps",
     "separate_meshes": "依材質分割網格",
-    "auto_classify_transparency": "透過 UV alpha 掃描自動分類透明材質",
     "import_physics": "從 PMX 物理資料建立剛體與關節",
     "disable_backface_culling": "停用背面剔除以啟用雙面算圖"
   },
@@ -155,13 +190,24 @@
     "command_port_dev_mode_required": "Command Port 僅能在開發模式使用",
     "import_partial": "匯入完成但有警告 ({warning_count}): {root_node}",
     "import_partial_title": "匯入警告",
+    "vmd_import_complete": "VMD 匯入完成: {file_path}",
+    "vmd_reduction_summary": "縮減關鍵影格: {source_key_count} -> {reduced_key_count}（縮減 {reduction_percent}%）",
     "vmd_import_partial": "VMD 匯入完成但有警告 ({warning_count}): {file_path}",
     "vmd_import_partial_title": "VMD 匯入警告",
     "morph_key_not_removed": "未刪除關鍵幀。請選擇一個動畫層，並確認目前時間已有關鍵幀",
     "loading": "載入中...",
     "saving": "儲存中...",
     "processing": "處理中...",
-    "export_dev_mode_required": "匯出僅能在開發模式使用"
+    "export_dev_mode_required": "匯出僅能在開發模式使用",
+    "humanik_restore_tooltip": "結束 HumanIK 控制裝備／目標預覽，並還原暫時隔離的 MMD 足部 IK、附加與約束連線及啟用狀態。HumanIK 角色定義會保留。",
+    "humanik_mode_neutral": "未設定",
+    "humanik_mode_source": "Source",
+    "humanik_mode_target_preview": "Target 預覽",
+    "humanik_mode_control_rig": "控制裝備",
+    "humanik_status_control_rig_suffix": " / 控制裝備: {count}",
+    "humanik_setup_selected_model_tooltip": "為Maya中目前選取的MMD模型設定HumanIK並進行角色化。完成後會顯示在角色和SOURCE清單中。",
+    "humanik_create_control_rig_tooltip": "為目前的HumanIK角色建立MMD控制裝備。",
+    "humanik_source_tooltip": "可將已角色化的 MMD 模型或場景中已定義的 HumanIK 角色指定為重定向 SOURCE。"
   },
   "options": {
     "none": "無",
@@ -204,6 +250,9 @@
   },
   "groups": {
     "general": "一般",
+    "display_frames": "顯示框",
+    "display_frame_properties": "顯示框屬性",
+    "display_frame_items": "包含的骨骼／變形",
     "model": "模型",
     "morph": "表情",
     "other": "其他",
@@ -257,6 +306,7 @@
     "import_physics": "匯入物理",
     "bake_mode": "烘焙動作",
     "native_physics_bake": "烘焙物理",
+    "reduce_bake_keys": "減少烘焙關鍵影格",
     "apply_scale": "套用縮放",
     "new_file": "新建檔案",
     "enable_ik": "啟用IK",
@@ -264,13 +314,18 @@
     "development_mode": "開發模式",
     "show_advanced_options": "顯示進階選項",
     "enable_logging": "啟用記錄",
-    "auto_classify_transparency": "自動分類透明 (掃描紋理α)",
     "auto_resolve_textures": "自動修復貼圖",
     "custom_namespace": "自訂命名空間:",
     "show_colliders": "顯示碰撞體",
     "enable_physics": "啟用物理"
   },
   "fields": {
+    "display_frame_name_jp": "日文名稱:",
+    "display_frame_name_en": "英文名稱:",
+    "special_display_frame": "特殊框（Root／表情）",
+    "element_type": "類型",
+    "element_name": "名稱",
+    "element_index": "索引",
     "import_scale": "匯入縮放:",
     "root_bone_name": "根骨骼名稱:",
     "texture_search_path": "貼圖搜尋路徑:",
@@ -278,6 +333,7 @@
     "start_frame": "開始影格:",
     "vmd_fps": "影格率:",
     "format": "格式:",
+    "reduce_quality": "縮減品質:",
     "vmd_file": "VMD檔案:",
     "target_model": "目標模型:",
     "current_model": "目前模型:",
@@ -333,7 +389,6 @@
     "command_port": "Command Port:",
     "export_format": "匯出格式:",
     "transparency_mode": "透明模式:",
-    "transparency_opaque_threshold": "不透明α閾值:",
     "original_texture_path": "原始紋理路徑:",
     "name": "名稱:",
     "name_english": "英文名稱:",
@@ -504,7 +559,7 @@
     "dont_show_again": "不再顯示",
     "status_fixed": "已修復 {count} 個貼圖",
     "status_repair_summary": "已修復 {resolved} 個貼圖；仍有 {unresolved} 個未解決。",
-    "status_select_model": "請在MMD Tools中選擇目標模型，然後再次執行修復貼圖路徑。",
+    "status_select_model": "請在 MMD Editor 中選擇目標模型，然後再次執行修復貼圖路徑。",
     "fix_texture_path": "修正貼圖路徑",
     "status_no_issues": "未發現貼圖路徑問題。",
     "status_scan_failed": "無法掃描貼圖路徑問題。"

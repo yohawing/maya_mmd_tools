@@ -35,8 +35,9 @@ UI_INDEX_TO_PMX_TYPE: Dict[int, int] = {
     ui_index: pmx_type for pmx_type, ui_index in PMX_TYPE_TO_UI_INDEX.items()
 }
 PMX_MORPH_TYPE_NAMES: Dict[int, str] = {
-    0: "group", 1: "vertex", 2: "bone", 3: "uv", 4: "uv", 5: "uv",
-    6: "uv", 7: "uv", 8: "material", 9: "flip", 10: "impulse",
+    0: "group", 1: "vertex", 2: "bone", 3: "uv", 4: "additional_uv1",
+    5: "additional_uv2", 6: "additional_uv3", 7: "additional_uv4",
+    8: "material", 9: "flip", 10: "impulse",
 }
 
 

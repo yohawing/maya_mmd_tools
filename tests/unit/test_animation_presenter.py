@@ -49,6 +49,10 @@ class _FakeSignal:
     def connect(self, cb):
         self.callbacks.append(cb)
 
+    def disconnect(self, cb):
+        if cb in self.callbacks:
+            self.callbacks.remove(cb)
+
     def emit(self, *args):
         for cb in self.callbacks:
             cb(*args)
@@ -57,6 +61,14 @@ class _FakeSignal:
 class _FakeButton:
     def __init__(self):
         self.clicked = _FakeSignal()
+        self.text = ""
+        self.enabled = True
+
+    def setText(self, text):
+        self.text = text
+
+    def setEnabled(self, enabled):
+        self.enabled = enabled
 
 
 class _FakeComboBox:
@@ -143,6 +155,7 @@ class _FakeTreeWidget:
     def __init__(self):
         self._items = []
         self.itemClicked = _FakeSignal()
+        self.itemPressed = _FakeSignal()
 
     def clear(self):
         self._items.clear()
@@ -192,27 +205,72 @@ class _FakeLayout:
 class _FakeBodyPicker:
     def __init__(self):
         self.region_clicked = _FakeSignal()
+        self.regions_selected = _FakeSignal()
         self.goto_finger_clicked = _FakeSignal()
         self.mirror_selection_clicked = _FakeSignal()
+        self.reset_pose_clicked = _FakeSignal()
+        self.select_all_clicked = _FakeSignal()
+        self.clear_selection_clicked = _FakeSignal()
         self.ik_toggled = _FakeSignal()
+        self.ik_enable_toggle_clicked = _FakeSignal()
+        self.selected_regions = []
+        self.tooltip = ""
+        self.additive_selection = False
+        self.region_labels = {}
+        self.region_tooltips = {}
+        self.hidden_regions = set()
+        self.region_dim_levels = {}
+
+    def set_selected_regions(self, region_ids):
+        self.selected_regions = list(region_ids)
+
+    def setToolTip(self, text):
+        self.tooltip = text
+
+    def update_region_texts(self, *, labels=None, tooltips=None):
+        self.region_labels.update(labels or {})
+        self.region_tooltips.update(tooltips or {})
+
+    def set_hidden_regions(self, region_ids):
+        self.hidden_regions = set(region_ids)
+
+    def set_region_dim_levels(self, levels):
+        self.region_dim_levels = dict(levels)
 
 
 class _FakeFingerPicker:
     def __init__(self):
         self.region_clicked = _FakeSignal()
+        self.regions_selected = _FakeSignal()
         self.goto_body_clicked = _FakeSignal()
         self.mirror_selection_clicked = _FakeSignal()
+        self.selected_regions = []
+        self.additive_selection = False
+        self.region_tooltips = {}
+
+    def set_selected_regions(self, region_ids):
+        self.selected_regions = list(region_ids)
+
+    def update_region_texts(self, *, labels=None, tooltips=None):
+        self.region_tooltips.update(tooltips or {})
 
 
 class _FakeTabWidget:
     def __init__(self):
         self._current = 0
+        self.enabled = True
 
     def setObjectName(self, _):
         pass
 
     def setCurrentIndex(self, idx):
         self._current = idx
+
+    def currentIndex(self):
+        return self._current
+
+    def setEnabled(self, enabled):
+        self.enabled = enabled
 
 
 class _FakeCheckBox:
@@ -227,6 +285,12 @@ class _FakeCheckBox:
     def setChecked(self, val):
         self._checked = val
 
+    def setEnabled(self, enabled):
+        self.enabled = bool(enabled)
+
+    def setVisible(self, visible):
+        self.visible = bool(visible)
+
 
 class _FakeView:
     TAB_BODY = 0
@@ -238,6 +302,7 @@ class _FakeView:
         self.model_combo = _FakeComboBox()
         self.refresh_btn = _FakeButton()
         self.clear_btn = _FakeButton()
+        self.select_all_btn = _FakeButton()
         self.status_label = _FakeLabel()
         self.display_frame_tree = _FakeTreeWidget()
         self.body_picker = _FakeBodyPicker()
@@ -246,12 +311,45 @@ class _FakeView:
         self.picker_tabs = _FakeTabWidget()
         self.vis_checkboxes = {
             k: _FakeCheckBox(k)
-            for k in ("mesh", "joints", "morphs", "colliders")
+            for k in ("mesh", "joints", "colliders")
         }
         self.tool_buttons = {
             k: _FakeButton()
             for k in ("copy", "paste", "mirror", "reset", "clean", "bake")
         }
+
+    def tr(self, key, _category=None):
+        return {
+            "reset": "Reset Pose",
+            "reset_pose_tooltip": "Reset selected joints to their bind pose",
+            "no_selectable_bones": "No selectable bones",
+            "selected_all_bones": "Selected all bones ({count})",
+            "select_all_failed": "Failed to select all bones",
+            "node_not_found": "Not found: {name}",
+            "unassigned_bones": "Unassigned: {names}",
+            "selection_failed": "Selection failed: {names}",
+            "no_joints_selected": "No joints selected",
+            "copied_pose": "Copied pose ({count} joints)",
+            "copy_failed": "Copy failed: {error}",
+            "no_pose_copied": "No pose copied",
+            "pasted_pose": "Pasted pose ({count} joints)",
+            "paste_failed": "Paste failed: {error}",
+            "reset_pose_applied": "Reset Pose ({count} joints)",
+            "reset_pose_failed": "Reset Pose failed: {error}",
+            "ik_not_found": "{side} IK was not found",
+            "ik_enabled": "{side} IK enabled",
+            "ik_disabled": "{side} IK disabled",
+            "ik_toggle_failed": "IK toggle failed: {error}",
+            "mirrored_pose": "Mirrored pose",
+            "mirror_failed": "Mirror failed: {error}",
+            "baked_animation": "Baked animation",
+            "bake_failed": "Bake failed: {error}",
+            "cleaned_curves": "Cleaned curves",
+            "clean_failed": "Clean failed: {error}",
+        }.get(key, key)
+
+    def current_language(self):
+        return "en"
 
 
 class _FakeAppState:
@@ -274,11 +372,12 @@ class _FakeAppState:
 
 class _FakeAdapter:
     def __init__(self, joints_by_index=None, display_json=None,
-                 blend_shapes=None, bone_names=None):
+                 blend_shapes=None, bone_names=None, morph_data=None):
         self._joints_by_index = joints_by_index or {}
         self._display_json = display_json
         self._blend_shapes = blend_shapes or {}
         self._bone_names = bone_names or {}
+        self._morph_data = morph_data
         self.selected = []
         self._set_attrs = {}
         self._attrs: dict[tuple[str, str], object] = {}
@@ -335,6 +434,8 @@ class _FakeAdapter:
             for mesh_bs in self._blend_shapes.values():
                 if node in mesh_bs and "morph_json" in mesh_bs[node]:
                     return True
+        if attr == "mmdMorphData":
+            return self._morph_data is not None
         if (node, attr) in self._attrs:
             return True
         return False
@@ -356,6 +457,8 @@ class _FakeAdapter:
             for mesh_bs in self._blend_shapes.values():
                 if node in mesh_bs and "morph_json" in mesh_bs[node]:
                     return json.dumps(mesh_bs[node]["morph_json"])
+        if attr == "mmdMorphData":
+            return json.dumps(self._morph_data, ensure_ascii=False)
         return None
 
     def set_attr(self, attr_path, value):
@@ -380,7 +483,10 @@ class _FakeAdapter:
         return []
 
     def select(self, nodes, replace=True):
-        self.selected = list(nodes)
+        if replace:
+            self.selected = list(nodes)
+        else:
+            self.selected = list(dict.fromkeys([*self.selected, *nodes]))
 
     def xform(self, node, **kwargs):
         if kwargs.get("query"):
@@ -408,10 +514,22 @@ _USER_ROLE = 0x0100
 
 
 class TestAnimationPresenter(unittest.TestCase):
-    def _make(self, joints=None, display_json=None, model_root=None):
+    def _make(
+        self,
+        joints=None,
+        display_json=None,
+        model_root=None,
+        bone_names=None,
+        morph_data=None,
+    ):
         view = _FakeView()
         app_state = _FakeAppState(model_root=model_root)
-        adapter = _FakeAdapter(joints_by_index=joints or {}, display_json=display_json)
+        adapter = _FakeAdapter(
+            joints_by_index=joints or {},
+            display_json=display_json,
+            bone_names=bone_names,
+            morph_data=morph_data,
+        )
         presenter = AnimationPresenter(view, app_state, maya_adapter=adapter)
         return presenter, view, app_state, adapter
 
@@ -467,10 +585,24 @@ class TestAnimationPresenter(unittest.TestCase):
 
         root_group = view.display_frame_tree.topLevelItem(0)
         child = root_group.child(0)
-        presenter.on_display_frame_item_clicked(child)
+        view.display_frame_tree.itemPressed.emit(child, 0)
 
         self.assertEqual(adapter.selected, ["center"])
         self.assertEqual(view.status_label.text(), "center")
+
+    def test_display_groups_start_collapsed_including_morphs(self):
+        _presenter, view, _, _ = self._make(
+            joints={0: "center"},
+            display_json=SAMPLE_FRAMES_JSON,
+            model_root="test_model",
+        )
+
+        self.assertTrue(
+            all(
+                not view.display_frame_tree.topLevelItem(index)._expanded
+                for index in range(view.display_frame_tree.topLevelItemCount())
+            )
+        )
 
     def test_click_unresolved_item_does_nothing(self):
         presenter, view, _, adapter = self._make(
@@ -556,6 +688,27 @@ class TestAnimationPresenter(unittest.TestCase):
         child = view.display_frame_tree.topLevelItem(0).child(0)
         self.assertEqual(child.text(0), "center_jnt")
 
+    def test_display_uses_japanese_bone_and_morph_metadata_names(self):
+        with patch(
+            "mmd_tools.ui.presenters.animation_presenter"
+            ".AnimationPresenter._populate_morph_groups"
+        ):
+            _presenter, view, _, _ = self._make(
+                joints={0: "|root|ns:center_jnt"},
+                bone_names={"|root|ns:center_jnt": "センター"},
+                display_json=SAMPLE_FRAMES_JSON,
+                morph_data=[
+                    {"index": 0, "name_jp": "笑い", "name_en": "Smile", "panel": 2, "type": 1},
+                    {"index": 1, "name_jp": "まばたき", "name_en": "Blink", "panel": 2, "type": 1},
+                ],
+                model_root="test_model",
+            )
+
+        self.assertEqual(view.display_frame_tree.topLevelItem(0).child(0).text(0), "センター")
+        expressions = view.display_frame_tree.topLevelItem(1)
+        self.assertEqual(expressions.child(0).text(0), "笑い")
+        self.assertEqual(expressions.child(1).text(0), "まばたき")
+
     def test_model_combo_updated_on_model_list_signal(self):
         presenter, view, app_state, _ = self._make()
 
@@ -592,13 +745,183 @@ class TestBodyPickerPresenter(unittest.TestCase):
         )
         presenter.on_body_region_clicked("head")
         self.assertEqual(adapter.selected, ["head_jnt"])
-        self.assertEqual(view.status_label.text(), "head_jnt")
+        self.assertEqual(view.status_label.text(), "頭")
+        self.assertEqual(view.body_picker.selected_regions, ["head"])
+
+    def test_leg_ik_toggle_hides_only_that_sides_fk_regions(self):
+        presenter, view, _, adapter = self._make_with_bones()
+        presenter._ik_nodes_by_side = {
+            "left": "left_leg_ik_solver",
+            "right": "right_leg_ik_solver",
+        }
+        adapter._attrs["left_leg_ik_solver", "enabled"] = False
+        adapter._attrs["right_leg_ik_solver", "enabled"] = False
+
+        view.body_picker.ik_toggled.emit("left", True)
+
+        self.assertTrue(adapter._attrs["left_leg_ik_solver", "enabled"])
+        self.assertEqual(
+            view.body_picker.hidden_regions,
+            {
+                "left_lower_leg",
+                "left_foot",
+                "left_toe_ik",
+                "right_ik",
+                "right_toe_ik",
+            },
+        )
+        self.assertNotIn("left_upper_leg", view.body_picker.hidden_regions)
+        self.assertNotIn("left_ik", view.body_picker.hidden_regions)
+        self.assertEqual(view.body_picker.region_dim_levels, {"ik_enable_right": 0.65})
+        self.assertIn("L IK enabled", view.status_label.text())
+
+    def test_ik_enable_toggle_switches_one_sides_solvers_without_hiding_thighs(self):
+        presenter, view, _, adapter = self._make_with_bones()
+        presenter._ik_nodes_by_side = {
+            "left": "left_leg_ik_solver",
+            "right": "right_leg_ik_solver",
+        }
+        presenter._toe_ik_nodes_by_side = {
+            "left": "left_toe_ik_solver",
+            "right": "right_toe_ik_solver",
+        }
+        adapter._attrs["left_leg_ik_solver", "enabled"] = False
+        adapter._attrs["right_leg_ik_solver", "enabled"] = False
+        adapter._attrs["left_toe_ik_solver", "enabled"] = False
+        adapter._attrs["right_toe_ik_solver", "enabled"] = False
+
+        view.body_picker.ik_enable_toggle_clicked.emit("left")
+
+        self.assertTrue(adapter._attrs["left_leg_ik_solver", "enabled"])
+        self.assertFalse(adapter._attrs["right_leg_ik_solver", "enabled"])
+        self.assertTrue(adapter._attrs["left_toe_ik_solver", "enabled"])
+        self.assertFalse(adapter._attrs["right_toe_ik_solver", "enabled"])
+        self.assertEqual(
+            view.body_picker.hidden_regions,
+            {
+                "left_lower_leg",
+                "left_foot",
+                "left_toe",
+                "right_ik",
+                "right_toe_ik",
+            },
+        )
+        self.assertEqual(view.body_picker.region_dim_levels, {"ik_enable_right": 0.65})
+
+        view.body_picker.ik_enable_toggle_clicked.emit("left")
+
+        self.assertFalse(adapter._attrs["left_leg_ik_solver", "enabled"])
+        self.assertFalse(adapter._attrs["right_leg_ik_solver", "enabled"])
+        self.assertFalse(adapter._attrs["left_toe_ik_solver", "enabled"])
+        self.assertFalse(adapter._attrs["right_toe_ik_solver", "enabled"])
+        self.assertEqual(
+            view.body_picker.hidden_regions,
+            {"left_ik", "right_ik", "left_toe_ik", "right_toe_ik"},
+        )
+        self.assertEqual(
+            view.body_picker.region_dim_levels,
+            {"ik_enable_left": 0.65, "ik_enable_right": 0.65},
+        )
+
+    def test_ik_enable_toggle_rolls_back_when_one_solver_update_fails(self):
+        presenter, view, _, adapter = self._make_with_bones()
+        presenter._ik_nodes_by_side = {
+            "left": "left_leg_ik_solver",
+        }
+        presenter._toe_ik_nodes_by_side = {"left": "left_toe_ik_solver"}
+        adapter._attrs["left_leg_ik_solver", "enabled"] = False
+        adapter._attrs["left_toe_ik_solver", "enabled"] = False
+        set_attr = adapter.set_attr
+
+        def fail_toe_solver(attr_path, value):
+            if attr_path == "left_toe_ik_solver.enabled":
+                raise RuntimeError("toe solver is not settable")
+            set_attr(attr_path, value)
+
+        adapter.set_attr = fail_toe_solver
+
+        view.body_picker.ik_enable_toggle_clicked.emit("left")
+
+        self.assertFalse(adapter._attrs["left_leg_ik_solver", "enabled"])
+        self.assertFalse(adapter._attrs["left_toe_ik_solver", "enabled"])
+        self.assertEqual(
+            view.body_picker.hidden_regions,
+            {"left_ik", "right_ik", "left_toe_ik", "right_toe_ik"},
+        )
+        self.assertIn("IK toggle failed", view.status_label.text())
+
+    def test_body_picker_targets_owned_control_in_every_rig_state(self):
+        presenter, _view, _app_state, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        metadata = {
+            "state": "ATTACHED",
+            "controls": {"master": "master-control-uuid"},
+            "bindings": {"master": {"jointUuid": "head-joint-uuid"}},
+        }
+
+        def resolve_node(node, **_kwargs):
+            return {
+                "head_jnt": ["|model|head_jnt"],
+                "head-joint-uuid": ["|model|head_jnt"],
+                "master-control-uuid": ["|MMD_CONTROLS_GRP|master_ctrl"],
+            }.get(node, [node])
+
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            return_value=metadata,
+        ), patch("maya.cmds.ls", side_effect=resolve_node):
+            for state in ("ATTACHED", "EDIT", "BAKED"):
+                metadata["state"] = state
+                presenter.on_body_region_clicked("head")
+                self.assertEqual(adapter.selected, ["|MMD_CONTROLS_GRP|master_ctrl"])
+
+    def test_body_picker_falls_back_to_joint_for_missing_or_invalid_metadata(self):
+        presenter, _view, _app_state, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            side_effect=(None, {"state": "UNKNOWN"}),
+        ):
+            presenter.on_body_region_clicked("head")
+            self.assertEqual(adapter.selected, ["head_jnt"])
+            presenter.on_body_region_clicked("head")
+            self.assertEqual(adapter.selected, ["head_jnt"])
+
+    def test_picker_tooltip_uses_english_metadata_outside_japanese(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        adapter._attrs[("head_jnt", "mmd_bone_name_en")] = "Head"
+
+        presenter._build_picker_english_tooltips()
+        presenter._retranslate_picker_bone_tooltips()
+
+        self.assertEqual(view.body_picker.region_tooltips["head"], "Head")
+
+        view.current_language = lambda: "ja"
+        presenter._retranslate_picker_bone_tooltips()
+        self.assertEqual(view.body_picker.region_tooltips["head"], "頭")
+
+    def test_body_picker_tooltip_prefers_ui_translation_for_fixed_regions(self):
+        presenter, view, _, _adapter = self._make_with_bones()
+        view.current_language = lambda: "zh_cn"
+        translate = view.tr
+        view.tr = lambda key, category=None: (
+            "腰" if (key, category) == ("waist", "animation_picker") else translate(key, category)
+        )
+
+        presenter._retranslate_picker_bone_tooltips()
+
+        self.assertEqual(view.body_picker.region_tooltips["waist"], "腰")
 
     def test_region_click_unmapped_bone(self):
         presenter, view, _, adapter = self._make_with_bones(bone_names={})
         presenter.on_body_region_clicked("head")
         self.assertEqual(adapter.selected, [])
-        self.assertIn("unmapped", view.status_label.text())
+        self.assertIn("Unassigned", view.status_label.text())
 
     def test_goto_finger_switches_tab(self):
         presenter, view, _, _ = self._make_with_bones()
@@ -616,7 +939,73 @@ class TestBodyPickerPresenter(unittest.TestCase):
         )
         presenter.on_finger_region_clicked("left_thumb_0")
         self.assertEqual(adapter.selected, ["left_thumb_jnt"])
-        self.assertEqual(view.status_label.text(), "left_thumb_jnt")
+        self.assertEqual(view.status_label.text(), "左親指０")
+        self.assertEqual(view.finger_picker.selected_regions, ["left_thumb_0"])
+
+    def test_rectangle_selection_selects_multiple_bones(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭", "neck_jnt": "首", "arm_jnt": "左腕"},
+        )
+
+        view.body_picker.regions_selected.emit(["head", "neck", "left_upper_arm"])
+
+        self.assertEqual(adapter.selected, ["head_jnt", "neck_jnt", "arm_jnt"])
+        self.assertEqual(
+            set(view.body_picker.selected_regions),
+            {"head", "neck", "left_upper_arm"},
+        )
+
+    def test_select_all_selects_every_model_joint(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭", "neck_jnt": "首", "arm_jnt": "左腕"},
+        )
+
+        view.select_all_btn.clicked.emit()
+
+        self.assertEqual(adapter.selected, ["head_jnt", "neck_jnt", "arm_jnt"])
+        self.assertIn("Selected all bones", view.status_label.text())
+
+    def test_shift_click_adds_picker_bone_to_current_selection(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭", "neck_jnt": "首"},
+        )
+        adapter.selected = ["head_jnt"]
+        view.body_picker.additive_selection = True
+
+        view.body_picker.region_clicked.emit("neck")
+
+        self.assertEqual(adapter.selected, ["head_jnt", "neck_jnt"])
+        self.assertEqual(set(view.body_picker.selected_regions), {"head", "neck"})
+
+    def test_shift_rectangle_adds_regions_to_current_selection(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭", "neck_jnt": "首", "arm_jnt": "左腕"},
+        )
+        adapter.selected = ["head_jnt"]
+        view.body_picker.additive_selection = True
+
+        view.body_picker.regions_selected.emit(["neck", "left_upper_arm"])
+
+        self.assertEqual(adapter.selected, ["head_jnt", "neck_jnt", "arm_jnt"])
+
+    def test_body_picker_all_button_selects_every_model_joint(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭", "neck_jnt": "首"},
+        )
+
+        view.body_picker.select_all_clicked.emit()
+
+        self.assertEqual(adapter.selected, ["head_jnt", "neck_jnt"])
+
+    def test_body_picker_clear_button_clears_selection(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        adapter.selected = ["head_jnt"]
+
+        view.body_picker.clear_selection_clicked.emit()
+
+        self.assertEqual(adapter.selected, [])
 
     def test_mirror_selection(self):
         presenter, view, _, adapter = self._make_with_bones(
@@ -656,10 +1045,15 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         ".AnimationPresenter._populate_morph_groups"
     )
 
-    def _make_with_morphs(self, blend_shapes=None, model_root="test_model"):
+    def _make_with_morphs(
+        self,
+        blend_shapes=None,
+        model_root="test_model",
+        morph_data=None,
+    ):
         view = _FakeView()
         app_state = _FakeAppState(model_root=model_root)
-        adapter = _FakeAdapter(blend_shapes=blend_shapes or {})
+        adapter = _FakeAdapter(blend_shapes=blend_shapes or {}, morph_data=morph_data)
         with patch(self._POPULATE_PATH):
             presenter = AnimationPresenter(view, app_state, maya_adapter=adapter)
         adapter._set_attrs.clear()
@@ -675,6 +1069,28 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         self.assertIn("笑い", names)
         self.assertIn("怒り", names)
         self.assertIn("まばたき", names)
+
+    def test_authoritative_morph_metadata_supplies_panel_and_global_index(self):
+        morph_data = [
+            {"index": 19, "name_jp": "笑い", "name_en": "Smile", "panel": 2, "type": 1},
+        ]
+        blend_shapes = {
+            "body_mesh": {
+                "blendShape1": {
+                    "type": "blendShape",
+                    "morph_json": {"0": {"name": "笑い", "index": 19}},
+                }
+            }
+        }
+        presenter, _, _, _ = self._make_with_morphs(
+            blend_shapes=blend_shapes,
+            morph_data=morph_data,
+        )
+
+        info = presenter._read_morph_metadata("test_model")[19]
+        self.assertEqual(info.name, "笑い")
+        self.assertEqual(info.panel, 2)
+        self.assertEqual(presenter._morph_targets["笑い"], [("blendShape1", 0)])
 
     def test_morph_targets_tracked(self):
         presenter, _, _, _ = self._make_with_morphs(
@@ -708,6 +1124,93 @@ class TestAnimationPresenterMorph(unittest.TestCase):
 
         self.assertIn("blendShape1.weight[0]", adapter._set_attrs)
         self.assertAlmostEqual(adapter._set_attrs["blendShape1.weight[0]"], 0.5)
+        self.assertEqual(adapter._undo_chunks, ["Edit MMD Morph"])
+
+    def test_controller_plug_is_primary_authority_over_blendshape_fallback(self):
+        presenter, _, _, adapter = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        presenter._morph_controller = "morphController"
+        presenter._morph_indices["笑い"] = 19
+
+        presenter._on_morph_weight_changed("笑い", 0.375)
+
+        self.assertEqual(
+            adapter._set_attrs["morphController.inputWeight[19]"], 0.375
+        )
+        self.assertNotIn("blendShape1.weight[0]", adapter._set_attrs)
+
+    def test_animation_state_distinguishes_current_key_and_interpolation(self):
+        presenter, _, _, adapter = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        adapter.current_time = lambda: 12.0
+        current_key = {"value": True}
+
+        def keyframe(target, **kwargs):
+            if kwargs.get("name"):
+                return ["animCurve1"]
+            if kwargs.get("keyframeCount"):
+                return 1 if current_key["value"] else 0
+            return []
+
+        adapter.keyframe = keyframe
+        plug = "blendShape1.weight[0]"
+
+        self.assertEqual(presenter._morph_animation_state(plug), "key")
+        current_key["value"] = False
+        self.assertEqual(presenter._morph_animation_state(plug), "animated")
+
+        adapter.keyframe = lambda *_args, **_kwargs: []
+        self.assertEqual(presenter._morph_animation_state(plug), "static")
+
+    def test_animation_state_checks_every_split_legacy_target(self):
+        presenter, _, _, adapter = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        adapter.current_time = lambda: 12.0
+
+        def keyframe(target, **kwargs):
+            if kwargs.get("name"):
+                return ["animCurveSecond"] if target == "second.weight[0]" else []
+            if kwargs.get("keyframeCount"):
+                return 1
+            return []
+
+        adapter.keyframe = keyframe
+        self.assertEqual(
+            presenter._morph_animation_state(
+                ("first.weight[0]", "second.weight[0]")
+            ),
+            "key",
+        )
+
+    def test_refresh_does_not_overwrite_uncommitted_numeric_input(self):
+        presenter, view, _, adapter = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+
+        class EditingRow:
+            plugs = ()
+
+            class Editor:
+                is_editing = True
+
+            editor = Editor()
+
+            def set_value(self, _value):
+                raise AssertionError("editing value was overwritten")
+
+            def set_animation_state(self, _state):
+                pass
+
+        presenter._morph_rows = {"笑い": EditingRow()}
+        view.isVisible = lambda: True
+        view.picker_tabs.setCurrentIndex(view.TAB_MORPH)
+        adapter.current_time = lambda: 1.0
+        presenter._last_morph_refresh_time = 1.0
+
+        presenter._refresh_morph_rows()
 
     def test_morph_slider_unknown_morph_noop(self):
         presenter, _, _, adapter = self._make_with_morphs(
@@ -723,6 +1226,7 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         with patch(self._POPULATE_PATH):
             app_state.current_model_changed.emit("")
         self.assertEqual(len(presenter._morph_targets), 0)
+        self.assertEqual(len(presenter._morph_rows), 0)
 
     def test_split_morph_drives_all_nodes(self):
         split_bs = {
@@ -810,6 +1314,21 @@ class TestVisibilityToggle(unittest.TestCase):
         presenter._on_visibility_changed("joints", False)
         self.assertEqual(len(adapter._set_attrs), 0)
 
+    def test_control_rig_visibility_targets_uuid_owned_group(self):
+        presenter, view, _, adapter = self._make_with_model()
+        button = _FakeCheckBox("control_rig")
+        view.vis_checkboxes["control_rig"] = button
+        group = "|test_model|Controls"
+        adapter._attrs[(group, "visibility")] = True
+
+        with patch.object(presenter, "_control_rig_group", return_value=group):
+            presenter._sync_visibility_controls("test_model")
+            presenter._on_visibility_changed("control_rig", False)
+
+        self.assertTrue(button._control_rig_available)
+        self.assertTrue(button.isChecked())
+        self.assertFalse(adapter._set_attrs[f"{group}.visibility"])
+
 
 class TestToolsSection(unittest.TestCase):
     _POPULATE_PATH = (
@@ -827,7 +1346,11 @@ class TestToolsSection(unittest.TestCase):
         adapter._transforms["j1"] = ([1, 2, 3], [10, 20, 30])
         adapter._transforms["j2"] = ([4, 5, 6], [40, 50, 60])
         with patch(self._POPULATE_PATH):
-            presenter = AnimationPresenter(view, app_state, maya_adapter=adapter)
+            presenter = AnimationPresenter(
+                view,
+                app_state,
+                maya_adapter=adapter,
+            )
         return presenter, view, app_state, adapter
 
     def test_copy_pose_stores_clipboard(self):
@@ -859,20 +1382,45 @@ class TestToolsSection(unittest.TestCase):
         presenter._on_tool_clicked("paste")
         self.assertIn("No pose copied", view.status_label.text())
 
-    def test_reset_pose_zeroes_rotation_only(self):
+    def test_reset_pose_applies_bind_translation_and_zeroes_rotation(self):
         presenter, view, _, adapter = self._make()
         adapter.selected = ["j1"]
-        presenter._on_tool_clicked("reset")
-        t, r = adapter._transforms["j1"]
-        self.assertEqual(t, [1, 2, 3])
-        self.assertEqual(r, [0, 0, 0])
-        self.assertIn("Reset", view.status_label.text())
+        adapter._attrs["j1", "mmd_vmd_bind_translate"] = "[1.0, 2.0, 3.0]"
 
-    def test_reset_opens_undo_chunk(self):
-        presenter, _, _, adapter = self._make()
+        presenter._on_tool_clicked("reset")
+
+        self.assertEqual(adapter._transforms["j1"], ([1.0, 2.0, 3.0], [0, 0, 0]))
+        self.assertIn("Reset Pose", view.status_label.text())
+        self.assertTrue(view.picker_tabs.enabled)
+        self.assertTrue(all(button.enabled for button in view.tool_buttons.values()))
+
+    def test_body_picker_reset_uses_the_same_selection_only_action(self):
+        presenter, view, _, adapter = self._make()
+        adapter.selected = ["j2"]
+        adapter._attrs["j2", "mmd_vmd_bind_translate"] = "[4.0, 5.0, 6.0]"
+
+        view.body_picker.reset_pose_clicked.emit()
+
+        self.assertEqual(adapter._transforms["j2"], ([4.0, 5.0, 6.0], [0, 0, 0]))
+        self.assertTrue(view.picker_tabs.enabled)
+
+    def test_reset_pose_without_selection_only_reports_status(self):
+        presenter, view, _, adapter = self._make()
+        before = {joint: (list(t), list(r)) for joint, (t, r) in adapter._transforms.items()}
+
+        presenter._on_tool_clicked("reset")
+
+        self.assertIn("No joints", view.status_label.text())
+        self.assertEqual(adapter._transforms, before)
+        self.assertEqual(adapter._undo_chunks, [])
+
+    def test_reset_pose_has_no_shared_mode_state(self):
+        presenter, view, _, adapter = self._make()
+        self.assertFalse(hasattr(presenter, "rest_pose_manager"))
+        self.assertTrue(view.picker_tabs.enabled)
         adapter.selected = ["j1"]
         presenter._on_tool_clicked("reset")
-        self.assertIn("Reset Pose", adapter._undo_chunks)
+        self.assertTrue(view.picker_tabs.enabled)
 
     def test_mirror_stub_shows_error(self):
         presenter, view, _, adapter = self._make()

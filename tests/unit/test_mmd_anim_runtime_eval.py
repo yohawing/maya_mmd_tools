@@ -42,6 +42,10 @@ from mmd_tools.core.native.mmd_anim_runtime import (
     compute_maya_local_channels,
     compute_maya_local_channels_batch,
 )
+from mmd_tools.core.native.mmd_anim_runtime_types import (
+    MmdRuntimeFfiGenericCurveDescriptor,
+    MmdRuntimeFfiGenericCurveInfo,
+)
 
 
 # ----------------------------------------------------------------------
@@ -286,6 +290,114 @@ def _make_clip(handle=0x1234):
     clip._lib = None
     clip._handle = handle
     return clip
+
+
+class _FakeReducedPoseLib:
+    """Fake generic reduction ABI covering ownership and validation paths."""
+
+    def __init__(self, *, feature_flags=1 << 4, invalid_descriptor=False, start_frame=10.0, frame_step=1.0):
+        self.feature_flags = feature_flags
+        self.invalid_descriptor = invalid_descriptor
+        self.start_frame = start_frame
+        self.frame_step = frame_step
+        self.create_calls = []
+        self.free_calls = []
+
+    def mmd_runtime_feature_flags(self):
+        return self.feature_flags
+
+    def mmd_runtime_reduced_pose_create_from_dense(self, model, *args):
+        self.create_calls.append(model)
+        args[-1]._obj.value = 0xCAFE
+        return rt.MMD_RUNTIME_STATUS_OK
+
+    def mmd_runtime_reduced_pose_free(self, handle):
+        self.free_calls.append(handle.value if hasattr(handle, "value") else handle)
+
+    def mmd_runtime_reduced_pose_generic_curve_info(self, _pose, out_info):
+        info = out_info._obj
+        info.struct_size = ctypes.sizeof(MmdRuntimeFfiGenericCurveInfo)
+        info.abi_version = 1
+        info.reduction_target = 2
+        info.model_identity = 7
+        info.start_frame = self.start_frame
+        info.frame_step = self.frame_step
+        info.frame_count = 2
+        info.bone_count = 1
+        info.morph_count = 1
+        return rt.MMD_RUNTIME_STATUS_OK
+
+    def mmd_runtime_reduced_pose_generic_curve_count(self, _pose, out_count):
+        out_count._obj.value = 2
+        return rt.MMD_RUNTIME_STATUS_OK
+
+    def mmd_runtime_reduced_pose_generic_curve_descriptor(self, _pose, index, out_descriptor):
+        descriptor = out_descriptor._obj
+        descriptor.struct_size = ctypes.sizeof(MmdRuntimeFfiGenericCurveDescriptor)
+        descriptor.abi_version = 1
+        descriptor.interpolation = 999 if self.invalid_descriptor else 2
+        descriptor.key_count = 2
+        if index == 0:
+            descriptor.kind = 0
+            descriptor.target_index = 0
+            descriptor.parent_index = -1
+            descriptor.value_flags = 3
+            descriptor.rotation_basis = 1
+        else:
+            descriptor.kind = 1
+            descriptor.target_index = 0
+            descriptor.parent_index = -1
+            descriptor.value_flags = 4
+            descriptor.rotation_basis = 0
+        return rt.MMD_RUNTIME_STATUS_OK
+
+    def mmd_runtime_reduced_pose_generic_curve_keys(
+        self, _pose, _index, out_keys, capacity, _stride, out_required
+    ):
+        out_required._obj.value = 2
+        if out_keys is None or capacity == 0:
+            return rt.MMD_RUNTIME_STATUS_BUFFER_TOO_SMALL
+        for sample_index in range(2):
+            key = out_keys[sample_index]
+            key.sample_index = sample_index
+            key.frame = self.start_frame + self.frame_step * sample_index
+            key.rotation_xyzw[3] = 1.0
+        return rt.MMD_RUNTIME_STATUS_OK
+
+    def mmd_runtime_reduced_pose_report(self, _pose, out_report):
+        report = out_report._obj
+        report.source_bone_key_count = 2
+        report.reduced_bone_key_count = 2
+        report.source_morph_key_count = 2
+        report.reduced_morph_key_count = 2
+        return rt.MMD_RUNTIME_STATUS_OK
+
+
+class _FakeReductionModel:
+    def __init__(self, lib):
+        self._lib = lib
+        self._handle = ctypes.c_void_p(0x100)
+
+    @property
+    def handle(self):
+        return self._handle
+
+
+class _FakeReductionLibMissingSymbol(_FakeReducedPoseLib):
+    def __getattribute__(self, name):
+        if name == "mmd_runtime_reduced_pose_create_from_dense":
+            raise AttributeError(name)
+        return super().__getattribute__(name)
+
+
+def _make_reduction_batch():
+    return MmdRuntimeBatchEvaluation(
+        frame_count=2,
+        bone_count=1,
+        morph_count=1,
+        world_matrices=[0.0] * 32,
+        morph_weights=[0.0, 0.0],
+    )
 
 
 # ----------------------------------------------------------------------
@@ -1358,6 +1470,28 @@ class TestGetRuntimeLibraryCache(unittest.TestCase):
         self.assertIs(runtime_loader._runtime_lib, False)
         self.assertIsNone(runtime_loader._runtime_lib_path)
 
+    def test_accepts_current_and_compatible_runtime_abi_versions(self):
+        from pathlib import Path
+
+        path = Path("F:/runtime/mmd_runtime_ffi.dll")
+        for abi_version in runtime_loader.MMD_RUNTIME_ABI_VERSIONS_SUPPORTED:
+            class FakeLib:
+                @staticmethod
+                def mmd_runtime_abi_version():
+                    return abi_version
+
+            runtime_loader._runtime_lib = None
+            runtime_loader._runtime_lib_path = None
+            with self.subTest(abi_version=abi_version), mock.patch.object(
+                runtime_loader, "find_library", return_value=path
+            ), mock.patch.object(runtime_loader.ctypes, "CDLL", return_value=FakeLib()), mock.patch.object(
+                runtime_loader, "setup_function_signatures"
+            ):
+                self.assertIsNotNone(rt.get_mmd_runtime_library())
+
+            self.assertIsNot(runtime_loader._runtime_lib, False)
+            self.assertEqual(runtime_loader._runtime_lib_path, path)
+
     def test_distribution_abi_escape_hatch_is_disabled(self):
         from pathlib import Path
 
@@ -1456,6 +1590,63 @@ class TestFactoryGuardsWithoutLibrary(unittest.TestCase):
         with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
             self.assertTrue(rt.is_native_pmx_parser_available())
             self.assertTrue(native_pkg.is_native_pmx_parser_available())
+
+
+class TestNativeReducedPoseWrapper(unittest.TestCase):
+    """Generic reduced-pose DTO and native-handle ownership contracts."""
+
+    def test_reduce_dense_pose_snapshots_generic_curves_and_frees_once(self):
+        lib = _FakeReducedPoseLib()
+        model = _FakeReductionModel(lib)
+        result = rt.reduce_dense_pose(model, _make_reduction_batch(), model_identity=7, start_frame=10.0)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result.curves), 2)
+        self.assertEqual(result.curves[0].descriptor.target_index, 0)
+        self.assertEqual(result.curves[1].descriptor.kind, 1)
+        self.assertEqual(lib.create_calls, [model.handle])
+        self.assertEqual(lib.free_calls, [0xCAFE])
+
+    def test_reduce_dense_pose_accepts_large_f32_frame_origin_and_step(self):
+        start_frame = 100000.1
+        frame_step = 1000000.1
+        lib = _FakeReducedPoseLib(start_frame=start_frame, frame_step=frame_step)
+        model = _FakeReductionModel(lib)
+
+        result = rt.reduce_dense_pose(
+            model,
+            _make_reduction_batch(),
+            model_identity=7,
+            start_frame=start_frame,
+            frame_step=frame_step,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.info.start_frame, c_float(start_frame).value)
+        self.assertEqual(result.info.frame_step, c_float(frame_step).value)
+        self.assertEqual([key.frame for key in result.curves[0].keys], [
+            c_float(start_frame).value,
+            c_float(start_frame + frame_step).value,
+        ])
+        self.assertEqual(lib.free_calls, [0xCAFE])
+
+    def test_validation_failure_still_frees_once(self):
+        lib = _FakeReducedPoseLib(invalid_descriptor=True)
+        model = _FakeReductionModel(lib)
+
+        result = rt.reduce_dense_pose(model, _make_reduction_batch(), model_identity=7, start_frame=10.0)
+
+        self.assertIsNone(result)
+        self.assertEqual(lib.create_calls, [model.handle])
+        self.assertEqual(lib.free_calls, [0xCAFE])
+
+    def test_missing_feature_or_symbol_returns_none_without_create_or_free(self):
+        for lib in (_FakeReducedPoseLib(feature_flags=0), _FakeReductionLibMissingSymbol()):
+            model = _FakeReductionModel(lib)
+            result = rt.reduce_dense_pose(model, _make_reduction_batch(), model_identity=7, start_frame=10.0)
+            self.assertIsNone(result)
+            self.assertEqual(lib.create_calls, [])
+            self.assertEqual(lib.free_calls, [])
 
 
 class _FakePhysicsLib:

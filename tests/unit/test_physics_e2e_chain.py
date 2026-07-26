@@ -23,6 +23,7 @@ consistency of the chain across all participating modules.
 from __future__ import annotations
 
 import ast
+import importlib.util
 import unittest
 from pathlib import Path
 
@@ -34,6 +35,7 @@ DRAW_OVERRIDE_PATH = _ROOT / "mmd_tools" / "nodes" / "mmd_rigid_body_draw_overri
 COORD_TRANSFORM_PATH = _ROOT / "mmd_tools" / "core" / "coordinate_transform.py"
 RUNTIME_HANDLES_PATH = _ROOT / "mmd_tools" / "core" / "native" / "mmd_anim_runtime_handles.py"
 SCENE_BUILDER_PATH = _ROOT / "mmd_tools" / "converters" / "physics_scene_builder.py"
+PHYSICS_PROBE_PATH = _ROOT / "tests" / "viewport" / "physics_solver_cycle_probe.py"
 
 
 def _get_source(path: Path) -> tuple[str, ast.AST, list[str]]:
@@ -97,6 +99,28 @@ class TestE2EChainStructure(unittest.TestCase):
         src, tree, lines = _get_source(BONE_DRIVER_PATH)
         self.assertIn("outTranslateX", src)
         self.assertIn("outRotateX", src)
+
+    def test_cycle_probe_captures_only_solver_cycle_messages(self):
+        """The transient-warning gate must reject only solver cycle output."""
+        spec = importlib.util.spec_from_file_location("physics_solver_cycle_probe", PHYSICS_PROBE_PATH)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        probe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(probe)
+        report = probe._stop_command_output_capture(
+            {
+                "enabled": True,
+                "callback": None,
+                "messages": [
+                    {"type": 0, "message": "mmdPhysicsSolver.outSolved cycleCheck warning"},
+                    {"type": 0, "message": "mmdPhysicsSolver info"},
+                    {"type": 0, "message": "outSolved cycle warning"},
+                    {"type": 0, "message": "unrelated DG cycle warning"},
+                ],
+            }
+        )
+        self.assertEqual(report["warningCount"], 1)
+        self.assertEqual(report["warnings"], ["mmdPhysicsSolver.outSolved cycleCheck warning"])
 
     def test_live_graph_connects_solver_to_bone_drivers(self):
         """Live graph creates solver → bone driver connections."""

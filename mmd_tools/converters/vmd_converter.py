@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
+from ..core.exceptions import MMDImportException
 from ..core.logger import get_logger
 from ..core.native.native_pmx_parser import parse_pmx_native
 from ..core.settings import settings
@@ -127,6 +128,7 @@ from .vmd_runtime_sources import (
     should_use_mmd_runtime_bake,
 )
 from .vmd_runtime_world_bake import bake_bone_poses_from_world_matrices, convert_mmd_world_matrix_to_maya
+from .vmd_reduced_pose_integration import author_reduced_pose_from_runtime_cache
 from .vmd_scene_keying import (
     batch_create_and_key_curve_arrays,
     batch_create_and_key_curves,
@@ -140,6 +142,7 @@ from . import vmd_profile
 try:
     from ..core.native.mmd_anim_runtime import (
         is_mmd_runtime_available,
+        is_native_reduced_pose_available,
         is_native_physics_available,
         MmdRuntimeModel,
         MmdRuntimeClip,
@@ -157,6 +160,9 @@ except Exception:
     def is_mmd_runtime_available():
         return False
 
+    def is_native_reduced_pose_available():
+        return False
+
     def is_native_physics_available():
         return False
 
@@ -166,6 +172,22 @@ except Exception:
     MmdRuntimeModel = MmdRuntimeClip = MmdRuntimeInstance = MmdRuntimePhysicsWorld = None  # type: ignore
     compute_maya_local_channels = None  # type: ignore
     compute_maya_local_channels_batch = None  # type: ignore
+
+
+# ``HumanIkImportLock.blocked`` value -> ``MMDImportException.reason_code`` for
+# ``VmdConverter._enforce_humanik_import_gate``. Deliberately duplicated as
+# plain string literals (not imported) instead of importing
+# ``mmd_tools.core.humanik_frontend.REASON_IMPORT_BLOCKED_TARGET_PREVIEW`` /
+# ``REASON_IMPORT_BLOCKED_CONTROL_RIG`` directly -- that module pulls in the
+# full HumanIK frontend session stack, which would turn a lazy, defensive
+# import (see ``_enforce_humanik_import_gate``'s "never hard-depends on
+# HumanIK" contract) into a much heavier one. The string values must stay in
+# sync with ``humanik_frontend.py``'s constants; keep them equal in the same
+# change if either side is renamed.
+_IMPORT_LOCK_REASON_CODE_BY_BLOCKED = {
+    "target_preview": "import_blocked_target_preview",
+    "control_rig": "import_blocked_control_rig",
+}
 
 
 class VmdConverter:
@@ -252,6 +274,10 @@ class VmdConverter:
         progress_callback: Optional[Callable[[int], None]] = None,
         use_native_physics_bake: bool = False,
         target_model: str = None,
+        reduce_bake_keys: bool = False,
+        reduce_translate_tolerance: float = 5.0e-4,
+        reduce_rotate_tolerance: float = 1.0e-4,
+        reduce_morph_tolerance: float = 1.0e-3,
     ) -> VmdImportContext:
         """Return import-run state for convert() dispatch and split helpers."""
         return VmdImportContext(
@@ -269,6 +295,10 @@ class VmdConverter:
             import_camera_animation=bool(self.import_camera_animation),
             import_light_animation=bool(self.import_light_animation),
             use_native_physics_bake=bool(use_native_physics_bake),
+            reduce_bake_keys=bool(reduce_bake_keys),
+            reduce_translate_tolerance=float(reduce_translate_tolerance),
+            reduce_rotate_tolerance=float(reduce_rotate_tolerance),
+            reduce_morph_tolerance=float(reduce_morph_tolerance),
         )
 
     def _runtime_local_decompose_context(self) -> VmdRuntimeLocalDecomposeContext:
@@ -455,6 +485,10 @@ class VmdConverter:
         use_native_physics_bake: bool = False,
         target_model: str = None,
         scene_animation_only: bool = False,
+        reduce_bake_keys: bool = False,
+        reduce_translate_tolerance: float = 5.0e-4,
+        reduce_rotate_tolerance: float = 1.0e-4,
+        reduce_morph_tolerance: float = 1.0e-3,
     ) -> bool:
         """VMDデータをMayaアニメーションに変換
 
@@ -477,14 +511,44 @@ class VmdConverter:
             progress_callback: フェーズ進捗通知コールバック
             use_native_physics_bake: True かつ bake_mode のとき native physics bake を試行する
                 （デフォルト OFF。feature 不足や失敗時は既存 runtime batch へ fallback）
+            reduce_bake_keys: True かつ bake_mode のとき runtime pose reduction を試行する
+                （デフォルト OFF。失敗時は dense fallback せず False を返す）
+            reduce_translate_tolerance / reduce_rotate_tolerance / reduce_morph_tolerance: scalar tolerances
 
         Returns:
             変換が成功した場合True、失敗した場合False
         """
+        if reduce_bake_keys and scene_animation_only:
+            self.logger.error(
+                "Reduce Bake Keys is unsupported for camera/light-only scene animation imports"
+            )
+            return False
+        if reduce_bake_keys:
+            motion_kind = self._detect_vmd_motion_kind(vmd_data)
+            if motion_kind not in {"model", "mixed"}:
+                self.logger.error(
+                    "Reduce Bake Keys requires model motion; VMD motion kind '%s' is unsupported",
+                    motion_kind,
+                )
+                return False
         if scene_animation_only:
             return self._convert_scene_animation_only(vmd_data, layer_name, bake_mode, vmd_bytes)
         if not target_model:
             self.logger.error("VMD model motion requires an explicit target model")
+            return False
+        # Gate BEFORE any scene mutation (including clear_existing_motion
+        # below): HUMANIK-SOURCE-VMD-IK-PARITY-1 requires VMD import to
+        # refuse fail-closed while target_model is a HumanIK TARGET preview
+        # or has an active Control Rig, with no implicit mode switching.
+        self._enforce_humanik_import_gate(target_model)
+        if reduce_bake_keys and not self._preflight_reduced_bake_keys(
+            vmd_data=vmd_data,
+            vmd_bytes=vmd_bytes,
+            pmx_bytes=pmx_bytes,
+            pmx_path=pmx_path,
+            target_namespace=target_namespace,
+            bake_mode=bake_mode,
+        ):
             return False
         import_start_time = None
         anim_layer_selection = None
@@ -503,6 +567,10 @@ class VmdConverter:
             profile=profile,
             progress_callback=progress_callback,
             use_native_physics_bake=use_native_physics_bake,
+            reduce_bake_keys=reduce_bake_keys,
+            reduce_translate_tolerance=reduce_translate_tolerance,
+            reduce_rotate_tolerance=reduce_rotate_tolerance,
+            reduce_morph_tolerance=reduce_morph_tolerance,
         )
 
         def _emit_progress(value: int) -> None:
@@ -592,12 +660,21 @@ class VmdConverter:
                     use_native_physics_bake=bool(
                         import_context.bake_mode and import_context.use_native_physics_bake
                     ),
+                    reduce_bake_keys=bool(import_context.bake_mode and import_context.reduce_bake_keys),
+                    reduce_translate_tolerance=import_context.reduce_translate_tolerance,
+                    reduce_rotate_tolerance=import_context.reduce_rotate_tolerance,
+                    reduce_morph_tolerance=import_context.reduce_morph_tolerance,
                     profile=import_context.profile,
                 )
                 if runtime_success:
                     self.logger.info("mmd-anim runtime high-precision bake completed")
                     _emit_progress(82)
                 else:
+                    if import_context.reduce_bake_keys:
+                        self.logger.error(
+                            "Runtime reduction failed; legacy fallback was not attempted"
+                        )
+                        return False
                     self.logger.warning("Runtime bake failed; falling back to legacy path")
                     self._record_profile_warning(
                         import_context.profile,
@@ -676,6 +753,65 @@ class VmdConverter:
             self._current_import_live_rig_target = False
             self._restore_anim_layer_selection(anim_layer_selection)
             self._restore_import_scene_updates(undo_was_enabled, refresh_suspended)
+
+    def _enforce_humanik_import_gate(self, target_model: str) -> None:
+        """Refuse VMD import while HumanIK owns ``target_model`` as TARGET/Control Rig.
+
+        Per ``HUMANIK-SOURCE-VMD-IK-PARITY-1``, VMD import is permitted while a
+        HumanIK-characterized model is NEUTRAL (uncharacterized) or SOURCE
+        (characterized, read-only, no input source, no Control Rig).  It must
+        be refused fail-closed -- with no implicit mode switching -- while the
+        model is a HumanIK TARGET preview or has an active Control Rig.
+
+        Detection is scene-fact based (see
+        ``mmd_tools.core.humanik_retarget.describe_humanik_import_lock``), not
+        session based, and the HumanIK module is imported lazily/defensively
+        here so VMD import never hard-depends on HumanIK MEL availability: a
+        missing plugin, missing MEL, or any detection failure allows the
+        import to proceed unchanged.
+
+        The refusal message and mode names deliberately match the HumanIK tab's
+        own vocabulary (``humanik_view.MODE_TRANSLATION_KEYS`` /
+        ``describe_frontend_state``'s ``FRONTEND_MODE_TARGET_PREVIEW`` /
+        ``FRONTEND_MODE_CONTROL_RIG``): "TARGET preview" / "Control Rig", plus
+        recovery path: open ``MMD > HumanIK (Experimental)`` and use
+        ``Restore MMD Rig`` in the editor.
+        The raised exception also carries a ``reason_code`` attribute
+        (``_IMPORT_LOCK_REASON_CODE_BY_BLOCKED``) mirroring
+        ``humanik_frontend.REASON_IMPORT_BLOCKED_TARGET_PREVIEW`` /
+        ``REASON_IMPORT_BLOCKED_CONTROL_RIG`` so a caller can classify the
+        failure without parsing the message string.
+
+        Args:
+            target_model: Model root VMD motion will be applied to.
+
+        Raises:
+            MMDImportException: If scene facts show ``target_model`` is
+                currently a HumanIK TARGET preview or Control Rig. Carries a
+                ``reason_code`` attribute (see above).
+        """
+        try:
+            from ..core.humanik_retarget import describe_humanik_import_lock
+        except Exception:
+            self.logger.debug("HumanIK import gate module unavailable; allowing import", exc_info=True)
+            return
+        try:
+            lock = describe_humanik_import_lock(target_model)
+        except Exception:
+            self.logger.debug("HumanIK import gate detection failed; allowing import", exc_info=True)
+            return
+        if not lock.blocked:
+            return
+        mode_label = "Control Rig" if lock.blocked == "control_rig" else "TARGET preview"
+        reason_code = _IMPORT_LOCK_REASON_CODE_BY_BLOCKED.get(lock.blocked)
+        message = (
+            f"VMD import is blocked: {target_model} (HumanIK character={lock.character}) "
+            f"is currently in {mode_label} mode. Open MMD menu > HumanIK (Experimental), "
+            "then use Restore MMD Rig in the editor before importing VMD motion; VMD import does "
+            "not implicitly switch HumanIK modes."
+        )
+        self.logger.error(message)
+        raise MMDImportException(message, reason_code=reason_code)
 
     def _suspend_import_scene_updates(self) -> Tuple[bool, bool]:
         """Suppress Maya undo recording and viewport refresh during VMD import."""
@@ -807,6 +943,56 @@ class VmdConverter:
             bake_mode,
         )
 
+    def _preflight_reduced_bake_keys(
+        self,
+        *,
+        vmd_data: VmdData,
+        vmd_bytes: bytes,
+        pmx_bytes: bytes,
+        pmx_path: str,
+        target_namespace: Optional[str],
+        bake_mode: bool,
+    ) -> bool:
+        """Reject unsupported reduction requests before mutating the scene.
+
+        ``Reduce Bake Keys`` is an explicit opt-in.  Unlike the normal bake
+        strategy, it must not silently continue through the legacy dense path
+        when the runtime source or generic reducer ABI is unavailable.
+        Source resolution and capability checks below are read-only; model
+        mapping, rig disconnect, key clearing, and timeline changes happen
+        only after this method succeeds.
+        """
+        if not bake_mode:
+            self.logger.error("Reduce Bake Keys requires bake_mode=True")
+            return False
+
+        resolved_vmd_bytes, resolved_pmx_bytes, resolved_pmx_path = self._resolve_runtime_bake_sources(
+            vmd_data,
+            vmd_bytes,
+            pmx_bytes,
+            pmx_path,
+            target_namespace,
+        )
+        if not self._should_use_mmd_runtime_bake(
+            resolved_vmd_bytes,
+            resolved_pmx_bytes,
+            resolved_pmx_path,
+            False,
+            True,
+        ):
+            self.logger.error(
+                "Reduce Bake Keys requires an available mmd-anim runtime bake source; "
+                "legacy dense fallback was not attempted"
+            )
+            return False
+        if not is_native_reduced_pose_available():
+            self.logger.error(
+                "Reduce Bake Keys requires the mmd-anim generic DCC curve reducer ABI; "
+                "legacy dense fallback was not attempted"
+            )
+            return False
+        return True
+
     def _resolve_runtime_bake_sources(
         self,
         vmd_data: VmdData,
@@ -826,6 +1012,10 @@ class VmdConverter:
         pmx_path: str,
         use_native_physics_bake: bool = False,
         profile: Optional[Dict[str, Any]] = None,
+        reduce_bake_keys: bool = False,
+        reduce_translate_tolerance: float = 5.0e-4,
+        reduce_rotate_tolerance: float = 1.0e-4,
+        reduce_morph_tolerance: float = 1.0e-3,
     ) -> bool:
         """
         mmd-anim runtime を使って全フレームを評価し、正確なポーズをベイクする。
@@ -835,6 +1025,11 @@ class VmdConverter:
         成功しサンプルが一様な場合に限って sequential physics bake を試行し、
         結果は既存の matrix/morph キャッシュ適用経路へ流す。失敗時は物理なし
         runtime batch へ silent fallback する（例外にしない）。
+
+        ``reduce_bake_keys`` is an explicit Bake-mode opt-in.  Its three
+        tolerances are expressed in Maya channel units: translation scene units,
+        rotation radians, and morph weight units. Reduction failures are
+        reported to the caller and never silently replaced by a dense bake.
         """
         resolved_pmx_bytes, pmx_morph_names = resolve_runtime_pmx_bytes_and_morph_names(
             pmx_bytes,
@@ -948,8 +1143,10 @@ class VmdConverter:
                 f"append={runtime_cache.append_elapsed:.3f}s"
             )
 
-            # キャッシュから一括でキーフレーム登録（Maya Python API 2.0 優先）
-            if runtime_cache.baked_frames:
+            def _apply_dense_runtime_cache() -> None:
+                """Apply the collected cache for the normal non-reduced path."""
+                if not runtime_cache.baked_frames:
+                    return
                 apply_start = time.perf_counter()
                 apply_runtime_channel_arrays_to_scene_with_undo_disabled(
                     self._runtime_scene_apply_context(),
@@ -964,6 +1161,106 @@ class VmdConverter:
                 self.logger.debug(
                     f"Runtime cache key application completed (elapsed={apply_elapsed:.3f}s)"
                 )
+
+            if reduce_bake_keys:
+                reduction_start = time.perf_counter()
+                reduction_reason = None
+                reduction_outcome = None
+                try:
+                    from ..core.native.mmd_anim_runtime import MMD_RUNTIME_REDUCTION_TARGET_DCC_CUBIC
+                    from ..core.native.mmd_anim_runtime_types import MmdRuntimeReductionTolerances
+
+                    if runtime_cache.dense_batch_result is None:
+                        reduction_reason = "dense runtime batch unavailable"
+                    else:
+                        reduced_pose = model.reduce_dense_pose(
+                            runtime_cache.dense_batch_result,
+                            model_identity=id(model),
+                            start_frame=float(runtime_cache.baked_frames[0]) if runtime_cache.baked_frames else 0.0,
+                            frame_step=(
+                                float(runtime_cache.baked_frames[1] - runtime_cache.baked_frames[0])
+                                if len(runtime_cache.baked_frames) > 1
+                                else 1.0
+                            ),
+                            target=MMD_RUNTIME_REDUCTION_TARGET_DCC_CUBIC,
+                            tolerances=MmdRuntimeReductionTolerances(
+                                local_position=reduce_translate_tolerance,
+                                local_rotation_radians=reduce_rotate_tolerance,
+                                world_position=reduce_translate_tolerance,
+                                world_rotation_radians=reduce_rotate_tolerance,
+                                morph_weight=reduce_morph_tolerance,
+                            ),
+                        )
+                        if reduced_pose is None:
+                            reduction_reason = "runtime reducer unavailable or returned no pose"
+                        else:
+                            reduction_outcome = author_reduced_pose_from_runtime_cache(
+                                self,
+                                runtime_cache,
+                                reduced_pose,
+                                pmx_morph_names,
+                                translate_tolerance=reduce_translate_tolerance,
+                                rotate_tolerance_radians=reduce_rotate_tolerance,
+                                morph_tolerance=reduce_morph_tolerance,
+                            )
+                            if not reduction_outcome.success:
+                                reduction_reason = reduction_outcome.reason or "reduced authoring failed"
+                except Exception as exc:
+                    reduction_reason = f"reduced bake exception: {exc}"
+
+                reduction_elapsed = time.perf_counter() - reduction_start
+                reduced_profile = {
+                    "requested": True,
+                    "used": bool(reduction_outcome and reduction_outcome.success),
+                    "elapsed": float(reduction_elapsed),
+                    "physics_used": bool(physics_routing.get("used", False)),
+                    "translate_tolerance": float(reduce_translate_tolerance),
+                    "rotate_tolerance_radians": float(reduce_rotate_tolerance),
+                    "morph_tolerance": float(reduce_morph_tolerance),
+                }
+                if reduction_outcome and reduction_outcome.success:
+                    report = reduction_outcome.plan.report if reduction_outcome.plan else None
+                    if report:
+                        reduced_profile.update(
+                            {
+                                "source_key_count": int(report.source_key_count),
+                                "reduced_key_count": int(report.reduced_key_count),
+                                "reduction_ratio": float(report.reduction_ratio),
+                                "max_translate_error": float(report.max_translate_error),
+                                "max_rotate_error_radians": float(report.max_rotate_error_radians),
+                                "max_morph_error": float(report.max_morph_error),
+                            }
+                        )
+                    reduced_profile["created_curves"] = [
+                        item.curve_name for item in (reduction_outcome.authoring.created_curves if reduction_outcome.authoring else ())
+                    ]
+                    reduced_profile["route_count"] = int(reduction_outcome.route_count)
+                    reduced_profile["morph_fanout_count"] = int(reduction_outcome.morph_fanout_count)
+                    if isinstance(profile, dict):
+                        profile.setdefault("vmd_converter", {})["reduced_bake_keys"] = reduced_profile
+                    return True
+
+                reduced_profile["reason"] = reduction_reason or "reduced bake rejected"
+                reduced_profile["fallback"] = "none"
+                if isinstance(profile, dict):
+                    profile.setdefault("vmd_converter", {})["reduced_bake_keys"] = reduced_profile
+                self.logger.error(
+                    "Reduce Bake Keys failed; dense fallback was not attempted: %s",
+                    reduced_profile["reason"],
+                )
+                self._record_profile_warning(
+                    profile,
+                    {
+                        "source": "vmd_converter",
+                        "code": "reduced_bake_keys_failed",
+                        "severity": "error",
+                        "message": reduced_profile["reason"],
+                        "fallback": "none",
+                    },
+                )
+                return False
+
+            _apply_dense_runtime_cache()
 
             runtime_elapsed = time.perf_counter() - runtime_start
             self.logger.debug(f"runtime bake total elapsed={runtime_elapsed:.3f}s")

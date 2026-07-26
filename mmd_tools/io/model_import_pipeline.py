@@ -37,6 +37,7 @@ class ModelImportPipeline:
         self.progress_callback = progress_callback
         self.profile = self.options.get("profile") if isinstance(self.options.get("profile"), dict) else None
         self.phase_timings: Dict[str, float] = {}
+        self._has_hardware_shader = False
 
     def record_phase(self, name: str, start: float) -> None:
         """Record elapsed seconds for a named import phase when profiling."""
@@ -220,6 +221,7 @@ class ModelImportPipeline:
             mesh_converter.has_dx11_shaders
             or getattr(mesh_converter, "has_glsl_shaders", False)
         )
+        self._has_hardware_shader = has_hardware_shader
         if refresh_if_dx11 and has_hardware_shader:
             try:
                 phase_start = time.perf_counter()
@@ -244,13 +246,31 @@ class ModelImportPipeline:
         except Exception:
             self.logger.debug("Failed to wire MMD light", exc_info=True)
 
-    def setup_view(self) -> None:
-        """Apply MMD-friendly view settings requested by import options."""
+    def setup_view(self) -> int:
+        """Apply MMD-friendly view settings requested by import options.
+
+        Hardware shaders require textured model panels in VP2.
+        The panel adjustment is intentionally gated by the completed converter
+        sync so a standard-surface import does not overwrite viewport state.
+
+        Returns:
+            int: Number of model panels changed for hardware shader display.
+        """
         if settings.get(setting_keys.IMPORT_VIEW_SETUP_COLOR_MANAGEMENT, True):
             maya_viewport_utils.setup_mmd_color_management()
         if settings.get(setting_keys.IMPORT_VIEW_SETUP_TRANSPARENCY, True):
             maya_viewport_utils.setup_mmd_transparency()
+        if self._has_hardware_shader:
+            changed_panels = maya_viewport_utils.setup_mmd_hardware_viewport()
+            self.logger.debug(
+                "MMD hardware viewport setup changed %d model panel(s)",
+                changed_panels,
+            )
+        else:
+            changed_panels = 0
+            self.logger.debug("Skipping MMD hardware viewport setup: no hardware shader created")
         self.emit_progress(96)
+        return changed_panels
 
     def cleanup_namespace(self, namespace: Optional[str]) -> None:
         """Remove a namespace after an import failure."""

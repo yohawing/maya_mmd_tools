@@ -1,3 +1,5 @@
+import math
+
 from ..qt_compat import QObject, QFileDialog
 from ...actions.export_model_action import ExportModelAction, ExportModelRequest
 from ...actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
@@ -16,6 +18,7 @@ from ...core.constants import (
 )
 from ...core.logger import get_logger
 from ...services.settings_service import SettingsService
+from ..model_readme_dialog import ModelReadmeDialogAdapter, read_model_readme
 from .list_presenter_helpers import tr_message, tr_message_format
 from ..translations.translator import UITranslator
 
@@ -33,6 +36,7 @@ class ImportExportPresenter(QObject):
         export_vmd_action=None,
         settings_service=None,
         maya_adapter=None,
+        model_readme_adapter=None,
     ):
         super().__init__()
         self.view = view
@@ -43,6 +47,9 @@ class ImportExportPresenter(QObject):
         self.export_vmd_action = export_vmd_action or ExportVmdAction()
         self.settings_service = settings_service or SettingsService()
         self.maya_adapter = maya_adapter or MayaCmdsAdapter()
+        self.model_readme_adapter = model_readme_adapter or ModelReadmeDialogAdapter(
+            development_mode_getter=self.settings_service.is_development_mode,
+        )
         self._vmd_model_roots = []
         self.view.presenter = self
         self.connect_signals()
@@ -169,6 +176,22 @@ class ImportExportPresenter(QObject):
                 dialog.exec_()
         except Exception as exc:
             logger.error("Failed to show texture issue dialog: %s", exc, exc_info=True)
+
+    def _maybe_show_model_readme(self, root_node, file_path):
+        """Show the imported model readme after other import modals complete."""
+
+        if not root_node:
+            return
+        scene_model_service = getattr(self.app_state, "scene_model_service", None)
+        readme = read_model_readme(scene_model_service, root_node)
+        if readme is None:
+            return
+        try:
+            self.model_readme_adapter.show(readme, model_path=file_path, parent=self.view)
+        except Exception as exc:
+            # Import already succeeded; a UI adapter failure must not turn it
+            # into a fatal result or suppress the existing status/history.
+            logger.error("Failed to show model readme: %s", exc, exc_info=True)
 
     def _material_name_for_file_node(self, file_node):
         """Return a connected shader/material name, falling back to the file node."""
@@ -330,6 +353,38 @@ class ImportExportPresenter(QObject):
             return False
         return all(self._is_texture_issue_warning(item) for item in warnings)
 
+    def _vmd_reduction_summary(self, profile):
+        """Return a localized reduced-key summary when runtime reduction succeeded."""
+        if not isinstance(profile, dict):
+            return ""
+        converter_profile = profile.get("vmd_converter")
+        if not isinstance(converter_profile, dict):
+            return ""
+        reduction = converter_profile.get("reduced_bake_keys")
+        if not isinstance(reduction, dict) or not reduction.get("used"):
+            return ""
+        try:
+            source_key_count = int(reduction["source_key_count"])
+            reduced_key_count = int(reduction["reduced_key_count"])
+            reduction_ratio = float(reduction.get("reduction_ratio"))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return ""
+        if source_key_count <= 0 or reduced_key_count < 0 or not math.isfinite(reduction_ratio):
+            return ""
+        reduction_percent = max(0.0, min(100.0, reduction_ratio * 100.0))
+        return tr_message_format(
+            "vmd_reduction_summary",
+            source_key_count=source_key_count,
+            reduced_key_count=reduced_key_count,
+            reduction_percent=f"{reduction_percent:.1f}",
+        )
+
+    def _vmd_import_success_status(self, file_path, profile):
+        """Build the normal VMD success status with an optional reduction summary."""
+        message = tr_message_format("vmd_import_complete", file_path=file_path)
+        summary = self._vmd_reduction_summary(profile)
+        return f"{message} — {summary}" if summary else message
+
     def _show_import_partial_warning(self, title, message, warnings=None):
         """Show one operation-level warning dialog for a partial import.
 
@@ -352,6 +407,7 @@ class ImportExportPresenter(QObject):
         root_node=None,
         kind="model",
         show_dialog=True,
+        profile=None,
     ):
         """Present exactly one operation-level partial import outcome.
 
@@ -375,6 +431,10 @@ class ImportExportPresenter(QObject):
                 warning_count=warning_count,
             )
             title = tr_message("import_partial_title")
+        if kind == "vmd":
+            summary = self._vmd_reduction_summary(profile)
+            if summary:
+                message = f"{message} — {summary}"
         self.app_state.emit_status(message)
         if show_dialog:
             self._show_import_partial_warning(title, message, warnings)
@@ -457,13 +517,15 @@ class ImportExportPresenter(QObject):
                 texture_only = (not is_vmd) and self._partial_warnings_are_texture_only(
                     getattr(result, "warnings", None)
                 )
-                self._present_import_partial_outcome(
-                    result.warnings,
-                    file_path=file_path,
-                    root_node=root_node,
-                    kind="vmd" if is_vmd else "model",
-                    show_dialog=not texture_only,
-                )
+                partial_kwargs = {
+                    "file_path": file_path,
+                    "root_node": root_node,
+                    "kind": "vmd" if is_vmd else "model",
+                    "show_dialog": not texture_only,
+                }
+                if is_vmd and import_options.get("profile") is not None:
+                    partial_kwargs["profile"] = import_options.get("profile")
+                self._present_import_partial_outcome(result.warnings, **partial_kwargs)
                 if texture_only:
                     self._maybe_show_texture_issue_dialog(import_profile, file_path)
                 elif not is_vmd and any(
@@ -472,9 +534,16 @@ class ImportExportPresenter(QObject):
                     self._maybe_show_texture_issue_dialog(import_profile, file_path)
             else:
                 logger.info("Import successful.")
-                self.app_state.emit_status(tr_message_format("import_complete_node", root_node=root_node))
+                if is_vmd:
+                    self.app_state.emit_status(
+                        self._vmd_import_success_status(file_path, import_options.get("profile"))
+                    )
+                else:
+                    self.app_state.emit_status(tr_message_format("import_complete_node", root_node=root_node))
                 if not is_vmd:
                     self._maybe_show_texture_issue_dialog(import_profile, file_path)
+            if not is_vmd:
+                self._maybe_show_model_readme(root_node, file_path)
         except Exception as e:
             logger.error(f"Import failed: {e}", exc_info=True)
             self.app_state.emit_status(tr_message_format("import_error", error=str(e)))
@@ -560,15 +629,19 @@ class ImportExportPresenter(QObject):
             self.view.add_vmd_path_to_history(file_path)
             if outcome == "partial":
                 logger.warning("VMD import completed with warnings.")
-                self._present_import_partial_outcome(
-                    result.warnings,
-                    file_path=file_path,
-                    root_node=result.root_node,
-                    kind="vmd",
-                )
+                partial_kwargs = {
+                    "file_path": file_path,
+                    "root_node": result.root_node,
+                    "kind": "vmd",
+                }
+                if animation_options.get("profile") is not None:
+                    partial_kwargs["profile"] = animation_options.get("profile")
+                self._present_import_partial_outcome(result.warnings, **partial_kwargs)
             else:
                 logger.info("VMD import successful.")
-                self.app_state.emit_status(tr_message_format("vmd_import_complete", file_path=file_path))
+                self.app_state.emit_status(
+                    self._vmd_import_success_status(file_path, animation_options.get("profile"))
+                )
         except Exception as e:
             logger.error(f"VMD import failed: {e}", exc_info=True)
             self.app_state.emit_status(tr_message_format("vmd_import_error", error=str(e)))

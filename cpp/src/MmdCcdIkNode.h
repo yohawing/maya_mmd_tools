@@ -24,6 +24,9 @@
 #include <maya/MFnMatrixAttribute.h>
 #include <maya/MTypeId.h>
 
+#include <memory>
+#include <mutex>
+
 class MmdCcdIkNode : public MPxNode {
 public:
     MmdCcdIkNode();
@@ -108,6 +111,15 @@ public:
     static MObject aOutputLinkRotates;
 
 private:
+    // chainJson の解析結果と native chain はノードインスタンス単位で保持する。
+    // 定義は cpp 側に隠し、ヘッダから Maya/runtime の実装詳細を漏らさない。
+    struct ChainCache;
+
+    bool ensureChainCache(const MString& chainJson);
+
+    std::unique_ptr<ChainCache> chainCache_;
+    std::mutex chainCacheMutex_;
+
     static MObject createDouble3Attribute(
         const MString& longName,
         const MString& shortName,

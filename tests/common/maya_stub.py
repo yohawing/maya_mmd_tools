@@ -35,6 +35,7 @@ _STUBBED_MODULE_NAMES = (
     "maya",
     "maya.cmds",
     "maya.mel",
+    "maya.utils",
     "maya.OpenMaya",
     "maya.OpenMayaMPx",
     "maya.api",
@@ -165,6 +166,8 @@ def install_maya_stub(profile: Optional[str] = None) -> bool:
     _configure_cmds_profile(maya.cmds, profile or "minimal")
     maya.mel = MagicMock(name="maya.mel")
     maya.OpenMaya = MagicMock(name="maya.OpenMaya")
+    maya.utils = MagicMock(name="maya.utils")
+    maya.standalone = MagicMock(name="maya.standalone")
 
     class _StubMPxFileTranslator:
         kImportAccessMode = 0
@@ -193,6 +196,8 @@ def install_maya_stub(profile: Optional[str] = None) -> bool:
     sys.modules["maya"] = maya
     sys.modules["maya.cmds"] = maya.cmds
     sys.modules["maya.mel"] = maya.mel
+    sys.modules["maya.utils"] = maya.utils
+    sys.modules["maya.standalone"] = maya.standalone
     sys.modules["maya.OpenMaya"] = maya.OpenMaya
     sys.modules["maya.OpenMayaMPx"] = maya.OpenMayaMPx
     sys.modules["maya.api"] = api
@@ -240,9 +245,10 @@ class _StubSignal:
 
 # qt_compat が QtCore/QtGui/QtWidgets から名前付きで import する識別子。
 # QObject/Signal 以外は「呼べる/継承できるダミークラス」で十分。
-_QTCORE_NAMES = ["Qt", "QSettings", "QTimer"]
+_QTCORE_NAMES = ["Qt", "QSettings", "QTimer", "QByteArray", "QPointF", "QRectF", "QSize"]
 _QTGUI_NAMES = [
     "QAction", "QDoubleValidator", "QColor", "QTextCursor", "QTextCharFormat",
+    "QBrush", "QFont", "QIcon", "QPainter", "QPainterPath", "QPen", "QPixmap", "QPolygonF", "QTransform",
 ]
 _QTWIDGETS_NAMES = [
     "QApplication", "QMainWindow", "QTabWidget", "QDockWidget", "QPushButton",
@@ -252,7 +258,7 @@ _QTWIDGETS_NAMES = [
     "QColorDialog", "QDoubleSpinBox", "QAbstractSpinBox", "QSpinBox", "QGridLayout", "QScrollArea",
     "QListWidgetItem", "QStatusBar", "QProgressBar", "QSplitter", "QTableWidget",
     "QTableWidgetItem", "QHeaderView", "QMessageBox", "QInputDialog", "QToolBar",
-    "QMenuBar", "QMenu",
+    "QMenuBar", "QMenu", "QSizePolicy", "QToolTip",
 ]
 
 
@@ -270,6 +276,7 @@ class _StubQt:
     AlignCenter = 4
     Horizontal = 1
     Vertical = 2
+    ItemIsEditable = 2
 
 
 class _StubQListWidgetItem:
@@ -278,6 +285,7 @@ class _StubQListWidgetItem:
     def __init__(self, *args, **kwargs):
         self._role_data: dict = {}
         self._text = args[0] if args else ""
+        self._tooltip = ""
 
     def text(self):
         return self._text
@@ -291,11 +299,53 @@ class _StubQListWidgetItem:
     def data(self, role):
         return self._role_data.get(role)
 
+    def setToolTip(self, tooltip):
+        self._tooltip = tooltip
+
+    def toolTip(self):
+        return self._tooltip
+
     def setHidden(self, hidden):
         pass
 
     def isHidden(self):
         return False
+
+
+class _StubQTableWidgetItem:
+    """QTableWidgetItem stub with text and item-flag support."""
+
+    def __init__(self, *args, **kwargs):
+        self._text = args[0] if args else ""
+        self._flags = _StubQt.ItemIsEditable
+
+    def text(self):
+        return self._text
+
+    def setText(self, text):
+        self._text = text
+
+    def flags(self):
+        return self._flags
+
+    def setFlags(self, flags):
+        self._flags = flags
+
+
+class _StubQTimer:
+    """QTimer stub that executes queued work without a Qt event loop."""
+
+    @staticmethod
+    def singleShot(_delay, callback):
+        callback()
+
+
+class _StubQApplication:
+    """QApplication stub exposing the top-level widget query contract."""
+
+    @staticmethod
+    def topLevelWidgets():
+        return []
 
 
 def _qt_already_available() -> bool:
@@ -334,6 +384,7 @@ def install_qt_stub() -> bool:
     for n in _QTCORE_NAMES:
         setattr(qtcore, n, _make_stub_qclass(n))
     qtcore.Qt = _StubQt  # override with constant-bearing version
+    qtcore.QTimer = _StubQTimer
 
     qtgui = ModuleType("PySide6.QtGui")
     for n in _QTGUI_NAMES:
@@ -343,17 +394,24 @@ def install_qt_stub() -> bool:
     for n in _QTWIDGETS_NAMES:
         setattr(qtwidgets, n, _make_stub_qclass(n))
     qtwidgets.QListWidgetItem = _StubQListWidgetItem  # override with data-aware version
+    qtwidgets.QTableWidgetItem = _StubQTableWidgetItem
+    qtwidgets.QApplication = _StubQApplication
+
+    qtsvg = ModuleType("PySide6.QtSvg")
+    qtsvg.QSvgRenderer = _make_stub_qclass("QSvgRenderer")
 
     shiboken6 = ModuleType("shiboken6")
     shiboken6.wrapInstance = MagicMock(name="shiboken6.wrapInstance")
 
     pyside6.QtCore = qtcore
     pyside6.QtGui = qtgui
+    pyside6.QtSvg = qtsvg
     pyside6.QtWidgets = qtwidgets
 
     sys.modules["PySide6"] = pyside6
     sys.modules["PySide6.QtCore"] = qtcore
     sys.modules["PySide6.QtGui"] = qtgui
+    sys.modules["PySide6.QtSvg"] = qtsvg
     sys.modules["PySide6.QtWidgets"] = qtwidgets
     sys.modules["shiboken6"] = shiboken6
     return True
@@ -430,6 +488,12 @@ def install_om_double_array_stub() -> None:
 
 class _MTime:
     """Minimal scalar stand-in for ``om.MTime`` in pure-Python tests."""
+
+    # Maya 2024 reports ``MTime.kSeconds == 3``.  Keep the public unit
+    # constant available because production nodes pass it to ``asUnits``;
+    # without it, a test that installs this shared stub makes later physics
+    # tests depend on collection order.
+    kSeconds = 3
 
     def __init__(self, value=0.0, _unit=None):
         self._value = float(value)

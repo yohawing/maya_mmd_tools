@@ -34,6 +34,24 @@ class TestVmdHeader(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Invalid magic number"):
             header.parse(buf)
 
+    def test_write_uses_canonical_vmd2_magic(self):
+        header = VmdHeader()
+        buf = io.BytesIO()
+        header.write(buf)
+
+        self.assertEqual(
+            buf.getvalue()[:30],
+            b"Vocaloid Motion Data 0002" + b"\x00" * 5,
+        )
+
+    def test_parse_accepts_legacy_20_byte_signature(self):
+        legacy_header = b"Vocaloid Motion Data" + b"\x00" * 10 + b"\x00" * 20
+
+        header = VmdHeader()
+        header.parse(io.BytesIO(legacy_header))
+
+        self.assertTrue(header.magic.startswith(VmdHeader.LEGACY_SIGNATURE))
+
     def test_write_size(self):
         header = VmdHeader()
         header.model_name = "abc"

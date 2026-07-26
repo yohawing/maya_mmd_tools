@@ -93,6 +93,8 @@ def initialize():
     typed = om.MFnTypedAttribute()
 
     N.aInputWeight = numeric.create("inputWeight", "iw", om.MFnNumericData.kDouble, 0.0)
+    numeric.setMin(0.0)
+    numeric.setMax(1.0)
     numeric.array = True
     numeric.usesArrayDataBuilder = True
     numeric.keyable = True

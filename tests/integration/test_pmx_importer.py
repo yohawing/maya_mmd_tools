@@ -403,7 +403,10 @@ class TestPmxImporter(MayaTestBase):
             cmds.getAttr(f"{solvers[0]}.outSolved"),
             cmds.getAttr(f"{solvers[0]}.outStatus"),
         )
-        self.assertIn(cmds.getAttr(f"{solvers[0]}.outStatus"), ("reset", "stepped", "cached"))
+        self.assertIn(
+            cmds.getAttr(f"{solvers[0]}.outStatus"),
+            ("reset", "stepped", "cached", "pose-updated"),
+        )
 
     @unittest.skipUnless(is_native_physics_available(), "native physics DLL not available")
     def test_mixed_mode_bone_omits_kinematic_world_matrix_connection(self):

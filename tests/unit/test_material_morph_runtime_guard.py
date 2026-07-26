@@ -45,6 +45,61 @@ def _rgb_safe_get_attr(*, locked=False, attr_type="double3", value=(1.0, 0.0, 0.
 
 
 class TestMaterialMorphRuntimeGuard(unittest.TestCase):
+    def test_standard_surface_texture_morph_drives_file_color_gain(self):
+        """Textured fallback keeps the stock file-to-baseColor connection."""
+        cmds = mock.Mock()
+        cmds.nodeType.side_effect = lambda node: {
+            "Face_shader": "standardSurface",
+            "Face_file": "file",
+        }.get(node, "unknown")
+
+        def list_connections(plug, **_kwargs):
+            return {
+                "Face_shader.baseColor": ["Face_file.outColor"],
+                "Face_file.colorGain": [],
+            }.get(plug, [])
+
+        def get_attr(plug, **_kwargs):
+            if plug == "Face_file.colorGain":
+                return [(0.8, 0.7, 0.6)]
+            if plug == "Face_shader.opacity":
+                return [(1.0, 1.0, 1.0)]
+            raise AssertionError(f"unexpected getAttr: {plug}")
+
+        cmds.listConnections.side_effect = list_connections
+        cmds.getAttr.side_effect = get_attr
+        cmds.attributeQuery.side_effect = lambda attr, node=None, **kwargs: (
+            attr == "opacity" and node == "Face_shader" and kwargs.get("exists")
+        )
+        route = material_morph_runtime.ShaderColorRoute(
+            backend=material_morph_runtime.BACKEND_STANDARD,
+            attr_name="baseColor",
+        )
+
+        with mock.patch.object(material_morph_runtime, "cmds", cmds), mock.patch.object(
+            material_morph_runtime, "_is_connected", return_value=False
+        ), mock.patch.object(material_morph_runtime, "_connect_if_needed") as connect:
+            result = material_morph_runtime._reroute_shader_color(
+                "Face_shader", "Face_materialMorphEval", route
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(
+            cmds.setAttr.call_args_list,
+            [
+                mock.call("Face_materialMorphEval.baseDiffuseR", 0.8),
+                mock.call("Face_materialMorphEval.baseDiffuseG", 0.7),
+                mock.call("Face_materialMorphEval.baseDiffuseB", 0.6),
+                mock.call("Face_materialMorphEval.baseDiffuseA", 1.0),
+            ],
+        )
+        connect.assert_called_once_with(
+            "Face_materialMorphEval.outputDiffuse",
+            "Face_file.colorGain",
+            force=True,
+        )
+        cmds.disconnectAttr.assert_not_called()
+
     def test_build_graph_starts_full_runtime_by_default(self):
         cmds = mock.Mock()
         cmds.objExists.return_value = True

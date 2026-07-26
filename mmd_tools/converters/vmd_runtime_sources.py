@@ -116,5 +116,17 @@ def resolve_runtime_pmx_bytes_and_morph_names(
                 pmx_morph_names = [morph.name for morph in pmx_data.morphs]
         except Exception as exc:
             logger.warning(f"Failed to get PMX morph names for runtime morph bake: {exc}")
+        if not pmx_morph_names:
+            try:
+                from mmd_tools.core.mmd_parser import parse_mmd_file
+
+                pmx_data = parse_mmd_file(
+                    pmx_path,
+                    use_native_pmx_parse=False,
+                    require_native_pmx_parse=False,
+                )
+                pmx_morph_names = [morph.name for morph in (getattr(pmx_data, "morphs", ()) or ())]
+            except Exception as exc:
+                logger.warning(f"Failed to get PMX morph names with Python parser: {exc}")
 
     return resolved_pmx_bytes, pmx_morph_names

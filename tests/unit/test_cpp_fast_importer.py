@@ -12,9 +12,11 @@ before importing the modules under test.
 from __future__ import annotations
 
 import json
+import re
 import types
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from tests.common.maya_stub import install_maya_stub
@@ -28,7 +30,11 @@ from mmd_tools.core.settings import settings
 from mmd_tools.io import cpp_fast_importer
 from mmd_tools.io.cpp_fast_importer import (
     _apply_basic_materials,
+    _apply_fast_morph_metadata,
     _apply_fast_skeleton_skin,
+    _apply_fast_root_metadata,
+    _allocate_fast_material_name,
+    _create_standard_material,
     _sanitize_node_name,
     fast_import,
 )
@@ -407,9 +413,13 @@ class TestFastSkeletonSkin(unittest.TestCase):
 
         cmds = self._make_cmds_mock()
 
-        _apply_fast_skeleton_skin(
-            "model.pmx", "mesh1", "root1", "my_model", cmds
-        )
+        with patch(
+            "mmd_tools.io.cpp_fast_importer.maya_mesh_utils.has_materially_different_authored_normals",
+            return_value=False,
+        ) as mock_normal_difference:
+            _apply_fast_skeleton_skin(
+                "model.pmx", "mesh1", "root1", "my_model", cmds
+            )
 
         # ---- assertions ----
         # Skeleton group created
@@ -437,10 +447,24 @@ class TestFastSkeletonSkin(unittest.TestCase):
         joints_arg = skin_call[0][0]
         self.assertEqual(len(joints_arg), 2)
 
+        mock_normal_difference.assert_called_once_with("mesh1")
+        cmds.setAttr.assert_any_call("skinCluster1.deformUserNormals", True)
+        self.assertFalse(
+            any(
+                call.args == ("skinCluster1.blockGPU", True)
+                for call in cmds.setAttr.call_args_list
+            )
+        )
+
         # segmentScaleCompensate set to False on both
         ssc_calls = [c for c in cmds.setAttr.call_args_list
                      if "segmentScaleCompensate" in str(c)]
         self.assertEqual(len(ssc_calls), 2)
+        bind_translate_calls = [
+            c for c in cmds.setAttr.call_args_list
+            if "mmd_vmd_bind_translate" in str(c)
+        ]
+        self.assertEqual(len(bind_translate_calls), 2)
         self.mock_apply_weights.assert_called_once_with(
             "skinCluster1",
             "mesh1",
@@ -449,6 +473,58 @@ class TestFastSkeletonSkin(unittest.TestCase):
                 [1.0, 0.0],
             ],
         )
+
+    def test_skeleton_skin_blocks_gpu_for_authored_normal_difference(self):
+        """Only a materially different authored normal opts the deformer out of GPU."""
+        metadata_json = json.dumps({
+            "bones": [{
+                "name": "center",
+                "englishName": "center",
+                "parentIndex": -1,
+                "position": [0.0, 0.0, 0.0],
+            }]
+        })
+        mock_parsed = MagicMock()
+        mock_parsed.metadata_json = metadata_json
+        mock_parsed.skin_indices = [(0, 0, 0, 0)]
+        mock_parsed.skin_weights = [(1.0, 0.0, 0.0, 0.0)]
+        self.mock_parsed_cls.from_pmx_bytes.return_value = mock_parsed
+
+        cmds = self._make_cmds_mock()
+        with patch(
+            "mmd_tools.io.cpp_fast_importer.maya_mesh_utils.has_materially_different_authored_normals",
+            return_value=True,
+        ) as mock_normal_difference:
+            _apply_fast_skeleton_skin(
+                "model.pmx", "mesh1", "root1", "my_model", cmds
+            )
+
+        mock_normal_difference.assert_called_once_with("mesh1")
+        cmds.setAttr.assert_any_call("skinCluster1.deformUserNormals", True)
+        cmds.setAttr.assert_any_call("skinCluster1.blockGPU", True)
+
+    def test_basic_materials_returns_header_metadata_from_single_parsed_model(self):
+        """Root metadata reuses the parsed-model JSON instead of reparsing PMX."""
+        mock_parsed = MagicMock()
+        mock_parsed.metadata_json = json.dumps(
+            {
+                "metadata": {
+                    "name": "モデルJP",
+                    "englishName": "Model EN",
+                    "comment": "コメントJP",
+                    "englishComment": "Comment EN",
+                },
+                "materials": [],
+            }
+        )
+        mock_parsed.material_groups = []
+        self.mock_parsed_cls.from_pmx_bytes.return_value = mock_parsed
+
+        metadata = _apply_basic_materials("model.pmx", "mesh1", MagicMock())
+
+        self.assertEqual(metadata["metadata"]["comment"], "コメントJP")
+        self.mock_parsed_cls.from_pmx_bytes.assert_called_once_with(b"fake pmx bytes")
+        mock_parsed.free.assert_called_once_with()
 
     @patch("mmd_tools.io.cpp_fast_importer.parse_pmx_native")
     def test_skeleton_skin_falls_back_to_native_pmx_parser(self, mock_parse_native: MagicMock):
@@ -597,13 +673,15 @@ class TestSanitizeNodeName(unittest.TestCase):
         self.assertEqual(_sanitize_node_name("hello"), "hello")
 
     def test_leading_digit_prefixed(self):
-        self.assertEqual(_sanitize_node_name("123bone"), "m_123bone")
+        result = _sanitize_node_name("123bone")
+        self.assertRegex(result, r"^[A-Za-z_][A-Za-z0-9_]*$")
+        self.assertNotEqual(result[0], "1")
 
     def test_unicode_replaced(self):
-        # Full-width katakana and kanji become underscores
+        # Shared conversion may transliterate known terms; it must remain safe.
         result = _sanitize_node_name("\u30bb\u30f3\u30bf\u30fc")
         self.assertNotIn("\u30bb", result)
-        self.assertTrue(all(c in "_" for c in result) or result == "")
+        self.assertRegex(result, r"^[A-Za-z_][A-Za-z0-9_]*$")
 
     def test_mixed(self):
         result = _sanitize_node_name("center_\u30bb\u30f3\u30bf\u30fc")
@@ -611,7 +689,337 @@ class TestSanitizeNodeName(unittest.TestCase):
         self.assertIn("center", result)
 
     def test_empty(self):
-        self.assertEqual(_sanitize_node_name(""), "")
+        self.assertEqual(_sanitize_node_name(""), "unnamed")
+
+    def test_hazardous_names_are_safe_and_collision_free(self):
+        used = set()
+        names = [
+            _allocate_fast_material_name("1:髪", 0, used),
+            _allocate_fast_material_name("2:髪+", 1, used),
+            _allocate_fast_material_name("a:b", 2, used),
+            _allocate_fast_material_name("ab", 3, used),
+            _allocate_fast_material_name("", 4, used),
+        ]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertTrue(all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in names))
+        self.assertTrue(all(f"{name}SG" in used for name in names))
+
+
+class TestFastMorphMetadata(unittest.TestCase):
+    """Verify the Python-side alias/raw-name transaction for C++ morphs."""
+
+    @staticmethod
+    def _cmds(weight_count, aliases=None):
+        cmds = MagicMock()
+        cmds.listHistory.return_value = ["blendShape1"]
+        cmds.nodeType.return_value = "blendShape"
+        cmds.blendShape.return_value = weight_count
+        aliases = aliases or {}
+        alias_state = {
+            f"blendShape1.weight[{index}]": alias
+            for index, alias in aliases.items()
+        }
+
+        def alias_attr(*args, **kwargs):
+            if kwargs.get("query"):
+                return alias_state.get(args[0])
+            if kwargs.get("remove"):
+                old_alias = args[0].split(".", 1)[-1]
+                for plug, alias in list(alias_state.items()):
+                    if alias == old_alias:
+                        alias_state.pop(plug, None)
+                return None
+            alias_state[args[1]] = args[0]
+            return None
+
+        cmds.aliasAttr.side_effect = alias_attr
+        cmds.attributeQuery.return_value = False
+        cmds._alias_state = alias_state
+        return cmds
+
+    @staticmethod
+    def _source():
+        return {
+            "vertex_count": 4,
+            "spans": [(0, 1, 0), (0, 1, 2), (0, 1, 3), (0, 1, 4)],
+            "names": ["1:髪", "a:b", "a_b", ""],
+            "morphs": [
+                {"name": "1:髪", "type": "vertex", "vertexOffsets": [{"vertexIndex": 0}]},
+                {"name": "bone", "type": "bone", "vertexOffsets": []},
+                {"name": "a:b", "type": "vertex", "vertexOffsets": [{"vertexIndex": 1}]},
+                {"name": "a_b", "type": "vertex", "vertexOffsets": [{"vertexIndex": 2}]},
+                {"name": "", "type": "vertex", "vertexOffsets": [{"vertexIndex": 3}]},
+            ],
+        }
+
+    @patch("mmd_tools.io.cpp_fast_importer._load_fast_morph_source")
+    def test_hazard_collision_aliases_and_raw_global_indices(self, mock_source):
+        mock_source.return_value = self._source()
+        cmds = self._cmds(4, {0: "1____", 1: "a_b", 2: "a_b_1", 3: "morph_3"})
+
+        _apply_fast_morph_metadata("model.pmx", "meshShape1", cmds)
+
+        aliases = [
+            cmds._alias_state.get(f"blendShape1.weight[{index}]")
+            for index in range(4)
+        ]
+        self.assertEqual(len(aliases), len(set(aliases)))
+        self.assertTrue(all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", alias) for alias in aliases))
+        mapping_call = next(
+            call for call in cmds.setAttr.call_args_list
+            if call.args and ".mmd_blendshape_morph_names_json" in call.args[0]
+        )
+        mapping = json.loads(mapping_call.args[1])
+        self.assertEqual(
+            mapping,
+            {
+                "0": {"name": "1:髪", "index": 0},
+                "1": {"name": "a:b", "index": 2},
+                "2": {"name": "a_b", "index": 3},
+            },
+        )
+
+    @patch("mmd_tools.io.cpp_fast_importer._load_fast_morph_source")
+    def test_count_mismatch_does_not_mutate_aliases_or_json(self, mock_source):
+        mock_source.return_value = self._source()
+        cmds = self._cmds(3, {0: "cpp_a", 1: "cpp_b", 2: "cpp_c"})
+
+        _apply_fast_morph_metadata("model.pmx", "meshShape1", cmds)
+
+        self.assertEqual(
+            cmds._alias_state,
+            {
+                "blendShape1.weight[0]": "cpp_a",
+                "blendShape1.weight[1]": "cpp_b",
+                "blendShape1.weight[2]": "cpp_c",
+            },
+        )
+        self.assertFalse(any(
+            call.args and ".mmd_blendshape_morph_names_json" in call.args[0]
+            for call in cmds.setAttr.call_args_list
+        ))
+        self.assertFalse(any(call.kwargs.get("remove") for call in cmds.aliasAttr.call_args_list))
+
+    @patch("mmd_tools.io.cpp_fast_importer._load_fast_morph_source")
+    def test_parser_exception_does_not_mutate(self, mock_source):
+        mock_source.side_effect = RuntimeError("parser unavailable")
+        cmds = self._cmds(1, {0: "cpp_alias"})
+
+        _apply_fast_morph_metadata("model.pmx", "meshShape1", cmds)
+
+        self.assertEqual(cmds._alias_state, {"blendShape1.weight[0]": "cpp_alias"})
+        self.assertFalse(cmds.addAttr.called)
+
+    @patch("mmd_tools.io.cpp_fast_importer.parse_pmx_native")
+    @patch("mmd_tools.io.cpp_fast_importer._mmd_parsed_model_class")
+    @patch("mmd_tools.io.cpp_fast_importer.Path.read_bytes", return_value=b"fake pmx")
+    def test_parsed_model_unavailable_uses_native_morph_fallback(
+        self,
+        _read_bytes,
+        parsed_class,
+        parse_native,
+    ):
+        parsed_class.return_value.from_pmx_bytes.return_value = None
+        parse_native.return_value = SimpleNamespace(
+            vertices=[object(), object()],
+            morphs=[
+                SimpleNamespace(
+                    name="native_vertex",
+                    morph_type=1,
+                    offsets=[{"vertex_index": 1}],
+                ),
+                SimpleNamespace(name="native_bone", morph_type=2, offsets=[]),
+            ],
+        )
+
+        source = cpp_fast_importer._load_fast_morph_source("model.pmx")
+
+        self.assertEqual(source["vertex_count"], 2)
+        self.assertIsNone(source["spans"])
+        self.assertEqual(source["morphs"][0], {
+            "name": "native_vertex",
+            "type": "vertex",
+            "vertexOffsets": [{"vertexIndex": 1}],
+        })
+        parsed_class.return_value.from_pmx_bytes.assert_called_once_with(b"fake pmx")
+        parse_native.assert_called_once_with("model.pmx")
+
+    @patch("mmd_tools.io.cpp_fast_importer.parse_pmx_native", side_effect=RuntimeError("native parser unavailable"))
+    @patch("mmd_tools.io.cpp_fast_importer._mmd_parsed_model_class")
+    @patch("mmd_tools.io.cpp_fast_importer.Path.read_bytes", return_value=b"fake pmx")
+    def test_parser_and_native_fallback_exception_does_not_mutate(
+        self,
+        _read_bytes,
+        parsed_class,
+        _parse_native,
+    ):
+        parsed_class.return_value.from_pmx_bytes.side_effect = RuntimeError("ffi unavailable")
+        cmds = self._cmds(1, {0: "cpp_alias"})
+
+        _apply_fast_morph_metadata("model.pmx", "meshShape1", cmds)
+
+        self.assertEqual(cmds._alias_state, {"blendShape1.weight[0]": "cpp_alias"})
+        self.assertFalse(cmds.addAttr.called)
+
+    @patch("mmd_tools.io.cpp_fast_importer._load_fast_morph_source")
+    def test_alias_failure_rolls_back_previous_aliases(self, mock_source):
+        mock_source.return_value = self._source()
+        cmds = self._cmds(4, {0: "cpp_a", 1: "cpp_b", 2: "cpp_c", 3: "cpp_d"})
+        original_alias_attr = cmds.aliasAttr.side_effect
+
+        def fail_weight_one(*args, **kwargs):
+            if (
+                not kwargs.get("query")
+                and not kwargs.get("remove")
+                and args[1] == "blendShape1.weight[1]"
+                and args[0] != "cpp_b"
+            ):
+                raise RuntimeError("alias write failed")
+            return original_alias_attr(*args, **kwargs)
+
+        cmds.aliasAttr.side_effect = fail_weight_one
+
+        _apply_fast_morph_metadata("model.pmx", "meshShape1", cmds)
+
+        self.assertEqual(
+            cmds._alias_state,
+            {
+                "blendShape1.weight[0]": "cpp_a",
+                "blendShape1.weight[1]": "cpp_b",
+                "blendShape1.weight[2]": "cpp_c",
+                "blendShape1.weight[3]": "cpp_d",
+            },
+        )
+        self.assertFalse(any(
+            call.args and ".mmd_blendshape_morph_names_json" in call.args[0]
+            for call in cmds.setAttr.call_args_list
+        ))
+
+    @patch("mmd_tools.io.cpp_fast_importer._load_fast_morph_source")
+    def test_empty_raw_names_keep_aliases_without_creating_mapping(self, mock_source):
+        mock_source.return_value = {
+            "vertex_count": 1,
+            "spans": [(0, 1, 0)],
+            "names": [""],
+            "morphs": [{"name": "", "type": "vertex", "vertexOffsets": [{"vertexIndex": 0}]}],
+        }
+        cmds = self._cmds(1, {0: "cpp_alias"})
+
+        _apply_fast_morph_metadata("model.pmx", "meshShape1", cmds)
+
+        self.assertRegex(cmds._alias_state["blendShape1.weight[0]"], r"^[A-Za-z_][A-Za-z0-9_]*$")
+        cmds.addAttr.assert_not_called()
+        self.assertFalse(any(
+            call.args and ".mmd_blendshape_morph_names_json" in call.args[0]
+            for call in cmds.setAttr.call_args_list
+        ))
+
+    @patch("mmd_tools.io.cpp_fast_importer._apply_fast_morph_metadata")
+    @patch("mmd_tools.io.cpp_fast_importer._apply_fast_root_metadata")
+    @patch("mmd_tools.io.cpp_fast_importer._apply_basic_materials")
+    @patch("mmd_tools.io.cpp_fast_importer._candidate_plugin_paths")
+    @patch("mmd_tools.io.cpp_fast_importer._setup_plugin_directory")
+    def test_include_morphs_false_skips_post_pass(
+        self,
+        _setup,
+        candidates,
+        basic_materials,
+        root_metadata,
+        morph_metadata,
+    ):
+        plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
+        candidates.return_value = [plugin_path]
+        basic_materials.return_value = None
+        cmds = types.SimpleNamespace(
+            loadPlugin=MagicMock(),
+            mmdFastLoad=MagicMock(return_value=["root", "mesh"]),
+        )
+        with patch.object(Path, "exists", return_value=True), patch.dict(
+            "sys.modules", {"maya.cmds": cmds}
+        ):
+            fast_import("model.pmx", include_morphs=False)
+
+        morph_metadata.assert_not_called()
+
+    def test_standard_material_preserves_raw_names(self):
+        cmds = MagicMock()
+        cmds.ls.return_value = []
+        cmds.attributeQuery.return_value = False
+        cmds.shadingNode.side_effect = ["ab_fast", "ab_1_fast"]
+        used = set()
+        first = _create_standard_material(
+            {"name": "a:b", "englishName": "a:b_en", "diffuse": [1, 0, 0, 1]},
+            0,
+            cmds,
+            used,
+        )
+        second = _create_standard_material(
+            {"name": "ab", "englishName": "ab_en", "diffuse": [0, 1, 0, 1]},
+            1,
+            cmds,
+            used,
+        )
+
+        self.assertEqual((first, second), ("ab_fast", "ab_1_fast"))
+        raw_writes = {
+            call[0][0]: call[0][1]
+            for call in cmds.setAttr.call_args_list
+            if len(call[0]) >= 2 and ".mmd_material_name" in call[0][0]
+        }
+        self.assertEqual(raw_writes["ab_fast.mmd_material_name"], "a:b")
+        self.assertEqual(raw_writes["ab_1_fast.mmd_material_name"], "ab")
+
+    def test_root_metadata_preserves_japanese_english_and_empty_comments(self):
+        cmds = MagicMock()
+        cmds.attributeQuery.return_value = False
+        metadata = {
+            "metadata": {
+                "name": "モデルJP",
+                "englishName": "Model EN",
+                "comment": "コメントJP",
+                "englishComment": "Comment EN",
+            }
+        }
+        _apply_fast_root_metadata("model.pmx", "root", metadata, cmds)
+
+        writes = {call[0][0]: call[0][1] for call in cmds.setAttr.call_args_list if len(call[0]) >= 2}
+        self.assertEqual(writes["root.mmd_model_name"], "モデルJP")
+        self.assertEqual(writes["root.mmd_model_name_en"], "Model EN")
+        self.assertEqual(writes["root.mmd_comment"], "コメントJP")
+        self.assertEqual(writes["root.mmd_comment_en"], "Comment EN")
+
+        cmds.reset_mock()
+        _apply_fast_root_metadata(
+            "model.pmx",
+            "empty_root",
+            {"metadata": {"name": "", "englishName": "", "comment": "", "englishComment": ""}},
+            cmds,
+        )
+        empty_writes = {call[0][0]: call[0][1] for call in cmds.setAttr.call_args_list if len(call[0]) >= 2}
+        self.assertEqual(empty_writes["empty_root.mmd_comment"], "")
+        self.assertEqual(empty_writes["empty_root.mmd_comment_en"], "")
+
+    @patch("mmd_tools.io.cpp_fast_importer.parse_pmx_native")
+    def test_root_metadata_native_parser_fallback_is_called_once(self, mock_parse_native):
+        mock_parse_native.return_value = SimpleNamespace(
+            header=SimpleNamespace(
+                model_name="Native JP",
+                model_name_english="Native EN",
+                comment="Native comment",
+                comment_english="Native comment EN",
+            )
+        )
+        cmds = MagicMock()
+        cmds.attributeQuery.return_value = False
+
+        _apply_fast_root_metadata("model.pmx", "root", None, cmds)
+
+        mock_parse_native.assert_called_once_with("model.pmx")
+        self.assertTrue(any("root.mmd_comment" in call[0][0] for call in cmds.setAttr.call_args_list))
+
+    @patch("mmd_tools.io.cpp_fast_importer.parse_pmx_native", side_effect=RuntimeError("parser unavailable"))
+    def test_root_metadata_parser_exception_is_best_effort(self, _mock_parse_native):
+        _apply_fast_root_metadata("model.pmx", "root", None, MagicMock())
 
 
 class TestCppFastImporterDebugLogging(unittest.TestCase):

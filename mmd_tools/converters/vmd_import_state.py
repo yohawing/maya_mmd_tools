@@ -308,14 +308,24 @@ def _restore_joints_to_rest(joints, fallback_translates: Dict[str, Tuple[float, 
         logger.debug(f"Fallback: restored {restored} joints from snapshots (no dagPose)")
 
 
-def store_bind_translate(joint: str, translate: Tuple[float, float, float]) -> None:
-    """Persist a joint bind translate for future clear/reimport fallback."""
-    if not joint or not cmds.objExists(joint):
+def store_bind_translate(
+    joint: str,
+    translate: Tuple[float, float, float],
+    cmds_module=None,
+) -> None:
+    """Persist a joint bind translate for future clear/reimport fallback.
+
+    ``cmds_module`` is injectable for import paths that already own a Maya
+    command facade (notably the C++ fast importer).  The normal VMD path keeps
+    the historical module-level ``maya.cmds`` default.
+    """
+    maya_cmds = cmds if cmds_module is None else cmds_module
+    if not joint or not maya_cmds.objExists(joint):
         return
     try:
-        if not cmds.attributeQuery(_ATTR_VMD_BIND_TRANSLATE, node=joint, exists=True):
-            cmds.addAttr(joint, longName=_ATTR_VMD_BIND_TRANSLATE, dataType="string")
-        cmds.setAttr(
+        if not maya_cmds.attributeQuery(_ATTR_VMD_BIND_TRANSLATE, node=joint, exists=True):
+            maya_cmds.addAttr(joint, longName=_ATTR_VMD_BIND_TRANSLATE, dataType="string")
+        maya_cmds.setAttr(
             f"{joint}.{_ATTR_VMD_BIND_TRANSLATE}",
             json.dumps([float(translate[0]), float(translate[1]), float(translate[2])]),
             type="string",

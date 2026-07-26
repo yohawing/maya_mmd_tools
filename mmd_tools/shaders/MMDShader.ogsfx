@@ -9,6 +9,7 @@
 // Uniform parameters
 //**********
 uniform mat4 World : WORLD < string UIWidget = "None"; >;
+uniform mat4 WorldInverseTranspose : WorldInverseTranspose < string UIWidget = "None"; >;
 uniform mat4 View : VIEW < string UIWidget = "None"; >;
 uniform mat4 WorldViewProjection : WorldViewProjection < string UIWidget = "None"; >;
 uniform vec3 ViewPosition : ViewPosition < string UIWidget = "None"; >;
@@ -106,7 +107,7 @@ GLSLShader VS
     void main()
     {
         vec4 world_pos = World * vec4(Position, 1.0);
-        vsOut.NormalWS = normalize((World * vec4(Normal, 0.0)).xyz);
+        vsOut.NormalWS = normalize((WorldInverseTranspose * vec4(Normal, 0.0)).xyz);
         vsOut.ViewDir = normalize(ViewPosition - world_pos.xyz);
         vsOut.UVset0 = vec2(UVset0.x, 1.0 - UVset0.y);
         gl_Position = WorldViewProjection * vec4(Position, 1.0);
@@ -137,46 +138,47 @@ GLSLShader FS
             texColor = texColor * MainTextureMultiply + MainTextureAdd;
         }
         float ndotl = dot(n, lightDir);
-        float halfLambert = ndotl * 0.5 + 0.5;
-        float rampCoord = clamp(halfLambert, 0.0, 1.0);
+        float toonV = clamp(0.5 - ndotl * 0.5, 0.0, 1.0);
         vec3 toonColor = vec3(1.0);
         if (HasToonTexture != 0)
         {
-            vec4 toonSample = texture2D(ToonSampler, vec2(0.5, 1.0 - rampCoord));
+            vec4 toonSample = texture2D(ToonSampler, vec2(0.5, toonV));
             vec4 factoredToon = toonSample * ToonTextureMultiply + ToonTextureAdd;
             toonColor = factoredToon.rgb;
         }
-        // No toon means flat MMD diffuse. N.L is used only to select a ramp
-        // sample when a toon texture is actually bound.
         vec3 materialBase = clamp(DiffuseColorRGB * lightColor + AmbientColor, 0.0, 1.0) * texColor.rgb;
-        // Flat bypasses only the N.L ramp; cast-shadow attenuation remains a
-        // separate factor shared by toon-present and toon-absent materials.
-        vec3 diffuse = materialBase * ShadowAttenuation;
-        if (HasToonTexture != 0)
-        {
-            diffuse *= toonColor;
-        }
-        vec3 halfVec = normalize(lightDir + normalize(psIn.ViewDir));
-        float specFactor = pow(max(dot(n, halfVec), 0.0), max(Shininess, 1.0)) * step(0.0, ndotl);
-        vec3 lighting = diffuse + SpecularColor * specFactor * lightColor;
-
         vec3 sphereColor = vec3(1.0);
         if (SphereMode > 0 && HasSphereTexture != 0)
         {
             vec3 sphereNormal = normalize((View * vec4(n, 0.0)).xyz);
-            vec2 sphereUV = vec2(sphereNormal.x * 0.35 + 0.5, sphereNormal.y * -0.35 + 0.5);
+            vec2 sphereUV = vec2(sphereNormal.x * 0.5 + 0.5, sphereNormal.y * -0.5 + 0.5);
             vec4 sphereSample = texture2D(SphereSampler, sphereUV);
             vec4 factoredSphere = sphereSample * SphereTextureMultiply + SphereTextureAdd;
             sphereColor = factoredSphere.rgb;
         }
+        vec3 surfaceColor = materialBase;
         if (SphereMode == 1 && HasSphereTexture != 0)
         {
-            lighting *= sphereColor;
+            surfaceColor *= sphereColor;
         }
         else if (SphereMode == 2 && HasSphereTexture != 0)
         {
-            lighting += sphereColor;
+            surfaceColor += sphereColor;
         }
+        if (HasToonTexture != 0)
+        {
+            surfaceColor *= toonColor;
+        }
+
+        vec3 diffuse = surfaceColor * ShadowAttenuation;
+        vec3 specular = vec3(0.0);
+        if (Shininess > 0.0)
+        {
+            vec3 halfVec = normalize(lightDir + normalize(psIn.ViewDir));
+            float specFactor = pow(max(dot(n, halfVec), 0.0), Shininess);
+            specular = SpecularColor * specFactor * lightColor;
+        }
+        vec3 lighting = diffuse + specular;
 
         float opacity = texColor.a * DiffuseColorA * Opacity;
         // Cut out transparent texture texels without discarding intentionally

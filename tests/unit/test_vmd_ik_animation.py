@@ -284,6 +284,46 @@ class TestVmdIkAnimation(MayaTestBase):
 
         cmds.delete(node, goal)
 
+    def test_mmd_ccd_ik_goal_world_matrix_root_translation_stays_passthrough(self):
+        """モデル root 移動は world goal と local input に二重適用しない"""
+        node = cmds.createNode("mmdCcdIk", name="goal_world_root_translation_ik_solver")
+        root = cmds.group(empty=True, name="goal_world_root_translation_model_root")
+        controller = cmds.group(empty=True, name="goal_world_root_translation_controller")
+        cmds.parent(controller, root)
+        chain = {
+            "bones": [
+                {
+                    "rest_position": [0.0, 0.0, 0.0],
+                    "parent_slot": -1,
+                    "joint_orient_deg": [0.0, 0.0, 0.0],
+                },
+                {
+                    "rest_position": [1.0, 0.0, 0.0],
+                    "parent_slot": 0,
+                    "joint_orient_deg": [0.0, 0.0, 0.0],
+                },
+            ],
+            "links": [{"bone_slot": 0}],
+            "targetBoneSlot": 1,
+            "controllerBoneSlot": 1,
+            "iterationCount": 40,
+            "limitAngle": 2.0,
+        }
+        cmds.setAttr(f"{node}.chainJson", json.dumps(chain), type="string")
+        cmds.setAttr(f"{node}.enabled", True)
+        cmds.setAttr(f"{controller}.translate", 1.0, 0.0, 0.0)
+        cmds.connectAttr(f"{controller}.worldMatrix[0]", f"{node}.goalWorldMatrix")
+        cmds.setAttr(f"{node}.inputTranslate[1].inputTranslateElementX", 1.0)
+
+        before = cmds.getAttr(f"{node}.outputRotate[0].outputRotateElementZ")
+        cmds.xform(root, relative=True, worldSpace=True, translation=(5.0, -2.0, 3.0))
+        after = cmds.getAttr(f"{node}.outputRotate[0].outputRotateElementZ")
+
+        self.assertAlmostEqual(before, 0.0, places=5)
+        self.assertAlmostEqual(after, 0.0, places=5)
+
+        cmds.delete(node, root)
+
     def test_mmd_ccd_ik_goal_world_matrix_offset_solves_without_translate_offset(self):
         """goalWorldMatrix が REST から動いたら controller translate offset なしでも IK を解く"""
         node = cmds.createNode("mmdCcdIk", name="goal_world_offset_ik_solver")

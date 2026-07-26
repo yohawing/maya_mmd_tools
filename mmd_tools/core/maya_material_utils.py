@@ -85,6 +85,32 @@ def is_mmd_file_node_unreadable(file_node):
 
 def find_material_texture_file_node(material):
     """Find the base texture file node used by a material, if any."""
+
+    def find_upstream_file_node(plug, visited=None):
+        """Walk utility nodes to find a file node driving a material input."""
+        if visited is None:
+            visited = set()
+        node = plug.split(".", 1)[0]
+        if node in visited:
+            return None
+        visited.add(node)
+        if cmds.nodeType(node) == "file":
+            return node
+        if cmds.nodeType(node) != "multiplyDivide":
+            return None
+        for input_attr in ("input1", "input1X", "input1Y", "input1Z", "input2", "input2X", "input2Y", "input2Z"):
+            incoming = cmds.listConnections(
+                f"{node}.{input_attr}",
+                source=True,
+                destination=False,
+                plugs=True,
+            ) or []
+            for upstream in incoming:
+                file_node = find_upstream_file_node(upstream, visited)
+                if file_node:
+                    return file_node
+        return None
+
     shader_type = cmds.nodeType(material)
     texture_attrs = []
     if shader_type == "standardSurface":
@@ -98,9 +124,16 @@ def find_material_texture_file_node(material):
         texture_attrs.append(f"{material}.color")
 
     for attr in texture_attrs:
-        connections = cmds.listConnections(attr, type="file", source=True, destination=False) or []
-        if connections:
-            return connections[0]
+        connections = cmds.listConnections(
+            attr,
+            source=True,
+            destination=False,
+            plugs=True,
+        ) or []
+        for connection in connections:
+            file_node = find_upstream_file_node(connection)
+            if file_node:
+                return file_node
     return None
 
 

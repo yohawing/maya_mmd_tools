@@ -381,6 +381,22 @@ class BoneConverter:
         if setup_bone_orientation:
             self._apply_joint_orient_all(maya_joints, bones, format_type, scale=scale)
 
+        # Reset Pose needs the final local bind translation, after parenting
+        # and any LOCAL_AXIS jointOrient compensation have settled.  Store the
+        # Maya-local value rather than the PMX world position so IK targets can
+        # be restored without entering the shared Rest Pose display mode.
+        # Keep this VMD compatibility helper local: BoneConverter is also used
+        # by PMX-only imports, so importing the full VMD state module at module
+        # load would add unnecessary runtime dependencies and cycle risk.
+        from .vmd_import_state import store_bind_translate
+
+        for joint in maya_joints:
+            try:
+                translate = cmds.getAttr(f"{joint}.translate")[0]
+                store_bind_translate(joint, translate, cmds_module=cmds)
+            except Exception as exc:
+                self.logger.debug("Failed to persist bind translate for %s: %s", joint, exc)
+
         return maya_joints
 
     def _set_extra_attributes(self, i, joint, bone, format_type):
@@ -498,6 +514,7 @@ class BoneConverter:
         if not mesh_node or not cmds.objExists(mesh_node):
             self.logger.warning(f"Mesh node '{mesh_node}' does not exist. Skin cluster will not be created.")
             return None
+        has_authored_normal_difference = maya_mesh_utils.has_materially_different_authored_normals(mesh_node)
 
         # skin_cluster = skin_cluster_result[0] if skin_cluster_result else None
         skin_cluster_create_start = time.perf_counter()
@@ -510,6 +527,11 @@ class BoneConverter:
             name="skinCluster",
         )[0]
         self._add_profile_time("skin_cluster_create_sec", skin_cluster_create_start)
+
+        maya_mesh_utils.configure_authored_normal_skin_policy(
+            skin_cluster,
+            has_authored_normal_difference,
+        )
 
         return skin_cluster
 
