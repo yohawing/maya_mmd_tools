@@ -329,7 +329,7 @@ def _attr_getter(values):
 class TestBonePresenterHeadless(unittest.TestCase):
     def test_bind_pose_button_runs_one_shot_action_without_locking_editor(self):
         view = _FakeView()
-        app_state = _FakeAppState(TEST_MODEL)
+        app_state = _FakeAppState()
         action = _FakeBindPoseAction()
         presenter = BonePresenter(
             view,
@@ -337,6 +337,7 @@ class TestBonePresenterHeadless(unittest.TestCase):
             maya_adapter=_FakeMayaAdapter(),
             bind_pose_action=action,
         )
+        app_state.current_model_root = TEST_MODEL
 
         presenter.go_to_bind_pose()
 
