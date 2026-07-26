@@ -1033,6 +1033,9 @@ def _reroute_shader_color(shader: str, node: str, route: Optional[ShaderColorRou
     base_attr = f"{node}.baseDiffuse"
     shader_attr = f"{shader}.{diffuse_name}"
 
+    if _reroute_standard_surface_texture_gain(shader, node, shader_attr):
+        return True
+
     if _is_connected(output_attr, shader_attr):
         return True
 
@@ -1074,6 +1077,62 @@ def _reroute_shader_color(shader: str, node: str, route: Optional[ShaderColorRou
                 _connect_if_needed(source, base_axis, force=True)
 
     _connect_if_needed(output_attr, shader_attr, force=True)
+    return True
+
+
+def _reroute_standard_surface_texture_gain(shader: str, node: str, shader_attr: str) -> bool:
+    """Drive a directly connected file texture's colorGain for material morphs.
+
+    Keeping ``file.outColor -> standardSurface.baseColor`` intact preserves
+    Viewport 2.0's built-in fallback when texture display is disabled. The
+    evaluator therefore owns the PMX diffuse multiplier on ``file.colorGain``
+    instead of intercepting the shader's baseColor connection.
+    """
+    try:
+        if cmds.nodeType(shader) != "standardSurface":
+            return False
+        sources = cmds.listConnections(shader_attr, s=True, d=False, p=True) or []
+    except Exception:
+        return False
+
+    file_node = None
+    for source in sources:
+        source_node = source.split(".", 1)[0]
+        try:
+            if cmds.nodeType(source_node) == "file" and source.split(".", 1)[1] == "outColor":
+                file_node = source_node
+                break
+        except (IndexError, TypeError):
+            continue
+        except Exception:
+            continue
+    if not file_node:
+        return False
+
+    output_attr = f"{node}.outputDiffuse"
+    base_attr = f"{node}.baseDiffuse"
+    gain_attr = f"{file_node}.colorGain"
+    if _is_connected(output_attr, gain_attr):
+        return True
+
+    try:
+        gain = cmds.getAttr(gain_attr)[0]
+        for axis, value in zip("RGB", gain[:3]):
+            cmds.setAttr(f"{base_attr}{axis}", float(value))
+        cmds.setAttr(f"{base_attr}A", _read_shader_base_alpha(shader))
+    except Exception:
+        logger.debug("Failed to read %s", gain_attr, exc_info=True)
+
+    for source in cmds.listConnections(gain_attr, s=True, d=False, p=True) or []:
+        if _same_source(source, output_attr):
+            continue
+        try:
+            cmds.disconnectAttr(source, gain_attr)
+        except Exception:
+            pass
+        _connect_if_needed(source, base_attr, force=True)
+
+    _connect_if_needed(output_attr, gain_attr, force=True)
     return True
 
 

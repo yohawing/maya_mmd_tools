@@ -1227,23 +1227,17 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         )
         mock_cmds.connectAttr.assert_any_call(
             "Face_file.outColor",
-            "Face_diffuseMultiply.input1",
-            force=True,
-        )
-        mock_cmds.connectAttr.assert_any_call(
-            "Face_diffuseMultiply.output",
             "Face_shader.baseColor",
             force=True,
         )
         self.assertIn(
-            call("Face_diffuseMultiply", "operation", 1, "long"),
+            call("Face_file", "colorGain", (0.8, 0.7, 0.6), "double3"),
             mock_set_attribute.call_args_list,
         )
-        for channel, value in zip("XYZ", (0.8, 0.7, 0.6)):
-            self.assertIn(
-                call("Face_diffuseMultiply", f"input2{channel}", value, "float"),
-                mock_set_attribute.call_args_list,
-            )
+        self.assertNotIn(
+            call("multiplyDivide", asUtility=True, name="Face_diffuseMultiply"),
+            mock_cmds.shadingNode.call_args_list,
+        )
 
     def test_transparency_precompute_always_scans_texture_alpha(self):
         """Material transparency classification no longer requires a setting."""
@@ -1337,19 +1331,17 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
                 mock_set_attribute.call_args_list,
             )
 
-    def test_standard_surface_texture_repair_discovers_file_through_diffuse_multiply(self):
-        """Texture repair must find the file node behind the tint utility."""
+    def test_standard_surface_texture_repair_discovers_direct_file_connection(self):
+        """Texture repair must find the file node on the stock baseColor route."""
         def node_type(node):
             return {
                 "Face_shader": "standardSurface",
-                "Face_diffuseMultiply": "multiplyDivide",
                 "Face_file": "file",
             }.get(node, "transform")
 
         def list_connections(plug, **_kwargs):
             return {
-                "Face_shader.baseColor": ["Face_diffuseMultiply.output"],
-                "Face_diffuseMultiply.input1": ["Face_file.outColor"],
+                "Face_shader.baseColor": ["Face_file.outColor"],
             }.get(plug, [])
 
         with patch.object(maya_material_utils, "cmds") as mock_cmds:
@@ -1424,19 +1416,13 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         )
         mock_cmds.connectAttr.assert_any_call(
             "Face_file.outColor",
-            "Face_diffuseMultiply.input1",
-            force=True,
-        )
-        mock_cmds.connectAttr.assert_any_call(
-            "Face_diffuseMultiply.output",
             "Face_shader.baseColor",
             force=True,
         )
-        for channel, value in zip("XYZ", (0.8, 0.7, 0.6)):
-            self.assertIn(
-                call("Face_diffuseMultiply", f"input2{channel}", value, "float"),
-                mock_set_attribute.call_args_list,
-            )
+        self.assertIn(
+            call("Face_file", "colorGain", (0.8, 0.7, 0.6), "double3"),
+            mock_set_attribute.call_args_list,
+        )
         mock_cmds.connectAttr.assert_any_call(
             "Face_file.outColor",
             "Face_ambientMultiply.input1",

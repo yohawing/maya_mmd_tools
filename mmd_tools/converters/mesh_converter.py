@@ -2011,21 +2011,18 @@ class MeshConverter:
                             f"Texture path needs resolution ({issue.get('reason', 'unreadable_path')}): "
                             f"{full_texture_path}"
                         )
-                diffuse_multiply = cmds.shadingNode(
-                    "multiplyDivide",
-                    asUtility=True,
-                    name=sanitized_name + "_diffuseMultiply",
+                # Keep Maya's stock file-to-standardSurface contract intact so
+                # VP2 can provide its normal untextured fallback when panel
+                # texture display is disabled. file.colorGain applies the same
+                # Texture * PMX Diffuse multiplication without an intermediate
+                # arithmetic node on the baseColor connection.
+                maya_attribute_utils.set_attribute(
+                    file_node,
+                    "colorGain",
+                    tuple(float(value) for value in material.diffuse[:3]),
+                    "double3",
                 )
-                maya_attribute_utils.set_attribute(diffuse_multiply, "operation", 1, "long")
-                for channel, value in zip("XYZ", material.diffuse[:3]):
-                    maya_attribute_utils.set_attribute(
-                        diffuse_multiply,
-                        f"input2{channel}",
-                        float(value),
-                        "float",
-                    )
-                cmds.connectAttr(file_node + ".outColor", diffuse_multiply + ".input1", force=True)
-                cmds.connectAttr(diffuse_multiply + ".output", shader + ".baseColor", force=True)
+                cmds.connectAttr(file_node + ".outColor", shader + ".baseColor", force=True)
 
                 if hasattr(material, "ambient"):
                     ambient_multiply = cmds.shadingNode(
