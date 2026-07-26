@@ -2858,7 +2858,14 @@ def maya_visual_regression(session: nox.Session) -> None:
     timeout = _option(session.posargs, "--timeout", "420")
 
     forwarded: list[str] = []
-    passthrough_flags = {"--keep-maya", "--no-compare", "--attach-existing", "--debug-lambert-control", "--hide-orig-shapes"}
+    passthrough_flags = {
+        "--keep-maya",
+        "--no-compare",
+        "--attach-existing",
+        "--debug-lambert-control",
+        "--debug-outline-sentinel",
+        "--hide-orig-shapes",
+    }
     passthrough_options = {"--case", "--tag", "--limit", "--launch-mode", "--shader-fx"}
     i = 0
     while i < len(session.posargs):
@@ -2915,6 +2922,58 @@ def maya_visual_regression(session: nox.Session) -> None:
         for threshold in _options(session.posargs, "--threshold"):
             comparison_cmd.extend(["--threshold", threshold])
         session.run(*comparison_cmd, external=True)
+
+
+@nox.session(venv_backend="none")
+def shader_visual_semantic_gate(session: nox.Session) -> None:
+    """Guard DX11 outline-color leakage and disappearing hair geometry."""
+    from tests.viewport.shader_visual_semantic_gate import CASE_MIN_FOREGROUND
+
+    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    manifest = _option(session.posargs, "--manifest", "")
+    if not manifest:
+        session.error("--manifest <fixture.render.json> is required")
+    out_path = _require_build_path(
+        session,
+        _option(session.posargs, "--out", "build/visual-regression/shader-semantic"),
+        "--out",
+    )
+    port = _option(session.posargs, "--port", "7721")
+    timeout = _option(session.posargs, "--timeout", "240")
+    capture_cmd = [
+        sys.executable,
+        "tests/viewport/visual_regression_capture.py",
+        "--maya",
+        version,
+        "--manifest",
+        manifest,
+        "--out",
+        str(out_path),
+        "--port",
+        port,
+        "--timeout",
+        timeout,
+        "--shader-backend",
+        "dx11",
+        "--vp2-device",
+        "dx11",
+        "--display-textures",
+        "on",
+        "--debug-outline-sentinel",
+        "--no-compare",
+    ]
+    for case_name in CASE_MIN_FOREGROUND:
+        capture_cmd.extend(["--case", case_name])
+    session.run(*capture_cmd, external=True)
+    session.run(
+        sys.executable,
+        "tests/viewport/shader_visual_semantic_gate.py",
+        "--capture-report",
+        str(out_path / "visual-regression-report.json"),
+        "--out",
+        str(out_path / "shader-semantic-report.json"),
+        external=True,
+    )
 
 
 @nox.session(venv_backend="none")

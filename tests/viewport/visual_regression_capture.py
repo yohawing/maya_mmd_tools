@@ -115,6 +115,11 @@ def _parse_args() -> argparse.Namespace:
         help="Temporarily assign a red lambert to visible mesh transforms before capture.",
     )
     parser.add_argument(
+        "--debug-outline-sentinel",
+        action="store_true",
+        help="Set a vivid edge color without changing DX11 technique or EdgeSize.",
+    )
+    parser.add_argument(
         "--hide-orig-shapes",
         action="store_true",
         help="Temporarily mark *Orig mesh shapes as intermediate before capture.",
@@ -250,6 +255,7 @@ def _build_maya_code(
     hide_orig_shapes: bool,
     shader_backend: str,
     display_textures: bool = True,
+    debug_outline_sentinel: bool = False,
 ) -> str:
     payload = {
         "project_root": str(project_root),
@@ -261,6 +267,7 @@ def _build_maya_code(
         "height": height,
         "compare": compare,
         "debug_lambert_control": debug_lambert_control,
+        "debug_outline_sentinel": debug_outline_sentinel,
         "hide_orig_shapes": hide_orig_shapes,
         "shader_backend": shader_backend,
         "shader_node_type": BACKEND_CONFIG[shader_backend]["node_type"],
@@ -285,6 +292,7 @@ _width = int(_payload["width"])
 _height = int(_payload["height"])
 _compare = bool(_payload["compare"])
 _debug_lambert_control = bool(_payload["debug_lambert_control"])
+_debug_outline_sentinel = bool(_payload["debug_outline_sentinel"])
 _hide_orig_shapes = bool(_payload["hide_orig_shapes"])
 _shader_backend = _payload["shader_backend"]
 _display_textures = bool(_payload.get("display_textures", True))
@@ -708,6 +716,24 @@ def _assign_debug_lambert():
             assigned.append("ERR: " + target + ": " + str(exc))
     return {{"shader": shader, "shadingEngine": sg, "assigned": assigned}}
 
+def _apply_outline_sentinel():
+    # Make accidental edge-pass execution visually unmistakable.
+    changed = []
+    if _shader_backend != "dx11":
+        return changed
+    for shader in cmds.ls(type=_shader_node_type) or []:
+        item = {{"shader": shader}}
+        try:
+            item["technique"] = cmds.getAttr(shader + ".technique")
+            cmds.setAttr(shader + ".EdgeColorRGB", 1.0, 0.0, 1.0, type="double3")
+            cmds.setAttr(shader + ".EdgeColorA", 1.0)
+            item["edgeColorRGB"] = [1.0, 0.0, 1.0]
+            item["edgeSize"] = cmds.getAttr(shader + ".EdgeSize")
+        except Exception as exc:
+            item["error"] = str(exc)
+        changed.append(item)
+    return changed
+
 def _color_management_diag():
     result = {{}}
     for query in ["cmEnabled", "viewTransformName", "displayName", "renderingSpaceName"]:
@@ -787,6 +813,8 @@ def _capture_case(case):
         debug_actions["hideOrigShapes"] = _mark_orig_shapes_intermediate()
     if _debug_lambert_control:
         debug_actions["lambertControl"] = _assign_debug_lambert()
+    if _debug_outline_sentinel:
+        debug_actions["outlineSentinel"] = _apply_outline_sentinel()
 
     camera = _make_camera(case["camera"])
     _setup_color_management()
@@ -973,6 +1001,7 @@ def main() -> int:
             height=args.height,
             compare=not args.no_compare,
             debug_lambert_control=args.debug_lambert_control,
+            debug_outline_sentinel=args.debug_outline_sentinel,
             hide_orig_shapes=args.hide_orig_shapes,
             shader_backend=args.shader_backend,
             display_textures=args.display_textures == "on",
