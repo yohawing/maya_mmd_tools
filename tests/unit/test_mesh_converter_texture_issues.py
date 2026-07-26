@@ -1185,6 +1185,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
     def test_setup_standard_shader_multiplies_texture_alpha_by_pmx_alpha(self):
         """Resolved fallback textures must drive opacity through PMX alpha."""
         converter = MeshConverter(str(self.model))
+        converter._transparency_modes[0] = "blend"
         material = self._material(diffuse=[0.8, 0.7, 0.6, 0.25])
 
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
@@ -1243,6 +1244,75 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
                 call("Face_diffuseMultiply", f"input2{channel}", value, "float"),
                 mock_set_attribute.call_args_list,
             )
+
+    def test_transparency_precompute_always_scans_texture_alpha(self):
+        """Material transparency classification no longer requires a setting."""
+        converter = MeshConverter(str(self.model))
+        converter.texture_dir = str(self.root)
+        vertices = [
+            SimpleNamespace(uv=(0.0, 0.0)),
+            SimpleNamespace(uv=(1.0, 0.0)),
+            SimpleNamespace(uv=(0.0, 1.0)),
+        ]
+        faces = [SimpleNamespace(indices=(0, 1, 2))]
+        materials = [self._material(face_count=3, texture_index=0)]
+
+        def get_setting(key, default=None):
+            values = {
+                "import.model.create_mmd_shaders": False,
+                "import.model.transparency_opaque_threshold": 255,
+            }
+            return values.get(key, default)
+
+        with patch(
+            "mmd_tools.converters.mesh_converter.settings",
+            SimpleNamespace(get=get_setting),
+        ), patch(
+            "mmd_tools.converters.texture_alpha.classify_material", return_value="opaque"
+        ) as classify_material:
+            converter._precompute_transparency_modes(
+                vertices,
+                faces,
+                materials,
+                [self.ascii_texture.name],
+            )
+
+        self.assertEqual(converter._transparency_modes, {0: "opaque"})
+        classify_material.assert_called_once()
+
+    def test_setup_standard_shader_keeps_classified_opaque_texture_disconnected(self):
+        """Opaque fallback materials must not enter VP2's transparent queue."""
+        converter = MeshConverter(str(self.model))
+        converter._transparency_modes[0] = "opaque"
+        material = self._material(diffuse=[0.8, 0.7, 0.6, 0.999])
+
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
+        ) as mock_set_attribute, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
+        ), patch(
+            "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
+        ):
+            mock_cmds.shadingNode.side_effect = lambda _type, **kwargs: kwargs["name"]
+            converter._setup_standard_shader(
+                "Face_shader",
+                material,
+                self.ascii_texture.name,
+                [self.ascii_texture.name],
+                is_pmd=False,
+                material_index=0,
+            )
+
+        self.assertIn(
+            call("Face_shader", "opacity", (1.0, 1.0, 1.0), "double3"),
+            mock_set_attribute.call_args_list,
+        )
+        alpha_connections = [
+            args
+            for args, _kwargs in mock_cmds.connectAttr.call_args_list
+            if args and args[0] == "Face_file.outAlpha"
+        ]
+        self.assertEqual(alpha_connections, [])
         self.assertIn(
             call("Face_shader", "emission", 1.0, "float"),
             mock_set_attribute.call_args_list,
@@ -1377,18 +1447,13 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
             "Face_shader.emissionColor",
             force=True,
         )
-        mock_cmds.connectAttr.assert_any_call(
-            "Face_file.outAlpha",
-            "Face_opacityMultiply.input1X",
-            force=True,
-        )
-        for channel in "RGB":
-            mock_cmds.connectAttr.assert_any_call(
-                "Face_opacityMultiply.outputX",
-                f"Face_shader.opacity{channel}",
-                force=True,
-            )
-        self.assertIn(
+        alpha_connections = [
+            args
+            for args, _kwargs in mock_cmds.connectAttr.call_args_list
+            if args and args[0] == "Face_file.outAlpha"
+        ]
+        self.assertEqual(alpha_connections, [])
+        self.assertNotIn(
             call("Face_opacityMultiply", "input2X", 1.0, "float"),
             mock_set_attribute.call_args_list,
         )

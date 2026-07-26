@@ -147,7 +147,6 @@
     "start_frame": "在Maya时间线上指定VMD动画的起始帧",
     "vmd_fps": "VMD文件的帧率。MMD标准为30fps",
     "separate_meshes": "按材质分割网格",
-    "auto_classify_transparency": "通过UV Alpha扫描自动分类透明材质",
     "import_physics": "从 PMX 物理数据创建刚体和关节",
     "disable_backface_culling": "禁用背面剔除以实现双面渲染"
   },
@@ -315,7 +314,6 @@
     "development_mode": "开发模式",
     "show_advanced_options": "显示高级选项",
     "enable_logging": "启用日志记录",
-    "auto_classify_transparency": "自动分类透明 (扫描纹理α)",
     "auto_resolve_textures": "自动修复贴图",
     "custom_namespace": "自定义命名空间:",
     "show_colliders": "显示碰撞体",

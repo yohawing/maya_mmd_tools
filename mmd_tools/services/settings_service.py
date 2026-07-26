@@ -19,7 +19,6 @@ _SETTINGS_EXPORT_CATEGORIES = ("import", "export", "logging", "ui")
 _NORMAL_MODE_IMPORT_OVERRIDES = {
     "import_models": True,
     "separate_meshes_by_material": False,
-    "auto_classify_transparency": False,
     "disable_backface_culling": True,
     "uv_set_name": "map#",
     "texture_search_path": "",
@@ -204,7 +203,6 @@ class SettingsService:
             "import_models": self.get(setting_keys.IMPORT_MODEL_IMPORT_MODELS, True),
             "create_mmd_shaders": self.get(setting_keys.IMPORT_MODEL_CREATE_MMD_SHADERS, True),
             "separate_meshes_by_material": self.get(setting_keys.IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL, False),
-            "auto_classify_transparency": self.get(setting_keys.IMPORT_MODEL_AUTO_CLASSIFY_TRANSPARENCY, False),
             "auto_resolve_textures": self.get(setting_keys.IMPORT_MODEL_AUTO_RESOLVE_TEXTURES, True),
             "disable_backface_culling": self.get(setting_keys.IMPORT_MODEL_DISABLE_BACKFACE_CULLING, True),
             "uv_set_name": self.get(setting_keys.IMPORT_MODEL_UV_SET_NAME, "map#"),

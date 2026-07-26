@@ -147,7 +147,6 @@
     "start_frame": "VMD 動畫在 Maya 時間軸上的起始影格",
     "vmd_fps": "VMD 檔案的影格率。MMD 標準為 30 fps",
     "separate_meshes": "依材質分割網格",
-    "auto_classify_transparency": "透過 UV alpha 掃描自動分類透明材質",
     "import_physics": "從 PMX 物理資料建立剛體與關節",
     "disable_backface_culling": "停用背面剔除以啟用雙面算圖"
   },
@@ -315,7 +314,6 @@
     "development_mode": "開發模式",
     "show_advanced_options": "顯示進階選項",
     "enable_logging": "啟用記錄",
-    "auto_classify_transparency": "自動分類透明 (掃描紋理α)",
     "auto_resolve_textures": "自動修復貼圖",
     "custom_namespace": "自訂命名空間:",
     "show_colliders": "顯示碰撞體",

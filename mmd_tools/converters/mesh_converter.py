@@ -82,6 +82,7 @@ TRANSPARENCY_MODE_OPAQUE = "opaque"
 TRANSPARENCY_MODE_CUTOUT = "cutout"
 TRANSPARENCY_MODE_BLEND = "blend"
 TRANSPARENCY_MODES = (TRANSPARENCY_MODE_OPAQUE, TRANSPARENCY_MODE_CUTOUT, TRANSPARENCY_MODE_BLEND)
+_OPAQUE_MATERIAL_ALPHA_THRESHOLD = 0.999
 _ATTR_MMD_DOUBLE_SIDED = "mmdDoubleSided"
 _MATERIAL_NODE_FAMILY_SUFFIXES = (
     "",
@@ -100,6 +101,18 @@ _DX11_TECHNIQUE_BY_SIDEDNESS = {
     False: "MMDTechnique",
     True: "MMDTechniqueDoubleSided",
 }
+
+
+def _normalized_material_opacity(material) -> float:
+    """Return clamped PMX opacity, snapping near-opaque values to exactly one."""
+    try:
+        opacity = float(material.diffuse[3]) if len(material.diffuse) > 3 else 1.0
+    except (AttributeError, TypeError, ValueError):
+        return 1.0
+    opacity = min(1.0, max(0.0, opacity))
+    if opacity >= _OPAQUE_MATERIAL_ALPHA_THRESHOLD:
+        return 1.0
+    return opacity
 
 
 def _ensure_shader_plugin(plugin_name) -> bool:
@@ -1183,16 +1196,9 @@ class MeshConverter:
         diffuse-alpha fallback in ``_setup_dx11_shader`` applies.
         """
         self._transparency_modes = {}
-        if not settings.get(setting_keys.IMPORT_MODEL_CREATE_MMD_SHADERS):
-            return
-        # Default is opaque: texture-based cutout/blend auto-classification is
-        # opt-in, because diffuse-texture alpha cannot reliably tell an occluding
-        # translucent material (hair) from a see-through one (skirt frill) -- that
-        # is a semantic choice the user makes per material in the Material tab.
-        # When off, _setup_dx11_shader falls back to diffuse-alpha only
-        # (alpha < 1 -> blend, otherwise opaque).
-        if not settings.get(setting_keys.IMPORT_MODEL_AUTO_CLASSIFY_TRANSPARENCY, False):
-            return
+        # Every material is classified automatically. This keeps opaque
+        # standardSurface materials out of VP2's transparent queue and selects
+        # the appropriate hardware-shader technique without a user-facing mode.
         texture_dir = getattr(self, "texture_dir", None)
         if not texture_dir:
             return
@@ -1213,12 +1219,8 @@ class MeshConverter:
             start_tri, end_tri = cursor, cursor + triangle_count
             cursor = end_tri
             try:
-                opacity = (
-                    material.diffuse[3]
-                    if hasattr(material, "diffuse") and len(material.diffuse) > 3
-                    else 1.0
-                )
-                if opacity < 0.999:
+                opacity = _normalized_material_opacity(material)
+                if opacity < 1.0:
                     self._transparency_modes[material_index] = TRANSPARENCY_MODE_BLEND
                     continue
 
@@ -1881,10 +1883,11 @@ class MeshConverter:
         maya_attribute_utils.set_attribute(shader, "baseColor", material.diffuse[:3], "double3")
 
         # AlphaをOpacityに変換（StandardSurfaceではopacityを使用）
+        material_opacity = _normalized_material_opacity(material)
         maya_attribute_utils.set_attribute(
             shader,
             "opacity",
-            (material.diffuse[3], material.diffuse[3], material.diffuse[3]),
+            (material_opacity, material_opacity, material_opacity),
             "double3",
         )
 
@@ -1951,28 +1954,32 @@ class MeshConverter:
                 # utility to find and update this node in place.
                 cmds.connectAttr(place_uv_node + ".outUV", file_node + ".uvCoord")
 
-                # Preserve PMX diffuse alpha while applying per-pixel texture
-                # alpha. StandardSurface opacity is a color compound, so
-                # drive all channels from one scalar product.
-                opacity_multiply = cmds.shadingNode(
-                    "multiplyDivide",
-                    asUtility=True,
-                    name=sanitized_name + "_opacityMultiply",
+                transparency_mode = self._transparency_modes.get(
+                    material_index, TRANSPARENCY_MODE_OPAQUE
                 )
-                maya_attribute_utils.set_attribute(opacity_multiply, "operation", 1, "long")
-                maya_attribute_utils.set_attribute(
-                    opacity_multiply,
-                    "input2X",
-                    float(material.diffuse[3]) if len(material.diffuse) > 3 else 1.0,
-                    "float",
-                )
-                cmds.connectAttr(file_node + ".outAlpha", opacity_multiply + ".input1X", force=True)
-                for channel in "RGB":
-                    cmds.connectAttr(
-                        opacity_multiply + ".outputX",
-                        shader + f".opacity{channel}",
-                        force=True,
+                if transparency_mode != TRANSPARENCY_MODE_OPAQUE:
+                    # Preserve PMX diffuse alpha while applying per-pixel
+                    # texture alpha. Opaque materials deliberately have no
+                    # opacity connection so VP2 keeps them in the opaque queue.
+                    opacity_multiply = cmds.shadingNode(
+                        "multiplyDivide",
+                        asUtility=True,
+                        name=sanitized_name + "_opacityMultiply",
                     )
+                    maya_attribute_utils.set_attribute(opacity_multiply, "operation", 1, "long")
+                    maya_attribute_utils.set_attribute(
+                        opacity_multiply,
+                        "input2X",
+                        material_opacity,
+                        "float",
+                    )
+                    cmds.connectAttr(file_node + ".outAlpha", opacity_multiply + ".input1X", force=True)
+                    for channel in "RGB":
+                        cmds.connectAttr(
+                            opacity_multiply + ".outputX",
+                            shader + f".opacity{channel}",
+                            force=True,
+                        )
 
                 maya_attribute_utils.set_attribute(file_node, "fileTextureName", file_texture_path, "string")
                 maya_material_utils.mark_mmd_texture_file_node(

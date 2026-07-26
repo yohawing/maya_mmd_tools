@@ -6,7 +6,6 @@ IMPORT_GENERAL_USE_NAMESPACE = "import.general.use_namespace"
 IMPORT_MODEL_IMPORT_MODELS = "import.model.import_models"
 IMPORT_MODEL_CREATE_MMD_SHADERS = "import.model.create_mmd_shaders"
 IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL = "import.model.separate_meshes_by_material"
-IMPORT_MODEL_AUTO_CLASSIFY_TRANSPARENCY = "import.model.auto_classify_transparency"
 IMPORT_MODEL_AUTO_RESOLVE_TEXTURES = "import.model.auto_resolve_textures"
 IMPORT_MODEL_DISABLE_BACKFACE_CULLING = "import.model.disable_backface_culling"
 IMPORT_MODEL_UV_SET_NAME = "import.model.uv_set_name"
@@ -63,7 +62,6 @@ LOGGING_LOG_FILE_PATH = "logging.log_file_path"
 # Option-dict keys that must be mirrored into global settings while importing.
 MODEL_OPTION_TO_SETTINGS_KEY = {
     "separate_meshes_by_material": IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL,
-    "auto_classify_transparency": IMPORT_MODEL_AUTO_CLASSIFY_TRANSPARENCY,
     "auto_resolve_textures": IMPORT_MODEL_AUTO_RESOLVE_TEXTURES,
     "disable_backface_culling": IMPORT_MODEL_DISABLE_BACKFACE_CULLING,
     "uv_set_name": IMPORT_MODEL_UV_SET_NAME,

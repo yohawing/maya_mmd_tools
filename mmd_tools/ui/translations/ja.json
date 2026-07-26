@@ -149,7 +149,6 @@
     "vmd_fps": "VMDファイルのフレームレート。MMDは30fpsが標準です",
     "motion_scale": "VMDのボーン移動量とカメラ位置・距離に適用する倍率です",
     "separate_meshes": "マテリアルごとにメッシュを分割します",
-    "auto_classify_transparency": "UVアルファスキャンで透過マテリアルを自動分類します",
     "disable_backface_culling": "バックフェースカリングを無効にして両面描画にします",
     "import_physics": "PMXの物理データから剛体とジョイントを作成します",
     "use_cpp_rig_nodes": "IK/付与制約に実験的なC++リグノードを使います。利用できない場合はPythonノードにフォールバックします"
@@ -376,7 +375,6 @@
     "development_mode": "開発モード",
     "show_advanced_options": "詳細オプションを表示",
     "enable_logging": "ログを有効にする",
-    "auto_classify_transparency": "透過を自動分類 (テクスチャαを走査)",
     "auto_resolve_textures": "テクスチャを自動修復",
     "show_colliders": "コライダーを表示",
     "enable_physics": "物理を有効化"

@@ -153,17 +153,6 @@ class ImportExportTab(BaseTab):
             tooltip_key="separate_meshes",
         )
 
-        # Auto-classify transparency (opt-in): scan each material's used-UV texture
-        # alpha to assign cutout/blend. Off by default -> materials import opaque
-        # and the user assigns blend manually in the Material tab.
-        self.auto_classify_transparency_check = self._bind_checkbox(
-            "auto_classify_transparency",
-            setting_keys.IMPORT_MODEL_AUTO_CLASSIFY_TRANSPARENCY,
-            False,
-            model_layout,
-            tooltip_key="auto_classify_transparency",
-        )
-
         self.auto_resolve_textures_check = self._bind_checkbox(
             "auto_resolve_textures",
             setting_keys.IMPORT_MODEL_AUTO_RESOLVE_TEXTURES,
@@ -512,7 +501,6 @@ class ImportExportTab(BaseTab):
         self._dev_only_widgets = [
             self.scale_row,
             self.separate_meshes_check,
-            self.auto_classify_transparency_check,
             self.transparency_threshold_row,
             self.disable_backface_culling_check,
             self.texture_row,
@@ -773,8 +761,6 @@ class ImportExportTab(BaseTab):
         self.import_models_check.setText(self.tr("import_models", "checkboxes"))
         self.create_mmd_shaders_check.setText(self.tr("create_mmd_shaders", "checkboxes"))
         self.separate_meshes_check.setText(self.tr("separate_meshes", "checkboxes"))
-        if hasattr(self, "auto_classify_transparency_check"):
-            self.auto_classify_transparency_check.setText(self.tr("auto_classify_transparency", "checkboxes"))
         if hasattr(self, "auto_resolve_textures_check"):
             self.auto_resolve_textures_check.setText(self.tr("auto_resolve_textures", "checkboxes"))
         self.disable_backface_culling_check.setText(self.tr("disable_backface_culling", "checkboxes"))
@@ -795,7 +781,6 @@ class ImportExportTab(BaseTab):
         self.use_namespace_check.setToolTip(self.tr("use_namespace", "tooltips"))
         self.create_mmd_shaders_check.setToolTip(self.tr("create_mmd_shaders", "tooltips"))
         self.separate_meshes_check.setToolTip(self.tr("separate_meshes", "tooltips"))
-        self.auto_classify_transparency_check.setToolTip(self.tr("auto_classify_transparency", "tooltips"))
         self.auto_resolve_textures_check.setToolTip(self.tr("auto_resolve_textures", "tooltips"))
         self.disable_backface_culling_check.setToolTip(self.tr("disable_backface_culling", "tooltips"))
         self.import_physics_check.setToolTip(self.tr("import_physics", "tooltips"))

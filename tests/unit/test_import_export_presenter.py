@@ -1696,7 +1696,6 @@ class TestDevModeBehaviorGating(unittest.TestCase):
         "import.model.import_models",
         "import.physics.import_physics",
         "import.model.separate_meshes_by_material",
-        "import.model.auto_classify_transparency",
         "import.model.auto_resolve_textures",
         "import.model.disable_backface_culling",
         "import.model.uv_set_name",
@@ -1819,12 +1818,6 @@ class TestDevModeBehaviorGating(unittest.TestCase):
         settings.set("import.model.texture_search_path", "/some/path")
         opts = self._run_import()
         self.assertEqual(opts["texture_search_path"], "")
-
-    def test_normal_mode_forces_auto_classify_transparency_false(self):
-        settings.set("ui.general.development_mode", False)
-        settings.set("import.model.auto_classify_transparency", True)
-        opts = self._run_import()
-        self.assertFalse(opts["auto_classify_transparency"])
 
     def test_normal_mode_preserves_auto_resolve_textures_option(self):
         settings.set("ui.general.development_mode", False)
