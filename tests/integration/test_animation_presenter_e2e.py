@@ -172,6 +172,7 @@ class _Picker:
         self.goto_body_clicked = _Signal()
         self.mirror_selection_clicked = _Signal()
         self.ik_toggled = _Signal()
+        self.ik_enable_toggle_clicked = _Signal()
         self.selected_regions = []
         self.additive_selection = False
 
@@ -206,7 +207,6 @@ class _View:
         self.refresh_btn = _Btn()
         self.clear_btn = _Btn()
         self.select_all_btn = _Btn()
-        self.finger_body_btn = _Btn()
         self.status_label = _Label()
         self.display_frame_tree = _Tree()
         self.body_picker = _Picker()

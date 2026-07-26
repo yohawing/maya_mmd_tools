@@ -310,6 +310,7 @@ class SvgPickerWidget(QWidget):
         self._drag_origin: QPointF | None = None
         self._selection_rect: QRectF | None = None
         self._selected_regions: set[str] = set()
+        self._region_dim_levels: dict[str, float] = {}
         self._available_regions = set(self._region_paths)
         self._enabled_regions = set(self._region_paths)
         self._additive_selection = False
@@ -358,6 +359,16 @@ class SvgPickerWidget(QWidget):
             removed_ids.update(self._region_element_ids.get(region_id, ()))
         self._renderer.load(QByteArray(_renderer_bytes(self._svg_text, removed_ids)))
         self._sync_interactive_regions()
+
+    def set_region_dim_levels(self, levels: dict[str, float]) -> None:
+        """Visually dim individual regions while preserving SVG-authored artwork."""
+
+        self._region_dim_levels = {
+            region_id: max(0.0, min(float(level), 1.0))
+            for region_id, level in levels.items()
+            if region_id in self._region_paths and level > 0.0
+        }
+        self.update()
 
     def _sync_interactive_regions(self) -> None:
         """Apply model availability and dynamic visibility as one hit-test set."""
@@ -451,6 +462,14 @@ class SvgPickerWidget(QWidget):
             color = QColor(77, 196, 255, 150)
             painter.setBrush(QBrush(color))
             painter.setPen(QPen(QColor(color.red(), color.green(), color.blue(), 255), 2.2))
+            painter.drawPath(path)
+
+        for region_id, level in self._region_dim_levels.items():
+            if region_id in self._hidden_regions:
+                continue
+            path = self._region_paths[region_id]
+            painter.setBrush(QBrush(QColor(20, 24, 30, round(180 * level))))
+            painter.setPen(Qt.NoPen)
             painter.drawPath(path)
 
         if self._region_labels:

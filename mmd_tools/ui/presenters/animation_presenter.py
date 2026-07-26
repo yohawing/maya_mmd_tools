@@ -41,9 +41,17 @@ _IK_BONE_NAMES = {
     "left": "左足ＩＫ",
     "right": "右足ＩＫ",
 }
+_TOE_IK_BONE_NAMES = {
+    "left": "左つま先ＩＫ",
+    "right": "右つま先ＩＫ",
+}
 _LEG_FK_REGIONS = {
-    "left": {"left_upper_leg", "left_lower_leg", "left_foot", "left_toe", "left_toe_ex"},
-    "right": {"right_upper_leg", "right_lower_leg", "right_foot", "right_toe", "right_toe_ex"},
+    "left": {"left_lower_leg", "left_foot"},
+    "right": {"right_lower_leg", "right_foot"},
+}
+_TOE_FK_REGIONS = {
+    "left": {"left_toe"},
+    "right": {"right_toe"},
 }
 
 
@@ -82,6 +90,7 @@ class AnimationPresenter:
         self._pose_clipboard: dict | None = None
         self._all_model_joints: list[str] = []
         self._ik_nodes_by_side: dict[str, str] = {}
+        self._toe_ik_nodes_by_side: dict[str, str] = {}
         self._last_ik_states: dict[str, bool] = {}
         self._disposed = False
         # Animator Reset Pose is a one-shot selection action, distinct from
@@ -116,15 +125,15 @@ class AnimationPresenter:
             self.view.body_picker.clear_selection_clicked.connect(self.on_clear_clicked)
         if hasattr(self.view.body_picker, "ik_toggled"):
             self.view.body_picker.ik_toggled.connect(self.on_ik_toggled)
-        if hasattr(self.view, "ik_off_btn"):
-            self.view.ik_off_btn.clicked.connect(self.on_ik_off_clicked)
+        if hasattr(self.view.body_picker, "ik_enable_toggle_clicked"):
+            self.view.body_picker.ik_enable_toggle_clicked.connect(
+                self.on_ik_enable_toggle_clicked
+            )
         self.view.finger_picker.region_clicked.connect(self.on_finger_region_clicked)
         if hasattr(self.view.finger_picker, "regions_selected"):
             self.view.finger_picker.regions_selected.connect(self.on_finger_regions_selected)
         self.view.finger_picker.goto_body_clicked.connect(self.on_goto_body)
         self.view.finger_picker.mirror_selection_clicked.connect(self.on_mirror_selection)
-        if hasattr(self.view, "finger_body_btn"):
-            self.view.finger_body_btn.clicked.connect(self.on_goto_body)
         if hasattr(self.view, "select_all_btn"):
             self.view.select_all_btn.clicked.connect(self.on_select_all)
         for key, cb in self.view.vis_checkboxes.items():
@@ -221,23 +230,51 @@ class AnimationPresenter:
         self._sync_ik_picker_state(force=True)
         self._set_status("ik_enabled" if enabled else "ik_disabled", side=side_label)
 
-    def on_ik_off_clicked(self) -> None:
-        """Disable both leg IK solvers without creating keys."""
+    def on_ik_enable_toggle_clicked(self, side: str) -> None:
+        """Toggle one side's foot and toe IK without authoring animation keys."""
 
-        if not self._ik_nodes_by_side:
-            self._set_status("ik_not_found", side="L/R")
+        side_label = "L" if side == "left" else "R"
+        nodes = tuple(
+            dict.fromkeys(
+                node
+                for node in (
+                    self._ik_nodes_by_side.get(side),
+                    self._toe_ik_nodes_by_side.get(side),
+                )
+                if node
+            )
+        )
+        if not nodes:
+            self._set_status("ik_not_found", side=side_label)
             return
-        failures = []
-        for node in dict.fromkeys(self._ik_nodes_by_side.values()):
+        current_states = {}
+        for node in nodes:
             try:
-                self.maya_adapter.set_attr(f"{node}.enabled", False)
-            except Exception as exc:
-                failures.append(str(exc))
-        if failures:
-            self._set_status("ik_toggle_failed", error=failures[0])
+                current_states[node] = bool(
+                    self.maya_adapter.get_attr(f"{node}.enabled")
+                )
+            except Exception:
+                current_states[node] = False
+        enabled = not all(current_states.values())
+        updated_nodes = []
+        try:
+            for node in nodes:
+                self.maya_adapter.set_attr(f"{node}.enabled", enabled)
+                updated_nodes.append(node)
+        except Exception as exc:
+            for node in reversed(updated_nodes):
+                try:
+                    self.maya_adapter.set_attr(
+                        f"{node}.enabled", current_states[node]
+                    )
+                except Exception:
+                    logger.debug("Failed to restore IK Enable for %s", node)
+            logger.debug("IK Enable toggle failed: %s", exc)
+            self._sync_ik_picker_state(force=True)
+            self._set_status("ik_toggle_failed", error=exc)
             return
         self._sync_ik_picker_state(force=True)
-        self._set_status("ik_all_disabled")
+        self._set_status("ik_enabled" if enabled else "ik_disabled", side=side_label)
 
     def _on_control_rig_clicked(self, action: str) -> None:
         """Run one explicit MMD-native control-rig state action."""
@@ -281,6 +318,7 @@ class AnimationPresenter:
                         f"MMD Control Rig: {metadata['state']} / "
                         f"{len(metadata.get('controls', {}))} controls"
                     )
+            self._sync_visibility_controls(root)
             self.view.status_label.setText(message)
         except Exception as exc:
             logger.error("MMD Control Rig action failed", exc_info=True)
@@ -521,6 +559,14 @@ class AnimationPresenter:
         model_root = self.app_state.current_model_root
         if not model_root:
             return
+        if category == "control_rig":
+            group = self._control_rig_group(model_root)
+            if group:
+                try:
+                    self.maya_adapter.set_attr(f"{group}.visibility", visible)
+                except Exception as exc:
+                    logger.debug("Control Rig visibility toggle failed: %s", exc)
+            return
         if category == "morphs":
             return
         try:
@@ -536,6 +582,7 @@ class AnimationPresenter:
         self._all_model_joints = [bone_map[index] for index in sorted(bone_map)]
         self._bone_name_to_joint = self._build_bone_name_map(model_root)
         self._ik_nodes_by_side = self._collect_leg_ik_nodes(model_root)
+        self._toe_ik_nodes_by_side = self._collect_toe_ik_nodes(model_root)
         self._last_ik_states = {}
         self._sync_picker_regions()
         self._sync_ik_picker_state(force=True)
@@ -582,6 +629,9 @@ class AnimationPresenter:
                 "fingers_right",
             }
         )
+        for side in _IK_BONE_NAMES:
+            if side in self._ik_nodes_by_side or side in self._toe_ik_nodes_by_side:
+                body_ids.add(f"ik_enable_{side}")
         if hasattr(self.view.body_picker, "set_enabled_regions"):
             self.view.body_picker.set_enabled_regions(body_ids)
 
@@ -591,6 +641,7 @@ class AnimationPresenter:
             if (normalize_mmd_bone_name(region["bone_name"]) or region["bone_name"])
             in available_names
         }
+        finger_ids.add("back_to_body")
         if hasattr(self.view.finger_picker, "set_enabled_regions"):
             self.view.finger_picker.set_enabled_regions(finger_ids)
 
@@ -613,6 +664,25 @@ class AnimationPresenter:
             if (name := normalize_mmd_bone_name(raw_name) or raw_name) in normalized
         }
 
+    def _collect_toe_ik_nodes(self, model_root: str) -> dict[str, str]:
+        """Resolve the current model's owned left/right toe IK solvers."""
+
+        try:
+            from ...converters.vmd_ik_enabled_animation import collect_ik_nodes_by_bone_name
+
+            nodes = collect_ik_nodes_by_bone_name(target_model=model_root)
+        except Exception as exc:
+            logger.debug("Failed to collect toe IK nodes for %s: %s", model_root, exc)
+            return {}
+        normalized = {
+            normalize_mmd_bone_name(name) or name: node for name, node in nodes.items()
+        }
+        return {
+            side: normalized[name]
+            for side, raw_name in _TOE_IK_BONE_NAMES.items()
+            if (name := normalize_mmd_bone_name(raw_name) or raw_name) in normalized
+        }
+
     def _sync_ik_picker_state(self, *, force: bool = False) -> None:
         """Hide a side's FK controls while its evaluated leg IK is enabled."""
 
@@ -622,17 +692,49 @@ class AnimationPresenter:
                 states[side] = bool(self.maya_adapter.get_attr(f"{node}.enabled"))
             except Exception:
                 states[side] = False
-        if not force and states == self._last_ik_states:
+        toe_states = {}
+        for side, node in self._toe_ik_nodes_by_side.items():
+            try:
+                toe_states[side] = bool(self.maya_adapter.get_attr(f"{node}.enabled"))
+            except Exception:
+                toe_states[side] = False
+        combined_states = {
+            **{f"foot:{side}": enabled for side, enabled in states.items()},
+            **{f"toe:{side}": enabled for side, enabled in toe_states.items()},
+        }
+        if not force and combined_states == self._last_ik_states:
             return
-        self._last_ik_states = states
+        self._last_ik_states = combined_states
         hidden = set()
-        for side, enabled in states.items():
-            if enabled:
+        for side in _IK_BONE_NAMES:
+            foot_enabled = states.get(side, False)
+            toe_enabled = toe_states.get(side, False)
+            if foot_enabled:
                 hidden.update(_LEG_FK_REGIONS[side])
+            else:
+                hidden.add(f"{side}_ik")
+            if toe_enabled:
+                hidden.update(_TOE_FK_REGIONS[side])
+            else:
+                hidden.add(f"{side}_toe_ik")
         if hasattr(self.view.body_picker, "set_hidden_regions"):
             self.view.body_picker.set_hidden_regions(hidden)
-        if hasattr(self.view, "ik_off_btn"):
-            self.view.ik_off_btn.setEnabled(any(states.values()))
+        if hasattr(self.view.body_picker, "set_region_dim_levels"):
+            dim_levels = {}
+            for side in _IK_BONE_NAMES:
+                values = [
+                    enabled
+                    for key, enabled in (
+                        (f"foot:{side}", states.get(side)),
+                        (f"toe:{side}", toe_states.get(side)),
+                    )
+                    if key in combined_states
+                ]
+                if not values or not any(values):
+                    dim_levels[f"ik_enable_{side}"] = 0.65
+                elif not all(values):
+                    dim_levels[f"ik_enable_{side}"] = 0.3
+            self.view.body_picker.set_region_dim_levels(dim_levels)
 
     def _build_picker_english_tooltips(self) -> None:
         """Cache PMX English bone names for locale-aware picker tooltips."""
@@ -668,27 +770,36 @@ class AnimationPresenter:
             ("finger", self.view.finger_picker, _FINGER_REGIONS),
         ):
             english = self._picker_english_tooltips[picker]
-            tooltips = {
-                region["id"]: (
-                    english.get(region["id"], region["bone_name"])
-                    if language != "ja"
-                    else region["bone_name"]
+            tooltips = {}
+            for region in regions:
+                region_id = region["id"]
+                if language == "ja":
+                    tooltips[region_id] = region["bone_name"]
+                    continue
+                translated = (
+                    self.view.tr(region_id, "animation_picker")
+                    if picker == "body"
+                    else region_id
                 )
-                for region in regions
-            }
+                tooltips[region_id] = (
+                    translated
+                    if translated != region_id
+                    else english.get(region_id, region["bone_name"])
+                )
             widget.update_region_texts(tooltips=tooltips)
 
     def _clear_all(self):
         self._picker_groups = []
         self._all_model_joints = []
         self._ik_nodes_by_side = {}
+        self._toe_ik_nodes_by_side = {}
         self._last_ik_states = {}
         self._bone_name_to_joint.clear()
         self._sync_picker_regions()
         if hasattr(self.view.body_picker, "set_hidden_regions"):
             self.view.body_picker.set_hidden_regions(set())
-        if hasattr(self.view, "ik_off_btn"):
-            self.view.ik_off_btn.setEnabled(False)
+        if hasattr(self.view.body_picker, "set_region_dim_levels"):
+            self.view.body_picker.set_region_dim_levels({})
         self.view.display_frame_tree.clear()
         self._clear_morph_tab()
         self.view.status_label.setText("")
@@ -697,11 +808,41 @@ class AnimationPresenter:
         try:
             sync_visibility_connections(self.maya_adapter, model_root)
             for key, cb in self.view.vis_checkboxes.items():
+                if key == "control_rig":
+                    group = self._control_rig_group(model_root)
+                    cb._control_rig_available = bool(group)
+                    cb.setChecked(
+                        bool(self.maya_adapter.get_attr(f"{group}.visibility"))
+                        if group
+                        else False
+                    )
+                    continue
                 if key == "morphs":
                     continue
                 cb.setChecked(get_visibility_category(self.maya_adapter, model_root, key))
+            if hasattr(self.view, "refresh_development_mode_visibility"):
+                self.view.refresh_development_mode_visibility()
         except Exception as exc:
             logger.debug("Visibility control sync failed: %s", exc)
+
+    def _control_rig_group(self, model_root: str) -> str | None:
+        """Resolve the UUID-owned Control Rig display group, if it is valid."""
+
+        cmds_module = getattr(self.maya_adapter, "_cmds", None)
+        if cmds_module is None:
+            return None
+        try:
+            from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
+
+            metadata = read_mmd_control_rig_metadata(
+                model_root, cmds_module=cmds_module
+            )
+            uuid = metadata.get("controlGroupUuid") if metadata else None
+            nodes = self.maya_adapter.ls(uuid, long=True) if uuid else []
+            return str(nodes[0]) if len(nodes) == 1 else None
+        except Exception:
+            logger.debug("Control Rig visibility group lookup failed", exc_info=True)
+            return None
 
     def _update_model_combo(self, models: list):
         combo = self.view.model_combo

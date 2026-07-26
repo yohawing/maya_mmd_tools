@@ -33,8 +33,10 @@ class AnimationTab(BaseTab):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("AnimationTab")
+        self.setMinimumWidth(150)
 
         main_layout = QVBoxLayout(self)
+        main_layout.setSizeConstraint(QVBoxLayout.SetNoConstraint)
         main_layout.setContentsMargins(4, 4, 4, 4)
 
         # --- Model selector ---
@@ -53,11 +55,15 @@ class AnimationTab(BaseTab):
         self.vis_checkboxes = {}
         for key, symbol in (
             ("mesh", "view_in_ar"),
-            ("joints", "account_tree"),
-            ("colliders", "shield"),
+            ("joints", "bone"),
+            ("colliders", "capsule"),
+            ("control_rig", "controlrig"),
         ):
             button = MaterialSymbolToolButton(symbol, key, checkable=True)
             button.setChecked(True)
+            if key == "control_rig":
+                button._control_rig_available = False
+                button.setEnabled(False)
             visibility_layout.addWidget(button)
             self.vis_checkboxes[key] = button
         visibility_layout.addStretch(1)
@@ -77,6 +83,7 @@ class AnimationTab(BaseTab):
             )
         ):
             button = QPushButton(label)
+            button.setToolTip(label)
             row, column = divmod(index, 3)
             control_rig_layout.addWidget(button, row, column)
             self.control_rig_buttons[key] = button
@@ -90,13 +97,6 @@ class AnimationTab(BaseTab):
         self.body_page = QWidget()
         body_layout = QVBoxLayout(self.body_page)
         body_layout.setContentsMargins(0, 0, 0, 0)
-        ik_layout = QHBoxLayout()
-        ik_layout.setContentsMargins(0, 0, 0, 0)
-        ik_layout.addStretch(1)
-        self.ik_off_btn = QPushButton("IK OFF")
-        self.ik_off_btn.setEnabled(False)
-        ik_layout.addWidget(self.ik_off_btn)
-        body_layout.addLayout(ik_layout)
         self.body_picker = BodyPickerWidget()
         body_layout.addWidget(self.body_picker, 0, Qt.AlignTop)
         body_layout.addStretch(1)
@@ -105,13 +105,6 @@ class AnimationTab(BaseTab):
         self.finger_page = QWidget()
         finger_layout = QVBoxLayout(self.finger_page)
         finger_layout.setContentsMargins(0, 0, 0, 0)
-        finger_nav_layout = QHBoxLayout()
-        finger_nav_layout.setContentsMargins(0, 0, 0, 0)
-        self.finger_body_btn = QPushButton("‹  Bodyへ戻る")
-        self.finger_body_btn.setToolTip("全身Pickerへ戻る")
-        finger_nav_layout.addWidget(self.finger_body_btn)
-        finger_nav_layout.addStretch(1)
-        finger_layout.addLayout(finger_nav_layout)
         self.finger_picker = FingerPickerWidget()
         finger_layout.addWidget(self.finger_picker, 0, Qt.AlignTop)
         finger_layout.addStretch(1)
@@ -211,6 +204,15 @@ class AnimationTab(BaseTab):
         # buttons clickable through a re-parented or scripted view.
         self.control_rig_group.setVisible(development_mode)
         self.control_rig_group.setEnabled(development_mode)
+        control_rig_visibility = self.vis_checkboxes.get("control_rig")
+        if control_rig_visibility is not None:
+            control_rig_visibility.setVisible(development_mode)
+            control_rig_visibility.setEnabled(
+                development_mode
+                and bool(
+                    getattr(control_rig_visibility, "_control_rig_available", False)
+                )
+            )
 
     def current_language(self) -> str:
         """Return the active UI locale for presenter-owned dynamic text."""
@@ -225,13 +227,9 @@ class AnimationTab(BaseTab):
         self.refresh_btn.setText(tr("refresh"))
         for index, key in enumerate(("body", "finger", "morph", "display")):
             self.picker_tabs.setTabText(index, tr(key))
-        self.finger_body_btn.setText(f"‹  {tr('back_to_body')}")
-        self.finger_body_btn.setToolTip(tr("back_to_body_tooltip"))
         self.select_all_btn.setText(tr("select_all"))
         self.select_all_btn.setToolTip(tr("select_all_tooltip"))
         self.clear_btn.setText(tr("clear"))
-        self.ik_off_btn.setText(tr("ik_off"))
-        self.ik_off_btn.setToolTip(tr("ik_off_tooltip"))
         self.visibility_label.setText(f"{tr('visibility')}：")
         self.body_picker.update_region_texts(
             labels={
@@ -247,9 +245,15 @@ class AnimationTab(BaseTab):
                 "mirror_sel": tr("mirror_selection_tooltip"),
                 "fingers_left": tr("finger_picker_tooltip"),
                 "fingers_right": tr("finger_picker_tooltip"),
+                "ik_enable_left": self.tr("ik_enable_side_tooltip"),
+                "ik_enable_right": self.tr("ik_enable_side_tooltip"),
             },
         )
-        for key in ("mesh", "joints", "colliders"):
+        self.finger_picker.update_region_texts(
+            labels={"back_to_body": f"‹  {tr('back_to_body')}"},
+            tooltips={"back_to_body": tr("back_to_body_tooltip")},
+        )
+        for key in ("mesh", "joints", "colliders", "control_rig"):
             self.vis_checkboxes[key].setText(tr(key))
         self.tools_group.setTitle(tr("tools"))
         for key, button in self.tool_buttons.items():

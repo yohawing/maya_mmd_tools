@@ -212,11 +212,14 @@ class _FakeBodyPicker:
         self.select_all_clicked = _FakeSignal()
         self.clear_selection_clicked = _FakeSignal()
         self.ik_toggled = _FakeSignal()
+        self.ik_enable_toggle_clicked = _FakeSignal()
         self.selected_regions = []
         self.tooltip = ""
         self.additive_selection = False
+        self.region_labels = {}
         self.region_tooltips = {}
         self.hidden_regions = set()
+        self.region_dim_levels = {}
 
     def set_selected_regions(self, region_ids):
         self.selected_regions = list(region_ids)
@@ -225,10 +228,14 @@ class _FakeBodyPicker:
         self.tooltip = text
 
     def update_region_texts(self, *, labels=None, tooltips=None):
+        self.region_labels.update(labels or {})
         self.region_tooltips.update(tooltips or {})
 
     def set_hidden_regions(self, region_ids):
         self.hidden_regions = set(region_ids)
+
+    def set_region_dim_levels(self, levels):
+        self.region_dim_levels = dict(levels)
 
 
 class _FakeFingerPicker:
@@ -278,6 +285,12 @@ class _FakeCheckBox:
     def setChecked(self, val):
         self._checked = val
 
+    def setEnabled(self, enabled):
+        self.enabled = bool(enabled)
+
+    def setVisible(self, visible):
+        self.visible = bool(visible)
+
 
 class _FakeView:
     TAB_BODY = 0
@@ -290,8 +303,6 @@ class _FakeView:
         self.refresh_btn = _FakeButton()
         self.clear_btn = _FakeButton()
         self.select_all_btn = _FakeButton()
-        self.ik_off_btn = _FakeButton()
-        self.finger_body_btn = _FakeButton()
         self.status_label = _FakeLabel()
         self.display_frame_tree = _FakeTreeWidget()
         self.body_picker = _FakeBodyPicker()
@@ -328,7 +339,6 @@ class _FakeView:
             "ik_not_found": "{side} IK was not found",
             "ik_enabled": "{side} IK enabled",
             "ik_disabled": "{side} IK disabled",
-            "ik_all_disabled": "Leg IK disabled",
             "ik_toggle_failed": "IK toggle failed: {error}",
             "mirrored_pose": "Mirrored pose",
             "mirror_failed": "Mirror failed: {error}",
@@ -752,28 +762,93 @@ class TestBodyPickerPresenter(unittest.TestCase):
         self.assertTrue(adapter._attrs["left_leg_ik_solver", "enabled"])
         self.assertEqual(
             view.body_picker.hidden_regions,
-            {"left_upper_leg", "left_lower_leg", "left_foot", "left_toe", "left_toe_ex"},
+            {
+                "left_lower_leg",
+                "left_foot",
+                "left_toe_ik",
+                "right_ik",
+                "right_toe_ik",
+            },
         )
-        self.assertTrue(view.ik_off_btn.enabled)
+        self.assertNotIn("left_upper_leg", view.body_picker.hidden_regions)
+        self.assertNotIn("left_ik", view.body_picker.hidden_regions)
+        self.assertEqual(view.body_picker.region_dim_levels, {"ik_enable_right": 0.65})
         self.assertIn("L IK enabled", view.status_label.text())
 
-    def test_ik_off_disables_both_sides_and_restores_fk_regions(self):
+    def test_ik_enable_toggle_switches_one_sides_solvers_without_hiding_thighs(self):
         presenter, view, _, adapter = self._make_with_bones()
         presenter._ik_nodes_by_side = {
             "left": "left_leg_ik_solver",
             "right": "right_leg_ik_solver",
         }
-        adapter._attrs["left_leg_ik_solver", "enabled"] = True
-        adapter._attrs["right_leg_ik_solver", "enabled"] = True
-        presenter._sync_ik_picker_state(force=True)
+        presenter._toe_ik_nodes_by_side = {
+            "left": "left_toe_ik_solver",
+            "right": "right_toe_ik_solver",
+        }
+        adapter._attrs["left_leg_ik_solver", "enabled"] = False
+        adapter._attrs["right_leg_ik_solver", "enabled"] = False
+        adapter._attrs["left_toe_ik_solver", "enabled"] = False
+        adapter._attrs["right_toe_ik_solver", "enabled"] = False
 
-        view.ik_off_btn.clicked.emit()
+        view.body_picker.ik_enable_toggle_clicked.emit("left")
+
+        self.assertTrue(adapter._attrs["left_leg_ik_solver", "enabled"])
+        self.assertFalse(adapter._attrs["right_leg_ik_solver", "enabled"])
+        self.assertTrue(adapter._attrs["left_toe_ik_solver", "enabled"])
+        self.assertFalse(adapter._attrs["right_toe_ik_solver", "enabled"])
+        self.assertEqual(
+            view.body_picker.hidden_regions,
+            {
+                "left_lower_leg",
+                "left_foot",
+                "left_toe",
+                "right_ik",
+                "right_toe_ik",
+            },
+        )
+        self.assertEqual(view.body_picker.region_dim_levels, {"ik_enable_right": 0.65})
+
+        view.body_picker.ik_enable_toggle_clicked.emit("left")
 
         self.assertFalse(adapter._attrs["left_leg_ik_solver", "enabled"])
         self.assertFalse(adapter._attrs["right_leg_ik_solver", "enabled"])
-        self.assertEqual(view.body_picker.hidden_regions, set())
-        self.assertFalse(view.ik_off_btn.enabled)
-        self.assertIn("Leg IK disabled", view.status_label.text())
+        self.assertFalse(adapter._attrs["left_toe_ik_solver", "enabled"])
+        self.assertFalse(adapter._attrs["right_toe_ik_solver", "enabled"])
+        self.assertEqual(
+            view.body_picker.hidden_regions,
+            {"left_ik", "right_ik", "left_toe_ik", "right_toe_ik"},
+        )
+        self.assertEqual(
+            view.body_picker.region_dim_levels,
+            {"ik_enable_left": 0.65, "ik_enable_right": 0.65},
+        )
+
+    def test_ik_enable_toggle_rolls_back_when_one_solver_update_fails(self):
+        presenter, view, _, adapter = self._make_with_bones()
+        presenter._ik_nodes_by_side = {
+            "left": "left_leg_ik_solver",
+        }
+        presenter._toe_ik_nodes_by_side = {"left": "left_toe_ik_solver"}
+        adapter._attrs["left_leg_ik_solver", "enabled"] = False
+        adapter._attrs["left_toe_ik_solver", "enabled"] = False
+        set_attr = adapter.set_attr
+
+        def fail_toe_solver(attr_path, value):
+            if attr_path == "left_toe_ik_solver.enabled":
+                raise RuntimeError("toe solver is not settable")
+            set_attr(attr_path, value)
+
+        adapter.set_attr = fail_toe_solver
+
+        view.body_picker.ik_enable_toggle_clicked.emit("left")
+
+        self.assertFalse(adapter._attrs["left_leg_ik_solver", "enabled"])
+        self.assertFalse(adapter._attrs["left_toe_ik_solver", "enabled"])
+        self.assertEqual(
+            view.body_picker.hidden_regions,
+            {"left_ik", "right_ik", "left_toe_ik", "right_toe_ik"},
+        )
+        self.assertIn("IK toggle failed", view.status_label.text())
 
     def test_body_picker_targets_owned_control_in_every_rig_state(self):
         presenter, _view, _app_state, adapter = self._make_with_bones(
@@ -829,6 +904,18 @@ class TestBodyPickerPresenter(unittest.TestCase):
         view.current_language = lambda: "ja"
         presenter._retranslate_picker_bone_tooltips()
         self.assertEqual(view.body_picker.region_tooltips["head"], "頭")
+
+    def test_body_picker_tooltip_prefers_ui_translation_for_fixed_regions(self):
+        presenter, view, _, _adapter = self._make_with_bones()
+        view.current_language = lambda: "zh_cn"
+        translate = view.tr
+        view.tr = lambda key, category=None: (
+            "腰" if (key, category) == ("waist", "animation_picker") else translate(key, category)
+        )
+
+        presenter._retranslate_picker_bone_tooltips()
+
+        self.assertEqual(view.body_picker.region_tooltips["waist"], "腰")
 
     def test_region_click_unmapped_bone(self):
         presenter, view, _, adapter = self._make_with_bones(bone_names={})
@@ -1226,6 +1313,21 @@ class TestVisibilityToggle(unittest.TestCase):
         presenter, _, _, adapter = self._make_with_model(model_root=None)
         presenter._on_visibility_changed("joints", False)
         self.assertEqual(len(adapter._set_attrs), 0)
+
+    def test_control_rig_visibility_targets_uuid_owned_group(self):
+        presenter, view, _, adapter = self._make_with_model()
+        button = _FakeCheckBox("control_rig")
+        view.vis_checkboxes["control_rig"] = button
+        group = "|test_model|Controls"
+        adapter._attrs[(group, "visibility")] = True
+
+        with patch.object(presenter, "_control_rig_group", return_value=group):
+            presenter._sync_visibility_controls("test_model")
+            presenter._on_visibility_changed("control_rig", False)
+
+        self.assertTrue(button._control_rig_available)
+        self.assertTrue(button.isChecked())
+        self.assertFalse(adapter._set_attrs[f"{group}.visibility"])
 
 
 class TestToolsSection(unittest.TestCase):

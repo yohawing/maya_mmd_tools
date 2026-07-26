@@ -62,12 +62,15 @@ class _VisibilityTarget:
 
 
 def _view():
+    control_rig_visibility = _VisibilityTarget()
+    control_rig_visibility._control_rig_available = True
     return SimpleNamespace(
         TAB_BODY=AnimationTab.TAB_BODY,
         TAB_FINGER=AnimationTab.TAB_FINGER,
         picker_tabs=_PickerTabs(AnimationTab.TAB_BODY),
         tools_group=_VisibilityTarget(),
         control_rig_group=_VisibilityTarget(),
+        vis_checkboxes={"control_rig": control_rig_visibility},
     )
 
 
@@ -135,6 +138,17 @@ class AnimationTabDevelopmentVisibilityTest(unittest.TestCase):
 
         self.assertTrue(view.control_rig_group.visible)
         self.assertTrue(view.control_rig_group.enabled)
+
+    def test_control_rig_visibility_button_is_development_mode_only(self):
+        view = _view()
+
+        _refresh(view, development_mode=False)
+        self.assertFalse(view.vis_checkboxes["control_rig"].visible)
+        self.assertFalse(view.vis_checkboxes["control_rig"].enabled)
+
+        _refresh(view, development_mode=True)
+        self.assertTrue(view.vis_checkboxes["control_rig"].visible)
+        self.assertTrue(view.vis_checkboxes["control_rig"].enabled)
 
 
 class MmdControlRigReleaseIsolationTest(unittest.TestCase):

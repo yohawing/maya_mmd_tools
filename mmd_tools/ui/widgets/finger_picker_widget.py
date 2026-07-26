@@ -66,8 +66,11 @@ def _hand_shape_order(side: str) -> tuple[str, ...]:
     )
 
 
-# The SVG is front-facing: screen-left is the character's right hand.
-_FINGER_SHAPE_REGION_IDS = _hand_shape_order("right") + _hand_shape_order("left")
+# The SVG is front-facing: the first authored group is screen-right, which is
+# the character's left hand; the second group is the character's right hand.
+_FINGER_SHAPE_REGION_IDS = (
+    _hand_shape_order("left") + _hand_shape_order("right") + ("back_to_body",)
+)
 
 
 class FingerPickerWidget(SvgPickerWidget):
@@ -82,9 +85,25 @@ class FingerPickerWidget(SvgPickerWidget):
         super().__init__(
             _ASSET_DIR / "animpicker_finger.svg",
             ordered_region_ids=_FINGER_SHAPE_REGION_IDS,
+            region_labels={"back_to_body": "‹  Body"},
             tooltip_labels={region["id"]: region["bone_name"] for region in _FINGER_REGIONS},
             parent=parent,
         )
         self.setObjectName("FingerPickerWidget")
-        self.shape_clicked.connect(self.region_clicked.emit)
-        self.shapes_selected.connect(self.regions_selected.emit)
+        self.shape_clicked.connect(self._on_shape_clicked)
+        self.shapes_selected.connect(self._on_shapes_selected)
+
+    def _on_shape_clicked(self, region_id: str) -> None:
+        """Route the embedded navigation button separately from finger bones."""
+
+        if region_id == "back_to_body":
+            self.goto_body_clicked.emit()
+        else:
+            self.region_clicked.emit(region_id)
+
+    def _on_shapes_selected(self, region_ids: list[str]) -> None:
+        """Exclude the embedded navigation button from marquee selection."""
+
+        self.regions_selected.emit(
+            [region_id for region_id in region_ids if region_id != "back_to_body"]
+        )

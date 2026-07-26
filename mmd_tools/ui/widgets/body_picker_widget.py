@@ -41,8 +41,8 @@ _BODY_REGIONS = [
     {"id": "right_eye", "bone_name": "右目"},
     {"id": "left_shoulder_p", "bone_name": "左肩P"},
     {"id": "right_shoulder_p", "bone_name": "右肩P"},
-    {"id": "left_toe_ex", "bone_name": "左足先EX"},
-    {"id": "right_toe_ex", "bone_name": "右足先EX"},
+    {"id": "left_toe_ik", "bone_name": "左つま先ＩＫ"},
+    {"id": "right_toe_ik", "bone_name": "右つま先ＩＫ"},
     {"id": "left_ik", "bone_name": "左足ＩＫ"},
     {"id": "right_ik", "bone_name": "右足ＩＫ"},
     {"id": "master", "bone_name": "全ての親"},
@@ -81,10 +81,12 @@ _BODY_SOURCES = tuple(
         ("right_eye", "right_eye"),
         ("left_shoulder_p", "left_shoulder_p"),
         ("right_shoulder_p", "right_shoulder_p"),
-        ("left_toe_ex", "left_toe_ex"),
-        ("right_toe_ex", "right_toe_ex"),
+        ("left_toe_IK", "left_toe_ik"),
+        ("right_toe_IK", "right_toe_ik"),
         ("left_ik", "left_ik"),
         ("right_ik", "right_ik"),
+        ("mirror_sel-2", "ik_enable_left"),
+        ("mirror_sel-3", "ik_enable_right"),
         ("master", "master"),
         ("some_function", "select_all"),
         ("some_function-2", "clear_selection"),
@@ -107,6 +109,7 @@ class BodyPickerWidget(SvgPickerWidget):
     select_all_clicked = Signal()
     clear_selection_clicked = Signal()
     ik_toggled = Signal(str, bool)
+    ik_enable_toggle_clicked = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(
@@ -118,10 +121,6 @@ class BodyPickerWidget(SvgPickerWidget):
                 "clear_selection": "CLEAR",
                 "reset_pose": "Reset Pose",
                 "mirror_sel": "Mirror Sel",
-                "left_ik": "L IK",
-                "right_ik": "R IK",
-                "fingers_left": "F",
-                "fingers_right": "F",
             },
             tooltip_labels={
                 **{region["id"]: region["bone_name"] for region in _BODY_REGIONS},
@@ -131,6 +130,8 @@ class BodyPickerWidget(SvgPickerWidget):
                 "mirror_sel": "反対側のボーンを選択",
                 "fingers_left": "指Pickerへ移動",
                 "fingers_right": "指Pickerへ移動",
+                "ik_enable_left": "左脚のIK Enableを切り替え",
+                "ik_enable_right": "右脚のIK Enableを切り替え",
             },
             removed_element_ids={"bg.png", "alignment-guides"},
             parent=parent,
@@ -151,6 +152,8 @@ class BodyPickerWidget(SvgPickerWidget):
                 "mirror_sel",
                 "fingers_left",
                 "fingers_right",
+                "ik_enable_left",
+                "ik_enable_right",
             }
         ]
         self.regions_selected.emit(selectable)
@@ -166,6 +169,8 @@ class BodyPickerWidget(SvgPickerWidget):
             self.goto_finger_clicked.emit()
         elif region_id == "reset_pose":
             self.reset_pose_clicked.emit()
+        elif region_id in {"ik_enable_left", "ik_enable_right"}:
+            self.ik_enable_toggle_clicked.emit(region_id.removeprefix("ik_enable_"))
         else:
             if region_id in {"left_ik", "right_ik"}:
                 self.ik_toggled.emit(region_id.removesuffix("_ik"), True)

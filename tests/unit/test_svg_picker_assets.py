@@ -41,8 +41,12 @@ def test_body_semantic_regions_have_unique_ids_and_bone_names():
 
     assert len(region_ids) == len(set(region_ids))
     assert len(bone_names) == len(set(bone_names))
-    assert {"lower_body", "left_ik", "right_ik"} <= set(region_ids)
-    assert {"下半身", "左足ＩＫ", "右足ＩＫ"} <= set(bone_names)
+    assert {"lower_body", "left_ik", "right_ik", "left_toe_ik", "right_toe_ik"} <= set(
+        region_ids
+    )
+    assert {"下半身", "左足ＩＫ", "右足ＩＫ", "左つま先ＩＫ", "右つま先ＩＫ"} <= set(
+        bone_names
+    )
 
 
 def test_body_torso_art_maps_chest_to_upper_body_2_and_abdomen_to_upper_body():
@@ -51,6 +55,10 @@ def test_body_torso_art_maps_chest_to_upper_body_2_and_abdomen_to_upper_body():
     assert source_map["upper_body"] == "upper_body_2"
     assert source_map["upper_body_2"] == "upper_body"
     assert source_map["lower_body"] == "lower_body"
+    assert source_map["left_toe_IK"] == "left_toe_ik"
+    assert source_map["right_toe_IK"] == "right_toe_ik"
+    assert source_map["mirror_sel-2"] == "ik_enable_left"
+    assert source_map["mirror_sel-3"] == "ik_enable_right"
 
 
 def test_renderer_can_remove_fk_art_without_removing_ik_art():
@@ -68,7 +76,7 @@ def test_renderer_can_remove_fk_art_without_removing_ik_art():
     assert "left_upper_leg-2" in ids
 
 
-def test_finger_svg_shape_order_matches_32_semantic_regions():
+def test_finger_svg_shape_order_matches_bones_and_embedded_navigation():
     root = _svg_root("animpicker_finger.svg")
     shapes = [
         element
@@ -77,10 +85,15 @@ def test_finger_svg_shape_order_matches_32_semantic_regions():
         and element.get("id") != "canvas-background"
     ]
 
-    assert len(shapes) == 32
-    assert len(_FINGER_SHAPE_REGION_IDS) == 32
-    assert len(set(_FINGER_SHAPE_REGION_IDS)) == 32
-    assert {region["id"] for region in _FINGER_REGIONS} == set(_FINGER_SHAPE_REGION_IDS)
+    assert len(shapes) == 33
+    assert len(_FINGER_SHAPE_REGION_IDS) == 33
+    assert len(set(_FINGER_SHAPE_REGION_IDS)) == 33
+    assert {region["id"] for region in _FINGER_REGIONS} == (
+        set(_FINGER_SHAPE_REGION_IDS) - {"back_to_body"}
+    )
+    assert _FINGER_SHAPE_REGION_IDS[0] == "left_palm"
+    assert _FINGER_SHAPE_REGION_IDS[16] == "right_palm"
+    assert _FINGER_SHAPE_REGION_IDS[-1] == "back_to_body"
 
 
 def test_picker_background_is_high_dpi_2x_canvas():
