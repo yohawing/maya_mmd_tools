@@ -229,13 +229,8 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         ]
         self.assertEqual(len(animator_calls), 1)
 
-    def test_install_menu_resolves_icons_without_module_file_binding(self):
-        """Maya's scripted plug-in loader can exec plugin_main with no __file__.
-
-        The editor menu item used ``os.path.dirname(__file__)`` for its icon,
-        so ``initializePlugin`` raised NameError before any rig node was
-        registered on mayapy/batch hosts.
-        """
+    def test_install_menu_without_module_file_binding(self):
+        """Maya's scripted plug-in loader can exec plugin_main with no __file__."""
         self.plugin_main.cmds.menu.side_effect = lambda *_args, **kwargs: (
             False if kwargs.get("exists") else [] if kwargs.get("query") else "MMD"
         )
@@ -254,7 +249,7 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             if call[1].get("label") == "MMD Editor"
         ]
         self.assertEqual(len(editor_calls), 1)
-        self.assertTrue(editor_calls[0][1]["image"].endswith("mmd_editor.svg"))
+        self.assertNotIn("image", editor_calls[0][1])
 
     def test_install_menu_creates_tearoff_top_menu_and_installs_humanik_item(self):
         self.plugin_main.cmds.menu.side_effect = lambda *_args, **kwargs: (
@@ -298,7 +293,6 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             unittest.mock.call(
                 "MMDToolsMenuItem",
                 label="MMD Editor",
-                image=unittest.mock.ANY,
                 command=unittest.mock.ANY,
                 parent="MMD",
             ),

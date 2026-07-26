@@ -252,7 +252,6 @@ def install_mmd_menu():
     cmds.menuItem(
         "MMDToolsMenuItem",
         label="MMD Editor",
-        image=os.path.join(_PACKAGE_DIR, "ui", "assets", "app", "mmd_editor.svg"),
         command=lambda *args: open_main_window(dockable=False),
         parent="MMD",
     )
