@@ -24,10 +24,11 @@ from mmd_tools.nodes import mmd_physics_world_shape
 
 _main_window = None
 _animator_toolset_window = None
-# Track whether Python actually registered rig nodes (mmdAppend / mmdCcdIk).
-# Used at deregister time instead of re-checking _cpp_plugin_loaded(), which
-# is fragile if the C++ plugin loads or unloads between init and uninit.
-_python_rig_nodes_registered = False
+# Track each rig node that this Python plug-in actually registered. The C++
+# plug-in can remain loaded after skipping duplicate Python-owned types, so its
+# loaded state alone does not prove that it currently owns either node type.
+_python_append_node_registered = False
+_python_ccd_ik_node_registered = False
 _shader_override_registered = False
 _physics_nodes_registered = False
 _python_physics_solver_registered = False
@@ -284,15 +285,6 @@ def uninstall_mmd_menu():
         cmds.deleteUI("MMD", menu=True)
 
 
-def _cpp_plugin_loaded() -> bool:
-    """Return True if the C++ plugin (mmd_tools_cpp) is already loaded."""
-    try:
-        loaded = cmds.pluginInfo(query=True, listPlugins=True) or []
-    except Exception:
-        loaded = []
-    return "mmd_tools_cpp" in loaded
-
-
 def _node_type_registered(type_name: str) -> bool:
     """Return True if Maya already has the given node type registered."""
     try:
@@ -533,12 +525,18 @@ def initializePlugin(mobject):
         if not _scene_file_is_being_read():
             _soft_sync_existing_glsl_diffuse_contracts()
         _trace_initialize_step("scene-sync:done")
-        # Skip Python rig-node registration when C++ plugin already provides them
-        global _python_rig_nodes_registered
-        if not _cpp_plugin_loaded():
+        # Register any missing rig type independently. A loaded C++ plug-in may
+        # have skipped duplicate Python-owned types during its own initialize;
+        # after this plug-in is reloaded, checking only the C++ plug-in name
+        # would then leave both types unregistered.
+        global _python_append_node_registered
+        global _python_ccd_ik_node_registered
+        if not _node_type_registered("mmdAppend"):
             mmd_append_node.register(plugin_fn)
+            _python_append_node_registered = _node_type_registered("mmdAppend")
+        if not _node_type_registered("mmdCcdIk"):
             mmd_ccd_ik_node.register(plugin_fn)
-            _python_rig_nodes_registered = True
+            _python_ccd_ik_node_registered = _node_type_registered("mmdCcdIk")
         _trace_initialize_step("rig-nodes:done")
         global _physics_nodes_registered
         global _python_physics_solver_registered
@@ -607,12 +605,15 @@ def uninitializePlugin(mobject):
             mmd_rigid_body_shape.deregister(plugin_fn)
             mmd_physics_world_shape.deregister(plugin_fn)
             _physics_nodes_registered = False
-        # Only deregister rig nodes that Python actually registered
-        global _python_rig_nodes_registered
-        if _python_rig_nodes_registered:
+        # Only deregister each rig node that Python actually registered.
+        global _python_append_node_registered
+        global _python_ccd_ik_node_registered
+        if _python_ccd_ik_node_registered:
             mmd_ccd_ik_node.deregister(plugin_fn)
+            _python_ccd_ik_node_registered = False
+        if _python_append_node_registered:
             mmd_append_node.deregister(plugin_fn)
-            _python_rig_nodes_registered = False
+            _python_append_node_registered = False
         mmd_morph_controller_node.deregister(plugin_fn)
         mmd_material_morph_eval_node.deregister(plugin_fn)
         mmd_bone_morph_accum_node.deregister(plugin_fn)

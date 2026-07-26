@@ -409,6 +409,18 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
 
         soft_check.assert_called_once_with()
 
+    def test_initialize_registers_missing_rig_types_while_cpp_plugin_is_loaded(self):
+        """A loaded C++ plug-in does not prove that it owns the rig node types."""
+        self.plugin_main.install_mmd_menu = MagicMock()
+        self.plugin_main.install_drag_drop_importer = MagicMock()
+        self.plugin_main.cmds.allNodeTypes.return_value = []
+        self.plugin_main.cmds.pluginInfo.return_value = ["mmd_tools_cpp"]
+
+        self.plugin_main.initializePlugin(MagicMock())
+
+        self.plugin_main.mmd_append_node.register.assert_called_once()
+        self.plugin_main.mmd_ccd_ik_node.register.assert_called_once()
+
     def test_initialize_while_reading_registers_after_open_without_immediate_migration(self):
         self.plugin_main.install_mmd_menu = MagicMock()
         self.plugin_main.install_drag_drop_importer = MagicMock()
