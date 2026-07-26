@@ -11,7 +11,6 @@ IMPORT_MODEL_DISABLE_BACKFACE_CULLING = "import.model.disable_backface_culling"
 IMPORT_MODEL_UV_SET_NAME = "import.model.uv_set_name"
 IMPORT_MODEL_TEXTURE_SEARCH_PATH = "import.model.texture_search_path"
 IMPORT_MODEL_SHOW_TEXTURE_ISSUE_DIALOG = "import.model.show_texture_issue_dialog"
-IMPORT_MODEL_TRANSPARENCY_OPAQUE_THRESHOLD = "import.model.transparency_opaque_threshold"
 IMPORT_MODEL_MMD_SHADER_BACKEND = "import.model.mmd_shader_backend"
 
 IMPORT_PHYSICS_IMPORT_PHYSICS = "import.physics.import_physics"

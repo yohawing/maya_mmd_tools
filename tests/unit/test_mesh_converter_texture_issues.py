@@ -1251,17 +1251,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         faces = [SimpleNamespace(indices=(0, 1, 2))]
         materials = [self._material(face_count=3, texture_index=0)]
 
-        def get_setting(key, default=None):
-            values = {
-                "import.model.create_mmd_shaders": False,
-                "import.model.transparency_opaque_threshold": 255,
-            }
-            return values.get(key, default)
-
         with patch(
-            "mmd_tools.converters.mesh_converter.settings",
-            SimpleNamespace(get=get_setting),
-        ), patch(
             "mmd_tools.converters.texture_alpha.classify_material", return_value="opaque"
         ) as classify_material:
             converter._precompute_transparency_modes(

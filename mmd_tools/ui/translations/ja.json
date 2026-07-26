@@ -450,7 +450,6 @@
     "command_port": "Command Port:",
     "export_format": "エクスポート形式:",
     "transparency_mode": "透過モード:",
-    "transparency_opaque_threshold": "不透明とみなすα閾値:",
     "original_texture_path": "元テクスチャパス:",
     "name": "名前:",
     "name_english": "英語名:",

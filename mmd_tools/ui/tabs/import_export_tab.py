@@ -9,7 +9,6 @@ from ..qt_compat import (
     QCheckBox,
     QComboBox,
     QSlider,
-    QSpinBox,
     QDoubleSpinBox,
     QLabel,
     QScrollArea,
@@ -160,23 +159,6 @@ class ImportExportTab(BaseTab):
             model_layout,
             tooltip_key="auto_resolve_textures",
         )
-
-        self.transparency_threshold_row = QWidget()
-        transparency_threshold_layout = QHBoxLayout(self.transparency_threshold_row)
-        transparency_threshold_layout.setContentsMargins(0, 0, 0, 0)
-        self.transparency_threshold_label = QLabel(self.tr("transparency_opaque_threshold", "fields"))
-        self.transparency_threshold_spin = QSpinBox()
-        self.transparency_threshold_spin.setRange(0, 255)
-        self.transparency_threshold_spin.setValue(
-            int(self.settings_service.get(setting_keys.IMPORT_MODEL_TRANSPARENCY_OPAQUE_THRESHOLD, 255))
-        )
-        self.transparency_threshold_spin.valueChanged.connect(
-            lambda v: self.settings_service.set(setting_keys.IMPORT_MODEL_TRANSPARENCY_OPAQUE_THRESHOLD, int(v))
-        )
-        transparency_threshold_layout.addWidget(self.transparency_threshold_label)
-        transparency_threshold_layout.addWidget(self.transparency_threshold_spin)
-        transparency_threshold_layout.addStretch()
-        model_layout.addWidget(self.transparency_threshold_row)
 
         self.disable_backface_culling_check = self._bind_checkbox(
             "disable_backface_culling",
@@ -501,7 +483,6 @@ class ImportExportTab(BaseTab):
         self._dev_only_widgets = [
             self.scale_row,
             self.separate_meshes_check,
-            self.transparency_threshold_row,
             self.disable_backface_culling_check,
             self.texture_row,
             self.uv_row,
@@ -718,8 +699,6 @@ class ImportExportTab(BaseTab):
             self.vmd_fps_label.setText(self.tr("vmd_fps", "fields"))
         if hasattr(self, "motion_scale_label"):
             self.motion_scale_label.setText(self.tr("motion_scale", "fields"))
-        if hasattr(self, "transparency_threshold_label"):
-            self.transparency_threshold_label.setText(self.tr("transparency_opaque_threshold", "fields"))
         if hasattr(self, "format_label"):
             self.format_label.setText(self.tr("format", "fields"))
         if hasattr(self, "import_path_label"):

@@ -1207,7 +1207,6 @@ class MeshConverter:
         except Exception:
             return
 
-        opaque_threshold = int(settings.get(setting_keys.IMPORT_MODEL_TRANSPARENCY_OPAQUE_THRESHOLD, 255))
         classify_start = time.perf_counter()
         alpha_cache = {}
         cursor = 0
@@ -1239,7 +1238,7 @@ class MeshConverter:
                     uv2 = all_vertices[i2].uv
                     triangles.append((uv0[0], uv0[1], uv1[0], uv1[1], uv2[0], uv2[1]))
                 self._transparency_modes[material_index] = texture_alpha.classify_material(
-                    resolved, triangles, alpha_cache=alpha_cache, opaque_threshold=opaque_threshold
+                    resolved, triangles, alpha_cache=alpha_cache
                 )
             except Exception:
                 self.logger.debug("Failed to classify transparency (material %s)", material_index, exc_info=True)

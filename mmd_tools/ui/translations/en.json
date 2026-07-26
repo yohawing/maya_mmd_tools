@@ -450,7 +450,6 @@
     "command_port": "Command Port:",
     "export_format": "Export Format:",
     "transparency_mode": "Transparency Mode:",
-    "transparency_opaque_threshold": "Opaque alpha threshold:",
     "original_texture_path": "Original Texture Path:",
     "name": "Name:",
     "name_english": "English Name:",

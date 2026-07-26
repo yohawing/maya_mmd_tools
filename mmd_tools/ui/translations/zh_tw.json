@@ -389,7 +389,6 @@
     "command_port": "Command Port:",
     "export_format": "匯出格式:",
     "transparency_mode": "透明模式:",
-    "transparency_opaque_threshold": "不透明α閾值:",
     "original_texture_path": "原始紋理路徑:",
     "name": "名稱:",
     "name_english": "英文名稱:",
