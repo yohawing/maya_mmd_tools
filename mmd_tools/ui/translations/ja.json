@@ -253,6 +253,7 @@
     "humanik_mode_control_rig": "コントロールリグ",
     "humanik_status_control_rig_suffix": " / コントロールリグ: {count}",
     "humanik_setup_selected_model_tooltip": "Mayaで選択中のMMDモデルをHumanIK用にセットアップし、キャラクタ定義します。完了後にキャラクタとSOURCEの候補へ表示されます。",
+    "humanik_create_control_rig_tooltip": "現在のHumanIKキャラクターにMMDコントロールリグを作成します。",
     "humanik_source_tooltip": "SOURCEにはキャラクタライズ済みのMMDモデル、またはシーン内でキャラクタ定義済みのHumanIKキャラクターを指定できます。"
   },
   "options": {

@@ -38,12 +38,13 @@ class _FakeSession:
         self.error = error
         self.describe_calls = []
         self.external_candidates = list(external_candidates) if external_candidates else []
+        self.state_by_model = {}
 
     def describe_frontend_state(self, model_root=None):
         self.describe_calls.append(model_root)
         if self.error is not None:
             raise self.error
-        return self.state
+        return self.state_by_model.get(model_root, self.state)
 
     def list_source_candidates(self):
         return list(self.external_candidates)
@@ -119,6 +120,10 @@ class _FakeCmds:
         self.min_time = min_time
         self.max_time = max_time
         self.edits = []
+        self.script_job_calls = []
+        self.script_job_kills = []
+        self.script_job_callbacks = {}
+        self._next_script_job_id = 1
 
     def playbackOptions(self, query=False, edit=False, minTime=None, maxTime=None):
         if edit:
@@ -133,6 +138,19 @@ class _FakeCmds:
                 return self.min_time
             if maxTime:
                 return self.max_time
+        return None
+
+    def scriptJob(self, event=None, kill=None, force=False):
+        if event is not None:
+            job_id = self._next_script_job_id
+            self._next_script_job_id += 1
+            self.script_job_calls.append(event)
+            self.script_job_callbacks[job_id] = event[1]
+            return job_id
+        if kill is not None:
+            self.script_job_kills.append((kill, force))
+            self.script_job_callbacks.pop(kill, None)
+            return None
         return None
 
 
@@ -188,6 +206,58 @@ class TestHumanIkPresenter(unittest.TestCase):
         self.assertEqual(len(self.session.describe_calls), 1)
         self.view.set_state.assert_called_once()
 
+    def test_selection_watch_refreshes_and_is_not_duplicated(self):
+        self.presenter.on_tab_activated()
+        self.assertEqual(len(self.cmds.script_job_calls), 1)
+        job_id = next(iter(self.cmds.script_job_callbacks))
+        refresh_calls = self.view.set_state.call_count
+
+        self.cmds.script_job_callbacks[job_id]()
+
+        self.assertEqual(self.view.set_state.call_count, refresh_calls + 1)
+        self.presenter.on_tab_activated()
+        self.assertEqual(len(self.cmds.script_job_calls), 1)
+
+    def test_selection_watch_cleanup_on_deactivate_and_reactivation(self):
+        self.presenter.on_tab_activated()
+        first_job_id = next(iter(self.cmds.script_job_callbacks))
+
+        self.presenter.on_tab_deactivated()
+
+        self.assertEqual(self.cmds.script_job_kills, [(first_job_id, True)])
+        refresh_calls = self.view.set_state.call_count
+        self.presenter._on_selection_changed()
+        self.assertEqual(self.view.set_state.call_count, refresh_calls)
+
+        self.presenter.on_tab_activated()
+        self.assertEqual(len(self.cmds.script_job_calls), 2)
+        self.assertNotEqual(next(iter(self.cmds.script_job_callbacks)), first_job_id)
+
+    def test_selection_watch_enables_setup_after_selected_model_changes(self):
+        self.actions.scene_models = ["|Imported"]
+        self.actions.characterized_models = []
+        self.session.state_by_model[None] = {
+            "actions": {
+                "setup_and_characterize": {
+                    "allowed": False,
+                    "reasonCode": "model_required",
+                },
+            }
+        }
+        self.session.state_by_model["|Imported"] = {
+            "actions": {
+                "setup_and_characterize": {"allowed": True},
+            }
+        }
+
+        self.presenter.on_tab_activated()
+        self.actions.display_model_root = "|Imported"
+        job_id = next(iter(self.cmds.script_job_callbacks))
+        self.cmds.script_job_callbacks[job_id]()
+
+        state = self.view.set_state.call_args.args[0]
+        self.assertTrue(state["actions"]["setup_and_characterize"]["allowed"])
+
     def test_on_tab_deactivated_does_not_itself_scan(self):
         self.presenter.on_tab_activated()
         self.session.describe_calls.clear()
@@ -239,6 +309,61 @@ class TestHumanIkPresenter(unittest.TestCase):
         # picker dialog or raise) for a passive status refresh.
         self.presenter.refresh()
         self.assertEqual(self.actions.resolve_calls, 1)
+
+    def test_setup_requires_current_selection_even_with_sticky_character(self):
+        self.actions.scene_models = ["|Ready"]
+        self.actions.characterized_models = ["|Ready"]
+        self.actions.display_model_root = None
+        self.session.state = {
+            "actions": {
+                "setup_and_characterize": {"allowed": True},
+                "create_control_rig": {"allowed": True},
+                "restore_mmd_rig": {"allowed": True},
+            }
+        }
+        self.session.state_by_model[None] = {
+            "actions": {
+                "setup_and_characterize": {
+                    "allowed": False,
+                    "reasonCode": "model_required",
+                    "reasonText": "Select a model to characterize",
+                },
+            }
+        }
+
+        self.presenter.refresh()
+
+        state = self.view.set_state.call_args.args[0]
+        self.assertFalse(state["actions"]["setup_and_characterize"]["allowed"])
+        self.assertEqual(
+            state["actions"]["setup_and_characterize"]["reasonCode"],
+            "model_required",
+        )
+        # Create/Restore retain the backend preflight for the sticky
+        # character; only Setup is selection-bound.
+        self.assertTrue(state["actions"]["create_control_rig"]["allowed"])
+
+    def test_setup_uses_backend_preflight_for_selected_uncharacterized_model(self):
+        self.actions.scene_models = ["|Imported"]
+        self.actions.characterized_models = []
+        self.actions.display_model_root = "|Imported"
+        self.session.state = {
+            "actions": {
+                "setup_and_characterize": {
+                    "allowed": False,
+                    "reasonCode": "preview_active",
+                    "reasonText": "preview is active",
+                },
+            }
+        }
+
+        self.presenter.refresh()
+
+        state = self.view.set_state.call_args.args[0]
+        self.assertEqual(
+            state["actions"]["setup_and_characterize"],
+            self.session.state["actions"]["setup_and_characterize"],
+        )
 
     # -- (d) remaining buttons dispatch to humanik_menu_actions, then refresh
 
@@ -319,7 +444,7 @@ class TestHumanIkPresenterCharacterCombo(unittest.TestCase):
 
         _options, selected = self._last_character_call().args
         self.assertEqual(selected, "|Only")
-        self.assertEqual(self.session.describe_calls, ["|Only"])
+        self.assertEqual(self.session.describe_calls, ["|Only", None])
 
     def test_maya_selection_wins_over_default(self):
         self.actions.scene_models = ["|A", "|B"]
@@ -401,7 +526,10 @@ class TestHumanIkPresenterCharacterCombo(unittest.TestCase):
         options, selected = self._last_character_call().args
         self.assertEqual(options, [("humanik_none", None)])
         self.assertIsNone(selected)
-        self.assertEqual(self.session.describe_calls, [None])
+        # The selected uncharacterized root gets its own Setup preflight;
+        # the character snapshot remains model-agnostic because no
+        # characterized fallback exists.
+        self.assertEqual(self.session.describe_calls, [None, "|ImportedOnly"])
 
     def test_only_characterized_models_are_character_candidates(self):
         self.actions.scene_models = ["|Ready", "|ImportedOnly"]
@@ -570,8 +698,10 @@ class TestHumanIkViewSetState(unittest.TestCase):
         fake._action_buttons = {attr: Mock() for attr in _ACTION_BUTTON_ATTRS}
         fake._last_mode = "neutral"
         fake._last_control_rig_count = 0
+        fake._last_action_states = {}
         fake._mode_text = HumanIkView._mode_text.__get__(fake)
         fake._status_text = HumanIkView._status_text.__get__(fake)
+        fake._create_control_rig_tooltip = HumanIkView._create_control_rig_tooltip.__get__(fake)
         return fake
 
     def test_status_keeps_only_mode_and_control_rig_count(self):
@@ -587,24 +717,46 @@ class TestHumanIkViewSetState(unittest.TestCase):
             "humanik_mode_target_previewhumanik_status_control_rig_suffix"
         )
 
-    def test_backend_blocked_actions_stay_clickable_without_inline_reason(self):
+    def test_backend_action_preflights_gate_setup_create_and_restore(self):
         fake = self._make_fake_view()
         state = {
             "mode": "neutral",
             "actions": {
+                "setup_and_characterize": {
+                    "allowed": False,
+                    "reasonCode": "model_required",
+                    "reasonText": "Select a model to characterize",
+                },
                 "create_control_rig": {
                     "allowed": False,
                     "reasonCode": "not_characterized",
                     "reasonText": "details",
                 },
+                "restore_mmd_rig": {"allowed": True},
             },
         }
 
         HumanIkView.set_state(fake, state)
 
-        for button in fake._action_buttons.values():
-            button.setEnabled.assert_called_once_with(True)
-            button.setToolTip.assert_not_called()
+        fake._action_buttons["setup_characterize_btn"].setEnabled.assert_called_once_with(False)
+        fake._action_buttons["create_control_rig_btn"].setEnabled.assert_called_once_with(False)
+        fake._action_buttons["restore_btn"].setEnabled.assert_called_once_with(True)
+        create_tooltip = fake._action_buttons["create_control_rig_btn"].setToolTip.call_args.args[0]
+        self.assertIn("humanik_create_control_rig_tooltip", create_tooltip)
+        self.assertIn("details", create_tooltip)
+        self.assertIn("not_characterized", create_tooltip)
+
+    def test_create_control_rig_tooltip_remains_useful_when_allowed(self):
+        fake = self._make_fake_view()
+        HumanIkView.set_state(
+            fake,
+            {"actions": {"create_control_rig": {"allowed": True}}},
+        )
+
+        fake._action_buttons["create_control_rig_btn"].setEnabled.assert_called_once_with(True)
+        fake._action_buttons["create_control_rig_btn"].setToolTip.assert_called_once_with(
+            "humanik_create_control_rig_tooltip"
+        )
 
 if __name__ == "__main__":
     unittest.main()

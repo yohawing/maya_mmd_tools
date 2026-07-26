@@ -18,9 +18,10 @@ when they are not in use.
 but Setup / Characterize is an explicit button: only already-characterized
 models appear in either combo, and a scene with none shows Character as
 "(none)" until the user selects an MMD model and runs Setup. The backend
-remains authoritative for every action guard. Buttons stay clickable and
-failures are written to Maya's Script Editor, keeping detailed state and
-error prose out of this compact UI.
+remains authoritative for every action guard. Setup, Create Control Rig, and
+Restore reflect the backend's read-only action preflight; Create Control Rig
+keeps its tooltip (including a denial reason when available) even while
+disabled. Mutating calls still report failures to Maya's Script Editor.
 """
 
 from .combo_box_utils import configure_model_combo_width
@@ -31,6 +32,7 @@ from .qt_compat import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    Qt,
     QSizePolicy,
     QSpinBox,
     QVBoxLayout,
@@ -55,6 +57,12 @@ _ACTION_BUTTON_SPECS = (
     ("bake_btn", "humanik_bake_execute"),
     ("restore_btn", "humanik_restore"),
 )
+
+_FRONTEND_ACTION_TO_BUTTON = {
+    "setup_and_characterize": "setup_characterize_btn",
+    "create_control_rig": "create_control_rig_btn",
+    "restore_mmd_rig": "restore_btn",
+}
 
 MODE_TRANSLATION_KEYS = {
     "neutral": "humanik_mode_neutral",
@@ -86,6 +94,12 @@ class HumanIkView(BaseTab):
         ("character_combo_label", "setText", "humanik_character", "labels"),
         ("source_combo_label", "setText", "humanik_source", "labels"),
         ("source_combo", "setToolTip", "humanik_source_tooltip", "messages"),
+        (
+            "create_control_rig_btn",
+            "setToolTip",
+            "humanik_create_control_rig_tooltip",
+            "messages",
+        ),
         (
             "setup_characterize_btn",
             "setToolTip",
@@ -119,6 +133,7 @@ class HumanIkView(BaseTab):
         self._last_mode = "neutral"
         self._last_control_rig_count = 0
         self._last_state = {}
+        self._last_action_states = {}
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(8, 8, 8, 8)
@@ -209,6 +224,9 @@ class HumanIkView(BaseTab):
             "humanik_create_control_rig",
             compact=True,
         )
+        self.create_control_rig_btn.setToolTip(
+            self.tr("humanik_create_control_rig_tooltip", "messages")
+        )
         self._add_action_row(
             primary_actions,
             "restore_btn",
@@ -288,11 +306,23 @@ class HumanIkView(BaseTab):
     def _add_action_row(self, layout, attr, label_key, compact=False):
         """Add an action button, optionally ignoring its text size hint."""
         button = QPushButton(self.tr(label_key, "buttons"))
+        # Qt normally suppresses hover events for disabled widgets.  Keep
+        # action explanations discoverable even while a backend preflight
+        # disables a button (Qt::WA_AlwaysShowToolTips is available in both
+        # PySide2 and PySide6).
+        always_show_tooltips = getattr(Qt, "WA_AlwaysShowToolTips", None)
+        if always_show_tooltips is not None:
+            button.setAttribute(always_show_tooltips, True)
         horizontal_policy = QSizePolicy.Ignored if compact else QSizePolicy.Expanding
         button.setSizePolicy(horizontal_policy, QSizePolicy.Fixed)
         layout.addWidget(button)
         setattr(self, attr, button)
         self._action_buttons[attr] = button
+        if attr in _FRONTEND_ACTION_TO_BUTTON.values():
+            # Until the first frontend-state snapshot arrives, fail closed.
+            # The presenter will enable the button only after the backend
+            # confirms the corresponding action is allowed.
+            button.setEnabled(False)
 
     def _set_bake_expanded(self, expanded):
         """Show or hide Bake controls while keeping the section header visible."""
@@ -330,11 +360,40 @@ class HumanIkView(BaseTab):
         self._last_mode = mode
         self._last_control_rig_count = len(control_rigs)
         self.status_label.setText(self._status_text(mode, self._last_control_rig_count))
+        action_states = state.get("actions") or {}
+        self._last_action_states = action_states
 
-        # Keep action guards in one place: the backend operation. The view no
-        # longer duplicates them as disabled buttons and inline error prose.
-        for button in self._action_buttons.values():
-            button.setEnabled(True)
+        # Keep action guards in one place: the backend operation. The view
+        # only renders the allowed bit from the frontend-state preflight and
+        # never duplicates its conditions locally. Bake remains available as
+        # a dispatch entry point for compatibility; the backend still owns
+        # its validation and failure reporting.
+        for action_name, button_attr in _FRONTEND_ACTION_TO_BUTTON.items():
+            button = self._action_buttons.get(button_attr)
+            if button is None:
+                continue
+            action_state = action_states.get(action_name)
+            allowed = bool(action_state and action_state.get("allowed"))
+            button.setEnabled(allowed)
+
+            if action_name == "create_control_rig":
+                button.setToolTip(self._create_control_rig_tooltip(action_state))
+
+    def _create_control_rig_tooltip(self, action_state):
+        """Return the Create Control Rig tooltip, including denial details."""
+        base = self.tr("humanik_create_control_rig_tooltip", "messages")
+        if not isinstance(action_state, dict) or action_state.get("allowed"):
+            return base
+        reason_text = str(action_state.get("reasonText") or "").strip()
+        reason_code = str(action_state.get("reasonCode") or "").strip()
+        details = []
+        if reason_text:
+            details.append(reason_text)
+        if reason_code:
+            details.append(f"[{reason_code}]")
+        if not details:
+            return base
+        return f"{base}\n\n{' '.join(details)}"
 
     def _selected_bake_destination(self):
         """Return the stable destination identifier selected in the Bake UI."""
@@ -402,5 +461,16 @@ class HumanIkView(BaseTab):
             button = self._action_buttons.get(attr)
             if button is not None:
                 button.setText(self.tr(label_key, "buttons"))
+        self.setup_characterize_btn.setToolTip(
+            self.tr("humanik_setup_selected_model_tooltip", "messages")
+        )
+        self.restore_btn.setToolTip(self.tr("humanik_restore_tooltip", "messages"))
+        create_button = self._action_buttons.get("create_control_rig_btn")
+        if create_button is not None:
+            create_button.setToolTip(
+                self._create_control_rig_tooltip(
+                    self._last_action_states.get("create_control_rig")
+                )
+            )
         self._set_bake_expanded(self.bake_toggle_btn.isChecked())
         self.status_label.setText(self._status_text(self._last_mode, self._last_control_rig_count))

@@ -195,6 +195,7 @@
     "humanik_mode_control_rig": "控制裝備",
     "humanik_status_control_rig_suffix": " / 控制裝備: {count}",
     "humanik_setup_selected_model_tooltip": "為Maya中目前選取的MMD模型設定HumanIK並進行角色化。完成後會顯示在角色和SOURCE清單中。",
+    "humanik_create_control_rig_tooltip": "為目前的HumanIK角色建立MMD控制裝備。",
     "humanik_source_tooltip": "可將已角色化的 MMD 模型或場景中已定義的 HumanIK 角色指定為重定向 SOURCE。"
   },
   "options": {

@@ -177,6 +177,18 @@ class TestHumanIkViewGUI(GuiTestBase):
             self.assertIn("1", tab.status_label.text())
             self.assertTrue(tab.bake_btn.isEnabled())
             self.assertTrue(tab.create_control_rig_btn.isEnabled())
+            self.assertTrue(tab.create_control_rig_btn.toolTip())
+
+            state["actions"]["create_control_rig"] = {
+                "allowed": False,
+                "reasonCode": "not_characterized",
+                "reasonText": "Characterize the selected model first",
+            }
+            tab.set_state(state)
+            QApplication.processEvents()
+            self.assertFalse(tab.create_control_rig_btn.isEnabled())
+            self.assertIn("Characterize the selected model first", tab.create_control_rig_btn.toolTip())
+            self.assertIn("not_characterized", tab.create_control_rig_btn.toolTip())
         finally:
             tab.deleteLater()
             QApplication.processEvents()
@@ -198,12 +210,12 @@ class TestHumanIkViewGUI(GuiTestBase):
         try:
             translator.set_language("en")
             tab.retranslateUi()
-            en_refresh = tab.refresh_btn.text()
+            en_setup = tab.setup_characterize_btn.text()
             en_character_label = tab.character_combo_label.text()
 
             translator.set_language("ja")
             tab.retranslateUi()
-            self.assertNotEqual(tab.refresh_btn.text(), en_refresh)
+            self.assertNotEqual(tab.setup_characterize_btn.text(), en_setup)
             self.assertNotEqual(tab.character_combo_label.text(), en_character_label)
         finally:
             translator.set_language(previous_language)
@@ -221,6 +233,7 @@ class TestHumanIkViewGUI(GuiTestBase):
             presenter.refresh()
             QApplication.processEvents()
         finally:
+            presenter.on_tab_deactivated()
             tab.deleteLater()
             QApplication.processEvents()
 
@@ -229,7 +242,16 @@ class TestHumanIkViewGUI(GuiTestBase):
 
         class FakeSession:
             def describe_frontend_state(self, model_root=None):
-                return {"mode": "neutral", "source": None, "controlRigs": []}
+                return {
+                    "mode": "neutral",
+                    "source": None,
+                    "controlRigs": [],
+                    "actions": {
+                        "setup_and_characterize": {"allowed": True},
+                        "create_control_rig": {"allowed": True},
+                        "restore_mmd_rig": {"allowed": True},
+                    },
+                }
 
             def list_source_candidates(self):
                 return []
@@ -337,6 +359,9 @@ class TestHumanIkWindowGUI(GuiTestBase):
             window.show_window(dockable=True)
             QApplication.processEvents()
             self.assertTrue(cmds.workspaceControl(workspace_name, exists=True))
+            self.assertTrue(
+                cmds.workspaceControl(workspace_name, query=True, floating=True)
+            )
             self.assertTrue(window.isVisible())
         finally:
             window.close_window()

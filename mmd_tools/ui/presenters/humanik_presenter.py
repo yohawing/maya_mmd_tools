@@ -57,6 +57,7 @@ class HumanIkPresenter:
         self._actions = actions_module or default_actions
         self._cmds_module = cmds_module
         self._active = False
+        self._selection_script_job = None
         # Character combo selection-policy state (see
         # ``_resolve_character_root``): the last Maya-selection-derived root
         # observed (to detect "the selection just changed"), a user's manual
@@ -180,20 +181,65 @@ class HumanIkPresenter:
         except Exception:
             return None
 
+    def _install_selection_watch(self):
+        """Subscribe to Maya selection changes while this presenter is visible."""
+        if self._selection_script_job is not None:
+            return
+        cmds = self._maya_cmds()
+        if cmds is None:
+            return
+        try:
+            self._selection_script_job = cmds.scriptJob(
+                event=["SelectionChanged", self._on_selection_changed]
+            )
+        except Exception:
+            # Plain-Python test doubles and non-Maya hosts do not provide
+            # scriptJob.  Selection-follow still works on explicit refreshes.
+            self._selection_script_job = None
+            logger.debug("HumanIK tab could not install SelectionChanged watch", exc_info=True)
+
+    def _remove_selection_watch(self):
+        """Kill the Maya selection watch, tolerating scene/host teardown."""
+        job_id = self._selection_script_job
+        self._selection_script_job = None
+        if job_id is None:
+            return
+        cmds = self._maya_cmds()
+        if cmds is None:
+            return
+        try:
+            cmds.scriptJob(kill=job_id, force=True)
+        except TypeError:
+            # Minimal test doubles may not accept Maya's ``force`` flag.
+            try:
+                cmds.scriptJob(kill=job_id)
+            except Exception:
+                logger.debug("HumanIK tab could not remove SelectionChanged watch", exc_info=True)
+        except Exception:
+            logger.debug("HumanIK tab could not remove SelectionChanged watch", exc_info=True)
+
+    def _on_selection_changed(self, *_args):
+        """Refresh the visible tab after Maya selection changes."""
+        if self._active:
+            self.refresh()
+
     # -- lifecycle -----------------------------------------------------
 
     def on_tab_activated(self):
         """Refresh scene state when the HumanIK tab becomes active.
 
-        Scene state is only read while this tab is visible: activation is
-        the sole trigger for a scan, matching the lazy-refresh pattern the
-        Morph/Physics tabs use in ``MainWindow._on_main_tab_changed``.
+        Scene state is only read while this tab is visible: activation and
+        Maya's ``SelectionChanged`` event trigger scans, matching the
+        lazy-refresh pattern the Morph/Physics tabs use in
+        ``MainWindow._on_main_tab_changed``.
         """
         self._active = True
+        self._install_selection_watch()
         self.refresh()
 
     def on_tab_deactivated(self):
         self._active = False
+        self._remove_selection_watch()
 
     def on_scene_changed(self):
         """Drop combo-selection memory and refresh the visible new scene."""
@@ -224,15 +270,41 @@ class HumanIkPresenter:
         self._set_character_options(character_options, character_root)
 
         session = self._actions.get_humanik_session()
-        try:
-            state = session.describe_frontend_state(character_root)
-        except Exception:
-            logger.warning("HumanIK describe_frontend_state failed", exc_info=True)
-            state = {}
+        state = self._describe_frontend_state(session, character_root)
+        # Setup / Characterize is the one action whose target must always be
+        # the *current Maya selection*.  ``character_root`` may intentionally
+        # come from sticky combo state when there is no selection, so do not
+        # let that fallback make Setup appear available for another model.
+        # Reuse the character snapshot for the common case and only request a
+        # second backend preflight when the two roots differ.
+        if selected_root != character_root:
+            selected_state = self._describe_frontend_state(session, selected_root)
+            selected_actions = (selected_state or {}).get("actions") or {}
+            setup_action = selected_actions.get(
+                "setup_and_characterize",
+                {
+                    "allowed": False,
+                    "reasonCode": "model_required",
+                    "reasonText": "Select a model to characterize",
+                },
+            )
+            state = dict(state or {})
+            actions = dict(state.get("actions") or {})
+            actions["setup_and_characterize"] = setup_action
+            state["actions"] = actions
         self.view.set_state(state)
 
         self._refresh_source_combo(models, character_root, state, session)
         self._sync_bake_frame_range()
+
+    @staticmethod
+    def _describe_frontend_state(session, model_root):
+        """Return a fail-soft frontend snapshot for the requested model root."""
+        try:
+            return session.describe_frontend_state(model_root)
+        except Exception:
+            logger.warning("HumanIK describe_frontend_state failed", exc_info=True)
+            return {}
 
     def _refresh_source_combo(self, models, character_root, state, session):
         """Populate the Source combo and select it from backend truth, not memory.

@@ -131,7 +131,7 @@ class HumanIkWindow(QWidget):
     # -- show/close, mirroring MainWindow.show_window / AnimatorToolsetWindow --
 
     def show_window(self, dockable=True):
-        """Show as a dockable Maya panel (default) or a floating window."""
+        """Show as an initially floating dockable panel or a plain Qt window."""
         if dockable:
             self.setWindowFlags(Qt.Widget)
             self.setAttribute(Qt.WA_DeleteOnClose, False)
@@ -146,13 +146,12 @@ class HumanIkWindow(QWidget):
             cmds.workspaceControl(
                 ws,
                 label=self._window_title(),
-                tabToControl=["AttributeEditor", -1],
                 initialWidth=self.PREFERRED_WIDTH,
                 minimumWidth=self.MINIMUM_WIDTH,
                 initialHeight=640,
                 widthProperty="free",
                 retain=False,
-                floating=False,
+                floating=True,
             )
             cmds.control(self.WINDOW_NAME, e=True, parent=ws)
             self.show()
