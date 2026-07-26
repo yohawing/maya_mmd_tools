@@ -168,7 +168,7 @@ def _native_runtime_smoke_code() -> str:
     """Return Python code that verifies the runtime ABI and required features."""
     return (
         "from mmd_tools.core.native.mmd_anim_runtime import "
-        "get_mmd_runtime_library, get_runtime_library_path; "
+        "MMD_RUNTIME_ABI_VERSION_CURRENT, get_mmd_runtime_library, get_runtime_library_path; "
         "required = "
         f"{MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS}; "
         "lib = get_mmd_runtime_library(); "
@@ -176,8 +176,10 @@ def _native_runtime_smoke_code() -> str:
         "flags = lib.mmd_runtime_feature_flags() if lib and hasattr(lib, 'mmd_runtime_feature_flags') else 0; "
         "abi = lib.mmd_runtime_abi_version() if lib else 0; "
         "print(path); "
-        "print({'abi': abi, 'featureFlags': hex(flags), 'requiredFeatureFlags': hex(required)}); "
-        "raise SystemExit(0 if lib and abi == 2 and (flags & required) == required else 1)"
+        "print({'abi': abi, 'expectedAbi': MMD_RUNTIME_ABI_VERSION_CURRENT, "
+        "'featureFlags': hex(flags), 'requiredFeatureFlags': hex(required)}); "
+        "raise SystemExit(0 if lib and abi == MMD_RUNTIME_ABI_VERSION_CURRENT "
+        "and (flags & required) == required else 1)"
     )
 
 

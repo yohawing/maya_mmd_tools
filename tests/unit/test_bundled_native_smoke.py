@@ -39,7 +39,7 @@ class BundledNativeSmokeTest(unittest.TestCase):
                 return self.value
 
         fake_library = mock.Mock()
-        fake_library.mmd_runtime_abi_version = FakeFunction(2)
+        fake_library.mmd_runtime_abi_version = FakeFunction(smoke.CURRENT_ABI_VERSION)
         fake_library.mmd_runtime_feature_flags = FakeFunction(smoke.REQUIRED_FEATURE_FLAGS)
         with tempfile.TemporaryDirectory() as directory:
             runtime = Path(directory) / smoke.RUNTIME_NAME
@@ -49,6 +49,26 @@ class BundledNativeSmokeTest(unittest.TestCase):
                     result = smoke._runtime_probe(runtime)
         self.assertEqual(result["status"], "fail")
         self.assertEqual(result["loadedPath"], "F:/wrong/mmd_runtime_ffi.dll")
+
+    def test_current_runtime_abi_from_expected_path_passes(self):
+        class FakeFunction:
+            def __init__(self, value):
+                self.value = value
+
+            def __call__(self):
+                return self.value
+
+        fake_library = mock.Mock()
+        fake_library.mmd_runtime_abi_version = FakeFunction(smoke.CURRENT_ABI_VERSION)
+        fake_library.mmd_runtime_feature_flags = FakeFunction(smoke.REQUIRED_FEATURE_FLAGS)
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory) / smoke.RUNTIME_NAME
+            runtime.write_bytes(b"fixture")
+            with mock.patch.object(smoke.ctypes, "WinDLL", return_value=fake_library, create=True):
+                with mock.patch.object(smoke, "_windows_module_path", return_value=str(runtime.resolve())):
+                    result = smoke._runtime_probe(runtime)
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(result["abi"], smoke.CURRENT_ABI_VERSION)
 
     def test_summary_is_fail_closed(self):
         self.assertEqual(smoke.summarize([{"status": "pass"}, {"status": "fail"}])["status"], "fail")
