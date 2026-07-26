@@ -19,7 +19,7 @@
 #include "mmdFastLoad.h"
 
 #include <maya/MArgDatabase.h>
-#include <maya/MDGModifier.h>
+#include <maya/MDagModifier.h>
 #include <maya/MDagPath.h>
 #include <maya/MFloatArray.h>
 #include <maya/MFnDagNode.h>
@@ -772,17 +772,26 @@ MStatus MmdFastLoad::undoIt()
         return MS::kSuccess;  // nothing to undo
     }
 
-    MDGModifier dgMod;
+    MDagModifier dagMod;
     for (unsigned int i = 0; i < createdRoots_.length(); ++i) {
         MSelectionList sel;
         if (!sel.add(createdRoots_[i]) || sel.length() == 0) {
             continue;
         }
         MObject node;
-        sel.getDependNode(0, node);
-        dgMod.deleteNode(node);
+        MStatus status = sel.getDependNode(0, node);
+        if (!status || !node.hasFn(MFn::kDagNode)) {
+            continue;
+        }
+        status = dagMod.deleteNode(node);
+        if (!status) {
+            return status;
+        }
     }
-    dgMod.doIt();
+    MStatus status = dagMod.doIt();
+    if (!status) {
+        return status;
+    }
 
     transformName_.clear();
     meshName_.clear();

@@ -100,6 +100,10 @@ def main() -> int:
         cmds.undo()
         if cmds.objExists(single_transform):
             raise RuntimeError("single mmdFastLoad undo did not delete the transform")
+        # Force Maya to tear down the post-undo DAG immediately. A DG modifier
+        # deleting the transform used to leave corrupt DAG state that crashed
+        # standalone during this reset on multiple Maya versions.
+        cmds.file(new=True, force=True)
 
         split = cmds.mmdFastLoad(f=str(SPLIT_FIXTURE), n="focused_fast_split_normals", s=1.0, sp=True)
         if not split or len(split) != 1:
