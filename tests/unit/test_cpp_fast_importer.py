@@ -460,6 +460,11 @@ class TestFastSkeletonSkin(unittest.TestCase):
         ssc_calls = [c for c in cmds.setAttr.call_args_list
                      if "segmentScaleCompensate" in str(c)]
         self.assertEqual(len(ssc_calls), 2)
+        bind_translate_calls = [
+            c for c in cmds.setAttr.call_args_list
+            if "mmd_vmd_bind_translate" in str(c)
+        ]
+        self.assertEqual(len(bind_translate_calls), 2)
         self.mock_apply_weights.assert_called_once_with(
             "skinCluster1",
             "mesh1",

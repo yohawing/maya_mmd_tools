@@ -55,16 +55,12 @@ class AnimatorToolsetWindow(QWidget):
 
         self.app_state.refresh_model_list()
 
-    def _cleanup(self, restore_motion=True):
+    def _cleanup(self):
         """Detach presenter listeners before Maya destroys docked Qt children."""
         if self._cleanup_done:
             return
         self._cleanup_done = True
         self.animation_presenter.disconnect_signals()
-        if restore_motion:
-            from ..actions.rest_pose_action import get_rest_pose_manager
-
-            get_rest_pose_manager().return_to_motion()
 
     def _on_destroyed(self, *_args):
         """Cover workspaceControl teardown paths that skip ``closeEvent``."""

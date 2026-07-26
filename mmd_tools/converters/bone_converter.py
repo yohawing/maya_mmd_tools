@@ -381,6 +381,22 @@ class BoneConverter:
         if setup_bone_orientation:
             self._apply_joint_orient_all(maya_joints, bones, format_type, scale=scale)
 
+        # Reset Pose needs the final local bind translation, after parenting
+        # and any LOCAL_AXIS jointOrient compensation have settled.  Store the
+        # Maya-local value rather than the PMX world position so IK targets can
+        # be restored without entering the shared Rest Pose display mode.
+        # Keep this VMD compatibility helper local: BoneConverter is also used
+        # by PMX-only imports, so importing the full VMD state module at module
+        # load would add unnecessary runtime dependencies and cycle risk.
+        from .vmd_import_state import store_bind_translate
+
+        for joint in maya_joints:
+            try:
+                translate = cmds.getAttr(f"{joint}.translate")[0]
+                store_bind_translate(joint, translate, cmds_module=cmds)
+            except Exception as exc:
+                self.logger.debug("Failed to persist bind translate for %s: %s", joint, exc)
+
         return maya_joints
 
     def _set_extra_attributes(self, i, joint, bone, format_type):

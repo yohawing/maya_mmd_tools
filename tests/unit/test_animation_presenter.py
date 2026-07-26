@@ -1184,43 +1184,6 @@ class TestVisibilityToggle(unittest.TestCase):
         self.assertEqual(len(adapter._set_attrs), 0)
 
 
-class _FakeRestPoseResult:
-    def __init__(self, active=False, model_root="", joint_count=0, succeeded=True, error=""):
-        self.active = active
-        self.model_root = model_root
-        self.joint_count = joint_count
-        self.succeeded = succeeded
-        self.error = error
-
-
-class _FakeRestPoseManager:
-    def __init__(self):
-        self.active = False
-        self.listeners = []
-        self.toggle_calls = []
-
-    def add_listener(self, listener):
-        self.listeners.append(listener)
-
-    def remove_listener(self, listener):
-        if listener in self.listeners:
-            self.listeners.remove(listener)
-
-    def state(self):
-        return _FakeRestPoseResult(self.active, "test_model" if self.active else "", 2 if self.active else 0)
-
-    def toggle(self, model_root):
-        self.toggle_calls.append(model_root)
-        self.active = not self.active
-        result = _FakeRestPoseResult(self.active, model_root, 2)
-        for listener in list(self.listeners):
-            listener(result)
-        return result
-
-    def ensure_model(self, _model_root):
-        return self.state()
-
-
 class TestToolsSection(unittest.TestCase):
     _POPULATE_PATH = (
         "mmd_tools.ui.presenters.animation_presenter"
@@ -1236,13 +1199,11 @@ class TestToolsSection(unittest.TestCase):
         )
         adapter._transforms["j1"] = ([1, 2, 3], [10, 20, 30])
         adapter._transforms["j2"] = ([4, 5, 6], [40, 50, 60])
-        rest_pose_manager = _FakeRestPoseManager()
         with patch(self._POPULATE_PATH):
             presenter = AnimationPresenter(
                 view,
                 app_state,
                 maya_adapter=adapter,
-                rest_pose_manager=rest_pose_manager,
             )
         return presenter, view, app_state, adapter
 
@@ -1275,68 +1236,45 @@ class TestToolsSection(unittest.TestCase):
         presenter._on_tool_clicked("paste")
         self.assertIn("No pose copied", view.status_label.text())
 
-    def test_rest_pose_tool_toggles_model_wide_shared_session(self):
-        presenter, view, _, _ = self._make()
+    def test_reset_pose_applies_bind_translation_and_zeroes_rotation(self):
+        presenter, view, _, adapter = self._make()
+        adapter.selected = ["j1"]
+        adapter._attrs["j1", "mmd_vmd_bind_translate"] = "[1.0, 2.0, 3.0]"
+
         presenter._on_tool_clicked("reset")
-        self.assertEqual(presenter.rest_pose_manager.toggle_calls, ["test_model"])
+
+        self.assertEqual(adapter._transforms["j1"], ([1.0, 2.0, 3.0], [0, 0, 0]))
         self.assertIn("Rest Pose", view.status_label.text())
-        self.assertEqual(view.tool_buttons["reset"].text, "Return to Motion")
-        self.assertFalse(view.picker_tabs.enabled)
-
-    def test_return_to_motion_reenables_picker_controls(self):
-        presenter, view, _, _ = self._make()
-        presenter._on_tool_clicked("reset")
-        presenter._on_tool_clicked("reset")
-        self.assertIn("Motion", view.status_label.text())
-        self.assertEqual(view.tool_buttons["reset"].text, "Rest Pose")
         self.assertTrue(view.picker_tabs.enabled)
+        self.assertTrue(all(button.enabled for button in view.tool_buttons.values()))
 
-    def test_body_picker_rest_pose_uses_the_shared_session(self):
-        presenter, view, _, _ = self._make()
+    def test_body_picker_reset_uses_the_same_selection_only_action(self):
+        presenter, view, _, adapter = self._make()
+        adapter.selected = ["j2"]
+        adapter._attrs["j2", "mmd_vmd_bind_translate"] = "[4.0, 5.0, 6.0]"
 
         view.body_picker.reset_pose_clicked.emit()
 
-        self.assertEqual(presenter.rest_pose_manager.toggle_calls, ["test_model"])
+        self.assertEqual(adapter._transforms["j2"], ([4.0, 5.0, 6.0], [0, 0, 0]))
+        self.assertTrue(view.picker_tabs.enabled)
 
-    def test_disconnect_is_idempotent_and_removes_rest_pose_listener(self):
-        presenter, _, _, _ = self._make()
-        manager = presenter.rest_pose_manager
+    def test_reset_pose_without_selection_only_reports_status(self):
+        presenter, view, _, adapter = self._make()
+        before = {joint: (list(t), list(r)) for joint, (t, r) in adapter._transforms.items()}
 
-        presenter.disconnect_signals()
-        presenter.disconnect_signals()
+        presenter._on_tool_clicked("reset")
 
-        self.assertEqual(manager.listeners, [])
+        self.assertIn("No joints", view.status_label.text())
+        self.assertEqual(adapter._transforms, before)
+        self.assertEqual(adapter._undo_chunks, [])
 
-    def test_deleted_qt_control_unsubscribes_stale_rest_pose_listener(self):
-        presenter, view, _, _ = self._make()
-        manager = presenter.rest_pose_manager
-
-        def raise_deleted(_text):
-            raise RuntimeError("Internal C++ object already deleted")
-
-        view.tool_buttons["reset"].setText = raise_deleted
-        manager.toggle("test_model")
-
-        self.assertEqual(manager.listeners, [])
-
-    def test_new_presenter_can_subscribe_after_previous_one_disconnects(self):
-        presenter, _, _, _ = self._make()
-        manager = presenter.rest_pose_manager
-        presenter.disconnect_signals()
-        replacement_view = _FakeView()
-
-        with patch(self._POPULATE_PATH):
-            replacement = AnimationPresenter(
-                replacement_view,
-                _FakeAppState(model_root="test_model"),
-                maya_adapter=_FakeAdapter(),
-                rest_pose_manager=manager,
-            )
-
-        self.assertEqual(manager.listeners, [replacement._on_rest_pose_state_changed])
-        manager.toggle("test_model")
-        self.assertEqual(replacement_view.tool_buttons["reset"].text, "Return to Motion")
-        replacement.disconnect_signals()
+    def test_reset_pose_has_no_shared_mode_state(self):
+        presenter, view, _, adapter = self._make()
+        self.assertFalse(hasattr(presenter, "rest_pose_manager"))
+        self.assertTrue(view.picker_tabs.enabled)
+        adapter.selected = ["j1"]
+        presenter._on_tool_clicked("reset")
+        self.assertTrue(view.picker_tabs.enabled)
 
     def test_mirror_stub_shows_error(self):
         presenter, view, _, adapter = self._make()

@@ -13,7 +13,6 @@ from ...core.constants import (
     ATTR_MMD_DISPLAY_FRAMES_JSON,
     ATTR_MMD_MORPH_DATA,
 )
-from ...actions.rest_pose_action import get_rest_pose_manager
 from ...core.display_frame_resolver import PickerGroup, resolve_display_frames
 from ...core.logger import get_logger
 from ...core.mmd_bone_names import normalize_mmd_bone_name
@@ -47,7 +46,6 @@ class AnimationPresenter:
         view,
         app_state: ApplicationState,
         maya_adapter=None,
-        rest_pose_manager=None,
     ):
         self.view = view
         self.app_state = app_state
@@ -75,10 +73,9 @@ class AnimationPresenter:
         self._pose_clipboard: dict | None = None
         self._all_model_joints: list[str] = []
         self._disposed = False
-        self.rest_pose_manager = rest_pose_manager or get_rest_pose_manager()
-        self.rest_pose_manager.add_listener(self._on_rest_pose_state_changed)
+        # Animator Reset Pose is a one-shot selection action and must not
+        # participate in Bone Editor's shared temporary Rest Pose session.
         self.connect_signals()
-        self._on_rest_pose_state_changed(self.rest_pose_manager.state())
         self._start_morph_refresh_timer()
 
         if self.app_state.current_model_root:
@@ -133,8 +130,7 @@ class AnimationPresenter:
 
         Maya may destroy a docked view through its workspaceControl before the
         Python window receives ``closeEvent``.  Mark the presenter disposed
-        first so a Rest Pose notification racing with teardown cannot touch
-        already-deleted Qt objects.
+        first so teardown cannot touch already-deleted Qt objects.
         """
         if self._disposed:
             return
@@ -147,10 +143,6 @@ class AnimationPresenter:
                 pass
             self._morph_refresh_timer = None
         try:
-            self.rest_pose_manager.remove_listener(self._on_rest_pose_state_changed)
-        except (RuntimeError, TypeError):
-            pass
-        try:
             self.app_state.current_model_changed.disconnect(self.on_current_model_changed)
         except (RuntimeError, TypeError):
             pass
@@ -162,7 +154,6 @@ class AnimationPresenter:
     def retranslate_ui(self):
         """Retranslate presenter-owned dynamic controls without reloading the model."""
 
-        self._on_rest_pose_state_changed(self.rest_pose_manager.state())
         for header, category_key, count in self._morph_group_headers:
             expanded = header.isChecked()
             title = self.view.tr(category_key, "animation_toolset")
@@ -172,7 +163,6 @@ class AnimationPresenter:
     # -- Signal handlers -----------------------------------------------
 
     def on_current_model_changed(self, model_root: str):
-        self.rest_pose_manager.ensure_model(model_root or "")
         if model_root:
             self._reload_for_model(model_root)
         else:
@@ -1224,42 +1214,52 @@ class AnimationPresenter:
             self._set_status("paste_failed", error=result.error)
 
     def _on_reset_pose(self):
-        result = self.rest_pose_manager.toggle(self.app_state.current_model_root or "")
-        if result.succeeded:
-            self._set_status(
-                "rest_pose_applied" if result.active else "motion_restored",
-                count=result.joint_count,
+        from ...actions.pose_actions import ResetPoseAction, ResetPoseRequest
+
+        joints = self._selected_joints()
+        if not joints:
+            self._set_status("no_joints_selected")
+            return
+
+        bind_translations = self._selected_bind_translations(joints)
+        result = ResetPoseAction(self.maya_adapter).execute(
+            ResetPoseRequest(
+                joints=joints,
+                bind_translations=bind_translations,
             )
+        )
+        if result.succeeded:
+            # Reuse the established Animator translation keys; the action is
+            # now one-shot, but the existing localized status surface remains
+            # the compatibility boundary for all supported languages.
+            self._set_status("rest_pose_applied", count=result.reset_count)
         else:
             self._set_status("rest_pose_failed", error=result.error)
 
-    def _on_rest_pose_state_changed(self, result):
-        """Synchronize Animation Toolset controls with the shared session."""
-        if self._disposed:
-            return
-        try:
-            reset_button = self.view.tool_buttons.get("reset")
-            if reset_button is not None and hasattr(reset_button, "setText"):
-                key = "return_to_motion" if result.active else "reset"
-                reset_button.setText(self.view.tr(key, "animation_toolset"))
-            if hasattr(self.view.picker_tabs, "setEnabled"):
-                self.view.picker_tabs.setEnabled(not result.active)
-            for key, button in self.view.tool_buttons.items():
-                if key != "reset" and hasattr(button, "setEnabled"):
-                    button.setEnabled(not result.active)
-            if hasattr(self.view.body_picker, "setToolTip"):
-                self.view.body_picker.setToolTip(
-                    self.view.tr(
-                        "return_to_motion_tooltip" if result.active else "rest_pose_tooltip",
-                        "animation_toolset",
-                    )
+    def _selected_bind_translations(
+        self,
+        joints: list[str],
+    ) -> dict[str, tuple[float, float, float]]:
+        """Read persisted import-time local translations for selected joints."""
+        bind_translations: dict[str, tuple[float, float, float]] = {}
+        for joint in joints:
+            try:
+                if not self.maya_adapter.attribute_exists(
+                    "mmd_vmd_bind_translate", joint
+                ):
+                    continue
+                raw_value = self.maya_adapter.get_attr(
+                    f"{joint}.mmd_vmd_bind_translate"
                 )
-        except RuntimeError:
-            # A workspaceControl can delete its Qt children without delivering
-            # closeEvent to this Python wrapper.  Treat a dead view as a final
-            # lifecycle signal and unsubscribe immediately.
-            logger.debug("Animator Toolset view was deleted during Rest Pose update")
-            self.disconnect_signals()
+                values = json.loads(raw_value)
+                if not isinstance(values, (list, tuple)) or len(values) != 3:
+                    continue
+                bind_translations[joint] = tuple(float(value) for value in values)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                logger.debug("Invalid bind translate metadata on %s", joint)
+            except Exception:
+                logger.debug("Failed to read bind translate metadata on %s", joint, exc_info=True)
+        return bind_translations
 
     def _on_mirror_pose(self):
         from ...actions.pose_actions import MirrorPoseAction, MirrorPoseRequest

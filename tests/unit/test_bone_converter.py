@@ -1,3 +1,4 @@
+import json
 import unittest
 from unittest.mock import Mock, patch
 import maya.cmds as cmds
@@ -204,6 +205,11 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertAlmostEqual(upper_pos[0], 0, places=5)
         self.assertAlmostEqual(upper_pos[1], 10, places=5)
         self.assertAlmostEqual(upper_pos[2], 0, places=5)
+
+        for joint, expected in zip(maya_joints, ((0, 0, 0), (0, 10, 0), (0, 10, 0))):
+            self.assertTrue(cmds.attributeQuery("mmd_vmd_bind_translate", node=joint, exists=True))
+            stored = cmds.getAttr(f"{joint}.mmd_vmd_bind_translate")
+            self.assertEqual(tuple(json.loads(stored)), expected)
 
     @patch("mmd_tools.converters.bone_converter.maya_name_utils.sanitize_bone_name")
     def test_create_maya_joints_refreshes_paths_after_name_collision(self, mock_sanitize):

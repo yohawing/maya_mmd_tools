@@ -790,6 +790,20 @@ def _apply_fast_skeleton_skin(
             except Exception:
                 pass
 
+    # Parent/absolute operations establish the final local bind translation.
+    # Persist that value for Animator Toolset Reset Pose, which intentionally
+    # operates on selected joints instead of opening Rest Pose display mode.
+    # Keep the VMD compatibility helper local so mesh-only fast import does
+    # not import the full VMD scene-state dependency graph at module load.
+    from mmd_tools.converters.vmd_import_state import store_bind_translate
+
+    for joint in joints:
+        try:
+            translate = cmds_module.getAttr(f"{joint}.translate")[0]
+            store_bind_translate(joint, translate, cmds_module=cmds_module)
+        except Exception as exc:
+            logger.debug("Failed to persist fast-path bind translate for %s: %s", joint, exc)
+
     # ---- create skinCluster ----
     if not cmds_module.objExists(mesh_node):
         logger.debug("Mesh node %s does not exist; skipping skinCluster", mesh_node)
