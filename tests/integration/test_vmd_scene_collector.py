@@ -21,10 +21,13 @@ class TestVmdSceneCollector(MayaTestBase):
     def setUp(self):
         super().setUp()
         cmds.file(new=True, force=True)
+        self._original_time_unit = cmds.currentUnit(query=True, time=True)
+        cmds.currentUnit(time="film")
         self.fixture_provider = TestFixtureProvider()
 
     def tearDown(self):
         self.fixture_provider.cleanup_temp_files()
+        cmds.currentUnit(time=self._original_time_unit)
         super().tearDown()
         cmds.file(new=True, force=True)
 
@@ -43,7 +46,8 @@ class TestVmdSceneCollector(MayaTestBase):
         self.assertEqual(parsed.bone_frames[0].bone_name, "センター")
         self.assertEqual(parsed.bone_frames[0].frame_number, 0)
         self.assertEqual(parsed.bone_frames[1].bone_name, "センター")
-        self.assertEqual(parsed.bone_frames[1].frame_number, 10)
+        # VMD is fixed at 30fps, so Maya film frame 10 becomes VMD frame 12.
+        self.assertEqual(parsed.bone_frames[1].frame_number, 12)
         self.assertEqual(parsed.bone_frames[1].position, (5.0, 1.0, -2.0))
 
     def test_roundtrip_keyed_joint_uses_bind_relative_scaled_vmd_offset(self):
@@ -136,7 +140,7 @@ class TestVmdSceneCollector(MayaTestBase):
 
         self.assertEqual(len(parsed.camera_frames), 1)
         camera_frame = parsed.camera_frames[0]
-        self.assertEqual(camera_frame.frame_number, 12)
+        self.assertEqual(camera_frame.frame_number, 15)
         self.assertEqual(camera_frame.position, (1.0, 2.0, 3.0))
         self.assertAlmostEqual(camera_frame.rotation[2], 0.5235987901687622)
         self.assertEqual(camera_frame.distance, -45.0)
@@ -145,7 +149,7 @@ class TestVmdSceneCollector(MayaTestBase):
 
         self.assertEqual(len(parsed.light_frames), 1)
         light_frame = parsed.light_frames[0]
-        self.assertEqual(light_frame.frame_number, 8)
+        self.assertEqual(light_frame.frame_number, 10)
         self.assertAlmostEqual(light_frame.color[0], 0.1)
         self.assertAlmostEqual(light_frame.color[1], 0.2)
         self.assertAlmostEqual(light_frame.color[2], 0.3)
