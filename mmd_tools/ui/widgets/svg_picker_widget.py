@@ -288,8 +288,14 @@ class SvgPickerWidget(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         svg_text = svg_path.read_text(encoding="utf-8")
+        self._svg_text = svg_text
+        self._removed_element_ids = set(removed_element_ids or set())
+        self._region_element_ids: dict[str, set[str]] = {}
+        for source in region_sources:
+            self._region_element_ids.setdefault(source.region_id, set()).add(source.element_id)
+        self._hidden_regions: set[str] = set()
         self._renderer = QSvgRenderer(
-            QByteArray(_renderer_bytes(svg_text, removed_element_ids or set()))
+            QByteArray(_renderer_bytes(svg_text, self._removed_element_ids))
         )
         if region_sources:
             self._region_paths = _paths_by_element_id(svg_text, region_sources)
@@ -304,6 +310,7 @@ class SvgPickerWidget(QWidget):
         self._drag_origin: QPointF | None = None
         self._selection_rect: QRectF | None = None
         self._selected_regions: set[str] = set()
+        self._available_regions = set(self._region_paths)
         self._enabled_regions = set(self._region_paths)
         self._additive_selection = False
 
@@ -336,8 +343,30 @@ class SvgPickerWidget(QWidget):
     def set_enabled_regions(self, region_ids) -> None:
         """Disable unavailable model regions while keeping the artwork visible."""
 
-        self._enabled_regions = set(region_ids) & set(self._region_paths)
+        self._available_regions = set(region_ids) & set(self._region_paths)
+        self._sync_interactive_regions()
+
+    def set_hidden_regions(self, region_ids) -> None:
+        """Hide dynamic mode-specific regions from artwork and hit testing."""
+
+        hidden = set(region_ids) & set(self._region_paths)
+        if hidden == self._hidden_regions:
+            return
+        self._hidden_regions = hidden
+        removed_ids = set(self._removed_element_ids)
+        for region_id in hidden:
+            removed_ids.update(self._region_element_ids.get(region_id, ()))
+        self._renderer.load(QByteArray(_renderer_bytes(self._svg_text, removed_ids)))
+        self._sync_interactive_regions()
+
+    def _sync_interactive_regions(self) -> None:
+        """Apply model availability and dynamic visibility as one hit-test set."""
+
+        self._enabled_regions = self._available_regions - self._hidden_regions
         self._selected_regions &= self._enabled_regions
+        if self._hovered_region not in self._enabled_regions:
+            self._hovered_region = None
+            QToolTip.hideText()
         self.update()
 
     def set_selected_regions(self, region_ids) -> None:
@@ -430,6 +459,8 @@ class SvgPickerWidget(QWidget):
             painter.setFont(font)
             painter.setPen(QPen(QColor(225, 235, 244), 1.0))
             for region_id, label in self._region_labels.items():
+                if region_id in self._hidden_regions:
+                    continue
                 painter.drawText(
                     self._region_paths[region_id].boundingRect(),
                     Qt.AlignCenter,

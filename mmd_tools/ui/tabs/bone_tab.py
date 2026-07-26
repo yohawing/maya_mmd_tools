@@ -112,12 +112,10 @@ class BoneTab(BaseTab):
         # ツールバー
         toolbar_layout = QHBoxLayout()
         self.refresh_btn = MaterialSymbolToolButton("refresh", self.tr("refresh", "buttons"))
-        self.rest_pose_btn = QPushButton()
-        self._rest_pose_active = False
-        self.set_rest_pose_state(False)
+        self.bind_pose_btn = QPushButton(self.tr("go_to_bind_pose", "buttons"))
 
         toolbar_layout.addWidget(self.refresh_btn)
-        toolbar_layout.addWidget(self.rest_pose_btn)
+        toolbar_layout.addWidget(self.bind_pose_btn)
         toolbar_layout.addStretch()
 
         bone_tree_layout.addLayout(toolbar_layout)
@@ -582,16 +580,10 @@ class BoneTab(BaseTab):
         self.apply_btn.setEnabled(enabled)
         self.reset_btn.setEnabled(enabled)
 
-    def set_rest_pose_state(self, active):
-        """Update the shared Rest Pose toggle label."""
-        self._rest_pose_active = bool(active)
-        key = "return_to_motion" if active else "rest_pose"
-        self.rest_pose_btn.setText(self.tr(key, "buttons"))
-
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""
         apply_translation_registry(self, self._TRANSLATION_REGISTRY)
-        self.set_rest_pose_state(self._rest_pose_active)
+        self.bind_pose_btn.setText(self.tr("go_to_bind_pose", "buttons"))
 
         # ComboBox items - Connection type
         self.connection_type_combo.clear()

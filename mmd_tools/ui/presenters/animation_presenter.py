@@ -37,6 +37,15 @@ logger = get_logger(__name__)
 
 _USER_ROLE = 0x0100  # Qt.UserRole
 
+_IK_BONE_NAMES = {
+    "left": "左足ＩＫ",
+    "right": "右足ＩＫ",
+}
+_LEG_FK_REGIONS = {
+    "left": {"left_upper_leg", "left_lower_leg", "left_foot", "left_toe", "left_toe_ex"},
+    "right": {"right_upper_leg", "right_lower_leg", "right_foot", "right_toe", "right_toe_ex"},
+}
+
 
 class AnimationPresenter:
     """Drives the AnimationTab (Body/Finger/Morph/Display picker + tools)."""
@@ -72,9 +81,11 @@ class AnimationPresenter:
         self._last_morph_refresh_time: float | None = None
         self._pose_clipboard: dict | None = None
         self._all_model_joints: list[str] = []
+        self._ik_nodes_by_side: dict[str, str] = {}
+        self._last_ik_states: dict[str, bool] = {}
         self._disposed = False
-        # Animator Reset Pose is a one-shot selection action and must not
-        # participate in Bone Editor's shared temporary Rest Pose session.
+        # Animator Reset Pose is a one-shot selection action, distinct from
+        # Bone Editor's model-wide Go to Bind Pose inspection command.
         self.connect_signals()
         self._start_morph_refresh_timer()
 
@@ -103,6 +114,10 @@ class AnimationPresenter:
             self.view.body_picker.select_all_clicked.connect(self.on_select_all)
         if hasattr(self.view.body_picker, "clear_selection_clicked"):
             self.view.body_picker.clear_selection_clicked.connect(self.on_clear_clicked)
+        if hasattr(self.view.body_picker, "ik_toggled"):
+            self.view.body_picker.ik_toggled.connect(self.on_ik_toggled)
+        if hasattr(self.view, "ik_off_btn"):
+            self.view.ik_off_btn.clicked.connect(self.on_ik_off_clicked)
         self.view.finger_picker.region_clicked.connect(self.on_finger_region_clicked)
         if hasattr(self.view.finger_picker, "regions_selected"):
             self.view.finger_picker.regions_selected.connect(self.on_finger_regions_selected)
@@ -188,6 +203,41 @@ class AnimationPresenter:
         except Exception:
             pass
         self.view.status_label.setText("")
+
+    def on_ik_toggled(self, side: str, enabled: bool) -> None:
+        """Set one leg IK solver state without authoring animation keys."""
+
+        side_label = {"left": "L", "right": "R"}.get(side, side.upper())
+        node = self._ik_nodes_by_side.get(side)
+        if not node:
+            self._set_status("ik_not_found", side=side_label)
+            return
+        try:
+            self.maya_adapter.set_attr(f"{node}.enabled", bool(enabled))
+        except Exception as exc:
+            logger.debug("IK toggle failed for %s: %s", node, exc)
+            self._set_status("ik_toggle_failed", error=exc)
+            return
+        self._sync_ik_picker_state(force=True)
+        self._set_status("ik_enabled" if enabled else "ik_disabled", side=side_label)
+
+    def on_ik_off_clicked(self) -> None:
+        """Disable both leg IK solvers without creating keys."""
+
+        if not self._ik_nodes_by_side:
+            self._set_status("ik_not_found", side="L/R")
+            return
+        failures = []
+        for node in dict.fromkeys(self._ik_nodes_by_side.values()):
+            try:
+                self.maya_adapter.set_attr(f"{node}.enabled", False)
+            except Exception as exc:
+                failures.append(str(exc))
+        if failures:
+            self._set_status("ik_toggle_failed", error=failures[0])
+            return
+        self._sync_ik_picker_state(force=True)
+        self._set_status("ik_all_disabled")
 
     def _on_control_rig_clicked(self, action: str) -> None:
         """Run one explicit MMD-native control-rig state action."""
@@ -485,7 +535,10 @@ class AnimationPresenter:
         bone_map = self._build_bone_index_map(model_root)
         self._all_model_joints = [bone_map[index] for index in sorted(bone_map)]
         self._bone_name_to_joint = self._build_bone_name_map(model_root)
+        self._ik_nodes_by_side = self._collect_leg_ik_nodes(model_root)
+        self._last_ik_states = {}
         self._sync_picker_regions()
+        self._sync_ik_picker_state(force=True)
         self._build_picker_english_tooltips()
         self._retranslate_picker_bone_tooltips()
         bone_display_names = self._build_bone_display_name_map(bone_map)
@@ -541,6 +594,46 @@ class AnimationPresenter:
         if hasattr(self.view.finger_picker, "set_enabled_regions"):
             self.view.finger_picker.set_enabled_regions(finger_ids)
 
+    def _collect_leg_ik_nodes(self, model_root: str) -> dict[str, str]:
+        """Resolve the current model's owned left/right foot IK solvers."""
+
+        try:
+            from ...converters.vmd_ik_enabled_animation import collect_ik_nodes_by_bone_name
+
+            nodes = collect_ik_nodes_by_bone_name(target_model=model_root)
+        except Exception as exc:
+            logger.debug("Failed to collect IK nodes for %s: %s", model_root, exc)
+            return {}
+        normalized = {
+            normalize_mmd_bone_name(name) or name: node for name, node in nodes.items()
+        }
+        return {
+            side: normalized[name]
+            for side, raw_name in _IK_BONE_NAMES.items()
+            if (name := normalize_mmd_bone_name(raw_name) or raw_name) in normalized
+        }
+
+    def _sync_ik_picker_state(self, *, force: bool = False) -> None:
+        """Hide a side's FK controls while its evaluated leg IK is enabled."""
+
+        states = {}
+        for side, node in self._ik_nodes_by_side.items():
+            try:
+                states[side] = bool(self.maya_adapter.get_attr(f"{node}.enabled"))
+            except Exception:
+                states[side] = False
+        if not force and states == self._last_ik_states:
+            return
+        self._last_ik_states = states
+        hidden = set()
+        for side, enabled in states.items():
+            if enabled:
+                hidden.update(_LEG_FK_REGIONS[side])
+        if hasattr(self.view.body_picker, "set_hidden_regions"):
+            self.view.body_picker.set_hidden_regions(hidden)
+        if hasattr(self.view, "ik_off_btn"):
+            self.view.ik_off_btn.setEnabled(any(states.values()))
+
     def _build_picker_english_tooltips(self) -> None:
         """Cache PMX English bone names for locale-aware picker tooltips."""
 
@@ -588,8 +681,14 @@ class AnimationPresenter:
     def _clear_all(self):
         self._picker_groups = []
         self._all_model_joints = []
+        self._ik_nodes_by_side = {}
+        self._last_ik_states = {}
         self._bone_name_to_joint.clear()
         self._sync_picker_regions()
+        if hasattr(self.view.body_picker, "set_hidden_regions"):
+            self.view.body_picker.set_hidden_regions(set())
+        if hasattr(self.view, "ik_off_btn"):
+            self.view.ik_off_btn.setEnabled(False)
         self.view.display_frame_tree.clear()
         self._clear_morph_tab()
         self.view.status_label.setText("")
@@ -1091,8 +1190,17 @@ class AnimationPresenter:
 
         self._morph_refresh_timer = QTimer(self.view)
         self._morph_refresh_timer.setInterval(200)
-        self._morph_refresh_timer.timeout.connect(self._refresh_morph_rows)
+        self._morph_refresh_timer.timeout.connect(self._refresh_dynamic_ui)
         self._morph_refresh_timer.start()
+
+    def _refresh_dynamic_ui(self) -> None:
+        """Refresh evaluated picker and morph state for the visible sub-tab."""
+
+        if not self.view.isVisible():
+            return
+        if self.view.picker_tabs.currentIndex() == self.view.TAB_BODY:
+            self._sync_ik_picker_state()
+        self._refresh_morph_rows()
 
     def _refresh_morph_rows(self) -> None:
         if (
@@ -1232,9 +1340,9 @@ class AnimationPresenter:
             # Reuse the established Animator translation keys; the action is
             # now one-shot, but the existing localized status surface remains
             # the compatibility boundary for all supported languages.
-            self._set_status("rest_pose_applied", count=result.reset_count)
+            self._set_status("reset_pose_applied", count=result.reset_count)
         else:
-            self._set_status("rest_pose_failed", error=result.error)
+            self._set_status("reset_pose_failed", error=result.error)
 
     def _selected_bind_translations(
         self,

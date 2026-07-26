@@ -127,7 +127,7 @@ class BodyPickerWidget(SvgPickerWidget):
                 **{region["id"]: region["bone_name"] for region in _BODY_REGIONS},
                 "select_all": "現在のMMDモデルの全ボーンを選択",
                 "clear_selection": "選択をクリア",
-                "reset_pose": "モデル全体をRest Pose表示へ切り替え",
+                "reset_pose": "選択中のボーンをバインドポーズへ戻す",
                 "mirror_sel": "反対側のボーンを選択",
                 "fingers_left": "指Pickerへ移動",
                 "fingers_right": "指Pickerへ移動",

@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from maya import cmds
 import maya.OpenMayaUI as mui
 from .qt_compat import (
@@ -13,7 +11,6 @@ from .qt_compat import (
     QStatusBar,
     QProgressBar,
     QLabel,
-    QIcon,
 )
 from .components.header_widget import HeaderWidget
 from .application_state import ApplicationState
@@ -54,9 +51,6 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("MMD Tools")
         self.setObjectName(self.WINDOW_NAME)
-        icon_path = Path(__file__).parent / "assets" / "app" / "mmd_editor.svg"
-        if icon_path.is_file():
-            self.setWindowIcon(QIcon(str(icon_path)))
 
         # アプリケーション状態管理
         self.app_state = ApplicationState()
@@ -146,10 +140,7 @@ class MainWindow(QMainWindow):
         self.show_window(dockable=dockable)
 
     def closeEvent(self, event):
-        from ..actions.rest_pose_action import get_rest_pose_manager
-
         self.bone_presenter.disconnect_signals()
-        get_rest_pose_manager().return_to_motion()
         self.save_settings()
         super().closeEvent(event)
 

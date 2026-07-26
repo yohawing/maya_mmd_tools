@@ -90,6 +90,13 @@ class AnimationTab(BaseTab):
         self.body_page = QWidget()
         body_layout = QVBoxLayout(self.body_page)
         body_layout.setContentsMargins(0, 0, 0, 0)
+        ik_layout = QHBoxLayout()
+        ik_layout.setContentsMargins(0, 0, 0, 0)
+        ik_layout.addStretch(1)
+        self.ik_off_btn = QPushButton("IK OFF")
+        self.ik_off_btn.setEnabled(False)
+        ik_layout.addWidget(self.ik_off_btn)
+        body_layout.addLayout(ik_layout)
         self.body_picker = BodyPickerWidget()
         body_layout.addWidget(self.body_picker, 0, Qt.AlignTop)
         body_layout.addStretch(1)
@@ -163,7 +170,7 @@ class AnimationTab(BaseTab):
                 ("copy", "Copy", "content_copy"),
                 ("paste", "Paste", "content_paste"),
                 ("mirror", "Mirror", "flip"),
-                ("reset", "Rest Pose", "restart_alt"),
+                ("reset", "Reset Pose", "restart_alt"),
                 ("clean", "Clean", "cleaning_services"),
                 ("bake", "Bake", "animation"),
             ]
@@ -223,6 +230,8 @@ class AnimationTab(BaseTab):
         self.select_all_btn.setText(tr("select_all"))
         self.select_all_btn.setToolTip(tr("select_all_tooltip"))
         self.clear_btn.setText(tr("clear"))
+        self.ik_off_btn.setText(tr("ik_off"))
+        self.ik_off_btn.setToolTip(tr("ik_off_tooltip"))
         self.visibility_label.setText(f"{tr('visibility')}：")
         self.body_picker.update_region_texts(
             labels={
@@ -234,7 +243,7 @@ class AnimationTab(BaseTab):
             tooltips={
                 "select_all": tr("select_all_tooltip"),
                 "clear_selection": tr("clear_tooltip"),
-                "reset_pose": tr("picker_rest_pose_tooltip"),
+                "reset_pose": tr("reset_pose_tooltip"),
                 "mirror_sel": tr("mirror_selection_tooltip"),
                 "fingers_left": tr("finger_picker_tooltip"),
                 "fingers_right": tr("finger_picker_tooltip"),

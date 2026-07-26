@@ -216,6 +216,7 @@ class _FakeBodyPicker:
         self.tooltip = ""
         self.additive_selection = False
         self.region_tooltips = {}
+        self.hidden_regions = set()
 
     def set_selected_regions(self, region_ids):
         self.selected_regions = list(region_ids)
@@ -225,6 +226,9 @@ class _FakeBodyPicker:
 
     def update_region_texts(self, *, labels=None, tooltips=None):
         self.region_tooltips.update(tooltips or {})
+
+    def set_hidden_regions(self, region_ids):
+        self.hidden_regions = set(region_ids)
 
 
 class _FakeFingerPicker:
@@ -286,6 +290,7 @@ class _FakeView:
         self.refresh_btn = _FakeButton()
         self.clear_btn = _FakeButton()
         self.select_all_btn = _FakeButton()
+        self.ik_off_btn = _FakeButton()
         self.finger_body_btn = _FakeButton()
         self.status_label = _FakeLabel()
         self.display_frame_tree = _FakeTreeWidget()
@@ -304,10 +309,8 @@ class _FakeView:
 
     def tr(self, key, _category=None):
         return {
-            "reset": "Rest Pose",
-            "return_to_motion": "Return to Motion",
-            "rest_pose_tooltip": "Display model Rest Pose",
-            "return_to_motion_tooltip": "Return to Motion",
+            "reset": "Reset Pose",
+            "reset_pose_tooltip": "Reset selected joints to their bind pose",
             "no_selectable_bones": "No selectable bones",
             "selected_all_bones": "Selected all bones ({count})",
             "select_all_failed": "Failed to select all bones",
@@ -320,9 +323,13 @@ class _FakeView:
             "no_pose_copied": "No pose copied",
             "pasted_pose": "Pasted pose ({count} joints)",
             "paste_failed": "Paste failed: {error}",
-            "rest_pose_applied": "Rest Pose ({count} joints)",
-            "motion_restored": "Motion restored ({count} joints)",
-            "rest_pose_failed": "Rest Pose failed: {error}",
+            "reset_pose_applied": "Reset Pose ({count} joints)",
+            "reset_pose_failed": "Reset Pose failed: {error}",
+            "ik_not_found": "{side} IK was not found",
+            "ik_enabled": "{side} IK enabled",
+            "ik_disabled": "{side} IK disabled",
+            "ik_all_disabled": "Leg IK disabled",
+            "ik_toggle_failed": "IK toggle failed: {error}",
             "mirrored_pose": "Mirrored pose",
             "mirror_failed": "Mirror failed: {error}",
             "baked_animation": "Baked animation",
@@ -730,6 +737,43 @@ class TestBodyPickerPresenter(unittest.TestCase):
         self.assertEqual(adapter.selected, ["head_jnt"])
         self.assertEqual(view.status_label.text(), "頭")
         self.assertEqual(view.body_picker.selected_regions, ["head"])
+
+    def test_leg_ik_toggle_hides_only_that_sides_fk_regions(self):
+        presenter, view, _, adapter = self._make_with_bones()
+        presenter._ik_nodes_by_side = {
+            "left": "left_leg_ik_solver",
+            "right": "right_leg_ik_solver",
+        }
+        adapter._attrs["left_leg_ik_solver", "enabled"] = False
+        adapter._attrs["right_leg_ik_solver", "enabled"] = False
+
+        view.body_picker.ik_toggled.emit("left", True)
+
+        self.assertTrue(adapter._attrs["left_leg_ik_solver", "enabled"])
+        self.assertEqual(
+            view.body_picker.hidden_regions,
+            {"left_upper_leg", "left_lower_leg", "left_foot", "left_toe", "left_toe_ex"},
+        )
+        self.assertTrue(view.ik_off_btn.enabled)
+        self.assertIn("L IK enabled", view.status_label.text())
+
+    def test_ik_off_disables_both_sides_and_restores_fk_regions(self):
+        presenter, view, _, adapter = self._make_with_bones()
+        presenter._ik_nodes_by_side = {
+            "left": "left_leg_ik_solver",
+            "right": "right_leg_ik_solver",
+        }
+        adapter._attrs["left_leg_ik_solver", "enabled"] = True
+        adapter._attrs["right_leg_ik_solver", "enabled"] = True
+        presenter._sync_ik_picker_state(force=True)
+
+        view.ik_off_btn.clicked.emit()
+
+        self.assertFalse(adapter._attrs["left_leg_ik_solver", "enabled"])
+        self.assertFalse(adapter._attrs["right_leg_ik_solver", "enabled"])
+        self.assertEqual(view.body_picker.hidden_regions, set())
+        self.assertFalse(view.ik_off_btn.enabled)
+        self.assertIn("Leg IK disabled", view.status_label.text())
 
     def test_body_picker_targets_owned_control_in_every_rig_state(self):
         presenter, _view, _app_state, adapter = self._make_with_bones(
@@ -1244,7 +1288,7 @@ class TestToolsSection(unittest.TestCase):
         presenter._on_tool_clicked("reset")
 
         self.assertEqual(adapter._transforms["j1"], ([1.0, 2.0, 3.0], [0, 0, 0]))
-        self.assertIn("Rest Pose", view.status_label.text())
+        self.assertIn("Reset Pose", view.status_label.text())
         self.assertTrue(view.picker_tabs.enabled)
         self.assertTrue(all(button.enabled for button in view.tool_buttons.values()))
 

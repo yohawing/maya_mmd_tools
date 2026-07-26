@@ -13,6 +13,7 @@ from mmd_tools.ui.widgets.finger_picker_widget import (  # noqa: E402
     _FINGER_REGIONS,
     _FINGER_SHAPE_REGION_IDS,
 )
+from mmd_tools.ui.widgets.svg_picker_widget import _renderer_bytes  # noqa: E402
 
 ASSET_DIR = Path(__file__).resolve().parents[2] / "mmd_tools" / "ui" / "assets" / "animator_toolset"
 
@@ -50,6 +51,21 @@ def test_body_torso_art_maps_chest_to_upper_body_2_and_abdomen_to_upper_body():
     assert source_map["upper_body"] == "upper_body_2"
     assert source_map["upper_body_2"] == "upper_body"
     assert source_map["lower_body"] == "lower_body"
+
+
+def test_renderer_can_remove_fk_art_without_removing_ik_art():
+    svg_text = (ASSET_DIR / "animpicker_body.svg").read_text(encoding="utf-8")
+    root = ET.fromstring(
+        _renderer_bytes(svg_text, {"left_upper_leg", "left_lower_leg", "left_foot"})
+    )
+    ids = {element.get("id") for element in root.iter() if element.get("id")}
+
+    assert "left_upper_leg" not in ids
+    assert "left_lower_leg" not in ids
+    assert "left_foot" not in ids
+    assert "left_ik" in ids
+    assert "right_upper_leg" not in ids  # authored right leg uses the -2 element IDs
+    assert "left_upper_leg-2" in ids
 
 
 def test_finger_svg_shape_order_matches_32_semantic_regions():
