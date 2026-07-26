@@ -350,11 +350,41 @@ class TestDragDropImporter(unittest.TestCase):
             with patch.object(drag_drop_importer.cmds, "ls", return_value=["|model_root|joint1"]):
                 self.assertEqual(drag_drop_importer._selected_model_root(), "|model_root")
 
-    def test_selected_model_root_falls_back_to_first_mmd_model(self):
+    def test_selected_model_root_rejects_ambiguous_loaded_models(self):
         service = _FakeSceneModelService(models=["|first_model", "|second_model"])
         with patch.object(drag_drop_importer, "SceneModelService", return_value=service):
             with patch.object(drag_drop_importer.cmds, "ls", return_value=[]):
-                self.assertEqual(drag_drop_importer._selected_model_root(), "|first_model")
+                self.assertIsNone(drag_drop_importer._selected_model_root())
+
+    def test_selected_model_root_falls_back_to_sole_mmd_model(self):
+        service = _FakeSceneModelService(models=["|only_model"])
+        with patch.object(drag_drop_importer.cmds, "ls", return_value=[]):
+            self.assertEqual(drag_drop_importer._selected_model_root(service), "|only_model")
+
+    @patch.object(drag_drop_importer, "_display_warning")
+    @patch.object(drag_drop_importer, "_display_info")
+    def test_import_dropped_vmd_requires_selection_when_multiple_models_are_loaded(
+        self,
+        _display_info,
+        display_warning,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            motion = Path(tmp) / "motion.vmd"
+            motion.write_text("", encoding="utf-8")
+            importer = MagicMock(return_value=True)
+            service = _FakeSceneModelService(models=["|model_a", "|ns:model_b"])
+            with patch.object(drag_drop_importer.cmds, "ls", return_value=[]):
+                result = drag_drop_importer.import_dropped_files(
+                    [str(motion)],
+                    importer=importer,
+                    settings_service=_FakeSettingsService(),
+                    scene_model_service=service,
+                )
+
+        self.assertFalse(result)
+        importer.assert_not_called()
+        self.assertIn("select one MMD model", display_warning.call_args.args[0])
+        self.assertIn("2 models", display_warning.call_args.args[0])
 
     def test_drop_filter_uses_global_qt_filter_on_maya_2026(self):
         event_filter = drag_drop_importer._MmdDropEventFilter()

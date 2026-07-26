@@ -90,8 +90,8 @@ def supported_mmd_files(paths: Iterable[str]) -> List[str]:
     return result
 
 
-def _selected_model_root() -> Optional[str]:
-    service = SceneModelService()
+def _selected_model_root(scene_model_service: Optional[SceneModelService] = None) -> Optional[str]:
+    service = scene_model_service or SceneModelService()
     for node in cmds.ls(selection=True, long=True) or []:
         root = service.get_parent_mmd_root(node) or node
         if (
@@ -103,7 +103,17 @@ def _selected_model_root() -> Optional[str]:
         ):
             return root
     models = service.list_mmd_models()
-    return models[0] if models else None
+    return models[0] if len(models) == 1 else None
+
+
+def _missing_target_warning(scene_model_service: SceneModelService, asset_label: str) -> str:
+    models = scene_model_service.list_mmd_models()
+    if len(models) > 1:
+        return (
+            f"Maya MMD Tools: select one MMD model before dropping {asset_label} files; "
+            f"{len(models)} models are loaded."
+        )
+    return f"Maya MMD Tools: load or drop a PMX/PMD model before dropping {asset_label} files."
 
 
 def import_dropped_files(
@@ -170,9 +180,9 @@ def import_dropped_files(
             _display_warning(f"Maya MMD Tools: model import failed: {model_path}")
 
     for motion_path in motion_files:
-        target_model = last_model_root or _selected_model_root()
+        target_model = last_model_root or _selected_model_root(scene_model_service)
         if not target_model:
-            _display_warning("Maya MMD Tools: load or drop a PMX/PMD model before dropping VMD motion files.")
+            _display_warning(_missing_target_warning(scene_model_service, "VMD motion"))
             continue
         options = settings_service.build_vmd_import_options(target_model)
         if last_model_path:
@@ -185,9 +195,9 @@ def import_dropped_files(
             _display_warning(f"Maya MMD Tools: VMD import failed: {motion_path}")
 
     for pose_path in pose_files:
-        target_model = last_model_root or _selected_model_root()
+        target_model = last_model_root or _selected_model_root(scene_model_service)
         if not target_model:
-            _display_warning("Maya MMD Tools: select or drop a PMX/PMD model before dropping VPD pose files.")
+            _display_warning(_missing_target_warning(scene_model_service, "VPD pose"))
             continue
         try:
             pose_data = parser(pose_path)
