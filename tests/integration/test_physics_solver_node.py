@@ -232,7 +232,7 @@ class TestPhysicsSolverNode(MayaTestBase):
         solver = self._create_solver(root)
         cmds.currentTime(0)
         status = cmds.getAttr(f"{solver}.outStatus")
-        self.assertIn(status, ("reset", "stepped", "cached"))
+        self.assertIn(status, ("reset", "stepped", "cached", "pose-updated"))
 
     def test_solver_disabled_outputs_not_solved(self):
         root, _ = self._build_scene()
@@ -244,14 +244,14 @@ class TestPhysicsSolverNode(MayaTestBase):
         status = cmds.getAttr(f"{solver}.outStatus")
         self.assertEqual(status, "disabled")
 
-    def test_solver_same_time_idempotent(self):
+    def test_solver_same_time_refreshes_maya_pose(self):
         root, _ = self._build_scene()
         solver = self._create_solver(root)
         cmds.currentTime(1)
         status1 = cmds.getAttr(f"{solver}.outStatus")
-        # Force re-evaluation by reading again (DG caches, so this verifies
-        # the node handles same-time correctly on internal state)
-        self.assertIn(status1, ("reset", "stepped"))
+        # Maya-pose input must refresh at the same time because its incoming
+        # kinematic matrices may have dirtied without a time change.
+        self.assertIn(status1, ("reset", "stepped", "pose-updated"))
 
     def test_solver_bone_matrices_non_empty(self):
         root, _ = self._build_scene()
@@ -1049,15 +1049,15 @@ class TestSolverLifecycle(MayaTestBase):
         registered_types = set(cmds.allNodeTypes() or [])
         self.assertTrue({"mmdMorphController", "mmdAppend", "mmdCcdIk"}.issubset(registered_types))
 
-    def test_no_model_root_graceful(self):
-        """Solver with no model root connection outputs not-solved."""
+    def test_no_world_connection_stays_disabled_before_descriptor_work(self):
+        """A solver without its production World control remains cheaply disabled."""
         solver = cmds.createNode("mmdPhysicsSolver", name="testSolver")
         cmds.connectAttr("time1.outTime", f"{solver}.inTime")
         cmds.currentTime(0)
         solved = cmds.getAttr(f"{solver}.outSolved")
         self.assertFalse(solved)
         status = cmds.getAttr(f"{solver}.outStatus")
-        self.assertEqual(status, "no physics data")
+        self.assertEqual(status, "disabled")
 
     def test_model_root_without_physics_metadata_graceful(self):
         """Solver with model root but no physics metadata outputs not-solved."""
