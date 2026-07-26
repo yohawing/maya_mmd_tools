@@ -10,7 +10,7 @@ Scenario, all against one Kokomi PMX fixture imported twice:
 
 1. Characterize both copies (``HumanIkFrontendSession.setup_and_characterize``),
    select the first as SOURCE and enter a TARGET preview on the second
-   (mirrors ``tests/viewport/humanik_target_preview_smoke.py``).
+   through the production frontend session.
 2. Attempt a VMD import onto the TARGET model.  Expect
    ``mmd_tools.core.exceptions.MMDImportException`` naming the blocking mode
    and ``Restore MMD Rig``.
