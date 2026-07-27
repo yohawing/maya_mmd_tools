@@ -5,7 +5,9 @@ from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
 
 import maya.cmds as cmds
+from maya.api import OpenMayaAnim as oma
 
+from mmd_tools.core import maya_animation_utils
 from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.mmd_control_rig_builder import (
     CONTROL_RIG_ATTACHED,
@@ -295,8 +297,48 @@ class TestControlRigImportPreflight(unittest.TestCase):
 
 
 class TestControlRigMotionClear(MayaTestBase):
+    def test_api_keying_reuses_existing_control_curve_uuid(self):
+        cmds.select(clear=True)
+        control = cmds.createNode("transform", name="cr061_existing_curve_ctrl")
+        cmds.setKeyframe(control, attribute="rotateX", time=3, value=25.0)
+        curve = (cmds.listConnections(f"{control}.rotateX", source=True, destination=False) or [None])[0]
+        curve_uuid = (cmds.ls(curve, uuid=True) or [None])[0]
+
+        curves = maya_animation_utils.create_animation_curves(
+            control,
+            ["rotateX"],
+            tangent_type=oma.MFnAnimCurve.kTangentLinear,
+        )
+
+        self.assertEqual(curves["rotateX"].name(), curve)
+        self.assertEqual((cmds.ls(curve, uuid=True) or [None])[0], curve_uuid)
+
+    def test_failed_reimport_restores_existing_curve_uuid_and_payload(self):
+        cmds.select(clear=True)
+        control = cmds.createNode("transform", name="cr061_rollback_curve_ctrl")
+        cmds.setKeyframe(control, attribute="rotateX", time=1, value=10.0)
+        cmds.setKeyframe(control, attribute="rotateX", time=5, value=30.0)
+        curve = (cmds.listConnections(f"{control}.rotateX", source=True, destination=False) or [None])[0]
+        curve_uuid = (cmds.ls(curve, uuid=True) or [None])[0]
+        metadata = {"controls": {"center": (cmds.ls(control, uuid=True) or [None])[0]}}
+        converter = VmdConverter()
+        snapshot = converter._capture_mmd_control_rig_animation_snapshot(metadata)
+        cmds.setKeyframe(control, attribute="rotateX", time=1, value=99.0)
+        cmds.setKeyframe(control, attribute="rotateX", time=2, value=99.0)
+
+        error = converter._restore_mmd_control_rig_animation_snapshot(snapshot)
+
+        self.assertIsNone(error)
+        self.assertEqual((cmds.ls(curve, uuid=True) or [None])[0], curve_uuid)
+        self.assertEqual(cmds.keyframe(curve, query=True, timeChange=True), [1.0, 5.0])
+        restored_values = cmds.keyframe(curve, query=True, valueChange=True)
+        self.assertAlmostEqual(restored_values[0], 10.0, places=9)
+        self.assertAlmostEqual(restored_values[1], 30.0, places=9)
+
     def test_clear_existing_motion_cuts_control_owned_curve(self):
+        cmds.select(clear=True)
         root = cmds.group(empty=True, name="cr061_control_clear_root")
+        cmds.select(clear=True)
         joint = cmds.joint(name="cr061_control_clear_joint")
         cmds.parent(joint, root)
         control = cmds.createNode("transform", name="cr061_control_clear_ctrl")

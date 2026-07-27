@@ -110,12 +110,6 @@ def create_animation_curves(
             if cmds.objExists(f"{node_name}.{attr}") or cmds.attributeQuery(base_attr, node=node_name, exists=True):
                 cmds.animLayer(animation_layer, edit=True, attribute=f"{node_name}.{attr}")
 
-    if not animation_layer:
-        for attr in attributes:
-            connections = cmds.listConnections(f"{node_name}.{attr}", source=True, destination=False)
-            if connections:
-                cmds.delete(connections)
-
     curves = {}
     for attr in attributes:
         if animation_layer:
@@ -153,6 +147,24 @@ def create_animation_curves(
                 if attr in curves:
                     break
         else:
+            destination = f"{node_name}.{attr}"
+            source_plugs = cmds.listConnections(
+                destination,
+                source=True,
+                destination=False,
+                plugs=True,
+                skipConversionNodes=False,
+            ) or []
+            if source_plugs:
+                source_nodes = list(dict.fromkeys(str(plug).split(".", 1)[0] for plug in source_plugs))
+                if len(source_nodes) != 1 or not str(cmds.nodeType(source_nodes[0])).startswith("animCurve"):
+                    raise RuntimeError(
+                        f"cannot replace non-animCurve input on {destination}: {source_plugs!r}"
+                    )
+                curve_sel = om.MSelectionList()
+                curve_sel.add(source_nodes[0])
+                curves[attr] = oma.MFnAnimCurve(curve_sel.getDependNode(0))
+                continue
             curve = oma.MFnAnimCurve()
             plug = _find_plug(fn_depend, attr)
             # Passing only an MPlug is ambiguous in Maya 2024's Python API:

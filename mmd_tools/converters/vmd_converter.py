@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 
 import maya.api.OpenMaya as om
+import maya.api.OpenMayaAnim as oma
 import maya.cmds as cmds
 
 from ..core.exceptions import MMDImportException
@@ -808,7 +809,10 @@ class VmdConverter:
                                         reason_code="control_rig_bone_keying_failed",
                                     ) from exc
                                 raise
-                        failed_after = sorted(set(self._failed_bones) - failed_before)
+                        # This set was cleared immediately before conversion,
+                        # so every member belongs to the current import even
+                        # when the same role also failed in an earlier call.
+                        failed_after = sorted(set(self._failed_bones))
                         # Keep the converter's cumulative failure record for
                         # diagnostics while still classifying this call.
                         self._failed_bones.update(failed_before)
@@ -1420,13 +1424,16 @@ class VmdConverter:
                             plug,
                             source=True,
                             destination=False,
-                            type="animCurve",
+                            plugs=True,
+                            skipConversionNodes=False,
                         )
                         or []
                     )
+                    incoming_nodes = [str(source).split(".", 1)[0] for source in incoming]
                     payload = (
-                        _capture_animation_curve_payload(cmds, str(incoming[0]))
-                        if incoming
+                        _capture_animation_curve_payload(cmds, incoming_nodes[0])
+                        if len(incoming_nodes) == 1
+                        and str(cmds.nodeType(incoming_nodes[0])).startswith("animCurve")
                         else {}
                     )
                     value = cmds.getAttr(plug)
@@ -1455,27 +1462,60 @@ class VmdConverter:
             if not control or not attr:
                 continue
             try:
-                cmds.cutKey(control, attribute=attr, clear=True)
+                destination = f"{control}.{attr}"
+                prior_sources = [str(source) for source in (row.get("incoming") or [])]
+                current_sources = [
+                    str(source)
+                    for source in (
+                        cmds.listConnections(
+                            destination,
+                            source=True,
+                            destination=False,
+                            plugs=True,
+                            skipConversionNodes=False,
+                        )
+                        or []
+                    )
+                ]
+                for source in current_sources:
+                    if source in prior_sources:
+                        continue
+                    cmds.disconnectAttr(source, destination)
+                    source_node = source.split(".", 1)[0]
+                    if cmds.objExists(source_node) and str(cmds.nodeType(source_node)).startswith("animCurve"):
+                        cmds.delete(source_node)
+                for source in prior_sources:
+                    if not cmds.objExists(source):
+                        raise RuntimeError(f"original animation source is missing: {source}")
+                    if not cmds.isConnected(source, destination):
+                        cmds.connectAttr(source, destination, force=True)
                 payload = row.get("curve_payload") or {}
                 keys = payload.get("keys") or []
                 if keys:
+                    curve_node = prior_sources[0].split(".", 1)[0]
+                    selection = om.MSelectionList()
+                    selection.add(curve_node)
+                    curve_fn = oma.MFnAnimCurve(selection.getDependNode(0))
+                    for index in reversed(range(curve_fn.numKeys)):
+                        curve_fn.remove(index)
                     for key in keys:
                         cmds.setKeyframe(
-                            control,
-                            attribute=attr,
+                            curve_node,
                             time=float(key.get("time", 0.0)),
                             value=float(key.get("value", 0.0)),
                         )
-                    current_curves = cmds.listConnections(
-                        f"{control}.{attr}",
-                        source=True,
-                        destination=False,
-                        type="animCurve",
-                    ) or []
-                    for curve in current_curves:
-                        _restore_animation_curve_payload(cmds, str(curve), payload)
+                    _restore_animation_curve_payload(cmds, curve_node, payload)
                 elif row.get("value") is not None:
-                    cmds.setAttr(f"{control}.{attr}", row["value"])
+                    if prior_sources:
+                        curve_node = prior_sources[0].split(".", 1)[0]
+                        if str(cmds.nodeType(curve_node)).startswith("animCurve"):
+                            selection = om.MSelectionList()
+                            selection.add(curve_node)
+                            curve_fn = oma.MFnAnimCurve(selection.getDependNode(0))
+                            for index in reversed(range(curve_fn.numKeys)):
+                                curve_fn.remove(index)
+                    else:
+                        cmds.setAttr(destination, row["value"])
             except Exception as exc:
                 errors.append(f"restore controller {control}.{attr} failed: {exc}")
         return "; ".join(errors) if errors else None
