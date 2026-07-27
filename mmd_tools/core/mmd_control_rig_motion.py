@@ -89,6 +89,8 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
         for role, uuid in metadata.get("controls", {}).items()
     }
     operations: List[Tuple[str, str, str]] = []
+    created_curve_nodes: List[str] = []
+    curve_representations = _curve_representations(metadata)
     journal: Dict[str, Any] = {"channels": [], "offsetParentMatrix": [], "ikEnabled": []}
     claimed_targets = set()
     display_reference_time = float(metadata["displayReferenceTime"])
@@ -143,12 +145,27 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
 
                     value = float(cmds.getAttr(target))
                     source = str(incoming[0]) if incoming else None
+                    control_source = _existing_control_curve(
+                        cmds, curve_representations, target
+                    )
+                    if source and control_source is None:
+                        control_source = _duplicate_animation_source(
+                            cmds, source, created_curve_nodes
+                        )
+                    elif source and control_source is not None:
+                        # A previous EDIT/BAKE cycle already owns a detached
+                        # controller representation. Reuse its UUID-backed
+                        # curve instead of growing a new node each cycle.
+                        pass
                     if source is not None:
                         _require_animation_source(cmds, source, target)
                         cmds.disconnectAttr(source, target)
                         operations.append(("connect", source, target))
-                        cmds.connectAttr(source, control_plug, force=False)
-                        operations.append(("disconnect", source, control_plug))
+                        if control_source:
+                            if cmds.isConnected(control_source, control_plug):
+                                cmds.disconnectAttr(control_source, control_plug)
+                            cmds.connectAttr(control_source, control_plug, force=False)
+                            operations.append(("disconnect", control_source, control_plug))
                     else:
                         cmds.setAttr(control_plug, value)
                     cmds.connectAttr(control_plug, target, force=False)
@@ -160,13 +177,29 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                             control=control_plug,
                             target=target,
                             value=value,
+                            control_source=control_source,
                         )
+                    )
+                    _record_curve_representation(
+                        curve_representations,
+                        target,
+                        source,
+                        control_source,
+                        cmds,
                     )
 
                 offset_controls.add(control)
 
                 if binding.get("inputKind") == INPUT_IK_CONTROLLER:
-                    _connect_ik_enabled(cmds, control, binding, journal, operations)
+                    _connect_ik_enabled(
+                        cmds,
+                        control,
+                        binding,
+                        journal,
+                        operations,
+                        created_curve_nodes=created_curve_nodes,
+                        curve_representations=curve_representations,
+                    )
 
             _zero_control_display_offsets(
                 cmds,
@@ -175,23 +208,50 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                 reference_time=display_reference_time,
             )
             metadata["journal"] = journal
+            for row in curve_representations:
+                row["activeOwner"] = CONTROL_RIG_CONTROL_OWNED
+            metadata["curveRepresentations"] = curve_representations
             metadata["state"] = CONTROL_RIG_EDIT
             metadata["owner"] = CONTROL_RIG_CONTROL_OWNED
             _write_metadata(cmds, root, metadata)
     except Exception as exc:
+        rollback_error = None
         try:
             _rollback(cmds, operations)
             _restore_plug_states(cmds, plug_states)
+            for node in reversed(created_curve_nodes):
+                if cmds.objExists(node):
+                    cmds.delete(node)
             for plug in reversed(added_attributes):
                 node, _, attribute = plug.partition(".")
                 if cmds.objExists(plug) and not (
                     cmds.listConnections(plug, source=False, destination=True) or []
                 ):
                     cmds.deleteAttr(f"{node}.{attribute}")
-            _restore_raw_metadata(cmds, root, metadata_before)
         except Exception as rollback_exc:
+            rollback_error = rollback_exc
+            # A caller may inject a failure into connectAttr itself. The
+            # completed undo chunk is the only reliable graph restore path in
+            # that case because the patched writer cannot reconnect sources.
+            try:
+                cmds.undo()
+            except Exception:
+                pass
+            for node in reversed(created_curve_nodes):
+                if cmds.objExists(node):
+                    try:
+                        cmds.delete(node)
+                    except Exception:
+                        pass
+        try:
+            # Metadata is restored even when a test-injected connection
+            # failure also affects best-effort graph rollback.
+            _restore_raw_metadata(cmds, root, metadata_before)
+        except Exception as metadata_exc:
+            rollback_error = rollback_error or metadata_exc
+        if rollback_error is not None:
             raise MmdControlRigBuildError(
-                f"control-rig enter EDIT failed and rollback was incomplete: {rollback_exc}"
+                f"control-rig enter EDIT failed and rollback was incomplete: {rollback_error}"
             ) from exc
         raise
     return metadata
@@ -236,6 +296,9 @@ def restore_mmd_control_rig_attached(model_root: str, *, cmds_module=None) -> Di
             source, target = row["control"], row["target"]
             if cmds.isConnected(source, target):
                 cmds.disconnectAttr(source, target)
+            control_source = row.get("controlSource")
+            if control_source and cmds.isConnected(control_source, source):
+                cmds.disconnectAttr(control_source, source)
             prior = row.get("source")
             if prior:
                 cmds.connectAttr(prior, target, force=False)
@@ -245,6 +308,9 @@ def restore_mmd_control_rig_attached(model_root: str, *, cmds_module=None) -> Di
             control, target = row["control"], row["target"]
             if cmds.isConnected(control, target):
                 cmds.disconnectAttr(control, target)
+            control_source = row.get("controlSource")
+            if control_source and cmds.isConnected(control_source, control):
+                cmds.disconnectAttr(control_source, control)
             source = row.get("source")
             if source:
                 if cmds.isConnected(source, control):
@@ -254,6 +320,9 @@ def restore_mmd_control_rig_attached(model_root: str, *, cmds_module=None) -> Di
                 cmds.setAttr(target, float(row["value"]))
         _restore_offsets(cmds, offset_rows, strict=True)
         metadata.pop("journal", None)
+        for row in metadata.get("curveRepresentations", []):
+            if isinstance(row, dict):
+                row["activeOwner"] = CONTROL_RIG_MMD_OWNED
         metadata["state"] = CONTROL_RIG_ATTACHED
         metadata["owner"] = CONTROL_RIG_MMD_OWNED
         _write_metadata(cmds, root, metadata)
@@ -295,13 +364,35 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
         "bake",
         rows,
         offset_rows,
+        curve_plugs=tuple(
+            plug
+            for row in rows
+            for plug in (row.get("source"), row.get("controlSource"))
+            if plug
+        ),
     ):
         for row in reversed(ik_rows):
-            _commit_control_input(cmds, row, sources_by_control[row["control"]])
+            _commit_control_input(
+                cmds, row, sources_by_control[row["control"]],
+            )
         for row in reversed(channel_rows):
-            _commit_control_input(cmds, row, sources_by_control[row["control"]])
+            _commit_control_input(
+                cmds, row, sources_by_control[row["control"]],
+            )
         _restore_offsets(cmds, offset_rows, strict=True)
+        representations = metadata.setdefault("curveRepresentations", [])
+        for row in rows:
+            _record_curve_representation(
+                representations,
+                row["target"],
+                row.get("source"),
+                row.get("controlSource") or sources_by_control[row["control"]],
+                cmds,
+            )
         metadata.pop("journal", None)
+        for row in metadata.get("curveRepresentations", []):
+            if isinstance(row, dict):
+                row["activeOwner"] = CONTROL_RIG_MMD_OWNED
         metadata["state"] = CONTROL_RIG_BAKED
         metadata["owner"] = CONTROL_RIG_MMD_OWNED
         _write_metadata(cmds, root, metadata)
@@ -350,7 +441,9 @@ def _entry_transaction_plugs(cmds, metadata, controls) -> Tuple[str, ...]:
 
 
 @contextmanager
-def _edit_exit_transaction(cmds, root, label, action, rows, offset_rows):
+def _edit_exit_transaction(
+    cmds, root, label, action, rows, offset_rows, *, curve_plugs=()
+):
     """Snapshot EDIT plugs and roll back a failed state transition."""
     transaction_plugs = {
         str(row[key])
@@ -360,6 +453,7 @@ def _edit_exit_transaction(cmds, root, label, action, rows, offset_rows):
     transaction_plugs.update(str(row["control"]) for row in offset_rows)
     plug_states = _capture_plug_states(cmds, transaction_plugs)
     metadata_before = _raw_metadata(cmds, root)
+    curve_snapshots = _capture_curve_snapshots(cmds, curve_plugs)
     try:
         transitioning = json.loads(metadata_before)
         transitioning["owner"] = CONTROL_RIG_CONVERTING
@@ -369,12 +463,17 @@ def _edit_exit_transaction(cmds, root, label, action, rows, offset_rows):
     except Exception as exc:
         try:
             _restore_plug_states(cmds, plug_states)
+            _restore_curve_snapshots(cmds, curve_snapshots)
             _restore_raw_metadata(cmds, root, metadata_before)
         except Exception as rollback_exc:
+            _discard_curve_snapshots(cmds, curve_snapshots)
             raise MmdControlRigBuildError(
                 f"control-rig {action} failed and rollback was incomplete: {rollback_exc}"
             ) from exc
+        _discard_curve_snapshots(cmds, curve_snapshots)
         raise
+    else:
+        _discard_curve_snapshots(cmds, curve_snapshots)
 
 
 def _expanded_authored_plugs(
@@ -436,6 +535,7 @@ def _journal_plug_row(
     control: str,
     target: str,
     value: Any,
+    control_source: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a connection-journal row with readable and stable plug names."""
     return {
@@ -446,6 +546,10 @@ def _journal_plug_row(
         "target": target,
         "targetRef": _plug_reference(cmds, target),
         "value": value,
+        "controlSource": control_source,
+        "controlSourceRef": (
+            _plug_reference(cmds, control_source) if control_source else None
+        ),
     }
 
 
@@ -494,6 +598,16 @@ def _resolve_journal_plug_row(cmds, row: Mapping[str, Any]) -> Dict[str, Any]:
         if source
         else None
     )
+    control_source = row.get("controlSource")
+    resolved["controlSource"] = (
+        _resolve_plug_reference(
+            cmds,
+            row.get("controlSourceRef"),
+            "journal control curve source",
+        )
+        if control_source
+        else None
+    )
     return resolved
 
 
@@ -508,7 +622,16 @@ def _resolve_journal_offset_row(cmds, row: Mapping[str, Any]) -> Dict[str, Any]:
     return resolved
 
 
-def _connect_ik_enabled(cmds, control, binding, journal, operations) -> None:
+def _connect_ik_enabled(
+    cmds,
+    control,
+    binding,
+    journal,
+    operations,
+    *,
+    created_curve_nodes=None,
+    curve_representations=None,
+) -> None:
     solvers = resolve_mmd_control_rig_binding_ik_solvers(cmds, binding)
     if not solvers:
         return
@@ -523,21 +646,30 @@ def _connect_ik_enabled(cmds, control, binding, journal, operations) -> None:
         if len(incoming) > 1:
             raise MmdControlRigBuildError(f"multiple IK enabled sources: {target}")
         source = str(incoming[0]) if incoming else None
+        control_source = (
+            _existing_control_curve(cmds, curve_representations, target)
+            if curve_representations is not None
+            else None
+        )
+        if source and control_source is None:
+            control_source = _duplicate_animation_source(
+                cmds, source, created_curve_nodes if created_curve_nodes is not None else []
+            )
         value = bool(cmds.getAttr(target))
         if source:
             _require_animation_source(cmds, source, target)
             control_incoming = cmds.listConnections(
                 control_plug, source=True, destination=False, plugs=True
             ) or []
-            if control_incoming and str(control_incoming[0]) != source:
+            if control_incoming and control_source and str(control_incoming[0]) != control_source:
                 raise MmdControlRigBuildError(
                     f"IK solvers have different enabled animation sources: {control}"
                 )
             cmds.disconnectAttr(source, target)
             operations.append(("connect", source, target))
-            if not control_incoming:
-                cmds.connectAttr(source, control_plug, force=False)
-                operations.append(("disconnect", source, control_plug))
+            if control_source and not control_incoming:
+                cmds.connectAttr(control_source, control_plug, force=False)
+                operations.append(("disconnect", control_source, control_plug))
         elif not (cmds.listConnections(control_plug, source=True, destination=False) or []):
             cmds.setAttr(control_plug, value)
         cmds.connectAttr(control_plug, target, force=False)
@@ -549,8 +681,13 @@ def _connect_ik_enabled(cmds, control, binding, journal, operations) -> None:
                 control=control_plug,
                 target=target,
                 value=value,
+                control_source=control_source,
             )
         )
+        if curve_representations is not None:
+            _record_curve_representation(
+                curve_representations, target, source, control_source, cmds
+            )
 
 
 def _zero_control_display_offsets(
@@ -594,6 +731,123 @@ def _zero_control_display_offsets(
             cmds.currentTime(restore_time, edit=True)
 
 
+def _curve_representations(metadata: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """Return persisted two-owner curve rows without exposing metadata state."""
+    rows = metadata.get("curveRepresentations", [])
+    return [dict(row) for row in rows if isinstance(row, Mapping)]
+
+
+def _existing_control_curve(cmds, rows, target: str) -> Optional[str]:
+    """Resolve a detached CONTROL curve for a target by UUID authority."""
+    if not rows:
+        return None
+    for row in rows:
+        if row.get("target") != target:
+            try:
+                if _resolve_plug_reference(cmds, row.get("targetRef"), "curve target") != target:
+                    continue
+            except MmdControlRigBuildError:
+                continue
+        ref = row.get("controlRef")
+        if not ref:
+            return None
+        try:
+            return _resolve_plug_reference(cmds, ref, "control curve")
+        except MmdControlRigBuildError:
+            return None
+    return None
+
+
+def _record_curve_representation(rows, target, mmd_source, control_source, cmds):
+    """Persist both MMD and controller curve UUIDs for one authored channel."""
+    existing = next((row for row in rows if row.get("target") == target), None)
+    payload = {
+        "target": target,
+        "targetRef": _plug_reference(cmds, target),
+        "mmd": mmd_source,
+        "mmdRef": _plug_reference(cmds, mmd_source) if mmd_source else None,
+        "control": control_source,
+        "controlRef": _plug_reference(cmds, control_source) if control_source else None,
+    }
+    if existing is None:
+        rows.append(payload)
+    else:
+        existing.update(payload)
+
+
+def _capture_curve_snapshots(cmds, plugs):
+    snapshots = []
+    created = []
+    for plug in sorted(set(str(value) for value in plugs if value)):
+        node = plug.split(".", 1)[0]
+        if not cmds.objExists(node) or not str(cmds.nodeType(node)).startswith("animCurve"):
+            continue
+        try:
+            backup = _duplicate_animation_source(cmds, plug, created)
+        except MmdControlRigBuildError:
+            continue
+        if backup != plug:
+            snapshots.append((plug, backup))
+    return snapshots
+
+
+def _restore_curve_snapshots(cmds, snapshots):
+    for original, backup in snapshots:
+        try:
+            _copy_animation_curve(cmds, backup, original)
+        except Exception:
+            pass
+
+
+def _discard_curve_snapshots(cmds, snapshots):
+    for _original, backup in snapshots:
+        node = backup.split(".", 1)[0]
+        if cmds.objExists(node):
+            try:
+                cmds.delete(node)
+            except Exception:
+                pass
+
+
+def _duplicate_animation_source(cmds, source: str, created_nodes: List[str]) -> str:
+    """Clone one authored animation node, retaining key/tangent data and UUID."""
+    node, _, attribute = source.partition(".")
+    if not node or not attribute:
+        raise MmdControlRigBuildError(f"invalid animation source: {source}")
+    _require_animation_source(cmds, source, source)
+    try:
+        duplicates = cmds.duplicate(node, upstreamNodes=True, returnRootsOnly=True)
+    except Exception:
+        duplicates = []
+    if duplicates:
+        duplicate = str(duplicates[0])
+    elif str(cmds.nodeType(node)).startswith("animCurve"):
+        # Dependency-only animCurve nodes are not duplicated by Maya's DAG
+        # duplicate command. Create a same-typed node and copy its keys.
+        try:
+            duplicate = str(cmds.createNode(cmds.nodeType(node)))
+            cmds.copyKey(node, option="curve")
+            cmds.pasteKey(duplicate, option="replaceCompletely")
+        except Exception as exc:
+            raise MmdControlRigBuildError(
+                f"could not duplicate animation source: {source}: {exc}"
+            ) from exc
+    elif str(cmds.nodeType(node)).startswith("animBlendNode"):
+        # Blend nodes are generated by Maya's legacy VMD route and cannot be
+        # cloned with a stable cross-version attribute schema. Fail closed
+        # instead of claiming one UUID is two independent owner curves.
+        raise MmdControlRigBuildError(
+            f"independent control curve is unsupported for blend source: {source}"
+        )
+    else:
+        raise MmdControlRigBuildError(f"could not duplicate animation source: {source}")
+    created_nodes.append(duplicate)
+    plug = f"{duplicate}.{attribute}"
+    if not cmds.objExists(plug):
+        raise MmdControlRigBuildError(f"duplicated animation source plug is missing: {plug}")
+    return plug
+
+
 def _rollback(cmds, operations) -> None:
     for action, source, target in reversed(operations):
         try:
@@ -614,11 +868,33 @@ def _restore_offsets(cmds, rows, *, strict: bool = False) -> None:
                 raise
 
 
-def _commit_control_input(cmds, row: Mapping[str, Any], source: Optional[str]) -> None:
+def _commit_control_input(
+    cmds, row: Mapping[str, Any], source: Optional[str],
+) -> None:
     control, target = row["control"], row["target"]
     value = cmds.getAttr(control)
     if cmds.isConnected(control, target):
         cmds.disconnectAttr(control, target)
+    control_source = row.get("controlSource") or source
+    mmd_source = row.get("source")
+    if control_source and mmd_source:
+        # The two curves stay as separate nodes. Bake copies controller keys
+        # into the original MMD curve when possible, then makes that curve the
+        # sole writer of the authored input.
+        if cmds.isConnected(control_source, control):
+            cmds.disconnectAttr(control_source, control)
+        if not cmds.isConnected(mmd_source, target):
+            cmds.connectAttr(mmd_source, target, force=False)
+        _copy_animation_curve(cmds, control_source, mmd_source)
+        return
+    if control_source and not mmd_source:
+        # No authored MMD curve existed before EDIT. Keep the controller curve
+        # intact and make it the sole MMD writer for this newly authored route.
+        if cmds.isConnected(control_source, control):
+            cmds.disconnectAttr(control_source, control)
+        if not cmds.isConnected(control_source, target):
+            cmds.connectAttr(control_source, target, force=False)
+        return
     if source:
         if cmds.isConnected(source, control):
             cmds.disconnectAttr(source, control)
@@ -626,6 +902,23 @@ def _commit_control_input(cmds, row: Mapping[str, Any], source: Optional[str]) -
             cmds.connectAttr(source, target, force=False)
     else:
         cmds.setAttr(target, value)
+
+
+def _copy_animation_curve(cmds, source: str, destination: str) -> None:
+    """Copy an animCurve payload while preserving both node identities."""
+    source_node = source.split(".", 1)[0]
+    destination_node = destination.split(".", 1)[0]
+    if not str(cmds.nodeType(source_node)).startswith("animCurve"):
+        return
+    if not str(cmds.nodeType(destination_node)).startswith("animCurve"):
+        return
+    try:
+        cmds.copyKey(source_node, option="curve")
+        cmds.pasteKey(destination_node, option="replaceCompletely")
+    except Exception as exc:
+        raise MmdControlRigBuildError(
+            f"could not copy control animation curve: {source} -> {destination}"
+        ) from exc
 
 
 def _capture_plug_states(cmds, plugs) -> Dict[str, Dict[str, Any]]:
