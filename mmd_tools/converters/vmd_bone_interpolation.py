@@ -72,6 +72,13 @@ def evaluate_vmd_bezier(points: Tuple[float, float, float, float], x: float) -> 
         c *= 0.5
         t += c if ft < 0.0 else -c
         s = 1.0 - t
+    # The final subdivision updates ``t`` after calculating the polynomial
+    # terms above.  Recompute the terms at that final ``t`` before returning;
+    # returning the previous iteration's terms introduces a small but
+    # systematic timing error at every sampled VMD channel.
+    sst3 = 3.0 * s * s * t
+    stt3 = 3.0 * s * t * t
+    ttt = t * t * t
     return sst3 * y1 + stt3 * y2 + ttt
 
 
