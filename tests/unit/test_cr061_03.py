@@ -224,6 +224,7 @@ class TestControlRigImportPreflight(unittest.TestCase):
         route = routes["|model|right_leg"]
         self.assertFalse(route["skip_rotate"])
         self.assertIsNone(route["ik_solver_rotate"])
+        self.assertTrue(route["control_owned"])
         self.assertEqual(route["attr_targets"]["rotateX"], ("|model|right_leg_CTRL", "rotateX"))
 
     def test_active_role_keeps_identity_frame_zero_but_identity_only_role_is_dropped(self):
@@ -236,7 +237,7 @@ class TestControlRigImportPreflight(unittest.TestCase):
         self.assertEqual([frame["bone_name"] for frame in retained], ["右足", "右足"])
         self.assertEqual(
             VmdConverter._vmd_bone_frame_channels(frames[1]),
-            {"translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"},
+            {"translateX", "translateY", "translateZ"},
         )
 
     def test_unmapped_vmd_role_fails_closed_before_keying(self):

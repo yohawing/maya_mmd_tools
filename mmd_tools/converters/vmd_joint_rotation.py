@@ -3,10 +3,49 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Optional, Tuple
+from typing import Any, Iterable, List, Optional, Tuple
 
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
+
+
+def unwrap_euler_sequence(
+    euler_angles: Iterable[Tuple[float, float, float]],
+) -> List[Tuple[float, float, float]]:
+    """Return a degree-valued Euler sequence with continuous nearest branches.
+
+    Maya stores each Euler channel as an angle in degrees, while quaternion
+    decomposition chooses a canonical branch independently for every sample.
+    For dense VMD samples that can turn a physically small ``179 -> -179``
+    step into a 358-degree Euler jump.  This helper keeps the first sample
+    unchanged and adds the nearest multiple of 360 degrees to each subsequent
+    axis relative to the previously unwrapped sample.
+
+    Args:
+        euler_angles: Euler triples in chronological order, expressed in
+            degrees.
+
+    Returns:
+        A new list of Euler triples.  The input iterable is never modified.
+    """
+    unwrapped: List[Tuple[float, float, float]] = []
+    previous: Optional[Tuple[float, float, float]] = None
+
+    for angles in euler_angles:
+        current = tuple(float(value) for value in angles)
+        if len(current) != 3:
+            raise ValueError("Euler samples must contain exactly three angles")
+
+        if previous is not None:
+            current = tuple(
+                value + 360.0 * round((prior - value) / 360.0)
+                for prior, value in zip(previous, current)
+            )
+
+        unwrapped.append(current)
+        previous = current
+
+    return unwrapped
 
 
 def extract_euler_from_matrix(m: om.MMatrix, rotate_order: int) -> Tuple[float, float, float]:

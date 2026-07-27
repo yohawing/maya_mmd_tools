@@ -63,10 +63,12 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
 
     for joint in set(converter.bone_name_mapping.values()):
         ik_info = ik_link_joints.get(joint)
+        control_route = control_routes.get(joint, {})
         route = {
             "attr_targets": {},
             "skip_rotate": joint in ik_link_joints,
             "ik_solver_rotate": ik_info,
+            "control_owned": bool(control_route),
         }
         info = append_info.get(joint)
         if info:
@@ -77,7 +79,7 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
 
         # In EDIT, the owned curve is the authored animation input. Unsupported
         # bones and solver-output links retain the established legacy route.
-        route["attr_targets"].update(control_routes.get(joint, {}))
+        route["attr_targets"].update(control_route)
 
         # A CONTROL_OWNED MMD Control Rig is a single-writer path: when all
         # rotation channels are routed to an owned controller, author those

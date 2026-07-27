@@ -1030,23 +1030,27 @@ class VmdConverter:
 
     @classmethod
     def _vmd_bone_frame_channels(cls, frame) -> set:
-        """Return channels that legacy VMD keying writes for a sample.
-
-        The legacy writer emits all six TRS channels for every active role,
-        including zero-valued components.  Preflight therefore requires the
-        complete route rather than inferring sparse channels from sample
-        magnitudes.
-        """
+        """Return channel groups with a non-identity value in one VMD sample."""
         if cls._vmd_bone_frame_is_identity(frame):
             return set()
-        return {
-            "translateX",
-            "translateY",
-            "translateZ",
-            "rotateX",
-            "rotateY",
-            "rotateZ",
-        }
+        position = getattr(frame, "position", None)
+        rotation = getattr(frame, "rotation", None)
+        if isinstance(frame, dict):
+            position = frame.get("position", position)
+            rotation = frame.get("rotation", rotation)
+        epsilon = 1.0e-8
+        channels = set()
+        try:
+            if position is not None and any(abs(float(value)) > epsilon for value in position[:3]):
+                channels.update(("translateX", "translateY", "translateZ"))
+            if rotation is not None and (
+                any(abs(float(value)) > epsilon for value in rotation[:3])
+                or abs(float(rotation[3]) - 1.0) > epsilon
+            ):
+                channels.update(("rotateX", "rotateY", "rotateZ"))
+        except (TypeError, ValueError, OverflowError):
+            return {"translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"}
+        return channels
 
     @classmethod
     def _control_rig_bone_frames_for_import(cls, frames) -> list:
