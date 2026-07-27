@@ -115,6 +115,50 @@ class TestMmdControlRigRoundtrip(MayaTestBase):
         self.assertAlmostEqual(cmds.getAttr(f"{target}.translateX", time=23), 7.0)
         self.assertEqual(float(cmds.currentTime(query=True)), 77.0)
 
+    def test_sampled_route_creates_mmd_curve_when_source_is_missing(self):
+        """A sampled bake must retain controller animation without an MMD source."""
+        control = cmds.createNode("transform", name="cr061_sampled_new_control")
+        target = cmds.createNode("transform", name="cr061_sampled_new_target")
+        cmds.setKeyframe(control, attribute="rotateY", time=4, value=0.25)
+        cmds.setKeyframe(control, attribute="rotateY", time=9, value=1.5)
+        control_source = (
+            cmds.listConnections(
+                f"{control}.rotateY", source=True, destination=False, plugs=True
+            )
+            or [None]
+        )[0]
+        self.assertTrue(control_source)
+        cmds.currentTime(50, edit=True)
+
+        created = []
+        result = _sample_control_input_to_mmd(
+            cmds,
+            {
+                "control": f"{control}.rotateY",
+                "target": f"{target}.rotateY",
+                "source": None,
+                "controlSource": control_source,
+                "routeClass": "sampled",
+            },
+            control_source,
+            None,
+            created_curve_nodes=created,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(len(created), 1)
+        self.assertEqual(
+            cmds.nodeType(result.split(".", 1)[0]),
+            "animCurveTA",
+        )
+        self.assertEqual(
+            cmds.keyframe(result.split(".", 1)[0], query=True, timeChange=True),
+            list(range(4, 10)),
+        )
+        self.assertAlmostEqual(cmds.getAttr(f"{target}.rotateY", time=4), 0.25)
+        self.assertAlmostEqual(cmds.getAttr(f"{target}.rotateY", time=9), 1.5)
+        self.assertEqual(float(cmds.currentTime(query=True)), 50.0)
+
 
 if __name__ == "__main__":
     unittest.main()
