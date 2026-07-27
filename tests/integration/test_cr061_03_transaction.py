@@ -157,6 +157,36 @@ class TestCr06103SceneTransaction(MayaTestBase):
         self.assertEqual(len(light_values), 1)
         self.assertAlmostEqual(light_values[0], 15.0, places=7)
 
+    def test_zero_key_curve_stays_empty_after_late_failure(self):
+        root = cmds.group(empty=True, name="cr06103_transaction_empty_curve_model")
+        control = cmds.group(empty=True, name="cr06103_transaction_empty_curve_control")
+        cmds.parent(control, root)
+        curve = cmds.createNode("animCurveTL", name="cr06103_transaction_empty_curve")
+        cmds.connectAttr(f"{curve}.output", f"{control}.translateX", force=True)
+
+        converter = VmdConverter()
+        converter.bone_name_mapping = {"センター": control}
+        snapshot = converter._capture_mmd_control_rig_scene_snapshot(root, _EmptyVmdData())
+        cmds.setKeyframe(control, attribute="translateX", time=6, value=42.0)
+        self.assertEqual(cmds.keyframe(curve, query=True, timeChange=True), [6.0])
+
+        rollback_error = converter._rollback_mmd_control_rig_import(
+            {
+                "root": root,
+                "entered_here": False,
+                "created": False,
+                "prior_animation_snapshot": [],
+                "scene_snapshot": snapshot,
+            }
+        )
+
+        self.assertIsNone(rollback_error, rollback_error)
+        self.assertFalse(cmds.keyframe(curve, query=True, timeChange=True))
+        self.assertEqual(
+            cmds.listConnections(f"{control}.translateX", source=True, destination=False),
+            [curve],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

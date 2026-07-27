@@ -1700,7 +1700,7 @@ class VmdConverter:
                     if cmds.objExists(source) and not cmds.isConnected(source, destination):
                         cmds.connectAttr(source, destination, force=True)
                 payload = row.get("curve_payload") or {}
-                if curve_node and cmds.objExists(curve_node) and payload.get("keys"):
+                if curve_node and cmds.objExists(curve_node):
                     selection = om.MSelectionList()
                     selection.add(curve_node)
                     curve_fn = oma.MFnAnimCurve(selection.getDependNode(0))
