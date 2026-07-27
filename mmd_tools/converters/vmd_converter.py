@@ -278,6 +278,7 @@ class VmdConverter:
         progress_callback: Optional[Callable[[int], None]] = None,
         use_native_physics_bake: bool = False,
         target_model: str = None,
+        create_mmd_control_rig: bool = False,
         reduce_bake_keys: bool = False,
         reduce_translate_tolerance: float = 5.0e-4,
         reduce_rotate_tolerance: float = 1.0e-4,
@@ -298,6 +299,7 @@ class VmdConverter:
             progress_callback=progress_callback,
             import_camera_animation=bool(self.import_camera_animation),
             import_light_animation=bool(self.import_light_animation),
+            create_mmd_control_rig=bool(create_mmd_control_rig),
             use_native_physics_bake=bool(use_native_physics_bake),
             reduce_bake_keys=bool(reduce_bake_keys),
             reduce_translate_tolerance=float(reduce_translate_tolerance),
@@ -489,6 +491,7 @@ class VmdConverter:
         use_native_physics_bake: bool = False,
         target_model: str = None,
         scene_animation_only: bool = False,
+        create_mmd_control_rig: bool = False,
         reduce_bake_keys: bool = False,
         reduce_translate_tolerance: float = 5.0e-4,
         reduce_rotate_tolerance: float = 1.0e-4,
@@ -508,6 +511,7 @@ class VmdConverter:
             layer_name: アニメーションレイヤー名
             bake_mode: True の場合は live rig ではなく runtime final-pose bake を優先する
             clear_existing_motion: True の場合は既存の VMD motion keys/layer を削除してから読み込む
+            create_mmd_control_rig: True の場合は MMD Control Rig を animation owner にして直接キーを作る
             vmd_bytes: 生の VMD バイナリ（runtime bake で使用）
             pmx_bytes: 生の PMX バイナリ（runtime bake で使用）
             pmx_path: PMX ファイルパス（pmx_bytes がない場合に読み込みに使用）
@@ -540,11 +544,33 @@ class VmdConverter:
         if not target_model:
             self.logger.error("VMD model motion requires an explicit target model")
             return False
+        if create_mmd_control_rig and bake_mode:
+            self._record_profile_warning(
+                profile,
+                {
+                    "source": "vmd_converter",
+                    "code": "control_rig_bake_mode_conflict",
+                    "severity": "error",
+                    "message": "MMD Control Rig import cannot be combined with Bake Motion",
+                    "fallback": "none",
+                },
+            )
+            raise MMDImportException(
+                "MMD Control Rig import cannot be combined with Bake Motion",
+                reason_code="control_rig_bake_mode_conflict",
+            )
         # Gate BEFORE any scene mutation (including clear_existing_motion
         # below): HUMANIK-SOURCE-VMD-IK-PARITY-1 requires VMD import to
         # refuse fail-closed while target_model is a HumanIK TARGET preview
         # or has an active Control Rig, with no implicit mode switching.
         self._enforce_humanik_import_gate(target_model)
+        if create_mmd_control_rig:
+            self._prepare_mmd_control_rig_import(
+                target_model,
+                profile,
+                vmd_data=vmd_data,
+                target_namespace=target_namespace,
+            )
         if reduce_bake_keys and not self._preflight_reduced_bake_keys(
             vmd_data=vmd_data,
             vmd_bytes=vmd_bytes,
@@ -575,6 +601,7 @@ class VmdConverter:
             reduce_translate_tolerance=reduce_translate_tolerance,
             reduce_rotate_tolerance=reduce_rotate_tolerance,
             reduce_morph_tolerance=reduce_morph_tolerance,
+            create_mmd_control_rig=bool(create_mmd_control_rig),
         )
 
         def _emit_progress(value: int) -> None:
@@ -622,7 +649,15 @@ class VmdConverter:
             # Runtime final-pose bake writes absolute joint channels.  Additive
             # animation layers can turn held rotation samples back into base
             # values after the last VMD key, so bake mode keys the base attrs.
-            use_animation_layers_for_import = self.use_animation_layers and not import_context.bake_mode
+            # Control Rig motion is authored on controller base attributes.  A
+            # VMD_Motion animLayer would introduce animBlendNode ownership and
+            # break the two-representation single-writer contract (layer
+            # support is deferred until the bidirectional bake slice).
+            use_animation_layers_for_import = (
+                self.use_animation_layers
+                and not import_context.bake_mode
+                and not import_context.create_mmd_control_rig
+            )
 
             # アニメーションレイヤーの作成
             if use_animation_layers_for_import:
@@ -646,7 +681,7 @@ class VmdConverter:
             _emit_progress(55)
 
             runtime_success = False
-            if self._should_use_mmd_runtime_bake(
+            if (not import_context.create_mmd_control_rig) and self._should_use_mmd_runtime_bake(
                 vmd_bytes,
                 pmx_bytes,
                 pmx_path,
@@ -816,6 +851,197 @@ class VmdConverter:
         )
         self.logger.error(message)
         raise MMDImportException(message, reason_code=reason_code)
+
+    def _prepare_mmd_control_rig_import(
+        self,
+        target_model: str,
+        profile=None,
+        *,
+        vmd_data=None,
+        target_namespace=None,
+    ) -> None:
+        """Create/reuse an MMD Control Rig and enter its CONTROL_OWNED state.
+
+        This is deliberately a preflight boundary: analyzer and metadata
+        compatibility checks run before VMD keys or layers are touched.  The
+        builder/enter APIs own their graph transactions; a newly-created rig
+        is removed if entering EDIT fails.
+        """
+        from ..core.mmd_control_rig_analyzer import analyze_mmd_control_rig
+        from ..core.mmd_control_rig_builder import (
+            CONTROL_RIG_ATTACHED,
+            CONTROL_RIG_BAKED,
+            CONTROL_RIG_CONTROL_OWNED,
+            CONTROL_RIG_EDIT,
+            CONTROL_RIG_METADATA_SCHEMA,
+            CONTROL_RIG_METADATA_VERSION,
+            CONTROL_RIG_MMD_OWNED,
+            MmdControlRigBuildError,
+            build_mmd_control_rig,
+            read_mmd_control_rig_metadata,
+            remove_mmd_control_rig,
+        )
+        from ..core.mmd_control_rig_motion import enter_mmd_control_rig_edit, restore_mmd_control_rig_attached
+
+        def fail(code, message, detail=None):
+            diagnostic = {"code": code, "severity": "error", "message": message}
+            if detail:
+                diagnostic["detail"] = detail
+            if isinstance(profile, dict):
+                profile.setdefault("mmd_control_rig", {}).setdefault("diagnostics", []).append(diagnostic)
+                profile.setdefault("vmd_converter", {}).setdefault("warnings", []).append(dict(diagnostic))
+            raise MMDImportException(message, reason_code=code)
+
+        def preflight_animation_layers():
+            """Reject active non-base animation-layer ownership for ON imports.
+
+            Control Rig authoring currently supports plain animCurves only.
+            Treat any populated non-base layer (or connected animBlend node) as
+            an unsupported ownership setup rather than flattening it silently.
+            Empty layer shells are harmless and remain available for the user.
+            """
+            try:
+                layers = cmds.ls(type="animLayer") or []
+            except Exception as exc:
+                fail(
+                    "control_rig_anim_layer_preflight_failed",
+                    "Unable to inspect animation-layer ownership before MMD Control Rig import",
+                    str(exc),
+                )
+            conflicts = []
+            for layer in layers:
+                if str(layer) in {"BaseAnimation", "baseAnimation"}:
+                    continue
+                try:
+                    attrs = cmds.animLayer(layer, query=True, attribute=True) or []
+                except Exception as exc:
+                    fail(
+                        "control_rig_anim_layer_preflight_failed",
+                        "Unable to inspect animation-layer ownership before MMD Control Rig import",
+                        f"{layer}: {exc}",
+                    )
+                try:
+                    blend_nodes = cmds.listConnections(
+                        layer,
+                        source=False,
+                        destination=True,
+                        type="animBlendNodeBase",
+                    ) or []
+                except Exception:
+                    blend_nodes = []
+                if attrs or blend_nodes:
+                    conflicts.append(str(layer))
+            if conflicts:
+                fail(
+                    "control_rig_anim_layer_unsupported",
+                    "MMD Control Rig import does not support existing animation-layer ownership",
+                    sorted(set(conflicts)),
+                )
+
+        preflight_animation_layers()
+        metadata = read_mmd_control_rig_metadata(target_model)
+        created = False
+        entered_here = False
+
+        requested_vmd_names = set()
+        if vmd_data is not None and getattr(vmd_data, "bone_frames", None):
+            requested_vmd_names = {
+                str(frame.bone_name if hasattr(frame, "bone_name") else frame.get("bone_name", ""))
+                for frame in vmd_data.bone_frames
+            }
+            requested_vmd_names.discard("")
+            # This read-only mapping preflight must happen before creating or
+            # entering a control rig, so an unknown VMD role cannot trigger a
+            # transient scene mutation before being rejected.
+            self._build_name_mappings(target_namespace, target_model=target_model)
+            unmapped = sorted(name for name in requested_vmd_names if name not in self.bone_name_mapping)
+            if unmapped:
+                fail(
+                    "control_rig_unmapped_vmd_roles",
+                    "MMD Control Rig import cannot convert VMD bone roles",
+                    unmapped,
+                )
+
+        def validate_vmd_routes():
+            """Reject VMD bone channels that cannot be authored by a control."""
+            if vmd_data is None or not getattr(vmd_data, "bone_frames", None):
+                return
+            from ..core.mmd_control_rig_motion import control_rig_edit_routes_for_joints
+
+            routes = control_rig_edit_routes_for_joints(self.bone_name_mapping.values())
+            missing_routes = sorted(
+                name
+                for name in requested_vmd_names
+                if not routes.get(self.bone_name_mapping[name])
+            )
+            if missing_routes:
+                fail(
+                    "control_rig_unconvertible_vmd_roles",
+                    "MMD Control Rig has no authored route for VMD bone roles",
+                    missing_routes,
+                )
+
+        try:
+            if metadata is not None:
+                if (
+                    metadata.get("schema") != CONTROL_RIG_METADATA_SCHEMA
+                    or int(metadata.get("version", -1)) != CONTROL_RIG_METADATA_VERSION
+                ):
+                    fail(
+                        "control_rig_incompatible",
+                        "Existing MMD Control Rig metadata is incompatible with this importer",
+                    )
+                required_roles = {"master", "center", "left_foot_ik", "right_foot_ik"}
+                bindings = metadata.get("bindings") or {}
+                controls = metadata.get("controls") or {}
+                if not required_roles.issubset(bindings) or not required_roles.issubset(controls):
+                    fail("control_rig_unsupported_roles", "Existing MMD Control Rig is missing required roles")
+                if metadata.get("state") == CONTROL_RIG_EDIT:
+                    if metadata.get("owner") != CONTROL_RIG_CONTROL_OWNED:
+                        fail("control_rig_owner_conflict", "Existing MMD Control Rig is not CONTROL_OWNED")
+                    validate_vmd_routes()
+                    return
+                if metadata.get("owner") != CONTROL_RIG_MMD_OWNED or metadata.get("state") not in {
+                    CONTROL_RIG_ATTACHED,
+                    CONTROL_RIG_BAKED,
+                }:
+                    fail("control_rig_owner_conflict", "Existing MMD Control Rig cannot enter CONTROL_OWNED")
+            else:
+                try:
+                    spec = analyze_mmd_control_rig(target_model)
+                except Exception as exc:
+                    fail("control_rig_analysis_failed", "MMD Control Rig analysis failed before VMD import", str(exc))
+                if not spec.can_build_mvp:
+                    blockers = list(spec.blockers)
+                    fail(
+                        "control_rig_unsupported_roles",
+                        "MMD Control Rig import is unsupported for required roles",
+                        blockers or list(spec.warnings),
+                    )
+                build_mmd_control_rig(target_model, spec=spec)
+                created = True
+            enter_mmd_control_rig_edit(target_model)
+            entered_here = True
+            validate_vmd_routes()
+        except MMDImportException:
+            if entered_here:
+                try:
+                    restore_mmd_control_rig_attached(target_model)
+                except Exception:
+                    self.logger.debug("Failed to restore control rig after VMD route preflight failure", exc_info=True)
+            if created:
+                try:
+                    remove_mmd_control_rig(target_model)
+                except Exception:
+                    self.logger.debug("Failed to remove newly-created control rig after preflight failure", exc_info=True)
+            raise
+        except (MmdControlRigBuildError, ValueError, RuntimeError) as exc:
+            if created:
+                try:
+                    remove_mmd_control_rig(target_model)
+                except Exception:
+                    self.logger.debug("Failed to remove newly-created control rig after preflight failure", exc_info=True)
+            fail("control_rig_edit_failed", "MMD Control Rig could not enter CONTROL_OWNED", str(exc))
 
     def _suspend_import_scene_updates(self) -> Tuple[bool, bool]:
         """Suppress Maya undo recording and viewport refresh during VMD import."""

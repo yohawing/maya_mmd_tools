@@ -32,6 +32,7 @@ class VmdImportContext:
     progress_callback: Optional[Callable[[int], None]]
     import_camera_animation: bool
     import_light_animation: bool
+    create_mmd_control_rig: bool = False
     # Explicit opt-in only (default OFF). Requires bake_mode=True.
     use_native_physics_bake: bool = False
     # Explicit programmatic opt-in only (default OFF). Requires bake_mode=True.

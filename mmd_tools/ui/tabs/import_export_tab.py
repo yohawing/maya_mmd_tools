@@ -426,6 +426,20 @@ class ImportExportTab(BaseTab):
         self.clear_existing_motion_check.setToolTip(self.tr("clear_existing_motion", "tooltips"))
         animation_layout.addRow(self.clear_existing_motion_check)
 
+        # Experimental MMD-native control-rig animation owner.  This option is
+        # intentionally part of the normal VMD options and is not Development
+        # Mode gated; the backend still validates bake-mode exclusivity and
+        # control-rig compatibility before mutating the scene.
+        self.create_mmd_control_rig_check = QCheckBox(self.tr("create_mmd_control_rig", "checkboxes"))
+        self.create_mmd_control_rig_check.setChecked(
+            self.settings_service.get(setting_keys.IMPORT_ANIMATION_CREATE_MMD_CONTROL_RIG, False)
+        )
+        self.create_mmd_control_rig_check.toggled.connect(
+            lambda v: self.settings_service.set(setting_keys.IMPORT_ANIMATION_CREATE_MMD_CONTROL_RIG, v)
+        )
+        self.create_mmd_control_rig_check.setToolTip(self.tr("create_mmd_control_rig", "tooltips"))
+        animation_layout.addRow(self.create_mmd_control_rig_check)
+
         self.import_vmd_button = QPushButton(self.tr("import_animation", "actions"))
         animation_layout.addRow(self.import_vmd_button)
 
@@ -751,6 +765,8 @@ class ImportExportTab(BaseTab):
         if hasattr(self, "reduce_quality_label"):
             self.reduce_quality_label.setText(self.tr("reduce_quality", "fields"))
         self.clear_existing_motion_check.setText(self.tr("clear_existing_motion", "checkboxes"))
+        if hasattr(self, "create_mmd_control_rig_check"):
+            self.create_mmd_control_rig_check.setText(self.tr("create_mmd_control_rig", "checkboxes"))
         self.use_cpp_rig_nodes_check.setText(self.tr("use_cpp_rig_nodes", "checkboxes"))
         self.apply_scale_check.setText(self.tr("apply_scale", "checkboxes"))
         self.new_file_check.setText(self.tr("new_file", "checkboxes"))
@@ -769,6 +785,8 @@ class ImportExportTab(BaseTab):
         if hasattr(self, "reduce_quality_slider"):
             self.reduce_quality_slider.setToolTip(self.tr("reduce_quality", "tooltips"))
         self.clear_existing_motion_check.setToolTip(self.tr("clear_existing_motion", "tooltips"))
+        if hasattr(self, "create_mmd_control_rig_check"):
+            self.create_mmd_control_rig_check.setToolTip(self.tr("create_mmd_control_rig", "tooltips"))
         self.use_cpp_rig_nodes_check.setToolTip(self.tr("use_cpp_rig_nodes", "tooltips"))
         if hasattr(self, "animation_start_frame"):
             self.animation_start_frame.setToolTip(self.tr("start_frame", "tooltips"))

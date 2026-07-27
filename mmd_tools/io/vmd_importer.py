@@ -64,6 +64,7 @@ def import_vmd_file(
             - pmx_path: 対応する PMX ファイルのパス
             - pmx_bytes: 生 PMX バイト
             - bake_mode: True の場合はリグ経由ではなく runtime bake を優先
+            - create_mmd_control_rig: True の場合は MMD Control Rig を作成/再利用し、直接キーを作成
             - use_native_physics_bake: True かつ bake_mode のとき native physics bake を試行する（default False）
             - reduce_bake_keys: True かつ bake_mode のとき runtime pose reduction を試行する（default False）
             - reduce_translate_tolerance / reduce_rotate_tolerance / reduce_morph_tolerance: reduction tolerances
@@ -187,6 +188,7 @@ def import_vmd_file(
                     target_namespace,
                     bake_mode=options.get("bake_mode", False),
                     clear_existing_motion=options.get("clear_existing_motion", False),
+                    create_mmd_control_rig=options.get("create_mmd_control_rig", False),
                     vmd_bytes=vmd_bytes,
                     pmx_bytes=pmx_bytes,
                     pmx_path=pmx_path,

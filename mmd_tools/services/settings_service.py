@@ -183,6 +183,7 @@ class SettingsService:
             "import_light_animation": self.get(setting_keys.IMPORT_ANIMATION_IMPORT_LIGHT_ANIMATION, True),
             "motion_scale": self.get(setting_keys.IMPORT_ANIMATION_MOTION_SCALE, 1.0),
             "clear_existing_motion": self.get(setting_keys.IMPORT_ANIMATION_CLEAR_EXISTING_MOTION, False),
+            "create_mmd_control_rig": self.get(setting_keys.IMPORT_ANIMATION_CREATE_MMD_CONTROL_RIG, False),
             "resample_curves": self.get(setting_keys.IMPORT_ANIMATION_RESAMPLE_CURVES, False) if is_dev else False,
             "bake_mode": bake_mode,
             "use_native_physics_bake": self.get(setting_keys.IMPORT_ANIMATION_USE_NATIVE_PHYSICS_BAKE, False),

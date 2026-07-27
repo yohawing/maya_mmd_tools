@@ -12,6 +12,8 @@ from .vmd_context import VmdImportStateContext
 from .vmd_ik_enabled_animation import ik_node_is_owned_by_root, root_owned_joints
 from .vmd_morph_mapping import morph_node_is_owned_by_root
 from .vmd_runtime_rig_helper import _ls_mmd_ccd_ik_nodes
+from ..core.mmd_control_rig_builder import CONTROL_RIG_CONTROL_OWNED, read_mmd_control_rig_metadata
+from ..core.mmd_control_rig_motion import control_rig_edit_routes_for_joints
 
 _ATTR_VMD_BIND_TRANSLATE = "mmd_vmd_bind_translate"
 _LOGGER = get_logger(__name__)
@@ -164,6 +166,23 @@ def clear_existing_motion(
             joint,
             ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"),
         )
+
+    # In CONTROL_OWNED/EDIT, authored VMD channels are redirected to the
+    # controller curves.  Clear those curves as part of the same root-scoped
+    # operation; otherwise Clear Existing Motion would leave old controller
+    # keys driving the freshly imported motion.
+    control_routes = {}
+    if target_model:
+        control_metadata = read_mmd_control_rig_metadata(target_model)
+        if control_metadata and control_metadata.get("owner") == CONTROL_RIG_CONTROL_OWNED:
+            control_routes = control_rig_edit_routes_for_joints(context.bone_name_mapping.values())
+    for route in control_routes.values():
+        by_node = {}
+        for target_node, target_attr in route.values():
+            by_node.setdefault(target_node, set()).add(target_attr)
+        for node, attrs in by_node.items():
+            owned_motion_nodes.add(node)
+            cleared += cut_keyable_attrs(node, tuple(sorted(attrs)))
 
     for target_joint, info in context.collect_append_info().items():
         append_node = info.get("node")

@@ -39,6 +39,7 @@
       "vmd_fps": 30,
       "motion_scale": 1.0,
       "clear_existing_motion": false,
+      "create_mmd_control_rig": false,
       "resample_curves": false,
       "use_native_physics_bake": false,
       "reduce_bake_keys": false,

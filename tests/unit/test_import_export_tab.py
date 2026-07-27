@@ -230,6 +230,21 @@ class TestImportExportTabRefreshModelList(unittest.TestCase):
 
 
 class TestImportExportTabDevModeVisibility(unittest.TestCase):
+    def test_mmd_control_rig_option_is_not_development_mode_gated(self):
+        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
+        tab._dev_only_widgets = []
+        tab.create_mmd_control_rig_check = _FakeWidget()
+        tab.create_mmd_control_rig_check.visible = True
+        tab.scale_spin = _FakeSpinBox(value=1.0)
+        tab.settings_service = _FakeSettingsService({"ui.general.development_mode": False})
+
+        import_export_tab.ImportExportTab._apply_dev_mode_visibility(tab)
+        self.assertTrue(tab.create_mmd_control_rig_check.visible)
+
+        tab.settings_service.set("ui.general.development_mode", True)
+        import_export_tab.ImportExportTab._apply_dev_mode_visibility(tab)
+        self.assertTrue(tab.create_mmd_control_rig_check.visible)
+
     def test_dev_only_controls_follow_development_mode(self):
         tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
         scale_row = _FakeWidget()
