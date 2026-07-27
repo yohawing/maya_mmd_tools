@@ -343,6 +343,8 @@ class TestControlRigMotionClear(MayaTestBase):
         cmds.parent(joint, root)
         control = cmds.createNode("transform", name="cr061_control_clear_ctrl")
         cmds.setKeyframe(control, attribute="rotateX", time=3, value=25.0)
+        control_curve = (cmds.listConnections(f"{control}.rotateX", source=True, destination=False) or [None])[0]
+        control_curve_uuid = (cmds.ls(control_curve, uuid=True) or [None])[0]
         converter = VmdConverter()
         converter.bone_name_mapping = {"センター": joint}
         context = VmdImportStateContext(
@@ -363,6 +365,11 @@ class TestControlRigMotionClear(MayaTestBase):
         ):
             clear_existing_motion(context, "missing_layer", target_model=root)
         self.assertIsNone(cmds.keyframe(control, attribute="rotateX", query=True, timeChange=True))
+        self.assertEqual((cmds.ls(control_curve, uuid=True) or [None])[0], control_curve_uuid)
+        self.assertEqual(
+            cmds.listConnections(f"{control}.rotateX", source=True, destination=False),
+            [control_curve],
+        )
 
 
 if __name__ == "__main__":

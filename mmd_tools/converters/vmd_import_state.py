@@ -4,6 +4,8 @@ import json
 from typing import Any, Dict, Optional, Tuple, Union
 
 import maya.cmds as cmds
+import maya.api.OpenMaya as om
+import maya.api.OpenMayaAnim as oma
 
 from ..core.constants import ATTR_MMD_CAMERA, ATTR_MMD_LIGHT
 from ..core.logger import get_logger
@@ -182,7 +184,11 @@ def clear_existing_motion(
             by_node.setdefault(target_node, set()).add(target_attr)
         for node, attrs in by_node.items():
             owned_motion_nodes.add(node)
-            cleared += cut_keyable_attrs(node, tuple(sorted(attrs)))
+            cleared += cut_keyable_attrs(
+                node,
+                tuple(sorted(attrs)),
+                preserve_curve_nodes=True,
+            )
 
     for target_joint, info in context.collect_append_info().items():
         append_node = info.get("node")
@@ -435,7 +441,12 @@ def _anim_layer_is_exclusively_owned_by(layer_name: str, owned_nodes) -> bool:
     return True
 
 
-def cut_keyable_attrs(node: str, attrs: Tuple[str, ...]) -> int:
+def cut_keyable_attrs(
+    node: str,
+    attrs: Tuple[str, ...],
+    *,
+    preserve_curve_nodes: bool = False,
+) -> int:
     """Delete keys for existing attrs and return the number of attrs attempted."""
     if not node or not cmds.objExists(node):
         return 0
@@ -447,7 +458,24 @@ def cut_keyable_attrs(node: str, attrs: Tuple[str, ...]) -> int:
             continue
         try:
             for target_attr in _key_cut_attrs(node, attr):
-                cmds.cutKey(node, attribute=target_attr)
+                plug = f"{node}.{target_attr}"
+                curves = (
+                    cmds.listConnections(
+                        plug,
+                        source=True,
+                        destination=False,
+                        type="animCurve",
+                    )
+                    or []
+                )
+                if preserve_curve_nodes and len(curves) == 1:
+                    selection = om.MSelectionList()
+                    selection.add(curves[0])
+                    curve_fn = oma.MFnAnimCurve(selection.getDependNode(0))
+                    for index in reversed(range(curve_fn.numKeys)):
+                        curve_fn.remove(index)
+                else:
+                    cmds.cutKey(node, attribute=target_attr)
             cleared += 1
         except Exception as exc:
             _LOGGER.debug("Failed to cut key %s.%s: %s", node, attr, exc)
