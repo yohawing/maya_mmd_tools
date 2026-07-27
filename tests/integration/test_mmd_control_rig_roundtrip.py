@@ -81,6 +81,21 @@ class TestMmdControlRigRoundtrip(MayaTestBase):
             cmds.setInfinity(destination_node, query=True, postInfinite=True),
         )
 
+    def test_empty_animcurve_copy_clears_destination_without_replacing_nodes(self):
+        """An empty cleared controller curve removes stale authored keys."""
+        source_node = cmds.createNode("animCurveTA", name="cr061_empty_payload_source")
+        destination_node = cmds.createNode("animCurveTA", name="cr061_empty_payload_destination")
+        destination = f"{destination_node}.output"
+        cmds.setKeyframe(destination_node, time=9, value=2.0)
+        source_uuid = (cmds.ls(source_node, uuid=True) or [None])[0]
+        destination_uuid = (cmds.ls(destination_node, uuid=True) or [None])[0]
+
+        _copy_animation_curve(cmds, f"{source_node}.output", destination)
+
+        self.assertEqual(cmds.ls(source_node, uuid=True), [source_uuid])
+        self.assertEqual(cmds.ls(destination_node, uuid=True), [destination_uuid])
+        self.assertEqual(cmds.keyframe(destination_node, query=True, timeChange=True), None)
+
     def test_sampled_route_writes_control_values_at_source_times(self):
         control = cmds.createNode("transform", name="cr061_sampled_control")
         target = cmds.createNode("transform", name="cr061_sampled_target")

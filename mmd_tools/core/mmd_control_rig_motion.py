@@ -13,6 +13,7 @@ import math
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import maya.api.OpenMaya as om
+import maya.api.OpenMayaAnim as oma
 
 from mmd_tools.core.constants import ATTR_MMD_CONTROL_RIG_JSON
 from mmd_tools.core.humanik_utils import maya_cmds
@@ -1249,12 +1250,26 @@ def _copy_animation_curve(cmds, source: str, destination: str) -> None:
     if not str(cmds.nodeType(destination_node)).startswith("animCurve"):
         return
     try:
+        payload = _capture_animation_curve_payload(cmds, source_node)
+        if not payload.get("times"):
+            # Clear Existing Motion may intentionally leave an empty but
+            # UUID-stable controller curve for a role that has no active VMD
+            # payload.  Maya's pasteKey rejects an empty clipboard; clear the
+            # authored destination directly instead of treating that as a
+            # failed bake.
+            selection = om.MSelectionList()
+            selection.add(destination_node)
+            destination_fn = oma.MFnAnimCurve(selection.getDependNode(0))
+            for index in reversed(range(destination_fn.numKeys)):
+                destination_fn.remove(index)
+            _restore_animation_curve_payload(cmds, destination_node, payload)
+            return
         cmds.copyKey(source_node, option="curve")
         cmds.pasteKey(destination_node, option="replaceCompletely")
         _restore_animation_curve_payload(
             cmds,
             destination_node,
-            _capture_animation_curve_payload(cmds, source_node),
+            payload,
         )
     except Exception as exc:
         raise MmdControlRigBuildError(
