@@ -5,7 +5,12 @@ the production PMX importer, records every solver plug and its connections,
 captures the relevant rigid-body/joint/skin/IK/append topology, then runs a
 small reversible playback/scrub/reset/physics-toggle sequence.  The probe
 does not disconnect or repair any scene connections; all evidence is written
-to a JSON report under ``build/``.
+to a JSON report under ``build/``.  Each evaluation-mode run also performs a
+single-frame offscreen Playblast by default.  The Playblast trace records the
+requested/captured frame, solver state and two explicit same-frame pulls
+before and after capture, so a repeated pull can be distinguished from a
+sequential time evaluation.  Use ``--no-playblast`` to disable this optional
+observation or ``--playblast-out``/``--playblast-frame`` to control its output.
 
 Usage (inside Maya's Python interpreter)::
 
@@ -31,6 +36,9 @@ import maya.cmds as cmds
 DEFAULT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PMX = "build/fixtures/citlali_ascii_file/citlali.pmx"
 DEFAULT_REPORT = "build/reports/physics_solver_cycle_probe.json"
+DEFAULT_PLAYBLAST = "build/physics_solver_cycle_probe_playblast.png"
+DEFAULT_PLAYBLAST_WIDTH = 320
+DEFAULT_PLAYBLAST_HEIGHT = 240
 _EVALUATION_MODES = {"off", "serial", "parallel"}
 _SOLVER_CYCLE_WARNING_RE = re.compile(
     r"(?=.*mmdPhysicsSolver)(?=.*outSolved)"
@@ -52,6 +60,46 @@ def _parse_args() -> argparse.Namespace:
         "--modes",
         default="off,serial,parallel",
         help="Comma-separated evaluationManager modes (off, serial, parallel).",
+    )
+    playblast_group = parser.add_mutually_exclusive_group()
+    playblast_group.add_argument(
+        "--playblast",
+        dest="playblast",
+        action="store_true",
+        default=True,
+        help="Capture one offscreen Playblast frame per evaluation mode (default).",
+    )
+    playblast_group.add_argument(
+        "--no-playblast",
+        dest="playblast",
+        action="store_false",
+        help="Skip the Playblast observation while retaining cycle probing.",
+    )
+    parser.add_argument(
+        "--playblast-frame",
+        type=int,
+        default=None,
+        help="Explicit frame for the one-frame Playblast (defaults to the first --frames value).",
+    )
+    parser.add_argument(
+        "--playblast-out",
+        "--playblast-output",
+        "--playblast-path",
+        dest="playblast_out",
+        default=DEFAULT_PLAYBLAST,
+        help="Playblast PNG path/base; mode is appended to keep per-mode output deterministic.",
+    )
+    parser.add_argument(
+        "--playblast-width",
+        type=int,
+        default=DEFAULT_PLAYBLAST_WIDTH,
+        help=f"Offscreen Playblast width in pixels (default: {DEFAULT_PLAYBLAST_WIDTH}).",
+    )
+    parser.add_argument(
+        "--playblast-height",
+        type=int,
+        default=DEFAULT_PLAYBLAST_HEIGHT,
+        help=f"Offscreen Playblast height in pixels (default: {DEFAULT_PLAYBLAST_HEIGHT}).",
     )
     return parser.parse_args()
 
@@ -112,6 +160,221 @@ def _safe_get_attr(plug: str) -> Any:
         return _json_safe(cmds.getAttr(plug))
     except Exception as exc:
         return {"error": str(exc)}
+
+
+def _current_frame() -> Any:
+    """Return Maya's current time without hiding a query failure."""
+    try:
+        return _json_safe(cmds.currentTime(query=True))
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def _solver_status_pull(solver: str | None, requested_frame: int, label: str) -> Dict[str, Any]:
+    """Pull the solver status once and preserve the exact DG evidence.
+
+    This intentionally uses ``cmds.getAttr`` directly instead of
+    :func:`_safe_get_attr`: a failed pull is evidence for the Playblast trace,
+    not a value that should be silently converted into a string.
+    """
+    row: Dict[str, Any] = {
+        "label": label,
+        "requestedFrame": requested_frame,
+        "observedFrame": _current_frame(),
+        "plug": None,
+        "status": None,
+        "error": None,
+    }
+    if not solver or not cmds.objExists(solver):
+        row["error"] = f"solver is unavailable: {solver!r}"
+        return row
+    try:
+        attr = "outStatus" if cmds.attributeQuery("outStatus", node=solver, exists=True) else "outSolved"
+        row["plug"] = f"{solver}.{attr}"
+        row["status"] = _json_safe(cmds.getAttr(row["plug"]))
+    except Exception as exc:
+        row["error"] = str(exc)
+    return row
+
+
+def _resolve_playblast_output(requested: Path, frame: int, result: Any = None) -> Path | None:
+    """Resolve Maya's actual PNG path for a one-frame image Playblast.
+
+    Maya versions differ in whether ``playblast`` returns an exact path and in
+    how they pad a single frame number.  The candidate directory is controlled
+    by the caller, so this lookup cannot accidentally select another report.
+    """
+    requested = requested.resolve()
+    candidates: List[Path] = [requested, requested.with_suffix(".png")]
+    base = requested.with_suffix("")
+    for value in (result if isinstance(result, (list, tuple)) else [result]):
+        if value in (None, ""):
+            continue
+        try:
+            returned = Path(str(value))
+        except (TypeError, ValueError):
+            continue
+        candidates.extend((returned, returned.with_suffix(".png")))
+    candidates.extend(
+        base.parent / f"{base.name}.{suffix}.png"
+        for suffix in (f"{frame:04d}", f"{frame:03d}", f"{frame:02d}", str(frame))
+    )
+    seen: set[str] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        key = str(resolved).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if resolved.is_file() and resolved.stat().st_size > 0:
+                return resolved
+        except OSError:
+            continue
+    try:
+        matches = sorted(
+            (path for path in base.parent.glob(f"{base.name}*.png") if path.is_file()),
+            key=lambda path: (path.stat().st_mtime_ns, str(path)),
+            reverse=True,
+        )
+    except OSError:
+        matches = []
+    for match in matches:
+        try:
+            if match.stat().st_size > 0:
+                return match.resolve()
+        except OSError:
+            continue
+    return None
+
+
+def _file_signature(path: Path | None) -> Dict[str, Any] | None:
+    """Return a small pre/post signature for Playblast write diagnostics."""
+    if path is None:
+        return None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return {"bytes": int(stat.st_size), "mtimeNs": int(stat.st_mtime_ns)}
+
+
+def _playblast_observation(
+    *,
+    solver: str | None,
+    frame: int,
+    output_path: Path,
+    width: int,
+    height: int,
+) -> Dict[str, Any]:
+    """Capture and report one explicit offscreen Playblast frame.
+
+    The operation is deliberately observation-only.  It does not change
+    solver/world attributes and records both same-frame status pulls around
+    the capture.  Any Maya/playblast or output-resolution error is returned in
+    the JSON row so callers can fail the mode without losing diagnostics.
+    """
+    output_path = output_path.resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    requested_base = output_path.with_suffix("")
+    frame_before_request = _current_frame()
+    frame_request_error: str | None = None
+    try:
+        cmds.currentTime(frame, edit=True)
+        cmds.refresh(force=True)
+    except Exception as exc:
+        frame_request_error = str(exc)
+    before_frame = _current_frame()
+    before_solver = _solver_state(solver)
+    before_pulls = [
+        _solver_status_pull(solver, frame, "before_same_frame_pull_1"),
+        _solver_status_pull(solver, frame, "before_same_frame_pull_2"),
+    ]
+    preexisting = _resolve_playblast_output(output_path, frame)
+    pre_signature = _file_signature(preexisting)
+    result: Any = None
+    call_error: str | None = None
+    try:
+        # These flags are supported by standalone mayapy and avoid requiring a
+        # GUI modelPanel or DX11 viewport.  Singular ``frame`` is intentional:
+        # it prevents Maya from evaluating an implicit frame range.
+        result = cmds.playblast(
+            filename=str(requested_base),
+            frame=frame,
+            format="image",
+            compression="png",
+            offScreen=True,
+            offScreenViewportUpdate=True,
+            viewer=False,
+            width=int(width),
+            height=int(height),
+            percent=100,
+            forceOverwrite=True,
+            showOrnaments=False,
+        )
+    except Exception as exc:
+        call_error = str(exc)
+    actual = _resolve_playblast_output(output_path, frame, result)
+    after_frame = _current_frame()
+    after_solver = _solver_state(solver)
+    after_pulls = [
+        _solver_status_pull(solver, frame, "after_same_frame_pull_1"),
+        _solver_status_pull(solver, frame, "after_same_frame_pull_2"),
+    ]
+    post_signature = _file_signature(actual)
+    file_written = bool(call_error is None and post_signature and post_signature.get("bytes", 0) > 0)
+    errors = []
+    if frame_request_error:
+        errors.append(f"set requested frame {frame}: {frame_request_error}")
+    if call_error:
+        errors.append(f"cmds.playblast: {call_error}")
+    if actual is None:
+        errors.append(f"Playblast did not produce a non-empty PNG under {output_path.parent}")
+    for pull in before_pulls + after_pulls:
+        if pull.get("error"):
+            errors.append(f"{pull.get('label')}: {pull['error']}")
+    if isinstance(after_frame, (int, float)) and after_frame != frame:
+        errors.append(f"Playblast left Maya at frame {after_frame!r}; requested {frame}")
+    return {
+        "outcome": "pass" if not errors else "error",
+        "requestedFrame": frame,
+        "capturedFrame": after_frame,
+        "frameBeforeRequest": frame_before_request,
+        "frameBeforePlayblast": before_frame,
+        "frameAfterPlayblast": after_frame,
+        "sameFrame": after_frame == frame,
+        "beforeSolverState": before_solver,
+        "solverStateBefore": before_solver,
+        "beforeSameFramePulls": before_pulls,
+        "afterSolverState": after_solver,
+        "solverStateAfter": after_solver,
+        "afterSameFramePulls": after_pulls,
+        "sameFramePulls": before_pulls + after_pulls,
+        "playblast": {
+            "requestedOutputPath": str(output_path),
+            "requestedFilenameBase": str(requested_base),
+            "returned": _json_safe(result),
+            "actualOutputPath": str(actual) if actual else None,
+            "fileWritten": file_written,
+            "fileExists": bool(post_signature),
+            "fileBytes": post_signature.get("bytes") if post_signature else 0,
+            "preExistingOutputPath": str(preexisting) if preexisting else None,
+            "preSignature": pre_signature,
+            "postSignature": post_signature,
+            "fileChanged": pre_signature != post_signature,
+            "width": int(width),
+            "height": int(height),
+            "offScreen": True,
+            "offScreenViewportUpdate": True,
+            "viewer": False,
+            "frame": frame,
+        },
+        "playblastReturned": _json_safe(result),
+        "actualOutputPath": str(actual) if actual else None,
+        "fileWritten": file_written,
+        "errors": errors,
+        "error": errors[0] if errors else None,
+    }
 
 
 def _safe_node_type(node: str) -> str | None:
@@ -418,6 +681,14 @@ def _parse_modes(raw: str) -> List[str]:
     return list(dict.fromkeys(values))
 
 
+def _mode_playblast_path(base: Path, mode: str) -> Path:
+    """Derive a deterministic per-mode PNG path from the CLI base path."""
+    base = base.resolve()
+    if base.suffix.lower() != ".png":
+        base = base.with_suffix(".png")
+    return base.with_name(f"{base.stem}_{mode}{base.suffix}")
+
+
 def _set_evaluation_mode(mode: str) -> Dict[str, Any]:
     """Set one evaluationManager mode and return before/after evidence."""
     before = _evaluation_state()
@@ -527,6 +798,11 @@ def _run_mode(
     mode: str,
     scene_path: Path,
     frames: Sequence[int],
+    playblast_enabled: bool,
+    playblast_frame: int,
+    playblast_path: Path,
+    playblast_width: int,
+    playblast_height: int,
 ) -> Dict[str, Any]:
     """Run one fully isolated import/operation/reopen pass."""
     report: Dict[str, Any] = {
@@ -536,6 +812,7 @@ def _run_mode(
         "solver": None,
         "import": {},
         "operations": [],
+        "playblast": {},
         "errors": [],
         "evaluationMode": {},
         "mayaCommandOutput": {},
@@ -623,6 +900,45 @@ def _run_mode(
             return {"worlds": worlds, "toggled": bool(worlds)}
 
         report["operations"].append(_operation(f"{mode}:physics_toggle", toggle_physics, solver))
+
+        if playblast_enabled:
+            def playblast_observation() -> Dict[str, Any]:
+                return _playblast_observation(
+                    solver=solver,
+                    frame=playblast_frame,
+                    output_path=playblast_path,
+                    width=playblast_width,
+                    height=playblast_height,
+                )
+
+            playblast_operation = _operation(
+                f"{mode}:playblast_trace",
+                playblast_observation,
+                solver,
+            )
+            playblast_result = playblast_operation.get("result") or {}
+            if playblast_result.get("outcome") == "error":
+                playblast_operation["outcome"] = "error"
+                playblast_operation["error"] = playblast_result.get("error") or "Playblast observation failed"
+            report["operations"].append(playblast_operation)
+            report["playblast"] = playblast_result
+        else:
+            skipped_playblast = {
+                "label": f"{mode}:playblast_trace",
+                "outcome": "skipped",
+                "error": None,
+                "result": {
+                    "outcome": "skipped",
+                    "requestedFrame": playblast_frame,
+                    "reason": "disabled by --no-playblast",
+                },
+                "evaluation": _evaluation_state(),
+                "evaluationAfter": _evaluation_state(),
+                "solverState": _solver_state(solver),
+                "cycle": _cycle_state(f"{mode}:playblast_trace_skipped"),
+            }
+            report["operations"].append(skipped_playblast)
+            report["playblast"] = skipped_playblast["result"]
 
         # Restore world values after the reversible sequence.  The reset
         # generation is restored too; the operation evidence remains in JSON.
@@ -717,12 +1033,28 @@ def _run(args: argparse.Namespace) -> Dict[str, Any]:
     pmx = _resolve_path(args.pmx)
     modes = _parse_modes(args.modes)
     frames = _parse_frames(args.frames)
+    playblast_enabled = bool(getattr(args, "playblast", True))
+    requested_playblast_frame = getattr(args, "playblast_frame", None)
+    playblast_frame = requested_playblast_frame if requested_playblast_frame is not None else frames[0]
+    playblast_width = int(getattr(args, "playblast_width", DEFAULT_PLAYBLAST_WIDTH))
+    playblast_height = int(getattr(args, "playblast_height", DEFAULT_PLAYBLAST_HEIGHT))
+    if playblast_width <= 0 or playblast_height <= 0:
+        raise ValueError("--playblast-width and --playblast-height must be positive")
+    playblast_base = _resolve_path(getattr(args, "playblast_out", DEFAULT_PLAYBLAST))
     report: Dict[str, Any] = {
         "status": "error",
         "probe": "MMD-PHYSICS-SOLVER-CYCLE-1",
         "mayaVersion": str(cmds.about(version=True)),
         "pmx": str(pmx),
         "modesRequested": modes,
+        "playblastObservation": {
+            "enabled": playblast_enabled,
+            "requestedFrame": playblast_frame,
+            "outputBase": str(playblast_base),
+            "width": playblast_width,
+            "height": playblast_height,
+            "offScreen": True,
+        },
         "modes": [],
         "modeComparison": {},
         "errors": [],
@@ -749,6 +1081,11 @@ def _run(args: argparse.Namespace) -> Dict[str, Any]:
                 mode=mode,
                 scene_path=scene_path,
                 frames=frames,
+                playblast_enabled=playblast_enabled,
+                playblast_frame=int(playblast_frame),
+                playblast_path=_mode_playblast_path(playblast_base, mode),
+                playblast_width=playblast_width,
+                playblast_height=playblast_height,
             )
             report["modes"].append(mode_report)
 
@@ -759,6 +1096,8 @@ def _run(args: argparse.Namespace) -> Dict[str, Any]:
             solver_connections = _solver_connection_set(mode_report)
             topology = _topology_set(mode_report)
             reopen = (mode_report.get("operations") or [])[-1].get("result", {}) if mode_report.get("operations") else {}
+            playblast = mode_report.get("playblast") or {}
+            playblast_file = playblast.get("playblast") or {}
             facts[mode] = {
                 "status": mode_report.get("status"),
                 "cycleCount": len(cycle_plugs),
@@ -774,6 +1113,11 @@ def _run(args: argparse.Namespace) -> Dict[str, Any]:
                 "topology": topology,
                 "topologyStable": mode_report.get("topologyStable"),
                 "evaluationModeRestored": (mode_report.get("evaluationMode") or {}).get("restored"),
+                "playblastOutcome": playblast.get("outcome"),
+                "playblastRequestedFrame": playblast.get("requestedFrame"),
+                "playblastCapturedFrame": playblast.get("capturedFrame"),
+                "playblastFileWritten": playblast_file.get("fileWritten"),
+                "playblastActualOutputPath": playblast_file.get("actualOutputPath"),
             }
         report["modeComparison"] = {
             "modes": modes,
