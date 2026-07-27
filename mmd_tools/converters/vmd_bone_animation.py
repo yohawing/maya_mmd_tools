@@ -5,6 +5,9 @@ from typing import Dict, List, Optional
 import maya.cmds as cmds
 
 from . import vmd_profile
+from .vmd_bone_interpolation import (
+    sample_vmd_rotation_quaternions,
+)
 from .vmd_context import VmdBoneAnimationContext
 from .vmd_scene_keying import VmdKeyingError, _ensure_fallback_allowed
 
@@ -111,6 +114,12 @@ def set_bone_keyframes(
         vmd_bone_name,
         context.bone_bind_poses.get(joint, (0.0, 0.0, 0.0)),
     )
+    sampled_rotations = sample_vmd_rotation_quaternions(frames)
+    keyed_frame_numbers = {
+        float(frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0))
+        for frame in frames
+    }
+    has_sampled_rotations = any(frame_number not in keyed_frame_numbers for frame_number, _ in sampled_rotations)
 
     batch_simple_bone = (
         not attr_targets
@@ -145,6 +154,16 @@ def set_bone_keyframes(
                 }
                 for attr, value in values.items():
                     channel_samples[attr].append((maya_time, float(value)))
+            if has_sampled_rotations:
+                for frame_number, rotation_quat in sampled_rotations:
+                    if frame_number in keyed_frame_numbers:
+                        continue
+                    maya_time = context.vmd_frame_to_maya_time(frame_number)
+                    rx, ry, rz = context.convert_vmd_quat_to_joint_rotate(joint, *rotation_quat)
+                    for attr, value in (("rotateX", rx), ("rotateY", ry), ("rotateZ", rz)):
+                        channel_samples[attr].append((maya_time, float(value)))
+                for samples in channel_samples.values():
+                    samples.sort(key=lambda item: item[0])
 
         animation_layer = context.anim_layer if use_layer else None
         if animation_layer:
@@ -165,6 +184,8 @@ def set_bone_keyframes(
                 finally:
                     cmds.scriptEditorInfo(suppressWarnings=False)
             tangent_attrs = attrs
+            if has_sampled_rotations:
+                tangent_attrs = [a for a in tangent_attrs if not a.startswith("rotate")]
             if context.use_quaternion_interpolation:
                 tangent_attrs = [a for a in attrs if not a.startswith("rotate")]
             context.apply_vmd_bezier_tangents(joint, frames, tangent_attrs, channel_interp_map)
@@ -203,6 +224,20 @@ def set_bone_keyframes(
             for attr, value in values.items():
                 target_node, target_attr = attr_targets.get(attr, (joint, attr))
                 routed_samples.setdefault(target_node, {}).setdefault(target_attr, []).append((maya_time, float(value)))
+        if has_sampled_rotations and not skip_rotate:
+            for frame_number, rotation_quat in sampled_rotations:
+                if frame_number in keyed_frame_numbers:
+                    continue
+                maya_time = context.vmd_frame_to_maya_time(frame_number)
+                rx, ry, rz = context.convert_vmd_quat_to_joint_rotate(joint, *rotation_quat)
+                for attr, value in (("rotateX", rx), ("rotateY", ry), ("rotateZ", rz)):
+                    target_node, target_attr = attr_targets.get(attr, (joint, attr))
+                    routed_samples.setdefault(target_node, {}).setdefault(target_attr, []).append(
+                        (maya_time, float(value))
+                    )
+            for target_samples in routed_samples.values():
+                for samples in target_samples.values():
+                    samples.sort(key=lambda item: item[0])
 
     animation_layer = context.anim_layer if use_layer else None
     routed_success = False
@@ -262,6 +297,16 @@ def set_bone_keyframes(
             rx, ry, rz = context.convert_vmd_quat_to_joint_rotate(joint, *rq)
             for attr, val in zip(ir_attrs, [rx, ry, rz]):
                 solver_samples[attr].append((maya_time, float(val)))
+        if has_sampled_rotations:
+            for frame_number, rotation_quat in sampled_rotations:
+                if frame_number in keyed_frame_numbers:
+                    continue
+                maya_time = context.vmd_frame_to_maya_time(frame_number)
+                rx, ry, rz = context.convert_vmd_quat_to_joint_rotate(joint, *rotation_quat)
+                for attr, value in zip(ir_attrs, (rx, ry, rz)):
+                    solver_samples[attr].append((maya_time, float(value)))
+            for samples in solver_samples.values():
+                samples.sort(key=lambda item: item[0])
         if not context.batch_key_scalar_channels(solver_node, solver_samples, animation_layer=None):
             context.logger.debug(f"IK solver batch keying produced no keys for {solver_node}; using setKeyframe fallback")
             for attr, samples in solver_samples.items():
@@ -301,6 +346,12 @@ def set_bone_keyframes(
         for attr in attrs
         if not (skip_rotate_tangent and attr.startswith("rotate"))
     }
+    if has_sampled_rotations:
+        tangent_targets = {
+            attr: target
+            for attr, target in tangent_targets.items()
+            if not attr.startswith("rotate")
+        }
     context.apply_vmd_bezier_tangents(joint, frames, tangent_targets, channel_interp_map)
 
     if ik_info and solver_node and slot is not None:
@@ -309,4 +360,6 @@ def set_bone_keyframes(
             "rotateY": (solver_node, f"inputRotate[{slot}].inputRotateElementY"),
             "rotateZ": (solver_node, f"inputRotate[{slot}].inputRotateElementZ"),
         }
+        if has_sampled_rotations:
+            solver_tangent_targets = {}
         context.apply_vmd_bezier_tangents(joint, frames, solver_tangent_targets, channel_interp_map)

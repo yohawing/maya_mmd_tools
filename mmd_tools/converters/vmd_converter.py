@@ -209,7 +209,11 @@ class VmdConverter:
         self.motion_scale = float(settings.get(setting_keys.IMPORT_ANIMATION_MOTION_SCALE, 1.0))
         self._failed_bones = set()  # 変換に失敗したボーン名を記録
         self._bone_bind_poses: Dict[str, Tuple[float, float, float]] = {}  # ボーンの初期位置
-        self.use_quaternion_interpolation = True  # Quaternion補間の使用フラグ
+        # VMD rotation channels carry per-segment Bezier controls.  Maya's
+        # quaternionSlerp conversion discards those controls and interpolates
+        # sparse keys linearly in quaternion space, diverging from MMD between
+        # keys.  Keep Euler curves by default so VMD tangents remain active.
+        self.use_quaternion_interpolation = False
         self.anim_layer = None  # 現在のアニメーションレイヤー名
         self.use_animation_layers = True  # アニメーションレイヤーの使用フラグ
         self.import_camera_animation = True

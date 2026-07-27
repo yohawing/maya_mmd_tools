@@ -6,6 +6,7 @@ import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
 from mmd_tools.converters import vmd_bezier_tangent
+from mmd_tools.converters.vmd_bone_interpolation import sample_vmd_rotation_quaternions
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.core.constants import ATTR_MMD_BONE_NAME
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
@@ -40,6 +41,21 @@ class TestVmdBoneInterpolation(MayaTestBase):
     def tearDown(self):
         super().tearDown()
         self.fixture_provider.cleanup_temp_files()
+
+    def test_sparse_rotation_sampling_uses_arriving_key_bezier(self):
+        """Sparse rotations are sampled as normalized quaternion Bezier steps."""
+        frame0 = VmdBoneFrame()
+        frame0.frame_number = 0
+        frame0.rotation = (0.0, 0.0, 0.0, 1.0)
+        frame1 = VmdBoneFrame()
+        frame1.frame_number = 5
+        frame1.rotation = (0.0, 0.0, 1.0, 0.0)
+        frame1.interpolation = _bone_interp_bytes_by_channel(rotation=(0, 0, 127, 127))
+
+        samples = sample_vmd_rotation_quaternions([frame0, frame1])
+        self.assertEqual([frame for frame, _ in samples], [0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
+        self.assertGreater(samples[1][1][2], 0.2)
+        self.assertAlmostEqual(sum(value * value for value in samples[1][1]), 1.0, places=6)
 
     def test_bone_bezier_tangents_use_api_on_animation_layer(self):
         """大量 model VMD の tangent 適用で cmds.keyTangent hot path に落ちない。"""
