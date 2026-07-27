@@ -1,11 +1,4 @@
-"""Development Mode visibility contract for Animator Toolkit controls.
-
-The MMD-native Control Rig ships as a Development Mode-only, unsupported
-surface (``MMD-CONTROL-RIG-RELEASE-DISPOSITION-1``).  These tests fix the two
-release conditions for that disposition: normal mode cannot reach Create,
-Attach/Edit, Bake, Restore, Delete or Diagnostics, and no control rig
-transaction state outlives a scene new/open.
-"""
+"""Visibility contract for public Animator Toolkit Control Rig controls."""
 
 import ast
 import pathlib
@@ -37,7 +30,7 @@ _PLUGIN_MAIN = _PROJECT_ROOT / "mmd_tools" / "plugin_main.py"
 # Every staged MMD Control Rig action the animator tab exposes. Adding an
 # action without listing it here fails the reachability test below.
 _CONTROL_RIG_ACTIONS = frozenset(
-    {"create", "edit", "bake_mmd", "restore", "delete", "diagnostics"}
+    {"create", "bake_control", "bake_mmd", "restore", "delete", "diagnostics"}
 )
 
 
@@ -114,24 +107,23 @@ def _declared_control_rig_actions():
 
 
 class AnimationTabDevelopmentVisibilityTest(unittest.TestCase):
-    """Keep unfinished MMD Control Rig actions private in release UI."""
+    """Keep the experimental rig public while pose helpers stay gated."""
 
-    def test_mmd_control_rig_buttons_are_hidden_outside_development_mode(self):
+    def test_mmd_control_rig_buttons_are_visible_outside_development_mode(self):
         view = _view()
 
         _refresh(view, development_mode=False)
 
-        self.assertFalse(view.control_rig_group.visible)
+        self.assertTrue(view.control_rig_group.visible)
 
-    def test_mmd_control_rig_buttons_are_disabled_outside_development_mode(self):
-        """Hiding alone still leaves buttons clickable from a scripted view."""
+    def test_mmd_control_rig_buttons_are_enabled_outside_development_mode(self):
         view = _view()
 
         _refresh(view, development_mode=False)
 
-        self.assertFalse(view.control_rig_group.enabled)
+        self.assertTrue(view.control_rig_group.enabled)
 
-    def test_mmd_control_rig_buttons_are_visible_only_in_development_mode(self):
+    def test_mmd_control_rig_buttons_remain_visible_in_development_mode(self):
         view = _view()
 
         _refresh(view, development_mode=True)
@@ -139,12 +131,12 @@ class AnimationTabDevelopmentVisibilityTest(unittest.TestCase):
         self.assertTrue(view.control_rig_group.visible)
         self.assertTrue(view.control_rig_group.enabled)
 
-    def test_control_rig_visibility_button_is_development_mode_only(self):
+    def test_control_rig_visibility_button_is_public_when_available(self):
         view = _view()
 
         _refresh(view, development_mode=False)
-        self.assertFalse(view.vis_checkboxes["control_rig"].visible)
-        self.assertFalse(view.vis_checkboxes["control_rig"].enabled)
+        self.assertTrue(view.vis_checkboxes["control_rig"].visible)
+        self.assertTrue(view.vis_checkboxes["control_rig"].enabled)
 
         _refresh(view, development_mode=True)
         self.assertTrue(view.vis_checkboxes["control_rig"].visible)

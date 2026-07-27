@@ -349,6 +349,7 @@ def _soft_sync_existing_glsl_diffuse_contracts():
 def _after_scene_open(*_args):
     """Run strict existing-scene migration after Maya opens a scene."""
     _reset_humanik_session_after_scene_change()
+    _refresh_animator_toolset_after_scene_change()
     try:
         _soft_sync_existing_glsl_diffuse_contracts()
     except Exception:
@@ -359,6 +360,7 @@ def _after_scene_open(*_args):
 def _after_scene_new(*_args):
     """Drop process-owned HumanIK state after Maya creates a new scene."""
     _reset_humanik_session_after_scene_change()
+    _refresh_animator_toolset_after_scene_change()
     _soft_sync_dx11_device_pixel_ratio(force=True)
 
 
@@ -415,6 +417,33 @@ def _reset_humanik_session_after_scene_change():
 
         humanik_window.refresh_humanik_window_for_scene_change()
     except Exception:
+        pass
+
+
+def _refresh_animator_toolset_after_scene_change():
+    """Refresh the public Animator Toolset after a scene replacement.
+
+    Control Rig ownership is persisted on the model root, not in this
+    process.  The window therefore only drops stale model/cache references and
+    re-reads the new scene; it never restores or deletes user animation during
+    a normal window/scene lifecycle callback.
+    """
+
+    window = _animator_toolset_window
+    if window is None:
+        return
+    try:
+        refresh = getattr(window, "refresh_for_scene_change", None)
+        if callable(refresh):
+            refresh()
+        else:
+            presenter = getattr(window, "animation_presenter", None)
+            refresh = getattr(presenter, "refresh_for_scene_change", None)
+            if callable(refresh):
+                refresh()
+    except Exception:
+        # A stale Qt wrapper must never make Maya's scene-open/new callback
+        # fail; the next explicit Refresh can rebuild the panel.
         pass
 
 

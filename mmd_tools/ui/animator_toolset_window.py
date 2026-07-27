@@ -104,10 +104,26 @@ class AnimatorToolsetWindow(QWidget):
             self.animation_presenter.retranslate_ui()
 
     def refresh_development_mode_visibility(self):
-        """Refresh Development Mode-only controls in the standalone window."""
+        """Refresh legacy Development Mode-only pose controls."""
 
         if hasattr(self, "animation_tab"):
             self.animation_tab.refresh_development_mode_visibility()
+
+    def refresh_for_scene_change(self) -> None:
+        """Refresh the presenter after Maya opens or creates a scene.
+
+        Scene replacement invalidates the old model root and any UUID lookup;
+        delegate to the presenter so ownership metadata is re-read from the
+        new scene.  This is deliberately non-destructive and does not touch
+        user animation curves.
+        """
+
+        if self._cleanup_done:
+            return
+        presenter = getattr(self, "animation_presenter", None)
+        refresh = getattr(presenter, "refresh_for_scene_change", None)
+        if callable(refresh):
+            refresh()
 
     def _apply_floating_window_size(self) -> None:
         """Restore the saved size on Maya's floating Qt wrapper.
