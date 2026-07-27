@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+import math
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import maya.api.OpenMaya as om
@@ -32,8 +33,16 @@ from mmd_tools.core.mmd_control_rig_analyzer import INPUT_IK_CONTROLLER
 
 
 _CHANNELS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
-_SAFE_ANIMATION_TYPES = ("animCurve", "animBlendNode")
+_SAFE_ANIMATION_TYPES = ("animCurve",)
 _SAFE_ANIMATION_NODES = frozenset({"pairBlend", "unitConversion"})
+
+# Route classification is persisted with the journal so callers can report
+# whether a bake copied an animation curve or sampled a changed transform
+# basis.  ``same_basis`` is the only route that promises lossless payload
+# preservation; all solver/append/JO conversions are explicitly sampled.
+ROUTE_SAME_BASIS = "same_basis"
+ROUTE_SAMPLED = "sampled"
+ROUTE_UNSUPPORTED = "unsupported"
 
 
 def control_rig_edit_routes_for_joints(joints, *, cmds_module=None) -> Dict[str, Dict[str, Tuple[str, str]]]:
@@ -84,6 +93,8 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
             f"cannot enter EDIT while motion owner is {metadata.get('owner')}"
         )
 
+    _assert_bake_route_supported(cmds, metadata)
+
     controls = {
         role: _resolve_uuid(cmds, uuid)
         for role, uuid in metadata.get("controls", {}).items()
@@ -131,6 +142,13 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                     channel = _control_channel_for_target(target)
                     if channel not in _CHANNELS:
                         raise MmdControlRigBuildError(f"unsupported authored channel: {target}")
+                    route_class, route_reasons = _classify_route(
+                        cmds, binding, target
+                    )
+                    if route_class == ROUTE_UNSUPPORTED:
+                        raise MmdControlRigBuildError(
+                            f"unsupported control-rig route: {target} ({', '.join(route_reasons)})"
+                        )
                     control_plug = f"{control}.{channel}"
                     incoming = cmds.listConnections(
                         target, source=True, destination=False, plugs=True
@@ -178,6 +196,8 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                             target=target,
                             value=value,
                             control_source=control_source,
+                            route_class=route_class,
+                            route_reasons=route_reasons,
                         )
                     )
                     _record_curve_representation(
@@ -211,6 +231,7 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
             for row in curve_representations:
                 row["activeOwner"] = CONTROL_RIG_CONTROL_OWNED
             metadata["curveRepresentations"] = curve_representations
+            metadata["routeDiagnostics"] = _route_diagnostics(journal)
             metadata["state"] = CONTROL_RIG_EDIT
             metadata["owner"] = CONTROL_RIG_CONTROL_OWNED
             _write_metadata(cmds, root, metadata)
@@ -341,6 +362,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
         raise MmdControlRigBuildError(
             f"cannot bake MMD control rig while motion owner is {metadata.get('owner')}"
         )
+    _assert_bake_route_supported(cmds, metadata)
     ik_rows, channel_rows, offset_rows = _resolve_edit_journal(cmds, metadata)
     rows = ik_rows + channel_rows
     sources_by_control = {}
@@ -390,6 +412,9 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
                 cmds,
             )
         metadata.pop("journal", None)
+        metadata["routeDiagnostics"] = _route_diagnostics(
+            {"channels": rows, "ikEnabled": []}
+        )
         for row in metadata.get("curveRepresentations", []):
             if isinstance(row, dict):
                 row["activeOwner"] = CONTROL_RIG_MMD_OWNED
@@ -513,8 +538,111 @@ def _require_animation_source(cmds, source: str, target: str) -> None:
     if node_type in _SAFE_ANIMATION_NODES or node_type.startswith(_SAFE_ANIMATION_TYPES):
         return
     raise MmdControlRigBuildError(
-        f"non-animation input blocks EDIT: {source} -> {target} ({node_type})"
+        f"unsupported animation input blocks EDIT: {source} -> {target} ({node_type}); "
+        "animLayer/animBlend routes must be flattened explicitly by the caller"
     )
+
+
+def _assert_bake_route_supported(cmds, metadata: Mapping[str, Any]) -> None:
+    """Fail closed when an active animation layer or blend node is present."""
+    # A non-base layer owns an animBlendNode and flattening it would silently
+    # discard layer weights.  Reject any populated non-base layer before the
+    # transaction mutates the graph.  Maya command stubs may not implement
+    # animLayer; in that case source-node validation below remains authoritative.
+    try:
+        layers = cmds.ls(type="animLayer") or []
+    except Exception:
+        layers = []
+    for layer in layers:
+        name = str(layer)
+        if name in {"BaseAnimation", "baseAnimation"}:
+            continue
+        try:
+            attrs = cmds.animLayer(name, query=True, attribute=True) or []
+        except Exception:
+            attrs = []
+        try:
+            weight = float(cmds.animLayer(name, query=True, weight=True) or 0.0)
+        except Exception:
+            weight = 1.0 if attrs else 0.0
+        if attrs and weight > 1.0e-8:
+            raise MmdControlRigBuildError(
+                f"active animLayer is unsupported for control-rig bake: {name}"
+            )
+
+    for binding in metadata.get("bindings", {}).values():
+        for target in _expanded_authored_plugs(binding, cmds_module=cmds):
+            incoming = cmds.listConnections(
+                target, source=True, destination=False, plugs=True
+            ) or []
+            for source in incoming:
+                node_type = str(cmds.nodeType(str(source).split(".", 1)[0]))
+                if node_type.startswith("animBlendNode"):
+                    raise MmdControlRigBuildError(
+                        f"animBlend input is unsupported for control-rig bake: {source} -> {target}"
+                    )
+
+
+def _classify_route(cmds, binding: Mapping[str, Any], target: str):
+    """Return ``(route class, reasons)`` for one authored input plug."""
+    input_kind = str(binding.get("inputKind") or "")
+    reasons = []
+    if input_kind in {"ik_controller", "ik_link_input"}:
+        reasons.append("ik")
+    elif input_kind in {"append_base", "bone_morph_base"}:
+        reasons.append(input_kind)
+    elif input_kind != "direct_channel":
+        return ROUTE_UNSUPPORTED, [f"input_kind:{input_kind or 'missing'}"]
+
+    joint = None
+    try:
+        joint = resolve_mmd_control_rig_binding_joint(cmds, binding)
+    except MmdControlRigBuildError:
+        joint = binding.get("joint")
+    if joint and cmds.objExists(joint):
+        try:
+            orient = [
+                float(cmds.getAttr(f"{joint}.jointOrient{axis}") or 0.0)
+                for axis in "XYZ"
+                if cmds.attributeQuery(f"jointOrient{axis}", node=joint, exists=True)
+            ]
+            if any(abs(value) > 1.0e-8 for value in orient):
+                reasons.append("joint_orient")
+        except Exception:
+            reasons.append("joint_orient")
+        try:
+            rotate_order = int(cmds.getAttr(f"{joint}.rotateOrder"))
+            if rotate_order != 0:  # Maya kXYZ
+                reasons.append("rotate_order")
+        except Exception:
+            pass
+        try:
+            parents = cmds.listRelatives(joint, parent=True, fullPath=True) or []
+            if parents:
+                parent = str(parents[0])
+                rotation = [float(cmds.getAttr(f"{parent}.rotate{axis}") or 0.0) for axis in "XYZ"]
+                scale = [float(cmds.getAttr(f"{parent}.scale{axis}") or 1.0) for axis in "XYZ"]
+                if any(abs(value) > 1.0e-8 for value in rotation) or any(
+                    abs(value - 1.0) > 1.0e-8 for value in scale
+                ):
+                    reasons.append("parent_basis")
+        except Exception:
+            pass
+    return (ROUTE_SAMPLED if reasons else ROUTE_SAME_BASIS), tuple(sorted(set(reasons)))
+
+
+def _route_diagnostics(journal: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    rows = []
+    for section in ("channels", "ikEnabled"):
+        for row in journal.get(section, []) or []:
+            rows.append(
+                {
+                    "target": row.get("target"),
+                    "routeClass": row.get("routeClass", ROUTE_SAME_BASIS),
+                    "reasons": list(row.get("routeReasons") or []),
+                }
+            )
+    return rows
 
 
 def _plug_reference(cmds, plug: str) -> Dict[str, str]:
@@ -536,6 +664,8 @@ def _journal_plug_row(
     target: str,
     value: Any,
     control_source: Optional[str] = None,
+    route_class: str = ROUTE_SAME_BASIS,
+    route_reasons=(),
 ) -> Dict[str, Any]:
     """Create a connection-journal row with readable and stable plug names."""
     return {
@@ -550,6 +680,8 @@ def _journal_plug_row(
         "controlSourceRef": (
             _plug_reference(cmds, control_source) if control_source else None
         ),
+        "routeClass": str(route_class),
+        "routeReasons": list(route_reasons or ()),
     }
 
 
@@ -682,6 +814,8 @@ def _connect_ik_enabled(
                 target=target,
                 value=value,
                 control_source=control_source,
+                route_class=ROUTE_SAMPLED,
+                route_reasons=("ik",),
             )
         )
         if curve_representations is not None:
@@ -826,8 +960,7 @@ def _duplicate_animation_source(cmds, source: str, created_nodes: List[str]) -> 
         # duplicate command. Create a same-typed node and copy its keys.
         try:
             duplicate = str(cmds.createNode(cmds.nodeType(node)))
-            cmds.copyKey(node, option="curve")
-            cmds.pasteKey(duplicate, option="replaceCompletely")
+            _copy_animation_curve(cmds, f"{node}.{attribute}", f"{duplicate}.{attribute}")
         except Exception as exc:
             raise MmdControlRigBuildError(
                 f"could not duplicate animation source: {source}: {exc}"
@@ -877,6 +1010,9 @@ def _commit_control_input(
         cmds.disconnectAttr(control, target)
     control_source = row.get("controlSource") or source
     mmd_source = row.get("source")
+    if row.get("routeClass", ROUTE_SAME_BASIS) == ROUTE_SAMPLED:
+        _sample_control_input_to_mmd(cmds, row, control_source, mmd_source)
+        return
     if control_source and mmd_source:
         # The two curves stay as separate nodes. Bake copies controller keys
         # into the original MMD curve when possible, then makes that curve the
@@ -904,6 +1040,68 @@ def _commit_control_input(
         cmds.setAttr(target, value)
 
 
+def _sample_control_input_to_mmd(
+    cmds,
+    row: Mapping[str, Any],
+    control_source: Optional[str],
+    mmd_source: Optional[str],
+) -> None:
+    """Sample controller values into the existing MMD animCurve in-place.
+
+    Solver/append/IK routes do not share a transform basis, so copying the
+    controller curve payload would be misleading.  Existing MMD key times are
+    retained as the deterministic sample grid; the detached controller curve
+    remains available through the persisted dual-owner representation.
+    """
+    control, target = row["control"], row["target"]
+    source_node = mmd_source.split(".", 1)[0] if mmd_source else None
+    control_node = control_source.split(".", 1)[0] if control_source else None
+    source_times = []
+    if source_node:
+        source_times = [
+            float(time)
+            for time in (cmds.keyframe(source_node, query=True, timeChange=True) or [])
+        ]
+    control_times = []
+    if control_node:
+        control_times = [
+            float(time)
+            for time in (cmds.keyframe(control_node, query=True, timeChange=True) or [])
+        ]
+    times = sorted(set(source_times + control_times))
+    if times:
+        times = sorted(
+            set(times)
+            | set(
+                float(frame)
+                for frame in range(int(math.floor(min(times))), int(math.ceil(max(times))) + 1)
+            )
+        )
+    sampled_values = [
+        (time, float(cmds.getAttr(control, time=time)))
+        for time in sorted(set(times))
+    ]
+    if cmds.isConnected(control, target):
+        cmds.disconnectAttr(control, target)
+    if control_source and cmds.isConnected(control_source, control):
+        cmds.disconnectAttr(control_source, control)
+    if mmd_source:
+        if not cmds.isConnected(mmd_source, target):
+            cmds.connectAttr(mmd_source, target, force=False)
+        target_node, _, target_attr = target.partition(".")
+        for time, value in sampled_values:
+            cmds.setKeyframe(
+                target_node,
+                attribute=target_attr,
+                time=(time, time),
+                value=value,
+            )
+        if sampled_values or cmds.isConnected(mmd_source, target):
+            return
+    value = float(cmds.getAttr(control))
+    cmds.setAttr(target, value)
+
+
 def _copy_animation_curve(cmds, source: str, destination: str) -> None:
     """Copy an animCurve payload while preserving both node identities."""
     source_node = source.split(".", 1)[0]
@@ -915,10 +1113,103 @@ def _copy_animation_curve(cmds, source: str, destination: str) -> None:
     try:
         cmds.copyKey(source_node, option="curve")
         cmds.pasteKey(destination_node, option="replaceCompletely")
+        _restore_animation_curve_payload(
+            cmds,
+            destination_node,
+            _capture_animation_curve_payload(cmds, source_node),
+        )
     except Exception as exc:
         raise MmdControlRigBuildError(
             f"could not copy control animation curve: {source} -> {destination}"
         ) from exc
+
+
+def _capture_animation_curve_payload(cmds, node: str) -> Dict[str, Any]:
+    """Capture key/tangent/infinity data for a native animCurve node."""
+    def _scalar(value):
+        if isinstance(value, (list, tuple)):
+            return value[0] if value else None
+        return value
+
+    try:
+        times = [float(value) for value in (cmds.keyframe(node, query=True, timeChange=True) or [])]
+        values = [float(value) for value in (cmds.keyframe(node, query=True, valueChange=True) or [])]
+        payload = {"times": times, "values": values, "keys": []}
+        weighted = cmds.keyTangent(node, query=True, weightedTangents=True)
+        if isinstance(weighted, (list, tuple)):
+            weighted = weighted[0] if weighted else False
+        payload["weightedTangents"] = bool(weighted)
+        try:
+            payload["preInfinite"] = _scalar(
+                cmds.setInfinity(node, query=True, preInfinite=True)
+            )
+            payload["postInfinite"] = _scalar(
+                cmds.setInfinity(node, query=True, postInfinite=True)
+            )
+        except Exception:
+            pass
+        for index, time in enumerate(times):
+            query = {"time": (time, time), "query": True}
+            key = {"time": time, "value": values[index] if index < len(values) else None}
+            for option, name in (
+                ("inTangentType", "inType"),
+                ("outTangentType", "outType"),
+                ("inAngle", "inAngle"),
+                ("outAngle", "outAngle"),
+                ("inWeight", "inWeight"),
+                ("outWeight", "outWeight"),
+            ):
+                result = cmds.keyTangent(node, **query, **{option: True}) or []
+                key[name] = _scalar(result)
+            payload["keys"].append(key)
+        return payload
+    except Exception:
+        # ``copyKey`` remains Maya's compatibility fallback when an older
+        # command implementation does not expose one of the tangent queries.
+        return {}
+
+
+def _restore_animation_curve_payload(cmds, node: str, payload: Mapping[str, Any]) -> None:
+    """Reapply tangent and infinity metadata after Maya curve paste."""
+    if not payload:
+        return
+    try:
+        cmds.keyTangent(
+            node,
+            edit=True,
+            weightedTangents=bool(payload.get("weightedTangents", False)),
+        )
+    except Exception:
+        pass
+    for key in payload.get("keys", ()):
+        time = float(key.get("time", 0.0))
+        kwargs = {"time": (time, time), "edit": True}
+        for name, option in (
+            ("inType", "inTangentType"),
+            ("outType", "outTangentType"),
+            ("inAngle", "inAngle"),
+            ("outAngle", "outAngle"),
+            ("inWeight", "inWeight"),
+            ("outWeight", "outWeight"),
+        ):
+            if key.get(name) is not None:
+                kwargs[option] = key[name]
+        try:
+            cmds.keyTangent(node, **kwargs)
+        except Exception:
+            # Maya can reject angle/weight edits for non-fixed tangents; the
+            # tangent type and copied key payload remain authoritative.
+            continue
+    infinity_kwargs = {
+        name: payload[name]
+        for name in ("preInfinite", "postInfinite")
+        if payload.get(name) is not None
+    }
+    if infinity_kwargs:
+        try:
+            cmds.setInfinity(node, edit=True, **infinity_kwargs)
+        except Exception:
+            pass
 
 
 def _capture_plug_states(cmds, plugs) -> Dict[str, Dict[str, Any]]:

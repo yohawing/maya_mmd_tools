@@ -243,13 +243,13 @@ class ImportExportTab(BaseTab):
         self.vmd_fps_label = QLabel(self.tr("vmd_fps", "fields"))
         fps_layout.addWidget(self.vmd_fps_label)
         self.vmd_fps_combo = QComboBox()
-        self.vmd_fps_combo.addItems(["30", "60"])
+        self.vmd_fps_combo.addItems(["24", "30", "60"])
         vmd_fps_val = self.settings_service.get(setting_keys.IMPORT_ANIMATION_VMD_FPS, 30)
         try:
             vmd_fps_int = int(vmd_fps_val)
         except (TypeError, ValueError):
             vmd_fps_int = 30
-        if vmd_fps_int not in (30, 60):
+        if vmd_fps_int not in (24, 30, 60):
             vmd_fps_int = 30
             self.settings_service.set(setting_keys.IMPORT_ANIMATION_VMD_FPS, 30)
         self.vmd_fps_combo.setCurrentText(str(vmd_fps_int))
