@@ -45,7 +45,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
-#elif defined(__APPLE__)
+#else
 #include <dlfcn.h>
 #endif
 
@@ -72,6 +72,22 @@ mmd_runtime_ik_chain_t* createNativeIkChain(const CcdIkChainConfig& cfg);
 IkChainCreateV2Fn resolveIkChainCreateV2()
 {
 #ifdef _WIN32
+    // ``mmd_runtime_ik_chain_create`` is imported into this plugin through
+    // the IAT, so GetModuleHandleEx(FROM_ADDRESS) identifies the plugin
+    // rather than the dependency that exports the v2 symbol.  Resolve the
+    // already-loaded runtime DLL by module name first; never LoadLibrary here
+    // because node evaluation must not change DLL lifetime.
+    HMODULE runtimeModule = GetModuleHandleA("mmd_runtime_ffi.dll");
+    if (runtimeModule) {
+        auto fn = reinterpret_cast<IkChainCreateV2Fn>(
+            GetProcAddress(runtimeModule, "mmd_runtime_ik_chain_create_v2"));
+        if (fn) {
+            return fn;
+        }
+    }
+
+    // Keep compatibility with statically linked/runtime-hosted builds where
+    // the v2 symbol lives in the same image as the imported entry point.
     HMODULE ownerModule = nullptr;
     if (!GetModuleHandleExA(
             GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -82,22 +98,12 @@ IkChainCreateV2Fn resolveIkChainCreateV2()
     }
     return reinterpret_cast<IkChainCreateV2Fn>(
         GetProcAddress(ownerModule, "mmd_runtime_ik_chain_create_v2"));
-#elif defined(__APPLE__)
-    Dl_info ownerInfo{};
-    if (dladdr(reinterpret_cast<const void*>(&mmd_runtime_ik_chain_create), &ownerInfo) == 0 ||
-        !ownerInfo.dli_fname) {
-        return nullptr;
-    }
-    void* ownerModule = dlopen(ownerInfo.dli_fname, RTLD_LAZY | RTLD_NOLOAD);
-    if (!ownerModule) {
-        return nullptr;
-    }
-    auto fn = reinterpret_cast<IkChainCreateV2Fn>(
-        dlsym(ownerModule, "mmd_runtime_ik_chain_create_v2"));
-    dlclose(ownerModule);
-    return fn;
+#else
+    // Search loaded images without opening/closing a dependency handle.  A
+    // RTLD_DEFAULT lookup leaves ownership and lifetime with the loader.
+    return reinterpret_cast<IkChainCreateV2Fn>(
+        dlsym(RTLD_DEFAULT, "mmd_runtime_ik_chain_create_v2"));
 #endif
-    return nullptr;
 }
 
 struct CcdIkChainConfig {
