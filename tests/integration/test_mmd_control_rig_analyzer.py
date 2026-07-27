@@ -365,6 +365,48 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertEqual(baked["state"], "BAKED")
         self.assertFalse(cmds.listConnections(target_x, source=True, destination=False, plugs=True) or [])
 
+    def test_baked_ik_controller_base_channels_are_exported(self):
+        """VMD collection retains identity-only IK controller edits after bake."""
+        root, _center, _left_ik, _right_ik, _append_joint, _append_node = (
+            self._create_minimal_control_rig_graph()
+        )
+        morph = self._create_bone_morph_metadata(
+            root,
+            "left_ik_export_boneMorph",
+            0,
+            [
+                {
+                    "bone_index": 1,
+                    "translation": [2.0, 0.0, 0.0],
+                    "rotation": [0.0, 0.0, 0.0, 1.0],
+                }
+            ],
+        )
+        self.assertTrue(build_bone_morph_graph(root)["success"])
+
+        spec = analyze_mmd_control_rig(root)
+        self.assertEqual(
+            spec.roles_by_name["left_foot_ik"].binding.input_kind,
+            INPUT_IK_CONTROLLER,
+        )
+        rig = build_mmd_control_rig(root, spec=spec)
+        enter_mmd_control_rig_edit(root)
+        control = rig.controls["left_foot_ik"]
+        cmds.setKeyframe(control, attribute="translateX", time=3, value=0.35)
+        bake_mmd_control_rig(root)
+        cmds.setAttr(f"{morph}.weight", 0.0)
+
+        collected = VmdSceneCollector().collect({"target_model": root})
+        output_path = self.get_temp_filename("ik_controller_base_export.vmd")
+        VmdExporter().export_vmd_animation(output_path, collected)
+        parsed = VmdData().parse_file(output_path)
+
+        left_frames = [frame for frame in parsed.bone_frames if frame.bone_name == "左足ＩＫ"]
+        self.assertTrue(left_frames)
+        # Maya film frame 3 maps to VMD frame 4 at 30 fps.
+        frame = next(item for item in left_frames if item.frame_number == 4)
+        self.assertAlmostEqual(frame.position[0], 0.35, places=5)
+
     def test_anim_picker_selects_owned_center_control(self):
         """Keep the Picker-to-controller selection path live in Maya."""
 
