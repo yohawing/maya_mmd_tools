@@ -1281,8 +1281,12 @@ def mmd_control_rig_gui_e2e(session: nox.Session) -> None:
         "--out-dir",
     )
     model = _option(args, "--model", "tests/data/mmt_test_model.pmx")
-    gui_report = out_dir / f"mmd_control_rig_e2e_maya{maya_version}.json"
-    exported_vmd = out_dir / f"mmd_control_rig_e2e_maya{maya_version}.vmd"
+    evaluation_mode = _option(args, "--evaluation-mode", "default")
+    mode_suffix = "" if evaluation_mode == "default" else f"_{evaluation_mode}"
+    route_suffix = "_create_on_import" if "--create-on-import" in args else ""
+    output_suffix = f"{mode_suffix}{route_suffix}"
+    gui_report = out_dir / f"mmd_control_rig_e2e_maya{maya_version}{output_suffix}.json"
+    exported_vmd = out_dir / f"mmd_control_rig_e2e_maya{maya_version}{output_suffix}.vmd"
     session.run(
         sys.executable,
         str(ROOT / "tests" / "viewport" / "e2e_mmd_control_rig.py"),
@@ -1304,7 +1308,7 @@ def mmd_control_rig_gui_e2e(session: nox.Session) -> None:
             "mmd-anim FFI release directory is required for the external oracle: "
             f"{ffi_path}"
         )
-    oracle_report = out_dir / f"mmd_anim_mesh_oracle_compare_maya{maya_version}.json"
+    oracle_report = out_dir / f"mmd_anim_mesh_oracle_compare_maya{maya_version}{output_suffix}.json"
     _clear_probe_report(session, oracle_report, "mmd-anim mesh oracle")
     oracle_args = [
         "--pmx",
