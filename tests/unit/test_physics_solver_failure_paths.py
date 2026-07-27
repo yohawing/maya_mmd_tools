@@ -268,6 +268,26 @@ class TestInitializationFailures(unittest.TestCase):
 
         details.assert_called_once()
 
+    def test_validation_failure_latches_until_descriptor_version_changes(self):
+        self.node._initialized = False
+        self.node._world = self.node._instance = None
+        self.node._last_descriptor_version = 11
+        self.node._latched_validation_failure_descriptor_version = 11
+        self.node._try_initialize = Mock(return_value=False)
+        self.node._read_world_settings = Mock(return_value=(True, -1))
+        data = _Data(time=0.0)
+        data.inputs[solver.MmdPhysicsSolverNode.aInDescriptorVersion] = 11
+
+        # The compute path owns the latch check.  The same invalid descriptor
+        # version must not rebuild a world or repeat diagnostics.
+        _compute(self.node, data)
+        self.node._try_initialize.assert_not_called()
+
+        # A changed descriptor version unlocks a fresh attempt.
+        data.inputs[solver.MmdPhysicsSolverNode.aInDescriptorVersion] = 12
+        _compute(self.node, data)
+        self.node._try_initialize.assert_called_once_with()
+
 
 def _prepare_node(*, world, instance, time=0.0, last_time=None):
     node = solver.MmdPhysicsSolverNode()

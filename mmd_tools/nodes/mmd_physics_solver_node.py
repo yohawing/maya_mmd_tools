@@ -87,6 +87,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._last_descriptor_version = None
         self._initialization_failure_signatures: set[tuple] = set()
         self._initialization_failure_descriptor_version = None
+        self._latched_validation_failure_descriptor_version = None
 
     def compute(self, plug, data):
         attr = plug.attribute()
@@ -137,7 +138,10 @@ class MmdPhysicsSolverNode(om.MPxNode):
         if descriptor_changed:
             self._free_handles()
 
-        if not self._initialized:
+        if (
+            not self._initialized
+            and self._latched_validation_failure_descriptor_version != descriptor_version
+        ):
             self._try_initialize()
 
         if self._world is None or self._instance is None:
@@ -398,6 +402,10 @@ class MmdPhysicsSolverNode(om.MPxNode):
 
             stage = "validate physics descriptors"
             if world_descriptors.validation_errors:
+                # Descriptor validation is deterministic for a given version.
+                # Do not rebuild/emit the same failure on every DG pull; a
+                # descriptor edit changes the version and unlocks retry.
+                self._latched_validation_failure_descriptor_version = descriptor_version
                 return self._fail_initialization(
                     model_root=model_root,
                     descriptor_version=descriptor_version,
@@ -465,6 +473,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
             return False
 
         self._initialized = True
+        self._latched_validation_failure_descriptor_version = None
         self._initialization_failure_signatures.clear()
         self._initialization_failure_descriptor_version = descriptor_version
         return True
