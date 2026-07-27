@@ -79,6 +79,15 @@ def _load_rig_plugins() -> None:
     if not cmds.pluginInfo(str(cpp_plugin), query=True, loaded=True):
         cmds.loadPlugin(str(cpp_plugin), quiet=True)
 
+
+def _load_mmd_plugin() -> None:
+    """Load Python MMD nodes required by PMX morph import in every oracle mode."""
+
+    from tests.common.maya_plugin_setup import load_mmd_tools_plugin
+
+    load_mmd_tools_plugin(ROOT, cmds_module=cmds)
+
+
 def _maya_point_from_mmd(point: tuple[float, float, float]) -> tuple[float, float, float]:
     return (point[0], point[1], -point[2])
 
@@ -244,6 +253,7 @@ def _import_scene(pmx_path: Path, vmd_path: Path, mode: str, bone_count: int) ->
     cmds.file(new=True, force=True)
     if mode == "rig":
         _load_rig_plugins()
+    _load_mmd_plugin()
     settings.set("import.model.create_mmd_shaders", False)
     settings.set("import.rig.add_semi_standard_bones", False)
     root = import_mmd_file(
