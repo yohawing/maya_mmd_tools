@@ -1265,6 +1265,25 @@ class VmdConverter:
             if metadata and metadata.get("state") == CONTROL_RIG_EDIT
             else []
         )
+
+        # Capture the scene channels which a mixed VMD import can mutate before
+        # the rig transition or ``clear_existing_motion`` runs.  The control
+        # curve snapshot above only covers EDIT-owned controller attributes;
+        # morph/camera/light curves and the playback range also need a
+        # fail-closed rollback when a late channel conversion raises.
+        if vmd_data is not None:
+            try:
+                self._build_name_mappings(target_namespace, target_model=target_model)
+            except Exception:
+                # The normal import path rebuilds mappings again.  Snapshotting
+                # remains best-effort here so a mapping diagnostic does not
+                # mask the original preflight error.
+                self.logger.debug("Failed to refresh mappings before scene snapshot", exc_info=True)
+        scene_snapshot = self._capture_mmd_control_rig_scene_snapshot(
+            target_model,
+            vmd_data,
+            target_namespace=target_namespace,
+        )
         created = False
         entered_here = False
 
@@ -1341,10 +1360,11 @@ class VmdConverter:
                         "created": False,
                         "entered_here": False,
                         "prior_state": prior_state,
-                        "prior_owner": prior_owner,
-                        "prior_raw_metadata": prior_raw_metadata,
-                        "prior_animation_snapshot": prior_animation_snapshot,
-                    }
+                    "prior_owner": prior_owner,
+                    "prior_raw_metadata": prior_raw_metadata,
+                    "prior_animation_snapshot": prior_animation_snapshot,
+                    "scene_snapshot": scene_snapshot,
+                }
                 if metadata.get("owner") != CONTROL_RIG_MMD_OWNED or metadata.get("state") not in {
                     CONTROL_RIG_ATTACHED,
                     CONTROL_RIG_BAKED,
@@ -1376,6 +1396,7 @@ class VmdConverter:
                 "prior_owner": prior_owner,
                 "prior_raw_metadata": prior_raw_metadata,
                 "prior_animation_snapshot": prior_animation_snapshot,
+                "scene_snapshot": scene_snapshot,
             }
         except MMDImportException:
             if entered_here:
@@ -1449,6 +1470,305 @@ class VmdConverter:
                     }
                 )
         return snapshot
+
+    def _capture_mmd_control_rig_scene_snapshot(
+        self,
+        target_model: str,
+        vmd_data,
+        *,
+        target_namespace: Optional[str] = None,
+    ) -> Dict[str, object]:
+        """Capture mixed-import scene state before any destructive mutation.
+
+        Control Rig ownership metadata does not cover ordinary model/morph
+        curves or the scene-level camera/light tracks.  This snapshot is
+        intentionally limited to nodes owned by ``target_model`` plus marked
+        MMD camera/light nodes, and records the playback range/unit as well.
+        It is used only by the ON-path transaction rollback, so normal VMD
+        imports retain their historical performance and behavior.
+        """
+        from ..core.constants import ATTR_MMD_CAMERA, ATTR_MMD_LIGHT
+        from ..core.mmd_control_rig_motion import _capture_animation_curve_payload
+
+        snapshot: Dict[str, object] = {
+            "timeline": {},
+            "channels": [],
+            "known_dag_nodes": set(cmds.ls(dag=True, long=True) or []),
+            "camera_markers": set(cmds.ls(f"*.{ATTR_MMD_CAMERA}", objectsOnly=True, long=True) or []),
+            "light_markers": set(cmds.ls(f"*.{ATTR_MMD_LIGHT}", objectsOnly=True, long=True) or []),
+        }
+        try:
+            snapshot["timeline"] = {
+                "current_time": float(cmds.currentTime(query=True)),
+                "min": float(cmds.playbackOptions(query=True, min=True)),
+                "max": float(cmds.playbackOptions(query=True, max=True)),
+                "animation_start": float(cmds.playbackOptions(query=True, animationStartTime=True)),
+                "animation_end": float(cmds.playbackOptions(query=True, animationEndTime=True)),
+                "time_unit": cmds.currentUnit(query=True, time=True),
+            }
+        except Exception:
+            self.logger.debug("Failed to capture VMD scene timeline", exc_info=True)
+
+        nodes = set()
+        explicit_attrs_by_node = {}
+        nodes.update(str(node) for node in self.bone_name_mapping.values() if node)
+        if target_model and cmds.objExists(target_model):
+            nodes.add(str(target_model))
+            nodes.update(
+                str(node)
+                for node in (
+                    cmds.listRelatives(target_model, allDescendents=True, fullPath=True) or []
+                )
+                if cmds.nodeType(node) == "joint"
+            )
+
+        try:
+            owned_joints = set()
+            for joint in self.bone_name_mapping.values():
+                owned_joints.update(cmds.ls(joint, long=True) or [joint])
+            for target_joint, info in (self._collect_append_info() or {}).items():
+                append_node = info.get("node") if isinstance(info, dict) else None
+                target_joint = (info or {}).get("target_joint", target_joint) if isinstance(info, dict) else target_joint
+                resolved_target = (cmds.ls(target_joint, long=True) or [target_joint])[0]
+                if append_node and (not target_model or resolved_target in owned_joints):
+                    nodes.add(str(append_node))
+        except Exception:
+            self.logger.debug("Failed to capture append nodes for VMD scene snapshot", exc_info=True)
+
+        # Morph mappings are rebuilt by _build_name_mappings before the normal
+        # import body.  Capture every owned provider rather than only names
+        # present in the VMD, because clear_existing_motion clears the whole
+        # target-root morph surface.
+        for mapping_entry in (self.morph_name_mapping or {}).values():
+            for morph_node, weight_attr, _morph_name in self._iter_morph_mappings(mapping_entry):
+                if not target_model or self._node_is_owned_by_target(morph_node, target_model):
+                    nodes.add(str(morph_node))
+                    explicit_attrs_by_node.setdefault(str(morph_node), set()).add(str(weight_attr))
+
+        camera_markers = set(snapshot["camera_markers"])
+        light_markers = set(snapshot["light_markers"])
+        for marker in camera_markers:
+            nodes.add(str(marker))
+            nodes.update(str(node) for node in (cmds.listRelatives(marker, shapes=True, fullPath=True) or []))
+            for attr in ("mmd_camera_target_node", "mmd_camera_root_node"):
+                try:
+                    nodes.update(
+                        str(node)
+                        for node in (cmds.listConnections(f"{marker}.{attr}", source=True, destination=False) or [])
+                    )
+                except Exception:
+                    continue
+        for marker in light_markers:
+            nodes.add(str(marker))
+            nodes.update(str(node) for node in (cmds.listRelatives(marker, shapes=True, fullPath=True) or []))
+
+        channels = []
+        for node in sorted(nodes):
+            if not cmds.objExists(node):
+                continue
+            try:
+                attrs = set(cmds.listAttr(node, keyable=True) or [])
+            except Exception:
+                attrs = set()
+            attrs.update(explicit_attrs_by_node.get(node, set()))
+            # Marker nodes may expose these custom channels as non-keyable
+            # plugs in older Maya versions; include them explicitly.
+            attrs.update(
+                {
+                    "mmd_camera_target_x",
+                    "mmd_camera_target_y",
+                    "mmd_camera_target_z",
+                    "mmd_camera_rotation_x",
+                    "mmd_camera_rotation_y",
+                    "mmd_camera_rotation_z",
+                    "mmd_camera_distance",
+                    "mmd_camera_viewing_angle",
+                    "mmd_camera_perspective",
+                    "mmd_light_colorR",
+                    "mmd_light_colorG",
+                    "mmd_light_colorB",
+                }
+            )
+            for attr in sorted(attrs):
+                if "[" not in attr:
+                    try:
+                        # Avoid restoring a compound multi parent (for
+                        # example blendShape.weight) as if it were a scalar
+                        # plug; Maya would drop the element index from an
+                        # incoming animCurve connection.
+                        if cmds.attributeQuery(attr, node=node, multi=True):
+                            continue
+                    except Exception:
+                        pass
+                plug = f"{node}.{attr}"
+                if not cmds.objExists(plug):
+                    continue
+                try:
+                    incoming = [
+                        str(source)
+                        for source in (
+                            cmds.listConnections(
+                                plug,
+                                source=True,
+                                destination=False,
+                                plugs=True,
+                                skipConversionNodes=False,
+                            )
+                            or []
+                        )
+                    ]
+                    incoming_nodes = [source.split(".", 1)[0] for source in incoming]
+                    curve_payload = {}
+                    curve_node = None
+                    if len(incoming_nodes) == 1 and str(cmds.nodeType(incoming_nodes[0])).startswith("animCurve"):
+                        curve_node = incoming_nodes[0]
+                        curve_payload = _capture_animation_curve_payload(cmds, curve_node)
+                    value = cmds.getAttr(plug)
+                except Exception:
+                    continue
+                channels.append(
+                    {
+                        "node": node,
+                        "attribute": attr,
+                        "incoming": incoming,
+                        "curve_node": curve_node,
+                        "curve_type": cmds.nodeType(curve_node) if curve_node else None,
+                        "curve_payload": curve_payload,
+                        "value": value,
+                    }
+                )
+        snapshot["channels"] = channels
+        return snapshot
+
+    @staticmethod
+    def _node_is_owned_by_target(node: str, target_model: str) -> bool:
+        """Return true when a morph provider is explicitly owned by a model root."""
+        try:
+            from .vmd_morph_mapping import morph_node_is_owned_by_root
+
+            return bool(morph_node_is_owned_by_root(node, target_model))
+        except Exception:
+            return False
+
+    def _restore_mmd_control_rig_scene_snapshot(self, snapshot) -> Optional[str]:
+        """Restore mixed-channel curves, timeline, and newly-created markers."""
+        if not snapshot:
+            return None
+        from ..core.constants import ATTR_MMD_CAMERA, ATTR_MMD_LIGHT
+        from ..core.mmd_control_rig_motion import _restore_animation_curve_payload
+
+        errors = []
+        for row in snapshot.get("channels", []) or []:
+            node = row.get("node")
+            attr = row.get("attribute")
+            if not node or not attr or not cmds.objExists(f"{node}.{attr}"):
+                continue
+            destination = f"{node}.{attr}"
+            try:
+                prior_sources = [str(source) for source in (row.get("incoming") or [])]
+                current_sources = [
+                    str(source)
+                    for source in (
+                        cmds.listConnections(
+                            destination,
+                            source=True,
+                            destination=False,
+                            plugs=True,
+                            skipConversionNodes=False,
+                        )
+                        or []
+                    )
+                ]
+                for source in current_sources:
+                    if source in prior_sources:
+                        continue
+                    try:
+                        cmds.disconnectAttr(source, destination)
+                    except Exception:
+                        pass
+                    source_node = source.split(".", 1)[0]
+                    if cmds.objExists(source_node) and str(cmds.nodeType(source_node)).startswith("animCurve"):
+                        cmds.delete(source_node)
+                curve_node = row.get("curve_node")
+                curve_type = row.get("curve_type")
+                if curve_node and not cmds.objExists(curve_node) and curve_type:
+                    try:
+                        cmds.createNode(curve_type, name=curve_node.rsplit("|", 1)[-1])
+                    except Exception as exc:
+                        errors.append(f"recreate curve {curve_node} failed: {exc}")
+                for source in prior_sources:
+                    if cmds.objExists(source) and not cmds.isConnected(source, destination):
+                        cmds.connectAttr(source, destination, force=True)
+                payload = row.get("curve_payload") or {}
+                if curve_node and cmds.objExists(curve_node) and payload.get("keys"):
+                    selection = om.MSelectionList()
+                    selection.add(curve_node)
+                    curve_fn = oma.MFnAnimCurve(selection.getDependNode(0))
+                    for index in reversed(range(curve_fn.numKeys)):
+                        curve_fn.remove(index)
+                    for key in payload.get("keys", []):
+                        cmds.setKeyframe(
+                            curve_node,
+                            time=float(key.get("time", 0.0)),
+                            value=float(key.get("value", 0.0)),
+                        )
+                    _restore_animation_curve_payload(cmds, curve_node, payload)
+                elif not prior_sources and row.get("value") is not None:
+                    cmds.setAttr(destination, row["value"])
+            except Exception as exc:
+                errors.append(f"restore scene channel {destination} failed: {exc}")
+
+        timeline = snapshot.get("timeline") or {}
+        try:
+            if timeline.get("time_unit"):
+                cmds.currentUnit(time=timeline["time_unit"])
+            if timeline:
+                cmds.playbackOptions(
+                    min=timeline.get("min"),
+                    max=timeline.get("max"),
+                    animationStartTime=timeline.get("animation_start"),
+                    animationEndTime=timeline.get("animation_end"),
+                )
+            if timeline.get("current_time") is not None:
+                cmds.currentTime(timeline["current_time"], edit=True)
+            cmds.play(state=False)
+        except Exception as exc:
+            errors.append(f"restore timeline failed: {exc}")
+
+        known_dag_nodes = set(snapshot.get("known_dag_nodes") or set())
+        marker_specs = (
+            ("camera_markers", ATTR_MMD_CAMERA),
+            ("light_markers", ATTR_MMD_LIGHT),
+        )
+        for key, marker_attr in marker_specs:
+            baseline = set(snapshot.get(key) or set())
+            for marker in cmds.ls(f"*.{marker_attr}", objectsOnly=True, long=True) or []:
+                if marker in baseline:
+                    continue
+                try:
+                    # Delete the highest newly-created DAG ancestor so a new
+                    # camera rig root/shape is removed with its marker.
+                    top = marker
+                    while True:
+                        parent = cmds.listRelatives(top, parent=True, fullPath=True) or []
+                        if not parent or parent[0] in known_dag_nodes:
+                            break
+                        top = parent[0]
+                    cmds.delete(top)
+                except Exception as exc:
+                    errors.append(f"remove created {marker_attr} node {marker} failed: {exc}")
+        # Existing cameras may have acquired a target/root helper during
+        # _ensure_mmd_camera_rig.  Remove only helpers absent from the pre-state.
+        for marker in set(snapshot.get("camera_markers") or set()):
+            for attr in ("mmd_camera_target_node", "mmd_camera_root_node"):
+                try:
+                    connected = cmds.listConnections(f"{marker}.{attr}", source=True, destination=False) or []
+                    for helper in connected:
+                        if (cmds.ls(helper, long=True) or [helper])[0] not in known_dag_nodes:
+                            cmds.delete(helper)
+                except Exception as exc:
+                    errors.append(f"remove created camera helper {marker}.{attr} failed: {exc}")
+        return "; ".join(errors) if errors else None
 
     @staticmethod
     def _restore_mmd_control_rig_animation_snapshot(snapshot) -> Optional[str]:
@@ -1546,6 +1866,15 @@ class VmdConverter:
             )
             if snapshot_error:
                 errors.append(snapshot_error)
+        # The rig journal must see the authored control/solver graph before
+        # ordinary joint channels are restored.  Restoring scene curves first
+        # can disconnect the very inputs that restore_mmd_control_rig_attached
+        # uses to leave CONTROL_OWNED safely.
+        scene_error = self._restore_mmd_control_rig_scene_snapshot(
+            transaction.get("scene_snapshot")
+        )
+        if scene_error:
+            errors.append(scene_error)
         raw = transaction.get("prior_raw_metadata")
         if raw is not None and cmds.objExists(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}"):
             try:
