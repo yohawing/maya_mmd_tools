@@ -16,6 +16,7 @@ from .vmd_scene_keying import VmdKeyingError, _ensure_fallback_allowed
 def _unwrap_rotation_channel_samples(
     channel_samples: Dict[str, List[tuple]],
     rotation_attrs: tuple[str, str, str],
+    rotate_order: int = 0,
 ) -> None:
     """Continuously unwrap one time-aligned Euler rotation sample set in place."""
     if any(not channel_samples.get(attr) for attr in rotation_attrs):
@@ -28,8 +29,11 @@ def _unwrap_rotation_channel_samples(
     if not times:
         return
     unwrapped = unwrap_euler_sequence(
-        tuple(samples_by_attr[attr][time] for attr in rotation_attrs)
-        for time in times
+        (
+            tuple(samples_by_attr[attr][time] for attr in rotation_attrs)
+            for time in times
+        ),
+        rotate_order=rotate_order,
     )
     for axis, attr in enumerate(rotation_attrs):
         channel_samples[attr] = [
@@ -119,6 +123,10 @@ def set_bone_keyframes(
         # channels.  Zero/identity channel groups without a route must not
         # fall through to the joint and create a second MMD-side writer.
         attrs = [attr for attr in attrs if attr in attr_targets]
+    try:
+        joint_rotate_order = int(cmds.getAttr(f"{joint}.rotateOrder"))
+    except Exception:
+        joint_rotate_order = 0
     channel_interp_map = {
         attr: context.vmd_interp_channel_for_attr(attr)
         for attr in attrs
@@ -198,6 +206,7 @@ def set_bone_keyframes(
         _unwrap_rotation_channel_samples(
             channel_samples,
             ("rotateX", "rotateY", "rotateZ"),
+            joint_rotate_order,
         )
 
         animation_layer = context.anim_layer if use_layer else None
@@ -287,6 +296,7 @@ def set_bone_keyframes(
             _unwrap_rotation_channel_samples(
                 routed_samples.get(rotate_node, {}),
                 tuple(attr for _node, attr in rotate_targets),
+                joint_rotate_order,
             )
 
     animation_layer = context.anim_layer if use_layer else None
@@ -357,7 +367,11 @@ def set_bone_keyframes(
                     solver_samples[attr].append((maya_time, float(value)))
             for samples in solver_samples.values():
                 samples.sort(key=lambda item: item[0])
-        _unwrap_rotation_channel_samples(solver_samples, tuple(ir_attrs))
+        _unwrap_rotation_channel_samples(
+            solver_samples,
+            tuple(ir_attrs),
+            joint_rotate_order,
+        )
         if not context.batch_key_scalar_channels(solver_node, solver_samples, animation_layer=None):
             context.logger.debug(f"IK solver batch keying produced no keys for {solver_node}; using setKeyframe fallback")
             for attr, samples in solver_samples.items():

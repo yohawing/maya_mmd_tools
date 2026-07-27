@@ -27,3 +27,17 @@ class TestVmdJointRotation(MayaTestBase):
 
         self.assertEqual(source, [(0.0, 179.0, -179.0), (0.0, -179.0, 179.0)])
         self.assertEqual(unwrapped, [(0.0, 179.0, -179.0), (0.0, 181.0, -181.0)])
+
+    def test_unwrap_euler_sequence_selects_closest_gimbal_solution(self):
+        """Equivalent XYZ solutions stay continuous across the Y=90 singularity."""
+        unwrapped = unwrap_euler_sequence(
+            [
+                (0.0, 89.0, 0.0),
+                (180.0, 89.0, 180.0),
+            ],
+            rotate_order=0,
+        )
+
+        self.assertAlmostEqual(unwrapped[1][0], 0.0, places=6)
+        self.assertAlmostEqual(unwrapped[1][1], 91.0, places=6)
+        self.assertAlmostEqual(unwrapped[1][2], 0.0, places=6)
