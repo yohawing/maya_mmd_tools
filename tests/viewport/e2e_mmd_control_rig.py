@@ -41,6 +41,8 @@ MOVE_OFFSET_X = 0.35
 MOVE_EPSILON = 1.0e-5
 ROUNDTRIP_MATRIX_EPSILON = 5.0e-3
 ROUNDTRIP_FRAMES = tuple(range(0, 6))
+EVALUATION_MODE_CHOICES = ("default", "dg", "serial", "parallel")
+_EVALUATION_MODE_TO_MAYA = {"dg": "off", "serial": "serial", "parallel": "parallel"}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -99,6 +101,30 @@ def _cycle_state(label: str, cmds) -> dict[str, Any]:
     evaluation_on = bool(cmds.cycleCheck(query=True, evaluation=True))
     plugs = sorted(str(item) for item in (cmds.cycleCheck(all=True, list=True) or []))
     return {"label": label, "evaluationOn": evaluation_on, "cyclePlugs": plugs}
+
+
+def _evaluation_mode_snapshot(requested: str, cmds) -> dict[str, str]:
+    """Apply and report the requested Maya evaluation mode.
+
+    Maya exposes DG evaluation as ``off``; the report keeps the user-facing
+    ``dg`` spelling while retaining the raw Maya mode for diagnostics.
+    ``default`` intentionally leaves the current Maya mode untouched.
+    """
+
+    requested = str(requested or "default").lower()
+    if requested not in EVALUATION_MODE_CHOICES:
+        raise ValueError(f"unsupported evaluation mode: {requested}")
+    target = _EVALUATION_MODE_TO_MAYA.get(requested)
+    if target is not None:
+        cmds.evaluationManager(mode=target)
+    raw = cmds.evaluationManager(query=True, mode=True) or []
+    maya_mode = str(raw[0]) if raw else "unknown"
+    active = {"off": "dg"}.get(maya_mode, maya_mode)
+    if target is not None and maya_mode != target:
+        raise RuntimeError(
+            f"requested evaluation mode {requested!r}, Maya reported {maya_mode!r}"
+        )
+    return {"requested": requested, "active": active, "mayaMode": maya_mode}
 
 
 def _joint_worlds(cmds, frames: Iterable[int]) -> dict[str, dict[str, list[float]]]:
@@ -466,6 +492,7 @@ def run_e2e_check(
     report_path: str,
     scene_path: str,
     exported_vmd_path: str,
+    evaluation_mode: str = "default",
 ) -> None:
     """Execute the complete control-rig workflow in a live Maya GUI."""
 
@@ -486,6 +513,11 @@ def run_e2e_check(
         },
         "status": "error",
         "mayaVersion": None,
+        "evaluationMode": {
+            "requested": str(evaluation_mode or "default"),
+            "active": None,
+            "mayaMode": None,
+        },
         "model": str(model_path),
         "motion": str(motion_path),
         "states": {},
@@ -531,6 +563,16 @@ def run_e2e_check(
         if not cmds.pluginInfo(plugin_name, query=True, loaded=True):
             cmds.loadPlugin(str(plugin_path), quiet=True)
             _log(f"loaded plugin: {plugin_path}")
+
+        report["evaluationMode"] = _evaluation_mode_snapshot(evaluation_mode, cmds)
+        _log(
+            "evaluation mode: requested=%s active=%s maya=%s"
+            % (
+                report["evaluationMode"]["requested"],
+                report["evaluationMode"]["active"],
+                report["evaluationMode"]["mayaMode"],
+            )
+        )
 
         from mmd_tools.core.mmd_control_rig_builder import (
             CONTROL_RIG_ATTACHED,
@@ -1094,15 +1136,22 @@ def main() -> int:
     )
     parser.add_argument("--port", type=int, default=COMMAND_PORT)
     parser.add_argument("--timeout", type=float, default=TEST_TIMEOUT)
+    parser.add_argument(
+        "--evaluation-mode",
+        choices=EVALUATION_MODE_CHOICES,
+        default="default",
+        help="Maya evaluation mode (default preserves the current Maya setting)",
+    )
     parser.add_argument("--out-dir", default=str(_PROJECT_ROOT / "build" / "e2e"))
     args = parser.parse_args()
 
     out_dir = _repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    report_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}.json"
-    log_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}.log"
-    scene_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}.ma"
-    exported_vmd_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}.vmd"
+    mode_suffix = "" if args.evaluation_mode == "default" else f"_{args.evaluation_mode}"
+    report_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{mode_suffix}.json"
+    log_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{mode_suffix}.log"
+    scene_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{mode_suffix}.ma"
+    exported_vmd_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{mode_suffix}.vmd"
     model_path = _repo_path(args.model)
     motion_path = _repo_path(args.motion)
     maya_commandport.remove_stale_logs(
@@ -1143,7 +1192,7 @@ def main() -> int:
             "if str(project_root) not in sys.path:\n"
             "    sys.path.insert(0, str(project_root))\n"
             "from tests.viewport.e2e_mmd_control_rig import run_e2e_check\n"
-            f"run_e2e_check(r'{log_path.as_posix()}', r'{model_posix}', r'{motion_posix}', r'{report_path.as_posix()}', r'{scene_path.as_posix()}', r'{exported_vmd_path.as_posix()}')\n"
+            f"run_e2e_check(r'{log_path.as_posix()}', r'{model_posix}', r'{motion_posix}', r'{report_path.as_posix()}', r'{scene_path.as_posix()}', r'{exported_vmd_path.as_posix()}', r'{args.evaluation_mode}')\n"
         )
         maya_commandport.send_python(args.port, command, label="<mmd-control-rig-e2e>")
         report = _monitor_result(log_path, report_path, args.timeout)
@@ -1159,6 +1208,7 @@ def main() -> int:
             "status": "blocked",
             "maya": args.maya,
             "port": args.port,
+            "evaluationMode": args.evaluation_mode,
             "error": str(exc),
         }
         _write_maya_report(report_path, blocked)

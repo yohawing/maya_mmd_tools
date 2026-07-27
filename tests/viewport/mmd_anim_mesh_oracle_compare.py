@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import statistics
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -24,12 +25,20 @@ from mesh_oracle_utils import distance, mesh_points, source_indices, visible_mes
 
 ROOT = Path(__file__).resolve().parents[2]
 _DLL_DIRECTORY_HANDLES: list[Any] = []
+EVALUATION_MODE_CHOICES = ("default", "dg", "serial", "parallel")
+_EVALUATION_MODE_TO_MAYA = {"dg": "off", "serial": "serial", "parallel": "parallel"}
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pmx", default="tests/data/mmt_test_model.pmx")
     parser.add_argument("--vmd", default="tests/data/mmt_test_model_test_motion.vmd")
+    parser.add_argument(
+        "--exported-vmd",
+        action="append",
+        default=[],
+        help="Also compare a GUI-exported VMD using the same PMX, frames, mode, and threshold; repeatable.",
+    )
     parser.add_argument("--out", default="build/reports/mmd_anim_mesh_oracle_compare.json")
     parser.add_argument(
         "--frame",
@@ -40,6 +49,18 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--threshold", type=float, default=0.1)
     parser.add_argument("--mode", choices=["bake", "rig"], default="bake")
+    parser.add_argument(
+        "--evaluation-mode",
+        choices=EVALUATION_MODE_CHOICES,
+        default="default",
+        help="Maya evaluation mode (default preserves the current Maya setting)",
+    )
+    parser.add_argument(
+        "--vmd-role",
+        choices=["original-fixture", "gui-exported"],
+        default="original-fixture",
+        help="Provenance label stored in the report JSON.",
+    )
     parser.add_argument(
         "--bind-source",
         choices=["maya", "pmx"],
@@ -56,6 +77,25 @@ def _initialize() -> None:
         pass
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
+
+
+def _evaluation_mode_snapshot(requested: str) -> dict[str, str]:
+    """Apply and report the requested Maya evaluation mode before import."""
+
+    requested = str(requested or "default").lower()
+    if requested not in EVALUATION_MODE_CHOICES:
+        raise ValueError(f"unsupported evaluation mode: {requested}")
+    target = _EVALUATION_MODE_TO_MAYA.get(requested)
+    if target is not None:
+        cmds.evaluationManager(mode=target)
+    raw = cmds.evaluationManager(query=True, mode=True) or []
+    maya_mode = str(raw[0]) if raw else "unknown"
+    active = {"off": "dg"}.get(maya_mode, maya_mode)
+    if target is not None and maya_mode != target:
+        raise RuntimeError(
+            f"requested evaluation mode {requested!r}, Maya reported {maya_mode!r}"
+        )
+    return {"requested": requested, "active": active, "mayaMode": maya_mode}
 
 
 def _load_rig_plugins() -> None:
@@ -568,6 +608,7 @@ def _compare(
 def main() -> int:
     args = _parse_args()
     _initialize()
+    evaluation_mode = _evaluation_mode_snapshot(args.evaluation_mode)
     pmx_path = (ROOT / args.pmx).resolve() if not Path(args.pmx).is_absolute() else Path(args.pmx)
     vmd_path = (ROOT / args.vmd).resolve() if not Path(args.vmd).is_absolute() else Path(args.vmd)
     frames = list(dict.fromkeys(args.frame if args.frame is not None else [0, 30, 60]))
@@ -607,6 +648,8 @@ def main() -> int:
         },
         "pmx": str(pmx_path),
         "vmd": str(vmd_path),
+        "vmdRole": args.vmd_role,
+        "evaluationMode": evaluation_mode,
         "mode": args.mode,
         "bind_source": args.bind_source,
         "comparison": comparison,
@@ -647,7 +690,46 @@ def main() -> int:
     print(f"Report Markdown: {md}")
     print(f"Status: {report['status']}")
     print(f"Earliest divergent bone: {bone_comparison['earliest_divergence']}")
-    return 0 if report["status"] == "passed" else 1
+    status_code = 0 if report["status"] == "passed" else 1
+    if args.exported_vmd:
+        # Run each exported VMD in a fresh mayapy process.  This keeps the
+        # original fixture report intact and gives every input the identical
+        # import/evaluation/oracle path without changing the fixture.
+        base_out = out
+        for index, exported_vmd in enumerate(args.exported_vmd, start=1):
+            exported_path = (
+                ROOT / exported_vmd
+                if not Path(exported_vmd).is_absolute()
+                else Path(exported_vmd)
+            ).resolve()
+            exported_out = base_out.with_name(
+                f"{base_out.stem}.gui_exported_{index}{base_out.suffix}"
+            )
+            command = [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--pmx",
+                str(pmx_path),
+                "--vmd",
+                str(exported_path),
+                "--out",
+                str(exported_out),
+                "--threshold",
+                str(args.threshold),
+                "--mode",
+                args.mode,
+                "--evaluation-mode",
+                args.evaluation_mode,
+                "--bind-source",
+                args.bind_source,
+                "--vmd-role",
+                "gui-exported",
+            ]
+            for frame in frames:
+                command.extend(("--frame", str(frame)))
+            completed = subprocess.run(command, check=False)
+            status_code = max(status_code, int(completed.returncode))
+    return status_code
 
 
 if __name__ == "__main__":
