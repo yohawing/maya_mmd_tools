@@ -40,6 +40,20 @@ CONTROL_RIG_EDIT = "EDIT"
 CONTROL_RIG_BAKED = "BAKED"
 CONTROL_RIG_STATES = frozenset({CONTROL_RIG_ATTACHED, CONTROL_RIG_EDIT, CONTROL_RIG_BAKED})
 
+# ``state`` is retained as the legacy lifecycle field.  ``owner`` is the
+# authoritative single-writer field for motion transitions.  Keep both the
+# descriptive and owner-prefixed names available to callers because the
+# metadata is consumed by older development-mode surfaces as well.
+CONTROL_RIG_MMD_OWNED = "MMD_OWNED"
+CONTROL_RIG_CONTROL_OWNED = "CONTROL_OWNED"
+CONTROL_RIG_CONVERTING = "CONVERTING"
+CONTROL_RIG_OWNERS = frozenset(
+    {CONTROL_RIG_MMD_OWNED, CONTROL_RIG_CONTROL_OWNED, CONTROL_RIG_CONVERTING}
+)
+CONTROL_RIG_OWNER_MMD = CONTROL_RIG_MMD_OWNED
+CONTROL_RIG_OWNER_CONTROL = CONTROL_RIG_CONTROL_OWNED
+CONTROL_RIG_OWNER_CONVERTING = CONTROL_RIG_CONVERTING
+
 
 class MmdControlRigBuildError(RuntimeError):
     """Raised when safe creation, recovery, or removal cannot be proven."""
@@ -55,6 +69,7 @@ class MmdControlRigBuildResult:
     controls: Mapping[str, str]
     zero_groups: Mapping[str, str]
     state: str = CONTROL_RIG_ATTACHED
+    owner: str = CONTROL_RIG_MMD_OWNED
     created: bool = True
 
 
@@ -284,6 +299,7 @@ def build_mmd_control_rig(
                 "schema": CONTROL_RIG_METADATA_SCHEMA,
                 "version": CONTROL_RIG_METADATA_VERSION,
                 "state": CONTROL_RIG_ATTACHED,
+                "owner": CONTROL_RIG_MMD_OWNED,
                 "displayReferenceTime": display_reference_time,
                 "modelRootUuid": _node_uuid(cmds, root),
                 "controlGroupUuid": _node_uuid(cmds, control_group),
@@ -321,6 +337,8 @@ def remove_mmd_control_rig(model_root: str, *, cmds_module=None) -> bool:
         return False
     if metadata["state"] not in {CONTROL_RIG_ATTACHED, CONTROL_RIG_BAKED}:
         raise MmdControlRigBuildError("return the control rig to ATTACHED before removal")
+    if metadata.get("owner") != CONTROL_RIG_MMD_OWNED:
+        raise MmdControlRigBuildError("cannot remove a control rig during ownership conversion")
     if _node_uuid(cmds, root) != metadata.get("modelRootUuid"):
         raise MmdControlRigBuildError("control-rig metadata model UUID mismatch")
     resolved = _resolve_owned_nodes(cmds, metadata)
@@ -386,6 +404,7 @@ def _result_from_metadata(
         controls=controls,
         zero_groups=zero_groups,
         state=str(metadata["state"]),
+        owner=str(metadata.get("owner", _owner_for_state(metadata["state"]))),
         created=created,
     )
 
@@ -405,8 +424,21 @@ def _read_metadata(cmds, root: str) -> Optional[Dict[str, Any]]:
     version = metadata.get("version")
     if version != CONTROL_RIG_METADATA_VERSION:
         raise MmdControlRigBuildError("unsupported control-rig metadata version")
-    if metadata.get("state") not in CONTROL_RIG_STATES:
+    state = metadata.get("state")
+    if state not in CONTROL_RIG_STATES:
         raise MmdControlRigBuildError("unsupported control-rig metadata state")
+    owner = metadata.get("owner")
+    if owner is None:
+        # v3 metadata written before explicit ownership used ATTACHED/BAKED
+        # for MMD-owned motion and EDIT for control-owned motion.
+        owner = _owner_for_state(state)
+        metadata["owner"] = owner
+    elif owner not in CONTROL_RIG_OWNERS:
+        raise MmdControlRigBuildError("unsupported control-rig metadata owner")
+    elif owner != CONTROL_RIG_CONVERTING and owner != _owner_for_state(state):
+        raise MmdControlRigBuildError(
+            "control-rig metadata state and owner disagree"
+        )
     for key in ("modelRootUuid", "controlGroupUuid", "selectionSetUuid"):
         if not isinstance(metadata.get(key), str) or not metadata[key]:
             raise MmdControlRigBuildError(f"control-rig metadata missing {key}")
@@ -419,6 +451,15 @@ def _read_metadata(cmds, root: str) -> Optional[Dict[str, Any]]:
     if not math.isfinite(display_reference_time):
         raise MmdControlRigBuildError("control-rig display reference must be finite")
     return metadata
+
+
+def _owner_for_state(state: str) -> str:
+    """Derive explicit motion ownership from a legacy lifecycle state."""
+    return (
+        CONTROL_RIG_CONTROL_OWNED
+        if state == CONTROL_RIG_EDIT
+        else CONTROL_RIG_MMD_OWNED
+    )
 
 
 def _resolve_owned_nodes(cmds, metadata: Mapping[str, Any]) -> Dict[str, str]:

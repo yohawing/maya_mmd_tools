@@ -12,6 +12,8 @@ from maya import cmds
 from mmd_tools.core import settings
 from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX, ATTR_MMD_CONTROL_RIG_JSON
 from mmd_tools.core.mmd_control_rig_builder import (
+    CONTROL_RIG_CONTROL_OWNED,
+    CONTROL_RIG_MMD_OWNED,
     MmdControlRigBuildError,
     build_mmd_control_rig,
     read_mmd_control_rig_metadata,
@@ -283,6 +285,107 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             )
         )
         self.assertFalse(remove_mmd_control_rig(reopened_root))
+
+    def test_motion_owner_is_explicit_and_legacy_state_derives_owner(self):
+        root = self._import_fixture()
+        build_mmd_control_rig(root)
+
+        metadata = read_mmd_control_rig_metadata(root)
+        self.assertEqual(metadata["owner"], CONTROL_RIG_MMD_OWNED)
+
+        # v3 scenes written before the owner field remain readable and derive
+        # the MMD-side writer from their legacy ATTACHED state.
+        legacy = dict(metadata)
+        legacy.pop("owner")
+        cmds.setAttr(
+            f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}",
+            json.dumps(legacy, ensure_ascii=False),
+            type="string",
+        )
+        self.assertEqual(
+            read_mmd_control_rig_metadata(root)["owner"],
+            CONTROL_RIG_MMD_OWNED,
+        )
+
+        entered = enter_mmd_control_rig_edit(root)
+        self.assertEqual(entered["state"], "EDIT")
+        self.assertEqual(entered["owner"], CONTROL_RIG_CONTROL_OWNED)
+        self.assertNotEqual(entered["owner"], "CONVERTING")
+
+        baked = bake_mmd_control_rig(root)
+        self.assertEqual(baked["state"], "BAKED")
+        self.assertEqual(baked["owner"], CONTROL_RIG_MMD_OWNED)
+
+        entered = enter_mmd_control_rig_edit(root)
+        restored = restore_mmd_control_rig_attached(root)
+        self.assertEqual(restored["state"], "ATTACHED")
+        self.assertEqual(restored["owner"], CONTROL_RIG_MMD_OWNED)
+
+    def test_enter_edit_failure_restores_graph_values_and_raw_metadata(self):
+        root = self._import_fixture()
+        self.assertTrue(
+            import_mmd_file(
+                _VMD_PATH,
+                options={"target_model": root, "pmx_path": _PMX_PATH},
+            )
+        )
+        rig = build_mmd_control_rig(root)
+        metadata_before = cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}")
+
+        plugs = set()
+        for role, binding in read_mmd_control_rig_metadata(root)["bindings"].items():
+            control = rig.controls[role]
+            for compound in binding["authoredPlugs"]:
+                channels = (
+                    [f"{compound}{axis}" for axis in "XYZ"]
+                    if compound.endswith((".translate", ".rotate", ".baseTranslate", ".baseRotate"))
+                    else [compound]
+                )
+                for target in channels:
+                    raw_channel = target.rsplit(".", 1)[-1]
+                    if raw_channel.startswith("baseRotate"):
+                        channel = f"rotate{raw_channel[-1]}"
+                    elif raw_channel.startswith("baseTranslate"):
+                        channel = f"translate{raw_channel[-1]}"
+                    elif raw_channel.startswith("inputRotateElement"):
+                        channel = f"rotate{raw_channel[-1]}"
+                    else:
+                        channel = raw_channel
+                    plugs.update((target, f"{control}.{channel}"))
+        before = {
+            plug: (
+                tuple(cmds.listConnections(plug, source=True, destination=False, plugs=True) or []),
+                cmds.getAttr(plug),
+            )
+            for plug in sorted(plugs)
+            if cmds.objExists(plug)
+        }
+
+        connect_attr = cmds.connectAttr
+        calls = [0]
+
+        def fail_after_first(*args, **kwargs):
+            calls[0] += 1
+            if calls[0] == 2:
+                raise RuntimeError("simulated enter connection failure")
+            return connect_attr(*args, **kwargs)
+
+        with mock.patch.object(cmds, "connectAttr", side_effect=fail_after_first):
+            with self.assertRaisesRegex(RuntimeError, "simulated enter"):
+                enter_mmd_control_rig_edit(root)
+
+        self.assertEqual(cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}"), metadata_before)
+        self.assertEqual(read_mmd_control_rig_metadata(root)["state"], "ATTACHED")
+        self.assertEqual(read_mmd_control_rig_metadata(root)["owner"], CONTROL_RIG_MMD_OWNED)
+        after = {
+            plug: (
+                tuple(cmds.listConnections(plug, source=True, destination=False, plugs=True) or []),
+                cmds.getAttr(plug),
+            )
+            for plug in sorted(plugs)
+            if cmds.objExists(plug)
+        }
+        self.assertEqual(after, before)
 
     def test_model_root_master_fallback_stays_outside_driven_hierarchy(self):
         root = (cmds.ls(self._import_fixture(), long=True) or [None])[0]

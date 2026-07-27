@@ -18,7 +18,10 @@ from mmd_tools.core.humanik_utils import maya_cmds
 from mmd_tools.core.mmd_control_rig_builder import (
     CONTROL_RIG_ATTACHED,
     CONTROL_RIG_BAKED,
+    CONTROL_RIG_CONVERTING,
+    CONTROL_RIG_CONTROL_OWNED,
     CONTROL_RIG_EDIT,
+    CONTROL_RIG_MMD_OWNED,
     MmdControlRigBuildError,
     read_mmd_control_rig_metadata,
     resolve_mmd_control_rig_binding_authored_plugs,
@@ -44,7 +47,7 @@ def control_rig_edit_routes_for_joints(joints, *, cmds_module=None) -> Dict[str,
     roots = cmds.ls(f"*.{ATTR_MMD_CONTROL_RIG_JSON}", objectsOnly=True, long=True) or []
     for root in roots:
         metadata = read_mmd_control_rig_metadata(str(root), cmds_module=cmds)
-        if not metadata or metadata["state"] != CONTROL_RIG_EDIT:
+        if not metadata or metadata.get("owner") != CONTROL_RIG_CONTROL_OWNED:
             continue
         for role, binding in metadata.get("bindings", {}).items():
             try:
@@ -76,6 +79,10 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
         return metadata
     if metadata["state"] not in {CONTROL_RIG_ATTACHED, CONTROL_RIG_BAKED}:
         raise MmdControlRigBuildError(f"cannot enter EDIT from {metadata['state']}")
+    if metadata.get("owner") != CONTROL_RIG_MMD_OWNED:
+        raise MmdControlRigBuildError(
+            f"cannot enter EDIT while motion owner is {metadata.get('owner')}"
+        )
 
     controls = {
         role: _resolve_uuid(cmds, uuid)
@@ -86,9 +93,31 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
     claimed_targets = set()
     display_reference_time = float(metadata["displayReferenceTime"])
     offset_controls = set()
+    transaction_plugs = _entry_transaction_plugs(cmds, metadata, controls)
+    plug_states = _capture_plug_states(cmds, transaction_plugs)
+    metadata_before = _raw_metadata(cmds, root)
+    added_attributes = []
 
-    with _undo_chunk(cmds, "Enter MMD Control Rig Edit"):
-        try:
+    try:
+        # Persist the in-flight boundary before any graph mutation.  A failed
+        # transition must restore this exact raw payload, including omitted
+        # legacy owner fields.
+        transitioning = dict(metadata)
+        transitioning["owner"] = CONTROL_RIG_CONVERTING
+        _write_metadata(cmds, root, transitioning)
+        for role, binding in metadata.get("bindings", {}).items():
+            if binding.get("inputKind") != INPUT_IK_CONTROLLER:
+                continue
+            control = controls.get(role)
+            if control is None:
+                continue
+            plug = f"{control}.ikEnabled"
+            if not cmds.attributeQuery("ikEnabled", node=control, exists=True):
+                cmds.addAttr(control, longName="ikEnabled", attributeType="bool", keyable=True)
+                added_attributes.append(plug)
+                plug_states[plug] = _capture_plug_states(cmds, (plug,))[plug]
+
+        with _undo_chunk(cmds, "Enter MMD Control Rig Edit"):
             for role, binding in metadata.get("bindings", {}).items():
                 control = controls.get(role)
                 if control is None:
@@ -147,11 +176,24 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
             )
             metadata["journal"] = journal
             metadata["state"] = CONTROL_RIG_EDIT
+            metadata["owner"] = CONTROL_RIG_CONTROL_OWNED
             _write_metadata(cmds, root, metadata)
-        except Exception:
+    except Exception as exc:
+        try:
             _rollback(cmds, operations)
-            _restore_offsets(cmds, journal.get("offsetParentMatrix", []))
-            raise
+            _restore_plug_states(cmds, plug_states)
+            for plug in reversed(added_attributes):
+                node, _, attribute = plug.partition(".")
+                if cmds.objExists(plug) and not (
+                    cmds.listConnections(plug, source=False, destination=True) or []
+                ):
+                    cmds.deleteAttr(f"{node}.{attribute}")
+            _restore_raw_metadata(cmds, root, metadata_before)
+        except Exception as rollback_exc:
+            raise MmdControlRigBuildError(
+                f"control-rig enter EDIT failed and rollback was incomplete: {rollback_exc}"
+            ) from exc
+        raise
     return metadata
 
 
@@ -163,9 +205,18 @@ def restore_mmd_control_rig_attached(model_root: str, *, cmds_module=None) -> Di
     if metadata is None:
         raise MmdControlRigBuildError("MMD control rig metadata is missing")
     if metadata["state"] == CONTROL_RIG_ATTACHED:
+        if metadata.get("owner") != CONTROL_RIG_MMD_OWNED:
+            raise MmdControlRigBuildError(
+                f"cannot restore ATTACHED while motion owner is {metadata.get('owner')}"
+            )
         return metadata
     if metadata["state"] == CONTROL_RIG_BAKED:
+        if metadata.get("owner") != CONTROL_RIG_MMD_OWNED:
+            raise MmdControlRigBuildError(
+                f"cannot restore ATTACHED while motion owner is {metadata.get('owner')}"
+            )
         metadata["state"] = CONTROL_RIG_ATTACHED
+        metadata["owner"] = CONTROL_RIG_MMD_OWNED
         _write_metadata(cmds, root, metadata)
         return metadata
     if metadata["state"] != CONTROL_RIG_EDIT:
@@ -204,6 +255,7 @@ def restore_mmd_control_rig_attached(model_root: str, *, cmds_module=None) -> Di
         _restore_offsets(cmds, offset_rows, strict=True)
         metadata.pop("journal", None)
         metadata["state"] = CONTROL_RIG_ATTACHED
+        metadata["owner"] = CONTROL_RIG_MMD_OWNED
         _write_metadata(cmds, root, metadata)
     return metadata
 
@@ -216,6 +268,10 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
     if metadata is None or metadata.get("state") != CONTROL_RIG_EDIT:
         state = metadata.get("state") if metadata else "missing"
         raise MmdControlRigBuildError(f"cannot bake MMD control rig from {state}")
+    if metadata.get("owner") != CONTROL_RIG_CONTROL_OWNED:
+        raise MmdControlRigBuildError(
+            f"cannot bake MMD control rig while motion owner is {metadata.get('owner')}"
+        )
     ik_rows, channel_rows, offset_rows = _resolve_edit_journal(cmds, metadata)
     rows = ik_rows + channel_rows
     sources_by_control = {}
@@ -247,6 +303,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
         _restore_offsets(cmds, offset_rows, strict=True)
         metadata.pop("journal", None)
         metadata["state"] = CONTROL_RIG_BAKED
+        metadata["owner"] = CONTROL_RIG_MMD_OWNED
         _write_metadata(cmds, root, metadata)
     return metadata
 
@@ -267,6 +324,31 @@ def _resolve_edit_journal(cmds, metadata: Mapping[str, Any]):
     return ik_rows, channel_rows, offset_rows
 
 
+def _entry_transaction_plugs(cmds, metadata, controls) -> Tuple[str, ...]:
+    """Collect every plug that enter-EDIT may disconnect or overwrite."""
+    plugs = set()
+    for role, binding in metadata.get("bindings", {}).items():
+        control = controls.get(role)
+        if control is None:
+            raise MmdControlRigBuildError(f"missing owned control for {role}")
+        for target in _expanded_authored_plugs(binding, cmds_module=cmds):
+            plugs.add(target)
+            plugs.add(f"{control}.{_control_channel_for_target(target)}")
+        plugs.add(f"{control}.offsetParentMatrix")
+        if binding.get("inputKind") == INPUT_IK_CONTROLLER:
+            for solver in resolve_mmd_control_rig_binding_ik_solvers(cmds, binding):
+                plugs.add(f"{solver}.enabled")
+            # ikEnabled is added lazily for legacy control nodes.  It is
+            # included when already present; enter handles a newly-added plug
+            # explicitly so its removal is part of rollback.
+            if cmds.attributeQuery("ikEnabled", node=control, exists=True):
+                plugs.add(f"{control}.ikEnabled")
+    for plug in plugs:
+        if not cmds.objExists(plug):
+            raise MmdControlRigBuildError(f"enter EDIT plug is missing: {plug}")
+    return tuple(sorted(plugs))
+
+
 @contextmanager
 def _edit_exit_transaction(cmds, root, label, action, rows, offset_rows):
     """Snapshot EDIT plugs and roll back a failed state transition."""
@@ -277,18 +359,17 @@ def _edit_exit_transaction(cmds, root, label, action, rows, offset_rows):
     }
     transaction_plugs.update(str(row["control"]) for row in offset_rows)
     plug_states = _capture_plug_states(cmds, transaction_plugs)
-    metadata_before = cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}")
+    metadata_before = _raw_metadata(cmds, root)
     try:
+        transitioning = json.loads(metadata_before)
+        transitioning["owner"] = CONTROL_RIG_CONVERTING
+        _write_metadata(cmds, root, transitioning)
         with _undo_chunk(cmds, label):
             yield
     except Exception as exc:
         try:
             _restore_plug_states(cmds, plug_states)
-            cmds.setAttr(
-                f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}",
-                metadata_before,
-                type="string",
-            )
+            _restore_raw_metadata(cmds, root, metadata_before)
         except Exception as rollback_exc:
             raise MmdControlRigBuildError(
                 f"control-rig {action} failed and rollback was incomplete: {rollback_exc}"
@@ -607,6 +688,25 @@ def _write_metadata(cmds, root: str, metadata: Mapping[str, Any]) -> None:
         json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
         type="string",
     )
+
+
+def _raw_metadata(cmds, root: str) -> Optional[str]:
+    """Read the persisted metadata without legacy owner normalization."""
+    if not cmds.attributeQuery(ATTR_MMD_CONTROL_RIG_JSON, node=root, exists=True):
+        return None
+    return cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}")
+
+
+def _restore_raw_metadata(cmds, root: str, raw: Optional[str]) -> None:
+    """Restore the exact metadata payload that preceded a transition."""
+    plug = f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}"
+    if raw is None:
+        if cmds.attributeQuery(ATTR_MMD_CONTROL_RIG_JSON, node=root, exists=True):
+            cmds.deleteAttr(plug)
+        return
+    if not cmds.attributeQuery(ATTR_MMD_CONTROL_RIG_JSON, node=root, exists=True):
+        cmds.addAttr(root, longName=ATTR_MMD_CONTROL_RIG_JSON, dataType="string")
+    cmds.setAttr(plug, raw, type="string")
 
 
 @contextmanager
