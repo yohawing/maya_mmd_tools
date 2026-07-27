@@ -37,7 +37,16 @@ from mmd_tools.core.mmd_control_rig_builder import (
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
 
-def _bone(index, name, *, pmx_flags=0, incoming=(), ik_solvers=(), solver_input_plugs=()):
+def _bone(
+    index,
+    name,
+    *,
+    pmx_flags=0,
+    incoming=(),
+    ik_solvers=(),
+    solver_input_plugs=(),
+    bone_morph_base_plugs=(),
+):
     return MmdControlRigBoneFact(
         joint=f"|model|bone_{index}",
         mmd_name=name,
@@ -46,6 +55,7 @@ def _bone(index, name, *, pmx_flags=0, incoming=(), ik_solvers=(), solver_input_
         incoming=tuple(incoming),
         ik_solvers=tuple(ik_solvers),
         solver_input_plugs=tuple(solver_input_plugs),
+        bone_morph_base_plugs=tuple(bone_morph_base_plugs),
     )
 
 
@@ -580,6 +590,97 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
             ("upper_mmdAppend.baseRotate", "upper_mmdAppend.baseTranslate"),
         )
         self.assertFalse(binding.blocked)
+
+    def test_bone_morph_accumulator_routes_direct_joint_to_base_inputs(self):
+        target = _bone(
+            3,
+            "左足IK",
+            ik_solvers=("left_leg_mmdCcdIk",),
+            incoming=(
+                _connection(
+                    "left_foot_boneMorphAccum.outputTranslate",
+                    "|model|bone_3.translate",
+                    "mmdBoneMorphAccum",
+                ),
+                _connection(
+                    "left_foot_boneMorphAccum.outputRotate",
+                    "|model|bone_3.rotate",
+                    "mmdBoneMorphAccum",
+                ),
+            ),
+            bone_morph_base_plugs=(
+                "left_foot_boneMorphAccum.baseTranslate",
+                "left_foot_boneMorphAccum.baseRotate",
+            ),
+        )
+
+        spec = classify_mmd_control_rig("|model", [target])
+        binding = spec.bones[0]
+        role = spec.roles_by_name["left_foot_ik"]
+
+        self.assertEqual(binding.input_kind, INPUT_IK_CONTROLLER)
+        self.assertEqual(role.binding.input_kind, INPUT_IK_CONTROLLER)
+        self.assertEqual(
+            role.binding.authored_plugs,
+            (
+                "left_foot_boneMorphAccum.baseRotate",
+                "left_foot_boneMorphAccum.baseTranslate",
+            ),
+        )
+        self.assertFalse(role.blockers)
+
+    def test_bone_morph_accumulator_routes_thigh_fk_to_base_before_solver(self):
+        thigh = _bone(
+            0,
+            "左足",
+            incoming=(
+                _connection(
+                    "left_leg_mmdCcdIk.outputRotate[0]",
+                    "|model|bone_0.rotate",
+                    "mmdCcdIk",
+                ),
+            ),
+            solver_input_plugs=tuple(
+                f"left_leg_mmdCcdIk.inputRotate[7].inputRotateElement{axis}"
+                for axis in "XYZ"
+            ),
+            bone_morph_base_plugs=("left_leg_boneMorphAccum.baseRotate",),
+        )
+
+        spec = classify_mmd_control_rig("|model", [thigh])
+        role = spec.roles_by_name["left_leg"]
+        self.assertEqual(role.status, STATUS_READY)
+        self.assertEqual(role.binding.input_kind, INPUT_IK_LINK_INPUT)
+        self.assertEqual(
+            role.binding.authored_plugs,
+            ("left_leg_boneMorphAccum.baseRotate",),
+        )
+
+    def test_bone_morph_route_with_unknown_composer_stays_blocked(self):
+        target = _bone(
+            3,
+            "左足IK",
+            ik_solvers=("left_leg_mmdCcdIk",),
+            incoming=(
+                _connection(
+                    "left_foot_boneMorphAccum.outputTranslate",
+                    "|model|bone_3.translate",
+                    "mmdBoneMorphAccum",
+                ),
+                _connection(
+                    "unknown_composer.outputTranslate",
+                    "|model|bone_3.translate",
+                    "mysteryComposer",
+                ),
+            ),
+            bone_morph_base_plugs=("left_foot_boneMorphAccum.baseTranslate",),
+        )
+
+        spec = classify_mmd_control_rig("|model", [target])
+        role = spec.roles_by_name["left_foot_ik"]
+        self.assertEqual(role.status, STATUS_BLOCKED)
+        self.assertTrue(role.blockers)
+        self.assertEqual(role.binding.input_kind, INPUT_UNSUPPORTED)
 
     def test_solver_outputs_physics_and_external_writers_fail_closed(self):
         solver_link = _bone(

@@ -37,6 +37,7 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
     STATUS_READY,
     analyze_mmd_control_rig,
 )
+from mmd_tools.converters.bone_morph_runtime import build_bone_morph_graph
 from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
 from mmd_tools.converters.vmd_ik_enabled_animation import collect_ik_nodes_by_bone_name
 from mmd_tools.core.vmd_data import VmdData
@@ -171,6 +172,24 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         # inspect the same graph through the analyzer and builder APIs.
         return root, center, left_ik, right_ik, append_joint, append_node
 
+    def _create_bone_morph_metadata(self, root, name, morph_index, offsets):
+        """Create the small network metadata consumed by the real runtime builder."""
+        node = cmds.createNode("network", name=name)
+        cmds.addAttr(node, longName="weight", attributeType="double", keyable=True)
+        cmds.addAttr(node, longName="mmd_morph_type", dataType="string")
+        cmds.addAttr(node, longName="mmd_morph_index", attributeType="long")
+        cmds.addAttr(node, longName="mmd_bone_morph_offsets_json", dataType="string")
+        cmds.addAttr(node, longName="mmd_model_root", attributeType="message")
+        cmds.setAttr(f"{node}.mmd_morph_type", "bone", type="string")
+        cmds.setAttr(f"{node}.mmd_morph_index", morph_index)
+        cmds.setAttr(
+            f"{node}.mmd_bone_morph_offsets_json",
+            json.dumps(offsets, separators=(",", ":")),
+            type="string",
+        )
+        cmds.connectAttr(f"{root}.message", f"{node}.mmd_model_root")
+        return node
+
     def test_mmt_rig_fixture_classifies_mvp_without_mutating_scene(self):
         root = self._import_fixture()
         nodes_before = set(cmds.ls(long=True) or [])
@@ -280,6 +299,71 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
                 f"{append_node}.baseRotateX",
             )
         )
+
+    def test_bone_morph_ik_controller_authors_accumulator_base_without_cycle(self):
+        """The real accumulator keeps morph and IK control as one writer route."""
+        try:
+            probe = cmds.createNode("mmdBoneMorphAccum", name="analyzer_accum_probe")
+        except RuntimeError as exc:
+            self.skipTest(f"mmdBoneMorphAccum node is unavailable: {exc}")
+        else:
+            cmds.delete(probe)
+        root, _center, left_ik, _right_ik, _append_joint, _append_node = (
+            self._create_minimal_control_rig_graph()
+        )
+        morph = self._create_bone_morph_metadata(
+            root,
+            "left_ik_authoring_boneMorph",
+            0,
+            [
+                {
+                    "bone_index": 1,
+                    "translation": [2.0, 0.0, 0.0],
+                    "rotation": [0.0, 0.0, 0.0, 1.0],
+                }
+            ],
+        )
+        self.assertTrue(build_bone_morph_graph(root)["success"])
+
+        spec = analyze_mmd_control_rig(root)
+        binding = spec.roles_by_name["left_foot_ik"].binding
+        self.assertEqual(binding.input_kind, INPUT_IK_CONTROLLER)
+        accum = (cmds.ls(type="mmdBoneMorphAccum") or [None])[0]
+        self.assertTrue(accum)
+        self.assertEqual(
+            binding.authored_plugs,
+            (f"{accum}.baseRotate", f"{accum}.baseTranslate"),
+        )
+
+        rig = build_mmd_control_rig(root, spec=spec)
+        enter_mmd_control_rig_edit(root)
+        control = rig.controls["left_foot_ik"]
+        target = next(plug for plug in binding.authored_plugs if plug.endswith(".baseTranslate"))
+        target_x = f"{target}X"
+        control_source = cmds.listConnections(
+            target_x, source=True, destination=False, plugs=True
+        ) or []
+        self.assertEqual(len(control_source), 1)
+        self.assertEqual(
+            cmds.ls(control_source[0].split(".", 1)[0], long=True),
+            cmds.ls(control, long=True),
+        )
+        self.assertTrue(control_source[0].endswith(".translateX"))
+        self.assertEqual(
+            cmds.listConnections(f"{left_ik}.translate", source=True, destination=False, plugs=True),
+            [target.rsplit(".", 1)[0] + ".outputTranslate"],
+        )
+        cycles_before = sorted(cmds.cycleCheck(all=True, list=True) or [])
+        cmds.setAttr(f"{control}.translateX", 1.5)
+        cmds.setAttr(f"{morph}.weight", 0.0)
+        self.assertAlmostEqual(cmds.getAttr(f"{left_ik}.translateX"), 1.5, places=5)
+        cmds.setAttr(f"{morph}.weight", 1.0)
+        self.assertAlmostEqual(cmds.getAttr(f"{left_ik}.translateX"), 3.5, places=5)
+        self.assertEqual(sorted(cmds.cycleCheck(all=True, list=True) or []), cycles_before)
+
+        baked = bake_mmd_control_rig(root)
+        self.assertEqual(baked["state"], "BAKED")
+        self.assertFalse(cmds.listConnections(target_x, source=True, destination=False, plugs=True) or [])
 
     def test_anim_picker_selects_owned_center_control(self):
         """Keep the Picker-to-controller selection path live in Maya."""
