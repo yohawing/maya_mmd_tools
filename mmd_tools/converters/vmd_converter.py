@@ -945,9 +945,30 @@ class VmdConverter:
 
         requested_vmd_names = set()
         if vmd_data is not None and getattr(vmd_data, "bone_frames", None):
+            def _is_identity_frame(frame) -> bool:
+                """Return whether a VMD bone frame carries a no-op pose."""
+                try:
+                    position = getattr(frame, "position", None)
+                    rotation = getattr(frame, "rotation", None)
+                    if isinstance(frame, dict):
+                        position = frame.get("position", position)
+                        rotation = frame.get("rotation", rotation)
+                    if position is None or rotation is None or len(position) < 3 or len(rotation) < 4:
+                        return False
+                    epsilon = 1.0e-8
+                    return (
+                        all(abs(float(value)) <= epsilon for value in position[:3])
+                        and all(abs(float(value)) <= epsilon for value in rotation[:3])
+                        and abs(float(rotation[3]) - 1.0) <= epsilon
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    # Malformed payloads are not silently treated as no-op.
+                    return False
+
             requested_vmd_names = {
                 str(frame.bone_name if hasattr(frame, "bone_name") else frame.get("bone_name", ""))
                 for frame in vmd_data.bone_frames
+                if not _is_identity_frame(frame)
             }
             requested_vmd_names.discard("")
             # This read-only mapping preflight must happen before creating or

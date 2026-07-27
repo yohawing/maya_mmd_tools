@@ -163,7 +163,9 @@ class TestControlRigImportPreflight(unittest.TestCase):
                 self.converter._prepare_mmd_control_rig_import(
                     "|model",
                     profile,
-                    vmd_data=_fake_vmd_data([{"bone_name": "未対応ボーン"}]),
+                    vmd_data=_fake_vmd_data(
+                        [{"bone_name": "未対応ボーン", "position": [1.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]}]
+                    ),
                 )
         self.assertEqual(raised.exception.reason_code, "control_rig_unmapped_vmd_roles")
         build.assert_not_called()
@@ -172,6 +174,27 @@ class TestControlRigImportPreflight(unittest.TestCase):
             profile["mmd_control_rig"]["diagnostics"][0]["code"],
             "control_rig_unmapped_vmd_roles",
         )
+
+    def test_identity_only_unmapped_vmd_role_is_ignored_as_noop(self):
+        spec = MagicMock(can_build_mvp=True)
+        identity = {"bone_name": "未対応ボーン", "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]}
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata", return_value=None)
+            )
+            stack.enter_context(
+                patch("mmd_tools.core.mmd_control_rig_analyzer.analyze_mmd_control_rig", return_value=spec)
+            )
+            build = stack.enter_context(patch("mmd_tools.core.mmd_control_rig_builder.build_mmd_control_rig"))
+            enter = stack.enter_context(patch("mmd_tools.core.mmd_control_rig_motion.enter_mmd_control_rig_edit"))
+            stack.enter_context(patch.object(self.converter, "_build_name_mappings"))
+            self.converter.bone_name_mapping = {}
+            self.converter._prepare_mmd_control_rig_import(
+                "|model",
+                vmd_data=_fake_vmd_data([identity]),
+            )
+        build.assert_called_once()
+        enter.assert_called_once_with("|model")
 
 
 class TestControlRigMotionClear(MayaTestBase):
