@@ -387,6 +387,58 @@ def _control_worlds(controls: Mapping[str, str], cmds) -> dict[str, list[float]]
     }
 
 
+def _dag_descendant_roles(
+    controls: Mapping[str, str], ancestor_role: str, cmds
+) -> set[str]:
+    """Return controls that are DAG descendants of ``ancestor_role``.
+
+    Control zero groups are intentionally nested below their nearest parent
+    control.  Moving a parent therefore changes each child control's world
+    matrix even though no child channel was authored.  Resolve long DAG paths
+    before comparing them so namespace and nested-group changes do not turn
+    expected inherited motion into an unrelated-control failure.
+    """
+
+    ancestor = controls.get(ancestor_role)
+    if not ancestor:
+        return set()
+    try:
+        ancestor_paths = cmds.ls(str(ancestor), long=True) or [str(ancestor)]
+    except RuntimeError:
+        ancestor_paths = [str(ancestor)]
+
+    descendants: set[str] = set()
+    for ancestor_path in ancestor_paths:
+        try:
+            descendants.update(
+                str(node)
+                for node in (
+                    cmds.listRelatives(
+                        str(ancestor_path),
+                        allDescendents=True,
+                        fullPath=True,
+                    )
+                    or []
+                )
+            )
+        except RuntimeError:
+            continue
+    if not descendants:
+        return set()
+
+    result: set[str] = set()
+    for role, node in controls.items():
+        if str(role) == str(ancestor_role):
+            continue
+        try:
+            node_paths = cmds.ls(str(node), long=True) or [str(node)]
+        except RuntimeError:
+            node_paths = [str(node)]
+        if descendants.intersection(str(path) for path in node_paths):
+            result.add(str(role))
+    return result
+
+
 def _find_rig_root(cmds) -> str:
     from mmd_tools.core.constants import ATTR_MMD_CONTROL_RIG_JSON
 
@@ -627,10 +679,16 @@ def run_e2e_check(
             role: _distance(before_controls.get(role, []), after_controls.get(role, []))
             for role in sorted(set(before_controls) | set(after_controls))
         }
+        descendant_roles = _dag_descendant_roles(rig.controls, "left_foot_ik", cmds)
+        descendant_control_deltas = {
+            role: delta
+            for role, delta in control_deltas.items()
+            if role in descendant_roles
+        }
         other_control_deltas = {
             role: delta
             for role, delta in control_deltas.items()
-            if role != "left_foot_ik"
+            if role != "left_foot_ik" and role not in descendant_roles
         }
         report["ikMove"] = {
             "frame": frame,
@@ -643,6 +701,8 @@ def run_e2e_check(
             "outputRotateDelta": output_delta,
             "effectorWorldMatrixDelta": effector_delta,
             "controlWorldDeltas": control_deltas,
+            "descendantControlRoles": sorted(descendant_roles),
+            "descendantControlWorldDeltas": descendant_control_deltas,
             "otherControlWorldDeltas": other_control_deltas,
             "pass": bool(
                 goal_delta > MOVE_EPSILON
@@ -654,6 +714,16 @@ def run_e2e_check(
             "IK move: goalDelta=%.8f outputDelta=%.8f effectorDelta=%.8f"
             % (goal_delta, output_delta, effector_delta)
         )
+        if descendant_control_deltas:
+            _log(
+                "IK move: inherited descendant control deltas=%s"
+                % json.dumps(descendant_control_deltas, sort_keys=True)
+            )
+        if other_control_deltas:
+            _log(
+                "IK move: unrelated control deltas=%s"
+                % json.dumps(other_control_deltas, sort_keys=True)
+            )
         if not report["ikMove"]["pass"]:
             raise RuntimeError("left foot IK move did not produce an owned solver response")
 
