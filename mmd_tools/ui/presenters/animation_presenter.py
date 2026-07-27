@@ -225,6 +225,18 @@ class AnimationPresenter:
         except Exception:
             logger.debug("Animator scene refresh failed", exc_info=True)
             self._clear_all()
+            return
+
+        # A newly opened scene may contain a model with the same DAG path as
+        # the previous scene.  ApplicationState intentionally suppresses its
+        # change signals when the string-valued model list is unchanged, so a
+        # scene callback must explicitly reload UUID-backed rig metadata and
+        # picker state instead of leaving the previous scene cached in the UI.
+        model = self.app_state.current_model_root
+        if model:
+            self._reload_for_model(model)
+        else:
+            self._clear_all()
 
     def on_clear_clicked(self):
         self._set_picker_selection_from_nodes([])
