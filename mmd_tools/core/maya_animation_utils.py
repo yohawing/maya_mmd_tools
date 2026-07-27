@@ -37,7 +37,14 @@ def _find_plug(fn_depend, attr):
             child = None
             for child_index in range(plug.numChildren()):
                 candidate = plug.child(child_index)
-                if candidate.partialName(useLongNames=True) == attr_name:
+                candidate_name = candidate.partialName(useLongNames=True)
+                # Array-element child plugs include their full parent path in
+                # ``partialName`` (for example
+                # ``inputRotate[6].inputRotateElementX``).  Compare the
+                # terminal attribute segment so nested compound-array paths
+                # resolve consistently across Maya 2024/2026.
+                candidate_name = candidate_name.rsplit(".", 1)[-1].split("[", 1)[0]
+                if candidate_name == attr_name:
                     child = candidate
                     break
             if child is None:
@@ -148,7 +155,12 @@ def create_animation_curves(
         else:
             curve = oma.MFnAnimCurve()
             plug = _find_plug(fn_depend, attr)
-            curve.create(plug)
+            # Passing only an MPlug is ambiguous in Maya 2024's Python API:
+            # the overload dispatcher may select ``create(animCurveType)``
+            # and attempt to marshal the plug as an integer.  Supplying the
+            # explicit ``Unknown`` type selects the documented MPlug
+            # overload while retaining Maya's destination-driven inference.
+            curve.create(plug, oma.MFnAnimCurve.kAnimCurveUnknown)
             curves[attr] = curve
 
     return curves

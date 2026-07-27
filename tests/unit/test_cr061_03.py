@@ -15,12 +15,13 @@ from mmd_tools.core.mmd_control_rig_builder import (
 )
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters.vmd_context import VmdImportStateContext
+from mmd_tools.converters.vmd_legacy_bone_routes import build_legacy_bone_key_routes
 from mmd_tools.converters.vmd_import_state import clear_existing_motion
 from mmd_tools.services.settings_service import SettingsService
 from tests.common.maya_test_base import MayaTestBase
 
 
-def _fake_vmd_data(bone_frames=None):
+def _fake_vmd_data(bone_frames=None, ik_show_hide_frames=None):
     return type(
         "FakeVmdData",
         (),
@@ -29,6 +30,7 @@ def _fake_vmd_data(bone_frames=None):
             "morph_frames": [],
             "camera_frames": [],
             "light_frames": [],
+            "ik_show_hide_frames": list(ik_show_hide_frames or []),
         },
     )()
 
@@ -104,6 +106,64 @@ class TestControlRigImportPreflight(unittest.TestCase):
             )
         anim_layer.assert_not_called()
 
+    def test_control_rig_failure_reraises_and_rolls_back_transaction(self):
+        profile = {}
+        transaction = {
+            "root": "|model",
+            "created": False,
+            "entered_here": False,
+            "prior_animation_snapshot": [],
+        }
+        frame = {
+            "bone_name": "センター",
+            "frame_number": 0,
+            "position": [1.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0, 1.0],
+        }
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(self.converter, "_enforce_humanik_import_gate"))
+            stack.enter_context(patch.object(self.converter, "_prepare_mmd_control_rig_import", return_value=transaction))
+            stack.enter_context(patch.object(self.converter, "_suspend_import_scene_updates", return_value=(True, False)))
+            stack.enter_context(patch.object(self.converter, "_restore_import_scene_updates"))
+            stack.enter_context(patch.object(self.converter, "_capture_anim_layer_selection", return_value={}))
+            stack.enter_context(patch.object(self.converter, "_restore_anim_layer_selection"))
+            stack.enter_context(patch.object(self.converter, "_build_name_mappings"))
+            stack.enter_context(patch.object(self.converter, "_record_bind_poses"))
+            stack.enter_context(patch.object(self.converter, "_setup_timeline"))
+            stack.enter_context(patch.object(self.converter, "_resolve_runtime_bake_sources", return_value=(None, None, None)))
+            stack.enter_context(patch.object(self.converter, "_has_live_mmd_rig_for_runtime_target", return_value=False))
+            stack.enter_context(patch.object(self.converter, "_restore_import_timeline_state"))
+            stack.enter_context(patch.object(self.converter, "_apply_mmd_control_rig_ik_enabled_animation"))
+            rollback = stack.enter_context(patch.object(self.converter, "_rollback_mmd_control_rig_import", return_value=None))
+            stack.enter_context(patch.object(self.converter, "_convert_bone_animation", side_effect=RuntimeError("forced keying failure")))
+            with self.assertRaises(MMDImportException) as raised:
+                self.converter.convert(
+                    _fake_vmd_data([frame]),
+                    target_model="|model",
+                    create_mmd_control_rig=True,
+                    clear_existing_motion=False,
+                    profile=profile,
+                )
+        self.assertEqual(raised.exception.reason_code, "control_rig_bone_keying_failed")
+        rollback.assert_called_once_with(transaction)
+        self.assertIn("forced keying failure", profile["mmd_control_rig"]["diagnostics"][-1]["message"])
+
+    def test_ik_visibility_keys_owned_controller(self):
+        frame = {"frame_number": 7, "ik_states": [("右足IK", False)]}
+        with patch.object(
+            self.converter,
+            "_resolve_mmd_control_rig_ik_controls",
+            return_value={"右足IK": "|model|right_leg_CTRL"},
+        ), patch("mmd_tools.converters.vmd_converter.cmds.setAttr") as set_attr, patch(
+            "mmd_tools.converters.vmd_converter.cmds.setKeyframe"
+        ) as set_key:
+            self.converter._apply_mmd_control_rig_ik_enabled_animation(
+                _fake_vmd_data(ik_show_hide_frames=[frame]), target_model="|model"
+            )
+        set_attr.assert_called_once_with("|model|right_leg_CTRL.ikEnabled", False)
+        set_key.assert_called_once()
+        self.assertEqual(set_key.call_args.kwargs["attribute"], "ikEnabled")
+
     def test_existing_non_base_anim_layer_fails_closed_before_rig_build(self):
         with ExitStack() as stack:
             stack.enter_context(
@@ -142,6 +202,42 @@ class TestControlRigImportPreflight(unittest.TestCase):
             self.converter._prepare_mmd_control_rig_import("|model", vmd_data=_fake_vmd_data())
         build.assert_not_called()
         enter.assert_called_once_with("|model")
+
+    def test_control_owned_rotation_route_disables_solver_input_route(self):
+        converter = MagicMock()
+        converter.bone_name_mapping = {"右足": "|model|right_leg"}
+        converter._collect_append_info.return_value = {}
+        converter._collect_ik_link_joints.return_value = {
+            "|model|right_leg": {"solver": "|model|right_leg_ik_mmdCcdIk", "slot": 6}
+        }
+        with patch(
+            "mmd_tools.converters.vmd_legacy_bone_routes.control_rig_edit_routes_for_joints",
+            return_value={
+                "|model|right_leg": {
+                    "rotateX": ("|model|right_leg_CTRL", "rotateX"),
+                    "rotateY": ("|model|right_leg_CTRL", "rotateY"),
+                    "rotateZ": ("|model|right_leg_CTRL", "rotateZ"),
+                }
+            },
+        ):
+            routes = build_legacy_bone_key_routes(converter)
+        route = routes["|model|right_leg"]
+        self.assertFalse(route["skip_rotate"])
+        self.assertIsNone(route["ik_solver_rotate"])
+        self.assertEqual(route["attr_targets"]["rotateX"], ("|model|right_leg_CTRL", "rotateX"))
+
+    def test_active_role_keeps_identity_frame_zero_but_identity_only_role_is_dropped(self):
+        frames = [
+            {"bone_name": "右足", "position": [0, 0, 0], "rotation": [0, 0, 0, 1]},
+            {"bone_name": "右足", "position": [1, 0, 0], "rotation": [0, 0, 0, 1]},
+            {"bone_name": "任意の未使用ボーン", "position": [0, 0, 0], "rotation": [0, 0, 0, 1]},
+        ]
+        retained = VmdConverter._control_rig_bone_frames_for_import(frames)
+        self.assertEqual([frame["bone_name"] for frame in retained], ["右足", "右足"])
+        self.assertEqual(
+            VmdConverter._vmd_bone_frame_channels(frames[1]),
+            {"translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"},
+        )
 
     def test_unmapped_vmd_role_fails_closed_before_keying(self):
         profile = {}

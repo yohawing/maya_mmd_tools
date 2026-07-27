@@ -79,6 +79,15 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
         # bones and solver-output links retain the established legacy route.
         route["attr_targets"].update(control_routes.get(joint, {}))
 
+        # A CONTROL_OWNED MMD Control Rig is a single-writer path: when all
+        # rotation channels are routed to an owned controller, author those
+        # channels there and do not also key the solver's ``inputRotate``
+        # array.  The latter is a connected/locked solver input in EDIT and
+        # can both fail API key creation and violate controller ownership.
+        if all(channel in route["attr_targets"] for channel in ("rotateX", "rotateY", "rotateZ")):
+            route["skip_rotate"] = False
+            route["ik_solver_rotate"] = None
+
         if route["attr_targets"] or route["skip_rotate"] or ik_info:
             routes[joint] = route
 

@@ -782,6 +782,74 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertTrue(cmds.ls(original_curve_uuid, long=True))
         self.assertTrue(cmds.isConnected(source, target))
 
+    def test_sampled_bake_creates_mmd_curve_when_controller_is_only_source(self):
+        """IK controller samples survive Bake when the MMD side had no curve."""
+        root = self._import_fixture()
+        rig = build_mmd_control_rig(root)
+        entered = enter_mmd_control_rig_edit(root)
+        control = rig.controls["left_foot_ik"]
+        target = next(
+            target
+            for row in entered["journal"]["channels"]
+            if row["control"].startswith(f"{control}.translateX")
+            for target in [row["target"]]
+        )
+        source_row = next(row for row in entered["journal"]["channels"] if row["target"] == target)
+        self.assertIsNone(source_row["source"])
+
+        cmds.setKeyframe(control, attribute="translateX", time=6, value=0.2)
+        cmds.setKeyframe(control, attribute="translateX", time=11, value=0.8)
+        baked = bake_mmd_control_rig(root)
+
+        self.assertEqual(baked["state"], "BAKED")
+        source = cmds.listConnections(target, source=True, destination=False, plugs=True) or []
+        self.assertEqual(len(source), 1)
+        source_node = source[0].split(".", 1)[0]
+        self.assertTrue(cmds.nodeType(source_node).startswith("animCurve"))
+        self.assertEqual(
+            cmds.keyframe(source_node, query=True, timeChange=True),
+            list(range(6, 12)),
+        )
+        self.assertAlmostEqual(cmds.getAttr(target, time=6), 0.2, places=6)
+        self.assertAlmostEqual(cmds.getAttr(target, time=11), 0.8, places=6)
+
+    def test_sampled_bake_failure_removes_new_mmd_curve_and_restores_edit(self):
+        """A post-sample failure must remove the transient MMD curve."""
+        root = self._import_fixture()
+        rig = build_mmd_control_rig(root)
+        entered = enter_mmd_control_rig_edit(root)
+        control = rig.controls["left_foot_ik"]
+        row = next(
+            row
+            for row in entered["journal"]["channels"]
+            if row["control"].startswith(f"{control}.translateX")
+        )
+        target = row["target"]
+        cmds.setKeyframe(control, attribute="translateX", time=6, value=0.2)
+        cmds.setKeyframe(control, attribute="translateX", time=11, value=0.8)
+        curves_before = set(cmds.ls(type="animCurve") or [])
+
+        from mmd_tools.core import mmd_control_rig_motion as motion_module
+
+        with mock.patch.object(
+            motion_module,
+            "_restore_offsets",
+            side_effect=RuntimeError("simulated sampled bake failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "simulated sampled bake failure"):
+                bake_mmd_control_rig(root)
+
+        self.assertEqual(read_mmd_control_rig_metadata(root)["state"], "EDIT")
+        restored_source = cmds.listConnections(
+            target, source=True, destination=False, plugs=True
+        ) or []
+        self.assertEqual(len(restored_source), 1)
+        self.assertEqual(
+            cmds.ls(restored_source[0].split(".", 1)[0], long=True)[0],
+            row["control"].split(".", 1)[0],
+        )
+        self.assertEqual(set(cmds.ls(type="animCurve") or []), curves_before)
+
     def test_native_animcurve_has_independent_owner_representations(self):
         """Native animCurve routes retain UUID-stable MMD and control curves."""
         root = self._import_fixture()
@@ -839,6 +907,12 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         entered_again = enter_mmd_control_rig_edit(root)
         row_again = next(row for row in entered_again["journal"]["channels"] if row["target"] == target)
         self.assertEqual(control_uuid, cmds.ls(row_again["controlSource"].split(".", 1)[0], uuid=True)[0])
+        target_rows = [
+            row
+            for row in entered_again.get("curveRepresentations", [])
+            if row.get("targetRef") == row_again.get("targetRef")
+        ]
+        self.assertEqual(len(target_rows), 1)
 
     def test_native_animcurve_bake_failure_restores_curve_payload_and_metadata(self):
         """A failure after a curve copy restores payload, graph, and owner."""

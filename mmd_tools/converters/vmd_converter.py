@@ -564,8 +564,9 @@ class VmdConverter:
         # refuse fail-closed while target_model is a HumanIK TARGET preview
         # or has an active Control Rig, with no implicit mode switching.
         self._enforce_humanik_import_gate(target_model)
+        control_rig_transaction = None
         if create_mmd_control_rig:
-            self._prepare_mmd_control_rig_import(
+            control_rig_transaction = self._prepare_mmd_control_rig_import(
                 target_model,
                 profile,
                 vmd_data=vmd_data,
@@ -579,6 +580,19 @@ class VmdConverter:
             target_namespace=target_namespace,
             bake_mode=bake_mode,
         ):
+            if control_rig_transaction is not None:
+                failure = MMDImportException(
+                    "MMD Control Rig import preflight failed",
+                    reason_code="control_rig_import_preflight_failed",
+                )
+                rollback_error = self._rollback_mmd_control_rig_import(control_rig_transaction)
+                self._record_control_rig_import_failure(profile, failure, rollback_error)
+                if rollback_error:
+                    raise MMDImportException(
+                        f"{failure}; {rollback_error}",
+                        reason_code=failure.reason_code,
+                    ) from failure
+                raise failure
             return False
         import_start_time = None
         anim_layer_selection = None
@@ -713,6 +727,23 @@ class VmdConverter:
                         self.logger.error(
                             "Runtime reduction failed; legacy fallback was not attempted"
                         )
+                        if import_context.create_mmd_control_rig:
+                            failure = MMDImportException(
+                                "MMD Control Rig runtime reduction failed",
+                                reason_code="control_rig_import_runtime_failed",
+                            )
+                            rollback_error = self._rollback_mmd_control_rig_import(control_rig_transaction)
+                            self._record_control_rig_import_failure(
+                                import_context.profile,
+                                failure,
+                                rollback_error,
+                            )
+                            if rollback_error:
+                                raise MMDImportException(
+                                    f"{failure}; {rollback_error}",
+                                    reason_code=failure.reason_code,
+                                ) from failure
+                            raise failure
                         return False
                     self.logger.warning("Runtime bake failed; falling back to legacy path")
                     self._record_profile_warning(
@@ -733,21 +764,62 @@ class VmdConverter:
 
             if not runtime_success:
                 # --- レガシーパス（従来の変換） ---
-                self._apply_ik_enabled_animation(
-                    import_context.vmd_data,
-                    import_context.target_namespace,
-                    target_model=import_context.target_model,
-                )
+                if import_context.create_mmd_control_rig:
+                    self._apply_mmd_control_rig_ik_enabled_animation(
+                        import_context.vmd_data,
+                        target_model=import_context.target_model,
+                    )
+                else:
+                    self._apply_ik_enabled_animation(
+                        import_context.vmd_data,
+                        import_context.target_namespace,
+                        target_model=import_context.target_model,
+                    )
                 _emit_progress(60)
 
                 if hasattr(import_context.vmd_data, "bone_frames") and import_context.vmd_data.bone_frames:
-                    self.logger.info(
-                        f"Starting bone animation conversion (legacy): {len(import_context.vmd_data.bone_frames)} frames"
-                    )
-                    with vmd_profile.scope("bone_animation_convert"):
-                        bone_success = self._convert_bone_animation(import_context.vmd_data.bone_frames)
-                    if not bone_success:
-                        self.logger.warning("Some errors occurred during bone animation conversion")
+                    bone_frames = list(import_context.vmd_data.bone_frames)
+                    if import_context.create_mmd_control_rig:
+                        # Identity-only optional roles are a VMD no-op and
+                        # must not create a controller curve on the ON path.
+                        # Active roles retain identity frame 0 samples for
+                        # interpolation/initial-pose continuity.
+                        bone_frames = self._control_rig_bone_frames_for_import(bone_frames)
+                    if bone_frames:
+                        self.logger.info(
+                            f"Starting bone animation conversion (legacy): {len(bone_frames)} frames"
+                        )
+                        with vmd_profile.scope("bone_animation_convert"):
+                            failed_before = set(self._failed_bones)
+                            # ``_convert_bone_animation`` records failures on
+                            # the converter and returns True when any role
+                            # succeeds.  Isolate this import's failures so a
+                            # stale role from an earlier conversion cannot
+                            # hide a new partial-write error.
+                            self._failed_bones.clear()
+                            try:
+                                bone_success = self._convert_bone_animation(bone_frames)
+                            except Exception as exc:
+                                failed_after = set(self._failed_bones)
+                                self._failed_bones.update(failed_before)
+                                if import_context.create_mmd_control_rig:
+                                    raise MMDImportException(
+                                        f"MMD Control Rig bone keying failed: {exc}",
+                                        reason_code="control_rig_bone_keying_failed",
+                                    ) from exc
+                                raise
+                        failed_after = sorted(set(self._failed_bones) - failed_before)
+                        # Keep the converter's cumulative failure record for
+                        # diagnostics while still classifying this call.
+                        self._failed_bones.update(failed_before)
+                        if import_context.create_mmd_control_rig and (not bone_success or failed_after):
+                            raise MMDImportException(
+                                "MMD Control Rig bone keying failed for VMD roles"
+                                + (f": {failed_after}" if failed_after else ""),
+                                reason_code="control_rig_bone_keying_failed",
+                            )
+                        if not bone_success:
+                            self.logger.warning("Some errors occurred during bone animation conversion")
                 _emit_progress(72)
 
                 # モーフアニメーション（レガシー）
@@ -784,9 +856,35 @@ class VmdConverter:
             self._restore_import_timeline_state(import_start_time)
             return True
 
+        except MMDImportException as exc:
+            self._restore_import_timeline_state(import_start_time)
+            rollback_error = self._rollback_mmd_control_rig_import(control_rig_transaction)
+            self.logger.error(f"Error occurred during VMD animation conversion: {exc}", exc_info=True)
+            if import_context.create_mmd_control_rig:
+                self._record_control_rig_import_failure(import_context.profile, exc, rollback_error)
+                if rollback_error:
+                    raise MMDImportException(
+                        f"{exc}; {rollback_error}",
+                        reason_code=exc.reason_code or "control_rig_import_failed",
+                    ) from exc
+                raise
+            raise
         except Exception as e:
             self._restore_import_timeline_state(import_start_time)
+            rollback_error = self._rollback_mmd_control_rig_import(control_rig_transaction)
             self.logger.error(f"Error occurred during VMD animation conversion: {str(e)}", exc_info=True)
+            if import_context.create_mmd_control_rig:
+                failure = MMDImportException(
+                    f"MMD Control Rig VMD import failed: {e}",
+                    reason_code="control_rig_import_failed",
+                )
+                self._record_control_rig_import_failure(import_context.profile, failure, rollback_error)
+                if rollback_error:
+                    raise MMDImportException(
+                        f"{failure}; {rollback_error}",
+                        reason_code=failure.reason_code,
+                    ) from e
+                raise failure from e
             return False
         finally:
             self._current_import_live_rig_target = False
@@ -852,6 +950,208 @@ class VmdConverter:
         self.logger.error(message)
         raise MMDImportException(message, reason_code=reason_code)
 
+    @staticmethod
+    def _resolve_mmd_control_rig_ik_controls(target_model: str) -> Dict[str, str]:
+        """Resolve VMD IK names to owned ``control.ikEnabled`` nodes."""
+        from ..core.constants import ATTR_MMD_BONE_NAME
+        from ..core.mmd_control_rig_analyzer import INPUT_IK_CONTROLLER
+        from ..core.mmd_control_rig_builder import (
+            MmdControlRigBuildError,
+            read_mmd_control_rig_metadata,
+            resolve_mmd_control_rig_binding_ik_solvers,
+            resolve_mmd_control_rig_binding_joint,
+        )
+
+        metadata = read_mmd_control_rig_metadata(target_model)
+        if metadata is None:
+            raise MMDImportException(
+                "MMD Control Rig metadata is missing for IK animation",
+                reason_code="control_rig_ik_route_missing",
+            )
+        controls_by_name: Dict[str, str] = {}
+        for role, binding in (metadata.get("bindings") or {}).items():
+            if binding.get("inputKind") != INPUT_IK_CONTROLLER:
+                continue
+            control_uuid = (metadata.get("controls") or {}).get(role)
+            controls = cmds.ls(control_uuid, long=True) if control_uuid else []
+            if not controls:
+                raise MMDImportException(
+                    f"MMD Control Rig IK control is missing for role {role}",
+                    reason_code="control_rig_ik_route_missing",
+                )
+            control = str(controls[0])
+            names = []
+            try:
+                for solver in resolve_mmd_control_rig_binding_ik_solvers(cmds, binding):
+                    if cmds.attributeQuery("mmd_ik_bone_name", node=solver, exists=True):
+                        name = cmds.getAttr(f"{solver}.mmd_ik_bone_name") or ""
+                        if name:
+                            names.append(str(name))
+                if not names:
+                    joint = resolve_mmd_control_rig_binding_joint(cmds, binding)
+                    if cmds.attributeQuery(ATTR_MMD_BONE_NAME, node=joint, exists=True):
+                        name = cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_NAME}") or ""
+                        if name:
+                            names.append(str(name))
+            except (MmdControlRigBuildError, RuntimeError) as exc:
+                raise MMDImportException(
+                    f"MMD Control Rig IK route is unresolved for role {role}: {exc}",
+                    reason_code="control_rig_ik_route_missing",
+                ) from exc
+            for name in names:
+                prior = controls_by_name.get(name)
+                if prior and prior != control:
+                    raise MMDImportException(
+                        f"MMD Control Rig IK role is ambiguous: {name}",
+                        reason_code="control_rig_ik_route_ambiguous",
+                    )
+                controls_by_name[name] = control
+        return controls_by_name
+
+    @staticmethod
+    def _vmd_bone_frame_is_identity(frame) -> bool:
+        """Return whether a VMD bone sample carries no position/rotation change."""
+        try:
+            position = getattr(frame, "position", None)
+            rotation = getattr(frame, "rotation", None)
+            if isinstance(frame, dict):
+                position = frame.get("position", position)
+                rotation = frame.get("rotation", rotation)
+            if position is None or rotation is None or len(position) < 3 or len(rotation) < 4:
+                return False
+            epsilon = 1.0e-8
+            return (
+                all(abs(float(value)) <= epsilon for value in position[:3])
+                and all(abs(float(value)) <= epsilon for value in rotation[:3])
+                and abs(float(rotation[3]) - 1.0) <= epsilon
+            )
+        except (TypeError, ValueError, OverflowError):
+            return False
+
+    @classmethod
+    def _vmd_bone_frame_channels(cls, frame) -> set:
+        """Return channels that legacy VMD keying writes for a sample.
+
+        The legacy writer emits all six TRS channels for every active role,
+        including zero-valued components.  Preflight therefore requires the
+        complete route rather than inferring sparse channels from sample
+        magnitudes.
+        """
+        if cls._vmd_bone_frame_is_identity(frame):
+            return set()
+        return {
+            "translateX",
+            "translateY",
+            "translateZ",
+            "rotateX",
+            "rotateY",
+            "rotateZ",
+        }
+
+    @classmethod
+    def _control_rig_bone_frames_for_import(cls, frames) -> list:
+        """Drop identity-only roles while preserving active role frame zero."""
+        frames = list(frames or [])
+        active_names = set()
+        for frame in frames:
+            name = str(
+                frame.bone_name if hasattr(frame, "bone_name") else frame.get("bone_name", "")
+            )
+            if name and not cls._vmd_bone_frame_is_identity(frame):
+                active_names.add(name)
+        return [
+            frame
+            for frame in frames
+            if str(frame.bone_name if hasattr(frame, "bone_name") else frame.get("bone_name", ""))
+            in active_names
+        ]
+
+    def _validate_mmd_control_rig_ik_routes(self, target_model, vmd_data, fail) -> None:
+        """Fail closed when VMD IK state names have no owned control route."""
+        if vmd_data is None:
+            return
+        if not (getattr(vmd_data, "ik_show_hide_frames", None) or []):
+            # Bone channels do not carry IK visibility semantics.  Only an
+            # explicit VMD IK show/hide stream requires a controller route;
+            # identity-only or ordinary bone-only motions must remain valid.
+            return
+        controls_by_name = self._resolve_mmd_control_rig_ik_controls(target_model)
+        property_names = set()
+        for frame in getattr(vmd_data, "ik_show_hide_frames", []) or []:
+            states = getattr(frame, "ik_states", None)
+            if isinstance(frame, dict):
+                states = frame.get("ik_states", states)
+            for state in states or []:
+                if isinstance(state, dict):
+                    name = state.get("ik_name", state.get("name", ""))
+                else:
+                    try:
+                        name = state[0]
+                    except (TypeError, IndexError):
+                        name = ""
+                if name:
+                    property_names.add(str(name))
+        missing = sorted(name for name in property_names if name not in controls_by_name)
+        if missing:
+            fail(
+                "control_rig_ik_route_missing",
+                "MMD Control Rig has no authored route for VMD IK state roles",
+                missing,
+            )
+
+    def _apply_mmd_control_rig_ik_enabled_animation(self, vmd_data, *, target_model: str) -> None:
+        """Key VMD IK visibility on owned controls, never solver inputs."""
+        property_frames = list(getattr(vmd_data, "ik_show_hide_frames", []) or [])
+        bone_frames = getattr(vmd_data, "bone_frames", None) or []
+        if not property_frames and not bone_frames:
+            return
+        controls_by_name = self._resolve_mmd_control_rig_ik_controls(target_model)
+        property_frames = sorted(
+            property_frames,
+            key=lambda frame: int(
+                getattr(frame, "frame_number", frame.get("frame_number", 0) if isinstance(frame, dict) else 0)
+            ),
+        )
+        keyed = 0
+        if property_frames:
+            for frame in property_frames:
+                frame_number = int(
+                    getattr(frame, "frame_number", frame.get("frame_number", 0) if isinstance(frame, dict) else 0)
+                )
+                states = getattr(frame, "ik_states", None)
+                if isinstance(frame, dict):
+                    states = frame.get("ik_states", states)
+                for state in states or []:
+                    if isinstance(state, dict):
+                        name = state.get("ik_name", state.get("name", ""))
+                        enabled = state.get("show_flag", state.get("enabled", False))
+                    else:
+                        try:
+                            name, enabled = state[0], state[1]
+                        except (TypeError, IndexError):
+                            continue
+                    control = controls_by_name.get(str(name))
+                    if control is None:
+                        continue
+                    value = bool(enabled)
+                    cmds.setAttr(f"{control}.ikEnabled", value)
+                    cmds.setKeyframe(
+                        control,
+                        attribute="ikEnabled",
+                        time=self.vmd_frame_to_maya_time(frame_number),
+                        value=int(value),
+                    )
+                    keyed += 1
+        elif getattr(vmd_data, "bone_frames", None):
+            min_frame, _max_frame = self._get_animation_frame_range(vmd_data)
+            time = self.vmd_frame_to_maya_time(min_frame)
+            for control in sorted(set(controls_by_name.values())):
+                cmds.setAttr(f"{control}.ikEnabled", True)
+                cmds.setKeyframe(control, attribute="ikEnabled", time=time, value=1)
+                keyed += 1
+        if keyed:
+            self.logger.info("Applied %d VMD IK state keys to MMD Control Rig controls", keyed)
+
     def _prepare_mmd_control_rig_import(
         self,
         target_model: str,
@@ -859,7 +1159,7 @@ class VmdConverter:
         *,
         vmd_data=None,
         target_namespace=None,
-    ) -> None:
+    ) -> Dict[str, object]:
         """Create/reuse an MMD Control Rig and enter its CONTROL_OWNED state.
 
         This is deliberately a preflight boundary: analyzer and metadata
@@ -868,6 +1168,7 @@ class VmdConverter:
         is removed if entering EDIT fails.
         """
         from ..core.mmd_control_rig_analyzer import analyze_mmd_control_rig
+        from ..core.constants import ATTR_MMD_CONTROL_RIG_JSON
         from ..core.mmd_control_rig_builder import (
             CONTROL_RIG_ATTACHED,
             CONTROL_RIG_BAKED,
@@ -940,37 +1241,41 @@ class VmdConverter:
 
         preflight_animation_layers()
         metadata = read_mmd_control_rig_metadata(target_model)
+        root_matches = cmds.ls(target_model, long=True) or [target_model]
+        control_rig_root = str(root_matches[0])
+        prior_raw_metadata = None
+        try:
+            metadata_plug = f"{control_rig_root}.{ATTR_MMD_CONTROL_RIG_JSON}"
+            if cmds.objExists(metadata_plug):
+                prior_raw_metadata = cmds.getAttr(metadata_plug)
+        except Exception:
+            prior_raw_metadata = None
+        prior_state = metadata.get("state") if metadata else None
+        prior_owner = metadata.get("owner") if metadata else None
+        prior_animation_snapshot = (
+            self._capture_mmd_control_rig_animation_snapshot(metadata)
+            if metadata and metadata.get("state") == CONTROL_RIG_EDIT
+            else []
+        )
         created = False
         entered_here = False
 
         requested_vmd_names = set()
+        requested_vmd_channels = {}
         if vmd_data is not None and getattr(vmd_data, "bone_frames", None):
-            def _is_identity_frame(frame) -> bool:
-                """Return whether a VMD bone frame carries a no-op pose."""
-                try:
-                    position = getattr(frame, "position", None)
-                    rotation = getattr(frame, "rotation", None)
-                    if isinstance(frame, dict):
-                        position = frame.get("position", position)
-                        rotation = frame.get("rotation", rotation)
-                    if position is None or rotation is None or len(position) < 3 or len(rotation) < 4:
-                        return False
-                    epsilon = 1.0e-8
-                    return (
-                        all(abs(float(value)) <= epsilon for value in position[:3])
-                        and all(abs(float(value)) <= epsilon for value in rotation[:3])
-                        and abs(float(rotation[3]) - 1.0) <= epsilon
-                    )
-                except (TypeError, ValueError, OverflowError):
-                    # Malformed payloads are not silently treated as no-op.
-                    return False
-
             requested_vmd_names = {
                 str(frame.bone_name if hasattr(frame, "bone_name") else frame.get("bone_name", ""))
                 for frame in vmd_data.bone_frames
-                if not _is_identity_frame(frame)
+                if not self._vmd_bone_frame_is_identity(frame)
             }
             requested_vmd_names.discard("")
+            for frame in vmd_data.bone_frames:
+                name = str(
+                    frame.bone_name if hasattr(frame, "bone_name") else frame.get("bone_name", "")
+                )
+                channels = self._vmd_bone_frame_channels(frame)
+                if name and channels:
+                    requested_vmd_channels.setdefault(name, set()).update(channels)
             # This read-only mapping preflight must happen before creating or
             # entering a control rig, so an unknown VMD role cannot trigger a
             # transient scene mutation before being rejected.
@@ -990,15 +1295,16 @@ class VmdConverter:
             from ..core.mmd_control_rig_motion import control_rig_edit_routes_for_joints
 
             routes = control_rig_edit_routes_for_joints(self.bone_name_mapping.values())
-            missing_routes = sorted(
-                name
-                for name in requested_vmd_names
-                if not routes.get(self.bone_name_mapping[name])
-            )
+            missing_routes = {}
+            for name in requested_vmd_names:
+                route_channels = set(routes.get(self.bone_name_mapping[name], {}))
+                missing = sorted(requested_vmd_channels.get(name, set()) - route_channels)
+                if missing:
+                    missing_routes[name] = missing
             if missing_routes:
                 fail(
                     "control_rig_unconvertible_vmd_roles",
-                    "MMD Control Rig has no authored route for VMD bone roles",
+                    "MMD Control Rig has incomplete authored routes for VMD bone channels",
                     missing_routes,
                 )
 
@@ -1021,7 +1327,16 @@ class VmdConverter:
                     if metadata.get("owner") != CONTROL_RIG_CONTROL_OWNED:
                         fail("control_rig_owner_conflict", "Existing MMD Control Rig is not CONTROL_OWNED")
                     validate_vmd_routes()
-                    return
+                    self._validate_mmd_control_rig_ik_routes(target_model, vmd_data, fail)
+                    return {
+                        "root": control_rig_root,
+                        "created": False,
+                        "entered_here": False,
+                        "prior_state": prior_state,
+                        "prior_owner": prior_owner,
+                        "prior_raw_metadata": prior_raw_metadata,
+                        "prior_animation_snapshot": prior_animation_snapshot,
+                    }
                 if metadata.get("owner") != CONTROL_RIG_MMD_OWNED or metadata.get("state") not in {
                     CONTROL_RIG_ATTACHED,
                     CONTROL_RIG_BAKED,
@@ -1044,6 +1359,16 @@ class VmdConverter:
             enter_mmd_control_rig_edit(target_model)
             entered_here = True
             validate_vmd_routes()
+            self._validate_mmd_control_rig_ik_routes(target_model, vmd_data, fail)
+            return {
+                "root": control_rig_root,
+                "created": created,
+                "entered_here": entered_here,
+                "prior_state": prior_state,
+                "prior_owner": prior_owner,
+                "prior_raw_metadata": prior_raw_metadata,
+                "prior_animation_snapshot": prior_animation_snapshot,
+            }
         except MMDImportException:
             if entered_here:
                 try:
@@ -1063,6 +1388,149 @@ class VmdConverter:
                 except Exception:
                     self.logger.debug("Failed to remove newly-created control rig after preflight failure", exc_info=True)
             fail("control_rig_edit_failed", "MMD Control Rig could not enter CONTROL_OWNED", str(exc))
+
+    @staticmethod
+    def _capture_mmd_control_rig_animation_snapshot(metadata) -> list:
+        """Capture existing controller keys before an EDIT-owned import mutates them."""
+        if not isinstance(metadata, dict):
+            return []
+        from ..core.mmd_control_rig_motion import _capture_animation_curve_payload
+
+        snapshot = []
+        seen_controls = set()
+        for control_uuid in (metadata.get("controls") or {}).values():
+            controls = cmds.ls(control_uuid, long=True) if control_uuid else []
+            if not controls:
+                continue
+            control = str(controls[0])
+            if control in seen_controls:
+                continue
+            seen_controls.add(control)
+            for attr in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ", "ikEnabled"):
+                plug = f"{control}.{attr}"
+                try:
+                    if not cmds.objExists(plug):
+                        continue
+                    incoming = list(
+                        cmds.listConnections(
+                            plug,
+                            source=True,
+                            destination=False,
+                            type="animCurve",
+                        )
+                        or []
+                    )
+                    payload = (
+                        _capture_animation_curve_payload(cmds, str(incoming[0]))
+                        if incoming
+                        else {}
+                    )
+                    value = cmds.getAttr(plug)
+                except Exception:
+                    continue
+                snapshot.append(
+                    {
+                        "control": control,
+                        "attribute": attr,
+                        "incoming": incoming,
+                        "curve_payload": payload,
+                        "value": value,
+                    }
+                )
+        return snapshot
+
+    @staticmethod
+    def _restore_mmd_control_rig_animation_snapshot(snapshot) -> Optional[str]:
+        """Restore controller keys captured before an EDIT-owned import."""
+        from ..core.mmd_control_rig_motion import _restore_animation_curve_payload
+
+        errors = []
+        for row in snapshot or []:
+            control = row.get("control")
+            attr = row.get("attribute")
+            if not control or not attr:
+                continue
+            try:
+                cmds.cutKey(control, attribute=attr, clear=True)
+                payload = row.get("curve_payload") or {}
+                keys = payload.get("keys") or []
+                if keys:
+                    for key in keys:
+                        cmds.setKeyframe(
+                            control,
+                            attribute=attr,
+                            time=float(key.get("time", 0.0)),
+                            value=float(key.get("value", 0.0)),
+                        )
+                    current_curves = cmds.listConnections(
+                        f"{control}.{attr}",
+                        source=True,
+                        destination=False,
+                        type="animCurve",
+                    ) or []
+                    for curve in current_curves:
+                        _restore_animation_curve_payload(cmds, str(curve), payload)
+                elif row.get("value") is not None:
+                    cmds.setAttr(f"{control}.{attr}", row["value"])
+            except Exception as exc:
+                errors.append(f"restore controller {control}.{attr} failed: {exc}")
+        return "; ".join(errors) if errors else None
+
+    def _rollback_mmd_control_rig_import(self, transaction) -> Optional[str]:
+        """Rollback an ON-path rig transition and return a failure detail."""
+        if not transaction:
+            return None
+        from ..core.constants import ATTR_MMD_CONTROL_RIG_JSON
+        from ..core.mmd_control_rig_builder import remove_mmd_control_rig
+        from ..core.mmd_control_rig_motion import restore_mmd_control_rig_attached
+
+        root = transaction["root"]
+        errors = []
+        if transaction.get("entered_here"):
+            try:
+                restore_mmd_control_rig_attached(root)
+            except Exception as exc:
+                errors.append(f"restore attached failed: {exc}")
+            if transaction.get("created"):
+                try:
+                    remove_mmd_control_rig(root)
+                except Exception as exc:
+                    errors.append(f"remove created rig failed: {exc}")
+        elif transaction.get("prior_animation_snapshot"):
+            snapshot_error = self._restore_mmd_control_rig_animation_snapshot(
+                transaction["prior_animation_snapshot"]
+            )
+            if snapshot_error:
+                errors.append(snapshot_error)
+        raw = transaction.get("prior_raw_metadata")
+        if raw is not None and cmds.objExists(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}"):
+            try:
+                cmds.setAttr(
+                    f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}",
+                    raw,
+                    type="string",
+                )
+            except Exception as exc:
+                errors.append(f"restore metadata failed: {exc}")
+        return "; ".join(errors) if errors else None
+
+    @staticmethod
+    def _record_control_rig_import_failure(profile, exc, rollback_error=None) -> None:
+        """Publish exact ON-path failure diagnostics into the import profile."""
+        if not isinstance(profile, dict):
+            return
+        detail = {
+            "source": "vmd_converter",
+            "code": "control_rig_import_failed",
+            "severity": "error",
+            "message": str(exc),
+            "exception_type": type(exc).__name__,
+            "fallback": "none",
+        }
+        if rollback_error:
+            detail["rollback_error"] = rollback_error
+        profile.setdefault("mmd_control_rig", {}).setdefault("diagnostics", []).append(detail)
+        profile.setdefault("vmd_converter", {}).setdefault("warnings", []).append(dict(detail))
 
     def _suspend_import_scene_updates(self) -> Tuple[bool, bool]:
         """Suppress Maya undo recording and viewport refresh during VMD import."""
