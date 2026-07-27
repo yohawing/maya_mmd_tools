@@ -294,6 +294,7 @@ def classify_mmd_control_rig(
             bindings_by_joint,
             resolved_roles,
             model_root,
+            optional=True,
         )
         roles.append(role)
         resolved_roles[role.role] = role
@@ -516,6 +517,8 @@ def _resolve_role(
     bindings_by_joint: Mapping[str, MmdControlRigBoneBinding],
     resolved_roles: Mapping[str, MmdControlRigRoleBinding],
     model_root: str,
+    *,
+    optional: bool = False,
 ) -> MmdControlRigRoleBinding:
     candidates: List[MmdControlRigBoneFact] = []
     for name in definition.mmd_names:
@@ -554,6 +557,13 @@ def _resolve_role(
                 status=STATUS_FALLBACK,
                 binding=fallback_binding,
                 fallback="model_root",
+                warnings=(warning,),
+            )
+        if optional:
+            warning = f"{definition.role}: optional MMD bone is missing; control omitted"
+            return MmdControlRigRoleBinding(
+                role=definition.role,
+                status=STATUS_MISSING,
                 warnings=(warning,),
             )
         blocker = f"{definition.role}: required MMD bone is missing"
