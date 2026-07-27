@@ -1,12 +1,116 @@
 """Bone-specific helpers for VMD animation conversion."""
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
+import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
 from . import vmd_profile
+from .vmd_bone_interpolation import (
+    evaluate_vmd_bezier,
+    get_frame_interpolation,
+    get_frame_number,
+    is_linear_vmd_interp,
+    parse_vmd_interpolation,
+)
 from .vmd_context import VmdBoneAnimationContext
 from .vmd_scene_keying import VmdKeyingError, _ensure_fallback_allowed
+
+
+def _frame_rotation(frame) -> Tuple[float, float, float, float]:
+    """Return a VMD key's raw quaternion in xyzw order."""
+    rotation = frame.rotation if hasattr(frame, "rotation") else frame.get("rotation", (0.0, 0.0, 0.0, 1.0))
+    return tuple(float(value) for value in rotation)
+
+
+def _rotation_samples(
+    context: VmdBoneAnimationContext,
+    joint: str,
+    frames: List,
+    *,
+    dense_linear_segments: bool = False,
+) -> Tuple[List[Tuple[float, Tuple[float, float, float]]], bool]:
+    """Build VMD rotation samples, expanding non-linear segments at integer frames.
+
+    The mmd-anim runtime applies the destination key's rotation Bezier amount
+    before quaternion slerp.  Maya's quaternionSlerp uses only linear time, so
+    retaining only the sparse keys loses the intended curve.  Interior integer
+    samples are normally expanded only for non-linear segments.  Redirected
+    custom angle plugs cannot use Maya quaternion interpolation, so callers may
+    also request integer samples for linear segments.
+
+    Returns:
+        A sorted ``(maya_time, (rx, ry, rz))`` list and whether any interior
+        samples were added (used to suppress a second Euler tangent pass).
+    """
+    if not frames:
+        return [], False
+
+    sorted_frames = sorted(frames, key=get_frame_number)
+    samples_by_frame: Dict[float, Tuple[float, float, float]] = {}
+    dense = False
+
+    def add_sample(frame_number: float, quaternion: Tuple[float, float, float, float]) -> None:
+        samples_by_frame[float(frame_number)] = tuple(
+            float(value)
+            for value in context.convert_vmd_quat_to_joint_rotate(joint, *quaternion)
+        )
+
+    for frame in sorted_frames:
+        add_sample(get_frame_number(frame), _frame_rotation(frame))
+
+    if not context.use_quaternion_interpolation:
+        return [
+            (context.vmd_frame_to_maya_time(frame_number), values)
+            for frame_number, values in sorted(samples_by_frame.items())
+        ], False
+
+    for left, right in zip(sorted_frames, sorted_frames[1:]):
+        left_frame = get_frame_number(left)
+        right_frame = get_frame_number(right)
+        if right_frame <= left_frame + 1.0:
+            continue
+        interpolation = parse_vmd_interpolation(get_frame_interpolation(right)).get("rotation")
+        linear_segment = not interpolation or is_linear_vmd_interp(interpolation)
+        if linear_segment and not dense_linear_segments:
+            continue
+
+        dense = True
+        left_q = om.MQuaternion(*_frame_rotation(left))
+        right_q = om.MQuaternion(*_frame_rotation(right))
+        frame_start = int(left_frame) + 1
+        frame_end = int(right_frame)
+        for frame_number in range(frame_start, frame_end):
+            linear_amount = (float(frame_number) - left_frame) / (right_frame - left_frame)
+            amount = (
+                linear_amount
+                if linear_segment
+                else evaluate_vmd_bezier(interpolation, linear_amount)
+            )
+            quaternion = om.MQuaternion.slerp(left_q, right_q, amount)
+            add_sample(
+                float(frame_number),
+                (quaternion.x, quaternion.y, quaternion.z, quaternion.w),
+            )
+
+    return [
+        (context.vmd_frame_to_maya_time(frame_number), values)
+        for frame_number, values in sorted(samples_by_frame.items())
+    ], dense
+
+
+def _apply_quaternion_interpolation(
+    context: VmdBoneAnimationContext,
+    plugs: List[str],
+) -> None:
+    """Apply Maya quaternion slerp to a keyed three-angle compound."""
+    try:
+        cmds.scriptEditorInfo(suppressWarnings=True)
+        cmds.rotationInterpolation(*plugs, convert="quaternionSlerp")
+    except Exception as exc:
+        context.logger.warning(f"Failed to apply quaternion interpolation to {plugs[0]}: {exc}")
+    finally:
+        cmds.scriptEditorInfo(suppressWarnings=False)
 
 
 def convert_bone_animation(context: VmdBoneAnimationContext, bone_frames: List) -> bool:
@@ -146,24 +250,28 @@ def set_bone_keyframes(
                 for attr, value in values.items():
                     channel_samples[attr].append((maya_time, float(value)))
 
+        rotation_samples, dense_rotation = _rotation_samples(context, joint, frames)
+        if dense_rotation:
+            for attr_index, attr in enumerate(("rotateX", "rotateY", "rotateZ")):
+                channel_samples[attr] = [
+                    (maya_time, values[attr_index])
+                    for maya_time, values in rotation_samples
+                ]
+            vmd_profile.add_count(
+                "rotation_bezier_dense_samples",
+                max(0, len(rotation_samples) - len(frames)),
+            )
+
         animation_layer = context.anim_layer if use_layer else None
         if animation_layer:
             channel_samples = context.samples_as_anim_layer_deltas(joint, channel_samples)
 
         if context.batch_key_scalar_channels(joint, channel_samples, animation_layer=animation_layer):
             if context.use_quaternion_interpolation:
-                try:
-                    cmds.scriptEditorInfo(suppressWarnings=True)
-                    cmds.rotationInterpolation(
-                        f"{joint}.rotateX",
-                        f"{joint}.rotateY",
-                        f"{joint}.rotateZ",
-                        convert="quaternionSlerp",
-                    )
-                except Exception as e:
-                    context.logger.warning(f"Failed to apply quaternion interpolation to {joint}: {str(e)}")
-                finally:
-                    cmds.scriptEditorInfo(suppressWarnings=False)
+                _apply_quaternion_interpolation(
+                    context,
+                    [f"{joint}.rotateX", f"{joint}.rotateY", f"{joint}.rotateZ"],
+                )
             tangent_attrs = attrs
             if context.use_quaternion_interpolation:
                 tangent_attrs = [a for a in attrs if not a.startswith("rotate")]
@@ -204,6 +312,28 @@ def set_bone_keyframes(
                 target_node, target_attr = attr_targets.get(attr, (joint, attr))
                 routed_samples.setdefault(target_node, {}).setdefault(target_attr, []).append((maya_time, float(value)))
 
+    rotation_samples, dense_rotation = (
+        _rotation_samples(
+            context,
+            joint,
+            frames,
+            dense_linear_segments=bool(attr_targets),
+        )
+        if not skip_rotate
+        else ([], False)
+    )
+    if dense_rotation:
+        for attr_index, source_attr in enumerate(("rotateX", "rotateY", "rotateZ")):
+            target_node, target_attr = attr_targets.get(source_attr, (joint, source_attr))
+            routed_samples.setdefault(target_node, {})[target_attr] = [
+                (maya_time, values[attr_index])
+                for maya_time, values in rotation_samples
+            ]
+        vmd_profile.add_count(
+            "rotation_bezier_dense_samples",
+            max(0, len(rotation_samples) - len(frames)),
+        )
+
     animation_layer = context.anim_layer if use_layer else None
     routed_success = False
     for target_node, target_samples in routed_samples.items():
@@ -240,6 +370,7 @@ def set_bone_keyframes(
         context.logger.debug(f"legacy bone routed keying produced no keys for {joint}")
 
     ik_info = key_route.get("ik_solver_rotate") if key_route else None
+    solver_dense_rotation = False
     if ik_info:
         solver_node = ik_info.get("solver")
         slot = ik_info.get("slot")
@@ -251,17 +382,15 @@ def set_bone_keyframes(
             f"inputRotate[{slot}].inputRotateElementZ",
         ]
         solver_samples = {attr: [] for attr in ir_attrs}
-        for frame in frames:
-            if hasattr(frame, "frame_number"):
-                fn = frame.frame_number
-                rq = frame.rotation
-            else:
-                fn = frame.get("frame_number", 0)
-                rq = frame.get("rotation", [0, 0, 0, 1])
-            maya_time = context.vmd_frame_to_maya_time(fn)
-            rx, ry, rz = context.convert_vmd_quat_to_joint_rotate(joint, *rq)
-            for attr, val in zip(ir_attrs, [rx, ry, rz]):
-                solver_samples[attr].append((maya_time, float(val)))
+        samples_for_solver, solver_dense_rotation = _rotation_samples(
+            context,
+            joint,
+            frames,
+            dense_linear_segments=True,
+        )
+        for maya_time, values in samples_for_solver:
+            for attr, value in zip(ir_attrs, values):
+                solver_samples[attr].append((maya_time, float(value)))
         if not context.batch_key_scalar_channels(solver_node, solver_samples, animation_layer=None):
             context.logger.debug(f"IK solver batch keying produced no keys for {solver_node}; using setKeyframe fallback")
             for attr, samples in solver_samples.items():
@@ -279,21 +408,14 @@ def set_bone_keyframes(
         attr_targets.get(attr, (joint, attr))[0] != joint
         for attr in ("rotateX", "rotateY", "rotateZ")
     )
-    if context.use_quaternion_interpolation and not skip_rotate and not rotate_redirected:
-        try:
-            cmds.scriptEditorInfo(suppressWarnings=True)
-            cmds.rotationInterpolation(
-                f"{joint}.rotateX",
-                f"{joint}.rotateY",
-                f"{joint}.rotateZ",
-                convert="quaternionSlerp",
+    if context.use_quaternion_interpolation and not skip_rotate:
+        if not rotate_redirected:
+            _apply_quaternion_interpolation(
+                context,
+                [f"{joint}.rotateX", f"{joint}.rotateY", f"{joint}.rotateZ"],
             )
-        except Exception as e:
-            context.logger.warning(f"Failed to apply quaternion interpolation to {joint}: {str(e)}")
-        finally:
-            cmds.scriptEditorInfo(suppressWarnings=False)
 
-    skip_rotate_tangent = skip_rotate or (
+    skip_rotate_tangent = skip_rotate or dense_rotation or (
         context.use_quaternion_interpolation and not rotate_redirected
     )
     tangent_targets = {
@@ -303,7 +425,7 @@ def set_bone_keyframes(
     }
     context.apply_vmd_bezier_tangents(joint, frames, tangent_targets, channel_interp_map)
 
-    if ik_info and solver_node and slot is not None:
+    if ik_info and solver_node and slot is not None and not solver_dense_rotation:
         solver_tangent_targets = {
             "rotateX": (solver_node, f"inputRotate[{slot}].inputRotateElementX"),
             "rotateY": (solver_node, f"inputRotate[{slot}].inputRotateElementY"),

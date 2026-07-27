@@ -32,6 +32,7 @@
 #include <maya/MVector.h>
 
 #include "mmd_runtime.h"
+#include "MmdCoordinateUtils.h"
 #include "third_party/json.hpp"
 
 #include <array>
@@ -43,7 +44,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
-#elif defined(__APPLE__)
+#else
 #include <dlfcn.h>
 #endif
 
@@ -70,6 +71,22 @@ mmd_runtime_ik_chain_t* createNativeIkChain(const CcdIkChainConfig& cfg);
 IkChainCreateV2Fn resolveIkChainCreateV2()
 {
 #ifdef _WIN32
+    // ``mmd_runtime_ik_chain_create`` is imported into this plugin through
+    // the IAT, so GetModuleHandleEx(FROM_ADDRESS) identifies the plugin
+    // rather than the dependency that exports the v2 symbol. Resolve the
+    // already-loaded runtime DLL by module name first; never LoadLibrary here
+    // because node evaluation must not change DLL lifetime.
+    HMODULE runtimeModule = GetModuleHandleA("mmd_runtime_ffi.dll");
+    if (runtimeModule) {
+        auto fn = reinterpret_cast<IkChainCreateV2Fn>(
+            GetProcAddress(runtimeModule, "mmd_runtime_ik_chain_create_v2"));
+        if (fn) {
+            return fn;
+        }
+    }
+
+    // Keep compatibility with statically linked/runtime-hosted builds where
+    // the v2 symbol lives in the same image as the imported entry point.
     HMODULE ownerModule = nullptr;
     if (!GetModuleHandleExA(
             GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -80,22 +97,12 @@ IkChainCreateV2Fn resolveIkChainCreateV2()
     }
     return reinterpret_cast<IkChainCreateV2Fn>(
         GetProcAddress(ownerModule, "mmd_runtime_ik_chain_create_v2"));
-#elif defined(__APPLE__)
-    Dl_info ownerInfo{};
-    if (dladdr(reinterpret_cast<const void*>(&mmd_runtime_ik_chain_create), &ownerInfo) == 0 ||
-        !ownerInfo.dli_fname) {
-        return nullptr;
-    }
-    void* ownerModule = dlopen(ownerInfo.dli_fname, RTLD_LAZY | RTLD_NOLOAD);
-    if (!ownerModule) {
-        return nullptr;
-    }
-    auto fn = reinterpret_cast<IkChainCreateV2Fn>(
-        dlsym(ownerModule, "mmd_runtime_ik_chain_create_v2"));
-    dlclose(ownerModule);
-    return fn;
+#else
+    // Search loaded images without opening/closing a dependency handle. A
+    // RTLD_DEFAULT lookup leaves ownership and lifetime with the loader.
+    return reinterpret_cast<IkChainCreateV2Fn>(
+        dlsym(RTLD_DEFAULT, "mmd_runtime_ik_chain_create_v2"));
 #endif
-    return nullptr;
 }
 
 struct CcdIkChainConfig {
@@ -202,26 +209,6 @@ MQuaternion jointOrientFromDegrees(const std::array<double, 3>& degrees)
         degrees[0] * kPi / 180.0,
         degrees[1] * kPi / 180.0,
         degrees[2] * kPi / 180.0).asQuaternion();
-}
-
-MMatrix mmdWorldToMaya(const MMatrix& matrix)
-{
-    const double signs[3] = {1.0, 1.0, -1.0};
-    MMatrix result(matrix);
-    for (unsigned int row = 0; row < 3; ++row) {
-        for (unsigned int col = 0; col < 3; ++col) {
-            result(row, col) = matrix(row, col) * signs[row] * signs[col];
-        }
-    }
-    for (unsigned int col = 0; col < 3; ++col) {
-        result(3, col) = matrix(3, col) * signs[col];
-    }
-    return result;
-}
-
-MMatrix mayaWorldToMmd(const MMatrix& matrix)
-{
-    return mmdWorldToMaya(matrix);
 }
 
 bool parseCcdIkChainJson(const MString& chainJson, CcdIkChainConfig& cfg)
@@ -608,6 +595,24 @@ void copyInputRotateLinksToOutput(
     }
 }
 
+void copyMmdLinkQuaternionsToOutput(
+    const CcdIkChainConfig& cfg,
+    const std::vector<float>& rotations,
+    std::vector<std::array<double, 4>>& outMmdLinkQuaternions)
+{
+    outMmdLinkQuaternions.clear();
+    outMmdLinkQuaternions.reserve(cfg.linkSlots.size());
+    for (uint32_t slot : cfg.linkSlots) {
+        const size_t offset = static_cast<size_t>(slot) * 4;
+        outMmdLinkQuaternions.push_back({
+            static_cast<double>(rotations[offset]),
+            static_cast<double>(rotations[offset + 1]),
+            static_cast<double>(rotations[offset + 2]),
+            static_cast<double>(rotations[offset + 3]),
+        });
+    }
+}
+
 std::array<float, 3> readGoalPositionMmd(
     const CcdIkChainConfig& cfg,
     MDataBlock& data,
@@ -645,10 +650,12 @@ bool solveChainJsonIk(
     const CcdIkChainConfig& cfg,
     mmd_runtime_ik_chain_t* chain,
     MDataBlock& data,
+    bool solveEnabled,
     bool useGoalWorldMatrix,
     bool goalHasInputConnection,
     bool& outSolved,
-    std::vector<std::array<double, 3>>& outEulerRadians)
+    std::vector<std::array<double, 3>>& outEulerRadians,
+    std::vector<std::array<double, 4>>& outMmdLinkQuaternions)
 {
     if (!chain) {
         return false;
@@ -750,6 +757,13 @@ bool solveChainJsonIk(
         }
     }
 
+    if (!solveEnabled) {
+        copyInputRotateLinksToOutput(cfg, data, outEulerRadians);
+        copyMmdLinkQuaternionsToOutput(cfg, rotations, outMmdLinkQuaternions);
+        outSolved = false;
+        return true;
+    }
+
     const bool useControllerGoal = cfg.controllerBoneSlot >= 0 &&
                                    static_cast<size_t>(cfg.controllerBoneSlot) < boneCount &&
                                    !goalHasInputConnection;
@@ -769,6 +783,7 @@ bool solveChainJsonIk(
             std::abs(fkTarget[1] - goal[1]) <= kGoalMatchEpsilon &&
             std::abs(fkTarget[2] - goal[2]) <= kGoalMatchEpsilon) {
             copyInputRotateLinksToOutput(cfg, data, outEulerRadians);
+            copyMmdLinkQuaternionsToOutput(cfg, rotations, outMmdLinkQuaternions);
             outSolved = false;
             return true;
         }
@@ -791,6 +806,17 @@ bool solveChainJsonIk(
         return false;
     }
     outSolved = true;
+    outMmdLinkQuaternions.clear();
+    outMmdLinkQuaternions.reserve(cfg.links.size());
+    for (size_t linkIndex = 0; linkIndex < cfg.links.size(); ++linkIndex) {
+        const size_t offset = linkIndex * 4;
+        outMmdLinkQuaternions.push_back({
+            static_cast<double>(outQuats[offset]),
+            static_cast<double>(outQuats[offset + 1]),
+            static_cast<double>(outQuats[offset + 2]),
+            static_cast<double>(outQuats[offset + 3]),
+        });
+    }
 
     outEulerRadians.clear();
     outEulerRadians.reserve(cfg.links.size());
@@ -957,6 +983,7 @@ MObject MmdCcdIkNode::aOutputLinkAngles;
 
 // --- 出力: outputLinkRotates ---
 MObject MmdCcdIkNode::aOutputLinkRotates;
+MObject MmdCcdIkNode::aOutputMmdLinkQuaternions;
 
 
 MmdCcdIkNode::MmdCcdIkNode() = default;
@@ -1306,6 +1333,15 @@ MStatus MmdCcdIkNode::initialize() {
     tAttr.setHidden(true);
     addAttribute(aOutputLinkRotates);
 
+    aOutputMmdLinkQuaternions = tAttr.create(
+        "outputMmdLinkQuaternions", "omlq", MFnData::kDoubleArray, MObject::kNullObj, &status);
+    tAttr.setWritable(false);
+    tAttr.setReadable(true);
+    tAttr.setStorable(false);
+    tAttr.setKeyable(false);
+    tAttr.setHidden(true);
+    addAttribute(aOutputMmdLinkQuaternions);
+
     // --- attributeAffects ---
     // 既存 1-link の既存出力との依存を維持
     attributeAffects(aInputRootX, aOutputRotateX);
@@ -1402,6 +1438,14 @@ MStatus MmdCcdIkNode::initialize() {
     attributeAffects(aIterations, aOutputLinkRotates);
     attributeAffects(aAngleLimit, aOutputLinkRotates);
     attributeAffects(aInputChain, aOutputLinkRotates);
+    attributeAffects(aEnabled, aOutputMmdLinkQuaternions);
+    attributeAffects(aChainJson, aOutputMmdLinkQuaternions);
+    attributeAffects(aGoalX, aOutputMmdLinkQuaternions);
+    attributeAffects(aGoalY, aOutputMmdLinkQuaternions);
+    attributeAffects(aGoalZ, aOutputMmdLinkQuaternions);
+    attributeAffects(aGoalWorldMatrix, aOutputMmdLinkQuaternions);
+    attributeAffects(aInputRotateArray, aOutputMmdLinkQuaternions);
+    attributeAffects(aInputTranslateArray, aOutputMmdLinkQuaternions);
 
     attributeAffects(aChainJson, aOutputRotateX);
     attributeAffects(aChainJson, aOutputRotateY);
@@ -1456,8 +1500,9 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
     bool isSolved = (plug == aSolved);
     bool isLinkAngles = (plug == aOutputLinkAngles);
     bool isLinkRotates = (plug == aOutputLinkRotates);
+    bool isMmdLinkQuaternions = (plug == aOutputMmdLinkQuaternions);
 
-    if (!isRotate && !isAngle && !isSolved && !isLinkAngles && !isLinkRotates) {
+    if (!isRotate && !isAngle && !isSolved && !isLinkAngles && !isLinkRotates && !isMmdLinkQuaternions) {
         return MS::kUnknownParameter;
     }
 
@@ -1471,6 +1516,7 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
     double outRotX = 0.0, outRotY = 0.0, outRotZ = 0.0;
     MDoubleArray outLinkAngles;
     MDoubleArray outLinkRotates;
+    MDoubleArray outMmdLinkQuaternions;
     const double eps = 1e-12;
 
     // chainJson の parse/native chain create はノードインスタンス内で内容変更時
@@ -1481,37 +1527,23 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
     if (ensureChainCache(chainJson)) {
         const CcdIkChainConfig& chainCfg = chainCache_->config;
         std::vector<std::array<double, 3>> chainRotationsRadians;
+        std::vector<std::array<double, 4>> chainMmdLinkQuaternions;
         bool chainSolved = false;
         bool chainPathHandled = false;
 
-        if (enabled) {
-            const MObject thisNode = thisMObject();
-            const bool goalWorldConnected = plugOrChildrenHasInputConnection(thisNode, aGoalWorldMatrix);
-            const bool goalConnected = goalWorldConnected || plugOrChildrenHasInputConnection(thisNode, aGoal);
-            chainPathHandled = solveChainJsonIk(
-                chainCfg,
-                chainCache_->nativeChain,
-                data,
-                goalWorldConnected,
-                goalConnected,
-                chainSolved,
-                chainRotationsRadians);
-        } else {
-            MArrayDataHandle rotateArray = data.inputArrayValue(aInputRotateArray, &status);
-            chainRotationsRadians.reserve(chainCfg.linkSlots.size());
-            for (uint32_t slot : chainCfg.linkSlots) {
-                std::array<double, 3> eulerRadians{0.0, 0.0, 0.0};
-                readInputRotateElement(
-                    rotateArray,
-                    slot,
-                    aInputRotateArrayX,
-                    aInputRotateArrayY,
-                    aInputRotateArrayZ,
-                    eulerRadians);
-                chainRotationsRadians.push_back(eulerRadians);
-            }
-            chainPathHandled = true;
-        }
+        const MObject thisNode = thisMObject();
+        const bool goalWorldConnected = plugOrChildrenHasInputConnection(thisNode, aGoalWorldMatrix);
+        const bool goalConnected = goalWorldConnected || plugOrChildrenHasInputConnection(thisNode, aGoal);
+        chainPathHandled = solveChainJsonIk(
+            chainCfg,
+            chainCache_->nativeChain,
+            data,
+            enabled,
+            goalWorldConnected,
+            goalConnected,
+            chainSolved,
+            chainRotationsRadians,
+            chainMmdLinkQuaternions);
 
         if (chainPathHandled) {
             // どの output plug が要求された場合でも、一度の solve 結果で関連
@@ -1550,6 +1582,17 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
             MDataHandle hLinkRotates = data.outputValue(aOutputLinkRotates, &status);
             hLinkRotates.setMObject(linkRotatesObj);
             hLinkRotates.setClean();
+
+            for (const auto& quaternion : chainMmdLinkQuaternions) {
+                outMmdLinkQuaternions.append(quaternion[0]);
+                outMmdLinkQuaternions.append(quaternion[1]);
+                outMmdLinkQuaternions.append(quaternion[2]);
+                outMmdLinkQuaternions.append(quaternion[3]);
+            }
+            MObject mmdQuaternionsObj = dataObject.create(outMmdLinkQuaternions, &status);
+            MDataHandle hMmdQuaternions = data.outputValue(aOutputMmdLinkQuaternions, &status);
+            hMmdQuaternions.setMObject(mmdQuaternionsObj);
+            hMmdQuaternions.setClean();
 
             data.setClean(plug);
             return MS::kSuccess;
@@ -1707,6 +1750,11 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
     MDataHandle hLinkRotates = data.outputValue(aOutputLinkRotates, &status);
     hLinkRotates.setMObject(linkRotatesObj);
     hLinkRotates.setClean();
+
+    MObject mmdQuaternionsObj = dataObject.create(outMmdLinkQuaternions, &status);
+    MDataHandle hMmdQuaternions = data.outputValue(aOutputMmdLinkQuaternions, &status);
+    hMmdQuaternions.setMObject(mmdQuaternionsObj);
+    hMmdQuaternions.setClean();
 
     data.setClean(plug);
     return MS::kSuccess;

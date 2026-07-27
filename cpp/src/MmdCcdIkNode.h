@@ -110,6 +110,10 @@ public:
     // outputLinkRotates(doubleArray)
     static MObject aOutputLinkRotates;
 
+    // Solved PMX/MMD-space link quaternions, flat [x,y,z,w] per link.
+    // This avoids reinterpreting JO-aware Maya rotate channels in mmdAppend.
+    static MObject aOutputMmdLinkQuaternions;
+
 private:
     // chainJson の解析結果と native chain はノードインスタンス単位で保持する。
     // 定義は cpp 側に隠し、ヘッダから Maya/runtime の実装詳細を漏らさない。
