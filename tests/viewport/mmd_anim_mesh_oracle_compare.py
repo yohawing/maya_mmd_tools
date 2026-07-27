@@ -133,13 +133,49 @@ def _compute_oracle_vertices(
     vmd_path: Path,
     frames: list[int],
     bind_world_matrices: list[om.MMatrix] | None = None,
+    runtime_world_matrices: dict[int, list[om.MMatrix]] | None = None,
 ) -> dict[int, list[tuple[float, float, float]]]:
-    from mmd_tools.converters.vmd_converter import VmdConverter
     from mmd_tools.core.mmd_parser import parse_pmx_file
-    from mmd_tools.core.native.mmd_anim_runtime import MmdRuntimeClip, MmdRuntimeInstance, MmdRuntimeModel
 
     pmx = parse_pmx_file(str(pmx_path))
     bind_world_matrices = bind_world_matrices or _compute_bind_world_matrices(pmx)
+    runtime_world_matrices = runtime_world_matrices or _compute_runtime_world_matrices(
+        pmx_path,
+        vmd_path,
+        frames,
+    )
+
+    result: dict[int, list[tuple[float, float, float]]] = {}
+    for frame in frames:
+        runtime_matrices = runtime_world_matrices.get(frame) or []
+        vertices: list[tuple[float, float, float]] = []
+        for vertex in pmx.vertices:
+            accum = [0.0, 0.0, 0.0]
+            for bone_index, weight in _vertex_weights(vertex):
+                if weight == 0.0 or bone_index < 0 or bone_index >= len(runtime_matrices):
+                    continue
+                local = _mat_point_mul(
+                    bind_world_matrices[bone_index].inverse(),
+                    _maya_point_from_mmd(tuple(vertex.position)),
+                )
+                transformed = _mat_point_mul(runtime_matrices[bone_index], local)
+                accum[0] += transformed[0] * weight
+                accum[1] += transformed[1] * weight
+                accum[2] += transformed[2] * weight
+            vertices.append((accum[0], accum[1], accum[2]))
+        result[frame] = vertices
+    return result
+
+
+def _compute_runtime_world_matrices(
+    pmx_path: Path,
+    vmd_path: Path,
+    frames: list[int],
+) -> dict[int, list[om.MMatrix]]:
+    """Evaluate converted mmd-anim world matrices for each requested frame."""
+
+    from mmd_tools.converters.vmd_converter import VmdConverter
+    from mmd_tools.core.native.mmd_anim_runtime import MmdRuntimeClip, MmdRuntimeInstance, MmdRuntimeModel
 
     pmx_bytes = pmx_path.read_bytes()
     vmd_bytes = vmd_path.read_bytes()
@@ -156,32 +192,16 @@ def _compute_oracle_vertices(
         model.free()
         raise RuntimeError("mmd-anim instance creation failed")
 
-    result: dict[int, list[tuple[float, float, float]]] = {}
+    result: dict[int, list[om.MMatrix]] = {}
     try:
         for frame in frames:
             if not instance.evaluate_clip_frame(clip, float(frame)):
                 raise RuntimeError(f"mmd-anim evaluate failed at frame {frame}")
             runtime_matrices = instance.get_world_matrices() or []
-            maya_matrices = [
+            result[frame] = [
                 om.MMatrix(VmdConverter._convert_mmd_world_matrix_to_maya(list(matrix)))
                 for matrix in runtime_matrices
             ]
-            vertices: list[tuple[float, float, float]] = []
-            for vertex in pmx.vertices:
-                accum = [0.0, 0.0, 0.0]
-                for bone_index, weight in _vertex_weights(vertex):
-                    if weight == 0.0 or bone_index < 0 or bone_index >= len(maya_matrices):
-                        continue
-                    local = _mat_point_mul(
-                        bind_world_matrices[bone_index].inverse(),
-                        _maya_point_from_mmd(tuple(vertex.position)),
-                    )
-                    transformed = _mat_point_mul(maya_matrices[bone_index], local)
-                    accum[0] += transformed[0] * weight
-                    accum[1] += transformed[1] * weight
-                    accum[2] += transformed[2] * weight
-                vertices.append((accum[0], accum[1], accum[2]))
-            result[frame] = vertices
     finally:
         instance.free()
         clip.free()
@@ -235,6 +255,226 @@ def _capture_skin_bind_world_matrices(root: str, bone_count: int) -> list[om.MMa
                 continue
             bind_matrices[bone_index] = bind_pre.inverse()
     return bind_matrices
+
+
+def _joint_incoming_ownership(joint: str) -> tuple[str, list[str]]:
+    """Classify solver ownership from incoming Maya joint connections."""
+
+    incoming: list[str] = []
+    for attr in (
+        "rotate",
+        "rotateX",
+        "rotateY",
+        "rotateZ",
+        "translate",
+        "translateX",
+        "translateY",
+        "translateZ",
+    ):
+        incoming.extend(cmds.listConnections(f"{joint}.{attr}", s=True, d=False, p=True) or [])
+
+    incoming = sorted(set(incoming))
+    owners = set()
+    for plug in incoming:
+        node = plug.split(".", 1)[0]
+        try:
+            node_type = cmds.nodeType(node)
+        except Exception:
+            continue
+        if node_type == "mmdCcdIk":
+            owners.add("mmdCcdIk")
+        elif node_type == "mmdAppend":
+            owners.add("mmdAppend")
+    if not owners:
+        owner = "neither"
+    elif len(owners) == 1:
+        owner = next(iter(owners))
+    else:
+        owner = "+".join(sorted(owners))
+    return owner, incoming
+
+
+def _capture_maya_skin_deformation_matrices(
+    root: str,
+    bone_count: int,
+    frames: list[int],
+) -> dict[str, Any]:
+    """Capture ``bindPreMatrix * joint.worldMatrix`` per PMX-indexed joint."""
+
+    joints_by_index: dict[int, str] = {}
+    for joint in cmds.ls(type="joint", long=True) or []:
+        if not cmds.attributeQuery("mmd_bone_index", node=joint, exists=True):
+            continue
+        try:
+            bone_index = int(cmds.getAttr(f"{joint}.mmd_bone_index"))
+        except Exception:
+            continue
+        if 0 <= bone_index < bone_count and bone_index not in joints_by_index:
+            joints_by_index[bone_index] = joint
+
+    skin_clusters: list[str] = []
+    for mesh in visible_mesh_transforms(root, require_skin_cluster=True):
+        history = cmds.listHistory(mesh, pruneDagObjects=True) or []
+        for node in history:
+            if cmds.nodeType(node) == "skinCluster" and node not in skin_clusters:
+                skin_clusters.append(node)
+
+    # A PMX bone can influence multiple meshes.  The first valid bind matrix is
+    # authoritative for the report, matching the existing bind-source capture.
+    records: dict[int, dict[str, Any]] = {}
+    for skin_cluster in skin_clusters:
+        influences = cmds.skinCluster(skin_cluster, query=True, influence=True) or []
+        for logical_index, joint in enumerate(influences):
+            if not cmds.objExists(joint) or not cmds.attributeQuery("mmd_bone_index", node=joint, exists=True):
+                continue
+            try:
+                bone_index = int(cmds.getAttr(f"{joint}.mmd_bone_index"))
+                bind_pre = om.MMatrix(cmds.getAttr(f"{skin_cluster}.bindPreMatrix[{logical_index}]"))
+            except Exception:
+                continue
+            if not (0 <= bone_index < bone_count) or bone_index in records:
+                continue
+            owner, incoming = _joint_incoming_ownership(joint)
+            records[bone_index] = {
+                "joint": joint,
+                "bind_pre": bind_pre,
+                "ownership": owner,
+                "incoming": incoming,
+            }
+
+    frame_records: dict[str, dict[str, dict[str, Any]]] = {}
+    for frame in frames:
+        cmds.currentTime(frame, edit=True)
+        try:
+            cmds.refresh(force=True)
+        except Exception:
+            pass
+        per_bone: dict[str, dict[str, Any]] = {}
+        for bone_index, record in records.items():
+            try:
+                world = om.MMatrix(cmds.getAttr(f"{record['joint']}.worldMatrix[0]"))
+                deformation = record["bind_pre"] * world
+            except Exception:
+                continue
+            per_bone[str(bone_index)] = {
+                "maya_joint": record["joint"],
+                "ownership": record["ownership"],
+                "incoming": record["incoming"],
+                "matrix": deformation,
+            }
+        frame_records[str(frame)] = per_bone
+
+    return {
+        "joints": joints_by_index,
+        "records": frame_records,
+    }
+
+
+def _matrix_values(matrix: om.MMatrix) -> list[float]:
+    return [float(matrix[index]) for index in range(16)]
+
+
+def _matrix_error(maya_matrix: om.MMatrix, runtime_matrix: om.MMatrix) -> dict[str, Any]:
+    maya_values = _matrix_values(maya_matrix)
+    runtime_values = _matrix_values(runtime_matrix)
+    errors = [abs(left - right) for left, right in zip(maya_values, runtime_values)]
+    worst_index = max(range(len(errors)), key=errors.__getitem__)
+    return {
+        "max_abs_element": round(errors[worst_index], 6),
+        "element_index": worst_index,
+        "row": worst_index // 4,
+        "column": worst_index % 4,
+        "maya_value": round(maya_values[worst_index], 6),
+        "runtime_value": round(runtime_values[worst_index], 6),
+    }
+
+
+def _compare_bone_skin_matrices(
+    pmx: Any,
+    frames: list[int],
+    threshold: float,
+    bind_world_matrices: list[om.MMatrix],
+    runtime_world_matrices: dict[int, list[om.MMatrix]],
+    maya_capture: dict[str, Any],
+) -> dict[str, Any]:
+    """Compare JO-aware skin matrices without changing vertex pass/fail state."""
+
+    per_frame: dict[str, Any] = {}
+    all_errors: list[tuple[int, dict[str, Any]]] = []
+    for frame in frames:
+        runtime_matrices = runtime_world_matrices.get(frame) or []
+        captured = maya_capture["records"].get(str(frame), {})
+        bones: list[dict[str, Any]] = []
+        for bone_index, bone in enumerate(pmx.bones):
+            bone_name = str(getattr(bone, "name", ""))
+            base = {
+                "bone_index": bone_index,
+                "bone_name": bone_name,
+                "maya_joint": maya_capture["joints"].get(bone_index),
+            }
+            maya_record = captured.get(str(bone_index))
+            if maya_record is None:
+                bones.append({**base, "status": "missing_maya_skin_matrix"})
+                continue
+            if bone_index >= len(bind_world_matrices) or bone_index >= len(runtime_matrices):
+                bones.append({
+                    **base,
+                    "maya_joint": maya_record["maya_joint"],
+                    "ownership": maya_record["ownership"],
+                    "incoming": maya_record["incoming"],
+                    "status": "missing_runtime_matrix",
+                })
+                continue
+            runtime_deformation = bind_world_matrices[bone_index].inverse() * runtime_matrices[bone_index]
+            error = _matrix_error(maya_record["matrix"], runtime_deformation)
+            item = {
+                **base,
+                "maya_joint": maya_record["maya_joint"],
+                "ownership": maya_record["ownership"],
+                "incoming": maya_record["incoming"],
+                "status": "compared",
+                **error,
+            }
+            bones.append(item)
+            all_errors.append((frame, item))
+
+        comparable = [item for item in bones if item.get("status") == "compared"]
+        comparable.sort(key=lambda item: item["max_abs_element"], reverse=True)
+        worst = comparable[0] if comparable else None
+        per_frame[str(frame)] = {
+            "compared_bones": len(comparable),
+            "missing": len(bones) - len(comparable),
+            "worst": worst,
+            "bones": sorted(
+                bones,
+                key=lambda item: item.get("max_abs_element", -1.0),
+                reverse=True,
+            ),
+            "failed": bool(worst and worst["max_abs_element"] > threshold),
+        }
+
+    earliest = None
+    for frame, item in sorted(all_errors, key=lambda entry: (entry[0], -entry[1]["max_abs_element"])):
+        if item["max_abs_element"] > threshold:
+            earliest = {"frame": frame, **item}
+            break
+    overall_worst = max(
+        all_errors,
+        key=lambda entry: entry[1]["max_abs_element"],
+        default=None,
+    )
+    return {
+        "matrix_convention": {
+            "maya": "row-vector bindPreMatrix * joint.worldMatrix",
+            "runtime": "row-vector bindWorldMatrix^-1 * convertedRuntimeWorld",
+            "raw_joint_world_acceptance": False,
+        },
+        "threshold": threshold,
+        "passed": earliest is None,
+        "overall_max": overall_worst[1]["max_abs_element"] if overall_worst else None,
+        "earliest_divergence": earliest,
+        "frames": per_frame,
+    }
 
 
 def _import_scene(pmx_path: Path, vmd_path: Path, mode: str, bone_count: int) -> tuple[str, list[om.MMatrix]]:
@@ -333,12 +573,30 @@ def main() -> int:
     frames = list(dict.fromkeys(args.frame if args.frame is not None else [0, 30, 60]))
     from mmd_tools.core.mmd_parser import parse_pmx_file
 
-    bone_count = len(parse_pmx_file(str(pmx_path)).bones)
+    pmx = parse_pmx_file(str(pmx_path))
+    bone_count = len(pmx.bones)
     root, maya_bind_world_matrices = _import_scene(pmx_path, vmd_path, args.mode, bone_count)
     bind_world_matrices = None if args.bind_source == "pmx" else maya_bind_world_matrices
-    oracle = _compute_oracle_vertices(pmx_path, vmd_path, frames, bind_world_matrices)
+    runtime_world_matrices = _compute_runtime_world_matrices(pmx_path, vmd_path, frames)
+    oracle = _compute_oracle_vertices(
+        pmx_path,
+        vmd_path,
+        frames,
+        bind_world_matrices,
+        runtime_world_matrices,
+    )
     maya_points = _capture_maya_by_source_index(root, frames)
     comparison = _compare(maya_points, oracle, frames, args.threshold)
+    maya_skin_capture = _capture_maya_skin_deformation_matrices(root, bone_count, frames)
+    bone_comparison = _compare_bone_skin_matrices(
+        pmx,
+        frames,
+        args.threshold,
+        bind_world_matrices or _compute_bind_world_matrices(pmx),
+        runtime_world_matrices,
+        maya_skin_capture,
+    )
+    bone_comparison["bind_source"] = args.bind_source
     report = {
         "status": "passed" if comparison["passed"] else "failed",
         "oracle": {
@@ -352,6 +610,7 @@ def main() -> int:
         "mode": args.mode,
         "bind_source": args.bind_source,
         "comparison": comparison,
+        "bone_diagnostics": bone_comparison,
     }
     out = Path(args.out).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -367,17 +626,27 @@ def main() -> int:
         f"- vmd: `{vmd_path}`",
         f"- overall max: `{comparison['overall_max']}`",
         f"- overall mean: `{comparison['overall_mean']}`",
+        f"- earliest bone divergence: `{bone_comparison['earliest_divergence']}`",
         "",
     ]
     for frame, data in comparison["frames"].items():
+        bone_worst = bone_comparison["frames"].get(frame, {}).get("worst")
+        bone_summary = "none"
+        if bone_worst:
+            bone_summary = (
+                f"index={bone_worst['bone_index']} name={bone_worst['bone_name']!r} "
+                f"ownership={bone_worst['ownership']} error={bone_worst['max_abs_element']}"
+            )
         lines.append(
             f"- frame {frame}: max=`{data['max']}`, mean=`{data['mean']}`, "
-            f"p95=`{data['p95']}`, vertices=`{data['compared_vertices']}`, failed=`{data['failed']}`"
+            f"p95=`{data['p95']}`, vertices=`{data['compared_vertices']}`, failed=`{data['failed']}`, "
+            f"bone worst=`{bone_summary}`"
         )
     md.write_text("\n".join(lines), encoding="utf-8")
     print(f"Report JSON: {out}")
     print(f"Report Markdown: {md}")
     print(f"Status: {report['status']}")
+    print(f"Earliest divergent bone: {bone_comparison['earliest_divergence']}")
     return 0 if report["status"] == "passed" else 1
 
 
