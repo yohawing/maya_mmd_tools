@@ -1,9 +1,13 @@
-"""Compare Maya deformed mesh against an mmd-anim/PMX skinning oracle.
+"""Compare Maya skeletal deformation against an mmd-anim/PMX skinning oracle.
 
 This is stricter than Bake-vs-Rig parity: it computes expected skinned vertex
 positions from PMX raw positions, PMX skin weights, mmd-anim runtime world
 matrices, and the actual Maya REST bind matrices, then compares Maya mesh world
 positions by stored PMX source vertex index.
+
+Use ``--skeletal-only`` to exclude morph output when isolating VMD bone, IK,
+or append motion.  The mode rejects VMD inputs that drive PMX bone morphs;
+VMD morph output is otherwise covered by dedicated morph tests.
 """
 
 from __future__ import annotations
@@ -40,6 +44,27 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--threshold", type=float, default=0.1)
     parser.add_argument("--mode", choices=["bake", "rig"], default="bake")
+    parser.add_argument(
+        "--namespace",
+        default=None,
+        help="Optional custom namespace for the imported PMX model.",
+    )
+    parser.add_argument(
+        "--capture",
+        default=None,
+        help="Optional PNG path for an offscreen post-comparison viewport capture.",
+    )
+    parser.add_argument(
+        "--evaluation-mode",
+        choices=["off", "serial", "parallel"],
+        default="off",
+        help="Maya evaluationManager mode used for scene import and capture.",
+    )
+    parser.add_argument(
+        "--skeletal-only",
+        action="store_true",
+        help="Disable PMX morph import after rejecting VMD motion that drives bone morphs.",
+    )
     parser.add_argument(
         "--bind-source",
         choices=["maya", "pmx"],
@@ -246,7 +271,44 @@ def _capture_skin_bind_world_matrices(root: str, bone_count: int) -> list[om.MMa
     return bind_matrices
 
 
-def _import_scene(pmx_path: Path, vmd_path: Path, mode: str, bone_count: int) -> tuple[str, list[om.MMatrix]]:
+def _active_vmd_morphs_drive_bone_morphs(pmx_data: Any, vmd_data: Any) -> list[str]:
+    """Return VMD morph names that resolve to a PMX bone morph through groups."""
+
+    from mmd_tools.core.pmx_data.morph import PmxMorphType
+
+    morphs = list(getattr(pmx_data, "morphs", []) or [])
+    by_name = {str(morph.get_name()): index for index, morph in enumerate(morphs)}
+
+    def _contains_bone_morph(index: int, seen: set[int]) -> bool:
+        if index in seen or not (0 <= index < len(morphs)):
+            return False
+        seen.add(index)
+        morph = morphs[index]
+        if getattr(morph, "morph_type", None) == PmxMorphType.BoneMorph:
+            return True
+        if getattr(morph, "morph_type", None) != PmxMorphType.GroupMorph:
+            return False
+        return any(
+            _contains_bone_morph(int(offset.get("morph_index", -1)), seen)
+            for offset in (getattr(morph, "offsets", []) or [])
+            if isinstance(offset, dict)
+        )
+
+    active_names = {str(frame.morph_name) for frame in (getattr(vmd_data, "morph_frames", []) or [])}
+    return sorted(
+        name for name in active_names if name in by_name and _contains_bone_morph(by_name[name], set())
+    )
+
+
+def _import_scene(
+    pmx_path: Path,
+    vmd_path: Path,
+    mode: str,
+    bone_count: int,
+    *,
+    skeletal_only: bool,
+    custom_namespace: str | None = None,
+) -> tuple[str, list[om.MMatrix]]:
     from mmd_tools.core import settings
     from mmd_tools.io.mmd_importer import import_mmd_file
 
@@ -262,6 +324,8 @@ def _import_scene(pmx_path: Path, vmd_path: Path, mode: str, bone_count: int) ->
             "setup_rig": mode == "rig",
             "setup_bone_orientation": mode == "rig",
             "import_physics": False,
+            "import_morphs": not skeletal_only,
+            "custom_namespace": custom_namespace,
         },
     )
     if not root:
@@ -300,6 +364,51 @@ def _capture_maya_by_source_index(root: str, frames: list[int]) -> dict[int, dic
                 frame_points[int(source_index)] = point
         result[frame] = frame_points
     return result
+
+
+def _capture_viewport(root: str, frame: int, requested_path: Path) -> Path:
+    """Capture the evaluated model from a fitted standalone perspective camera."""
+    requested_path = requested_path.resolve()
+    requested_path.parent.mkdir(parents=True, exist_ok=True)
+    bounds = cmds.exactWorldBoundingBox(root)
+    center = tuple((bounds[index] + bounds[index + 3]) * 0.5 for index in range(3))
+    extent = max(bounds[index + 3] - bounds[index] for index in range(3)) or 10.0
+
+    camera = "persp"
+    cmds.setAttr(f"{camera}.translate", center[0] + extent * 1.5, center[1] + extent * 0.4, center[2] + extent * 2.0, type="double3")
+    target = cmds.spaceLocator(name="mmdOracleCaptureTarget")[0]
+    cmds.setAttr(f"{target}.translate", *center, type="double3")
+    constraint = cmds.aimConstraint(
+        target,
+        camera,
+        aimVector=(0.0, 0.0, -1.0),
+        upVector=(0.0, 1.0, 0.0),
+        worldUpType="scene",
+    )[0]
+    cmds.delete(constraint, target)
+    cmds.currentTime(frame, edit=True)
+    cmds.playblast(
+        filename=str(requested_path.with_suffix("")),
+        frame=frame,
+        format="image",
+        compression="png",
+        offScreen=True,
+        offScreenViewportUpdate=True,
+        viewer=False,
+        width=960,
+        height=720,
+        forceOverwrite=True,
+        showOrnaments=False,
+        percent=100,
+    )
+    candidates = sorted(
+        requested_path.parent.glob(f"{requested_path.stem}*.png"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates or candidates[0].stat().st_size <= 0:
+        raise RuntimeError(f"viewport capture was not produced for {requested_path}")
+    return candidates[0]
 
 
 def _compare(
@@ -345,17 +454,40 @@ def _compare(
 def main() -> int:
     args = _parse_args()
     _initialize()
+    cmds.evaluationManager(mode=args.evaluation_mode)
     pmx_path = (ROOT / args.pmx).resolve() if not Path(args.pmx).is_absolute() else Path(args.pmx)
     vmd_path = (ROOT / args.vmd).resolve() if not Path(args.vmd).is_absolute() else Path(args.vmd)
     frames = list(dict.fromkeys(args.frame if args.frame is not None else [0, 30, 60]))
-    from mmd_tools.core.mmd_parser import parse_pmx_file
+    from mmd_tools.core.mmd_parser import parse_mmd_file, parse_pmx_file
 
-    bone_count = len(parse_pmx_file(str(pmx_path)).bones)
-    root, maya_bind_world_matrices = _import_scene(pmx_path, vmd_path, args.mode, bone_count)
+    pmx_data = parse_pmx_file(str(pmx_path))
+    if args.skeletal_only:
+        driven_bone_morphs = _active_vmd_morphs_drive_bone_morphs(
+            pmx_data,
+            parse_mmd_file(str(vmd_path)),
+        )
+        if driven_bone_morphs:
+            raise ValueError(
+                "--skeletal-only cannot disable PMX bone morphs driven by this VMD: "
+                + ", ".join(driven_bone_morphs)
+            )
+    root, maya_bind_world_matrices = _import_scene(
+        pmx_path,
+        vmd_path,
+        args.mode,
+        len(pmx_data.bones),
+        skeletal_only=args.skeletal_only,
+        custom_namespace=args.namespace,
+    )
     bind_world_matrices = None if args.bind_source == "pmx" else maya_bind_world_matrices
     oracle = _compute_oracle_vertices(pmx_path, vmd_path, frames, bind_world_matrices)
     maya_points = _capture_maya_by_source_index(root, frames)
     comparison = _compare(maya_points, oracle, frames, args.threshold)
+    capture_path = (
+        _capture_viewport(root, frames[0], Path(args.capture))
+        if args.capture
+        else None
+    )
     report = {
         "status": "passed" if comparison["passed"] else "failed",
         "oracle": {
@@ -367,6 +499,10 @@ def main() -> int:
         "pmx": str(pmx_path),
         "vmd": str(vmd_path),
         "mode": args.mode,
+        "evaluationMode": args.evaluation_mode,
+        "namespace": args.namespace,
+        "capture": str(capture_path) if capture_path else None,
+        "skeletalOnly": bool(args.skeletal_only),
         "bind_source": args.bind_source,
         "comparison": comparison,
     }

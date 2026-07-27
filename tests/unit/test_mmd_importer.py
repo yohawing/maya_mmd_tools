@@ -17,6 +17,7 @@ _ALL_KEYS = (
     "import.model.uv_set_name",
     "import.model.texture_search_path",
     "import.rig.add_semi_standard_bones",
+    "import.morph.import_morphs",
     "import.naming.translate_names",
 )
 
@@ -35,6 +36,7 @@ class TestScopedSettingsOverride(unittest.TestCase):
         settings.set("import.model.disable_backface_culling", False)
         settings.set("import.model.uv_set_name", "myUV")
         settings.set("import.rig.add_semi_standard_bones", True)
+        settings.set("import.morph.import_morphs", True)
         settings.set("import.naming.translate_names", False)
 
         options = {
@@ -44,6 +46,7 @@ class TestScopedSettingsOverride(unittest.TestCase):
             "uv_set_name": "map#",
             "texture_search_path": "",
             "add_semi_standard_bones": False,
+            "import_morphs": False,
             "translate_names": True,
         }
 
@@ -54,6 +57,7 @@ class TestScopedSettingsOverride(unittest.TestCase):
             self.assertEqual(settings.get("import.model.uv_set_name"), "map#")
             self.assertEqual(settings.get("import.model.texture_search_path"), "")
             self.assertFalse(settings.get("import.rig.add_semi_standard_bones"))
+            self.assertFalse(settings.get("import.morph.import_morphs"))
             self.assertTrue(settings.get("import.naming.translate_names"))
 
     def test_original_values_restored_after_context(self):

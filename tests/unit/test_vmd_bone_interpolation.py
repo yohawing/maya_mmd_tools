@@ -6,6 +6,7 @@ import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
 from mmd_tools.converters import vmd_bezier_tangent
+from mmd_tools.converters.vmd_bone_interpolation import evaluate_vmd_bezier
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.core.constants import ATTR_MMD_BONE_NAME
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
@@ -40,6 +41,36 @@ class TestVmdBoneInterpolation(MayaTestBase):
     def tearDown(self):
         super().tearDown()
         self.fixture_provider.cleanup_temp_files()
+
+    def test_rotation_bezier_evaluator_matches_runtime_probe(self):
+        """KOTORA frame 295->304 rotation timing matches mmd-anim."""
+        points = (0.0, 20.0 / 127.0, 75.0 / 127.0, 1.0)
+
+        self.assertAlmostEqual(
+            evaluate_vmd_bezier(points, 5.0 / 9.0),
+            0.77281165,
+            delta=1.0e-7,
+        )
+
+    def test_non_linear_rotation_bezier_is_sampled_at_integer_frames(self):
+        joint = cmds.joint(name="rotation_bezier_joint")
+        self.converter.bone_name_mapping = {"腕": joint}
+        self.converter._bone_bind_poses = {"腕": (0.0, 0.0, 0.0)}
+
+        frame0 = VmdBoneFrame()
+        frame0.bone_name = "腕"
+        frame0.frame_number = 0
+        frame0.rotation = (0.0, 0.0, 0.0, 1.0)
+        frame1 = VmdBoneFrame()
+        frame1.bone_name = "腕"
+        frame1.frame_number = 4
+        frame1.rotation = (0.0, 0.70710678, 0.0, 0.70710678)
+        frame1.interpolation = _bone_interp_bytes_by_channel(rotation=(0, 20, 75, 127))
+
+        self.converter._set_bone_keyframes(joint, [frame0, frame1], "腕")
+
+        keyed_times = cmds.keyframe(f"{joint}.rotateY", query=True, timeChange=True)
+        self.assertEqual(keyed_times, [0.0, 1.0, 2.0, 3.0, 4.0])
 
     def test_bone_bezier_tangents_use_api_on_animation_layer(self):
         """大量 model VMD の tangent 適用で cmds.keyTangent hot path に落ちない。"""

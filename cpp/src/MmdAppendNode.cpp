@@ -14,15 +14,19 @@
 
 #include <maya/MFnAttribute.h>
 #include <maya/MFnNumericAttribute.h>
+#include <maya/MFnDoubleArrayData.h>
 #include <maya/MFnCompoundAttribute.h>
+#include <maya/MFnMatrixAttribute.h>
 #include <maya/MDataHandle.h>
 #include <maya/MPlug.h>
 #include <maya/MGlobal.h>
 #include <maya/MAngle.h>
 #include <maya/MEulerRotation.h>
 #include <maya/MQuaternion.h>
+#include <maya/MTransformationMatrix.h>
 
 #include "mmd_runtime.h"
+#include "MmdCoordinateUtils.h"
 
 #include <cmath>
 
@@ -202,6 +206,44 @@ void setAngle3OutputsDegrees(
     }
 }
 
+MMatrix rotationMatrix(const MQuaternion& quaternion)
+{
+    MTransformationMatrix transform;
+    transform.setRotationQuaternion(quaternion.x, quaternion.y, quaternion.z, quaternion.w);
+    return transform.asMatrix();
+}
+
+MQuaternion exactAppendRotate(
+    const MQuaternion& baseRotate,
+    const MQuaternion& targetJointOrient,
+    const MQuaternion& grantMmdRotate,
+    const MMatrix& targetMayaBindWorld,
+    const MMatrix& targetNoOrientBindWorld,
+    const MMatrix& parentMayaBindWorld,
+    const MMatrix& parentNoOrientBindWorld)
+{
+    // Maya's local rotate plug excludes jointOrient.  Convert the complete
+    // Maya local orientation into runtime (MMD) local space, append the native
+    // runtime grant there, then convert back and remove target JO again.
+    MQuaternion baseTotal = baseRotate * targetJointOrient;
+    baseTotal.normalizeIt();
+    const MMatrix mayaLocal = rotationMatrix(baseTotal);
+    const MMatrix runtimeLocalMaya =
+        targetNoOrientBindWorld * targetMayaBindWorld.inverse() * mayaLocal *
+        parentMayaBindWorld * parentNoOrientBindWorld.inverse();
+    const MMatrix runtimeLocalMmd = mayaWorldToMmd(runtimeLocalMaya);
+    const MMatrix runtimeFinal = runtimeLocalMmd * rotationMatrix(grantMmdRotate);
+    const MMatrix mayaFinal =
+        targetMayaBindWorld * targetNoOrientBindWorld.inverse() *
+        mmdWorldToMaya(runtimeFinal) * parentNoOrientBindWorld *
+        parentMayaBindWorld.inverse();
+
+    MQuaternion finalTotal = MTransformationMatrix(mayaFinal).rotation();
+    finalTotal = finalTotal * targetJointOrient.inverse();
+    finalTotal.normalizeIt();
+    return finalTotal;
+}
+
 
 const MTypeId MmdAppendNode::id(0x00128001);
 
@@ -259,6 +301,13 @@ MObject MmdAppendNode::aSourceJointOrient;
 MObject MmdAppendNode::aSourceJointOrientX;
 MObject MmdAppendNode::aSourceJointOrientY;
 MObject MmdAppendNode::aSourceJointOrientZ;
+MObject MmdAppendNode::aSourceMmdLinkQuaternions;
+MObject MmdAppendNode::aSourceMmdLinkIndex;
+MObject MmdAppendNode::aUseTargetBindMatrices;
+MObject MmdAppendNode::aTargetMayaBindWorldMatrix;
+MObject MmdAppendNode::aTargetNoOrientBindWorldMatrix;
+MObject MmdAppendNode::aParentMayaBindWorldMatrix;
+MObject MmdAppendNode::aParentNoOrientBindWorldMatrix;
 
 MObject MmdAppendNode::aTargetJointOrient;
 MObject MmdAppendNode::aTargetJointOrientX;
@@ -438,6 +487,8 @@ void MmdAppendNode::markAngle3Output(
 MStatus MmdAppendNode::initialize() {
     MStatus status;
     MFnNumericAttribute nAttr;
+    MFnTypedAttribute tAttr;
+    MFnMatrixAttribute mAttr;
 
     // --- Legacy 入力 (hidden): inputTranslate(double3) ---
     aInputTranslate = createDouble3Attribute(
@@ -518,6 +569,72 @@ MStatus MmdAppendNode::initialize() {
         "sourceJointOrient", "sjo",
         aSourceJointOrientX, aSourceJointOrientY, aSourceJointOrientZ, 0.0);
     addAttribute(aSourceJointOrient);
+
+    aSourceMmdLinkQuaternions = tAttr.create(
+        "sourceMmdLinkQuaternions", "smlq", MFnData::kDoubleArray, MObject::kNullObj, &status);
+    tAttr.setStorable(false);
+    tAttr.setKeyable(false);
+    tAttr.setWritable(true);
+    tAttr.setReadable(true);
+    tAttr.setHidden(true);
+    addAttribute(aSourceMmdLinkQuaternions);
+
+    aSourceMmdLinkIndex = nAttr.create(
+        "sourceMmdLinkIndex", "smli", MFnNumericData::kInt, -1, &status);
+    nAttr.setStorable(true);
+    nAttr.setKeyable(false);
+    nAttr.setWritable(true);
+    nAttr.setReadable(false);
+    nAttr.setHidden(true);
+    nAttr.setMin(-1);
+    addAttribute(aSourceMmdLinkIndex);
+
+    // Hidden bind-space inputs used by the native CcdIK -> append bridge.  A
+    // false flag deliberately preserves the legacy JO-only compatibility path.
+    aUseTargetBindMatrices = nAttr.create(
+        "useTargetBindMatrices", "utbm", MFnNumericData::kBoolean, false, &status);
+    nAttr.setStorable(true);
+    nAttr.setKeyable(false);
+    nAttr.setWritable(true);
+    nAttr.setReadable(false);
+    nAttr.setHidden(true);
+    addAttribute(aUseTargetBindMatrices);
+
+    aTargetMayaBindWorldMatrix = mAttr.create(
+        "targetMayaBindWorldMatrix", "tmbw", MFnMatrixAttribute::kDouble, &status);
+    mAttr.setStorable(true);
+    mAttr.setKeyable(false);
+    mAttr.setWritable(true);
+    mAttr.setReadable(false);
+    mAttr.setHidden(true);
+    addAttribute(aTargetMayaBindWorldMatrix);
+
+    aTargetNoOrientBindWorldMatrix = mAttr.create(
+        "targetNoOrientBindWorldMatrix", "tnobw", MFnMatrixAttribute::kDouble, &status);
+    mAttr.setStorable(true);
+    mAttr.setKeyable(false);
+    mAttr.setWritable(true);
+    mAttr.setReadable(false);
+    mAttr.setHidden(true);
+    addAttribute(aTargetNoOrientBindWorldMatrix);
+
+    aParentMayaBindWorldMatrix = mAttr.create(
+        "parentMayaBindWorldMatrix", "pmbw", MFnMatrixAttribute::kDouble, &status);
+    mAttr.setStorable(true);
+    mAttr.setKeyable(false);
+    mAttr.setWritable(true);
+    mAttr.setReadable(false);
+    mAttr.setHidden(true);
+    addAttribute(aParentMayaBindWorldMatrix);
+
+    aParentNoOrientBindWorldMatrix = mAttr.create(
+        "parentNoOrientBindWorldMatrix", "pnobw", MFnMatrixAttribute::kDouble, &status);
+    mAttr.setStorable(true);
+    mAttr.setKeyable(false);
+    mAttr.setWritable(true);
+    mAttr.setReadable(false);
+    mAttr.setHidden(true);
+    addAttribute(aParentNoOrientBindWorldMatrix);
 
     aTargetJointOrient = createAngle3Attribute(
         "targetJointOrient", "tjo",
@@ -634,6 +751,10 @@ MStatus MmdAppendNode::initialize() {
              aBaseRotateX, aBaseRotateY, aBaseRotateZ,
              aSourceRotateX, aSourceRotateY, aSourceRotateZ,
              aSourceJointOrientX, aSourceJointOrientY, aSourceJointOrientZ,
+             aSourceMmdLinkQuaternions, aSourceMmdLinkIndex,
+             aUseTargetBindMatrices,
+             aTargetMayaBindWorldMatrix, aTargetNoOrientBindWorldMatrix,
+             aParentMayaBindWorldMatrix, aParentNoOrientBindWorldMatrix,
              aTargetJointOrientX, aTargetJointOrientY, aTargetJointOrientZ,
              aRatio, aAffectRotation, aLocalAppend, aSchemaMode}) {
         attributeAffects(input, aOutputRotateX);
@@ -709,9 +830,27 @@ MStatus MmdAppendNode::compute(const MPlug& plug, MDataBlock& data) {
         const double baseRy = data.inputValue(aBaseRotateY).asAngle().asRadians();
         const double baseRz = data.inputValue(aBaseRotateZ).asAngle().asRadians();
 
-        MQuaternion sourceQuat = MEulerRotation(srcRx, srcRy, srcRz).asQuaternion();
-        MQuaternion sourceJoQuat = MEulerRotation(srcJoX, srcJoY, srcJoZ).asQuaternion();
-        MQuaternion sourceMmdQuat = sourceJoQuat.inverse() * sourceQuat * sourceJoQuat;
+        MQuaternion sourceMmdQuat;
+        bool hasNativeMmdQuaternion = false;
+        const int sourceMmdLinkIndex = data.inputValue(aSourceMmdLinkIndex, &status).asInt();
+        MObject sourceMmdDataObject = data.inputValue(aSourceMmdLinkQuaternions, &status).data();
+        if (sourceMmdLinkIndex >= 0 && !sourceMmdDataObject.isNull()) {
+            MFnDoubleArrayData sourceMmdData(sourceMmdDataObject, &status);
+            if (status == MS::kSuccess) {
+                const MDoubleArray values = sourceMmdData.array(&status);
+                const unsigned int offset = static_cast<unsigned int>(sourceMmdLinkIndex) * 4u;
+                if (status == MS::kSuccess && values.length() >= offset + 4u) {
+                    sourceMmdQuat = MQuaternion(
+                        values[offset], values[offset + 1], values[offset + 2], values[offset + 3]);
+                    hasNativeMmdQuaternion = true;
+                }
+            }
+        }
+        if (!hasNativeMmdQuaternion) {
+            MQuaternion sourceQuat = MEulerRotation(srcRx, srcRy, srcRz).asQuaternion();
+            MQuaternion sourceJoQuat = MEulerRotation(srcJoX, srcJoY, srcJoZ).asQuaternion();
+            sourceMmdQuat = sourceJoQuat.inverse() * sourceQuat * sourceJoQuat;
+        }
         sourceMmdQuat.normalizeIt();
 
         float sourcePosition[3] = {
@@ -761,11 +900,25 @@ MStatus MmdAppendNode::compute(const MPlug& plug, MDataBlock& data) {
         double appendRz = appendEuler.z * 180.0 / kPi;
 
         MQuaternion targetJoQuat = MEulerRotation(tgtJoX, tgtJoY, tgtJoZ).asQuaternion();
-        MQuaternion targetGrantQuat = targetJoQuat * grantQuat * targetJoQuat.inverse();
-        targetGrantQuat.normalizeIt();
         MQuaternion baseQuat = MEulerRotation(baseRx, baseRy, baseRz).asQuaternion();
-        MQuaternion finalQuat = baseQuat * targetGrantQuat;
-        finalQuat.normalizeIt();
+        const bool useExactBindSpace = hasNativeMmdQuaternion &&
+            data.inputValue(aUseTargetBindMatrices, &status).asBool();
+        MQuaternion finalQuat;
+        if (useExactBindSpace) {
+            finalQuat = exactAppendRotate(
+                baseQuat,
+                targetJoQuat,
+                grantQuat,
+                data.inputValue(aTargetMayaBindWorldMatrix, &status).asMatrix(),
+                data.inputValue(aTargetNoOrientBindWorldMatrix, &status).asMatrix(),
+                data.inputValue(aParentMayaBindWorldMatrix, &status).asMatrix(),
+                data.inputValue(aParentNoOrientBindWorldMatrix, &status).asMatrix());
+        } else {
+            MQuaternion targetGrantQuat = targetJoQuat * grantQuat * targetJoQuat.inverse();
+            targetGrantQuat.normalizeIt();
+            finalQuat = baseQuat * targetGrantQuat;
+            finalQuat.normalizeIt();
+        }
         MEulerRotation finalEuler = finalQuat.asEulerRotation();
         double outRx = finalEuler.x * 180.0 / kPi;
         double outRy = finalEuler.y * 180.0 / kPi;

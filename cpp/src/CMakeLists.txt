@@ -76,6 +76,7 @@ set(HEADERS
     mmdFastLoad.h
     MmdAppendNode.h
     MmdCcdIkNode.h
+    MmdCoordinateUtils.h
     MmdPhysicsBoneDriverNode.h
 )
 
