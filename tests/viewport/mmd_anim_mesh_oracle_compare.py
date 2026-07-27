@@ -268,7 +268,14 @@ def _import_scene(pmx_path: Path, vmd_path: Path, mode: str, bone_count: int) ->
         raise RuntimeError("PMX import failed")
     bind_world_matrices = _capture_skin_bind_world_matrices(root, bone_count)
     cmds.select(root, replace=True)
-    ok = import_mmd_file(str(vmd_path), options={"target_model": root, "pmx_path": str(pmx_path)})
+    ok = import_mmd_file(
+        str(vmd_path),
+        options={
+            "target_model": root,
+            "pmx_path": str(pmx_path),
+            "bake_mode": mode == "bake",
+        },
+    )
     if not ok:
         raise RuntimeError("VMD import failed")
     return root, bind_world_matrices
