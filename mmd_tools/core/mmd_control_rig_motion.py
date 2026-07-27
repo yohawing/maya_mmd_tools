@@ -1163,6 +1163,7 @@ def _sample_control_input_to_mmd(
                 time=(time, time),
                 value=value,
             )
+        _set_sampled_curve_tangents(cmds, mmd_source, target)
         if sampled_values or cmds.isConnected(mmd_source, target):
             return str(mmd_source)
 
@@ -1174,6 +1175,7 @@ def _sample_control_input_to_mmd(
                 created_curve_nodes.append(curve_node)
             for time, value in sampled_values:
                 cmds.setKeyframe(curve_node, time=(time, time), value=value)
+            _set_sampled_curve_tangents(cmds, f"{curve_node}.output", target)
             curve_plug = f"{curve_node}.output"
             cmds.connectAttr(curve_plug, target, force=False)
             return curve_plug
@@ -1189,6 +1191,35 @@ def _sample_control_input_to_mmd(
     value = float(cmds.getAttr(control))
     cmds.setAttr(target, value)
     return None
+
+
+def _set_sampled_curve_tangents(cmds, curve_plug: str, target: str) -> None:
+    """Use non-overshooting interpolation for sampled solver inputs.
+
+    Transform-space samples are a discrete approximation of a solved pose and
+    must not introduce Bezier overshoot between integer frames.  Boolean IK
+    state is piecewise constant, so a step tangent keeps the prior state until
+    the next keyed frame.
+    """
+    curve_node = str(curve_plug).split(".", 1)[0]
+    in_tangent, out_tangent = _sampled_curve_tangent_types(target)
+    cmds.keyTangent(
+        curve_node,
+        edit=True,
+        inTangentType=in_tangent,
+        outTangentType=out_tangent,
+    )
+
+
+def _sampled_curve_tangent_types(target: str) -> Tuple[str, str]:
+    """Return explicit in/out tangent types for a sampled destination plug."""
+    attribute = str(target).rsplit(".", 1)[-1].lower()
+    if attribute.endswith("enabled") or attribute.startswith("ik"):
+        # Maya rejects ``step`` as an in-tangent; ``stepnext`` gives the same
+        # held-state behavior on the incoming side while ``step`` is valid for
+        # outgoing boolean keys.
+        return "stepnext", "step"
+    return "linear", "linear"
 
 
 def _sampled_curve_type(cmds, control_source: Optional[str], target: str) -> str:

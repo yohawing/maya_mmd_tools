@@ -112,6 +112,14 @@ class TestMmdControlRigRoundtrip(MayaTestBase):
         self.assertAlmostEqual(sampled_values[0], 2.0)
         self.assertAlmostEqual(sampled_values[6], 4.5)
         self.assertAlmostEqual(sampled_values[-1], 7.0)
+        self.assertEqual(
+            cmds.keyTangent(source.split(".", 1)[0], query=True, inTangentType=True),
+            ["linear"] * len(sampled_values),
+        )
+        self.assertEqual(
+            cmds.keyTangent(source.split(".", 1)[0], query=True, outTangentType=True),
+            ["linear"] * len(sampled_values),
+        )
         self.assertAlmostEqual(cmds.getAttr(f"{target}.translateX", time=23), 7.0)
         self.assertEqual(float(cmds.currentTime(query=True)), 77.0)
 
@@ -155,9 +163,62 @@ class TestMmdControlRigRoundtrip(MayaTestBase):
             cmds.keyframe(result.split(".", 1)[0], query=True, timeChange=True),
             list(range(4, 10)),
         )
+        self.assertEqual(
+            cmds.keyTangent(result.split(".", 1)[0], query=True, inTangentType=True),
+            ["linear"] * 6,
+        )
+        self.assertEqual(
+            cmds.keyTangent(result.split(".", 1)[0], query=True, outTangentType=True),
+            ["linear"] * 6,
+        )
         self.assertAlmostEqual(cmds.getAttr(f"{target}.rotateY", time=4), 0.25)
         self.assertAlmostEqual(cmds.getAttr(f"{target}.rotateY", time=9), 1.5)
         self.assertEqual(float(cmds.currentTime(query=True)), 50.0)
+
+    def test_sampled_route_uses_step_tangents_for_ik_enabled_curve(self):
+        """IK enabled samples remain constant until the next keyed state."""
+        control = cmds.createNode("transform", name="cr061_sampled_ik_control")
+        target = cmds.createNode("network", name="cr061_sampled_ik_target")
+        cmds.addAttr(control, longName="ikEnabled", attributeType="bool", keyable=True)
+        cmds.addAttr(target, longName="enabled", attributeType="bool", keyable=True)
+        cmds.setKeyframe(control, attribute="ikEnabled", time=4, value=1)
+        cmds.setKeyframe(control, attribute="ikEnabled", time=9, value=0)
+        control_source = (
+            cmds.listConnections(
+                f"{control}.ikEnabled", source=True, destination=False, plugs=True
+            )
+            or [None]
+        )[0]
+        self.assertTrue(control_source)
+
+        created = []
+        result = _sample_control_input_to_mmd(
+            cmds,
+            {
+                "control": f"{control}.ikEnabled",
+                "target": f"{target}.enabled",
+                "source": None,
+                "controlSource": control_source,
+                "routeClass": "sampled",
+            },
+            control_source,
+            None,
+            created_curve_nodes=created,
+        )
+
+        self.assertTrue(result)
+        curve_node = result.split(".", 1)[0]
+        self.assertEqual(cmds.nodeType(curve_node), "animCurveTU")
+        self.assertEqual(
+            cmds.keyTangent(curve_node, query=True, inTangentType=True),
+            ["stepnext"] * 6,
+        )
+        self.assertEqual(
+            cmds.keyTangent(curve_node, query=True, outTangentType=True),
+            ["step"] * 6,
+        )
+        self.assertTrue(cmds.getAttr(f"{target}.enabled", time=6))
+        self.assertFalse(cmds.getAttr(f"{target}.enabled", time=9))
 
 
 if __name__ == "__main__":
