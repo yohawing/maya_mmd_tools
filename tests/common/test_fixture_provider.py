@@ -21,6 +21,7 @@ class TestFixtureProvider:
     _FIXTURE_MANIFESTS = {
         "yw_test_model": "yw_test_model.fixture.json",
         "yw_test_model_control_rig_vmd": "yw_test_model_control_rig_vmd.fixture.json",
+        "yw_test_model_control_rig_bone_morph": "yw_test_model_control_rig_bone_morph.fixture.json",
     }
 
     def __init__(self, data_dir: str = None):

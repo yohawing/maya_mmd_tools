@@ -502,10 +502,20 @@ def _normalized_vmd(vmd: Any) -> dict[str, Any]:
             }
         )
     ik_rows.sort(key=lambda row: _frame_sort_key(row["frame"]))
+    morph_rows = [
+        {
+            "morphName": str(frame.morph_name),
+            "frame": _frame_value(frame.frame_number),
+            "value": float(frame.value),
+        }
+        for frame in getattr(vmd, "morph_frames", []) or []
+    ]
+    morph_rows.sort(key=lambda row: (row["morphName"], _frame_sort_key(row["frame"])))
     return {
         "boneKeyTimes": [(row["boneName"], row["frame"]) for row in bone_rows],
         "boneInterpolation": bone_rows,
         "ikProperties": ik_rows,
+        "morphKeyValues": morph_rows,
     }
 
 
@@ -538,6 +548,7 @@ def _compare_vmd_roundtrip(exported: Any, fresh: Any) -> dict[str, Any]:
                 }
             )
     ik_pass = left["ikProperties"] == right["ikProperties"]
+    morph_pass = left["morphKeyValues"] == right["morphKeyValues"]
     first_divergence = None
     if not key_times_pass:
         first_divergence = {
@@ -556,6 +567,12 @@ def _compare_vmd_roundtrip(exported: Any, fresh: Any) -> dict[str, Any]:
             "exported": left["ikProperties"],
             "fresh": right["ikProperties"],
         }
+    elif not morph_pass:
+        first_divergence = {
+            "category": "export_fresh_morph_keys",
+            "exported": left["morphKeyValues"],
+            "fresh": right["morphKeyValues"],
+        }
     return {
         "keyTimes": {
             "exported": left["boneKeyTimes"],
@@ -572,8 +589,51 @@ def _compare_vmd_roundtrip(exported: Any, fresh: Any) -> dict[str, Any]:
             "fresh": right["ikProperties"],
             "pass": ik_pass,
         },
+        "morphKeyValues": {
+            "exported": left["morphKeyValues"],
+            "fresh": right["morphKeyValues"],
+            "pass": morph_pass,
+        },
         "firstDivergence": first_divergence,
-        "pass": key_times_pass and not interpolation_mismatches and ik_pass,
+        "pass": key_times_pass and not interpolation_mismatches and ik_pass and morph_pass,
+    }
+
+
+def _compare_exported_morph_presence(
+    vmd: Any,
+    pmx: Any | None,
+    authored_morph_names: Iterable[str] = (),
+) -> dict[str, Any]:
+    """Require authored structural PMX BoneMorphs to survive VMD export."""
+
+    authored_names = {str(name) for name in authored_morph_names if str(name)}
+    expected = [
+        morph["name"]
+        for morph in _pmx_bone_morphs(pmx)
+        if morph["name"] in authored_names or morph["nameEnglish"] in authored_names
+    ]
+    rows = [
+        {
+            "name": str(frame.morph_name),
+            "frame": _frame_value(frame.frame_number),
+            "value": float(frame.value),
+        }
+        for frame in getattr(vmd, "morph_frames", []) or []
+    ]
+    actual = sorted({row["name"] for row in rows})
+    missing = sorted(set(expected) - set(actual))
+    reasons = []
+    if expected and not rows:
+        reasons.append("exported VMD contains no morph frames for structural PMX BoneMorph")
+    if missing:
+        reasons.append(f"exported VMD is missing PMX BoneMorph names: {missing}")
+    return {
+        "expectedNames": sorted(expected),
+        "exportedNames": actual,
+        "exportedFrames": rows,
+        "missingNames": missing,
+        "pass": not expected or not reasons,
+        "reasons": reasons,
     }
 
 
@@ -949,10 +1009,12 @@ def _run_export_fresh_import(
     frames: list[int | float],
     interpolation_probe: Mapping[str, Any],
     output: Path,
+    authored_morph_names: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Export baked Control Rig motion and compare a fresh ordinary import."""
 
     from mmd_tools.core.vmd_data import VmdData
+    from mmd_tools.core.mmd_parser import parse_pmx_file
     from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
     from mmd_tools.io.mmd_importer import import_mmd_file
     from mmd_tools.io.vmd_exporter import VmdExporter
@@ -1045,6 +1107,18 @@ def _run_export_fresh_import(
             raise RuntimeError(f"fresh VMD re-export did not produce a file: {fresh_export_path}")
         fresh_vmd = VmdData().parse_file(str(fresh_export_path))
         data_compare = _compare_vmd_roundtrip(exported_vmd, fresh_vmd)
+        morph_presence = _compare_exported_morph_presence(
+            exported_vmd,
+            parse_pmx_file(str(model), use_native_pmx_parse=False),
+            authored_morph_names,
+        )
+        data_compare["morphPresence"] = morph_presence
+        data_compare["pass"] = bool(data_compare.get("pass")) and bool(morph_presence.get("pass"))
+        if not morph_presence.get("pass") and not data_compare.get("firstDivergence"):
+            data_compare["firstDivergence"] = {
+                "category": "export_morph_presence",
+                "reasons": list(morph_presence.get("reasons") or []),
+            }
         gate.update(
             {
                 "freshRoot": str(fresh_root),
@@ -1203,6 +1277,174 @@ def _route_target_observable_evidence(route: Mapping[str, Any], target_index: in
     return result
 
 
+def _pmx_bone_morphs(pmx: Any | None) -> list[dict[str, Any]]:
+    """Return only PMX BoneMorph records with finite, non-identity offsets."""
+
+    from mmd_tools.core.pmx_data.morph import PmxMorphType
+
+    result = []
+    for index, morph in enumerate(getattr(pmx, "morphs", []) or []):
+        if getattr(morph, "morph_type", None) != PmxMorphType.BoneMorph:
+            continue
+        offsets = []
+        for offset in getattr(morph, "offsets", []) or []:
+            try:
+                bone_index = int(offset["bone_index"])
+                translation = [float(value) for value in offset.get("translation", (0.0, 0.0, 0.0))]
+                rotation = [float(value) for value in offset.get("rotation", (0.0, 0.0, 0.0, 1.0))]
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            if len(translation) != 3 or len(rotation) != 4 or not all(
+                math.isfinite(value) for value in (*translation, *rotation)
+            ):
+                continue
+            delta = max(abs(value) for value in translation)
+            delta = max(delta, max(abs(value) for value in rotation[:3]))
+            if delta <= _APPEND_OBSERVABLE_EPSILON and abs(abs(rotation[3]) - 1.0) <= _APPEND_OBSERVABLE_EPSILON:
+                continue
+            offsets.append({"boneIndex": bone_index, "translation": translation, "rotation": rotation})
+        result.append(
+            {
+                "index": index,
+                "name": str(getattr(morph, "name", "") or ""),
+                "nameEnglish": str(getattr(morph, "name_english", "") or ""),
+                "offsets": offsets,
+            }
+        )
+    return result
+
+
+def _vmd_morph_evidence(vmd: Any, morph: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve a PMX morph name to authored VMD weights, fail-closed."""
+
+    names = {str(morph.get("name", "")), str(morph.get("nameEnglish", ""))} - {""}
+    rows = [
+        {
+            "frame": _frame_value(frame.frame_number),
+            "weight": float(frame.value),
+        }
+        for frame in getattr(vmd, "morph_frames", []) or []
+        if str(getattr(frame, "morph_name", "")) in names
+    ]
+    rows.sort(key=lambda item: _frame_sort_key(item["frame"]))
+    reasons = []
+    if not names:
+        reasons.append("PMX BoneMorph has no resolvable name")
+    if not rows:
+        reasons.append("VMD has no authored frame resolving the PMX BoneMorph name")
+    if rows and any(not math.isfinite(row["weight"]) for row in rows):
+        reasons.append("VMD BoneMorph weights contain a non-finite value")
+    if rows and not any(abs(row["weight"]) > _APPEND_OBSERVABLE_EPSILON for row in rows):
+        reasons.append("VMD BoneMorph weights are all zero")
+    return {
+        "pass": not reasons,
+        "status": "covered" if not reasons else "missing",
+        "morphName": str(morph.get("name", "")),
+        "frames": rows,
+        "reasons": reasons,
+    }
+
+
+def _scene_bone_morph_writer_evidence(
+    route: Mapping[str, Any], morph: Mapping[str, Any], vmd_evidence: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Require a real network weight, accumulator writer, and target delta."""
+
+    result = {
+        "pass": False,
+        "status": "missing",
+        "morphNode": "",
+        "accumulators": [],
+        "targetEvidence": [],
+        "reasons": [],
+    }
+    if route.get("importStatus") != "pass" or cmds is None:
+        result["reasons"].append("route import or Maya commands unavailable")
+        return result
+    morph_name = str(morph.get("name", ""))
+    nodes = []
+    for node in cmds.ls(type="network", long=True) or []:
+        try:
+            if not cmds.attributeQuery("mmd_morph_type", node=node, exists=True):
+                continue
+            if str(cmds.getAttr(f"{node}.mmd_morph_type") or "") != "bone":
+                continue
+            if str(cmds.getAttr(f"{node}.mmd_morph_name") or "") != morph_name:
+                continue
+            nodes.append(str(node))
+        except (RuntimeError, TypeError):
+            continue
+    if len(nodes) != 1:
+        result["reasons"].append(f"expected one real bone morph network node, got {len(nodes)}")
+        return result
+    node = nodes[0]
+    result["morphNode"] = node
+    weight_values = []
+    for row in vmd_evidence.get("frames", ()):
+        frame = row["frame"]
+        try:
+            cmds.currentTime(frame, edit=True)
+            weight_values.append({"frame": frame, "value": float(cmds.getAttr(f"{node}.weight"))})
+        except (RuntimeError, TypeError, ValueError):
+            result["reasons"].append(f"morph weight is not readable at frame {frame}")
+    if not any(abs(row["value"]) > _APPEND_OBSERVABLE_EPSILON for row in weight_values):
+        result["reasons"].append("scene morph weight never reaches a non-zero value")
+    result["weightValues"] = weight_values
+    for offset in morph.get("offsets", ()):
+        target_index = int(offset["boneIndex"])
+        record = _route_record(route, target_index)
+        target_joint = str(record.get("joint") or "") if record else ""
+        accumulators = []
+        if target_joint:
+            for attribute in ("translate", "rotate"):
+                for plug in cmds.listConnections(
+                    f"{target_joint}.{attribute}", source=True, destination=False, plugs=True
+                ) or []:
+                    source_node = str(plug).split(".", 1)[0]
+                    if cmds.nodeType(source_node) == "mmdBoneMorphAccum" and source_node not in accumulators:
+                        accumulators.append(source_node)
+        result["accumulators"].extend(accumulators)
+        target_frames = [int(row["frame"]) for row in vmd_evidence.get("frames", ())]
+        probe_frame = next((frame for frame in reversed(target_frames) if frame != 0), None)
+        if probe_frame is None:
+            result["reasons"].append("BoneMorph has no non-zero probe frame")
+            continue
+        evidence = _route_target_observable_evidence(route, target_index, probe_frame)
+        result["targetEvidence"].append(evidence)
+        if not evidence.get("pass"):
+            result["reasons"].append(evidence["reasons"][0] if evidence.get("reasons") else "target observable did not change")
+        if not accumulators:
+            result["reasons"].append(f"target bone {target_index} has no mmdBoneMorphAccum writer")
+    result["accumulators"] = sorted(set(result["accumulators"]))
+    result["pass"] = not result["reasons"]
+    result["status"] = "covered" if result["pass"] else "missing"
+    return result
+
+
+def _bone_morph_coverage(vmd: Any, pmx: Any | None, routes: Mapping[str, Mapping[str, Any]] | None) -> dict[str, Any]:
+    """Require structural PMX, authored VMD, and both real scene routes."""
+
+    morphs = _pmx_bone_morphs(pmx)
+    item = {"fixturePresent": bool(morphs), "status": "missing", "morphs": [], "reasons": []}
+    if not morphs:
+        item["reasons"].append("PMX has no non-identity BoneMorph offset")
+        return item
+    for morph in morphs:
+        vmd_evidence = _vmd_morph_evidence(vmd, morph)
+        row = {**morph, "vmd": vmd_evidence, "routes": {}}
+        if not vmd_evidence["pass"]:
+            item["reasons"].extend(vmd_evidence["reasons"])
+        for route_name, route in sorted((routes or {}).items()):
+            scene = _scene_bone_morph_writer_evidence(route, morph, vmd_evidence)
+            row["routes"][route_name] = scene
+            if not scene["pass"]:
+                item["reasons"].extend(f"{route_name}: {reason}" for reason in scene["reasons"])
+        item["morphs"].append(row)
+    item["reasons"] = list(dict.fromkeys(item["reasons"]))
+    item["status"] = "covered" if item["morphs"] and not item["reasons"] and routes else "missing"
+    return item
+
+
 def _append_coverage(vmd: Any, pmx: Any | None, routes: Mapping[str, Mapping[str, Any]] | None, interpolation_probe: Mapping[str, Any] | None) -> dict[str, Any]:
     """Report structural Append coverage; static helper grants are excluded explicitly."""
 
@@ -1272,12 +1514,11 @@ def _coverage(
     """
 
     bone_names = {str(frame.bone_name) for frame in getattr(vmd, "bone_frames", []) or []}
-    morph_present = bool(getattr(vmd, "morph_frames", None))
     ik_present = bool(getattr(vmd, "ik_show_hide_frames", None))
     foot_names = sorted(name for name in bone_names if "足IK" in name or "足ＩＫ" in name)
     toe_names = sorted(name for name in bone_names if "つま先IK" in name or "つま先ＩＫ" in name)
     rows = {
-        "boneMorph": {"fixturePresent": morph_present, "status": "covered" if morph_present else "missing"},
+        "boneMorph": _bone_morph_coverage(vmd, pmx, routes),
         "append": _append_coverage(vmd, pmx, routes, interpolation_probe),
         "footIk": {"fixturePresent": bool(foot_names), "roles": foot_names, "status": "covered" if foot_names else "missing"},
         "toeIk": {"fixturePresent": bool(toe_names), "roles": toe_names, "status": "covered" if toe_names else "missing"},
@@ -1396,11 +1637,26 @@ def run(model: Path, motion: Path, output: Path, evaluation_mode: str = "dg") ->
                 frames,
                 interpolation_probe,
                 output,
+                authored_morph_names=[
+                    str(frame.morph_name)
+                    for frame in getattr(vmd, "morph_frames", []) or []
+                ],
             )
             coverage["items"]["exportFreshImport"] = {
                 "status": "covered",
                 "gatePass": bool(export_fresh_import.get("pass")),
             }
+            morph_presence = (
+                export_fresh_import.get("dataParity", {}).get("morphPresence", {})
+                if isinstance(export_fresh_import.get("dataParity"), Mapping)
+                else {}
+            )
+            if coverage["items"]["boneMorph"].get("status") == "covered" and not morph_presence.get("pass"):
+                coverage["items"]["boneMorph"]["status"] = "missing"
+                coverage["items"]["boneMorph"].setdefault("reasons", []).append(
+                    "BoneMorph export/fresh VMD roundtrip did not preserve authored morph keys"
+                )
+                coverage_missing_set.add("boneMorph")
             # Executed red is a gate failure, not missing coverage.  The
             # remaining five categories stay fail-closed below.
             coverage_missing_set.discard("exportFreshImport")

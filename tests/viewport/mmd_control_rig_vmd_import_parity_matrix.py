@@ -35,6 +35,10 @@ CASE_PATHS = {
         ROOT / "tests" / "data" / "yw_test_model.pmx",
         ROOT / "tests" / "data" / "yw_test_model_control_rig_vmd.vmd",
     ),
+    "boneMorph": (
+        ROOT / "tests" / "data" / "yw_test_model_control_rig_bone_morph.pmx",
+        ROOT / "tests" / "data" / "yw_test_model_control_rig_bone_morph.vmd",
+    ),
 }
 CASES = tuple(CASE_PATHS)
 
@@ -567,7 +571,7 @@ def _aggregate(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cases", default=None, help="comma-separated parity cases (default: base,coverage)")
+    parser.add_argument("--cases", default=None, help="comma-separated parity cases (default: base,coverage,boneMorph)")
     parser.add_argument("--versions", default=",".join(VERSIONS), help="comma-separated Maya versions")
     parser.add_argument("--modes", default=",".join(MODES), help="comma-separated evaluation modes")
     parser.add_argument("--model", default=None, help="single-case model override (legacy CLI compatibility)")

@@ -181,13 +181,18 @@ def _source_data(source_path: str | Path) -> Mapping[str, Any]:
     return payload
 
 
-def build_vmd_data(model_path: str | Path, source_path: str | Path = DEFAULT_SOURCE) -> tuple[VmdData, dict[str, dict[str, Any]]]:
+def build_vmd_data(
+    model_path: str | Path,
+    source_path: str | Path = DEFAULT_SOURCE,
+    *,
+    require_no_morphs: bool = True,
+) -> tuple[VmdData, dict[str, dict[str, Any]]]:
     """Build VMD data and resolved role metadata without writing a file."""
 
     source = _source_data(source_path)
     roles = resolve_structural_roles(model_path)
     model = parse_pmx_file(str(model_path))
-    if model.morphs:
+    if require_no_morphs and model.morphs:
         raise ValueError("yw_test_model fixture unexpectedly contains morphs; do not fabricate Bone Morph coverage")
     model_name = str(source.get("model_name", model.header.model_name))
     _shift_jis_name(model_name, _NAME_WIDTHS["model"], "VMD model name")

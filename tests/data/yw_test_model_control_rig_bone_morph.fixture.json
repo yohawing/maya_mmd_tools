@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "name": "yw_test_model_control_rig_bone_morph",
+  "description": "Deterministic Control Rig BoneMorph parity fixture derived from the separately evidenced CC0 yw_test_model PMX.",
+  "license": {
+    "identifier": "MIT",
+    "evidence": {
+      "source": "Repository-authored generator and semantic source JSON; derived binary is checked in for test reproducibility.",
+      "record": "The base PMX remains CC0; the added BoneMorph PMX/VMD fixture and generator are repository-authored MIT test assets."
+    }
+  },
+  "provenance": {
+    "base_model_fixture": "yw_test_model",
+    "generator": "tests/data/generate_yw_test_model_control_rig_bone_morph.py",
+    "source_spec": "yw_test_model_control_rig_bone_morph.json",
+    "command": "python tests/data/generate_yw_test_model_control_rig_bone_morph.py",
+    "record": "PMX is produced by PmxData legacy parse/write with one explicit BoneMorph; VMD is produced by VmdExporter(native_exporter=None) from semantic source data. Binary hand editing is prohibited; regeneration must be byte-identical."
+  },
+  "files": [
+    {
+      "path": "yw_test_model_control_rig_bone_morph.pmx",
+      "kind": "pmx",
+      "size": 580745,
+      "sha256": "fdbcc52364d5ece7b7e10ad0f73286bff01c2e535abf39250403c7be6ef141f7"
+    },
+    {
+      "path": "yw_test_model_control_rig_bone_morph.json",
+      "kind": "source",
+      "size": 3350,
+      "sha256": "2b9ffba128ee9437c66f9b8b8acd597400c6dd265ab822da570b8879a0a3436b"
+    },
+    {
+      "path": "yw_test_model_control_rig_bone_morph.vmd",
+      "kind": "vmd",
+      "size": 2513,
+      "sha256": "14609a8d553279ce82e081238efa219f8a833e6fbd23f1c4b9c25400abaeb1d6"
+    }
+  ],
+  "motion": {
+    "model_name": "YWテスト用モデル",
+    "bone_frames": [0, 10, 20],
+    "bone_track_count": 6,
+    "morph_name": "CR_BoneMorph",
+    "morph_frames": [0, 10, 20],
+    "morph_weights": [0.0, 0.75, 1.0],
+    "ik_enable_frames": [0, 6, 12, 20],
+    "selection": {
+      "morph": {"name": "CR_BoneMorph", "type": "BoneMorph", "bone_name": "センター", "bone_index": 2, "translation": [0.25, 0.0, 0.0]},
+      "left_foot_ik": {"name": "左足ＩＫ", "index": 9},
+      "right_foot_ik": {"name": "右足ＩＫ", "index": 6},
+      "left_toe_ik": {"name": "左つま先ＩＫ", "index": 10},
+      "right_toe_ik": {"name": "右つま先ＩＫ", "index": 7}
+    }
+  },
+  "coverage": {
+    "bone_morph": {
+      "status": "requires_structural_scene_gate",
+      "requirements": ["PMX type=BoneMorph", "VMD name resolves PMX morph with non-zero authored weight", "legacy/direct real morph writer", "target transform delta", "export/fresh morph key and value roundtrip"]
+    }
+  }
+}

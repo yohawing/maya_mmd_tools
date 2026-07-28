@@ -141,12 +141,12 @@ def test_export_gate_not_run_remains_missing():
     assert "exportFreshImport" in aggregate["coverage"]["coverageMissingUnion"]
 
 
-def test_two_case_coverage_is_recorded_by_explicit_case():
+def test_case_coverage_is_recorded_by_explicit_case():
     rows = []
     for case in matrix.CASES:
         for version in matrix.VERSIONS:
             for mode in matrix.MODES:
-                if case == "coverage":
+                if case in {"coverage", "boneMorph"}:
                     statuses = {"append": "covered", "boneMorph": "covered", "ikEnable": "covered"}
                     coverage = ("evaluationModes", "externalOracle")
                 else:
@@ -171,13 +171,13 @@ def test_two_case_coverage_is_recorded_by_explicit_case():
     )
 
     assert aggregate["coverage"]["append"] == "covered"
-    assert aggregate["coverage"]["appendCases"] == ["coverage"]
-    assert aggregate["coverage"]["boneMorphCases"] == ["coverage"]
-    assert aggregate["coverage"]["ikEnableCases"] == ["coverage"]
+    assert aggregate["coverage"]["appendCases"] == ["boneMorph", "coverage"]
+    assert aggregate["coverage"]["boneMorphCases"] == ["boneMorph", "coverage"]
+    assert aggregate["coverage"]["ikEnableCases"] == ["boneMorph", "coverage"]
     assert "append" not in aggregate["coverage"]["coverageMissingUnion"]
 
 
-def test_two_case_export_failure_preserves_first_failing_case():
+def test_case_export_failure_preserves_first_failing_case():
     rows = []
     for case in matrix.CASES:
         for version in matrix.VERSIONS:
@@ -256,7 +256,10 @@ def test_default_dry_run_expands_two_cases(tmp_path):
     assert report["status"] == "dry_run"
     assert len(report["runs"]) == len(matrix.CASES) * len(matrix.VERSIONS) * len(matrix.MODES)
     assert {row["case"] for row in report["runs"]} == set(matrix.CASES)
-    assert all("_base_maya" in row["command"][-1] or "_coverage_maya" in row["command"][-1] for row in report["runs"])
+    assert all(
+        any(f"_{case}_maya" in row["command"][-1] for case in matrix.CASES)
+        for row in report["runs"]
+    )
 
 
 def test_validate_child_accepts_executed_red_export_as_gate_failure(tmp_path):

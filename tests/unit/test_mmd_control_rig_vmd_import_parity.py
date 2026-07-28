@@ -6,10 +6,15 @@ from types import SimpleNamespace
 
 from tests.viewport import mmd_control_rig_vmd_import_parity as parity
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
+from mmd_tools.core.pmx_data.morph import PmxMorphType
 
 
 def _bone_frame(name: str, frame: int) -> SimpleNamespace:
     return SimpleNamespace(bone_name=name, frame_number=frame, interpolation=bytes(64))
+
+
+def _morph_frame(name: str, frame: int, value: float) -> SimpleNamespace:
+    return SimpleNamespace(morph_name=name, frame_number=frame, value=value)
 
 
 def test_cpp_plugin_path_prefers_maya_version_override(tmp_path):
@@ -83,6 +88,84 @@ def test_external_oracle_not_run_is_explicit_and_not_numeric_zero():
     assert result["pass"] is False
     assert "max" not in result
     assert result["reason"] == "FFI unavailable"
+
+
+def test_bone_morph_coverage_requires_pmx_type_and_authored_nonzero_weight():
+    vmd = SimpleNamespace(
+        bone_frames=[_bone_frame("センター", 0)],
+        morph_frames=[_morph_frame("CR_BoneMorph", 0, 0.0)],
+        ik_show_hide_frames=[],
+    )
+    pmx = SimpleNamespace(
+        morphs=[
+            SimpleNamespace(
+                name="CR_BoneMorph",
+                name_english="CR_BoneMorph",
+                morph_type=PmxMorphType.BoneMorph,
+                offsets=[{"bone_index": 2, "translation": (0.25, 0.0, 0.0), "rotation": (0.0, 0.0, 0.0, 1.0)}],
+            )
+        ]
+    )
+    result = parity._coverage(vmd, pmx, routes=None, interpolation_probe={"frames": [1]})
+    item = result["items"]["boneMorph"]
+    assert item["fixturePresent"] is True
+    assert item["status"] == "missing"
+    assert "all zero" in " ".join(item["reasons"])
+
+
+def test_vmd_roundtrip_compares_morph_key_values():
+    exported = SimpleNamespace(
+        bone_frames=[_bone_frame("右足", 0)],
+        morph_frames=[_morph_frame("CR_BoneMorph", 10, 0.75)],
+        ik_show_hide_frames=[],
+    )
+    fresh = SimpleNamespace(
+        bone_frames=[_bone_frame("右足", 0)],
+        morph_frames=[_morph_frame("CR_BoneMorph", 10, 0.5)],
+        ik_show_hide_frames=[],
+    )
+    result = parity._compare_vmd_roundtrip(exported, fresh)
+    assert result["morphKeyValues"]["pass"] is False
+    assert result["firstDivergence"]["category"] == "export_fresh_morph_keys"
+
+
+def test_un_authored_structural_bone_morph_does_not_fail_export_presence():
+    pmx = SimpleNamespace(
+        morphs=[
+            SimpleNamespace(
+                name="CR_BoneMorph",
+                name_english="CR_BoneMorph",
+                morph_type=PmxMorphType.BoneMorph,
+                offsets=[{"bone_index": 2, "translation": (0.25, 0.0, 0.0), "rotation": (0.0, 0.0, 0.0, 1.0)}],
+            )
+        ]
+    )
+    result = parity._compare_exported_morph_presence(
+        SimpleNamespace(morph_frames=[]),
+        pmx,
+    )
+    assert result["pass"] is True
+    assert result["expectedNames"] == []
+
+
+def test_exported_morph_presence_fails_when_authored_bone_morph_is_dropped():
+    pmx = SimpleNamespace(
+        morphs=[
+            SimpleNamespace(
+                name="CR_BoneMorph",
+                name_english="CR_BoneMorph",
+                morph_type=PmxMorphType.BoneMorph,
+                offsets=[{"bone_index": 2, "translation": (0.25, 0.0, 0.0), "rotation": (0.0, 0.0, 0.0, 1.0)}],
+            )
+        ]
+    )
+    result = parity._compare_exported_morph_presence(
+        SimpleNamespace(morph_frames=[]),
+        pmx,
+        authored_morph_names={"CR_BoneMorph"},
+    )
+    assert result["pass"] is False
+    assert result["missingNames"] == ["CR_BoneMorph"]
 
 
 def test_fresh_key_times_compare_bone_union_not_constant_components():
