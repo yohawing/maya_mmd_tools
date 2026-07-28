@@ -342,25 +342,9 @@ def remove_mmd_control_rig(model_root: str, *, cmds_module=None) -> bool:
     if _node_uuid(cmds, root) != metadata.get("modelRootUuid"):
         raise MmdControlRigBuildError("control-rig metadata model UUID mismatch")
     resolved = _resolve_owned_nodes(cmds, metadata)
+    _validate_control_rig_topology(cmds, metadata, resolved)
     control_group = resolved[metadata["controlGroupUuid"]]
     selection_set = resolved[metadata["selectionSetUuid"]]
-    actual = set(
-        [control_group]
-        + list(
-            cmds.listRelatives(
-                control_group,
-                allDescendents=True,
-                fullPath=True,
-            )
-            or []
-        )
-    )
-    recorded_dag = set(resolved.values()) - {selection_set}
-    if actual != recorded_dag:
-        changed = ", ".join(sorted(actual.symmetric_difference(recorded_dag)))
-        raise MmdControlRigBuildError(
-            f"control group ownership topology changed: {changed}"
-        )
     with _undo_chunk(cmds, "Remove MMD Control Rig"):
         if cmds.objExists(selection_set):
             cmds.delete(selection_set)
@@ -379,16 +363,51 @@ def read_mmd_control_rig_metadata(model_root: str, *, cmds_module=None) -> Optio
     return dict(metadata) if metadata is not None else None
 
 
+def inspect_mmd_control_rig(
+    model_root: str,
+    *,
+    cmds_module=None,
+) -> Optional[MmdControlRigBuildResult]:
+    """Resolve an existing UUID-owned Control Rig without mutating the scene.
+
+    A model with no control-rig metadata returns ``None``.  Any malformed,
+    stale, ambiguous, or model-root-mismatched metadata raises the same
+    :class:`MmdControlRigBuildError` used by build/remove recovery paths.  The
+    result is produced through ``_result_from_metadata`` so inspection and
+    idempotent build share one ownership invariant implementation.
+    """
+
+    cmds = cmds_module or maya_cmds()
+    root = _canonical_node(cmds, model_root)
+    metadata = _read_metadata(cmds, root)
+    if metadata is None:
+        return None
+    return _result_from_metadata(
+        cmds,
+        root,
+        metadata,
+        created=False,
+        validate_topology=True,
+    )
+
+
+# Resolver spelling for callers that treat inspection as an ownership lookup.
+resolve_mmd_control_rig = inspect_mmd_control_rig
+
+
 def _result_from_metadata(
     cmds,
     root: str,
     metadata: Mapping[str, Any],
     *,
     created: bool,
+    validate_topology: bool = False,
 ) -> MmdControlRigBuildResult:
     resolved = _resolve_owned_nodes(cmds, metadata)
     if _node_uuid(cmds, root) != metadata.get("modelRootUuid"):
         raise MmdControlRigBuildError("control-rig metadata model UUID mismatch")
+    if validate_topology:
+        _validate_control_rig_topology(cmds, metadata, resolved)
     controls = {
         role: resolved[uuid]
         for role, uuid in sorted(metadata.get("controls", {}).items())
@@ -468,19 +487,54 @@ def _resolve_owned_nodes(cmds, metadata: Mapping[str, Any]) -> Dict[str, str]:
         if not isinstance(row, dict) or not isinstance(row.get("uuid"), str):
             raise MmdControlRigBuildError("invalid owned-node metadata row")
         uuid = row["uuid"]
+        if uuid in resolved:
+            raise MmdControlRigBuildError(f"duplicate owned control-rig UUID: {uuid}")
         nodes = cmds.ls(uuid, long=True) or []
         if len(nodes) != 1:
             raise MmdControlRigBuildError(f"owned control-rig node is missing: {uuid}")
         resolved[uuid] = str(nodes[0])
+    for key in ("controls", "zeroGroups"):
+        if not isinstance(metadata.get(key), Mapping):
+            raise MmdControlRigBuildError(f"control-rig metadata {key} must be an object")
     for uuid in (
         metadata["controlGroupUuid"],
         metadata["selectionSetUuid"],
         *metadata.get("controls", {}).values(),
         *metadata.get("zeroGroups", {}).values(),
     ):
+        if not isinstance(uuid, str) or not uuid:
+            raise MmdControlRigBuildError("invalid referenced control-rig UUID")
         if uuid not in resolved:
             raise MmdControlRigBuildError(f"unrecorded control-rig UUID: {uuid}")
     return resolved
+
+
+def _validate_control_rig_topology(
+    cmds,
+    metadata: Mapping[str, Any],
+    resolved: Mapping[str, str],
+) -> None:
+    """Fail closed when the recorded control DAG no longer matches the scene."""
+
+    control_group = resolved[metadata["controlGroupUuid"]]
+    selection_set = resolved[metadata["selectionSetUuid"]]
+    actual = set(
+        [control_group]
+        + list(
+            cmds.listRelatives(
+                control_group,
+                allDescendents=True,
+                fullPath=True,
+            )
+            or []
+        )
+    )
+    recorded_dag = set(resolved.values()) - {selection_set}
+    if actual != recorded_dag:
+        changed = ", ".join(sorted(actual.symmetric_difference(recorded_dag)))
+        raise MmdControlRigBuildError(
+            f"control group ownership topology changed: {changed}"
+        )
 
 
 @lru_cache(maxsize=1)

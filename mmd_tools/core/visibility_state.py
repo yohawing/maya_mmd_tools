@@ -131,20 +131,27 @@ def get_visibility_state(
     """
 
     group = resolve_visibility_group(adapter, model_root, category)
+    return get_visibility_group_state(adapter, group)
+
+
+def get_visibility_group_state(adapter, group: str | None) -> VisibilityState:
+    """Read the evaluated three-state value of one display group.
+
+    This resolver intentionally has no model-root knowledge.  It is suitable
+    for a directly-owned group (for example a Control Rig group) and keeps
+    the established fail-open read semantics: an unreadable or incomplete
+    group is treated as ``VISIBLE`` while an explicitly false visibility wins
+    over every drawing override.
+    """
+
     if not group:
         return VisibilityState.VISIBLE
-
     try:
         visibility = adapter.get_attr(f"{group}.visibility")
         if visibility is None:
             return VisibilityState.VISIBLE
         if not bool(visibility):
             return VisibilityState.HIDDEN
-    except Exception:
-        # A group that cannot be read must not cause a category to disappear.
-        return VisibilityState.VISIBLE
-
-    try:
         override_enabled = bool(adapter.get_attr(f"{group}.overrideEnabled"))
         display_type = int(adapter.get_attr(f"{group}.overrideDisplayType"))
     except Exception:
@@ -187,10 +194,18 @@ def set_visibility_state(
     # This keeps a locked or externally driven override from leaving a partial
     # state behind when the caller requested an atomic UI transition.
     root_exists = _attribute_exists(adapter, model_root, attr)
-    if root_exists and not _plug_writable(adapter, root_plug):
+    if not root_exists:
+        # Attribute creation/migration belongs to import/setup, never to a
+        # state transition. Returning before the transaction also guarantees
+        # a legacy or partially-authored model remains byte-for-byte intact.
+        return False
+    if not _plug_writable(adapter, root_plug):
         return False
     if not _attribute_exists(adapter, group, "visibility"):
         return False
+    if not group_sources and not _plug_writable(adapter, group_visibility):
+        return False
+    override_plugs = []
     if normalized is not VisibilityState.HIDDEN:
         for override_attr in ("overrideEnabled", "overrideDisplayType"):
             override_plug = f"{group}.{override_attr}"
@@ -198,49 +213,223 @@ def set_visibility_state(
                 return False
             if not _plug_writable(adapter, override_plug):
                 return False
-    elif not group_sources:
-        if not _plug_writable(adapter, group_visibility):
-            return False
+            override_plugs.append(override_plug)
 
-    try:
-        ensure_visibility_attrs(adapter, model_root)
-        adapter.set_attr(root_plug, normalized != VisibilityState.HIDDEN)
-    except Exception:
-        return False
+    plugs = [root_plug, group_visibility, *override_plugs]
+    snapshots = _snapshot_values(adapter, plugs)
+    connections = {group_visibility: tuple(group_sources)}
 
-    if not group_sources:
-        # Existing imports normally have the root authority connected already.
-        # For hand-authored/legacy scenes, establish that link without ever
-        # forcing over a foreign source.  When a thin test/headless adapter
-        # cannot connect plugs, mirror the evaluated value as the established
-        # adapter convention does.
-        connected = False
-        if hasattr(adapter, "connect_attr"):
-            try:
-                adapter.connect_attr(root_source, group_visibility, force=False)
-                connected = True
-            except Exception:
-                connected = False
-        if not connected:
-            try:
+    def write_state() -> None:
+        adapter.set_attr(root_plug, normalized is not VisibilityState.HIDDEN)
+        if not group_sources:
+            # Existing imports normally have the root authority connected
+            # already.  For hand-authored/legacy scenes establish that link
+            # without forcing over a foreign source.  Thin adapters that do
+            # not support connection creation mirror the evaluated value.
+            connected = False
+            if hasattr(adapter, "connect_attr"):
+                try:
+                    adapter.connect_attr(root_source, group_visibility, force=False)
+                    connected = True
+                except Exception:
+                    connected = False
+            if not connected:
                 adapter.set_attr(
                     group_visibility,
                     normalized is not VisibilityState.HIDDEN,
                 )
-            except Exception:
-                return False
-
-    if normalized is not VisibilityState.HIDDEN:
-        expected_type = 2 if normalized is VisibilityState.REFERENCE else 0
-        try:
+        if normalized is not VisibilityState.HIDDEN:
+            expected_type = 2 if normalized is VisibilityState.REFERENCE else 0
             adapter.set_attr(f"{group}.overrideEnabled", True)
             adapter.set_attr(f"{group}.overrideDisplayType", expected_type)
-        except Exception:
-            return False
 
-    # A successful write must be observable through the same plugs used for
-    # presenter readback.  This also rejects a stale/foreign visibility link.
-    return get_visibility_state(adapter, model_root, category_key) is normalized
+    def readback() -> bool:
+        expected_visible = normalized is not VisibilityState.HIDDEN
+        if bool(adapter.get_attr(root_plug)) != expected_visible:
+            return False
+        if normalized is VisibilityState.HIDDEN and bool(
+            adapter.get_attr(group_visibility)
+        ):
+            return False
+        if normalized is not VisibilityState.HIDDEN:
+            if not bool(adapter.get_attr(f"{group}.overrideEnabled")):
+                return False
+            expected_type = 2 if normalized is VisibilityState.REFERENCE else 0
+            if int(adapter.get_attr(f"{group}.overrideDisplayType")) != expected_type:
+                return False
+        return get_visibility_group_state(adapter, group) is normalized
+
+    return _run_visibility_transaction(
+        adapter,
+        "Set MMD Visibility",
+        snapshots,
+        connections,
+        write_state,
+        readback,
+    )
+
+
+def set_visibility_group_state(
+    adapter,
+    group: str,
+    state: VisibilityState | str,
+    *,
+    label: str = "Set Visibility",
+) -> bool:
+    """Atomically write the three-state contract of a direct display group.
+
+    Unlike :func:`set_visibility_state`, this generic writer has no model-root
+    authority or connection to establish.  It therefore rejects every
+    incoming connection on plugs it would write and snapshots/restores all
+    touched values if a write or readback fails.  Hidden intentionally leaves
+    drawing override fields untouched, matching category semantics.
+    """
+
+    normalized = _coerce_visibility_state(state)
+    if not isinstance(group, str) or not group or normalized is None:
+        return False
+    visibility_plug = f"{group}.visibility"
+    if not _attribute_exists(adapter, group, "visibility"):
+        return False
+    override_plugs = []
+    if normalized is not VisibilityState.HIDDEN:
+        for attr in ("overrideEnabled", "overrideDisplayType"):
+            if not _attribute_exists(adapter, group, attr):
+                return False
+            override_plugs.append(f"{group}.{attr}")
+    plugs = [visibility_plug, *override_plugs]
+    for plug in plugs:
+        if _source_connections(adapter, plug) or not _plug_writable(adapter, plug):
+            return False
+    snapshots = _snapshot_values(adapter, plugs)
+
+    def write_state() -> None:
+        adapter.set_attr(visibility_plug, normalized is not VisibilityState.HIDDEN)
+        if normalized is not VisibilityState.HIDDEN:
+            expected_type = 2 if normalized is VisibilityState.REFERENCE else 0
+            adapter.set_attr(f"{group}.overrideEnabled", True)
+            adapter.set_attr(f"{group}.overrideDisplayType", expected_type)
+
+    def readback() -> bool:
+        return get_visibility_group_state(adapter, group) is normalized
+
+    return _run_visibility_transaction(
+        adapter,
+        label,
+        snapshots,
+        {},
+        write_state,
+        readback,
+    )
+
+
+_MISSING = object()
+
+
+def _snapshot_values(adapter, plugs):
+    """Capture exact readable values for a transaction's touched plugs."""
+
+    return {
+        plug: (
+            adapter.get_attr(plug)
+            if _attribute_exists(adapter, *plug.rsplit(".", 1))
+            else _MISSING
+        )
+        for plug in plugs
+    }
+
+
+def _run_visibility_transaction(
+    adapter,
+    label,
+    snapshots,
+    connections,
+    writer,
+    readback,
+) -> bool:
+    """Run one visibility mutation with best-effort exact rollback."""
+
+    chunk_open = False
+    undo_info = getattr(adapter, "undo_info", None)
+    try:
+        if callable(undo_info):
+            undo_info(openChunk=True, chunkName=label)
+            chunk_open = True
+        writer()
+        if not readback():
+            raise RuntimeError("visibility state readback mismatch")
+        return True
+    except Exception:
+        _restore_connections(adapter, connections)
+        _restore_values(adapter, snapshots)
+        return False
+    finally:
+        if chunk_open:
+            try:
+                undo_info(closeChunk=True)
+            except Exception:
+                pass
+
+
+def _restore_values(adapter, snapshots):
+    """Restore transaction values while preserving the original failure."""
+
+    for plug, value in snapshots.items():
+        if value is _MISSING:
+            _delete_attr_if_present(adapter, plug)
+            continue
+        try:
+            adapter.set_attr(plug, value)
+        except Exception:
+            continue
+
+
+def _delete_attr_if_present(adapter, plug):
+    """Delete a newly-created plug when a transaction started without it."""
+
+    try:
+        node, attr = plug.rsplit(".", 1)
+        if _attribute_exists(adapter, node, attr) and hasattr(adapter, "delete_attr"):
+            adapter.delete_attr(plug)
+    except Exception:
+        return
+
+
+def _restore_connections(adapter, snapshots):
+    """Restore incoming connection lists for destinations touched by a write."""
+
+    for destination, expected in snapshots.items():
+        expected = tuple(expected)
+        actual = tuple(_source_connections(adapter, destination))
+        for source in actual:
+            if source not in expected:
+                _disconnect_attr(adapter, source, destination)
+        actual = tuple(_source_connections(adapter, destination))
+        for source in expected:
+            if source not in actual:
+                try:
+                    adapter.connect_attr(source, destination, force=False)
+                except Exception:
+                    continue
+
+
+def _disconnect_attr(adapter, source, destination):
+    """Disconnect one source when the adapter exposes a Maya-compatible API."""
+
+    try:
+        disconnect = getattr(adapter, "disconnect_attr", None)
+        if callable(disconnect):
+            disconnect(source, destination)
+            return
+        cmds_module = getattr(adapter, "_cmds", None)
+        if cmds_module is not None and hasattr(cmds_module, "disconnectAttr"):
+            cmds_module.disconnectAttr(source, destination)
+            return
+        mapping = getattr(adapter, "connections", None)
+        if isinstance(mapping, dict):
+            mapping[destination] = [item for item in mapping.get(destination, []) if item != source]
+    except Exception:
+        return
 
 
 def sync_visibility_connections(adapter, model_root: str, category: str | None = None) -> None:
