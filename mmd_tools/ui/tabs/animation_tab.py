@@ -73,21 +73,21 @@ class AnimationTab(BaseTab):
         # the normal Animator Toolset surface.  Its action buttons remain
         # explicit state transitions so users can see which representation is
         # currently authoritative.
-        self.control_rig_group = QGroupBox("MMD Control Rig (Experimental)")
+        self.control_rig_group = QGroupBox()
         control_rig_layout = QGridLayout()
         self.control_rig_buttons: dict[str, QPushButton] = {}
-        for index, (key, label) in enumerate(
+        for index, (key, translation_key) in enumerate(
             (
-                ("create", "Create"),
-                ("bake_control", "Bake to Control Rig"),
-                ("bake_mmd", "Bake to MMD Rig"),
-                ("restore", "Restore"),
-                ("delete", "Delete Rig"),
-                ("diagnostics", "Diagnostics"),
+                ("create", "control_rig_create"),
+                ("bake_control", "control_rig_bake_control"),
+                ("bake_mmd", "control_rig_bake_mmd"),
+                ("restore", "control_rig_restore"),
+                ("delete", "control_rig_delete"),
+                ("diagnostics", "control_rig_diagnostics"),
             )
         ):
-            button = QPushButton(label)
-            button.setToolTip(label)
+            button = QPushButton()
+            button._control_rig_translation_key = translation_key
             row, column = divmod(index, 3)
             control_rig_layout.addWidget(button, row, column)
             self.control_rig_buttons[key] = button
@@ -259,6 +259,10 @@ class AnimationTab(BaseTab):
         for key in ("mesh", "joints", "colliders", "control_rig"):
             self.vis_checkboxes[key].setText(tr(key))
         self.tools_group.setTitle(tr("tools"))
-        self.control_rig_group.setTitle("MMD Control Rig (Experimental)")
+        self.control_rig_group.setTitle(tr("control_rig_group_title"))
+        for button in self.control_rig_buttons.values():
+            translation_key = button._control_rig_translation_key
+            button.setText(tr(translation_key))
+            button.setToolTip(tr(f"{translation_key}_tooltip"))
         for key, button in self.tool_buttons.items():
             button.setText(tr(key))
