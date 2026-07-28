@@ -205,6 +205,16 @@ def run_ui_check(
         report["models"]["controlRigCreatedDuringImport"] = control_rig_created_during_import
         if not imported_rig_metadata:
             raise RuntimeError("Create MMD Control Rig did not build a rig during model import")
+        report["models"]["controlRigBoundDuringImport"] = {
+            "state": imported_rig_metadata.get("state"),
+            "owner": imported_rig_metadata.get("owner"),
+            "passed": imported_rig_metadata.get("state") == "EDIT"
+            and imported_rig_metadata.get("owner") == "CONTROL_OWNED",
+        }
+        if not report["models"]["controlRigBoundDuringImport"]["passed"]:
+            raise RuntimeError(
+                "Create MMD Control Rig did not enter EDIT / CONTROL_OWNED during model import"
+            )
 
         if vmd_path:
             vmd_profile: dict[str, Any] = {}
@@ -354,6 +364,7 @@ def run_ui_check(
             "firstRoot": original_root,
             "secondRoot": second_root,
             "controlRigCreatedDuringImport": control_rig_created_during_import,
+            "controlRigBoundDuringImport": report["models"].get("controlRigBoundDuringImport"),
             "vmdImport": report["models"].get("vmdImport"),
             "availableRoots": model_roots,
             "comboCount": int(combo.count()),

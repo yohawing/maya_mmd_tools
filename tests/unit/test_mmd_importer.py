@@ -314,20 +314,30 @@ class TestModelImportControlRig(unittest.TestCase):
                 with patch(
                     "mmd_tools.io.mmd_importer.build_mmd_control_rig",
                     return_value=build_result,
-                ) as build:
+                ) as build, patch(
+                    "mmd_tools.io.mmd_importer.enter_mmd_control_rig_edit",
+                    return_value={"state": "EDIT", "owner": "CONTROL_OWNED"},
+                ) as bind:
                     options = {"create_mmd_control_rig": True, "profile": profile}
                     result = import_mmd_file("model.pmx", options=options)
 
         self.assertEqual(result, "python_root")
         build.assert_called_once_with("python_root")
+        bind.assert_called_once_with("python_root")
         self.assertEqual(profile["mmd_control_rig"]["succeeded"], True)
         self.assertEqual(profile["mmd_control_rig"]["created"], True)
+        self.assertEqual(profile["mmd_control_rig"]["bound"], True)
+        self.assertEqual(profile["mmd_control_rig"]["state"], "EDIT")
+        self.assertEqual(profile["mmd_control_rig"]["owner"], "CONTROL_OWNED")
         self.assertEqual(profile["mmd_control_rig"]["control_count"], 1)
 
     def test_cpp_model_import_uses_the_same_post_import_builder(self):
         with patch("mmd_tools.io.mmd_importer.fast_import", return_value="cpp_root") as fast:
             with patch("mmd_tools.io.mmd_importer.parse_mmd_file") as parse_file:
-                with patch("mmd_tools.io.mmd_importer.build_mmd_control_rig") as build:
+                with patch("mmd_tools.io.mmd_importer.build_mmd_control_rig") as build, patch(
+                    "mmd_tools.io.mmd_importer.enter_mmd_control_rig_edit",
+                    return_value={"state": "EDIT", "owner": "CONTROL_OWNED"},
+                ) as bind:
                     options = {
                         "create_mmd_control_rig": True,
                         "cpp_fast_load_mesh_only": True,
@@ -340,6 +350,7 @@ class TestModelImportControlRig(unittest.TestCase):
         self.assertEqual(result, "cpp_root")
         self.assertEqual(fast.call_args.kwargs["mesh_only"], False)
         build.assert_called_once_with("cpp_root")
+        bind.assert_called_once_with("cpp_root")
         parse_file.assert_not_called()
 
     def test_disabled_option_does_not_build_for_python_model(self):
@@ -349,11 +360,14 @@ class TestModelImportControlRig(unittest.TestCase):
                 "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
                 return_value="model_root",
             ):
-                with patch("mmd_tools.io.mmd_importer.build_mmd_control_rig") as build:
+                with patch("mmd_tools.io.mmd_importer.build_mmd_control_rig") as build, patch(
+                    "mmd_tools.io.mmd_importer.enter_mmd_control_rig_edit"
+                ) as bind:
                     result = import_mmd_file("model.pmd", options={})
 
         self.assertEqual(result, "model_root")
         build.assert_not_called()
+        bind.assert_not_called()
 
     def test_builder_failure_preserves_model_and_records_partial_warning(self):
         parsed_data = object()
@@ -366,7 +380,7 @@ class TestModelImportControlRig(unittest.TestCase):
                 with patch(
                     "mmd_tools.io.mmd_importer.build_mmd_control_rig",
                     side_effect=RuntimeError("missing role binding"),
-                ):
+                ), patch("mmd_tools.io.mmd_importer.enter_mmd_control_rig_edit") as bind:
                     options = {"create_mmd_control_rig": True, "profile": profile}
                     result = import_mmd_file("model.pmx", options=options)
 
@@ -379,6 +393,41 @@ class TestModelImportControlRig(unittest.TestCase):
         self.assertEqual(warning["model_root"], "model_root")
         self.assertEqual(warning["severity"], "warning")
         self.assertEqual(warning["fallback"], "model_imported_without_control_rig")
+        bind.assert_not_called()
+
+    def test_bind_failure_preserves_created_attached_rig_and_records_warning(self):
+        parsed_data = object()
+        profile = {}
+        build_result = SimpleNamespace(
+            created=True,
+            control_group="Controls",
+            selection_set="Controls_SET",
+            state="ATTACHED",
+            owner="MMD_OWNED",
+            controls={"center": "center_CTRL"},
+        )
+        with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data), patch(
+            "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
+            return_value="model_root",
+        ), patch(
+            "mmd_tools.io.mmd_importer.build_mmd_control_rig",
+            return_value=build_result,
+        ), patch(
+            "mmd_tools.io.mmd_importer.enter_mmd_control_rig_edit",
+            side_effect=RuntimeError("bind route failed"),
+        ):
+            options = {"create_mmd_control_rig": True, "profile": profile}
+            result = import_mmd_file("model.pmx", options=options)
+
+        self.assertEqual(result, "model_root")
+        rig_profile = profile["mmd_control_rig"]
+        self.assertFalse(rig_profile["succeeded"])
+        self.assertTrue(rig_profile["created"])
+        self.assertFalse(rig_profile["bound"])
+        self.assertEqual(rig_profile["state"], "ATTACHED")
+        warning = profile["warnings"][0]
+        self.assertEqual(warning["code"], "control_rig_bind_failed")
+        self.assertEqual(warning["fallback"], "model_imported_with_attached_control_rig")
 
 
 if __name__ == "__main__":

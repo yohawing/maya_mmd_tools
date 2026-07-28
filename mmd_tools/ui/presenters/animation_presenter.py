@@ -328,8 +328,12 @@ class AnimationPresenter:
             )
 
             if action == "create":
-                result = build_mmd_control_rig(root)
-                message = f"MMD Control Rig (Experimental): {result.state} / {result.owner}"
+                build_mmd_control_rig(root)
+                metadata = enter_mmd_control_rig_edit(root)
+                message = (
+                    "MMD Control Rig (Experimental): "
+                    f"{metadata['state']} / {metadata.get('owner', 'CONTROL_OWNED')}"
+                )
             elif action == "bake_control":
                 metadata = enter_mmd_control_rig_edit(root)
                 message = (

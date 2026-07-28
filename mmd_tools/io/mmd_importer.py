@@ -11,6 +11,7 @@ from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.import_strategy import resolve_model_import_strategy
 from mmd_tools.core.mmd_parser import parse_mmd_file
 from mmd_tools.core.mmd_control_rig_builder import build_mmd_control_rig
+from mmd_tools.core.mmd_control_rig_motion import enter_mmd_control_rig_edit
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.converters import vmd_profile
 from mmd_tools.io import pmx_importer, vmd_importer
@@ -23,7 +24,7 @@ _OPTION_TO_SETTINGS_KEY = settings_keys.MODEL_OPTION_TO_SETTINGS_KEY
 
 
 def _post_model_import_control_rig(root: Optional[Any], options: Dict[str, Any]) -> Optional[Any]:
-    """Build the opt-in MMD Control Rig after a model import succeeds.
+    """Build and bind the opt-in MMD Control Rig after model import.
 
     C++ fast loading and the Python PMX/PMD importer both return the model
     root from :func:`import_mmd_file`.  Keeping this follow-up in one helper
@@ -69,15 +70,43 @@ def _post_model_import_control_rig(root: Optional[Any], options: Dict[str, Any])
         return root
 
     created = bool(result.created)
-    rig_profile["succeeded"] = True
     rig_profile["created"] = created
     rig_profile["reused"] = not created
     rig_profile["control_group"] = result.control_group
     rig_profile["selection_set"] = result.selection_set
-    rig_profile["state"] = result.state
-    rig_profile["owner"] = result.owner
     rig_profile["control_count"] = len(result.controls)
-    logger.info("MMD Control Rig ready for imported model: %s", root)
+
+    try:
+        metadata = enter_mmd_control_rig_edit(model_root)
+    except Exception as exc:
+        warning = {
+            "source": "mmd_importer",
+            "code": "control_rig_bind_failed",
+            "message": str(exc),
+            "model_root": model_root,
+            "exception_type": type(exc).__name__,
+            "severity": "warning",
+            "fallback": "model_imported_with_attached_control_rig",
+        }
+        rig_profile["succeeded"] = False
+        rig_profile["bound"] = False
+        rig_profile["state"] = result.state
+        rig_profile["owner"] = result.owner
+        rig_profile["error"] = str(exc)
+        profile.setdefault("warnings", []).append(warning)
+        logger.warning(
+            "MMD Control Rig bind failed after model import (%s): %s",
+            root,
+            exc,
+            exc_info=True,
+        )
+        return root
+
+    rig_profile["succeeded"] = True
+    rig_profile["bound"] = True
+    rig_profile["state"] = metadata["state"]
+    rig_profile["owner"] = metadata.get("owner", result.owner)
+    logger.info("MMD Control Rig created and bound for imported model: %s", root)
     return root
 
 
