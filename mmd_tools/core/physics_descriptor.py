@@ -164,7 +164,7 @@ def validate_rigid_body_fields(
     collision_mask: int,
     bone_index: int,
     mode: int,
-    bone_count: int = 0,
+    bone_count: int | None = None,
 ) -> List[DescriptorValidationError]:
     errors: List[DescriptorValidationError] = []
 
@@ -195,7 +195,9 @@ def validate_rigid_body_fields(
         err("collision_mask", f"out of range: {collision_mask}")
     if mode not in _VALID_MODES:
         err("mode", f"invalid physics mode {mode}")
-    if bone_count > 0 and not (0 <= bone_index < bone_count):
+    # PMX uses -1 for rigid bodies that are intentionally not attached to a
+    # bone.  It is a valid sentinel, not a malformed reference.
+    if bone_count is not None and not (-1 <= bone_index < bone_count):
         err("bone_index", f"out of range: {bone_index} (bone_count={bone_count})")
     return errors
 

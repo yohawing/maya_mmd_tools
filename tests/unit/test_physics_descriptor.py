@@ -108,6 +108,40 @@ class TestValidation(unittest.TestCase):
         )
         self.assertTrue(any(e.field == "mode" for e in errors))
 
+    def test_unattached_rigid_body_sentinel_is_valid(self):
+        errors = validate_rigid_body_fields(
+            0, 0, (1.0, 1.0, 1.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+            1.0, 0.5, 0.5, 0.5, 0.5, 1, 0xFFFF, -1, 0, bone_count=1,
+        )
+        self.assertEqual(errors, [])
+
+    def test_rigid_body_index_below_unattached_sentinel_is_rejected(self):
+        errors = validate_rigid_body_fields(
+            0, 0, (1.0, 1.0, 1.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+            1.0, 0.5, 0.5, 0.5, 0.5, 1, 0xFFFF, -2, 0, bone_count=1,
+        )
+        self.assertTrue(any(error.field == "bone_index" for error in errors))
+
+    def test_rigid_body_index_at_bone_count_is_rejected(self):
+        errors = validate_rigid_body_fields(
+            0, 0, (1.0, 1.0, 1.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+            1.0, 0.5, 0.5, 0.5, 0.5, 1, 0xFFFF, 1, 0, bone_count=1,
+        )
+        self.assertTrue(any(error.field == "bone_index" for error in errors))
+
+    def test_zero_bone_model_only_accepts_unattached_sentinel(self):
+        sentinel_errors = validate_rigid_body_fields(
+            0, 0, (1.0, 1.0, 1.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+            1.0, 0.5, 0.5, 0.5, 0.5, 1, 0xFFFF, -1, 0, bone_count=0,
+        )
+        indexed_errors = validate_rigid_body_fields(
+            0, 0, (1.0, 1.0, 1.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+            1.0, 0.5, 0.5, 0.5, 0.5, 1, 0xFFFF, 0, 0, bone_count=0,
+        )
+
+        self.assertEqual(sentinel_errors, [])
+        self.assertTrue(any(error.field == "bone_index" for error in indexed_errors))
+
     def test_valid_joint_passes(self):
         errors = validate_joint_fields(
             0, MMD_RUNTIME_PHYSICS_JOINT_KIND_GENERIC_6DOF_SPRING,
