@@ -52,7 +52,8 @@ class TestVmdBoneInterpolation(MayaTestBase):
             delta=1.0e-7,
         )
 
-    def test_non_linear_rotation_bezier_is_sampled_at_integer_frames(self):
+    def test_non_linear_rotation_bezier_keeps_sparse_rig_keys(self):
+        """Rig mode favors authored-key editability over dense runtime parity."""
         joint = cmds.joint(name="rotation_bezier_joint")
         self.converter.bone_name_mapping = {"腕": joint}
         self.converter._bone_bind_poses = {"腕": (0.0, 0.0, 0.0)}
@@ -70,7 +71,7 @@ class TestVmdBoneInterpolation(MayaTestBase):
         self.converter._set_bone_keyframes(joint, [frame0, frame1], "腕")
 
         keyed_times = cmds.keyframe(f"{joint}.rotateY", query=True, timeChange=True)
-        self.assertEqual(keyed_times, [0.0, 1.0, 2.0, 3.0, 4.0])
+        self.assertEqual(keyed_times, [0.0, 4.0])
 
     def test_bone_bezier_tangents_use_api_on_animation_layer(self):
         """大量 model VMD の tangent 適用で cmds.keyTangent hot path に落ちない。"""
