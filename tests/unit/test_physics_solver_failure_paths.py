@@ -268,6 +268,26 @@ class TestInitializationFailures(unittest.TestCase):
 
         details.assert_called_once()
 
+    def test_validation_failure_latches_until_descriptor_version_changes(self):
+        self.node._initialized = False
+        self.node._world = self.node._instance = None
+        self.node._last_descriptor_version = 11
+        self.node._latched_validation_failure_descriptor_version = 11
+        self.node._try_initialize = Mock(return_value=False)
+        self.node._read_world_settings = Mock(return_value=(True, -1))
+        data = _Data(time=0.0)
+        data.inputs[solver.MmdPhysicsSolverNode.aInDescriptorVersion] = 11
+
+        # The compute path owns the latch check.  The same invalid descriptor
+        # version must not rebuild a world or repeat diagnostics.
+        _compute(self.node, data)
+        self.node._try_initialize.assert_not_called()
+
+        # A changed descriptor version unlocks a fresh attempt.
+        data.inputs[solver.MmdPhysicsSolverNode.aInDescriptorVersion] = 12
+        _compute(self.node, data)
+        self.node._try_initialize.assert_called_once_with()
+
 
 def _prepare_node(*, world, instance, time=0.0, last_time=None):
     node = solver.MmdPhysicsSolverNode()
@@ -327,10 +347,12 @@ class TestEvaluationFailures(unittest.TestCase):
         instance = _Instance()
         instance.set_physics_mode = lambda _mode: False
         node, data = _prepare_node(world=_World(), instance=instance)
+        node._last_kinematic_pose_signature = ((0, "matrix", (1.0,)),)
         solved, status, matrices = _compute(node, data)
         self.assertFalse(solved)
         self.assertIn("failed", status)
         self.assertEqual(matrices, [])
+        self.assertIsNone(node._last_kinematic_pose_signature)
 
     def test_step_and_post_failure_clear_cache(self):
         node, data = _prepare_node(
@@ -340,3 +362,75 @@ class TestEvaluationFailures(unittest.TestCase):
         self.assertFalse(solved)
         self.assertIn("failed", status)
         self.assertEqual(matrices, [])
+
+
+class TestSameTimePoseCache(unittest.TestCase):
+    """Same-time Maya-pose pulls are cached only for an identical input pose."""
+
+    def _prepare_pose_node(self, *, previous_signature, current_signature):
+        node, data = _prepare_node(
+            world=_World(), instance=_Instance(), time=0.0, last_time=0.0
+        )
+        data.inputs[solver.MmdPhysicsSolverNode.aInputMode] = solver.INPUT_MODE_MAYA_POSE
+        node._kinematic_corrections = {0: object()}
+        pose_input = ([0.0] * 16, [1], current_signature)
+        node._read_kinematic_pose_inputs = Mock(return_value=pose_input)
+        node._last_kinematic_pose_signature = previous_signature
+        node._reset_world = Mock(return_value=True)
+        node._update_cached_matrices = Mock(return_value=True)
+        return node, data, pose_input
+
+    def test_unchanged_maya_pose_is_cached_without_reset(self):
+        signature = ((0, "matrix", (1.0,)),)
+        node, data, _pose_input = self._prepare_pose_node(
+            previous_signature=signature, current_signature=signature
+        )
+
+        solved, status, _matrices = _compute(node, data)
+
+        self.assertTrue(solved)
+        self.assertEqual(status, "cached")
+        node._reset_world.assert_not_called()
+        node._read_kinematic_pose_inputs.assert_called_once_with(data)
+
+    def test_changed_maya_pose_uses_pose_updated_reset_route(self):
+        previous = ((0, "matrix", (1.0,)),)
+        current = ((0, "matrix", (2.0,)),)
+        node, data, pose_input = self._prepare_pose_node(
+            previous_signature=previous, current_signature=current
+        )
+
+        solved, status, _matrices = _compute(node, data)
+
+        self.assertTrue(solved)
+        self.assertEqual(status, "pose-updated")
+        node._reset_world.assert_called_once_with(
+            solver.INPUT_MODE_MAYA_POSE, data, pose_input=pose_input
+        )
+
+    def test_failed_pose_read_never_counts_as_unchanged(self):
+        signature = ((0, "matrix", (1.0,)),)
+        node, data, _pose_input = self._prepare_pose_node(
+            previous_signature=signature, current_signature=signature
+        )
+        node._read_kinematic_pose_inputs.return_value = None
+
+        solved, status, _matrices = _compute(node, data)
+
+        self.assertTrue(solved)
+        self.assertEqual(status, "pose-updated")
+        node._reset_world.assert_called_once_with(
+            solver.INPUT_MODE_MAYA_POSE, data, pose_input=None
+        )
+
+    def test_rest_only_same_time_cache_remains_unchanged(self):
+        node, data = _prepare_node(
+            world=_World(), instance=_Instance(), time=0.0, last_time=0.0
+        )
+        node._reset_world = Mock(return_value=True)
+
+        solved, status, _matrices = _compute(node, data)
+
+        self.assertTrue(solved)
+        self.assertEqual(status, "cached")
+        node._reset_world.assert_not_called()

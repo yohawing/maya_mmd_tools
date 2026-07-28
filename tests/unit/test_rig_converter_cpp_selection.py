@@ -97,10 +97,24 @@ class TestRigConverterUnifiedNodeTypes(unittest.TestCase):
             [{"boneIndex": 3}],
             [(5, {3}), (9, {14})],
             5,
+            {1, 3, 6, 14},
             [(3, 1), (1, 6)],
         )
 
         self.assertEqual(excluded, {1, 3, 6, 14})
+
+    def test_ik_exclusions_keep_grant_ancestor_not_read_by_mini_chain(self):
+        converter = RigConverter()
+
+        excluded = converter._excluded_ik_input_bones(
+            [{"boneIndex": 56}],
+            [(58, {56}), (67, {65})],
+            58,
+            {53, 56, 86},
+            [(56, 68), (65, 86)],
+        )
+
+        self.assertEqual(excluded, {56, 68})
 
     def test_only_rotation_grants_enter_ik_rotation_exclusion_edges(self):
         grants = [
@@ -130,7 +144,7 @@ class TestRigConverterUnifiedNodeTypes(unittest.TestCase):
                 converter._can_connect_live_ik_goal_world_matrix("controller", ["unrelated"])
             )
 
-    def test_cpp_v2_lookup_is_scoped_to_legacy_symbol_owner_module(self):
+    def test_cpp_v2_lookup_uses_loaded_runtime_module(self):
         source = (
             Path(__file__).resolve().parents[2] / "cpp" / "src" / "MmdCcdIkNode.cpp"
         ).read_text(encoding="utf-8")
@@ -143,7 +157,9 @@ class TestRigConverterUnifiedNodeTypes(unittest.TestCase):
 
         # Windows first checks the already-loaded runtime DLL by name, then
         # retains the same-image fallback for statically hosted builds.
-        self.assertIn('GetModuleHandleA("mmd_runtime_ffi.dll")', windows_resolver)
+        self.assertIn('"mmd_runtime_ffi.dll"', windows_resolver)
+        self.assertIn('"mmd_anim_ffi.dll"', windows_resolver)
+        self.assertIn("GetModuleHandleA(runtimeDllName)", windows_resolver)
         self.assertIn("GetProcAddress(runtimeModule", windows_resolver)
         self.assertIn("GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS", windows_resolver)
         self.assertIn("&mmd_runtime_ik_chain_create", windows_resolver)

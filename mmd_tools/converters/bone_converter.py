@@ -127,9 +127,20 @@ class BoneConverter:
         for mn in mesh_nodes:
             if not mn or not cmds.objExists(mn):
                 continue
-            sc = self._create_skin_cluster(maya_joints, mn, max_influence=4)
+            influence_bone_indices = self._get_mesh_used_bone_indices(pmx_data, mn)
+            influence_joints = [maya_joints[index] for index in influence_bone_indices]
+            if not influence_joints:
+                self.logger.warning("Mesh '%s' has no positive PMX skin weights; skipping skinCluster", mn)
+                continue
+            sc = self._create_skin_cluster(influence_joints, mn, max_influence=4)
             if sc:
-                self._apply_pmx_vertex_weights(pmx_data, maya_joints, sc, mn)
+                self._apply_pmx_vertex_weights(
+                    pmx_data,
+                    maya_joints,
+                    sc,
+                    mn,
+                    influence_bone_indices=influence_bone_indices,
+                )
                 skin_clusters.append(sc)
 
         # リグのセットアップはRigConverterに委譲。
@@ -598,6 +609,20 @@ class BoneConverter:
         """QDEFの重み情報を取得する。"""
         return self._get_bdef4_weights(vertex)
 
+    def _get_mesh_used_bone_indices(self, pmx_data, mesh_node) -> List[int]:
+        """Return sorted PMX bone indices with positive weights on one mesh."""
+        source_vertex_indices = self._get_mesh_source_vertex_indices(mesh_node)
+        vertices = pmx_data.vertices
+        vertex_indices = source_vertex_indices if source_vertex_indices is not None else range(len(vertices))
+        used_indices = set()
+        for source_vertex_index in vertex_indices:
+            if source_vertex_index < 0 or source_vertex_index >= len(vertices):
+                continue
+            for bone_index, weight in self._get_pmx_vertex_weights(vertices[source_vertex_index]):
+                if weight > 0.0 and 0 <= bone_index < len(pmx_data.bones):
+                    used_indices.add(bone_index)
+        return sorted(used_indices)
+
     def _apply_flat_vertex_weights(self, skin_cluster, mesh_node, flat_weights, influence_count):
         """Apply already-packed vertex weights directly through MFnSkinCluster."""
         selection_list = om.MSelectionList()
@@ -639,7 +664,14 @@ class BoneConverter:
             False,
         )
 
-    def _apply_pmx_vertex_weights(self, pmx_data, maya_joints, skin_cluster, mesh_node):
+    def _apply_pmx_vertex_weights(
+        self,
+        pmx_data,
+        maya_joints,
+        skin_cluster,
+        mesh_node,
+        influence_bone_indices=None,
+    ):
         """
         PMX頂点ウェイトをスキンクラスターに適用する。
 
@@ -650,10 +682,16 @@ class BoneConverter:
             mesh_node (str): メッシュノードの名前。
         """
         weight_pack_start = time.perf_counter()
-        joint_count = len(maya_joints)
+        if influence_bone_indices is None:
+            influence_bone_indices = list(range(len(maya_joints)))
+        influence_index_by_bone = {
+            bone_index: influence_index
+            for influence_index, bone_index in enumerate(influence_bone_indices)
+        }
+        influence_count = len(influence_bone_indices)
         flat_weights = []
         flat_extend = flat_weights.extend
-        zero_row = [0.0] * joint_count
+        zero_row = [0.0] * influence_count
         source_vertex_indices = self._get_mesh_source_vertex_indices(mesh_node)
         vertices = pmx_data.vertices
         vertex_indices = source_vertex_indices if source_vertex_indices is not None else range(len(vertices))
@@ -671,15 +709,17 @@ class BoneConverter:
 
             for joint_index, weight in weight_maps:
                 # ボーンインデックスの境界チェック
-                if joint_index < 0 or joint_index >= joint_count:
-                    self.logger.warning(f"Invalid bone index {joint_index}, max={joint_count - 1}")
+                if joint_index < 0 or joint_index >= len(maya_joints):
+                    self.logger.warning(f"Invalid bone index {joint_index}, max={len(maya_joints) - 1}")
                     continue
-                flat_weights[row_start + joint_index] = weight
+                influence_index = influence_index_by_bone.get(joint_index)
+                if influence_index is not None:
+                    flat_weights[row_start + influence_index] = weight
         self._add_profile_time("weight_pack_sec", weight_pack_start)
 
         set_weights_start = time.perf_counter()
         try:
-            self._apply_flat_vertex_weights(skin_cluster, mesh_node, flat_weights, joint_count)
+            self._apply_flat_vertex_weights(skin_cluster, mesh_node, flat_weights, influence_count)
         except Exception as exc:
             self.logger.warning(
                 "Direct skin weight application failed for '%s'; falling back to apply_vertex_weights(): %s",
@@ -687,8 +727,8 @@ class BoneConverter:
                 exc,
             )
             weights = [
-                flat_weights[row_start : row_start + joint_count]
-                for row_start in range(0, len(flat_weights), joint_count)
+                flat_weights[row_start : row_start + influence_count]
+                for row_start in range(0, len(flat_weights), influence_count)
             ]
             maya_mesh_utils.apply_vertex_weights(skin_cluster, mesh_node, weights)
         self._add_profile_time("set_weights_sec", set_weights_start)

@@ -5,40 +5,42 @@ from typing import Dict, List, Optional
 import maya.cmds as cmds
 
 from . import vmd_profile
-from .vmd_bone_interpolation import (
-    sample_vmd_rotation_quaternions,
-)
 from .vmd_context import VmdBoneAnimationContext
-from .vmd_joint_rotation import unwrap_euler_sequence
 from .vmd_scene_keying import VmdKeyingError, _ensure_fallback_allowed
 
 
-def _unwrap_rotation_channel_samples(
-    channel_samples: Dict[str, List[tuple]],
-    rotation_attrs: tuple[str, str, str],
-    rotate_order: int = 0,
+def _sparse_rotation_samples(
+    context: VmdBoneAnimationContext,
+    joint: str,
+    frames: List,
+) -> List[tuple]:
+    """Convert only authored VMD rotation keys for editable rig curves."""
+    samples_by_time = {}
+    for frame in frames:
+        if hasattr(frame, "frame_number"):
+            frame_number = frame.frame_number
+            rotation_quat = frame.rotation
+        else:
+            frame_number = frame.get("frame_number", 0)
+            rotation_quat = frame.get("rotation", [0, 0, 0, 1])
+        maya_time = context.vmd_frame_to_maya_time(frame_number)
+        rotation = context.convert_vmd_quat_to_joint_rotate(joint, *rotation_quat)
+        samples_by_time[float(maya_time)] = tuple(float(value) for value in rotation)
+    return sorted(samples_by_time.items())
+
+
+def _apply_quaternion_interpolation(
+    context: VmdBoneAnimationContext,
+    plugs: List[str],
 ) -> None:
-    """Continuously unwrap one time-aligned Euler rotation sample set in place."""
-    if any(not channel_samples.get(attr) for attr in rotation_attrs):
-        return
-    samples_by_attr = {
-        attr: {float(time): float(value) for time, value in channel_samples[attr]}
-        for attr in rotation_attrs
-    }
-    times = sorted(set.intersection(*(set(samples) for samples in samples_by_attr.values())))
-    if not times:
-        return
-    unwrapped = unwrap_euler_sequence(
-        (
-            tuple(samples_by_attr[attr][time] for attr in rotation_attrs)
-            for time in times
-        ),
-        rotate_order=rotate_order,
-    )
-    for axis, attr in enumerate(rotation_attrs):
-        channel_samples[attr] = [
-            (time, angles[axis]) for time, angles in zip(times, unwrapped)
-        ]
+    """Apply Maya quaternion slerp to a keyed three-angle compound."""
+    try:
+        cmds.scriptEditorInfo(suppressWarnings=True)
+        cmds.rotationInterpolation(*plugs, convert="quaternionSlerp")
+    except Exception as exc:
+        context.logger.warning(f"Failed to apply quaternion interpolation to {plugs[0]}: {exc}")
+    finally:
+        cmds.scriptEditorInfo(suppressWarnings=False)
 
 
 def convert_bone_animation(context: VmdBoneAnimationContext, bone_frames: List) -> bool:
@@ -118,15 +120,6 @@ def set_bone_keyframes(
     attr_targets = key_route.get("attr_targets", {})
     skip_rotate = bool(key_route.get("skip_rotate"))
     attrs = ["translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"]
-    if key_route.get("control_owned"):
-        # In EDIT the controller routes are the complete set of writable VMD
-        # channels.  Zero/identity channel groups without a route must not
-        # fall through to the joint and create a second MMD-side writer.
-        attrs = [attr for attr in attrs if attr in attr_targets]
-    try:
-        joint_rotate_order = int(cmds.getAttr(f"{joint}.rotateOrder"))
-    except Exception:
-        joint_rotate_order = 0
     channel_interp_map = {
         attr: context.vmd_interp_channel_for_attr(attr)
         for attr in attrs
@@ -152,12 +145,13 @@ def set_bone_keyframes(
         vmd_bone_name,
         context.bone_bind_poses.get(joint, (0.0, 0.0, 0.0)),
     )
-    sampled_rotations = sample_vmd_rotation_quaternions(frames)
-    keyed_frame_numbers = {
-        float(frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0))
-        for frame in frames
-    }
-    has_sampled_rotations = any(frame_number not in keyed_frame_numbers for frame_number, _ in sampled_rotations)
+    needs_rotation_samples = not skip_rotate or bool(key_route.get("ik_solver_rotate"))
+    rotation_samples = (
+        _sparse_rotation_samples(context, joint, frames)
+        if needs_rotation_samples
+        else []
+    )
+    rotation_by_time = dict(rotation_samples)
 
     batch_simple_bone = (
         not attr_targets
@@ -171,17 +165,15 @@ def set_bone_keyframes(
                 if hasattr(frame, "frame_number"):
                     frame_number = frame.frame_number
                     vmd_pos = frame.position
-                    rotation_quat = frame.rotation
                 else:
                     frame_number = frame.get("frame_number", 0)
                     vmd_pos = frame.get("position", [0, 0, 0])
-                    rotation_quat = frame.get("rotation", [0, 0, 0, 1])
                 maya_time = context.vmd_frame_to_maya_time(frame_number)
 
                 tx = float(bind_pos[0]) + float(vmd_pos[0]) * context.motion_scale
                 ty = float(bind_pos[1]) + float(vmd_pos[1]) * context.motion_scale
                 tz = float(bind_pos[2]) - float(vmd_pos[2]) * context.motion_scale
-                rx, ry, rz = context.convert_vmd_quat_to_joint_rotate(joint, *rotation_quat)
+                rx, ry, rz = rotation_by_time[maya_time]
                 values = {
                     "translateX": tx,
                     "translateY": ty,
@@ -192,22 +184,6 @@ def set_bone_keyframes(
                 }
                 for attr, value in values.items():
                     channel_samples[attr].append((maya_time, float(value)))
-            if has_sampled_rotations:
-                for frame_number, rotation_quat in sampled_rotations:
-                    if frame_number in keyed_frame_numbers:
-                        continue
-                    maya_time = context.vmd_frame_to_maya_time(frame_number)
-                    rx, ry, rz = context.convert_vmd_quat_to_joint_rotate(joint, *rotation_quat)
-                    for attr, value in (("rotateX", rx), ("rotateY", ry), ("rotateZ", rz)):
-                        channel_samples[attr].append((maya_time, float(value)))
-                for samples in channel_samples.values():
-                    samples.sort(key=lambda item: item[0])
-
-        _unwrap_rotation_channel_samples(
-            channel_samples,
-            ("rotateX", "rotateY", "rotateZ"),
-            joint_rotate_order,
-        )
 
         animation_layer = context.anim_layer if use_layer else None
         if animation_layer:
@@ -215,21 +191,11 @@ def set_bone_keyframes(
 
         if context.batch_key_scalar_channels(joint, channel_samples, animation_layer=animation_layer):
             if context.use_quaternion_interpolation:
-                try:
-                    cmds.scriptEditorInfo(suppressWarnings=True)
-                    cmds.rotationInterpolation(
-                        f"{joint}.rotateX",
-                        f"{joint}.rotateY",
-                        f"{joint}.rotateZ",
-                        convert="quaternionSlerp",
-                    )
-                except Exception as e:
-                    context.logger.warning(f"Failed to apply quaternion interpolation to {joint}: {str(e)}")
-                finally:
-                    cmds.scriptEditorInfo(suppressWarnings=False)
+                _apply_quaternion_interpolation(
+                    context,
+                    [f"{joint}.rotateX", f"{joint}.rotateY", f"{joint}.rotateZ"],
+                )
             tangent_attrs = attrs
-            if has_sampled_rotations:
-                tangent_attrs = [a for a in tangent_attrs if not a.startswith("rotate")]
             if context.use_quaternion_interpolation:
                 tangent_attrs = [a for a in attrs if not a.startswith("rotate")]
             context.apply_vmd_bezier_tangents(joint, frames, tangent_attrs, channel_interp_map)
@@ -243,11 +209,9 @@ def set_bone_keyframes(
             if hasattr(frame, "frame_number"):
                 frame_number = frame.frame_number
                 vmd_pos = frame.position
-                rotation_quat = frame.rotation
             else:
                 frame_number = frame.get("frame_number", 0)
                 vmd_pos = frame.get("position", [0, 0, 0])
-                rotation_quat = frame.get("rotation", [0, 0, 0, 1])
             maya_time = context.vmd_frame_to_maya_time(frame_number)
 
             tx = float(bind_pos[0]) + float(vmd_pos[0]) * context.motion_scale
@@ -260,44 +224,14 @@ def set_bone_keyframes(
                 "translateZ": tz,
             }
             if not skip_rotate:
-                rx, ry, rz = context.convert_vmd_quat_to_joint_rotate(joint, *rotation_quat)
+                rx, ry, rz = rotation_by_time[maya_time]
                 values["rotateX"] = rx
                 values["rotateY"] = ry
                 values["rotateZ"] = rz
 
             for attr, value in values.items():
-                if attr not in attrs:
-                    continue
                 target_node, target_attr = attr_targets.get(attr, (joint, attr))
                 routed_samples.setdefault(target_node, {}).setdefault(target_attr, []).append((maya_time, float(value)))
-        if has_sampled_rotations and not skip_rotate and any(attr.startswith("rotate") for attr in attrs):
-            for frame_number, rotation_quat in sampled_rotations:
-                if frame_number in keyed_frame_numbers:
-                    continue
-                maya_time = context.vmd_frame_to_maya_time(frame_number)
-                rx, ry, rz = context.convert_vmd_quat_to_joint_rotate(joint, *rotation_quat)
-                for attr, value in (("rotateX", rx), ("rotateY", ry), ("rotateZ", rz)):
-                    if attr not in attrs:
-                        continue
-                    target_node, target_attr = attr_targets.get(attr, (joint, attr))
-                    routed_samples.setdefault(target_node, {}).setdefault(target_attr, []).append(
-                        (maya_time, float(value))
-                    )
-            for target_samples in routed_samples.values():
-                for samples in target_samples.values():
-                    samples.sort(key=lambda item: item[0])
-
-        rotate_targets = [
-            attr_targets.get(attr, (joint, attr))
-            for attr in ("rotateX", "rotateY", "rotateZ")
-        ]
-        if len({node for node, _attr in rotate_targets}) == 1:
-            rotate_node = rotate_targets[0][0]
-            _unwrap_rotation_channel_samples(
-                routed_samples.get(rotate_node, {}),
-                tuple(attr for _node, attr in rotate_targets),
-                joint_rotate_order,
-            )
 
     animation_layer = context.anim_layer if use_layer else None
     routed_success = False
@@ -346,32 +280,9 @@ def set_bone_keyframes(
             f"inputRotate[{slot}].inputRotateElementZ",
         ]
         solver_samples = {attr: [] for attr in ir_attrs}
-        for frame in frames:
-            if hasattr(frame, "frame_number"):
-                fn = frame.frame_number
-                rq = frame.rotation
-            else:
-                fn = frame.get("frame_number", 0)
-                rq = frame.get("rotation", [0, 0, 0, 1])
-            maya_time = context.vmd_frame_to_maya_time(fn)
-            rx, ry, rz = context.convert_vmd_quat_to_joint_rotate(joint, *rq)
-            for attr, val in zip(ir_attrs, [rx, ry, rz]):
-                solver_samples[attr].append((maya_time, float(val)))
-        if has_sampled_rotations:
-            for frame_number, rotation_quat in sampled_rotations:
-                if frame_number in keyed_frame_numbers:
-                    continue
-                maya_time = context.vmd_frame_to_maya_time(frame_number)
-                rx, ry, rz = context.convert_vmd_quat_to_joint_rotate(joint, *rotation_quat)
-                for attr, value in zip(ir_attrs, (rx, ry, rz)):
-                    solver_samples[attr].append((maya_time, float(value)))
-            for samples in solver_samples.values():
-                samples.sort(key=lambda item: item[0])
-        _unwrap_rotation_channel_samples(
-            solver_samples,
-            tuple(ir_attrs),
-            joint_rotate_order,
-        )
+        for maya_time, rotation in rotation_samples:
+            for attr, value in zip(ir_attrs, rotation):
+                solver_samples[attr].append((maya_time, float(value)))
         if not context.batch_key_scalar_channels(solver_node, solver_samples, animation_layer=None):
             context.logger.debug(f"IK solver batch keying produced no keys for {solver_node}; using setKeyframe fallback")
             for attr, samples in solver_samples.items():
@@ -389,19 +300,12 @@ def set_bone_keyframes(
         attr_targets.get(attr, (joint, attr))[0] != joint
         for attr in ("rotateX", "rotateY", "rotateZ")
     )
-    if context.use_quaternion_interpolation and not skip_rotate and not rotate_redirected:
-        try:
-            cmds.scriptEditorInfo(suppressWarnings=True)
-            cmds.rotationInterpolation(
-                f"{joint}.rotateX",
-                f"{joint}.rotateY",
-                f"{joint}.rotateZ",
-                convert="quaternionSlerp",
+    if context.use_quaternion_interpolation and not skip_rotate:
+        if not rotate_redirected:
+            _apply_quaternion_interpolation(
+                context,
+                [f"{joint}.rotateX", f"{joint}.rotateY", f"{joint}.rotateZ"],
             )
-        except Exception as e:
-            context.logger.warning(f"Failed to apply quaternion interpolation to {joint}: {str(e)}")
-        finally:
-            cmds.scriptEditorInfo(suppressWarnings=False)
 
     skip_rotate_tangent = skip_rotate or (
         context.use_quaternion_interpolation and not rotate_redirected
@@ -411,12 +315,6 @@ def set_bone_keyframes(
         for attr in attrs
         if not (skip_rotate_tangent and attr.startswith("rotate"))
     }
-    if has_sampled_rotations:
-        tangent_targets = {
-            attr: target
-            for attr, target in tangent_targets.items()
-            if not attr.startswith("rotate")
-        }
     context.apply_vmd_bezier_tangents(joint, frames, tangent_targets, channel_interp_map)
 
     if ik_info and solver_node and slot is not None:
@@ -425,6 +323,4 @@ def set_bone_keyframes(
             "rotateY": (solver_node, f"inputRotate[{slot}].inputRotateElementY"),
             "rotateZ": (solver_node, f"inputRotate[{slot}].inputRotateElementZ"),
         }
-        if has_sampled_rotations:
-            solver_tangent_targets = {}
         context.apply_vmd_bezier_tangents(joint, frames, solver_tangent_targets, channel_interp_map)

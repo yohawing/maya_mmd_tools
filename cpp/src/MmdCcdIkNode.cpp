@@ -34,6 +34,7 @@
 #include <maya/MVector.h>
 
 #include "mmd_runtime.h"
+#include "MmdCoordinateUtils.h"
 #include "third_party/json.hpp"
 
 #include <array>
@@ -74,15 +75,21 @@ IkChainCreateV2Fn resolveIkChainCreateV2()
 #ifdef _WIN32
     // ``mmd_runtime_ik_chain_create`` is imported into this plugin through
     // the IAT, so GetModuleHandleEx(FROM_ADDRESS) identifies the plugin
-    // rather than the dependency that exports the v2 symbol.  Resolve the
+    // rather than the dependency that exports the v2 symbol. Resolve the
     // already-loaded runtime DLL by module name first; never LoadLibrary here
     // because node evaluation must not change DLL lifetime.
-    HMODULE runtimeModule = GetModuleHandleA("mmd_runtime_ffi.dll");
-    if (runtimeModule) {
-        auto fn = reinterpret_cast<IkChainCreateV2Fn>(
-            GetProcAddress(runtimeModule, "mmd_runtime_ik_chain_create_v2"));
-        if (fn) {
-            return fn;
+    constexpr const char* kRuntimeDllNames[] = {
+        "mmd_runtime_ffi.dll",
+        "mmd_anim_ffi.dll",
+    };
+    for (const char* runtimeDllName : kRuntimeDllNames) {
+        HMODULE runtimeModule = GetModuleHandleA(runtimeDllName);
+        if (runtimeModule) {
+            auto fn = reinterpret_cast<IkChainCreateV2Fn>(
+                GetProcAddress(runtimeModule, "mmd_runtime_ik_chain_create_v2"));
+            if (fn) {
+                return fn;
+            }
         }
     }
 
@@ -297,7 +304,6 @@ bool connectedGoalModelRootWorldMatrix(
     }
     return false;
 }
-
 bool parseCcdIkChainJson(const MString& chainJson, CcdIkChainConfig& cfg)
 {
     const std::string text = chainJson.asChar();
@@ -682,6 +688,24 @@ void copyInputRotateLinksToOutput(
     }
 }
 
+void copyMmdLinkQuaternionsToOutput(
+    const CcdIkChainConfig& cfg,
+    const std::vector<float>& rotations,
+    std::vector<std::array<double, 4>>& outMmdLinkQuaternions)
+{
+    outMmdLinkQuaternions.clear();
+    outMmdLinkQuaternions.reserve(cfg.linkSlots.size());
+    for (uint32_t slot : cfg.linkSlots) {
+        const size_t offset = static_cast<size_t>(slot) * 4;
+        outMmdLinkQuaternions.push_back({
+            static_cast<double>(rotations[offset]),
+            static_cast<double>(rotations[offset + 1]),
+            static_cast<double>(rotations[offset + 2]),
+            static_cast<double>(rotations[offset + 3]),
+        });
+    }
+}
+
 std::array<float, 3> readGoalPositionMmd(
     const CcdIkChainConfig& cfg,
     const MObject& node,
@@ -731,10 +755,12 @@ bool solveChainJsonIk(
     mmd_runtime_ik_chain_t* chain,
     const MObject& node,
     MDataBlock& data,
+    bool solveEnabled,
     bool useGoalWorldMatrix,
     bool goalHasInputConnection,
     bool& outSolved,
-    std::vector<std::array<double, 3>>& outEulerRadians)
+    std::vector<std::array<double, 3>>& outEulerRadians,
+    std::vector<std::array<double, 4>>& outMmdLinkQuaternions)
 {
     if (!chain) {
         return false;
@@ -836,6 +862,13 @@ bool solveChainJsonIk(
         }
     }
 
+    if (!solveEnabled) {
+        copyInputRotateLinksToOutput(cfg, data, outEulerRadians);
+        copyMmdLinkQuaternionsToOutput(cfg, rotations, outMmdLinkQuaternions);
+        outSolved = false;
+        return true;
+    }
+
     const bool useControllerGoal = cfg.controllerBoneSlot >= 0 &&
                                    static_cast<size_t>(cfg.controllerBoneSlot) < boneCount &&
                                    !goalHasInputConnection;
@@ -855,6 +888,7 @@ bool solveChainJsonIk(
             std::abs(fkTarget[1] - goal[1]) <= kGoalMatchEpsilon &&
             std::abs(fkTarget[2] - goal[2]) <= kGoalMatchEpsilon) {
             copyInputRotateLinksToOutput(cfg, data, outEulerRadians);
+            copyMmdLinkQuaternionsToOutput(cfg, rotations, outMmdLinkQuaternions);
             outSolved = false;
             return true;
         }
@@ -877,6 +911,17 @@ bool solveChainJsonIk(
         return false;
     }
     outSolved = true;
+    outMmdLinkQuaternions.clear();
+    outMmdLinkQuaternions.reserve(cfg.links.size());
+    for (size_t linkIndex = 0; linkIndex < cfg.links.size(); ++linkIndex) {
+        const size_t offset = linkIndex * 4;
+        outMmdLinkQuaternions.push_back({
+            static_cast<double>(outQuats[offset]),
+            static_cast<double>(outQuats[offset + 1]),
+            static_cast<double>(outQuats[offset + 2]),
+            static_cast<double>(outQuats[offset + 3]),
+        });
+    }
 
     outEulerRadians.clear();
     outEulerRadians.reserve(cfg.links.size());
@@ -1043,6 +1088,7 @@ MObject MmdCcdIkNode::aOutputLinkAngles;
 
 // --- 出力: outputLinkRotates ---
 MObject MmdCcdIkNode::aOutputLinkRotates;
+MObject MmdCcdIkNode::aOutputMmdLinkQuaternions;
 
 
 MmdCcdIkNode::MmdCcdIkNode() = default;
@@ -1392,6 +1438,15 @@ MStatus MmdCcdIkNode::initialize() {
     tAttr.setHidden(true);
     addAttribute(aOutputLinkRotates);
 
+    aOutputMmdLinkQuaternions = tAttr.create(
+        "outputMmdLinkQuaternions", "omlq", MFnData::kDoubleArray, MObject::kNullObj, &status);
+    tAttr.setWritable(false);
+    tAttr.setReadable(true);
+    tAttr.setStorable(false);
+    tAttr.setKeyable(false);
+    tAttr.setHidden(true);
+    addAttribute(aOutputMmdLinkQuaternions);
+
     // --- attributeAffects ---
     // 既存 1-link の既存出力との依存を維持
     attributeAffects(aInputRootX, aOutputRotateX);
@@ -1488,6 +1543,14 @@ MStatus MmdCcdIkNode::initialize() {
     attributeAffects(aIterations, aOutputLinkRotates);
     attributeAffects(aAngleLimit, aOutputLinkRotates);
     attributeAffects(aInputChain, aOutputLinkRotates);
+    attributeAffects(aEnabled, aOutputMmdLinkQuaternions);
+    attributeAffects(aChainJson, aOutputMmdLinkQuaternions);
+    attributeAffects(aGoalX, aOutputMmdLinkQuaternions);
+    attributeAffects(aGoalY, aOutputMmdLinkQuaternions);
+    attributeAffects(aGoalZ, aOutputMmdLinkQuaternions);
+    attributeAffects(aGoalWorldMatrix, aOutputMmdLinkQuaternions);
+    attributeAffects(aInputRotateArray, aOutputMmdLinkQuaternions);
+    attributeAffects(aInputTranslateArray, aOutputMmdLinkQuaternions);
 
     attributeAffects(aChainJson, aOutputRotateX);
     attributeAffects(aChainJson, aOutputRotateY);
@@ -1542,8 +1605,9 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
     bool isSolved = (plug == aSolved);
     bool isLinkAngles = (plug == aOutputLinkAngles);
     bool isLinkRotates = (plug == aOutputLinkRotates);
+    bool isMmdLinkQuaternions = (plug == aOutputMmdLinkQuaternions);
 
-    if (!isRotate && !isAngle && !isSolved && !isLinkAngles && !isLinkRotates) {
+    if (!isRotate && !isAngle && !isSolved && !isLinkAngles && !isLinkRotates && !isMmdLinkQuaternions) {
         return MS::kUnknownParameter;
     }
 
@@ -1557,6 +1621,7 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
     double outRotX = 0.0, outRotY = 0.0, outRotZ = 0.0;
     MDoubleArray outLinkAngles;
     MDoubleArray outLinkRotates;
+    MDoubleArray outMmdLinkQuaternions;
     const double eps = 1e-12;
 
     // chainJson の parse/native chain create はノードインスタンス内で内容変更時
@@ -1567,38 +1632,24 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
     if (ensureChainCache(chainJson)) {
         const CcdIkChainConfig& chainCfg = chainCache_->config;
         std::vector<std::array<double, 3>> chainRotationsRadians;
+        std::vector<std::array<double, 4>> chainMmdLinkQuaternions;
         bool chainSolved = false;
         bool chainPathHandled = false;
 
-        if (enabled) {
-            const MObject thisNode = thisMObject();
-            const bool goalWorldConnected = plugOrChildrenHasInputConnection(thisNode, aGoalWorldMatrix);
-            const bool goalConnected = goalWorldConnected || plugOrChildrenHasInputConnection(thisNode, aGoal);
-            chainPathHandled = solveChainJsonIk(
-                chainCfg,
-                chainCache_->nativeChain,
-                thisNode,
-                data,
-                goalWorldConnected,
-                goalConnected,
-                chainSolved,
-                chainRotationsRadians);
-        } else {
-            MArrayDataHandle rotateArray = data.inputArrayValue(aInputRotateArray, &status);
-            chainRotationsRadians.reserve(chainCfg.linkSlots.size());
-            for (uint32_t slot : chainCfg.linkSlots) {
-                std::array<double, 3> eulerRadians{0.0, 0.0, 0.0};
-                readInputRotateElement(
-                    rotateArray,
-                    slot,
-                    aInputRotateArrayX,
-                    aInputRotateArrayY,
-                    aInputRotateArrayZ,
-                    eulerRadians);
-                chainRotationsRadians.push_back(eulerRadians);
-            }
-            chainPathHandled = true;
-        }
+        const MObject thisNode = thisMObject();
+        const bool goalWorldConnected = plugOrChildrenHasInputConnection(thisNode, aGoalWorldMatrix);
+        const bool goalConnected = goalWorldConnected || plugOrChildrenHasInputConnection(thisNode, aGoal);
+        chainPathHandled = solveChainJsonIk(
+            chainCfg,
+            chainCache_->nativeChain,
+            thisNode,
+            data,
+            enabled,
+            goalWorldConnected,
+            goalConnected,
+            chainSolved,
+            chainRotationsRadians,
+            chainMmdLinkQuaternions);
 
         if (chainPathHandled) {
             // どの output plug が要求された場合でも、一度の solve 結果で関連
@@ -1637,6 +1688,17 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
             MDataHandle hLinkRotates = data.outputValue(aOutputLinkRotates, &status);
             hLinkRotates.setMObject(linkRotatesObj);
             hLinkRotates.setClean();
+
+            for (const auto& quaternion : chainMmdLinkQuaternions) {
+                outMmdLinkQuaternions.append(quaternion[0]);
+                outMmdLinkQuaternions.append(quaternion[1]);
+                outMmdLinkQuaternions.append(quaternion[2]);
+                outMmdLinkQuaternions.append(quaternion[3]);
+            }
+            MObject mmdQuaternionsObj = dataObject.create(outMmdLinkQuaternions, &status);
+            MDataHandle hMmdQuaternions = data.outputValue(aOutputMmdLinkQuaternions, &status);
+            hMmdQuaternions.setMObject(mmdQuaternionsObj);
+            hMmdQuaternions.setClean();
 
             data.setClean(plug);
             return MS::kSuccess;
@@ -1794,6 +1856,11 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
     MDataHandle hLinkRotates = data.outputValue(aOutputLinkRotates, &status);
     hLinkRotates.setMObject(linkRotatesObj);
     hLinkRotates.setClean();
+
+    MObject mmdQuaternionsObj = dataObject.create(outMmdLinkQuaternions, &status);
+    MDataHandle hMmdQuaternions = data.outputValue(aOutputMmdLinkQuaternions, &status);
+    hMmdQuaternions.setMObject(mmdQuaternionsObj);
+    hMmdQuaternions.setClean();
 
     data.setClean(plug);
     return MS::kSuccess;

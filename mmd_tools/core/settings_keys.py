@@ -67,5 +67,6 @@ MODEL_OPTION_TO_SETTINGS_KEY = {
     "uv_set_name": IMPORT_MODEL_UV_SET_NAME,
     "texture_search_path": IMPORT_MODEL_TEXTURE_SEARCH_PATH,
     "add_semi_standard_bones": IMPORT_RIG_ADD_SEMI_STANDARD_BONES,
+    "import_morphs": IMPORT_MORPH_IMPORT_MORPHS,
     "translate_names": IMPORT_NAMING_TRANSLATE_NAMES,
 }

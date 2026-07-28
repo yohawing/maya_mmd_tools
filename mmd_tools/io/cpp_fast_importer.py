@@ -809,11 +809,23 @@ def _apply_fast_skeleton_skin(
         logger.debug("Mesh node %s does not exist; skipping skinCluster", mesh_node)
         return
 
-    # filter to joints that still exist
-    existing_joints = [j for j in joints if cmds_module.objExists(j)]
-    if not existing_joints:
-        logger.debug("No valid joints for skinCluster; skipping")
+    used_bone_indices = sorted(
+        {
+            int(bone_index)
+            for indices, weights in zip(skin_indices, skin_weights)
+            for bone_index, weight in zip(indices, weights)
+            if float(weight) > 0.0 and 0 <= int(bone_index) < len(joints)
+        }
+    )
+    influence_pairs = [
+        (bone_index, joints[bone_index])
+        for bone_index in used_bone_indices
+        if cmds_module.objExists(joints[bone_index])
+    ]
+    if not influence_pairs:
+        logger.debug("No positive-weight joints for skinCluster; skipping")
         return
+    influence_joints = [joint for _bone_index, joint in influence_pairs]
 
     # Evaluate authored-normal state before creating the deformer so Maya's
     # skinCluster initialization cannot alter the predicate's mesh snapshot.
@@ -822,7 +834,7 @@ def _apply_fast_skeleton_skin(
     )
 
     skin_cluster = cmds_module.skinCluster(
-        existing_joints,
+        influence_joints,
         mesh_node,
         toSelectedBones=True,
         normalizeWeights=2,
@@ -843,24 +855,22 @@ def _apply_fast_skeleton_skin(
                      n_verts, len(skin_weights) if skin_weights else 0)
         return
 
-    # Build per-vertex weight arrays of len existing_joints
-    # Map joint_names -> index in existing_joints
-    joint_to_influence: dict[str, int] = {}
-    for idx, jnt in enumerate(existing_joints):
-        joint_to_influence[jnt] = idx
+    influence_index_by_bone = {
+        bone_index: influence_index
+        for influence_index, (bone_index, _joint) in enumerate(influence_pairs)
+    }
 
     # Build influence index -> weight for each vertex
     weights_list: list[list[float]] = []
     for v in range(n_verts):
-        vw = [0.0] * len(existing_joints)
+        vw = [0.0] * len(influence_joints)
         idx4 = skin_indices[v]
         w4 = skin_weights[v]
         for k in range(4):
             bi = int(idx4[k])
             w = float(w4[k])
             if w > 0.0 and bi < len(joints):
-                jnt_name = joints[bi]
-                infl_idx = joint_to_influence.get(jnt_name)
+                infl_idx = influence_index_by_bone.get(bi)
                 if infl_idx is not None:
                     vw[infl_idx] = w
         weights_list.append(vw)

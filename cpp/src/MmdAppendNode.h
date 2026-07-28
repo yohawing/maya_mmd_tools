@@ -15,6 +15,7 @@
 #include <maya/MFnNumericAttribute.h>
 #include <maya/MFnCompoundAttribute.h>
 #include <maya/MFnUnitAttribute.h>
+#include <maya/MFnTypedAttribute.h>
 #include <maya/MTypeId.h>
 
 class MmdAppendNode : public MPxNode {
@@ -89,6 +90,20 @@ public:
     static MObject aSourceJointOrientX;
     static MObject aSourceJointOrientY;
     static MObject aSourceJointOrientZ;
+
+    // Optional flat [x,y,z,w] array supplied by mmdCcdIk. An empty array or
+    // negative index falls back to sourceRotate + sourceJointOrient.
+    static MObject aSourceMmdLinkQuaternions;
+    static MObject aSourceMmdLinkIndex;
+
+    // Optional bind-space matrices for exact native MMD -> Maya append
+    // conversion.  These are populated once at rig creation time and only
+    // used when sourceMmdLinkQuaternions is connected.
+    static MObject aUseTargetBindMatrices;
+    static MObject aTargetMayaBindWorldMatrix;
+    static MObject aTargetNoOrientBindWorldMatrix;
+    static MObject aParentMayaBindWorldMatrix;
+    static MObject aParentNoOrientBindWorldMatrix;
 
     static MObject aTargetJointOrient;
     static MObject aTargetJointOrientX;
