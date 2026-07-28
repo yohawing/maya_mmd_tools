@@ -65,6 +65,18 @@ def _compact_error(value: Any) -> str:
     return text.split("; restore scene channel", 1)[0]
 
 
+def _remove_stale_artifacts(paths: list[Path]) -> None:
+    """Remove exact generated artifacts or fail before collecting evidence."""
+
+    for artifact in paths:
+        try:
+            artifact.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise RuntimeError(f"stale VMD cleanup failed: {artifact}: {exc}") from exc
+
+
 def _load_plugins() -> dict[str, str]:
     """Load the Python plugin and the native solver needed by Control Rig."""
 
@@ -140,7 +152,13 @@ def _joint_skin_records(root: str) -> dict[str, dict[str, Any]]:
             index = str(int(cmds.getAttr(f"{joint}.mmd_bone_index")))
         except (TypeError, ValueError, RuntimeError):
             continue
-        records[index] = {"joint": str(joint), "skin": []}
+        bone_name = ""
+        try:
+            if cmds.attributeQuery("mmd_bone_name", node=joint, exists=True):
+                bone_name = str(cmds.getAttr(f"{joint}.mmd_bone_name") or "")
+        except (RuntimeError, TypeError):
+            bone_name = ""
+        records[index] = {"joint": str(joint), "boneName": bone_name, "skin": []}
 
     for skin in cmds.ls(type="skinCluster", long=True) or []:
         for logical in cmds.getAttr(f"{skin}.matrix", multiIndices=True) or []:
@@ -174,7 +192,9 @@ def _skin_matrix(joint: str, skin: str, logical: int) -> list[float]:
     return [float(product[index]) for index in range(16)]
 
 
-def _capture_observables(records: Mapping[str, Mapping[str, Any]], frames: list[int]) -> dict[str, Any]:
+def _capture_observables(
+    records: Mapping[str, Mapping[str, Any]], frames: list[int | float]
+) -> dict[str, Any]:
     captured: dict[str, Any] = {}
     for frame in frames:
         cmds.currentTime(frame, edit=True)
@@ -185,6 +205,7 @@ def _capture_observables(records: Mapping[str, Mapping[str, Any]], frames: list[
             if not cmds.objExists(joint):
                 raise RuntimeError(f"indexed joint disappeared at frame {frame}: {joint}")
             joints[index] = {
+                "boneName": str(row.get("boneName", "")),
                 "worldMatrix": _floats(cmds.getAttr(f"{joint}.worldMatrix[0]")),
                 "skinMatrices": [
                     _skin_matrix(joint, item["skinCluster"], int(item["logicalIndex"]))
@@ -215,7 +236,237 @@ def _keyframe_inventory(root: str) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda item: item["curve"])
 
 
-def _evaluation_evidence(frames: list[int], records: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+def _fresh_bone_key_times(root: str) -> list[dict[str, Any]]:
+    """Resolve fresh upstream key times to PMX bone names.
+
+    Query each target joint independently so an intermediate blend node cannot
+    leak one curve's times into another bone or channel.
+    """
+
+    records = _joint_skin_records(root)
+    rows = []
+    for record in records.values():
+        joint = str(record["joint"])
+        if not cmds.objExists(joint):
+            continue
+        name = str(cmds.getAttr(f"{joint}.mmd_bone_name") or "")
+        if not name:
+            continue
+        times = {
+            _frame_value(value)
+            for value in _floats(cmds.keyframe(joint, query=True, timeChange=True))
+        }
+        if times:
+            rows.append({"boneName": name, "times": sorted(times, key=_frame_sort_key)})
+    return sorted(rows, key=lambda row: row["boneName"])
+
+
+def _compare_fresh_bone_key_times(exported: Any, fresh_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Compare exported VMD bone frame times with fresh Maya curve keys.
+
+    VMD stores one key time for the whole bone, while Maya may omit constant
+    Euler or translation components.  Compare the union of authored component
+    times per bone and keep the per-channel rows as diagnostics.
+    """
+
+    normalized = _normalized_vmd(exported)
+    expected_by_bone: dict[str, set[int | float]] = {}
+    for bone_name, frame in normalized["boneKeyTimes"]:
+        expected_by_bone.setdefault(str(bone_name), set()).add(frame)
+    actual_by_bone: dict[str, set[int | float]] = {}
+    for row in fresh_rows:
+        actual_by_bone.setdefault(str(row["boneName"]), set()).update(row["times"])
+    mismatches = []
+    for bone_name, expected_times in sorted(expected_by_bone.items()):
+        expected = tuple(sorted(expected_times, key=_frame_sort_key))
+        fresh = tuple(sorted(actual_by_bone.get(bone_name, ()), key=_frame_sort_key))
+        if fresh != expected:
+            mismatches.append(
+                {
+                    "boneName": bone_name,
+                    "exported": list(expected),
+                    "fresh": list(fresh),
+                }
+            )
+    for bone_name in sorted(set(actual_by_bone) - set(expected_by_bone)):
+        mismatches.append(
+            {
+                "boneName": bone_name,
+                "exported": [],
+                "fresh": sorted(actual_by_bone[bone_name], key=_frame_sort_key),
+            }
+        )
+    first = mismatches[0] if mismatches else None
+    return {
+        "exportedBoneCount": len(expected_by_bone),
+        "freshBoneCount": len(actual_by_bone),
+        "mismatchCount": len(mismatches),
+        "firstMismatch": first,
+        "pass": bool(expected_by_bone) and not mismatches,
+    }
+
+
+def _ik_state_inventory(root: str, frames: list[int | float]) -> list[dict[str, Any]]:
+    """Capture target-owned ``mmdCcdIk.enabled`` by PMX IK bone name."""
+
+    from mmd_tools.converters.vmd_ik_enabled_animation import collect_ik_nodes_by_bone_name
+
+    nodes_by_name = collect_ik_nodes_by_bone_name(target_model=str(root))
+    rows = []
+    for frame in frames:
+        cmds.currentTime(frame, edit=True)
+        cmds.refresh(force=True)
+        states = []
+        for bone_name, node in sorted(nodes_by_name.items()):
+            try:
+                enabled = bool(cmds.getAttr(f"{node}.enabled"))
+            except (RuntimeError, TypeError):
+                enabled = None
+            states.append({"boneName": str(bone_name), "enabled": enabled})
+        rows.append({"frame": _frame_value(frame), "states": states})
+    return rows
+
+
+def _compare_ik_state_inventory(reference: list[dict[str, Any]], candidate: list[dict[str, Any]]) -> dict[str, Any]:
+    """Compare evaluated IK enabled state, preserving the first mismatch."""
+
+    reference_map = {row["frame"]: row["states"] for row in reference}
+    candidate_map = {row["frame"]: row["states"] for row in candidate}
+    first = None
+    for frame in sorted(set(reference_map) | set(candidate_map), key=_frame_sort_key):
+        left = reference_map.get(frame)
+        right = candidate_map.get(frame)
+        if left != right:
+            first = {"category": "export_fresh_ik_state", "frame": frame, "baked": left, "fresh": right}
+            break
+    observed = any(row["states"] for row in reference) and any(row["states"] for row in candidate)
+    if not observed and first is None:
+        first = {"category": "export_fresh_ik_state_missing", "baked": reference, "fresh": candidate}
+    return {
+        "baked": reference,
+        "fresh": candidate,
+        "observed": observed,
+        "firstMismatch": first,
+        "pass": observed and first is None,
+    }
+
+
+def _frame_value(value: Any) -> int | float:
+    """Return an integer frame when exact, otherwise preserve a half-frame."""
+
+    numeric = float(value)
+    return int(numeric) if numeric.is_integer() else numeric
+
+
+def _frame_sort_key(value: Any) -> float:
+    return float(value)
+
+
+def _normalized_vmd(vmd: Any) -> dict[str, Any]:
+    """Normalize exported VMD payloads for key-time/interpolation/IK gates."""
+
+    bone_rows = []
+    for frame in getattr(vmd, "bone_frames", []) or []:
+        bone_rows.append(
+            {
+                "boneName": str(frame.bone_name),
+                "frame": _frame_value(frame.frame_number),
+                "interpolation": list(bytes(getattr(frame, "interpolation", b""))),
+            }
+        )
+    bone_rows.sort(key=lambda row: (row["boneName"], _frame_sort_key(row["frame"])))
+    ik_rows = []
+    for frame in getattr(vmd, "ik_show_hide_frames", []) or []:
+        states = sorted(
+            (str(name), bool(enabled))
+            for name, enabled in (getattr(frame, "ik_states", ()) or ())
+        )
+        ik_rows.append(
+            {
+                "frame": _frame_value(frame.frame_number),
+                "visible": bool(getattr(frame, "visible", True)),
+                "states": states,
+            }
+        )
+    ik_rows.sort(key=lambda row: _frame_sort_key(row["frame"]))
+    return {
+        "boneKeyTimes": [(row["boneName"], row["frame"]) for row in bone_rows],
+        "boneInterpolation": bone_rows,
+        "ikProperties": ik_rows,
+    }
+
+
+def _compare_vmd_roundtrip(exported: Any, fresh: Any) -> dict[str, Any]:
+    """Compare normalized VMD key times, Bezier bytes, and IK properties."""
+
+    left = _normalized_vmd(exported)
+    right = _normalized_vmd(fresh)
+    key_times_pass = left["boneKeyTimes"] == right["boneKeyTimes"]
+    interpolation_mismatches = []
+    left_interpolation = {
+        (row["boneName"], row["frame"]): row["interpolation"]
+        for row in left["boneInterpolation"]
+    }
+    right_interpolation = {
+        (row["boneName"], row["frame"]): row["interpolation"]
+        for row in right["boneInterpolation"]
+    }
+    for key in sorted(
+        set(left_interpolation) | set(right_interpolation),
+        key=lambda item: (str(item[0]), _frame_sort_key(item[1])),
+    ):
+        if left_interpolation.get(key) != right_interpolation.get(key):
+            interpolation_mismatches.append(
+                {
+                    "boneName": key[0],
+                    "frame": key[1],
+                    "exported": left_interpolation.get(key),
+                    "fresh": right_interpolation.get(key),
+                }
+            )
+    ik_pass = left["ikProperties"] == right["ikProperties"]
+    first_divergence = None
+    if not key_times_pass:
+        first_divergence = {
+            "category": "export_fresh_key_times",
+            "exported": left["boneKeyTimes"],
+            "fresh": right["boneKeyTimes"],
+        }
+    elif interpolation_mismatches:
+        first_divergence = {
+            "category": "export_fresh_bone_interpolation",
+            **interpolation_mismatches[0],
+        }
+    elif not ik_pass:
+        first_divergence = {
+            "category": "export_fresh_ik_properties",
+            "exported": left["ikProperties"],
+            "fresh": right["ikProperties"],
+        }
+    return {
+        "keyTimes": {
+            "exported": left["boneKeyTimes"],
+            "fresh": right["boneKeyTimes"],
+            "pass": key_times_pass,
+        },
+        "boneInterpolation": {
+            "mismatchCount": len(interpolation_mismatches),
+            "firstMismatch": interpolation_mismatches[0] if interpolation_mismatches else None,
+            "pass": not interpolation_mismatches,
+        },
+        "ikProperties": {
+            "exported": left["ikProperties"],
+            "fresh": right["ikProperties"],
+            "pass": ik_pass,
+        },
+        "firstDivergence": first_divergence,
+        "pass": key_times_pass and not interpolation_mismatches and ik_pass,
+    }
+
+
+def _evaluation_evidence(
+    frames: list[int | float], records: Mapping[str, Mapping[str, Any]]
+) -> dict[str, Any]:
     """Exercise sequential, repeated, and non-sequential frame seeks."""
 
     sequential = list(frames)
@@ -253,7 +504,9 @@ def _route_snapshot(root: str, requested_control_rig: bool, profile: Mapping[str
     }
 
 
-def _run_route(model: Path, motion: Path, create_control_rig: bool, frames: list[int]) -> dict[str, Any]:
+def _run_route(
+    model: Path, motion: Path, create_control_rig: bool, frames: list[int | float]
+) -> dict[str, Any]:
     from mmd_tools.io.mmd_importer import import_mmd_file
 
     cmds.file(new=True, force=True)
@@ -310,15 +563,15 @@ def _compare(reference: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict
     divergences = []
     ref_frames = reference["observables"]
     candidate_frames = candidate["observables"]
-    for frame in sorted(set(ref_frames) | set(candidate_frames), key=int):
+    for frame in sorted(set(ref_frames) | set(candidate_frames), key=_frame_sort_key):
         if frame not in ref_frames or frame not in candidate_frames:
-            divergences.append({"category": "frame_set", "frame": int(frame)})
+            divergences.append({"category": "frame_set", "frame": _frame_value(frame)})
             continue
         ref_joints = ref_frames[frame]
         candidate_joints = candidate_frames[frame]
-        for index in sorted(set(ref_joints) | set(candidate_joints), key=int):
+        for index in sorted(set(ref_joints) | set(candidate_joints), key=lambda value: int(value)):
             if index not in ref_joints or index not in candidate_joints:
-                divergences.append({"category": "joint_set", "frame": int(frame), "jointIndex": index})
+                divergences.append({"category": "joint_set", "frame": _frame_value(frame), "jointIndex": index})
                 continue
             world_error = _matrix_error(ref_joints[index]["worldMatrix"], candidate_joints[index]["worldMatrix"])
             ref_skin = ref_joints[index]["skinMatrices"]
@@ -327,7 +580,7 @@ def _compare(reference: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict
                 divergences.append(
                     {
                         "category": "skin_matrix_count",
-                        "frame": int(frame),
+                        "frame": _frame_value(frame),
                         "jointIndex": index,
                         "legacyCount": len(ref_skin),
                         "directCount": len(candidate_skin),
@@ -337,20 +590,157 @@ def _compare(reference: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict
                 (_matrix_error(left, right) for left, right in zip(ref_skin, candidate_skin)),
                 default=0.0,
             )
-            row = {"frame": int(frame), "jointIndex": index, "worldMatrixMax": world_error, "skinMatrixMax": skin_error}
+            row = {
+                "frame": _frame_value(frame),
+                "jointIndex": index,
+                "boneName": str(ref_joints[index].get("boneName") or candidate_joints[index].get("boneName") or ""),
+                "worldMatrixMax": world_error,
+                "skinMatrixMax": skin_error,
+            }
             rows.append(row)
             if max(world_error, skin_error) > _MATRIX_EPSILON:
                 divergences.append({"category": "jo_aware_matrix", **row})
     worst_world = max((row["worldMatrixMax"] for row in rows), default=0.0)
     worst_skin = max((row["skinMatrixMax"] for row in rows), default=0.0)
+    worst_world_row = max(rows, key=lambda row: row["worldMatrixMax"], default=None)
+    worst_skin_row = max(rows, key=lambda row: row["skinMatrixMax"], default=None)
     return {
         "threshold": _MATRIX_EPSILON,
         "maxWorldMatrixError": worst_world,
         "maxSkinMatrixError": worst_skin,
+        "worstWorld": worst_world_row,
+        "worstSkin": worst_skin_row,
         "firstDivergence": divergences[0] if divergences else None,
         "divergenceCount": len(divergences),
         "pass": not divergences and worst_world <= _MATRIX_EPSILON and worst_skin <= _MATRIX_EPSILON,
     }
+
+
+def _run_export_fresh_import(
+    model: Path,
+    baked: Mapping[str, Any],
+    frames: list[int | float],
+    interpolation_frames: list[int | float],
+    output: Path,
+) -> dict[str, Any]:
+    """Export baked Control Rig motion and compare a fresh ordinary import."""
+
+    from mmd_tools.core.vmd_data import VmdData
+    from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
+    from mmd_tools.io.mmd_importer import import_mmd_file
+    from mmd_tools.io.vmd_exporter import VmdExporter
+
+    export_path = output.with_name(f"{output.stem}_baked_export.vmd")
+    fresh_export_path = output.with_name(f"{output.stem}_fresh_reexport.vmd")
+    gate: dict[str, Any] = {
+        "attempted": True,
+        "status": "fail",
+        "pass": False,
+        "exportPath": str(export_path),
+        "freshExportPath": str(fresh_export_path),
+        "errors": [],
+    }
+    try:
+        _remove_stale_artifacts([export_path, fresh_export_path])
+        baked_ik_states = _ik_state_inventory(str(baked["root"]), frames)
+        collected = VmdSceneCollector().collect({"target_model": str(baked["root"])})
+        VmdExporter().export_vmd_animation(str(export_path), collected)
+        if not export_path.is_file():
+            raise RuntimeError(f"baked VMD export did not produce a file: {export_path}")
+        exported_vmd = VmdData().parse_file(str(export_path))
+        if not exported_vmd.bone_frames:
+            raise RuntimeError("baked VMD export contains no bone frames")
+
+        cmds.file(new=True, force=True)
+        fresh_root = _import_model(model)
+        imported = import_mmd_file(
+            str(export_path),
+            options={
+                "target_model": str(fresh_root),
+                "pmx_path": str(model),
+                "bake_mode": False,
+                "clear_existing_motion": True,
+                "create_mmd_control_rig": False,
+            },
+        )
+        if not imported:
+            raise RuntimeError("fresh ordinary VMD import returned false")
+        fresh_records = _joint_skin_records(str(fresh_root))
+        if not fresh_records:
+            raise RuntimeError("fresh ordinary import has no indexed joints")
+        fresh_observables = _capture_observables(fresh_records, frames)
+        mesh_compare = _compare(
+            {"observables": baked["observables"]},
+            {"observables": fresh_observables},
+        )
+        interpolation_keys = [str(_frame_value(frame)) for frame in interpolation_frames]
+        interpolation_compare = _compare(
+            {
+                "observables": {
+                    key: baked["observables"][key]
+                    for key in interpolation_keys
+                    if key in baked["observables"]
+                }
+            },
+            {
+                "observables": {
+                    key: fresh_observables[key]
+                    for key in interpolation_keys
+                    if key in fresh_observables
+                }
+            },
+        )
+        mesh_compare["interpolationProbe"] = {
+            "frames": [_frame_value(frame) for frame in interpolation_frames],
+            "tested": bool(interpolation_frames)
+            and len(interpolation_compare.get("worstWorld") or {}) > 0,
+            "metric": "JO-aware world/skin matrix max abs error",
+            "threshold": _MATRIX_EPSILON,
+            "comparison": interpolation_compare,
+        }
+        fresh_ik_states = _ik_state_inventory(str(fresh_root), frames)
+        ik_state_compare = _compare_ik_state_inventory(baked_ik_states, fresh_ik_states)
+        fresh_bone_key_times = _fresh_bone_key_times(str(fresh_root))
+        keyframe_compare = _compare_fresh_bone_key_times(exported_vmd, fresh_bone_key_times)
+
+        # Re-export the fresh ordinary scene so interpolation bytes and IK
+        # property/state are compared as data, not inferred from Maya curves.
+        fresh_collected = VmdSceneCollector().collect({"target_model": str(fresh_root)})
+        VmdExporter().export_vmd_animation(str(fresh_export_path), fresh_collected)
+        if not fresh_export_path.is_file():
+            raise RuntimeError(f"fresh VMD re-export did not produce a file: {fresh_export_path}")
+        fresh_vmd = VmdData().parse_file(str(fresh_export_path))
+        data_compare = _compare_vmd_roundtrip(exported_vmd, fresh_vmd)
+        gate.update(
+            {
+                "freshRoot": str(fresh_root),
+                "exportedBoneFrames": len(exported_vmd.bone_frames),
+                "freshExportedBoneFrames": len(fresh_vmd.bone_frames),
+                "freshKeyframes": _keyframe_inventory(str(fresh_root)),
+                "freshBoneKeyTimes": fresh_bone_key_times,
+                "keyframeParity": keyframe_compare,
+                "ikStateParity": ik_state_compare,
+                "meshParity": mesh_compare,
+                "dataParity": data_compare,
+                "firstDivergence": (
+                    mesh_compare.get("firstDivergence")
+                    or keyframe_compare.get("firstMismatch")
+                    or ik_state_compare.get("firstMismatch")
+                    or data_compare.get("firstDivergence")
+                ),
+            }
+        )
+        gate["pass"] = (
+            bool(mesh_compare.get("pass"))
+            and bool(keyframe_compare.get("pass"))
+            and bool(ik_state_compare.get("pass"))
+            and bool(data_compare.get("pass"))
+        )
+        gate["status"] = "pass" if gate["pass"] else "fail"
+    except Exception as exc:  # noqa: BLE001 - preserve first round-trip red evidence
+        gate["errors"].append(_compact_error(exc))
+        gate["firstDivergence"] = {"category": "export_fresh_import", "error": gate["errors"][0]}
+    return gate
 
 
 def _coverage(vmd: Any) -> dict[str, Any]:
@@ -409,15 +799,26 @@ def run(model: Path, motion: Path, output: Path, evaluation_mode: str = "dg") ->
             raise RuntimeError("fixture VMD contains no bone frames")
         authored_frames = sorted({int(frame.frame_number) for frame in vmd.bone_frames})
         end = authored_frames[-1]
-        frames = sorted({0, 1, max(1, end // 2), end, *authored_frames})
+        authored_frame_set = set(authored_frames)
+        authored_intervals = [
+            (right - left, left, right)
+            for left, right in zip(authored_frames, authored_frames[1:])
+            if left < right
+        ]
+        interpolation_frames: list[int | float] = []
+        if authored_intervals:
+            _, left, right = max(authored_intervals, key=lambda row: (row[0], -row[1]))
+            midpoint = (left + right) / 2.0
+            if midpoint not in authored_frame_set:
+                interpolation_frames.append(_frame_value(midpoint))
+        frames = sorted({0, 1, end, *authored_frames, *interpolation_frames})
         coverage = _coverage(vmd)
         for name in ("externalOracle", "exportFreshImport", "evaluationModes"):
             coverage["items"][name] = {"status": "missing"}
-        coverage_missing = sorted(
+        coverage_missing_set = (
             set(coverage["coverageMissing"])
             | {"externalOracle", "exportFreshImport", "evaluationModes"}
         )
-        coverage["coverageMissing"] = coverage_missing
         legacy = _run_route(model, motion, False, frames)
         direct = _run_route(model, motion, True, frames)
         baked = None
@@ -463,6 +864,24 @@ def run(model: Path, motion: Path, output: Path, evaluation_mode: str = "dg") ->
                 },
             }
         )
+        export_fresh_import = {"attempted": False, "status": "not_run", "pass": False}
+        if baked and legacy.get("importStatus") == "pass":
+            export_fresh_import = _run_export_fresh_import(
+                model,
+                {**baked, "root": direct["root"]},
+                frames,
+                interpolation_frames,
+                output,
+            )
+            coverage["items"]["exportFreshImport"] = {
+                "status": "covered",
+                "gatePass": bool(export_fresh_import.get("pass")),
+            }
+            # Executed red is a gate failure, not missing coverage.  The
+            # remaining five categories stay fail-closed below.
+            coverage_missing_set.discard("exportFreshImport")
+        coverage_missing = sorted(coverage_missing_set)
+        coverage["coverageMissing"] = coverage_missing
         payload.update(
             {
                 "mayaVersion": str(cmds.about(version=True)),
@@ -470,6 +889,7 @@ def run(model: Path, motion: Path, output: Path, evaluation_mode: str = "dg") ->
                 "evaluationMode": evaluation,
                 "frames": frames,
                 "authoredBoneKeyFrames": authored_frames,
+                "interpolationFrames": interpolation_frames,
                 "coverage": coverage,
                 "coverageMissing": coverage_missing,
                 "routes": {
@@ -499,11 +919,14 @@ def run(model: Path, motion: Path, output: Path, evaluation_mode: str = "dg") ->
                     "error": bake_error,
                     "result": baked,
                 },
+                "exportFreshImport": export_fresh_import,
             }
         )
         payload["status"] = (
             "pass"
-            if payload["routeParity"]["pass"] and not coverage_missing
+            if payload["routeParity"]["pass"]
+            and bool(export_fresh_import.get("pass"))
+            and not coverage_missing
             else "fail"
         )
     except Exception as exc:  # noqa: BLE001 - fail closed in report
@@ -512,7 +935,22 @@ def run(model: Path, motion: Path, output: Path, evaluation_mode: str = "dg") ->
     finally:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        print(json.dumps({"status": payload["status"], "report": str(output), "firstDivergence": payload.get("routeParity", {}).get("directVsLegacy", {}).get("firstDivergence")}, ensure_ascii=False))
+        print(
+            json.dumps(
+                {
+                    "status": payload["status"],
+                    "report": str(output),
+                    "firstDivergence": payload.get("routeParity", {})
+                    .get("directVsLegacy", {})
+                    .get("firstDivergence"),
+                    "exportFreshImport": {
+                        "status": payload.get("exportFreshImport", {}).get("status"),
+                        "firstDivergence": payload.get("exportFreshImport", {}).get("firstDivergence"),
+                    },
+                },
+                ensure_ascii=False,
+            )
+        )
     return 0 if payload["status"] == "pass" else 1
 
 

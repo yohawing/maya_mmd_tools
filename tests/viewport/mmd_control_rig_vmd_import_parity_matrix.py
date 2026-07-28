@@ -139,14 +139,46 @@ def _validate_child(
     if coverage_missing is None:
         errors.append("coverageMissing must be a JSON list")
 
+    export_gate = _as_mapping(payload.get("exportFreshImport"))
+    export_status = "not_run"
+    export_pass = False
+    export_attempted = False
+    if export_gate is None:
+        errors.append("missing exportFreshImport gate")
+    else:
+        export_status = str(export_gate.get("status", ""))
+        export_pass = bool(export_gate.get("pass"))
+        export_attempted = bool(export_gate.get("attempted"))
+        if export_status not in {"pass", "fail", "not_run"}:
+            errors.append(f"invalid exportFreshImport.status: {export_status!r}")
+        if export_status == "pass" and (not export_attempted or not export_pass):
+            errors.append("exportFreshImport pass requires attempted=true and pass=true")
+        if export_status == "fail" and (not export_attempted or export_pass):
+            errors.append("exportFreshImport fail requires attempted=true and pass=false")
+        if export_status == "not_run" and (export_attempted or export_pass):
+            errors.append("exportFreshImport not_run requires attempted=false and pass=false")
+        if coverage_missing is not None:
+            listed = "exportFreshImport" in coverage_missing
+            if export_status == "not_run" and not listed:
+                errors.append("not_run exportFreshImport must remain in coverageMissing")
+            if export_status in {"pass", "fail"} and listed:
+                errors.append("executed exportFreshImport must not remain in coverageMissing")
+
     coverage_only_nonzero = (
         returncode == 1
         and str(payload.get("status")) == "fail"
         and route_green
         and coverage_missing is not None
         and bool(coverage_missing)
+        and export_status != "fail"
     )
-    if returncode != 0 and not coverage_only_nonzero:
+    gate_failure_nonzero = (
+        returncode == 1
+        and str(payload.get("status")) == "fail"
+        and route_green
+        and export_status == "fail"
+    )
+    if returncode != 0 and not (coverage_only_nonzero or gate_failure_nonzero):
         errors.append(f"child returned nonzero exit={returncode}")
     if returncode == 0 and str(payload.get("status")) != "pass":
         errors.append(f"child returned zero with status={payload.get('status')!r}")
@@ -159,7 +191,14 @@ def _validate_child(
         "returncode": int(returncode),
         "routeParityPass": route_green,
         "coverageMissing": coverage_missing or [],
+        "exportFreshImportStatus": export_status,
+        "exportFreshImportPass": export_pass,
+        "exportFreshImportAttempted": export_attempted,
+        "exportFreshImportFirstDivergence": (
+            export_gate.get("firstDivergence") if export_gate is not None else None
+        ),
         "coverageOnlyNonzero": coverage_only_nonzero,
+        "gateFailureNonzero": gate_failure_nonzero,
         "valid": not errors,
         "errors": errors,
     }
@@ -244,17 +283,33 @@ def _aggregate(
     expected = {(version, mode) for version in versions for mode in modes}
     actual = {(str(row.get("version")), str(row.get("mode"))) for row in rows}
     complete = actual == expected and len(rows) == len(expected)
-    route_green = complete and all(bool(row.get("routeParityPass")) and bool(row.get("valid")) for row in rows)
+    reports_valid = complete and all(bool(row.get("valid")) for row in rows)
+    route_green = reports_valid and all(bool(row.get("routeParityPass")) for row in rows)
     coverage_union_set = {item for row in rows for item in row.get("coverageMissing", [])}
+    export_statuses = [str(row.get("exportFreshImportStatus", "not_run")) for row in rows]
+    if not rows or any(status == "fail" for status in export_statuses):
+        export_status = "fail" if rows and any(status == "fail" for status in export_statuses) else "not_run"
+    elif all(status == "pass" for status in export_statuses):
+        export_status = "pass"
+    elif all(status == "not_run" for status in export_statuses):
+        export_status = "not_run"
+    else:
+        export_status = "fail"
     # The six-run matrix itself is the evidence for this coverage item.  Once
     # every expected run has a green route parity, do not leave the satisfied
     # ``evaluationModes`` marker in the aggregate missing union.  All other
     # missing/unaudited categories remain fail-closed and untouched.
     if route_green:
         coverage_union_set.discard("evaluationModes")
+    if export_status == "pass":
+        coverage_union_set.discard("exportFreshImport")
     coverage_union = sorted(coverage_union_set)
     return {
-        "status": "dry_run" if dry_run else ("pass" if route_green and not coverage_union else "fail"),
+        "status": "dry_run" if dry_run else (
+            "pass"
+            if route_green and reports_valid and export_status == "pass" and not coverage_union
+            else "fail"
+        ),
         "routeParity": {"pass": route_green, "runCount": len(rows), "expectedCount": len(expected)},
         "evaluationModes": {
             "status": "pass" if route_green else "fail",
@@ -267,7 +322,7 @@ def _aggregate(
             "boneMorph": "not_verified",
             "ikEnable": "not_verified",
             "externalOracle": "not_run",
-            "exportFreshImport": "not_run",
+            "exportFreshImport": export_status,
             "coverageMissingUnion": coverage_union,
         },
         "runs": rows,
