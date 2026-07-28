@@ -71,6 +71,24 @@ def test_ik_state_compare_requires_observed_matching_nodes():
     assert parity._compare_ik_state_inventory([], [])["pass"] is False
 
 
+def test_interpolation_probe_selects_earliest_widest_integer_gap():
+    result = parity._select_interpolation_probe([0, 5, 10])
+
+    assert result["status"] == "covered"
+    assert result["frames"] == [2]
+    assert result["leftKey"] == 0
+    assert result["rightKey"] == 5
+    assert result["frameIsAuthored"] is False
+
+
+def test_interpolation_probe_is_not_applicable_without_integer_gap():
+    result = parity._select_interpolation_probe([0, 1, 2])
+
+    assert result["status"] == "not_applicable"
+    assert result["frames"] == []
+    assert result["frameIsAuthored"] is None
+
+
 def test_stale_export_artifacts_are_removed_or_fail_closed(tmp_path):
     stale_file = tmp_path / "motion.vmd"
     stale_file.write_bytes(b"old")

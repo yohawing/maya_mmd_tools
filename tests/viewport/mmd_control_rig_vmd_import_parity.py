@@ -32,6 +32,7 @@ _DEFAULT_MOTION = _ROOT / "tests" / "data" / "mmt_test_model_test_motion.vmd"
 _MATRIX_EPSILON = 5.0e-3
 _EVALUATION_MODES = ("dg", "serial", "parallel")
 _MAYA_EVALUATION_MODES = {"dg": "off", "serial": "serial", "parallel": "parallel"}
+_BONE_EXPORT_ATTRS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
 cmds = None
 
 
@@ -81,7 +82,12 @@ def _load_plugins() -> dict[str, str]:
     """Load the Python plugin and the native solver needed by Control Rig."""
 
     maya_major = str(cmds.about(version=True)).split(".", 1)[0]
-    cpp = _ROOT / "plug-ins" / maya_major / "Debug" / "mmd_tools_cpp.mll"
+    override = os.environ.get("MMD_TOOLS_CPP_PLUGIN")
+    cpp = (
+        Path(override).expanduser().resolve()
+        if override
+        else _ROOT / "plug-ins" / maya_major / "Debug" / "mmd_tools_cpp.mll"
+    )
     if not cpp.is_file():
         raise RuntimeError(f"required native plugin is missing: {cpp}")
     plugin_dir = str(cpp.parent)
@@ -252,12 +258,56 @@ def _fresh_bone_key_times(root: str) -> list[dict[str, Any]]:
         name = str(cmds.getAttr(f"{joint}.mmd_bone_name") or "")
         if not name:
             continue
-        times = {
-            _frame_value(value)
-            for value in _floats(cmds.keyframe(joint, query=True, timeChange=True))
-        }
-        if times:
-            rows.append({"boneName": name, "times": sorted(times, key=_frame_sort_key)})
+        for channel in _BONE_EXPORT_ATTRS:
+            times = {
+                _frame_value(value)
+                for value in _floats(cmds.keyframe(joint, attribute=channel, query=True, timeChange=True))
+            }
+            if times:
+                rows.append(
+                    {
+                        "boneName": name,
+                        "channel": channel,
+                        "times": sorted(times, key=_frame_sort_key),
+                    }
+                )
+    # Legacy ordinary import routes foot rotations through mmdCcdIk input
+    # slots rather than directly keying the driven joint.  Resolve each slot
+    # through its output joint so these curves still normalize to PMX bone
+    # names instead of solver/node paths.
+    from mmd_tools.converters.vmd_ik_enabled_animation import collect_ik_nodes_by_bone_name
+
+    for solver in collect_ik_nodes_by_bone_name(target_model=str(root)).values():
+        slots = cmds.getAttr(f"{solver}.inputRotate", multiIndices=True) or []
+        for slot in slots:
+            destinations = cmds.listConnections(
+                f"{solver}.outputRotate[{int(slot)}]",
+                source=False,
+                destination=True,
+                type="joint",
+            ) or []
+            bone_names = []
+            for destination in destinations:
+                joint = str((cmds.ls(destination, long=True) or [destination])[0])
+                if cmds.attributeQuery("mmd_bone_name", node=joint, exists=True):
+                    name = str(cmds.getAttr(f"{joint}.mmd_bone_name") or "")
+                    if name:
+                        bone_names.append(name)
+            for axis in "XYZ":
+                attribute = f"inputRotate[{int(slot)}].inputRotateElement{axis}"
+                times = {
+                    _frame_value(value)
+                    for value in _floats(cmds.keyframe(solver, attribute=attribute, query=True, timeChange=True))
+                }
+                for name in bone_names:
+                    if times:
+                        rows.append(
+                            {
+                                "boneName": name,
+                                "channel": f"rotate{axis}",
+                                "times": sorted(times, key=_frame_sort_key),
+                            }
+                        )
     return sorted(rows, key=lambda row: row["boneName"])
 
 
@@ -360,6 +410,45 @@ def _frame_value(value: Any) -> int | float:
 
 def _frame_sort_key(value: Any) -> float:
     return float(value)
+
+
+def _select_interpolation_probe(authored_frames: Iterable[int]) -> dict[str, Any]:
+    """Select one integer frame strictly inside the widest authored gap."""
+
+    values = sorted({int(frame) for frame in authored_frames})
+    intervals = [
+        (right - left, left, right)
+        for left, right in zip(values, values[1:])
+        if left < right
+    ]
+    if not intervals:
+        return {
+            "status": "not_applicable",
+            "frames": [],
+            "reason": "no adjacent authored integer keys",
+            "frameIsAuthored": None,
+        }
+    gap, left, right = max(intervals, key=lambda row: (row[0], -row[1]))
+    if gap <= 1:
+        return {
+            "status": "not_applicable",
+            "frames": [],
+            "leftKey": left,
+            "rightKey": right,
+            "gap": gap,
+            "reason": "no integer frame between adjacent authored keys",
+            "frameIsAuthored": None,
+        }
+    frame = left + max(1, gap // 2)
+    return {
+        "status": "covered",
+        "frames": [frame],
+        "leftKey": left,
+        "rightKey": right,
+        "gap": gap,
+        "reason": "representative integer between adjacent authored keys",
+        "frameIsAuthored": frame in set(values),
+    }
 
 
 def _normalized_vmd(vmd: Any) -> dict[str, Any]:
@@ -620,7 +709,7 @@ def _run_export_fresh_import(
     model: Path,
     baked: Mapping[str, Any],
     frames: list[int | float],
-    interpolation_frames: list[int | float],
+    interpolation_probe: Mapping[str, Any],
     output: Path,
 ) -> dict[str, Any]:
     """Export baked Control Rig motion and compare a fresh ordinary import."""
@@ -673,6 +762,7 @@ def _run_export_fresh_import(
             {"observables": baked["observables"]},
             {"observables": fresh_observables},
         )
+        interpolation_frames = list(interpolation_probe.get("frames") or [])
         interpolation_keys = [str(_frame_value(frame)) for frame in interpolation_frames]
         interpolation_compare = _compare(
             {
@@ -691,7 +781,13 @@ def _run_export_fresh_import(
             },
         )
         mesh_compare["interpolationProbe"] = {
+            "status": str(interpolation_probe.get("status", "not_applicable")),
             "frames": [_frame_value(frame) for frame in interpolation_frames],
+            "frameIsAuthored": interpolation_probe.get("frameIsAuthored"),
+            "bakedObservable": bool(interpolation_keys)
+            and interpolation_keys[0] in baked["observables"],
+            "freshObservable": bool(interpolation_keys)
+            and interpolation_keys[0] in fresh_observables,
             "tested": bool(interpolation_frames)
             and len(interpolation_compare.get("worstWorld") or {}) > 0,
             "metric": "JO-aware world/skin matrix max abs error",
@@ -799,18 +895,8 @@ def run(model: Path, motion: Path, output: Path, evaluation_mode: str = "dg") ->
             raise RuntimeError("fixture VMD contains no bone frames")
         authored_frames = sorted({int(frame.frame_number) for frame in vmd.bone_frames})
         end = authored_frames[-1]
-        authored_frame_set = set(authored_frames)
-        authored_intervals = [
-            (right - left, left, right)
-            for left, right in zip(authored_frames, authored_frames[1:])
-            if left < right
-        ]
-        interpolation_frames: list[int | float] = []
-        if authored_intervals:
-            _, left, right = max(authored_intervals, key=lambda row: (row[0], -row[1]))
-            midpoint = (left + right) / 2.0
-            if midpoint not in authored_frame_set:
-                interpolation_frames.append(_frame_value(midpoint))
+        interpolation_probe = _select_interpolation_probe(authored_frames)
+        interpolation_frames = list(interpolation_probe["frames"])
         frames = sorted({0, 1, end, *authored_frames, *interpolation_frames})
         coverage = _coverage(vmd)
         for name in ("externalOracle", "exportFreshImport", "evaluationModes"):
@@ -870,7 +956,7 @@ def run(model: Path, motion: Path, output: Path, evaluation_mode: str = "dg") ->
                 model,
                 {**baked, "root": direct["root"]},
                 frames,
-                interpolation_frames,
+                interpolation_probe,
                 output,
             )
             coverage["items"]["exportFreshImport"] = {
@@ -890,6 +976,7 @@ def run(model: Path, motion: Path, output: Path, evaluation_mode: str = "dg") ->
                 "frames": frames,
                 "authoredBoneKeyFrames": authored_frames,
                 "interpolationFrames": interpolation_frames,
+                "interpolationProbe": interpolation_probe,
                 "coverage": coverage,
                 "coverageMissing": coverage_missing,
                 "routes": {
