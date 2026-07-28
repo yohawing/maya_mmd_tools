@@ -3,65 +3,10 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Iterable, List, Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
-
-
-def unwrap_euler_sequence(
-    euler_angles: Iterable[Tuple[float, float, float]],
-    rotate_order: int = 0,
-) -> List[Tuple[float, float, float]]:
-    """Return a degree-valued Euler sequence with continuous nearest branches.
-
-    Maya stores each Euler channel as an angle in degrees, while quaternion
-    decomposition chooses a canonical branch independently for every sample.
-    For dense VMD samples that can turn a physically small ``179 -> -179``
-    step into a 358-degree Euler jump.  This helper keeps the first sample
-    unchanged and adds the nearest multiple of 360 degrees to each subsequent
-    axis relative to the previously unwrapped sample.
-
-    Args:
-        euler_angles: Euler triples in chronological order, expressed in
-            degrees.
-
-    Returns:
-        A new list of Euler triples.  The input iterable is never modified.
-    """
-    unwrapped: List[Tuple[float, float, float]] = []
-    order_map = {
-        0: om.MEulerRotation.kXYZ,
-        1: om.MEulerRotation.kYZX,
-        2: om.MEulerRotation.kZXY,
-        3: om.MEulerRotation.kXZY,
-        4: om.MEulerRotation.kYXZ,
-        5: om.MEulerRotation.kZYX,
-    }
-    maya_order = order_map.get(int(rotate_order), om.MEulerRotation.kXYZ)
-    previous: Optional[om.MEulerRotation] = None
-
-    for angles in euler_angles:
-        current = tuple(float(value) for value in angles)
-        if len(current) != 3:
-            raise ValueError("Euler samples must contain exactly three angles")
-
-        current_euler = om.MEulerRotation(
-            math.radians(current[0]),
-            math.radians(current[1]),
-            math.radians(current[2]),
-            maya_order,
-        )
-        if previous is not None:
-            current_euler.setToClosestSolution(previous)
-        current = tuple(
-            math.degrees(value)
-            for value in (current_euler.x, current_euler.y, current_euler.z)
-        )
-        unwrapped.append(current)
-        previous = current_euler
-
-    return unwrapped
 
 
 def extract_euler_from_matrix(m: om.MMatrix, rotate_order: int) -> Tuple[float, float, float]:

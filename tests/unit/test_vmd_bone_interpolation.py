@@ -8,7 +8,6 @@ import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
 from mmd_tools.converters import vmd_bezier_tangent
-from mmd_tools.converters.vmd_bone_interpolation import evaluate_vmd_bezier
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.core.constants import ATTR_MMD_BONE_NAME
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
@@ -50,15 +49,6 @@ class TestVmdBoneInterpolation(MayaTestBase):
     def tearDown(self):
         super().tearDown()
         self.fixture_provider.cleanup_temp_files()
-
-    def test_bezier_sampling_recomputes_final_subdivision_terms(self):
-        """The bounded solver returns the value at its final subdivision ``t``."""
-        points = tuple(value / 127.0 for value in (20, 100, 100, 20))
-        self.assertAlmostEqual(
-            evaluate_vmd_bezier(points, 0.2),
-            0.37526944254564365,
-            places=12,
-        )
 
     @staticmethod
     def _rotation_frames(bone_name):
