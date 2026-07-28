@@ -283,6 +283,19 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertTrue(pmx_options["create_mmd_control_rig"])
         self.assertTrue(vmd_options["create_mmd_control_rig"])
 
+    def test_rotation_time_curve_option_requires_control_rig_setting(self):
+        self.service.set("import.animation.vmd_rotation_time_curve", True)
+
+        self.assertFalse(
+            self.service.build_vmd_import_options()["use_vmd_rotation_time_curve"]
+        )
+
+        self.service.set("import.model.create_mmd_control_rig", True)
+
+        self.assertTrue(
+            self.service.build_vmd_import_options()["use_vmd_rotation_time_curve"]
+        )
+
     def test_normal_mode_preserves_import_physics_enabled(self):
         self.service.set("import.physics.import_physics", True)
         self.assertFalse(self.service.is_development_mode())

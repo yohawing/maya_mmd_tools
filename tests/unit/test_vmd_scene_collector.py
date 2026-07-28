@@ -294,6 +294,42 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual([row["frame_number"] for row in left_ik_frames], [0, 1, 2, 3])
         self.assertEqual(left_ik_frames[-1]["position"], (0.35, 0.0, 0.0))
 
+    def test_experimental_rotation_tracks_stay_sparse_while_other_bones_are_dense(self):
+        self.cmds.node_types.update(
+            {
+                "sparse_joint": "joint",
+                "dense_joint": "joint",
+            }
+        )
+        self.cmds.attrs[("sparse_joint", ATTR_MMD_BONE_NAME)] = "下半身"
+        self.cmds.attrs[("dense_joint", ATTR_MMD_BONE_NAME)] = "左足ＩＫ"
+        for joint in ("sparse_joint", "dense_joint"):
+            for attr in (
+                "translateX",
+                "translateY",
+                "translateZ",
+                "rotateX",
+                "rotateY",
+                "rotateZ",
+            ):
+                self.cmds.keys[(joint, attr)] = {0.0: 0.0, 2.0: 1.0}
+
+        frames = VmdSceneCollector().collect_bone_frames(
+            ["sparse_joint", "dense_joint"],
+            dense_sample=True,
+            rotation_interpolation={"下半身": {2: bytes([20] * 64)}},
+            time_converter=lambda value: value,
+        )
+
+        sparse_frames = [
+            row["frame_number"] for row in frames if row["bone_name"] == "下半身"
+        ]
+        dense_frames = [
+            row["frame_number"] for row in frames if row["bone_name"] == "左足ＩＫ"
+        ]
+        self.assertEqual(sparse_frames, [0, 2])
+        self.assertEqual(dense_frames, [0, 1, 2])
+
     def test_rejects_control_rig_export_while_editing(self):
         collector_module.read_mmd_control_rig_metadata = lambda _target_model: {
             "state": "EDIT"

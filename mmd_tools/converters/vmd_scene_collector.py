@@ -113,6 +113,7 @@ class VmdSceneCollector:
         bone_bind_poses = options.get("bone_bind_poses") or {}
         maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
         dense_control_rig_export = self._control_rig_dense_export(target_model)
+        rotation_interpolation = self._rotation_time_curve_interpolation(target_model)
         authored_routes = self._scene_authored_input_routes(joints, target_model)
 
         return {
@@ -126,6 +127,7 @@ class VmdSceneCollector:
                 input_routes=authored_routes,
                 dense_sample=dense_control_rig_export,
                 time_converter=maya_time_to_vmd,
+                rotation_interpolation=rotation_interpolation,
             ),
             "morph_frames": self.collect_morph_frames(
                 blend_shapes,
@@ -164,12 +166,14 @@ class VmdSceneCollector:
         input_routes: Optional[Mapping[str, Mapping[str, tuple[str, str]]]] = None,
         dense_sample: bool = False,
         time_converter=None,
+        rotation_interpolation: Optional[Mapping[str, Mapping[int, bytes]]] = None,
     ) -> list[dict]:
         """Collect keyed local joint transform frames."""
         bone_bind_poses = bone_bind_poses or {}
         input_routes = input_routes or {}
         time_converter = time_converter or _scene_maya_time_to_vmd_frame()
         rotation_context = _build_rotation_export_context(joints)
+        rotation_interpolation = rotation_interpolation or {}
         frames = []
         dense_frames = None
         if dense_sample:
@@ -193,7 +197,14 @@ class VmdSceneCollector:
                 start_frame,
                 end_frame,
             )
-            keyed_frames = dense_frames if dense_frames is not None and sparse_frames else sparse_frames
+            preserve_sparse_rotation = bone_name in rotation_interpolation
+            keyed_frames = (
+                dense_frames
+                if dense_frames is not None
+                and sparse_frames
+                and not preserve_sparse_rotation
+                else sparse_frames
+            )
             for frame_number in keyed_frames:
                 rotation = _maya_joint_rotate_to_vmd_quaternion(
                     joint,
@@ -202,10 +213,10 @@ class VmdSceneCollector:
                     _routed_plug_float(joint, "rotateZ", frame_number, route),
                     rotation_context.get(str(long_names[0])),
                 )
-                frames.append(
-                    {
+                vmd_frame = _vmd_frame_number(frame_number, time_converter)
+                payload = {
                         "bone_name": bone_name,
-                        "frame_number": _vmd_frame_number(frame_number, time_converter),
+                        "frame_number": vmd_frame,
                         "position": _maya_translate_to_vmd_position(
                             (
                                 _routed_plug_float(joint, "translateX", frame_number, route),
@@ -217,7 +228,10 @@ class VmdSceneCollector:
                         ),
                         "rotation": rotation,
                     }
-                )
+                interpolation = rotation_interpolation.get(bone_name, {}).get(vmd_frame)
+                if interpolation is not None:
+                    payload["interpolation"] = interpolation
+                frames.append(payload)
         return _deduplicate_frames(frames, ("bone_name", "frame_number"))
 
     def collect_ik_show_hide_frames(
@@ -288,6 +302,22 @@ class VmdSceneCollector:
         if metadata["state"] == CONTROL_RIG_EDIT:
             raise ValueError("Bake the MMD control rig before VMD export")
         return True
+
+    @staticmethod
+    def _rotation_time_curve_interpolation(
+        target_model: Optional[str],
+    ) -> dict[str, dict[int, bytes]]:
+        """Resolve Experimental rotation interpolation for sparse export."""
+        if not target_model:
+            return {}
+        metadata = read_mmd_control_rig_metadata(target_model)
+        if not metadata:
+            return {}
+        from mmd_tools.converters.vmd_rotation_time_curve import (
+            rotation_time_curve_interpolation_by_bone,
+        )
+
+        return rotation_time_curve_interpolation_by_bone(metadata)
 
     def _scene_authored_input_routes(
         self,

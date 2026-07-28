@@ -40,6 +40,7 @@
       "vmd_fps": 30,
       "motion_scale": 1.0,
       "clear_existing_motion": false,
+      "vmd_rotation_time_curve": false,
       "resample_curves": false,
       "use_native_physics_bake": false,
       "reduce_bake_keys": false,

@@ -151,6 +151,19 @@ class ImportExportTab(BaseTab):
             model_layout,
             tooltip_key="create_mmd_control_rig",
         )
+        self.vmd_rotation_time_curve_check = self._bind_checkbox(
+            "vmd_rotation_time_curve",
+            setting_keys.IMPORT_ANIMATION_VMD_ROTATION_TIME_CURVE,
+            False,
+            model_layout,
+            tooltip_key="vmd_rotation_time_curve",
+        )
+        self.vmd_rotation_time_curve_check.setEnabled(
+            self.create_mmd_control_rig_check.isChecked()
+        )
+        self.create_mmd_control_rig_check.toggled.connect(
+            self.vmd_rotation_time_curve_check.setEnabled
+        )
 
         self.separate_meshes_check = self._bind_checkbox(
             "separate_meshes",
@@ -760,6 +773,10 @@ class ImportExportTab(BaseTab):
         self.clear_existing_motion_check.setText(self.tr("clear_existing_motion", "checkboxes"))
         if hasattr(self, "create_mmd_control_rig_check"):
             self.create_mmd_control_rig_check.setText(self.tr("create_mmd_control_rig", "checkboxes"))
+        if hasattr(self, "vmd_rotation_time_curve_check"):
+            self.vmd_rotation_time_curve_check.setText(
+                self.tr("vmd_rotation_time_curve", "checkboxes")
+            )
         self.use_cpp_rig_nodes_check.setText(self.tr("use_cpp_rig_nodes", "checkboxes"))
         self.apply_scale_check.setText(self.tr("apply_scale", "checkboxes"))
         self.new_file_check.setText(self.tr("new_file", "checkboxes"))
@@ -780,6 +797,10 @@ class ImportExportTab(BaseTab):
         self.clear_existing_motion_check.setToolTip(self.tr("clear_existing_motion", "tooltips"))
         if hasattr(self, "create_mmd_control_rig_check"):
             self.create_mmd_control_rig_check.setToolTip(self.tr("create_mmd_control_rig", "tooltips"))
+        if hasattr(self, "vmd_rotation_time_curve_check"):
+            self.vmd_rotation_time_curve_check.setToolTip(
+                self.tr("vmd_rotation_time_curve", "tooltips")
+            )
         self.use_cpp_rig_nodes_check.setToolTip(self.tr("use_cpp_rig_nodes", "tooltips"))
         if hasattr(self, "animation_start_frame"):
             self.animation_start_frame.setToolTip(self.tr("start_frame", "tooltips"))

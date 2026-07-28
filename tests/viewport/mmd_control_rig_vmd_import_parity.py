@@ -683,6 +683,7 @@ def _run_route(
     create_control_rig: bool,
     frames: list[int | float],
     append_grants: Iterable[Mapping[str, Any]] | None = None,
+    route_options: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     from mmd_tools.io.mmd_importer import import_mmd_file
 
@@ -697,6 +698,7 @@ def _run_route(
         "profile": profile,
         "create_mmd_control_rig": bool(create_control_rig),
     }
+    options.update(dict(route_options or {}))
     try:
         imported = import_mmd_file(str(motion), options=options)
     except Exception as exc:  # noqa: BLE001 - route red evidence is part of the report

@@ -40,6 +40,7 @@ IMPORT_ANIMATION_REDUCE_BAKE_KEYS = "import.animation.reduce_bake_keys"
 IMPORT_ANIMATION_REDUCE_QUALITY = "import.animation.reduce_quality"
 IMPORT_ANIMATION_MOTION_SCALE = "import.animation.motion_scale"
 IMPORT_ANIMATION_CLEAR_EXISTING_MOTION = "import.animation.clear_existing_motion"
+IMPORT_ANIMATION_VMD_ROTATION_TIME_CURVE = "import.animation.vmd_rotation_time_curve"
 # Kept as a compatibility alias for callers that used the former animation
 # setting name.  The persisted setting is model-scoped and has one authority.
 IMPORT_ANIMATION_CREATE_MMD_CONTROL_RIG = IMPORT_MODEL_CREATE_MMD_CONTROL_RIG

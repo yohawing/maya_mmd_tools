@@ -309,6 +309,17 @@ def set_bone_keyframes(
 
     if quaternion_plugs:
         _apply_quaternion_interpolation(context, quaternion_plugs)
+        if context.use_vmd_rotation_time_curve and len(frames) >= 2:
+            from .vmd_rotation_time_curve import apply_vmd_rotation_time_curve
+
+            context.rotation_time_curve_records.append(
+                apply_vmd_rotation_time_curve(
+                    frames,
+                    quaternion_plugs,
+                    vmd_bone_name,
+                    time_converter=context.vmd_frame_to_maya_time,
+                )
+            )
 
     skip_rotate_tangent = skip_rotate or bool(quaternion_plugs)
     tangent_targets = {
