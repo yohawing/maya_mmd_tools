@@ -7,7 +7,7 @@ script does not change fixtures or numeric thresholds.
 
 Usage::
 
-    mayapy tests/viewport/mmd_control_rig_vmd_import_parity.py --maya 2026
+    mayapy -m tests.viewport.mmd_control_rig_vmd_import_parity --maya 2026
 """
 
 from __future__ import annotations
@@ -17,10 +17,10 @@ import json
 import os
 import random
 import sys
+import traceback
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-import maya.cmds as cmds
 import maya.standalone
 
 
@@ -30,6 +30,7 @@ if str(_ROOT) not in sys.path:
 _DEFAULT_MODEL = _ROOT / "tests" / "data" / "mmt_test_model.pmx"
 _DEFAULT_MOTION = _ROOT / "tests" / "data" / "mmt_test_model_test_motion.vmd"
 _MATRIX_EPSILON = 5.0e-3
+cmds = None
 
 
 def _floats(value: Any) -> list[float]:
@@ -348,6 +349,11 @@ def _coverage(vmd: Any) -> dict[str, Any]:
 
 
 def run(model: Path, motion: Path, output: Path) -> int:
+    global cmds
+    if cmds is None:
+        import maya.cmds as maya_cmds
+
+        cmds = maya_cmds
     payload: dict[str, Any] = {
         "kind": "mmd-control-rig-vmd-import-parity",
         "status": "error",
@@ -487,7 +493,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    maya.standalone.initialize(name="python")
+    try:
+        maya.standalone.initialize(name="python")
+    except Exception:
+        traceback.print_exc()
+        raise
     exit_code = 0 if main() == 0 else 1
     sys.stdout.flush()
     sys.stderr.flush()

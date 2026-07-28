@@ -54,7 +54,12 @@ def control_rig_edit_routes_for_joints(joints, *, cmds_module=None) -> Dict[str,
         matches = cmds.ls(joint, long=True) or []
         wanted.add(str(matches[0]) if len(matches) == 1 else str(joint))
     routes: Dict[str, Dict[str, Tuple[str, str]]] = {}
-    roots = cmds.ls(f"*.{ATTR_MMD_CONTROL_RIG_JSON}", objectsOnly=True, long=True) or []
+    roots = cmds.ls(
+        f"*.{ATTR_MMD_CONTROL_RIG_JSON}",
+        objectsOnly=True,
+        long=True,
+        recursive=True,
+    ) or []
     for root in roots:
         metadata = read_mmd_control_rig_metadata(str(root), cmds_module=cmds)
         if not metadata or metadata.get("owner") != CONTROL_RIG_CONTROL_OWNED:

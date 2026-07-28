@@ -334,6 +334,52 @@ class TestControlRigImportPreflight(unittest.TestCase):
         self.assertTrue(route["control_owned"])
         self.assertEqual(route["attr_targets"]["rotateX"], ("|model|right_leg_CTRL", "rotateX"))
 
+    def test_control_route_discovers_namespaced_metadata_recursively(self):
+        joint = "|ns:model|ns:center"
+
+        class FakeCmds:
+            def __init__(self):
+                self.root_query = None
+
+            def ls(self, value, **kwargs):
+                if str(value).startswith("*."):
+                    self.root_query = kwargs
+                    return ["|ns:model"]
+                return [str(value)]
+
+        fake_cmds = FakeCmds()
+        metadata = {
+            "owner": "CONTROL_OWNED",
+            "bindings": {"center": {}},
+            "controls": {"center": "control-uuid"},
+        }
+        with patch.object(
+            mmd_control_rig_motion,
+            "read_mmd_control_rig_metadata",
+            return_value=metadata,
+        ), patch.object(
+            mmd_control_rig_motion,
+            "resolve_mmd_control_rig_binding_joint",
+            return_value=joint,
+        ), patch.object(
+            mmd_control_rig_motion,
+            "_expanded_authored_plugs",
+            return_value=(f"{joint}.translateX",),
+        ), patch.object(
+            mmd_control_rig_motion,
+            "_resolve_uuid",
+            return_value="|ns:center_CTRL",
+        ):
+            routes = mmd_control_rig_motion.control_rig_edit_routes_for_joints(
+                [joint], cmds_module=fake_cmds
+            )
+
+        self.assertTrue(fake_cmds.root_query["recursive"])
+        self.assertEqual(
+            routes[joint]["translateX"],
+            ("|ns:center_CTRL", "translateX"),
+        )
+
     def test_active_role_keeps_identity_frame_zero_but_identity_only_role_is_dropped(self):
         frames = [
             {"bone_name": "右足", "position": [0, 0, 0], "rotation": [0, 0, 0, 1]},
