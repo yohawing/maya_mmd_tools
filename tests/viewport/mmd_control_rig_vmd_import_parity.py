@@ -30,6 +30,8 @@ if str(_ROOT) not in sys.path:
 _DEFAULT_MODEL = _ROOT / "tests" / "data" / "mmt_test_model.pmx"
 _DEFAULT_MOTION = _ROOT / "tests" / "data" / "mmt_test_model_test_motion.vmd"
 _MATRIX_EPSILON = 5.0e-3
+_EVALUATION_MODES = ("dg", "serial", "parallel")
+_MAYA_EVALUATION_MODES = {"dg": "off", "serial": "serial", "parallel": "parallel"}
 cmds = None
 
 
@@ -79,6 +81,31 @@ def _load_plugins() -> dict[str, str]:
     if not cmds.pluginInfo(py_plugin.stem, query=True, loaded=True):
         cmds.loadPlugin(str(py_plugin), quiet=True)
     return {"python": str(py_plugin), "native": str(cpp)}
+
+
+def _apply_evaluation_mode(requested: str) -> dict[str, Any]:
+    """Set and read back one exact Maya evaluation mode before either route."""
+
+    requested = str(requested).lower()
+    if requested not in _EVALUATION_MODES:
+        raise ValueError(f"unsupported evaluation mode: {requested}")
+    maya_requested = _MAYA_EVALUATION_MODES[requested]
+    cmds.evaluationManager(mode=maya_requested)
+    raw = cmds.evaluationManager(query=True, mode=True) or []
+    maya_mode = str(raw[0]) if raw else "unknown"
+    active = "dg" if maya_mode == "off" else maya_mode
+    result = {
+        "requested": requested,
+        "mayaRequested": maya_requested,
+        "mayaMode": maya_mode,
+        "active": active,
+        "pass": active == requested,
+    }
+    if not result["pass"]:
+        raise RuntimeError(
+            f"evaluation mode readback mismatch: requested={requested} maya={maya_mode}"
+        )
+    return result
 
 
 def _import_model(model: Path) -> str:
@@ -174,7 +201,6 @@ def _keyframe_inventory(root: str) -> list[dict[str, Any]]:
         destinations = sorted(
             str(value)
             for value in (cmds.listConnections(curve, source=False, destination=True, plugs=True) or [])
-            if str(value).startswith(str(root))
         )
         if not destinations:
             continue
@@ -348,7 +374,7 @@ def _coverage(vmd: Any) -> dict[str, Any]:
     return {"items": rows, "coverageMissing": sorted(name for name, row in rows.items() if row["status"] == "missing")}
 
 
-def run(model: Path, motion: Path, output: Path) -> int:
+def run(model: Path, motion: Path, output: Path, evaluation_mode: str = "dg") -> int:
     global cmds
     if cmds is None:
         import maya.cmds as maya_cmds
@@ -359,6 +385,12 @@ def run(model: Path, motion: Path, output: Path) -> int:
         "status": "error",
         "model": str(model),
         "motion": str(motion),
+        "requiredRunMatrix": {
+            "requestedModes": list(_EVALUATION_MODES),
+            "currentMode": str(evaluation_mode),
+            "singleModeReport": True,
+            "complete": False,
+        },
         "externalOracle": {
             "identity": "mmd-anim-mesh-oracle",
             "status": "not_run",
@@ -367,6 +399,7 @@ def run(model: Path, motion: Path, output: Path) -> int:
     }
     try:
         plugins = _load_plugins()
+        evaluation = _apply_evaluation_mode(evaluation_mode)
         from mmd_tools.core.vmd_data import VmdData
 
         if not model.is_file() or not motion.is_file():
@@ -434,6 +467,7 @@ def run(model: Path, motion: Path, output: Path) -> int:
             {
                 "mayaVersion": str(cmds.about(version=True)),
                 "plugins": plugins,
+                "evaluationMode": evaluation,
                 "frames": frames,
                 "authoredBoneKeyFrames": authored_frames,
                 "coverage": coverage,
@@ -485,11 +519,17 @@ def run(model: Path, motion: Path, output: Path) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--maya", default="2026", help="report label; mayapy supplies the actual version")
+    parser.add_argument("--evaluation-mode", choices=_EVALUATION_MODES, default="dg")
     parser.add_argument("--model", default=str(_DEFAULT_MODEL))
     parser.add_argument("--motion", default=str(_DEFAULT_MOTION))
     parser.add_argument("--out", default=str(_ROOT / "build" / "reports" / "mmd_control_rig_vmd_import_parity.json"))
     args = parser.parse_args()
-    return run(Path(args.model).resolve(), Path(args.motion).resolve(), Path(args.out).resolve())
+    return run(
+        Path(args.model).resolve(),
+        Path(args.motion).resolve(),
+        Path(args.out).resolve(),
+        args.evaluation_mode,
+    )
 
 
 if __name__ == "__main__":
