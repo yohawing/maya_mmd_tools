@@ -1,19 +1,20 @@
 """Focused CR061-03 VMD Control Rig option and preflight regressions."""
 
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from unittest.mock import MagicMock, patch
 
 import maya.cmds as cmds
 from maya.api import OpenMayaAnim as oma
 
-from mmd_tools.core import maya_animation_utils
+from mmd_tools.core import maya_animation_utils, mmd_control_rig_motion
 from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.mmd_control_rig_builder import (
     CONTROL_RIG_ATTACHED,
     CONTROL_RIG_METADATA_SCHEMA,
     CONTROL_RIG_METADATA_VERSION,
     CONTROL_RIG_MMD_OWNED,
+    MmdControlRigBuildError,
 )
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters.vmd_context import VmdImportStateContext
@@ -334,6 +335,105 @@ class TestControlRigMotionClear(MayaTestBase):
         restored_values = cmds.keyframe(curve, query=True, valueChange=True)
         self.assertAlmostEqual(restored_values[0], 10.0, places=9)
         self.assertAlmostEqual(restored_values[1], 30.0, places=9)
+
+    def test_curve_payload_capture_failure_uses_copy_paste_without_clearing_destination(self):
+        """A keyed source survives payload-query failures through Maya's native fallback."""
+        source_node = cmds.createNode("animCurveTA", name="cr061_capture_failure_source")
+        destination_node = cmds.createNode("animCurveTA", name="cr061_capture_failure_destination")
+        source = f"{source_node}.output"
+        destination = f"{destination_node}.output"
+        cmds.setKeyframe(source_node, time=2, value=4.0)
+        cmds.setKeyframe(source_node, time=8, value=9.0)
+        cmds.setKeyframe(destination_node, time=5, value=123.0)
+
+        with patch.object(
+            mmd_control_rig_motion,
+            "_capture_animation_curve_payload",
+            return_value={"captureFailed": True},
+        ), patch.object(cmds, "copyKey", wraps=cmds.copyKey) as copy_key, patch.object(
+            cmds, "pasteKey", wraps=cmds.pasteKey
+        ) as paste_key:
+            mmd_control_rig_motion._copy_animation_curve(cmds, source, destination)
+
+        copy_key.assert_called_once_with(source_node, option="curve")
+        paste_key.assert_called_once_with(destination_node, option="replaceCompletely")
+        self.assertEqual(cmds.keyframe(destination_node, query=True, timeChange=True), [2.0, 8.0])
+        self.assertEqual(cmds.keyframe(destination_node, query=True, valueChange=True), [4.0, 9.0])
+
+    def test_empty_curve_payload_still_clears_destination(self):
+        """A successfully captured empty curve intentionally removes stale keys."""
+        source_node = cmds.createNode("animCurveTA", name="cr061_empty_capture_source")
+        destination_node = cmds.createNode("animCurveTA", name="cr061_empty_capture_destination")
+        cmds.setKeyframe(destination_node, time=5, value=123.0)
+
+        mmd_control_rig_motion._copy_animation_curve(
+            cmds,
+            f"{source_node}.output",
+            f"{destination_node}.output",
+        )
+
+        self.assertIsNone(cmds.keyframe(destination_node, query=True, timeChange=True))
+
+    def test_known_empty_curve_clears_when_metadata_capture_fails(self):
+        """An empty source stays destructive-clear even if tangent metadata is unavailable."""
+        source_node = cmds.createNode("animCurveTA", name="cr061_empty_metadata_failure_source")
+        destination_node = cmds.createNode("animCurveTA", name="cr061_empty_metadata_failure_destination")
+        cmds.setKeyframe(destination_node, time=5, value=123.0)
+
+        with patch.object(cmds, "keyTangent", side_effect=RuntimeError("unsupported tangent query")), patch.object(
+            cmds, "copyKey", wraps=cmds.copyKey
+        ) as copy_key:
+            mmd_control_rig_motion._copy_animation_curve(
+                cmds,
+                f"{source_node}.output",
+                f"{destination_node}.output",
+            )
+
+        copy_key.assert_not_called()
+        self.assertIsNone(cmds.keyframe(destination_node, query=True, timeChange=True))
+
+    def test_curve_restore_failure_marks_edit_exit_rollback_incomplete(self):
+        """A failed snapshot copy must surface as an incomplete transaction rollback."""
+        fake_cmds = MagicMock()
+        metadata_before = '{"owner":"CONTROL_OWNED"}'
+        snapshots = [("destination.output", "backup.output")]
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch.object(mmd_control_rig_motion, "_capture_plug_states", return_value={})
+            )
+            stack.enter_context(
+                patch.object(mmd_control_rig_motion, "_raw_metadata", return_value=metadata_before)
+            )
+            stack.enter_context(
+                patch.object(mmd_control_rig_motion, "_capture_curve_snapshots", return_value=snapshots)
+            )
+            stack.enter_context(patch.object(mmd_control_rig_motion, "_write_metadata"))
+            stack.enter_context(
+                patch.object(mmd_control_rig_motion, "_undo_chunk", return_value=nullcontext())
+            )
+            stack.enter_context(patch.object(mmd_control_rig_motion, "_restore_plug_states"))
+            stack.enter_context(patch.object(mmd_control_rig_motion, "_restore_raw_metadata"))
+            stack.enter_context(patch.object(mmd_control_rig_motion, "_discard_curve_snapshots"))
+            copy = stack.enter_context(
+                patch.object(
+                    mmd_control_rig_motion,
+                    "_copy_animation_curve",
+                    side_effect=RuntimeError("restore copy failure"),
+                )
+            )
+            with self.assertRaisesRegex(MmdControlRigBuildError, "rollback was incomplete"):
+                with mmd_control_rig_motion._edit_exit_transaction(
+                    fake_cmds,
+                    "|model",
+                    "Test Edit Exit",
+                    "restore",
+                    [],
+                    [],
+                    curve_plugs=("destination.output",),
+                ):
+                    raise RuntimeError("edit action failure")
+
+        copy.assert_called_once_with(fake_cmds, "backup.output", "destination.output")
 
     def test_clear_existing_motion_cuts_control_owned_curve(self):
         cmds.select(clear=True)

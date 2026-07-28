@@ -981,10 +981,10 @@ def _capture_curve_snapshots(cmds, plugs):
 
 def _restore_curve_snapshots(cmds, snapshots):
     for original, backup in snapshots:
-        try:
-            _copy_animation_curve(cmds, backup, original)
-        except Exception:
-            pass
+        # A snapshot restore is part of the transaction's rollback contract.
+        # Let copy failures reach ``_edit_exit_transaction`` so callers cannot
+        # report a successful rollback while the original curve is incomplete.
+        _copy_animation_curve(cmds, backup, original)
 
 
 def _discard_curve_snapshots(cmds, snapshots):
@@ -1251,7 +1251,16 @@ def _copy_animation_curve(cmds, source: str, destination: str) -> None:
         return
     try:
         payload = _capture_animation_curve_payload(cmds, source_node)
-        if not payload.get("times"):
+        if not isinstance(payload, Mapping) or "times" not in payload:
+            # Payload inspection is best-effort across Maya versions.  When a
+            # tangent/infinity query is unavailable, copyKey/pasteKey remains
+            # the authoritative fallback and must run before any destructive
+            # destination clearing.
+            cmds.copyKey(source_node, option="curve")
+            cmds.pasteKey(destination_node, option="replaceCompletely")
+            return
+        capture_failed = bool(payload.get("captureFailed"))
+        if not payload["times"]:
             # Clear Existing Motion may intentionally leave an empty but
             # UUID-stable controller curve for a role that has no active VMD
             # payload.  Maya's pasteKey rejects an empty clipboard; clear the
@@ -1263,6 +1272,14 @@ def _copy_animation_curve(cmds, source: str, destination: str) -> None:
             for index in reversed(range(destination_fn.numKeys)):
                 destination_fn.remove(index)
             _restore_animation_curve_payload(cmds, destination_node, payload)
+            return
+        if capture_failed:
+            # A non-empty ``times`` list proves that the source is keyed even
+            # when a later tangent/infinity query failed.  Preserve the keyed
+            # source through Maya's native clipboard path instead of trying to
+            # interpret its incomplete metadata payload.
+            cmds.copyKey(source_node, option="curve")
+            cmds.pasteKey(destination_node, option="replaceCompletely")
             return
         cmds.copyKey(source_node, option="curve")
         cmds.pasteKey(destination_node, option="replaceCompletely")
@@ -1284,10 +1301,11 @@ def _capture_animation_curve_payload(cmds, node: str) -> Dict[str, Any]:
             return value[0] if value else None
         return value
 
+    times = None
     try:
         times = [float(value) for value in (cmds.keyframe(node, query=True, timeChange=True) or [])]
         values = [float(value) for value in (cmds.keyframe(node, query=True, valueChange=True) or [])]
-        payload = {"times": times, "values": values, "keys": []}
+        payload = {"captureFailed": False, "times": times, "values": values, "keys": []}
         weighted = cmds.keyTangent(node, query=True, weightedTangents=True)
         if isinstance(weighted, (list, tuple)):
             weighted = weighted[0] if weighted else False
@@ -1317,14 +1335,20 @@ def _capture_animation_curve_payload(cmds, node: str) -> Dict[str, Any]:
             payload["keys"].append(key)
         return payload
     except Exception:
-        # ``copyKey`` remains Maya's compatibility fallback when an older
-        # command implementation does not expose one of the tangent queries.
-        return {}
+        # Keep the result mapping distinct from a successful empty curve.  The
+        # caller will use copyKey/pasteKey when this best-effort payload query
+        # is unavailable, rather than clearing a keyed destination.  A
+        # successfully observed time list remains useful: ``[]`` proves that
+        # the source is empty, while a non-empty list proves that it is keyed.
+        payload = {"captureFailed": True}
+        if times is not None:
+            payload["times"] = times
+        return payload
 
 
 def _restore_animation_curve_payload(cmds, node: str, payload: Mapping[str, Any]) -> None:
     """Reapply tangent and infinity metadata after Maya curve paste."""
-    if not payload:
+    if not payload or payload.get("captureFailed"):
         return
     try:
         cmds.keyTangent(
