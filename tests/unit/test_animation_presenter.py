@@ -649,6 +649,42 @@ class TestAnimationPresenter(unittest.TestCase):
         self.assertEqual(app_state.cache_clear_count, 1)
         reload_model.assert_called_once_with("test_model")
 
+    def test_undo_redo_jobs_read_back_visibility_and_are_removed(self):
+        presenter, _, _, adapter = self._make(model_root="test_model")
+
+        class FakeCmds:
+            def __init__(self):
+                self.jobs = {}
+                self.killed = []
+
+            def scriptJob(self, **kwargs):
+                if "event" in kwargs:
+                    job_id = len(self.jobs) + 1
+                    self.jobs[job_id] = kwargs["event"]
+                    return job_id
+                if "exists" in kwargs:
+                    return kwargs["exists"] in self.jobs
+                job_id = kwargs["kill"]
+                self.killed.append(job_id)
+                self.jobs.pop(job_id, None)
+
+        cmds = FakeCmds()
+        adapter._cmds = cmds
+        with patch.object(
+            presenter, "_sync_visibility_controls"
+        ) as sync, patch(
+            "mmd_tools.ui.qt_compat.QTimer.singleShot",
+            side_effect=lambda _delay, callback: callback(),
+        ):
+            presenter._install_visibility_history_jobs()
+            self.assertEqual([value[0] for value in cmds.jobs.values()], ["Undo", "Redo"])
+            cmds.jobs[1][1]()
+            sync.assert_called_once_with("test_model", ensure_connections=False)
+            presenter.disconnect_signals()
+
+        self.assertEqual(cmds.killed, [1, 2])
+        self.assertEqual(cmds.jobs, {})
+
     def test_create_control_rig_also_enters_bound_edit_state(self):
         presenter, view, _, _ = self._make(model_root="test_model")
         with patch(

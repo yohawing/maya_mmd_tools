@@ -101,10 +101,12 @@ class AnimationPresenter:
         self._ik_nodes_by_side: dict[str, str] = {}
         self._toe_ik_nodes_by_side: dict[str, str] = {}
         self._last_ik_states: dict[str, bool] = {}
+        self._visibility_history_jobs: list[int] = []
         self._disposed = False
         # Animator Reset Pose is a one-shot selection action, distinct from
         # Bone Editor's model-wide Go to Bind Pose inspection command.
         self.connect_signals()
+        self._install_visibility_history_jobs()
         self._start_morph_refresh_timer()
 
         if self.app_state.current_model_root:
@@ -192,6 +194,7 @@ class AnimationPresenter:
             except RuntimeError:
                 pass
             self._morph_refresh_timer = None
+        self._remove_visibility_history_jobs()
         try:
             self.app_state.current_model_changed.disconnect(self.on_current_model_changed)
         except (RuntimeError, TypeError):
@@ -200,6 +203,60 @@ class AnimationPresenter:
             self.app_state.model_list_updated.disconnect(self.on_model_list_updated)
         except (RuntimeError, TypeError):
             pass
+
+    def _install_visibility_history_jobs(self) -> None:
+        """Read back scene-authoritative visibility after Maya undo/redo."""
+
+        cmds_module = getattr(self.maya_adapter, "_cmds", None)
+        script_job = getattr(cmds_module, "scriptJob", None)
+        if not callable(script_job):
+            return
+        for event_name in ("Undo", "Redo"):
+            try:
+                job_id = script_job(
+                    event=[event_name, self._schedule_visibility_history_sync],
+                    protected=True,
+                )
+                self._visibility_history_jobs.append(int(job_id))
+            except Exception:
+                logger.debug("Could not install %s visibility callback", event_name)
+
+    def _remove_visibility_history_jobs(self) -> None:
+        """Remove presenter-owned Maya history callbacks."""
+
+        cmds_module = getattr(self.maya_adapter, "_cmds", None)
+        script_job = getattr(cmds_module, "scriptJob", None)
+        jobs, self._visibility_history_jobs = self._visibility_history_jobs, []
+        if not callable(script_job):
+            return
+        for job_id in jobs:
+            try:
+                if script_job(exists=job_id):
+                    script_job(kill=job_id, force=True)
+            except Exception:
+                logger.debug("Could not remove visibility callback %s", job_id)
+
+    def _sync_visibility_after_history(self) -> None:
+        """Refresh buttons without repairing connections or mutating the scene."""
+
+        if self._disposed:
+            return
+        self._sync_visibility_controls(
+            self.app_state.current_model_root or None,
+            ensure_connections=False,
+        )
+
+    def _schedule_visibility_history_sync(self) -> None:
+        """Defer readback until Maya has finished applying undo or redo."""
+
+        try:
+            from ..qt_compat import QTimer
+
+            # Script jobs run on Maya idle; defer once more so Qt repaint and
+            # scene-authoritative plug readback share the same event turn.
+            QTimer.singleShot(0, self._sync_visibility_after_history)
+        except Exception:
+            self._sync_visibility_after_history()
 
     def retranslate_ui(self):
         """Retranslate presenter-owned dynamic controls without reloading the model."""
