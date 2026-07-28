@@ -1346,6 +1346,129 @@ def _capture_animation_curve_payload(cmds, node: str) -> Dict[str, Any]:
         return payload
 
 
+def _capture_animation_channel_snapshot(cmds, plug: str) -> Dict[str, Any]:
+    """Capture one channel's incoming edges, curve payload, and value.
+
+    VMD Control Rig transactions snapshot both controller plugs and ordinary
+    model/camera/light plugs.  Keeping the Maya connection query in one
+    primitive avoids the two paths drifting on conversion-node handling or on
+    the distinction between a keyed animCurve and a plain value channel.
+    """
+    incoming = [
+        str(source)
+        for source in (
+            cmds.listConnections(
+                plug,
+                source=True,
+                destination=False,
+                plugs=True,
+                skipConversionNodes=False,
+            )
+            or []
+        )
+    ]
+    incoming_nodes = [source.split(".", 1)[0] for source in incoming]
+    curve_node = None
+    curve_payload: Dict[str, Any] = {}
+    if len(incoming_nodes) == 1 and str(cmds.nodeType(incoming_nodes[0])).startswith("animCurve"):
+        curve_node = incoming_nodes[0]
+        curve_payload = _capture_animation_curve_payload(cmds, curve_node)
+    return {
+        "incoming": incoming,
+        "curve_node": curve_node,
+        "curve_type": cmds.nodeType(curve_node) if curve_node else None,
+        "curve_payload": curve_payload,
+        "value": cmds.getAttr(plug),
+    }
+
+
+def _clear_animation_curve_keys(cmds, node: str) -> None:
+    """Remove all keys while retaining the animCurve node and its UUID."""
+    selection = om.MSelectionList()
+    selection.add(node)
+    curve_fn = oma.MFnAnimCurve(selection.getDependNode(0))
+    for index in reversed(range(curve_fn.numKeys)):
+        curve_fn.remove(index)
+
+
+def _restore_animation_channel_snapshot(
+    cmds,
+    row: Mapping[str, Any],
+    *,
+    destination: str,
+    recreate_curve: bool = False,
+) -> None:
+    """Restore one channel snapshot without replacing the original curve node.
+
+    ``recreate_curve`` is used for scene channels whose original animCurve may
+    have been deleted by the failed import.  Controller snapshots require the
+    source to remain present and therefore fail closed when it is missing.
+    """
+    prior_sources = [str(source) for source in (row.get("incoming") or [])]
+    current_sources = [
+        str(source)
+        for source in (
+            cmds.listConnections(
+                destination,
+                source=True,
+                destination=False,
+                plugs=True,
+                skipConversionNodes=False,
+            )
+            or []
+        )
+    ]
+    for source in current_sources:
+        if source in prior_sources:
+            continue
+        cmds.disconnectAttr(source, destination)
+        source_node = source.split(".", 1)[0]
+        if cmds.objExists(source_node) and str(cmds.nodeType(source_node)).startswith("animCurve"):
+            cmds.delete(source_node)
+
+    payload = row.get("curve_payload")
+    payload_known = (
+        isinstance(payload, Mapping)
+        and "times" in payload
+        and "keys" in payload
+        and not payload.get("captureFailed")
+    )
+    curve_node = row.get("curve_node")
+    curve_type = row.get("curve_type")
+    if curve_node is None and prior_sources:
+        source_node = prior_sources[0].split(".", 1)[0]
+        if cmds.objExists(source_node) and str(cmds.nodeType(source_node)).startswith("animCurve"):
+            curve_node = source_node
+    if curve_node and not cmds.objExists(curve_node):
+        if not recreate_curve or not curve_type:
+            raise RuntimeError(f"original animation source is missing: {curve_node}")
+        if not payload_known:
+            raise RuntimeError(f"animation curve payload is unavailable: {curve_node}")
+        curve_node = str(cmds.createNode(curve_type, name=str(curve_node).rsplit("|", 1)[-1]))
+    for source in prior_sources:
+        if not cmds.objExists(source):
+            raise RuntimeError(f"original animation source is missing: {source}")
+        if not cmds.isConnected(source, destination):
+            cmds.connectAttr(source, destination, force=True)
+
+    if curve_node and cmds.objExists(curve_node):
+        if not payload_known:
+            # A failed/partial query is deliberately not treated as an empty
+            # curve.  Keep the existing keys when the node survived, while
+            # still restoring its incoming connection above.
+            return
+        _clear_animation_curve_keys(cmds, curve_node)
+        for key in payload.get("keys", ()):
+            cmds.setKeyframe(
+                curve_node,
+                time=float(key.get("time", 0.0)),
+                value=float(key.get("value", 0.0)),
+            )
+        _restore_animation_curve_payload(cmds, curve_node, payload)
+    elif not prior_sources and row.get("value") is not None:
+        cmds.setAttr(destination, row["value"])
+
+
 def _restore_animation_curve_payload(cmds, node: str, payload: Mapping[str, Any]) -> None:
     """Reapply tangent and infinity metadata after Maya curve paste."""
     if not payload or payload.get("captureFailed"):

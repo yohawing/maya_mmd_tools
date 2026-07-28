@@ -392,6 +392,74 @@ class TestControlRigMotionClear(MayaTestBase):
         copy_key.assert_not_called()
         self.assertIsNone(cmds.keyframe(destination_node, query=True, timeChange=True))
 
+    def test_channel_snapshot_capture_failure_keeps_surviving_curve_keys(self):
+        """Unknown payloads restore edges without destructively clearing keys."""
+        control = cmds.createNode("transform", name="cr061_channel_capture_failure_ctrl")
+        curve = cmds.createNode("animCurveTA", name="cr061_channel_capture_failure_curve")
+        cmds.setKeyframe(curve, time=2, value=4.0)
+        cmds.connectAttr(f"{curve}.output", f"{control}.rotateX", force=True)
+        row = {
+            "incoming": [f"{curve}.output"],
+            "curve_node": curve,
+            "curve_type": "animCurveTA",
+            "curve_payload": {"captureFailed": True, "times": [2.0]},
+            "value": 4.0,
+        }
+        cmds.setKeyframe(curve, time=8, value=9.0)
+
+        mmd_control_rig_motion._restore_animation_channel_snapshot(
+            cmds,
+            row,
+            destination=f"{control}.rotateX",
+        )
+
+        self.assertEqual(cmds.keyframe(curve, query=True, timeChange=True), [2.0, 8.0])
+
+    def test_channel_snapshot_known_empty_curve_clears_surviving_keys(self):
+        """A successful empty payload remains intentionally destructive-clear."""
+        control = cmds.createNode("transform", name="cr061_channel_empty_ctrl")
+        curve = cmds.createNode("animCurveTA", name="cr061_channel_empty_curve")
+        cmds.setKeyframe(curve, time=2, value=4.0)
+        cmds.connectAttr(f"{curve}.output", f"{control}.rotateX", force=True)
+        row = {
+            "incoming": [f"{curve}.output"],
+            "curve_node": curve,
+            "curve_type": "animCurveTA",
+            "curve_payload": {"captureFailed": False, "times": [], "keys": []},
+            "value": 0.0,
+        }
+
+        mmd_control_rig_motion._restore_animation_channel_snapshot(
+            cmds,
+            row,
+            destination=f"{control}.rotateX",
+        )
+
+        self.assertIsNone(cmds.keyframe(curve, query=True, timeChange=True))
+
+    def test_channel_snapshot_capture_failure_cannot_recreate_deleted_curve(self):
+        """A deleted curve plus an unknown payload fails closed instead of recreating empty."""
+        control = cmds.createNode("transform", name="cr061_channel_deleted_ctrl")
+        curve = cmds.createNode("animCurveTA", name="cr061_channel_deleted_curve")
+        cmds.setKeyframe(curve, time=2, value=4.0)
+        cmds.connectAttr(f"{curve}.output", f"{control}.rotateX", force=True)
+        row = {
+            "incoming": [f"{curve}.output"],
+            "curve_node": curve,
+            "curve_type": "animCurveTA",
+            "curve_payload": {"captureFailed": True, "times": [2.0]},
+            "value": 4.0,
+        }
+        cmds.delete(curve)
+
+        with self.assertRaisesRegex(RuntimeError, "payload is unavailable"):
+            mmd_control_rig_motion._restore_animation_channel_snapshot(
+                cmds,
+                row,
+                destination=f"{control}.rotateX",
+                recreate_curve=True,
+            )
+
     def test_curve_restore_failure_marks_edit_exit_rollback_incomplete(self):
         """A failed snapshot copy must surface as an incomplete transaction rollback."""
         fake_cmds = MagicMock()

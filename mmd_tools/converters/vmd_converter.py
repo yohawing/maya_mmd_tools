@@ -16,7 +16,6 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 
 import maya.api.OpenMaya as om
-import maya.api.OpenMayaAnim as oma
 import maya.cmds as cmds
 
 from ..core.exceptions import MMDImportException
@@ -1447,7 +1446,7 @@ class VmdConverter:
         """Capture existing controller keys before an EDIT-owned import mutates them."""
         if not isinstance(metadata, dict):
             return []
-        from ..core.mmd_control_rig_motion import _capture_animation_curve_payload
+        from ..core.mmd_control_rig_motion import _capture_animation_channel_snapshot
 
         snapshot = []
         seen_controls = set()
@@ -1464,33 +1463,14 @@ class VmdConverter:
                 try:
                     if not cmds.objExists(plug):
                         continue
-                    incoming = list(
-                        cmds.listConnections(
-                            plug,
-                            source=True,
-                            destination=False,
-                            plugs=True,
-                            skipConversionNodes=False,
-                        )
-                        or []
-                    )
-                    incoming_nodes = [str(source).split(".", 1)[0] for source in incoming]
-                    payload = (
-                        _capture_animation_curve_payload(cmds, incoming_nodes[0])
-                        if len(incoming_nodes) == 1
-                        and str(cmds.nodeType(incoming_nodes[0])).startswith("animCurve")
-                        else {}
-                    )
-                    value = cmds.getAttr(plug)
+                    channel = _capture_animation_channel_snapshot(cmds, plug)
                 except Exception:
                     continue
                 snapshot.append(
                     {
                         "control": control,
                         "attribute": attr,
-                        "incoming": incoming,
-                        "curve_payload": payload,
-                        "value": value,
+                        **channel,
                     }
                 )
         return snapshot
@@ -1512,7 +1492,7 @@ class VmdConverter:
         imports retain their historical performance and behavior.
         """
         from ..core.constants import ATTR_MMD_CAMERA, ATTR_MMD_LIGHT
-        from ..core.mmd_control_rig_motion import _capture_animation_curve_payload
+        from ..core.mmd_control_rig_motion import _capture_animation_channel_snapshot
 
         snapshot: Dict[str, object] = {
             "timeline": {},
@@ -1628,37 +1608,14 @@ class VmdConverter:
                 if not cmds.objExists(plug):
                     continue
                 try:
-                    incoming = [
-                        str(source)
-                        for source in (
-                            cmds.listConnections(
-                                plug,
-                                source=True,
-                                destination=False,
-                                plugs=True,
-                                skipConversionNodes=False,
-                            )
-                            or []
-                        )
-                    ]
-                    incoming_nodes = [source.split(".", 1)[0] for source in incoming]
-                    curve_payload = {}
-                    curve_node = None
-                    if len(incoming_nodes) == 1 and str(cmds.nodeType(incoming_nodes[0])).startswith("animCurve"):
-                        curve_node = incoming_nodes[0]
-                        curve_payload = _capture_animation_curve_payload(cmds, curve_node)
-                    value = cmds.getAttr(plug)
+                    channel = _capture_animation_channel_snapshot(cmds, plug)
                 except Exception:
                     continue
                 channels.append(
                     {
                         "node": node,
                         "attribute": attr,
-                        "incoming": incoming,
-                        "curve_node": curve_node,
-                        "curve_type": cmds.nodeType(curve_node) if curve_node else None,
-                        "curve_payload": curve_payload,
-                        "value": value,
+                        **channel,
                     }
                 )
         snapshot["channels"] = channels
@@ -1679,7 +1636,7 @@ class VmdConverter:
         if not snapshot:
             return None
         from ..core.constants import ATTR_MMD_CAMERA, ATTR_MMD_LIGHT
-        from ..core.mmd_control_rig_motion import _restore_animation_curve_payload
+        from ..core.mmd_control_rig_motion import _restore_animation_channel_snapshot
 
         errors = []
         for row in snapshot.get("channels", []) or []:
@@ -1689,56 +1646,12 @@ class VmdConverter:
                 continue
             destination = f"{node}.{attr}"
             try:
-                prior_sources = [str(source) for source in (row.get("incoming") or [])]
-                current_sources = [
-                    str(source)
-                    for source in (
-                        cmds.listConnections(
-                            destination,
-                            source=True,
-                            destination=False,
-                            plugs=True,
-                            skipConversionNodes=False,
-                        )
-                        or []
-                    )
-                ]
-                for source in current_sources:
-                    if source in prior_sources:
-                        continue
-                    try:
-                        cmds.disconnectAttr(source, destination)
-                    except Exception:
-                        pass
-                    source_node = source.split(".", 1)[0]
-                    if cmds.objExists(source_node) and str(cmds.nodeType(source_node)).startswith("animCurve"):
-                        cmds.delete(source_node)
-                curve_node = row.get("curve_node")
-                curve_type = row.get("curve_type")
-                if curve_node and not cmds.objExists(curve_node) and curve_type:
-                    try:
-                        cmds.createNode(curve_type, name=curve_node.rsplit("|", 1)[-1])
-                    except Exception as exc:
-                        errors.append(f"recreate curve {curve_node} failed: {exc}")
-                for source in prior_sources:
-                    if cmds.objExists(source) and not cmds.isConnected(source, destination):
-                        cmds.connectAttr(source, destination, force=True)
-                payload = row.get("curve_payload") or {}
-                if curve_node and cmds.objExists(curve_node):
-                    selection = om.MSelectionList()
-                    selection.add(curve_node)
-                    curve_fn = oma.MFnAnimCurve(selection.getDependNode(0))
-                    for index in reversed(range(curve_fn.numKeys)):
-                        curve_fn.remove(index)
-                    for key in payload.get("keys", []):
-                        cmds.setKeyframe(
-                            curve_node,
-                            time=float(key.get("time", 0.0)),
-                            value=float(key.get("value", 0.0)),
-                        )
-                    _restore_animation_curve_payload(cmds, curve_node, payload)
-                elif not prior_sources and row.get("value") is not None:
-                    cmds.setAttr(destination, row["value"])
+                _restore_animation_channel_snapshot(
+                    cmds,
+                    row,
+                    destination=destination,
+                    recreate_curve=True,
+                )
             except Exception as exc:
                 errors.append(f"restore scene channel {destination} failed: {exc}")
 
@@ -1797,7 +1710,7 @@ class VmdConverter:
     @staticmethod
     def _restore_mmd_control_rig_animation_snapshot(snapshot) -> Optional[str]:
         """Restore controller keys captured before an EDIT-owned import."""
-        from ..core.mmd_control_rig_motion import _restore_animation_curve_payload
+        from ..core.mmd_control_rig_motion import _restore_animation_channel_snapshot
 
         errors = []
         for row in snapshot or []:
@@ -1807,59 +1720,11 @@ class VmdConverter:
                 continue
             try:
                 destination = f"{control}.{attr}"
-                prior_sources = [str(source) for source in (row.get("incoming") or [])]
-                current_sources = [
-                    str(source)
-                    for source in (
-                        cmds.listConnections(
-                            destination,
-                            source=True,
-                            destination=False,
-                            plugs=True,
-                            skipConversionNodes=False,
-                        )
-                        or []
-                    )
-                ]
-                for source in current_sources:
-                    if source in prior_sources:
-                        continue
-                    cmds.disconnectAttr(source, destination)
-                    source_node = source.split(".", 1)[0]
-                    if cmds.objExists(source_node) and str(cmds.nodeType(source_node)).startswith("animCurve"):
-                        cmds.delete(source_node)
-                for source in prior_sources:
-                    if not cmds.objExists(source):
-                        raise RuntimeError(f"original animation source is missing: {source}")
-                    if not cmds.isConnected(source, destination):
-                        cmds.connectAttr(source, destination, force=True)
-                payload = row.get("curve_payload") or {}
-                keys = payload.get("keys") or []
-                if keys:
-                    curve_node = prior_sources[0].split(".", 1)[0]
-                    selection = om.MSelectionList()
-                    selection.add(curve_node)
-                    curve_fn = oma.MFnAnimCurve(selection.getDependNode(0))
-                    for index in reversed(range(curve_fn.numKeys)):
-                        curve_fn.remove(index)
-                    for key in keys:
-                        cmds.setKeyframe(
-                            curve_node,
-                            time=float(key.get("time", 0.0)),
-                            value=float(key.get("value", 0.0)),
-                        )
-                    _restore_animation_curve_payload(cmds, curve_node, payload)
-                elif row.get("value") is not None:
-                    if prior_sources:
-                        curve_node = prior_sources[0].split(".", 1)[0]
-                        if str(cmds.nodeType(curve_node)).startswith("animCurve"):
-                            selection = om.MSelectionList()
-                            selection.add(curve_node)
-                            curve_fn = oma.MFnAnimCurve(selection.getDependNode(0))
-                            for index in reversed(range(curve_fn.numKeys)):
-                                curve_fn.remove(index)
-                    else:
-                        cmds.setAttr(destination, row["value"])
+                _restore_animation_channel_snapshot(
+                    cmds,
+                    row,
+                    destination=destination,
+                )
             except Exception as exc:
                 errors.append(f"restore controller {control}.{attr} failed: {exc}")
         return "; ".join(errors) if errors else None
