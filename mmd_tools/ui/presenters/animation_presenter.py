@@ -42,6 +42,9 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 _USER_ROLE = 0x0100  # Qt.UserRole
+_SELECTION_VISIBLE = "visible"
+_SELECTION_BLOCKED = "blocked"
+_SELECTION_UNKNOWN = "unknown"
 
 _IK_BONE_NAMES = {
     "left": "左足ＩＫ",
@@ -262,7 +265,6 @@ class AnimationPresenter:
             self._clear_all()
 
     def on_clear_clicked(self):
-        self._set_picker_selection_from_nodes([])
         try:
             self._select_nodes([])
         except Exception:
@@ -471,13 +473,15 @@ class AnimationPresenter:
         """Select every indexed joint belonging to the current MMD model."""
 
         joints = [self._preferred_rig_control(joint) for joint in self._all_model_joints]
-        self._set_picker_selection_from_nodes(joints)
         if not joints:
             self._set_status("no_selectable_bones")
             return
         try:
-            self._select_nodes(joints)
-            self._set_status("selected_all_bones", count=len(joints))
+            accepted = self._select_nodes(joints)
+            if accepted:
+                self._set_status("selected_all_bones", count=len(accepted))
+            else:
+                self._set_status("no_selectable_bones")
         except Exception:
             self._set_status("select_all_failed")
 
@@ -486,9 +490,11 @@ class AnimationPresenter:
         if not node_name:
             return
         try:
-            self._set_picker_selection_from_nodes([node_name])
-            self._select_nodes([self._preferred_rig_control(node_name)])
-            self.view.status_label.setText(item.text(0))
+            accepted = self._select_nodes([self._preferred_rig_control(node_name)])
+            if accepted:
+                self.view.status_label.setText(item.text(0))
+            else:
+                self._set_status("no_selectable_bones")
         except Exception:
             self._set_status("node_not_found", name=node_name)
 
@@ -531,21 +537,21 @@ class AnimationPresenter:
             if joint and joint not in joints:
                 joints.append(self._preferred_rig_control(joint))
 
-        current = []
-        if additive:
-            try:
-                current = self.maya_adapter.ls(selection=True) or []
-            except Exception:
-                current = []
-        combined = list(dict.fromkeys([*current, *joints]))
-        self._set_picker_selection_from_nodes(combined)
         self.view.status_label.setText("、".join(labels))
         if not joints:
             if labels:
                 self._set_status("unassigned_bones", names="、".join(labels))
+            try:
+                self._set_picker_selection_from_nodes(
+                    self.maya_adapter.ls(selection=True) or []
+                )
+            except Exception:
+                pass
             return
         try:
-            self._select_nodes(joints, replace=not additive)
+            accepted = self._select_nodes(joints, replace=not additive)
+            if not accepted:
+                self._set_status("no_selectable_bones")
         except Exception:
             self._set_status("selection_failed", names="、".join(labels))
 
@@ -585,14 +591,232 @@ class AnimationPresenter:
         if hasattr(self.view.finger_picker, "set_selected_regions"):
             self.view.finger_picker.set_selected_regions(selected_ids(_FINGER_REGIONS))
 
-    def _select_nodes(self, nodes: list[str], *, replace: bool = True) -> None:
-        """Use the API 2.0 selection path when the production adapter exposes it."""
+    def _select_nodes(self, nodes: list[str], *, replace: bool = True) -> list[str]:
+        """Select only candidates inside currently visible model boundaries.
+
+        Selection is deliberately guarded at this single write point so body,
+        finger, display-tree, mirror and Select All callers cannot highlight a
+        node that Maya will not display or allow to pick.  Candidates are
+        resolved to one full DAG path before classification; unresolved or
+        ambiguous paths are rejected fail-closed.  An empty explicit request
+        remains the one operation that clears Maya's active selection.
+
+        Returns:
+            The accepted candidate spellings, preserving input order and
+            de-duplicated by resolved full DAG identity.
+        """
+
+        requested = list(nodes or [])
+        if not requested:
+            self._write_selection([], replace=True)
+            self._sync_picker_to_actual_selection()
+            return []
+
+        boundaries, known_joints = self._selection_visibility_boundaries()
+        accepted = []
+        seen_paths = set()
+        for candidate in requested:
+            resolved = self._resolve_selection_path(candidate)
+            if resolved is None or resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            if self._selection_path_blocked(resolved, boundaries, known_joints):
+                continue
+            accepted.append(candidate)
+
+        # A blocked/invalid batch must not clear or replace an existing Maya
+        # selection.  This is especially important for additive picker clicks:
+        # guard the requested candidates, then preserve the current selection.
+        if accepted:
+            self._write_selection(accepted, replace=replace)
+        self._sync_picker_to_actual_selection()
+        return accepted
+
+    def _write_selection(self, nodes: list[str], *, replace: bool = True) -> None:
+        """Write an already-validated selection through the fastest adapter path."""
 
         select_fast = getattr(self.maya_adapter, "select_fast", None)
         if callable(select_fast):
             select_fast(nodes, replace=replace)
         else:
             self.maya_adapter.select(nodes, replace=replace)
+
+    def _sync_picker_to_actual_selection(self) -> None:
+        """Read Maya's selection after a guard decision and update highlights."""
+
+        try:
+            actual = self.maya_adapter.ls(selection=True) or []
+        except Exception:
+            actual = []
+        self._set_picker_selection_from_nodes(actual)
+
+    def _resolve_selection_path(self, candidate: str) -> str | None:
+        """Resolve one candidate to exactly one full DAG path."""
+
+        if not isinstance(candidate, str) or not candidate:
+            return None
+        try:
+            resolved = self.maya_adapter.ls(candidate, long=True) or []
+        except Exception:
+            return None
+        if len(resolved) != 1 or not isinstance(resolved[0], str):
+            return None
+        path = str(resolved[0])
+        return path if path.startswith("|") else None
+
+    def _selection_visibility_boundaries(self):
+        """Read selection ownership and fail-closed visibility context.
+
+        Boundary resolution is intentionally separate from the generic
+        visibility helpers.  Those helpers preserve legacy fail-open behavior
+        for UI toggles; picker selection must instead reject model-owned nodes
+        when a group or one of its plugs cannot be proven readable.
+        """
+
+        root = self.app_state.current_model_root
+        if not root:
+            return (), set()
+
+        boundaries = []
+        try:
+            skeleton = resolve_visibility_group(self.maya_adapter, root, "joints")
+        except Exception:
+            skeleton = None
+        if skeleton:
+            skeleton_state = self._read_selection_group_state(skeleton)
+            boundaries.append(
+                {
+                    "group": skeleton,
+                    "state": skeleton_state,
+                    "owned": set(),
+                }
+            )
+        else:
+            # Keep an explicit unknown Skeleton boundary so known model joints
+            # are rejected below even when the direct group is ambiguous or
+            # missing from a partially-authored scene.
+            boundaries.append(
+                {"group": None, "state": _SELECTION_UNKNOWN, "owned": set()}
+            )
+
+        # The normal path classifies directly from one resolved group prefix.
+        # Resolve the full model-joint identity set only when Skeleton
+        # ownership is unknown, avoiding hundreds of Maya ls round-trips per
+        # ordinary picker click on larger rigs.
+        skeleton_context = boundaries[0]
+        known_joints = set()
+        if (
+            skeleton_context["state"] == _SELECTION_UNKNOWN
+            and not skeleton_context["group"]
+        ):
+            candidates = dict.fromkeys(
+                (*self._all_model_joints, *self._bone_name_to_joint.values())
+            )
+            for candidate in candidates:
+                resolved = self._resolve_selection_path(candidate)
+                if resolved:
+                    known_joints.add(resolved)
+
+        cmds_module = getattr(self.maya_adapter, "_cmds", None)
+        control_inspection = None
+        control_error = False
+        if root and cmds_module is not None:
+            try:
+                control_inspection = inspect_mmd_control_rig(
+                    root, cmds_module=cmds_module
+                )
+            except Exception:
+                control_error = True
+
+        if control_inspection is not None:
+            control_group = getattr(control_inspection, "control_group", None)
+            if isinstance(control_group, str) and control_group:
+                controls = set()
+                for node in getattr(control_inspection, "controls", {}).values():
+                    resolved = self._resolve_selection_path(node)
+                    if resolved:
+                        controls.add(resolved)
+                boundaries.append(
+                    {
+                        "group": control_group,
+                        "state": self._read_selection_group_state(control_group),
+                        "owned": controls,
+                    }
+                )
+        elif control_error and cmds_module is not None:
+            # A failed topology inspection must not turn validated UUIDs into
+            # selectable nodes.  Readable metadata is only used to resolve
+            # exact control identities; its topology/group is not trusted.
+            try:
+                from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
+
+                metadata = read_mmd_control_rig_metadata(
+                    root, cmds_module=cmds_module
+                )
+            except Exception:
+                metadata = None
+            if isinstance(metadata, dict):
+                owned = set()
+                for uuid in (metadata.get("controls") or {}).values():
+                    resolved = self._resolve_selection_path(uuid)
+                    if resolved:
+                        owned.add(resolved)
+                if owned:
+                    boundaries.append(
+                        {
+                            "group": None,
+                            "state": _SELECTION_UNKNOWN,
+                            "owned": owned,
+                        }
+                    )
+        return tuple(boundaries), known_joints
+
+    def _read_selection_group_state(self, group: str) -> str:
+        """Read raw visibility/override plugs with fail-closed error handling."""
+
+        try:
+            visibility = self.maya_adapter.get_attr(f"{group}.visibility")
+            override_enabled = self.maya_adapter.get_attr(
+                f"{group}.overrideEnabled"
+            )
+            display_type = self.maya_adapter.get_attr(
+                f"{group}.overrideDisplayType"
+            )
+            if visibility is None or override_enabled is None or display_type is None:
+                return _SELECTION_UNKNOWN
+            if not bool(visibility):
+                return _SELECTION_BLOCKED
+            if bool(override_enabled) and int(display_type) == 2:
+                return _SELECTION_BLOCKED
+        except Exception:
+            return _SELECTION_UNKNOWN
+        return _SELECTION_VISIBLE
+
+    @staticmethod
+    def _selection_path_blocked(
+        path: str, boundaries, known_joints: set[str]
+    ) -> bool:
+        """Return whether a resolved path is inside a non-visible boundary."""
+
+        for boundary in boundaries:
+            group = boundary["group"]
+            state = boundary["state"]
+            owned = boundary["owned"]
+            if path in owned:
+                return state != _SELECTION_VISIBLE
+            if group and (path == group or path.startswith(f"{group}|")):
+                return state != _SELECTION_VISIBLE
+        # If Skeleton ownership itself is unknown, known model joints are
+        # rejected even without a usable group prefix.  A valid but blocked
+        # group only blocks descendants; unrelated paths remain selectable.
+        skeleton = boundaries[0] if boundaries else None
+        if (
+            path in known_joints
+            and skeleton is not None
+            and skeleton["state"] == _SELECTION_UNKNOWN
+        ):
+            return True
+        return False
 
     def _preferred_rig_control(self, joint: str) -> str:
         """Prefer the owned curve corresponding to a picker joint."""
@@ -692,9 +916,8 @@ class AnimationPresenter:
                 mirrored.append(node)
         if mirrored:
             try:
-                self._set_picker_selection_from_nodes(mirrored)
-                self._select_nodes(mirrored)
-                selected_names = [joint_to_bone.get(node, node) for node in mirrored]
+                accepted = self._select_nodes(mirrored)
+                selected_names = [joint_to_bone.get(node, node) for node in accepted]
                 self.view.status_label.setText("、".join(selected_names))
             except Exception:
                 pass

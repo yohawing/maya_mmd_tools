@@ -428,7 +428,8 @@ class _FakeAppState:
 
 class _FakeAdapter:
     def __init__(self, joints_by_index=None, display_json=None,
-                 blend_shapes=None, bone_names=None, morph_data=None):
+                 blend_shapes=None, bone_names=None, morph_data=None,
+                 long_paths=None):
         self._joints_by_index = joints_by_index or {}
         self._display_json = display_json
         self._blend_shapes = blend_shapes or {}
@@ -437,16 +438,37 @@ class _FakeAdapter:
         self.selected = []
         self._set_attrs = {}
         self._attrs: dict[tuple[str, str], object] = {}
+        for group in ("Geometry", "Skeleton", "Physics"):
+            self._attrs[(f"|test_model|{group}", "visibility")] = True
+            self._attrs[(f"|test_model|{group}", "overrideEnabled")] = False
+            self._attrs[(f"|test_model|{group}", "overrideDisplayType")] = 0
         self._connections: list[tuple[str, str, bool]] = []
         self._incoming_connections: dict[str, list[str]] = {}
         self._node_types: dict[str, str] = {}
+        self._long_paths = dict(long_paths or {})
+        self._ls_long_calls = 0
         self._transforms: dict[str, tuple[list, list]] = {}
         self._undo_chunks: list[str] = []
 
-    def ls(self, nodes=None, type=None, selection=False):
+    def ls(self, nodes=None, type=None, selection=False, long=False, **_kwargs):
         if selection:
             return list(self.selected)
-        return nodes if nodes else []
+        if nodes is None:
+            return []
+        values = list(nodes) if isinstance(nodes, (list, tuple)) else [nodes]
+        if not long:
+            return values
+        self._ls_long_calls += len(values)
+        resolved = []
+        for node in values:
+            path = self._long_paths.get(
+                node,
+                node
+                if str(node).startswith("|")
+                else f"|test_model|Skeleton|{node}",
+            )
+            resolved.extend(path if isinstance(path, (list, tuple)) else [path])
+        return resolved
 
     def list_relatives(self, node, **kwargs):
         if kwargs.get("parent"):
@@ -829,6 +851,12 @@ class TestBodyPickerPresenter(unittest.TestCase):
             presenter = AnimationPresenter(view, app_state, maya_adapter=adapter)
         return presenter, view, app_state, adapter
 
+    @staticmethod
+    def _set_group_state(adapter, group, state):
+        adapter._attrs[(group, "visibility")] = state != "hidden"
+        adapter._attrs[(group, "overrideEnabled")] = state == "reference"
+        adapter._attrs[(group, "overrideDisplayType")] = 2 if state == "reference" else 0
+
     def test_region_click_selects_bone(self):
         presenter, view, _, adapter = self._make_with_bones(
             bone_names={"head_jnt": "頭", "neck_jnt": "首"},
@@ -837,6 +865,298 @@ class TestBodyPickerPresenter(unittest.TestCase):
         self.assertEqual(adapter.selected, ["head_jnt"])
         self.assertEqual(view.status_label.text(), "頭")
         self.assertEqual(view.body_picker.selected_regions, ["head"])
+
+    def test_visible_skeleton_picker_does_not_resolve_all_joint_paths(self):
+        presenter, _view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭", "neck_jnt": "首"},
+        )
+        adapter._ls_long_calls = 0
+
+        presenter.on_body_region_clicked("head")
+
+        self.assertEqual(adapter._ls_long_calls, 1)
+
+    def test_reference_skeleton_blocks_body_finger_display_and_select_all(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭", "left_thumb_jnt": "左親指０"},
+        )
+        self._set_group_state(adapter, "|test_model|Skeleton", "reference")
+
+        presenter.on_body_region_clicked("head")
+        presenter.on_finger_region_clicked("left_thumb_0")
+        item = _FakeTreeItem(["head"])
+        item.setData(0, _USER_ROLE, "head_jnt")
+        presenter.on_display_frame_item_clicked(item)
+        view.select_all_btn.clicked.emit()
+
+        self.assertEqual(adapter.selected, [])
+        self.assertEqual(view.body_picker.selected_regions, [])
+        self.assertEqual(view.finger_picker.selected_regions, [])
+        self.assertIn("No selectable bones", view.status_label.text())
+
+    def test_hidden_skeleton_blocks_picker_selection_and_keeps_actual_highlight(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        adapter.selected = ["unrelated"]
+        adapter._long_paths["unrelated"] = "|other|unrelated"
+        self._set_group_state(adapter, "|test_model|Skeleton", "hidden")
+
+        presenter.on_body_region_clicked("head")
+
+        self.assertEqual(adapter.selected, ["unrelated"])
+        self.assertEqual(view.body_picker.selected_regions, [])
+
+    def test_blocked_body_status_is_no_selectable_bones(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        self._set_group_state(adapter, "|test_model|Skeleton", "hidden")
+
+        presenter.on_body_region_clicked("head")
+
+        self.assertEqual(view.status_label.text(), "No selectable bones")
+
+    def test_blocked_finger_status_is_no_selectable_bones(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"left_thumb_jnt": "左親指０"},
+        )
+        self._set_group_state(adapter, "|test_model|Skeleton", "reference")
+
+        presenter.on_finger_region_clicked("left_thumb_0")
+
+        self.assertEqual(view.status_label.text(), "No selectable bones")
+
+    def test_blocked_display_status_is_no_selectable_bones(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        self._set_group_state(adapter, "|test_model|Skeleton", "hidden")
+        item = _FakeTreeItem(["head"])
+        item.setData(0, _USER_ROLE, "head_jnt")
+
+        presenter.on_display_frame_item_clicked(item)
+
+        self.assertEqual(view.status_label.text(), "No selectable bones")
+
+    def test_missing_skeleton_group_rejects_known_joint_but_allows_external(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        adapter.selected = ["external"]
+        adapter._long_paths["external"] = "|other|external"
+        original_list_relatives = adapter.list_relatives
+
+        def no_skeleton(node, **kwargs):
+            if kwargs.get("children") and kwargs.get("type") == "transform":
+                return []
+            return original_list_relatives(node, **kwargs)
+
+        adapter.list_relatives = no_skeleton
+
+        presenter.on_body_region_clicked("head")
+
+        self.assertEqual(adapter.selected, ["external"])
+        self.assertEqual(view.body_picker.selected_regions, [])
+
+    def test_ambiguous_skeleton_group_rejects_known_joint(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        adapter.selected = ["external"]
+        adapter._long_paths["external"] = "|other|external"
+        original_list_relatives = adapter.list_relatives
+
+        def ambiguous_skeleton(node, **kwargs):
+            if kwargs.get("children") and kwargs.get("type") == "transform":
+                return ["|test_model|Skeleton", "|test_model|ns:Skeleton"]
+            return original_list_relatives(node, **kwargs)
+
+        adapter.list_relatives = ambiguous_skeleton
+
+        presenter.on_body_region_clicked("head")
+
+        self.assertEqual(adapter.selected, ["external"])
+        self.assertEqual(view.body_picker.selected_regions, [])
+
+    def test_unreadable_skeleton_plug_rejects_known_joint(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        adapter.selected = ["external"]
+        adapter._long_paths["external"] = "|other|external"
+        original_get_attr = adapter.get_attr
+
+        def unreadable(attr_path):
+            if attr_path == "|test_model|Skeleton.overrideEnabled":
+                raise RuntimeError("locked visibility plug")
+            return original_get_attr(attr_path)
+
+        adapter.get_attr = unreadable
+
+        presenter.on_body_region_clicked("head")
+
+        self.assertEqual(adapter.selected, ["external"])
+        self.assertEqual(view.body_picker.selected_regions, [])
+
+    def test_reference_control_group_blocks_uuid_control_candidate(self):
+        presenter, _view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        group = "|test_model|MMD_CONTROLS_GRP"
+        self._set_group_state(adapter, group, "reference")
+        adapter._long_paths["master_uuid"] = f"{group}|master_ctrl"
+        adapter._cmds = object()
+
+        with patch(
+            "mmd_tools.ui.presenters.animation_presenter.inspect_mmd_control_rig",
+            return_value=SimpleNamespace(
+                control_group=group, controls={"master": "master_uuid"}
+            ),
+        ):
+            accepted = presenter._select_nodes(["master_uuid"])
+
+        self.assertEqual(accepted, [])
+        self.assertEqual(adapter.selected, [])
+
+    def test_control_inspection_failure_rejects_readable_uuid_metadata(self):
+        presenter, _view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        adapter._long_paths["master_uuid"] = "|test_model|MMD_CONTROLS_GRP|master_ctrl"
+        adapter._cmds = object()
+
+        with patch(
+            "mmd_tools.ui.presenters.animation_presenter.inspect_mmd_control_rig",
+            side_effect=RuntimeError("stale control-rig topology"),
+        ), patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            return_value={"controls": {"master": "master_uuid"}},
+        ):
+            accepted = presenter._select_nodes(["master_uuid"])
+
+        self.assertEqual(accepted, [])
+        self.assertEqual(adapter.selected, [])
+
+    def test_missing_control_metadata_keeps_external_candidate_allowed(self):
+        presenter, _view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        adapter._long_paths["external"] = "|other|external"
+        adapter._cmds = object()
+
+        with patch(
+            "mmd_tools.ui.presenters.animation_presenter.inspect_mmd_control_rig",
+            return_value=None,
+        ):
+            accepted = presenter._select_nodes(["external"])
+
+        self.assertEqual(accepted, ["external"])
+        self.assertEqual(adapter.selected, ["external"])
+
+    def test_ambiguous_long_path_candidate_is_rejected_fail_closed(self):
+        presenter, _view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        adapter._long_paths["ambiguous"] = ["|a|joint", "|b|joint"]
+
+        accepted = presenter._select_nodes(["ambiguous"])
+
+        self.assertEqual(accepted, [])
+        self.assertEqual(adapter.selected, [])
+
+    def test_mixed_joint_and_control_batch_keeps_only_visible_boundary(self):
+        presenter, _view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        control_group = "|test_model|MMD_CONTROLS_GRP"
+        adapter._long_paths["master_uuid"] = f"{control_group}|master_ctrl"
+        self._set_group_state(adapter, "|test_model|Skeleton", "reference")
+        self._set_group_state(adapter, control_group, "visible")
+        adapter._cmds = object()
+
+        with patch(
+            "mmd_tools.ui.presenters.animation_presenter.inspect_mmd_control_rig",
+            return_value=SimpleNamespace(
+                control_group=control_group, controls={"master": "master_uuid"}
+            ),
+        ):
+            accepted = presenter._select_nodes(["head_jnt", "master_uuid"])
+
+        self.assertEqual(accepted, ["master_uuid"])
+        self.assertEqual(adapter.selected, ["master_uuid"])
+
+    def test_unrelated_mirror_candidate_is_allowed_when_skeleton_hidden(self):
+        presenter, _view, _, adapter = self._make_with_bones(
+            bone_names={"left_arm_jnt": "左腕", "right_arm_jnt": "右腕"},
+        )
+        adapter.selected = ["unrelated"]
+        adapter._long_paths["unrelated"] = "|other|unrelated"
+        self._set_group_state(adapter, "|test_model|Skeleton", "hidden")
+
+        presenter.on_mirror_selection()
+
+        self.assertEqual(adapter.selected, ["unrelated"])
+
+    def test_hidden_mirror_candidate_is_blocked_and_current_selection_preserved(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"left_arm_jnt": "左腕", "right_arm_jnt": "右腕"},
+        )
+        for state in ("hidden", "reference"):
+            adapter.selected = ["left_arm_jnt"]
+            self._set_group_state(adapter, "|test_model|Skeleton", state)
+            presenter.on_mirror_selection()
+            self.assertEqual(adapter.selected, ["left_arm_jnt"])
+        self.assertEqual(view.body_picker.selected_regions, ["left_upper_arm"])
+
+    def test_all_blocked_replace_preserves_existing_selection(self):
+        presenter, _view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        adapter.selected = ["unrelated"]
+        adapter._long_paths["unrelated"] = "|other|unrelated"
+        self._set_group_state(adapter, "|test_model|Skeleton", "reference")
+
+        accepted = presenter._select_nodes(["head_jnt"])
+
+        self.assertEqual(accepted, [])
+        self.assertEqual(adapter.selected, ["unrelated"])
+
+    def test_explicit_empty_selection_clears_even_when_skeleton_hidden(self):
+        presenter, _view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        adapter.selected = ["head_jnt"]
+        self._set_group_state(adapter, "|test_model|Skeleton", "hidden")
+
+        presenter._select_nodes([])
+
+        self.assertEqual(adapter.selected, [])
+
+    def test_additive_visible_unrelated_candidate_preserves_prior_selection(self):
+        presenter, _view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        adapter.selected = ["head_jnt"]
+        adapter._long_paths["outside"] = "|other|outside"
+        self._set_group_state(adapter, "|test_model|Skeleton", "reference")
+
+        accepted = presenter._select_nodes(["outside"], replace=False)
+
+        self.assertEqual(accepted, ["outside"])
+        self.assertEqual(adapter.selected, ["head_jnt", "outside"])
+
+    def test_select_all_status_count_uses_accepted_candidates(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭", "neck_jnt": "首"},
+        )
+        adapter._long_paths["neck_jnt"] = "|other|neck_jnt"
+        self._set_group_state(adapter, "|test_model|Skeleton", "reference")
+
+        view.select_all_btn.clicked.emit()
+
+        self.assertEqual(adapter.selected, ["neck_jnt"])
+        self.assertIn("Selected all bones (1)", view.status_label.text())
 
     def test_leg_ik_toggle_hides_only_that_sides_fk_regions(self):
         presenter, view, _, adapter = self._make_with_bones()
