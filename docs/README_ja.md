@@ -113,29 +113,6 @@ Mayaのメニューバーに `MMD > MMD Editor` が追加されていること�
 1. `Import Animation` をクリックします。
 1. シーン内の対応するモデルにアニメーションが適用されます。
 
-### MMD Control Rig（実験的）
-
-Animator Toolsetの `MMD Control Rig（実験的）` は、MMDモーションをControl
-Rigで編集するためのオプトイン機能です。Import/Exportタブの `MMD Control
-Rigを作成` は既定OFFで、OFFのままなら従来どおりMMDボーンへVMDを読み込みます。
-ONにすると、Control Rigを作成または再利用してコントローラーへキーを作成します。
-
-| 操作 | 説明 |
-|---|---|
-| **作成** | 現在のモデル用Control Rigを作成または再利用します。 |
-| **Control Rigへベイク** | MMDリグのモーションをControl Rigキーへ変換し、所有者を切り替えます。 |
-| **MMDリグへベイク** | Control RigのモーションをMMDリグキーへ変換し、所有者を戻します。 |
-| **復元** | 一時的なControl Rig編集の前に保存した接続と所有権を復元します。 |
-| **リグを削除** | 接続済み・MMD所有の状態に戻した後、シーン所有のControl Rigを削除します。 |
-| **診断** | 所有者、状態、バインディング、未対応項目、循環の診断情報を表示します。 |
-
-編集を終えるときは `MMDリグへベイク` または `復元` を実行してから削除してください。
-Control Rigのベイクは、アクティブな非ベース `animLayer` や `animBlendNode` を
-サポートしません。レイヤーを暗黙にフラット化したりウェイトを破棄したりせず、
-シーンを変更する前に失敗します。ベースアニメーションを使うか、バックアップ後に
-Maya側で明示的にフラット化してください。animLayerの完全保持は今回の実験機能の
-対象外です。
-
 ### HumanIK（試験的）の使い方
 
 ![humanik](./assets/humanik.png)
