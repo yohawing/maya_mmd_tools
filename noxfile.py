@@ -2371,6 +2371,56 @@ def physics_solver_cycle_probe(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def physics_import_memory_probe(session: nox.Session) -> None:
+    """Measure Working Set/Private Bytes across repeated physics imports.
+
+    This is the machine evidence gate for PHS-ISSUE-110-1.  It intentionally
+    runs the new-scene/import/new-scene cycle in mayapy and consumes only the
+    JSON report emitted by the dedicated probe.
+
+    Examples:
+        uvx nox -s physics_import_memory_probe -- --maya 2024
+        uvx nox -s physics_import_memory_probe -- --maya 2024 --iterations 3
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    args = list(session.posargs)
+    out_value = _option(
+        args,
+        "--out",
+        str(ROOT / "build/reports/physics_import_memory_probe.json"),
+    )
+    pmx_value = _option(
+        args,
+        "--pmx",
+        str(ROOT / "build/fixtures/kotora_ascii/kotora.pmx"),
+    )
+    iterations_value = _option(args, "--iterations", "3")
+    report_path = Path(out_value)
+    passthrough = [
+        "--maya", maya_ver,
+        "--pmx", pmx_value,
+        "--iterations", iterations_value,
+        "--out", out_value,
+    ]
+    _clear_probe_report(session, report_path, "physics import memory probe")
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tests/viewport/physics_import_memory_probe.py",
+        passthrough,
+        {"--pmx", "--out"},
+        utf8=True,
+    )
+    report = _read_probe_report(session, report_path, "Physics import memory probe")
+    if report.get("status") != "pass":
+        session.error(
+            "Physics import memory probe failed: "
+            f"errors={report.get('errors')}, baselineGate={report.get('baselineGate')}"
+        )
+
+
+@nox.session(venv_backend="none")
 def root_move_skin_parity_probe(session: nox.Session) -> None:
     """Measure Citlali root-motion, skin products, and world-space mesh parity.
 

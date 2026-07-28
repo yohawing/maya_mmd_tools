@@ -3,6 +3,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock
 
 from maya import cmds
 
@@ -95,6 +96,31 @@ class TestPhysicsGraphAuthority(MayaTestBase):
         cmds.currentTime(10)
         self.assertAlmostEqual(cmds.getAttr(f"{joints[0]}.translateX"), 9.0, places=5)
         self.assertAlmostEqual(cmds.getAttr(f"{joints[0]}.rotateY"), 45.0, places=5)
+
+    def test_unattached_dynamic_body_silently_omits_joint_driver(self):
+        cmds.namespace(add="unattachedModel")
+        cmds.namespace(set=":unattachedModel")
+        logger = Mock()
+        try:
+            root = cmds.group(empty=True, name="root")
+            cmds.select(clear=True)
+            joint = cmds.joint(name="bone0")
+            cmds.parent(joint, root)
+            graph = build_physics_live_graph(
+                rigid_bodies=[
+                    SimpleNamespace(physics_mode=1, related_bone_index=-1),
+                    SimpleNamespace(physics_mode=1, related_bone_index=0),
+                ],
+                bones=[SimpleNamespace(parent_bone_index=-1)],
+                maya_joints=[joint],
+                root_group=root,
+                logger=logger,
+            )
+        finally:
+            cmds.namespace(set=":")
+
+        self.assertEqual(len(graph["drivers"]), 1)
+        logger.warning.assert_not_called()
 
     def test_two_namespaced_models_share_one_world(self):
         _root_a, _joints_a, graph_a = self._build_graph("modelA")
