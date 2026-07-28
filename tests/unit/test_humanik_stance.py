@@ -33,6 +33,7 @@ class _FakeCmds:
             "|model|left_forearm": _matrix(left_direction, 1.0, 0.0),
             "|model|right_arm": _matrix(0.0, 1.0, 0.0),
             "|model|right_forearm": _matrix(-1.0, 1.0, 0.0),
+            "|model|left_index1": _matrix(0.0, 1.0, 0.0),
         }
         self.attrs = {}
         self.connections = {}
@@ -139,6 +140,10 @@ def _leg_assignments():
         _assignment("RightFoot", "|model|right_ankle"),
         _assignment("RightToeBase", "|model|right_toe"),
     )
+
+
+def _finger_assignments():
+    return _assignments() + (_assignment("LeftHandIndex1", "|model|left_index1"),)
 
 
 def _setter(cmds):
@@ -405,11 +410,84 @@ class TestHumanIkStance(unittest.TestCase):
             ("|left_arm_boneMorphAccum.outputRotate", left_rotate),
             ("|left_arm_boneMorphAccum.outputTranslate", left_translate),
         ])
+        self.assertTrue(all(edge["classification"] == "temporary_arm_pose_writer" for edge in pose_edges))
         tx.restore()
 
         self.assertEqual(cmds.connections[left_rotate], ["|left_arm_boneMorphAccum.outputRotate"])
         self.assertEqual(cmds.connections[left_translate], ["|left_arm_boneMorphAccum.outputTranslate"])
         self.assertEqual(cmds.connections[forearm_rotate], ["|left_forearm_anim.outputRotate"])
+
+    def test_direct_bone_morph_writer_on_characterized_finger_is_isolated_and_restored(self):
+        cmds = _FakeCmds()
+        finger = "|model|left_index1"
+        accum = "|left_index1_boneMorphAccum"
+        rotate_destination = f"{finger}.rotate"
+        translate_destination = f"{finger}.translateX"
+        unexpected_destination = f"{finger}.rotateY"
+        cmds.node_types[accum] = "mmdBoneMorphAccum"
+        cmds.connections[rotate_destination] = [f"{accum}.outputRotate"]
+        cmds.connections[translate_destination] = [f"{accum}.outputTranslateX"]
+        cmds.connections[unexpected_destination] = [f"{accum}.baseRotate"]
+        tx = HumanIkStanceTransaction(
+            "|model",
+            _finger_assignments(),
+            ownership_report={"rows": [], "counts": {}},
+            cmds_module=cmds,
+            world_matrix_setter=_setter(cmds),
+        )
+
+        tx.enter()
+
+        self.assertEqual(cmds.connections[rotate_destination], [])
+        self.assertEqual(cmds.connections[translate_destination], [])
+        self.assertEqual(cmds.connections[unexpected_destination], [f"{accum}.baseRotate"])
+        edges = tx.ownership_snapshot["poseWriterEdges"]
+        self.assertEqual(
+            [(edge["source"], edge["destination"]) for edge in edges],
+            [
+                (f"{accum}.outputRotate", rotate_destination),
+                (f"{accum}.outputTranslateX", translate_destination),
+            ],
+        )
+        finger_edges = [edge for edge in edges if edge["hikBone"] == "LeftHandIndex1"]
+        self.assertTrue(all(edge["classification"] == "temporary_characterized_pose_writer" for edge in finger_edges))
+
+        restore = tx.restore()
+
+        self.assertTrue(restore["passed"])
+        self.assertEqual(cmds.connections[rotate_destination], [f"{accum}.outputRotate"])
+        self.assertEqual(cmds.connections[translate_destination], [f"{accum}.outputTranslateX"])
+        self.assertEqual(cmds.connections[unexpected_destination], [f"{accum}.baseRotate"])
+
+    def test_direct_bone_morph_writer_on_characterized_finger_rolls_back_on_enter_failure(self):
+        cmds = _FakeCmds()
+        finger = "|model|left_index1"
+        accum = "|left_index1_boneMorphAccum"
+        rotate_destination = f"{finger}.rotate"
+        translate_destination = f"{finger}.translate"
+        cmds.node_types[accum] = "mmdBoneMorphAccum"
+        cmds.connections[rotate_destination] = [f"{accum}.outputRotate"]
+        cmds.connections[translate_destination] = [f"{accum}.outputTranslate"]
+        tx = HumanIkStanceTransaction(
+            "|model",
+            _finger_assignments(),
+            ownership_report={"rows": [], "counts": {}},
+            cmds_module=cmds,
+            world_matrix_setter=None,
+        )
+
+        def failing_setter(joint, child, target):
+            if joint == "|model|right_arm":
+                raise RuntimeError("locked rotate")
+            return _setter(cmds)(joint, child, target)
+
+        tx.world_matrix_setter = failing_setter
+        with self.assertRaisesRegex(RuntimeError, "locked rotate"):
+            tx.enter()
+
+        self.assertFalse(tx.active)
+        self.assertEqual(cmds.connections[rotate_destination], [f"{accum}.outputRotate"])
+        self.assertEqual(cmds.connections[translate_destination], [f"{accum}.outputTranslate"])
 
     def test_vmd_animation_isolated_and_rest_pose_applied_before_characterize(self):
         """VMD-driven descendants enter bind/rest pose, then recover motion exactly."""
