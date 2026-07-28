@@ -230,7 +230,10 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertTrue(options["import_models"])
         self.assertFalse(options["import_physics"])
         self.assertNotIn("enable_maya_bullet_preview", options)
-        self.assertFalse(options["separate_meshes_by_material"])
+        # Separate Meshes By Material is a normal-mode import option.  Its
+        # persisted value must remain user-controllable instead of being
+        # silently forced off by the Development Mode policy.
+        self.assertTrue(options["separate_meshes_by_material"])
         self.assertNotIn("split_meshes_by_morph_groups", options)
         self.assertNotIn("hide_hidden_geometry", options)
         self.assertNotIn("auto_classify_transparency", options)

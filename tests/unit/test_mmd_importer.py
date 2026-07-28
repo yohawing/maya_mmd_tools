@@ -2,13 +2,14 @@
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
 
 install_headless_ui_stubs()
 
 from mmd_tools.core.settings import settings  # noqa: E402
+from mmd_tools.core.exceptions import MMDImportException  # noqa: E402
 from mmd_tools.io.mmd_importer import _scoped_settings_override, import_mmd_file  # noqa: E402
 
 _ALL_KEYS = (
@@ -429,6 +430,55 @@ class TestModelImportControlRig(unittest.TestCase):
         self.assertEqual(warning["code"], "control_rig_bind_failed")
         self.assertEqual(warning["fallback"], "model_imported_with_attached_control_rig")
 
+
+class TestUVEditorRefreshAfterModelImport(unittest.TestCase):
+    """Ensure model imports schedule one deferred UV cache refresh."""
+
+    def _run_model_import(self, extension):
+        deferred_callbacks = []
+        parsed_data = object()
+        importer_patch = "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file"
+
+        with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data), patch(
+            importer_patch,
+            return_value="model_root",
+        ), patch("maya.utils.executeDeferred", side_effect=deferred_callbacks.append) as execute_deferred:
+            result = import_mmd_file(f"model{extension}", options={})
+
+        self.assertEqual(result, "model_root")
+        execute_deferred.assert_called_once()
+        self.assertEqual(len(deferred_callbacks), 1)
+        return deferred_callbacks[0]
+
+    def test_pmx_and_pmd_each_schedule_one_refresh_callback(self):
+        for extension in (".pmx", ".pmd"):
+            with self.subTest(extension=extension), patch(
+                "maya.cmds.getPanel",
+                return_value=["uvEditorA", "uvEditorB"],
+            ) as get_panel, patch("maya.cmds.textureWindow") as texture_window:
+                refresh = self._run_model_import(extension)
+                refresh()
+
+            get_panel.assert_called_once_with(type="polyTexturePlacementPanel")
+            texture_window.assert_has_calls(
+                [
+                    call("uvEditorA", edit=True, forceRebake=True),
+                    call("uvEditorA", edit=True, refresh=True),
+                    call("uvEditorB", edit=True, forceRebake=True),
+                    call("uvEditorB", edit=True, refresh=True),
+                ]
+            )
+            self.assertEqual(texture_window.call_count, 4)
+
+    def test_failed_model_import_does_not_schedule_refresh(self):
+        with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=object()), patch(
+            "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
+            side_effect=RuntimeError("import failed"),
+        ), patch("maya.utils.executeDeferred") as execute_deferred:
+            with self.assertRaises(MMDImportException):
+                import_mmd_file("model.pmx", options={})
+
+        execute_deferred.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

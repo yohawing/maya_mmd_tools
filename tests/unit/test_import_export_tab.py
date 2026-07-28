@@ -515,8 +515,8 @@ class TestImportExportViewState(unittest.TestCase):
         self.assertEqual(store.values["b"], "[]")
 
 
-class TestPhysicsVisibilitySourceInspection(unittest.TestCase):
-    """Verify that the physics import UI is available in normal mode."""
+class TestNormalModeVisibilitySourceInspection(unittest.TestCase):
+    """Verify supported model import controls remain available in normal mode."""
 
     def setUp(self):
         self.source = Path(import_export_tab.__file__).read_text(encoding="utf-8")
@@ -535,6 +535,12 @@ class TestPhysicsVisibilitySourceInspection(unittest.TestCase):
             if in_dev_only and "]" in line:
                 in_dev_only = False
         self.assertFalse(found, "self.physics_group must remain visible in normal mode")
+
+    def test_separate_meshes_is_not_in_dev_only_widgets(self):
+        dev_only_start = self.source.index("self._dev_only_widgets = [")
+        dev_only_end = self.source.index("]", dev_only_start)
+
+        self.assertNotIn("self.separate_meshes_check", self.source[dev_only_start:dev_only_end])
 
 
 class TestControlRigSettingSourceInspection(unittest.TestCase):

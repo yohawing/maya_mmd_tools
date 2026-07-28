@@ -1757,11 +1757,11 @@ class TestDevModeBehaviorGating(unittest.TestCase):
         opts = self._run_import()
         self.assertTrue(opts["import_models"])
 
-    def test_normal_mode_forces_separate_meshes_false(self):
+    def test_normal_mode_preserves_separate_meshes_option(self):
         settings.set("ui.general.development_mode", False)
         settings.set("import.model.separate_meshes_by_material", True)
         opts = self._run_import()
-        self.assertFalse(opts["separate_meshes_by_material"])
+        self.assertTrue(opts["separate_meshes_by_material"])
 
     def test_normal_mode_bake_mode_does_not_disable_model_rig_options(self):
         # bake_mode is an animation-import setting and must not suppress model rig creation.
