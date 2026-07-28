@@ -46,6 +46,45 @@ def test_cpp_plugin_path_defaults_to_debug_binary(tmp_path):
     assert result == tmp_path / "plug-ins" / "2024" / "Debug" / "mmd_tools_cpp.mll"
 
 
+def test_external_oracle_summary_keeps_route_results_independent():
+    legacy_oracle = {"status": "pass", "attempted": True, "pass": True}
+    direct_oracle = {"status": "fail", "attempted": True, "pass": False}
+
+    result = parity._external_oracle_summary(
+        {
+            "legacy": {"externalOracle": legacy_oracle},
+            "controlRigDirect": {"externalOracle": direct_oracle},
+        },
+        {
+            "status": "ready",
+            "frames": [0, 2],
+            "provenance": {
+                "status": "ready",
+                "runtimePath": "C:/runtime/mmd_runtime_ffi.dll",
+                "runtimeSha256": "a" * 64,
+                "runtimeAbi": 3,
+            },
+        },
+    )
+
+    assert result["status"] == "fail"
+    assert result["pass"] is False
+    assert result["routes"]["legacy"]["status"] == "pass"
+    assert result["routes"]["controlRigDirect"]["status"] == "fail"
+    assert result["oraclePreparation"]["runtimeProvenance"]["runtimeAbi"] == 3
+    assert result["runtimeProvenance"]["runtimeSha256"] == "a" * 64
+
+
+def test_external_oracle_not_run_is_explicit_and_not_numeric_zero():
+    result = parity._external_oracle_not_run("FFI unavailable")
+
+    assert result["status"] == "not_run"
+    assert result["attempted"] is False
+    assert result["pass"] is False
+    assert "max" not in result
+    assert result["reason"] == "FFI unavailable"
+
+
 def test_fresh_key_times_compare_bone_union_not_constant_components():
     exported = SimpleNamespace(
         bone_frames=[_bone_frame("右足", 0), _bone_frame("右足", 1)],

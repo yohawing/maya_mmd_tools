@@ -13,6 +13,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -35,6 +36,8 @@ _EVALUATION_MODES = ("dg", "serial", "parallel")
 _MAYA_EVALUATION_MODES = {"dg": "off", "serial": "serial", "parallel": "parallel"}
 _BONE_EXPORT_ATTRS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
 _APPEND_OBSERVABLE_EPSILON = 1.0e-8
+_EXTERNAL_ORACLE_THRESHOLD = 0.01
+_EXTERNAL_ORACLE_IDENTITY = "mmd-anim-mesh-oracle"
 cmds = None
 
 
@@ -680,6 +683,208 @@ def _run_route(
     }
 
 
+def _external_oracle_not_run(reason: str) -> dict[str, Any]:
+    """Return explicit fail-closed evidence when the mesh oracle is unavailable."""
+
+    return {
+        "identity": _EXTERNAL_ORACLE_IDENTITY,
+        "status": "not_run",
+        "attempted": False,
+        "pass": False,
+        "threshold": _EXTERNAL_ORACLE_THRESHOLD,
+        "reason": str(reason),
+    }
+
+
+def _external_oracle_module() -> Any:
+    """Load the shared mesh-oracle helpers in module and script launch modes."""
+
+    viewport_root = str(_ROOT / "tests" / "viewport")
+    if viewport_root not in sys.path:
+        sys.path.insert(0, viewport_root)
+    from tests.viewport import mmd_anim_mesh_oracle_compare
+
+    return mmd_anim_mesh_oracle_compare
+
+
+def _runtime_provenance() -> dict[str, Any]:
+    """Return provenance for the actually loaded mmd-anim FFI library."""
+
+    result: dict[str, Any] = {
+        "status": "not_run",
+        "runtimePath": None,
+        "runtimeSha256": None,
+        "runtimeAbi": None,
+        "missing": [],
+        "errors": [],
+    }
+    try:
+        from mmd_tools.core.native import mmd_anim_runtime
+
+        library = mmd_anim_runtime.get_mmd_runtime_library()
+        if library is None:
+            result["errors"].append("mmd-anim runtime library is not loaded")
+            return result
+        path = mmd_anim_runtime.get_runtime_library_path()
+        if path is None:
+            raw_name = getattr(library, "_name", None)
+            candidate = Path(str(raw_name)).expanduser() if raw_name else None
+            if candidate is not None and (candidate.is_absolute() or candidate.is_file()):
+                path = candidate
+        if path is None:
+            result["missing"].append("runtimePath")
+        else:
+            resolved = Path(path).expanduser().resolve()
+            if not resolved.is_file():
+                result["missing"].append("runtimePath")
+            else:
+                result["runtimePath"] = str(resolved)
+                try:
+                    result["runtimeSha256"] = hashlib.sha256(resolved.read_bytes()).hexdigest()
+                except OSError as exc:
+                    result["errors"].append(f"runtimeSha256: {exc}")
+        abi_function = getattr(library, "mmd_runtime_abi_version", None)
+        if abi_function is None:
+            result["missing"].append("runtimeAbi")
+        else:
+            try:
+                result["runtimeAbi"] = int(abi_function())
+            except (TypeError, ValueError, OSError, RuntimeError) as exc:
+                result["errors"].append(f"runtimeAbi: {exc}")
+    except Exception as exc:  # noqa: BLE001 - provenance is fail-closed metadata
+        result["errors"].append(_compact_error(exc))
+    if result["runtimeSha256"] is None and "runtimeSha256" not in result["missing"]:
+        result["missing"].append("runtimeSha256")
+    if result["runtimeAbi"] is None and "runtimeAbi" not in result["missing"]:
+        result["missing"].append("runtimeAbi")
+    result["status"] = "ready" if not result["missing"] and not result["errors"] else "missing"
+    return result
+
+
+def _prepare_external_oracle(
+    model: Path, motion: Path, frames: list[int | float]
+) -> dict[str, Any]:
+    """Compute one mmd-anim mesh oracle shared by both live Maya routes.
+
+    The expensive runtime evaluation is independent from the Maya scene.  It
+    is intentionally prepared once so both route captures compare against the
+    exact same PMX/VMD data and an unavailable FFI remains explicit.
+    """
+
+    try:
+        oracle_module = _external_oracle_module()
+        integer_frames = [int(frame) for frame in frames]
+        vertices = oracle_module._compute_oracle_vertices(model, motion, integer_frames)
+        if set(vertices) != set(integer_frames):
+            raise RuntimeError(
+                "mmd-anim oracle returned an incomplete frame set: "
+                f"expected={integer_frames!r} actual={sorted(vertices)!r}"
+            )
+        provenance = _runtime_provenance()
+        if provenance["status"] != "ready":
+            return {
+                "status": "not_run",
+                "reason": "mmd-anim runtime provenance is incomplete",
+                "provenance": provenance,
+            }
+        return {
+            "status": "ready",
+            "vertices": vertices,
+            "frames": integer_frames,
+            "provenance": provenance,
+        }
+    except Exception as exc:  # noqa: BLE001 - unavailable runtime is evidence, not a crash
+        return {"status": "not_run", "reason": _compact_error(exc), "provenance": _runtime_provenance()}
+
+
+def _capture_external_oracle(
+    route: Mapping[str, Any],
+    oracle: Mapping[str, Any],
+    frames: list[int | float],
+) -> dict[str, Any]:
+    """Compare one imported route's evaluated mesh against the external oracle."""
+
+    if route.get("importStatus") != "pass":
+        return _external_oracle_not_run(
+            f"route importStatus={route.get('importStatus')!r}; mesh capture was not attempted"
+        )
+    if oracle.get("status") != "ready":
+        return _external_oracle_not_run(str(oracle.get("reason") or "mmd-anim oracle unavailable"))
+    try:
+        oracle_module = _external_oracle_module()
+
+        comparison = oracle_module._compare(
+            oracle_module._capture_maya_by_source_index(
+                str(route["root"]), [int(frame) for frame in frames]
+            ),
+            oracle["vertices"],
+            [int(frame) for frame in frames],
+            _EXTERNAL_ORACLE_THRESHOLD,
+        )
+    except Exception as exc:  # noqa: BLE001 - preserve route-specific capture failures
+        return {
+            "identity": _EXTERNAL_ORACLE_IDENTITY,
+            "status": "fail",
+            "attempted": True,
+            "pass": False,
+            "threshold": _EXTERNAL_ORACLE_THRESHOLD,
+            "frames": [int(frame) for frame in frames],
+            "runtimeProvenance": dict(oracle.get("provenance") or {}),
+            "error": _compact_error(exc),
+        }
+    passed = bool(comparison.get("passed"))
+    return {
+        "identity": _EXTERNAL_ORACLE_IDENTITY,
+        "status": "pass" if passed else "fail",
+        "attempted": True,
+        "pass": passed,
+        "threshold": _EXTERNAL_ORACLE_THRESHOLD,
+        "frames": [int(frame) for frame in frames],
+        "runtimeProvenance": dict(oracle.get("provenance") or {}),
+        "comparison": comparison,
+    }
+
+
+def _external_oracle_summary(
+    routes: Mapping[str, Mapping[str, Any]], oracle: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Summarize route-specific oracle gates without coupling route parity."""
+
+    route_results = {
+        name: dict((route.get("externalOracle") or _external_oracle_not_run("route evidence missing")))
+        for name, route in sorted(routes.items())
+    }
+    statuses = [str(result.get("status", "not_run")) for result in route_results.values()]
+    if len(route_results) < 2 or any(status == "not_run" for status in statuses):
+        status = "not_run"
+    elif any(status == "fail" for status in statuses):
+        status = "fail"
+    else:
+        status = "pass"
+    return {
+        "identity": _EXTERNAL_ORACLE_IDENTITY,
+        "status": status,
+        "attempted": status in {"pass", "fail"},
+        "pass": status == "pass",
+        "threshold": _EXTERNAL_ORACLE_THRESHOLD,
+        "oraclePreparation": (
+            {
+                "status": "ready",
+                "frames": list(oracle.get("frames") or []),
+                "runtimeProvenance": dict(oracle.get("provenance") or {}),
+            }
+            if oracle.get("status") == "ready"
+            else {
+                "status": "not_run",
+                "reason": str(oracle.get("reason") or "unknown"),
+                "runtimeProvenance": dict(oracle.get("provenance") or {}),
+            }
+        ),
+        "runtimeProvenance": dict(oracle.get("provenance") or {}),
+        "routes": route_results,
+    }
+
+
 def _compare(reference: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[str, Any]:
     rows = []
     divergences = []
@@ -1098,11 +1303,7 @@ def run(model: Path, motion: Path, output: Path, evaluation_mode: str = "dg") ->
             "singleModeReport": True,
             "complete": False,
         },
-        "externalOracle": {
-            "identity": "mmd-anim-mesh-oracle",
-            "status": "not_run",
-            "reason": "This harness reports route parity only; existing external oracle is separate.",
-        },
+        "externalOracle": _external_oracle_not_run("route evidence has not been collected"),
     }
     try:
         plugins = _load_plugins()
@@ -1124,8 +1325,14 @@ def run(model: Path, motion: Path, output: Path, evaluation_mode: str = "dg") ->
         interpolation_probe = _select_interpolation_probe(authored_frames)
         interpolation_frames = list(interpolation_probe["frames"])
         frames = sorted({0, 1, end, *authored_frames, *interpolation_frames})
+        external_oracle = _prepare_external_oracle(model, motion, frames)
         legacy = _run_route(model, motion, False, frames, append_grants)
+        legacy["externalOracle"] = _capture_external_oracle(legacy, external_oracle, frames)
         direct = _run_route(model, motion, True, frames, append_grants)
+        direct["externalOracle"] = _capture_external_oracle(direct, external_oracle, frames)
+        external_summary = _external_oracle_summary(
+            {"legacy": legacy, "controlRigDirect": direct}, external_oracle
+        )
         coverage = _coverage(
             vmd,
             pmx,
@@ -1197,6 +1404,16 @@ def run(model: Path, motion: Path, output: Path, evaluation_mode: str = "dg") ->
             # Executed red is a gate failure, not missing coverage.  The
             # remaining five categories stay fail-closed below.
             coverage_missing_set.discard("exportFreshImport")
+        coverage["items"]["externalOracle"] = {
+            "status": "covered" if external_summary["status"] in {"pass", "fail"} else "missing",
+            "gatePass": bool(external_summary.get("pass")),
+            "routeStatuses": {
+                name: str(result.get("status", "not_run"))
+                for name, result in external_summary.get("routes", {}).items()
+            },
+        }
+        if coverage["items"]["externalOracle"]["status"] == "covered":
+            coverage_missing_set.discard("externalOracle")
         coverage_missing = sorted(coverage_missing_set)
         coverage["coverageMissing"] = coverage_missing
         payload.update(
@@ -1210,6 +1427,7 @@ def run(model: Path, motion: Path, output: Path, evaluation_mode: str = "dg") ->
                 "interpolationProbe": interpolation_probe,
                 "coverage": coverage,
                 "coverageMissing": coverage_missing,
+                "externalOracle": external_summary,
                 "routes": {
                     "legacy": {key: value for key, value in legacy.items() if key != "records"},
                     "controlRigDirect": {key: value for key, value in direct.items() if key != "records"},
@@ -1244,6 +1462,7 @@ def run(model: Path, motion: Path, output: Path, evaluation_mode: str = "dg") ->
             "pass"
             if payload["routeParity"]["pass"]
             and bool(export_fresh_import.get("pass"))
+            and bool(external_summary.get("pass"))
             and not coverage_missing
             else "fail"
         )

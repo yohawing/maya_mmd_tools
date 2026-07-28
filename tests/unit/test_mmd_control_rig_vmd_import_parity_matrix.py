@@ -21,6 +21,31 @@ def _green_run(version: str, mode: str, *, case="base", coverage=None, export_st
     }
 
 
+def _oracle_run(version: str, mode: str, *, case="base", status="pass") -> dict:
+    coverage = ("evaluationModes", "append") if status != "not_run" else ("evaluationModes", "append", "externalOracle")
+    route_status = {
+        "legacy": {"status": status, "attempted": status != "not_run", "pass": status == "pass"},
+        "controlRigDirect": {"status": status, "attempted": status != "not_run", "pass": status == "pass"},
+    }
+    row = _green_run(
+        version,
+        mode,
+        case=case,
+        coverage=coverage,
+        coverage_statuses={"append": "covered"},
+    )
+    row.update(
+        {
+            "externalOracleStatus": status,
+            "externalOraclePass": status == "pass",
+            "externalOracleAttempted": status != "not_run",
+            "externalOracleRoutes": {name: value["status"] for name, value in route_status.items()},
+            "externalOracleFailures": route_status if status == "fail" else None,
+        }
+    )
+    return row
+
+
 def test_full_two_case_matrix_satisfies_evaluation_mode_coverage_only():
     rows = [
         _green_run(version, mode, case=case)
@@ -65,6 +90,29 @@ def test_export_gate_red_is_not_coverage_only():
     assert aggregate["routeParity"]["pass"] is True
     assert aggregate["coverage"]["exportFreshImport"] == "fail"
     assert "exportFreshImport" not in aggregate["coverage"]["coverageMissingUnion"]
+
+
+def test_external_oracle_failure_is_an_independent_gate():
+    rows = [
+        _oracle_run(version, mode, case=case, status="fail")
+        for case in matrix.CASES
+        for version in matrix.VERSIONS
+        for mode in matrix.MODES
+    ]
+
+    aggregate = matrix._aggregate(
+        rows,
+        cases=matrix.CASES,
+        versions=matrix.VERSIONS,
+        modes=matrix.MODES,
+        dry_run=False,
+    )
+
+    assert aggregate["routeParity"]["pass"] is True
+    assert aggregate["coverage"]["externalOracle"] == "fail"
+    assert aggregate["coverage"]["externalOracleFailures"]
+    assert "externalOracle" not in aggregate["coverage"]["coverageMissingUnion"]
+    assert aggregate["status"] == "fail"
 
 
 def test_export_gate_not_run_remains_missing():
@@ -233,7 +281,18 @@ def test_validate_child_accepts_executed_red_export_as_gate_failure(tmp_path):
                 "append": {"status": "missing"},
                 "boneMorph": {"status": "covered"},
                 "ikEnable": {"status": "covered"},
+                "externalOracle": {"status": "missing"},
             }
+        },
+        "externalOracle": {
+            "identity": "mmd-anim-mesh-oracle",
+            "status": "not_run",
+            "attempted": False,
+            "pass": False,
+            "routes": {
+                "legacy": {"status": "not_run", "attempted": False, "pass": False},
+                "controlRigDirect": {"status": "not_run", "attempted": False, "pass": False},
+            },
         },
         "status": "fail",
         "exportFreshImport": {
@@ -259,6 +318,70 @@ def test_validate_child_accepts_executed_red_export_as_gate_failure(tmp_path):
     assert result["coverageOnlyNonzero"] is False
     assert result["gateFailureNonzero"] is True
     assert result["exportFreshImportStatus"] == "fail"
+    assert result["errors"] == []
+
+
+def test_validate_child_accepts_executed_red_external_oracle_as_gate_failure(tmp_path):
+    payload = {
+        "model": str(tmp_path / "model.pmx"),
+        "motion": str(tmp_path / "motion.vmd"),
+        "mayaVersion": "2026",
+        "evaluationMode": {"requested": "dg", "active": "dg", "pass": True},
+        "requiredRunMatrix": {
+            "requestedModes": list(matrix.MODES),
+            "currentMode": "dg",
+            "singleModeReport": True,
+        },
+        "routeParity": {
+            "pass": True,
+            "directVsLegacy": {"pass": True},
+            "bakedVsLegacy": {"pass": True},
+        },
+        "coverageMissing": ["append"],
+        "coverage": {
+            "items": {
+                "append": {"status": "missing"},
+                "boneMorph": {"status": "covered"},
+                "ikEnable": {"status": "covered"},
+                "externalOracle": {"status": "covered", "gatePass": False},
+            }
+        },
+        "externalOracle": {
+            "identity": "mmd-anim-mesh-oracle",
+            "status": "fail",
+            "attempted": True,
+            "pass": False,
+            "runtimeProvenance": {
+                "status": "ready",
+                "runtimePath": "C:/runtime/mmd_runtime_ffi.dll",
+                "runtimeSha256": "a" * 64,
+                "runtimeAbi": 3,
+            },
+            "routes": {
+                "legacy": {"status": "fail", "attempted": True, "pass": False},
+                "controlRigDirect": {"status": "fail", "attempted": True, "pass": False},
+            },
+        },
+        "status": "fail",
+        "exportFreshImport": {"attempted": True, "status": "pass", "pass": True},
+    }
+
+    result = matrix._validate_child(
+        payload,
+        case="base",
+        version="2026",
+        mode="dg",
+        returncode=1,
+        report_path=tmp_path / "child.json",
+        model=tmp_path / "model.pmx",
+        motion=tmp_path / "motion.vmd",
+    )
+
+    assert result["valid"] is True
+    assert result["oracleGateFailureNonzero"] is True
+    assert result["coverageOnlyNonzero"] is False
+    assert result["routeParityPass"] is True
+    assert result["externalOracleStatus"] == "fail"
     assert result["errors"] == []
 
 

@@ -179,6 +179,72 @@ def _validate_child(
             if status == "covered" and listed:
                 errors.append(f"covered category {category} must not be listed")
 
+    external_gate = _as_mapping(payload.get("externalOracle"))
+    external_status = "not_run"
+    external_pass = False
+    external_attempted = False
+    external_routes: dict[str, str] = {}
+    if external_gate is None:
+        errors.append("missing externalOracle gate")
+    else:
+        external_status = str(external_gate.get("status", ""))
+        external_pass = bool(external_gate.get("pass"))
+        external_attempted = bool(external_gate.get("attempted"))
+        if external_status not in {"pass", "fail", "not_run"}:
+            errors.append(f"invalid externalOracle.status: {external_status!r}")
+        routes = _as_mapping(external_gate.get("routes"))
+        if routes is None:
+            errors.append("externalOracle.routes must include legacy/controlRigDirect")
+        else:
+            for route_name in ("legacy", "controlRigDirect"):
+                route_gate = _as_mapping(routes.get(route_name))
+                route_status = str(route_gate.get("status", "")) if route_gate else ""
+                if route_status not in {"pass", "fail", "not_run"}:
+                    errors.append(f"externalOracle.routes.{route_name}.status is invalid")
+                else:
+                    external_routes[route_name] = route_status
+                    route_attempted = bool(route_gate.get("attempted"))
+                    route_pass = bool(route_gate.get("pass"))
+                    if route_status == "pass" and (not route_attempted or not route_pass):
+                        errors.append(f"externalOracle.routes.{route_name} pass is inconsistent")
+                    if route_status == "fail" and (not route_attempted or route_pass):
+                        errors.append(f"externalOracle.routes.{route_name} fail is inconsistent")
+                    if route_status == "not_run" and (route_attempted or route_pass):
+                        errors.append(f"externalOracle.routes.{route_name} not_run is inconsistent")
+            if set(external_routes) != {"legacy", "controlRigDirect"}:
+                errors.append("externalOracle.routes must include both route results")
+        if external_status == "pass" and (not external_attempted or not external_pass):
+            errors.append("externalOracle pass requires attempted=true and pass=true")
+        if external_status == "fail" and (not external_attempted or external_pass):
+            errors.append("externalOracle fail requires attempted=true and pass=false")
+        if external_status == "not_run" and (external_attempted or external_pass):
+            errors.append("externalOracle not_run requires attempted=false and pass=false")
+        provenance = _as_mapping(external_gate.get("runtimeProvenance"))
+        if external_status in {"pass", "fail"}:
+            if provenance is None:
+                errors.append("executed externalOracle requires runtimeProvenance")
+            else:
+                if str(provenance.get("status")) != "ready":
+                    errors.append("executed externalOracle requires ready runtimeProvenance")
+                for field in ("runtimePath", "runtimeSha256", "runtimeAbi"):
+                    if provenance.get(field) in (None, ""):
+                        errors.append(f"executed externalOracle runtimeProvenance missing {field}")
+        external_item = _as_mapping(coverage_items.get("externalOracle")) if coverage_items else None
+        external_coverage_status = str(external_item.get("status", "")) if external_item else ""
+        if external_coverage_status not in {"covered", "missing"}:
+            errors.append("coverage.items.externalOracle.status must be covered/missing")
+        else:
+            listed = coverage_missing is not None and "externalOracle" in coverage_missing
+            should_be_covered = external_status in {"pass", "fail"}
+            if should_be_covered and external_coverage_status != "covered":
+                errors.append("executed externalOracle must be marked covered")
+            if not should_be_covered and external_coverage_status != "missing":
+                errors.append("not_run externalOracle must be marked missing")
+            if should_be_covered and listed:
+                errors.append("executed externalOracle must not remain in coverageMissing")
+            if not should_be_covered and not listed:
+                errors.append("not_run externalOracle must remain in coverageMissing")
+
     export_gate = _as_mapping(payload.get("exportFreshImport"))
     export_status = "not_run"
     export_pass = False
@@ -211,6 +277,7 @@ def _validate_child(
         and coverage_missing is not None
         and bool(coverage_missing)
         and export_status != "fail"
+        and external_status != "fail"
     )
     gate_failure_nonzero = (
         returncode == 1
@@ -218,7 +285,14 @@ def _validate_child(
         and route_green
         and export_status == "fail"
     )
-    if returncode != 0 and not (coverage_only_nonzero or gate_failure_nonzero):
+    oracle_gate_failure_nonzero = (
+        returncode == 1
+        and str(payload.get("status")) == "fail"
+        and route_green
+        and export_status != "fail"
+        and external_status == "fail"
+    )
+    if returncode != 0 and not (coverage_only_nonzero or gate_failure_nonzero or oracle_gate_failure_nonzero):
         errors.append(f"child returned nonzero exit={returncode}")
     if returncode == 0 and str(payload.get("status")) != "pass":
         errors.append(f"child returned zero with status={payload.get('status')!r}")
@@ -239,8 +313,16 @@ def _validate_child(
         "exportFreshImportFirstDivergence": (
             export_gate.get("firstDivergence") if export_gate is not None else None
         ),
+        "externalOracleStatus": external_status,
+        "externalOraclePass": external_pass,
+        "externalOracleAttempted": external_attempted,
+        "externalOracleRoutes": external_routes,
+        "externalOracleFailures": (
+            external_gate.get("routes") if external_gate is not None and external_status == "fail" else None
+        ),
         "coverageOnlyNonzero": coverage_only_nonzero,
         "gateFailureNonzero": gate_failure_nonzero,
+        "oracleGateFailureNonzero": oracle_gate_failure_nonzero,
         "valid": not errors,
         "errors": errors,
     }
@@ -370,6 +452,23 @@ def _aggregate(
         for row in rows
         if str(row.get("exportFreshImportStatus", "not_run")) == "fail"
     ]
+    external_statuses = [str(row.get("externalOracleStatus", "not_run")) for row in rows]
+    if not rows or any(status == "fail" for status in external_statuses):
+        external_status = "fail" if rows and any(status == "fail" for status in external_statuses) else "not_run"
+    elif all(status == "pass" for status in external_statuses):
+        external_status = "pass"
+    else:
+        external_status = "not_run"
+    external_failures = [
+        {
+            "case": str(row.get("case", "base")),
+            "version": str(row.get("version")),
+            "mode": str(row.get("mode")),
+            "routes": row.get("externalOracleFailures"),
+        }
+        for row in rows
+        if str(row.get("externalOracleStatus", "not_run")) == "fail"
+    ]
     coverage_categories = {}
     for category in ("append", "boneMorph", "ikEnable"):
         covered_cases = []
@@ -416,11 +515,19 @@ def _aggregate(
         coverage_union_set.discard("evaluationModes")
     if export_status == "pass":
         coverage_union_set.discard("exportFreshImport")
+    if external_status in {"pass", "fail"} and all(
+        status in {"pass", "fail"} for status in external_statuses
+    ):
+        coverage_union_set.discard("externalOracle")
     coverage_union = sorted(coverage_union_set)
     return {
-            "status": "dry_run" if dry_run else (
+        "status": "dry_run" if dry_run else (
             "pass"
-            if route_green and reports_valid and export_status == "pass" and not coverage_union
+            if route_green
+            and reports_valid
+            and export_status == "pass"
+            and external_status == "pass"
+            and not coverage_union
             else "fail"
         ),
         "routeParity": {"pass": route_green, "runCount": len(rows), "expectedCount": len(expected)},
@@ -430,6 +537,12 @@ def _aggregate(
             "coveredRuns": sorted(
                 [f"{c}/maya{v}/{m}" for c, v, m in actual if (c, v, m) in expected]
             ),
+        },
+        "externalOracle": {
+            "status": external_status,
+            "pass": external_status == "pass",
+            "attempted": external_status in {"pass", "fail"},
+            "failures": external_failures,
         },
         "coverage": {
             "evaluationModes": "pass" if evaluation_green else ("partial" if route_green else "fail"),
@@ -442,7 +555,8 @@ def _aggregate(
             "ikEnable": coverage_categories["ikEnable"]["status"],
             "ikEnableCases": coverage_categories["ikEnable"]["cases"],
             "ikEnablePartialCases": coverage_categories["ikEnable"]["partialCases"],
-            "externalOracle": "not_run",
+            "externalOracle": external_status,
+            "externalOracleFailures": external_failures,
             "exportFreshImport": export_status,
             "exportFreshImportFailures": export_failures,
             "coverageMissingUnion": coverage_union,
