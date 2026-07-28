@@ -29,6 +29,22 @@ def _normalize_vmd_fps(value: Any, logger=None) -> int:
     return fps
 
 
+def _resolve_quaternion_interpolation(options: Dict[str, Any]) -> bool:
+    """Resolve the sparse rotation interpolation policy for one VMD import.
+
+    Quaternion slerp is an experimental Control Rig feature.  Keep the
+    legacy joint-side import unchanged unless the caller explicitly opts in,
+    while making the normal ``create_mmd_control_rig=True`` route activate the
+    experimentally validated mode.  An explicit option remains authoritative
+    for probes and compatibility callers.
+    """
+    create_control_rig = bool(options.get("create_mmd_control_rig", False))
+    override = options.get("use_quaternion_interpolation")
+    if override is None:
+        return create_control_rig
+    return bool(override)
+
+
 def _try_recover_physics_drivers(target_model, logger, profile):
     """Attempt to reconnect orphaned physics drivers after VMD import.
 
@@ -80,6 +96,7 @@ def import_vmd_file(
             - pmx_bytes: 生 PMX バイト
             - bake_mode: True の場合はリグ経由ではなく runtime bake を優先
             - create_mmd_control_rig: True の場合は MMD Control Rig を作成/再利用し、直接キーを作成
+            - use_quaternion_interpolation: sparse回転をQuaternion slerp評価する。Control Rig直接importは既定True、legacyは既定False。
             - use_native_physics_bake: True かつ bake_mode のとき native physics bake を試行する（default False）
             - reduce_bake_keys: True かつ bake_mode のとき runtime pose reduction を試行する（default False）
             - reduce_translate_tolerance / reduce_rotate_tolerance / reduce_morph_tolerance: reduction tolerances
@@ -170,6 +187,7 @@ def import_vmd_file(
         converter.motion_scale = float(options.get("motion_scale", 1.0))
         converter.import_camera_animation = bool(options.get("import_camera_animation", True))
         converter.import_light_animation = bool(options.get("import_light_animation", True))
+        converter.use_quaternion_interpolation = _resolve_quaternion_interpolation(options)
         profile = options.get("profile")
         if not isinstance(profile, dict):
             profile = {}
@@ -194,7 +212,7 @@ def import_vmd_file(
                     target_namespace,
                     bake_mode=options.get("bake_mode", False),
                     clear_existing_motion=options.get("clear_existing_motion", False),
-                    create_mmd_control_rig=options.get("create_mmd_control_rig", False),
+                    create_mmd_control_rig=bool(options.get("create_mmd_control_rig", False)),
                     vmd_bytes=vmd_bytes,
                     pmx_bytes=pmx_bytes,
                     pmx_path=pmx_path,

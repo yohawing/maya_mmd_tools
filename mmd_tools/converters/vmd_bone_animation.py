@@ -190,15 +190,9 @@ def set_bone_keyframes(
             channel_samples = context.samples_as_anim_layer_deltas(joint, channel_samples)
 
         if context.batch_key_scalar_channels(joint, channel_samples, animation_layer=animation_layer):
-            if context.use_quaternion_interpolation:
-                _apply_quaternion_interpolation(
-                    context,
-                    [f"{joint}.rotateX", f"{joint}.rotateY", f"{joint}.rotateZ"],
-                )
-            tangent_attrs = attrs
-            if context.use_quaternion_interpolation:
-                tangent_attrs = [a for a in attrs if not a.startswith("rotate")]
-            context.apply_vmd_bezier_tangents(joint, frames, tangent_attrs, channel_interp_map)
+            context.apply_vmd_bezier_tangents(
+                joint, frames, attrs, channel_interp_map
+            )
             return
 
         context.logger.debug(f"legacy bone batch keying produced no keys for {joint}; using setKeyframe fallback")
@@ -296,20 +290,27 @@ def set_bone_keyframes(
                     with vmd_profile.scope("fallback_setKeyframe"):
                         cmds.setKeyframe(f"{solver_node}.{attr}", time=maya_time, value=value)
 
-    rotate_redirected = any(
-        attr_targets.get(attr, (joint, attr))[0] != joint
-        for attr in ("rotateX", "rotateY", "rotateZ")
+    rotation_attrs = ("rotateX", "rotateY", "rotateZ")
+    rotation_targets = [attr_targets.get(attr, (joint, attr)) for attr in rotation_attrs]
+    rotate_redirected = any(target_node != joint for target_node, _ in rotation_targets)
+    quaternion_route_safe = bool(key_route.get("control_owned")) and bool(
+        key_route.get("quaternion_interpolation_safe")
     )
-    if context.use_quaternion_interpolation and not skip_rotate:
+    quaternion_plugs = None
+    if context.use_quaternion_interpolation and quaternion_route_safe and not skip_rotate:
         if not rotate_redirected:
-            _apply_quaternion_interpolation(
-                context,
-                [f"{joint}.rotateX", f"{joint}.rotateY", f"{joint}.rotateZ"],
-            )
+            quaternion_plugs = [f"{joint}.{attr}" for attr in rotation_attrs]
+        elif key_route.get("control_owned"):
+            target_nodes = {target_node for target_node, _ in rotation_targets}
+            target_attrs = tuple(target_attr for _, target_attr in rotation_targets)
+            if len(target_nodes) == 1 and target_attrs == rotation_attrs:
+                target_node = next(iter(target_nodes))
+                quaternion_plugs = [f"{target_node}.{attr}" for attr in rotation_attrs]
 
-    skip_rotate_tangent = skip_rotate or (
-        context.use_quaternion_interpolation and not rotate_redirected
-    )
+    if quaternion_plugs:
+        _apply_quaternion_interpolation(context, quaternion_plugs)
+
+    skip_rotate_tangent = skip_rotate or bool(quaternion_plugs)
     tangent_targets = {
         attr: attr_targets.get(attr, (joint, attr))
         for attr in attrs

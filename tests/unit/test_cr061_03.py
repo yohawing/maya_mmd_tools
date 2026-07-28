@@ -20,6 +20,7 @@ from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters.vmd_context import VmdImportStateContext
 from mmd_tools.converters.vmd_legacy_bone_routes import build_legacy_bone_key_routes
 from mmd_tools.converters.vmd_import_state import clear_existing_motion
+from mmd_tools.io.vmd_importer import _resolve_quaternion_interpolation
 from mmd_tools.services.settings_service import SettingsService
 from tests.common.maya_test_base import MayaTestBase
 
@@ -45,6 +46,20 @@ class TestControlRigImportPreflight(unittest.TestCase):
     def test_default_off_is_forwarded_by_converter_context(self):
         context = self.converter._import_context(_fake_vmd_data(), target_model="|model")
         self.assertFalse(context.create_mmd_control_rig)
+
+    def test_sparse_quaternion_policy_defaults_to_control_rig_only(self):
+        self.assertFalse(_resolve_quaternion_interpolation({}))
+        self.assertTrue(_resolve_quaternion_interpolation({"create_mmd_control_rig": True}))
+        self.assertFalse(
+            _resolve_quaternion_interpolation(
+                {"create_mmd_control_rig": True, "use_quaternion_interpolation": False}
+            )
+        )
+        self.assertTrue(
+            _resolve_quaternion_interpolation(
+                {"create_mmd_control_rig": False, "use_quaternion_interpolation": True}
+            )
+        )
 
     def test_settings_option_defaults_off(self):
         class Store:
@@ -332,6 +347,7 @@ class TestControlRigImportPreflight(unittest.TestCase):
         self.assertFalse(route["skip_rotate"])
         self.assertIsNone(route["ik_solver_rotate"])
         self.assertTrue(route["control_owned"])
+        self.assertFalse(route["quaternion_interpolation_safe"])
         self.assertEqual(route["attr_targets"]["rotateX"], ("|model|right_leg_CTRL", "rotateX"))
 
     def test_control_route_discovers_namespaced_metadata_recursively(self):
@@ -619,6 +635,237 @@ class TestControlRigImportPreflight(unittest.TestCase):
 
 
 class TestControlRigMotionClear(MayaTestBase):
+    def test_sparse_quaternion_rotation_bake_preserves_keys_and_pose(self):
+        """Compound bake keeps sparse authored times and quaternion state."""
+        control = cmds.createNode("transform", name="cr061_sparse_quaternion_control")
+        joint = cmds.createNode("transform", name="cr061_sparse_quaternion_joint")
+        times = (547.0, 550.0)
+        values = {
+            "X": (179.0, -179.0),
+            "Y": (0.0, 0.0),
+            "Z": (0.0, 0.0),
+        }
+        control_sources = {}
+        mmd_sources = {}
+        for axis in "XYZ":
+            control_curve = cmds.createNode("animCurveTA")
+            mmd_curve = cmds.createNode("animCurveTA")
+            for time, value in zip(times, values[axis]):
+                cmds.setKeyframe(control_curve, time=time, value=value)
+                cmds.setKeyframe(mmd_curve, time=time, value=0.0)
+            control_plug = f"{control}.rotate{axis}"
+            target_plug = f"{joint}.rotate{axis}"
+            control_source = f"{control_curve}.output"
+            mmd_source = f"{mmd_curve}.output"
+            cmds.connectAttr(control_source, control_plug, force=True)
+            cmds.connectAttr(control_plug, target_plug, force=True)
+            control_sources[control_plug] = control_source
+            mmd_sources[control_plug] = mmd_source
+
+        cmds.rotationInterpolation(
+            *(f"{control}.rotate{axis}" for axis in "XYZ"),
+            convert="quaternionSlerp",
+        )
+        cmds.currentTime(548.5, edit=True)
+        before = cmds.xform(joint, query=True, worldSpace=True, matrix=True)
+        rows = [
+            {
+                "control": f"{control}.rotate{axis}",
+                "target": f"{joint}.rotate{axis}",
+                "source": mmd_sources[f"{control}.rotate{axis}"],
+                "controlSource": control_sources[f"{control}.rotate{axis}"],
+                "routeClass": mmd_control_rig_motion.ROUTE_SAME_BASIS,
+            }
+            for axis in ("X", "Y", "Z")
+        ]
+        mmd_control_rig_motion._commit_control_rotation_group(
+            cmds,
+            rows,
+            control_sources,
+        )
+        after = cmds.xform(joint, query=True, worldSpace=True, matrix=True)
+        self.assertEqual(
+            cmds.keyframe(mmd_sources[f"{control}.rotateX"].split(".", 1)[0], query=True, timeChange=True),
+            list(times),
+        )
+        self.assertAlmostEqual(max(abs(a - b) for a, b in zip(before, after)), 0.0, places=7)
+        for axis in "XYZ":
+            curve = mmd_sources[f"{control}.rotate{axis}"].split(".", 1)[0]
+            self.assertEqual(cmds.rotationInterpolation(curve, query=True), "quaternionSlerp")
+        self.assertEqual(cmds.keyframe(mmd_sources[f"{control}.rotateX"].split(".", 1)[0], query=True, timeChange=True), list(times))
+        cmds.delete(control, joint)
+
+    def test_bake_rotation_group_requires_one_standard_xyz_transform(self):
+        rows = [
+            {
+                "control": f"|ctrl.rotate{axis}",
+                "target": f"|joint.rotate{axis}",
+                "routeClass": mmd_control_rig_motion.ROUTE_SAME_BASIS,
+            }
+            for axis in ("X", "Y", "Z")
+        ]
+        rows.append(
+            {
+                "control": "|ctrl.rotateX",
+                "target": "|append.baseRotateX",
+                "routeClass": mmd_control_rig_motion.ROUTE_SAMPLED,
+            }
+        )
+        groups = mmd_control_rig_motion._rotation_channel_groups(rows)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(
+            [row["target"] for row in groups[0]],
+            ["|joint.rotateX", "|joint.rotateY", "|joint.rotateZ"],
+        )
+
+    def test_bake_rotation_group_excludes_sampled_xyz_route(self):
+        rows = [
+            {
+                "control": f"|ctrl.rotate{axis}",
+                "target": f"|joint.rotate{axis}",
+                "routeClass": mmd_control_rig_motion.ROUTE_SAMPLED,
+            }
+            for axis in ("X", "Y", "Z")
+        ]
+        self.assertEqual(mmd_control_rig_motion._rotation_channel_groups(rows), [])
+
+    def test_bake_rotation_group_requires_quaternion_controller_curves(self):
+        control = cmds.createNode("transform", name="cr061_euler_opt_out_control")
+        joint = cmds.createNode("transform", name="cr061_euler_opt_out_joint")
+        rows = []
+        sources = {}
+        for axis in "XYZ":
+            cmds.setKeyframe(control, attribute=f"rotate{axis}", time=1, value=0.0)
+            source = cmds.listConnections(
+                f"{control}.rotate{axis}", source=True, destination=False, plugs=True
+            )[0]
+            row = {
+                "control": f"{control}.rotate{axis}",
+                "target": f"{joint}.rotate{axis}",
+                "routeClass": mmd_control_rig_motion.ROUTE_SAME_BASIS,
+            }
+            rows.append(row)
+            sources[row["control"]] = source
+
+        group = mmd_control_rig_motion._rotation_channel_groups(rows)[0]
+        self.assertFalse(
+            mmd_control_rig_motion._rotation_group_uses_quaternion(cmds, group, sources)
+        )
+        cmds.rotationInterpolation(
+            *(f"{control}.rotate{axis}" for axis in "XYZ"),
+            convert="quaternionSlerp",
+        )
+        self.assertTrue(
+            mmd_control_rig_motion._rotation_group_uses_quaternion(cmds, group, sources)
+        )
+        cmds.delete(control, joint)
+
+    def test_rotation_interpolation_state_restores_after_transaction_failure(self):
+        control = cmds.createNode("transform", name="cr061_rollback_rotation_control")
+        joint = cmds.createNode("transform", name="cr061_rollback_rotation_joint")
+        rows = []
+        for axis in "XYZ":
+            cmds.setKeyframe(joint, attribute=f"rotate{axis}", time=1, value=0.0)
+            source = cmds.listConnections(
+                f"{joint}.rotate{axis}", source=True, destination=False, plugs=True
+            )[0]
+            cmds.disconnectAttr(source, f"{joint}.rotate{axis}")
+            cmds.connectAttr(f"{control}.rotate{axis}", f"{joint}.rotate{axis}")
+            rows.append(
+                {
+                    "control": f"{control}.rotate{axis}",
+                    "target": f"{joint}.rotate{axis}",
+                    "source": source,
+                    "routeClass": mmd_control_rig_motion.ROUTE_SAME_BASIS,
+                }
+            )
+        states = mmd_control_rig_motion._capture_rotation_interpolation_states(
+            cmds, [rows]
+        )
+        for row in rows:
+            cmds.disconnectAttr(row["control"], row["target"])
+            cmds.connectAttr(row["source"], row["target"])
+        cmds.rotationInterpolation(
+            *(row["target"] for row in rows),
+            convert="quaternionSlerp",
+        )
+        mmd_control_rig_motion._restore_rotation_interpolation_states(cmds, states)
+        for axis in "XYZ":
+            curve = cmds.listConnections(
+                f"{joint}.rotate{axis}", source=True, destination=False
+            )[0]
+            self.assertNotEqual(
+                cmds.rotationInterpolation(curve, query=True), "quaternionSlerp"
+            )
+        cmds.delete(control, joint)
+
+    def test_quaternion_interpolation_targets_control_owned_rotation_curves(self):
+        """Control-owned XYZ curves receive the same quaternion mode as bone curves."""
+        joint = cmds.joint(name="cr061_quaternion_joint")
+        control = cmds.createNode("transform", name="cr061_quaternion_control")
+        converter = VmdConverter()
+        converter.use_animation_layers = False
+        converter.use_quaternion_interpolation = True
+        converter._bone_bind_poses["下半身"] = (0.0, 0.0, 0.0)
+        frames = [
+            {
+                "frame_number": 0,
+                "position": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.98, 0.0, 0.2],
+            },
+            {
+                "frame_number": 3,
+                "position": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.99, 0.0, -0.05],
+            },
+        ]
+        route = {
+            "control_owned": True,
+            "quaternion_interpolation_safe": True,
+            "attr_targets": {
+                attr: (control, attr) for attr in ("rotateX", "rotateY", "rotateZ")
+            },
+        }
+
+        with patch(
+            "mmd_tools.converters.vmd_bone_animation._apply_quaternion_interpolation"
+        ) as apply_quaternion:
+            converter._set_bone_keyframes(joint, frames, "下半身", route)
+
+        apply_quaternion.assert_called_once()
+        self.assertEqual(
+            apply_quaternion.call_args.args[1],
+            [f"{control}.rotateX", f"{control}.rotateY", f"{control}.rotateZ"],
+        )
+        cmds.delete(joint, control)
+
+    def test_control_rig_default_keeps_legacy_fallback_on_vmd_bezier(self):
+        """Unowned route gaps must not inherit the control-only quaternion policy."""
+        joint = cmds.joint(name="cr061_legacy_quaternion_fallback_joint")
+        converter = VmdConverter()
+        converter.use_animation_layers = False
+        converter.use_quaternion_interpolation = True
+        converter._bone_bind_poses["右袖"] = (0.0, 0.0, 0.0)
+        frames = [
+            {
+                "frame_number": 0,
+                "position": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.98, 0.0, 0.2],
+            },
+            {
+                "frame_number": 3,
+                "position": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.99, 0.0, -0.05],
+            },
+        ]
+        with patch(
+            "mmd_tools.converters.vmd_bone_animation._apply_quaternion_interpolation"
+        ) as apply_quaternion:
+            converter._set_bone_keyframes(joint, frames, "右袖", {})
+
+        apply_quaternion.assert_not_called()
+        cmds.delete(joint)
+
     def test_rotation_only_vmd_frame_keys_legacy_joint_translate_fallback(self):
         """Legacy writer retains all six channels even for a rotation-only VMD frame."""
         joint = cmds.joint(name="cr061_legacy_fallback_joint")
