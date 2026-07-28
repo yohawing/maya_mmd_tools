@@ -345,9 +345,30 @@ def remove_mmd_control_rig(model_root: str, *, cmds_module=None) -> bool:
     _validate_control_rig_topology(cmds, metadata, resolved)
     control_group = resolved[metadata["controlGroupUuid"]]
     selection_set = resolved[metadata["selectionSetUuid"]]
+    rotation_time_curves = []
+    for row in metadata.get("rotationTimeCurves", []) or []:
+        from mmd_tools.converters.vmd_rotation_time_curve import (
+            resolve_vmd_rotation_time_curve_record,
+        )
+
+        try:
+            node, _control, _rotation_curves = resolve_vmd_rotation_time_curve_record(
+                row,
+                cmds_module=cmds,
+            )
+        except RuntimeError as exc:
+            raise MmdControlRigBuildError(str(exc)) from exc
+        rotation_time_curves.append(node)
     with _undo_chunk(cmds, "Remove MMD Control Rig"):
         if cmds.objExists(selection_set):
             cmds.delete(selection_set)
+        for node in rotation_time_curves:
+            if cmds.objExists(node):
+                from mmd_tools.converters.vmd_rotation_time_curve import (
+                    detach_and_delete_vmd_rotation_time_curve,
+                )
+
+                detach_and_delete_vmd_rotation_time_curve(cmds, node)
         if cmds.objExists(control_group):
             cmds.delete(control_group)
         if cmds.attributeQuery(ATTR_MMD_CONTROL_RIG_JSON, node=root, exists=True):

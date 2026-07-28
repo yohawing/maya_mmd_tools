@@ -97,6 +97,7 @@ def import_vmd_file(
             - bake_mode: True の場合はリグ経由ではなく runtime bake を優先
             - create_mmd_control_rig: True の場合は MMD Control Rig を作成/再利用し、直接キーを作成
             - use_quaternion_interpolation: sparse回転をQuaternion slerp評価する。Control Rig直接importは既定True、legacyは既定False。
+            - use_vmd_rotation_time_curve: Control Rig回転BezierをanimCurveTTとして保持する実験機能（default False）。
             - use_native_physics_bake: True かつ bake_mode のとき native physics bake を試行する（default False）
             - reduce_bake_keys: True かつ bake_mode のとき runtime pose reduction を試行する（default False）
             - reduce_translate_tolerance / reduce_rotate_tolerance / reduce_morph_tolerance: reduction tolerances
@@ -188,6 +189,21 @@ def import_vmd_file(
         converter.import_camera_animation = bool(options.get("import_camera_animation", True))
         converter.import_light_animation = bool(options.get("import_light_animation", True))
         converter.use_quaternion_interpolation = _resolve_quaternion_interpolation(options)
+        converter.use_vmd_rotation_time_curve = bool(
+            options.get("use_vmd_rotation_time_curve", False)
+        )
+        if converter.use_vmd_rotation_time_curve and not bool(
+            options.get("create_mmd_control_rig", False)
+        ):
+            raise MMDImportException(
+                "VMD Rotation Time Curve requires MMD Control Rig import",
+                reason_code="vmd_rotation_time_curve_requires_control_rig",
+            )
+        if converter.use_vmd_rotation_time_curve and not converter.use_quaternion_interpolation:
+            raise MMDImportException(
+                "VMD Rotation Time Curve requires Quaternion interpolation",
+                reason_code="vmd_rotation_time_curve_requires_quaternion",
+            )
         profile = options.get("profile")
         if not isinstance(profile, dict):
             profile = {}

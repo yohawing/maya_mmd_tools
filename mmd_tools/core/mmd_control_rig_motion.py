@@ -276,6 +276,22 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                 journal,
                 reference_time=display_reference_time,
             )
+            from mmd_tools.converters.vmd_rotation_time_curve import (
+                share_vmd_rotation_time_curve,
+            )
+
+            for group in _rotation_channel_groups(journal["channels"]):
+                rows_by_attr = {
+                    str(row["target"]).rsplit(".", 1)[-1]: row for row in group
+                }
+                attrs = ("rotateX", "rotateY", "rotateZ")
+                if set(rows_by_attr) != set(attrs):
+                    continue
+                share_vmd_rotation_time_curve(
+                    cmds,
+                    [rows_by_attr[attr].get("source") for attr in attrs],
+                    [rows_by_attr[attr].get("controlSource") for attr in attrs],
+                )
             metadata["journal"] = journal
             for row in curve_representations:
                 row["activeOwner"] = CONTROL_RIG_CONTROL_OWNED
@@ -571,6 +587,7 @@ def _edit_exit_transaction(
     plug_states = _capture_plug_states(cmds, transaction_plugs)
     metadata_before = _raw_metadata(cmds, root)
     curve_snapshots = _capture_curve_snapshots(cmds, curve_plugs)
+    curve_input_states = _capture_curve_input_states(cmds, curve_plugs)
     rotation_states = _capture_rotation_interpolation_states(cmds, rotation_groups)
     try:
         transitioning = json.loads(metadata_before)
@@ -589,6 +606,7 @@ def _edit_exit_transaction(
                     cmds.delete(node)
             _restore_plug_states(cmds, plug_states)
             _restore_curve_snapshots(cmds, curve_snapshots)
+            _restore_curve_input_states(cmds, curve_input_states)
             _restore_rotation_interpolation_states(cmds, rotation_states)
             _restore_raw_metadata(cmds, root, metadata_before)
         except Exception as rollback_exc:
@@ -1064,6 +1082,48 @@ def _capture_curve_snapshots(cmds, plugs):
     return snapshots
 
 
+def _capture_curve_input_states(cmds, plugs):
+    """Capture animCurve time inputs that a compound bake may rewire."""
+    states = {}
+    for plug in sorted(set(str(value) for value in plugs if value)):
+        node = plug.split(".", 1)[0]
+        input_plug = f"{node}.input"
+        if not cmds.objExists(input_plug) or not str(cmds.nodeType(node)).startswith(
+            "animCurve"
+        ):
+            continue
+        states[input_plug] = [
+            str(source)
+            for source in (
+                cmds.listConnections(
+                    input_plug,
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                )
+                or []
+            )
+        ]
+    return states
+
+
+def _restore_curve_input_states(cmds, states) -> None:
+    """Restore exact animCurve time inputs after a failed compound bake."""
+    for input_plug, prior_sources in states.items():
+        current_sources = cmds.listConnections(
+            input_plug,
+            source=True,
+            destination=False,
+            plugs=True,
+        ) or []
+        for source in current_sources:
+            if str(source) not in prior_sources:
+                cmds.disconnectAttr(source, input_plug)
+        for source in prior_sources:
+            if not cmds.isConnected(source, input_plug):
+                cmds.connectAttr(source, input_plug, force=True)
+
+
 def _restore_curve_snapshots(cmds, snapshots):
     for original, backup in snapshots:
         # A snapshot restore is part of the transaction's rollback contract.
@@ -1291,6 +1351,11 @@ def _commit_control_rotation_group(
                 cmds.disconnectAttr(control_source, control)
             result[control] = str(mmd_source)
         _apply_quaternion_interpolation_to_plugs(cmds, destination_plugs)
+        from mmd_tools.converters.vmd_rotation_time_curve import (
+            share_vmd_rotation_time_curve,
+        )
+
+        share_vmd_rotation_time_curve(cmds, control_sources, mmd_sources)
         return result
 
     for attr, row, control_source, mmd_source in zip(
@@ -1322,6 +1387,15 @@ def _commit_control_rotation_group(
             result[control] = None
 
     _apply_quaternion_interpolation_to_plugs(cmds, destination_plugs)
+    from mmd_tools.converters.vmd_rotation_time_curve import (
+        share_vmd_rotation_time_curve,
+    )
+
+    baked_sources = [
+        result.get(control) or control_source
+        for control, control_source in zip(controls, control_sources)
+    ]
+    share_vmd_rotation_time_curve(cmds, control_sources, baked_sources)
     return result
 
 

@@ -54,6 +54,8 @@ class VmdBoneAnimationContext:
     anim_layer: Optional[str]
     motion_scale: float
     use_quaternion_interpolation: bool
+    use_vmd_rotation_time_curve: bool
+    rotation_time_curve_records: List[Dict[str, Any]]
     set_bone_keyframes: Callable[[str, List[Any], str, Optional[dict]], None]
     build_legacy_bone_key_routes: Callable[[], Mapping[str, dict]]
     collect_ik_link_joints: Callable[[], Mapping[str, dict]]

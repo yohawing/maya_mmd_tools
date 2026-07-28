@@ -335,6 +335,52 @@ class TestVmdImporter(MayaTestBase):
             with self.assertRaises(MMDImportException):
                 import_vmd_file(object(), vmd_path, {"scene_animation_only": True})
 
+    def test_rotation_time_curve_requires_control_rig_import(self):
+        temp_root = Path(tempfile.mkdtemp())
+        vmd_path = str(temp_root / "motion.vmd")
+        Path(vmd_path).write_bytes(b"Vocaloid Motion Data 0002\x00")
+        self.files_created.append(vmd_path)
+
+        with patch("mmd_tools.io.vmd_importer.VmdConverter"):
+            with self.assertRaises(MMDImportException) as raised:
+                import_vmd_file(
+                    object(),
+                    vmd_path,
+                    {
+                        "scene_animation_only": True,
+                        "use_vmd_rotation_time_curve": True,
+                    },
+                )
+
+        self.assertEqual(
+            raised.exception.reason_code,
+            "vmd_rotation_time_curve_requires_control_rig",
+        )
+
+    def test_rotation_time_curve_requires_quaternion_interpolation(self):
+        temp_root = Path(tempfile.mkdtemp())
+        vmd_path = str(temp_root / "motion.vmd")
+        Path(vmd_path).write_bytes(b"Vocaloid Motion Data 0002\x00")
+        self.files_created.append(vmd_path)
+
+        with patch("mmd_tools.io.vmd_importer.VmdConverter"):
+            with self.assertRaises(MMDImportException) as raised:
+                import_vmd_file(
+                    object(),
+                    vmd_path,
+                    {
+                        "scene_animation_only": True,
+                        "create_mmd_control_rig": True,
+                        "use_quaternion_interpolation": False,
+                        "use_vmd_rotation_time_curve": True,
+                    },
+                )
+
+        self.assertEqual(
+            raised.exception.reason_code,
+            "vmd_rotation_time_curve_requires_quaternion",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
