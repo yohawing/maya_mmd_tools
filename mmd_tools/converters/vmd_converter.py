@@ -1335,6 +1335,27 @@ class VmdConverter:
                     missing_routes,
                 )
 
+        def rollback_preflight() -> Optional[str]:
+            """Undo the graph transition made by this preflight attempt.
+
+            Preflight runs before ``convert`` establishes its outer transaction,
+            so failures here must be reported locally.  Keep attempting every
+            applicable cleanup operation and return all failures to the caller
+            instead of hiding them in debug logging.
+            """
+            errors = []
+            if entered_here:
+                try:
+                    restore_mmd_control_rig_attached(target_model)
+                except Exception as exc:
+                    errors.append(f"restore attached failed: {exc}")
+            if created:
+                try:
+                    remove_mmd_control_rig(target_model)
+                except Exception as exc:
+                    errors.append(f"remove created rig failed: {exc}")
+            return "; ".join(errors) if errors else None
+
         try:
             if metadata is not None:
                 if (
@@ -1398,25 +1419,28 @@ class VmdConverter:
                 "prior_animation_snapshot": prior_animation_snapshot,
                 "scene_snapshot": scene_snapshot,
             }
-        except MMDImportException:
-            if entered_here:
-                try:
-                    restore_mmd_control_rig_attached(target_model)
-                except Exception:
-                    self.logger.debug("Failed to restore control rig after VMD route preflight failure", exc_info=True)
-            if created:
-                try:
-                    remove_mmd_control_rig(target_model)
-                except Exception:
-                    self.logger.debug("Failed to remove newly-created control rig after preflight failure", exc_info=True)
+        except MMDImportException as exc:
+            rollback_error = rollback_preflight()
+            if rollback_error:
+                self._record_control_rig_import_failure(profile, exc, rollback_error)
+                raise MMDImportException(
+                    f"{exc}; MMD Control Rig preflight rollback was incomplete: {rollback_error}",
+                    reason_code=exc.reason_code,
+                ) from exc
             raise
         except (MmdControlRigBuildError, ValueError, RuntimeError) as exc:
-            if created:
-                try:
-                    remove_mmd_control_rig(target_model)
-                except Exception:
-                    self.logger.debug("Failed to remove newly-created control rig after preflight failure", exc_info=True)
-            fail("control_rig_edit_failed", "MMD Control Rig could not enter CONTROL_OWNED", str(exc))
+            rollback_error = rollback_preflight()
+            failure = MMDImportException(
+                "MMD Control Rig could not enter CONTROL_OWNED",
+                reason_code="control_rig_edit_failed",
+            )
+            if rollback_error:
+                self._record_control_rig_import_failure(profile, failure, rollback_error)
+                raise MMDImportException(
+                    f"{failure}; MMD Control Rig preflight rollback was incomplete: {rollback_error}",
+                    reason_code=failure.reason_code,
+                ) from exc
+            fail(failure.reason_code, str(failure), str(exc))
 
     @staticmethod
     def _capture_mmd_control_rig_animation_snapshot(metadata) -> list:
