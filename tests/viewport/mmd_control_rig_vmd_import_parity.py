@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import random
 import sys
@@ -33,6 +34,7 @@ _MATRIX_EPSILON = 5.0e-3
 _EVALUATION_MODES = ("dg", "serial", "parallel")
 _MAYA_EVALUATION_MODES = {"dg": "off", "serial": "serial", "parallel": "parallel"}
 _BONE_EXPORT_ATTRS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
+_APPEND_OBSERVABLE_EPSILON = 1.0e-8
 cmds = None
 
 
@@ -594,7 +596,11 @@ def _route_snapshot(root: str, requested_control_rig: bool, profile: Mapping[str
 
 
 def _run_route(
-    model: Path, motion: Path, create_control_rig: bool, frames: list[int | float]
+    model: Path,
+    motion: Path,
+    create_control_rig: bool,
+    frames: list[int | float],
+    append_grants: Iterable[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     from mmd_tools.io.mmd_importer import import_mmd_file
 
@@ -636,6 +642,13 @@ def _run_route(
     records = _joint_skin_records(root)
     if not records:
         raise RuntimeError(f"no indexed joints below imported root: {root}")
+    append_writer_evidence = {}
+    if append_grants:
+        scene_route = {"importStatus": "pass", "records": records}
+        append_writer_evidence = {
+            str(grant["targetIndex"]): _scene_append_writer_evidence(scene_route, grant)
+            for grant in append_grants
+        }
     return {
         "root": root,
         "importStatus": "pass",
@@ -644,6 +657,7 @@ def _run_route(
         "observables": _capture_observables(records, frames),
         "evaluation": _evaluation_evidence(frames, records),
         "records": records,
+        "appendWriterEvidence": append_writer_evidence,
     }
 
 
@@ -839,20 +853,208 @@ def _run_export_fresh_import(
     return gate
 
 
-def _coverage(vmd: Any) -> dict[str, Any]:
-    """Report fixture coverage explicitly; missing categories stay red."""
+def _pmx_bone_names(bone: Any) -> list[str]:
+    """Return exact PMX names for evidence (never for role inference)."""
+
+    return list(dict.fromkeys(str(getattr(bone, key, "") or "") for key in ("name", "name_english") if getattr(bone, key, "")))
+
+
+def _pmx_append_grants(pmx: Any) -> list[dict[str, Any]]:
+    """Extract PMX grant edges; flags, indices, and finite non-zero rates are authoritative."""
+
+    from mmd_tools.core.pmx_data.bone import PmxBoneFlag
+
+    bones = list(getattr(pmx, "bones", []) or [])
+    grant_mask = int(PmxBoneFlag.GRANT_PARENT_ROTATE | PmxBoneFlag.GRANT_PARENT_MOVE)
+    grants = []
+    for target_index, bone in enumerate(bones):
+        flags = int(getattr(bone, "bone_flag", 0) or 0)
+        if not flags & grant_mask:
+            continue
+        raw_source_index = getattr(bone, "grant_parent_bone_index", -1)
+        try:
+            source_index = int(raw_source_index)
+        except (TypeError, ValueError, OverflowError):
+            source_index = -1
+        try:
+            rate = float(getattr(bone, "grant_rate", 0.0))
+        except (TypeError, ValueError, OverflowError):
+            rate = float("nan")
+        source = bones[source_index] if 0 <= source_index < len(bones) else None
+        reasons = []
+        if source is None or source_index == target_index:
+            reasons.append(f"invalid grant source index {source_index}")
+        if not math.isfinite(rate) or rate == 0.0:
+            reasons.append(f"grant rate is not finite/non-zero: {rate!r}")
+        grants.append(
+            {
+                "targetIndex": target_index,
+                "sourceIndex": source_index,
+                "targetNames": _pmx_bone_names(bone),
+                "sourceNames": _pmx_bone_names(source) if source else [],
+                "targetName": str(getattr(bone, "name", "") or ""),
+                "sourceName": str(getattr(source, "name", "") or "") if source else "",
+                "affectRotation": bool(flags & int(PmxBoneFlag.GRANT_PARENT_ROTATE)),
+                "affectTranslation": bool(flags & int(PmxBoneFlag.GRANT_PARENT_MOVE)),
+                "grantRate": rate,
+                "reasons": reasons,
+            }
+        )
+    return grants
+
+
+def _vmd_source_frames(vmd: Any, source_names: Iterable[str]) -> list[int]:
+    """Return exact integer keys for a PMX-resolved VMD source name."""
+
+    names = {str(name) for name in source_names if str(name)}
+    return sorted(
+        {
+            int(float(frame.frame_number))
+            for frame in getattr(vmd, "bone_frames", []) or []
+            if str(getattr(frame, "bone_name", "")) in names
+            and float(getattr(frame, "frame_number", 0)).is_integer()
+        }
+    )
+
+
+def _route_record(route: Mapping[str, Any], index: int) -> Mapping[str, Any] | None:
+    records = route.get("records") or {}
+    return records.get(str(index)) or records.get(index)
+
+
+def _scene_append_writer_evidence(route: Mapping[str, Any], grant: Mapping[str, Any]) -> dict[str, Any]:
+    """Check indexed target/source records and a real mmdAppend writer/marker."""
+
+    cached = (route.get("appendWriterEvidence") or {}).get(str(grant["targetIndex"]))
+    if cached is not None:
+        return dict(cached)
+    result = {"pass": False, "status": "missing", "writers": [], "reasons": []}
+    if route.get("importStatus") != "pass":
+        result["reasons"].append(f"route importStatus={route.get('importStatus')!r}")
+        return result
+    target = _route_record(route, int(grant["targetIndex"]))
+    source = _route_record(route, int(grant["sourceIndex"]))
+    target_joint, source_joint = (str(row.get("joint") or "") if row else "" for row in (target, source))
+    if not target_joint or not source_joint or cmds is None:
+        result["reasons"].append("indexed target/source scene records or Maya commands are unavailable")
+        return result
+    attrs = [name for name, enabled in (("rotate", grant["affectRotation"]), ("translate", grant["affectTranslation"])) if enabled]
+    nodes = []
+    for attr in attrs:
+        for plug in cmds.listConnections(f"{target_joint}.{attr}", source=True, destination=False, plugs=True) or []:
+            node = str(plug).split(".", 1)[0]
+            if cmds.nodeType(node) == "mmdAppend" and node not in nodes:
+                nodes.append(node)
+    result["writers"] = sorted(nodes)
+    for node in nodes:
+        if not cmds.attributeQuery("mmd_grant_node", node=node, exists=True) or not cmds.getAttr(f"{node}.mmd_grant_node"):
+            result["reasons"].append(f"mmdAppend writer {node} lacks mmd_grant_node metadata")
+    if not nodes:
+        result["reasons"].append("target has no mmdAppend output writer")
+    result["pass"] = not result["reasons"]
+    result["status"] = "covered" if result["pass"] else "missing"
+    return result
+
+
+def _route_target_observable_evidence(route: Mapping[str, Any], target_index: int, probe_frame: int) -> dict[str, Any]:
+    """Require a finite target world/skin observable delta from frame-0 baseline."""
+
+    observations = route.get("observables") or {}
+    baseline = observations.get("0") or observations.get(0) or {}
+    probe = observations.get(str(probe_frame)) or observations.get(probe_frame) or {}
+    left = baseline.get(str(target_index)) or baseline.get(target_index)
+    right = probe.get(str(target_index)) or probe.get(target_index)
+    result = {"pass": False, "status": "missing", "targetIndex": target_index, "probeFrame": probe_frame, "delta": None, "reasons": []}
+    if not left or not right:
+        result["reasons"].append("target baseline/probe observable is missing")
+        return result
+    world_delta = _matrix_error(left.get("worldMatrix", []), right.get("worldMatrix", []))
+    skin_delta = max((_matrix_error(a, b) for a, b in zip(left.get("skinMatrices", []) or [], right.get("skinMatrices", []) or [])), default=0.0)
+    delta = max(world_delta, skin_delta)
+    result.update({"worldDelta": world_delta, "skinDelta": skin_delta, "delta": delta})
+    if not math.isfinite(delta) or delta <= _APPEND_OBSERVABLE_EPSILON:
+        result["reasons"].append(f"target observable did not change from baseline (delta={delta!r})")
+    result["pass"] = not result["reasons"]
+    result["status"] = "covered" if result["pass"] else "missing"
+    return result
+
+
+def _append_coverage(vmd: Any, pmx: Any | None, routes: Mapping[str, Mapping[str, Any]] | None, interpolation_probe: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Report structural Append coverage; static helper grants are excluded explicitly."""
+
+    item = {"fixturePresent": False, "roles": [], "status": "missing", "grants": [], "representativeGrantIndices": [], "excludedGrantCount": 0, "routeEvidence": {}, "reasons": []}
+    if pmx is None:
+        item["reasons"].append("PMX metadata unavailable; append name inference is disabled")
+        return item
+    grants = _pmx_append_grants(pmx)
+    item["fixturePresent"] = bool(grants)
+    item["roles"] = sorted({name for grant in grants for name in grant["targetNames"] if name})
+    probe_values = list((interpolation_probe or {}).get("frames") or [])
+    try:
+        probe = float(probe_values[0]) if len(probe_values) == 1 else float("nan")
+    except (TypeError, ValueError, OverflowError):
+        probe = float("nan")
+    if not math.isfinite(probe) or not probe.is_integer():
+        item["reasons"].append("exactly one integer interpolation frame is required")
+        return item
+    probe_frame = int(probe)
+    if not routes:
+        item["reasons"].append("legacy/direct route evidence is unavailable")
+    candidates = []
+    for grant in grants:
+        frames = _vmd_source_frames(vmd, grant["sourceNames"])
+        row = {**grant, "sourceAuthoredFrames": frames, "probeFrame": probe_frame, "status": "excluded", "reasons": list(grant["reasons"])}
+        if not frames:
+            row["reasons"].append("VMD has no authored key for PMX-resolved grant source")
+        elif probe_frame in frames or not frames[0] < probe_frame < frames[-1]:
+            row["reasons"].append(f"representative frame {probe_frame} is outside source authored-key interval")
+        else:
+            candidates.append((grant, row))
+            continue
+        item["grants"].append(row)
+    item["excludedGrantCount"] = len(item["grants"])
+    if not candidates:
+        item["reasons"].append("no PMX grant has an authored source-key interval covering the representative frame")
+        return item
+    item["representativeGrantIndices"] = [int(grant["targetIndex"]) for grant, _ in candidates]
+    for grant, row in candidates:
+        for route_name, route in sorted((routes or {}).items()):
+            writer = _scene_append_writer_evidence(route, grant)
+            observable = _route_target_observable_evidence(route, int(grant["targetIndex"]), probe_frame)
+            item["routeEvidence"].setdefault(route_name, []).append({"writer": writer, "observable": observable})
+            if not writer["pass"]:
+                row["reasons"].append(f"{route_name}: {writer['reasons'][0]}")
+            if not observable["pass"]:
+                row["reasons"].append(f"{route_name}: {observable['reasons'][0]}")
+        if not row["reasons"]:
+            row["status"] = "covered"
+        item["grants"].append(row)
+    failures = [row["reasons"][0] for _, row in candidates if row["reasons"]]
+    item["reasons"].extend(dict.fromkeys(failures))
+    item["status"] = "covered" if candidates and not failures and routes else "missing"
+    return item
+
+
+def _coverage(
+    vmd: Any,
+    pmx: Any | None = None,
+    routes: Mapping[str, Mapping[str, Any]] | None = None,
+    interpolation_probe: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Report fixture coverage explicitly; missing categories stay red.
+
+    Append coverage is deliberately structural.  A VMD bone name containing
+    ``append`` or ``付与`` is not evidence of a PMX grant and is ignored.
+    """
 
     bone_names = {str(frame.bone_name) for frame in getattr(vmd, "bone_frames", []) or []}
     morph_present = bool(getattr(vmd, "morph_frames", None))
     ik_present = bool(getattr(vmd, "ik_show_hide_frames", None))
-    append_names = sorted(
-        name for name in bone_names if "付与" in name or "append" in name.lower()
-    )
     foot_names = sorted(name for name in bone_names if "足IK" in name or "足ＩＫ" in name)
     toe_names = sorted(name for name in bone_names if "つま先IK" in name or "つま先ＩＫ" in name)
     rows = {
         "boneMorph": {"fixturePresent": morph_present, "status": "covered" if morph_present else "missing"},
-        "append": {"fixturePresent": bool(append_names), "roles": append_names, "status": "covered" if append_names else "missing"},
+        "append": _append_coverage(vmd, pmx, routes, interpolation_probe),
         "footIk": {"fixturePresent": bool(foot_names), "roles": foot_names, "status": "covered" if foot_names else "missing"},
         "toeIk": {"fixturePresent": bool(toe_names), "roles": toe_names, "status": "covered" if toe_names else "missing"},
         "ikEnable": {"fixturePresent": ik_present, "status": "covered" if ik_present else "missing"},
@@ -887,26 +1089,36 @@ def run(model: Path, motion: Path, output: Path, evaluation_mode: str = "dg") ->
         plugins = _load_plugins()
         evaluation = _apply_evaluation_mode(evaluation_mode)
         from mmd_tools.core.vmd_data import VmdData
+        from mmd_tools.core.mmd_parser import parse_pmx_file
 
         if not model.is_file() or not motion.is_file():
             raise FileNotFoundError(f"fixture missing: model={model} motion={motion}")
         vmd = VmdData().parse_file(str(motion))
         if not vmd.bone_frames:
             raise RuntimeError("fixture VMD contains no bone frames")
+        # Keep coverage metadata on the same legacy Python PMX parser path as
+        # the import fixture.  Native parsing is unrelated to this route gate.
+        pmx = parse_pmx_file(str(model), use_native_pmx_parse=False)
+        append_grants = _pmx_append_grants(pmx)
         authored_frames = sorted({int(frame.frame_number) for frame in vmd.bone_frames})
         end = authored_frames[-1]
         interpolation_probe = _select_interpolation_probe(authored_frames)
         interpolation_frames = list(interpolation_probe["frames"])
         frames = sorted({0, 1, end, *authored_frames, *interpolation_frames})
-        coverage = _coverage(vmd)
+        legacy = _run_route(model, motion, False, frames, append_grants)
+        direct = _run_route(model, motion, True, frames, append_grants)
+        coverage = _coverage(
+            vmd,
+            pmx,
+            routes={"legacy": legacy, "controlRigDirect": direct},
+            interpolation_probe=interpolation_probe,
+        )
         for name in ("externalOracle", "exportFreshImport", "evaluationModes"):
             coverage["items"][name] = {"status": "missing"}
         coverage_missing_set = (
             set(coverage["coverageMissing"])
             | {"externalOracle", "exportFreshImport", "evaluationModes"}
         )
-        legacy = _run_route(model, motion, False, frames)
-        direct = _run_route(model, motion, True, frames)
         baked = None
         bake_error = None
         try:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from tests.viewport import mmd_control_rig_vmd_import_parity as parity
+from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
 
 def _bone_frame(name: str, frame: int) -> SimpleNamespace:
@@ -103,3 +104,105 @@ def test_stale_export_artifacts_are_removed_or_fail_closed(tmp_path):
         assert "stale VMD cleanup failed" in str(exc)
     else:
         raise AssertionError("directory cleanup must fail closed")
+
+
+def test_append_coverage_does_not_infer_from_vmd_name_substrings():
+    vmd = SimpleNamespace(
+        bone_frames=[_bone_frame("fake_append_name", 0), _bone_frame("fake_append_name", 5)],
+        morph_frames=[],
+        ik_show_hide_frames=[],
+    )
+
+    result = parity._coverage(vmd)
+
+    assert result["items"]["append"]["status"] == "missing"
+    assert result["items"]["append"]["fixturePresent"] is False
+    assert "name inference is disabled" in result["items"]["append"]["reasons"][0]
+
+
+def test_append_coverage_resolves_grant_indices_and_requires_route_evidence():
+    flags = int(PmxBoneFlag.GRANT_PARENT_ROTATE)
+    pmx = SimpleNamespace(
+        bones=[
+            SimpleNamespace(name="source", name_english="", bone_flag=0),
+            SimpleNamespace(
+                name="target",
+                name_english="",
+                bone_flag=flags,
+                grant_parent_bone_index=0,
+                grant_rate=0.5,
+            ),
+        ]
+    )
+    vmd = SimpleNamespace(
+        bone_frames=[_bone_frame("source", 0), _bone_frame("source", 5)],
+        morph_frames=[],
+        ik_show_hide_frames=[],
+    )
+    probe = parity._select_interpolation_probe([0, 5])
+
+    result = parity._coverage(vmd, pmx, routes=None, interpolation_probe=probe)
+    append = result["items"]["append"]
+
+    assert append["fixturePresent"] is True
+    assert append["roles"] == ["target"]
+    assert append["grants"][0]["targetIndex"] == 1
+    assert append["grants"][0]["sourceIndex"] == 0
+    assert append["grants"][0]["sourceAuthoredFrames"] == [0, 5]
+    assert append["status"] == "missing"
+    assert any("route evidence is unavailable" in reason for reason in append["reasons"])
+
+
+def test_append_target_observable_requires_change_from_baseline():
+    identity = [1.0 if index % 5 == 0 else 0.0 for index in range(16)]
+    moved = list(identity)
+    moved[12] = 0.25
+    route = {
+        "observables": {
+            "0": {"1": {"worldMatrix": identity, "skinMatrices": []}},
+            "2": {"1": {"worldMatrix": moved, "skinMatrices": []}},
+        }
+    }
+
+    result = parity._route_target_observable_evidence(route, 1, 2)
+
+    assert result["pass"] is True
+    assert result["delta"] == 0.25
+
+
+def test_append_coverage_fails_closed_for_invalid_grant_metadata():
+    flags = int(PmxBoneFlag.GRANT_PARENT_MOVE)
+    pmx = SimpleNamespace(
+        bones=[
+            SimpleNamespace(name="source", name_english="", bone_flag=0),
+            SimpleNamespace(
+                name="target",
+                name_english="",
+                bone_flag=flags,
+                grant_parent_bone_index=-1,
+                grant_rate=float("nan"),
+            ),
+        ]
+    )
+    vmd = SimpleNamespace(bone_frames=[_bone_frame("source", 0), _bone_frame("source", 5)], morph_frames=[], ik_show_hide_frames=[])
+
+    append = parity._coverage(vmd, pmx, routes={}, interpolation_probe={"frames": [2]})["items"]["append"]
+
+    assert append["status"] == "missing"
+    assert any("invalid grant source index" in reason for reason in append["grants"][0]["reasons"])
+    assert any("grant rate is not finite" in reason for reason in append["grants"][0]["reasons"])
+
+
+def test_append_writer_evidence_fails_when_target_has_no_mmd_append(monkeypatch):
+    class _Cmds:
+        def listConnections(self, *_args, **_kwargs):
+            return []
+
+    monkeypatch.setattr(parity, "cmds", _Cmds())
+    route = {"importStatus": "pass", "records": {"0": {"joint": "source"}, "1": {"joint": "target"}}}
+    grant = {"targetIndex": 1, "sourceIndex": 0, "affectRotation": True, "affectTranslation": False}
+
+    result = parity._scene_append_writer_evidence(route, grant)
+
+    assert result["pass"] is False
+    assert "target has no mmdAppend output writer" in result["reasons"]
