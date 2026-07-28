@@ -138,12 +138,22 @@ class TestRigConverterUnifiedNodeTypes(unittest.TestCase):
             "struct CcdIkChainConfig", 1
         )[0]
 
-        self.assertIn("GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS", resolver)
-        self.assertIn("&mmd_runtime_ik_chain_create", resolver)
-        self.assertIn("dladdr", resolver)
-        self.assertIn("ownerInfo.dli_fname", resolver)
-        self.assertNotIn("GetModuleHandleA(", resolver)
-        self.assertNotIn("RTLD_DEFAULT", resolver)
+        windows_resolver = resolver.split("#ifdef _WIN32", 1)[1].split("#else", 1)[0]
+        posix_resolver = resolver.split("#else", 1)[1].split("#endif", 1)[0]
+
+        # Windows first checks the already-loaded runtime DLL by name, then
+        # retains the same-image fallback for statically hosted builds.
+        self.assertIn('GetModuleHandleA("mmd_runtime_ffi.dll")', windows_resolver)
+        self.assertIn("GetProcAddress(runtimeModule", windows_resolver)
+        self.assertIn("GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS", windows_resolver)
+        self.assertIn("&mmd_runtime_ik_chain_create", windows_resolver)
+
+        # POSIX must scope lookup to the image owning the legacy symbol and
+        # must not use process-wide RTLD_DEFAULT resolution.
+        self.assertIn("dladdr", posix_resolver)
+        self.assertIn("ownerInfo.dli_fname", posix_resolver)
+        self.assertIn("RTLD_NOLOAD", posix_resolver)
+        self.assertNotIn("RTLD_DEFAULT", posix_resolver)
 
     def test_ik_chain_json_preserves_local_axis_on_remapped_slot(self):
         converter = RigConverter()

@@ -99,10 +99,27 @@ IkChainCreateV2Fn resolveIkChainCreateV2()
     return reinterpret_cast<IkChainCreateV2Fn>(
         GetProcAddress(ownerModule, "mmd_runtime_ik_chain_create_v2"));
 #else
-    // Search loaded images without opening/closing a dependency handle.  A
-    // RTLD_DEFAULT lookup leaves ownership and lifetime with the loader.
-    return reinterpret_cast<IkChainCreateV2Fn>(
-        dlsym(RTLD_DEFAULT, "mmd_runtime_ik_chain_create_v2"));
+    // ``mmd_runtime_ik_chain_create`` may be imported by this plugin while
+    // another loaded image exports a symbol with the same name.  Resolve the
+    // v2 entry point from the exact image that owns the legacy symbol instead
+    // of searching the process-wide symbol scope.
+    Dl_info ownerInfo{};
+    if (dladdr(reinterpret_cast<const void*>(&mmd_runtime_ik_chain_create), &ownerInfo) == 0 ||
+        !ownerInfo.dli_fname) {
+        return nullptr;
+    }
+
+    // RTLD_NOLOAD observes an already-loaded image without loading a new one.
+    // Keep the temporary handle alive while dlsym runs, then release the
+    // balanced handle before returning the function pointer.
+    void* ownerModule = dlopen(ownerInfo.dli_fname, RTLD_LAZY | RTLD_NOLOAD);
+    if (!ownerModule) {
+        return nullptr;
+    }
+    auto fn = reinterpret_cast<IkChainCreateV2Fn>(
+        dlsym(ownerModule, "mmd_runtime_ik_chain_create_v2"));
+    dlclose(ownerModule);
+    return fn;
 #endif
 }
 
