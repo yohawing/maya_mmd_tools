@@ -144,6 +144,14 @@ class ImportExportTab(BaseTab):
             tooltip_key="create_mmd_shaders",
         )
 
+        self.create_mmd_control_rig_check = self._bind_checkbox(
+            "create_mmd_control_rig",
+            setting_keys.IMPORT_MODEL_CREATE_MMD_CONTROL_RIG,
+            False,
+            model_layout,
+            tooltip_key="create_mmd_control_rig",
+        )
+
         self.separate_meshes_check = self._bind_checkbox(
             "separate_meshes",
             setting_keys.IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL,
@@ -425,20 +433,6 @@ class ImportExportTab(BaseTab):
         )
         self.clear_existing_motion_check.setToolTip(self.tr("clear_existing_motion", "tooltips"))
         animation_layout.addRow(self.clear_existing_motion_check)
-
-        # Experimental MMD-native control-rig animation owner.  This option is
-        # intentionally part of the normal VMD options and is not Development
-        # Mode gated; the backend still validates bake-mode exclusivity and
-        # control-rig compatibility before mutating the scene.
-        self.create_mmd_control_rig_check = QCheckBox(self.tr("create_mmd_control_rig", "checkboxes"))
-        self.create_mmd_control_rig_check.setChecked(
-            self.settings_service.get(setting_keys.IMPORT_ANIMATION_CREATE_MMD_CONTROL_RIG, False)
-        )
-        self.create_mmd_control_rig_check.toggled.connect(
-            lambda v: self.settings_service.set(setting_keys.IMPORT_ANIMATION_CREATE_MMD_CONTROL_RIG, v)
-        )
-        self.create_mmd_control_rig_check.setToolTip(self.tr("create_mmd_control_rig", "tooltips"))
-        animation_layout.addRow(self.create_mmd_control_rig_check)
 
         self.import_vmd_button = QPushButton(self.tr("import_animation", "actions"))
         animation_layout.addRow(self.import_vmd_button)

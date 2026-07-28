@@ -2,9 +2,10 @@
 
 This probe keeps the UI contract separate from the numeric Control Rig gate.
 It opens the public Animator Toolset with Development Mode disabled, verifies
-the Experimental action group and VMD import option, exercises owner-aware
-picker selection and model switching, then saves/reopens and closes both
-windows.  A JSON report and two Qt widget captures are written below
+the Experimental action group and model-import Control Rig option, optionally
+imports a real VMD through the created rig, exercises owner-aware picker
+selection and model switching, then saves/reopens and closes both windows. A
+JSON report and two Qt widget captures are written below
 ``build/e2e`` by default.
 
 Usage::
@@ -129,6 +130,7 @@ def run_ui_check(
     report_path: str,
     scene_path: str,
     capture_dir: str,
+    vmd_path: str = "",
 ) -> None:
     """Execute the UI/lifecycle checks inside a fresh Maya GUI process."""
 
@@ -164,7 +166,7 @@ def run_ui_check(
 
     settings = SettingsService()
     original_dev = settings.get(settings_keys.UI_GENERAL_DEVELOPMENT_MODE, False)
-    original_create = settings.get(settings_keys.IMPORT_ANIMATION_CREATE_MMD_CONTROL_RIG, False)
+    original_create = settings.get(settings_keys.IMPORT_MODEL_CREATE_MMD_CONTROL_RIG, False)
     animator_window = None
     main_window = None
     original_root = None
@@ -174,7 +176,7 @@ def run_ui_check(
         # Isolate the contract from a prior user's persisted experimental
         # choice, while restoring both values before this Maya exits.
         settings.set(settings_keys.UI_GENERAL_DEVELOPMENT_MODE, False)
-        settings.set(settings_keys.IMPORT_ANIMATION_CREATE_MMD_CONTROL_RIG, False)
+        settings.set(settings_keys.IMPORT_MODEL_CREATE_MMD_CONTROL_RIG, False)
         report["developmentMode"] = bool(settings.is_development_mode())
         _load_plugins(cmds)
 
@@ -184,12 +186,57 @@ def run_ui_check(
         original_root = str(
             import_mmd_file(
                 str(model_path),
-                options={"setup_rig": True, "setup_bone_orientation": True, "import_physics": False},
+                options={
+                    "setup_rig": True,
+                    "setup_bone_orientation": True,
+                    "import_physics": False,
+                    "create_mmd_control_rig": True,
+                },
             )
         )
         if not original_root:
             raise RuntimeError("PMX import returned no root")
         log(f"imported first model: {original_root}")
+
+        from mmd_tools.core.mmd_control_rig_builder import read_mmd_control_rig_metadata
+
+        imported_rig_metadata = read_mmd_control_rig_metadata(original_root)
+        control_rig_created_during_import = bool(imported_rig_metadata)
+        report["models"]["controlRigCreatedDuringImport"] = control_rig_created_during_import
+        if not imported_rig_metadata:
+            raise RuntimeError("Create MMD Control Rig did not build a rig during model import")
+
+        if vmd_path:
+            vmd_profile: dict[str, Any] = {}
+            try:
+                vmd_imported = bool(
+                    import_mmd_file(
+                        str(vmd_path),
+                        options={
+                            "target_model": original_root,
+                            "create_mmd_control_rig": True,
+                            "clear_existing_motion": True,
+                            "import_camera_animation": False,
+                            "import_light_animation": False,
+                            "profile": vmd_profile,
+                        },
+                    )
+                )
+            except Exception:
+                report["models"]["vmdImport"] = {
+                    "path": str(vmd_path),
+                    "passed": False,
+                    "profile": vmd_profile,
+                }
+                raise
+            vmd_warnings = list(vmd_profile.get("vmd_converter", {}).get("warnings") or [])
+            report["models"]["vmdImport"] = {
+                "path": str(vmd_path),
+                "passed": vmd_imported,
+                "warnings": vmd_warnings,
+            }
+            if not vmd_imported:
+                raise RuntimeError("Control Rig VMD import returned false")
 
         from mmd_tools.plugin_main import close_animator_toolset, close_main_window, open_animator_toolset, open_main_window
 
@@ -217,14 +264,14 @@ def run_ui_check(
         import_tab = main_window.import_export_tab
         checkbox = import_tab.create_mmd_control_rig_check
         initial_checked = bool(checkbox.isChecked())
-        settings_before_toggle = bool(settings.get(settings_keys.IMPORT_ANIMATION_CREATE_MMD_CONTROL_RIG, False))
+        settings_before_toggle = bool(settings.get(settings_keys.IMPORT_MODEL_CREATE_MMD_CONTROL_RIG, False))
         checkbox.setChecked(True)
         _safe_process_events()
-        toggled_on = bool(checkbox.isChecked()) and bool(settings.get(settings_keys.IMPORT_ANIMATION_CREATE_MMD_CONTROL_RIG, False))
+        toggled_on = bool(checkbox.isChecked()) and bool(settings.get(settings_keys.IMPORT_MODEL_CREATE_MMD_CONTROL_RIG, False))
         checkbox.setChecked(False)
         _safe_process_events()
-        toggled_off = (not bool(checkbox.isChecked())) and not bool(settings.get(settings_keys.IMPORT_ANIMATION_CREATE_MMD_CONTROL_RIG, False))
-        report["ui"]["vmdImportOption"] = {
+        toggled_off = (not bool(checkbox.isChecked())) and not bool(settings.get(settings_keys.IMPORT_MODEL_CREATE_MMD_CONTROL_RIG, False))
+        report["ui"]["modelImportOption"] = {
             "objectPresent": True,
             "initialChecked": initial_checked,
             "settingsBeforeToggle": settings_before_toggle,
@@ -238,7 +285,7 @@ def run_ui_check(
         report["captures"]["mainWindowSaved"] = _safe_grab(main_window, capture_root / "mmd_tools_main_window.png")
 
         # Build an owned Control Rig and use the real presenter picker signal.
-        from mmd_tools.core.mmd_control_rig_builder import build_mmd_control_rig, read_mmd_control_rig_metadata
+        from mmd_tools.core.mmd_control_rig_builder import build_mmd_control_rig
         from mmd_tools.core.mmd_control_rig_motion import enter_mmd_control_rig_edit, restore_mmd_control_rig_attached
 
         # The presenter is separate from the main window; make its ApplicationState
@@ -246,7 +293,9 @@ def run_ui_check(
         animator_window.app_state.current_model_root = original_root
         animator_window.animation_presenter.refresh_for_scene_change()
         build_mmd_control_rig(original_root)
-        enter_mmd_control_rig_edit(original_root)
+        current_metadata = read_mmd_control_rig_metadata(original_root) or {}
+        if current_metadata.get("state") != "EDIT":
+            enter_mmd_control_rig_edit(original_root)
         animator_window.animation_presenter.refresh_for_scene_change()
         animator_window.animation_presenter.on_body_region_clicked("center")
         _safe_process_events()
@@ -304,6 +353,8 @@ def run_ui_check(
         report["models"] = {
             "firstRoot": original_root,
             "secondRoot": second_root,
+            "controlRigCreatedDuringImport": control_rig_created_during_import,
+            "vmdImport": report["models"].get("vmdImport"),
             "availableRoots": model_roots,
             "comboCount": int(combo.count()),
             "secondComboIndex": int(second_index),
@@ -383,7 +434,7 @@ def run_ui_check(
         except Exception:
             pass
         settings.set(settings_keys.UI_GENERAL_DEVELOPMENT_MODE, original_dev)
-        settings.set(settings_keys.IMPORT_ANIMATION_CREATE_MMD_CONTROL_RIG, original_create)
+        settings.set(settings_keys.IMPORT_MODEL_CREATE_MMD_CONTROL_RIG, original_create)
         _write_report(report_file, report)
         log("RESULT_JSON: " + json.dumps(report, ensure_ascii=False, sort_keys=True))
         log(COMPLETION_MARKER)
@@ -395,6 +446,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="MMD Control Rig normal UI Maya GUI E2E")
     parser.add_argument("--maya", default="2026")
     parser.add_argument("--model", default=str(_PROJECT_ROOT / "tests" / "data" / "mmt_test_model.pmx"))
+    parser.add_argument("--vmd", default="", help="Optional real VMD imported through the created Control Rig")
     parser.add_argument("--port", type=int, default=COMMAND_PORT)
     parser.add_argument("--timeout", type=float, default=TEST_TIMEOUT)
     parser.add_argument("--out-dir", default=str(_PROJECT_ROOT / "build" / "e2e"))
@@ -412,7 +464,7 @@ def main() -> int:
         f"project_root = Path(r'{_PROJECT_ROOT.as_posix()}')\n"
         "sys.path.insert(0, str(project_root)) if str(project_root) not in sys.path else None\n"
         "from tests.viewport.e2e_mmd_control_rig_ui import run_ui_check\n"
-        f"run_ui_check(r'{log_path.as_posix()}', r'{Path(args.model).resolve().as_posix()}', r'{report_path.as_posix()}', r'{scene_path.as_posix()}', r'{capture_dir.as_posix()}')\n"
+        f"run_ui_check(r'{log_path.as_posix()}', r'{Path(args.model).resolve().as_posix()}', r'{report_path.as_posix()}', r'{scene_path.as_posix()}', r'{capture_dir.as_posix()}', r'{Path(args.vmd).resolve().as_posix() if args.vmd else ''}')\n"
     )
     report = run_maya_e2e(
         project_root=_PROJECT_ROOT,

@@ -145,7 +145,7 @@
     "reduce_bake_keys": "Reduce sparse Bake Motion keys while preserving replay tolerance",
     "reduce_quality": "Reduce Bake Keys quality: 1.0 keeps the highest fidelity; 0.0 applies the strongest reduction",
     "clear_existing_motion": "Remove existing VMD keys and the VMD_Motion layer on the target model before import",
-    "create_mmd_control_rig": "Import VMD motion directly to an MMD Control Rig (Experimental)",
+    "create_mmd_control_rig": "Create an MMD Control Rig after model import. Subsequent VMD imports target this rig directly (Experimental)",
     "start_frame": "Starting frame on the Maya timeline for the VMD animation",
     "vmd_fps": "Frame rate for the VMD file. MMD standard is 30 fps",
     "motion_scale": "Scale VMD bone translations and camera position/distance",

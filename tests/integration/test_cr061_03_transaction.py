@@ -1,6 +1,8 @@
 """CR061-03 late-failure rollback coverage for mixed VMD scene channels."""
 
+import json
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from maya import cmds
@@ -21,6 +23,13 @@ class _EmptyVmdData:
 
 class TestCr06103SceneTransaction(MayaTestBase):
     """Force a late mixed-import failure and prove scene state is restored."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        plugin_path = Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py"
+        if not cmds.pluginInfo(str(plugin_path), query=True, loaded=True):
+            cls.plugins_loaded.extend(cmds.loadPlugin(str(plugin_path), quiet=True) or [])
 
     def test_late_failure_restores_curve_timeline_and_created_camera_light(self):
         root = cmds.group(empty=True, name="cr06103_transaction_model")
@@ -156,6 +165,61 @@ class TestCr06103SceneTransaction(MayaTestBase):
         light_values = cmds.keyframe(light, attribute="rotateX", query=True, valueChange=True)
         self.assertEqual(len(light_values), 1)
         self.assertAlmostEqual(light_values[0], 15.0, places=7)
+
+    def test_legacy_ik_solver_channels_restore_after_late_failure(self):
+        """Rollback restores fallback solver keys, including inputRotate elements."""
+        root = cmds.group(empty=True, name="cr06103_transaction_legacy_ik_model")
+        joint = cmds.joint(name="cr06103_transaction_legacy_ik_joint")
+        if not (cmds.listRelatives(joint, parent=True, fullPath=True) or []):
+            cmds.parent(joint, root)
+        solver = cmds.createNode("mmdCcdIk", name="cr06103_transaction_legacy_ik_solver")
+        if not cmds.attributeQuery("mmd_ik_bone_name", node=solver, exists=True):
+            cmds.addAttr(solver, longName="mmd_ik_bone_name", dataType="string")
+        cmds.setAttr(f"{solver}.mmd_ik_bone_name", "右髪ＩＫ", type="string")
+        chain = {
+            "bones": [{"rest_position": [0.0, 0.0, 0.0], "parent_slot": -1}],
+            "links": [{"bone_slot": 2}],
+            "targetBoneSlot": 0,
+            "controllerBoneSlot": 0,
+            "iterationCount": 1,
+            "limitAngle": 1.0,
+        }
+        cmds.setAttr(f"{solver}.chainJson", json.dumps(chain), type="string")
+        cmds.connectAttr(f"{solver}.outputRotate[0]", f"{joint}.rotate", force=True)
+        cmds.setKeyframe(solver, attribute="enabled", time=1, value=0)
+        input_plug = f"{solver}.inputRotate[2].inputRotateElementX"
+        cmds.setKeyframe(input_plug, time=1, value=0.25)
+
+        converter = VmdConverter()
+        converter.bone_name_mapping = {"右髪ＩＫ": joint}
+        snapshot = converter._capture_mmd_control_rig_scene_snapshot(root, _EmptyVmdData())
+        snapshot_plugs = {
+            f"{row['node']}.{row['attribute']}"
+            for row in snapshot["channels"]
+        }
+        self.assertIn(f"{solver}.enabled", snapshot_plugs)
+        self.assertIn(input_plug, snapshot_plugs)
+        cmds.setKeyframe(solver, attribute="enabled", time=2, value=1)
+        cmds.setKeyframe(input_plug, time=2, value=0.75)
+
+        rollback_error = converter._rollback_mmd_control_rig_import(
+            {
+                "root": root,
+                "entered_here": False,
+                "created": False,
+                "prior_animation_snapshot": [],
+                "scene_snapshot": snapshot,
+            }
+        )
+
+        self.assertIsNone(rollback_error, rollback_error)
+        self.assertEqual(cmds.keyframe(f"{solver}.enabled", query=True, timeChange=True), [1.0])
+        self.assertEqual(cmds.keyframe(input_plug, query=True, timeChange=True), [1.0])
+        self.assertAlmostEqual(
+            cmds.keyframe(input_plug, query=True, valueChange=True)[0],
+            0.25,
+            places=7,
+        )
 
     def test_zero_key_curve_stays_empty_after_late_failure(self):
         root = cmds.group(empty=True, name="cr06103_transaction_empty_curve_model")

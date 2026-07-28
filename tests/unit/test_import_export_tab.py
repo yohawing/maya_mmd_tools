@@ -537,5 +537,27 @@ class TestPhysicsVisibilitySourceInspection(unittest.TestCase):
         self.assertFalse(found, "self.physics_group must remain visible in normal mode")
 
 
+class TestControlRigSettingSourceInspection(unittest.TestCase):
+    """Ensure the model-scoped control-rig checkbox has one UI owner."""
+
+    def setUp(self):
+        self.source = Path(import_export_tab.__file__).read_text(encoding="utf-8")
+
+    def test_control_rig_checkbox_is_declared_in_model_settings(self):
+        model_start = self.source.index("# Model Settings Group")
+        animation_start = self.source.index("# Animation Import Group (VMD)")
+        model_source = self.source[model_start:animation_start]
+
+        self.assertIn("self.create_mmd_control_rig_check = self._bind_checkbox(", model_source)
+        self.assertIn("setting_keys.IMPORT_MODEL_CREATE_MMD_CONTROL_RIG", model_source)
+        self.assertIn("False", model_source)
+
+    def test_animation_group_does_not_create_a_duplicate_control_rig_checkbox(self):
+        animation_start = self.source.index("# Animation Import Group (VMD)")
+        animation_source = self.source[animation_start:]
+
+        self.assertNotIn("self.create_mmd_control_rig_check = QCheckBox", animation_source)
+
+
 if __name__ == "__main__":
     unittest.main()

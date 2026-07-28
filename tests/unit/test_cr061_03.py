@@ -123,6 +123,7 @@ class TestControlRigImportPreflight(unittest.TestCase):
             "position": [1.0, 0.0, 0.0],
             "rotation": [0.0, 0.0, 0.0, 1.0],
         }
+        self.converter.bone_name_mapping = {"センター": "|model|center"}
         with ExitStack() as stack:
             stack.enter_context(patch.object(self.converter, "_enforce_humanik_import_gate"))
             stack.enter_context(patch.object(self.converter, "_prepare_mmd_control_rig_import", return_value=transaction))
@@ -166,6 +167,109 @@ class TestControlRigImportPreflight(unittest.TestCase):
         set_attr.assert_called_once_with("|model|right_leg_CTRL.ikEnabled", False)
         set_key.assert_called_once()
         self.assertEqual(set_key.call_args.kwargs["attribute"], "ikEnabled")
+
+    def test_ik_visibility_keys_target_owned_legacy_solver_when_control_is_absent(self):
+        frame = {"frame_number": 7, "ik_states": [("右髪ＩＫ", False)]}
+        with patch.object(
+            self.converter,
+            "_resolve_mmd_control_rig_ik_routes",
+            return_value=(
+                {"右足IK": "|model|right_foot_CTRL"},
+                {"右髪ＩＫ": "|model|hair_ik_mmdCcdIk"},
+            ),
+        ), patch("mmd_tools.converters.vmd_converter.cmds.setAttr") as set_attr, patch(
+            "mmd_tools.converters.vmd_converter.cmds.setKeyframe"
+        ) as set_key:
+            self.converter._apply_mmd_control_rig_ik_enabled_animation(
+                _fake_vmd_data(ik_show_hide_frames=[frame]), target_model="|model"
+            )
+        set_attr.assert_called_once_with("|model|hair_ik_mmdCcdIk.enabled", False)
+        set_key.assert_called_once_with(
+            "|model|hair_ik_mmdCcdIk",
+            attribute="enabled",
+            time=7.0,
+            value=0,
+        )
+
+    def test_ik_visibility_skips_names_absent_from_control_and_legacy_routes(self):
+        frame = {
+            "frame_number": 7,
+            "ik_states": [("右足IK", True), ("右髪ＩＫ", False), ("ﾈｸﾀｲＩＫ", False)],
+        }
+        profile = {}
+        with patch.object(
+            self.converter,
+            "_resolve_mmd_control_rig_ik_routes",
+            return_value=(
+                {"右足IK": "|model|right_foot_CTRL"},
+                {"右髪ＩＫ": "|model|hair_ik_mmdCcdIk"},
+            ),
+        ):
+            self.converter._validate_mmd_control_rig_ik_routes(
+                "|model",
+                _fake_vmd_data(ik_show_hide_frames=[frame]),
+                profile=profile,
+            )
+        warning = profile["vmd_converter"]["warnings"][0]
+        self.assertEqual(warning["code"], "control_rig_skipped_unmapped_vmd_ik")
+        self.assertEqual(warning["reason"], "target_model_ik_route_missing")
+        self.assertEqual(warning["skipped_ik_names"], ["ﾈｸﾀｲＩＫ"])
+
+    def test_ik_visibility_mixed_routes_do_not_double_key_control_owned_solver(self):
+        frame = {
+            "frame_number": 7,
+            "ik_states": [("右足IK", False), ("右髪ＩＫ", True)],
+        }
+        with patch.object(
+            self.converter,
+            "_resolve_mmd_control_rig_ik_routes",
+            return_value=(
+                {"右足IK": "|model|right_foot_CTRL"},
+                {
+                    "右足IK": "|model|right_foot_mmdCcdIk",
+                    "右髪ＩＫ": "|model|hair_ik_mmdCcdIk",
+                },
+            ),
+        ), patch("mmd_tools.converters.vmd_converter.cmds.setAttr") as set_attr, patch(
+            "mmd_tools.converters.vmd_converter.cmds.setKeyframe"
+        ) as set_key:
+            self.converter._apply_mmd_control_rig_ik_enabled_animation(
+                _fake_vmd_data(ik_show_hide_frames=[frame]), target_model="|model"
+            )
+        self.assertEqual(
+            [call.args[0] for call in set_attr.call_args_list],
+            ["|model|right_foot_CTRL.ikEnabled", "|model|hair_ik_mmdCcdIk.enabled"],
+        )
+        self.assertEqual(
+            [call.args[0] for call in set_key.call_args_list],
+            ["|model|right_foot_CTRL", "|model|hair_ik_mmdCcdIk"],
+        )
+
+    def test_ik_visibility_without_property_frames_defaults_control_and_legacy_routes_on(self):
+        with patch.object(
+            self.converter,
+            "_resolve_mmd_control_rig_ik_routes",
+            return_value=(
+                {"右足IK": "|model|right_foot_CTRL"},
+                {
+                    "右足IK": "|model|right_foot_mmdCcdIk",
+                    "右髪ＩＫ": "|model|hair_ik_mmdCcdIk",
+                },
+            ),
+        ), patch.object(self.converter, "_get_animation_frame_range", return_value=(3, 12)), patch(
+            "mmd_tools.converters.vmd_converter.cmds.setAttr"
+        ) as set_attr, patch("mmd_tools.converters.vmd_converter.cmds.setKeyframe") as set_key:
+            self.converter._apply_mmd_control_rig_ik_enabled_animation(
+                _fake_vmd_data(bone_frames=[object()]), target_model="|model"
+            )
+        self.assertEqual(
+            [call.args[0] for call in set_attr.call_args_list],
+            ["|model|right_foot_CTRL.ikEnabled", "|model|hair_ik_mmdCcdIk.enabled"],
+        )
+        self.assertEqual(
+            [call.args[0] for call in set_key.call_args_list],
+            ["|model|right_foot_CTRL", "|model|hair_ik_mmdCcdIk"],
+        )
 
     def test_existing_non_base_anim_layer_fails_closed_before_rig_build(self):
         with ExitStack() as stack:
@@ -236,14 +340,183 @@ class TestControlRigImportPreflight(unittest.TestCase):
             {"bone_name": "右足", "position": [1, 0, 0], "rotation": [0, 0, 0, 1]},
             {"bone_name": "任意の未使用ボーン", "position": [0, 0, 0], "rotation": [0, 0, 0, 1]},
         ]
-        retained = VmdConverter._control_rig_bone_frames_for_import(frames)
+        retained = VmdConverter._control_rig_bone_frames_for_import(frames, mapped_names={"右足"})
         self.assertEqual([frame["bone_name"] for frame in retained], ["右足", "右足"])
         self.assertEqual(
             VmdConverter._vmd_bone_frame_channels(frames[1]),
             {"translateX", "translateY", "translateZ"},
         )
 
-    def test_unmapped_vmd_role_fails_closed_before_keying(self):
+    def test_active_unmapped_role_is_filtered_before_bone_conversion(self):
+        frames = [
+            {"bone_name": "右足", "position": [0, 0, 0], "rotation": [0, 0, 0, 1]},
+            {"bone_name": "右足", "position": [1, 0, 0], "rotation": [0, 0, 0, 1]},
+            {"bone_name": "袖", "position": [0.2, 0, 0], "rotation": [0, 0, 0, 1]},
+        ]
+        retained = VmdConverter._control_rig_bone_frames_for_import(frames, mapped_names={"右足"})
+        self.assertEqual([frame["bone_name"] for frame in retained], ["右足", "右足"])
+
+    def test_mapped_vmd_role_without_control_rig_route_falls_back_to_joint_channels(self):
+        profile = {}
+        spec = MagicMock(can_build_mvp=True)
+        frame = {
+            "bone_name": "右足",
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.1, 0.2, 0.3, 0.9],
+        }
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata", return_value=None)
+            )
+            stack.enter_context(
+                patch("mmd_tools.core.mmd_control_rig_analyzer.analyze_mmd_control_rig", return_value=spec)
+            )
+            build = stack.enter_context(patch("mmd_tools.core.mmd_control_rig_builder.build_mmd_control_rig"))
+            enter = stack.enter_context(
+                patch("mmd_tools.core.mmd_control_rig_motion.enter_mmd_control_rig_edit")
+            )
+            remove = stack.enter_context(patch("mmd_tools.core.mmd_control_rig_builder.remove_mmd_control_rig"))
+            stack.enter_context(patch.object(self.converter, "_build_name_mappings"))
+            stack.enter_context(
+                patch(
+                    "mmd_tools.core.mmd_control_rig_motion.control_rig_edit_routes_for_joints",
+                    return_value={
+                        "|model|right_leg": {
+                            "rotateX": ("|model|right_leg_CTRL", "rotateX"),
+                            "rotateY": ("|model|right_leg_CTRL", "rotateY"),
+                            "rotateZ": ("|model|right_leg_CTRL", "rotateZ"),
+                        }
+                    },
+                )
+            )
+            self.converter.bone_name_mapping = {"右足": "|model|right_leg"}
+            transaction = self.converter._prepare_mmd_control_rig_import(
+                "|model",
+                profile,
+                vmd_data=_fake_vmd_data([frame]),
+            )
+        self.assertEqual(transaction["root"], "|model")
+        build.assert_called_once()
+        enter.assert_called_once_with("|model")
+        remove.assert_not_called()
+        warning = profile["vmd_converter"]["warnings"][0]
+        self.assertEqual(warning["source"], "vmd_converter")
+        self.assertEqual(warning["code"], "control_rig_legacy_bone_route_fallback")
+        self.assertEqual(warning["severity"], "warning")
+        self.assertEqual(warning["reason"], "control_route_missing")
+        self.assertEqual(
+            warning["fallback_channels"],
+            {
+                "右足": ["translateX", "translateY", "translateZ"],
+            },
+        )
+        self.assertEqual(warning["fallback"], "legacy_bone_channels")
+
+    def test_ik_solver_rotation_is_reported_as_legacy_fallback(self):
+        """IK solver inputRotate writes rotation channels outside Control Rig ownership."""
+        profile = {}
+        spec = MagicMock(can_build_mvp=True)
+        frame = {
+            "bone_name": "右足",
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.1, 0.2, 0.3, 0.9],
+        }
+        joint = "|model|right_leg"
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata", return_value=None)
+            )
+            stack.enter_context(
+                patch("mmd_tools.core.mmd_control_rig_analyzer.analyze_mmd_control_rig", return_value=spec)
+            )
+            stack.enter_context(patch("mmd_tools.core.mmd_control_rig_builder.build_mmd_control_rig"))
+            stack.enter_context(patch("mmd_tools.core.mmd_control_rig_motion.enter_mmd_control_rig_edit"))
+            stack.enter_context(patch("mmd_tools.core.mmd_control_rig_builder.remove_mmd_control_rig"))
+            stack.enter_context(patch.object(self.converter, "_build_name_mappings"))
+            stack.enter_context(
+                patch(
+                    "mmd_tools.core.mmd_control_rig_motion.control_rig_edit_routes_for_joints",
+                    return_value={},
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    self.converter,
+                    "_build_legacy_bone_key_routes",
+                    return_value={
+                        joint: {
+                            "skip_rotate": True,
+                            "ik_solver_rotate": {"solver": "|model|right_leg_ik_mmdCcdIk", "slot": 6},
+                            "attr_targets": {},
+                        }
+                    },
+                )
+            )
+            self.converter.bone_name_mapping = {"右足": joint}
+            self.converter._prepare_mmd_control_rig_import(
+                "|model",
+                profile,
+                vmd_data=_fake_vmd_data([frame]),
+            )
+
+        warning = profile["vmd_converter"]["warnings"][0]
+        self.assertEqual(
+            warning["fallback_channels"]["右足"],
+            ["rotateX", "rotateY", "rotateZ", "translateX", "translateY", "translateZ"],
+        )
+
+    def test_append_route_remains_legacy_fallback_in_warning(self):
+        """Append attr_targets are legacy-owned, not authored Control Rig channels."""
+        profile = {}
+        spec = MagicMock(can_build_mvp=True)
+        frame = {
+            "bone_name": "右足",
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.1, 0.2, 0.3, 0.9],
+        }
+        joint = "|model|right_leg"
+        append_attrs = {
+            attr: ("|model|right_leg_append", attr)
+            for attr in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
+        }
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata", return_value=None)
+            )
+            stack.enter_context(
+                patch("mmd_tools.core.mmd_control_rig_analyzer.analyze_mmd_control_rig", return_value=spec)
+            )
+            stack.enter_context(patch("mmd_tools.core.mmd_control_rig_builder.build_mmd_control_rig"))
+            stack.enter_context(patch("mmd_tools.core.mmd_control_rig_motion.enter_mmd_control_rig_edit"))
+            stack.enter_context(patch("mmd_tools.core.mmd_control_rig_builder.remove_mmd_control_rig"))
+            stack.enter_context(patch.object(self.converter, "_build_name_mappings"))
+            stack.enter_context(
+                patch(
+                    "mmd_tools.core.mmd_control_rig_motion.control_rig_edit_routes_for_joints",
+                    return_value={},
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    self.converter,
+                    "_build_legacy_bone_key_routes",
+                    return_value={joint: {"attr_targets": append_attrs, "skip_rotate": False}},
+                )
+            )
+            self.converter.bone_name_mapping = {"右足": joint}
+            self.converter._prepare_mmd_control_rig_import(
+                "|model",
+                profile,
+                vmd_data=_fake_vmd_data([frame]),
+            )
+
+        warning = profile["vmd_converter"]["warnings"][0]
+        self.assertEqual(
+            warning["fallback_channels"]["右足"],
+            ["rotateX", "rotateY", "rotateZ", "translateX", "translateY", "translateZ"],
+        )
+
+    def test_unmapped_vmd_role_is_skipped_with_structured_warning(self):
         profile = {}
         spec = MagicMock(can_build_mvp=True)
         with ExitStack() as stack:
@@ -259,21 +532,23 @@ class TestControlRigImportPreflight(unittest.TestCase):
             remove = stack.enter_context(patch("mmd_tools.core.mmd_control_rig_builder.remove_mmd_control_rig"))
             stack.enter_context(patch.object(self.converter, "_build_name_mappings"))
             self.converter.bone_name_mapping = {}
-            with self.assertRaises(MMDImportException) as raised:
-                self.converter._prepare_mmd_control_rig_import(
-                    "|model",
-                    profile,
-                    vmd_data=_fake_vmd_data(
-                        [{"bone_name": "未対応ボーン", "position": [1.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]}]
-                    ),
-                )
-        self.assertEqual(raised.exception.reason_code, "control_rig_unmapped_vmd_roles")
-        build.assert_not_called()
+            self.converter._prepare_mmd_control_rig_import(
+                "|model",
+                profile,
+                vmd_data=_fake_vmd_data(
+                    [{"bone_name": "未対応ボーン", "position": [1.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]}]
+                ),
+            )
+        build.assert_called_once()
         remove.assert_not_called()
-        self.assertEqual(
-            profile["mmd_control_rig"]["diagnostics"][0]["code"],
-            "control_rig_unmapped_vmd_roles",
-        )
+        warning = profile["vmd_converter"]["warnings"][0]
+        self.assertEqual(warning["source"], "vmd_converter")
+        self.assertEqual(warning["code"], "control_rig_skipped_unmapped_vmd_bones")
+        self.assertEqual(warning["severity"], "warning")
+        self.assertEqual(warning["message"], "Skipped VMD bone roles absent from target model")
+        self.assertEqual(warning["reason"], "target_model_bone_missing")
+        self.assertEqual(warning["skipped_bones"], ["未対応ボーン"])
+        self.assertEqual(warning["fallback"], "skip_missing_target_bones")
 
     def test_identity_only_unmapped_vmd_role_is_ignored_as_noop(self):
         spec = MagicMock(can_build_mvp=True)
@@ -298,6 +573,38 @@ class TestControlRigImportPreflight(unittest.TestCase):
 
 
 class TestControlRigMotionClear(MayaTestBase):
+    def test_rotation_only_vmd_frame_keys_legacy_joint_translate_fallback(self):
+        """Legacy writer retains all six channels even for a rotation-only VMD frame."""
+        joint = cmds.joint(name="cr061_legacy_fallback_joint")
+        control = cmds.createNode("transform", name="cr061_legacy_fallback_control")
+        converter = VmdConverter()
+        converter.use_animation_layers = False
+        converter._bone_bind_poses["右足"] = (0.0, 0.0, 0.0)
+        frame = {
+            "frame_number": 7,
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.1, 0.2, 0.3, 0.9],
+        }
+
+        converter._set_bone_keyframes(
+            joint,
+            [frame],
+            "右足",
+            {
+                "attr_targets": {
+                    "rotateX": (control, "rotateX"),
+                    "rotateY": (control, "rotateY"),
+                    "rotateZ": (control, "rotateZ"),
+                }
+            },
+        )
+
+        for attr in ("translateX", "translateY", "translateZ"):
+            self.assertEqual(cmds.keyframe(joint, attribute=attr, query=True, timeChange=True), [7.0])
+        for attr in ("rotateX", "rotateY", "rotateZ"):
+            self.assertEqual(cmds.keyframe(control, attribute=attr, query=True, timeChange=True), [7.0])
+        cmds.delete(joint, control)
+
     def test_api_keying_reuses_existing_control_curve_uuid(self):
         cmds.select(clear=True)
         control = cmds.createNode("transform", name="cr061_existing_curve_ctrl")

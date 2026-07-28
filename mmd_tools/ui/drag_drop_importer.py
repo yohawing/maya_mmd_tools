@@ -14,6 +14,7 @@ from urllib.parse import unquote, urlparse
 from maya import cmds
 import maya.api.OpenMaya as om
 
+from mmd_tools.actions.import_result import warnings_from_options
 from mmd_tools.core.constants import ATTR_MMD_MODEL_NAME, ATTR_MMD_MODEL_NAME_EN
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.mmd_parser import parse_mmd_file
@@ -116,6 +117,19 @@ def _missing_target_warning(scene_model_service: SceneModelService, asset_label:
     return f"Maya MMD Tools: load or drop a PMX/PMD model before dropping {asset_label} files."
 
 
+def _partial_import_warning(asset_label: str, file_path: str, warnings: Iterable[object]) -> str:
+    """Build a concise warning for a successful import with profile warnings."""
+    warning_list = list(warnings or [])
+    details = []
+    for warning in warning_list:
+        if isinstance(warning, dict):
+            code = warning.get("code") or warning.get("reason") or warning.get("message")
+            if code:
+                details.append(str(code))
+    suffix = ", ".join(details) if details else f"{len(warning_list)} warning(s)"
+    return f"Maya MMD Tools: imported {asset_label} with warnings ({Path(file_path).name}: {suffix})."
+
+
 def import_dropped_files(
     paths: Iterable[str],
     *,
@@ -169,7 +183,11 @@ def import_dropped_files(
                 cmds.select(root, replace=True)
             except Exception:
                 pass
-            _display_info(f"Maya MMD Tools: imported model {Path(model_path).name}")
+            warnings = warnings_from_options(options)
+            if warnings:
+                _display_warning(_partial_import_warning("model", model_path, warnings))
+            else:
+                _display_info(f"Maya MMD Tools: imported model {Path(model_path).name}")
             readme = read_model_readme(scene_model_service, root)
             if readme is not None:
                 try:
@@ -190,7 +208,11 @@ def import_dropped_files(
         success = importer(motion_path, options=options)
         if success:
             imported_any = True
-            _display_info(f"Maya MMD Tools: imported motion {Path(motion_path).name}")
+            warnings = warnings_from_options(options)
+            if warnings:
+                _display_warning(_partial_import_warning("motion", motion_path, warnings))
+            else:
+                _display_info(f"Maya MMD Tools: imported motion {Path(motion_path).name}")
         else:
             _display_warning(f"Maya MMD Tools: VMD import failed: {motion_path}")
 

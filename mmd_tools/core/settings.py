@@ -9,6 +9,10 @@ import json
 import os
 from collections import UserDict
 
+
+_LEGACY_CREATE_MMD_CONTROL_RIG_OPTION_KEY = "import::animation::create_mmd_control_rig"
+_MODEL_CREATE_MMD_CONTROL_RIG_OPTION_KEY = "import::model::create_mmd_control_rig"
+
 try:
     from maya import cmds
 
@@ -119,6 +123,41 @@ class Settings(UserDict):
             for k in keys[:-1]:
                 d = d.setdefault(k, {})
             d[keys[-1]] = value
+
+        self._migrate_legacy_create_mmd_control_rig_option_var()
+
+    def _migrate_legacy_create_mmd_control_rig_option_var(self):
+        """Copy the former animation-scoped Control Rig optionVar to its model key.
+
+        The model-scoped optionVar is authoritative when both keys exist.  The
+        legacy value is copied once for existing Maya sessions and the old key
+        is intentionally left intact so this migration remains non-destructive.
+        """
+        legacy_option_var = self.get_option_var_key(_LEGACY_CREATE_MMD_CONTROL_RIG_OPTION_KEY)
+        model_option_var = self.get_option_var_key(_MODEL_CREATE_MMD_CONTROL_RIG_OPTION_KEY)
+        try:
+            if cmds.optionVar(exists=model_option_var) or not cmds.optionVar(exists=legacy_option_var):
+                return
+            loaded_value = cmds.optionVar(q=legacy_option_var)
+        except Exception:
+            return
+
+        try:
+            value = bool(int(loaded_value))
+        except (TypeError, ValueError):
+            return
+
+        keys = _MODEL_CREATE_MMD_CONTROL_RIG_OPTION_KEY.split("::")
+        target = self.data
+        for key in keys[:-1]:
+            target = target.setdefault(key, {})
+        target[keys[-1]] = value
+        try:
+            cmds.optionVar(iv=(model_option_var, int(value)))
+        except Exception:
+            # Keep the in-memory migration even if Maya rejects the write; the
+            # next session can retry while the legacy optionVar remains intact.
+            return
 
     def save(self):
         """Save all current settings to Maya's optionVars."""

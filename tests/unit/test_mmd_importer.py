@@ -1,6 +1,7 @@
 """MMD import entry point option handling tests (pure Python, Maya-free)."""
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
@@ -200,7 +201,6 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
                     )
         finally:
             settings.set("ui.general.development_mode", self._saved_dev)
-
     def test_explicit_scale_kwarg_remains_public_override(self):
         """scale= is an intentional public API override even in normal mode."""
         self._saved_dev = settings.get("ui.general.development_mode", False)
@@ -289,6 +289,96 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
                 result = import_mmd_file("model.pmx", options={}, progress_callback=broken_progress)
 
         self.assertEqual(result, "model_root")
+
+
+class TestModelImportControlRig(unittest.TestCase):
+    """Opt-in Control Rig creation is shared by every model import route."""
+
+    def test_python_model_import_builds_control_rig_once(self):
+        parsed_data = object()
+        profile = {}
+        build_result = SimpleNamespace(
+            created=True,
+            control_group="Controls",
+            selection_set="Controls_SET",
+            state="ATTACHED",
+            owner="MMD_OWNED",
+            controls={"center": "center_CTRL"},
+        )
+
+        with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data):
+            with patch(
+                "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
+                return_value="python_root",
+            ):
+                with patch(
+                    "mmd_tools.io.mmd_importer.build_mmd_control_rig",
+                    return_value=build_result,
+                ) as build:
+                    options = {"create_mmd_control_rig": True, "profile": profile}
+                    result = import_mmd_file("model.pmx", options=options)
+
+        self.assertEqual(result, "python_root")
+        build.assert_called_once_with("python_root")
+        self.assertEqual(profile["mmd_control_rig"]["succeeded"], True)
+        self.assertEqual(profile["mmd_control_rig"]["created"], True)
+        self.assertEqual(profile["mmd_control_rig"]["control_count"], 1)
+
+    def test_cpp_model_import_uses_the_same_post_import_builder(self):
+        with patch("mmd_tools.io.mmd_importer.fast_import", return_value="cpp_root") as fast:
+            with patch("mmd_tools.io.mmd_importer.parse_mmd_file") as parse_file:
+                with patch("mmd_tools.io.mmd_importer.build_mmd_control_rig") as build:
+                    options = {
+                        "create_mmd_control_rig": True,
+                        "cpp_fast_load_mesh_only": True,
+                    }
+                    result = import_mmd_file(
+                        "model.pmx",
+                        options={**options, "use_cpp_fast_load": True},
+                    )
+
+        self.assertEqual(result, "cpp_root")
+        self.assertEqual(fast.call_args.kwargs["mesh_only"], False)
+        build.assert_called_once_with("cpp_root")
+        parse_file.assert_not_called()
+
+    def test_disabled_option_does_not_build_for_python_model(self):
+        parsed_data = object()
+        with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data):
+            with patch(
+                "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
+                return_value="model_root",
+            ):
+                with patch("mmd_tools.io.mmd_importer.build_mmd_control_rig") as build:
+                    result = import_mmd_file("model.pmd", options={})
+
+        self.assertEqual(result, "model_root")
+        build.assert_not_called()
+
+    def test_builder_failure_preserves_model_and_records_partial_warning(self):
+        parsed_data = object()
+        profile = {}
+        with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data):
+            with patch(
+                "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
+                return_value="model_root",
+            ):
+                with patch(
+                    "mmd_tools.io.mmd_importer.build_mmd_control_rig",
+                    side_effect=RuntimeError("missing role binding"),
+                ):
+                    options = {"create_mmd_control_rig": True, "profile": profile}
+                    result = import_mmd_file("model.pmx", options=options)
+
+        self.assertEqual(result, "model_root")
+        self.assertEqual(profile["mmd_control_rig"]["succeeded"], False)
+        self.assertEqual(profile["mmd_control_rig"]["error"], "missing role binding")
+        warning = profile["warnings"][0]
+        self.assertEqual(warning["source"], "mmd_importer")
+        self.assertEqual(warning["code"], "control_rig_create_failed")
+        self.assertEqual(warning["model_root"], "model_root")
+        self.assertEqual(warning["severity"], "warning")
+        self.assertEqual(warning["fallback"], "model_imported_without_control_rig")
 
 
 if __name__ == "__main__":

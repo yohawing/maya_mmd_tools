@@ -784,7 +784,14 @@ class VmdConverter:
                         # must not create a controller curve on the ON path.
                         # Active roles retain identity frame 0 samples for
                         # interpolation/initial-pose continuity.
-                        bone_frames = self._control_rig_bone_frames_for_import(bone_frames)
+                        # Portable motions may carry optional roles absent from
+                        # the target model.  Filter them before the legacy
+                        # converter sees the frames so its missing-joint path
+                        # cannot reclassify an optional role as a failed bone.
+                        bone_frames = self._control_rig_bone_frames_for_import(
+                            bone_frames,
+                            mapped_names=self.bone_name_mapping,
+                        )
                     if bone_frames:
                         self.logger.info(
                             f"Starting bone animation conversion (legacy): {len(bone_frames)} frames"
@@ -1011,6 +1018,47 @@ class VmdConverter:
                 controls_by_name[name] = control
         return controls_by_name
 
+    def _resolve_mmd_control_rig_ik_routes(self, target_model: str):
+        """Return Control Rig and target-owned legacy IK routes by VMD name.
+
+        A name present in both maps is deliberately owned by the Control Rig
+        controller.  The legacy solver is retained only as a fallback for
+        names that have no authored controller route.
+        """
+        controls_by_name = self._resolve_mmd_control_rig_ik_controls(target_model)
+        legacy_nodes_by_name = self._collect_ik_nodes_by_bone_name(target_model=target_model)
+        legacy_nodes_by_name = {
+            str(name): str(node)
+            for name, node in (legacy_nodes_by_name or {}).items()
+            if str(name) not in controls_by_name
+        }
+        return controls_by_name, legacy_nodes_by_name
+
+    @staticmethod
+    def _iter_vmd_ik_states(vmd_data):
+        """Yield ``(frame_number, name, enabled)`` tuples from VMD IK frames."""
+        for frame in getattr(vmd_data, "ik_show_hide_frames", []) or []:
+            frame_number = getattr(frame, "frame_number", None)
+            states = getattr(frame, "ik_states", None)
+            if isinstance(frame, dict):
+                frame_number = frame.get("frame_number", frame_number)
+                states = frame.get("ik_states", states)
+            try:
+                frame_number = int(frame_number or 0)
+            except (TypeError, ValueError, OverflowError):
+                frame_number = 0
+            for state in states or []:
+                if isinstance(state, dict):
+                    name = state.get("ik_name", state.get("name", ""))
+                    enabled = state.get("show_flag", state.get("enabled", False))
+                else:
+                    try:
+                        name, enabled = state[0], state[1]
+                    except (TypeError, IndexError):
+                        continue
+                if name:
+                    yield frame_number, str(name), bool(enabled)
+
     @staticmethod
     def _vmd_bone_frame_is_identity(frame) -> bool:
         """Return whether a VMD bone sample carries no position/rotation change."""
@@ -1056,15 +1104,26 @@ class VmdConverter:
         return channels
 
     @classmethod
-    def _control_rig_bone_frames_for_import(cls, frames) -> list:
-        """Drop identity-only roles while preserving active role frame zero."""
+    def _control_rig_bone_frames_for_import(cls, frames, mapped_names=None) -> list:
+        """Filter Control Rig frames to active roles present on the target.
+
+        Identity-only roles remain a no-op and are dropped as before.  When
+        ``mapped_names`` is provided, active roles absent from the target
+        mapping are also removed before key conversion so the legacy converter
+        cannot report them as failed bones.
+        """
         frames = list(frames or [])
+        allowed_names = None if mapped_names is None else {str(name) for name in mapped_names}
         active_names = set()
         for frame in frames:
             name = str(
                 frame.bone_name if hasattr(frame, "bone_name") else frame.get("bone_name", "")
             )
-            if name and not cls._vmd_bone_frame_is_identity(frame):
+            if (
+                name
+                and not cls._vmd_bone_frame_is_identity(frame)
+                and (allowed_names is None or name in allowed_names)
+            ):
                 active_names.add(name)
         return [
             frame
@@ -1073,91 +1132,87 @@ class VmdConverter:
             in active_names
         ]
 
-    def _validate_mmd_control_rig_ik_routes(self, target_model, vmd_data, fail) -> None:
-        """Fail closed when VMD IK state names have no owned control route."""
+    def _validate_mmd_control_rig_ik_routes(self, target_model, vmd_data, profile=None) -> None:
+        """Classify VMD IK state names and warn for portable optional roles."""
         if vmd_data is None:
             return
         if not (getattr(vmd_data, "ik_show_hide_frames", None) or []):
-            # Bone channels do not carry IK visibility semantics.  Only an
-            # explicit VMD IK show/hide stream requires a controller route;
-            # identity-only or ordinary bone-only motions must remain valid.
+            # Bone channels do not carry IK visibility semantics.  No explicit
+            # IK state stream means there are no names to classify; the apply
+            # phase still defaults both owned route types ON for bone motion.
             return
-        controls_by_name = self._resolve_mmd_control_rig_ik_controls(target_model)
-        property_names = set()
-        for frame in getattr(vmd_data, "ik_show_hide_frames", []) or []:
-            states = getattr(frame, "ik_states", None)
-            if isinstance(frame, dict):
-                states = frame.get("ik_states", states)
-            for state in states or []:
-                if isinstance(state, dict):
-                    name = state.get("ik_name", state.get("name", ""))
-                else:
-                    try:
-                        name = state[0]
-                    except (TypeError, IndexError):
-                        name = ""
-                if name:
-                    property_names.add(str(name))
-        missing = sorted(name for name in property_names if name not in controls_by_name)
+        property_names = {name for _frame, name, _enabled in self._iter_vmd_ik_states(vmd_data)}
+        if not property_names:
+            return
+        controls_by_name, legacy_nodes_by_name = self._resolve_mmd_control_rig_ik_routes(target_model)
+        missing = sorted(
+            name for name in property_names if name not in controls_by_name and name not in legacy_nodes_by_name
+        )
         if missing:
-            fail(
-                "control_rig_ik_route_missing",
-                "MMD Control Rig has no authored route for VMD IK state roles",
+            warning = {
+                "source": "vmd_converter",
+                "code": "control_rig_skipped_unmapped_vmd_ik",
+                "severity": "warning",
+                "message": "Skipped VMD IK state roles absent from Control Rig and target IK nodes",
+                "reason": "target_model_ik_route_missing",
+                "skipped_ik_names": missing,
+                "fallback": "skip_missing_ik_routes",
+            }
+            self._record_profile_warning(profile, warning)
+            self.logger.warning(
+                "Skipping VMD IK state roles without Control Rig or legacy routes: %s",
                 missing,
             )
 
-    def _apply_mmd_control_rig_ik_enabled_animation(self, vmd_data, *, target_model: str) -> None:
-        """Key VMD IK visibility on owned controls, never solver inputs."""
+    def _apply_mmd_control_rig_ik_enabled_animation(
+        self,
+        vmd_data,
+        *,
+        target_model: str,
+    ) -> None:
+        """Key VMD IK state on Control Rig controls or owned legacy nodes."""
         property_frames = list(getattr(vmd_data, "ik_show_hide_frames", []) or [])
         bone_frames = getattr(vmd_data, "bone_frames", None) or []
         if not property_frames and not bone_frames:
             return
-        controls_by_name = self._resolve_mmd_control_rig_ik_controls(target_model)
-        property_frames = sorted(
-            property_frames,
-            key=lambda frame: int(
-                getattr(frame, "frame_number", frame.get("frame_number", 0) if isinstance(frame, dict) else 0)
-            ),
-        )
+        controls_by_name, legacy_nodes_by_name = self._resolve_mmd_control_rig_ik_routes(target_model)
+        # Keep Control Rig ownership authoritative even when a compatibility
+        # resolver returns overlapping legacy entries.
+        legacy_nodes_by_name = {
+            name: node for name, node in legacy_nodes_by_name.items() if name not in controls_by_name
+        }
+        property_states = sorted(self._iter_vmd_ik_states(vmd_data), key=lambda row: row[0])
         keyed = 0
-        if property_frames:
-            for frame in property_frames:
-                frame_number = int(
-                    getattr(frame, "frame_number", frame.get("frame_number", 0) if isinstance(frame, dict) else 0)
+        if property_states:
+            for frame_number, name, enabled in property_states:
+                control = controls_by_name.get(name)
+                node = legacy_nodes_by_name.get(name)
+                target = control or node
+                if target is None:
+                    continue
+                value = bool(enabled)
+                attribute = "ikEnabled" if control else "enabled"
+                cmds.setAttr(f"{target}.{attribute}", value)
+                cmds.setKeyframe(
+                    target,
+                    attribute=attribute,
+                    time=self.vmd_frame_to_maya_time(frame_number),
+                    value=int(value),
                 )
-                states = getattr(frame, "ik_states", None)
-                if isinstance(frame, dict):
-                    states = frame.get("ik_states", states)
-                for state in states or []:
-                    if isinstance(state, dict):
-                        name = state.get("ik_name", state.get("name", ""))
-                        enabled = state.get("show_flag", state.get("enabled", False))
-                    else:
-                        try:
-                            name, enabled = state[0], state[1]
-                        except (TypeError, IndexError):
-                            continue
-                    control = controls_by_name.get(str(name))
-                    if control is None:
-                        continue
-                    value = bool(enabled)
-                    cmds.setAttr(f"{control}.ikEnabled", value)
-                    cmds.setKeyframe(
-                        control,
-                        attribute="ikEnabled",
-                        time=self.vmd_frame_to_maya_time(frame_number),
-                        value=int(value),
-                    )
-                    keyed += 1
-        elif getattr(vmd_data, "bone_frames", None):
+                keyed += 1
+        elif not property_frames and getattr(vmd_data, "bone_frames", None):
             min_frame, _max_frame = self._get_animation_frame_range(vmd_data)
             time = self.vmd_frame_to_maya_time(min_frame)
             for control in sorted(set(controls_by_name.values())):
                 cmds.setAttr(f"{control}.ikEnabled", True)
                 cmds.setKeyframe(control, attribute="ikEnabled", time=time, value=1)
                 keyed += 1
+            for node in sorted(set(legacy_nodes_by_name.values())):
+                cmds.setAttr(f"{node}.enabled", True)
+                cmds.setKeyframe(node, attribute="enabled", time=time, value=1)
+                keyed += 1
         if keyed:
-            self.logger.info("Applied %d VMD IK state keys to MMD Control Rig controls", keyed)
+            self.logger.info("Applied %d VMD IK state keys to Control Rig/legacy routes", keyed)
 
     def _prepare_mmd_control_rig_import(
         self,
@@ -1287,7 +1342,6 @@ class VmdConverter:
         entered_here = False
 
         requested_vmd_names = set()
-        requested_vmd_channels = {}
         if vmd_data is not None and getattr(vmd_data, "bone_frames", None):
             requested_vmd_names = {
                 str(frame.bone_name if hasattr(frame, "bone_name") else frame.get("bone_name", ""))
@@ -1295,43 +1349,90 @@ class VmdConverter:
                 if not self._vmd_bone_frame_is_identity(frame)
             }
             requested_vmd_names.discard("")
-            for frame in vmd_data.bone_frames:
-                name = str(
-                    frame.bone_name if hasattr(frame, "bone_name") else frame.get("bone_name", "")
-                )
-                channels = self._vmd_bone_frame_channels(frame)
-                if name and channels:
-                    requested_vmd_channels.setdefault(name, set()).update(channels)
             # This read-only mapping preflight must happen before creating or
-            # entering a control rig, so an unknown VMD role cannot trigger a
-            # transient scene mutation before being rejected.
+            # entering a control rig, so optional VMD roles can be classified
+            # before any transient scene mutation.
             self._build_name_mappings(target_namespace, target_model=target_model)
             unmapped = sorted(name for name in requested_vmd_names if name not in self.bone_name_mapping)
             if unmapped:
-                fail(
-                    "control_rig_unmapped_vmd_roles",
-                    "MMD Control Rig import cannot convert VMD bone roles",
+                # Portable motions commonly carry optional clothing/face
+                # roles which are not present on every target model.  They
+                # are safe to omit, but the exact names must remain visible to
+                # the action boundary so the successful import is auditable.
+                warning = {
+                    "source": "vmd_converter",
+                    "code": "control_rig_skipped_unmapped_vmd_bones",
+                    "severity": "warning",
+                    "message": "Skipped VMD bone roles absent from target model",
+                    "reason": "target_model_bone_missing",
+                    "skipped_bones": unmapped,
+                    "fallback": "skip_missing_target_bones",
+                }
+                self._record_profile_warning(profile, warning)
+                self.logger.warning(
+                    "Skipping VMD bones absent from target model: %s",
                     unmapped,
                 )
+                requested_vmd_names.difference_update(unmapped)
 
         def validate_vmd_routes():
-            """Reject VMD bone channels that cannot be authored by a control."""
+            """Record channels that fall back to legacy joint keying.
+
+            Control Rig EDIT owns only the authored controller plugs. The
+            established legacy joint/append/IK route retains every remaining
+            channel, so a partial controller route is valid and must not block
+            an otherwise usable import.
+            """
             if vmd_data is None or not getattr(vmd_data, "bone_frames", None):
                 return
             from ..core.mmd_control_rig_motion import control_rig_edit_routes_for_joints
 
             routes = control_rig_edit_routes_for_joints(self.bone_name_mapping.values())
-            missing_routes = {}
-            for name in requested_vmd_names:
-                route_channels = set(routes.get(self.bone_name_mapping[name], {}))
-                missing = sorted(requested_vmd_channels.get(name, set()) - route_channels)
+            try:
+                legacy_routes = self._build_legacy_bone_key_routes()
+            except Exception:
+                # Route diagnostics must not make preflight less reliable than
+                # the established legacy converter.  Fall back to the direct
+                # Control Rig route map if auxiliary route collection fails.
+                legacy_routes = {}
+                self.logger.debug("Failed to collect legacy VMD key routes for diagnostics", exc_info=True)
+            all_channels = {
+                "translateX",
+                "translateY",
+                "translateZ",
+                "rotateX",
+                "rotateY",
+                "rotateZ",
+            }
+            fallback_channels = {}
+            for name in sorted(requested_vmd_names):
+                joint = self.bone_name_mapping[name]
+                key_route = legacy_routes.get(joint, {})
+                actual_channels = set(all_channels)
+                if key_route.get("skip_rotate") and not key_route.get("ik_solver_rotate"):
+                    actual_channels.difference_update({"rotateX", "rotateY", "rotateZ"})
+                # Only authored Control Rig destinations are excluded from
+                # the fallback warning.  ``attr_targets`` also contains
+                # append and solver-owned legacy routes, which still form
+                # the fallback surface and therefore must remain reported.
+                routed_channels = set(routes.get(joint, {}))
+                missing = sorted(actual_channels - routed_channels)
                 if missing:
-                    missing_routes[name] = missing
-            if missing_routes:
-                fail(
-                    "control_rig_unconvertible_vmd_roles",
-                    "MMD Control Rig has incomplete authored routes for VMD bone channels",
-                    missing_routes,
+                    fallback_channels[name] = missing
+            if fallback_channels:
+                warning = {
+                    "source": "vmd_converter",
+                    "code": "control_rig_legacy_bone_route_fallback",
+                    "severity": "warning",
+                    "message": "VMD channels without authored Control Rig routes use legacy bone routing",
+                    "reason": "control_route_missing",
+                    "fallback_channels": fallback_channels,
+                    "fallback": "legacy_bone_channels",
+                }
+                self._record_profile_warning(profile, warning)
+                self.logger.warning(
+                    "Using legacy bone routes for VMD Control Rig route gaps: %s",
+                    fallback_channels,
                 )
 
         def rollback_preflight() -> Optional[str]:
@@ -1374,7 +1475,7 @@ class VmdConverter:
                     if metadata.get("owner") != CONTROL_RIG_CONTROL_OWNED:
                         fail("control_rig_owner_conflict", "Existing MMD Control Rig is not CONTROL_OWNED")
                     validate_vmd_routes()
-                    self._validate_mmd_control_rig_ik_routes(target_model, vmd_data, fail)
+                    self._validate_mmd_control_rig_ik_routes(target_model, vmd_data, profile=profile)
                     return {
                         "root": control_rig_root,
                         "created": False,
@@ -1407,7 +1508,7 @@ class VmdConverter:
             enter_mmd_control_rig_edit(target_model)
             entered_here = True
             validate_vmd_routes()
-            self._validate_mmd_control_rig_ik_routes(target_model, vmd_data, fail)
+            self._validate_mmd_control_rig_ik_routes(target_model, vmd_data, profile=profile)
             return {
                 "root": control_rig_root,
                 "created": created,
@@ -1515,6 +1616,7 @@ class VmdConverter:
 
         nodes = set()
         explicit_attrs_by_node = {}
+        explicit_only_nodes = set()
         nodes.update(str(node) for node in self.bone_name_mapping.values() if node)
         if target_model and cmds.objExists(target_model):
             nodes.add(str(target_model))
@@ -1525,6 +1627,55 @@ class VmdConverter:
                 )
                 if cmds.nodeType(node) == "joint"
             )
+
+        # Legacy IK fallback writes the solver's enabled state directly.  Its
+        # node is not a DAG descendant, so include the target-owned solver and
+        # the exact inputRotate elements that legacy bone keying may author in
+        # the same animation-channel snapshot used by ordinary joints.
+        try:
+            for solver in (self._collect_ik_nodes_by_bone_name(target_model=target_model) or {}).values():
+                resolved_solver = (cmds.ls(solver, long=True) or [solver])[0]
+                solver = str(resolved_solver)
+                nodes.add(solver)
+                explicit_only_nodes.add(solver)
+                explicit_attrs_by_node.setdefault(solver, set()).add("enabled")
+        except Exception:
+            self.logger.debug("Failed to capture target-owned IK solver nodes", exc_info=True)
+        try:
+            owned_joints = set()
+            for joint in self.bone_name_mapping.values():
+                owned_joints.update(cmds.ls(joint, long=True) or [joint])
+            captured_solver_slots = set()
+            for joint, info in (self._collect_ik_link_joints() or {}).items():
+                resolved_joint = (cmds.ls(joint, long=True) or [joint])[0]
+                if target_model and str(resolved_joint) not in {str(value) for value in owned_joints}:
+                    continue
+                solver = info.get("solver") if isinstance(info, dict) else None
+                slot = info.get("slot") if isinstance(info, dict) else None
+                if not solver or slot is None:
+                    continue
+                try:
+                    slot = int(slot)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                resolved_solver = (cmds.ls(solver, long=True) or [solver])[0]
+                solver = str(resolved_solver)
+                solver_slot = (solver, slot)
+                if solver_slot in captured_solver_slots:
+                    continue
+                captured_solver_slots.add(solver_slot)
+                nodes.add(solver)
+                explicit_only_nodes.add(solver)
+                attrs = explicit_attrs_by_node.setdefault(solver, set())
+                attrs.add("enabled")
+                attrs.update(
+                    {
+                        f"inputRotate[{slot}].inputRotateElement{axis}"
+                        for axis in ("X", "Y", "Z")
+                    }
+                )
+        except Exception:
+            self.logger.debug("Failed to capture legacy IK inputRotate channels", exc_info=True)
 
         try:
             owned_joints = set()
@@ -1566,15 +1717,42 @@ class VmdConverter:
             nodes.add(str(marker))
             nodes.update(str(node) for node in (cmds.listRelatives(marker, shapes=True, fullPath=True) or []))
 
+        # Maya accepts both short and long DAG names.  Normalize the complete
+        # ownership set before taking the snapshot so a solver discovered via
+        # a short name cannot be captured twice or lose its explicit attrs.
+        canonical_nodes = set()
+        canonical_explicit_attrs = {}
+        canonical_explicit_only = set()
+        for node in nodes:
+            try:
+                canonical = str((cmds.ls(node, long=True) or [node])[0])
+            except Exception:
+                canonical = str(node)
+            canonical_nodes.add(canonical)
+            attrs = canonical_explicit_attrs.setdefault(canonical, set())
+            attrs.update(explicit_attrs_by_node.get(node, set()))
+            if node in explicit_only_nodes:
+                canonical_explicit_only.add(canonical)
+        nodes = canonical_nodes
+        explicit_attrs_by_node = canonical_explicit_attrs
+        explicit_only_nodes = canonical_explicit_only
+
         channels = []
         for node in sorted(nodes):
             if not cmds.objExists(node):
                 continue
-            try:
-                attrs = set(cmds.listAttr(node, keyable=True) or [])
-            except Exception:
-                attrs = set()
-            attrs.update(explicit_attrs_by_node.get(node, set()))
+            if node in explicit_only_nodes:
+                # Legacy IK solver nodes are DG-owned.  Snapshot only the
+                # exact state that the fallback writer mutates; listAttr would
+                # pull in solver outputs and connected joint-facing plugs,
+                # which cannot be restored with setAttr while connected.
+                attrs = set(explicit_attrs_by_node.get(node, set()))
+            else:
+                try:
+                    attrs = set(cmds.listAttr(node, keyable=True) or [])
+                except Exception:
+                    attrs = set()
+                attrs.update(explicit_attrs_by_node.get(node, set()))
             # Marker nodes may expose these custom channels as non-keyable
             # plugs in older Maya versions; include them explicitly.
             attrs.update(
@@ -1611,6 +1789,26 @@ class VmdConverter:
                     channel = _capture_animation_channel_snapshot(cmds, plug)
                 except Exception:
                     continue
+                # A direct non-animCurve incoming connection owns this plug's
+                # value.  The import does not mutate that connection, and
+                # attempting to restore the captured value with setAttr would
+                # fail (or break the connection).  Leave it out of the
+                # channel snapshot; connection-bearing animCurve rows remain
+                # fully captured with their UUID/payload.
+                if channel.get("incoming") and not channel.get("curve_node"):
+                    continue
+                if not channel.get("incoming") and not channel.get("curve_node"):
+                    # Maya reports a compound-parent connection (for example
+                    # solver.outputRotate -> joint.rotate) only on the parent
+                    # plug; component listConnections() calls are empty.  A
+                    # false settable flag is the reliable child-plug signal,
+                    # and prevents rollback from issuing setAttr on a locked
+                    # or connected component.
+                    try:
+                        if cmds.getAttr(plug, settable=True) is False:
+                            continue
+                    except Exception:
+                        pass
                 channels.append(
                     {
                         "node": node,

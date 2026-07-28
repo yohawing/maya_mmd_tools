@@ -145,7 +145,7 @@
     "reduce_bake_keys": "ベイクキーを削減（許容誤差内）",
     "reduce_quality": "ベイクキー削減の品質。1.0 は最高精度、0.0 は最大削減",
     "clear_existing_motion": "VMDインポート前に対象モデルの既存VMDキーとVMD_Motionレイヤーを削除します",
-    "create_mmd_control_rig": "VMDモーションをMMD Control Rigへ直接インポートします（実験的）",
+    "create_mmd_control_rig": "モデルインポート後にMMD Control Rigを作成し、以後のVMDをこのリグへ直接インポートします（実験的）",
     "start_frame": "VMDアニメーションの開始フレームをMayaタイムライン上で指定します",
     "vmd_fps": "VMDファイルのフレームレート。MMDは30fpsが標準です",
     "motion_scale": "VMDのボーン移動量とカメラ位置・距離に適用する倍率です",

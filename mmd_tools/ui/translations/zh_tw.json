@@ -143,7 +143,7 @@
     "bake_mode": "將所有影格烘焙為關鍵影格。不建立 IK/附加綁定",
     "native_physics_bake": "使用原生執行階段烘焙 PMX 物理。需要烘焙動作",
     "reduce_bake_keys": "在容差內減少烘焙關鍵影格",
-    "create_mmd_control_rig": "將 VMD 動作直接匯入 MMD Control Rig（實驗性）",
+    "create_mmd_control_rig": "匯入模型後建立 MMD Control Rig，後續 VMD 將直接匯入此綁定（實驗性）",
     "reduce_quality": "烘焙關鍵影格縮減品質：1.0 保留最高保真度，0.0 進行最強縮減",
     "start_frame": "VMD 動畫在 Maya 時間軸上的起始影格",
     "vmd_fps": "VMD 檔案的影格率。MMD 標準為 30 fps",
