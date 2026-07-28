@@ -490,7 +490,6 @@ class ImportExportTab(BaseTab):
         # Export UI/entry is also develop-mode only (export_group via _apply_export_visibility).
         self._dev_only_widgets = [
             self.scale_row,
-            self.separate_meshes_check,
             self.disable_backface_culling_check,
             self.texture_row,
             self.uv_row,

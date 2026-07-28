@@ -19,7 +19,6 @@ _SETTINGS_EXPORT_CATEGORIES = ("import", "export", "logging", "ui")
 # In dev mode the saved setting is used instead.
 _NORMAL_MODE_IMPORT_OVERRIDES = {
     "import_models": True,
-    "separate_meshes_by_material": False,
     "disable_backface_culling": True,
     "uv_set_name": "map#",
     "texture_search_path": "",
