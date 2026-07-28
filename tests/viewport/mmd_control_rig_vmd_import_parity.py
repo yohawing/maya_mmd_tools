@@ -84,12 +84,7 @@ def _load_plugins() -> dict[str, str]:
     """Load the Python plugin and the native solver needed by Control Rig."""
 
     maya_major = str(cmds.about(version=True)).split(".", 1)[0]
-    override = os.environ.get("MMD_TOOLS_CPP_PLUGIN")
-    cpp = (
-        Path(override).expanduser().resolve()
-        if override
-        else _ROOT / "plug-ins" / maya_major / "Debug" / "mmd_tools_cpp.mll"
-    )
+    cpp = _resolve_cpp_plugin_path(maya_major)
     if not cpp.is_file():
         raise RuntimeError(f"required native plugin is missing: {cpp}")
     plugin_dir = str(cpp.parent)
@@ -101,6 +96,30 @@ def _load_plugins() -> dict[str, str]:
     if not cmds.pluginInfo(py_plugin.stem, query=True, loaded=True):
         cmds.loadPlugin(str(py_plugin), quiet=True)
     return {"python": str(py_plugin), "native": str(cpp)}
+
+
+def _resolve_cpp_plugin_path(
+    maya_major: str,
+    *,
+    env: Mapping[str, str] | None = None,
+    root: Path | None = None,
+) -> Path:
+    """Resolve the native plugin override for one Maya major version.
+
+    A version-specific override is useful when a matrix run needs to keep one
+    Maya host on a release binary while another host still uses its default
+    debug build.  The general override remains the fallback for existing
+    callers, followed by the repository's default debug plugin path.
+    """
+
+    values = os.environ if env is None else env
+    override = values.get(f"MMD_TOOLS_CPP_PLUGIN_{maya_major}") or values.get(
+        "MMD_TOOLS_CPP_PLUGIN"
+    )
+    if override:
+        return Path(override).expanduser().resolve()
+    base = _ROOT if root is None else root
+    return base / "plug-ins" / maya_major / "Debug" / "mmd_tools_cpp.mll"
 
 
 def _apply_evaluation_mode(requested: str) -> dict[str, Any]:

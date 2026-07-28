@@ -12,6 +12,40 @@ def _bone_frame(name: str, frame: int) -> SimpleNamespace:
     return SimpleNamespace(bone_name=name, frame_number=frame, interpolation=bytes(64))
 
 
+def test_cpp_plugin_path_prefers_maya_version_override(tmp_path):
+    version_path = tmp_path / "maya2026.mll"
+    general_path = tmp_path / "general.mll"
+
+    result = parity._resolve_cpp_plugin_path(
+        "2026",
+        env={
+            "MMD_TOOLS_CPP_PLUGIN_2026": str(version_path),
+            "MMD_TOOLS_CPP_PLUGIN": str(general_path),
+        },
+        root=tmp_path,
+    )
+
+    assert result == version_path.resolve()
+
+
+def test_cpp_plugin_path_uses_general_override_for_other_versions(tmp_path):
+    general_path = tmp_path / "general.mll"
+
+    result = parity._resolve_cpp_plugin_path(
+        "2024",
+        env={"MMD_TOOLS_CPP_PLUGIN": str(general_path)},
+        root=tmp_path,
+    )
+
+    assert result == general_path.resolve()
+
+
+def test_cpp_plugin_path_defaults_to_debug_binary(tmp_path):
+    result = parity._resolve_cpp_plugin_path("2024", env={}, root=tmp_path)
+
+    assert result == tmp_path / "plug-ins" / "2024" / "Debug" / "mmd_tools_cpp.mll"
+
+
 def test_fresh_key_times_compare_bone_union_not_constant_components():
     exported = SimpleNamespace(
         bone_frames=[_bone_frame("右足", 0), _bone_frame("右足", 1)],
