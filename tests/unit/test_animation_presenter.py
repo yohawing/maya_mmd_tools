@@ -3,6 +3,7 @@
 import json
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from tests.common.maya_stub import install_headless_ui_stubs
 
@@ -292,13 +293,64 @@ class _FakeCheckBox:
         self.visible = bool(visible)
 
 
+class _FakeTriStateButton(_FakeCheckBox):
+    """Small public-API double for the Animator tri-state button."""
+
+    def __init__(self, label=""):
+        super().__init__(label)
+        self.clicked = _FakeSignal()
+        self.visibilityStateChanged = _FakeSignal()
+        self.is_tri_state = True
+        self.visibility_state = "visible"
+        self._visibility_available = True
+        self._visibility_state_labels = {
+            "visible": "Visible",
+            "reference": "Reference",
+            "hidden": "Hidden",
+        }
+        self._visibility_unavailable_label = "Unavailable"
+        self.tooltip = ""
+        self.clicked.connect(lambda *_args: self.cycle_visibility_state())
+
+    def setVisibilityState(self, state):
+        self.visibility_state = str(state)
+
+    def setVisibilityAvailable(self, available, unavailable_label=None):
+        self._visibility_available = bool(available)
+        if unavailable_label is not None:
+            self._visibility_unavailable_label = unavailable_label
+        self.setEnabled(available)
+        self.tooltip = (
+            self._visibility_state_labels[self.visibility_state]
+            if available
+            else self._visibility_unavailable_label
+        )
+
+    def setVisibilityLabels(self, labels, unavailable_label=None):
+        self._visibility_state_labels.update(labels)
+        if unavailable_label is not None:
+            self._visibility_unavailable_label = unavailable_label
+        self.tooltip = (
+            self._visibility_state_labels[self.visibility_state]
+            if self._visibility_available
+            else self._visibility_unavailable_label
+        )
+
+    def cycle_visibility_state(self):
+        states = ("visible", "reference", "hidden")
+        state = states[(states.index(self.visibility_state) + 1) % len(states)]
+        self.setVisibilityState(state)
+        self.visibilityStateChanged.emit(state)
+        return state
+
+
 class _FakeView:
     TAB_BODY = 0
     TAB_FINGER = 1
     TAB_MORPH = 2
     TAB_OTHER = 3
 
-    def __init__(self):
+    def __init__(self, tri_state=False):
         self.model_combo = _FakeComboBox()
         self.refresh_btn = _FakeButton()
         self.clear_btn = _FakeButton()
@@ -309,9 +361,9 @@ class _FakeView:
         self.finger_picker = _FakeFingerPicker()
         self.morph_groups_layout = _FakeLayout()
         self.picker_tabs = _FakeTabWidget()
+        button_type = _FakeTriStateButton if tri_state else _FakeCheckBox
         self.vis_checkboxes = {
-            k: _FakeCheckBox(k)
-            for k in ("mesh", "joints", "colliders")
+            k: button_type(k) for k in ("mesh", "joints", "colliders")
         }
         self.tool_buttons = {
             k: _FakeButton()
@@ -469,6 +521,11 @@ class _FakeAdapter:
         self._set_attrs[attr_path] = value
         node, attr = attr_path.rsplit(".", 1)
         self._attrs[(node, attr)] = value
+        for source, destination, _force in self._connections:
+            if source != attr_path:
+                continue
+            target_node, target_attr = destination.rsplit(".", 1)
+            self._attrs[(target_node, target_attr)] = value
 
     def add_attr(self, node, longName=None, attributeType=None, **kwargs):
         self._attrs[(node, longName)] = False
@@ -480,6 +537,12 @@ class _FakeAdapter:
     def connect_attr(self, source, destination, force=False):
         self._connections.append((source, destination, force))
         self._incoming_connections[destination] = [source]
+        source_node, source_attr = source.rsplit(".", 1)
+        if (source_node, source_attr) in self._attrs:
+            target_node, target_attr = destination.rsplit(".", 1)
+            self._attrs[(target_node, target_attr)] = self._attrs[
+                (source_node, source_attr)
+            ]
 
     def list_connections(self, node, **kwargs):
         if kwargs.get("source") and kwargs.get("plugs"):
@@ -1280,8 +1343,8 @@ class TestAnimationPresenterMorph(unittest.TestCase):
 
 
 class TestVisibilityToggle(unittest.TestCase):
-    def _make_with_model(self, model_root="test_model"):
-        view = _FakeView()
+    def _make_with_model(self, model_root="test_model", tri_state=False):
+        view = _FakeView(tri_state=tri_state)
         app_state = _FakeAppState(model_root=model_root)
         adapter = _FakeAdapter(
             joints_by_index={0: "head_jnt"},
@@ -1348,13 +1411,172 @@ class TestVisibilityToggle(unittest.TestCase):
         group = "|test_model|Controls"
         adapter._attrs[(group, "visibility")] = True
 
-        with patch.object(presenter, "_control_rig_group", return_value=group):
+        adapter._cmds = object()
+        with patch(
+            "mmd_tools.ui.presenters.animation_presenter.inspect_mmd_control_rig",
+            return_value=SimpleNamespace(control_group=group),
+        ):
             presenter._sync_visibility_controls("test_model")
             presenter._on_visibility_changed("control_rig", False)
 
         self.assertTrue(button._control_rig_available)
         self.assertTrue(button.isChecked())
         self.assertFalse(adapter._set_attrs[f"{group}.visibility"])
+
+    def test_visibility_state_reference_writes_and_reads_group_plugs(self):
+        presenter, view, _, adapter = self._make_with_model()
+        button = _FakeTriStateButton("joints")
+        view.vis_checkboxes["joints"] = button
+        group = "|test_model|Skeleton"
+        adapter._attrs[(group, "visibility")] = True
+        adapter._attrs[(group, "overrideEnabled")] = False
+        adapter._attrs[(group, "overrideDisplayType")] = 0
+
+        presenter._on_visibility_state_changed("joints", "reference")
+
+        self.assertEqual(button.visibility_state, "reference")
+        self.assertTrue(adapter._set_attrs[f"{group}.overrideEnabled"])
+        self.assertEqual(adapter._set_attrs[f"{group}.overrideDisplayType"], 2)
+
+    def test_visibility_state_missing_model_resets_button_deterministically(self):
+        presenter, view, _, _ = self._make_with_model(model_root=None)
+        button = _FakeTriStateButton("joints")
+        button.visibility_state = "hidden"
+        view.vis_checkboxes["joints"] = button
+
+        presenter._on_visibility_state_changed("joints", "reference")
+
+        self.assertEqual(button.visibility_state, "visible")
+
+    def test_control_rig_visibility_state_uses_uuid_group_plugs(self):
+        presenter, view, _, adapter = self._make_with_model(tri_state=True)
+        button = _FakeTriStateButton("control_rig")
+        view.vis_checkboxes["control_rig"] = button
+        group = "|test_model|MMD_CONTROLS_GRP"
+        adapter._attrs[(group, "visibility")] = True
+        adapter._attrs[(group, "overrideEnabled")] = False
+        adapter._attrs[(group, "overrideDisplayType")] = 0
+
+        adapter._cmds = object()
+        with patch(
+            "mmd_tools.ui.presenters.animation_presenter.inspect_mmd_control_rig",
+            return_value=SimpleNamespace(control_group=group),
+        ):
+            presenter._on_visibility_state_changed("control_rig", "reference")
+
+        self.assertEqual(button.visibility_state, "reference")
+        self.assertEqual(adapter._set_attrs[f"{group}.overrideDisplayType"], 2)
+
+    def test_tri_state_clicked_cycle_has_one_emission_and_scene_readback(self):
+        presenter, view, _, adapter = self._make_with_model(tri_state=True)
+        button = view.vis_checkboxes["joints"]
+        group = "|test_model|Skeleton"
+        adapter._attrs[(group, "visibility")] = True
+        adapter._attrs[(group, "overrideEnabled")] = False
+        adapter._attrs[(group, "overrideDisplayType")] = 0
+        presenter._sync_visibility_controls("test_model")
+        emitted = []
+        button.visibilityStateChanged.connect(emitted.append)
+
+        button.clicked.emit(False)
+        button.clicked.emit(False)
+        button.clicked.emit(False)
+
+        self.assertEqual(emitted, ["reference", "hidden", "visible"])
+        self.assertEqual(button.visibility_state, "visible")
+
+    def test_rejected_tri_state_write_corrects_optimistic_button_readback(self):
+        presenter, view, _, adapter = self._make_with_model(tri_state=True)
+        button = view.vis_checkboxes["joints"]
+        group = "|test_model|Skeleton"
+        adapter._attrs[(group, "visibility")] = True
+        adapter._attrs[(group, "overrideEnabled")] = False
+        adapter._attrs[(group, "overrideDisplayType")] = 0
+        presenter._sync_visibility_controls("test_model")
+        adapter._incoming_connections[f"{group}.overrideEnabled"] = [
+            "foreign.output"
+        ]
+
+        button.clicked.emit(False)
+
+        self.assertEqual(button.visibility_state, "visible")
+        self.assertEqual(button._visibility_available, True)
+
+    def test_missing_visibility_group_disables_button_as_unavailable(self):
+        presenter, view, _, adapter = self._make_with_model(tri_state=True)
+        original_list_relatives = adapter.list_relatives
+
+        def no_display_groups(node, **kwargs):
+            if kwargs.get("children") and kwargs.get("type") == "transform":
+                return []
+            return original_list_relatives(node, **kwargs)
+
+        adapter.list_relatives = no_display_groups
+        presenter._sync_visibility_controls("test_model")
+
+        button = view.vis_checkboxes["joints"]
+        self.assertFalse(button._visibility_available)
+        self.assertFalse(button.enabled)
+        self.assertEqual(button.tooltip, "Unavailable")
+
+    def test_ambiguous_visibility_group_disables_button_as_unavailable(self):
+        presenter, view, _, adapter = self._make_with_model(tri_state=True)
+        original_list_relatives = adapter.list_relatives
+
+        def ambiguous_display_groups(node, **kwargs):
+            if kwargs.get("children") and kwargs.get("type") == "transform":
+                return ["|test_model|Skeleton", "|test_model|ns:Skeleton"]
+            return original_list_relatives(node, **kwargs)
+
+        adapter.list_relatives = ambiguous_display_groups
+        presenter._sync_visibility_controls("test_model")
+
+        button = view.vis_checkboxes["joints"]
+        self.assertFalse(button._visibility_available)
+        self.assertFalse(button.enabled)
+        self.assertEqual(button.tooltip, "Unavailable")
+
+    def test_missing_control_rig_inspection_disables_button_as_unavailable(self):
+        presenter, view, _, adapter = self._make_with_model(tri_state=True)
+        button = _FakeTriStateButton("control_rig")
+        view.vis_checkboxes["control_rig"] = button
+        adapter._cmds = object()
+
+        with patch(
+            "mmd_tools.ui.presenters.animation_presenter.inspect_mmd_control_rig",
+            return_value=None,
+        ):
+            presenter._sync_visibility_controls("test_model")
+
+        self.assertFalse(button._visibility_available)
+        self.assertFalse(button.enabled)
+        self.assertEqual(button.tooltip, "Unavailable")
+
+    def test_visibility_group_restore_reenables_and_reads_actual_state(self):
+        presenter, view, _, adapter = self._make_with_model(tri_state=True)
+        button = view.vis_checkboxes["joints"]
+        original_list_relatives = adapter.list_relatives
+
+        def no_display_groups(node, **kwargs):
+            if kwargs.get("children") and kwargs.get("type") == "transform":
+                return []
+            return original_list_relatives(node, **kwargs)
+
+        adapter.list_relatives = no_display_groups
+        presenter._sync_visibility_controls("test_model")
+        self.assertFalse(button._visibility_available)
+        self.assertFalse(button.enabled)
+
+        adapter.list_relatives = original_list_relatives
+        group = "|test_model|Skeleton"
+        adapter._attrs[(group, "visibility")] = True
+        adapter._attrs[(group, "overrideEnabled")] = True
+        adapter._attrs[(group, "overrideDisplayType")] = 2
+        presenter._sync_visibility_controls("test_model")
+
+        self.assertTrue(button._visibility_available)
+        self.assertTrue(button.enabled)
+        self.assertEqual(button.visibility_state, "reference")
 
 
 class TestToolsSection(unittest.TestCase):

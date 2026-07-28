@@ -49,6 +49,12 @@ _CONTROL_RIG_TRANSLATION_KEYS = (
     "control_rig_diagnostics",
     "control_rig_diagnostics_tooltip",
 )
+_VISIBILITY_TRANSLATION_KEYS = (
+    "visibility_state_visible",
+    "visibility_state_reference",
+    "visibility_state_hidden",
+    "visibility_unavailable",
+)
 
 
 class _PickerTabs:
@@ -76,12 +82,18 @@ class _TextTarget:
         self.text = None
         self.tooltip = None
         self.title = None
+        self.visibility_labels = None
+        self.visibility_unavailable = None
 
     def setText(self, text):
         self.text = text
 
     def setToolTip(self, text):
         self.tooltip = text
+
+    def setVisibilityLabels(self, labels, unavailable_label=None):
+        self.visibility_labels = dict(labels)
+        self.visibility_unavailable = unavailable_label
 
     def setTitle(self, text):
         self.title = text
@@ -195,6 +207,10 @@ class AnimationTabDevelopmentVisibilityTest(unittest.TestCase):
                     set(_CONTROL_RIG_TRANSLATION_KEYS).issubset(translations),
                     locale,
                 )
+                self.assertTrue(
+                    set(_VISIBILITY_TRANSLATION_KEYS).issubset(translations),
+                    locale,
+                )
                 view = _retranslate_view({"animation_toolset": translations, **translations})
                 AnimationTab.retranslateUi(view)
 
@@ -208,6 +224,15 @@ class AnimationTabDevelopmentVisibilityTest(unittest.TestCase):
                     self.assertEqual(
                         button.tooltip,
                         translations[f"{translation_key}_tooltip"],
+                    )
+                for button in view.vis_checkboxes.values():
+                    self.assertEqual(
+                        button.visibility_labels["reference"],
+                        translations["visibility_state_reference"],
+                    )
+                    self.assertEqual(
+                        button.visibility_unavailable,
+                        translations["visibility_unavailable"],
                     )
 
     def test_mmd_control_rig_buttons_are_visible_outside_development_mode(self):

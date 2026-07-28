@@ -16,6 +16,7 @@ from ...core.constants import (
 from ...core.display_frame_resolver import PickerGroup, resolve_display_frames
 from ...core.logger import get_logger
 from ...core.mmd_bone_names import normalize_mmd_bone_name
+from ...core.mmd_control_rig_builder import inspect_mmd_control_rig
 from ...core.morph_metadata_reader import (
     CategorizedMorphs,
     MorphInfo,
@@ -24,7 +25,12 @@ from ...core.morph_metadata_reader import (
     morph_info_from_presenter_entry,
 )
 from ...core.visibility_state import (
-    get_visibility_category,
+    VisibilityState,
+    get_visibility_state,
+    get_visibility_group_state,
+    resolve_visibility_group,
+    set_visibility_group_state,
+    set_visibility_state,
     set_visibility_category,
     sync_visibility_connections,
 )
@@ -100,6 +106,8 @@ class AnimationPresenter:
 
         if self.app_state.current_model_root:
             self._reload_for_model(self.app_state.current_model_root)
+        else:
+            self._sync_visibility_controls(None)
 
     def connect_signals(self):
         self.app_state.current_model_changed.connect(self.on_current_model_changed)
@@ -137,6 +145,21 @@ class AnimationPresenter:
         if hasattr(self.view, "select_all_btn"):
             self.view.select_all_btn.clicked.connect(self.on_select_all)
         for key, cb in self.view.vis_checkboxes.items():
+            capability = getattr(cb, "is_tri_state", None)
+            if capability is None:
+                capability = getattr(cb, "isTriState", False)
+            if callable(capability):
+                capability = capability()
+            is_tri_state = bool(capability)
+            if is_tri_state:
+                visibility_signal = getattr(cb, "visibilityStateChanged", None)
+                if visibility_signal is None:
+                    continue
+                visibility_signal.connect(
+                    lambda state, k=key: self._on_visibility_state_changed(k, state)
+                )
+                continue
+            # Keep the legacy bool signal for third-party and headless views.
             cb.stateChanged.connect(
                 lambda state, k=key: self._on_visibility_changed(k, state != 0)
             )
@@ -679,6 +702,8 @@ class AnimationPresenter:
     # -- Visibility -------------------------------------------------------
 
     def _on_visibility_changed(self, category: str, visible: bool):
+        """Compatibility entry point for legacy bool visibility widgets."""
+
         model_root = self.app_state.current_model_root
         if not model_root:
             return
@@ -697,6 +722,44 @@ class AnimationPresenter:
             sync_visibility_connections(self.maya_adapter, model_root, category)
         except Exception as exc:
             logger.debug("Visibility toggle failed for %s: %s", category, exc)
+        self._sync_visibility_controls(model_root)
+
+    def _on_visibility_state_changed(self, category: str, state: str) -> None:
+        """Apply a tri-state transition and immediately read the scene back."""
+
+        model_root = self.app_state.current_model_root
+        if not model_root:
+            self._sync_visibility_controls(None)
+            return
+        if category == "morphs":
+            return
+        normalized = self._coerce_visibility_state(state)
+        if normalized is None:
+            self._sync_visibility_controls(model_root)
+            return
+
+        success = False
+        if category == "control_rig":
+            group = self._control_rig_group(model_root)
+            if group:
+                success = set_visibility_group_state(
+                    self.maya_adapter,
+                    group,
+                    normalized,
+                    label="Set MMD Control Rig Visibility",
+                )
+        else:
+            try:
+                success = set_visibility_state(
+                    self.maya_adapter, model_root, category, normalized
+                )
+            except Exception as exc:
+                logger.debug("Visibility state transition failed for %s: %s", category, exc)
+        # Correct optimistic UI state from actual scene plugs after both
+        # successful and rejected writes.
+        self._sync_visibility_controls(model_root, ensure_connections=False)
+        if not success:
+            logger.debug("Visibility state transition was rejected for %s", category)
 
     # -- Internal ------------------------------------------------------
 
@@ -925,44 +988,88 @@ class AnimationPresenter:
             self.view.body_picker.set_region_dim_levels({})
         self.view.display_frame_tree.clear()
         self._clear_morph_tab()
+        self._sync_visibility_controls(None)
         self.view.status_label.setText("")
 
-    def _sync_visibility_controls(self, model_root: str):
+    def _sync_visibility_controls(
+        self, model_root: str | None, *, ensure_connections: bool = True
+    ):
         try:
-            sync_visibility_connections(self.maya_adapter, model_root)
+            if model_root and ensure_connections:
+                sync_visibility_connections(self.maya_adapter, model_root)
             for key, cb in self.view.vis_checkboxes.items():
                 if key == "control_rig":
-                    group = self._control_rig_group(model_root)
+                    group = self._control_rig_group(model_root) if model_root else None
                     cb._control_rig_available = bool(group)
-                    cb.setChecked(
-                        bool(self.maya_adapter.get_attr(f"{group}.visibility"))
-                        if group
-                        else False
+                    self._set_visibility_button_available(cb, bool(group))
+                    self._set_visibility_button_state(
+                        cb, get_visibility_group_state(self.maya_adapter, group)
                     )
                     continue
                 if key == "morphs":
                     continue
-                cb.setChecked(get_visibility_category(self.maya_adapter, model_root, key))
+                group = resolve_visibility_group(self.maya_adapter, model_root, key)
+                self._set_visibility_button_available(cb, bool(group))
+                state = (
+                    get_visibility_state(self.maya_adapter, model_root, key)
+                    if model_root
+                    else VisibilityState.VISIBLE
+                )
+                self._set_visibility_button_state(cb, state)
             if hasattr(self.view, "refresh_development_mode_visibility"):
                 self.view.refresh_development_mode_visibility()
         except Exception as exc:
             logger.debug("Visibility control sync failed: %s", exc)
 
+    @staticmethod
+    def _coerce_visibility_state(state: str | VisibilityState) -> VisibilityState | None:
+        if isinstance(state, VisibilityState):
+            return state
+        try:
+            return VisibilityState(str(state).strip().lower())
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _set_visibility_button_state(button, state: VisibilityState) -> None:
+        setter = getattr(button, "setVisibilityState", None)
+        if callable(setter):
+            setter(state.value)
+            return
+        setter = getattr(button, "set_visibility_state", None)
+        if callable(setter):
+            setter(state.value)
+            return
+        if hasattr(button, "setChecked"):
+            # Legacy bool widgets cannot expose Reference independently.
+            button.setChecked(state is not VisibilityState.HIDDEN)
+
+    @staticmethod
+    def _set_visibility_button_available(button, available: bool) -> None:
+        setter = getattr(button, "setVisibilityAvailable", None)
+        if callable(setter):
+            setter(available)
+            return
+        setter = getattr(button, "set_visibility_available", None)
+        if callable(setter):
+            setter(available)
+            return
+        if hasattr(button, "setEnabled"):
+            button.setEnabled(bool(available))
+        button._visibility_available = bool(available)
+
     def _control_rig_group(self, model_root: str) -> str | None:
         """Resolve the UUID-owned Control Rig display group, if it is valid."""
 
         cmds_module = getattr(self.maya_adapter, "_cmds", None)
-        if cmds_module is None:
+        if not model_root or cmds_module is None:
             return None
         try:
-            from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
-
-            metadata = read_mmd_control_rig_metadata(
+            inspected = inspect_mmd_control_rig(
                 model_root, cmds_module=cmds_module
             )
-            uuid = metadata.get("controlGroupUuid") if metadata else None
-            nodes = self.maya_adapter.ls(uuid, long=True) if uuid else []
-            return str(nodes[0]) if len(nodes) == 1 else None
+            group = getattr(inspected, "control_group", None)
+            return str(group) if isinstance(group, str) and group else None
         except Exception:
             logger.debug("Control Rig visibility group lookup failed", exc_info=True)
             return None

@@ -59,11 +59,11 @@ class AnimationTab(BaseTab):
             ("colliders", "capsule"),
             ("control_rig", "controlrig"),
         ):
-            button = MaterialSymbolToolButton(symbol, key, checkable=True)
-            button.setChecked(True)
+            button = MaterialSymbolToolButton(symbol, key, tri_state=True)
+            button.setVisibilityState("visible")
             if key == "control_rig":
                 button._control_rig_available = False
-                button.setEnabled(False)
+                button.setVisibilityAvailable(False)
             visibility_layout.addWidget(button)
             self.vis_checkboxes[key] = button
         visibility_layout.addStretch(1)
@@ -257,7 +257,17 @@ class AnimationTab(BaseTab):
             tooltips={"back_to_body": tr("back_to_body_tooltip")},
         )
         for key in ("mesh", "joints", "colliders", "control_rig"):
-            self.vis_checkboxes[key].setText(tr(key))
+            button = self.vis_checkboxes[key]
+            button.setText(tr(key))
+            if hasattr(button, "setVisibilityLabels"):
+                button.setVisibilityLabels(
+                    {
+                        "visible": tr("visibility_state_visible"),
+                        "reference": tr("visibility_state_reference"),
+                        "hidden": tr("visibility_state_hidden"),
+                    },
+                    tr("visibility_unavailable"),
+                )
         self.tools_group.setTitle(tr("tools"))
         self.control_rig_group.setTitle(tr("control_rig_group_title"))
         for button in self.control_rig_buttons.values():
