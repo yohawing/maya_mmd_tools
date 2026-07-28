@@ -21,7 +21,6 @@ import json
 import logging
 import os
 import sys
-import time
 import traceback
 from pathlib import Path
 from typing import Any
@@ -30,12 +29,11 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from tests.common import maya_commandport
+from tests.viewport.maya_e2e_harness import run_maya_e2e
 
 COMMAND_PORT = 7756
 COMPLETION_MARKER = "//-- MMD_CONTROL_RIG_UI_E2E_DONE --//"
 TEST_TIMEOUT = 420
-LOG_POLL_INTERVAL = 0.5
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -391,34 +389,6 @@ def run_ui_check(
         log(COMPLETION_MARKER)
 
 
-def _monitor_result(log_path: Path, report_path: Path, timeout: float) -> dict[str, Any]:
-    log_path.touch(exist_ok=True)
-    start = time.time()
-    result = None
-    with log_path.open("r", encoding="utf-8", errors="replace") as handle:
-        while time.time() - start < timeout:
-            line = handle.readline()
-            if line:
-                print(line, end="")
-                if line.startswith("RESULT_JSON:"):
-                    result = json.loads(line.split("RESULT_JSON:", 1)[1].strip())
-                if COMPLETION_MARKER in line:
-                    break
-            else:
-                time.sleep(LOG_POLL_INTERVAL)
-        else:
-            raise TimeoutError(f"timed out waiting for completion marker: {log_path}")
-    start = time.time()
-    while not report_path.is_file() and time.time() - start < 30:
-        time.sleep(LOG_POLL_INTERVAL)
-    if not report_path.is_file():
-        raise TimeoutError(f"missing report: {report_path}")
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    if result is not None and result.get("status") != report.get("status"):
-        raise RuntimeError("Maya RESULT_JSON and report status disagree")
-    return report
-
-
 def main() -> int:
     if hasattr(sys.stdout, "buffer"):
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
@@ -436,37 +406,31 @@ def main() -> int:
     log_path = out_dir / f"mmd_control_rig_ui_e2e_{suffix}.log"
     scene_path = out_dir / f"mmd_control_rig_ui_e2e_{suffix}.ma"
     capture_dir = out_dir / f"mmd_control_rig_ui_e2e_{suffix}_captures"
-    maya_commandport.remove_stale_logs([report_path, log_path, scene_path])
-    if maya_commandport.is_port_open(args.port):
-        raise RuntimeError(f"commandPort :{args.port} is already open")
-    proc = maya_commandport.launch_maya(
-        version=args.maya,
-        project_root=_PROJECT_ROOT,
-        output_dir=out_dir,
-        port=args.port,
-        launch_mode="explorer" if sys.platform == "win32" else "direct",
+    command = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"project_root = Path(r'{_PROJECT_ROOT.as_posix()}')\n"
+        "sys.path.insert(0, str(project_root)) if str(project_root) not in sys.path else None\n"
+        "from tests.viewport.e2e_mmd_control_rig_ui import run_ui_check\n"
+        f"run_ui_check(r'{log_path.as_posix()}', r'{Path(args.model).resolve().as_posix()}', r'{report_path.as_posix()}', r'{scene_path.as_posix()}', r'{capture_dir.as_posix()}')\n"
     )
-    try:
-        maya_commandport.wait_for_port(args.port, timeout=120, process=proc)
-        command = (
-            "import sys\n"
-            "from pathlib import Path\n"
-            f"project_root = Path(r'{_PROJECT_ROOT.as_posix()}')\n"
-            "sys.path.insert(0, str(project_root)) if str(project_root) not in sys.path else None\n"
-            "from tests.viewport.e2e_mmd_control_rig_ui import run_ui_check\n"
-            f"run_ui_check(r'{log_path.as_posix()}', r'{Path(args.model).resolve().as_posix()}', r'{report_path.as_posix()}', r'{scene_path.as_posix()}', r'{capture_dir.as_posix()}')\n"
-        )
-        maya_commandport.send_python(args.port, command, label="<mmd-control-rig-ui-e2e>")
-        report = _monitor_result(log_path, report_path, args.timeout)
-        return 0 if report.get("status") == "pass" else 1
-    finally:
-        try:
-            maya_commandport.quit_maya(args.port)
-            time.sleep(3)
-        finally:
-            if proc is not None and proc.poll() is None:
-                proc.terminate()
-            maya_commandport.close_process_logs(proc)
+    report = run_maya_e2e(
+        project_root=_PROJECT_ROOT,
+        version=args.maya,
+        out_dir=out_dir,
+        port=args.port,
+        timeout=args.timeout,
+        log_path=log_path,
+        report_path=report_path,
+        command=command,
+        marker=COMPLETION_MARKER,
+        send_label="<mmd-control-rig-ui-e2e>",
+        stale_paths=[report_path, log_path, scene_path],
+        terminate_process=True,
+        quit_delay=3.0,
+        port_error=f"commandPort :{args.port} is already open",
+    )
+    return 0 if report.get("status") == "pass" else 1
 
 
 if __name__ == "__main__":

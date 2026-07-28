@@ -24,7 +24,6 @@ import logging
 import math
 import os
 import sys
-import time
 import traceback
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -33,7 +32,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from tests.common import maya_commandport
+from tests.viewport.maya_e2e_harness import run_maya_e2e
 
 COMMAND_PORT = 7747
 COMPLETION_MARKER = "//-- MMD_CONTROL_RIG_BONE_MORPH_DONE --//"
@@ -337,45 +336,35 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     report_path = out_dir / f"mmd_control_rig_bone_morph_maya{args.maya}.json"
     log_path = out_dir / f"mmd_control_rig_bone_morph_maya{args.maya}.log"
-    maya_commandport.remove_stale_logs([report_path, log_path])
     model = Path(args.model).expanduser().resolve()
     if not model.is_file():
         logger.error("model not found: %s", model)
         return 2
-    proc = None
-    maya_owned = False
     try:
-        if maya_commandport.is_port_open(args.port):
-            raise RuntimeError(f"commandPort :{args.port} is already open")
-        proc = maya_commandport.launch_maya(version=args.maya, project_root=_PROJECT_ROOT, output_dir=out_dir, port=args.port, launch_mode="explorer" if sys.platform == "win32" else "direct")
-        maya_owned = True
-        maya_commandport.wait_for_port(args.port, timeout=120, process=proc)
         command = ("import sys\nfrom pathlib import Path\n" f"project_root=Path(r'{_PROJECT_ROOT.as_posix()}')\n" "sys.path.insert(0,str(project_root)) if str(project_root) not in sys.path else None\n" "from tests.viewport.e2e_mmd_control_rig_bone_morph import run_probe\n" f"run_probe(r'{log_path.as_posix()}',r'{model.as_posix()}',r'{report_path.as_posix()}')\n")
-        maya_commandport.send_python(args.port, command, label="<issue-97-bone-morph>")
-        start = time.time()
-        with log_path.open("a+", encoding="utf-8") as handle:
-            handle.seek(0)
-            while time.time() - start < args.timeout:
-                line = handle.readline()
-                if line:
-                    print(line, end="")
-                    if COMPLETION_MARKER in line:
-                        break
-                else:
-                    time.sleep(0.5)
-        if not report_path.is_file():
-            raise TimeoutError(f"report missing: {report_path}")
-        report = json.loads(report_path.read_text(encoding="utf-8"))
+        report = run_maya_e2e(
+            project_root=_PROJECT_ROOT,
+            version=args.maya,
+            out_dir=out_dir,
+            port=args.port,
+            timeout=args.timeout,
+            log_path=log_path,
+            report_path=report_path,
+            command=command,
+            marker=COMPLETION_MARKER,
+            send_label="<issue-97-bone-morph>",
+            stale_paths=[report_path, log_path],
+            wait_report_timeout=0,
+            verify_status=False,
+            report_error=f"report missing: {report_path}",
+            terminate_process=False,
+            quit_delay=2.0,
+        )
         logger.info("status=%s report=%s", report.get("status"), report_path)
         return 0 if report.get("status") == "pass" else (1 if report.get("status") == "blocked" else 2)
     except (FileNotFoundError, TimeoutError, RuntimeError, ValueError) as exc:
         logger.error("probe blocked: %s", exc)
         return 2
-    finally:
-        if maya_owned:
-            maya_commandport.quit_maya(args.port)
-            time.sleep(2.0)
-            maya_commandport.close_process_logs(proc)
 
 
 if __name__ == "__main__":

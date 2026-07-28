@@ -23,7 +23,6 @@ import logging
 import math
 import os
 import sys
-import time
 import traceback
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -32,12 +31,11 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from tests.common import maya_commandport
+from tests.viewport.maya_e2e_harness import run_maya_e2e
 
 COMMAND_PORT = 7734
 COMPLETION_MARKER = "//-- MMD_CONTROL_RIG_E2E_DONE --//"
 TEST_TIMEOUT = 600
-LOG_POLL_INTERVAL = 0.5
 MOVE_OFFSET_X = 0.35
 MOVE_EPSILON = 1.0e-5
 ROUNDTRIP_MATRIX_EPSILON = 5.0e-3
@@ -1377,43 +1375,6 @@ def _repo_path(value: str) -> Path:
     return path
 
 
-def _wait_for_file(path: Path, timeout: float) -> None:
-    start = time.time()
-    while time.time() - start < timeout:
-        if path.is_file():
-            return
-        time.sleep(LOG_POLL_INTERVAL)
-    raise TimeoutError(f"timed out waiting for file: {path}")
-
-
-def _monitor_result(log_path: Path, report_path: Path, timeout: float) -> dict[str, Any]:
-    log_path.touch(exist_ok=True)
-    start = time.time()
-    result: dict[str, Any] | None = None
-    with log_path.open("r", encoding="utf-8", errors="replace") as handle:
-        # The command may finish before the host opens the log.  Start at the
-        # beginning of this freshly removed file so a fast failure/pass cannot
-        # hide its completion marker behind an end seek.
-        handle.seek(0)
-        while time.time() - start < timeout:
-            line = handle.readline()
-            if line:
-                print(line, end="")
-                if line.strip().startswith("RESULT_JSON:"):
-                    result = json.loads(line.split("RESULT_JSON:", 1)[1].strip())
-                if COMPLETION_MARKER in line:
-                    break
-            else:
-                time.sleep(LOG_POLL_INTERVAL)
-        else:
-            raise TimeoutError(f"timed out waiting for completion marker: {log_path}")
-    _wait_for_file(report_path, timeout=30)
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    if result is not None and result.get("status") != report.get("status"):
-        raise RuntimeError("Maya RESULT_JSON and report status disagree")
-    return report
-
-
 # ===================================================================
 # Host-side: launch a fresh GUI process and drive commandPort
 # ===================================================================
@@ -1461,35 +1422,7 @@ def main() -> int:
     exported_vmd_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{output_suffix}.vmd"
     model_path = _repo_path(args.model)
     motion_path = _repo_path(args.motion)
-    maya_commandport.remove_stale_logs(
-        [log_path, report_path, scene_path, exported_vmd_path]
-    )
-
-    proc = None
-    maya_owned = False
     try:
-        if maya_commandport.is_port_open(args.port):
-            raise RuntimeError(
-                f"commandPort :{args.port} is already open; refusing to attach; choose a free port"
-            )
-        proc = maya_commandport.launch_maya(
-            version=args.maya,
-            project_root=_PROJECT_ROOT,
-            output_dir=out_dir,
-            port=args.port,
-            launch_mode="explorer" if sys.platform == "win32" else "direct",
-        )
-        # On Windows the Explorer launcher is detached and returns no PID, so
-        # commandPort preflight is the available ownership guard.  A port that
-        # was already open is rejected above; a residual launch race is logged.
-        maya_owned = True
-        maya_commandport.wait_for_port(args.port, timeout=120, process=proc)
-        logger.info("fresh Maya commandPort :%d ready", args.port)
-        if proc is None:
-            logger.warning(
-                "Explorer launch is detached; commandPort ownership is guarded by the preflight only"
-            )
-
         model_posix = model_path.as_posix()
         motion_posix = motion_path.as_posix()
         command = (
@@ -1501,8 +1434,25 @@ def main() -> int:
             "from tests.viewport.e2e_mmd_control_rig import run_e2e_check\n"
             f"run_e2e_check(r'{log_path.as_posix()}', r'{model_posix}', r'{motion_posix}', r'{report_path.as_posix()}', r'{scene_path.as_posix()}', r'{exported_vmd_path.as_posix()}', r'{args.evaluation_mode}', {bool(args.create_on_import)!r})\n"
         )
-        maya_commandport.send_python(args.port, command, label="<mmd-control-rig-e2e>")
-        report = _monitor_result(log_path, report_path, args.timeout)
+        report = run_maya_e2e(
+            project_root=_PROJECT_ROOT,
+            version=args.maya,
+            out_dir=out_dir,
+            port=args.port,
+            timeout=args.timeout,
+            log_path=log_path,
+            report_path=report_path,
+            command=command,
+            marker=COMPLETION_MARKER,
+            send_label="<mmd-control-rig-e2e>",
+            stale_paths=[log_path, report_path, scene_path, exported_vmd_path],
+            port_error=(
+                f"commandPort :{args.port} is already open; refusing to attach; choose a free port"
+            ),
+            report_error=f"timed out waiting for file: {report_path}",
+            log_ready=logger,
+            warn_detached=True,
+        )
         logger.info("MMD control-rig E2E status: %s", report.get("status"))
         logger.info("report: %s", report_path)
         if report.get("errors"):
@@ -1521,17 +1471,6 @@ def main() -> int:
         _write_maya_report(report_path, blocked)
         logger.error("MMD control-rig GUI E2E blocked: %s", exc)
         return 2
-    finally:
-        if maya_owned:
-            try:
-                maya_commandport.quit_maya(args.port)
-                time.sleep(3)
-            finally:
-                try:
-                    if proc is not None and proc.poll() is None:
-                        proc.terminate()
-                finally:
-                    maya_commandport.close_process_logs(proc)
 
 
 if __name__ == "__main__":
