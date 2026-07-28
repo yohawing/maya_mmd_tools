@@ -23,6 +23,12 @@ from mmd_tools.core.constants import (
 from mmd_tools.core.mmd_control_rig_builder import (
     CONTROL_RIG_EDIT,
     read_mmd_control_rig_metadata,
+    resolve_mmd_control_rig_binding_authored_plugs,
+    resolve_mmd_control_rig_binding_joint,
+)
+from mmd_tools.core.mmd_control_rig_analyzer import (
+    INPUT_BONE_MORPH_BASE,
+    INPUT_IK_CONTROLLER,
 )
 from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_names
 from mmd_tools.converters.vmd_camera_animation import (
@@ -105,7 +111,7 @@ class VmdSceneCollector:
         bone_bind_poses = options.get("bone_bind_poses") or {}
         maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
         dense_control_rig_export = self._control_rig_dense_export(target_model)
-        authored_routes = self._scene_authored_input_routes(joints)
+        authored_routes = self._scene_authored_input_routes(joints, target_model)
 
         return {
             "model_name": str(options.get("model_name") or self._model_name(target_model)),
@@ -283,7 +289,17 @@ class VmdSceneCollector:
     def _scene_authored_input_routes(
         self,
         joints: Sequence[str],
+        target_model: Optional[str] = None,
     ) -> dict[str, dict[str, tuple[str, str]]]:
+        """Resolve authored channels that bypass the visible joint transform.
+
+        Control-rig EDIT rewires ``bone_morph_base`` and ``ik_controller``
+        bindings through an ``mmdBoneMorphAccum`` node.  Once the rig is
+        baked, the joint itself has no keys, so the VMD collector must sample
+        the accumulator's base channels instead.  UUID-backed metadata is
+        authoritative; malformed or stale rows are skipped so unrelated
+        joints remain exportable.
+        """
         routes = {}
         append_info = collect_append_info()
         ik_info = collect_mmd_ik_passthrough_info()
@@ -304,6 +320,41 @@ class VmdSceneCollector:
                         node,
                         f"inputRotate[{slot}].inputRotateElement{axis}",
                     )
+
+        if not target_model:
+            return routes
+        metadata = read_mmd_control_rig_metadata(target_model)
+        if not metadata:
+            return routes
+        joints_by_path = {
+            str((cmds.ls(joint, long=True) or [joint])[0]): str(joint)
+            for joint in joints
+        }
+        for binding in (metadata.get("bindings", {}) or {}).values():
+            if not isinstance(binding, Mapping) or binding.get("inputKind") not in {
+                INPUT_BONE_MORPH_BASE,
+                INPUT_IK_CONTROLLER,
+            }:
+                continue
+            try:
+                joint = str(resolve_mmd_control_rig_binding_joint(cmds, binding))
+            except Exception:
+                joint = str(binding.get("joint") or "")
+            joint = str((cmds.ls(joint, long=True) or [joint])[0]) if joint else ""
+            if joint not in joints_by_path:
+                continue
+            try:
+                authored_plugs = resolve_mmd_control_rig_binding_authored_plugs(cmds, binding)
+            except Exception:
+                authored_plugs = tuple(str(plug) for plug in (binding.get("authoredPlugs") or ()))
+            route = routes.setdefault(joint, {})
+            for authored in authored_plugs:
+                node, separator, attribute = str(authored).rpartition(".")
+                if not separator or attribute not in {"baseTranslate", "baseRotate"}:
+                    continue
+                channel = "translate" if attribute == "baseTranslate" else "rotate"
+                for axis in "XYZ":
+                    route[f"{channel}{axis}"] = (node, f"{attribute}{axis}")
         return routes
 
     def collect_morph_frames(

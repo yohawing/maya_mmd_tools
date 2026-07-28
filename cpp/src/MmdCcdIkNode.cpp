@@ -21,6 +21,8 @@
 #include <maya/MDataHandle.h>
 #include <maya/MArrayDataBuilder.h>
 #include <maya/MArrayDataHandle.h>
+#include <maya/MDagPath.h>
+#include <maya/MFnDagNode.h>
 #include <maya/MPlug.h>
 #include <maya/MPlugArray.h>
 #include <maya/MGlobal.h>
@@ -104,10 +106,27 @@ IkChainCreateV2Fn resolveIkChainCreateV2()
     return reinterpret_cast<IkChainCreateV2Fn>(
         GetProcAddress(ownerModule, "mmd_runtime_ik_chain_create_v2"));
 #else
-    // Search loaded images without opening/closing a dependency handle. A
-    // RTLD_DEFAULT lookup leaves ownership and lifetime with the loader.
-    return reinterpret_cast<IkChainCreateV2Fn>(
-        dlsym(RTLD_DEFAULT, "mmd_runtime_ik_chain_create_v2"));
+    // ``mmd_runtime_ik_chain_create`` may be imported by this plugin while
+    // another loaded image exports a symbol with the same name.  Resolve the
+    // v2 entry point from the exact image that owns the legacy symbol instead
+    // of searching the process-wide symbol scope.
+    Dl_info ownerInfo{};
+    if (dladdr(reinterpret_cast<const void*>(&mmd_runtime_ik_chain_create), &ownerInfo) == 0 ||
+        !ownerInfo.dli_fname) {
+        return nullptr;
+    }
+
+    // RTLD_NOLOAD observes an already-loaded image without loading a new one.
+    // Keep the temporary handle alive while dlsym runs, then release the
+    // balanced handle before returning the function pointer.
+    void* ownerModule = dlopen(ownerInfo.dli_fname, RTLD_LAZY | RTLD_NOLOAD);
+    if (!ownerModule) {
+        return nullptr;
+    }
+    auto fn = reinterpret_cast<IkChainCreateV2Fn>(
+        dlsym(ownerModule, "mmd_runtime_ik_chain_create_v2"));
+    dlclose(ownerModule);
+    return fn;
 #endif
 }
 
@@ -217,6 +236,74 @@ MQuaternion jointOrientFromDegrees(const std::array<double, 3>& degrees)
         degrees[2] * kPi / 180.0).asQuaternion();
 }
 
+MMatrix mmdWorldToMaya(const MMatrix& matrix)
+{
+    const double signs[3] = {1.0, 1.0, -1.0};
+    MMatrix result(matrix);
+    for (unsigned int row = 0; row < 3; ++row) {
+        for (unsigned int col = 0; col < 3; ++col) {
+            result(row, col) = matrix(row, col) * signs[row] * signs[col];
+        }
+    }
+    for (unsigned int col = 0; col < 3; ++col) {
+        result(3, col) = matrix(3, col) * signs[col];
+    }
+    return result;
+}
+
+MMatrix mayaWorldToMmd(const MMatrix& matrix)
+{
+    return mmdWorldToMaya(matrix);
+}
+
+bool connectedGoalModelRootWorldMatrix(
+    const MObject& node,
+    const MObject& goalWorldMatrixAttr,
+    MMatrix& outRootWorld)
+{
+    MPlug goalPlug(node, goalWorldMatrixAttr);
+    MPlugArray sources;
+    if (!goalPlug.connectedTo(sources, true, false) || sources.length() == 0) {
+        return false;
+    }
+
+    for (unsigned int sourceIndex = 0; sourceIndex < sources.length(); ++sourceIndex) {
+        MDagPath path;
+        MStatus status = MDagPath::getAPathTo(sources[sourceIndex].node(), path);
+        if (status != MS::kSuccess) {
+            continue;
+        }
+
+        // The solver inputs are root-relative, while goalWorldMatrix is a
+        // world-space controller value.  Strip only the imported model root
+        // transform (matching the Python prototype); arbitrary top-level
+        // locators deliberately remain in world space.
+        for (unsigned int depth = path.length(); depth > 1; --depth) {
+            if (path.pop() != MS::kSuccess) {
+                break;
+            }
+            MFnDagNode dagNode(path, &status);
+            if (status != MS::kSuccess) {
+                continue;
+            }
+            std::string leaf = dagNode.name(&status).asChar();
+            if (status != MS::kSuccess) {
+                continue;
+            }
+            for (char& value : leaf) {
+                if (value >= 'A' && value <= 'Z') {
+                    value = static_cast<char>(value - 'A' + 'a');
+                }
+            }
+            if (leaf.size() >= 4 &&
+                leaf.compare(leaf.size() - 4, 4, "root") == 0) {
+                outRootWorld = path.inclusiveMatrix();
+                return true;
+            }
+        }
+    }
+    return false;
+}
 bool parseCcdIkChainJson(const MString& chainJson, CcdIkChainConfig& cfg)
 {
     const std::string text = chainJson.asChar();
@@ -621,6 +708,7 @@ void copyMmdLinkQuaternionsToOutput(
 
 std::array<float, 3> readGoalPositionMmd(
     const CcdIkChainConfig& cfg,
+    const MObject& node,
     MDataBlock& data,
     bool useGoalWorldMatrix)
 {
@@ -632,6 +720,16 @@ std::array<float, 3> readGoalPositionMmd(
         MTransformationMatrix goalTfm;
         goalTfm.setTranslation(MVector(goal[0], goal[1], goal[2]), MSpace::kTransform);
         goalMatrix = goalTfm.asMatrix();
+    }
+
+    if (useGoalWorldMatrix) {
+        MMatrix rootWorld;
+        if (connectedGoalModelRootWorldMatrix(
+                node,
+                MmdCcdIkNode::aGoalWorldMatrix,
+                rootWorld)) {
+            goalMatrix = goalMatrix * rootWorld.inverse();
+        }
     }
 
     if (cfg.hasBindMatrices &&
@@ -655,6 +753,7 @@ std::array<float, 3> readGoalPositionMmd(
 bool solveChainJsonIk(
     const CcdIkChainConfig& cfg,
     mmd_runtime_ik_chain_t* chain,
+    const MObject& node,
     MDataBlock& data,
     bool solveEnabled,
     bool useGoalWorldMatrix,
@@ -775,7 +874,7 @@ bool solveChainJsonIk(
                                    !goalHasInputConnection;
     const std::array<float, 3> goal = useControllerGoal
         ? computeFkWorldPosition(cfg, positions, rotations, cfg.controllerBoneSlot)
-        : readGoalPositionMmd(cfg, data, useGoalWorldMatrix);
+        : readGoalPositionMmd(cfg, node, data, useGoalWorldMatrix);
 
     // Pass-through gate: FK input pose が target を既に goal 上に置いている
     // なら solve しない（VMD bake 済み final pose の二重 solve 防止）。
@@ -1543,6 +1642,7 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
         chainPathHandled = solveChainJsonIk(
             chainCfg,
             chainCache_->nativeChain,
+            thisNode,
             data,
             enabled,
             goalWorldConnected,

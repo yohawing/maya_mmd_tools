@@ -22,6 +22,7 @@ class _FakeSettingsStore:
                 "model": {
                     "import_models": False,
                     "create_mmd_shaders": False,
+                    "create_mmd_control_rig": False,
                     "separate_meshes_by_material": True,
                     "auto_resolve_textures": True,
                     "disable_backface_culling": False,
@@ -174,6 +175,33 @@ class TestSettingsServiceJson(unittest.TestCase):
         self.assertEqual(self.service.get("logging.level"), "ERROR")
         self.assertIn(("logging.level", "ERROR"), self.store.set_calls)
 
+    def test_import_settings_migrates_legacy_control_rig_key_to_model_scope(self):
+        data = {
+            "import": {
+                "animation": {"create_mmd_control_rig": True},
+                "model": {"create_mmd_shaders": False},
+            }
+        }
+
+        self.service.import_settings_data(data)
+
+        self.assertTrue(self.service.get("import.model.create_mmd_control_rig"))
+        self.assertIsNone(self.service.get("import.animation.create_mmd_control_rig"))
+        self.assertIn(("import.model", {"create_mmd_shaders": False, "create_mmd_control_rig": True}), self.store.set_calls)
+
+    def test_import_settings_model_control_rig_value_wins_over_legacy_key(self):
+        data = {
+            "import": {
+                "animation": {"create_mmd_control_rig": True},
+                "model": {"create_mmd_control_rig": False},
+            }
+        }
+
+        self.service.import_settings_data(data)
+
+        self.assertFalse(self.service.get("import.model.create_mmd_control_rig"))
+        self.assertIsNone(self.service.get("import.animation.create_mmd_control_rig"))
+
 
 class TestSettingsServiceImportOptions(unittest.TestCase):
     def setUp(self):
@@ -242,6 +270,15 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertFalse(options["translate_names"])
         self.assertNotIn("setup_rig", options)
         self.assertNotIn("setup_bone_orientation", options)
+
+    def test_model_control_rig_setting_feeds_pmx_and_vmd_options(self):
+        self.service.set("import.model.create_mmd_control_rig", True)
+
+        pmx_options = self.service.build_pmx_import_options()
+        vmd_options = self.service.build_vmd_import_options()
+
+        self.assertTrue(pmx_options["create_mmd_control_rig"])
+        self.assertTrue(vmd_options["create_mmd_control_rig"])
 
     def test_normal_mode_preserves_import_physics_enabled(self):
         self.service.set("import.physics.import_physics", True)

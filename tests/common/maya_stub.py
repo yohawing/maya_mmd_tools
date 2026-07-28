@@ -440,8 +440,8 @@ class _MDoubleArray:
     - __len__ / __iter__ / __getitem__: list 委譲
     """
 
-    def __init__(self):
-        self._data: list = []
+    def __init__(self, values=None):
+        self._data = [float(value) for value in (values or [])]
 
     def append(self, value: float) -> None:
         self._data.append(float(value))

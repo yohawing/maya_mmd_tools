@@ -12,6 +12,7 @@ IMPORT_MODEL_UV_SET_NAME = "import.model.uv_set_name"
 IMPORT_MODEL_TEXTURE_SEARCH_PATH = "import.model.texture_search_path"
 IMPORT_MODEL_SHOW_TEXTURE_ISSUE_DIALOG = "import.model.show_texture_issue_dialog"
 IMPORT_MODEL_MMD_SHADER_BACKEND = "import.model.mmd_shader_backend"
+IMPORT_MODEL_CREATE_MMD_CONTROL_RIG = "import.model.create_mmd_control_rig"
 
 IMPORT_PHYSICS_IMPORT_PHYSICS = "import.physics.import_physics"
 
@@ -39,6 +40,9 @@ IMPORT_ANIMATION_REDUCE_BAKE_KEYS = "import.animation.reduce_bake_keys"
 IMPORT_ANIMATION_REDUCE_QUALITY = "import.animation.reduce_quality"
 IMPORT_ANIMATION_MOTION_SCALE = "import.animation.motion_scale"
 IMPORT_ANIMATION_CLEAR_EXISTING_MOTION = "import.animation.clear_existing_motion"
+# Kept as a compatibility alias for callers that used the former animation
+# setting name.  The persisted setting is model-scoped and has one authority.
+IMPORT_ANIMATION_CREATE_MMD_CONTROL_RIG = IMPORT_MODEL_CREATE_MMD_CONTROL_RIG
 IMPORT_ANIMATION_RESAMPLE_CURVES = "import.animation.resample_curves"
 IMPORT_ANIMATION_STATIC_CHANNEL_EPSILON_TRANSLATE = "import.animation.static_channel_epsilon_translate"
 IMPORT_ANIMATION_STATIC_CHANNEL_EPSILON_ROTATE_DEG = "import.animation.static_channel_epsilon_rotate_deg"

@@ -1,13 +1,7 @@
-"""Development Mode visibility contract for Animator Toolkit controls.
-
-The MMD-native Control Rig ships as a Development Mode-only, unsupported
-surface (``MMD-CONTROL-RIG-RELEASE-DISPOSITION-1``).  These tests fix the two
-release conditions for that disposition: normal mode cannot reach Create,
-Attach/Edit, Bake, Restore, Delete or Diagnostics, and no control rig
-transaction state outlives a scene new/open.
-"""
+"""Visibility contract for public Animator Toolkit Control Rig controls."""
 
 import ast
+import json
 import pathlib
 import sys
 from types import ModuleType, SimpleNamespace
@@ -33,11 +27,27 @@ _ANIMATION_PRESENTER = (
     _PROJECT_ROOT / "mmd_tools" / "ui" / "presenters" / "animation_presenter.py"
 )
 _PLUGIN_MAIN = _PROJECT_ROOT / "mmd_tools" / "plugin_main.py"
+_TRANSLATION_DIR = _PROJECT_ROOT / "mmd_tools" / "ui" / "translations"
 
 # Every staged MMD Control Rig action the animator tab exposes. Adding an
 # action without listing it here fails the reachability test below.
 _CONTROL_RIG_ACTIONS = frozenset(
-    {"create", "edit", "bake_mmd", "restore", "delete", "diagnostics"}
+    {"create", "bake_control", "bake_mmd", "restore", "delete", "diagnostics"}
+)
+_CONTROL_RIG_TRANSLATION_KEYS = (
+    "control_rig_group_title",
+    "control_rig_create",
+    "control_rig_create_tooltip",
+    "control_rig_bake_control",
+    "control_rig_bake_control_tooltip",
+    "control_rig_bake_mmd",
+    "control_rig_bake_mmd_tooltip",
+    "control_rig_restore",
+    "control_rig_restore_tooltip",
+    "control_rig_delete",
+    "control_rig_delete_tooltip",
+    "control_rig_diagnostics",
+    "control_rig_diagnostics_tooltip",
 )
 
 
@@ -59,6 +69,65 @@ class _VisibilityTarget:
 
     def setEnabled(self, enabled):
         self.enabled = bool(enabled)
+
+
+class _TextTarget:
+    def __init__(self):
+        self.text = None
+        self.tooltip = None
+        self.title = None
+
+    def setText(self, text):
+        self.text = text
+
+    def setToolTip(self, text):
+        self.tooltip = text
+
+    def setTitle(self, text):
+        self.title = text
+
+
+class _TabTarget:
+    def __init__(self):
+        self.tabs = {}
+
+    def setTabText(self, index, text):
+        self.tabs[index] = text
+
+
+class _PickerTarget:
+    def update_region_texts(self, **kwargs):
+        pass
+
+
+def _retranslate_view(data):
+    """Build the smallest view double needed by ``AnimationTab.retranslateUi``."""
+    view = SimpleNamespace(
+        refresh_btn=_TextTarget(),
+        picker_tabs=_TabTarget(),
+        select_all_btn=_TextTarget(),
+        clear_btn=_TextTarget(),
+        visibility_label=_TextTarget(),
+        body_picker=_PickerTarget(),
+        finger_picker=_PickerTarget(),
+        vis_checkboxes={key: _TextTarget() for key in ("mesh", "joints", "colliders", "control_rig")},
+        tools_group=_TextTarget(),
+        control_rig_group=_TextTarget(),
+        control_rig_buttons={
+            key: _TextTarget() for key in _CONTROL_RIG_ACTIONS
+        },
+        tool_buttons={"copy": _TextTarget()},
+    )
+    for key, button in view.control_rig_buttons.items():
+        button._control_rig_translation_key = f"control_rig_{key}"
+
+    def translate(key, category=None):
+        if category is None:
+            return data.get(key, key)
+        return data[category][key]
+
+    view.tr = translate
+    return view
 
 
 def _view():
@@ -114,24 +183,48 @@ def _declared_control_rig_actions():
 
 
 class AnimationTabDevelopmentVisibilityTest(unittest.TestCase):
-    """Keep unfinished MMD Control Rig actions private in release UI."""
+    """Keep the experimental rig public while pose helpers stay gated."""
 
-    def test_mmd_control_rig_buttons_are_hidden_outside_development_mode(self):
+    def test_control_rig_labels_and_tooltips_retranslate_for_every_locale(self):
+        for locale in ("en", "ja", "zh_cn", "zh_tw"):
+            with self.subTest(locale=locale):
+                translations = json.loads(
+                    (_TRANSLATION_DIR / f"{locale}.json").read_text(encoding="utf-8")
+                )["animation_toolset"]
+                self.assertTrue(
+                    set(_CONTROL_RIG_TRANSLATION_KEYS).issubset(translations),
+                    locale,
+                )
+                view = _retranslate_view({"animation_toolset": translations, **translations})
+                AnimationTab.retranslateUi(view)
+
+                self.assertEqual(
+                    view.control_rig_group.title,
+                    translations["control_rig_group_title"],
+                )
+                for key, button in view.control_rig_buttons.items():
+                    translation_key = f"control_rig_{key}"
+                    self.assertEqual(button.text, translations[translation_key])
+                    self.assertEqual(
+                        button.tooltip,
+                        translations[f"{translation_key}_tooltip"],
+                    )
+
+    def test_mmd_control_rig_buttons_are_visible_outside_development_mode(self):
         view = _view()
 
         _refresh(view, development_mode=False)
 
-        self.assertFalse(view.control_rig_group.visible)
+        self.assertTrue(view.control_rig_group.visible)
 
-    def test_mmd_control_rig_buttons_are_disabled_outside_development_mode(self):
-        """Hiding alone still leaves buttons clickable from a scripted view."""
+    def test_mmd_control_rig_buttons_are_enabled_outside_development_mode(self):
         view = _view()
 
         _refresh(view, development_mode=False)
 
-        self.assertFalse(view.control_rig_group.enabled)
+        self.assertTrue(view.control_rig_group.enabled)
 
-    def test_mmd_control_rig_buttons_are_visible_only_in_development_mode(self):
+    def test_mmd_control_rig_buttons_remain_visible_in_development_mode(self):
         view = _view()
 
         _refresh(view, development_mode=True)
@@ -139,12 +232,12 @@ class AnimationTabDevelopmentVisibilityTest(unittest.TestCase):
         self.assertTrue(view.control_rig_group.visible)
         self.assertTrue(view.control_rig_group.enabled)
 
-    def test_control_rig_visibility_button_is_development_mode_only(self):
+    def test_control_rig_visibility_button_is_public_when_available(self):
         view = _view()
 
         _refresh(view, development_mode=False)
-        self.assertFalse(view.vis_checkboxes["control_rig"].visible)
-        self.assertFalse(view.vis_checkboxes["control_rig"].enabled)
+        self.assertTrue(view.vis_checkboxes["control_rig"].visible)
+        self.assertTrue(view.vis_checkboxes["control_rig"].enabled)
 
         _refresh(view, development_mode=True)
         self.assertTrue(view.vis_checkboxes["control_rig"].visible)

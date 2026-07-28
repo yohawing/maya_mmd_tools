@@ -12,6 +12,7 @@
       "separate_meshes_by_material": false,
       "auto_resolve_textures": true,
       "create_mmd_shaders": true,
+      "create_mmd_control_rig": false,
       "mmd_shader_backend": "auto",
       "texture_search_path": "",
       "show_texture_issue_dialog": true,

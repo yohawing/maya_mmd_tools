@@ -12,7 +12,7 @@
     "ik_enable_side_tooltip": "切换单侧腿部IK解算器",
   "animation_toolset": {
     "control_rig": "控制绑定",
-    "window_title": "动画工具集", "refresh": "刷新", "body": "身体", "finger": "手指", "morph": "变形", "display": "显示框", "back_to_body": "返回身体", "back_to_body_tooltip": "返回全身选择器", "select_all": "全选", "select_all_tooltip": "选择当前MMD模型的所有骨骼", "clear": "清除", "clear_tooltip": "清除当前选择", "visibility": "可见性", "mesh": "网格", "joints": "骨骼", "colliders": "碰撞体", "ik_enable_toggle_tooltip": "切换双腿IK解算器", "tools": "工具", "copy": "复制", "paste": "粘贴", "mirror": "镜像", "mirror_selection": "镜像选择", "reset": "重置姿势", "clean": "清理", "bake": "烘焙", "reset_pose_tooltip": "将选中的骨骼重置为绑定姿势", "mirror_selection_tooltip": "选择另一侧的骨骼", "finger_picker_tooltip": "打开手指选择器", "category_brow": "眉毛变形", "category_eye": "眼睛变形", "category_mouth": "嘴部变形", "category_other": "未分类（PMX：其他）", "no_selectable_bones": "没有可选择的骨骼", "selected_all_bones": "已选择全部骨骼（{count}）", "select_all_failed": "选择全部骨骼失败", "node_not_found": "未找到: {name}", "unassigned_bones": "未分配: {names}", "selection_failed": "选择失败: {names}", "ik_not_found": "未找到{side} IK", "ik_enabled": "已启用{side} IK", "ik_disabled": "已关闭{side} IK", "ik_toggle_failed": "IK切换失败: {error}", "no_joints_selected": "未选择骨骼", "copied_pose": "已复制姿势（{count}个骨骼）", "copy_failed": "复制失败: {error}", "no_pose_copied": "没有已复制的姿势", "pasted_pose": "已粘贴姿势（{count}个骨骼）", "paste_failed": "粘贴失败: {error}", "reset_pose_applied": "已重置姿势（{count}个骨骼）", "reset_pose_failed": "重置姿势失败: {error}", "mirrored_pose": "已镜像姿势", "mirror_failed": "镜像失败: {error}", "baked_animation": "已烘焙动画", "bake_failed": "烘焙失败: {error}", "cleaned_curves": "已清理曲线", "clean_failed": "清理失败: {error}"
+    "window_title": "动画工具集", "refresh": "刷新", "body": "身体", "finger": "手指", "morph": "变形", "display": "显示框", "back_to_body": "返回身体", "back_to_body_tooltip": "返回全身选择器", "select_all": "全选", "select_all_tooltip": "选择当前MMD模型的所有骨骼", "clear": "清除", "clear_tooltip": "清除当前选择", "visibility": "可见性", "mesh": "网格", "joints": "骨骼", "colliders": "碰撞体", "ik_enable_toggle_tooltip": "切换双腿IK解算器", "tools": "工具", "copy": "复制", "paste": "粘贴", "mirror": "镜像", "mirror_selection": "镜像选择", "reset": "重置姿势", "clean": "清理", "bake": "烘焙", "reset_pose_tooltip": "将选中的骨骼重置为绑定姿势", "mirror_selection_tooltip": "选择另一侧的骨骼", "finger_picker_tooltip": "打开手指选择器", "category_brow": "眉毛变形", "category_eye": "眼睛变形", "category_mouth": "嘴部变形", "category_other": "未分类（PMX：其他）", "no_selectable_bones": "没有可选择的骨骼", "selected_all_bones": "已选择全部骨骼（{count}）", "select_all_failed": "选择全部骨骼失败", "node_not_found": "未找到: {name}", "unassigned_bones": "未分配: {names}", "selection_failed": "选择失败: {names}", "ik_not_found": "未找到{side} IK", "ik_enabled": "已启用{side} IK", "ik_disabled": "已关闭{side} IK", "ik_toggle_failed": "IK切换失败: {error}", "no_joints_selected": "未选择骨骼", "copied_pose": "已复制姿势（{count}个骨骼）", "copy_failed": "复制失败: {error}", "no_pose_copied": "没有已复制的姿势", "pasted_pose": "已粘贴姿势（{count}个骨骼）", "paste_failed": "粘贴失败: {error}", "reset_pose_applied": "已重置姿势（{count}个骨骼）", "reset_pose_failed": "重置姿势失败: {error}", "mirrored_pose": "已镜像姿势", "mirror_failed": "镜像失败: {error}", "baked_animation": "已烘焙动画", "bake_failed": "烘焙失败: {error}", "cleaned_curves": "已清理曲线", "clean_failed": "清理失败: {error}", "control_rig_group_title": "MMD Control Rig（实验性）", "control_rig_create": "创建", "control_rig_create_tooltip": "为当前模型创建或复用 MMD Control Rig。", "control_rig_bake_control": "烘焙到 Control Rig", "control_rig_bake_control_tooltip": "将 MMD 绑定动作转换为 Control Rig 关键帧，并将 Control Rig 设为活动所有者。", "control_rig_bake_mmd": "烘焙到 MMD Rig", "control_rig_bake_mmd_tooltip": "将 Control Rig 动作转换为 MMD 绑定关键帧，并将 MMD Rig 设为活动所有者。", "control_rig_restore": "恢复", "control_rig_restore_tooltip": "恢复 Control Rig 操作前的 MMD 绑定连接和所有权。", "control_rig_delete": "删除绑定", "control_rig_delete_tooltip": "删除 MMD Control Rig 及其场景控制器。", "control_rig_diagnostics": "诊断", "control_rig_diagnostics_tooltip": "显示所有者、状态、绑定、未支持功能和循环诊断。"
   },
   "tabs": {
     "file_io": "文件I/O",
@@ -143,6 +143,7 @@
     "bake_mode": "将所有帧烘焙为关键帧。不创建IK/附加绑定",
     "native_physics_bake": "使用原生运行时烘焙 PMX 物理。需要烘焙动作",
     "reduce_bake_keys": "在容差内减少烘焙关键帧",
+    "create_mmd_control_rig": "导入模型后创建并自动绑定 MMD Control Rig，后续 VMD 将直接导入此绑定（实验性）",
     "reduce_quality": "烘焙关键帧缩减质量：1.0 保留最高保真度，0.0 进行最强缩减",
     "start_frame": "在Maya时间线上指定VMD动画的起始帧",
     "vmd_fps": "VMD文件的帧率。MMD标准为30fps",
@@ -307,6 +308,7 @@
     "bake_mode": "烘焙动作",
     "native_physics_bake": "烘焙物理",
     "reduce_bake_keys": "减少烘焙关键帧",
+    "create_mmd_control_rig": "创建 MMD Control Rig",
     "apply_scale": "应用缩放",
     "new_file": "新建文件",
     "enable_ik": "启用IK",

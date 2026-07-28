@@ -205,6 +205,39 @@ class AnimationPresenter:
         if model:
             self._reload_for_model(model)
 
+    def refresh_for_scene_change(self) -> None:
+        """Refresh model/picker state after Maya replaces the current scene.
+
+        Scene callbacks run after the old DAG has been discarded.  Reusing a
+        stale model root here would make UUID-backed Control Rig metadata point
+        at unrelated nodes, so clear the cache first and let ApplicationState
+        resolve the new model list.
+        """
+
+        if self._disposed:
+            return
+        try:
+            self.app_state.clear_cache()
+        except Exception:
+            logger.debug("Animator scene refresh cache clear failed", exc_info=True)
+        try:
+            self.app_state.refresh_model_list()
+        except Exception:
+            logger.debug("Animator scene refresh failed", exc_info=True)
+            self._clear_all()
+            return
+
+        # A newly opened scene may contain a model with the same DAG path as
+        # the previous scene.  ApplicationState intentionally suppresses its
+        # change signals when the string-valued model list is unchanged, so a
+        # scene callback must explicitly reload UUID-backed rig metadata and
+        # picker state instead of leaving the previous scene cached in the UI.
+        model = self.app_state.current_model_root
+        if model:
+            self._reload_for_model(model)
+        else:
+            self._clear_all()
+
     def on_clear_clicked(self):
         self._set_picker_selection_from_nodes([])
         try:
@@ -295,34 +328,115 @@ class AnimationPresenter:
             )
 
             if action == "create":
-                result = build_mmd_control_rig(root)
-                message = f"MMD Control Rig: {result.state}"
-            elif action == "edit":
+                build_mmd_control_rig(root)
                 metadata = enter_mmd_control_rig_edit(root)
-                message = f"MMD Control Rig: {metadata['state']}"
+                message = (
+                    "MMD Control Rig (Experimental): "
+                    f"{metadata['state']} / {metadata.get('owner', 'CONTROL_OWNED')}"
+                )
+            elif action == "bake_control":
+                metadata = enter_mmd_control_rig_edit(root)
+                message = (
+                    "MMD Control Rig (Experimental): "
+                    f"{metadata['state']} / {metadata.get('owner', 'MMD_OWNED')}"
+                )
             elif action == "bake_mmd":
                 metadata = bake_mmd_control_rig(root)
-                message = f"MMD Control Rig: {metadata['state']}"
+                message = (
+                    "MMD Control Rig (Experimental): "
+                    f"{metadata['state']} / {metadata.get('owner', 'MMD_OWNED')}"
+                )
             elif action == "restore":
                 metadata = restore_mmd_control_rig_attached(root)
-                message = f"MMD Control Rig: {metadata['state']}"
+                message = (
+                    "MMD Control Rig (Experimental): "
+                    f"{metadata['state']} / {metadata.get('owner', 'MMD_OWNED')}"
+                )
             elif action == "delete":
                 removed = remove_mmd_control_rig(root)
                 message = "MMD Control Rig: deleted" if removed else "MMD Control Rig: not found"
-            else:
+            elif action == "diagnostics":
                 metadata = read_mmd_control_rig_metadata(root)
                 if not metadata:
                     message = "MMD Control Rig: not found"
                 else:
-                    message = (
-                        f"MMD Control Rig: {metadata['state']} / "
-                        f"{len(metadata.get('controls', {}))} controls"
-                    )
+                    message = self._format_control_rig_diagnostics(metadata)
+            else:
+                raise ValueError(f"unknown MMD Control Rig action: {action}")
             self._sync_visibility_controls(root)
             self.view.status_label.setText(message)
         except Exception as exc:
             logger.error("MMD Control Rig action failed", exc_info=True)
             self.view.status_label.setText(f"MMD Control Rig error: {exc}")
+
+    @staticmethod
+    def _format_control_rig_diagnostics(metadata: dict) -> str:
+        """Render concise, fail-closed diagnostics from scene metadata.
+
+        Metadata is intentionally extensible across CR061 slices.  Unknown
+        evidence fields are retained as compact JSON rather than silently
+        discarded, while the mandatory owner/state and cycle fields always
+        appear in the user-facing report.
+        """
+
+        owner = metadata.get("owner") or "unknown"
+        state = metadata.get("state") or "unknown"
+        bindings = metadata.get("bindings") or {}
+        def _items(value):
+            if value in (None, "", [], {}):
+                return []
+            if isinstance(value, (list, tuple, set)):
+                return list(value)
+            return [value]
+
+        unsupported = _items(metadata.get("unsupportedRoles"))
+        unsupported.extend(_items(metadata.get("unsupported")))
+        diagnostics = metadata.get("diagnostics")
+        if isinstance(diagnostics, dict):
+            unsupported.extend(_items(diagnostics.get("unsupportedRoles")))
+            unsupported.extend(_items(diagnostics.get("unsupported")))
+        for role, binding in bindings.items():
+            if not isinstance(binding, dict):
+                continue
+            if str(binding.get("inputKind", "")).lower() == "unsupported":
+                blockers = binding.get("blockers") or binding.get("reasons") or []
+                unsupported.append(
+                    f"{role} ({', '.join(map(str, blockers))})"
+                    if blockers
+                    else str(role)
+                )
+        unsupported = list(dict.fromkeys(str(item) for item in unsupported))
+
+        cycle = metadata.get("cycle")
+        if cycle is None:
+            cycle = metadata.get("cycleDiagnostics")
+        if cycle is None:
+            cycle = metadata.get("cycleCount")
+        if cycle is None:
+            cycle = metadata.get("cycleDetected")
+        if cycle is None and isinstance(diagnostics, dict):
+            cycle = diagnostics.get("cycle")
+            if cycle is None:
+                cycle = diagnostics.get("cycleDetected")
+        cycle_text = "none recorded" if cycle in (None, "", [], {}) else str(cycle)
+
+        evidence = {}
+        for key in (
+            "lastBake",
+            "lastBakeEvidence",
+            "lastOracle",
+            "oracleEvidence",
+            "oracle",
+        ):
+            if key in metadata and metadata[key] not in (None, "", [], {}):
+                evidence[key] = metadata[key]
+        evidence_text = json.dumps(evidence, ensure_ascii=False, sort_keys=True) if evidence else "none recorded"
+        return (
+            "MMD Control Rig diagnostics (Experimental): "
+            f"owner={owner}; state={state}; "
+            f"unsupported roles={', '.join(unsupported) if unsupported else 'none'}; "
+            f"cycle={cycle_text}; bake/oracle={evidence_text}"
+        )
 
     def _set_status(self, key: str, **values) -> None:
         """Show a localized Animator status message."""
@@ -333,7 +447,7 @@ class AnimationPresenter:
     def on_select_all(self):
         """Select every indexed joint belonging to the current MMD model."""
 
-        joints = list(self._all_model_joints)
+        joints = [self._preferred_rig_control(joint) for joint in self._all_model_joints]
         self._set_picker_selection_from_nodes(joints)
         if not joints:
             self._set_status("no_selectable_bones")
@@ -350,7 +464,7 @@ class AnimationPresenter:
             return
         try:
             self._set_picker_selection_from_nodes([node_name])
-            self._select_nodes([node_name])
+            self._select_nodes([self._preferred_rig_control(node_name)])
             self.view.status_label.setText(item.text(0))
         except Exception:
             self._set_status("node_not_found", name=node_name)
@@ -471,10 +585,16 @@ class AnimationPresenter:
             )
 
             metadata = read_mmd_control_rig_metadata(root)
-            # Selection and animation-input ownership are separate concerns.
-            # Prefer the visible owned curve in every valid rig state; the
-            # state machine still controls whether moving it affects the bone.
-            if not metadata:
+            # Picker selection follows the motion owner.  In MMD-owned mode,
+            # joints remain the authoring surface; only Control-owned mode may
+            # select UUID-backed controller transforms.
+            owner = metadata.get("owner") if metadata else None
+            if owner is None and metadata:
+                # Older presenter extensions supplied only ``controls`` and
+                # ``bindings``.  Keep that compatibility path; validated
+                # scene metadata always includes the explicit owner field.
+                owner = "CONTROL_OWNED"
+            if not metadata or owner != "CONTROL_OWNED":
                 return joint
             target = (cmds.ls(joint, long=True) or [joint])[0]
             for role, binding in metadata.get("bindings", {}).items():
@@ -502,7 +622,10 @@ class AnimationPresenter:
             )
 
             metadata = read_mmd_control_rig_metadata(root)
-            if not metadata:
+            owner = metadata.get("owner") if metadata else None
+            if owner is None and metadata:
+                owner = "CONTROL_OWNED"
+            if not metadata or owner != "CONTROL_OWNED":
                 return node
             selected = (cmds.ls(node, uuid=True) or [None])[0]
             for role, uuid in metadata.get("controls", {}).items():

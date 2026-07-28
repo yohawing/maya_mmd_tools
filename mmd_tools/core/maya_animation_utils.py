@@ -37,7 +37,14 @@ def _find_plug(fn_depend, attr):
             child = None
             for child_index in range(plug.numChildren()):
                 candidate = plug.child(child_index)
-                if candidate.partialName(useLongNames=True) == attr_name:
+                candidate_name = candidate.partialName(useLongNames=True)
+                # Array-element child plugs include their full parent path in
+                # ``partialName`` (for example
+                # ``inputRotate[6].inputRotateElementX``).  Compare the
+                # terminal attribute segment so nested compound-array paths
+                # resolve consistently across Maya 2024/2026.
+                candidate_name = candidate_name.rsplit(".", 1)[-1].split("[", 1)[0]
+                if candidate_name == attr_name:
                     child = candidate
                     break
             if child is None:
@@ -103,12 +110,6 @@ def create_animation_curves(
             if cmds.objExists(f"{node_name}.{attr}") or cmds.attributeQuery(base_attr, node=node_name, exists=True):
                 cmds.animLayer(animation_layer, edit=True, attribute=f"{node_name}.{attr}")
 
-    if not animation_layer:
-        for attr in attributes:
-            connections = cmds.listConnections(f"{node_name}.{attr}", source=True, destination=False)
-            if connections:
-                cmds.delete(connections)
-
     curves = {}
     for attr in attributes:
         if animation_layer:
@@ -146,9 +147,32 @@ def create_animation_curves(
                 if attr in curves:
                     break
         else:
+            destination = f"{node_name}.{attr}"
+            source_plugs = cmds.listConnections(
+                destination,
+                source=True,
+                destination=False,
+                plugs=True,
+                skipConversionNodes=False,
+            ) or []
+            if source_plugs:
+                source_nodes = list(dict.fromkeys(str(plug).split(".", 1)[0] for plug in source_plugs))
+                if len(source_nodes) != 1 or not str(cmds.nodeType(source_nodes[0])).startswith("animCurve"):
+                    raise RuntimeError(
+                        f"cannot replace non-animCurve input on {destination}: {source_plugs!r}"
+                    )
+                curve_sel = om.MSelectionList()
+                curve_sel.add(source_nodes[0])
+                curves[attr] = oma.MFnAnimCurve(curve_sel.getDependNode(0))
+                continue
             curve = oma.MFnAnimCurve()
             plug = _find_plug(fn_depend, attr)
-            curve.create(plug)
+            # Passing only an MPlug is ambiguous in Maya 2024's Python API:
+            # the overload dispatcher may select ``create(animCurveType)``
+            # and attempt to marshal the plug as an integer.  Supplying the
+            # explicit ``Unknown`` type selects the documented MPlug
+            # overload while retaining Maya's destination-driven inference.
+            curve.create(plug, oma.MFnAnimCurve.kAnimCurveUnknown)
             curves[attr] = curve
 
     return curves

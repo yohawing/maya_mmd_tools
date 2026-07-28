@@ -12,6 +12,8 @@ from maya import cmds
 from mmd_tools.core import settings
 from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX, ATTR_MMD_CONTROL_RIG_JSON
 from mmd_tools.core.mmd_control_rig_builder import (
+    CONTROL_RIG_CONTROL_OWNED,
+    CONTROL_RIG_MMD_OWNED,
     MmdControlRigBuildError,
     build_mmd_control_rig,
     read_mmd_control_rig_metadata,
@@ -31,9 +33,11 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
     INPUT_SOLVER_OUTPUT,
     MmdControlRigBoneBinding,
     STATUS_FALLBACK,
+    STATUS_MISSING,
     STATUS_READY,
     analyze_mmd_control_rig,
 )
+from mmd_tools.converters.bone_morph_runtime import build_bone_morph_graph
 from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
 from mmd_tools.converters.vmd_ik_enabled_animation import collect_ik_nodes_by_bone_name
 from mmd_tools.core.vmd_data import VmdData
@@ -118,6 +122,74 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertTrue(root)
         return root
 
+    def _create_minimal_control_rig_graph(self, *, include_append=False):
+        """Create a small indexed Maya graph without relying on a PMX fixture."""
+        root = cmds.group(empty=True, name="minimal_control_rig_model")
+
+        def create_bone(index, mmd_name):
+            joint = cmds.createNode("joint", name=f"minimal_bone_{index}", parent=root)
+            cmds.addAttr(joint, longName="mmd_bone_index", attributeType="long")
+            cmds.addAttr(joint, longName="mmd_bone_name", dataType="string")
+            cmds.addAttr(joint, longName="mmd_bone_flags", attributeType="long")
+            cmds.setAttr(f"{joint}.mmd_bone_index", index)
+            cmds.setAttr(f"{joint}.mmd_bone_name", mmd_name, type="string")
+            cmds.setAttr(f"{joint}.mmd_bone_flags", 0)
+            return joint
+
+        center = create_bone(0, "センター")
+        left_ik = create_bone(1, "左足ＩＫ")
+        right_ik = create_bone(2, "右足IK")
+        left_link = create_bone(3, "__left_ik_link__")
+        right_link = create_bone(4, "__right_ik_link__")
+        append_joint = create_bone(5, "上半身") if include_append else None
+
+        for side, joint, link, mmd_name in (
+            ("left", left_ik, left_link, "左足ＩＫ"),
+            ("right", right_ik, right_link, "右足IK"),
+        ):
+            solver = cmds.createNode("mmdCcdIk", name=f"minimal_{side}_mmdCcdIk")
+            cmds.addAttr(solver, longName="mmd_ik_bone_name", dataType="string")
+            cmds.setAttr(f"{solver}.mmd_ik_bone_name", mmd_name, type="string")
+            cmds.connectAttr(
+                f"{solver}.outputRotate[0]",
+                f"{link}.rotate",
+                force=True,
+            )
+
+        append_node = None
+        if append_joint is not None:
+            append_node = cmds.createNode("mmdAppend", name="minimal_mmdAppend")
+            cmds.setAttr(f"{append_node}.affectRotation", True)
+            cmds.setAttr(f"{append_node}.ratio", -0.5)
+            cmds.setAttr(f"{append_node}.sourceRotate", 30.0, 0.0, 0.0, type="double3")
+            cmds.connectAttr(
+                f"{append_node}.outputRotate",
+                f"{append_joint}.rotate",
+                force=True,
+            )
+
+        # Keep the parent transform in the helper's return value so callers can
+        # inspect the same graph through the analyzer and builder APIs.
+        return root, center, left_ik, right_ik, append_joint, append_node
+
+    def _create_bone_morph_metadata(self, root, name, morph_index, offsets):
+        """Create the small network metadata consumed by the real runtime builder."""
+        node = cmds.createNode("network", name=name)
+        cmds.addAttr(node, longName="weight", attributeType="double", keyable=True)
+        cmds.addAttr(node, longName="mmd_morph_type", dataType="string")
+        cmds.addAttr(node, longName="mmd_morph_index", attributeType="long")
+        cmds.addAttr(node, longName="mmd_bone_morph_offsets_json", dataType="string")
+        cmds.addAttr(node, longName="mmd_model_root", attributeType="message")
+        cmds.setAttr(f"{node}.mmd_morph_type", "bone", type="string")
+        cmds.setAttr(f"{node}.mmd_morph_index", morph_index)
+        cmds.setAttr(
+            f"{node}.mmd_bone_morph_offsets_json",
+            json.dumps(offsets, separators=(",", ":")),
+            type="string",
+        )
+        cmds.connectAttr(f"{root}.message", f"{node}.mmd_model_root")
+        return node
+
     def test_mmt_rig_fixture_classifies_mvp_without_mutating_scene(self):
         root = self._import_fixture()
         nodes_before = set(cmds.ls(long=True) or [])
@@ -148,6 +220,192 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         ]
         self.assertTrue(solver_outputs)
         self.assertTrue(all(binding.blocked for binding in solver_outputs))
+
+    def test_minimal_graph_omits_missing_semistandard_controls_without_blocker(self):
+        """Optional role absence must not prevent the core rig from building."""
+        root, _center, _left_ik, _right_ik, _append_joint, _append_node = (
+            self._create_minimal_control_rig_graph()
+        )
+
+        spec = analyze_mmd_control_rig(root)
+        roles = spec.roles_by_name
+        for role in (
+            "waist",
+            "left_foot_ik_parent",
+            "right_foot_ik_parent",
+            "left_toe_ik",
+            "right_toe_ik",
+            "upper_body",
+            "left_arm",
+            "left_leg",
+        ):
+            with self.subTest(role=role):
+                self.assertEqual(roles[role].status, STATUS_MISSING)
+                self.assertFalse(roles[role].blockers)
+
+        self.assertFalse(spec.blockers)
+        self.assertTrue(spec.can_build_mvp)
+        rig = build_mmd_control_rig(root, spec=spec)
+        self.assertIn("center", rig.controls)
+        self.assertIn("left_foot_ik", rig.controls)
+        self.assertNotIn("waist", rig.controls)
+        self.assertNotIn("left_toe_ik", rig.controls)
+
+    def test_negative_append_ratio_preserves_signed_control_route(self):
+        """Negative Append contribution remains authored through the base input."""
+        root, _center, _left_ik, _right_ik, append_joint, append_node = (
+            self._create_minimal_control_rig_graph(include_append=True)
+        )
+        self.assertTrue(append_joint)
+        self.assertTrue(append_node)
+
+        cmds.setAttr(f"{append_node}.ratio", 0.5)
+        positive = float(cmds.getAttr(f"{append_node}.outputRotateX"))
+        cmds.setAttr(f"{append_node}.ratio", -0.5)
+        negative = float(cmds.getAttr(f"{append_node}.outputRotateX"))
+        self.assertGreater(abs(positive), 1.0)
+        self.assertLess(positive * negative, 0.0)
+        self.assertAlmostEqual(abs(positive), abs(negative), places=5)
+
+        spec = analyze_mmd_control_rig(root)
+        append_binding = spec.roles_by_name["upper_body"].binding
+        self.assertIsNotNone(append_binding)
+        self.assertEqual(append_binding.input_kind, INPUT_APPEND_BASE)
+        self.assertEqual(append_binding.authored_plugs, (f"{append_node}.baseRotate",))
+        self.assertFalse(spec.blockers)
+
+        cycles_before = sorted(cmds.cycleCheck(all=True, list=True) or [])
+        rig = build_mmd_control_rig(root, spec=spec)
+        edit = enter_mmd_control_rig_edit(root)
+        self.assertEqual(edit["state"], "EDIT")
+        self.assertAlmostEqual(cmds.getAttr(f"{append_node}.ratio"), -0.5, places=7)
+        control = rig.controls["upper_body"]
+        self.assertTrue(
+            cmds.isConnected(
+                f"{control}.rotateX",
+                f"{append_node}.baseRotateX",
+            )
+        )
+        cmds.setAttr(f"{control}.rotateX", 8.0)
+        self.assertAlmostEqual(cmds.getAttr(f"{append_node}.baseRotateX"), 8.0, places=6)
+        self.assertEqual(sorted(cmds.cycleCheck(all=True, list=True) or []), cycles_before)
+
+        baked = bake_mmd_control_rig(root)
+        self.assertEqual(baked["state"], "BAKED")
+        self.assertAlmostEqual(cmds.getAttr(f"{append_node}.ratio"), -0.5, places=7)
+        self.assertFalse(
+            cmds.isConnected(
+                f"{control}.rotateX",
+                f"{append_node}.baseRotateX",
+            )
+        )
+
+    def test_bone_morph_ik_controller_authors_accumulator_base_without_cycle(self):
+        """The real accumulator keeps morph and IK control as one writer route."""
+        try:
+            probe = cmds.createNode("mmdBoneMorphAccum", name="analyzer_accum_probe")
+        except RuntimeError as exc:
+            self.skipTest(f"mmdBoneMorphAccum node is unavailable: {exc}")
+        else:
+            cmds.delete(probe)
+        root, _center, left_ik, _right_ik, _append_joint, _append_node = (
+            self._create_minimal_control_rig_graph()
+        )
+        morph = self._create_bone_morph_metadata(
+            root,
+            "left_ik_authoring_boneMorph",
+            0,
+            [
+                {
+                    "bone_index": 1,
+                    "translation": [2.0, 0.0, 0.0],
+                    "rotation": [0.0, 0.0, 0.0, 1.0],
+                }
+            ],
+        )
+        self.assertTrue(build_bone_morph_graph(root)["success"])
+
+        spec = analyze_mmd_control_rig(root)
+        binding = spec.roles_by_name["left_foot_ik"].binding
+        self.assertEqual(binding.input_kind, INPUT_IK_CONTROLLER)
+        accum = (cmds.ls(type="mmdBoneMorphAccum") or [None])[0]
+        self.assertTrue(accum)
+        self.assertEqual(
+            binding.authored_plugs,
+            (f"{accum}.baseRotate", f"{accum}.baseTranslate"),
+        )
+
+        rig = build_mmd_control_rig(root, spec=spec)
+        enter_mmd_control_rig_edit(root)
+        control = rig.controls["left_foot_ik"]
+        target = next(plug for plug in binding.authored_plugs if plug.endswith(".baseTranslate"))
+        target_x = f"{target}X"
+        control_source = cmds.listConnections(
+            target_x, source=True, destination=False, plugs=True
+        ) or []
+        self.assertEqual(len(control_source), 1)
+        self.assertEqual(
+            cmds.ls(control_source[0].split(".", 1)[0], long=True),
+            cmds.ls(control, long=True),
+        )
+        self.assertTrue(control_source[0].endswith(".translateX"))
+        self.assertEqual(
+            cmds.listConnections(f"{left_ik}.translate", source=True, destination=False, plugs=True),
+            [target.rsplit(".", 1)[0] + ".outputTranslate"],
+        )
+        cycles_before = sorted(cmds.cycleCheck(all=True, list=True) or [])
+        cmds.setAttr(f"{control}.translateX", 1.5)
+        cmds.setAttr(f"{morph}.weight", 0.0)
+        self.assertAlmostEqual(cmds.getAttr(f"{left_ik}.translateX"), 1.5, places=5)
+        cmds.setAttr(f"{morph}.weight", 1.0)
+        self.assertAlmostEqual(cmds.getAttr(f"{left_ik}.translateX"), 3.5, places=5)
+        self.assertEqual(sorted(cmds.cycleCheck(all=True, list=True) or []), cycles_before)
+
+        baked = bake_mmd_control_rig(root)
+        self.assertEqual(baked["state"], "BAKED")
+        self.assertFalse(cmds.listConnections(target_x, source=True, destination=False, plugs=True) or [])
+
+    def test_baked_ik_controller_base_channels_are_exported(self):
+        """VMD collection retains identity-only IK controller edits after bake."""
+        root, _center, _left_ik, _right_ik, _append_joint, _append_node = (
+            self._create_minimal_control_rig_graph()
+        )
+        morph = self._create_bone_morph_metadata(
+            root,
+            "left_ik_export_boneMorph",
+            0,
+            [
+                {
+                    "bone_index": 1,
+                    "translation": [2.0, 0.0, 0.0],
+                    "rotation": [0.0, 0.0, 0.0, 1.0],
+                }
+            ],
+        )
+        self.assertTrue(build_bone_morph_graph(root)["success"])
+
+        spec = analyze_mmd_control_rig(root)
+        self.assertEqual(
+            spec.roles_by_name["left_foot_ik"].binding.input_kind,
+            INPUT_IK_CONTROLLER,
+        )
+        rig = build_mmd_control_rig(root, spec=spec)
+        enter_mmd_control_rig_edit(root)
+        control = rig.controls["left_foot_ik"]
+        cmds.setKeyframe(control, attribute="translateX", time=3, value=0.35)
+        bake_mmd_control_rig(root)
+        cmds.setAttr(f"{morph}.weight", 0.0)
+
+        collected = VmdSceneCollector().collect({"target_model": root})
+        output_path = self.get_temp_filename("ik_controller_base_export.vmd")
+        VmdExporter().export_vmd_animation(output_path, collected)
+        parsed = VmdData().parse_file(output_path)
+
+        left_frames = [frame for frame in parsed.bone_frames if frame.bone_name == "左足ＩＫ"]
+        self.assertTrue(left_frames)
+        # Maya film frame 3 maps to VMD frame 4 at 30 fps.
+        frame = next(item for item in left_frames if item.frame_number == 4)
+        self.assertAlmostEqual(frame.position[0], 0.35, places=5)
 
     def test_anim_picker_selects_owned_center_control(self):
         """Keep the Picker-to-controller selection path live in Maya."""
@@ -284,6 +542,107 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         )
         self.assertFalse(remove_mmd_control_rig(reopened_root))
 
+    def test_motion_owner_is_explicit_and_legacy_state_derives_owner(self):
+        root = self._import_fixture()
+        build_mmd_control_rig(root)
+
+        metadata = read_mmd_control_rig_metadata(root)
+        self.assertEqual(metadata["owner"], CONTROL_RIG_MMD_OWNED)
+
+        # v3 scenes written before the owner field remain readable and derive
+        # the MMD-side writer from their legacy ATTACHED state.
+        legacy = dict(metadata)
+        legacy.pop("owner")
+        cmds.setAttr(
+            f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}",
+            json.dumps(legacy, ensure_ascii=False),
+            type="string",
+        )
+        self.assertEqual(
+            read_mmd_control_rig_metadata(root)["owner"],
+            CONTROL_RIG_MMD_OWNED,
+        )
+
+        entered = enter_mmd_control_rig_edit(root)
+        self.assertEqual(entered["state"], "EDIT")
+        self.assertEqual(entered["owner"], CONTROL_RIG_CONTROL_OWNED)
+        self.assertNotEqual(entered["owner"], "CONVERTING")
+
+        baked = bake_mmd_control_rig(root)
+        self.assertEqual(baked["state"], "BAKED")
+        self.assertEqual(baked["owner"], CONTROL_RIG_MMD_OWNED)
+
+        entered = enter_mmd_control_rig_edit(root)
+        restored = restore_mmd_control_rig_attached(root)
+        self.assertEqual(restored["state"], "ATTACHED")
+        self.assertEqual(restored["owner"], CONTROL_RIG_MMD_OWNED)
+
+    def test_enter_edit_failure_restores_graph_values_and_raw_metadata(self):
+        root = self._import_fixture()
+        self.assertTrue(
+            import_mmd_file(
+                _VMD_PATH,
+                options={"target_model": root, "pmx_path": _PMX_PATH},
+            )
+        )
+        rig = build_mmd_control_rig(root)
+        metadata_before = cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}")
+
+        plugs = set()
+        for role, binding in read_mmd_control_rig_metadata(root)["bindings"].items():
+            control = rig.controls[role]
+            for compound in binding["authoredPlugs"]:
+                channels = (
+                    [f"{compound}{axis}" for axis in "XYZ"]
+                    if compound.endswith((".translate", ".rotate", ".baseTranslate", ".baseRotate"))
+                    else [compound]
+                )
+                for target in channels:
+                    raw_channel = target.rsplit(".", 1)[-1]
+                    if raw_channel.startswith("baseRotate"):
+                        channel = f"rotate{raw_channel[-1]}"
+                    elif raw_channel.startswith("baseTranslate"):
+                        channel = f"translate{raw_channel[-1]}"
+                    elif raw_channel.startswith("inputRotateElement"):
+                        channel = f"rotate{raw_channel[-1]}"
+                    else:
+                        channel = raw_channel
+                    plugs.update((target, f"{control}.{channel}"))
+        before = {
+            plug: (
+                tuple(cmds.listConnections(plug, source=True, destination=False, plugs=True) or []),
+                cmds.getAttr(plug),
+            )
+            for plug in sorted(plugs)
+            if cmds.objExists(plug)
+        }
+
+        connect_attr = cmds.connectAttr
+        calls = [0]
+
+        def fail_after_first(*args, **kwargs):
+            calls[0] += 1
+            if calls[0] == 2:
+                raise RuntimeError("simulated enter connection failure")
+            return connect_attr(*args, **kwargs)
+
+        with mock.patch.object(cmds, "connectAttr", side_effect=fail_after_first):
+            with self.assertRaisesRegex(RuntimeError, "simulated enter"):
+                enter_mmd_control_rig_edit(root)
+
+        self.assertEqual(cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}"), metadata_before)
+        self.assertEqual(read_mmd_control_rig_metadata(root)["state"], "ATTACHED")
+        self.assertEqual(read_mmd_control_rig_metadata(root)["owner"], CONTROL_RIG_MMD_OWNED)
+        after = {
+            plug: (
+                tuple(cmds.listConnections(plug, source=True, destination=False, plugs=True) or []),
+                cmds.getAttr(plug),
+            )
+            for plug in sorted(plugs)
+            if cmds.objExists(plug)
+        }
+        self.assertEqual(after, before)
+
     def test_model_root_master_fallback_stays_outside_driven_hierarchy(self):
         root = (cmds.ls(self._import_fixture(), long=True) or [None])[0]
         spec = analyze_mmd_control_rig(root)
@@ -361,6 +720,66 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertFalse(cmds.listConnections(target_x, source=True, destination=False, plugs=True) or [])
         self.assertAlmostEqual(cmds.getAttr(target_x), 7.5, places=6)
 
+    def test_ik_disabled_leg_fk_keeps_pre_solver_single_writer_and_no_cycle(self):
+        """IK OFF still authors the solver input while output ownership stays intact."""
+        root = self._import_fixture()
+        spec = analyze_mmd_control_rig(root)
+        left_role = spec.roles_by_name["left_leg"]
+        self.assertEqual(left_role.status, STATUS_READY)
+        self.assertEqual(left_role.binding.input_kind, INPUT_IK_LINK_INPUT)
+
+        rig = build_mmd_control_rig(root, spec=spec)
+        metadata = enter_mmd_control_rig_edit(root)
+        control = rig.controls["left_leg"]
+        target_x = metadata["bindings"]["left_leg"]["authoredPlugs"][0]
+        solver = target_x.split(".", 1)[0]
+        thigh = left_role.binding.joint
+        cycles_before = sorted(cmds.cycleCheck(all=True, list=True) or [])
+
+        cmds.setAttr(f"{solver}.enabled", False)
+        target_sources = cmds.listConnections(
+            target_x,
+            source=True,
+            destination=False,
+            plugs=True,
+        ) or []
+        self.assertEqual(len(target_sources), 1)
+        self.assertEqual(cmds.ls(target_sources[0].split(".", 1)[0], long=True)[0], control)
+        thigh_sources = cmds.listConnections(
+            f"{thigh}.rotate",
+            source=True,
+            destination=False,
+            plugs=True,
+        ) or []
+        self.assertEqual(len(thigh_sources), 1)
+        self.assertTrue(thigh_sources[0].startswith(f"{solver}.outputRotate["))
+        self.assertFalse(
+            cmds.listConnections(
+                f"{thigh}.offsetParentMatrix",
+                source=True,
+                destination=False,
+                plugs=True,
+            )
+            or []
+        )
+
+        cmds.setAttr(f"{control}.rotateX", 7.5)
+        self.assertAlmostEqual(cmds.getAttr(target_x), 7.5, places=6)
+        self.assertEqual(
+            sorted(cmds.cycleCheck(all=True, list=True) or []),
+            cycles_before,
+        )
+        self.assertFalse(
+            cmds.listConnections(
+                f"{thigh}.rotate",
+                source=True,
+                destination=True,
+                plugs=True,
+                type="transform",
+            )
+            or []
+        )
+
     def test_existing_vmd_edit_and_bake_preserve_world_and_anim_curves(self):
         root = self._import_fixture()
         self.assertTrue(
@@ -404,6 +823,204 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertEqual(before, self._capture_indexed_world_matrices(root, frames))
         self.assertTrue(cmds.ls(original_curve_uuid, long=True))
         self.assertTrue(cmds.isConnected(source, target))
+
+    def test_sampled_bake_creates_mmd_curve_when_controller_is_only_source(self):
+        """IK controller samples survive Bake when the MMD side had no curve."""
+        root = self._import_fixture()
+        rig = build_mmd_control_rig(root)
+        entered = enter_mmd_control_rig_edit(root)
+        control = rig.controls["left_foot_ik"]
+        target = next(
+            target
+            for row in entered["journal"]["channels"]
+            if row["control"].startswith(f"{control}.translateX")
+            for target in [row["target"]]
+        )
+        source_row = next(row for row in entered["journal"]["channels"] if row["target"] == target)
+        self.assertIsNone(source_row["source"])
+
+        cmds.setKeyframe(control, attribute="translateX", time=6, value=0.2)
+        cmds.setKeyframe(control, attribute="translateX", time=11, value=0.8)
+        baked = bake_mmd_control_rig(root)
+
+        self.assertEqual(baked["state"], "BAKED")
+        source = cmds.listConnections(target, source=True, destination=False, plugs=True) or []
+        self.assertEqual(len(source), 1)
+        source_node = source[0].split(".", 1)[0]
+        self.assertTrue(cmds.nodeType(source_node).startswith("animCurve"))
+        self.assertEqual(
+            cmds.keyframe(source_node, query=True, timeChange=True),
+            list(range(6, 12)),
+        )
+        self.assertAlmostEqual(cmds.getAttr(target, time=6), 0.2, places=6)
+        self.assertAlmostEqual(cmds.getAttr(target, time=11), 0.8, places=6)
+
+    def test_sampled_bake_failure_removes_new_mmd_curve_and_restores_edit(self):
+        """A post-sample failure must remove the transient MMD curve."""
+        root = self._import_fixture()
+        rig = build_mmd_control_rig(root)
+        entered = enter_mmd_control_rig_edit(root)
+        control = rig.controls["left_foot_ik"]
+        row = next(
+            row
+            for row in entered["journal"]["channels"]
+            if row["control"].startswith(f"{control}.translateX")
+        )
+        target = row["target"]
+        cmds.setKeyframe(control, attribute="translateX", time=6, value=0.2)
+        cmds.setKeyframe(control, attribute="translateX", time=11, value=0.8)
+        curves_before = set(cmds.ls(type="animCurve") or [])
+
+        from mmd_tools.core import mmd_control_rig_motion as motion_module
+
+        with mock.patch.object(
+            motion_module,
+            "_restore_offsets",
+            side_effect=RuntimeError("simulated sampled bake failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "simulated sampled bake failure"):
+                bake_mmd_control_rig(root)
+
+        self.assertEqual(read_mmd_control_rig_metadata(root)["state"], "EDIT")
+        restored_source = cmds.listConnections(
+            target, source=True, destination=False, plugs=True
+        ) or []
+        self.assertEqual(len(restored_source), 1)
+        self.assertEqual(
+            cmds.ls(restored_source[0].split(".", 1)[0], long=True)[0],
+            row["control"].split(".", 1)[0],
+        )
+        self.assertEqual(set(cmds.ls(type="animCurve") or []), curves_before)
+
+    def test_native_animcurve_has_independent_owner_representations(self):
+        """Native animCurve routes retain UUID-stable MMD and control curves."""
+        root = self._import_fixture()
+        build_mmd_control_rig(root)
+        metadata = read_mmd_control_rig_metadata(root)
+        target = None
+        for binding in metadata["bindings"].values():
+            if binding.get("inputKind") != INPUT_DIRECT_CHANNEL:
+                continue
+            for compound in binding.get("authoredPlugs", []):
+                candidates = (
+                    [f"{compound}{axis}" for axis in "XYZ"]
+                    if compound.endswith((".translate", ".rotate"))
+                    else [compound]
+                )
+                for candidate in candidates:
+                    if cmds.objExists(candidate):
+                        try:
+                            cmds.setKeyframe(candidate, time=0, value=0.0)
+                            cmds.setKeyframe(candidate, time=10, value=5.0)
+                        except RuntimeError:
+                            continue
+                        target = candidate
+                        break
+                if target:
+                    break
+            if target:
+                break
+        self.assertTrue(target)
+        source = (cmds.listConnections(target, source=True, destination=False, plugs=True) or [None])[0]
+        self.assertTrue(source)
+        source_uuid = cmds.ls(source.split(".", 1)[0], uuid=True)[0]
+
+        entered = enter_mmd_control_rig_edit(root)
+        row = next(row for row in entered["journal"]["channels"] if row["target"] == target)
+        control_source = row["controlSource"]
+        self.assertTrue(control_source)
+        self.assertNotEqual(source_uuid, cmds.ls(control_source.split(".", 1)[0], uuid=True)[0])
+        self.assertFalse(cmds.isConnected(source, target))
+        self.assertTrue(cmds.isConnected(control_source, row["control"]))
+
+        control_uuid = cmds.ls(control_source.split(".", 1)[0], uuid=True)[0]
+        renamed_source = cmds.rename(source.split(".", 1)[0], "cr061_mmd_curve_RENAMED")
+        renamed_control = cmds.rename(control_source.split(".", 1)[0], "cr061_control_curve_RENAMED")
+        self.assertTrue(cmds.ls(source_uuid, long=True))
+        self.assertTrue(cmds.ls(control_uuid, long=True))
+
+        baked = bake_mmd_control_rig(root)
+        self.assertEqual(baked["owner"], CONTROL_RIG_MMD_OWNED)
+        resolved_source = f"{(cmds.ls(source_uuid, long=True) or [renamed_source])[0]}.{source.rsplit('.', 1)[-1]}"
+        resolved_control = f"{renamed_control}.{control_source.rsplit('.', 1)[-1]}"
+        self.assertTrue(cmds.isConnected(resolved_source, target))
+        self.assertFalse(cmds.isConnected(resolved_control, row["control"]))
+
+        entered_again = enter_mmd_control_rig_edit(root)
+        row_again = next(row for row in entered_again["journal"]["channels"] if row["target"] == target)
+        self.assertEqual(control_uuid, cmds.ls(row_again["controlSource"].split(".", 1)[0], uuid=True)[0])
+        target_rows = [
+            row
+            for row in entered_again.get("curveRepresentations", [])
+            if row.get("targetRef") == row_again.get("targetRef")
+        ]
+        self.assertEqual(len(target_rows), 1)
+
+    def test_native_animcurve_bake_failure_restores_curve_payload_and_metadata(self):
+        """A failure after a curve copy restores payload, graph, and owner."""
+        root = self._import_fixture()
+        build_mmd_control_rig(root)
+        metadata = read_mmd_control_rig_metadata(root)
+        targets = []
+        for binding in metadata["bindings"].values():
+            if binding.get("inputKind") != INPUT_DIRECT_CHANNEL:
+                continue
+            for compound in binding.get("authoredPlugs", []):
+                candidates = (
+                    [f"{compound}{axis}" for axis in "XYZ"]
+                    if compound.endswith((".translate", ".rotate"))
+                    else [compound]
+                )
+                for candidate in candidates:
+                    if not cmds.objExists(candidate):
+                        continue
+                    try:
+                        cmds.setKeyframe(candidate, time=0, value=0.0)
+                        cmds.setKeyframe(candidate, time=10, value=5.0)
+                    except RuntimeError:
+                        continue
+                    targets.append(candidate)
+                    break
+                if len(targets) >= 2:
+                    break
+            if len(targets) >= 2:
+                break
+        self.assertGreaterEqual(len(targets), 2)
+        entered = enter_mmd_control_rig_edit(root)
+        rows = [row for row in entered["journal"]["channels"] if row["target"] in targets]
+        self.assertEqual(len(rows), 2)
+        before = {
+            row["source"]: tuple(
+                cmds.keyframe(row["source"].split(".", 1)[0], query=True, valueChange=True) or []
+            )
+            for row in rows
+        }
+        cmds.setAttr(rows[0]["control"], 17.0)
+        metadata_before = cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}")
+        from mmd_tools.core import mmd_control_rig_motion as motion_module
+
+        original_copy = motion_module._copy_animation_curve
+        calls = [0]
+
+        def fail_after_first(cmds_module, source_plug, destination_plug):
+            calls[0] += 1
+            # Fail on the second destructive bake copy; rollback then invokes
+            # four restores, so six total calls are expected.
+            if calls[0] == 2:
+                raise RuntimeError("simulated curve copy failure")
+            return original_copy(cmds_module, source_plug, destination_plug)
+
+        with mock.patch.object(motion_module, "_copy_animation_curve", side_effect=fail_after_first):
+            with self.assertRaisesRegex(RuntimeError, "simulated curve copy failure"):
+                bake_mmd_control_rig(root)
+        self.assertEqual(calls[0], 6)
+        self.assertEqual(cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}"), metadata_before)
+        self.assertEqual(read_mmd_control_rig_metadata(root)["state"], "EDIT")
+        for source, values in before.items():
+            self.assertEqual(
+                tuple(cmds.keyframe(source.split(".", 1)[0], query=True, valueChange=True) or []),
+                values,
+            )
 
     def test_edit_display_offset_uses_build_reference_after_scrubbing(self):
         """Controls retain the build-time FK basis when EDIT starts elsewhere."""

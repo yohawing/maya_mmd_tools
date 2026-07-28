@@ -14,6 +14,21 @@ from ..core.namespace_utils import NamespaceUtils
 from ..core.native.mmd_anim_runtime import is_mmd_runtime_available
 
 
+def _normalize_vmd_fps(value: Any, logger=None) -> int:
+    """Return the supported Maya scene FPS while preserving VMD frame numbers."""
+    try:
+        fps = int(value)
+    except (TypeError, ValueError, OverflowError):
+        fps = 30
+    if fps not in (24, 30, 60):
+        if logger is not None:
+            logger.warning(
+                f"Invalid vmd_fps={value} (only 24, 30, or 60 allowed), falling back to 30"
+            )
+        return 30
+    return fps
+
+
 def _try_recover_physics_drivers(target_model, logger, profile):
     """Attempt to reconnect orphaned physics drivers after VMD import.
 
@@ -64,10 +79,11 @@ def import_vmd_file(
             - pmx_path: 対応する PMX ファイルのパス
             - pmx_bytes: 生 PMX バイト
             - bake_mode: True の場合はリグ経由ではなく runtime bake を優先
+            - create_mmd_control_rig: True の場合は MMD Control Rig を作成/再利用し、直接キーを作成
             - use_native_physics_bake: True かつ bake_mode のとき native physics bake を試行する（default False）
             - reduce_bake_keys: True かつ bake_mode のとき runtime pose reduction を試行する（default False）
             - reduce_translate_tolerance / reduce_rotate_tolerance / reduce_morph_tolerance: reduction tolerances
-            - vmd_fps: VMDインポート時のMayaシーンFPS (30 or 60, default 30)。VMDフレーム番号はリスケールせず、シーンのタイムユニットのみ変更。
+            - vmd_fps: VMDインポート時のMayaシーンFPS (24, 30, or 60, default 30)。VMDフレーム番号はリスケールせず、シーンのタイムユニットのみ変更。
         progress_callback (Callable[[int], None]): フェーズ進捗通知コールバック。
 
     Returns:
@@ -149,16 +165,7 @@ def import_vmd_file(
         # VMDコンバーターを使用してアニメーションを変換
         converter = VmdConverter()
         # Apply VMD import FPS setting (sets Maya scene time unit; VMD frame numbers are not rescaled)
-        vmd_fps = options.get("vmd_fps", 30)
-        if vmd_fps not in (30, 60):
-            try:
-                v = int(vmd_fps)
-                if v not in (30, 60):
-                    raise ValueError(v)
-                vmd_fps = v
-            except (TypeError, ValueError):
-                logger.warning(f"Invalid vmd_fps={vmd_fps} (only 30 or 60 allowed), falling back to 30")
-                vmd_fps = 30
+        vmd_fps = _normalize_vmd_fps(options.get("vmd_fps", 30), logger)
         converter.fps = float(vmd_fps)
         converter.motion_scale = float(options.get("motion_scale", 1.0))
         converter.import_camera_animation = bool(options.get("import_camera_animation", True))
@@ -187,6 +194,7 @@ def import_vmd_file(
                     target_namespace,
                     bake_mode=options.get("bake_mode", False),
                     clear_existing_motion=options.get("clear_existing_motion", False),
+                    create_mmd_control_rig=options.get("create_mmd_control_rig", False),
                     vmd_bytes=vmd_bytes,
                     pmx_bytes=pmx_bytes,
                     pmx_path=pmx_path,

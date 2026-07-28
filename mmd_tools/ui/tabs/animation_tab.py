@@ -1,4 +1,4 @@
-"""Animator Toolset tab with a public picker and development-only pose tools."""
+"""Animator Toolset tab with picker tools and the experimental MMD Control Rig."""
 
 from ..qt_compat import (
     QComboBox,
@@ -69,21 +69,25 @@ class AnimationTab(BaseTab):
         visibility_layout.addStretch(1)
         main_layout.addLayout(visibility_layout)
 
-        self.control_rig_group = QGroupBox("MMD Control Rig")
+        # The native rig is intentionally marked Experimental, but is part of
+        # the normal Animator Toolset surface.  Its action buttons remain
+        # explicit state transitions so users can see which representation is
+        # currently authoritative.
+        self.control_rig_group = QGroupBox()
         control_rig_layout = QGridLayout()
         self.control_rig_buttons: dict[str, QPushButton] = {}
-        for index, (key, label) in enumerate(
+        for index, (key, translation_key) in enumerate(
             (
-                ("create", "Create"),
-                ("edit", "Attach / Edit"),
-                ("bake_mmd", "Bake to MMD"),
-                ("restore", "Restore"),
-                ("delete", "Delete Rig"),
-                ("diagnostics", "Diagnostics"),
+                ("create", "control_rig_create"),
+                ("bake_control", "control_rig_bake_control"),
+                ("bake_mmd", "control_rig_bake_mmd"),
+                ("restore", "control_rig_restore"),
+                ("delete", "control_rig_delete"),
+                ("diagnostics", "control_rig_diagnostics"),
             )
         ):
-            button = QPushButton(label)
-            button.setToolTip(label)
+            button = QPushButton()
+            button._control_rig_translation_key = translation_key
             row, column = divmod(index, 3)
             control_rig_layout.addWidget(button, row, column)
             self.control_rig_buttons[key] = button
@@ -194,24 +198,23 @@ class AnimationTab(BaseTab):
         self.refresh_development_mode_visibility()
 
     def refresh_development_mode_visibility(self):
-        """Show unfinished pose tools only in Development Mode."""
+        """Refresh visibility for legacy tools and the public rig controls.
+
+        Pose authoring helpers are still Development Mode-only.  The MMD
+        Control Rig itself graduated to the normal Animator Toolset in 0.6.1,
+        so it must not disappear when Development Mode is disabled.
+        """
 
         development_mode = SettingsService().is_development_mode()
         picker_tab = self.picker_tabs.currentIndex() in (self.TAB_BODY, self.TAB_FINGER)
         self.tools_group.setVisible(picker_tab and development_mode)
-        # The MMD Control Rig is unsupported outside Development Mode, so the
-        # group is disabled as well as hidden: hiding alone still leaves the
-        # buttons clickable through a re-parented or scripted view.
-        self.control_rig_group.setVisible(development_mode)
-        self.control_rig_group.setEnabled(development_mode)
+        self.control_rig_group.setVisible(True)
+        self.control_rig_group.setEnabled(True)
         control_rig_visibility = self.vis_checkboxes.get("control_rig")
         if control_rig_visibility is not None:
-            control_rig_visibility.setVisible(development_mode)
+            control_rig_visibility.setVisible(True)
             control_rig_visibility.setEnabled(
-                development_mode
-                and bool(
-                    getattr(control_rig_visibility, "_control_rig_available", False)
-                )
+                bool(getattr(control_rig_visibility, "_control_rig_available", False))
             )
 
     def current_language(self) -> str:
@@ -256,5 +259,10 @@ class AnimationTab(BaseTab):
         for key in ("mesh", "joints", "colliders", "control_rig"):
             self.vis_checkboxes[key].setText(tr(key))
         self.tools_group.setTitle(tr("tools"))
+        self.control_rig_group.setTitle(tr("control_rig_group_title"))
+        for button in self.control_rig_buttons.values():
+            translation_key = button._control_rig_translation_key
+            button.setText(tr(translation_key))
+            button.setToolTip(tr(f"{translation_key}_tooltip"))
         for key, button in self.tool_buttons.items():
             button.setText(tr(key))

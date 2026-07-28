@@ -357,6 +357,7 @@ class _FakeAppState:
         self.current_model_changed = _FakeSignal()
         self.model_list_updated = _FakeSignal()
         self._current_model_root = model_root
+        self.cache_clear_count = 0
 
     @property
     def current_model_root(self):
@@ -368,6 +369,9 @@ class _FakeAppState:
 
     def refresh_model_list(self):
         pass
+
+    def clear_cache(self):
+        self.cache_clear_count += 1
 
 
 class _FakeAdapter:
@@ -550,6 +554,29 @@ class TestAnimationPresenter(unittest.TestCase):
         root_group = view.display_frame_tree.topLevelItem(0)
         self.assertIn("Root", root_group.text(0))
         self.assertEqual(root_group.childCount(), 1)
+
+    def test_scene_change_reloads_same_named_model_after_cache_clear(self):
+        presenter, _, app_state, _ = self._make(model_root="test_model")
+
+        with patch.object(presenter, "_reload_for_model") as reload_model:
+            presenter.refresh_for_scene_change()
+
+        self.assertEqual(app_state.cache_clear_count, 1)
+        reload_model.assert_called_once_with("test_model")
+
+    def test_create_control_rig_also_enters_bound_edit_state(self):
+        presenter, view, _, _ = self._make(model_root="test_model")
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.build_mmd_control_rig"
+        ) as build, patch(
+            "mmd_tools.core.mmd_control_rig_motion.enter_mmd_control_rig_edit",
+            return_value={"state": "EDIT", "owner": "CONTROL_OWNED"},
+        ) as bind, patch.object(presenter, "_sync_visibility_controls"):
+            presenter._on_control_rig_clicked("create")
+
+        build.assert_called_once_with("test_model")
+        bind.assert_called_once_with("test_model")
+        self.assertIn("EDIT / CONTROL_OWNED", view.status_label.text())
 
     def test_tree_bone_item_has_user_data(self):
         joints = {0: "center"}

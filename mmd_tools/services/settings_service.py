@@ -4,6 +4,7 @@ This module keeps UI presenters independent from the core settings singleton
 while preserving the existing optionVar-backed storage behavior.
 """
 
+import copy
 import json
 import math
 
@@ -160,9 +161,23 @@ class SettingsService:
 
     def import_settings_data(self, data):
         """Import settings data for supported top-level categories."""
+        normalized_data = copy.deepcopy(data)
+        import_settings = normalized_data.get("import")
+        if isinstance(import_settings, dict):
+            animation_settings = import_settings.get("animation")
+            if isinstance(animation_settings, dict) and "create_mmd_control_rig" in animation_settings:
+                model_settings = import_settings.get("model")
+                if not isinstance(model_settings, dict):
+                    model_settings = {}
+                    import_settings["model"] = model_settings
+                # A model-scoped value, including explicit False, wins over
+                # the former animation-scoped value during JSON import.
+                model_settings.setdefault("create_mmd_control_rig", animation_settings["create_mmd_control_rig"])
+                animation_settings.pop("create_mmd_control_rig", None)
+
         for category in _SETTINGS_EXPORT_CATEGORIES:
-            if category in data:
-                for key, value in data[category].items():
+            if category in normalized_data:
+                for key, value in normalized_data[category].items():
                     self.set(f"{category}.{key}", value)
 
     def import_settings_json(self, file_path):
@@ -183,6 +198,7 @@ class SettingsService:
             "import_light_animation": self.get(setting_keys.IMPORT_ANIMATION_IMPORT_LIGHT_ANIMATION, True),
             "motion_scale": self.get(setting_keys.IMPORT_ANIMATION_MOTION_SCALE, 1.0),
             "clear_existing_motion": self.get(setting_keys.IMPORT_ANIMATION_CLEAR_EXISTING_MOTION, False),
+            "create_mmd_control_rig": self.get(setting_keys.IMPORT_MODEL_CREATE_MMD_CONTROL_RIG, False),
             "resample_curves": self.get(setting_keys.IMPORT_ANIMATION_RESAMPLE_CURVES, False) if is_dev else False,
             "bake_mode": bake_mode,
             "use_native_physics_bake": self.get(setting_keys.IMPORT_ANIMATION_USE_NATIVE_PHYSICS_BAKE, False),
@@ -202,6 +218,7 @@ class SettingsService:
             "custom_namespace": custom_namespace,
             "import_models": self.get(setting_keys.IMPORT_MODEL_IMPORT_MODELS, True),
             "create_mmd_shaders": self.get(setting_keys.IMPORT_MODEL_CREATE_MMD_SHADERS, True),
+            "create_mmd_control_rig": self.get(setting_keys.IMPORT_MODEL_CREATE_MMD_CONTROL_RIG, False),
             "separate_meshes_by_material": self.get(setting_keys.IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL, False),
             "auto_resolve_textures": self.get(setting_keys.IMPORT_MODEL_AUTO_RESOLVE_TEXTURES, True),
             "disable_backface_culling": self.get(setting_keys.IMPORT_MODEL_DISABLE_BACKFACE_CULLING, True),

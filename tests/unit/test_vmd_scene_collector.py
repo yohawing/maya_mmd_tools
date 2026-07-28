@@ -3,6 +3,7 @@
 import json
 import math
 import unittest
+from unittest import mock
 
 from tests.common.maya_stub import install_maya_stub
 
@@ -208,6 +209,89 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(result["bone_frames"][1]["position"], (2.0, 3.0, -4.0))
         self.assertAlmostEqual(result["bone_frames"][1]["rotation"][2], 0.7071067811865476)
         self.assertAlmostEqual(result["bone_frames"][1]["rotation"][3], 0.7071067811865476)
+
+    def test_collects_bone_morph_base_channels_from_control_rig_metadata(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "center_joint": "joint",
+                "center_accum": "mmdBoneMorphAccum",
+            }
+        )
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
+        for attr, values in {
+            "baseTranslateX": {0.0: 0.0, 10.0: 3.0},
+            "baseTranslateY": {0.0: 0.0, 10.0: 0.0},
+            "baseTranslateZ": {0.0: 0.0, 10.0: 0.0},
+            "baseRotateX": {0.0: 0.0, 10.0: 0.0},
+            "baseRotateY": {0.0: 0.0, 10.0: 0.0},
+            "baseRotateZ": {0.0: 0.0, 10.0: 90.0},
+        }.items():
+            self.cmds.keys[("center_accum", attr)] = values
+        metadata = {
+            "state": "BAKED",
+            "bindings": {
+                "center": {
+                    "inputKind": "bone_morph_base",
+                    "joint": "center_joint",
+                    "authoredPlugs": [
+                        "center_accum.baseTranslate",
+                        "center_accum.baseRotate",
+                    ],
+                }
+            },
+        }
+        with mock.patch.object(collector_module, "read_mmd_control_rig_metadata", return_value=metadata), mock.patch.object(
+            collector_module, "collect_append_info", return_value={}
+        ), mock.patch.object(collector_module, "collect_mmd_ik_passthrough_info", return_value={}):
+            result = VmdSceneCollector().collect({"target_model": "model_root"})
+
+        center_frames = [row for row in result["bone_frames"] if row["bone_name"] == "センター"]
+        self.assertEqual(len(center_frames), 11)
+        self.assertEqual(center_frames[-1]["frame_number"], 10)
+        self.assertEqual(center_frames[-1]["position"], (3.0, 0.0, 0.0))
+        self.assertAlmostEqual(center_frames[-1]["rotation"][2], 0.7071067811865476)
+        self.assertAlmostEqual(center_frames[-1]["rotation"][3], 0.7071067811865476)
+
+    def test_collects_ik_controller_base_channels_from_control_rig_metadata(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "left_ik_joint": "joint",
+                "left_ik_accum": "mmdBoneMorphAccum",
+            }
+        )
+        self.cmds.children["model_root"] = ["left_ik_joint"]
+        self.cmds.attrs[("left_ik_joint", ATTR_MMD_BONE_NAME)] = "左足ＩＫ"
+        self.cmds.keys[("left_ik_accum", "baseTranslateX")] = {0.0: 0.0, 3.0: 0.35}
+        self.cmds.keys[("left_ik_accum", "baseTranslateY")] = {0.0: 0.0, 3.0: 0.0}
+        self.cmds.keys[("left_ik_accum", "baseTranslateZ")] = {0.0: 0.0, 3.0: 0.0}
+        for axis in "XYZ":
+            self.cmds.keys[("left_ik_accum", f"baseRotate{axis}")] = {0.0: 0.0, 3.0: 0.0}
+        metadata = {
+            "state": "BAKED",
+            "bindings": {
+                "left_foot_ik": {
+                    "inputKind": "ik_controller",
+                    "joint": "left_ik_joint",
+                    "authoredPlugs": [
+                        "left_ik_accum.baseTranslate",
+                        "left_ik_accum.baseRotate",
+                    ],
+                }
+            },
+        }
+        with mock.patch.object(collector_module, "read_mmd_control_rig_metadata", return_value=metadata), mock.patch.object(
+            collector_module, "collect_append_info", return_value={}
+        ), mock.patch.object(collector_module, "collect_mmd_ik_passthrough_info", return_value={}):
+            result = VmdSceneCollector().collect({"target_model": "model_root"})
+
+        left_ik_frames = [
+            row for row in result["bone_frames"] if row["bone_name"] == "左足ＩＫ"
+        ]
+        self.assertEqual([row["frame_number"] for row in left_ik_frames], [0, 1, 2, 3])
+        self.assertEqual(left_ik_frames[-1]["position"], (0.35, 0.0, 0.0))
 
     def test_rejects_control_rig_export_while_editing(self):
         collector_module.read_mmd_control_rig_metadata = lambda _target_model: {

@@ -30,6 +30,7 @@ CONTROL_RIG_SPEC_VERSION = 1
 
 INPUT_DIRECT_CHANNEL = "direct_channel"
 INPUT_APPEND_BASE = "append_base"
+INPUT_BONE_MORPH_BASE = "bone_morph_base"
 INPUT_IK_CONTROLLER = "ik_controller"
 INPUT_IK_LINK_INPUT = "ik_link_input"
 INPUT_SOLVER_OUTPUT = "solver_output"
@@ -86,6 +87,7 @@ class MmdControlRigBoneFact:
     incoming: Tuple[MmdControlRigConnectionFact, ...] = ()
     ik_solvers: Tuple[str, ...] = ()
     solver_input_plugs: Tuple[str, ...] = ()
+    bone_morph_base_plugs: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -294,6 +296,7 @@ def classify_mmd_control_rig(
             bindings_by_joint,
             resolved_roles,
             model_root,
+            optional=True,
         )
         roles.append(role)
         resolved_roles[role.role] = role
@@ -368,6 +371,11 @@ def analyze_mmd_control_rig(model_root: str, cmds_module=None) -> MmdControlRigS
                 )
             ),
             solver_input_plugs=_solver_input_rotate_plugs(cmds, row["incoming"]),
+            bone_morph_base_plugs=_bone_morph_base_plugs(
+                cmds,
+                row["joint"],
+                row["incoming"],
+            ),
         )
         for row in bone_rows
     ]
@@ -416,12 +424,25 @@ def _classify_bone_input(fact: MmdControlRigBoneFact) -> MmdControlRigBoneBindin
             or ".outputTranslate" in row.source_plug
         )
     ]
+    bone_morph_outputs = [
+        row
+        for row in incoming
+        if row.source_node_type == "mmdBoneMorphAccum"
+        and (
+            ".outputRotate" in row.source_plug
+            or ".outputTranslate" in row.source_plug
+        )
+    ]
+    bone_morph_base_plugs = tuple(
+        _unique_sorted(fact.bone_morph_base_plugs)
+    )
     unsupported = [
         row
         for row in incoming
         if row not in physics
         and row not in solver_outputs
         and row not in append_outputs
+        and row not in bone_morph_outputs
         and not _is_animation_source(row.source_node_type)
     ]
 
@@ -458,6 +479,23 @@ def _classify_bone_input(fact: MmdControlRigBoneFact) -> MmdControlRigBoneBindin
             )
         )
         return _bone_binding(fact, INPUT_UNSUPPORTED, (), incoming, blockers=blockers)
+    if bone_morph_base_plugs:
+        if fact.ik_solvers:
+            # IK controllers remain responsible for solver state, but their
+            # authored TRS must enter the accumulator so morph and control
+            # values have one effective writer before the solver goal.
+            return _bone_binding(
+                fact,
+                INPUT_IK_CONTROLLER,
+                bone_morph_base_plugs,
+                incoming,
+            )
+        return _bone_binding(
+            fact,
+            INPUT_BONE_MORPH_BASE,
+            bone_morph_base_plugs,
+            incoming,
+        )
     if append_outputs:
         authored = []
         for row in append_outputs:
@@ -516,6 +554,8 @@ def _resolve_role(
     bindings_by_joint: Mapping[str, MmdControlRigBoneBinding],
     resolved_roles: Mapping[str, MmdControlRigRoleBinding],
     model_root: str,
+    *,
+    optional: bool = False,
 ) -> MmdControlRigRoleBinding:
     candidates: List[MmdControlRigBoneFact] = []
     for name in definition.mmd_names:
@@ -556,6 +596,13 @@ def _resolve_role(
                 fallback="model_root",
                 warnings=(warning,),
             )
+        if optional:
+            warning = f"{definition.role}: optional MMD bone is missing; control omitted"
+            return MmdControlRigRoleBinding(
+                role=definition.role,
+                status=STATUS_MISSING,
+                warnings=(warning,),
+            )
         blocker = f"{definition.role}: required MMD bone is missing"
         return MmdControlRigRoleBinding(
             role=definition.role,
@@ -568,14 +615,15 @@ def _resolve_role(
     warnings = []
     blockers = list(binding.blockers)
     if definition.uses_solver_input:
-        if winner.solver_input_plugs:
+        authored_plugs = winner.bone_morph_base_plugs or winner.solver_input_plugs
+        if authored_plugs:
             binding = MmdControlRigBoneBinding(
                 joint=winner.joint,
                 mmd_name=winner.mmd_name,
                 bone_index=winner.bone_index,
                 pmx_flags=winner.pmx_flags,
                 input_kind=INPUT_IK_LINK_INPUT,
-                authored_plugs=winner.solver_input_plugs,
+                authored_plugs=authored_plugs,
                 ik_solvers=tuple(
                     sorted({plug.split(".", 1)[0] for plug in winner.solver_input_plugs})
                 ),
@@ -636,6 +684,135 @@ def _solver_input_rotate_plugs(
         base = f"{node}.inputRotate[{slot}]"
         plugs.extend(f"{base}.inputRotateElement{axis}" for axis in "XYZ")
     return tuple(_unique_sorted(plugs))
+
+
+def _bone_morph_base_plugs(
+    cmds,
+    joint: str,
+    incoming: Iterable[MmdControlRigConnectionFact],
+) -> Tuple[str, ...]:
+    """Resolve supported accumulator outputs to their writable base inputs.
+
+    ``mmdBoneMorphAccum`` is an intermediate composer, never an authoring
+    output.  Only the known MMD routes are followed: accumulator output to a
+    joint, an ``mmdAppend`` base, or an ``mmdCcdIk`` pre-input.  Unknown
+    composer/writer graphs intentionally return no route and remain blocked by
+    :func:`_classify_bone_input`.
+    """
+
+    plugs = []
+    for row in incoming:
+        source_node, source_attr = row.source_plug.split(".", 1)
+        if row.source_node_type == "mmdBoneMorphAccum":
+            base = _accum_base_from_output(source_node, source_attr)
+            if base:
+                plugs.append(base)
+            continue
+        if row.source_node_type == "mmdAppend":
+            append_base = _append_base_from_output(source_attr)
+            plugs.extend(
+                _accum_bases_from_destination(
+                    cmds,
+                    f"{source_node}.{append_base}" if append_base else None,
+                )
+            )
+            continue
+        if row.source_node_type == "mmdCcdIk" and ".outputRotate" in source_attr:
+            input_plug = _ccd_ik_input_compound_from_output(
+                cmds,
+                source_node,
+                source_attr,
+            )
+            plugs.extend(_accum_bases_from_destination(cmds, input_plug))
+
+    # A solver's input may be the effective destination even when its output
+    # is the only source visible on the authored link joint.  Resolve the
+    # solver pre-input separately so thigh/knee FK does not bypass the morph
+    # composer.
+    for target in _solver_input_rotate_plugs(cmds, incoming):
+        input_compound = target.rsplit(".inputRotateElement", 1)[0]
+        plugs.extend(_accum_bases_from_destination(cmds, input_compound))
+
+    return tuple(_unique_sorted(plugs))
+
+
+def _accum_base_from_output(node: str, source_attr: str) -> Optional[str]:
+    if source_attr.startswith("outputRotate"):
+        return f"{node}.baseRotate"
+    if source_attr.startswith("outputTranslate"):
+        return f"{node}.baseTranslate"
+    return None
+
+
+def _append_base_from_output(source_attr: str) -> Optional[str]:
+    if source_attr.startswith("outputRotate"):
+        return "baseRotate"
+    if source_attr.startswith("outputTranslate"):
+        return "baseTranslate"
+    return None
+
+
+def _accum_bases_from_destination(cmds, destination: Optional[str]) -> Tuple[str, ...]:
+    """Find accumulator sources feeding a known pre-input destination."""
+    if not destination:
+        return ()
+    plugs = []
+    destinations = [destination]
+    if ".inputRotate[" in destination:
+        destinations.extend(
+            f"{destination}.inputRotateElement{axis}" for axis in "XYZ"
+        )
+    elif destination.endswith(("baseRotate", "baseTranslate")):
+        destinations.extend(f"{destination}{axis}" for axis in "XYZ")
+    for target in destinations:
+        try:
+            sources = cmds.listConnections(
+                target,
+                source=True,
+                destination=False,
+                plugs=True,
+            ) or []
+        except Exception:
+            sources = []
+        for source in sources:
+            source_node, source_attr = str(source).split(".", 1)
+            try:
+                source_type = str(cmds.nodeType(source_node))
+            except Exception:
+                continue
+            if source_type != "mmdBoneMorphAccum":
+                continue
+            base = _accum_base_from_output(source_node, source_attr)
+            if base:
+                plugs.append(base)
+    return tuple(_unique_sorted(plugs))
+
+
+def _ccd_ik_input_compound_from_output(
+    cmds,
+    ik_node: str,
+    source_attr: str,
+) -> Optional[str]:
+    link_index = _array_index(source_attr, "outputRotate")
+    if link_index is None:
+        return None
+    try:
+        chain = json.loads(cmds.getAttr(f"{ik_node}.chainJson") or "{}")
+        links = chain.get("links") or []
+        slot = int(links[link_index].get("bone_slot", link_index))
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        slot = link_index
+    return f"{ik_node}.inputRotate[{slot}]"
+
+
+def _array_index(source_attr: str, array_name: str) -> Optional[int]:
+    match = re.match(rf"^{re.escape(array_name)}\[(\d+)\]", source_attr)
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
 
 
 def _collect_incoming_connections(cmds, joint: str) -> Tuple[MmdControlRigConnectionFact, ...]:

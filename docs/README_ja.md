@@ -103,7 +103,10 @@ Mayaのメニューバーに `MMD > MMD Editor` が追加されていること�
 ### モデルをインポートする
 
 1. Import/ExportタブでPMXまたはPMDファイルを選択します。
-2. `Import Model` をクリックします。
+2. 編集用リグも使う場合は、左側のImport SettingsにあるModel欄で`MMD Control Rigを作成`をONにします（実験的、既定OFF）。
+3. `Import Model` をクリックします。
+
+この設定をONにすると、モデルのインポート完了後にMMD Control Rigを作成し、自動的にBindしてControl Rigを編集対象にします。そのままVMDをインポートすると既存のControl Rigを再利用し、モーションをコントローラーへ直接設定します。手動Bind操作は不要です。
 
 ※テクスチャがマルチバイト文字によって読み込めない場合は、テクスチャを自動修復をONにしてください。自動で読み込める名前のテクスチャに自動でコピーされ使用されます。
 
