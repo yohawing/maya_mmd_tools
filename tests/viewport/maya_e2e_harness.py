@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -75,19 +76,27 @@ def run_maya_e2e(
     log_ready: Any = None,
     warn_detached: bool = False,
 ) -> dict[str, Any]:
-    """Launch Maya, run one commandPort probe, and close the owned process."""
+    """Launch Maya with isolated preferences, run a probe, and close it."""
     maya_commandport.remove_stale_logs(stale_paths)
     proc = None
     maya_owned = False
+    profile_owned = False
+    process_exited = False
+    maya_app_dir = (out_dir / f"maya-app-{version}-{port}").resolve()
     try:
         if maya_commandport.is_port_open(port):
             raise RuntimeError(port_error or f"commandPort :{port} is already open")
+        shutil.rmtree(maya_app_dir, ignore_errors=True)
+        profile_owned = True
         proc = maya_commandport.launch_maya(
             version=version,
             project_root=project_root,
             output_dir=out_dir,
             port=port,
             launch_mode="explorer" if sys.platform == "win32" else "direct",
+            # Never allow an automated Maya shutdown to rewrite the user's
+            # pluginPrefs.mel or other Documents/maya preferences.
+            env_overrides={"MAYA_APP_DIR": str(maya_app_dir)},
         )
         maya_owned = True
         maya_commandport.wait_for_port(port, timeout=launch_timeout, process=proc)
@@ -113,6 +122,17 @@ def run_maya_e2e(
                 maya_commandport.quit_maya(port)
                 time.sleep(quit_delay)
             finally:
-                if terminate_process and proc is not None and proc.poll() is None:
-                    proc.terminate()
-                maya_commandport.close_process_logs(proc)
+                try:
+                    if proc is None:
+                        maya_commandport.wait_for_port_close(port, timeout=30)
+                        process_exited = True
+                    elif proc.poll() is not None:
+                        process_exited = True
+                    elif terminate_process:
+                        proc.terminate()
+                        proc.wait(timeout=30)
+                        process_exited = True
+                finally:
+                    maya_commandport.close_process_logs(proc)
+        if profile_owned and (not maya_owned or process_exited):
+            shutil.rmtree(maya_app_dir, ignore_errors=True)

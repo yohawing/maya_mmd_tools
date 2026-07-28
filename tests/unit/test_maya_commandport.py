@@ -127,6 +127,10 @@ class TestMayaCommandPort(unittest.TestCase):
 
             try:
                 self.assertNotIn("MAYA_VP2_DEVICE_OVERRIDE", popen.call_args.kwargs["env"])
+                self.assertEqual(
+                    str((Path(tmpdir) / "logs" / "maya-app-2026-7722").resolve()),
+                    popen.call_args.kwargs["env"]["MAYA_APP_DIR"],
+                )
             finally:
                 maya_commandport.close_process_logs(process)
 
