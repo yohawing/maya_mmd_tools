@@ -1471,7 +1471,17 @@ def _restore_animation_channel_snapshot(
             )
         _restore_animation_curve_payload(cmds, curve_node, payload)
     elif not prior_sources and row.get("value") is not None:
-        cmds.setAttr(destination, row["value"])
+        value = row["value"]
+        if (
+            isinstance(value, (list, tuple))
+            and len(value) == 1
+            and isinstance(value[0], (list, tuple))
+        ):
+            value = value[0]
+        if isinstance(value, (list, tuple)):
+            cmds.setAttr(destination, *value)
+        else:
+            cmds.setAttr(destination, value)
 
 
 def _restore_animation_curve_payload(cmds, node: str, payload: Mapping[str, Any]) -> None:

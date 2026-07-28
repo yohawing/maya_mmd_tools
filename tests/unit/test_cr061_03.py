@@ -790,6 +790,24 @@ class TestControlRigMotionClear(MayaTestBase):
 
         self.assertIsNone(cmds.keyframe(curve, query=True, timeChange=True))
 
+    def test_channel_snapshot_restores_compound_numeric_value(self):
+        """Maya's one-row compound wrapper is expanded for setAttr restore."""
+        control = cmds.createNode("transform", name="cr061_compound_snapshot_ctrl")
+        cmds.setAttr(f"{control}.translate", 1.0, 2.0, 3.0)
+        row = mmd_control_rig_motion._capture_animation_channel_snapshot(
+            cmds,
+            f"{control}.translate",
+        )
+        cmds.setAttr(f"{control}.translate", 7.0, 8.0, 9.0)
+
+        mmd_control_rig_motion._restore_animation_channel_snapshot(
+            cmds,
+            row,
+            destination=f"{control}.translate",
+        )
+
+        self.assertEqual(cmds.getAttr(f"{control}.translate")[0], (1.0, 2.0, 3.0))
+
     def test_channel_snapshot_capture_failure_cannot_recreate_deleted_curve(self):
         """A deleted curve plus an unknown payload fails closed instead of recreating empty."""
         control = cmds.createNode("transform", name="cr061_channel_deleted_ctrl")
