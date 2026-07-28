@@ -591,6 +591,41 @@ class TestPmxExporter(MayaTestBase):
         self.assertEqual(pmx.vertices[2].weight_transform_type, 0)
         self.assertEqual(pmx.vertices[2].bone_indices, [1])
 
+    def test_model_export_keeps_metadata_bone_without_skin_influence(self):
+        """model exportは0-weight jointもSkeleton metadataからPMX boneへ戻す。"""
+        transform, joints, skin_cluster = self._make_skinned_triangle("pmx_zero_weight_bone")
+        root = cmds.group(empty=True, name="pmx_zero_weight_root")
+        cmds.parent(transform, root)
+        cmds.parent(joints[0], root)
+        cmds.select(joints[1], replace=True)
+        unused_joint = cmds.joint(name="pmx_unused_ik_target", position=[0.0, 3.0, 0.0])
+        for attr, value in [
+            (ATTR_MMD_BONE_INDEX, 2),
+            (ATTR_MMD_BONE_PARENT_INDEX, 1),
+        ]:
+            cmds.addAttr(unused_joint, longName=attr, attributeType="long")
+            cmds.setAttr(f"{unused_joint}.{attr}", value)
+        for attr, value in [
+            (ATTR_MMD_BONE_NAME, "ＩＫ先"),
+            (ATTR_MMD_BONE_NAME_EN, "IKTarget"),
+        ]:
+            cmds.addAttr(unused_joint, longName=attr, dataType="string")
+            cmds.setAttr(f"{unused_joint}.{attr}", value, type="string")
+
+        output_path = self.get_temp_filename("zero_weight_bone.pmx")
+        result = ExportModelAction().execute(
+            ExportModelRequest(
+                file_path=output_path,
+                options={"export_format": "pmx", "target_model": root},
+            )
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(len(cmds.skinCluster(skin_cluster, query=True, influence=True)), 2)
+        pmx = _parse_pmx(output_path)
+        self.assertEqual([bone.name for bone in pmx.bones], ["センター", "上半身", "ＩＫ先"])
+        self.assertEqual([bone.parent_bone_index for bone in pmx.bones], [-1, 0, 1])
+
     def test_export_model_action_collects_skincluster_weights_to_pmd(self):
         """skinCluster の influence と weight を PMD bones/vertex weight に書き出す。"""
         transform, _joints, _skin_cluster = self._make_skinned_triangle("pmd_skinned_tri")
