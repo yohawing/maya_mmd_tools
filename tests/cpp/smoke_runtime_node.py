@@ -840,6 +840,40 @@ def main() -> int:
                         f"{case['label']} should match no-JO output: expected {expected_no_jo}, got {case_output_r}"
                     )
 
+        if cpp_registered_append:
+            for attr in ("sourceMmdLinkQuaternions", "sourceMmdLinkIndex"):
+                if not cmds.attributeQuery(attr, node=append_node, exists=True):
+                    raise RuntimeError(f"Missing native append safety-test attribute {attr!r}")
+
+            # A non-null, short quaternion array with an invalid link index must
+            # take the sourceRotate/sourceJointOrient fallback.  INT_MAX used to
+            # wrap the uint32 offset and pass the length guard before indexing.
+            cmds.setAttr(f"{append_node}.schemaMode", 2)
+            cmds.setAttr(f"{append_node}.baseTranslate", 0.0, 0.0, 0.0, type="double3")
+            cmds.setAttr(f"{append_node}.baseRotate", 0.0, 0.0, 0.0, type="double3")
+            cmds.setAttr(f"{append_node}.sourceTranslate", 0.0, 0.0, 0.0, type="double3")
+            cmds.setAttr(f"{append_node}.sourceRotate", 30.0, 10.0, -5.0, type="double3")
+            cmds.setAttr(f"{append_node}.sourceJointOrient", 12.0, -7.0, 3.0, type="double3")
+            cmds.setAttr(f"{append_node}.targetJointOrient", 0.0, 0.0, 0.0, type="double3")
+            cmds.setAttr(f"{append_node}.ratio", 0.75)
+            cmds.setAttr(f"{append_node}.affectRotation", True)
+            cmds.setAttr(f"{append_node}.affectTranslation", False)
+            cmds.setAttr(f"{append_node}.sourceMmdLinkQuaternions", [0.0, 0.0, 0.0], type="doubleArray")
+            cmds.setAttr(f"{append_node}.sourceMmdLinkIndex", -1)
+            fallback_append_r = cmds.getAttr(f"{append_node}.appendRotate")[0]
+            fallback_output_r = cmds.getAttr(f"{append_node}.outputRotate")[0]
+
+            cmds.setAttr(f"{append_node}.sourceMmdLinkIndex", 2147483647)
+            invalid_append_r = cmds.getAttr(f"{append_node}.appendRotate")[0]
+            invalid_output_r = cmds.getAttr(f"{append_node}.outputRotate")[0]
+            for label, expected, actual in (
+                ("invalid sourceMmdLinkIndex appendRotate", fallback_append_r, invalid_append_r),
+                ("invalid sourceMmdLinkIndex outputRotate", fallback_output_r, invalid_output_r),
+            ):
+                if any(abs(float(a) - float(e)) > 1e-5 for e, a in zip(expected, actual)):
+                    raise RuntimeError(f"{label} used invalid quaternion data: expected {expected}, got {actual}")
+            print(f"OK: {APPEND_NODE_TYPE} invalid sourceMmdLinkIndex fails closed to rotation fallback")
+
         print(f"OK: {APPEND_NODE_TYPE} JO-aware append parity cases match native expected outputs")
 
         if append_node not in vmd_runtime_rig_helper_mod._ls_mmd_append_nodes():

@@ -29,6 +29,7 @@
 #include "MmdCoordinateUtils.h"
 
 #include <cmath>
+#include <cstdint>
 
 namespace {
 constexpr double kPi = 3.14159265358979323846;
@@ -838,8 +839,16 @@ MStatus MmdAppendNode::compute(const MPlug& plug, MDataBlock& data) {
             MFnDoubleArrayData sourceMmdData(sourceMmdDataObject, &status);
             if (status == MS::kSuccess) {
                 const MDoubleArray values = sourceMmdData.array(&status);
-                const unsigned int offset = static_cast<unsigned int>(sourceMmdLinkIndex) * 4u;
-                if (status == MS::kSuccess && values.length() >= offset + 4u) {
+                // Validate the element index before multiplying.  Scene data can
+                // contain INT_MAX or other corrupt values; wrapping the old
+                // uint32 offset could turn an invalid link into an out-of-bounds
+                // read (and make the guard itself pass after offset + 4 wraps).
+                const std::uint64_t valueCount = static_cast<std::uint64_t>(values.length());
+                const std::uint64_t linkIndex = static_cast<std::uint64_t>(sourceMmdLinkIndex);
+                const bool hasQuaternion = valueCount >= 4u &&
+                    linkIndex <= (valueCount - 4u) / 4u;
+                if (status == MS::kSuccess && hasQuaternion) {
+                    const unsigned int offset = static_cast<unsigned int>(linkIndex * 4u);
                     sourceMmdQuat = MQuaternion(
                         values[offset], values[offset + 1], values[offset + 2], values[offset + 3]);
                     hasNativeMmdQuaternion = true;

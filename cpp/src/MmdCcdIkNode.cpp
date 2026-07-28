@@ -76,12 +76,18 @@ IkChainCreateV2Fn resolveIkChainCreateV2()
     // rather than the dependency that exports the v2 symbol. Resolve the
     // already-loaded runtime DLL by module name first; never LoadLibrary here
     // because node evaluation must not change DLL lifetime.
-    HMODULE runtimeModule = GetModuleHandleA("mmd_runtime_ffi.dll");
-    if (runtimeModule) {
-        auto fn = reinterpret_cast<IkChainCreateV2Fn>(
-            GetProcAddress(runtimeModule, "mmd_runtime_ik_chain_create_v2"));
-        if (fn) {
-            return fn;
+    constexpr const char* kRuntimeDllNames[] = {
+        "mmd_runtime_ffi.dll",
+        "mmd_anim_ffi.dll",
+    };
+    for (const char* runtimeDllName : kRuntimeDllNames) {
+        HMODULE runtimeModule = GetModuleHandleA(runtimeDllName);
+        if (runtimeModule) {
+            auto fn = reinterpret_cast<IkChainCreateV2Fn>(
+                GetProcAddress(runtimeModule, "mmd_runtime_ik_chain_create_v2"));
+            if (fn) {
+                return fn;
+            }
         }
     }
 

@@ -152,7 +152,9 @@ class TestRigConverterUnifiedNodeTypes(unittest.TestCase):
             "struct CcdIkChainConfig", 1
         )[0]
 
-        self.assertIn('GetModuleHandleA("mmd_runtime_ffi.dll")', resolver)
+        self.assertIn('"mmd_runtime_ffi.dll"', resolver)
+        self.assertIn('GetModuleHandleA(runtimeDllName)', resolver)
+        self.assertIn('"mmd_anim_ffi.dll"', resolver)
         self.assertIn("GetProcAddress", resolver)
         self.assertIn("RTLD_DEFAULT", resolver)
         self.assertNotIn("dladdr", resolver)
