@@ -123,7 +123,7 @@ class TestMayaE2EHarness(unittest.TestCase):
             profile = out_dir / "maya-app-2024-7788"
 
             def fail_launch(**_kwargs):
-                profile.mkdir(parents=True)
+                profile.mkdir(parents=True, exist_ok=True)
                 raise RuntimeError("launch failed")
 
             with mock.patch.object(harness.maya_commandport, "remove_stale_logs"), mock.patch.object(
@@ -151,8 +151,32 @@ class TestMayaE2EHarness(unittest.TestCase):
             out_dir = Path(temp_dir) / "out"
             profile = out_dir / "maya-app-2024-7788"
 
+            project_root = Path(temp_dir) / "project"
+
             def launch(**_kwargs):
-                profile.mkdir(parents=True)
+                profile.mkdir(parents=True, exist_ok=True)
+                prefs_path = profile / "2024" / "prefs" / "userPrefs.mel"
+                prefs = prefs_path.read_text(encoding="utf-8")
+                expected_plugin_dir = (project_root / "mmd_tools").resolve().as_posix()
+                self.assertIn('optionVar -cat "Security"', prefs)
+                self.assertIn('-sa "SafeModeAllowedlistPaths"', prefs)
+                self.assertIn(
+                    f'SafeModeAllowedlistPaths" "{expected_plugin_dir}"',
+                    prefs,
+                )
+                self.assertNotIn("MAYA_SECURE_OPTOUT", prefs)
+                localized_prefs = (
+                    profile / "2024" / "ja_JP" / "prefs" / "userPrefs.mel"
+                ).read_text(encoding="utf-8")
+                self.assertEqual(prefs, localized_prefs)
+                localized_user_setup = (
+                    profile / "2024" / "ja_JP" / "scripts" / "userSetup.mel"
+                ).read_text(encoding="utf-8")
+                self.assertIn(
+                    f'SafeModeAllowedlistPaths" "{expected_plugin_dir}"',
+                    localized_user_setup,
+                )
+                self.assertNotIn("MAYA_SECURE_OPTOUT", localized_user_setup)
                 return None
 
             def wait_for_close(*_args, **_kwargs):
@@ -178,7 +202,7 @@ class TestMayaE2EHarness(unittest.TestCase):
                 harness.maya_commandport, "close_process_logs"
             ):
                 harness.run_maya_e2e(
-                    project_root=Path("repo"),
+                    project_root=project_root,
                     version="2024",
                     out_dir=out_dir,
                     port=7788,

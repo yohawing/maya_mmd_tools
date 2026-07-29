@@ -14,6 +14,53 @@ from tests.common import maya_commandport
 LOG_POLL_INTERVAL = 0.5
 
 
+def _seed_isolated_maya_profile(
+    maya_app_dir: Path,
+    version: str,
+    project_root: Path,
+) -> None:
+    """Allow only this checkout's Python plug-ins in the isolated Maya profile.
+
+    Maya reads the secure plug-in allowlist from ``userPrefs.mel`` during
+    startup.  The E2E harness intentionally removes its profile for every
+    run, so seed the narrow repository path before launching Maya instead of
+    relying on a trust decision persisted in the user's normal preferences.
+    """
+    plugin_dir = (project_root / "mmd_tools").resolve().as_posix()
+    # MEL strings use backslash escapes; paths are normalized to forward
+    # slashes first so only quotes/control characters need escaping here.
+    escaped_plugin_dir = (
+        plugin_dir.replace('"', '\\"')
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+    )
+    prefs = (
+        '// Security\n'
+        'optionVar -cat "Security"\n'
+        ' -sa "SafeModeAllowedlistPaths"\n'
+        f' -sva "SafeModeAllowedlistPaths" "{escaped_plugin_dir}"\n'
+        ';\n'
+    )
+    # English Maya uses the base profile. Japanese and Simplified Chinese
+    # builds use locale-qualified profile roots under the same version.
+    for locale_name in (None, "ja_JP", "zh_CN"):
+        version_root = maya_app_dir / version
+        if locale_name is not None:
+            version_root /= locale_name
+        prefs_path = version_root / "prefs" / "userPrefs.mel"
+        prefs_path.parent.mkdir(parents=True, exist_ok=True)
+        prefs_path.write_text(prefs, encoding="utf-8")
+        # Security optionVars are initialized again after userPrefs is read.
+        # Re-apply only this checkout's plug-in directory after startup.
+        user_setup_path = version_root / "scripts" / "userSetup.mel"
+        user_setup_path.parent.mkdir(parents=True, exist_ok=True)
+        user_setup_path.write_text(
+            f'optionVar -sva "SafeModeAllowedlistPaths" "{escaped_plugin_dir}";\n',
+            encoding="utf-8",
+        )
+
+
 def monitor_result(
     log_path: Path,
     report_path: Path,
@@ -88,6 +135,7 @@ def run_maya_e2e(
             raise RuntimeError(port_error or f"commandPort :{port} is already open")
         shutil.rmtree(maya_app_dir, ignore_errors=True)
         profile_owned = True
+        _seed_isolated_maya_profile(maya_app_dir, version, project_root)
         proc = maya_commandport.launch_maya(
             version=version,
             project_root=project_root,
