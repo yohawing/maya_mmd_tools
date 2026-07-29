@@ -119,6 +119,96 @@ def validate_basis_record(record: Mapping[str, Any]) -> MmdControlRigBasis:
     return MmdControlRigBasis(canonical, str(source))
 
 
+def quaternion_multiply(
+    left: Tuple[float, float, float, float],
+    right: Tuple[float, float, float, float],
+) -> Tuple[float, float, float, float]:
+    """Multiply two finite xyzw quaternions and return canonical output."""
+
+    x1, y1, z1, w1 = _coerce_quaternion(left, "left quaternion")
+    x2, y2, z2, w2 = _coerce_quaternion(right, "right quaternion")
+    result = (
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+    )
+    return _normalize_and_canonicalize(result)
+
+
+def quaternion_conjugate(
+    quaternion: Tuple[float, float, float, float],
+) -> Tuple[float, float, float, float]:
+    """Return the normalized canonical conjugate of an xyzw quaternion."""
+
+    x, y, z, w = _coerce_quaternion(quaternion, "quaternion")
+    return _normalize_and_canonicalize((-x, -y, -z, w))
+
+
+def quaternion_inverse(
+    quaternion: Tuple[float, float, float, float],
+) -> Tuple[float, float, float, float]:
+    """Return the normalized canonical inverse of an xyzw quaternion."""
+
+    return quaternion_conjugate(quaternion)
+
+
+def bone_to_control(
+    q_bone: Tuple[float, float, float, float],
+    basis: Any,
+) -> Tuple[float, float, float, float]:
+    """Convert a bone-local rotation into the persisted control basis.
+
+    For basis quaternion ``B`` this applies ``inverse(B) * q_bone * B``.
+    """
+
+    bone = _coerce_quaternion(q_bone, "bone quaternion")
+    basis_quaternion = _coerce_quaternion(basis, "basis quaternion")
+    if basis_quaternion == IDENTITY_QUATERNION:
+        return bone
+    inverse = quaternion_inverse(basis_quaternion)
+    return quaternion_multiply(quaternion_multiply(inverse, bone), basis_quaternion)
+
+
+def control_to_bone(
+    q_control: Tuple[float, float, float, float],
+    basis: Any,
+) -> Tuple[float, float, float, float]:
+    """Convert a control-basis rotation back into bone-local space.
+
+    For basis quaternion ``B`` this applies ``B * q_control * inverse(B)``.
+    """
+
+    control = _coerce_quaternion(q_control, "control quaternion")
+    basis_quaternion = _coerce_quaternion(basis, "basis quaternion")
+    if basis_quaternion == IDENTITY_QUATERNION:
+        return control
+    inverse = quaternion_inverse(basis_quaternion)
+    return quaternion_multiply(quaternion_multiply(basis_quaternion, control), inverse)
+
+
+def _coerce_quaternion(value: Any, description: str) -> Tuple[float, float, float, float]:
+    if isinstance(value, MmdControlRigBasis):
+        value = value.quaternion
+    elif isinstance(value, Mapping):
+        if "source" in value:
+            value = validate_basis_record(value).quaternion
+        else:
+            value = value.get("quaternion")
+    if isinstance(value, (str, bytes)) or value is None:
+        raise MmdControlRigBasisError(f"{description} is invalid")
+    try:
+        quaternion = tuple(float(component) for component in value)
+    except (TypeError, ValueError) as exc:
+        raise MmdControlRigBasisError(f"{description} is invalid") from exc
+    if len(quaternion) != 4:
+        raise MmdControlRigBasisError(f"{description} must have four components")
+    try:
+        return _normalize_and_canonicalize(quaternion)
+    except MmdControlRigBasisError as exc:
+        raise MmdControlRigBasisError(f"{description} is invalid") from exc
+
+
 def _normalize_and_canonicalize(
     quaternion: Tuple[float, float, float, float],
 ) -> Tuple[float, float, float, float]:
