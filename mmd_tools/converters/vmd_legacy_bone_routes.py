@@ -7,7 +7,10 @@ from typing import Dict, List
 
 import maya.cmds as cmds
 
-from ..core.mmd_control_rig_motion import control_rig_edit_routes_for_joints
+from ..core.mmd_control_rig_motion import (
+    control_rig_edit_routes_for_joints,
+    control_rig_quaternion_safe_joints,
+)
 from .vmd_runtime_rig_helper import _ls_mmd_ccd_ik_nodes
 
 
@@ -59,6 +62,9 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
     append_info = converter._collect_append_info()
     ik_link_joints = converter._collect_ik_link_joints()
     control_routes = control_rig_edit_routes_for_joints(converter.bone_name_mapping.values())
+    quaternion_safe_joints = control_rig_quaternion_safe_joints(
+        converter.bone_name_mapping.values()
+    )
     routes: Dict[str, dict] = {}
 
     for joint in set(converter.bone_name_mapping.values()):
@@ -69,6 +75,7 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
             "skip_rotate": joint in ik_link_joints,
             "ik_solver_rotate": ik_info,
             "control_owned": bool(control_route),
+            "quaternion_interpolation_safe": False,
         }
         info = append_info.get(joint)
         if info:
@@ -80,6 +87,7 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
         # In EDIT, the owned curve is the authored animation input. Unsupported
         # bones and solver-output links retain the established legacy route.
         route["attr_targets"].update(control_route)
+        route["quaternion_interpolation_safe"] = joint in quaternion_safe_joints
 
         # A CONTROL_OWNED MMD Control Rig is a single-writer path: when all
         # rotation channels are routed to an owned controller, author those

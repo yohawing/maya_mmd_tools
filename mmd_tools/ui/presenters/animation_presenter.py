@@ -16,6 +16,7 @@ from ...core.constants import (
 from ...core.display_frame_resolver import PickerGroup, resolve_display_frames
 from ...core.logger import get_logger
 from ...core.mmd_bone_names import normalize_mmd_bone_name
+from ...core.mmd_control_rig_builder import inspect_mmd_control_rig
 from ...core.morph_metadata_reader import (
     CategorizedMorphs,
     MorphInfo,
@@ -24,7 +25,12 @@ from ...core.morph_metadata_reader import (
     morph_info_from_presenter_entry,
 )
 from ...core.visibility_state import (
-    get_visibility_category,
+    VisibilityState,
+    get_visibility_state,
+    get_visibility_group_state,
+    resolve_visibility_group,
+    set_visibility_group_state,
+    set_visibility_state,
     set_visibility_category,
     sync_visibility_connections,
 )
@@ -36,6 +42,9 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 _USER_ROLE = 0x0100  # Qt.UserRole
+_SELECTION_VISIBLE = "visible"
+_SELECTION_BLOCKED = "blocked"
+_SELECTION_UNKNOWN = "unknown"
 
 _IK_BONE_NAMES = {
     "left": "左足ＩＫ",
@@ -92,14 +101,18 @@ class AnimationPresenter:
         self._ik_nodes_by_side: dict[str, str] = {}
         self._toe_ik_nodes_by_side: dict[str, str] = {}
         self._last_ik_states: dict[str, bool] = {}
+        self._visibility_history_jobs: list[int] = []
         self._disposed = False
         # Animator Reset Pose is a one-shot selection action, distinct from
         # Bone Editor's model-wide Go to Bind Pose inspection command.
         self.connect_signals()
+        self._install_visibility_history_jobs()
         self._start_morph_refresh_timer()
 
         if self.app_state.current_model_root:
             self._reload_for_model(self.app_state.current_model_root)
+        else:
+            self._sync_visibility_controls(None)
 
     def connect_signals(self):
         self.app_state.current_model_changed.connect(self.on_current_model_changed)
@@ -137,6 +150,21 @@ class AnimationPresenter:
         if hasattr(self.view, "select_all_btn"):
             self.view.select_all_btn.clicked.connect(self.on_select_all)
         for key, cb in self.view.vis_checkboxes.items():
+            capability = getattr(cb, "is_tri_state", None)
+            if capability is None:
+                capability = getattr(cb, "isTriState", False)
+            if callable(capability):
+                capability = capability()
+            is_tri_state = bool(capability)
+            if is_tri_state:
+                visibility_signal = getattr(cb, "visibilityStateChanged", None)
+                if visibility_signal is None:
+                    continue
+                visibility_signal.connect(
+                    lambda state, k=key: self._on_visibility_state_changed(k, state)
+                )
+                continue
+            # Keep the legacy bool signal for third-party and headless views.
             cb.stateChanged.connect(
                 lambda state, k=key: self._on_visibility_changed(k, state != 0)
             )
@@ -166,6 +194,7 @@ class AnimationPresenter:
             except RuntimeError:
                 pass
             self._morph_refresh_timer = None
+        self._remove_visibility_history_jobs()
         try:
             self.app_state.current_model_changed.disconnect(self.on_current_model_changed)
         except (RuntimeError, TypeError):
@@ -174,6 +203,60 @@ class AnimationPresenter:
             self.app_state.model_list_updated.disconnect(self.on_model_list_updated)
         except (RuntimeError, TypeError):
             pass
+
+    def _install_visibility_history_jobs(self) -> None:
+        """Read back scene-authoritative visibility after Maya undo/redo."""
+
+        cmds_module = getattr(self.maya_adapter, "_cmds", None)
+        script_job = getattr(cmds_module, "scriptJob", None)
+        if not callable(script_job):
+            return
+        for event_name in ("Undo", "Redo"):
+            try:
+                job_id = script_job(
+                    event=[event_name, self._schedule_visibility_history_sync],
+                    protected=True,
+                )
+                self._visibility_history_jobs.append(int(job_id))
+            except Exception:
+                logger.debug("Could not install %s visibility callback", event_name)
+
+    def _remove_visibility_history_jobs(self) -> None:
+        """Remove presenter-owned Maya history callbacks."""
+
+        cmds_module = getattr(self.maya_adapter, "_cmds", None)
+        script_job = getattr(cmds_module, "scriptJob", None)
+        jobs, self._visibility_history_jobs = self._visibility_history_jobs, []
+        if not callable(script_job):
+            return
+        for job_id in jobs:
+            try:
+                if script_job(exists=job_id):
+                    script_job(kill=job_id, force=True)
+            except Exception:
+                logger.debug("Could not remove visibility callback %s", job_id)
+
+    def _sync_visibility_after_history(self) -> None:
+        """Refresh buttons without repairing connections or mutating the scene."""
+
+        if self._disposed:
+            return
+        self._sync_visibility_controls(
+            self.app_state.current_model_root or None,
+            ensure_connections=False,
+        )
+
+    def _schedule_visibility_history_sync(self) -> None:
+        """Defer readback until Maya has finished applying undo or redo."""
+
+        try:
+            from ..qt_compat import QTimer
+
+            # Script jobs run on Maya idle; defer once more so Qt repaint and
+            # scene-authoritative plug readback share the same event turn.
+            QTimer.singleShot(0, self._sync_visibility_after_history)
+        except Exception:
+            self._sync_visibility_after_history()
 
     def retranslate_ui(self):
         """Retranslate presenter-owned dynamic controls without reloading the model."""
@@ -239,7 +322,6 @@ class AnimationPresenter:
             self._clear_all()
 
     def on_clear_clicked(self):
-        self._set_picker_selection_from_nodes([])
         try:
             self._select_nodes([])
         except Exception:
@@ -448,13 +530,15 @@ class AnimationPresenter:
         """Select every indexed joint belonging to the current MMD model."""
 
         joints = [self._preferred_rig_control(joint) for joint in self._all_model_joints]
-        self._set_picker_selection_from_nodes(joints)
         if not joints:
             self._set_status("no_selectable_bones")
             return
         try:
-            self._select_nodes(joints)
-            self._set_status("selected_all_bones", count=len(joints))
+            accepted = self._select_nodes(joints)
+            if accepted:
+                self._set_status("selected_all_bones", count=len(accepted))
+            else:
+                self._set_status("no_selectable_bones")
         except Exception:
             self._set_status("select_all_failed")
 
@@ -463,9 +547,11 @@ class AnimationPresenter:
         if not node_name:
             return
         try:
-            self._set_picker_selection_from_nodes([node_name])
-            self._select_nodes([self._preferred_rig_control(node_name)])
-            self.view.status_label.setText(item.text(0))
+            accepted = self._select_nodes([self._preferred_rig_control(node_name)])
+            if accepted:
+                self.view.status_label.setText(item.text(0))
+            else:
+                self._set_status("no_selectable_bones")
         except Exception:
             self._set_status("node_not_found", name=node_name)
 
@@ -508,21 +594,21 @@ class AnimationPresenter:
             if joint and joint not in joints:
                 joints.append(self._preferred_rig_control(joint))
 
-        current = []
-        if additive:
-            try:
-                current = self.maya_adapter.ls(selection=True) or []
-            except Exception:
-                current = []
-        combined = list(dict.fromkeys([*current, *joints]))
-        self._set_picker_selection_from_nodes(combined)
         self.view.status_label.setText("、".join(labels))
         if not joints:
             if labels:
                 self._set_status("unassigned_bones", names="、".join(labels))
+            try:
+                self._set_picker_selection_from_nodes(
+                    self.maya_adapter.ls(selection=True) or []
+                )
+            except Exception:
+                pass
             return
         try:
-            self._select_nodes(joints, replace=not additive)
+            accepted = self._select_nodes(joints, replace=not additive)
+            if not accepted:
+                self._set_status("no_selectable_bones")
         except Exception:
             self._set_status("selection_failed", names="、".join(labels))
 
@@ -562,14 +648,232 @@ class AnimationPresenter:
         if hasattr(self.view.finger_picker, "set_selected_regions"):
             self.view.finger_picker.set_selected_regions(selected_ids(_FINGER_REGIONS))
 
-    def _select_nodes(self, nodes: list[str], *, replace: bool = True) -> None:
-        """Use the API 2.0 selection path when the production adapter exposes it."""
+    def _select_nodes(self, nodes: list[str], *, replace: bool = True) -> list[str]:
+        """Select only candidates inside currently visible model boundaries.
+
+        Selection is deliberately guarded at this single write point so body,
+        finger, display-tree, mirror and Select All callers cannot highlight a
+        node that Maya will not display or allow to pick.  Candidates are
+        resolved to one full DAG path before classification; unresolved or
+        ambiguous paths are rejected fail-closed.  An empty explicit request
+        remains the one operation that clears Maya's active selection.
+
+        Returns:
+            The accepted candidate spellings, preserving input order and
+            de-duplicated by resolved full DAG identity.
+        """
+
+        requested = list(nodes or [])
+        if not requested:
+            self._write_selection([], replace=True)
+            self._sync_picker_to_actual_selection()
+            return []
+
+        boundaries, known_joints = self._selection_visibility_boundaries()
+        accepted = []
+        seen_paths = set()
+        for candidate in requested:
+            resolved = self._resolve_selection_path(candidate)
+            if resolved is None or resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            if self._selection_path_blocked(resolved, boundaries, known_joints):
+                continue
+            accepted.append(candidate)
+
+        # A blocked/invalid batch must not clear or replace an existing Maya
+        # selection.  This is especially important for additive picker clicks:
+        # guard the requested candidates, then preserve the current selection.
+        if accepted:
+            self._write_selection(accepted, replace=replace)
+        self._sync_picker_to_actual_selection()
+        return accepted
+
+    def _write_selection(self, nodes: list[str], *, replace: bool = True) -> None:
+        """Write an already-validated selection through the fastest adapter path."""
 
         select_fast = getattr(self.maya_adapter, "select_fast", None)
         if callable(select_fast):
             select_fast(nodes, replace=replace)
         else:
             self.maya_adapter.select(nodes, replace=replace)
+
+    def _sync_picker_to_actual_selection(self) -> None:
+        """Read Maya's selection after a guard decision and update highlights."""
+
+        try:
+            actual = self.maya_adapter.ls(selection=True) or []
+        except Exception:
+            actual = []
+        self._set_picker_selection_from_nodes(actual)
+
+    def _resolve_selection_path(self, candidate: str) -> str | None:
+        """Resolve one candidate to exactly one full DAG path."""
+
+        if not isinstance(candidate, str) or not candidate:
+            return None
+        try:
+            resolved = self.maya_adapter.ls(candidate, long=True) or []
+        except Exception:
+            return None
+        if len(resolved) != 1 or not isinstance(resolved[0], str):
+            return None
+        path = str(resolved[0])
+        return path if path.startswith("|") else None
+
+    def _selection_visibility_boundaries(self):
+        """Read selection ownership and fail-closed visibility context.
+
+        Boundary resolution is intentionally separate from the generic
+        visibility helpers.  Those helpers preserve legacy fail-open behavior
+        for UI toggles; picker selection must instead reject model-owned nodes
+        when a group or one of its plugs cannot be proven readable.
+        """
+
+        root = self.app_state.current_model_root
+        if not root:
+            return (), set()
+
+        boundaries = []
+        try:
+            skeleton = resolve_visibility_group(self.maya_adapter, root, "joints")
+        except Exception:
+            skeleton = None
+        if skeleton:
+            skeleton_state = self._read_selection_group_state(skeleton)
+            boundaries.append(
+                {
+                    "group": skeleton,
+                    "state": skeleton_state,
+                    "owned": set(),
+                }
+            )
+        else:
+            # Keep an explicit unknown Skeleton boundary so known model joints
+            # are rejected below even when the direct group is ambiguous or
+            # missing from a partially-authored scene.
+            boundaries.append(
+                {"group": None, "state": _SELECTION_UNKNOWN, "owned": set()}
+            )
+
+        # The normal path classifies directly from one resolved group prefix.
+        # Resolve the full model-joint identity set only when Skeleton
+        # ownership is unknown, avoiding hundreds of Maya ls round-trips per
+        # ordinary picker click on larger rigs.
+        skeleton_context = boundaries[0]
+        known_joints = set()
+        if (
+            skeleton_context["state"] == _SELECTION_UNKNOWN
+            and not skeleton_context["group"]
+        ):
+            candidates = dict.fromkeys(
+                (*self._all_model_joints, *self._bone_name_to_joint.values())
+            )
+            for candidate in candidates:
+                resolved = self._resolve_selection_path(candidate)
+                if resolved:
+                    known_joints.add(resolved)
+
+        cmds_module = getattr(self.maya_adapter, "_cmds", None)
+        control_inspection = None
+        control_error = False
+        if root and cmds_module is not None:
+            try:
+                control_inspection = inspect_mmd_control_rig(
+                    root, cmds_module=cmds_module
+                )
+            except Exception:
+                control_error = True
+
+        if control_inspection is not None:
+            control_group = getattr(control_inspection, "control_group", None)
+            if isinstance(control_group, str) and control_group:
+                controls = set()
+                for node in getattr(control_inspection, "controls", {}).values():
+                    resolved = self._resolve_selection_path(node)
+                    if resolved:
+                        controls.add(resolved)
+                boundaries.append(
+                    {
+                        "group": control_group,
+                        "state": self._read_selection_group_state(control_group),
+                        "owned": controls,
+                    }
+                )
+        elif control_error and cmds_module is not None:
+            # A failed topology inspection must not turn validated UUIDs into
+            # selectable nodes.  Readable metadata is only used to resolve
+            # exact control identities; its topology/group is not trusted.
+            try:
+                from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
+
+                metadata = read_mmd_control_rig_metadata(
+                    root, cmds_module=cmds_module
+                )
+            except Exception:
+                metadata = None
+            if isinstance(metadata, dict):
+                owned = set()
+                for uuid in (metadata.get("controls") or {}).values():
+                    resolved = self._resolve_selection_path(uuid)
+                    if resolved:
+                        owned.add(resolved)
+                if owned:
+                    boundaries.append(
+                        {
+                            "group": None,
+                            "state": _SELECTION_UNKNOWN,
+                            "owned": owned,
+                        }
+                    )
+        return tuple(boundaries), known_joints
+
+    def _read_selection_group_state(self, group: str) -> str:
+        """Read raw visibility/override plugs with fail-closed error handling."""
+
+        try:
+            visibility = self.maya_adapter.get_attr(f"{group}.visibility")
+            override_enabled = self.maya_adapter.get_attr(
+                f"{group}.overrideEnabled"
+            )
+            display_type = self.maya_adapter.get_attr(
+                f"{group}.overrideDisplayType"
+            )
+            if visibility is None or override_enabled is None or display_type is None:
+                return _SELECTION_UNKNOWN
+            if not bool(visibility):
+                return _SELECTION_BLOCKED
+            if bool(override_enabled) and int(display_type) == 2:
+                return _SELECTION_BLOCKED
+        except Exception:
+            return _SELECTION_UNKNOWN
+        return _SELECTION_VISIBLE
+
+    @staticmethod
+    def _selection_path_blocked(
+        path: str, boundaries, known_joints: set[str]
+    ) -> bool:
+        """Return whether a resolved path is inside a non-visible boundary."""
+
+        for boundary in boundaries:
+            group = boundary["group"]
+            state = boundary["state"]
+            owned = boundary["owned"]
+            if path in owned:
+                return state != _SELECTION_VISIBLE
+            if group and (path == group or path.startswith(f"{group}|")):
+                return state != _SELECTION_VISIBLE
+        # If Skeleton ownership itself is unknown, known model joints are
+        # rejected even without a usable group prefix.  A valid but blocked
+        # group only blocks descendants; unrelated paths remain selectable.
+        skeleton = boundaries[0] if boundaries else None
+        if (
+            path in known_joints
+            and skeleton is not None
+            and skeleton["state"] == _SELECTION_UNKNOWN
+        ):
+            return True
+        return False
 
     def _preferred_rig_control(self, joint: str) -> str:
         """Prefer the owned curve corresponding to a picker joint."""
@@ -669,9 +973,8 @@ class AnimationPresenter:
                 mirrored.append(node)
         if mirrored:
             try:
-                self._set_picker_selection_from_nodes(mirrored)
-                self._select_nodes(mirrored)
-                selected_names = [joint_to_bone.get(node, node) for node in mirrored]
+                accepted = self._select_nodes(mirrored)
+                selected_names = [joint_to_bone.get(node, node) for node in accepted]
                 self.view.status_label.setText("、".join(selected_names))
             except Exception:
                 pass
@@ -679,6 +982,8 @@ class AnimationPresenter:
     # -- Visibility -------------------------------------------------------
 
     def _on_visibility_changed(self, category: str, visible: bool):
+        """Compatibility entry point for legacy bool visibility widgets."""
+
         model_root = self.app_state.current_model_root
         if not model_root:
             return
@@ -697,6 +1002,44 @@ class AnimationPresenter:
             sync_visibility_connections(self.maya_adapter, model_root, category)
         except Exception as exc:
             logger.debug("Visibility toggle failed for %s: %s", category, exc)
+        self._sync_visibility_controls(model_root)
+
+    def _on_visibility_state_changed(self, category: str, state: str) -> None:
+        """Apply a tri-state transition and immediately read the scene back."""
+
+        model_root = self.app_state.current_model_root
+        if not model_root:
+            self._sync_visibility_controls(None)
+            return
+        if category == "morphs":
+            return
+        normalized = self._coerce_visibility_state(state)
+        if normalized is None:
+            self._sync_visibility_controls(model_root)
+            return
+
+        success = False
+        if category == "control_rig":
+            group = self._control_rig_group(model_root)
+            if group:
+                success = set_visibility_group_state(
+                    self.maya_adapter,
+                    group,
+                    normalized,
+                    label="Set MMD Control Rig Visibility",
+                )
+        else:
+            try:
+                success = set_visibility_state(
+                    self.maya_adapter, model_root, category, normalized
+                )
+            except Exception as exc:
+                logger.debug("Visibility state transition failed for %s: %s", category, exc)
+        # Correct optimistic UI state from actual scene plugs after both
+        # successful and rejected writes.
+        self._sync_visibility_controls(model_root, ensure_connections=False)
+        if not success:
+            logger.debug("Visibility state transition was rejected for %s", category)
 
     # -- Internal ------------------------------------------------------
 
@@ -925,44 +1268,88 @@ class AnimationPresenter:
             self.view.body_picker.set_region_dim_levels({})
         self.view.display_frame_tree.clear()
         self._clear_morph_tab()
+        self._sync_visibility_controls(None)
         self.view.status_label.setText("")
 
-    def _sync_visibility_controls(self, model_root: str):
+    def _sync_visibility_controls(
+        self, model_root: str | None, *, ensure_connections: bool = True
+    ):
         try:
-            sync_visibility_connections(self.maya_adapter, model_root)
+            if model_root and ensure_connections:
+                sync_visibility_connections(self.maya_adapter, model_root)
             for key, cb in self.view.vis_checkboxes.items():
                 if key == "control_rig":
-                    group = self._control_rig_group(model_root)
+                    group = self._control_rig_group(model_root) if model_root else None
                     cb._control_rig_available = bool(group)
-                    cb.setChecked(
-                        bool(self.maya_adapter.get_attr(f"{group}.visibility"))
-                        if group
-                        else False
+                    self._set_visibility_button_available(cb, bool(group))
+                    self._set_visibility_button_state(
+                        cb, get_visibility_group_state(self.maya_adapter, group)
                     )
                     continue
                 if key == "morphs":
                     continue
-                cb.setChecked(get_visibility_category(self.maya_adapter, model_root, key))
+                group = resolve_visibility_group(self.maya_adapter, model_root, key)
+                self._set_visibility_button_available(cb, bool(group))
+                state = (
+                    get_visibility_state(self.maya_adapter, model_root, key)
+                    if model_root
+                    else VisibilityState.VISIBLE
+                )
+                self._set_visibility_button_state(cb, state)
             if hasattr(self.view, "refresh_development_mode_visibility"):
                 self.view.refresh_development_mode_visibility()
         except Exception as exc:
             logger.debug("Visibility control sync failed: %s", exc)
 
+    @staticmethod
+    def _coerce_visibility_state(state: str | VisibilityState) -> VisibilityState | None:
+        if isinstance(state, VisibilityState):
+            return state
+        try:
+            return VisibilityState(str(state).strip().lower())
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _set_visibility_button_state(button, state: VisibilityState) -> None:
+        setter = getattr(button, "setVisibilityState", None)
+        if callable(setter):
+            setter(state.value)
+            return
+        setter = getattr(button, "set_visibility_state", None)
+        if callable(setter):
+            setter(state.value)
+            return
+        if hasattr(button, "setChecked"):
+            # Legacy bool widgets cannot expose Reference independently.
+            button.setChecked(state is not VisibilityState.HIDDEN)
+
+    @staticmethod
+    def _set_visibility_button_available(button, available: bool) -> None:
+        setter = getattr(button, "setVisibilityAvailable", None)
+        if callable(setter):
+            setter(available)
+            return
+        setter = getattr(button, "set_visibility_available", None)
+        if callable(setter):
+            setter(available)
+            return
+        if hasattr(button, "setEnabled"):
+            button.setEnabled(bool(available))
+        button._visibility_available = bool(available)
+
     def _control_rig_group(self, model_root: str) -> str | None:
         """Resolve the UUID-owned Control Rig display group, if it is valid."""
 
         cmds_module = getattr(self.maya_adapter, "_cmds", None)
-        if cmds_module is None:
+        if not model_root or cmds_module is None:
             return None
         try:
-            from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
-
-            metadata = read_mmd_control_rig_metadata(
+            inspected = inspect_mmd_control_rig(
                 model_root, cmds_module=cmds_module
             )
-            uuid = metadata.get("controlGroupUuid") if metadata else None
-            nodes = self.maya_adapter.ls(uuid, long=True) if uuid else []
-            return str(nodes[0]) if len(nodes) == 1 else None
+            group = getattr(inspected, "control_group", None)
+            return str(group) if isinstance(group, str) and group else None
         except Exception:
             logger.debug("Control Rig visibility group lookup failed", exc_info=True)
             return None

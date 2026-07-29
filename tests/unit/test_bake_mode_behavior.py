@@ -46,6 +46,9 @@ class TestBakeModeBehavior(unittest.TestCase):
         self._saved = {
             "ui.general.development_mode": settings.get("ui.general.development_mode", False),
             "import.rig.bake_mode": settings.get("import.rig.bake_mode", False),
+            "import.model.create_mmd_control_rig": settings.get(
+                "import.model.create_mmd_control_rig", False
+            ),
         }
 
     def tearDown(self):
@@ -164,7 +167,10 @@ class TestBakeModeBehavior(unittest.TestCase):
 
     def test_animation_import_passes_bake_mode_true_for_baked_path(self):
         settings.set("import.rig.bake_mode", True)
+        settings.set("import.model.create_mmd_control_rig", True)
         options = SettingsService().build_vmd_import_options(target_model="model_root")
+
+        self.assertFalse(options["create_mmd_control_rig"])
 
         converter = MagicMock()
         converter.convert.return_value = True

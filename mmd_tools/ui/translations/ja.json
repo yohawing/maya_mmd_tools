@@ -12,6 +12,7 @@
     "ik_enable_side_tooltip": "片側の脚IK Enableを切り替え",
   "animation_toolset": {
     "control_rig": "コントロールリグ",
+    "visibility_state_visible": "表示", "visibility_state_reference": "表示（編集不可）", "visibility_state_hidden": "非表示", "visibility_unavailable": "利用不可",
     "window_title": "アニメーターツールセット", "refresh": "更新", "body": "ボディ", "finger": "指", "morph": "モーフ", "display": "表示枠", "back_to_body": "ボディへ戻る", "back_to_body_tooltip": "全身ピッカーへ戻る", "select_all": "すべて選択", "select_all_tooltip": "現在のMMDモデルの全ボーンを選択", "clear": "クリア", "clear_tooltip": "現在の選択をクリア", "visibility": "表示", "mesh": "メッシュ", "joints": "ボーン", "colliders": "コライダー", "ik_enable_toggle_tooltip": "左右の脚IK Enableを切り替え", "tools": "ツール", "copy": "コピー", "paste": "貼り付け", "mirror": "ミラー", "mirror_selection": "反対側選択", "reset": "ポーズをリセット", "clean": "整理", "bake": "ベイク", "reset_pose_tooltip": "選択中のボーンをバインドポーズへ戻す", "mirror_selection_tooltip": "反対側のボーンを選択", "finger_picker_tooltip": "指ピッカーを開く", "category_brow": "眉モーフ", "category_eye": "目モーフ", "category_mouth": "口モーフ", "category_other": "未分類（PMX: その他）", "no_selectable_bones": "選択できるボーンがありません", "selected_all_bones": "全ボーンを選択（{count}）", "select_all_failed": "全ボーンの選択に失敗しました", "node_not_found": "見つかりません: {name}", "unassigned_bones": "未割当: {names}", "selection_failed": "選択失敗: {names}", "ik_not_found": "{side} IKが見つかりません", "ik_enabled": "{side} IKをONにしました", "ik_disabled": "{side} IKをOFFにしました", "ik_toggle_failed": "IK切り替え失敗: {error}", "no_joints_selected": "ボーンが選択されていません", "copied_pose": "ポーズをコピー（{count}ボーン）", "copy_failed": "コピー失敗: {error}", "no_pose_copied": "コピー済みのポーズがありません", "pasted_pose": "ポーズを貼り付け（{count}ボーン）", "paste_failed": "貼り付け失敗: {error}", "reset_pose_applied": "ポーズをリセット（{count}ボーン）", "reset_pose_failed": "ポーズのリセットに失敗しました: {error}", "mirrored_pose": "ポーズをミラーしました", "mirror_failed": "ミラー失敗: {error}", "baked_animation": "アニメーションをベイクしました", "bake_failed": "ベイク失敗: {error}", "cleaned_curves": "カーブを整理しました", "clean_failed": "整理失敗: {error}", "control_rig_group_title": "MMD Control Rig（実験的）", "control_rig_create": "作成", "control_rig_create_tooltip": "現在のモデル用MMD Control Rigを作成または再利用し、自動的にBindします。", "control_rig_bake_control": "Control Rigへベイク", "control_rig_bake_control_tooltip": "MMDリグのモーションをControl Rigキーへ変換し、Control Rigをアクティブな所有者にします。", "control_rig_bake_mmd": "MMDリグへベイク", "control_rig_bake_mmd_tooltip": "Control RigのモーションをMMDリグキーへ変換し、MMDリグをアクティブな所有者にします。", "control_rig_restore": "復元", "control_rig_restore_tooltip": "Control Rig操作前のMMDリグの接続と所有権を復元します。", "control_rig_delete": "リグを削除", "control_rig_delete_tooltip": "MMD Control Rigとシーン所有のコントロールを削除します。", "control_rig_diagnostics": "診断", "control_rig_diagnostics_tooltip": "所有者、状態、バインディング、未対応機能、循環を診断します。"
   },
   "tabs": {
@@ -146,6 +147,7 @@
     "reduce_quality": "ベイクキー削減の品質。1.0 は最高精度、0.0 は最大削減",
     "clear_existing_motion": "VMDインポート前に対象モデルの既存VMDキーとVMD_Motionレイヤーを削除します",
     "create_mmd_control_rig": "モデルインポート後にMMD Control Rigを作成して自動Bindし、以後のVMDをこのリグへ直接インポートします（実験的）",
+    "vmd_rotation_time_curve": "VMD回転補間をControlごとの時間カーブとして保持します。疎キーを維持できますが、キー時刻の編集には同期が必要です（実験的）",
     "start_frame": "VMDアニメーションの開始フレームをMayaタイムライン上で指定します",
     "vmd_fps": "VMDファイルのフレームレート。MMDは30fpsが標準です",
     "motion_scale": "VMDのボーン移動量とカメラ位置・距離に適用する倍率です",
@@ -369,6 +371,7 @@
     "reduce_bake_keys": "ベイクキーを削減",
     "clear_existing_motion": "既存モーションをクリア",
     "create_mmd_control_rig": "MMD Control Rigを作成",
+    "vmd_rotation_time_curve": "VMD回転補間を時間カーブとして保持（実験的）",
     "use_cpp_rig_nodes": "C++リグノードを使用（実験的）",
     "apply_scale": "スケールを適用",
     "new_file": "新規ファイル",

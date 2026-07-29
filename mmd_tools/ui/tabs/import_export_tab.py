@@ -289,6 +289,13 @@ class ImportExportTab(BaseTab):
         self.bake_mode_check = self._bind_checkbox(
             "bake_mode", setting_keys.IMPORT_RIG_BAKE_MODE, False, anim_settings_layout, tooltip_key="bake_mode"
         )
+        self.vmd_rotation_time_curve_check = self._bind_checkbox(
+            "vmd_rotation_time_curve",
+            setting_keys.IMPORT_ANIMATION_VMD_ROTATION_TIME_CURVE,
+            False,
+            anim_settings_layout,
+            tooltip_key="vmd_rotation_time_curve",
+        )
         self.native_physics_bake_check = self._bind_checkbox(
             "native_physics_bake",
             setting_keys.IMPORT_ANIMATION_USE_NATIVE_PHYSICS_BAKE,
@@ -312,10 +319,15 @@ class ImportExportTab(BaseTab):
         self.bake_mode_check.toggled.connect(self._sync_native_physics_bake_enabled)
         self.bake_mode_check.toggled.connect(self._sync_reduce_bake_keys_enabled)
         self.bake_mode_check.toggled.connect(self._sync_reduce_bake_quality_enabled)
+        self.bake_mode_check.toggled.connect(self._sync_vmd_rotation_time_curve_enabled)
+        self.create_mmd_control_rig_check.toggled.connect(
+            self._sync_vmd_rotation_time_curve_enabled
+        )
         self.reduce_bake_keys_check.toggled.connect(self._sync_reduce_bake_quality_enabled)
         self._sync_native_physics_bake_enabled(self.bake_mode_check.isChecked())
         self._sync_reduce_bake_keys_enabled(self.bake_mode_check.isChecked())
         self._sync_reduce_bake_quality_enabled()
+        self._sync_vmd_rotation_time_curve_enabled()
 
         self.animation_settings_group.setLayout(anim_settings_layout)
         model_settings_layout.addWidget(self.animation_settings_group)
@@ -490,7 +502,6 @@ class ImportExportTab(BaseTab):
         # Export UI/entry is also develop-mode only (export_group via _apply_export_visibility).
         self._dev_only_widgets = [
             self.scale_row,
-            self.separate_meshes_check,
             self.disable_backface_culling_check,
             self.texture_row,
             self.uv_row,
@@ -528,6 +539,14 @@ class ImportExportTab(BaseTab):
             row.setVisible(enabled)
         if slider is not None:
             slider.setEnabled(enabled)
+
+    def _sync_vmd_rotation_time_curve_enabled(self, *_args):
+        """Enable sparse rotation time curves only for direct Control Rig import."""
+        enabled = (
+            self.create_mmd_control_rig_check.isChecked()
+            and not self.bake_mode_check.isChecked()
+        )
+        self.vmd_rotation_time_curve_check.setEnabled(enabled)
 
     def _create_reduction_quality_row(self):
         """Create the embedded 0..1 Reduce Quality slider row."""
@@ -761,6 +780,10 @@ class ImportExportTab(BaseTab):
         self.clear_existing_motion_check.setText(self.tr("clear_existing_motion", "checkboxes"))
         if hasattr(self, "create_mmd_control_rig_check"):
             self.create_mmd_control_rig_check.setText(self.tr("create_mmd_control_rig", "checkboxes"))
+        if hasattr(self, "vmd_rotation_time_curve_check"):
+            self.vmd_rotation_time_curve_check.setText(
+                self.tr("vmd_rotation_time_curve", "checkboxes")
+            )
         self.use_cpp_rig_nodes_check.setText(self.tr("use_cpp_rig_nodes", "checkboxes"))
         self.apply_scale_check.setText(self.tr("apply_scale", "checkboxes"))
         self.new_file_check.setText(self.tr("new_file", "checkboxes"))
@@ -781,6 +804,10 @@ class ImportExportTab(BaseTab):
         self.clear_existing_motion_check.setToolTip(self.tr("clear_existing_motion", "tooltips"))
         if hasattr(self, "create_mmd_control_rig_check"):
             self.create_mmd_control_rig_check.setToolTip(self.tr("create_mmd_control_rig", "tooltips"))
+        if hasattr(self, "vmd_rotation_time_curve_check"):
+            self.vmd_rotation_time_curve_check.setToolTip(
+                self.tr("vmd_rotation_time_curve", "tooltips")
+            )
         self.use_cpp_rig_nodes_check.setToolTip(self.tr("use_cpp_rig_nodes", "tooltips"))
         if hasattr(self, "animation_start_frame"):
             self.animation_start_frame.setToolTip(self.tr("start_frame", "tooltips"))

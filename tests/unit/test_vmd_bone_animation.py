@@ -9,6 +9,7 @@ import maya.cmds as cmds
 from mmd_tools.converters.vmd_bone_animation import convert_bone_animation
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters.vmd_context import VmdBoneAnimationContext
+from mmd_tools.converters.vmd_registered_sparse import RegisteredSparseBoneFrame
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX, ATTR_MMD_BONE_NAME
 from tests.common.maya_test_base import MayaTestBase
@@ -29,6 +30,80 @@ class TestVmdBoneAnimation(MayaTestBase):
     def setUp(self):
         super().setUp()
         self.converter = VmdConverter()
+
+    def test_registered_semantic_rotation_drives_layer_quaternion_time(self):
+        """Compiled semantic rotation uses Bezier-warped slerp on an animLayer."""
+        joint = cmds.joint(name="registered_semantic_layer_joint")
+        cmds.select(clear=True)
+        layer = cmds.animLayer("registered_semantic_layer", override=False, weight=1.0)
+        self.converter.use_animation_layers = True
+        self.converter.anim_layer = layer
+        self.converter.bone_name_mapping = {"回転": joint}
+        self.converter.bone_index_to_joint = {0: joint}
+        self.converter._bone_bind_poses["回転"] = (0.0, 0.0, 0.0)
+        linear = (0.0, 0.0, 1.0, 1.0)
+        nonlinear = (0.4, 0.0, 0.55, 1.0)
+        semantic_start = {
+            "translate_x": linear,
+            "translate_y": linear,
+            "translate_z": linear,
+            "rotation": linear,
+        }
+        semantic_end = {**semantic_start, "rotation": nonlinear}
+        half_sqrt = math.sqrt(0.5)
+        frames = [
+            RegisteredSparseBoneFrame(
+                "回転",
+                0,
+                0,
+                (0.0, 0.0, 0.0),
+                (0.0, 0.0, 0.0, 1.0),
+                semantic_start,
+            ),
+            RegisteredSparseBoneFrame(
+                "回転",
+                0,
+                10,
+                (0.0, 0.0, 0.0),
+                (-half_sqrt, 0.0, 0.0, half_sqrt),
+                semantic_end,
+            ),
+        ]
+
+        self.assertTrue(self.converter._convert_bone_animation(frames))
+
+        time_curves = cmds.ls(type="animCurveTT") or []
+        self.assertEqual(len(time_curves), 1)
+        cmds.currentTime(5, edit=True)
+        time_value = float(cmds.getAttr(f"{time_curves[0]}.output"))
+        self.assertNotAlmostEqual(time_value, 5.0, places=3)
+
+        low, high = 0.0, 1.0
+        for _ in range(50):
+            u = (low + high) * 0.5
+            inv = 1.0 - u
+            x = 3 * inv * inv * u * nonlinear[0] + 3 * inv * u * u * nonlinear[2] + u**3
+            if x < 0.5:
+                low = u
+            else:
+                high = u
+        u = (low + high) * 0.5
+        inv = 1.0 - u
+        expected_time = 10.0 * (
+            3 * inv * inv * u * nonlinear[1]
+            + 3 * inv * u * u * nonlinear[3]
+            + u**3
+        )
+        self.assertAlmostEqual(time_value, expected_time, places=5)
+        for axis in "XYZ":
+            curves = cmds.keyframe(
+                f"{joint}.rotate{axis}", query=True, name=True
+            ) or []
+            self.assertEqual(len(curves), 1)
+            self.assertEqual(
+                cmds.rotationInterpolation(curves[0], query=True),
+                "quaternionSlerp",
+            )
 
     def test_bone_animation_context_exposes_legacy_keying_state(self):
         """Legacy bone helper state is passed through an explicit context object."""

@@ -230,7 +230,10 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertTrue(options["import_models"])
         self.assertFalse(options["import_physics"])
         self.assertNotIn("enable_maya_bullet_preview", options)
-        self.assertFalse(options["separate_meshes_by_material"])
+        # Separate Meshes By Material is a normal-mode import option.  Its
+        # persisted value must remain user-controllable instead of being
+        # silently forced off by the Development Mode policy.
+        self.assertTrue(options["separate_meshes_by_material"])
         self.assertNotIn("split_meshes_by_morph_groups", options)
         self.assertNotIn("hide_hidden_geometry", options)
         self.assertNotIn("auto_classify_transparency", options)
@@ -279,6 +282,33 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
 
         self.assertTrue(pmx_options["create_mmd_control_rig"])
         self.assertTrue(vmd_options["create_mmd_control_rig"])
+
+    def test_vmd_bake_mode_overrides_model_control_rig_import_route(self):
+        """Bake Motion wins only for VMD while PMX still creates its rig."""
+        self.service.set("import.model.create_mmd_control_rig", True)
+        self.service.set("import.animation.vmd_rotation_time_curve", True)
+        self.service.set("import.rig.bake_mode", True)
+
+        pmx_options = self.service.build_pmx_import_options()
+        vmd_options = self.service.build_vmd_import_options(target_model="model")
+
+        self.assertTrue(pmx_options["create_mmd_control_rig"])
+        self.assertTrue(vmd_options["bake_mode"])
+        self.assertFalse(vmd_options["create_mmd_control_rig"])
+        self.assertFalse(vmd_options["use_vmd_rotation_time_curve"])
+
+    def test_rotation_time_curve_option_requires_control_rig_setting(self):
+        self.service.set("import.animation.vmd_rotation_time_curve", True)
+
+        self.assertFalse(
+            self.service.build_vmd_import_options()["use_vmd_rotation_time_curve"]
+        )
+
+        self.service.set("import.model.create_mmd_control_rig", True)
+
+        self.assertTrue(
+            self.service.build_vmd_import_options()["use_vmd_rotation_time_curve"]
+        )
 
     def test_normal_mode_preserves_import_physics_enabled(self):
         self.service.set("import.physics.import_physics", True)

@@ -94,6 +94,11 @@ from .vmd_runtime_rig_helper import (
     has_live_mmd_rig_for_runtime_target,
     restore_joints_to_bind_pose_for_runtime_bake,
 )
+from .vmd_registered_sparse import registered_sparse_bone_frames
+from .vmd_runtime_provenance import (
+    build_runtime_registration_provenance,
+    store_runtime_registration_provenance,
+)
 from .vmd_runtime_channels import (
     append_bone_locals_to_channel_arrays,
     create_runtime_joint_channel_arrays,
@@ -148,7 +153,9 @@ try:
         MmdRuntimeClip,
         MmdRuntimeInstance,
         MmdRuntimePhysicsWorld,
+        get_mmd_runtime_library,
         get_runtime_feature_flags,
+        get_runtime_library_path,
     )
     from ..core.native.mmd_anim_runtime_local_channels import (
         compute_maya_local_channels,
@@ -168,6 +175,12 @@ except Exception:
 
     def get_runtime_feature_flags():
         return 0
+
+    def get_mmd_runtime_library():
+        return None
+
+    def get_runtime_library_path():
+        return None
 
     MmdRuntimeModel = MmdRuntimeClip = MmdRuntimeInstance = MmdRuntimePhysicsWorld = None  # type: ignore
     compute_maya_local_channels = None  # type: ignore
@@ -214,6 +227,8 @@ class VmdConverter:
         # sparse keys linearly in quaternion space, diverging from MMD between
         # keys.  Keep Euler curves by default so VMD tangents remain active.
         self.use_quaternion_interpolation = False
+        self.use_vmd_rotation_time_curve = False
+        self._rotation_time_curve_records: List[Dict[str, Any]] = []
         self.anim_layer = None  # 現在のアニメーションレイヤー名
         self.use_animation_layers = True  # アニメーションレイヤーの使用フラグ
         self.import_camera_animation = True
@@ -245,12 +260,15 @@ class VmdConverter:
         return VmdBoneAnimationContext(
             logger=self.logger,
             bone_name_mapping=self.bone_name_mapping,
+            bone_index_to_joint=getattr(self, "bone_index_to_joint", {}),
             bone_bind_poses=self._bone_bind_poses,
             failed_bones=self._failed_bones,
             use_animation_layers=self.use_animation_layers,
             anim_layer=self.anim_layer,
             motion_scale=self.motion_scale,
             use_quaternion_interpolation=self.use_quaternion_interpolation,
+            use_vmd_rotation_time_curve=self.use_vmd_rotation_time_curve,
+            rotation_time_curve_records=self._rotation_time_curve_records,
             set_bone_keyframes=self._set_bone_keyframes,
             build_legacy_bone_key_routes=self._build_legacy_bone_key_routes,
             collect_ik_link_joints=self._collect_ik_link_joints,
@@ -564,6 +582,30 @@ class VmdConverter:
         # refuse fail-closed while target_model is a HumanIK TARGET preview
         # or has an active Control Rig, with no implicit mode switching.
         self._enforce_humanik_import_gate(target_model)
+        registered_sparse_frames = None
+        registered_sparse_provenance = None
+        if not bake_mode and getattr(vmd_data, "bone_frames", None):
+            # Resolve the imported PMX index table before any Control Rig or
+            # clear-existing transaction mutates the scene. Missing native
+            # introspection fails closed instead of falling back to raw keys.
+            self._build_name_mappings(target_namespace, target_model=target_model)
+            sparse_vmd_bytes, sparse_pmx_bytes, sparse_pmx_path = (
+                self._resolve_runtime_bake_sources(
+                    vmd_data,
+                    vmd_bytes,
+                    pmx_bytes,
+                    pmx_path,
+                    target_namespace,
+                )
+            )
+            registered_sparse_frames, registered_sparse_provenance = self._compiled_registered_sparse_frames(
+                vmd_bytes=sparse_vmd_bytes,
+                pmx_bytes=sparse_pmx_bytes,
+                pmx_path=sparse_pmx_path,
+                vmd_source_path=getattr(vmd_data, "source_file", None),
+                source_bone_frames=getattr(vmd_data, "bone_frames", None) or (),
+                profile=profile,
+            )
         control_rig_transaction = None
         if create_mmd_control_rig:
             control_rig_transaction = self._prepare_mmd_control_rig_import(
@@ -571,6 +613,8 @@ class VmdConverter:
                 profile,
                 vmd_data=vmd_data,
                 target_namespace=target_namespace,
+                clear_existing_motion=clear_existing_motion,
+                layer_name=layer_name,
             )
         if reduce_bake_keys and not self._preflight_reduced_bake_keys(
             vmd_data=vmd_data,
@@ -627,6 +671,7 @@ class VmdConverter:
 
         try:
             self.logger.info("Starting VMD animation conversion")
+            self._rotation_time_curve_records.clear()
             undo_was_enabled, refresh_suspended = self._suspend_import_scene_updates()
             try:
                 import_start_time = cmds.currentTime(query=True)
@@ -636,6 +681,26 @@ class VmdConverter:
             if self.use_animation_layers:
                 anim_layer_selection = self._capture_anim_layer_selection()
 
+            if (
+                control_rig_transaction is not None
+                and (
+                    not self.use_vmd_rotation_time_curve
+                    or import_context.clear_existing_motion
+                )
+                and getattr(import_context.vmd_data, "bone_frames", None)
+            ):
+                from .vmd_rotation_time_curve import (
+                    stage_vmd_rotation_time_curve_disable,
+                )
+
+                control_rig_transaction["staged_rotation_time_curve_nodes"] = (
+                    stage_vmd_rotation_time_curve_disable(
+                        control_rig_transaction.get(
+                            "prior_rotation_time_curve_snapshot", []
+                        )
+                    )
+                )
+
             # 名前マッピングの構築（ボーン名 → Maya joint）
             with vmd_profile.scope("name_mapping_build"):
                 self._build_name_mappings(
@@ -644,7 +709,14 @@ class VmdConverter:
                 )
             _emit_progress(40)
             motion_kind = self._detect_vmd_motion_kind(import_context.vmd_data)
-            if import_context.clear_existing_motion and motion_kind in {"model", "mixed"}:
+            if (
+                import_context.clear_existing_motion
+                and motion_kind in {"model", "mixed"}
+                and not (
+                    control_rig_transaction is not None
+                    and control_rig_transaction.get("motion_cleared")
+                )
+            ):
                 self._clear_existing_motion(
                     import_context.layer_name,
                     import_context.target_namespace,
@@ -718,6 +790,7 @@ class VmdConverter:
                     reduce_rotate_tolerance=import_context.reduce_rotate_tolerance,
                     reduce_morph_tolerance=import_context.reduce_morph_tolerance,
                     profile=import_context.profile,
+                    target_model=import_context.target_model,
                 )
                 if runtime_success:
                     self.logger.info("mmd-anim runtime high-precision bake completed")
@@ -754,6 +827,8 @@ class VmdConverter:
                             "severity": "warning",
                             "message": "mmd-anim runtime bake failed; falling back to legacy VMD conversion",
                             "fallback": "legacy",
+                            "registration_mode": "model_paired_registered",
+                            "parity_guaranteed": False,
                             "bake_mode": bool(import_context.bake_mode),
                             "live_rig_target": bool(live_rig_target),
                             "has_vmd_bytes": bool(vmd_bytes),
@@ -778,7 +853,11 @@ class VmdConverter:
                 _emit_progress(60)
 
                 if hasattr(import_context.vmd_data, "bone_frames") and import_context.vmd_data.bone_frames:
-                    bone_frames = list(import_context.vmd_data.bone_frames)
+                    bone_frames = list(
+                        registered_sparse_frames
+                        if registered_sparse_frames is not None
+                        else import_context.vmd_data.bone_frames
+                    )
                     if import_context.create_mmd_control_rig:
                         # Identity-only optional roles are a VMD no-op and
                         # must not create a controller curve on the ON path.
@@ -830,6 +909,19 @@ class VmdConverter:
                             )
                         if not bone_success:
                             self.logger.warning("Some errors occurred during bone animation conversion")
+                    if (
+                        self._rotation_time_curve_records
+                        and import_context.create_mmd_control_rig
+                    ):
+                        from .vmd_rotation_time_curve import (
+                            record_vmd_rotation_time_curve_metadata,
+                        )
+
+                        record_vmd_rotation_time_curve_metadata(
+                            import_context.target_model,
+                            self._rotation_time_curve_records,
+                            replace_existing=import_context.clear_existing_motion,
+                        )
                 _emit_progress(72)
 
                 # モーフアニメーション（レガシー）
@@ -862,8 +954,30 @@ class VmdConverter:
                 self._convert_light_animation(import_context.vmd_data.light_frames, vmd_bytes=light_sample_bytes)
             _emit_progress(94)
 
-            self.logger.info("VMD animation conversion completed")
             self._restore_import_timeline_state(import_start_time)
+            if control_rig_transaction is not None:
+                from .vmd_rotation_time_curve import (
+                    commit_vmd_rotation_time_curve_disable,
+                )
+
+                commit_vmd_rotation_time_curve_disable(
+                    import_context.target_model,
+                    control_rig_transaction.get(
+                        "staged_rotation_time_curve_nodes", []
+                    ),
+                    clear_metadata=not bool(self._rotation_time_curve_records),
+                )
+                self._discard_mmd_control_rig_detached_motion_curves(
+                    control_rig_transaction
+                )
+            if registered_sparse_provenance is not None:
+                registered_sparse_provenance["scene_metadata_stored"] = (
+                    store_runtime_registration_provenance(
+                        import_context.target_model,
+                        registered_sparse_provenance,
+                    )
+                )
+            self.logger.info("VMD animation conversion completed")
             return True
 
         except MMDImportException as exc:
@@ -1221,11 +1335,16 @@ class VmdConverter:
         *,
         vmd_data=None,
         target_namespace=None,
+        clear_existing_motion: bool = False,
+        layer_name: Optional[str] = None,
     ) -> Dict[str, object]:
         """Create/reuse an MMD Control Rig and enter its CONTROL_OWNED state.
 
         This is deliberately a preflight boundary: analyzer and metadata
-        compatibility checks run before VMD keys or layers are touched.  The
+        compatibility checks run before graph ownership changes.  When
+        ``clear_existing_motion`` is requested, the outgoing model channels
+        are snapshotted and cleared before a new rig samples joint poses; the
+        same snapshot restores them if this transition fails.  The
         builder/enter APIs own their graph transactions; a newly-created rig
         is removed if entering EDIT fails.
         """
@@ -1316,8 +1435,13 @@ class VmdConverter:
         prior_owner = metadata.get("owner") if metadata else None
         prior_animation_snapshot = (
             self._capture_mmd_control_rig_animation_snapshot(metadata)
-            if metadata and metadata.get("state") == CONTROL_RIG_EDIT
+            if metadata
             else []
+        )
+        from .vmd_rotation_time_curve import capture_vmd_rotation_time_curve_snapshot
+
+        prior_rotation_time_curve_snapshot = capture_vmd_rotation_time_curve_snapshot(
+            metadata
         )
 
         # Capture the scene channels which a mixed VMD import can mutate before
@@ -1340,6 +1464,34 @@ class VmdConverter:
         )
         created = False
         entered_here = False
+        motion_cleared = False
+        transaction_detached_curve_nodes = []
+
+        def clear_motion_before_rig_transition() -> None:
+            """Clear outgoing model motion before a new rig samples joint poses.
+
+            ``build_mmd_control_rig`` derives each ZERO group's world matrix
+            from the live joint.  When an A->B import starts from the legacy
+            Bone route, those joints can still be evaluated at A's current
+            frame.  Clear and restore the target to its persisted bind pose
+            before any rig build/enter operation so the new rig captures the
+            static basis rather than the outgoing animation pose.
+            """
+            nonlocal motion_cleared
+            if not clear_existing_motion or vmd_data is None:
+                return
+            if self._detect_vmd_motion_kind(vmd_data) not in {"model", "mixed"}:
+                return
+            # Mark the transaction before entering the mutating helper.  A
+            # partial clear that raises still requires scene-snapshot restore.
+            motion_cleared = True
+            detached_curve_nodes = self._clear_existing_motion(
+                layer_name or "VMD_Motion",
+                target_namespace,
+                target_model=target_model,
+                preserve_curve_nodes=True,
+            )
+            transaction_detached_curve_nodes.extend(detached_curve_nodes or [])
 
         requested_vmd_names = set()
         if vmd_data is not None and getattr(vmd_data, "bone_frames", None):
@@ -1454,6 +1606,13 @@ class VmdConverter:
                     remove_mmd_control_rig(target_model)
                 except Exception as exc:
                     errors.append(f"remove created rig failed: {exc}")
+            if motion_cleared:
+                try:
+                    scene_error = self._restore_mmd_control_rig_scene_snapshot(scene_snapshot)
+                    if scene_error:
+                        errors.append(scene_error)
+                except Exception as exc:
+                    errors.append(f"restore cleared motion failed: {exc}")
             return "; ".join(errors) if errors else None
 
         try:
@@ -1476,16 +1635,22 @@ class VmdConverter:
                         fail("control_rig_owner_conflict", "Existing MMD Control Rig is not CONTROL_OWNED")
                     validate_vmd_routes()
                     self._validate_mmd_control_rig_ik_routes(target_model, vmd_data, profile=profile)
+                    clear_motion_before_rig_transition()
                     return {
                         "root": control_rig_root,
                         "created": False,
                         "entered_here": False,
                         "prior_state": prior_state,
-                    "prior_owner": prior_owner,
-                    "prior_raw_metadata": prior_raw_metadata,
-                    "prior_animation_snapshot": prior_animation_snapshot,
-                    "scene_snapshot": scene_snapshot,
-                }
+                        "prior_owner": prior_owner,
+                        "prior_raw_metadata": prior_raw_metadata,
+                        "prior_animation_snapshot": prior_animation_snapshot,
+                        "prior_rotation_time_curve_snapshot": prior_rotation_time_curve_snapshot,
+                        "scene_snapshot": scene_snapshot,
+                        "motion_cleared": motion_cleared,
+                        "detached_motion_curve_nodes": tuple(
+                            dict.fromkeys(transaction_detached_curve_nodes)
+                        ),
+                    }
                 if metadata.get("owner") != CONTROL_RIG_MMD_OWNED or metadata.get("state") not in {
                     CONTROL_RIG_ATTACHED,
                     CONTROL_RIG_BAKED,
@@ -1503,10 +1668,13 @@ class VmdConverter:
                         "MMD Control Rig import is unsupported for required roles",
                         blockers or list(spec.warnings),
                     )
+                clear_motion_before_rig_transition()
                 build_mmd_control_rig(target_model, spec=spec)
                 created = True
             enter_mmd_control_rig_edit(target_model)
             entered_here = True
+            if metadata is not None:
+                clear_motion_before_rig_transition()
             validate_vmd_routes()
             self._validate_mmd_control_rig_ik_routes(target_model, vmd_data, profile=profile)
             return {
@@ -1517,7 +1685,12 @@ class VmdConverter:
                 "prior_owner": prior_owner,
                 "prior_raw_metadata": prior_raw_metadata,
                 "prior_animation_snapshot": prior_animation_snapshot,
+                "prior_rotation_time_curve_snapshot": prior_rotation_time_curve_snapshot,
                 "scene_snapshot": scene_snapshot,
+                "motion_cleared": motion_cleared,
+                "detached_motion_curve_nodes": tuple(
+                    dict.fromkeys(transaction_detached_curve_nodes)
+                ),
             }
         except MMDImportException as exc:
             rollback_error = rollback_preflight()
@@ -1552,7 +1725,10 @@ class VmdConverter:
         snapshot = []
         seen_controls = set()
         for control_uuid in (metadata.get("controls") or {}).values():
-            controls = cmds.ls(control_uuid, long=True) if control_uuid else []
+            try:
+                controls = cmds.ls(control_uuid, long=True) if control_uuid else []
+            except RuntimeError:
+                controls = []
             if not controls:
                 continue
             control = str(controls[0])
@@ -1572,6 +1748,19 @@ class VmdConverter:
                         "control": control,
                         "attribute": attr,
                         **channel,
+                        "curve_input": (
+                            list(
+                                cmds.listConnections(
+                                    f"{channel['curve_node']}.input",
+                                    source=True,
+                                    destination=False,
+                                    plugs=True,
+                                )
+                                or []
+                            )
+                            if channel.get("curve_node")
+                            else []
+                        ),
                     }
                 )
         return snapshot
@@ -1923,6 +2112,22 @@ class VmdConverter:
                     row,
                     destination=destination,
                 )
+                curve_node = row.get("curve_node")
+                if curve_node and cmds.objExists(f"{curve_node}.input"):
+                    input_plug = f"{curve_node}.input"
+                    prior_inputs = [str(value) for value in row.get("curve_input") or []]
+                    current_inputs = cmds.listConnections(
+                        input_plug,
+                        source=True,
+                        destination=False,
+                        plugs=True,
+                    ) or []
+                    for source in current_inputs:
+                        if str(source) not in prior_inputs:
+                            cmds.disconnectAttr(source, input_plug)
+                    for source in prior_inputs:
+                        if not cmds.isConnected(source, input_plug):
+                            cmds.connectAttr(source, input_plug, force=True)
             except Exception as exc:
                 errors.append(f"restore controller {control}.{attr} failed: {exc}")
         return "; ".join(errors) if errors else None
@@ -1947,12 +2152,17 @@ class VmdConverter:
                     remove_mmd_control_rig(root)
                 except Exception as exc:
                     errors.append(f"remove created rig failed: {exc}")
-        elif transaction.get("prior_animation_snapshot"):
-            snapshot_error = self._restore_mmd_control_rig_animation_snapshot(
-                transaction["prior_animation_snapshot"]
+        try:
+            from .vmd_rotation_time_curve import (
+                restore_vmd_rotation_time_curve_snapshot,
             )
-            if snapshot_error:
-                errors.append(snapshot_error)
+
+            restore_vmd_rotation_time_curve_snapshot(
+                transaction.get("prior_rotation_time_curve_snapshot") or [],
+                self._rotation_time_curve_records,
+            )
+        except Exception as exc:
+            errors.append(f"restore rotation time curves failed: {exc}")
         # The rig journal must see the authored control/solver graph before
         # ordinary joint channels are restored.  Restoring scene curves first
         # can disconnect the very inputs that restore_mmd_control_rig_attached
@@ -1962,6 +2172,17 @@ class VmdConverter:
         )
         if scene_error:
             errors.append(scene_error)
+        # Restore controller keys after the scene snapshot has reinstated the
+        # original Maya time unit.  Restoring them before the timeline can
+        # cause Maya to reinterpret their numeric times when the failed import
+        # changed FPS (for example, ntscf -> ntsc), leaving an exact rollback
+        # with shifted key times despite an otherwise identical curve payload.
+        if transaction.get("prior_animation_snapshot"):
+            snapshot_error = self._restore_mmd_control_rig_animation_snapshot(
+                transaction["prior_animation_snapshot"]
+            )
+            if snapshot_error:
+                errors.append(snapshot_error)
         raw = transaction.get("prior_raw_metadata")
         if raw is not None and cmds.objExists(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}"):
             try:
@@ -1973,6 +2194,27 @@ class VmdConverter:
             except Exception as exc:
                 errors.append(f"restore metadata failed: {exc}")
         return "; ".join(errors) if errors else None
+
+    @staticmethod
+    def _discard_mmd_control_rig_detached_motion_curves(transaction) -> None:
+        """Delete orphaned legacy curves retained only for rollback identity."""
+        for curve in transaction.get("detached_motion_curve_nodes") or ():
+            if not cmds.objExists(curve):
+                continue
+            try:
+                destinations = cmds.listConnections(
+                    f"{curve}.output",
+                    source=False,
+                    destination=True,
+                    plugs=True,
+                ) or []
+                if not destinations:
+                    cmds.delete(curve)
+            except Exception:
+                # Successful import must not fail solely while cleaning an
+                # orphaned rollback aid; a connected curve remains owned by
+                # the newly-authored route and is intentionally preserved.
+                continue
 
     @staticmethod
     def _record_control_rig_import_failure(profile, exc, rollback_error=None) -> None:
@@ -2085,14 +2327,20 @@ class VmdConverter:
         layer_name: str,
         target_namespace: Optional[str] = None,
         target_model: Optional[str] = None,
-    ) -> None:
+        *,
+        preserve_curve_nodes: bool = False,
+    ) -> list:
         """対象モデルに残っている既存 VMD motion keys/layer を削除する。"""
+        detached_curve_nodes = []
         clear_existing_motion(
             self._import_state_context(),
             layer_name,
             target_namespace,
             target_model=target_model,
+            preserve_curve_nodes=preserve_curve_nodes,
+            detached_curve_nodes=detached_curve_nodes,
         )
+        return detached_curve_nodes
 
     def _clear_existing_camera_motion(self) -> None:
         """既存のMMDカメラアニメーションキーを削除する。"""
@@ -2121,6 +2369,147 @@ class VmdConverter:
             live_rig_target,
             bake_mode,
         )
+
+    def _compiled_registered_sparse_frames(
+        self,
+        *,
+        vmd_bytes: bytes,
+        pmx_bytes: bytes,
+        pmx_path: str,
+        vmd_source_path: Optional[str],
+        profile: Optional[Dict[str, Any]],
+        source_bone_frames=(),
+    ) -> Tuple[tuple, Dict[str, Any]]:
+        """Build model-paired compiled sparse keys before scene mutation.
+
+        The scene's persisted PMX bone indices are the consumer mapping
+        authority. Raw VMD names and interpolation bytes are not consulted for
+        authored values; matching source bytes remain export authority only.
+        """
+        resolved_pmx_bytes, _ = resolve_runtime_pmx_bytes_and_morph_names(
+            pmx_bytes,
+            pmx_path,
+            self.logger,
+            parse_pmx_native,
+        )
+
+        def fail(reason_code: str, message: str):
+            self._record_profile_warning(
+                profile,
+                {
+                    "source": "vmd_converter",
+                    "code": reason_code,
+                    "severity": "error",
+                    "message": message,
+                    "registration_mode": "model_paired_registered",
+                    "fallback": "none",
+                    "parity_guaranteed": False,
+                },
+            )
+            raise MMDImportException(message, reason_code=reason_code)
+
+        if not HAS_MMD_RUNTIME or not vmd_bytes or not resolved_pmx_bytes:
+            fail(
+                "registered_sparse_source_unavailable",
+                "Registered sparse VMD import requires raw PMX/VMD bytes and mmd-anim runtime",
+            )
+        model = MmdRuntimeModel.from_pmx_bytes(resolved_pmx_bytes)
+        if model is None:
+            fail("registered_sparse_model_create_failed", "Failed to create registered sparse PMX model")
+        clip = None
+        try:
+            clip = MmdRuntimeClip.from_vmd_bytes_for_model(model, vmd_bytes)
+            if clip is None:
+                fail("registered_sparse_clip_create_failed", "Failed to create registered sparse VMD clip")
+            tracks = clip.bone_tracks()
+            if tracks is None:
+                fail(
+                    "registered_sparse_introspection_unavailable",
+                    "Compiled registered VMD bone-track introspection is unavailable or invalid",
+                )
+            bone_names_by_index = {
+                int(index): str(name) for name, index in self.bone_name_to_index.items()
+            }
+            try:
+                frames = registered_sparse_bone_frames(
+                    tracks,
+                    bone_names_by_index=bone_names_by_index,
+                    imported_bone_indices=self.bone_index_to_joint,
+                    source_interpolation_by_key=(
+                        self._source_interpolation_by_registered_key(
+                            source_bone_frames
+                        )
+                    ),
+                )
+            except ValueError as exc:
+                fail("registered_sparse_bone_index_mismatch", str(exc))
+            runtime_library = get_mmd_runtime_library()
+            registration_profile = build_runtime_registration_provenance(
+                vmd_bytes=vmd_bytes,
+                pmx_bytes=resolved_pmx_bytes,
+                vmd_source_path=vmd_source_path,
+                pmx_source_path=pmx_path,
+                runtime_library_path=get_runtime_library_path(),
+                runtime_abi_version=(
+                    int(runtime_library.mmd_runtime_abi_version())
+                    if runtime_library is not None
+                    else 0
+                ),
+                runtime_feature_flags=int(get_runtime_feature_flags()),
+            )
+            registration_profile.update(
+                {
+                    "status": "success",
+                    "evaluation_mode": "authored_sparse_keys",
+                    "track_count": len(tracks),
+                    "key_count": len(frames),
+                }
+            )
+            if isinstance(profile, dict):
+                profile.setdefault("vmd_converter", {})["runtime_registration"] = registration_profile
+                profile.setdefault("vmd_converter", {})["registered_sparse"] = {
+                    "status": "success",
+                    "registration_mode": "model_paired_registered",
+                    "fallback": "none",
+                    "track_count": len(tracks),
+                    "key_count": len(frames),
+                }
+            return frames, registration_profile
+        finally:
+            if clip is not None:
+                clip.free()
+            model.free()
+
+    def _source_interpolation_by_registered_key(
+        self,
+        source_bone_frames,
+    ) -> Dict[Tuple[int, int], bytes]:
+        """Return raw source interpolation for export without driving Maya keys."""
+        joint_to_index = {
+            str(joint): int(index)
+            for index, joint in self.bone_index_to_joint.items()
+        }
+        result = {}
+        for frame in source_bone_frames or ():
+            bone_name = getattr(frame, "bone_name", None)
+            frame_number = getattr(frame, "frame_number", None)
+            interpolation = getattr(frame, "interpolation", None)
+            if isinstance(frame, dict):
+                bone_name = frame.get("bone_name", bone_name)
+                frame_number = frame.get("frame_number", frame_number)
+                interpolation = frame.get("interpolation", interpolation)
+            joint = self.bone_name_mapping.get(str(bone_name or ""))
+            bone_index = joint_to_index.get(str(joint))
+            if bone_index is None:
+                continue
+            try:
+                raw = bytes(interpolation)
+                key = (bone_index, int(frame_number))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if len(raw) == 64:
+                result[key] = raw
+        return result
 
     def _preflight_reduced_bake_keys(
         self,
@@ -2195,6 +2584,7 @@ class VmdConverter:
         reduce_translate_tolerance: float = 5.0e-4,
         reduce_rotate_tolerance: float = 1.0e-4,
         reduce_morph_tolerance: float = 1.0e-3,
+        target_model: Optional[str] = None,
     ) -> bool:
         """
         mmd-anim runtime を使って全フレームを評価し、正確なポーズをベイクする。
@@ -2220,20 +2610,47 @@ class VmdConverter:
             self.logger.error("Could not get PMX data required for runtime bake")
             return False
 
+        runtime_library = get_mmd_runtime_library() if HAS_MMD_RUNTIME else None
+        runtime_abi_version = 0
+        if runtime_library is not None:
+            try:
+                runtime_abi_version = int(runtime_library.mmd_runtime_abi_version())
+            except Exception:
+                self.logger.debug("Failed to query mmd-anim runtime ABI", exc_info=True)
+        registration_profile = build_runtime_registration_provenance(
+            vmd_bytes=vmd_bytes,
+            pmx_bytes=resolved_pmx_bytes,
+            vmd_source_path=getattr(vmd_data, "source_file", None),
+            pmx_source_path=pmx_path,
+            runtime_library_path=get_runtime_library_path() if HAS_MMD_RUNTIME else None,
+            runtime_abi_version=runtime_abi_version,
+            runtime_feature_flags=int(get_runtime_feature_flags()) if HAS_MMD_RUNTIME else 0,
+        )
+        registration_profile["target_model"] = str(target_model or "")
+        if isinstance(profile, dict):
+            profile.setdefault("vmd_converter", {})["runtime_registration"] = registration_profile
+
+        def _registration_failed(reason: str) -> None:
+            registration_profile["status"] = "failed"
+            registration_profile["reason"] = reason
+
         # モデル・クリップ・インスタンス作成
         model = MmdRuntimeModel.from_pmx_bytes(resolved_pmx_bytes)
         if model is None:
+            _registration_failed("model_create_failed")
             self.logger.error("Failed to create MmdRuntimeModel")
             return False
 
         clip = MmdRuntimeClip.from_vmd_bytes_for_model(model, vmd_bytes)
         if clip is None:
+            _registration_failed("registered_clip_create_failed")
             self.logger.error("Failed to create MmdRuntimeClip")
             model.free()
             return False
 
         instance = MmdRuntimeInstance.for_model(model)
         if instance is None:
+            _registration_failed("instance_create_failed")
             self.logger.error("Failed to create MmdRuntimeInstance")
             clip.free()
             model.free()
@@ -2443,6 +2860,15 @@ class VmdConverter:
 
             runtime_elapsed = time.perf_counter() - runtime_start
             self.logger.debug(f"runtime bake total elapsed={runtime_elapsed:.3f}s")
+
+            registration_profile["status"] = "success"
+            registration_profile["evaluation_mode"] = (
+                "batch" if runtime_cache.batch_mode else "frame"
+            )
+            registration_profile["frame_count"] = len(runtime_cache.baked_frames)
+            registration_profile["scene_metadata_stored"] = (
+                store_runtime_registration_provenance(target_model, registration_profile)
+            )
 
             return True
 

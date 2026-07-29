@@ -1265,6 +1265,30 @@ def mmd_control_rig_vmd_roundtrip_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def mmd_control_rig_vmd_import_parity_matrix(session: nox.Session) -> None:
+    """Run the Maya Control Rig VMD-import parity matrix host runner.
+
+    The host runner owns the Maya-version/evaluation-mode matrix and invokes
+    each configured ``mayapy`` process itself.  Nox only supplies the current
+    Python interpreter and forwards every positional argument unchanged, so
+    environment overrides such as ``MMD_TOOLS_CPP_PLUGIN_2026`` remain intact.
+
+    Examples:
+        uvx nox -s mmd_control_rig_vmd_import_parity_matrix
+        uvx nox -s mmd_control_rig_vmd_import_parity_matrix -- --versions 2024 --modes dg
+        uvx nox -s mmd_control_rig_vmd_import_parity_matrix -- --cases coverage --out build/reports/cr-matrix.json --timeout 600
+    """
+    session.run(
+        sys.executable,
+        "-m",
+        "tests.viewport.mmd_control_rig_vmd_import_parity_matrix",
+        *session.posargs,
+        env=dict(os.environ),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def mmd_control_rig_gui_e2e(session: nox.Session) -> None:
     """Run GUI control-rig E2E followed by the mandatory mesh oracle gate.
 

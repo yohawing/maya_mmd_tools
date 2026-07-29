@@ -85,6 +85,7 @@ _FINGER_ROLE_CHAINS = tuple(
     )
 )
 _FINGER_ROLES = tuple(role for chain in _FINGER_ROLE_CHAINS for role in chain)
+_FINGER_ROOT_ROLES = frozenset(chain[0] for chain in _FINGER_ROLE_CHAINS)
 _FINGER_ROLE_PARENTS = {
     role: (f"{role.split('_', 1)[0]}_wrist" if index == 0 else chain[index - 1])
     for chain in _FINGER_ROLE_CHAINS
@@ -230,6 +231,7 @@ def build_mmd_control_rig(
             display_reference_time = _current_time(cmds)
             controls: Dict[str, str] = {}
             zero_groups: Dict[str, str] = {}
+            role_joints: Dict[str, str] = {}
             bindings: Dict[str, Dict[str, Any]] = {}
             indexed_joints = {
                 bone.bone_index: bone.joint
@@ -279,13 +281,20 @@ def build_mmd_control_rig(
                 cmds.sets(control, add=selection_set)
                 controls[role] = str(control)
                 zero_groups[role] = str(zero)
+                role_joints[role] = str(binding.joint)
                 bindings[role] = _binding_metadata(role_binding, cmds_module=cmds)
 
             # Parent only concrete nodes.  Semantic fallback aliases are
             # added afterwards and must never be interpreted as new DAG
             # edges (e.g. groove_ZERO aliasing center_ZERO would otherwise
             # attempt to parent center_ZERO below its own child).
-            _parent_zero_groups(cmds, zero_groups, controls)
+            helper_nodes = _parent_zero_groups(
+                cmds,
+                zero_groups,
+                controls,
+                role_joints,
+            )
+            created_roots.extend(helper_nodes)
             _apply_fallback_role_aliases(
                 rig_spec.roles,
                 controls,
@@ -294,7 +303,14 @@ def build_mmd_control_rig(
                 cmds_module=cmds,
             )
 
-            nodes = _owned_nodes(cmds, control_group, selection_set)
+            nodes = tuple(
+                sorted(
+                    set(
+                        _owned_nodes(cmds, control_group, selection_set)
+                        + tuple(_canonical_node(cmds, node) for node in helper_nodes)
+                    )
+                )
+            )
             metadata = {
                 "schema": CONTROL_RIG_METADATA_SCHEMA,
                 "version": CONTROL_RIG_METADATA_VERSION,
@@ -304,6 +320,7 @@ def build_mmd_control_rig(
                 "modelRootUuid": _node_uuid(cmds, root),
                 "controlGroupUuid": _node_uuid(cmds, control_group),
                 "selectionSetUuid": _node_uuid(cmds, selection_set),
+                "helperNodes": [_node_uuid(cmds, node) for node in helper_nodes],
                 "nodes": [
                     {"uuid": _node_uuid(cmds, node), "name": str(node)}
                     for node in nodes
@@ -342,28 +359,39 @@ def remove_mmd_control_rig(model_root: str, *, cmds_module=None) -> bool:
     if _node_uuid(cmds, root) != metadata.get("modelRootUuid"):
         raise MmdControlRigBuildError("control-rig metadata model UUID mismatch")
     resolved = _resolve_owned_nodes(cmds, metadata)
+    _validate_control_rig_topology(cmds, metadata, resolved)
     control_group = resolved[metadata["controlGroupUuid"]]
     selection_set = resolved[metadata["selectionSetUuid"]]
-    actual = set(
-        [control_group]
-        + list(
-            cmds.listRelatives(
-                control_group,
-                allDescendents=True,
-                fullPath=True,
+    helper_nodes = [
+        resolved[uuid] for uuid in metadata.get("helperNodes", [])
+    ]
+    rotation_time_curves = []
+    for row in metadata.get("rotationTimeCurves", []) or []:
+        from mmd_tools.converters.vmd_rotation_time_curve import (
+            resolve_vmd_rotation_time_curve_record,
+        )
+
+        try:
+            node, _control, _rotation_curves = resolve_vmd_rotation_time_curve_record(
+                row,
+                cmds_module=cmds,
             )
-            or []
-        )
-    )
-    recorded_dag = set(resolved.values()) - {selection_set}
-    if actual != recorded_dag:
-        changed = ", ".join(sorted(actual.symmetric_difference(recorded_dag)))
-        raise MmdControlRigBuildError(
-            f"control group ownership topology changed: {changed}"
-        )
+        except RuntimeError as exc:
+            raise MmdControlRigBuildError(str(exc)) from exc
+        rotation_time_curves.append(node)
     with _undo_chunk(cmds, "Remove MMD Control Rig"):
+        for node in helper_nodes:
+            if cmds.objExists(node):
+                cmds.delete(node)
         if cmds.objExists(selection_set):
             cmds.delete(selection_set)
+        for node in rotation_time_curves:
+            if cmds.objExists(node):
+                from mmd_tools.converters.vmd_rotation_time_curve import (
+                    detach_and_delete_vmd_rotation_time_curve,
+                )
+
+                detach_and_delete_vmd_rotation_time_curve(cmds, node)
         if cmds.objExists(control_group):
             cmds.delete(control_group)
         if cmds.attributeQuery(ATTR_MMD_CONTROL_RIG_JSON, node=root, exists=True):
@@ -379,16 +407,51 @@ def read_mmd_control_rig_metadata(model_root: str, *, cmds_module=None) -> Optio
     return dict(metadata) if metadata is not None else None
 
 
+def inspect_mmd_control_rig(
+    model_root: str,
+    *,
+    cmds_module=None,
+) -> Optional[MmdControlRigBuildResult]:
+    """Resolve an existing UUID-owned Control Rig without mutating the scene.
+
+    A model with no control-rig metadata returns ``None``.  Any malformed,
+    stale, ambiguous, or model-root-mismatched metadata raises the same
+    :class:`MmdControlRigBuildError` used by build/remove recovery paths.  The
+    result is produced through ``_result_from_metadata`` so inspection and
+    idempotent build share one ownership invariant implementation.
+    """
+
+    cmds = cmds_module or maya_cmds()
+    root = _canonical_node(cmds, model_root)
+    metadata = _read_metadata(cmds, root)
+    if metadata is None:
+        return None
+    return _result_from_metadata(
+        cmds,
+        root,
+        metadata,
+        created=False,
+        validate_topology=True,
+    )
+
+
+# Resolver spelling for callers that treat inspection as an ownership lookup.
+resolve_mmd_control_rig = inspect_mmd_control_rig
+
+
 def _result_from_metadata(
     cmds,
     root: str,
     metadata: Mapping[str, Any],
     *,
     created: bool,
+    validate_topology: bool = False,
 ) -> MmdControlRigBuildResult:
     resolved = _resolve_owned_nodes(cmds, metadata)
     if _node_uuid(cmds, root) != metadata.get("modelRootUuid"):
         raise MmdControlRigBuildError("control-rig metadata model UUID mismatch")
+    if validate_topology:
+        _validate_control_rig_topology(cmds, metadata, resolved)
     controls = {
         role: resolved[uuid]
         for role, uuid in sorted(metadata.get("controls", {}).items())
@@ -444,6 +507,8 @@ def _read_metadata(cmds, root: str) -> Optional[Dict[str, Any]]:
             raise MmdControlRigBuildError(f"control-rig metadata missing {key}")
     if not isinstance(metadata.get("nodes"), list):
         raise MmdControlRigBuildError("control-rig metadata nodes must be an array")
+    if not isinstance(metadata.get("helperNodes", []), list):
+        raise MmdControlRigBuildError("control-rig metadata helperNodes must be an array")
     try:
         display_reference_time = float(metadata["displayReferenceTime"])
     except (KeyError, TypeError, ValueError) as exc:
@@ -468,19 +533,55 @@ def _resolve_owned_nodes(cmds, metadata: Mapping[str, Any]) -> Dict[str, str]:
         if not isinstance(row, dict) or not isinstance(row.get("uuid"), str):
             raise MmdControlRigBuildError("invalid owned-node metadata row")
         uuid = row["uuid"]
+        if uuid in resolved:
+            raise MmdControlRigBuildError(f"duplicate owned control-rig UUID: {uuid}")
         nodes = cmds.ls(uuid, long=True) or []
         if len(nodes) != 1:
             raise MmdControlRigBuildError(f"owned control-rig node is missing: {uuid}")
         resolved[uuid] = str(nodes[0])
+    for key in ("controls", "zeroGroups"):
+        if not isinstance(metadata.get(key), Mapping):
+            raise MmdControlRigBuildError(f"control-rig metadata {key} must be an object")
     for uuid in (
         metadata["controlGroupUuid"],
         metadata["selectionSetUuid"],
+        *metadata.get("helperNodes", []),
         *metadata.get("controls", {}).values(),
         *metadata.get("zeroGroups", {}).values(),
     ):
+        if not isinstance(uuid, str) or not uuid:
+            raise MmdControlRigBuildError("invalid referenced control-rig UUID")
         if uuid not in resolved:
             raise MmdControlRigBuildError(f"unrecorded control-rig UUID: {uuid}")
     return resolved
+
+
+def _validate_control_rig_topology(
+    cmds,
+    metadata: Mapping[str, Any],
+    resolved: Mapping[str, str],
+) -> None:
+    """Fail closed when the recorded control DAG no longer matches the scene."""
+
+    control_group = resolved[metadata["controlGroupUuid"]]
+    selection_set = resolved[metadata["selectionSetUuid"]]
+    actual = set(
+        [control_group]
+        + list(
+            cmds.listRelatives(
+                control_group,
+                allDescendents=True,
+                fullPath=True,
+            )
+            or []
+        )
+    )
+    recorded_dag = set(resolved.values()) - {selection_set}
+    if actual != recorded_dag:
+        changed = ", ".join(sorted(actual.symmetric_difference(recorded_dag)))
+        raise MmdControlRigBuildError(
+            f"control group ownership topology changed: {changed}"
+        )
 
 
 @lru_cache(maxsize=1)
@@ -693,12 +794,54 @@ def _parent_zero_groups(
     cmds,
     zero_groups: Mapping[str, str],
     controls: Mapping[str, str],
-) -> None:
-    """Parent concrete zero groups below their nearest available control."""
+    role_joints: Mapping[str, str],
+) -> Tuple[str, ...]:
+    """Parent concrete zero groups and attach finger roots to real wrists.
+
+    The visible FK hierarchy intentionally omits intermediate MMD helpers such
+    as arm/wrist twist joints.  Parenting a finger root below ``wrist_CTRL``
+    therefore loses motion contributed by those helpers and leaves the finger
+    controls behind the skinned hand.  A finger controller only drives its own
+    child joint, so following the real parent wrist joint is acyclic and keeps
+    the complete evaluated upstream transform.
+
+    Returns:
+        Constraint nodes owned by the Control Rig lifecycle.
+    """
+    helper_nodes = []
     for role, zero in zero_groups.items():
+        if role in _FINGER_ROOT_ROLES:
+            joint = role_joints.get(role)
+            parents = (
+                cmds.listRelatives(
+                    joint,
+                    parent=True,
+                    fullPath=True,
+                    type="joint",
+                )
+                if joint
+                else []
+            ) or []
+            if len(parents) != 1:
+                raise MmdControlRigBuildError(
+                    f"finger control parent joint is unresolved: {role}"
+                )
+            constraint = cmds.parentConstraint(
+                str(parents[0]),
+                zero,
+                maintainOffset=True,
+                name=f"{zero.rsplit('|', 1)[-1]}_FOLLOW",
+            ) or []
+            if len(constraint) != 1:
+                raise MmdControlRigBuildError(
+                    f"finger control follow constraint was not created: {role}"
+                )
+            helper_nodes.append(str(constraint[0]))
+            continue
         parent_role = _available_parent_role(role, controls)
         if parent_role:
             cmds.parent(zero, controls[parent_role])
+    return tuple(helper_nodes)
 
 
 def _should_build_role_control(role_binding: MmdControlRigRoleBinding) -> bool:

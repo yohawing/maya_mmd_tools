@@ -5,7 +5,21 @@ from mmd_tools.core.constants import (
     ATTR_MMD_SHOW_MESH,
     ATTR_MMD_SHOW_PHYSICS_COLLIDERS,
 )
-from mmd_tools.core.visibility_state import ensure_visibility_attrs, sync_visibility_connections
+from mmd_tools.core.visibility_state import (
+    HIDDEN,
+    REFERENCE,
+    VISIBLE,
+    VisibilityState,
+    ensure_visibility_attrs,
+    get_visibility_category,
+    get_visibility_group_state,
+    get_visibility_state,
+    resolve_visibility_group,
+    set_visibility_category,
+    set_visibility_group_state,
+    set_visibility_state,
+    sync_visibility_connections,
+)
 
 
 class _FakeAdapter:
@@ -14,6 +28,9 @@ class _FakeAdapter:
         self.calls = []
         self.relatives = {}
         self.connections = {}
+        self.settable = {}
+        self.fail_on_set = set()
+        self.undo_events = []
 
     def attribute_exists(self, attr, node):
         return (node, attr) in self.attrs
@@ -33,8 +50,14 @@ class _FakeAdapter:
 
     def set_attr(self, attr_path, value, **kwargs):
         self.calls.append(("set_attr", attr_path, value, kwargs))
+        if attr_path in self.fail_on_set:
+            self.fail_on_set.remove(attr_path)
+            raise RuntimeError(f"injected write failure: {attr_path}")
         node, attr = attr_path.rsplit(".", 1)
         self.attrs[(node, attr)] = value
+
+    def is_attr_settable(self, attr_path):
+        return self.settable.get(attr_path, True)
 
     def list_relatives(self, node, **kwargs):
         return self.relatives.get((node, kwargs.get("type")), [])
@@ -47,6 +70,25 @@ class _FakeAdapter:
     def connect_attr(self, source, destination, force=False):
         self.calls.append(("connect_attr", source, destination, force))
         self.connections[destination] = [source]
+        source_node, source_attr = source.rsplit(".", 1)
+        destination_node, destination_attr = destination.rsplit(".", 1)
+        if (source_node, source_attr) in self.attrs:
+            self.attrs[(destination_node, destination_attr)] = self.attrs[
+                (source_node, source_attr)
+            ]
+
+    def disconnect_attr(self, source, destination):
+        self.calls.append(("disconnect_attr", source, destination))
+        if source in self.connections.get(destination, []):
+            self.connections[destination].remove(source)
+        if not self.connections.get(destination):
+            self.connections.pop(destination, None)
+
+    def undo_info(self, **kwargs):
+        if kwargs.get("openChunk"):
+            self.undo_events.append(("open", kwargs.get("chunkName")))
+        if kwargs.get("closeChunk"):
+            self.undo_events.append(("close", None))
 
 
 class TestVisibilityState(unittest.TestCase):
@@ -116,6 +158,188 @@ class TestVisibilityState(unittest.TestCase):
             ),
             adapter.calls,
         )
+
+    def _group_adapter(self, group="|model_root|Geometry"):
+        adapter = _FakeAdapter(
+            {
+                ("model_root", ATTR_MMD_SHOW_MESH): True,
+                (group, "visibility"): True,
+                (group, "overrideEnabled"): False,
+                (group, "overrideDisplayType"): 1,
+            }
+        )
+        adapter.relatives[("model_root", "transform")] = [group]
+        return adapter, group
+
+    def test_get_visibility_state_hidden_wins_over_drawing_override(self):
+        adapter, group = self._group_adapter()
+        adapter.attrs[(group, "visibility")] = False
+        adapter.attrs[(group, "overrideEnabled")] = True
+        adapter.attrs[(group, "overrideDisplayType")] = 2
+
+        self.assertIs(get_visibility_state(adapter, "model_root", "mesh"), HIDDEN)
+
+    def test_get_visibility_state_requires_enabled_reference_override(self):
+        adapter, group = self._group_adapter()
+        adapter.attrs[(group, "overrideDisplayType")] = 2
+        self.assertIs(get_visibility_state(adapter, "model_root", "mesh"), VISIBLE)
+
+        adapter.attrs[(group, "overrideEnabled")] = True
+        self.assertIs(get_visibility_state(adapter, "model_root", "mesh"), REFERENCE)
+
+    def test_set_visibility_state_writes_root_authority_and_override(self):
+        adapter, group = self._group_adapter()
+
+        self.assertTrue(set_visibility_state(adapter, "model_root", "mesh", REFERENCE))
+        self.assertTrue(adapter.attrs[("model_root", ATTR_MMD_SHOW_MESH)])
+        self.assertTrue(adapter.attrs[(group, "overrideEnabled")])
+        self.assertEqual(adapter.attrs[(group, "overrideDisplayType")], 2)
+
+        self.assertTrue(set_visibility_state(adapter, "model_root", "mesh", VISIBLE))
+        self.assertEqual(adapter.attrs[(group, "overrideDisplayType")], 0)
+
+    def test_set_hidden_changes_only_root_authority(self):
+        adapter, group = self._group_adapter()
+        before = (
+            adapter.attrs[(group, "overrideEnabled")],
+            adapter.attrs[(group, "overrideDisplayType")],
+        )
+
+        self.assertTrue(set_visibility_state(adapter, "model_root", "mesh", HIDDEN))
+        self.assertFalse(adapter.attrs[("model_root", ATTR_MMD_SHOW_MESH)])
+        self.assertEqual(
+            before,
+            (
+                adapter.attrs[(group, "overrideEnabled")],
+                adapter.attrs[(group, "overrideDisplayType")],
+            ),
+        )
+
+    def test_group_resolver_is_namespace_safe_and_fails_on_ambiguity(self):
+        adapter, group = self._group_adapter("|model_root|char:Geometry")
+        self.assertEqual(resolve_visibility_group(adapter, "model_root", "mesh"), group)
+
+        adapter.relatives[("model_root", "transform")].append("|model_root|other:Geometry")
+        self.assertIsNone(resolve_visibility_group(adapter, "model_root", "mesh"))
+        self.assertIs(get_visibility_state(adapter, "model_root", "mesh"), VisibilityState.VISIBLE)
+        self.assertFalse(set_visibility_state(adapter, "model_root", "mesh", HIDDEN))
+
+    def test_bool_api_remains_root_attribute_compatible(self):
+        adapter, _group = self._group_adapter()
+
+        set_visibility_category(adapter, "model_root", "mesh", False)
+        self.assertFalse(get_visibility_category(adapter, "model_root", "mesh"))
+        set_visibility_category(adapter, "model_root", "mesh", True)
+        self.assertTrue(get_visibility_category(adapter, "model_root", "mesh"))
+
+    def test_state_writes_do_not_force_foreign_override_driver(self):
+        adapter, group = self._group_adapter()
+        adapter.connections[f"{group}.overrideEnabled"] = ["foreign.output"]
+
+        self.assertFalse(set_visibility_state(adapter, "model_root", "mesh", REFERENCE))
+        self.assertFalse(adapter.attrs[(group, "overrideEnabled")])
+        self.assertEqual(adapter.attrs[(group, "overrideDisplayType")], 1)
+
+    def test_state_writer_connects_unconnected_group_visibility(self):
+        adapter, group = self._group_adapter()
+
+        self.assertTrue(set_visibility_state(adapter, "model_root", "mesh", HIDDEN))
+        self.assertEqual(
+            adapter.connections[f"{group}.visibility"],
+            [f"model_root.{ATTR_MMD_SHOW_MESH}"],
+        )
+        self.assertFalse(adapter.attrs[(group, "visibility")])
+        self.assertIs(get_visibility_state(adapter, "model_root", "mesh"), HIDDEN)
+
+    def test_foreign_group_visibility_fails_before_root_mutation(self):
+        adapter, group = self._group_adapter()
+        adapter.connections[f"{group}.visibility"] = ["foreign.output"]
+
+        self.assertFalse(set_visibility_state(adapter, "model_root", "mesh", HIDDEN))
+        self.assertTrue(adapter.attrs[("model_root", ATTR_MMD_SHOW_MESH)])
+        self.assertTrue(adapter.attrs[(group, "visibility")])
+        self.assertEqual(
+            adapter.connections[f"{group}.visibility"], ["foreign.output"]
+        )
+
+    def test_locked_override_fails_before_root_mutation(self):
+        adapter, group = self._group_adapter()
+        adapter.settable[f"{group}.overrideDisplayType"] = False
+
+        self.assertFalse(set_visibility_state(adapter, "model_root", "mesh", REFERENCE))
+        self.assertTrue(adapter.attrs[("model_root", ATTR_MMD_SHOW_MESH)])
+        self.assertFalse(adapter.attrs[(group, "overrideEnabled")])
+        self.assertEqual(adapter.attrs[(group, "overrideDisplayType")], 1)
+
+    def test_group_reader_has_hidden_precedence(self):
+        adapter, group = self._group_adapter()
+        adapter.attrs[(group, "visibility")] = False
+        adapter.attrs[(group, "overrideEnabled")] = True
+        adapter.attrs[(group, "overrideDisplayType")] = 2
+
+        self.assertIs(get_visibility_group_state(adapter, group), HIDDEN)
+
+    def test_group_writer_is_one_undo_step_and_rolls_back_each_write(self):
+        adapter, group = self._group_adapter()
+        before = dict(adapter.attrs)
+        plugs = (
+            f"{group}.visibility",
+            f"{group}.overrideEnabled",
+            f"{group}.overrideDisplayType",
+        )
+
+        for plug in plugs:
+            with self.subTest(plug=plug):
+                adapter.attrs = dict(before)
+                adapter.calls = []
+                adapter.undo_events = []
+                adapter.fail_on_set = {plug}
+
+                self.assertFalse(
+                    set_visibility_group_state(adapter, group, REFERENCE, label="Group")
+                )
+                self.assertEqual(adapter.attrs, before)
+                self.assertEqual(
+                    adapter.undo_events,
+                    [("open", "Group"), ("close", None)],
+                )
+
+    def test_group_writer_rejects_foreign_and_locked_before_mutation(self):
+        adapter, group = self._group_adapter()
+        before = dict(adapter.attrs)
+        adapter.connections[f"{group}.visibility"] = ["foreign.output"]
+        self.assertFalse(set_visibility_group_state(adapter, group, HIDDEN))
+        self.assertEqual(adapter.attrs, before)
+        self.assertEqual(adapter.undo_events, [])
+
+        adapter.connections.clear()
+        adapter.settable[f"{group}.overrideDisplayType"] = False
+        self.assertFalse(set_visibility_group_state(adapter, group, REFERENCE))
+        self.assertEqual(adapter.attrs, before)
+        self.assertEqual(adapter.undo_events, [])
+
+    def test_category_writer_rolls_back_authority_and_new_group_link(self):
+        adapter, group = self._group_adapter()
+        before = dict(adapter.attrs)
+        adapter.fail_on_set = {f"{group}.overrideDisplayType"}
+
+        self.assertFalse(set_visibility_state(adapter, "model_root", "mesh", REFERENCE))
+        self.assertEqual(adapter.attrs, before)
+        self.assertEqual(adapter.connections, {})
+        self.assertEqual(
+            adapter.undo_events,
+            [("open", "Set MMD Visibility"), ("close", None)],
+        )
+
+    def test_category_writer_rejects_missing_authority_without_migration(self):
+        adapter, group = self._group_adapter()
+        adapter.attrs.pop(("model_root", ATTR_MMD_SHOW_MESH))
+        adapter.attrs[("model_root", "mmd_show_ik")] = True
+        before = dict(adapter.attrs)
+
+        self.assertFalse(set_visibility_state(adapter, "model_root", "mesh", REFERENCE))
+        self.assertEqual(adapter.attrs, before)
+        self.assertEqual(adapter.undo_events, [])
 
 
 if __name__ == "__main__":

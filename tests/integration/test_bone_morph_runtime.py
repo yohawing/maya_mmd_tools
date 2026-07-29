@@ -11,6 +11,9 @@ from maya import cmds
 
 from mmd_tools.converters import bone_morph_runtime
 from mmd_tools.converters.bone_morph_runtime import build_bone_morph_graph
+from mmd_tools.converters.vmd_context import VmdImportStateContext
+from mmd_tools.converters.vmd_import_state import clear_existing_motion
+from mmd_tools.converters.vmd_morph_mapping import iter_morph_mappings
 from mmd_tools.nodes.mmd_bone_morph_accum_node import MmdBoneMorphAccumNode
 from tests.common.maya_test_base import MayaTestBase
 
@@ -339,6 +342,194 @@ class TestBoneMorphRuntime(MayaTestBase):
             matching = [message for message in migration_warnings if node in message]
             self.assertEqual(len(matching), 1)
             self.assertIn(root, matching[0])
+
+    def test_root_scoped_clear_preserves_bone_morph_curve_and_runtime_graph(self):
+        """Clear target morph keys in place while leaving both model graphs intact."""
+        self._require_accumulator_node()
+        target_root, target_joint = self._create_indexed_joint(
+            name="clear_target_bone",
+            bone_index=0,
+        )
+        foreign_root, foreign_joint = self._create_indexed_joint(
+            name="clear_foreign_bone",
+            bone_index=0,
+        )
+        target_morph = self._create_bone_morph_node(
+            "clear_target_boneMorph",
+            0,
+            [{"bone_index": 0, "translation": [1.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]}],
+            target_root,
+        )
+        foreign_morph = self._create_bone_morph_node(
+            "clear_foreign_boneMorph",
+            0,
+            [{"bone_index": 0, "translation": [2.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]}],
+            foreign_root,
+        )
+
+        target_result = build_bone_morph_graph(target_root)
+        foreign_result = build_bone_morph_graph(foreign_root)
+        self.assertTrue(target_result["success"])
+        self.assertTrue(foreign_result["success"])
+        target_accum = target_result["accumulator_nodes"][0]
+        foreign_accum = foreign_result["accumulator_nodes"][0]
+
+        cmds.setKeyframe(target_morph, attribute="weight", time=2, value=0.25)
+        cmds.setKeyframe(target_morph, attribute="weight", time=8, value=0.75)
+        cmds.setKeyframe(foreign_morph, attribute="weight", time=3, value=0.4)
+        cmds.setKeyframe(foreign_morph, attribute="weight", time=9, value=0.9)
+
+        def _curve_state(morph):
+            curves = cmds.listConnections(
+                f"{morph}.weight",
+                source=True,
+                destination=False,
+                type="animCurve",
+                plugs=True,
+            ) or []
+            self.assertEqual(len(curves), 1)
+            curve_plug = curves[0]
+            curve = curve_plug.split(".", 1)[0]
+            return {
+                "curve": curve,
+                "uuid": (cmds.ls(curve, uuid=True) or [None])[0],
+                "source": curve_plug,
+                "destination": tuple(
+                    cmds.listConnections(
+                        curve_plug,
+                        source=False,
+                        destination=True,
+                        plugs=True,
+                    )
+                    or []
+                ),
+                "times": tuple(
+                    cmds.keyframe(morph, attribute="weight", query=True, timeChange=True) or []
+                ),
+                "values": tuple(
+                    cmds.keyframe(morph, attribute="weight", query=True, valueChange=True) or []
+                ),
+            }
+
+        target_curve_before = _curve_state(target_morph)
+        foreign_curve_before = _curve_state(foreign_morph)
+        target_contribution_sources = tuple(
+            cmds.listConnections(
+                f"{target_accum}.contribution[0].weight",
+                source=True,
+                destination=False,
+                plugs=True,
+            )
+            or []
+        )
+        foreign_contribution_sources = tuple(
+            cmds.listConnections(
+                f"{foreign_accum}.contribution[0].weight",
+                source=True,
+                destination=False,
+                plugs=True,
+            )
+            or []
+        )
+        target_output_destinations = tuple(
+            cmds.listConnections(
+                f"{target_accum}.outputTranslate",
+                source=False,
+                destination=True,
+                plugs=True,
+            )
+            or []
+        )
+        foreign_output_destinations = tuple(
+            cmds.listConnections(
+                f"{foreign_accum}.outputTranslate",
+                source=False,
+                destination=True,
+                plugs=True,
+            )
+            or []
+        )
+
+        context = VmdImportStateContext(
+            logger=bone_morph_runtime.logger,
+            bone_name_mapping={},
+            bone_bind_poses={},
+            morph_name_mapping={
+                "target": (target_morph, "weight", "target"),
+                "foreign": (foreign_morph, "weight", "foreign"),
+            },
+            collect_append_info=lambda: {},
+            iter_morph_mappings=iter_morph_mappings,
+            set_refresh_suspended=lambda _value: None,
+        )
+        clear_existing_motion(context, "missing_layer", target_model=target_root)
+
+        self.assertIsNone(
+            cmds.keyframe(target_morph, attribute="weight", query=True, timeChange=True)
+        )
+        self.assertEqual(
+            cmds.keyframe(foreign_morph, attribute="weight", query=True, timeChange=True),
+            list(foreign_curve_before["times"]),
+        )
+        self.assertEqual(_curve_state(target_morph)["curve"], target_curve_before["curve"])
+        self.assertEqual(_curve_state(target_morph)["uuid"], target_curve_before["uuid"])
+        self.assertEqual(_curve_state(target_morph)["source"], target_curve_before["source"])
+        self.assertEqual(
+            tuple(
+                cmds.listConnections(
+                    f"{target_accum}.contribution[0].weight",
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                )
+                or []
+            ),
+            target_contribution_sources,
+        )
+        self.assertEqual(
+            tuple(
+                cmds.listConnections(
+                    f"{target_accum}.outputTranslate",
+                    source=False,
+                    destination=True,
+                    plugs=True,
+                )
+                or []
+            ),
+            target_output_destinations,
+        )
+        self.assertTrue(cmds.objExists(target_morph))
+        self.assertTrue(cmds.objExists(target_accum))
+        self.assertTrue(cmds.objExists(target_joint))
+
+        self.assertEqual(_curve_state(foreign_morph), foreign_curve_before)
+        self.assertEqual(
+            tuple(
+                cmds.listConnections(
+                    f"{foreign_accum}.contribution[0].weight",
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                )
+                or []
+            ),
+            foreign_contribution_sources,
+        )
+        self.assertEqual(
+            tuple(
+                cmds.listConnections(
+                    f"{foreign_accum}.outputTranslate",
+                    source=False,
+                    destination=True,
+                    plugs=True,
+                )
+                or []
+            ),
+            foreign_output_destinations,
+        )
+        self.assertTrue(cmds.objExists(foreign_morph))
+        self.assertTrue(cmds.objExists(foreign_accum))
+        self.assertTrue(cmds.objExists(foreign_joint))
 
     def test_rotation_offset_uses_quaternion_slerp(self):
         """PMX quaternion is converted to Maya space and slerped by weight."""

@@ -1,9 +1,10 @@
 """Minimum Maya scene collector for VMD export.
 
-This collector gathers keyed joint transforms and blendShape weights into the
-dict contract consumed by ``VmdExporter``. Bone translation can be converted
-back to VMD offsets when a bind-pose map is supplied, and XYZ joint rotations
-are converted back to VMD quaternions with jointOrient compensation.
+This collector gathers keyed joint transforms, blendShape weights, and
+model-scoped PMX network morph controller weights into the dict contract
+consumed by ``VmdExporter``. Bone translation can be converted back to VMD
+offsets when a bind-pose map is supplied, and XYZ joint rotations are
+converted back to VMD quaternions with jointOrient compensation.
 """
 
 import json
@@ -31,6 +32,7 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
     INPUT_IK_CONTROLLER,
 )
 from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_names
+from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadata
 from mmd_tools.converters.vmd_camera_animation import (
     ATTR_MMD_CAMERA_ROOT_NODE,
     ATTR_MMD_CAMERA_TARGET_NODE,
@@ -111,6 +113,7 @@ class VmdSceneCollector:
         bone_bind_poses = options.get("bone_bind_poses") or {}
         maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
         dense_control_rig_export = self._control_rig_dense_export(target_model)
+        rotation_interpolation = self._rotation_time_curve_interpolation(target_model)
         authored_routes = self._scene_authored_input_routes(joints, target_model)
 
         return {
@@ -124,12 +127,14 @@ class VmdSceneCollector:
                 input_routes=authored_routes,
                 dense_sample=dense_control_rig_export,
                 time_converter=maya_time_to_vmd,
+                rotation_interpolation=rotation_interpolation,
             ),
             "morph_frames": self.collect_morph_frames(
                 blend_shapes,
                 start_frame,
                 end_frame,
                 time_converter=maya_time_to_vmd,
+                target_model=target_model,
             ),
             "camera_frames": self.collect_camera_frames(
                 cameras,
@@ -161,12 +166,14 @@ class VmdSceneCollector:
         input_routes: Optional[Mapping[str, Mapping[str, tuple[str, str]]]] = None,
         dense_sample: bool = False,
         time_converter=None,
+        rotation_interpolation: Optional[Mapping[str, Mapping[int, bytes]]] = None,
     ) -> list[dict]:
         """Collect keyed local joint transform frames."""
         bone_bind_poses = bone_bind_poses or {}
         input_routes = input_routes or {}
         time_converter = time_converter or _scene_maya_time_to_vmd_frame()
         rotation_context = _build_rotation_export_context(joints)
+        rotation_interpolation = rotation_interpolation or {}
         frames = []
         dense_frames = None
         if dense_sample:
@@ -190,7 +197,14 @@ class VmdSceneCollector:
                 start_frame,
                 end_frame,
             )
-            keyed_frames = dense_frames if dense_frames is not None and sparse_frames else sparse_frames
+            preserve_sparse_rotation = bone_name in rotation_interpolation
+            keyed_frames = (
+                dense_frames
+                if dense_frames is not None
+                and sparse_frames
+                and not preserve_sparse_rotation
+                else sparse_frames
+            )
             for frame_number in keyed_frames:
                 rotation = _maya_joint_rotate_to_vmd_quaternion(
                     joint,
@@ -199,10 +213,10 @@ class VmdSceneCollector:
                     _routed_plug_float(joint, "rotateZ", frame_number, route),
                     rotation_context.get(str(long_names[0])),
                 )
-                frames.append(
-                    {
+                vmd_frame = _vmd_frame_number(frame_number, time_converter)
+                payload = {
                         "bone_name": bone_name,
-                        "frame_number": _vmd_frame_number(frame_number, time_converter),
+                        "frame_number": vmd_frame,
                         "position": _maya_translate_to_vmd_position(
                             (
                                 _routed_plug_float(joint, "translateX", frame_number, route),
@@ -214,7 +228,10 @@ class VmdSceneCollector:
                         ),
                         "rotation": rotation,
                     }
-                )
+                interpolation = rotation_interpolation.get(bone_name, {}).get(vmd_frame)
+                if interpolation is not None:
+                    payload["interpolation"] = interpolation
+                frames.append(payload)
         return _deduplicate_frames(frames, ("bone_name", "frame_number"))
 
     def collect_ik_show_hide_frames(
@@ -285,6 +302,22 @@ class VmdSceneCollector:
         if metadata["state"] == CONTROL_RIG_EDIT:
             raise ValueError("Bake the MMD control rig before VMD export")
         return True
+
+    @staticmethod
+    def _rotation_time_curve_interpolation(
+        target_model: Optional[str],
+    ) -> dict[str, dict[int, bytes]]:
+        """Resolve Experimental rotation interpolation for sparse export."""
+        if not target_model:
+            return {}
+        metadata = read_mmd_control_rig_metadata(target_model)
+        if not metadata:
+            return {}
+        from mmd_tools.converters.vmd_rotation_time_curve import (
+            rotation_time_curve_interpolation_by_bone,
+        )
+
+        return rotation_time_curve_interpolation_by_bone(metadata)
 
     def _scene_authored_input_routes(
         self,
@@ -363,8 +396,17 @@ class VmdSceneCollector:
         start_frame: Optional[float] = None,
         end_frame: Optional[float] = None,
         time_converter=None,
+        target_model: Optional[str] = None,
     ) -> list[dict]:
-        """Collect keyed blendShape weight frames."""
+        """Collect keyed blendShape and model-owned network morph frames.
+
+        Vertex morphs are represented by the existing blendShape targets.  The
+        PMX controller also owns non-vertex morphs (bone, group, and material),
+        whose weights are keyed on ``inputWeight[index]``.  Network metadata is
+        used as the authoritative name/index mapping and is only consulted when
+        a model root is supplied, so unrelated model controllers cannot leak
+        into an export.
+        """
         time_converter = time_converter or _scene_maya_time_to_vmd_frame()
         frames = []
         for blend_shape in blend_shapes:
@@ -383,6 +425,50 @@ class VmdSceneCollector:
                             "weight": _plug_float(blend_shape, attr, frame_number),
                         }
                     )
+
+        # Non-vertex morphs are driven by the model-scoped mmdMorphController.
+        # Keep the existing blendShape rows first so a malformed scene that
+        # reuses a morph name remains deterministic and does not duplicate a
+        # VMD name/frame pair.
+        if target_model:
+            controller = _morph_controller_for_model(target_model)
+            if controller:
+                metadata = list(
+                    iter_morph_network_metadata(root_group=target_model)
+                )
+                metadata_by_index = {}
+                metadata_by_name = {}
+                for entry in metadata:
+                    morph_type = str(entry.morph_type or "")
+                    if morph_type == "vertex" or not entry.name or entry.index is None:
+                        continue
+                    index = int(entry.index)
+                    name = str(entry.name)
+                    # Duplicate index/name providers are ambiguous.  Skip all
+                    # contenders instead of guessing which network is active.
+                    metadata_by_index.setdefault(index, []).append(entry)
+                    metadata_by_name.setdefault(name, []).append(entry)
+
+                for index, entries in sorted(metadata_by_index.items()):
+                    if len(entries) != 1:
+                        continue
+                    entry = entries[0]
+                    if len(metadata_by_name.get(str(entry.name), ())) != 1:
+                        continue
+                    attr = f"inputWeight[{index}]"
+                    keyed_frames = _filter_frame_range(
+                        _key_times(controller, (attr,)),
+                        start_frame,
+                        end_frame,
+                    )
+                    for frame_number in keyed_frames:
+                        frames.append(
+                            {
+                                "morph_name": str(entry.name),
+                                "frame_number": _vmd_frame_number(frame_number, time_converter),
+                                "weight": _plug_float(controller, attr, frame_number),
+                            }
+                        )
         return _deduplicate_frames(frames, ("morph_name", "frame_number"))
 
     def collect_camera_frames(
@@ -568,6 +654,34 @@ def _read_blendshape_morph_names(blend_shape: str) -> dict[int, str]:
     except (TypeError, ValueError):
         return {}
     return parse_blendshape_morph_names(parsed)
+
+
+def _morph_controller_for_model(target_model: str) -> Optional[str]:
+    """Resolve the single morph controller connected to a model root.
+
+    The root message connection is the ownership boundary for morph export.
+    Missing, malformed, or ambiguous connections fail closed so a VMD export
+    cannot accidentally include another model's controller weights.
+    """
+    if not target_model or not _has_attr(target_model, "mmd_morph_controller"):
+        return None
+    try:
+        controllers = cmds.listConnections(
+            f"{target_model}.mmd_morph_controller",
+            source=True,
+            destination=False,
+        ) or []
+    except Exception:
+        return None
+    if len(controllers) != 1:
+        return None
+    controller = str(controllers[0])
+    try:
+        if cmds.nodeType(controller) != "mmdMorphController":
+            return None
+    except Exception:
+        return None
+    return controller
 
 
 def _key_times(node: str, attrs: Iterable[str]) -> list[float]:

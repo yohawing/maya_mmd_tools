@@ -41,7 +41,11 @@ class TestMayaCommandPort(unittest.TestCase):
                     },
                 )
             self.assertIsNone(result)
-            self.assertIn('commandPort -name ":7788"', (output / "commandport_7788.mel").read_text(encoding="utf-8"))
+            startup_script = (output / "commandport_7788.mel").read_text(encoding="utf-8")
+            self.assertEqual(
+                startup_script,
+                'commandPort -name ":7788" -sourceType "python";\n',
+            )
             batch = (output / "launch_maya_2025_7788.bat").read_text(encoding="utf-8")
             self.assertIn(f"MAYA_APP_DIR={root / 'isolated-maya-app'}", batch)
             self.assertIn("MAYA_VP2_DEVICE_OVERRIDE=VirtualDeviceGLCore", batch)
@@ -127,6 +131,10 @@ class TestMayaCommandPort(unittest.TestCase):
 
             try:
                 self.assertNotIn("MAYA_VP2_DEVICE_OVERRIDE", popen.call_args.kwargs["env"])
+                self.assertEqual(
+                    str((Path(tmpdir) / "logs" / "maya-app-2026-7722").resolve()),
+                    popen.call_args.kwargs["env"]["MAYA_APP_DIR"],
+                )
             finally:
                 maya_commandport.close_process_logs(process)
 

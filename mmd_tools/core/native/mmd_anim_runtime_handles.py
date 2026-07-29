@@ -15,6 +15,7 @@ from mmd_tools.core.native.mmd_anim_runtime_types import (
     MMD_RUNTIME_PHYSICS_FRAME_ACTION_SEED,
     MMD_RUNTIME_PHYSICS_FRAME_ACTION_STEP,
     MMD_RUNTIME_FEATURE_MODEL_DESCRIPTOR,
+    MMD_RUNTIME_FEATURE_CLIP_BONE_TRACK_INTROSPECTION,
     MMD_RUNTIME_FEATURE_REDUCED_POSE_GENERIC_CURVES,
     MMD_RUNTIME_GENERIC_CURVE_BONE_LOCAL,
     MMD_RUNTIME_GENERIC_CURVE_MORPH_WEIGHT,
@@ -31,7 +32,15 @@ from mmd_tools.core.native.mmd_anim_runtime_types import (
     MMD_RUNTIME_STATUS_OK,
     MMD_RUNTIME_STATUS_BUFFER_TOO_SMALL,
     MMD_RUNTIME_STATUS_UNSUPPORTED,
+    MMD_RUNTIME_BONE_TRACK_CURVE_CUBIC_BEZIER,
+    MMD_RUNTIME_BONE_TRACK_CURVE_NONE,
     MmdRuntimeBatchEvaluation,
+    MmdRuntimeBoneTrack,
+    MmdRuntimeBoneTrackCurve,
+    MmdRuntimeBoneTrackDescriptor,
+    MmdRuntimeBoneTrackKey,
+    MmdRuntimeFfiBoneTrackDescriptor,
+    MmdRuntimeFfiBoneTrackKey,
     MmdRuntimeFfiGenericCurveDescriptor,
     MmdRuntimeFfiGenericCurveInfo,
     MmdRuntimeFfiGenericCurveKey,
@@ -849,6 +858,140 @@ class MmdRuntimeClip:
             return int(first.value), int(last.value)
         except Exception as e:
             logger.error(f"MmdRuntimeClip.frame_range failed: {e}", exc_info=True)
+            return None
+
+    @staticmethod
+    def _bone_track_curve_dto(
+        native,
+        *,
+        first_key: bool,
+    ) -> Optional[MmdRuntimeBoneTrackCurve]:
+        """Validate and detach one semantic incoming-segment curve."""
+        kind = int(native.kind)
+        controls = tuple(float(value) for value in (native.x1, native.y1, native.x2, native.y2))
+        if not all(math.isfinite(value) for value in controls):
+            return None
+        if first_key:
+            if kind != MMD_RUNTIME_BONE_TRACK_CURVE_NONE or any(value != 0.0 for value in controls):
+                return None
+        elif kind != MMD_RUNTIME_BONE_TRACK_CURVE_CUBIC_BEZIER:
+            return None
+        if kind == MMD_RUNTIME_BONE_TRACK_CURVE_CUBIC_BEZIER and not all(
+            0.0 <= value <= 1.0 for value in controls
+        ):
+            return None
+        return MmdRuntimeBoneTrackCurve(kind, *controls)
+
+    @classmethod
+    def _bone_track_key_dto(
+        cls,
+        native: MmdRuntimeFfiBoneTrackKey,
+        *,
+        descriptor: MmdRuntimeBoneTrackDescriptor,
+        key_index: int,
+    ) -> Optional[MmdRuntimeBoneTrackKey]:
+        """Validate one copied key and detach it from caller-owned storage."""
+        if int(native.bone_index) != descriptor.bone_index:
+            return None
+        position = tuple(float(value) for value in native.position_xyz)
+        rotation = tuple(float(value) for value in native.rotation_xyzw)
+        if not all(math.isfinite(value) for value in position + rotation):
+            return None
+        norm_squared = sum(value * value for value in rotation)
+        if not 0.9999 <= norm_squared <= 1.0001:
+            return None
+        curves = tuple(
+            cls._bone_track_curve_dto(curve, first_key=key_index == 0)
+            for curve in (
+                native.translation_x,
+                native.translation_y,
+                native.translation_z,
+                native.rotation,
+            )
+        )
+        if any(curve is None for curve in curves):
+            return None
+        return MmdRuntimeBoneTrackKey(
+            int(native.bone_index),
+            int(native.frame),
+            position,
+            rotation,
+            curves[0],
+            curves[1],
+            curves[2],
+            curves[3],
+        )
+
+    def bone_tracks(self) -> Optional[Tuple[MmdRuntimeBoneTrack, ...]]:
+        """Return validated compiled authored keys, or ``None`` on any ABI mismatch.
+
+        The returned values own no native pointers and remain valid after
+        :meth:`free`. Missing capability or symbols fail closed; raw VMD keys
+        are never substituted here.
+        """
+        if not self._handle or self._lib is None:
+            return None
+        required_symbols = (
+            "mmd_runtime_clip_bone_track_count",
+            "mmd_runtime_clip_bone_track_descriptor",
+            "mmd_runtime_clip_bone_track_key_count",
+            "mmd_runtime_clip_copy_bone_track_keys",
+        )
+        flags_func = getattr(self._lib, "mmd_runtime_feature_flags", None)
+        if flags_func is None or any(getattr(self._lib, name, None) is None for name in required_symbols):
+            return None
+        try:
+            if not int(flags_func()) & MMD_RUNTIME_FEATURE_CLIP_BONE_TRACK_INTROSPECTION:
+                return None
+            track_count = int(self._lib.mmd_runtime_clip_bone_track_count(self._handle))
+            tracks = []
+            for track_index in range(track_count):
+                native_descriptor = MmdRuntimeFfiBoneTrackDescriptor()
+                status = int(
+                    self._lib.mmd_runtime_clip_bone_track_descriptor(
+                        self._handle,
+                        track_index,
+                        ctypes.byref(native_descriptor),
+                    )
+                )
+                if status != MMD_RUNTIME_STATUS_OK:
+                    return None
+                descriptor = MmdRuntimeBoneTrackDescriptor(
+                    int(native_descriptor.bone_index),
+                    int(native_descriptor.key_count),
+                )
+                key_count = int(
+                    self._lib.mmd_runtime_clip_bone_track_key_count(self._handle, track_index)
+                )
+                if key_count != descriptor.key_count:
+                    return None
+                native_keys = (MmdRuntimeFfiBoneTrackKey * key_count)()
+                written = c_size_t(0)
+                status = int(
+                    self._lib.mmd_runtime_clip_copy_bone_track_keys(
+                        self._handle,
+                        track_index,
+                        native_keys if key_count else None,
+                        key_count,
+                        ctypes.byref(written),
+                    )
+                )
+                if status != MMD_RUNTIME_STATUS_OK or int(written.value) != key_count:
+                    return None
+                keys = tuple(
+                    self._bone_track_key_dto(
+                        native_key,
+                        descriptor=descriptor,
+                        key_index=key_index,
+                    )
+                    for key_index, native_key in enumerate(native_keys)
+                )
+                if any(key is None for key in keys):
+                    return None
+                tracks.append(MmdRuntimeBoneTrack(descriptor, keys))
+            return tuple(tracks)
+        except Exception as exc:
+            logger.error("MmdRuntimeClip.bone_tracks failed: %s", exc, exc_info=True)
             return None
 
     def __del__(self):

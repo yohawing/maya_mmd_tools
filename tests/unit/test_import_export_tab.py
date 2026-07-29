@@ -421,6 +421,25 @@ class TestImportExportTabReducedBakeVisibility(unittest.TestCase):
         self.assertTrue(tab.reduce_quality_slider.enabled)
         self.assertTrue(tab.reduce_quality_row.visible)
 
+    def test_rotation_time_curve_requires_direct_control_rig_import(self):
+        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
+        tab.create_mmd_control_rig_check = _FakeWidget()
+        tab.bake_mode_check = _FakeWidget()
+        tab.vmd_rotation_time_curve_check = _FakeWidget()
+
+        tab.create_mmd_control_rig_check.isChecked = lambda: False
+        tab.bake_mode_check.isChecked = lambda: False
+        import_export_tab.ImportExportTab._sync_vmd_rotation_time_curve_enabled(tab)
+        self.assertFalse(tab.vmd_rotation_time_curve_check.enabled)
+
+        tab.create_mmd_control_rig_check.isChecked = lambda: True
+        import_export_tab.ImportExportTab._sync_vmd_rotation_time_curve_enabled(tab)
+        self.assertTrue(tab.vmd_rotation_time_curve_check.enabled)
+
+        tab.bake_mode_check.isChecked = lambda: True
+        import_export_tab.ImportExportTab._sync_vmd_rotation_time_curve_enabled(tab)
+        self.assertFalse(tab.vmd_rotation_time_curve_check.enabled)
+
 
 class TestImportExportTabExportVisibility(unittest.TestCase):
     def _make_tab(self, development_mode=True):
@@ -515,8 +534,8 @@ class TestImportExportViewState(unittest.TestCase):
         self.assertEqual(store.values["b"], "[]")
 
 
-class TestPhysicsVisibilitySourceInspection(unittest.TestCase):
-    """Verify that the physics import UI is available in normal mode."""
+class TestNormalModeVisibilitySourceInspection(unittest.TestCase):
+    """Verify supported model import controls remain available in normal mode."""
 
     def setUp(self):
         self.source = Path(import_export_tab.__file__).read_text(encoding="utf-8")
@@ -535,6 +554,12 @@ class TestPhysicsVisibilitySourceInspection(unittest.TestCase):
             if in_dev_only and "]" in line:
                 in_dev_only = False
         self.assertFalse(found, "self.physics_group must remain visible in normal mode")
+
+    def test_separate_meshes_is_not_in_dev_only_widgets(self):
+        dev_only_start = self.source.index("self._dev_only_widgets = [")
+        dev_only_end = self.source.index("]", dev_only_start)
+
+        self.assertNotIn("self.separate_meshes_check", self.source[dev_only_start:dev_only_end])
 
 
 class TestControlRigSettingSourceInspection(unittest.TestCase):
@@ -557,6 +582,26 @@ class TestControlRigSettingSourceInspection(unittest.TestCase):
         animation_source = self.source[animation_start:]
 
         self.assertNotIn("self.create_mmd_control_rig_check = QCheckBox", animation_source)
+
+    def test_rotation_time_curve_checkbox_is_declared_in_animation_settings(self):
+        model_start = self.source.index("# Model Settings Group")
+        animation_settings_start = self.source.index("# Animation Import Settings")
+        animation_import_start = self.source.index("# Animation Import Group (VMD)")
+
+        model_source = self.source[model_start:animation_settings_start]
+        animation_settings_source = self.source[
+            animation_settings_start:animation_import_start
+        ]
+
+        self.assertNotIn("self.vmd_rotation_time_curve_check", model_source)
+        self.assertIn(
+            "self.vmd_rotation_time_curve_check = self._bind_checkbox(",
+            animation_settings_source,
+        )
+        self.assertIn(
+            "setting_keys.IMPORT_ANIMATION_VMD_ROTATION_TIME_CURVE",
+            animation_settings_source,
+        )
 
 
 if __name__ == "__main__":

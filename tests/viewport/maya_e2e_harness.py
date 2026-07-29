@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -11,6 +12,51 @@ from typing import Any, Iterable
 from tests.common import maya_commandport
 
 LOG_POLL_INTERVAL = 0.5
+
+
+def _seed_isolated_maya_profile(
+    maya_app_dir: Path,
+    version: str,
+    project_root: Path,
+) -> None:
+    """Allow only this checkout's Python plug-ins in the isolated Maya profile.
+
+    Maya reads the secure plug-in allowlist from ``userPrefs.mel`` during
+    startup.  The E2E harness intentionally removes its profile for every
+    run, so seed the narrow repository path before launching Maya instead of
+    relying on a trust decision persisted in the user's normal preferences.
+    """
+    plugin_dir = (project_root / "mmd_tools").resolve().as_posix()
+    # MEL strings use backslash escapes; paths are normalized to forward
+    # slashes first so only quotes/control characters need escaping here.
+    escaped_plugin_dir = (
+        plugin_dir.replace('"', '\\"')
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+    )
+    prefs = (
+        f'//Maya Preference {version} (Release 1)\n'
+        '//\n'
+        '//\n'
+        '\n'
+        'optionVar -version 3;\n'
+        '\n'
+        '// Security\n'
+        'optionVar -cat "Security"\n'
+        ' -sa "SafeModeAllowedlistPaths"\n'
+        f' -sva "SafeModeAllowedlistPaths" "{escaped_plugin_dir}"\n'
+        ';\n'
+    )
+    # English Maya uses the base profile. Japanese and Simplified Chinese
+    # builds use locale-qualified profile roots under the same version.
+    for locale_name in (None, "ja_JP", "zh_CN"):
+        version_root = maya_app_dir / version
+        if locale_name is not None:
+            version_root /= locale_name
+        prefs_path = version_root / "prefs" / "userPrefs.mel"
+        prefs_path.parent.mkdir(parents=True, exist_ok=True)
+        prefs_path.write_text(prefs, encoding="utf-8")
 
 
 def monitor_result(
@@ -75,19 +121,28 @@ def run_maya_e2e(
     log_ready: Any = None,
     warn_detached: bool = False,
 ) -> dict[str, Any]:
-    """Launch Maya, run one commandPort probe, and close the owned process."""
+    """Launch Maya with isolated preferences, run a probe, and close it."""
     maya_commandport.remove_stale_logs(stale_paths)
     proc = None
     maya_owned = False
+    profile_owned = False
+    process_exited = False
+    maya_app_dir = (out_dir / f"maya-app-{version}-{port}").resolve()
     try:
         if maya_commandport.is_port_open(port):
             raise RuntimeError(port_error or f"commandPort :{port} is already open")
+        shutil.rmtree(maya_app_dir, ignore_errors=True)
+        profile_owned = True
+        _seed_isolated_maya_profile(maya_app_dir, version, project_root)
         proc = maya_commandport.launch_maya(
             version=version,
             project_root=project_root,
             output_dir=out_dir,
             port=port,
             launch_mode="explorer" if sys.platform == "win32" else "direct",
+            # Never allow an automated Maya shutdown to rewrite the user's
+            # pluginPrefs.mel or other Documents/maya preferences.
+            env_overrides={"MAYA_APP_DIR": str(maya_app_dir)},
         )
         maya_owned = True
         maya_commandport.wait_for_port(port, timeout=launch_timeout, process=proc)
@@ -113,6 +168,17 @@ def run_maya_e2e(
                 maya_commandport.quit_maya(port)
                 time.sleep(quit_delay)
             finally:
-                if terminate_process and proc is not None and proc.poll() is None:
-                    proc.terminate()
-                maya_commandport.close_process_logs(proc)
+                try:
+                    if proc is None:
+                        maya_commandport.wait_for_port_close(port, timeout=30)
+                        process_exited = True
+                    elif proc.poll() is not None:
+                        process_exited = True
+                    elif terminate_process:
+                        proc.terminate()
+                        proc.wait(timeout=30)
+                        process_exited = True
+                finally:
+                    maya_commandport.close_process_logs(proc)
+        if profile_owned and (not maya_owned or process_exited):
+            shutil.rmtree(maya_app_dir, ignore_errors=True)

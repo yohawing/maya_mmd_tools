@@ -23,6 +23,28 @@ logger = get_logger("mmd_tools.io.mmd_importer")
 _OPTION_TO_SETTINGS_KEY = settings_keys.MODEL_OPTION_TO_SETTINGS_KEY
 
 
+def _schedule_uv_editor_refresh() -> None:
+    """Refresh all open UV Editors once after a successful model import."""
+    try:
+        from maya import cmds, utils
+
+        def _refresh_open_uv_editors() -> None:
+            try:
+                editors = cmds.getPanel(type="polyTexturePlacementPanel") or []
+                for editor in editors:
+                    try:
+                        cmds.textureWindow(editor, edit=True, forceRebake=True)
+                        cmds.textureWindow(editor, edit=True, refresh=True)
+                    except Exception:
+                        logger.debug("Failed to refresh UV Editor %s", editor, exc_info=True)
+            except Exception:
+                logger.debug("Failed to enumerate open UV Editors", exc_info=True)
+
+        utils.executeDeferred(_refresh_open_uv_editors)
+    except Exception:
+        logger.debug("Failed to schedule UV Editor refresh", exc_info=True)
+
+
 def _post_model_import_control_rig(root: Optional[Any], options: Dict[str, Any]) -> Optional[Any]:
     """Build and bind the opt-in MMD Control Rig after model import.
 
@@ -32,7 +54,11 @@ def _post_model_import_control_rig(root: Optional[Any], options: Dict[str, Any])
     failure partial: the imported model remains usable and the action layer
     can surface the structured profile warning.
     """
-    if not root or not options.get("create_mmd_control_rig", False):
+    if not root:
+        return root
+
+    _schedule_uv_editor_refresh()
+    if not options.get("create_mmd_control_rig", False):
         return root
 
     profile = options.get("profile")

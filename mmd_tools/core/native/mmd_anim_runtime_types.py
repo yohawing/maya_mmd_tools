@@ -23,12 +23,16 @@ MMD_RUNTIME_FEATURE_PHYSICS_BULLET_NATIVE = 1 << 1
 MMD_RUNTIME_FEATURE_MODEL_DESCRIPTOR = 1 << 2
 MMD_RUNTIME_FEATURE_HOST_POSE_NATIVE_MORPHS = 1 << 3
 MMD_RUNTIME_FEATURE_REDUCED_POSE_GENERIC_CURVES = 1 << 4
+MMD_RUNTIME_FEATURE_CLIP_BONE_TRACK_INTROSPECTION = 1 << 5
 MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS = (
     MMD_RUNTIME_FEATURE_SPLIT_PHYSICS_EVALUATION
     | MMD_RUNTIME_FEATURE_PHYSICS_BULLET_NATIVE
 )
 
 MMD_RUNTIME_REDUCED_POSE_GENERIC_CURVE_ABI_VERSION_V1 = 1
+MMD_RUNTIME_CLIP_BONE_TRACK_INTROSPECTION_ABI_VERSION_V1 = 1
+MMD_RUNTIME_BONE_TRACK_CURVE_NONE = 0
+MMD_RUNTIME_BONE_TRACK_CURVE_CUBIC_BEZIER = 1
 
 MMD_RUNTIME_REDUCTION_TARGET_LINEAR_SLERP = 0
 MMD_RUNTIME_REDUCTION_TARGET_VMD_BEZIER = 1
@@ -69,6 +73,79 @@ class MmdRuntimeFfiByteBuffer(Structure):
         ("data", POINTER(c_uint8)),
         ("len", c_size_t),
     ]
+
+
+class MmdRuntimeFfiBoneTrackCurve(Structure):
+    """Semantic incoming-segment curve matching the clip introspection ABI."""
+
+    _fields_ = [
+        ("kind", c_uint32),
+        ("x1", c_float),
+        ("y1", c_float),
+        ("x2", c_float),
+        ("y2", c_float),
+    ]
+
+
+class MmdRuntimeFfiBoneTrackDescriptor(Structure):
+    """One compiled authored bone-track descriptor."""
+
+    _fields_ = [
+        ("bone_index", c_uint32),
+        ("key_count", c_size_t),
+    ]
+
+
+class MmdRuntimeFfiBoneTrackKey(Structure):
+    """One compiled authored local key and its incoming semantic curves."""
+
+    _fields_ = [
+        ("bone_index", c_uint32),
+        ("frame", c_uint32),
+        ("position_xyz", c_float * 3),
+        ("rotation_xyzw", c_float * 4),
+        ("translation_x", MmdRuntimeFfiBoneTrackCurve),
+        ("translation_y", MmdRuntimeFfiBoneTrackCurve),
+        ("translation_z", MmdRuntimeFfiBoneTrackCurve),
+        ("rotation", MmdRuntimeFfiBoneTrackCurve),
+    ]
+
+
+class MmdRuntimeBoneTrackCurve(NamedTuple):
+    """Immutable semantic curve copied from native memory."""
+
+    kind: int
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+
+
+class MmdRuntimeBoneTrackDescriptor(NamedTuple):
+    """Immutable compiled bone-track identity and key count."""
+
+    bone_index: int
+    key_count: int
+
+
+class MmdRuntimeBoneTrackKey(NamedTuple):
+    """Immutable authored local key detached from the native clip handle."""
+
+    bone_index: int
+    frame: int
+    position_xyz: Tuple[float, float, float]
+    rotation_xyzw: Tuple[float, float, float, float]
+    translation_x: MmdRuntimeBoneTrackCurve
+    translation_y: MmdRuntimeBoneTrackCurve
+    translation_z: MmdRuntimeBoneTrackCurve
+    rotation: MmdRuntimeBoneTrackCurve
+
+
+class MmdRuntimeBoneTrack(NamedTuple):
+    """Immutable descriptor and copied authored local keys."""
+
+    descriptor: MmdRuntimeBoneTrackDescriptor
+    keys: Tuple[MmdRuntimeBoneTrackKey, ...]
 
 
 class MmdRuntimeBatchEvaluation(NamedTuple):

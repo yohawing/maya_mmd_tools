@@ -13,7 +13,10 @@ from typing import Any, List
 
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.native.mmd_anim_runtime_types import (
+    MMD_RUNTIME_FEATURE_CLIP_BONE_TRACK_INTROSPECTION,
     MmdRuntimeFfiAppendConfig,
+    MmdRuntimeFfiBoneTrackDescriptor,
+    MmdRuntimeFfiBoneTrackKey,
     MmdRuntimeFfiByteBuffer,
     MmdRuntimeFfiGenericCurveDescriptor,
     MmdRuntimeFfiGenericCurveInfo,
@@ -85,6 +88,7 @@ def setup_function_signatures(lib: CDLL) -> None:
 
     lib.mmd_runtime_clip_create_from_vmd_bytes_for_model.restype = c_void_p
     lib.mmd_runtime_clip_create_from_vmd_bytes_for_model.argtypes = [c_void_p, POINTER(c_uint8), c_size_t]
+    setup_clip_bone_track_signatures(lib)
     set_sig(lib, "mmd_runtime_clip_frame_range", c_bool, [c_void_p, POINTER(c_uint32), POINTER(c_uint32)])
     set_sig(lib, "mmd_runtime_vmd_camera_track_create_from_vmd_bytes", c_void_p, [POINTER(c_uint8), c_size_t])
     set_sig(lib, "mmd_runtime_vmd_camera_track_sample", c_bool, [c_void_p, c_float, POINTER(c_float), c_size_t])
@@ -203,6 +207,38 @@ def setup_function_signatures(lib: CDLL) -> None:
     setup_rig_primitive_signatures(lib)
     setup_physics_signatures(lib)
     setup_reduction_signatures(lib)
+
+
+def setup_clip_bone_track_signatures(lib: CDLL) -> None:
+    """Bind clip-key introspection only when feature bit 5 is advertised."""
+    flags_func = getattr(lib, "mmd_runtime_feature_flags", None)
+    if flags_func is None:
+        return
+    try:
+        if not int(flags_func()) & MMD_RUNTIME_FEATURE_CLIP_BONE_TRACK_INTROSPECTION:
+            return
+    except Exception:
+        return
+    set_sig(lib, "mmd_runtime_clip_bone_track_count", c_size_t, [c_void_p])
+    set_sig(
+        lib,
+        "mmd_runtime_clip_bone_track_descriptor",
+        c_uint32,
+        [c_void_p, c_size_t, POINTER(MmdRuntimeFfiBoneTrackDescriptor)],
+    )
+    set_sig(lib, "mmd_runtime_clip_bone_track_key_count", c_size_t, [c_void_p, c_size_t])
+    set_sig(
+        lib,
+        "mmd_runtime_clip_copy_bone_track_keys",
+        c_uint32,
+        [
+            c_void_p,
+            c_size_t,
+            POINTER(MmdRuntimeFfiBoneTrackKey),
+            c_size_t,
+            POINTER(c_size_t),
+        ],
+    )
 
 
 def setup_reduction_signatures(lib: CDLL) -> None:

@@ -19,7 +19,6 @@ _SETTINGS_EXPORT_CATEGORIES = ("import", "export", "logging", "ui")
 # In dev mode the saved setting is used instead.
 _NORMAL_MODE_IMPORT_OVERRIDES = {
     "import_models": True,
-    "separate_meshes_by_material": False,
     "disable_backface_culling": True,
     "uv_set_name": "map#",
     "texture_search_path": "",
@@ -188,6 +187,14 @@ class SettingsService:
         """Build VMD import options from persisted settings."""
         is_dev = self.is_development_mode()
         bake_mode = bool(self.get(setting_keys.IMPORT_RIG_BAKE_MODE, False))
+        create_control_rig_setting = bool(
+            self.get(setting_keys.IMPORT_MODEL_CREATE_MMD_CONTROL_RIG, False)
+        )
+        # The Control Rig checkbox is also a PMX model-import preference, so it
+        # may legitimately remain enabled while Bake Motion is selected for a
+        # VMD import.  Bake Motion owns the VMD route in that case; the explicit
+        # converter API still rejects callers that directly request both modes.
+        create_control_rig = create_control_rig_setting and not bake_mode
         tolerances = self.resolve_reduce_bake_tolerances()
         return {
             "start_frame": self.get(setting_keys.IMPORT_ANIMATION_START_FRAME, 1),
@@ -198,7 +205,12 @@ class SettingsService:
             "import_light_animation": self.get(setting_keys.IMPORT_ANIMATION_IMPORT_LIGHT_ANIMATION, True),
             "motion_scale": self.get(setting_keys.IMPORT_ANIMATION_MOTION_SCALE, 1.0),
             "clear_existing_motion": self.get(setting_keys.IMPORT_ANIMATION_CLEAR_EXISTING_MOTION, False),
-            "create_mmd_control_rig": self.get(setting_keys.IMPORT_MODEL_CREATE_MMD_CONTROL_RIG, False),
+            "create_mmd_control_rig": create_control_rig,
+            "use_vmd_rotation_time_curve": create_control_rig
+            and self.get(
+                setting_keys.IMPORT_ANIMATION_VMD_ROTATION_TIME_CURVE,
+                False,
+            ),
             "resample_curves": self.get(setting_keys.IMPORT_ANIMATION_RESAMPLE_CURVES, False) if is_dev else False,
             "bake_mode": bake_mode,
             "use_native_physics_bake": self.get(setting_keys.IMPORT_ANIMATION_USE_NATIVE_PHYSICS_BAKE, False),

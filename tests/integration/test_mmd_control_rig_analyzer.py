@@ -463,6 +463,42 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         result = build_mmd_control_rig(root)
 
         self.assertTrue(result.created)
+        metadata = read_mmd_control_rig_metadata(root)
+        finger_roots = (
+            "left_thumb_0",
+            "left_index_1",
+            "left_middle_1",
+            "left_ring_1",
+            "left_pinky_1",
+            "right_thumb_0",
+            "right_index_1",
+            "right_middle_1",
+            "right_ring_1",
+            "right_pinky_1",
+        )
+        self.assertEqual(len(metadata.get("helperNodes", [])), len(finger_roots))
+        for role in finger_roots:
+            zero = result.zero_groups[role]
+            self.assertEqual(
+                cmds.ls(cmds.listRelatives(zero, parent=True), long=True),
+                [result.control_group],
+            )
+            constraints = cmds.listConnections(
+                zero,
+                source=True,
+                destination=False,
+                type="parentConstraint",
+            ) or []
+            self.assertEqual(len(set(constraints)), 1, role)
+            targets = cmds.parentConstraint(
+                constraints[0],
+                query=True,
+                targetList=True,
+            ) or []
+            joint_uuid = metadata["bindings"][role]["jointUuid"]
+            joint = (cmds.ls(joint_uuid, long=True) or [None])[0]
+            wrist = (cmds.listRelatives(joint, parent=True, fullPath=True) or [None])[0]
+            self.assertEqual(cmds.ls(targets, long=True), [wrist], role)
         self.assertTrue(
             {
                 "master",
@@ -529,10 +565,16 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         reopened = build_mmd_control_rig(reopened_root)
         self.assertFalse(reopened.created)
         self.assertEqual(set(reopened.controls), set(result.controls))
-        self.assertTrue(read_mmd_control_rig_metadata(reopened_root))
+        reopened_metadata = read_mmd_control_rig_metadata(reopened_root)
+        self.assertEqual(
+            len(reopened_metadata.get("helperNodes", [])),
+            len(finger_roots),
+        )
+        helper_uuids = tuple(reopened_metadata["helperNodes"])
 
         self.assertTrue(remove_mmd_control_rig(reopened_root))
         self.assertFalse(cmds.objExists(reopened.control_group))
+        self.assertFalse(any(cmds.ls(uuid) for uuid in helper_uuids))
         self.assertFalse(
             cmds.attributeQuery(
                 ATTR_MMD_CONTROL_RIG_JSON,

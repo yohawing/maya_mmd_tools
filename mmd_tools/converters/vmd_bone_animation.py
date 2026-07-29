@@ -1,5 +1,6 @@
 """Bone-specific helpers for VMD animation conversion."""
 
+from collections.abc import Mapping
 from typing import Dict, List, Optional
 
 import maya.cmds as cmds
@@ -32,24 +33,121 @@ def _sparse_rotation_samples(
 def _apply_quaternion_interpolation(
     context: VmdBoneAnimationContext,
     plugs: List[str],
+    *,
+    animation_layer: Optional[str] = None,
 ) -> None:
     """Apply Maya quaternion slerp to a keyed three-angle compound."""
     try:
+        from .vmd_rotation_time_curve import _resolve_quaternion_curves
+
         cmds.scriptEditorInfo(suppressWarnings=True)
-        cmds.rotationInterpolation(*plugs, convert="quaternionSlerp")
+        curves = _resolve_quaternion_curves(
+            plugs,
+            animation_layer=animation_layer,
+            require_quaternion=False,
+        )
+        cmds.rotationInterpolation(*curves, convert="quaternionSlerp")
     except Exception as exc:
         context.logger.warning(f"Failed to apply quaternion interpolation to {plugs[0]}: {exc}")
     finally:
         cmds.scriptEditorInfo(suppressWarnings=False)
 
 
+def _has_registered_rotation_curve(frames: List) -> bool:
+    """Return whether frames carry compiled semantic rotation controls."""
+    for frame in frames:
+        interpolation = getattr(frame, "semantic_interpolation", None)
+        if isinstance(frame, dict):
+            interpolation = frame.get("semantic_interpolation", interpolation)
+        if isinstance(interpolation, Mapping) and "rotation" in interpolation:
+            return True
+    return False
+
+
+def _configure_sparse_rotation_track(
+    context: VmdBoneAnimationContext,
+    joint: str,
+    frames: List,
+    vmd_bone_name: str,
+    key_route: dict,
+    *,
+    skip_rotate: bool,
+    animation_layer: Optional[str],
+) -> Optional[List[str]]:
+    """Apply quaternion interpolation and semantic time warping when safe."""
+    rotation_attrs = ("rotateX", "rotateY", "rotateZ")
+    attr_targets = key_route.get("attr_targets", {})
+    rotation_targets = [
+        attr_targets.get(attr, (joint, attr)) for attr in rotation_attrs
+    ]
+    rotate_redirected = any(
+        target_node != joint for target_node, _ in rotation_targets
+    )
+    registered_rotation_curve = _has_registered_rotation_curve(frames)
+    direct_rotation_route = (
+        not skip_rotate
+        and not rotate_redirected
+        and not key_route.get("ik_solver_rotate")
+    )
+    control_route_safe = (
+        bool(key_route.get("control_owned"))
+        and bool(key_route.get("quaternion_interpolation_safe"))
+    )
+    quaternion_requested = (
+        registered_rotation_curve and (direct_rotation_route or control_route_safe)
+    ) or (
+        context.use_quaternion_interpolation and control_route_safe
+    )
+    if not quaternion_requested or skip_rotate:
+        return None
+
+    quaternion_plugs = None
+    if not rotate_redirected:
+        quaternion_plugs = [f"{joint}.{attr}" for attr in rotation_attrs]
+    elif key_route.get("control_owned"):
+        target_nodes = {target_node for target_node, _ in rotation_targets}
+        target_attrs = tuple(target_attr for _, target_attr in rotation_targets)
+        if len(target_nodes) == 1 and target_attrs == rotation_attrs:
+            target_node = next(iter(target_nodes))
+            quaternion_plugs = [
+                f"{target_node}.{attr}" for attr in rotation_attrs
+            ]
+    if not quaternion_plugs:
+        return None
+
+    _apply_quaternion_interpolation(
+        context,
+        quaternion_plugs,
+        animation_layer=animation_layer,
+    )
+    if (
+        context.use_vmd_rotation_time_curve or registered_rotation_curve
+    ) and len(frames) >= 2:
+        from .vmd_rotation_time_curve import apply_vmd_rotation_time_curve
+
+        context.rotation_time_curve_records.append(
+            apply_vmd_rotation_time_curve(
+                frames,
+                quaternion_plugs,
+                vmd_bone_name,
+                time_converter=context.vmd_frame_to_maya_time,
+                animation_layer=animation_layer,
+            )
+        )
+    return quaternion_plugs
+
+
 def convert_bone_animation(context: VmdBoneAnimationContext, bone_frames: List) -> bool:
     """Convert VMD bone frames using explicit bone keying context."""
-    bone_frame_map: Dict[str, List] = {}
+    bone_frame_map: Dict[object, List] = {}
 
     with vmd_profile.scope("bone_frame_grouping", count=len(bone_frames)):
         for frame in bone_frames:
-            if hasattr(frame, "bone_name"):
+            if hasattr(frame, "bone_index"):
+                bone_name = ("index", int(frame.bone_index))
+            elif isinstance(frame, dict) and "bone_index" in frame:
+                bone_name = ("index", int(frame["bone_index"]))
+            elif hasattr(frame, "bone_name"):
                 bone_name = frame.bone_name
             else:
                 bone_name = frame.get("bone_name", "")
@@ -63,9 +161,20 @@ def convert_bone_animation(context: VmdBoneAnimationContext, bone_frames: List) 
     animated_joints = []
     key_routes = context.build_legacy_bone_key_routes()
 
-    for vmd_bone_name, frames in bone_frame_map.items():
-        if vmd_bone_name in context.bone_name_mapping:
-            maya_joint = context.bone_name_mapping[vmd_bone_name]
+    for bone_identity, frames in bone_frame_map.items():
+        indexed_identity = isinstance(bone_identity, tuple) and bone_identity[0] == "index"
+        first_frame = frames[0]
+        vmd_bone_name = str(
+            first_frame.bone_name
+            if hasattr(first_frame, "bone_name")
+            else first_frame.get("bone_name", "")
+        )
+        maya_joint = (
+            context.bone_index_to_joint.get(int(bone_identity[1]))
+            if indexed_identity
+            else context.bone_name_mapping.get(vmd_bone_name)
+        )
+        if maya_joint:
 
             try:
                 with vmd_profile.scope("bone_frame_sort", count=len(frames)):
@@ -190,15 +299,23 @@ def set_bone_keyframes(
             channel_samples = context.samples_as_anim_layer_deltas(joint, channel_samples)
 
         if context.batch_key_scalar_channels(joint, channel_samples, animation_layer=animation_layer):
-            if context.use_quaternion_interpolation:
-                _apply_quaternion_interpolation(
-                    context,
-                    [f"{joint}.rotateX", f"{joint}.rotateY", f"{joint}.rotateZ"],
-                )
-            tangent_attrs = attrs
-            if context.use_quaternion_interpolation:
-                tangent_attrs = [a for a in attrs if not a.startswith("rotate")]
-            context.apply_vmd_bezier_tangents(joint, frames, tangent_attrs, channel_interp_map)
+            quaternion_plugs = _configure_sparse_rotation_track(
+                context,
+                joint,
+                frames,
+                vmd_bone_name,
+                key_route,
+                skip_rotate=skip_rotate,
+                animation_layer=animation_layer,
+            )
+            tangent_attrs = [
+                attr
+                for attr in attrs
+                if not (quaternion_plugs and attr.startswith("rotate"))
+            ]
+            context.apply_vmd_bezier_tangents(
+                joint, frames, tangent_attrs, channel_interp_map
+            )
             return
 
         context.logger.debug(f"legacy bone batch keying produced no keys for {joint}; using setKeyframe fallback")
@@ -296,20 +413,17 @@ def set_bone_keyframes(
                     with vmd_profile.scope("fallback_setKeyframe"):
                         cmds.setKeyframe(f"{solver_node}.{attr}", time=maya_time, value=value)
 
-    rotate_redirected = any(
-        attr_targets.get(attr, (joint, attr))[0] != joint
-        for attr in ("rotateX", "rotateY", "rotateZ")
+    quaternion_plugs = _configure_sparse_rotation_track(
+        context,
+        joint,
+        frames,
+        vmd_bone_name,
+        key_route,
+        skip_rotate=skip_rotate,
+        animation_layer=animation_layer,
     )
-    if context.use_quaternion_interpolation and not skip_rotate:
-        if not rotate_redirected:
-            _apply_quaternion_interpolation(
-                context,
-                [f"{joint}.rotateX", f"{joint}.rotateY", f"{joint}.rotateZ"],
-            )
 
-    skip_rotate_tangent = skip_rotate or (
-        context.use_quaternion_interpolation and not rotate_redirected
-    )
+    skip_rotate_tangent = skip_rotate or bool(quaternion_plugs)
     tangent_targets = {
         attr: attr_targets.get(attr, (joint, attr))
         for attr in attrs

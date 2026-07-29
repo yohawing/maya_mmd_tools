@@ -18,6 +18,7 @@ from mmd_tools.core.collider_authoring import (
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BODIES_GROUP
 from ...core.logger import get_logger
+from ...core.physics_preroll import PhysicsPrerollError, run_physics_preroll
 from ...core.visibility_state import get_visibility_category, set_visibility_category, sync_visibility_connections
 from ..qt_compat import Qt
 from ..translations import UITranslator
@@ -365,7 +366,20 @@ class PhysicsPresenter:
         try:
             repairs = self._solvers_requiring_world_settings_version_repair(world)
             self._repair_world_settings_version_connections(world, repairs)
-            cmds.setAttr(f"{world}.enable", bool(enabled))
+            if enabled:
+                run_physics_preroll(world, solvers)
+            else:
+                cmds.setAttr(f"{world}.enable", False)
+        except PhysicsPrerollError as exc:
+            logger.warning(
+                "event=mmd_physics_preroll_failed reasonCode=%s detail=%s",
+                exc.reason_code,
+                exc,
+            )
+            try:
+                cmds.warning(f"MMD Physics pre-roll failed ({exc.reason_code})")
+            except Exception:
+                pass
         finally:
             cmds.undoInfo(closeChunk=True)
         self._sync_physics_enable_checkbox()
