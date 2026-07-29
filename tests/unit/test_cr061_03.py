@@ -11,9 +11,11 @@ from mmd_tools.core import maya_animation_utils, mmd_control_rig_motion
 from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.mmd_control_rig_builder import (
     CONTROL_RIG_ATTACHED,
+    CONTROL_RIG_CONTROL_OWNED,
     CONTROL_RIG_METADATA_SCHEMA,
     CONTROL_RIG_METADATA_VERSION,
     CONTROL_RIG_MMD_OWNED,
+    MmdControlRigBuildResult,
     MmdControlRigBuildError,
 )
 from mmd_tools.converters.vmd_converter import VmdConverter
@@ -1131,6 +1133,15 @@ class TestControlRigMotionClear(MayaTestBase):
         cmds.setKeyframe(control, attribute="rotateX", time=3, value=25.0)
         control_curve = (cmds.listConnections(f"{control}.rotateX", source=True, destination=False) or [None])[0]
         control_curve_uuid = (cmds.ls(control_curve, uuid=True) or [None])[0]
+        cmds.addAttr(control, longName="ikEnabled", attributeType="bool", keyable=True)
+        cmds.setKeyframe(control, attribute="ikEnabled", time=4, value=1.0)
+        ik_curve = (cmds.listConnections(f"{control}.ikEnabled", source=True, destination=False) or [None])[0]
+        ik_curve_uuid = (cmds.ls(ik_curve, uuid=True) or [None])[0]
+        foreign_root = cmds.group(empty=True, name="cr061_foreign_clear_root")
+        foreign_control = cmds.createNode("transform", name="cr061_foreign_clear_ctrl")
+        cmds.parent(foreign_control, foreign_root)
+        cmds.addAttr(foreign_control, longName="ikEnabled", attributeType="bool", keyable=True)
+        cmds.setKeyframe(foreign_control, attribute="ikEnabled", time=4, value=1.0)
         converter = VmdConverter()
         converter.bone_name_mapping = {"センター": joint}
         context = VmdImportStateContext(
@@ -1148,6 +1159,9 @@ class TestControlRigMotionClear(MayaTestBase):
         ), patch(
             "mmd_tools.converters.vmd_import_state.control_rig_edit_routes_for_joints",
             return_value={joint: {"rotateX": (control, "rotateX")}},
+        ), patch(
+            "mmd_tools.converters.vmd_import_state.control_rig_edit_ik_enabled_plugs_for_model",
+            return_value=(f"{control}.ikEnabled",),
         ):
             clear_existing_motion(context, "missing_layer", target_model=root)
         self.assertIsNone(cmds.keyframe(control, attribute="rotateX", query=True, timeChange=True))
@@ -1156,6 +1170,64 @@ class TestControlRigMotionClear(MayaTestBase):
             cmds.listConnections(f"{control}.rotateX", source=True, destination=False),
             [control_curve],
         )
+        self.assertIsNone(cmds.keyframe(control, attribute="ikEnabled", query=True, timeChange=True))
+        self.assertEqual((cmds.ls(ik_curve, uuid=True) or [None])[0], ik_curve_uuid)
+        self.assertEqual(
+            cmds.listConnections(f"{control}.ikEnabled", source=True, destination=False),
+            [ik_curve],
+        )
+        self.assertEqual(
+            cmds.keyframe(foreign_control, attribute="ikEnabled", query=True, timeChange=True),
+            [4.0],
+        )
+        self.assertTrue(cmds.objExists(foreign_root))
+
+    def test_control_rig_ik_enabled_resolver_uses_validated_target_controls(self):
+        """IK clear ignores foreign/corrupt UUID rows outside inspected topology."""
+        target_control = cmds.createNode("transform", name="cr061_ik_route_target_ctrl")
+        cmds.addAttr(target_control, longName="ikEnabled", attributeType="bool", keyable=True)
+        foreign_control = cmds.createNode("transform", name="cr061_ik_route_foreign_ctrl")
+        cmds.addAttr(foreign_control, longName="ikEnabled", attributeType="bool", keyable=True)
+
+        target_control_uuid = cmds.ls(target_control, uuid=True)[0]
+        foreign_control_uuid = cmds.ls(foreign_control, uuid=True)[0]
+        target_control_long = cmds.ls(target_control, long=True)[0]
+        metadata = {
+            "owner": CONTROL_RIG_CONTROL_OWNED,
+            "controls": {"right_foot_ik": target_control_uuid},
+            "bindings": {
+                "right_foot_ik": {"inputKind": "ik_controller"},
+                "foreign_foot_ik": {
+                    "inputKind": "ik_controller",
+                    "controlUuid": foreign_control_uuid,
+                },
+                "corrupt_foot_ik": {
+                    "inputKind": "ik_controller",
+                    "controlUuid": "missing-control-uuid",
+                },
+            },
+        }
+
+        inspected = MmdControlRigBuildResult(
+            model_root="|cr061_target_model",
+            control_group="|cr061_target_model|Controls",
+            selection_set="cr061_target_modelControls_SET",
+            controls={"right_foot_ik": target_control_long},
+            zero_groups={},
+            state="EDIT",
+            owner=CONTROL_RIG_CONTROL_OWNED,
+            created=False,
+        )
+        with patch.object(mmd_control_rig_motion, "inspect_mmd_control_rig", return_value=inspected), patch.object(
+            mmd_control_rig_motion,
+            "read_mmd_control_rig_metadata",
+            return_value=metadata,
+        ):
+            routes = mmd_control_rig_motion.control_rig_edit_ik_enabled_plugs_for_model(
+                "|cr061_target_model",
+            )
+
+        self.assertEqual(routes, (f"{target_control_long}.ikEnabled",))
 
 
 if __name__ == "__main__":

@@ -15,7 +15,10 @@ from .vmd_ik_enabled_animation import ik_node_is_owned_by_root, root_owned_joint
 from .vmd_morph_mapping import morph_node_is_owned_by_root
 from .vmd_runtime_rig_helper import _ls_mmd_ccd_ik_nodes
 from ..core.mmd_control_rig_builder import CONTROL_RIG_CONTROL_OWNED, read_mmd_control_rig_metadata
-from ..core.mmd_control_rig_motion import control_rig_edit_routes_for_joints
+from ..core.mmd_control_rig_motion import (
+    control_rig_edit_ik_enabled_plugs_for_model,
+    control_rig_edit_routes_for_joints,
+)
 
 _ATTR_VMD_BIND_TRANSLATE = "mmd_vmd_bind_translate"
 _LOGGER = get_logger(__name__)
@@ -174,6 +177,7 @@ def clear_existing_motion(
     # operation; otherwise Clear Existing Motion would leave old controller
     # keys driving the freshly imported motion.
     control_routes = {}
+    control_metadata = None
     if target_model:
         control_metadata = read_mmd_control_rig_metadata(target_model)
         if control_metadata and control_metadata.get("owner") == CONTROL_RIG_CONTROL_OWNED:
@@ -187,6 +191,21 @@ def clear_existing_motion(
             cleared += cut_keyable_attrs(
                 node,
                 tuple(sorted(attrs)),
+                preserve_curve_nodes=True,
+            )
+
+    # IK visibility animation is authored on the Control Rig controller rather
+    # than on the legacy solver.  Resolve only UUID-backed controls owned by
+    # this model root, then clear their existing animCurve keys in place.
+    if control_metadata and control_metadata.get("owner") == CONTROL_RIG_CONTROL_OWNED:
+        for plug in control_rig_edit_ik_enabled_plugs_for_model(
+            target_model,
+        ):
+            control, attribute = plug.rsplit(".", 1)
+            owned_motion_nodes.add(control)
+            cleared += cut_keyable_attrs(
+                control,
+                (attribute,),
                 preserve_curve_nodes=True,
             )
 
@@ -212,6 +231,10 @@ def clear_existing_motion(
             )
         ):
             owned_motion_nodes.add(append_node)
+            # Append nodes are part of the authored rig graph.  Clear only
+            # the key payload in the existing animCurves so the append node,
+            # curve identity, and direct joint/root connections survive a
+            # root-scoped re-import.
             cleared += cut_keyable_attrs(
                 append_node,
                 (
@@ -222,6 +245,7 @@ def clear_existing_motion(
                     "baseRotateY",
                     "baseRotateZ",
                 ),
+                preserve_curve_nodes=True,
             )
 
     for ik_node in _ls_mmd_ccd_ik_nodes():
@@ -231,7 +255,15 @@ def clear_existing_motion(
             else node_matches_target_namespace(ik_node, target_namespace)
         ):
             owned_motion_nodes.add(ik_node)
-            cleared += cut_keyable_attrs(ik_node, ("enabled", "inputRotate"))
+            # ``cutKey`` on the custom compound array can tear down the
+            # solver node when it removes the last inputRotate curve.  Remove
+            # keys through the existing animCurve nodes instead so solver
+            # graph connections remain intact during a root-scoped clear.
+            cleared += cut_keyable_attrs(
+                ik_node,
+                ("enabled", "inputRotate"),
+                preserve_curve_nodes=True,
+            )
 
     morph_nodes = set()
     for mapping_entry in context.morph_name_mapping.values():
@@ -242,7 +274,16 @@ def clear_existing_motion(
                 else node_matches_target_namespace(morph_node, target_namespace)
             ):
                 owned_motion_nodes.add(morph_node)
-                cleared += cut_keyable_attrs(morph_node, (weight_attr,))
+                # Remove only the key payload.  Bone morph weights feed the
+                # accumulator contribution graph; using ``cutKey`` here can
+                # delete an otherwise still-connected animCurve when it is
+                # the last key on the network node.  Keep the curve node and
+                # its downstream accumulator wiring intact for re-import.
+                cleared += cut_keyable_attrs(
+                    morph_node,
+                    (weight_attr,),
+                    preserve_curve_nodes=True,
+                )
                 morph_nodes.add(morph_node)
 
     can_delete_layer = not target_model or _anim_layer_is_exclusively_owned_by(
@@ -468,18 +509,54 @@ def cut_keyable_attrs(
                     )
                     or []
                 )
-                if preserve_curve_nodes and len(curves) == 1:
-                    selection = om.MSelectionList()
-                    selection.add(curves[0])
-                    curve_fn = oma.MFnAnimCurve(selection.getDependNode(0))
-                    for index in reversed(range(curve_fn.numKeys)):
-                        curve_fn.remove(index)
-                else:
-                    cmds.cutKey(node, attribute=target_attr)
+                if preserve_curve_nodes:
+                    # Compound-array parents (for example inputRotate) can
+                    # expose several directly connected child curves.  Clear
+                    # every unique curve in place; falling back to cutKey here
+                    # can tear down custom solver nodes and their graph.
+                    for curve in _animation_curve_nodes_for_plug(
+                        node,
+                        target_attr,
+                        direct_curves=curves,
+                    ):
+                        try:
+                            selection = om.MSelectionList()
+                            selection.add(curve)
+                            curve_fn = oma.MFnAnimCurve(selection.getDependNode(0))
+                        except Exception as exc:
+                            _LOGGER.debug("Failed to resolve animation curve %s: %s", curve, exc)
+                            continue
+                        for index in reversed(range(curve_fn.numKeys)):
+                            curve_fn.remove(index)
+                    continue
+                cmds.cutKey(node, attribute=target_attr)
             cleared += 1
         except Exception as exc:
             _LOGGER.debug("Failed to cut key %s.%s: %s", node, attr, exc)
     return cleared
+
+
+def _animation_curve_nodes_for_plug(
+    node: str,
+    attribute: str,
+    *,
+    direct_curves=(),
+) -> Tuple[str, ...]:
+    """Return all animCurves in a plug's keyset, including animation layers.
+
+    A layered attribute is often driven through an animBlend node, so a direct
+    ``listConnections(type=\"animCurve\")`` query can be empty even though the
+    plug still owns keyed curves.  Maya's keyset ``name`` query walks that
+    blend/layer graph; union it with direct connections for compound inputs and
+    de-duplicate before callers clear each curve in place.
+    """
+    curves = list(direct_curves or ())
+    plug = f"{node}.{attribute}"
+    try:
+        curves.extend(cmds.keyframe(plug, query=True, name=True) or ())
+    except Exception as exc:
+        _LOGGER.debug("Failed to query animation curves for %s: %s", plug, exc)
+    return tuple(dict.fromkeys(str(curve) for curve in curves if curve))
 
 
 def _key_cut_attrs(node: str, attr: str) -> Tuple[str, ...]:

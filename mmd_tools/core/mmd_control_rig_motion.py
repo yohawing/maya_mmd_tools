@@ -25,6 +25,7 @@ from mmd_tools.core.mmd_control_rig_builder import (
     CONTROL_RIG_EDIT,
     CONTROL_RIG_MMD_OWNED,
     MmdControlRigBuildError,
+    inspect_mmd_control_rig,
     read_mmd_control_rig_metadata,
     resolve_mmd_control_rig_binding_authored_plugs,
     resolve_mmd_control_rig_binding_ik_solvers,
@@ -81,6 +82,52 @@ def control_rig_edit_routes_for_joints(joints, *, cmds_module=None) -> Dict[str,
                 if channel in _CHANNELS:
                     routes.setdefault(joint, {})[channel] = (control, channel)
     return routes
+
+
+def control_rig_edit_ik_enabled_plugs_for_model(
+    model_root: str,
+    *,
+    cmds_module=None,
+) -> Tuple[str, ...]:
+    """Resolve target-model-owned ``control.ikEnabled`` plugs in EDIT.
+
+    The model root's inspected Control Rig topology is the ownership boundary.
+    Only bindings classified as ``INPUT_IK_CONTROLLER`` may contribute a
+    controller plug; stale or malformed metadata fails closed instead of
+    guessing from a name or namespace.
+    """
+    cmds = cmds_module or maya_cmds()
+    try:
+        rig = inspect_mmd_control_rig(model_root, cmds_module=cmds)
+    except (MmdControlRigBuildError, RuntimeError):
+        return ()
+    if rig is None or rig.owner != CONTROL_RIG_CONTROL_OWNED:
+        return ()
+
+    # Always read the scene payload after inspection so binding roles come from
+    # the same root whose topology was validated above.
+    try:
+        scene_metadata = read_mmd_control_rig_metadata(model_root, cmds_module=cmds)
+    except (MmdControlRigBuildError, RuntimeError):
+        return ()
+    if not scene_metadata or scene_metadata.get("owner") != CONTROL_RIG_CONTROL_OWNED:
+        return ()
+
+    owned_controls = set()
+    for role, binding in (scene_metadata.get("bindings") or {}).items():
+        if not isinstance(binding, Mapping) or binding.get("inputKind") != INPUT_IK_CONTROLLER:
+            continue
+        control = rig.controls.get(role)
+        if not control:
+            continue
+        try:
+            plug = f"{control}.ikEnabled"
+            if cmds.objExists(plug):
+                owned_controls.add(plug)
+        except RuntimeError:
+            continue
+
+    return tuple(sorted(owned_controls))
 
 
 def control_rig_quaternion_safe_joints(joints, *, cmds_module=None) -> set[str]:

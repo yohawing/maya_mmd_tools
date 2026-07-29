@@ -10,6 +10,7 @@ from maya import cmds
 from mmd_tools.converters.vmd_camera_animation import get_or_create_camera
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters.vmd_light_animation import get_or_create_light
+from mmd_tools.converters.vmd_import_state import clear_existing_motion
 from tests.common.maya_test_base import MayaTestBase
 
 
@@ -219,6 +220,144 @@ class TestCr06103SceneTransaction(MayaTestBase):
             cmds.keyframe(input_plug, query=True, valueChange=True)[0],
             0.25,
             places=7,
+        )
+
+    def test_clear_existing_motion_scopes_legacy_ik_nested_channels(self):
+        """Clear target legacy IK payload while preserving foreign graph state."""
+        target_root = cmds.group(empty=True, name="cr06103_clear_legacy_ik_target_root")
+        foreign_root = cmds.group(empty=True, name="cr06103_clear_legacy_ik_foreign_root")
+
+        cmds.select(clear=True)
+        target_joint = cmds.joint(name="cr06103_clear_legacy_ik_target_joint")
+        cmds.parent(target_joint, target_root)
+        cmds.select(clear=True)
+        foreign_joint = cmds.joint(name="cr06103_clear_legacy_ik_foreign_joint")
+        cmds.parent(foreign_joint, foreign_root)
+
+        def _create_solver(name, joint):
+            solver = cmds.createNode("mmdCcdIk", name=name)
+            cmds.connectAttr(f"{solver}.outputRotate[0]", f"{joint}.rotate", force=True)
+            cmds.setKeyframe(solver, attribute="enabled", time=3, value=0)
+            enabled = f"{solver}.enabled"
+            nested_x = f"{solver}.inputRotate[2].inputRotateElementX"
+            nested_z = f"{solver}.inputRotate[5].inputRotateElementZ"
+            cmds.setKeyframe(nested_x, time=7, value=0.25)
+            cmds.setKeyframe(nested_z, time=9, value=-0.5)
+            enabled_curve = (cmds.listConnections(
+                enabled,
+                source=True,
+                destination=False,
+                type="animCurve",
+            ) or [None])[0]
+            enabled_curve_uuid = cmds.ls(enabled_curve, uuid=True)[0] if enabled_curve else None
+            nested_curves = tuple(
+                (cmds.listConnections(plug, source=True, destination=False, type="animCurve") or [None])[0]
+                for plug in (nested_x, nested_z)
+            )
+            nested_curve_uuids = tuple(
+                cmds.ls(curve, uuid=True)[0] for curve in nested_curves if curve
+            )
+            return (
+                solver,
+                enabled,
+                enabled_curve,
+                enabled_curve_uuid,
+                (nested_x, nested_z),
+                nested_curves,
+                nested_curve_uuids,
+                cmds.connectionInfo(
+                f"{joint}.rotate",
+                sourceFromDestination=True,
+                ),
+            )
+
+        (
+            target_solver,
+            target_enabled,
+            target_enabled_curve,
+            target_enabled_curve_uuid,
+            target_inputs,
+            target_curves,
+            target_curve_uuids,
+            target_source,
+        ) = _create_solver(
+            "cr06103_clear_legacy_ik_target_solver",
+            target_joint,
+        )
+        (
+            foreign_solver,
+            foreign_enabled,
+            foreign_enabled_curve,
+            foreign_enabled_curve_uuid,
+            foreign_inputs,
+            foreign_curves,
+            foreign_curve_uuids,
+            foreign_source,
+        ) = _create_solver(
+            "cr06103_clear_legacy_ik_foreign_solver",
+            foreign_joint,
+        )
+
+        converter = VmdConverter()
+        converter.bone_name_mapping = {}
+        converter.morph_name_mapping = {}
+
+        clear_existing_motion(
+            converter._import_state_context(),
+            "cr06103_clear_legacy_ik_missing_layer",
+            target_model=target_root,
+        )
+
+        self.assertFalse(cmds.keyframe(target_enabled, query=True, timeChange=True))
+        self.assertEqual(
+            (cmds.listConnections(target_enabled, source=True, destination=False, type="animCurve") or [None])[0],
+            target_enabled_curve,
+        )
+        self.assertEqual(cmds.ls(target_enabled_curve, uuid=True)[0], target_enabled_curve_uuid)
+        for input_plug in target_inputs:
+            self.assertFalse(cmds.keyframe(input_plug, query=True, timeChange=True))
+        self.assertEqual(
+            tuple(
+                (cmds.listConnections(plug, source=True, destination=False, type="animCurve") or [None])[0]
+                for plug in target_inputs
+            ),
+            target_curves,
+        )
+        self.assertEqual(
+            tuple(cmds.ls(curve, uuid=True)[0] for curve in target_curves if curve),
+            target_curve_uuids,
+        )
+        self.assertEqual(
+            cmds.keyframe(foreign_enabled, query=True, timeChange=True),
+            [3.0],
+        )
+        self.assertEqual(
+            (cmds.listConnections(foreign_enabled, source=True, destination=False, type="animCurve") or [None])[0],
+            foreign_enabled_curve,
+        )
+        self.assertEqual(cmds.ls(foreign_enabled_curve, uuid=True)[0], foreign_enabled_curve_uuid)
+        self.assertEqual(cmds.keyframe(foreign_inputs[0], query=True, timeChange=True), [7.0])
+        self.assertEqual(cmds.keyframe(foreign_inputs[1], query=True, timeChange=True), [9.0])
+        self.assertEqual(
+            tuple(
+                (cmds.listConnections(plug, source=True, destination=False, type="animCurve") or [None])[0]
+                for plug in foreign_inputs
+            ),
+            foreign_curves,
+        )
+        self.assertEqual(
+            tuple(cmds.ls(curve, uuid=True)[0] for curve in foreign_curves if curve),
+            foreign_curve_uuids,
+        )
+        self.assertTrue(cmds.objExists(target_solver))
+        self.assertTrue(cmds.objExists(foreign_solver))
+        self.assertEqual(
+            cmds.connectionInfo(f"{target_joint}.rotate", sourceFromDestination=True),
+            target_source,
+        )
+        self.assertEqual(
+            cmds.connectionInfo(f"{foreign_joint}.rotate", sourceFromDestination=True),
+            foreign_source,
         )
 
     def test_zero_key_curve_stays_empty_after_late_failure(self):
