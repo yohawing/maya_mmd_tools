@@ -151,19 +151,6 @@ class ImportExportTab(BaseTab):
             model_layout,
             tooltip_key="create_mmd_control_rig",
         )
-        self.vmd_rotation_time_curve_check = self._bind_checkbox(
-            "vmd_rotation_time_curve",
-            setting_keys.IMPORT_ANIMATION_VMD_ROTATION_TIME_CURVE,
-            False,
-            model_layout,
-            tooltip_key="vmd_rotation_time_curve",
-        )
-        self.vmd_rotation_time_curve_check.setEnabled(
-            self.create_mmd_control_rig_check.isChecked()
-        )
-        self.create_mmd_control_rig_check.toggled.connect(
-            self.vmd_rotation_time_curve_check.setEnabled
-        )
 
         self.separate_meshes_check = self._bind_checkbox(
             "separate_meshes",
@@ -302,6 +289,13 @@ class ImportExportTab(BaseTab):
         self.bake_mode_check = self._bind_checkbox(
             "bake_mode", setting_keys.IMPORT_RIG_BAKE_MODE, False, anim_settings_layout, tooltip_key="bake_mode"
         )
+        self.vmd_rotation_time_curve_check = self._bind_checkbox(
+            "vmd_rotation_time_curve",
+            setting_keys.IMPORT_ANIMATION_VMD_ROTATION_TIME_CURVE,
+            False,
+            anim_settings_layout,
+            tooltip_key="vmd_rotation_time_curve",
+        )
         self.native_physics_bake_check = self._bind_checkbox(
             "native_physics_bake",
             setting_keys.IMPORT_ANIMATION_USE_NATIVE_PHYSICS_BAKE,
@@ -325,10 +319,15 @@ class ImportExportTab(BaseTab):
         self.bake_mode_check.toggled.connect(self._sync_native_physics_bake_enabled)
         self.bake_mode_check.toggled.connect(self._sync_reduce_bake_keys_enabled)
         self.bake_mode_check.toggled.connect(self._sync_reduce_bake_quality_enabled)
+        self.bake_mode_check.toggled.connect(self._sync_vmd_rotation_time_curve_enabled)
+        self.create_mmd_control_rig_check.toggled.connect(
+            self._sync_vmd_rotation_time_curve_enabled
+        )
         self.reduce_bake_keys_check.toggled.connect(self._sync_reduce_bake_quality_enabled)
         self._sync_native_physics_bake_enabled(self.bake_mode_check.isChecked())
         self._sync_reduce_bake_keys_enabled(self.bake_mode_check.isChecked())
         self._sync_reduce_bake_quality_enabled()
+        self._sync_vmd_rotation_time_curve_enabled()
 
         self.animation_settings_group.setLayout(anim_settings_layout)
         model_settings_layout.addWidget(self.animation_settings_group)
@@ -540,6 +539,14 @@ class ImportExportTab(BaseTab):
             row.setVisible(enabled)
         if slider is not None:
             slider.setEnabled(enabled)
+
+    def _sync_vmd_rotation_time_curve_enabled(self, *_args):
+        """Enable sparse rotation time curves only for direct Control Rig import."""
+        enabled = (
+            self.create_mmd_control_rig_check.isChecked()
+            and not self.bake_mode_check.isChecked()
+        )
+        self.vmd_rotation_time_curve_check.setEnabled(enabled)
 
     def _create_reduction_quality_row(self):
         """Create the embedded 0..1 Reduce Quality slider row."""
