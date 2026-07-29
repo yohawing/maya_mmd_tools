@@ -128,7 +128,6 @@ def launch_maya(
     port: int,
     launch_mode: str = "explorer" if platform.system() == "Windows" else "direct",
     env_overrides: Optional[dict[str, str]] = None,
-    startup_mel: str = "",
 ) -> Optional[subprocess.Popen]:
     """Launch Maya GUI with a Python commandPort and isolated preferences.
 
@@ -160,15 +159,11 @@ def launch_maya(
         )
 
     command_port_mel = f'commandPort -name ":{port}" -sourceType "python";'
-    startup_script = startup_mel.rstrip()
-    if startup_script:
-        startup_script += "\n"
-    startup_script += command_port_mel
-    command = [str(executable), "-command", startup_script]
+    command = [str(executable), "-command", command_port_mel]
     if platform.system() == "Windows" and launch_mode == "explorer":
         mel_path = (output_dir / f"commandport_{port}.mel").resolve()
         bat_path = (output_dir / f"launch_maya_{version}_{port}.bat").resolve()
-        mel_path.write_text(startup_script + "\n", encoding="utf-8")
+        mel_path.write_text(command_port_mel + "\n", encoding="utf-8")
         env_lines = [f'set "{name}={env[name]}"' for name in ("PYTHONPATH", "MAYA_MODULE_PATH")]
         env_lines.extend(f'set "{name}={value}"' for name, value in effective_overrides.items())
         bat_lines = [

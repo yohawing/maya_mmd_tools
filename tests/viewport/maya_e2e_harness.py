@@ -18,7 +18,7 @@ def _seed_isolated_maya_profile(
     maya_app_dir: Path,
     version: str,
     project_root: Path,
-) -> str:
+) -> None:
     """Allow only this checkout's Python plug-ins in the isolated Maya profile.
 
     Maya reads the secure plug-in allowlist from ``userPrefs.mel`` during
@@ -36,6 +36,12 @@ def _seed_isolated_maya_profile(
         .replace("\t", "\\t")
     )
     prefs = (
+        f'//Maya Preference {version} (Release 1)\n'
+        '//\n'
+        '//\n'
+        '\n'
+        'optionVar -version 3;\n'
+        '\n'
         '// Security\n'
         'optionVar -cat "Security"\n'
         ' -sa "SafeModeAllowedlistPaths"\n'
@@ -51,10 +57,6 @@ def _seed_isolated_maya_profile(
         prefs_path = version_root / "prefs" / "userPrefs.mel"
         prefs_path.parent.mkdir(parents=True, exist_ok=True)
         prefs_path.write_text(prefs, encoding="utf-8")
-    # userPrefs is retained as the persistent profile representation. Maya
-    # initializes Security optionVars again later, so the launcher executes
-    # this same narrow registration immediately before opening commandPort.
-    return f'optionVar -sva "SafeModeAllowedlistPaths" "{escaped_plugin_dir}";'
 
 
 def monitor_result(
@@ -131,7 +133,7 @@ def run_maya_e2e(
             raise RuntimeError(port_error or f"commandPort :{port} is already open")
         shutil.rmtree(maya_app_dir, ignore_errors=True)
         profile_owned = True
-        startup_mel = _seed_isolated_maya_profile(maya_app_dir, version, project_root)
+        _seed_isolated_maya_profile(maya_app_dir, version, project_root)
         proc = maya_commandport.launch_maya(
             version=version,
             project_root=project_root,
@@ -141,7 +143,6 @@ def run_maya_e2e(
             # Never allow an automated Maya shutdown to rewrite the user's
             # pluginPrefs.mel or other Documents/maya preferences.
             env_overrides={"MAYA_APP_DIR": str(maya_app_dir)},
-            startup_mel=startup_mel,
         )
         maya_owned = True
         maya_commandport.wait_for_port(port, timeout=launch_timeout, process=proc)

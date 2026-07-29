@@ -158,6 +158,8 @@ class TestMayaE2EHarness(unittest.TestCase):
                 prefs_path = profile / "2024" / "prefs" / "userPrefs.mel"
                 prefs = prefs_path.read_text(encoding="utf-8")
                 expected_plugin_dir = (project_root / "mmd_tools").resolve().as_posix()
+                self.assertTrue(prefs.startswith("//Maya Preference 2024 (Release 1)"))
+                self.assertIn("optionVar -version 3;", prefs)
                 self.assertIn('optionVar -cat "Security"', prefs)
                 self.assertIn('-sa "SafeModeAllowedlistPaths"', prefs)
                 self.assertIn(
@@ -169,12 +171,7 @@ class TestMayaE2EHarness(unittest.TestCase):
                     profile / "2024" / "ja_JP" / "prefs" / "userPrefs.mel"
                 ).read_text(encoding="utf-8")
                 self.assertEqual(prefs, localized_prefs)
-                startup_mel = _kwargs["startup_mel"]
-                self.assertIn(
-                    f'SafeModeAllowedlistPaths" "{expected_plugin_dir}"',
-                    startup_mel,
-                )
-                self.assertNotIn("MAYA_SECURE_OPTOUT", startup_mel)
+                self.assertNotIn("startup_mel", _kwargs)
                 return None
 
             def wait_for_close(*_args, **_kwargs):
