@@ -36,6 +36,11 @@ from mmd_tools.core.mmd_control_rig_channels import (
     derive_mmd_control_rig_channel_policy,
     union_mmd_control_rig_channel_policies,
 )
+from mmd_tools.core.mmd_control_rig_basis import (
+    MmdControlRigBasisError,
+    basis_from_shape_rotation,
+    validate_basis_record,
+)
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
 
@@ -250,6 +255,7 @@ def build_mmd_control_rig(
             zero_groups: Dict[str, str] = {}
             role_joints: Dict[str, str] = {}
             bindings: Dict[str, Dict[str, Any]] = {}
+            authoring_bases: Dict[str, Dict[str, Any]] = {}
             indexed_joints = {
                 bone.bone_index: bone.joint
                 for bone in rig_spec.bones
@@ -273,18 +279,27 @@ def build_mmd_control_rig(
                     matrix=True,
                 )
                 cmds.xform(zero, worldSpace=True, matrix=matrix)
+                shape_rotation = _control_shape_rotation(
+                    cmds,
+                    root,
+                    role,
+                    binding,
+                    indexed_joints,
+                )
+                try:
+                    authoring_bases[role] = dict(
+                        basis_from_shape_rotation(shape_rotation).to_dict()
+                    )
+                except MmdControlRigBasisError as exc:
+                    raise MmdControlRigBuildError(
+                        f"invalid control-rig basis for role {role}"
+                    ) from exc
                 control = _create_control_curve(
                     cmds,
                     f"{namespace}{role}_CTRL",
                     role,
                     scale,
-                    shape_rotation=_control_shape_rotation(
-                        cmds,
-                        root,
-                        role,
-                        binding,
-                        indexed_joints,
-                    ),
+                    shape_rotation=shape_rotation,
                 )
                 created_roots.append(control)
                 parented = cmds.parent(control, zero)
@@ -322,6 +337,7 @@ def build_mmd_control_rig(
                 controls,
                 zero_groups,
                 bindings,
+                authoring_bases,
                 cmds_module=cmds,
             )
 
@@ -356,6 +372,7 @@ def build_mmd_control_rig(
                     for role, node in sorted(zero_groups.items())
                 },
                 "bindings": bindings,
+                "authoringBases": authoring_bases,
             }
             _write_metadata(cmds, root, metadata)
             return _result_from_metadata(cmds, root, metadata, created=True)
@@ -603,6 +620,7 @@ def _restore_control_channel_states(
     for plug, state in snapshots.items():
         cmds.setAttr(plug, lock=state.locked)
 
+
 def _read_metadata(cmds, root: str) -> Optional[Dict[str, Any]]:
     raw = _raw_metadata(cmds, root)
     if not raw:
@@ -640,6 +658,8 @@ def _read_metadata(cmds, root: str) -> Optional[Dict[str, Any]]:
         raise MmdControlRigBuildError("control-rig metadata nodes must be an array")
     if not isinstance(metadata.get("helperNodes", []), list):
         raise MmdControlRigBuildError("control-rig metadata helperNodes must be an array")
+    if "authoringBases" in metadata:
+        _validate_basis_metadata(metadata["authoringBases"])
     try:
         display_reference_time = float(metadata["displayReferenceTime"])
     except (KeyError, TypeError, ValueError) as exc:
@@ -647,6 +667,20 @@ def _read_metadata(cmds, root: str) -> Optional[Dict[str, Any]]:
     if not math.isfinite(display_reference_time):
         raise MmdControlRigBuildError("control-rig display reference must be finite")
     return metadata
+
+
+def _validate_basis_metadata(value: Any) -> None:
+    """Validate optional per-role basis records without rewriting metadata."""
+
+    if not isinstance(value, Mapping):
+        raise MmdControlRigBuildError("control-rig basis metadata must be an object")
+    for role, record in value.items():
+        try:
+            validate_basis_record(record)
+        except MmdControlRigBasisError as exc:
+            raise MmdControlRigBuildError(
+                f"invalid control-rig basis metadata for role {role}"
+            ) from exc
 
 
 def _owner_for_state(state: str) -> str:
@@ -1114,6 +1148,7 @@ def _apply_fallback_role_aliases(
     controls: Dict[str, str],
     zero_groups: Dict[str, str],
     bindings: Dict[str, Dict[str, Any]],
+    authoring_bases: Optional[Dict[str, Dict[str, Any]]] = None,
     *,
     cmds_module=None,
 ) -> None:
@@ -1133,6 +1168,12 @@ def _apply_fallback_role_aliases(
             controls[role] = controls[target]
             zero_groups[role] = zero_groups[target]
             bindings[role] = _binding_metadata(role_binding, cmds_module=cmds_module)
+            if authoring_bases is not None:
+                if target not in authoring_bases:
+                    raise MmdControlRigBuildError(
+                        f"control-rig fallback basis target is unavailable: {role}->{target}"
+                    )
+                authoring_bases[role] = dict(authoring_bases[target])
             del pending[role]
             applied = True
         if applied:

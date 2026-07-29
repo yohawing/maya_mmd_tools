@@ -16,6 +16,7 @@ from mmd_tools.core.mmd_control_rig_builder import (
     CONTROL_RIG_MMD_OWNED,
     MmdControlRigBuildError,
     build_mmd_control_rig,
+    inspect_mmd_control_rig,
     read_mmd_control_rig_metadata,
     remove_mmd_control_rig,
 )
@@ -370,6 +371,43 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         build_mmd_control_rig(root)
         self.assertFalse(cmds.getAttr(scale, lock=True))
         self.assertTrue(cmds.getAttr(scale, keyable=True))
+
+    def test_control_basis_metadata_persists_and_fallback_alias_inherits(self):
+        """Static basis metadata survives reopen without changing the rig DAG."""
+        root, _center, _left_ik, _right_ik, _append_joint, _append_node = (
+            self._create_minimal_control_rig_graph(include_append=True)
+        )
+        result = build_mmd_control_rig(root)
+        metadata = read_mmd_control_rig_metadata(root)
+        basis = metadata["authoringBases"]
+
+        self.assertEqual(basis["center"], basis["groove"])
+        self.assertEqual(basis["center"]["source"], "identity")
+        self.assertEqual(basis["upper_body"]["source"], "identity")
+        self.assertEqual(len(basis["center"]["quaternion"]), 4)
+        self.assertIsNotNone(inspect_mmd_control_rig(root))
+
+        scene_path = self.get_temp_filename("mmd_control_rig_basis_reopen.ma")
+        cmds.file(rename=scene_path)
+        cmds.file(save=True, type="mayaAscii", force=True)
+        cmds.file(scene_path, open=True, force=True)
+        reopened_root = (cmds.ls(root, long=True) or [root])[0]
+        reopened_metadata = read_mmd_control_rig_metadata(reopened_root)
+        self.assertEqual(reopened_metadata["authoringBases"], basis)
+        self.assertEqual(
+            reopened_metadata["authoringBases"]["center"],
+            reopened_metadata["authoringBases"]["groove"],
+        )
+        self.assertEqual(
+            (cmds.ls(reopened_metadata["controls"]["center"], long=True) or [None])[0],
+            result.controls["center"],
+        )
+
+        cmds.file(new=True, force=True)
+        fixture_root = self._import_fixture()
+        build_mmd_control_rig(fixture_root)
+        fixture_basis = read_mmd_control_rig_metadata(fixture_root)["authoringBases"]
+        self.assertIn("pmx_tail", {record["source"] for record in fixture_basis.values()})
 
     def test_negative_append_ratio_preserves_signed_control_route(self):
         """Negative Append contribution remains authored through the base input."""
