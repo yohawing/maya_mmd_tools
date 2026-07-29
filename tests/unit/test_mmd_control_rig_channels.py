@@ -8,6 +8,7 @@ from mmd_tools.core.mmd_control_rig_channels import (
     ROTATE_CHANNELS,
     TRANSLATE_CHANNELS,
     derive_mmd_control_rig_channel_policy,
+    union_mmd_control_rig_channel_policies,
 )
 
 
@@ -91,6 +92,36 @@ class TestMmdControlRigChannels(unittest.TestCase):
                 self.assertEqual(policy.keyable_channels, ())
                 self.assertEqual(policy.channel_box_channels, ())
                 self.assertEqual(policy.locked_channels, ALL_CHANNELS)
+
+    def test_alias_policy_unions_only_valid_exposed_channels(self):
+        translate = derive_mmd_control_rig_channel_policy(
+            "center",
+            _binding("direct_channel", ("joint.translateX",)),
+        )
+        rotate = derive_mmd_control_rig_channel_policy(
+            "center",
+            _binding("direct_channel", ("joint.rotateZ",)),
+        )
+
+        policy = union_mmd_control_rig_channel_policies((translate, rotate))
+
+        self.assertEqual(policy.keyable_channels, ("translateX", "rotateZ"))
+        self.assertEqual(policy.allowed_families, ("translate", "rotate"))
+
+    def test_alias_union_fails_closed_for_empty_contributor(self):
+        valid = derive_mmd_control_rig_channel_policy(
+            "center",
+            _binding("direct_channel", ("joint.translate",)),
+        )
+        closed = derive_mmd_control_rig_channel_policy(
+            "center",
+            _binding("unsupported", ("joint.rotate",)),
+        )
+
+        policy = union_mmd_control_rig_channel_policies((valid, closed))
+
+        self.assertEqual(policy.keyable_channels, ())
+        self.assertEqual(policy.locked_channels, ALL_CHANNELS)
 
 
 if __name__ == "__main__":

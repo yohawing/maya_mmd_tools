@@ -61,6 +61,38 @@ class MmdControlRigChannelPolicy:
     locked_channels: Tuple[str, ...]
 
 
+def union_mmd_control_rig_channel_policies(
+    policies: Tuple[MmdControlRigChannelPolicy, ...],
+) -> MmdControlRigChannelPolicy:
+    """Union safe policies for aliases sharing one physical control.
+
+    A policy with no exposed authored channel is treated as invalid rather
+    than allowing another alias to broaden it.  Callers must separately
+    verify that each source binding is supported before invoking this helper.
+    """
+
+    if not policies or any(not policy.keyable_channels for policy in policies):
+        return _closed_policy()
+    keyable = tuple(
+        channel
+        for channel in (*TRANSLATE_CHANNELS, *ROTATE_CHANNELS)
+        if any(channel in policy.keyable_channels for policy in policies)
+    )
+    if not keyable:
+        return _closed_policy()
+    families = tuple(
+        family
+        for family in ("translate", "rotate")
+        if any(channel.startswith(family) for channel in keyable)
+    )
+    return MmdControlRigChannelPolicy(
+        allowed_families=families,
+        keyable_channels=keyable,
+        channel_box_channels=(),
+        locked_channels=tuple(channel for channel in ALL_CHANNELS if channel not in keyable),
+    )
+
+
 def derive_mmd_control_rig_channel_policy(
     role: str,
     binding: Any,
@@ -127,9 +159,11 @@ def _closed_policy() -> MmdControlRigChannelPolicy:
 
 
 def _binding_is_supported(binding: Any) -> bool:
+    blockers = _binding_value(binding, "blockers", "blockers")
     return bool(
         binding is not None
         and not _binding_value(binding, "blocked", "blocked")
+        and not blockers
         and _binding_value(binding, "input_kind", "inputKind")
         in _SUPPORTED_INPUT_KINDS
     )

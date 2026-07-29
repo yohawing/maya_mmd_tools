@@ -281,6 +281,46 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
                     self.assertFalse(cmds.getAttr(f"{control}.{channel}", keyable=True))
                     self.assertFalse(cmds.getAttr(f"{control}.{channel}", channelBox=True))
 
+    def test_existing_rig_channel_policy_migration_is_safe_and_idempotent(self):
+        """Build reuse repairs legacy flags but does not mutate an EDIT rig."""
+        root, _center, _left_ik, _right_ik, _append_joint, _append_node = (
+            self._create_minimal_control_rig_graph(include_append=True)
+        )
+        rig = build_mmd_control_rig(root)
+        upper_body = rig.controls["upper_body"]
+        translate = f"{upper_body}.translateX"
+        scale = f"{upper_body}.scaleX"
+
+        for plug in (translate, scale):
+            cmds.setAttr(plug, lock=False)
+            cmds.setAttr(plug, keyable=True)
+        migrated = build_mmd_control_rig(root)
+        self.assertFalse(migrated.created)
+        self.assertTrue(cmds.getAttr(translate, lock=True))
+        self.assertFalse(cmds.getAttr(translate, keyable=True))
+        self.assertTrue(cmds.getAttr(scale, lock=True))
+        self.assertFalse(cmds.getAttr(scale, keyable=True))
+
+        state = tuple(
+            (cmds.getAttr(plug, lock=True), cmds.getAttr(plug, keyable=True))
+            for plug in (translate, scale)
+        )
+        build_mmd_control_rig(root)
+        self.assertEqual(
+            state,
+            tuple(
+                (cmds.getAttr(plug, lock=True), cmds.getAttr(plug, keyable=True))
+                for plug in (translate, scale)
+            ),
+        )
+
+        enter_mmd_control_rig_edit(root)
+        cmds.setAttr(scale, lock=False)
+        cmds.setAttr(scale, keyable=True)
+        build_mmd_control_rig(root)
+        self.assertFalse(cmds.getAttr(scale, lock=True))
+        self.assertTrue(cmds.getAttr(scale, keyable=True))
+
     def test_negative_append_ratio_preserves_signed_control_route(self):
         """Negative Append contribution remains authored through the base input."""
         root, _center, _left_ik, _right_ik, append_joint, append_node = (

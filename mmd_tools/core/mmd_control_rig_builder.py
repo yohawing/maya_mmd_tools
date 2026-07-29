@@ -31,8 +31,10 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
     analyze_mmd_control_rig,
 )
 from mmd_tools.core.mmd_control_rig_channels import (
+    ALL_CHANNELS,
     apply_mmd_control_rig_channel_policy,
     derive_mmd_control_rig_channel_policy,
+    union_mmd_control_rig_channel_policies,
 )
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
@@ -75,6 +77,15 @@ class MmdControlRigBuildResult:
     state: str = CONTROL_RIG_ATTACHED
     owner: str = CONTROL_RIG_MMD_OWNED
     created: bool = True
+
+
+@dataclass(frozen=True)
+class _ControlChannelState:
+    """Exact Maya child-channel flags captured for migration rollback."""
+
+    locked: bool
+    keyable: bool
+    channel_box: bool
 
 
 _FINGER_ROLE_CHAINS = tuple(
@@ -206,7 +217,9 @@ def build_mmd_control_rig(
     root = _canonical_node(cmds, model_root)
     existing = _read_metadata(cmds, root)
     if existing is not None:
-        return _result_from_metadata(cmds, root, existing, created=False)
+        result = _result_from_metadata(cmds, root, existing, created=False)
+        _migrate_existing_control_channel_policy(cmds, existing)
+        return result
 
     rig_spec = spec or analyze_mmd_control_rig(root, cmds_module=cmds)
     if rig_spec.model_root != root:
@@ -480,6 +493,115 @@ def _result_from_metadata(
         created=created,
     )
 
+
+def _migrate_existing_control_channel_policy(cmds, metadata: Mapping[str, Any]) -> None:
+    """Repair channel flags for an existing MMD-owned rig transactionally.
+
+    The runtime channel state is intentionally not persisted in metadata.  A
+    build/reuse action is the explicit migration request for v3 rigs, while
+    EDIT/CONTROL_OWNED and CONVERTING states remain untouched so a live
+    authoring transaction cannot be interrupted by a convenience call.
+    """
+
+    if metadata.get("state") not in {CONTROL_RIG_ATTACHED, CONTROL_RIG_BAKED}:
+        return
+    if metadata.get("owner") != CONTROL_RIG_MMD_OWNED:
+        return
+
+    controls = metadata.get("controls") or {}
+    bindings = metadata.get("bindings")
+    if not isinstance(controls, Mapping):
+        raise MmdControlRigBuildError("control-rig metadata controls must be an object")
+    if bindings is None:
+        bindings = {}
+    if not isinstance(bindings, Mapping):
+        raise MmdControlRigBuildError("control-rig metadata bindings must be an object")
+
+    # Group semantic roles by recorded UUID so fallback aliases sharing one
+    # physical node receive one deterministic policy and one transaction.
+    grouped = {}
+    for role, uuid in sorted(controls.items(), key=lambda item: str(item[0])):
+        if not isinstance(uuid, str) or not uuid:
+            raise MmdControlRigBuildError(
+                f"control-rig metadata control UUID is invalid: {role}"
+            )
+        control = _resolve_uuid_node(cmds, uuid, f"control for role {role}")
+        binding = bindings.get(role)
+        policy = derive_mmd_control_rig_channel_policy(str(role), binding)
+        grouped.setdefault(uuid, {"control": control, "entries": []})["entries"].append(
+            (str(role), binding, policy)
+        )
+
+    migrations = []
+    for row in grouped.values():
+        entries = tuple(row["entries"])
+        policy = union_mmd_control_rig_channel_policies(
+            tuple(item[2] for item in entries)
+        )
+        migrations.append((row["control"], policy))
+    if not migrations:
+        return
+
+    snapshots = _capture_control_channel_states(cmds, migrations)
+    if _control_channel_policies_are_applied(snapshots, migrations):
+        return
+
+    with _undo_chunk(cmds, "Migrate MMD Control Rig Channel Policy"):
+        try:
+            for control, policy in migrations:
+                apply_mmd_control_rig_channel_policy(cmds, control, policy)
+        except Exception:
+            try:
+                _restore_control_channel_states(cmds, snapshots)
+            except Exception as restore_error:
+                raise MmdControlRigBuildError(
+                    "MMD control-rig channel migration rollback failed"
+                ) from restore_error
+            raise
+
+
+def _control_channel_policies_are_applied(snapshots, migrations) -> bool:
+    """Return whether every physical control already matches its policy."""
+    for control, policy in migrations:
+        for channel in ALL_CHANNELS:
+            state = snapshots[f"{control}.{channel}"]
+            if channel in policy.keyable_channels:
+                expected = _ControlChannelState(False, True, False)
+            elif channel in policy.channel_box_channels:
+                expected = _ControlChannelState(False, False, True)
+            else:
+                expected = _ControlChannelState(True, False, False)
+            if state != expected:
+                return False
+    return True
+
+
+def _capture_control_channel_states(cmds, migrations) -> Mapping[str, _ControlChannelState]:
+    snapshots = {}
+    for control, _policy in migrations:
+        for channel in ALL_CHANNELS:
+            plug = f"{control}.{channel}"
+            snapshots[plug] = _ControlChannelState(
+                locked=bool(cmds.getAttr(plug, lock=True)),
+                keyable=bool(cmds.getAttr(plug, keyable=True)),
+                channel_box=bool(cmds.getAttr(plug, channelBox=True)),
+            )
+    return snapshots
+
+
+def _restore_control_channel_states(
+    cmds,
+    snapshots: Mapping[str, _ControlChannelState],
+) -> None:
+    # Unlock all channels before restoring keyability/Channel Box flags; Maya
+    # rejects those writes while an attribute is locked.
+    for plug in snapshots:
+        cmds.setAttr(plug, lock=False)
+    for plug, state in snapshots.items():
+        cmds.setAttr(plug, keyable=state.keyable)
+        cmds.setAttr(plug, channelBox=state.channel_box)
+    for plug, state in snapshots.items():
+        cmds.setAttr(plug, lock=state.locked)
 
 def _read_metadata(cmds, root: str) -> Optional[Dict[str, Any]]:
     raw = _raw_metadata(cmds, root)
