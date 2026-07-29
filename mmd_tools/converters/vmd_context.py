@@ -48,6 +48,7 @@ class VmdBoneAnimationContext:
 
     logger: Any
     bone_name_mapping: Mapping[str, str]
+    bone_index_to_joint: Mapping[int, str]
     bone_bind_poses: Mapping[str, Tuple[float, float, float]]
     failed_bones: MutableSet[str]
     use_animation_layers: bool

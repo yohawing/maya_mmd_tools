@@ -45,11 +45,15 @@ def _apply_quaternion_interpolation(
 
 def convert_bone_animation(context: VmdBoneAnimationContext, bone_frames: List) -> bool:
     """Convert VMD bone frames using explicit bone keying context."""
-    bone_frame_map: Dict[str, List] = {}
+    bone_frame_map: Dict[object, List] = {}
 
     with vmd_profile.scope("bone_frame_grouping", count=len(bone_frames)):
         for frame in bone_frames:
-            if hasattr(frame, "bone_name"):
+            if hasattr(frame, "bone_index"):
+                bone_name = ("index", int(frame.bone_index))
+            elif isinstance(frame, dict) and "bone_index" in frame:
+                bone_name = ("index", int(frame["bone_index"]))
+            elif hasattr(frame, "bone_name"):
                 bone_name = frame.bone_name
             else:
                 bone_name = frame.get("bone_name", "")
@@ -63,9 +67,20 @@ def convert_bone_animation(context: VmdBoneAnimationContext, bone_frames: List) 
     animated_joints = []
     key_routes = context.build_legacy_bone_key_routes()
 
-    for vmd_bone_name, frames in bone_frame_map.items():
-        if vmd_bone_name in context.bone_name_mapping:
-            maya_joint = context.bone_name_mapping[vmd_bone_name]
+    for bone_identity, frames in bone_frame_map.items():
+        indexed_identity = isinstance(bone_identity, tuple) and bone_identity[0] == "index"
+        first_frame = frames[0]
+        vmd_bone_name = str(
+            first_frame.bone_name
+            if hasattr(first_frame, "bone_name")
+            else first_frame.get("bone_name", "")
+        )
+        maya_joint = (
+            context.bone_index_to_joint.get(int(bone_identity[1]))
+            if indexed_identity
+            else context.bone_name_mapping.get(vmd_bone_name)
+        )
+        if maya_joint:
 
             try:
                 with vmd_profile.scope("bone_frame_sort", count=len(frames)):

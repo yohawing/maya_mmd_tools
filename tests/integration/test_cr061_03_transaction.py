@@ -1,6 +1,7 @@
 """CR061-03 late-failure rollback coverage for mixed VMD scene channels."""
 
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -33,6 +34,28 @@ def _synthetic_motion(*frames):
         frame.rotation = (0.0, 0.0, 0.0, 1.0)
         data.bone_frames.append(frame)
     return data
+
+
+def _registered_convert(converter, motion, **kwargs):
+    """Run synthetic motion through the production model-paired clip path."""
+    temp_path = None
+    try:
+        compiled_source = VmdData()
+        compiled_source.header.model_name = motion.header.model_name
+        compiled_source.bone_frames = list(motion.bone_frames)
+        with tempfile.NamedTemporaryFile(suffix=".vmd", delete=False) as temp_file:
+            temp_path = Path(temp_file.name)
+        compiled_source.write_file(str(temp_path))
+        return converter.convert(
+            motion,
+            vmd_bytes=temp_path.read_bytes(),
+            pmx_bytes=Path(_PMX_PATH).read_bytes(),
+            pmx_path=_PMX_PATH,
+            **kwargs,
+        )
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 def _find_mmd_joint(root, bone_name):
@@ -168,7 +191,8 @@ class TestCr06103SceneTransaction(MayaTestBase):
             ("センター", 9, (0.75, 0.0, 0.0)),
         )
         self.assertTrue(
-            VmdConverter().convert(
+            _registered_convert(
+                VmdConverter(),
                 motion_a,
                 target_model=target_root,
                 create_mmd_control_rig=True,
@@ -196,7 +220,8 @@ class TestCr06103SceneTransaction(MayaTestBase):
             ("グルーブ", 27, (1.1, 0.0, 0.0)),
         )
         self.assertTrue(
-            VmdConverter().convert(
+            _registered_convert(
+                VmdConverter(),
                 motion_b,
                 target_model=target_root,
                 clear_existing_motion=True,
@@ -229,7 +254,8 @@ class TestCr06103SceneTransaction(MayaTestBase):
             ("センター", 12, (0.9, 0.0, 0.0)),
         )
         self.assertTrue(
-            VmdConverter().convert(
+            _registered_convert(
+                VmdConverter(),
                 motion_a,
                 target_model=target_root,
                 create_mmd_control_rig=True,
@@ -289,7 +315,8 @@ class TestCr06103SceneTransaction(MayaTestBase):
             side_effect=_fail_after_partial_b_writes,
         ):
             with self.assertRaises(Exception) as raised:
-                converter.convert(
+                _registered_convert(
+                    converter,
                     motion_b,
                     target_model=target_root,
                     clear_existing_motion=True,
@@ -331,7 +358,7 @@ class TestCr06103SceneTransaction(MayaTestBase):
         )
         legacy_converter = VmdConverter()
         legacy_converter.use_animation_layers = False
-        self.assertTrue(legacy_converter.convert(motion_a, target_model=target_root))
+        self.assertTrue(_registered_convert(legacy_converter, motion_a, target_model=target_root))
         cmds.currentTime(9, edit=True)
         cmds.refresh(force=True)
         evaluated_a = tuple(cmds.xform(center_joint, query=True, worldSpace=True, matrix=True))
@@ -354,7 +381,8 @@ class TestCr06103SceneTransaction(MayaTestBase):
             control_converter = VmdConverter()
             control_converter.use_animation_layers = False
             self.assertTrue(
-                control_converter.convert(
+                _registered_convert(
+                    control_converter,
                     motion_b,
                     target_model=target_root,
                     clear_existing_motion=True,
@@ -381,7 +409,7 @@ class TestCr06103SceneTransaction(MayaTestBase):
         )
         legacy_converter = VmdConverter()
         legacy_converter.use_animation_layers = False
-        self.assertTrue(legacy_converter.convert(motion_a, target_model=target_root))
+        self.assertTrue(_registered_convert(legacy_converter, motion_a, target_model=target_root))
         before = _curve_state(f"{center_joint}.translateX")
         self.assertTrue(before["curve"])
 
@@ -394,7 +422,8 @@ class TestCr06103SceneTransaction(MayaTestBase):
         control_converter.use_animation_layers = False
         with patch.object(control_converter, "_convert_morph_animation", side_effect=RuntimeError("forced basis rollback")):
             with self.assertRaises(Exception) as raised:
-                control_converter.convert(
+                _registered_convert(
+                    control_converter,
                     motion_b,
                     target_model=target_root,
                     clear_existing_motion=True,

@@ -143,6 +143,13 @@ class TestControlRigImportPreflight(unittest.TestCase):
         self.converter.bone_name_mapping = {"センター": "|model|center"}
         with ExitStack() as stack:
             stack.enter_context(patch.object(self.converter, "_enforce_humanik_import_gate"))
+            stack.enter_context(
+                patch.object(
+                    self.converter,
+                    "_compiled_registered_sparse_frames",
+                    return_value=(tuple(_fake_vmd_data([frame]).bone_frames), {}),
+                )
+            )
             stack.enter_context(patch.object(self.converter, "_prepare_mmd_control_rig_import", return_value=transaction))
             stack.enter_context(patch.object(self.converter, "_suspend_import_scene_updates", return_value=(True, False)))
             stack.enter_context(patch.object(self.converter, "_restore_import_scene_updates"))

@@ -54,7 +54,11 @@ def get_frame_number(frame) -> float:
 
 
 def get_frame_interpolation(frame):
-    """Return interpolation bytes from a VMD frame object or dict."""
+    """Return semantic controls when present, otherwise raw VMD bytes."""
+    if hasattr(frame, "semantic_interpolation"):
+        return frame.semantic_interpolation
+    if isinstance(frame, dict) and "semantic_interpolation" in frame:
+        return frame["semantic_interpolation"]
     if hasattr(frame, "interpolation"):
         return frame.interpolation
     return frame.get("interpolation", b"")

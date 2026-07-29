@@ -94,6 +94,7 @@ from .vmd_runtime_rig_helper import (
     has_live_mmd_rig_for_runtime_target,
     restore_joints_to_bind_pose_for_runtime_bake,
 )
+from .vmd_registered_sparse import registered_sparse_bone_frames
 from .vmd_runtime_provenance import (
     build_runtime_registration_provenance,
     store_runtime_registration_provenance,
@@ -259,6 +260,7 @@ class VmdConverter:
         return VmdBoneAnimationContext(
             logger=self.logger,
             bone_name_mapping=self.bone_name_mapping,
+            bone_index_to_joint=getattr(self, "bone_index_to_joint", {}),
             bone_bind_poses=self._bone_bind_poses,
             failed_bones=self._failed_bones,
             use_animation_layers=self.use_animation_layers,
@@ -580,6 +582,29 @@ class VmdConverter:
         # refuse fail-closed while target_model is a HumanIK TARGET preview
         # or has an active Control Rig, with no implicit mode switching.
         self._enforce_humanik_import_gate(target_model)
+        registered_sparse_frames = None
+        registered_sparse_provenance = None
+        if not bake_mode and getattr(vmd_data, "bone_frames", None):
+            # Resolve the imported PMX index table before any Control Rig or
+            # clear-existing transaction mutates the scene. Missing native
+            # introspection fails closed instead of falling back to raw keys.
+            self._build_name_mappings(target_namespace, target_model=target_model)
+            sparse_vmd_bytes, sparse_pmx_bytes, sparse_pmx_path = (
+                self._resolve_runtime_bake_sources(
+                    vmd_data,
+                    vmd_bytes,
+                    pmx_bytes,
+                    pmx_path,
+                    target_namespace,
+                )
+            )
+            registered_sparse_frames, registered_sparse_provenance = self._compiled_registered_sparse_frames(
+                vmd_bytes=sparse_vmd_bytes,
+                pmx_bytes=sparse_pmx_bytes,
+                pmx_path=sparse_pmx_path,
+                vmd_source_path=getattr(vmd_data, "source_file", None),
+                profile=profile,
+            )
         control_rig_transaction = None
         if create_mmd_control_rig:
             control_rig_transaction = self._prepare_mmd_control_rig_import(
@@ -827,7 +852,11 @@ class VmdConverter:
                 _emit_progress(60)
 
                 if hasattr(import_context.vmd_data, "bone_frames") and import_context.vmd_data.bone_frames:
-                    bone_frames = list(import_context.vmd_data.bone_frames)
+                    bone_frames = list(
+                        registered_sparse_frames
+                        if registered_sparse_frames is not None
+                        else import_context.vmd_data.bone_frames
+                    )
                     if import_context.create_mmd_control_rig:
                         # Identity-only optional roles are a VMD no-op and
                         # must not create a controller curve on the ON path.
@@ -936,6 +965,13 @@ class VmdConverter:
                 )
                 self._discard_mmd_control_rig_detached_motion_curves(
                     control_rig_transaction
+                )
+            if registered_sparse_provenance is not None:
+                registered_sparse_provenance["scene_metadata_stored"] = (
+                    store_runtime_registration_provenance(
+                        import_context.target_model,
+                        registered_sparse_provenance,
+                    )
                 )
             self.logger.info("VMD animation conversion completed")
             return True
@@ -2329,6 +2365,109 @@ class VmdConverter:
             live_rig_target,
             bake_mode,
         )
+
+    def _compiled_registered_sparse_frames(
+        self,
+        *,
+        vmd_bytes: bytes,
+        pmx_bytes: bytes,
+        pmx_path: str,
+        vmd_source_path: Optional[str],
+        profile: Optional[Dict[str, Any]],
+    ) -> Tuple[tuple, Dict[str, Any]]:
+        """Build model-paired compiled sparse keys before scene mutation.
+
+        The scene's persisted PMX bone indices are the consumer mapping
+        authority. Raw VMD names and interpolation bytes are not consulted.
+        """
+        resolved_pmx_bytes, _ = resolve_runtime_pmx_bytes_and_morph_names(
+            pmx_bytes,
+            pmx_path,
+            self.logger,
+            parse_pmx_native,
+        )
+
+        def fail(reason_code: str, message: str):
+            self._record_profile_warning(
+                profile,
+                {
+                    "source": "vmd_converter",
+                    "code": reason_code,
+                    "severity": "error",
+                    "message": message,
+                    "registration_mode": "model_paired_registered",
+                    "fallback": "none",
+                    "parity_guaranteed": False,
+                },
+            )
+            raise MMDImportException(message, reason_code=reason_code)
+
+        if not HAS_MMD_RUNTIME or not vmd_bytes or not resolved_pmx_bytes:
+            fail(
+                "registered_sparse_source_unavailable",
+                "Registered sparse VMD import requires raw PMX/VMD bytes and mmd-anim runtime",
+            )
+        model = MmdRuntimeModel.from_pmx_bytes(resolved_pmx_bytes)
+        if model is None:
+            fail("registered_sparse_model_create_failed", "Failed to create registered sparse PMX model")
+        clip = None
+        try:
+            clip = MmdRuntimeClip.from_vmd_bytes_for_model(model, vmd_bytes)
+            if clip is None:
+                fail("registered_sparse_clip_create_failed", "Failed to create registered sparse VMD clip")
+            tracks = clip.bone_tracks()
+            if tracks is None:
+                fail(
+                    "registered_sparse_introspection_unavailable",
+                    "Compiled registered VMD bone-track introspection is unavailable or invalid",
+                )
+            bone_names_by_index = {
+                int(index): str(name) for name, index in self.bone_name_to_index.items()
+            }
+            try:
+                frames = registered_sparse_bone_frames(
+                    tracks,
+                    bone_names_by_index=bone_names_by_index,
+                    imported_bone_indices=self.bone_index_to_joint,
+                )
+            except ValueError as exc:
+                fail("registered_sparse_bone_index_mismatch", str(exc))
+            runtime_library = get_mmd_runtime_library()
+            registration_profile = build_runtime_registration_provenance(
+                vmd_bytes=vmd_bytes,
+                pmx_bytes=resolved_pmx_bytes,
+                vmd_source_path=vmd_source_path,
+                pmx_source_path=pmx_path,
+                runtime_library_path=get_runtime_library_path(),
+                runtime_abi_version=(
+                    int(runtime_library.mmd_runtime_abi_version())
+                    if runtime_library is not None
+                    else 0
+                ),
+                runtime_feature_flags=int(get_runtime_feature_flags()),
+            )
+            registration_profile.update(
+                {
+                    "status": "success",
+                    "evaluation_mode": "authored_sparse_keys",
+                    "track_count": len(tracks),
+                    "key_count": len(frames),
+                }
+            )
+            if isinstance(profile, dict):
+                profile.setdefault("vmd_converter", {})["runtime_registration"] = registration_profile
+                profile.setdefault("vmd_converter", {})["registered_sparse"] = {
+                    "status": "success",
+                    "registration_mode": "model_paired_registered",
+                    "fallback": "none",
+                    "track_count": len(tracks),
+                    "key_count": len(frames),
+                }
+            return frames, registration_profile
+        finally:
+            if clip is not None:
+                clip.free()
+            model.free()
 
     def _preflight_reduced_bake_keys(
         self,

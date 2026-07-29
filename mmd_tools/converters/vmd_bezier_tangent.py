@@ -198,7 +198,12 @@ def apply_vmd_bezier_tangents(
 
         # VMD interpolation bytes are stored on the arriving key.
         parse_interpolation = interpolation_parser or converter._parse_vmd_interpolation
-        interpolation = parse_interpolation(get_frame_interpolation(next_frame))
+        interpolation_source = get_frame_interpolation(next_frame)
+        interpolation = (
+            interpolation_source
+            if isinstance(interpolation_source, dict)
+            else parse_interpolation(interpolation_source)
+        )
         if not interpolation:
             continue
 
