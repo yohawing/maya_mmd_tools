@@ -21,7 +21,7 @@ from mmd_tools.core.mmd_control_rig_builder import (
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters.vmd_context import VmdImportStateContext
 from mmd_tools.converters.vmd_legacy_bone_routes import build_legacy_bone_key_routes
-from mmd_tools.converters.vmd_import_state import clear_existing_motion
+from mmd_tools.converters.vmd_import_state import clear_existing_motion, cut_keyable_attrs
 from mmd_tools.io.vmd_importer import _resolve_quaternion_interpolation
 from mmd_tools.services.settings_service import SettingsService
 from tests.common.maya_test_base import MayaTestBase
@@ -326,6 +326,92 @@ class TestControlRigImportPreflight(unittest.TestCase):
             self.converter._prepare_mmd_control_rig_import("|model", vmd_data=_fake_vmd_data())
         build.assert_not_called()
         enter.assert_called_once_with("|model")
+
+    def test_clear_existing_motion_precedes_new_control_rig_basis_capture(self):
+        """A legacy pose is cleared before a newly-created rig samples joints."""
+        spec = MagicMock(can_build_mvp=True)
+        events = []
+
+        def clear_motion(*_args, **_kwargs):
+            events.append("clear")
+
+        def build_rig(*_args, **_kwargs):
+            events.append("build")
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata", return_value=None)
+            )
+            stack.enter_context(
+                patch("mmd_tools.core.mmd_control_rig_analyzer.analyze_mmd_control_rig", return_value=spec)
+            )
+            stack.enter_context(
+                patch("mmd_tools.core.mmd_control_rig_builder.build_mmd_control_rig", side_effect=build_rig)
+            )
+            stack.enter_context(patch("mmd_tools.core.mmd_control_rig_motion.enter_mmd_control_rig_edit"))
+            stack.enter_context(patch.object(self.converter, "_build_name_mappings"))
+            stack.enter_context(
+                patch.object(self.converter, "_capture_mmd_control_rig_scene_snapshot", return_value={})
+            )
+            stack.enter_context(patch.object(self.converter, "_clear_existing_motion", side_effect=clear_motion))
+            stack.enter_context(
+                patch.object(self.converter, "_detect_vmd_motion_kind", return_value="model")
+            )
+            stack.enter_context(patch.object(self.converter, "_validate_mmd_control_rig_ik_routes"))
+            transaction = self.converter._prepare_mmd_control_rig_import(
+                "|model",
+                vmd_data=_fake_vmd_data(),
+                clear_existing_motion=True,
+                layer_name="VMD_Motion",
+            )
+
+        self.assertEqual(events, ["clear", "build"])
+        self.assertTrue(transaction["motion_cleared"])
+
+    def test_clear_existing_motion_preflight_failure_restores_captured_scene(self):
+        """A failed new-rig build restores motion cleared for basis capture."""
+        spec = MagicMock(can_build_mvp=True)
+        scene_snapshot = {"channels": [{"node": "|model|joint", "attribute": "translateX"}]}
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata", return_value=None)
+            )
+            stack.enter_context(
+                patch("mmd_tools.core.mmd_control_rig_analyzer.analyze_mmd_control_rig", return_value=spec)
+            )
+            stack.enter_context(
+                patch(
+                    "mmd_tools.core.mmd_control_rig_builder.build_mmd_control_rig",
+                    side_effect=MmdControlRigBuildError("forced basis build failure"),
+                )
+            )
+            stack.enter_context(patch.object(self.converter, "_build_name_mappings"))
+            stack.enter_context(
+                patch.object(self.converter, "_capture_mmd_control_rig_scene_snapshot", return_value=scene_snapshot)
+            )
+            clear = stack.enter_context(patch.object(self.converter, "_clear_existing_motion"))
+            stack.enter_context(
+                patch.object(self.converter, "_detect_vmd_motion_kind", return_value="model")
+            )
+            restore = stack.enter_context(
+                patch.object(self.converter, "_restore_mmd_control_rig_scene_snapshot", return_value=None)
+            )
+            with self.assertRaises(MMDImportException) as raised:
+                self.converter._prepare_mmd_control_rig_import(
+                    "|model",
+                    vmd_data=_fake_vmd_data(),
+                    clear_existing_motion=True,
+                    layer_name="VMD_Motion",
+                )
+
+        clear.assert_called_once_with(
+            "VMD_Motion",
+            None,
+            target_model="|model",
+            preserve_curve_nodes=True,
+        )
+        restore.assert_called_once_with(scene_snapshot)
+        self.assertEqual(raised.exception.reason_code, "control_rig_edit_failed")
 
     def test_control_owned_rotation_route_disables_solver_input_route(self):
         converter = MagicMock()
@@ -637,6 +723,25 @@ class TestControlRigImportPreflight(unittest.TestCase):
 
 
 class TestControlRigMotionClear(MayaTestBase):
+    def test_preserved_curve_clear_keeps_non_animation_input_connected(self):
+        """Rollback curve retention must not detach solver/constraint inputs."""
+        target = cmds.createNode("transform", name="cr061_non_anim_input_target")
+        driver = cmds.createNode("multiplyDivide", name="cr061_non_anim_input_driver")
+        source = f"{driver}.outputX"
+        destination = f"{target}.translateX"
+        cmds.connectAttr(source, destination, force=True)
+        detached = []
+
+        cut_keyable_attrs(
+            target,
+            ("translateX",),
+            preserve_curve_nodes=True,
+            detached_curve_nodes=detached,
+        )
+
+        self.assertTrue(cmds.isConnected(source, destination))
+        self.assertEqual(detached, [])
+
     def test_sparse_quaternion_rotation_bake_preserves_keys_and_pose(self):
         """Compound bake keeps sparse authored times and quaternion state."""
         control = cmds.createNode("transform", name="cr061_sparse_quaternion_control")

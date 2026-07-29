@@ -1932,23 +1932,35 @@ def _restore_animation_curve_payload(cmds, node: str, payload: Mapping[str, Any]
         pass
     for key in payload.get("keys", ()):
         time = float(key.get("time", 0.0))
-        kwargs = {"time": (time, time), "edit": True}
-        for name, option in (
-            ("inType", "inTangentType"),
-            ("outType", "outTangentType"),
-            ("inAngle", "inAngle"),
-            ("outAngle", "outAngle"),
-            ("inWeight", "inWeight"),
-            ("outWeight", "outWeight"),
-        ):
-            if key.get(name) is not None:
-                kwargs[option] = key[name]
+        tangent_types = {"time": (time, time), "edit": True}
+        if key.get("inType") is not None:
+            tangent_types["inTangentType"] = key["inType"]
+        if key.get("outType") is not None:
+            tangent_types["outTangentType"] = key["outType"]
         try:
-            cmds.keyTangent(node, **kwargs)
+            cmds.keyTangent(node, **tangent_types)
         except Exception:
-            # Maya can reject angle/weight edits for non-fixed tangents; the
-            # tangent type and copied key payload remain authoritative.
-            continue
+            pass
+
+        # Maya converts non-fixed tangents to ``fixed`` when angle/weight is
+        # edited explicitly.  Reapply those values only for sides that were
+        # originally fixed; linear/auto/step types derive them from the curve.
+        fixed_values = {"time": (time, time), "edit": True}
+        for tangent_type, angle_name, angle_option, weight_name, weight_option in (
+            ("inType", "inAngle", "inAngle", "inWeight", "inWeight"),
+            ("outType", "outAngle", "outAngle", "outWeight", "outWeight"),
+        ):
+            if key.get(tangent_type) != "fixed":
+                continue
+            if key.get(angle_name) is not None:
+                fixed_values[angle_option] = key[angle_name]
+            if key.get(weight_name) is not None:
+                fixed_values[weight_option] = key[weight_name]
+        if len(fixed_values) > 2:
+            try:
+                cmds.keyTangent(node, **fixed_values)
+            except Exception:
+                pass
     infinity_kwargs = {
         name: payload[name]
         for name in ("preInfinite", "postInfinite")

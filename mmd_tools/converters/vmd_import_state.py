@@ -152,8 +152,16 @@ def clear_existing_motion(
     layer_name: str,
     target_namespace: Optional[str] = None,
     target_model: Optional[str] = None,
+    *,
+    preserve_curve_nodes: bool = False,
+    detached_curve_nodes=None,
 ) -> None:
-    """Delete existing VMD motion keys/layer for the target model."""
+    """Delete existing VMD motion keys/layer for the target model.
+
+    ``preserve_curve_nodes`` is used by the Control Rig preflight transaction
+    to retain legacy animCurve identity for exact rollback.  Such curves are
+    detached after their keys are removed and are deleted on successful commit.
+    """
     context = _resolve_import_state_context(converter_or_context)
     cleared = 0
     owned_motion_nodes = set()
@@ -170,6 +178,8 @@ def clear_existing_motion(
         cleared += cut_keyable_attrs(
             joint,
             ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"),
+            preserve_curve_nodes=preserve_curve_nodes,
+            detached_curve_nodes=detached_curve_nodes,
         )
 
     # In CONTROL_OWNED/EDIT, authored VMD channels are redirected to the
@@ -487,6 +497,7 @@ def cut_keyable_attrs(
     attrs: Tuple[str, ...],
     *,
     preserve_curve_nodes: bool = False,
+    detached_curve_nodes=None,
 ) -> int:
     """Delete keys for existing attrs and return the number of attrs attempted."""
     if not node or not cmds.objExists(node):
@@ -528,6 +539,30 @@ def cut_keyable_attrs(
                             continue
                         for index in reversed(range(curve_fn.numKeys)):
                             curve_fn.remove(index)
+                    if detached_curve_nodes is not None:
+                        for source in cmds.listConnections(
+                            plug,
+                            source=True,
+                            destination=False,
+                            plugs=True,
+                        ) or []:
+                            source_node = str(source).split(".", 1)[0]
+                            try:
+                                if not str(cmds.nodeType(source_node)).startswith("animCurve"):
+                                    continue
+                            except Exception:
+                                continue
+                            try:
+                                cmds.disconnectAttr(source, plug)
+                            except Exception as exc:
+                                _LOGGER.debug(
+                                    "Failed to detach animation curve %s from %s: %s",
+                                    source,
+                                    plug,
+                                    exc,
+                                )
+                                continue
+                            detached_curve_nodes.append(source_node)
                     continue
                 cmds.cutKey(node, attribute=target_attr)
             cleared += 1

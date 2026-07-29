@@ -13,6 +13,7 @@ from mmd_tools.converters.vmd_light_animation import get_or_create_light
 from mmd_tools.converters.vmd_import_state import clear_existing_motion
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
+from mmd_tools.core import mmd_control_rig_builder
 from mmd_tools.io.mmd_importer import import_mmd_file
 from tests.common.maya_test_base import MayaTestBase
 
@@ -317,6 +318,92 @@ class TestCr06103SceneTransaction(MayaTestBase):
         self.assertEqual(_timeline_state(), before_timeline)
         self.assertEqual(metadata["state"], "EDIT")
         self.assertEqual(metadata["owner"], "CONTROL_OWNED")
+
+    def test_legacy_a_is_cleared_before_new_control_rig_samples_bind_basis(self):
+        """A->B creation samples the bind pose, not A's current evaluated pose."""
+        target_root = self._import_control_fixture("cr06103_basis_order")
+        center_joint = _find_mmd_joint(target_root, "センター")
+        bind_matrix = tuple(cmds.xform(center_joint, query=True, worldSpace=True, matrix=True))
+
+        motion_a = _synthetic_motion(
+            ("センター", 5, (0.25, 0.0, 0.0)),
+            ("センター", 9, (0.75, 0.0, 0.0)),
+        )
+        legacy_converter = VmdConverter()
+        legacy_converter.use_animation_layers = False
+        self.assertTrue(legacy_converter.convert(motion_a, target_model=target_root))
+        cmds.currentTime(9, edit=True)
+        cmds.refresh(force=True)
+        evaluated_a = tuple(cmds.xform(center_joint, query=True, worldSpace=True, matrix=True))
+        self.assertNotEqual(evaluated_a, bind_matrix)
+
+        observed_build_joint_matrices = []
+        real_build = mmd_control_rig_builder.build_mmd_control_rig
+
+        def observe_build(*args, **kwargs):
+            observed_build_joint_matrices.append(
+                tuple(cmds.xform(center_joint, query=True, worldSpace=True, matrix=True))
+            )
+            return real_build(*args, **kwargs)
+
+        motion_b = _synthetic_motion(
+            ("グルーブ", 21, (0.4, 0.0, 0.0)),
+            ("グルーブ", 27, (1.1, 0.0, 0.0)),
+        )
+        with patch.object(mmd_control_rig_builder, "build_mmd_control_rig", side_effect=observe_build):
+            control_converter = VmdConverter()
+            control_converter.use_animation_layers = False
+            self.assertTrue(
+                control_converter.convert(
+                    motion_b,
+                    target_model=target_root,
+                    clear_existing_motion=True,
+                    create_mmd_control_rig=True,
+                )
+            )
+
+        self.assertEqual(len(observed_build_joint_matrices), 1)
+        for actual, expected in zip(observed_build_joint_matrices[0], bind_matrix):
+            self.assertAlmostEqual(actual, expected, places=5)
+        center_zero, _metadata = _control_for_role(target_root, "center")
+        center_zero = cmds.listRelatives(center_zero, parent=True, fullPath=True)[0]
+        zero_matrix = tuple(cmds.xform(center_zero, query=True, worldSpace=True, matrix=True))
+        for actual, expected in zip(zero_matrix, bind_matrix):
+            self.assertAlmostEqual(actual, expected, places=5)
+
+    def test_new_control_rig_preflight_failure_restores_legacy_a_motion(self):
+        """A legacy curve survives a failed A->B rig transition exactly."""
+        target_root = self._import_control_fixture("cr06103_basis_rollback")
+        center_joint = _find_mmd_joint(target_root, "センター")
+        motion_a = _synthetic_motion(
+            ("センター", 6, (0.2, 0.0, 0.0)),
+            ("センター", 12, (0.9, 0.0, 0.0)),
+        )
+        legacy_converter = VmdConverter()
+        legacy_converter.use_animation_layers = False
+        self.assertTrue(legacy_converter.convert(motion_a, target_model=target_root))
+        before = _curve_state(f"{center_joint}.translateX")
+        self.assertTrue(before["curve"])
+
+        motion_b = _synthetic_motion(
+            ("センター", 18, (2.0, 0.0, 0.0)),
+            ("センター", 24, (3.0, 0.0, 0.0)),
+        )
+        motion_b.morph_frames = [object()]
+        control_converter = VmdConverter()
+        control_converter.use_animation_layers = False
+        with patch.object(control_converter, "_convert_morph_animation", side_effect=RuntimeError("forced basis rollback")):
+            with self.assertRaises(Exception) as raised:
+                control_converter.convert(
+                    motion_b,
+                    target_model=target_root,
+                    clear_existing_motion=True,
+                    create_mmd_control_rig=True,
+                )
+
+        self.assertIn("forced basis rollback", str(raised.exception))
+        self.assertEqual(_curve_state(f"{center_joint}.translateX"), before)
+        self.assertFalse(cmds.objExists(f"{target_root}.mmd_control_rig_json"))
 
     def test_late_failure_restores_curve_timeline_and_created_camera_light(self):
         root = cmds.group(empty=True, name="cr06103_transaction_model")

@@ -575,6 +575,8 @@ class VmdConverter:
                 profile,
                 vmd_data=vmd_data,
                 target_namespace=target_namespace,
+                clear_existing_motion=clear_existing_motion,
+                layer_name=layer_name,
             )
         if reduce_bake_keys and not self._preflight_reduced_bake_keys(
             vmd_data=vmd_data,
@@ -669,7 +671,14 @@ class VmdConverter:
                 )
             _emit_progress(40)
             motion_kind = self._detect_vmd_motion_kind(import_context.vmd_data)
-            if import_context.clear_existing_motion and motion_kind in {"model", "mixed"}:
+            if (
+                import_context.clear_existing_motion
+                and motion_kind in {"model", "mixed"}
+                and not (
+                    control_rig_transaction is not None
+                    and control_rig_transaction.get("motion_cleared")
+                )
+            ):
                 self._clear_existing_motion(
                     import_context.layer_name,
                     import_context.target_namespace,
@@ -909,6 +918,9 @@ class VmdConverter:
                         "staged_rotation_time_curve_nodes", []
                     ),
                     clear_metadata=not self.use_vmd_rotation_time_curve,
+                )
+                self._discard_mmd_control_rig_detached_motion_curves(
+                    control_rig_transaction
                 )
             self.logger.info("VMD animation conversion completed")
             return True
@@ -1268,11 +1280,16 @@ class VmdConverter:
         *,
         vmd_data=None,
         target_namespace=None,
+        clear_existing_motion: bool = False,
+        layer_name: Optional[str] = None,
     ) -> Dict[str, object]:
         """Create/reuse an MMD Control Rig and enter its CONTROL_OWNED state.
 
         This is deliberately a preflight boundary: analyzer and metadata
-        compatibility checks run before VMD keys or layers are touched.  The
+        compatibility checks run before graph ownership changes.  When
+        ``clear_existing_motion`` is requested, the outgoing model channels
+        are snapshotted and cleared before a new rig samples joint poses; the
+        same snapshot restores them if this transition fails.  The
         builder/enter APIs own their graph transactions; a newly-created rig
         is removed if entering EDIT fails.
         """
@@ -1392,6 +1409,34 @@ class VmdConverter:
         )
         created = False
         entered_here = False
+        motion_cleared = False
+        transaction_detached_curve_nodes = []
+
+        def clear_motion_before_rig_transition() -> None:
+            """Clear outgoing model motion before a new rig samples joint poses.
+
+            ``build_mmd_control_rig`` derives each ZERO group's world matrix
+            from the live joint.  When an A->B import starts from the legacy
+            Bone route, those joints can still be evaluated at A's current
+            frame.  Clear and restore the target to its persisted bind pose
+            before any rig build/enter operation so the new rig captures the
+            static basis rather than the outgoing animation pose.
+            """
+            nonlocal motion_cleared
+            if not clear_existing_motion or vmd_data is None:
+                return
+            if self._detect_vmd_motion_kind(vmd_data) not in {"model", "mixed"}:
+                return
+            # Mark the transaction before entering the mutating helper.  A
+            # partial clear that raises still requires scene-snapshot restore.
+            motion_cleared = True
+            detached_curve_nodes = self._clear_existing_motion(
+                layer_name or "VMD_Motion",
+                target_namespace,
+                target_model=target_model,
+                preserve_curve_nodes=True,
+            )
+            transaction_detached_curve_nodes.extend(detached_curve_nodes or [])
 
         requested_vmd_names = set()
         if vmd_data is not None and getattr(vmd_data, "bone_frames", None):
@@ -1506,6 +1551,13 @@ class VmdConverter:
                     remove_mmd_control_rig(target_model)
                 except Exception as exc:
                     errors.append(f"remove created rig failed: {exc}")
+            if motion_cleared:
+                try:
+                    scene_error = self._restore_mmd_control_rig_scene_snapshot(scene_snapshot)
+                    if scene_error:
+                        errors.append(scene_error)
+                except Exception as exc:
+                    errors.append(f"restore cleared motion failed: {exc}")
             return "; ".join(errors) if errors else None
 
         try:
@@ -1528,6 +1580,7 @@ class VmdConverter:
                         fail("control_rig_owner_conflict", "Existing MMD Control Rig is not CONTROL_OWNED")
                     validate_vmd_routes()
                     self._validate_mmd_control_rig_ik_routes(target_model, vmd_data, profile=profile)
+                    clear_motion_before_rig_transition()
                     return {
                         "root": control_rig_root,
                         "created": False,
@@ -1538,6 +1591,10 @@ class VmdConverter:
                         "prior_animation_snapshot": prior_animation_snapshot,
                         "prior_rotation_time_curve_snapshot": prior_rotation_time_curve_snapshot,
                         "scene_snapshot": scene_snapshot,
+                        "motion_cleared": motion_cleared,
+                        "detached_motion_curve_nodes": tuple(
+                            dict.fromkeys(transaction_detached_curve_nodes)
+                        ),
                     }
                 if metadata.get("owner") != CONTROL_RIG_MMD_OWNED or metadata.get("state") not in {
                     CONTROL_RIG_ATTACHED,
@@ -1556,10 +1613,13 @@ class VmdConverter:
                         "MMD Control Rig import is unsupported for required roles",
                         blockers or list(spec.warnings),
                     )
+                clear_motion_before_rig_transition()
                 build_mmd_control_rig(target_model, spec=spec)
                 created = True
             enter_mmd_control_rig_edit(target_model)
             entered_here = True
+            if metadata is not None:
+                clear_motion_before_rig_transition()
             validate_vmd_routes()
             self._validate_mmd_control_rig_ik_routes(target_model, vmd_data, profile=profile)
             return {
@@ -1572,6 +1632,10 @@ class VmdConverter:
                 "prior_animation_snapshot": prior_animation_snapshot,
                 "prior_rotation_time_curve_snapshot": prior_rotation_time_curve_snapshot,
                 "scene_snapshot": scene_snapshot,
+                "motion_cleared": motion_cleared,
+                "detached_motion_curve_nodes": tuple(
+                    dict.fromkeys(transaction_detached_curve_nodes)
+                ),
             }
         except MMDImportException as exc:
             rollback_error = rollback_preflight()
@@ -2077,6 +2141,27 @@ class VmdConverter:
         return "; ".join(errors) if errors else None
 
     @staticmethod
+    def _discard_mmd_control_rig_detached_motion_curves(transaction) -> None:
+        """Delete orphaned legacy curves retained only for rollback identity."""
+        for curve in transaction.get("detached_motion_curve_nodes") or ():
+            if not cmds.objExists(curve):
+                continue
+            try:
+                destinations = cmds.listConnections(
+                    f"{curve}.output",
+                    source=False,
+                    destination=True,
+                    plugs=True,
+                ) or []
+                if not destinations:
+                    cmds.delete(curve)
+            except Exception:
+                # Successful import must not fail solely while cleaning an
+                # orphaned rollback aid; a connected curve remains owned by
+                # the newly-authored route and is intentionally preserved.
+                continue
+
+    @staticmethod
     def _record_control_rig_import_failure(profile, exc, rollback_error=None) -> None:
         """Publish exact ON-path failure diagnostics into the import profile."""
         if not isinstance(profile, dict):
@@ -2187,14 +2272,20 @@ class VmdConverter:
         layer_name: str,
         target_namespace: Optional[str] = None,
         target_model: Optional[str] = None,
-    ) -> None:
+        *,
+        preserve_curve_nodes: bool = False,
+    ) -> list:
         """対象モデルに残っている既存 VMD motion keys/layer を削除する。"""
+        detached_curve_nodes = []
         clear_existing_motion(
             self._import_state_context(),
             layer_name,
             target_namespace,
             target_model=target_model,
+            preserve_curve_nodes=preserve_curve_nodes,
+            detached_curve_nodes=detached_curve_nodes,
         )
+        return detached_curve_nodes
 
     def _clear_existing_camera_motion(self) -> None:
         """既存のMMDカメラアニメーションキーを削除する。"""
