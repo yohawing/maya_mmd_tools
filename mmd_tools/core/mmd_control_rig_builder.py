@@ -85,6 +85,7 @@ _FINGER_ROLE_CHAINS = tuple(
     )
 )
 _FINGER_ROLES = tuple(role for chain in _FINGER_ROLE_CHAINS for role in chain)
+_FINGER_ROOT_ROLES = frozenset(chain[0] for chain in _FINGER_ROLE_CHAINS)
 _FINGER_ROLE_PARENTS = {
     role: (f"{role.split('_', 1)[0]}_wrist" if index == 0 else chain[index - 1])
     for chain in _FINGER_ROLE_CHAINS
@@ -230,6 +231,7 @@ def build_mmd_control_rig(
             display_reference_time = _current_time(cmds)
             controls: Dict[str, str] = {}
             zero_groups: Dict[str, str] = {}
+            role_joints: Dict[str, str] = {}
             bindings: Dict[str, Dict[str, Any]] = {}
             indexed_joints = {
                 bone.bone_index: bone.joint
@@ -279,13 +281,20 @@ def build_mmd_control_rig(
                 cmds.sets(control, add=selection_set)
                 controls[role] = str(control)
                 zero_groups[role] = str(zero)
+                role_joints[role] = str(binding.joint)
                 bindings[role] = _binding_metadata(role_binding, cmds_module=cmds)
 
             # Parent only concrete nodes.  Semantic fallback aliases are
             # added afterwards and must never be interpreted as new DAG
             # edges (e.g. groove_ZERO aliasing center_ZERO would otherwise
             # attempt to parent center_ZERO below its own child).
-            _parent_zero_groups(cmds, zero_groups, controls)
+            helper_nodes = _parent_zero_groups(
+                cmds,
+                zero_groups,
+                controls,
+                role_joints,
+            )
+            created_roots.extend(helper_nodes)
             _apply_fallback_role_aliases(
                 rig_spec.roles,
                 controls,
@@ -294,7 +303,14 @@ def build_mmd_control_rig(
                 cmds_module=cmds,
             )
 
-            nodes = _owned_nodes(cmds, control_group, selection_set)
+            nodes = tuple(
+                sorted(
+                    set(
+                        _owned_nodes(cmds, control_group, selection_set)
+                        + tuple(_canonical_node(cmds, node) for node in helper_nodes)
+                    )
+                )
+            )
             metadata = {
                 "schema": CONTROL_RIG_METADATA_SCHEMA,
                 "version": CONTROL_RIG_METADATA_VERSION,
@@ -304,6 +320,7 @@ def build_mmd_control_rig(
                 "modelRootUuid": _node_uuid(cmds, root),
                 "controlGroupUuid": _node_uuid(cmds, control_group),
                 "selectionSetUuid": _node_uuid(cmds, selection_set),
+                "helperNodes": [_node_uuid(cmds, node) for node in helper_nodes],
                 "nodes": [
                     {"uuid": _node_uuid(cmds, node), "name": str(node)}
                     for node in nodes
@@ -345,6 +362,9 @@ def remove_mmd_control_rig(model_root: str, *, cmds_module=None) -> bool:
     _validate_control_rig_topology(cmds, metadata, resolved)
     control_group = resolved[metadata["controlGroupUuid"]]
     selection_set = resolved[metadata["selectionSetUuid"]]
+    helper_nodes = [
+        resolved[uuid] for uuid in metadata.get("helperNodes", [])
+    ]
     rotation_time_curves = []
     for row in metadata.get("rotationTimeCurves", []) or []:
         from mmd_tools.converters.vmd_rotation_time_curve import (
@@ -360,6 +380,9 @@ def remove_mmd_control_rig(model_root: str, *, cmds_module=None) -> bool:
             raise MmdControlRigBuildError(str(exc)) from exc
         rotation_time_curves.append(node)
     with _undo_chunk(cmds, "Remove MMD Control Rig"):
+        for node in helper_nodes:
+            if cmds.objExists(node):
+                cmds.delete(node)
         if cmds.objExists(selection_set):
             cmds.delete(selection_set)
         for node in rotation_time_curves:
@@ -484,6 +507,8 @@ def _read_metadata(cmds, root: str) -> Optional[Dict[str, Any]]:
             raise MmdControlRigBuildError(f"control-rig metadata missing {key}")
     if not isinstance(metadata.get("nodes"), list):
         raise MmdControlRigBuildError("control-rig metadata nodes must be an array")
+    if not isinstance(metadata.get("helperNodes", []), list):
+        raise MmdControlRigBuildError("control-rig metadata helperNodes must be an array")
     try:
         display_reference_time = float(metadata["displayReferenceTime"])
     except (KeyError, TypeError, ValueError) as exc:
@@ -520,6 +545,7 @@ def _resolve_owned_nodes(cmds, metadata: Mapping[str, Any]) -> Dict[str, str]:
     for uuid in (
         metadata["controlGroupUuid"],
         metadata["selectionSetUuid"],
+        *metadata.get("helperNodes", []),
         *metadata.get("controls", {}).values(),
         *metadata.get("zeroGroups", {}).values(),
     ):
@@ -768,12 +794,54 @@ def _parent_zero_groups(
     cmds,
     zero_groups: Mapping[str, str],
     controls: Mapping[str, str],
-) -> None:
-    """Parent concrete zero groups below their nearest available control."""
+    role_joints: Mapping[str, str],
+) -> Tuple[str, ...]:
+    """Parent concrete zero groups and attach finger roots to real wrists.
+
+    The visible FK hierarchy intentionally omits intermediate MMD helpers such
+    as arm/wrist twist joints.  Parenting a finger root below ``wrist_CTRL``
+    therefore loses motion contributed by those helpers and leaves the finger
+    controls behind the skinned hand.  A finger controller only drives its own
+    child joint, so following the real parent wrist joint is acyclic and keeps
+    the complete evaluated upstream transform.
+
+    Returns:
+        Constraint nodes owned by the Control Rig lifecycle.
+    """
+    helper_nodes = []
     for role, zero in zero_groups.items():
+        if role in _FINGER_ROOT_ROLES:
+            joint = role_joints.get(role)
+            parents = (
+                cmds.listRelatives(
+                    joint,
+                    parent=True,
+                    fullPath=True,
+                    type="joint",
+                )
+                if joint
+                else []
+            ) or []
+            if len(parents) != 1:
+                raise MmdControlRigBuildError(
+                    f"finger control parent joint is unresolved: {role}"
+                )
+            constraint = cmds.parentConstraint(
+                str(parents[0]),
+                zero,
+                maintainOffset=True,
+                name=f"{zero.rsplit('|', 1)[-1]}_FOLLOW",
+            ) or []
+            if len(constraint) != 1:
+                raise MmdControlRigBuildError(
+                    f"finger control follow constraint was not created: {role}"
+                )
+            helper_nodes.append(str(constraint[0]))
+            continue
         parent_role = _available_parent_role(role, controls)
         if parent_role:
             cmds.parent(zero, controls[parent_role])
+    return tuple(helper_nodes)
 
 
 def _should_build_role_control(role_binding: MmdControlRigRoleBinding) -> bool:

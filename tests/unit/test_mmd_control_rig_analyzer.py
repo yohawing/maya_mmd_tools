@@ -82,11 +82,13 @@ class _ShapeOrientationFake:
 class _HierarchyFake:
     """Minimal parent graph that rejects introducing a descendant cycle."""
 
-    def __init__(self):
+    def __init__(self, joint_parents=None):
         self.parent_by_child = {
             "master_CTRL": "master_ZERO",
             "center_CTRL": "center_ZERO",
         }
+        self.joint_parents = dict(joint_parents or {})
+        self.constraints = []
 
     def parent(self, child, parent):
         ancestor = parent
@@ -95,6 +97,14 @@ class _HierarchyFake:
                 raise AssertionError(f"self-parent cycle: {child} -> {parent}")
             ancestor = self.parent_by_child[ancestor]
         self.parent_by_child[child] = parent
+
+    def listRelatives(self, node, **kwargs):
+        parent = self.joint_parents.get(node)
+        return [parent] if parent else []
+
+    def parentConstraint(self, target, zero, **kwargs):
+        self.constraints.append((target, zero, dict(kwargs)))
+        return [f"{zero}_FOLLOW"]
 
 
 class MmdControlRigCurveTemplateTest(unittest.TestCase):
@@ -444,7 +454,7 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
         }
 
         fake = _HierarchyFake()
-        _parent_zero_groups(fake, concrete_zeros, concrete_controls)
+        _parent_zero_groups(fake, concrete_zeros, concrete_controls, {})
         _apply_fallback_role_aliases(
             spec.roles,
             concrete_controls,
@@ -469,7 +479,7 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
             aliased_bindings,
         )
         with self.assertRaises(AssertionError):
-            _parent_zero_groups(aliased_fake, aliased_zeros, aliased_controls)
+            _parent_zero_groups(aliased_fake, aliased_zeros, aliased_controls, {})
 
     def test_finger_roles_resolve_variants_and_parent_as_fk_chains(self):
         facts = [
@@ -508,7 +518,7 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
             30,
         )
 
-        fake = _HierarchyFake()
+        fake = _HierarchyFake({"left_middle_1_JNT": "left_wrist_JNT"})
         controls = {
             "left_wrist": "left_wrist_CTRL",
             "left_middle_1": "left_middle_1_CTRL",
@@ -519,9 +529,28 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
             role: control.replace("_CTRL", "_ZERO")
             for role, control in controls.items()
         }
-        _parent_zero_groups(fake, zero_groups, controls)
+        helper_nodes = _parent_zero_groups(
+            fake,
+            zero_groups,
+            controls,
+            {"left_middle_1": "left_middle_1_JNT"},
+        )
 
-        self.assertEqual(fake.parent_by_child["left_middle_1_ZERO"], "left_wrist_CTRL")
+        self.assertNotIn("left_middle_1_ZERO", fake.parent_by_child)
+        self.assertEqual(
+            fake.constraints,
+            [
+                (
+                    "left_wrist_JNT",
+                    "left_middle_1_ZERO",
+                    {
+                        "maintainOffset": True,
+                        "name": "left_middle_1_ZERO_FOLLOW",
+                    },
+                )
+            ],
+        )
+        self.assertEqual(helper_nodes, ("left_middle_1_ZERO_FOLLOW",))
         self.assertEqual(fake.parent_by_child["left_middle_2_ZERO"], "left_middle_1_CTRL")
         self.assertEqual(fake.parent_by_child["left_middle_3_ZERO"], "left_middle_2_CTRL")
 
@@ -554,7 +583,7 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
             role: control.replace("_CTRL", "_ZERO")
             for role, control in controls.items()
         }
-        _parent_zero_groups(fake, zero_groups, controls)
+        _parent_zero_groups(fake, zero_groups, controls, {})
 
         self.assertEqual(fake.parent_by_child["waist_ZERO"], "groove_CTRL")
         self.assertEqual(fake.parent_by_child["upper_body_ZERO"], "waist_CTRL")
