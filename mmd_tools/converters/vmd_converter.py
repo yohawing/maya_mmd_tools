@@ -2033,12 +2033,6 @@ class VmdConverter:
                     remove_mmd_control_rig(root)
                 except Exception as exc:
                     errors.append(f"remove created rig failed: {exc}")
-        if transaction.get("prior_animation_snapshot"):
-            snapshot_error = self._restore_mmd_control_rig_animation_snapshot(
-                transaction["prior_animation_snapshot"]
-            )
-            if snapshot_error:
-                errors.append(snapshot_error)
         try:
             from .vmd_rotation_time_curve import (
                 restore_vmd_rotation_time_curve_snapshot,
@@ -2059,6 +2053,17 @@ class VmdConverter:
         )
         if scene_error:
             errors.append(scene_error)
+        # Restore controller keys after the scene snapshot has reinstated the
+        # original Maya time unit.  Restoring them before the timeline can
+        # cause Maya to reinterpret their numeric times when the failed import
+        # changed FPS (for example, ntscf -> ntsc), leaving an exact rollback
+        # with shifted key times despite an otherwise identical curve payload.
+        if transaction.get("prior_animation_snapshot"):
+            snapshot_error = self._restore_mmd_control_rig_animation_snapshot(
+                transaction["prior_animation_snapshot"]
+            )
+            if snapshot_error:
+                errors.append(snapshot_error)
         raw = transaction.get("prior_raw_metadata")
         if raw is not None and cmds.objExists(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}"):
             try:

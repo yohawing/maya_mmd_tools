@@ -11,7 +11,115 @@ from mmd_tools.converters.vmd_camera_animation import get_or_create_camera
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters.vmd_light_animation import get_or_create_light
 from mmd_tools.converters.vmd_import_state import clear_existing_motion
+from mmd_tools.core.vmd_data import VmdData
+from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
+from mmd_tools.io.mmd_importer import import_mmd_file
 from tests.common.maya_test_base import MayaTestBase
+
+
+_TEST_DATA = Path(__file__).resolve().parents[1] / "data"
+_PMX_PATH = str(_TEST_DATA / "mmt_test_model.pmx")
+
+
+def _synthetic_motion(*frames):
+    """Build a deterministic model-only VMD payload for converter gates."""
+    data = VmdData()
+    for bone_name, frame_number, position in frames:
+        frame = VmdBoneFrame()
+        frame.bone_name = bone_name
+        frame.frame_number = int(frame_number)
+        frame.position = tuple(float(value) for value in position)
+        frame.rotation = (0.0, 0.0, 0.0, 1.0)
+        data.bone_frames.append(frame)
+    return data
+
+
+def _find_mmd_joint(root, bone_name):
+    """Resolve an imported PMX joint by its MMD bone-name attribute."""
+    for node in cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or []:
+        if cmds.attributeQuery("mmd_bone_name", node=node, exists=True):
+            if cmds.getAttr(f"{node}.mmd_bone_name") == bone_name:
+                return node
+    raise AssertionError(f"MMD bone not found: {bone_name}")
+
+
+def _control_for_role(root, role):
+    """Resolve a UUID-backed control from the root metadata."""
+    metadata = json.loads(cmds.getAttr(f"{root}.mmd_control_rig_json"))
+    control_uuid = metadata["controls"][role]
+    controls = cmds.ls(control_uuid, long=True) or []
+    if not controls:
+        raise AssertionError(f"Control UUID not found: {role} / {control_uuid}")
+    return controls[0], metadata
+
+
+def _curve_state(plug):
+    """Capture key payload and animCurve identity without mutating Maya."""
+    curve_plugs = cmds.listConnections(
+        plug,
+        source=True,
+        destination=False,
+        type="animCurve",
+        plugs=True,
+    ) or []
+    curve = curve_plugs[0].split(".", 1)[0] if curve_plugs else None
+    if not curve:
+        return {
+            "curve": None,
+            "uuid": None,
+            "input": (),
+            "times": (),
+            "values": (),
+            "in_tangent": (),
+            "out_tangent": (),
+            "in_angle": (),
+            "out_angle": (),
+            "in_weight": (),
+            "out_weight": (),
+            "weighted": None,
+            "pre_infinite": None,
+            "post_infinite": None,
+            "pre_infinite_attr": None,
+            "post_infinite_attr": None,
+        }
+    return {
+        "curve": curve,
+        "uuid": (cmds.ls(curve, uuid=True) or [None])[0],
+        "input": tuple(
+            cmds.listConnections(
+                f"{curve}.input",
+                source=True,
+                destination=False,
+                plugs=True,
+            )
+            or []
+        ),
+        "times": tuple(cmds.keyframe(curve, query=True, timeChange=True) or []),
+        "values": tuple(cmds.keyframe(curve, query=True, valueChange=True) or []),
+        "in_tangent": tuple(cmds.keyTangent(curve, query=True, inTangentType=True) or []),
+        "out_tangent": tuple(cmds.keyTangent(curve, query=True, outTangentType=True) or []),
+        "in_angle": tuple(cmds.keyTangent(curve, query=True, inAngle=True) or []),
+        "out_angle": tuple(cmds.keyTangent(curve, query=True, outAngle=True) or []),
+        "in_weight": tuple(cmds.keyTangent(curve, query=True, inWeight=True) or []),
+        "out_weight": tuple(cmds.keyTangent(curve, query=True, outWeight=True) or []),
+        "weighted": cmds.keyTangent(curve, query=True, weightedTangents=True),
+        "pre_infinite": cmds.setInfinity(curve, query=True, preInfinite=True),
+        "post_infinite": cmds.setInfinity(curve, query=True, postInfinite=True),
+        "pre_infinite_attr": cmds.getAttr(f"{curve}.preInfinity"),
+        "post_infinite_attr": cmds.getAttr(f"{curve}.postInfinity"),
+    }
+
+
+def _timeline_state():
+    """Capture all timeline fields that the Control Rig transaction owns."""
+    return {
+        "current": float(cmds.currentTime(query=True)),
+        "min": float(cmds.playbackOptions(query=True, min=True)),
+        "max": float(cmds.playbackOptions(query=True, max=True)),
+        "animation_start": float(cmds.playbackOptions(query=True, animationStartTime=True)),
+        "animation_end": float(cmds.playbackOptions(query=True, animationEndTime=True)),
+        "time_unit": cmds.currentUnit(query=True, time=True),
+    }
 
 
 class _EmptyVmdData:
@@ -31,6 +139,184 @@ class TestCr06103SceneTransaction(MayaTestBase):
         plugin_path = Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py"
         if not cmds.pluginInfo(str(plugin_path), query=True, loaded=True):
             cls.plugins_loaded.extend(cmds.loadPlugin(str(plugin_path), quiet=True) or [])
+
+    def _import_control_fixture(self, namespace):
+        """Import the deterministic indexed PMX fixture without optional shading."""
+        root = import_mmd_file(
+            _PMX_PATH,
+            options={
+                "custom_namespace": namespace,
+                "setup_rig": True,
+                "setup_bone_orientation": True,
+                "import_physics": False,
+                "create_mmd_shaders": False,
+            },
+        )
+        self.assertTrue(root)
+        return cmds.ls(root, long=True)[0]
+
+    def test_convert_control_rig_motion_a_to_b_clears_only_target_owned_keys(self):
+        """Public VmdConverter.convert replaces A with B on one Control Rig root."""
+        target_root = self._import_control_fixture("cr06103_target")
+        foreign_root = self._import_control_fixture("cr06103_foreign")
+        foreign_joint = _find_mmd_joint(foreign_root, "センター")
+        cmds.setKeyframe(foreign_joint, attribute="translateX", time=17, value=4.5)
+
+        motion_a = _synthetic_motion(
+            ("センター", 5, (0.25, 0.0, 0.0)),
+            ("センター", 9, (0.75, 0.0, 0.0)),
+        )
+        self.assertTrue(
+            VmdConverter().convert(
+                motion_a,
+                target_model=target_root,
+                create_mmd_control_rig=True,
+            )
+        )
+        center_control, metadata_a = _control_for_role(target_root, "center")
+        groove_control, metadata_a_again = _control_for_role(target_root, "groove")
+        self.assertEqual(metadata_a, metadata_a_again)
+        self.assertEqual(metadata_a["state"], "EDIT")
+        self.assertEqual(metadata_a["owner"], "CONTROL_OWNED")
+        center_before = _curve_state(f"{center_control}.translateX")
+        self.assertTrue(center_before["curve"])
+        if not center_before["input"]:
+            cmds.connectAttr("time1.outTime", f"{center_before['curve']}.input", force=True)
+            center_before = _curve_state(f"{center_control}.translateX")
+        self.assertGreaterEqual(len(center_before["times"]), 2)
+        self.assertIsNotNone(center_before["uuid"])
+        self.assertTrue(center_before["input"])
+        # Capture after the target import establishes its global time unit;
+        # the subsequent clear must not touch this foreign model.
+        foreign_before = _curve_state(f"{foreign_joint}.translateX")
+
+        motion_b = _synthetic_motion(
+            ("グルーブ", 21, (0.4, 0.0, 0.0)),
+            ("グルーブ", 27, (1.1, 0.0, 0.0)),
+        )
+        self.assertTrue(
+            VmdConverter().convert(
+                motion_b,
+                target_model=target_root,
+                clear_existing_motion=True,
+                create_mmd_control_rig=True,
+            )
+        )
+
+        center_after = _curve_state(f"{center_control}.translateX")
+        groove_after = _curve_state(f"{groove_control}.translateX")
+        self.assertEqual(center_after["curve"], center_before["curve"])
+        self.assertEqual(center_after["uuid"], center_before["uuid"])
+        self.assertEqual(center_after["input"], center_before["input"])
+        self.assertFalse(center_after["times"], "A-only center keys survived clear_existing_motion")
+        self.assertTrue(groove_after["times"], "B-only groove keys were not authored")
+        self.assertEqual(
+            _curve_state(f"{foreign_joint}.translateX"),
+            foreign_before,
+            "foreign model animation was modified by target-scoped reimport",
+        )
+        metadata_after = json.loads(cmds.getAttr(f"{target_root}.mmd_control_rig_json"))
+        self.assertEqual(metadata_after["state"], "EDIT")
+        self.assertEqual(metadata_after["owner"], "CONTROL_OWNED")
+        self.assertEqual(metadata_after["controls"], metadata_a["controls"])
+
+    def test_convert_control_rig_late_failure_restores_exact_a_transaction_state(self):
+        """A late failure after clear and partial B keys restores the full A state."""
+        target_root = self._import_control_fixture("cr06103_rollback")
+        motion_a = _synthetic_motion(
+            ("センター", 6, (0.2, 0.0, 0.0)),
+            ("センター", 12, (0.9, 0.0, 0.0)),
+        )
+        self.assertTrue(
+            VmdConverter().convert(
+                motion_a,
+                target_model=target_root,
+                create_mmd_control_rig=True,
+            )
+        )
+        center_control, metadata = _control_for_role(target_root, "center")
+        center_plug = f"{center_control}.translateX"
+        center_curve = _curve_state(center_plug)
+        self.assertTrue(center_curve["curve"])
+        if not center_curve["input"]:
+            cmds.connectAttr("time1.outTime", f"{center_curve['curve']}.input", force=True)
+            center_curve = _curve_state(center_plug)
+        self.assertTrue(center_curve["input"])
+        cmds.keyTangent(center_curve["curve"], edit=True, weightedTangents=True)
+        cmds.keyTangent(
+            center_curve["curve"],
+            edit=True,
+            time=(center_curve["times"][0], center_curve["times"][0]),
+            inTangentType="fixed",
+            outTangentType="fixed",
+            outAngle=23.0,
+            outWeight=0.65,
+        )
+        cmds.keyTangent(
+            center_curve["curve"],
+            edit=True,
+            time=(center_curve["times"][-1], center_curve["times"][-1]),
+            inTangentType="fixed",
+            outTangentType="fixed",
+            inAngle=-17.0,
+            inWeight=0.45,
+        )
+        cmds.setInfinity(center_curve["curve"], edit=True, preInfinite="cycle", postInfinite="oscillate")
+        cmds.currentUnit(time="ntscf")
+        cmds.playbackOptions(min=-20, max=300, animationStartTime=10, animationEndTime=250)
+        cmds.currentTime(123, edit=True)
+        before = _curve_state(center_plug)
+        before_metadata_raw = cmds.getAttr(f"{target_root}.mmd_control_rig_json")
+        before_timeline = _timeline_state()
+
+        motion_b = _synthetic_motion(
+            ("センター", 18, (2.0, 0.0, 0.0)),
+            ("センター", 24, (3.0, 0.0, 0.0)),
+        )
+        motion_b.morph_frames = [object()]
+        converter = VmdConverter()
+
+        def _fail_after_partial_b_writes(_frames):
+            partial = _curve_state(center_plug)
+            self.assertTrue(partial["times"], "late failure was not reached after B key writes")
+            self.assertNotEqual(partial["times"], before["times"])
+            raise RuntimeError("forced late B morph failure")
+
+        with patch.object(
+            converter,
+            "_convert_morph_animation",
+            side_effect=_fail_after_partial_b_writes,
+        ):
+            with self.assertRaises(Exception) as raised:
+                converter.convert(
+                    motion_b,
+                    target_model=target_root,
+                    clear_existing_motion=True,
+                    create_mmd_control_rig=True,
+                )
+        self.assertIn("forced late B morph failure", str(raised.exception))
+
+        after = _curve_state(center_plug)
+        self.assertEqual(after["curve"], before["curve"])
+        self.assertEqual(after["uuid"], before["uuid"])
+        self.assertEqual(after["input"], before["input"])
+        self.assertEqual(after["times"], before["times"])
+        self.assertEqual(after["values"], before["values"])
+        self.assertEqual(after["in_tangent"], before["in_tangent"])
+        self.assertEqual(after["out_tangent"], before["out_tangent"])
+        self.assertEqual(after["weighted"], before["weighted"])
+        self.assertEqual(after["pre_infinite"], before["pre_infinite"])
+        self.assertEqual(after["post_infinite"], before["post_infinite"])
+        self.assertEqual(after["pre_infinite_attr"], before["pre_infinite_attr"])
+        self.assertEqual(after["post_infinite_attr"], before["post_infinite_attr"])
+        for field in ("in_angle", "out_angle", "in_weight", "out_weight"):
+            self.assertEqual(len(after[field]), len(before[field]))
+            for actual, expected in zip(after[field], before[field]):
+                self.assertAlmostEqual(actual, expected, places=5, msg=field)
+        self.assertEqual(cmds.getAttr(f"{target_root}.mmd_control_rig_json"), before_metadata_raw)
+        self.assertEqual(_timeline_state(), before_timeline)
+        self.assertEqual(metadata["state"], "EDIT")
+        self.assertEqual(metadata["owner"], "CONTROL_OWNED")
 
     def test_late_failure_restores_curve_timeline_and_created_camera_light(self):
         root = cmds.group(empty=True, name="cr06103_transaction_model")
