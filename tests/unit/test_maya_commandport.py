@@ -39,9 +39,14 @@ class TestMayaCommandPort(unittest.TestCase):
                         "MAYA_APP_DIR": str(root / "isolated-maya-app"),
                         "MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceGLCore",
                     },
+                    startup_mel='optionVar -sva "SafeModeAllowedlistPaths" "F:/repo";',
                 )
             self.assertIsNone(result)
-            self.assertIn('commandPort -name ":7788"', (output / "commandport_7788.mel").read_text(encoding="utf-8"))
+            startup_script = (output / "commandport_7788.mel").read_text(encoding="utf-8")
+            self.assertLess(
+                startup_script.index("SafeModeAllowedlistPaths"),
+                startup_script.index('commandPort -name ":7788"'),
+            )
             batch = (output / "launch_maya_2025_7788.bat").read_text(encoding="utf-8")
             self.assertIn(f"MAYA_APP_DIR={root / 'isolated-maya-app'}", batch)
             self.assertIn("MAYA_VP2_DEVICE_OVERRIDE=VirtualDeviceGLCore", batch)

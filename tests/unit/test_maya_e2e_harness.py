@@ -169,14 +169,12 @@ class TestMayaE2EHarness(unittest.TestCase):
                     profile / "2024" / "ja_JP" / "prefs" / "userPrefs.mel"
                 ).read_text(encoding="utf-8")
                 self.assertEqual(prefs, localized_prefs)
-                localized_user_setup = (
-                    profile / "2024" / "ja_JP" / "scripts" / "userSetup.mel"
-                ).read_text(encoding="utf-8")
+                startup_mel = _kwargs["startup_mel"]
                 self.assertIn(
                     f'SafeModeAllowedlistPaths" "{expected_plugin_dir}"',
-                    localized_user_setup,
+                    startup_mel,
                 )
-                self.assertNotIn("MAYA_SECURE_OPTOUT", localized_user_setup)
+                self.assertNotIn("MAYA_SECURE_OPTOUT", startup_mel)
                 return None
 
             def wait_for_close(*_args, **_kwargs):
