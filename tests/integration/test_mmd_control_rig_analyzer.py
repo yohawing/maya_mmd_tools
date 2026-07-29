@@ -52,6 +52,18 @@ _TEST_DATA = os.path.join(
 )
 _PMX_PATH = os.path.join(_TEST_DATA, "mmt_test_model.pmx")
 _VMD_PATH = os.path.join(_TEST_DATA, "mmt_test_model_test_motion.vmd")
+_CONTROL_POLICY_TEST_CHANNELS = (
+    "translateX",
+    "translateY",
+    "translateZ",
+    "rotateX",
+    "rotateY",
+    "rotateZ",
+    "scaleX",
+    "scaleY",
+    "scaleZ",
+    "visibility",
+)
 
 
 class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
@@ -121,6 +133,44 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         root = import_mmd_file(_PMX_PATH, options=options)
         self.assertTrue(root)
         return root
+
+    def _channel_flags(self, control):
+        """Capture exact channel state for a UUID-resolved control."""
+        return {
+            channel: (
+                bool(cmds.getAttr(f"{control}.{channel}", lock=True)),
+                bool(cmds.getAttr(f"{control}.{channel}", keyable=True)),
+                bool(cmds.getAttr(f"{control}.{channel}", channelBox=True)),
+            )
+            for channel in _CONTROL_POLICY_TEST_CHANNELS
+        }
+
+    def _metadata_control(self, metadata, role):
+        """Resolve a recorded control UUID instead of trusting its display name."""
+        control_uuid = metadata["controls"][role]
+        controls = cmds.ls(control_uuid, long=True) or []
+        self.assertEqual(len(controls), 1, role)
+        return str(controls[0])
+
+    def _assert_representative_channel_policy(self, center_flags, fk_flags):
+        for channel in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
+            self.assertFalse(center_flags[channel][0], channel)
+            self.assertTrue(center_flags[channel][1], channel)
+        for channel in ("scaleX", "scaleY", "scaleZ", "visibility"):
+            self.assertTrue(center_flags[channel][0], channel)
+            self.assertFalse(center_flags[channel][1], channel)
+            self.assertFalse(center_flags[channel][2], channel)
+        for channel in ("translateX", "translateY", "translateZ"):
+            self.assertTrue(fk_flags[channel][0], channel)
+            self.assertFalse(fk_flags[channel][1], channel)
+            self.assertFalse(fk_flags[channel][2], channel)
+        for channel in ("rotateX", "rotateY", "rotateZ"):
+            self.assertFalse(fk_flags[channel][0], channel)
+            self.assertTrue(fk_flags[channel][1], channel)
+        for channel in ("scaleX", "scaleY", "scaleZ", "visibility"):
+            self.assertTrue(fk_flags[channel][0], channel)
+            self.assertFalse(fk_flags[channel][1], channel)
+            self.assertFalse(fk_flags[channel][2], channel)
 
     def _create_minimal_control_rig_graph(self, *, include_append=False):
         """Create a small indexed Maya graph without relying on a PMX fixture."""
@@ -368,6 +418,98 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
                 f"{control}.rotateX",
                 f"{append_node}.baseRotateX",
             )
+        )
+
+    def test_control_channel_flags_survive_lifecycle_and_failed_transition(self):
+        """Ownership transitions preserve the authored channel contract."""
+        root, _center, _left_ik, _right_ik, _append_joint, _append_node = (
+            self._create_minimal_control_rig_graph(include_append=True)
+        )
+        build_mmd_control_rig(root)
+        metadata = read_mmd_control_rig_metadata(root)
+        center = self._metadata_control(metadata, "center")
+        fk = self._metadata_control(metadata, "upper_body")
+        center_flags = self._channel_flags(center)
+        fk_flags = self._channel_flags(fk)
+        self._assert_representative_channel_policy(center_flags, fk_flags)
+
+        # A failure inside the existing ownership transaction must leave the
+        # channel flags untouched along with its graph/metadata rollback.
+        connect_attr = cmds.connectAttr
+        failures = [RuntimeError("simulated lifecycle enter failure")]
+
+        def fail_once(*args, **kwargs):
+            if failures:
+                raise failures.pop()
+            return connect_attr(*args, **kwargs)
+
+        with mock.patch.object(cmds, "connectAttr", side_effect=fail_once):
+            with self.assertRaisesRegex(RuntimeError, "simulated lifecycle enter failure"):
+                enter_mmd_control_rig_edit(root)
+        self.assertEqual(read_mmd_control_rig_metadata(root)["state"], "ATTACHED")
+        self.assertEqual(self._channel_flags(center), center_flags)
+        self.assertEqual(self._channel_flags(fk), fk_flags)
+
+        entered = enter_mmd_control_rig_edit(root)
+        self.assertEqual(entered["state"], "EDIT")
+        self.assertEqual(self._channel_flags(center), center_flags)
+        self.assertEqual(self._channel_flags(fk), fk_flags)
+
+        baked = bake_mmd_control_rig(root)
+        self.assertEqual(baked["state"], "BAKED")
+        self.assertEqual(self._channel_flags(center), center_flags)
+        self.assertEqual(self._channel_flags(fk), fk_flags)
+
+        entered_again = enter_mmd_control_rig_edit(root)
+        self.assertEqual(entered_again["state"], "EDIT")
+        restored = restore_mmd_control_rig_attached(root)
+        self.assertEqual(restored["state"], "ATTACHED")
+        self.assertEqual(self._channel_flags(center), center_flags)
+        self.assertEqual(self._channel_flags(fk), fk_flags)
+
+    def test_control_channel_flags_survive_build_undo_redo_and_reopen(self):
+        """Channel flags survive Maya lifecycle persistence and UUID lookup."""
+        root, _center, _left_ik, _right_ik, _append_joint, _append_node = (
+            self._create_minimal_control_rig_graph(include_append=True)
+        )
+        build_mmd_control_rig(root)
+        metadata = read_mmd_control_rig_metadata(root)
+        center = self._metadata_control(metadata, "center")
+        fk = self._metadata_control(metadata, "upper_body")
+        expected_center = self._channel_flags(center)
+        expected_fk = self._channel_flags(fk)
+
+        cmds.undo()
+        self.assertFalse(cmds.ls(metadata["controlGroupUuid"], long=True))
+        cmds.redo()
+        redone_metadata = read_mmd_control_rig_metadata(root)
+        redone_center = self._metadata_control(redone_metadata, "center")
+        redone_fk = self._metadata_control(redone_metadata, "upper_body")
+        self.assertEqual(self._channel_flags(redone_center), expected_center)
+        self.assertEqual(self._channel_flags(redone_fk), expected_fk)
+
+        scene_path = self.get_temp_filename("mmd_control_rig_channel_policy_reopen.ma")
+        cmds.file(rename=scene_path)
+        cmds.file(save=True, type="mayaAscii", force=True)
+        cmds.file(scene_path, open=True, force=True)
+        reopened_root = (cmds.ls(root, long=True) or [root])[0]
+        reopened_metadata = read_mmd_control_rig_metadata(reopened_root)
+        reopened_center = self._metadata_control(reopened_metadata, "center")
+        reopened_fk = self._metadata_control(reopened_metadata, "upper_body")
+        self.assertEqual(self._channel_flags(reopened_center), expected_center)
+        self.assertEqual(self._channel_flags(reopened_fk), expected_fk)
+
+        # Reuse invokes the explicit migration path but resolves the same
+        # controls by UUID and preserves the already-correct state.
+        reused = build_mmd_control_rig(reopened_root)
+        self.assertFalse(reused.created)
+        self.assertEqual(
+            self._channel_flags(self._metadata_control(reopened_metadata, "center")),
+            expected_center,
+        )
+        self.assertEqual(
+            self._channel_flags(self._metadata_control(reopened_metadata, "upper_body")),
+            expected_fk,
         )
 
     def test_bone_morph_ik_controller_authors_accumulator_base_without_cycle(self):
