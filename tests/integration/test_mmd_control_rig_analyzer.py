@@ -251,6 +251,36 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertNotIn("waist", rig.controls)
         self.assertNotIn("left_toe_ik", rig.controls)
 
+    def test_new_controls_expose_only_role_authoring_channels(self):
+        """Build applies rotate-only FK and locks non-authored channels."""
+        root, _center, _left_ik, _right_ik, _append_joint, _append_node = (
+            self._create_minimal_control_rig_graph(include_append=True)
+        )
+
+        rig = build_mmd_control_rig(root)
+        center = rig.controls["center"]
+        upper_body = rig.controls["upper_body"]
+
+        for channel in ("translateX", "rotateX"):
+            with self.subTest(control="center", channel=channel):
+                self.assertFalse(cmds.getAttr(f"{center}.{channel}", lock=True))
+                self.assertTrue(cmds.getAttr(f"{center}.{channel}", keyable=True))
+                self.assertFalse(cmds.getAttr(f"{center}.{channel}", channelBox=True))
+
+        self.assertTrue(cmds.getAttr(f"{upper_body}.translateX", lock=True))
+        self.assertFalse(cmds.getAttr(f"{upper_body}.translateX", keyable=True))
+        self.assertFalse(cmds.getAttr(f"{upper_body}.translateX", channelBox=True))
+        self.assertFalse(cmds.getAttr(f"{upper_body}.rotateX", lock=True))
+        self.assertTrue(cmds.getAttr(f"{upper_body}.rotateX", keyable=True))
+        self.assertFalse(cmds.getAttr(f"{upper_body}.rotateX", channelBox=True))
+
+        for control in (center, upper_body):
+            for channel in ("scaleX", "visibility"):
+                with self.subTest(control=control, channel=channel):
+                    self.assertTrue(cmds.getAttr(f"{control}.{channel}", lock=True))
+                    self.assertFalse(cmds.getAttr(f"{control}.{channel}", keyable=True))
+                    self.assertFalse(cmds.getAttr(f"{control}.{channel}", channelBox=True))
+
     def test_negative_append_ratio_preserves_signed_control_route(self):
         """Negative Append contribution remains authored through the base input."""
         root, _center, _left_ik, _right_ik, append_joint, append_node = (

@@ -30,6 +30,10 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
     STATUS_FALLBACK,
     analyze_mmd_control_rig,
 )
+from mmd_tools.core.mmd_control_rig_channels import (
+    apply_mmd_control_rig_channel_policy,
+    derive_mmd_control_rig_channel_policy,
+)
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
 
@@ -277,6 +281,11 @@ def build_mmd_control_rig(
                 _rename_control_shapes(cmds, control, namespace, role)
                 cmds.setAttr(f"{control}.translate", 0.0, 0.0, 0.0, type="double3")
                 cmds.setAttr(f"{control}.rotate", 0.0, 0.0, 0.0, type="double3")
+                apply_mmd_control_rig_channel_policy(
+                    cmds,
+                    control,
+                    derive_mmd_control_rig_channel_policy(role, binding),
+                )
                 _color_control(cmds, control, _ROLE_COLORS[role])
                 cmds.sets(control, add=selection_set)
                 controls[role] = str(control)

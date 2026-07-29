@@ -461,7 +461,12 @@ class TestControlRigImportPreflight(unittest.TestCase):
         fake_cmds = FakeCmds()
         metadata = {
             "owner": "CONTROL_OWNED",
-            "bindings": {"center": {}},
+            "bindings": {
+                "center": {
+                    "inputKind": "direct_channel",
+                    "authoredPlugs": [f"{joint}.translateX"],
+                }
+            },
             "controls": {"center": "control-uuid"},
         }
         with patch.object(

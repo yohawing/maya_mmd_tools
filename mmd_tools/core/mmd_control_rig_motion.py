@@ -32,6 +32,9 @@ from mmd_tools.core.mmd_control_rig_builder import (
     resolve_mmd_control_rig_binding_joint,
 )
 from mmd_tools.core.mmd_control_rig_analyzer import INPUT_DIRECT_CHANNEL, INPUT_IK_CONTROLLER
+from mmd_tools.core.mmd_control_rig_channels import (
+    derive_mmd_control_rig_channel_policy,
+)
 
 
 _CHANNELS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
@@ -68,7 +71,11 @@ def control_rig_edit_routes_for_joints(joints, *, cmds_module=None) -> Dict[str,
         for role, binding in metadata.get("bindings", {}).items():
             try:
                 joint = resolve_mmd_control_rig_binding_joint(cmds, binding)
-                authored_plugs = _expanded_authored_plugs(binding, cmds_module=cmds)
+                authored_plugs = _owned_authored_plugs(
+                    role,
+                    binding,
+                    cmds_module=cmds,
+                )
             except MmdControlRigBuildError:
                 continue
             if joint not in wanted:
@@ -231,7 +238,11 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                 control = controls.get(role)
                 if control is None:
                     raise MmdControlRigBuildError(f"missing owned control for {role}")
-                for target in _expanded_authored_plugs(binding, cmds_module=cmds):
+                for target in _owned_authored_plugs(
+                    role,
+                    binding,
+                    cmds_module=cmds,
+                ):
                     if target in claimed_targets:
                         continue
                     claimed_targets.add(target)
@@ -593,7 +604,11 @@ def _entry_transaction_plugs(cmds, metadata, controls) -> Tuple[str, ...]:
         control = controls.get(role)
         if control is None:
             raise MmdControlRigBuildError(f"missing owned control for {role}")
-        for target in _expanded_authored_plugs(binding, cmds_module=cmds):
+        for target in _owned_authored_plugs(
+            role,
+            binding,
+            cmds_module=cmds,
+        ):
             plugs.add(target)
             plugs.add(f"{control}.{_control_channel_for_target(target)}")
         plugs.add(f"{control}.offsetParentMatrix")
@@ -684,6 +699,22 @@ def _expanded_authored_plugs(
         else:
             plugs.append(str(plug))
     return tuple(plugs)
+
+
+def _owned_authored_plugs(
+    role: str,
+    binding: Mapping[str, Any],
+    *,
+    cmds_module=None,
+) -> Tuple[str, ...]:
+    """Return only authored targets exposed by the role's channel policy."""
+    policy = derive_mmd_control_rig_channel_policy(role, binding)
+    allowed = set(policy.keyable_channels)
+    return tuple(
+        target
+        for target in _expanded_authored_plugs(binding, cmds_module=cmds_module)
+        if _control_channel_for_target(target) in allowed
+    )
 
 
 def _control_channel_for_target(target: str) -> str:
