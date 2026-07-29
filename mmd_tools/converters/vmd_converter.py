@@ -94,6 +94,10 @@ from .vmd_runtime_rig_helper import (
     has_live_mmd_rig_for_runtime_target,
     restore_joints_to_bind_pose_for_runtime_bake,
 )
+from .vmd_runtime_provenance import (
+    build_runtime_registration_provenance,
+    store_runtime_registration_provenance,
+)
 from .vmd_runtime_channels import (
     append_bone_locals_to_channel_arrays,
     create_runtime_joint_channel_arrays,
@@ -148,7 +152,9 @@ try:
         MmdRuntimeClip,
         MmdRuntimeInstance,
         MmdRuntimePhysicsWorld,
+        get_mmd_runtime_library,
         get_runtime_feature_flags,
+        get_runtime_library_path,
     )
     from ..core.native.mmd_anim_runtime_local_channels import (
         compute_maya_local_channels,
@@ -168,6 +174,12 @@ except Exception:
 
     def get_runtime_feature_flags():
         return 0
+
+    def get_mmd_runtime_library():
+        return None
+
+    def get_runtime_library_path():
+        return None
 
     MmdRuntimeModel = MmdRuntimeClip = MmdRuntimeInstance = MmdRuntimePhysicsWorld = None  # type: ignore
     compute_maya_local_channels = None  # type: ignore
@@ -752,6 +764,7 @@ class VmdConverter:
                     reduce_rotate_tolerance=import_context.reduce_rotate_tolerance,
                     reduce_morph_tolerance=import_context.reduce_morph_tolerance,
                     profile=import_context.profile,
+                    target_model=import_context.target_model,
                 )
                 if runtime_success:
                     self.logger.info("mmd-anim runtime high-precision bake completed")
@@ -788,6 +801,8 @@ class VmdConverter:
                             "severity": "warning",
                             "message": "mmd-anim runtime bake failed; falling back to legacy VMD conversion",
                             "fallback": "legacy",
+                            "registration_mode": "model_paired_registered",
+                            "parity_guaranteed": False,
                             "bake_mode": bool(import_context.bake_mode),
                             "live_rig_target": bool(live_rig_target),
                             "has_vmd_bytes": bool(vmd_bytes),
@@ -2388,6 +2403,7 @@ class VmdConverter:
         reduce_translate_tolerance: float = 5.0e-4,
         reduce_rotate_tolerance: float = 1.0e-4,
         reduce_morph_tolerance: float = 1.0e-3,
+        target_model: Optional[str] = None,
     ) -> bool:
         """
         mmd-anim runtime を使って全フレームを評価し、正確なポーズをベイクする。
@@ -2413,20 +2429,47 @@ class VmdConverter:
             self.logger.error("Could not get PMX data required for runtime bake")
             return False
 
+        runtime_library = get_mmd_runtime_library() if HAS_MMD_RUNTIME else None
+        runtime_abi_version = 0
+        if runtime_library is not None:
+            try:
+                runtime_abi_version = int(runtime_library.mmd_runtime_abi_version())
+            except Exception:
+                self.logger.debug("Failed to query mmd-anim runtime ABI", exc_info=True)
+        registration_profile = build_runtime_registration_provenance(
+            vmd_bytes=vmd_bytes,
+            pmx_bytes=resolved_pmx_bytes,
+            vmd_source_path=getattr(vmd_data, "source_file", None),
+            pmx_source_path=pmx_path,
+            runtime_library_path=get_runtime_library_path() if HAS_MMD_RUNTIME else None,
+            runtime_abi_version=runtime_abi_version,
+            runtime_feature_flags=int(get_runtime_feature_flags()) if HAS_MMD_RUNTIME else 0,
+        )
+        registration_profile["target_model"] = str(target_model or "")
+        if isinstance(profile, dict):
+            profile.setdefault("vmd_converter", {})["runtime_registration"] = registration_profile
+
+        def _registration_failed(reason: str) -> None:
+            registration_profile["status"] = "failed"
+            registration_profile["reason"] = reason
+
         # モデル・クリップ・インスタンス作成
         model = MmdRuntimeModel.from_pmx_bytes(resolved_pmx_bytes)
         if model is None:
+            _registration_failed("model_create_failed")
             self.logger.error("Failed to create MmdRuntimeModel")
             return False
 
         clip = MmdRuntimeClip.from_vmd_bytes_for_model(model, vmd_bytes)
         if clip is None:
+            _registration_failed("registered_clip_create_failed")
             self.logger.error("Failed to create MmdRuntimeClip")
             model.free()
             return False
 
         instance = MmdRuntimeInstance.for_model(model)
         if instance is None:
+            _registration_failed("instance_create_failed")
             self.logger.error("Failed to create MmdRuntimeInstance")
             clip.free()
             model.free()
@@ -2636,6 +2679,15 @@ class VmdConverter:
 
             runtime_elapsed = time.perf_counter() - runtime_start
             self.logger.debug(f"runtime bake total elapsed={runtime_elapsed:.3f}s")
+
+            registration_profile["status"] = "success"
+            registration_profile["evaluation_mode"] = (
+                "batch" if runtime_cache.batch_mode else "frame"
+            )
+            registration_profile["frame_count"] = len(runtime_cache.baked_frames)
+            registration_profile["scene_metadata_stored"] = (
+                store_runtime_registration_provenance(target_model, registration_profile)
+            )
 
             return True
 

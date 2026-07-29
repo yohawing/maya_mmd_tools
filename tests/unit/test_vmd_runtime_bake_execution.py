@@ -77,6 +77,7 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
         self.converter.bone_name_to_index = {}
         logger_mock = MagicMock()
         self.converter.logger = logger_mock
+        profile = {}
         with patch.object(vmd_converter_module, "MmdRuntimeModel", FakeModel), patch.object(
             vmd_converter_module,
             "MmdRuntimeClip",
@@ -87,11 +88,18 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
                 vmd_bytes=b"vmd",
                 pmx_bytes=b"pmx",
                 pmx_path="",
+                profile=profile,
             )
 
         self.assertTrue(result)
         self.assertEqual(FakeInstance.last.batch_calls, [(0.0, 1.0, 3, 0)])
         self.assertEqual(FakeInstance.last.per_frame_calls, [])
+        registration = profile["vmd_converter"]["runtime_registration"]
+        self.assertEqual(registration["registration_mode"], "model_paired_registered")
+        self.assertEqual(registration["status"], "success")
+        self.assertEqual(registration["fallback"], "none")
+        self.assertEqual(registration["evaluation_mode"], "batch")
+        self.assertEqual(registration["frame_count"], 3)
 
         # Internal runtime bake detail stays on DEBUG; completion summary stays on INFO.
         detail_debug_prefixes = (
