@@ -13,6 +13,7 @@ from ..core.namespace_utils import NamespaceUtils
 from .vmd_context import VmdImportStateContext
 from .vmd_ik_enabled_animation import ik_node_is_owned_by_root, root_owned_joints
 from .vmd_morph_mapping import morph_node_is_owned_by_root
+from .vmd_rotation_time_curve import delete_vmd_rotation_time_curves_for_controls
 from .vmd_runtime_rig_helper import _ls_mmd_ccd_ik_nodes
 from ..core.mmd_control_rig_builder import CONTROL_RIG_CONTROL_OWNED, read_mmd_control_rig_metadata
 from ..core.mmd_control_rig_motion import (
@@ -173,6 +174,8 @@ def clear_existing_motion(
         if not target_model or _nodes_are_exclusively_owned([joint], owned_joints)
     }
     fallback_translates = _capture_fallback_rest_translates(mapped_joints, context.logger)
+    if not preserve_curve_nodes:
+        cleared += len(delete_vmd_rotation_time_curves_for_controls(mapped_joints))
     for joint in mapped_joints:
         owned_motion_nodes.add(joint)
         cleared += cut_keyable_attrs(

@@ -909,7 +909,10 @@ class VmdConverter:
                             )
                         if not bone_success:
                             self.logger.warning("Some errors occurred during bone animation conversion")
-                    if self.use_vmd_rotation_time_curve:
+                    if (
+                        self._rotation_time_curve_records
+                        and import_context.create_mmd_control_rig
+                    ):
                         from .vmd_rotation_time_curve import (
                             record_vmd_rotation_time_curve_metadata,
                         )
@@ -962,7 +965,7 @@ class VmdConverter:
                     control_rig_transaction.get(
                         "staged_rotation_time_curve_nodes", []
                     ),
-                    clear_metadata=not self.use_vmd_rotation_time_curve,
+                    clear_metadata=not bool(self._rotation_time_curve_records),
                 )
                 self._discard_mmd_control_rig_detached_motion_curves(
                     control_rig_transaction

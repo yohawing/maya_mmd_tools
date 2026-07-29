@@ -1,4 +1,4 @@
-"""Author experimental sparse VMD rotation time curves for Control Rig tracks."""
+"""Author sparse VMD rotation time curves for quaternion animation tracks."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ def apply_vmd_rotation_time_curve(
     vmd_bone_name: str,
     *,
     time_converter: Callable[[float], float] = float,
+    animation_layer: str | None = None,
 ) -> dict[str, Any]:
     """Create or update one weighted ``animCurveTT`` for an XYZ quaternion track."""
     ordered = sorted(frames, key=get_frame_number)
@@ -39,20 +40,13 @@ def apply_vmd_rotation_time_curve(
     if any(plug.rsplit(".", 1)[0] != control for plug in plugs):
         raise RuntimeError("VMD rotation time curve cannot span multiple controls")
 
-    curves = []
+    curves = _resolve_quaternion_curves(
+        plugs,
+        animation_layer=animation_layer,
+        require_quaternion=True,
+    )
     existing_time_curves = set()
-    for plug in plugs:
-        incoming = cmds.listConnections(
-            plug, source=True, destination=False, plugs=True
-        ) or []
-        if len(incoming) != 1:
-            raise RuntimeError(f"VMD rotation curve is unresolved: {plug}")
-        curve = str(incoming[0]).split(".", 1)[0]
-        if not str(cmds.nodeType(curve)).startswith("animCurve"):
-            raise RuntimeError(f"VMD rotation source is not an animCurve: {plug}")
-        if cmds.rotationInterpolation(curve, query=True) != "quaternionSlerp":
-            raise RuntimeError(f"VMD rotation source is not quaternion: {curve}")
-        curves.append(curve)
+    for curve in curves:
         sources = cmds.listConnections(
             f"{curve}.input", source=True, destination=False, plugs=True
         ) or []
@@ -117,9 +111,13 @@ def _author_vmd_rotation_time_curve(
         dt = end - start
         if dt <= 0.0:
             continue
-        points = parse_vmd_interpolation(get_frame_interpolation(arriving)).get(
-            "rotation"
+        interpolation_source = get_frame_interpolation(arriving)
+        interpolation = (
+            interpolation_source
+            if isinstance(interpolation_source, Mapping)
+            else parse_vmd_interpolation(interpolation_source)
         )
+        points = interpolation.get("rotation")
         if not points:
             continue
         x1, y1, x2, y2 = points
@@ -160,6 +158,56 @@ def _author_vmd_rotation_time_curve(
         "keyCount": len(ordered),
         "interpolationBytesAttribute": _INTERPOLATION_ATTR,
     }
+
+
+def _resolve_quaternion_curves(
+    plugs: list[str],
+    *,
+    animation_layer: str | None,
+    require_quaternion: bool,
+) -> list[str]:
+    """Resolve exactly one authored rotation curve per plug.
+
+    Animation-layer plugs are driven by an ``animBlendNode`` rather than by
+    their authored curves directly.  Intersecting ``keyframe -name`` with the
+    selected layer keeps the lookup root- and layer-scoped.
+    """
+    layer_curves = None
+    if animation_layer:
+        layer_curves = set(
+            cmds.animLayer(animation_layer, query=True, animCurves=True) or []
+        )
+    curves = []
+    for plug in plugs:
+        if layer_curves is None:
+            incoming = cmds.listConnections(
+                plug, source=True, destination=False, plugs=True
+            ) or []
+            candidates = [str(source).split(".", 1)[0] for source in incoming]
+        else:
+            candidates = [
+                str(curve)
+                for curve in (cmds.keyframe(plug, query=True, name=True) or [])
+                if str(curve) in layer_curves
+            ]
+        candidates = [
+            curve
+            for curve in dict.fromkeys(candidates)
+            if cmds.objExists(curve)
+            and str(cmds.nodeType(curve)).startswith("animCurve")
+        ]
+        if len(candidates) != 1:
+            raise RuntimeError(f"VMD rotation curve is unresolved: {plug}")
+        if (
+            require_quaternion
+            and cmds.rotationInterpolation(candidates[0], query=True)
+            != "quaternionSlerp"
+        ):
+            raise RuntimeError(f"VMD rotation source is not quaternion: {candidates[0]}")
+        curves.append(candidates[0])
+    if len(set(curves)) != 3:
+        raise RuntimeError("VMD rotation track does not have three sibling curves")
+    return curves
 
 
 def _serialized_interpolation_payload(frame: Any) -> dict[str, Any]:
@@ -511,6 +559,43 @@ def detach_and_delete_vmd_rotation_time_curve(cmds_module, node: str) -> None:
         ):
             maya_cmds.connectAttr("time1.outTime", destination, force=False)
     maya_cmds.delete(node)
+
+
+def delete_vmd_rotation_time_curves_for_controls(
+    controls: Iterable[str],
+    *,
+    cmds_module=None,
+) -> list[str]:
+    """Delete marker-owned TT curves for the supplied controls only.
+
+    Registered sparse legacy imports do not have Control Rig metadata, so the
+    UUID marker on each time curve is their rename-stable cleanup authority.
+    """
+    maya_cmds = cmds_module or cmds
+    control_uuids = {
+        str(uuid)
+        for control in controls
+        if control and maya_cmds.objExists(control)
+        for uuid in (maya_cmds.ls(control, uuid=True) or [])
+    }
+    if not control_uuids:
+        return []
+
+    deleted = []
+    for node in maya_cmds.ls(type="animCurveTT") or []:
+        if (
+            not maya_cmds.attributeQuery(_MARKER_ATTR, node=node, exists=True)
+            or not maya_cmds.getAttr(f"{node}.{_MARKER_ATTR}")
+            or not maya_cmds.attributeQuery(
+                _CONTROL_UUID_ATTR, node=node, exists=True
+            )
+            or str(maya_cmds.getAttr(f"{node}.{_CONTROL_UUID_ATTR}"))
+            not in control_uuids
+        ):
+            continue
+        detach_and_delete_vmd_rotation_time_curve(maya_cmds, node)
+        deleted.append(str(node))
+    return deleted
 
 
 def _set_segment_tangents(

@@ -13,6 +13,7 @@ from mmd_tools.converters.vmd_rotation_time_curve import (
     apply_vmd_rotation_time_curve,
     capture_vmd_rotation_time_curve_snapshot,
     commit_vmd_rotation_time_curve_disable,
+    delete_vmd_rotation_time_curves_for_controls,
     detach_and_delete_vmd_rotation_time_curve,
     record_vmd_rotation_time_curve_metadata,
     restore_vmd_rotation_time_curve_snapshot,
@@ -409,6 +410,33 @@ class TestVmdRotationTimeCurve(MayaTestBase):
                 ["time1.outTime"],
             )
         cmds.delete(control)
+
+    def test_root_scoped_removal_deletes_only_matching_time_curve(self):
+        control, plugs = self._quaternion_control()
+        other, other_plugs = self._quaternion_control()
+        frames = [
+            {"frame_number": 0, "interpolation": _interpolation_bytes()},
+            {"frame_number": 30, "interpolation": _interpolation_bytes()},
+        ]
+        record = apply_vmd_rotation_time_curve(frames, plugs, "下半身")
+        other_record = apply_vmd_rotation_time_curve(frames, other_plugs, "上半身")
+        time_curve = cmds.ls(record["rotationTimeCurveUuid"], long=True)[0]
+        other_curve = cmds.ls(other_record["rotationTimeCurveUuid"], long=True)[0]
+
+        deleted = delete_vmd_rotation_time_curves_for_controls([control])
+
+        self.assertEqual(deleted, [time_curve.lstrip("|")])
+        self.assertFalse(cmds.objExists(time_curve))
+        self.assertTrue(cmds.objExists(other_curve))
+        for plug in plugs:
+            curve = cmds.listConnections(plug, source=True, destination=False)[0]
+            self.assertEqual(
+                cmds.listConnections(
+                    f"{curve}.input", source=True, destination=False, plugs=True
+                ),
+                ["time1.outTime"],
+            )
+        cmds.delete(control, other, other_curve)
 
     def test_normal_mode_reimport_stages_and_commits_time_curve_removal(self):
         control, plugs = self._quaternion_control()
