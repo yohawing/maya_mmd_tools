@@ -65,6 +65,22 @@ class TestRegisteredSparseAdapter(TestCase):
         self.assertEqual(frames[1].semantic_interpolation["rotation"], (0.25, 0.5, 0.75, 1.0))
         self.assertFalse(hasattr(frames[1], "interpolation"))
 
+    def test_keeps_raw_source_interpolation_only_as_export_authority(self):
+        raw = bytes(range(64))
+        frames = registered_sparse_bone_frames(
+            (_track(),),
+            bone_names_by_index={3: "左腕捩"},
+            imported_bone_indices={3: "|model|leftArmTwist"},
+            source_interpolation_by_key={(3, 10): raw},
+        )
+
+        self.assertIsNone(frames[0].source_interpolation)
+        self.assertEqual(frames[1].source_interpolation, raw)
+        self.assertEqual(
+            frames[1].semantic_interpolation["rotation"],
+            (0.25, 0.5, 0.75, 1.0),
+        )
+
     def test_rejects_compiled_index_not_in_imported_pmx_table(self):
         with self.assertRaisesRegex(ValueError, "absent from imported PMX table"):
             registered_sparse_bone_frames(
@@ -79,11 +95,20 @@ class TestRegisteredSparsePreflight(TestCase):
         self.converter = VmdConverter()
         self.converter.bone_name_to_index = {"左腕捩": 3}
         self.converter.bone_index_to_joint = {3: "|model|leftArmTwist"}
+        self.converter.bone_name_mapping = {"左腕捩": "|model|leftArmTwist"}
 
     def test_builds_one_model_paired_clip_and_records_profile(self):
         model = SimpleNamespace(free=lambda: None)
         clip = SimpleNamespace(bone_tracks=lambda: (_track(),), free=lambda: None)
         profile = {}
+        raw_interpolation = bytes(range(64))
+        source_frames = [
+            SimpleNamespace(
+                bone_name="左腕捩",
+                frame_number=10,
+                interpolation=raw_interpolation,
+            )
+        ]
         with patch.object(
             converter_module,
             "resolve_runtime_pmx_bytes_and_morph_names",
@@ -103,11 +128,13 @@ class TestRegisteredSparsePreflight(TestCase):
                 pmx_path="model.pmx",
                 vmd_source_path="motion.vmd",
                 profile=profile,
+                source_bone_frames=source_frames,
             )
 
         model_create.assert_called_once_with(b"pmx")
         clip_create.assert_called_once_with(model, b"vmd")
         self.assertEqual(len(frames), 2)
+        self.assertEqual(frames[1].source_interpolation, raw_interpolation)
         self.assertEqual(provenance["evaluation_mode"], "authored_sparse_keys")
         self.assertEqual(profile["vmd_converter"]["registered_sparse"]["fallback"], "none")
 

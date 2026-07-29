@@ -108,10 +108,7 @@ def _author_vmd_rotation_time_curve(
         time = float(time_converter(vmd_frame))
         cmds.setKeyframe(time_curve, time=time, value=time)
         serialized_interpolation.append(
-            {
-                "frame": vmd_frame,
-                "bytes": list(bytes(get_frame_interpolation(frame))[:64]),
-            }
+            {"frame": vmd_frame, **_serialized_interpolation_payload(frame)}
         )
     cmds.keyTangent(time_curve, edit=True, weightedTangents=True)
     for previous, arriving in zip(ordered, ordered[1:]):
@@ -163,6 +160,26 @@ def _author_vmd_rotation_time_curve(
         "keyCount": len(ordered),
         "interpolationBytesAttribute": _INTERPOLATION_ATTR,
     }
+
+
+def _serialized_interpolation_payload(frame: Any) -> dict[str, Any]:
+    """Serialize raw export authority or semantic controls without coercing mappings."""
+    source = getattr(frame, "source_interpolation", None)
+    if isinstance(frame, dict):
+        source = frame.get("source_interpolation", source)
+    if source is not None:
+        raw = bytes(source)
+        if len(raw) == 64:
+            return {"bytes": list(raw)}
+
+    interpolation = get_frame_interpolation(frame)
+    if isinstance(interpolation, Mapping):
+        semantic = {
+            str(channel): [float(value) for value in controls]
+            for channel, controls in interpolation.items()
+        }
+        return {"semantic": semantic}
+    return {"bytes": list(bytes(interpolation)[:64])}
 
 
 def record_vmd_rotation_time_curve_metadata(

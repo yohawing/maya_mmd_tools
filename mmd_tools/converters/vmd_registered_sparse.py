@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping, Sequence, Tuple
+from typing import Mapping, Optional, Sequence, Tuple
 
 from ..core.native.mmd_anim_runtime_types import (
     MMD_RUNTIME_BONE_TRACK_CURVE_CUBIC_BEZIER,
@@ -22,6 +22,7 @@ class RegisteredSparseBoneFrame:
     position: Tuple[float, float, float]
     rotation: Tuple[float, float, float, float]
     semantic_interpolation: Mapping[str, Tuple[float, float, float, float]]
+    source_interpolation: Optional[bytes] = None
 
 
 def _semantic_points(curve: MmdRuntimeBoneTrackCurve) -> Tuple[float, float, float, float]:
@@ -36,6 +37,7 @@ def registered_sparse_bone_frames(
     *,
     bone_names_by_index: Mapping[int, str],
     imported_bone_indices: Mapping[int, str],
+    source_interpolation_by_key: Optional[Mapping[Tuple[int, int], bytes]] = None,
 ) -> Tuple[RegisteredSparseBoneFrame, ...]:
     """Convert compiled tracks after exact PMX bone-index validation.
 
@@ -43,11 +45,15 @@ def registered_sparse_bone_frames(
         tracks: Owned compiled authored tracks from ``mmd-anim``.
         bone_names_by_index: Imported PMX ordered index to original bone name.
         imported_bone_indices: Imported PMX ordered index to Maya joint.
+        source_interpolation_by_key: Optional raw VMD export authority keyed by
+            ``(bone_index, frame_number)``. It is never used for Maya values or
+            tangent authoring.
 
     Raises:
         ValueError: If compiled indices disagree with the imported PMX table.
     """
     frames = []
+    source_interpolation_by_key = source_interpolation_by_key or {}
     seen_indices = set()
     for track in tracks:
         bone_index = int(track.descriptor.bone_index)
@@ -73,6 +79,9 @@ def registered_sparse_bone_frames(
                         "translate_z": _semantic_points(key.translation_z),
                         "rotation": _semantic_points(key.rotation),
                     },
+                    source_interpolation=source_interpolation_by_key.get(
+                        (bone_index, int(key.frame))
+                    ),
                 )
             )
     return tuple(frames)

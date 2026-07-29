@@ -12,6 +12,9 @@ from mmd_tools.converters.vmd_camera_animation import get_or_create_camera
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters.vmd_light_animation import get_or_create_light
 from mmd_tools.converters.vmd_import_state import clear_existing_motion
+from mmd_tools.converters.vmd_rotation_time_curve import (
+    rotation_time_curve_interpolation_by_bone,
+)
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from mmd_tools.core import mmd_control_rig_builder
@@ -245,6 +248,32 @@ class TestCr06103SceneTransaction(MayaTestBase):
         self.assertEqual(metadata_after["state"], "EDIT")
         self.assertEqual(metadata_after["owner"], "CONTROL_OWNED")
         self.assertEqual(metadata_after["controls"], metadata_a["controls"])
+
+    def test_registered_control_rig_rotation_time_curve_uses_raw_export_bytes(self):
+        """Semantic registered curves must not be coerced to raw bytes."""
+        target_root = self._import_control_fixture("cr06103_registered_time_curve")
+        motion = _synthetic_motion(
+            ("センター", 0, (0.25, 0.0, 0.0)),
+            ("センター", 30, (0.75, 0.0, 0.0)),
+        )
+        expected = bytes(motion.bone_frames[1].interpolation)
+        converter = VmdConverter()
+        converter.use_quaternion_interpolation = True
+        converter.use_vmd_rotation_time_curve = True
+
+        self.assertTrue(
+            _registered_convert(
+                converter,
+                motion,
+                target_model=target_root,
+                create_mmd_control_rig=True,
+            )
+        )
+
+        metadata = json.loads(cmds.getAttr(f"{target_root}.mmd_control_rig_json"))
+        self.assertEqual(metadata["rotationInterpolationMode"], "vmd_time_curve_experimental")
+        interpolation = rotation_time_curve_interpolation_by_bone(metadata)
+        self.assertEqual(interpolation["センター"][30], expected)
 
     def test_convert_control_rig_late_failure_restores_exact_a_transaction_state(self):
         """A late failure after clear and partial B keys restores the full A state."""

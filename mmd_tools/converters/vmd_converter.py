@@ -603,6 +603,7 @@ class VmdConverter:
                 pmx_bytes=sparse_pmx_bytes,
                 pmx_path=sparse_pmx_path,
                 vmd_source_path=getattr(vmd_data, "source_file", None),
+                source_bone_frames=getattr(vmd_data, "bone_frames", None) or (),
                 profile=profile,
             )
         control_rig_transaction = None
@@ -2374,11 +2375,13 @@ class VmdConverter:
         pmx_path: str,
         vmd_source_path: Optional[str],
         profile: Optional[Dict[str, Any]],
+        source_bone_frames=(),
     ) -> Tuple[tuple, Dict[str, Any]]:
         """Build model-paired compiled sparse keys before scene mutation.
 
         The scene's persisted PMX bone indices are the consumer mapping
-        authority. Raw VMD names and interpolation bytes are not consulted.
+        authority. Raw VMD names and interpolation bytes are not consulted for
+        authored values; matching source bytes remain export authority only.
         """
         resolved_pmx_bytes, _ = resolve_runtime_pmx_bytes_and_morph_names(
             pmx_bytes,
@@ -2429,6 +2432,11 @@ class VmdConverter:
                     tracks,
                     bone_names_by_index=bone_names_by_index,
                     imported_bone_indices=self.bone_index_to_joint,
+                    source_interpolation_by_key=(
+                        self._source_interpolation_by_registered_key(
+                            source_bone_frames
+                        )
+                    ),
                 )
             except ValueError as exc:
                 fail("registered_sparse_bone_index_mismatch", str(exc))
@@ -2468,6 +2476,37 @@ class VmdConverter:
             if clip is not None:
                 clip.free()
             model.free()
+
+    def _source_interpolation_by_registered_key(
+        self,
+        source_bone_frames,
+    ) -> Dict[Tuple[int, int], bytes]:
+        """Return raw source interpolation for export without driving Maya keys."""
+        joint_to_index = {
+            str(joint): int(index)
+            for index, joint in self.bone_index_to_joint.items()
+        }
+        result = {}
+        for frame in source_bone_frames or ():
+            bone_name = getattr(frame, "bone_name", None)
+            frame_number = getattr(frame, "frame_number", None)
+            interpolation = getattr(frame, "interpolation", None)
+            if isinstance(frame, dict):
+                bone_name = frame.get("bone_name", bone_name)
+                frame_number = frame.get("frame_number", frame_number)
+                interpolation = frame.get("interpolation", interpolation)
+            joint = self.bone_name_mapping.get(str(bone_name or ""))
+            bone_index = joint_to_index.get(str(joint))
+            if bone_index is None:
+                continue
+            try:
+                raw = bytes(interpolation)
+                key = (bone_index, int(frame_number))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if len(raw) == 64:
+                result[key] = raw
+        return result
 
     def _preflight_reduced_bake_keys(
         self,

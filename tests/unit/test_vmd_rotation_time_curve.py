@@ -8,6 +8,7 @@ from unittest.mock import patch
 import maya.cmds as cmds
 
 from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
+from mmd_tools.converters.vmd_registered_sparse import RegisteredSparseBoneFrame
 from mmd_tools.converters.vmd_rotation_time_curve import (
     apply_vmd_rotation_time_curve,
     capture_vmd_rotation_time_curve_snapshot,
@@ -92,6 +93,35 @@ class TestVmdRotationTimeCurve(MayaTestBase):
         self.assertTrue(
             math.isclose(cmds.getAttr(f"{time_curve}.output"), expected, abs_tol=1.0e-5)
         )
+        cmds.delete(control, time_curve)
+
+    def test_registered_semantic_frames_keep_raw_export_interpolation(self):
+        control, plugs = self._quaternion_control()
+        raw = _interpolation_bytes((10, 80, 50, 120))
+        semantic = {
+            "translate_x": (0.0, 0.0, 1.0, 1.0),
+            "translate_y": (0.0, 0.0, 1.0, 1.0),
+            "translate_z": (0.0, 0.0, 1.0, 1.0),
+            "rotation": tuple(value / 127.0 for value in (10, 80, 50, 120)),
+        }
+        frames = [
+            RegisteredSparseBoneFrame(
+                "下半身", 1, frame, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0),
+                semantic, raw,
+            )
+            for frame in (0, 30)
+        ]
+
+        record = apply_vmd_rotation_time_curve(frames, plugs, "下半身")
+        interpolation = rotation_time_curve_interpolation_by_bone(
+            {
+                "rotationInterpolationMode": "vmd_time_curve_experimental",
+                "rotationTimeCurves": [record],
+            }
+        )
+
+        self.assertEqual(interpolation["下半身"][30], raw)
+        time_curve = cmds.ls(record["rotationTimeCurveUuid"], long=True)[0]
         cmds.delete(control, time_curve)
 
     def test_time_curve_uses_maya_times_but_exports_vmd_frames(self):
