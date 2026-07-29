@@ -27,6 +27,12 @@ import maya.api.OpenMaya as om
 
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.native.mmd_anim_runtime import is_native_physics_available
+from mmd_tools.core.physics_bind_basis import (
+    BIND_BASIS_MISSING,
+    BIND_BASIS_SINGULAR,
+    BindBasisResolutionError,
+    resolve_saved_bind_world_matrix,
+)
 
 
 logger = get_logger(__name__)
@@ -308,6 +314,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         stage: str,
         error_type: str,
         reason: str,
+        reason_code: str | None = None,
         validation_errors=None,
     ) -> None:
         """Emit one structured diagnostic for each unique initialization failure."""
@@ -324,12 +331,17 @@ class MmdPhysicsSolverNode(om.MPxNode):
             "errorType": error_type,
             "reason": reason,
         }
+        if reason_code:
+            # Keep ``reason`` backwards compatible for existing diagnostics,
+            # while exposing a machine-stable code for new fail-closed paths.
+            payload["reasonCode"] = reason_code
         signature = (
             model_root,
             descriptor_version,
             stage,
             error_type,
             reason,
+            reason_code,
             validation_signature,
         )
         if signature in self._initialization_failure_signatures:
@@ -351,6 +363,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         stage: str,
         error_type: str,
         reason: str,
+        reason_code: str | None = None,
         validation_errors=None,
     ) -> bool:
         """Record a non-exception failure, release partial handles, and stop."""
@@ -360,6 +373,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
             stage=stage,
             error_type=error_type,
             reason=reason,
+            reason_code=reason_code,
             validation_errors=validation_errors,
         )
         self._free_handles()
@@ -461,6 +475,17 @@ class MmdPhysicsSolverNode(om.MPxNode):
 
             stage = "build rigid body mapping"
             self._build_rigid_body_shape_mapping(model_root)
+        except BindBasisResolutionError as exc:
+            self._record_initialization_failure(
+                model_root=model_root,
+                descriptor_version=descriptor_version,
+                stage=stage,
+                error_type="BindBasisError",
+                reason=str(exc),
+                reason_code=exc.reason_code,
+            )
+            self._free_handles()
+            return False
         except Exception as exc:
             self._record_initialization_failure(
                 model_root=model_root,
@@ -489,7 +514,6 @@ class MmdPhysicsSolverNode(om.MPxNode):
         correction = mmd_matrix_to_maya(mmd_rest) * maya_bind^(-1)
         At runtime:  mmd_world = maya_matrix_to_mmd(correction * maya_animated)
         """
-        from maya import cmds
         from mmd_tools.core.coordinate_transform import mmd_matrix_to_maya
 
         all_bone_indices, kinematic_bone_indices = self._find_physics_bone_indices(model_root)
@@ -497,27 +521,46 @@ class MmdPhysicsSolverNode(om.MPxNode):
         if not all_bone_indices:
             return
 
-        self._instance.evaluate_rest_pose()
+        if not self._instance.evaluate_rest_pose():
+            raise BindBasisResolutionError(
+                BIND_BASIS_MISSING,
+                str(model_root),
+                "runtime rest pose is unavailable",
+            )
         mmd_rest_matrices = self._instance.get_world_matrices()
         if not mmd_rest_matrices:
-            return
+            raise BindBasisResolutionError(
+                BIND_BASIS_MISSING,
+                str(model_root),
+                "runtime rest world matrices are unavailable",
+            )
 
         for bone_idx in all_bone_indices:
             if bone_idx >= len(mmd_rest_matrices) or bone_idx >= len(self._bone_joints):
-                continue
+                raise BindBasisResolutionError(
+                    BIND_BASIS_MISSING,
+                    f"{model_root}[bone:{bone_idx}]",
+                    "physics bone has no matching rest/joint entry",
+                )
             joint = self._bone_joints[bone_idx]
-            if not joint or not cmds.objExists(joint):
-                continue
+            if not joint:
+                raise BindBasisResolutionError(BIND_BASIS_MISSING, str(joint))
             try:
                 mmd_rest_maya = mmd_matrix_to_maya(mmd_rest_matrices[bone_idx])
                 mmd_rest_maya_mat = om.MMatrix(mmd_rest_maya)
-
-                maya_bind = [float(v) for v in cmds.getAttr(f"{joint}.worldMatrix[0]")]
-                bind_mat = om.MMatrix(maya_bind)
-
+                # Never read the animated joint world matrix here.  Physics
+                # may be enabled after an arbitrary nonzero animation frame;
+                # only a validated, saved bind authority is safe at init.
+                bind_mat = resolve_saved_bind_world_matrix(joint)
                 self._kinematic_corrections[bone_idx] = mmd_rest_maya_mat * bind_mat.inverse()
-            except Exception:
-                continue
+            except BindBasisResolutionError:
+                raise
+            except Exception as exc:
+                raise BindBasisResolutionError(
+                    BIND_BASIS_SINGULAR,
+                    str(joint),
+                    str(exc) or type(exc).__name__,
+                ) from exc
 
     @staticmethod
     def _find_physics_bone_indices(model_root: str) -> tuple[set, set]:
