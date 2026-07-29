@@ -187,9 +187,14 @@ class SettingsService:
         """Build VMD import options from persisted settings."""
         is_dev = self.is_development_mode()
         bake_mode = bool(self.get(setting_keys.IMPORT_RIG_BAKE_MODE, False))
-        create_control_rig = bool(
+        create_control_rig_setting = bool(
             self.get(setting_keys.IMPORT_MODEL_CREATE_MMD_CONTROL_RIG, False)
         )
+        # The Control Rig checkbox is also a PMX model-import preference, so it
+        # may legitimately remain enabled while Bake Motion is selected for a
+        # VMD import.  Bake Motion owns the VMD route in that case; the explicit
+        # converter API still rejects callers that directly request both modes.
+        create_control_rig = create_control_rig_setting and not bake_mode
         tolerances = self.resolve_reduce_bake_tolerances()
         return {
             "start_frame": self.get(setting_keys.IMPORT_ANIMATION_START_FRAME, 1),

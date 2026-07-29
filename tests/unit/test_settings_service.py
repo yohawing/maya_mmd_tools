@@ -283,6 +283,20 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertTrue(pmx_options["create_mmd_control_rig"])
         self.assertTrue(vmd_options["create_mmd_control_rig"])
 
+    def test_vmd_bake_mode_overrides_model_control_rig_import_route(self):
+        """Bake Motion wins only for VMD while PMX still creates its rig."""
+        self.service.set("import.model.create_mmd_control_rig", True)
+        self.service.set("import.animation.vmd_rotation_time_curve", True)
+        self.service.set("import.rig.bake_mode", True)
+
+        pmx_options = self.service.build_pmx_import_options()
+        vmd_options = self.service.build_vmd_import_options(target_model="model")
+
+        self.assertTrue(pmx_options["create_mmd_control_rig"])
+        self.assertTrue(vmd_options["bake_mode"])
+        self.assertFalse(vmd_options["create_mmd_control_rig"])
+        self.assertFalse(vmd_options["use_vmd_rotation_time_curve"])
+
     def test_rotation_time_curve_option_requires_control_rig_setting(self):
         self.service.set("import.animation.vmd_rotation_time_curve", True)
 
