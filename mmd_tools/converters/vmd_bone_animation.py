@@ -1,6 +1,7 @@
 """Bone-specific helpers for VMD animation conversion."""
 
 from collections.abc import Mapping
+import math
 from typing import Dict, List, Optional
 
 import maya.cmds as cmds
@@ -10,10 +11,41 @@ from .vmd_context import VmdBoneAnimationContext
 from .vmd_scene_keying import VmdKeyingError, _ensure_fallback_allowed
 
 
+def _euler_degrees_to_quaternion(values):
+    """Convert XYZ Euler degrees to xyzw for Control Rig basis conversion."""
+
+    x, y, z = (math.radians(float(value)) * 0.5 for value in values)
+    cx, sx = math.cos(x), math.sin(x)
+    cy, sy = math.cos(y), math.sin(y)
+    cz, sz = math.cos(z), math.sin(z)
+    return (
+        sx * cy * cz - cx * sy * sz,
+        cx * sy * cz + sx * cy * sz,
+        cx * cy * sz - sx * sy * cz,
+        cx * cy * cz + sx * sy * sz,
+    )
+
+
+def _quaternion_to_euler_degrees(quaternion):
+    """Convert xyzw to XYZ Euler degrees with a stable gimbal fallback."""
+
+    x, y, z, w = (float(value) for value in quaternion)
+    sinr = 2.0 * (w * x + y * z)
+    cosr = 1.0 - 2.0 * (x * x + y * y)
+    roll = math.atan2(sinr, cosr)
+    sinp = 2.0 * (w * y - z * x)
+    pitch = math.copysign(math.pi / 2.0, sinp) if abs(sinp) >= 1.0 else math.asin(sinp)
+    siny = 2.0 * (w * z + x * y)
+    cosy = 1.0 - 2.0 * (y * y + z * z)
+    yaw = math.atan2(siny, cosy)
+    return tuple(math.degrees(value) for value in (roll, pitch, yaw))
+
+
 def _sparse_rotation_samples(
     context: VmdBoneAnimationContext,
     joint: str,
     frames: List,
+    key_route: Optional[dict] = None,
 ) -> List[tuple]:
     """Convert only authored VMD rotation keys for editable rig curves."""
     samples_by_time = {}
@@ -26,6 +58,16 @@ def _sparse_rotation_samples(
             rotation_quat = frame.get("rotation", [0, 0, 0, 1])
         maya_time = context.vmd_frame_to_maya_time(frame_number)
         rotation = context.convert_vmd_quat_to_joint_rotate(joint, *rotation_quat)
+        basis = (key_route or {}).get("authoring_basis")
+        if basis:
+            from ..core.mmd_control_rig_basis import (
+                bone_to_control,
+            )
+
+            bone_quaternion = _euler_degrees_to_quaternion(rotation)
+            rotation = _quaternion_to_euler_degrees(
+                bone_to_control(bone_quaternion, basis)
+            )
         samples_by_time[float(maya_time)] = tuple(float(value) for value in rotation)
     return sorted(samples_by_time.items())
 
@@ -256,7 +298,7 @@ def set_bone_keyframes(
     )
     needs_rotation_samples = not skip_rotate or bool(key_route.get("ik_solver_rotate"))
     rotation_samples = (
-        _sparse_rotation_samples(context, joint, frames)
+        _sparse_rotation_samples(context, joint, frames, key_route)
         if needs_rotation_samples
         else []
     )

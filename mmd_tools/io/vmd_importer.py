@@ -168,16 +168,6 @@ def import_vmd_file(
             except Exception:
                 logger.debug("Failed to restore PMX source from target model", exc_info=True)
 
-        if not scene_animation_only and not pmx_bytes and not pmx_path:
-            # 同じディレクトリに .pmx/.pmd があるか簡易推定
-            try:
-                vmd_dir = os.path.dirname(os.path.abspath(filepath))
-                candidates = [f for f in os.listdir(vmd_dir) if f.lower().endswith((".pmx", ".pmd"))] if os.path.isdir(vmd_dir) else []
-                if candidates:
-                    pmx_path = os.path.join(vmd_dir, candidates[0])
-                    logger.info(f"Auto-detected PMX source: {pmx_path} (explicit path recommended)")
-            except Exception:
-                logger.debug("Failed to auto-detect PMX source next to VMD", exc_info=True)
         _emit_progress(35)
 
         # VMDコンバーターを使用してアニメーションを変換

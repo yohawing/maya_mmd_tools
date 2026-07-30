@@ -8,6 +8,7 @@ from typing import Dict, List
 import maya.cmds as cmds
 
 from ..core.mmd_control_rig_motion import (
+    control_rig_edit_authoring_bases_for_joints,
     control_rig_edit_routes_for_joints,
     control_rig_quaternion_safe_joints,
 )
@@ -62,6 +63,9 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
     append_info = converter._collect_append_info()
     ik_link_joints = converter._collect_ik_link_joints()
     control_routes = control_rig_edit_routes_for_joints(converter.bone_name_mapping.values())
+    authoring_bases = control_rig_edit_authoring_bases_for_joints(
+        converter.bone_name_mapping.values()
+    )
     quaternion_safe_joints = control_rig_quaternion_safe_joints(
         converter.bone_name_mapping.values()
     )
@@ -76,6 +80,7 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
             "ik_solver_rotate": ik_info,
             "control_owned": bool(control_route),
             "quaternion_interpolation_safe": False,
+            "authoring_basis": authoring_bases.get(joint),
         }
         info = append_info.get(joint)
         if info:

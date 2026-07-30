@@ -234,6 +234,7 @@ class _View:
             "copied_pose": "Copied pose ({count} joints)",
             "pasted_pose": "Pasted pose ({count} joints)",
             "reset_pose_applied": "Reset Pose ({count} joints)",
+            "rest_pose_applied": "Reset Pose ({count} joints)",
         }.get(key, key)
 
 

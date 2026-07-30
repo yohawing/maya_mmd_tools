@@ -439,13 +439,21 @@ class TestVmdMotionClear(MayaTestBase):
         vmd_data.light_frames = []
 
         self.converter.use_animation_layers = False
-        self.assertTrue(
-            self.converter.convert(
-                vmd_data,
-                clear_existing_motion=True,
-                target_model=target_model,
+        # The fixture has no paired raw PMX/VMD bytes; bypass only the
+        # registered sparse compiler so this test remains focused on clearing
+        # and replacing legacy scene keys.
+        with patch.object(
+            self.converter,
+            "_compiled_registered_sparse_frames",
+            return_value=(tuple(vmd_data.bone_frames), {}),
+        ):
+            self.assertTrue(
+                self.converter.convert(
+                    vmd_data,
+                    clear_existing_motion=True,
+                    target_model=target_model,
+                )
             )
-        )
 
         self.assertNotIn(1.0, cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True) or [])
         self.assertIn(8.0, cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True) or [])

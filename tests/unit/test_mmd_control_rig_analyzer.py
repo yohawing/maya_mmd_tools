@@ -46,6 +46,7 @@ def _bone(
     ik_solvers=(),
     solver_input_plugs=(),
     bone_morph_base_plugs=(),
+    fixed_axis=None,
 ):
     return MmdControlRigBoneFact(
         joint=f"|model|bone_{index}",
@@ -56,6 +57,7 @@ def _bone(
         ik_solvers=tuple(ik_solvers),
         solver_input_plugs=tuple(solver_input_plugs),
         bone_morph_base_plugs=tuple(bone_morph_base_plugs),
+        fixed_axis=tuple(fixed_axis) if fixed_axis is not None else None,
     )
 
 
@@ -147,6 +149,49 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
         self.assertEqual(len(templates["finger"][0]["points"]), 21)
         self.assertTrue(all(shape["points"] for shapes in templates.values() for shape in shapes))
         self.assertTrue(all(shape["knots"] for shapes in templates.values() for shape in shapes))
+
+    def test_primary_twist_requires_fixed_axis_and_direct_or_append_input(self):
+        direct = _bone(
+            1,
+            "左腕捩",
+            pmx_flags=int(PmxBoneFlag.AXIS_FIXED),
+            fixed_axis=(1.0, 0.0, 0.0),
+        )
+        ready = classify_mmd_control_rig("|model", [direct]).roles_by_name[
+            "left_arm_twist"
+        ]
+        self.assertEqual(ready.status, STATUS_READY)
+        self.assertEqual(ready.binding.fixed_axis, (1.0, 0.0, 0.0))
+
+        missing_axis = _bone(
+            2,
+            "左腕捩",
+            pmx_flags=int(PmxBoneFlag.AXIS_FIXED),
+        )
+        blocked = classify_mmd_control_rig("|model", [missing_axis]).roles_by_name[
+            "left_arm_twist"
+        ]
+        self.assertEqual(blocked.status, STATUS_BLOCKED)
+        self.assertTrue(any("fixed-axis" in text for text in blocked.blockers))
+
+        append = _bone(
+            3,
+            "左腕捩",
+            pmx_flags=int(PmxBoneFlag.AXIS_FIXED),
+            fixed_axis=(0.0, 1.0, 0.0),
+            incoming=(
+                _connection(
+                    "append.outputRotate",
+                    "|model|bone_3.rotate",
+                    "mmdAppend",
+                ),
+            ),
+        )
+        append_ready = classify_mmd_control_rig("|model", [append]).roles_by_name[
+            "left_arm_twist"
+        ]
+        self.assertEqual(append_ready.status, STATUS_READY)
+        self.assertEqual(append_ready.binding.input_kind, INPUT_APPEND_BASE)
 
     def test_shape_only_shortest_arc_aligns_positive_z_without_scaling(self):
         direction = (2.0, 3.0, -4.0)

@@ -51,8 +51,12 @@ class _InspectionCmds:
             "zeroGroups": {"center": "zero-uuid"},
         }
 
-    def ls(self, value=None, *, long=False, uuid=False):
-        self.calls.append(("ls", value, long, uuid))
+    def ls(self, value=None, *, long=False, uuid=False, dag=False):
+        self.calls.append(("ls", value, long, uuid, dag))
+        if dag and value in {"basis-uuid", "center_CR_BASIS_DECOMPOSE"}:
+            return []
+        if dag and value in self.nodes_by_uuid.values():
+            return [value]
         if uuid:
             return [self.root_uuid] if value == self.root else []
         if value in self.nodes_by_uuid:
@@ -146,6 +150,17 @@ class TestMmdControlRigInspection(unittest.TestCase):
         cmds.listRelatives = foreign
         with self.assertRaisesRegex(MmdControlRigBuildError, "topology changed"):
             inspect_mmd_control_rig("model", cmds_module=cmds)
+
+    def test_dg_converter_node_is_not_compared_as_control_dag_topology(self):
+        cmds = _InspectionCmds()
+        cmds.nodes_by_uuid["basis-uuid"] = "center_CR_BASIS_DECOMPOSE"
+        cmds.metadata["nodes"].append(
+            {"uuid": "basis-uuid", "name": "center_CR_BASIS_DECOMPOSE"}
+        )
+
+        result = inspect_mmd_control_rig("model", cmds_module=cmds)
+
+        self.assertIsNotNone(result)
 
     def test_existing_attached_rig_repairs_legacy_channel_state_idempotently(self):
         cmds = _MigrationCmds()

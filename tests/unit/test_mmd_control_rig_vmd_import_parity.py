@@ -90,6 +90,69 @@ def test_external_oracle_not_run_is_explicit_and_not_numeric_zero():
     assert result["reason"] == "FFI unavailable"
 
 
+def test_external_oracle_gate_uses_skeletal_mesh_and_keeps_full_morph_residual(monkeypatch):
+    class _Oracle:
+        @staticmethod
+        def _capture_maya_by_source_index(root, _frames):
+            if root == "skeletal":
+                return {0: {0: (0.0, 0.0, 0.0)}}
+            return {0: {0: (0.5, 0.0, 0.0)}}
+
+        @staticmethod
+        def _compare(points, _oracle, _frames, _threshold):
+            passed = points[0][0] == (0.0, 0.0, 0.0)
+            return {"passed": passed, "overall_max": 0.0 if passed else 0.5}
+
+        @staticmethod
+        def _compare_morph_contribution(full, skeletal, _frames):
+            assert full[0][0] == (0.5, 0.0, 0.0)
+            assert skeletal[0][0] == (0.0, 0.0, 0.0)
+            return {"status": "compared", "overall_max": 0.5}
+
+    monkeypatch.setattr(parity, "_external_oracle_module", lambda: _Oracle)
+    result = parity._capture_external_oracle(
+        {"root": "full", "importStatus": "pass", "skeletalOnly": False},
+        {"status": "ready", "vertices": {0: [(0.0, 0.0, 0.0)]}},
+        [0],
+        skeletal_route={"root": "skeletal", "importStatus": "pass", "skeletalOnly": True},
+    )
+
+    assert result["status"] == "pass"
+    assert result["pass"] is True
+    assert result["gate"] == "skeletalComparison"
+    assert result["skeletalComparison"]["passed"] is True
+    assert result["fullEvaluatedComparison"]["passed"] is False
+    assert result["morphContribution"]["overall_max"] == 0.5
+
+
+def test_external_oracle_skeletal_failure_cannot_be_masked_by_full_mesh(monkeypatch):
+    class _Oracle:
+        @staticmethod
+        def _capture_maya_by_source_index(root, _frames):
+            return {0: {0: (0.5 if root == "skeletal" else 0.0, 0.0, 0.0)}}
+
+        @staticmethod
+        def _compare(points, _oracle, _frames, _threshold):
+            return {"passed": points[0][0] == (0.0, 0.0, 0.0)}
+
+        @staticmethod
+        def _compare_morph_contribution(_full, _skeletal, _frames):
+            return {"status": "compared"}
+
+    monkeypatch.setattr(parity, "_external_oracle_module", lambda: _Oracle)
+    result = parity._capture_external_oracle(
+        {"root": "full", "importStatus": "pass"},
+        {"status": "ready", "vertices": {0: [(0.0, 0.0, 0.0)]}},
+        [0],
+        skeletal_route={"root": "skeletal", "importStatus": "pass", "skeletalOnly": True},
+    )
+
+    assert result["status"] == "fail"
+    assert result["pass"] is False
+    assert result["skeletalComparison"]["passed"] is False
+    assert result["fullEvaluatedComparison"]["passed"] is True
+
+
 def test_bone_morph_coverage_requires_pmx_type_and_authored_nonzero_weight():
     vmd = SimpleNamespace(
         bone_frames=[_bone_frame("センター", 0)],

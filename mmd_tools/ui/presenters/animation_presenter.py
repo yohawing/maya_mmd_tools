@@ -54,6 +54,14 @@ _TOE_IK_BONE_NAMES = {
     "left": "左つま先ＩＫ",
     "right": "右つま先ＩＫ",
 }
+_CONTROL_IK_ROLES = {
+    "left": "left_foot_ik",
+    "right": "right_foot_ik",
+}
+_CONTROL_TOE_IK_ROLES = {
+    "left": "left_toe_ik",
+    "right": "right_toe_ik",
+}
 _LEG_FK_REGIONS = {
     "left": {"left_lower_leg", "left_foot"},
     "right": {"right_lower_leg", "right_foot"},
@@ -97,16 +105,22 @@ class AnimationPresenter:
         self._morph_refresh_timer = None
         self._last_morph_refresh_time: float | None = None
         self._pose_clipboard: dict | None = None
+        self._rest_pose_transaction = None
         self._all_model_joints: list[str] = []
         self._ik_nodes_by_side: dict[str, str] = {}
         self._toe_ik_nodes_by_side: dict[str, str] = {}
+        self._control_ik_nodes_by_side: dict[str, str] = {}
+        self._control_toe_ik_nodes_by_side: dict[str, str] = {}
+        self._ik_authority_owner = "MMD_OWNED"
         self._last_ik_states: dict[str, bool] = {}
         self._visibility_history_jobs: list[int] = []
+        self._selection_sync_jobs: list[int] = []
         self._disposed = False
         # Animator Reset Pose is a one-shot selection action, distinct from
         # Bone Editor's model-wide Go to Bind Pose inspection command.
         self.connect_signals()
         self._install_visibility_history_jobs()
+        self._install_selection_sync_job()
         self._start_morph_refresh_timer()
 
         if self.app_state.current_model_root:
@@ -172,10 +186,17 @@ class AnimationPresenter:
             btn.clicked.connect(
                 lambda _checked=False, k=key: self._on_tool_clicked(k)
             )
-        for key, btn in getattr(self.view, "control_rig_buttons", {}).items():
-            btn.clicked.connect(
-                lambda _checked=False, k=key: self._on_control_rig_clicked(k)
-            )
+        common_actions = getattr(self.view, "common_action_buttons", {})
+        callbacks = {
+            "reset": self._on_reset_pose,
+            "mirror": self._on_mirror_pose,
+            "mirror_selection": self.on_mirror_selection,
+        }
+        for key, btn in common_actions.items():
+            callback = callbacks.get(key)
+            if callback is not None:
+                btn.clicked.connect(lambda _checked=False, cb=callback: cb())
+        self._sync_common_action_state()
 
     def disconnect_signals(self):
         """Release shared listeners and timers exactly once.
@@ -186,6 +207,7 @@ class AnimationPresenter:
         """
         if self._disposed:
             return
+        self._restore_active_rest_pose(silent=True)
         self._disposed = True
         self._end_morph_edit()
         if self._morph_refresh_timer is not None:
@@ -195,6 +217,7 @@ class AnimationPresenter:
                 pass
             self._morph_refresh_timer = None
         self._remove_visibility_history_jobs()
+        self._remove_selection_sync_jobs()
         try:
             self.app_state.current_model_changed.disconnect(self.on_current_model_changed)
         except (RuntimeError, TypeError):
@@ -236,6 +259,37 @@ class AnimationPresenter:
             except Exception:
                 logger.debug("Could not remove visibility callback %s", job_id)
 
+    def _install_selection_sync_job(self) -> None:
+        """Observe viewport/Outliner selection without writing Maya state."""
+
+        cmds_module = getattr(self.maya_adapter, "_cmds", None)
+        script_job = getattr(cmds_module, "scriptJob", None)
+        if not callable(script_job):
+            return
+        try:
+            job_id = script_job(
+                event=["SelectionChanged", self._schedule_selection_sync],
+                protected=True,
+            )
+            self._selection_sync_jobs.append(int(job_id))
+        except Exception:
+            logger.debug("Could not install SelectionChanged callback", exc_info=True)
+
+    def _remove_selection_sync_jobs(self) -> None:
+        """Remove presenter-owned selection callbacks during teardown."""
+
+        cmds_module = getattr(self.maya_adapter, "_cmds", None)
+        script_job = getattr(cmds_module, "scriptJob", None)
+        jobs, self._selection_sync_jobs = self._selection_sync_jobs, []
+        if not callable(script_job):
+            return
+        for job_id in jobs:
+            try:
+                if script_job(exists=job_id):
+                    script_job(kill=job_id, force=True)
+            except Exception:
+                logger.debug("Could not remove SelectionChanged callback %s", job_id)
+
     def _sync_visibility_after_history(self) -> None:
         """Refresh buttons without repairing connections or mutating the scene."""
 
@@ -258,6 +312,18 @@ class AnimationPresenter:
         except Exception:
             self._sync_visibility_after_history()
 
+    def _schedule_selection_sync(self) -> None:
+        """Defer selection readback until Maya finishes the selection event."""
+
+        if self._disposed:
+            return
+        try:
+            from ..qt_compat import QTimer
+
+            QTimer.singleShot(0, self._sync_picker_to_actual_selection)
+        except Exception:
+            self._sync_picker_to_actual_selection()
+
     def retranslate_ui(self):
         """Retranslate presenter-owned dynamic controls without reloading the model."""
 
@@ -266,10 +332,12 @@ class AnimationPresenter:
             title = self.view.tr(category_key, "animation_toolset")
             header.setText(f"{'▾' if expanded else '▸'}  {title}    {count}")
         self._retranslate_picker_bone_tooltips()
+        self._sync_common_action_state()
 
     # -- Signal handlers -----------------------------------------------
 
     def on_current_model_changed(self, model_root: str):
+        self._restore_active_rest_pose(silent=True)
         if model_root:
             self._reload_for_model(model_root)
         else:
@@ -299,6 +367,10 @@ class AnimationPresenter:
 
         if self._disposed:
             return
+        # Scene-open/new callbacks can invalidate the old DAG before Maya
+        # delivers the model-list change.  Attempt the exact restore while the
+        # old UUID is still available, then clear the transaction regardless.
+        self._restore_active_rest_pose(silent=True)
         try:
             self.app_state.clear_cache()
         except Exception:
@@ -332,12 +404,14 @@ class AnimationPresenter:
         """Set one leg IK solver state without authoring animation keys."""
 
         side_label = {"left": "L", "right": "R"}.get(side, side.upper())
-        node = self._ik_nodes_by_side.get(side)
+        node = self._active_ik_nodes_by_side().get(side)
         if not node:
             self._set_status("ik_not_found", side=side_label)
             return
         try:
-            self.maya_adapter.set_attr(f"{node}.enabled", bool(enabled))
+            self.maya_adapter.set_attr(
+                f"{node}.{self._active_ik_attribute()}", bool(enabled)
+            )
         except Exception as exc:
             logger.debug("IK toggle failed for %s: %s", node, exc)
             self._set_status("ik_toggle_failed", error=exc)
@@ -353,8 +427,8 @@ class AnimationPresenter:
             dict.fromkeys(
                 node
                 for node in (
-                    self._ik_nodes_by_side.get(side),
-                    self._toe_ik_nodes_by_side.get(side),
+                    self._active_ik_nodes_by_side().get(side),
+                    self._active_toe_ik_nodes_by_side().get(side),
                 )
                 if node
             )
@@ -366,7 +440,9 @@ class AnimationPresenter:
         for node in nodes:
             try:
                 current_states[node] = bool(
-                    self.maya_adapter.get_attr(f"{node}.enabled")
+                    self.maya_adapter.get_attr(
+                        f"{node}.{self._active_ik_attribute()}"
+                    )
                 )
             except Exception:
                 current_states[node] = False
@@ -374,13 +450,15 @@ class AnimationPresenter:
         updated_nodes = []
         try:
             for node in nodes:
-                self.maya_adapter.set_attr(f"{node}.enabled", enabled)
+                self.maya_adapter.set_attr(
+                    f"{node}.{self._active_ik_attribute()}", enabled
+                )
                 updated_nodes.append(node)
         except Exception as exc:
             for node in reversed(updated_nodes):
                 try:
                     self.maya_adapter.set_attr(
-                        f"{node}.enabled", current_states[node]
+                        f"{node}.{self._active_ik_attribute()}", current_states[node]
                     )
                 except Exception:
                     logger.debug("Failed to restore IK Enable for %s", node)
@@ -391,145 +469,39 @@ class AnimationPresenter:
         self._sync_ik_picker_state(force=True)
         self._set_status("ik_enabled" if enabled else "ik_disabled", side=side_label)
 
-    def _on_control_rig_clicked(self, action: str) -> None:
-        """Run one explicit MMD-native control-rig state action."""
-        root = self.app_state.current_model_root
-        if not root:
-            self.view.status_label.setText("MMDモデルを選択してください")
-            return
-        try:
-            from ...core.mmd_control_rig_builder import (
-                build_mmd_control_rig,
-                read_mmd_control_rig_metadata,
-                remove_mmd_control_rig,
-            )
-            from ...core.mmd_control_rig_motion import (
-                bake_mmd_control_rig,
-                enter_mmd_control_rig_edit,
-                restore_mmd_control_rig_attached,
-            )
-
-            if action == "create":
-                build_mmd_control_rig(root)
-                metadata = enter_mmd_control_rig_edit(root)
-                message = (
-                    "MMD Control Rig (Experimental): "
-                    f"{metadata['state']} / {metadata.get('owner', 'CONTROL_OWNED')}"
-                )
-            elif action == "bake_control":
-                metadata = enter_mmd_control_rig_edit(root)
-                message = (
-                    "MMD Control Rig (Experimental): "
-                    f"{metadata['state']} / {metadata.get('owner', 'MMD_OWNED')}"
-                )
-            elif action == "bake_mmd":
-                metadata = bake_mmd_control_rig(root)
-                message = (
-                    "MMD Control Rig (Experimental): "
-                    f"{metadata['state']} / {metadata.get('owner', 'MMD_OWNED')}"
-                )
-            elif action == "restore":
-                metadata = restore_mmd_control_rig_attached(root)
-                message = (
-                    "MMD Control Rig (Experimental): "
-                    f"{metadata['state']} / {metadata.get('owner', 'MMD_OWNED')}"
-                )
-            elif action == "delete":
-                removed = remove_mmd_control_rig(root)
-                message = "MMD Control Rig: deleted" if removed else "MMD Control Rig: not found"
-            elif action == "diagnostics":
-                metadata = read_mmd_control_rig_metadata(root)
-                if not metadata:
-                    message = "MMD Control Rig: not found"
-                else:
-                    message = self._format_control_rig_diagnostics(metadata)
-            else:
-                raise ValueError(f"unknown MMD Control Rig action: {action}")
-            self._sync_visibility_controls(root)
-            self.view.status_label.setText(message)
-        except Exception as exc:
-            logger.error("MMD Control Rig action failed", exc_info=True)
-            self.view.status_label.setText(f"MMD Control Rig error: {exc}")
-
-    @staticmethod
-    def _format_control_rig_diagnostics(metadata: dict) -> str:
-        """Render concise, fail-closed diagnostics from scene metadata.
-
-        Metadata is intentionally extensible across CR061 slices.  Unknown
-        evidence fields are retained as compact JSON rather than silently
-        discarded, while the mandatory owner/state and cycle fields always
-        appear in the user-facing report.
-        """
-
-        owner = metadata.get("owner") or "unknown"
-        state = metadata.get("state") or "unknown"
-        bindings = metadata.get("bindings") or {}
-        def _items(value):
-            if value in (None, "", [], {}):
-                return []
-            if isinstance(value, (list, tuple, set)):
-                return list(value)
-            return [value]
-
-        unsupported = _items(metadata.get("unsupportedRoles"))
-        unsupported.extend(_items(metadata.get("unsupported")))
-        diagnostics = metadata.get("diagnostics")
-        if isinstance(diagnostics, dict):
-            unsupported.extend(_items(diagnostics.get("unsupportedRoles")))
-            unsupported.extend(_items(diagnostics.get("unsupported")))
-        for role, binding in bindings.items():
-            if not isinstance(binding, dict):
-                continue
-            if str(binding.get("inputKind", "")).lower() == "unsupported":
-                blockers = binding.get("blockers") or binding.get("reasons") or []
-                unsupported.append(
-                    f"{role} ({', '.join(map(str, blockers))})"
-                    if blockers
-                    else str(role)
-                )
-        unsupported = list(dict.fromkeys(str(item) for item in unsupported))
-
-        cycle = metadata.get("cycle")
-        if cycle is None:
-            cycle = metadata.get("cycleDiagnostics")
-        if cycle is None:
-            cycle = metadata.get("cycleCount")
-        if cycle is None:
-            cycle = metadata.get("cycleDetected")
-        if cycle is None and isinstance(diagnostics, dict):
-            cycle = diagnostics.get("cycle")
-            if cycle is None:
-                cycle = diagnostics.get("cycleDetected")
-        cycle_text = "none recorded" if cycle in (None, "", [], {}) else str(cycle)
-
-        evidence = {}
-        for key in (
-            "lastBake",
-            "lastBakeEvidence",
-            "lastOracle",
-            "oracleEvidence",
-            "oracle",
-        ):
-            if key in metadata and metadata[key] not in (None, "", [], {}):
-                evidence[key] = metadata[key]
-        evidence_text = json.dumps(evidence, ensure_ascii=False, sort_keys=True) if evidence else "none recorded"
-        return (
-            "MMD Control Rig diagnostics (Experimental): "
-            f"owner={owner}; state={state}; "
-            f"unsupported roles={', '.join(unsupported) if unsupported else 'none'}; "
-            f"cycle={cycle_text}; bake/oracle={evidence_text}"
-        )
-
     def _set_status(self, key: str, **values) -> None:
         """Show a localized Animator status message."""
 
         message = self.view.tr(key, "animation_toolset")
         self.view.status_label.setText(message.format(**values))
 
+    def _sync_common_action_state(self) -> None:
+        """Keep the shared Rest Pose button deterministic across both tabs."""
+
+        buttons = getattr(self.view, "common_action_buttons", {})
+        button = buttons.get("reset") if hasattr(buttons, "get") else None
+        if button is None:
+            return
+        active = self._rest_pose_transaction is not None
+        key = "rest_pose_return" if active else "reset"
+        tooltip_key = "rest_pose_return_tooltip" if active else "reset_pose_tooltip"
+        try:
+            button.setText(self.view.tr(key, "animation_toolset"))
+            if hasattr(button, "setToolTip"):
+                button.setToolTip(self.view.tr(tooltip_key, "animation_toolset"))
+            if hasattr(button, "setEnabled"):
+                button.setEnabled(True)
+        except Exception:
+            logger.debug("Could not sync common Rest Pose action state", exc_info=True)
+
     def on_select_all(self):
         """Select every indexed joint belonging to the current MMD model."""
 
-        joints = [self._preferred_rig_control(joint) for joint in self._all_model_joints]
+        joints = [
+            preferred
+            for joint in self._all_model_joints
+            if (preferred := self._preferred_rig_control(joint))
+        ]
         if not joints:
             self._set_status("no_selectable_bones")
             return
@@ -592,7 +564,9 @@ class AnimationPresenter:
             normalized = normalize_mmd_bone_name(label) or label
             joint = self._bone_name_to_joint.get(normalized)
             if joint and joint not in joints:
-                joints.append(self._preferred_rig_control(joint))
+                preferred = self._preferred_rig_control(joint)
+                if preferred:
+                    joints.append(preferred)
 
         self.view.status_label.setText("、".join(labels))
         if not joints:
@@ -618,7 +592,12 @@ class AnimationPresenter:
         from ..widgets.body_picker_widget import _BODY_REGIONS
         from ..widgets.finger_picker_widget import _FINGER_REGIONS
 
-        nodes = [self._joint_for_rig_control(node) for node in nodes]
+        resolved_nodes = []
+        for node in nodes:
+            joint = self._joint_for_rig_control(node)
+            if joint:
+                resolved_nodes.append(joint)
+        nodes = resolved_nodes
 
         # Maya may return a short name while UUID-backed rig resolution returns
         # a full DAG path (or vice versa).  The picker map belongs to one model,
@@ -875,20 +854,23 @@ class AnimationPresenter:
             return True
         return False
 
-    def _preferred_rig_control(self, joint: str) -> str:
+    def _preferred_rig_control(self, joint: str) -> str | None:
         """Prefer the owned curve corresponding to a picker joint."""
         root = self.app_state.current_model_root
         if not root:
             return joint
+        adapter_cmds = getattr(self.maya_adapter, "_cmds", None)
         try:
-            from maya import cmds
+            cmds = adapter_cmds
+            if cmds is None:
+                from maya import cmds
 
             from ...core.mmd_control_rig_builder import (
                 read_mmd_control_rig_metadata,
                 resolve_mmd_control_rig_binding_joint,
             )
 
-            metadata = read_mmd_control_rig_metadata(root)
+            metadata = read_mmd_control_rig_metadata(root, cmds_module=cmds)
             # Picker selection follows the motion owner.  In MMD-owned mode,
             # joints remain the authoring surface; only Control-owned mode may
             # select UUID-backed controller transforms.
@@ -898,9 +880,13 @@ class AnimationPresenter:
                 # ``bindings``.  Keep that compatibility path; validated
                 # scene metadata always includes the explicit owner field.
                 owner = "CONTROL_OWNED"
-            if not metadata or owner != "CONTROL_OWNED":
+            if not metadata or owner not in {"MMD_OWNED", "CONTROL_OWNED"}:
                 return joint
-            target = (cmds.ls(joint, long=True) or [joint])[0]
+            target_nodes = cmds.ls(joint, long=True) or []
+            if len(target_nodes) != 1:
+                return None
+            target = str(target_nodes[0])
+            matched_controls = []
             for role, binding in metadata.get("bindings", {}).items():
                 bound = resolve_mmd_control_rig_binding_joint(cmds, binding)
                 if bound != target:
@@ -908,38 +894,69 @@ class AnimationPresenter:
                 control_uuid = metadata.get("controls", {}).get(role)
                 nodes = cmds.ls(control_uuid, long=True) if control_uuid else []
                 if len(nodes) == 1:
-                    return str(nodes[0])
+                    if str(nodes[0]) not in matched_controls:
+                        matched_controls.append(str(nodes[0]))
+            if len(matched_controls) == 1:
+                return matched_controls[0]
+            # A stale/ambiguous UUID must not silently select a same-named
+            # joint or another character's controller.
+            return None
         except Exception:
             logger.debug("MMD Control Rig picker lookup failed", exc_info=True)
-        return joint
+        # Lightweight presenter test adapters do not expose a cmds module;
+        # their model has no UUID-backed Control Rig authority to resolve.
+        return joint if adapter_cmds is None else None
 
-    def _joint_for_rig_control(self, node: str) -> str:
+    def _joint_for_rig_control(self, node: str) -> str | None:
+        """Map an active Control Rig node to one UUID-owned binding joint.
+
+        A malformed or ambiguous Control Rig selection must not fall through
+        to a same-named joint.  Returning ``None`` is the fail-closed signal
+        consumed by ``_set_picker_selection_from_nodes``.
+        """
         root = self.app_state.current_model_root
         if not root:
             return node
+        adapter_cmds = getattr(self.maya_adapter, "_cmds", None)
         try:
-            from maya import cmds
+            cmds = adapter_cmds
+            if cmds is None:
+                from maya import cmds
 
             from ...core.mmd_control_rig_builder import (
                 read_mmd_control_rig_metadata,
                 resolve_mmd_control_rig_binding_joint,
             )
 
-            metadata = read_mmd_control_rig_metadata(root)
+            metadata = read_mmd_control_rig_metadata(root, cmds_module=cmds)
             owner = metadata.get("owner") if metadata else None
             if owner is None and metadata:
                 owner = "CONTROL_OWNED"
-            if not metadata or owner != "CONTROL_OWNED":
+            if not metadata or owner not in {"MMD_OWNED", "CONTROL_OWNED"}:
                 return node
-            selected = (cmds.ls(node, uuid=True) or [None])[0]
+            selected_uuids = cmds.ls(node, uuid=True) or []
+            if len(selected_uuids) != 1:
+                return None
+            selected = str(selected_uuids[0])
+            selected_paths = cmds.ls(node, long=True) or []
+            if len(selected_paths) != 1:
+                return None
+            selected_path = str(selected_paths[0])
+            matched_joints = []
             for role, uuid in metadata.get("controls", {}).items():
-                if uuid == selected:
-                    binding = metadata.get("bindings", {}).get(role)
-                    if binding:
-                        return resolve_mmd_control_rig_binding_joint(cmds, binding)
+                binding = metadata.get("bindings", {}).get(role)
+                if not binding:
+                    continue
+                joint = resolve_mmd_control_rig_binding_joint(cmds, binding)
+                if uuid == selected or joint == selected_path:
+                    if joint not in matched_joints:
+                        matched_joints.append(joint)
+            if len(matched_joints) == 1:
+                return matched_joints[0]
+            return None
         except Exception:
             logger.debug("MMD Control Rig reverse picker lookup failed", exc_info=True)
-        return node
+        return node if adapter_cmds is None else None
 
     def on_goto_finger(self):
         self.view.picker_tabs.setCurrentIndex(self.view.TAB_FINGER)
@@ -948,36 +965,146 @@ class AnimationPresenter:
         self.view.picker_tabs.setCurrentIndex(self.view.TAB_BODY)
 
     def on_mirror_selection(self):
-        _MIRROR_PAIRS = {"左": "右", "右": "左"}
         try:
-            sel = self.maya_adapter.ls(selection=True) or []
-        except Exception:
-            return
-        joint_to_bone = {v: k for k, v in self._bone_name_to_joint.items()}
-        mirrored = []
-        for node in sel:
-            bone_name = joint_to_bone.get(node)
-            if bone_name:
-                found = False
-                for jp, mirror_jp in _MIRROR_PAIRS.items():
-                    if jp in bone_name:
-                        mirror_bone = bone_name.replace(jp, mirror_jp, 1)
-                        mirror_joint = self._bone_name_to_joint.get(mirror_bone)
-                        if mirror_joint:
-                            mirrored.append(mirror_joint)
-                            found = True
-                            break
-                if not found:
-                    mirrored.append(node)
+            raw_selected = self.maya_adapter.ls(selection=True) or []
+            selected = []
+            if getattr(self.maya_adapter, "_cmds", None) is not None:
+                for node in raw_selected:
+                    path = self._resolve_selection_path(str(node))
+                    if path is None:
+                        raise RuntimeError(
+                            f"selection is not a validated MMD node: {node}"
+                        )
+                    selected.append(path)
             else:
-                mirrored.append(node)
-        if mirrored:
-            try:
-                accepted = self._select_nodes(mirrored)
-                selected_names = [joint_to_bone.get(node, node) for node in accepted]
-                self.view.status_label.setText("、".join(selected_names))
-            except Exception:
-                pass
+                selected = [str(node) for node in raw_selected]
+            entries, _owner, _model_uuid = self._mirror_entries()
+            from ..mirror_actions import resolve_mirror_selection
+
+            mirrored = resolve_mirror_selection(selected, entries)
+            accepted = self._select_nodes(mirrored)
+            if len(accepted) != len(mirrored):
+                raise RuntimeError("mirror selection contains blocked or stale nodes")
+            self._set_status("mirrored_selection", count=len(accepted))
+        except Exception as exc:
+            self._set_status("mirror_selection_failed", error=exc)
+
+    def _mirror_entries(self):
+        """Build UUID-authoritative joint/control entries for this model."""
+
+        root = self.app_state.current_model_root
+        cmds = getattr(self.maya_adapter, "_cmds", None)
+        if not root:
+            raise RuntimeError("No MMD model selected")
+        owner = "MMD_OWNED"
+        model_uuid = None
+        metadata = {}
+        if cmds is not None:
+            from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
+
+            metadata = read_mmd_control_rig_metadata(root, cmds_module=cmds) or {}
+            owner = str(metadata.get("owner") or "MMD_OWNED")
+            if owner not in {"MMD_OWNED", "CONTROL_OWNED"}:
+                raise RuntimeError(f"unsupported MMD Control Rig owner: {owner}")
+            if owner == "CONTROL_OWNED":
+                from ..mirror_actions import ensure_identity_authoring_bases
+
+                ensure_identity_authoring_bases(metadata)
+            root_uuids = cmds.ls(root, uuid=True) or []
+            if len(root_uuids) != 1:
+                raise RuntimeError("MMD model UUID is unavailable")
+            model_uuid = str(root_uuids[0])
+
+        candidates = list(dict.fromkeys((*self._all_model_joints, *self._bone_name_to_joint.values())))
+        entries = []
+        seen = set()
+        seen_nodes = {}
+        for candidate in candidates:
+            if not candidate:
+                continue
+            node = str(candidate)
+            if cmds is not None:
+                paths = cmds.ls(node, long=True) or []
+                uuids = cmds.ls(node, uuid=True) or []
+                if len(paths) != 1 or len(uuids) != 1:
+                    continue
+                joint = str(paths[0])
+                identity = str(uuids[0])
+                node = joint
+            else:
+                joint = node
+                identity = node
+            if identity in seen:
+                # The same UUID can appear once through the indexed map and
+                # once through the name map; it is still one authoritative
+                # node, not an ambiguous pair.
+                continue
+            names = []
+            for attr in (ATTR_MMD_BONE_NAME, ATTR_MMD_BONE_NAME_EN):
+                try:
+                    value = self.maya_adapter.get_attr(f"{candidate}.{attr}")
+                except Exception:
+                    value = None
+                if value:
+                    names.append(str(value))
+            if not names:
+                for bone_name, mapped in self._bone_name_to_joint.items():
+                    if mapped == candidate:
+                        names.append(str(bone_name))
+            if not names:
+                continue
+            if owner == "CONTROL_OWNED":
+                node = self._preferred_rig_control(joint)
+                if not node:
+                    continue
+                if cmds is not None:
+                    control_paths = cmds.ls(node, long=True) or []
+                    if len(control_paths) != 1:
+                        continue
+                    node = str(control_paths[0])
+            previous_identity = seen_nodes.get(node)
+            if previous_identity is not None and previous_identity != identity:
+                raise RuntimeError("ambiguous Control Rig mirror node ownership")
+            entries.append(
+                {
+                    "identity": identity,
+                    "node": node,
+                    "joint": joint,
+                    "names": tuple(dict.fromkeys(names)),
+                }
+            )
+            seen.add(identity)
+            seen_nodes[node] = identity
+        from ..mirror_actions import MirrorEntry
+
+        return [MirrorEntry(**entry) for entry in entries], owner, model_uuid
+
+    def _mirror_mappings_for_selection(self):
+        """Resolve selected nodes to paired UUID-owned entries."""
+
+        from ..mirror_actions import MirrorMapping, build_mirror_pairs
+
+        entries, owner, model_uuid = self._mirror_entries()
+        selected = self.maya_adapter.ls(selection=True) or []
+        if not selected:
+            raise RuntimeError("No joints selected")
+        paths = []
+        for node in selected:
+            path = self._resolve_selection_path(node) if getattr(self.maya_adapter, "_cmds", None) else str(node)
+            if path:
+                paths.append(path)
+        entry_by_node = {entry.node: entry for entry in entries}
+        pair_by_identity = build_mirror_pairs(entries)
+        mappings = []
+        for node in paths:
+            entry = entry_by_node.get(node)
+            if entry is None:
+                raise RuntimeError(f"selection is not a validated MMD node: {node}")
+            target = pair_by_identity.get(entry.identity)
+            if target is None:
+                raise RuntimeError(f"no unique mirror pair for {node}")
+            mappings.append(MirrorMapping(entry, target))
+        return mappings, owner, model_uuid
 
     # -- Visibility -------------------------------------------------------
 
@@ -1044,11 +1171,17 @@ class AnimationPresenter:
     # -- Internal ------------------------------------------------------
 
     def _reload_for_model(self, model_root: str):
+        self._restore_active_rest_pose(silent=True)
         bone_map = self._build_bone_index_map(model_root)
         self._all_model_joints = [bone_map[index] for index in sorted(bone_map)]
         self._bone_name_to_joint = self._build_bone_name_map(model_root)
         self._ik_nodes_by_side = self._collect_leg_ik_nodes(model_root)
         self._toe_ik_nodes_by_side = self._collect_toe_ik_nodes(model_root)
+        (
+            self._control_ik_nodes_by_side,
+            self._control_toe_ik_nodes_by_side,
+            self._ik_authority_owner,
+        ) = self._collect_control_rig_ik_nodes(model_root)
         self._last_ik_states = {}
         self._sync_picker_regions()
         self._sync_ik_picker_state(force=True)
@@ -1071,6 +1204,9 @@ class AnimationPresenter:
         self._reload_morph_tab(model_root, morph_metadata)
         self._sync_visibility_controls(model_root)
         self.view.status_label.setText("")
+        self._sync_control_rig_status(model_root)
+        self._sync_common_action_state()
+        self._sync_picker_to_actual_selection()
 
     def _sync_picker_regions(self):
         """Keep missing bones non-interactive while navigation stays available."""
@@ -1096,7 +1232,12 @@ class AnimationPresenter:
             }
         )
         for side in _IK_BONE_NAMES:
-            if side in self._ik_nodes_by_side or side in self._toe_ik_nodes_by_side:
+            if (
+                side in self._ik_nodes_by_side
+                or side in self._toe_ik_nodes_by_side
+                or side in self._control_ik_nodes_by_side
+                or side in self._control_toe_ik_nodes_by_side
+            ):
                 body_ids.add(f"ik_enable_{side}")
         if hasattr(self.view.body_picker, "set_enabled_regions"):
             self.view.body_picker.set_enabled_regions(body_ids)
@@ -1149,19 +1290,141 @@ class AnimationPresenter:
             if (name := normalize_mmd_bone_name(raw_name) or raw_name) in normalized
         }
 
+    def _collect_control_rig_ik_nodes(
+        self, model_root: str
+    ) -> tuple[dict[str, str], dict[str, str], str]:
+        """Resolve owned Control Rig IK controls without changing the scene.
+
+        Legacy ``mmdCcdIk.enabled`` remains authoritative for MMD-owned
+        scenes.  Once the metadata owner is ``CONTROL_OWNED``, the control's
+        ``ikEnabled`` plug is the only accepted source; falling back to a
+        legacy solver in that state would violate the single-writer contract.
+        """
+
+        # A model without Control Rig metadata is the normal MMD-owned route.
+        # Once metadata has been read successfully, a known CONTROL_OWNED
+        # value is retained even if a later topology inspection fails.
+        owner = "MMD_OWNED"
+        try:
+            from ...core.mmd_control_rig_builder import (
+                CONTROL_RIG_CONTROL_OWNED,
+                inspect_mmd_control_rig,
+                read_mmd_control_rig_metadata,
+            )
+
+            metadata = read_mmd_control_rig_metadata(model_root)
+            owner = str((metadata or {}).get("owner") or "MMD_OWNED")
+            if owner != CONTROL_RIG_CONTROL_OWNED:
+                return {}, {}, owner
+            rig = inspect_mmd_control_rig(model_root)
+            bindings = (metadata or {}).get("bindings") or {}
+            if rig is None or not isinstance(bindings, dict):
+                return {}, {}, owner
+
+            from ...core.mmd_control_rig_analyzer import INPUT_IK_CONTROLLER
+
+            def resolve_roles(role_map):
+                resolved = {}
+                for side, role in role_map.items():
+                    binding = bindings.get(role)
+                    control = getattr(rig, "controls", {}).get(role)
+                    if (
+                        isinstance(binding, dict)
+                        and binding.get("inputKind") == INPUT_IK_CONTROLLER
+                        and control
+                    ):
+                        try:
+                            if self.maya_adapter.attribute_exists("ikEnabled", control):
+                                resolved[side] = str(control)
+                        except Exception:
+                            continue
+                return resolved
+
+            return (
+                resolve_roles(_CONTROL_IK_ROLES),
+                resolve_roles(_CONTROL_TOE_IK_ROLES),
+                owner,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Failed to collect Control Rig IK controls for %s: %s",
+                model_root,
+                exc,
+            )
+            # Preserve a known CONTROL_OWNED authority on transient
+            # inspection failures; using a legacy solver here would violate
+            # the single-writer contract.  The next refresh retries.
+            return {}, {}, owner
+
+    def _active_ik_nodes_by_side(self) -> dict[str, str]:
+        """Return the IK source selected by the persisted motion owner."""
+
+        if self._ik_authority_owner == "CONTROL_OWNED":
+            return self._control_ik_nodes_by_side
+        if self._ik_authority_owner == "MMD_OWNED":
+            return self._ik_nodes_by_side
+        return {}
+
+    def _active_toe_ik_nodes_by_side(self) -> dict[str, str]:
+        """Return the toe IK source selected by the persisted motion owner."""
+
+        if self._ik_authority_owner == "CONTROL_OWNED":
+            return self._control_toe_ik_nodes_by_side
+        if self._ik_authority_owner == "MMD_OWNED":
+            return self._toe_ik_nodes_by_side
+        return {}
+
+    def _active_ik_attribute(self) -> str:
+        """Return the read/write plug attribute for the active owner."""
+
+        return "ikEnabled" if self._ik_authority_owner == "CONTROL_OWNED" else "enabled"
+
+    def _refresh_ik_authority(self) -> None:
+        """Re-read ownership metadata when a Control Rig transaction changes it."""
+
+        model_root = self.app_state.current_model_root
+        if not model_root:
+            return
+        try:
+            from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
+
+            metadata = read_mmd_control_rig_metadata(model_root)
+            owner = str((metadata or {}).get("owner") or "MMD_OWNED")
+        except Exception:
+            # A failed metadata read is not evidence that the scene is
+            # MMD-owned.  Keep the previous authority and retry later.
+            return
+        if owner != self._ik_authority_owner or (
+            owner == "CONTROL_OWNED"
+            and not (
+                self._control_ik_nodes_by_side or self._control_toe_ik_nodes_by_side
+            )
+        ):
+            (
+                self._control_ik_nodes_by_side,
+                self._control_toe_ik_nodes_by_side,
+                self._ik_authority_owner,
+            ) = self._collect_control_rig_ik_nodes(model_root)
+            self._last_ik_states = {}
+            self._sync_picker_regions()
+
     def _sync_ik_picker_state(self, *, force: bool = False) -> None:
         """Hide a side's FK controls while its evaluated leg IK is enabled."""
 
+        self._refresh_ik_authority()
+        active_foot_nodes = self._active_ik_nodes_by_side()
+        active_toe_nodes = self._active_toe_ik_nodes_by_side()
+        attribute = self._active_ik_attribute()
         states = {}
-        for side, node in self._ik_nodes_by_side.items():
+        for side, node in active_foot_nodes.items():
             try:
-                states[side] = bool(self.maya_adapter.get_attr(f"{node}.enabled"))
+                states[side] = bool(self.maya_adapter.get_attr(f"{node}.{attribute}"))
             except Exception:
                 states[side] = False
         toe_states = {}
-        for side, node in self._toe_ik_nodes_by_side.items():
+        for side, node in active_toe_nodes.items():
             try:
-                toe_states[side] = bool(self.maya_adapter.get_attr(f"{node}.enabled"))
+                toe_states[side] = bool(self.maya_adapter.get_attr(f"{node}.{attribute}"))
             except Exception:
                 toe_states[side] = False
         combined_states = {
@@ -1183,6 +1446,11 @@ class AnimationPresenter:
                 hidden.update(_TOE_FK_REGIONS[side])
             else:
                 hidden.add(f"{side}_toe_ik")
+        # The common action bar owns Rest Pose and Mirror Select.  Hide the
+        # legacy Body SVG hit regions in the real widget so the same action is
+        # not presented twice; headless doubles retain their signal contract.
+        if hasattr(self.view.body_picker, "_region_paths"):
+            hidden.update({"reset_pose", "mirror_sel"})
         if hasattr(self.view.body_picker, "set_hidden_regions"):
             self.view.body_picker.set_hidden_regions(hidden)
         if hasattr(self.view.body_picker, "set_region_dim_levels"):
@@ -1259,17 +1527,26 @@ class AnimationPresenter:
         self._all_model_joints = []
         self._ik_nodes_by_side = {}
         self._toe_ik_nodes_by_side = {}
+        self._control_ik_nodes_by_side = {}
+        self._control_toe_ik_nodes_by_side = {}
+        self._ik_authority_owner = "MMD_OWNED"
         self._last_ik_states = {}
         self._bone_name_to_joint.clear()
         self._sync_picker_regions()
         if hasattr(self.view.body_picker, "set_hidden_regions"):
-            self.view.body_picker.set_hidden_regions(set())
+            hidden = {"reset_pose", "mirror_sel"} if hasattr(
+                self.view.body_picker, "_region_paths"
+            ) else set()
+            self.view.body_picker.set_hidden_regions(hidden)
         if hasattr(self.view.body_picker, "set_region_dim_levels"):
             self.view.body_picker.set_region_dim_levels({})
         self.view.display_frame_tree.clear()
         self._clear_morph_tab()
         self._sync_visibility_controls(None)
         self.view.status_label.setText("")
+        self._sync_control_rig_status(None)
+        self._sync_common_action_state()
+        self._set_picker_selection_from_nodes([])
 
     def _sync_visibility_controls(
         self, model_root: str | None, *, ensure_connections: bool = True
@@ -1298,8 +1575,43 @@ class AnimationPresenter:
                 self._set_visibility_button_state(cb, state)
             if hasattr(self.view, "refresh_development_mode_visibility"):
                 self.view.refresh_development_mode_visibility()
+            self._sync_control_rig_status(model_root)
         except Exception as exc:
             logger.debug("Visibility control sync failed: %s", exc)
+
+    def _sync_control_rig_status(self, model_root: str | None) -> None:
+        """Reflect UUID-owned Control Rig metadata in the Animator footer.
+
+        This is intentionally read-only.  The manager owns every lifecycle
+        transition; the Animator only reports the current scene state and
+        exposes the manager launcher.
+        """
+
+        label = getattr(self.view, "control_rig_status_label", None)
+        if label is None:
+            return
+        if not model_root:
+            label.setText(self.view.tr("control_rig_status_none", "animation_toolset"))
+            return
+        try:
+            metadata = None
+            cmds_module = getattr(self.maya_adapter, "_cmds", None)
+            if cmds_module is not None:
+                from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
+
+                metadata = read_mmd_control_rig_metadata(
+                    model_root, cmds_module=cmds_module
+                )
+            if not metadata:
+                text = self.view.tr("control_rig_status_unset", "animation_toolset")
+            else:
+                text = self.view.tr("control_rig_status", "animation_toolset").format(
+                    state=metadata.get("state", "?"),
+                    owner=metadata.get("owner", "?"),
+                )
+        except Exception:
+            text = self.view.tr("control_rig_status_error", "animation_toolset")
+        label.setText(text)
 
     @staticmethod
     def _coerce_visibility_state(state: str | VisibilityState) -> VisibilityState | None:
@@ -1972,28 +2284,189 @@ class AnimationPresenter:
         else:
             self._set_status("paste_failed", error=result.error)
 
-    def _on_reset_pose(self):
-        from ...actions.pose_actions import ResetPoseAction, ResetPoseRequest
+    def _restore_active_rest_pose(self, *, silent: bool = False) -> bool:
+        """Return an active Rest Pose transaction to motion before teardown."""
 
-        joints = self._selected_joints()
-        if not joints:
+        transaction = self._rest_pose_transaction
+        if transaction is None:
+            return True
+        try:
+            transaction.restore()
+        except Exception as exc:
+            logger.error("Rest Pose restore failed during presenter teardown", exc_info=True)
+            if not silent:
+                self._set_status("rest_pose_failed", error=exc)
+            return False
+        finally:
+            # A scene replacement can make exact restoration impossible; do
+            # not retain a stale UUID transaction that could touch a new DAG.
+            self._rest_pose_transaction = None
+        return True
+
+    def _on_reset_pose(self):
+        """Toggle a reversible, model-scoped Rest Pose transaction.
+
+        Body and Finger both route their common Reset Pose control here.  On
+        real Maya adapters this snapshots writers and channels before applying
+        rest values; lightweight adapters retain the historical one-shot
+        action for headless compatibility.
+        """
+
+        if self._rest_pose_transaction is not None:
+            if self._restore_active_rest_pose():
+                self._sync_picker_to_actual_selection()
+                self._sync_common_action_state()
+                self._set_status("rest_pose_restored")
+            return
+
+        targets, bind_translations = self._rest_pose_targets()
+        if not targets:
             self._set_status("no_joints_selected")
             return
 
-        bind_translations = self._selected_bind_translations(joints)
-        result = ResetPoseAction(self.maya_adapter).execute(
-            ResetPoseRequest(
-                joints=joints,
-                bind_translations=bind_translations,
+        cmds = getattr(self.maya_adapter, "_cmds", None)
+        if cmds is None:
+            from ...actions.pose_actions import ResetPoseAction, ResetPoseRequest
+
+            result = ResetPoseAction(self.maya_adapter).execute(
+                ResetPoseRequest(
+                    joints=targets,
+                    bind_translations=bind_translations,
+                )
             )
-        )
-        if result.succeeded:
-            # Reuse the established Animator translation keys; the action is
-            # now one-shot, but the existing localized status surface remains
-            # the compatibility boundary for all supported languages.
-            self._set_status("reset_pose_applied", count=result.reset_count)
-        else:
-            self._set_status("reset_pose_failed", error=result.error)
+            if result.succeeded:
+                self._sync_common_action_state()
+                self._set_status("reset_pose_applied", count=result.reset_count)
+            else:
+                self._set_status("reset_pose_failed", error=result.error)
+            return
+
+        try:
+            from ..rest_pose_transaction import RestPoseTransaction
+
+            root = self.app_state.current_model_root
+            roots = cmds.ls(root, uuid=True) if root else []
+            if not root or len(roots) != 1:
+                raise RuntimeError("MMD model UUID is unavailable")
+            transaction = RestPoseTransaction(
+                self.maya_adapter,
+                model_root=root,
+                model_uuid=str(roots[0]),
+                targets=targets,
+                bind_translations=bind_translations,
+                scope_roots=self._rest_pose_scope_roots(root, cmds),
+            )
+            count = transaction.apply()
+            self._rest_pose_transaction = transaction
+            self._sync_common_action_state()
+            self._set_status("rest_pose_applied", count=count)
+        except Exception as exc:
+            self._set_status("rest_pose_failed", error=exc)
+
+    def _rest_pose_targets(self) -> tuple[list[str], dict[str, tuple[float, float, float]]]:
+        """Resolve every joint/controller in the current model UUID.
+
+        The production Maya path is model-scoped: Body and Finger are merely
+        two entry points into the same Rest Pose transaction.  Headless
+        adapters intentionally retain the historical selected-joint fallback
+        so existing action tests remain deterministic without a Maya DAG.
+        """
+
+        root = self.app_state.current_model_root
+        cmds = getattr(self.maya_adapter, "_cmds", None)
+        if not root or cmds is None:
+            joints = self._selected_joints()
+            return joints, self._selected_bind_translations(joints)
+        try:
+            from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
+
+            metadata = read_mmd_control_rig_metadata(root, cmds_module=cmds) or {}
+            owner = str(metadata.get("owner") or "MMD_OWNED")
+            if owner not in {"MMD_OWNED", "CONTROL_OWNED"}:
+                return [], {}
+            if len(cmds.ls(root, long=True) or []) != 1:
+                return [], {}
+            joints = self._rest_pose_model_joints(root, cmds)
+            if owner == "MMD_OWNED":
+                return joints, self._selected_bind_translations(joints)
+
+            # In CONTROL_OWNED mode each UUID-backed controller is the only
+            # accepted writer.  Binding metadata provides the complete model
+            # set, including a master control intentionally outside the model
+            # DAG; exact UUID resolution prevents cross-model fallthrough.
+            from ...core.mmd_control_rig_builder import (
+                resolve_mmd_control_rig_binding_joint,
+            )
+
+            targets = []
+            bound_joints = []
+            for role, control_uuid in (metadata.get("controls") or {}).items():
+                control_paths = cmds.ls(control_uuid, long=True) or []
+                binding = (metadata.get("bindings") or {}).get(role)
+                if len(control_paths) != 1 or not binding:
+                    continue
+                target = str(control_paths[0])
+                bound = resolve_mmd_control_rig_binding_joint(cmds, binding)
+                if not bound:
+                    continue
+                bound_paths = cmds.ls(bound, long=True) or []
+                if len(bound_paths) != 1:
+                    continue
+                bound = str(bound_paths[0])
+                if target not in targets:
+                    targets.append(target)
+                if bound not in bound_joints:
+                    bound_joints.append(bound)
+            return targets, self._selected_bind_translations(bound_joints)
+        except Exception:
+            logger.debug("Rest Pose target resolution failed", exc_info=True)
+            return [], {}
+
+    def _rest_pose_model_joints(self, root: str, cmds) -> list[str]:
+        """Resolve all model joints to unique full DAG paths."""
+
+        candidates = []
+        list_relatives = getattr(cmds, "listRelatives", None)
+        if callable(list_relatives):
+            candidates.extend(
+                list_relatives(
+                    root,
+                    allDescendents=True,
+                    type="joint",
+                    fullPath=True,
+                )
+                or []
+            )
+        if not candidates:
+            candidates.extend(self._all_model_joints)
+            candidates.extend(self._bone_name_to_joint.values())
+        result = []
+        for candidate in candidates:
+            paths = cmds.ls(candidate, long=True) or []
+            if len(paths) != 1:
+                continue
+            path = str(paths[0])
+            if path not in result:
+                result.append(path)
+        return result
+
+    @staticmethod
+    def _rest_pose_scope_roots(root: str, cmds) -> tuple[str, ...]:
+        """Include the detached Control Rig group when it is outside the DAG."""
+
+        scopes = [str(root)]
+        try:
+            from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
+
+            metadata = read_mmd_control_rig_metadata(root, cmds_module=cmds) or {}
+            group_uuid = metadata.get("controlGroupUuid")
+            if group_uuid:
+                paths = cmds.ls(group_uuid, long=True) or []
+                if len(paths) == 1:
+                    scopes.append(str(paths[0]))
+        except Exception:
+            logger.debug("Could not resolve Control Rig Rest Pose scope", exc_info=True)
+        return tuple(dict.fromkeys(scopes))
 
     def _selected_bind_translations(
         self,
@@ -2021,19 +2494,43 @@ class AnimationPresenter:
         return bind_translations
 
     def _on_mirror_pose(self):
-        from ...actions.pose_actions import MirrorPoseAction, MirrorPoseRequest
+        try:
+            if not (self.maya_adapter.ls(selection=True) or []):
+                self._set_status("no_joints_selected")
+                return
+            mappings, _owner, model_uuid = self._mirror_mappings_for_selection()
+            root = self.app_state.current_model_root
+            cmds = getattr(self.maya_adapter, "_cmds", None)
+            if cmds is None:
+                from ..mirror_actions import MirrorPoseTransaction
 
-        joints = self._selected_joints()
-        if not joints:
-            self._set_status("no_joints_selected")
-            return
-        result = MirrorPoseAction(self.maya_adapter).execute(
-            MirrorPoseRequest(joints=joints)
-        )
-        if result.succeeded:
-            self._set_status("mirrored_pose")
-        else:
-            self._set_status("mirror_failed", error=result.error)
+                count = MirrorPoseTransaction(
+                    self.maya_adapter,
+                    model_root=root or "",
+                    model_uuid=model_uuid or "",
+                    mappings=mappings,
+                ).apply()
+            else:
+                roots = cmds.ls(root, uuid=True) if root else []
+                if len(roots) != 1 or model_uuid != str(roots[0]):
+                    raise RuntimeError("MMD model UUID is unavailable")
+                from ..mirror_actions import MirrorPoseTransaction
+
+                count = MirrorPoseTransaction(
+                    self.maya_adapter,
+                    model_root=root,
+                    model_uuid=str(roots[0]),
+                    mappings=mappings,
+                    scope_roots=self._rest_pose_scope_roots(root, cmds),
+                ).apply()
+            self._set_status("mirrored_pose", count=count)
+        except Exception as exc:
+            # Keep the old headless status contract for the pre-Maya action
+            # test double while production always reports the real blocker.
+            error = exc
+            if getattr(self.maya_adapter, "_cmds", None) is None:
+                error = NotImplementedError("Mirror Pose not yet implemented")
+            self._set_status("mirror_failed", error=error)
 
     def _on_bake_animation(self):
         from ...actions.pose_actions import BakeAnimationAction, BakeAnimationRequest

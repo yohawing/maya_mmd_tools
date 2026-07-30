@@ -10,7 +10,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 import math
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
 import maya.api.OpenMaya as om
 import maya.api.OpenMayaAnim as oma
@@ -32,8 +32,22 @@ from mmd_tools.core.mmd_control_rig_builder import (
     resolve_mmd_control_rig_binding_joint,
 )
 from mmd_tools.core.mmd_control_rig_analyzer import INPUT_DIRECT_CHANNEL, INPUT_IK_CONTROLLER
+from mmd_tools.core.mmd_control_rig_basis import (
+    MmdControlRigBasisError,
+    control_to_bone,
+    matrix_from_quaternion,
+    validate_basis_record,
+)
 from mmd_tools.core.mmd_control_rig_channels import (
     derive_mmd_control_rig_channel_policy,
+)
+from mmd_tools.core.mmd_control_rig_anim_layers import (
+    MmdControlRigAnimLayerError,
+    apply_mmd_control_rig_anim_layer_route,
+    capture_mmd_control_rig_anim_layers,
+    resolve_mmd_control_rig_anim_layer_route,
+    restore_mmd_control_rig_anim_layer_journal,
+    restore_mmd_control_rig_anim_layer_route,
 )
 
 
@@ -89,6 +103,74 @@ def control_rig_edit_routes_for_joints(joints, *, cmds_module=None) -> Dict[str,
                 if channel in _CHANNELS:
                     routes.setdefault(joint, {})[channel] = (control, channel)
     return routes
+
+
+def control_rig_edit_authoring_bases_for_joints(
+    joints, *, cmds_module=None
+) -> Dict[str, Mapping[str, Any]]:
+    """Return UUID-validated authoring bases for complete XYZ routes.
+
+    The regular route helper intentionally keeps its historic two-tuple API.
+    VMD keying needs the additional static basis, so expose it through a
+    separate lookup and fail closed when a role has only a partial rotation
+    route or a solver input. Optional primary-twist rings may use complete
+    Append ``baseRotate``/``inputRotateElement`` inputs as their authored XYZ
+    route.
+    """
+
+    cmds = cmds_module or maya_cmds()
+    wanted = set()
+    for joint in joints:
+        matches = cmds.ls(joint, long=True) or []
+        wanted.add(str(matches[0]) if len(matches) == 1 else str(joint))
+    result: Dict[str, Mapping[str, Any]] = {}
+    roots = cmds.ls(
+        f"*.{ATTR_MMD_CONTROL_RIG_JSON}",
+        objectsOnly=True,
+        long=True,
+        recursive=True,
+    ) or []
+    for root in roots:
+        metadata = read_mmd_control_rig_metadata(str(root), cmds_module=cmds)
+        if not metadata or metadata.get("owner") != CONTROL_RIG_CONTROL_OWNED:
+            continue
+        bases = metadata.get("authoringBases") or {}
+        for role, binding in metadata.get("bindings", {}).items():
+            if not isinstance(binding, Mapping):
+                continue
+            is_twist = bool(binding.get("twistController")) or str(role) in {
+                "left_arm_twist",
+                "right_arm_twist",
+                "left_wrist_twist",
+                "right_wrist_twist",
+            }
+            if binding.get("inputKind") not in {
+                INPUT_DIRECT_CHANNEL,
+                "append_base" if is_twist else INPUT_DIRECT_CHANNEL,
+            }:
+                continue
+            try:
+                joint = resolve_mmd_control_rig_binding_joint(cmds, binding)
+                targets = _expanded_authored_plugs(binding, cmds_module=cmds)
+                channels = {
+                    _control_channel_for_target(target)
+                    for target in targets
+                    if _rotation_attr_for_target(target)
+                    in {"rotateX", "rotateY", "rotateZ"}
+                }
+                basis = validate_basis_record(bases[role]).to_dict()
+            except (KeyError, MmdControlRigBuildError, MmdControlRigBasisError):
+                continue
+            if joint not in wanted or channels != {"rotateX", "rotateY", "rotateZ"}:
+                continue
+            prior = result.get(joint)
+            if prior is not None and prior != basis:
+                # Two rigs claiming one joint with different bases is
+                # ambiguous; callers must retain the legacy route instead.
+                result.pop(joint, None)
+                continue
+            result[joint] = basis
+    return result
 
 
 def control_rig_edit_ik_enabled_plugs_for_model(
@@ -196,8 +278,6 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
             f"cannot enter EDIT while motion owner is {metadata.get('owner')}"
         )
 
-    _assert_bake_route_supported(cmds, metadata)
-
     controls = {
         role: _resolve_uuid(cmds, uuid)
         for role, uuid in metadata.get("controls", {}).items()
@@ -210,6 +290,21 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
     display_reference_time = float(metadata["displayReferenceTime"])
     offset_controls = set()
     transaction_plugs = _entry_transaction_plugs(cmds, metadata, controls)
+    try:
+        layer_journal = capture_mmd_control_rig_anim_layers(
+            cmds,
+            root,
+            None,
+        )
+    except MmdControlRigAnimLayerError as exc:
+        raise MmdControlRigBuildError(str(exc)) from exc
+    _assert_bake_route_supported(
+        cmds,
+        metadata,
+        model_root=root,
+        target_plugs=transaction_plugs,
+        layer_journal=layer_journal,
+    )
     plug_states = _capture_plug_states(cmds, transaction_plugs)
     metadata_before = _raw_metadata(cmds, root)
     added_attributes = []
@@ -257,6 +352,59 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                             f"unsupported control-rig route: {target} ({', '.join(route_reasons)})"
                         )
                     control_plug = f"{control}.{channel}"
+                    layer_route = layer_journal.get("routes", {}).get(target)
+                    if layer_route is not None:
+                        incoming_control = [
+                            str(source)
+                            for source in (
+                                cmds.listConnections(
+                                    control_plug,
+                                    source=True,
+                                    destination=False,
+                                    plugs=True,
+                                )
+                                or []
+                            )
+                        ]
+                        layer_source = layer_route.get("curve")
+                        if incoming_control and incoming_control != [layer_source]:
+                            raise MmdControlRigBuildError(
+                                f"foreign animation-layer controller source: {control_plug}"
+                            )
+                        value = float(cmds.getAttr(target))
+                        apply_mmd_control_rig_anim_layer_route(
+                            cmds,
+                            layer_route,
+                            control_plug,
+                            operations,
+                        )
+                        journal["channels"].append(
+                            _journal_plug_row(
+                                cmds,
+                                source=layer_source,
+                                control=control_plug,
+                                target=target,
+                                value=value,
+                                control_source=layer_source,
+                                route_class=ROUTE_SAMPLED,
+                                route_reasons=("anim_layer",),
+                                layer_route=layer_route,
+                                authoring_basis=metadata.get("authoringBases", {}).get(role),
+                                twist_controller=bool(
+                                    metadata.get("bindings", {})
+                                    .get(role, {})
+                                    .get("twistController")
+                                ),
+                            )
+                        )
+                        _record_curve_representation(
+                            curve_representations,
+                            target,
+                            layer_source,
+                            layer_source,
+                            cmds,
+                        )
+                        continue
                     incoming = cmds.listConnections(
                         target, source=True, destination=False, plugs=True
                     ) or []
@@ -305,6 +453,12 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                             control_source=control_source,
                             route_class=route_class,
                             route_reasons=route_reasons,
+                            authoring_basis=metadata.get("authoringBases", {}).get(role),
+                            twist_controller=bool(
+                                metadata.get("bindings", {})
+                                .get(role, {})
+                                .get("twistController")
+                            ),
                         )
                     )
                     _record_curve_representation(
@@ -326,6 +480,7 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                         operations,
                         created_curve_nodes=created_curve_nodes,
                         curve_representations=curve_representations,
+                        layer_routes=layer_journal.get("routes", {}),
                     )
 
             _zero_control_display_offsets(
@@ -334,13 +489,20 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                 journal,
                 reference_time=display_reference_time,
             )
+            rotation_converters = _create_live_rotation_converters(
+                cmds,
+                journal["channels"],
+                metadata.get("authoringBases", {}),
+                operations,
+                created_curve_nodes,
+            )
             from mmd_tools.converters.vmd_rotation_time_curve import (
                 share_vmd_rotation_time_curve,
             )
 
             for group in _rotation_channel_groups(journal["channels"]):
                 rows_by_attr = {
-                    str(row["target"]).rsplit(".", 1)[-1]: row for row in group
+                    _rotation_attr_for_target(row["target"]): row for row in group
                 }
                 attrs = ("rotateX", "rotateY", "rotateZ")
                 if set(rows_by_attr) != set(attrs):
@@ -351,9 +513,13 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                     [rows_by_attr[attr].get("controlSource") for attr in attrs],
                 )
             metadata["journal"] = journal
+            if rotation_converters:
+                metadata["rotationConverters"] = rotation_converters
+                _record_rotation_converter_nodes(metadata, rotation_converters)
             for row in curve_representations:
                 row["activeOwner"] = CONTROL_RIG_CONTROL_OWNED
             metadata["curveRepresentations"] = curve_representations
+            metadata["animLayerJournal"] = layer_journal
             metadata["routeDiagnostics"] = _route_diagnostics(journal)
             metadata["state"] = CONTROL_RIG_EDIT
             metadata["owner"] = CONTROL_RIG_CONTROL_OWNED
@@ -362,7 +528,21 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
         rollback_error = None
         try:
             _rollback(cmds, operations)
-            _restore_plug_states(cmds, plug_states)
+            _assert_created_curve_nodes_safe(
+                cmds,
+                created_curve_nodes,
+                transaction_plugs,
+            )
+            _restore_plug_states(
+                cmds,
+                plug_states,
+                allowed_sources={
+                    str(source)
+                    for _action, source, _target in operations
+                    if source
+                },
+                owned_nodes=set(created_curve_nodes),
+            )
             for node in reversed(created_curve_nodes):
                 if cmds.objExists(node):
                     cmds.delete(node)
@@ -372,6 +552,7 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                     cmds.listConnections(plug, source=False, destination=True) or []
                 ):
                     cmds.deleteAttr(f"{node}.{attribute}")
+            restore_mmd_control_rig_anim_layer_journal(cmds, layer_journal)
         except Exception as rollback_exc:
             rollback_error = rollback_exc
             # A caller may inject a failure into connectAttr itself. The
@@ -384,9 +565,16 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
             for node in reversed(created_curve_nodes):
                 if cmds.objExists(node):
                     try:
+                        _assert_created_curve_nodes_safe(
+                            cmds,
+                            (node,),
+                            transaction_plugs,
+                        )
                         cmds.delete(node)
                     except Exception:
-                        pass
+                        # A topology-drifted curve may carry a foreign edge;
+                        # leave it and its writer untouched.
+                        continue
         try:
             # Metadata is restored even when a test-injected connection
             # failure also affects best-effort graph rollback.
@@ -427,6 +615,7 @@ def restore_mmd_control_rig_attached(model_root: str, *, cmds_module=None) -> Di
         raise MmdControlRigBuildError(f"cannot restore ATTACHED from {metadata['state']}")
 
     ik_rows, channel_rows, offset_rows = _resolve_edit_journal(cmds, metadata)
+    rotation_converters = _resolve_rotation_converters(cmds, metadata)
 
     with _edit_exit_transaction(
         cmds,
@@ -435,11 +624,30 @@ def restore_mmd_control_rig_attached(model_root: str, *, cmds_module=None) -> Di
         "restore",
         ik_rows + channel_rows,
         offset_rows,
+        layer_journal=metadata.get("animLayerJournal"),
+        owned_nodes=tuple(
+            node
+            for converter in rotation_converters
+            for node in (
+                converter.get("compose"),
+                converter.get("mult"),
+                converter.get("decompose"),
+            )
+            if node
+        ),
     ):
         for row in reversed(ik_rows):
+            if row.get("layerRoute"):
+                restore_mmd_control_rig_anim_layer_route(
+                    cmds,
+                    row["layerRoute"],
+                    row["control"],
+                )
+                continue
             source, target = row["control"], row["target"]
             if cmds.isConnected(source, target):
                 cmds.disconnectAttr(source, target)
+            _disconnect_owned_rotation_writer(cmds, target, rotation_converters)
             control_source = row.get("controlSource")
             if control_source and cmds.isConnected(control_source, source):
                 cmds.disconnectAttr(control_source, source)
@@ -449,9 +657,17 @@ def restore_mmd_control_rig_attached(model_root: str, *, cmds_module=None) -> Di
             else:
                 cmds.setAttr(target, bool(row["value"]))
         for row in reversed(channel_rows):
+            if row.get("layerRoute"):
+                restore_mmd_control_rig_anim_layer_route(
+                    cmds,
+                    row["layerRoute"],
+                    row["control"],
+                )
+                continue
             control, target = row["control"], row["target"]
             if cmds.isConnected(control, target):
                 cmds.disconnectAttr(control, target)
+            _disconnect_owned_rotation_writer(cmds, target, rotation_converters)
             control_source = row.get("controlSource")
             if control_source and cmds.isConnected(control_source, control):
                 cmds.disconnectAttr(control_source, control)
@@ -464,12 +680,15 @@ def restore_mmd_control_rig_attached(model_root: str, *, cmds_module=None) -> Di
                 cmds.setAttr(target, float(row["value"]))
         _restore_offsets(cmds, offset_rows, strict=True)
         metadata.pop("journal", None)
+        _drop_rotation_converter_nodes(metadata, rotation_converters)
+        metadata.pop("rotationConverters", None)
         for row in metadata.get("curveRepresentations", []):
             if isinstance(row, dict):
                 row["activeOwner"] = CONTROL_RIG_MMD_OWNED
         metadata["state"] = CONTROL_RIG_ATTACHED
         metadata["owner"] = CONTROL_RIG_MMD_OWNED
         _write_metadata(cmds, root, metadata)
+        _remove_rotation_converters(cmds, rotation_converters)
     return metadata
 
 
@@ -485,8 +704,16 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
         raise MmdControlRigBuildError(
             f"cannot bake MMD control rig while motion owner is {metadata.get('owner')}"
         )
-    _assert_bake_route_supported(cmds, metadata)
     ik_rows, channel_rows, offset_rows = _resolve_edit_journal(cmds, metadata)
+    layer_journal = metadata.get("animLayerJournal")
+    _assert_bake_route_supported(
+        cmds,
+        metadata,
+        model_root=root,
+        target_plugs=[row["target"] for row in ik_rows + channel_rows],
+        layer_journal=layer_journal,
+    )
+    rotation_converters = _resolve_rotation_converters(cmds, metadata)
     rows = ik_rows + channel_rows
     created_curve_nodes = []
     sources_by_control = {}
@@ -506,7 +733,11 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
     rotation_groups = [
         group
         for group in _rotation_channel_groups(channel_rows)
-        if _rotation_group_uses_quaternion(cmds, group, sources_by_control)
+        if not any(row.get("layerRoute") for row in group)
+        and (
+            all(row.get("twistController") for row in group)
+            or _rotation_group_uses_quaternion(cmds, group, sources_by_control)
+        )
     ]
     with _edit_exit_transaction(
         cmds,
@@ -515,6 +746,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
         "bake",
         rows,
         offset_rows,
+        layer_journal=layer_journal,
         curve_plugs=tuple(
             plug
             for row in rows
@@ -523,6 +755,16 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
         ),
         created_curve_nodes=created_curve_nodes,
         rotation_groups=rotation_groups,
+        owned_nodes=tuple(
+            node
+            for converter in rotation_converters
+            for node in (
+                converter.get("compose"),
+                converter.get("mult"),
+                converter.get("decompose"),
+            )
+            if node
+        ),
     ):
         mmd_sources_by_control = {}
         for row in reversed(ik_rows):
@@ -532,6 +774,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
                 sources_by_control[row["control"]],
                 created_curve_nodes=created_curve_nodes,
             )
+        _disconnect_rotation_converters(cmds, rotation_converters)
         grouped_rows = {id(row) for group in rotation_groups for row in group}
         for group in reversed(rotation_groups):
             group_sources = _commit_control_rotation_group(
@@ -551,6 +794,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
                 created_curve_nodes=created_curve_nodes,
             )
         _restore_offsets(cmds, offset_rows, strict=True)
+        _drop_rotation_converter_nodes(metadata, rotation_converters)
         representations = _curve_representations(metadata)
         metadata["curveRepresentations"] = representations
         for row in rows:
@@ -569,6 +813,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
                 ),
             )
         metadata.pop("journal", None)
+        metadata.pop("rotationConverters", None)
         metadata["routeDiagnostics"] = _route_diagnostics(
             {"channels": rows, "ikEnabled": []}
         )
@@ -578,6 +823,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
         metadata["state"] = CONTROL_RIG_BAKED
         metadata["owner"] = CONTROL_RIG_MMD_OWNED
         _write_metadata(cmds, root, metadata)
+        _remove_rotation_converters(cmds, rotation_converters)
     return metadata
 
 
@@ -638,6 +884,8 @@ def _edit_exit_transaction(
     curve_plugs=(),
     created_curve_nodes=None,
     rotation_groups=(),
+    layer_journal: Optional[Mapping[str, Any]] = None,
+    owned_nodes=(),
 ):
     """Snapshot EDIT plugs and roll back a failed state transition."""
     transaction_plugs = {
@@ -651,6 +899,8 @@ def _edit_exit_transaction(
     curve_snapshots = _capture_curve_snapshots(cmds, curve_plugs)
     curve_input_states = _capture_curve_input_states(cmds, curve_plugs)
     rotation_states = _capture_rotation_interpolation_states(cmds, rotation_groups)
+    allowed_sources = _transaction_owned_sources(rows, curve_plugs, layer_journal)
+    owned_nodes = set(str(node) for node in (owned_nodes or ()))
     try:
         transitioning = json.loads(metadata_before)
         transitioning["owner"] = CONTROL_RIG_CONVERTING
@@ -659,6 +909,11 @@ def _edit_exit_transaction(
             yield
     except Exception as exc:
         try:
+            _assert_created_curve_nodes_safe(
+                cmds,
+                created_curve_nodes or (),
+                transaction_plugs,
+            )
             # Sampled routes may create a new MMD animCurve when the source
             # joint had no authored curve before EDIT.  Remove those nodes
             # before restoring plug state so their transient connections do
@@ -666,10 +921,17 @@ def _edit_exit_transaction(
             for node in reversed(created_curve_nodes or ()):
                 if cmds.objExists(node):
                     cmds.delete(node)
-            _restore_plug_states(cmds, plug_states)
+            _restore_plug_states(
+                cmds,
+                plug_states,
+                allowed_sources=allowed_sources,
+                owned_nodes=owned_nodes | set(created_curve_nodes or ()),
+            )
             _restore_curve_snapshots(cmds, curve_snapshots)
             _restore_curve_input_states(cmds, curve_input_states)
             _restore_rotation_interpolation_states(cmds, rotation_states)
+            if layer_journal:
+                restore_mmd_control_rig_anim_layer_journal(cmds, layer_journal)
             _restore_raw_metadata(cmds, root, metadata_before)
         except Exception as rollback_exc:
             _discard_curve_snapshots(cmds, curve_snapshots)
@@ -708,13 +970,24 @@ def _owned_authored_plugs(
     cmds_module=None,
 ) -> Tuple[str, ...]:
     """Return only authored targets exposed by the role's channel policy."""
-    policy = derive_mmd_control_rig_channel_policy(role, binding)
+    policy = derive_mmd_control_rig_channel_policy(_channel_policy_role(role), binding)
     allowed = set(policy.keyable_channels)
     return tuple(
         target
         for target in _expanded_authored_plugs(binding, cmds_module=cmds_module)
         if _control_channel_for_target(target) in allowed
     )
+
+
+def _channel_policy_role(role: str) -> str:
+    """Map optional twist rings onto the established rotate-only policies."""
+
+    return {
+        "left_arm_twist": "left_arm",
+        "right_arm_twist": "right_arm",
+        "left_wrist_twist": "left_wrist",
+        "right_wrist_twist": "right_wrist",
+    }.get(str(role), str(role))
 
 
 def _control_channel_for_target(target: str) -> str:
@@ -740,8 +1013,24 @@ def _require_animation_source(cmds, source: str, target: str) -> None:
     )
 
 
-def _assert_bake_route_supported(cmds, metadata: Mapping[str, Any]) -> None:
-    """Fail closed when an active animation layer or blend node is present."""
+def _assert_bake_route_supported(
+    cmds,
+    metadata: Mapping[str, Any],
+    *,
+    model_root: Optional[str] = None,
+    target_plugs=(),
+    layer_journal: Optional[Mapping[str, Any]] = None,
+) -> None:
+    """Fail closed for unsupported layer/blend writers.
+
+    A captured target-exclusive layer journal is the one supported exception:
+    its direct source is transferred through the controller and never
+    flattened.  All other populated layers and blend inputs remain rejected.
+    """
+    supported_routes = {
+        str(target): route
+        for target, route in (layer_journal or {}).get("routes", {}).items()
+    }
     # A non-base layer owns an animBlendNode and flattening it would silently
     # discard layer weights.  Reject any populated non-base layer before the
     # transaction mutates the graph.  Maya command stubs may not implement
@@ -763,6 +1052,13 @@ def _assert_bake_route_supported(cmds, metadata: Mapping[str, Any]) -> None:
         except Exception:
             weight = 1.0 if attrs else 0.0
         if attrs and weight > 1.0e-8:
+            if model_root and layer_journal is not None:
+                names = {
+                    str(row.get("name"))
+                    for row in (layer_journal.get("layers", []) or [])
+                }
+                if name in names:
+                    continue
             raise MmdControlRigBuildError(
                 f"active animLayer is unsupported for control-rig bake: {name}"
             )
@@ -775,6 +1071,8 @@ def _assert_bake_route_supported(cmds, metadata: Mapping[str, Any]) -> None:
             for source in incoming:
                 node_type = str(cmds.nodeType(str(source).split(".", 1)[0]))
                 if node_type.startswith("animBlendNode"):
+                    if target in supported_routes:
+                        continue
                     raise MmdControlRigBuildError(
                         f"animBlend input is unsupported for control-rig bake: {source} -> {target}"
                     )
@@ -863,6 +1161,9 @@ def _journal_plug_row(
     control_source: Optional[str] = None,
     route_class: str = ROUTE_SAME_BASIS,
     route_reasons=(),
+    layer_route: Optional[Mapping[str, Any]] = None,
+    authoring_basis: Optional[Mapping[str, Any]] = None,
+    twist_controller: bool = False,
 ) -> Dict[str, Any]:
     """Create a connection-journal row with readable and stable plug names."""
     return {
@@ -879,6 +1180,9 @@ def _journal_plug_row(
         ),
         "routeClass": str(route_class),
         "routeReasons": list(route_reasons or ()),
+        "layerRoute": dict(layer_route) if layer_route else None,
+        "authoringBasis": dict(authoring_basis) if authoring_basis else None,
+        "twistController": bool(twist_controller),
     }
 
 
@@ -937,6 +1241,15 @@ def _resolve_journal_plug_row(cmds, row: Mapping[str, Any]) -> Dict[str, Any]:
         if control_source
         else None
     )
+    layer_route = row.get("layerRoute")
+    if layer_route:
+        try:
+            resolved["layerRoute"] = resolve_mmd_control_rig_anim_layer_route(
+                cmds,
+                layer_route,
+            )
+        except MmdControlRigAnimLayerError as exc:
+            raise MmdControlRigBuildError(str(exc)) from exc
     return resolved
 
 
@@ -951,6 +1264,128 @@ def _resolve_journal_offset_row(cmds, row: Mapping[str, Any]) -> Dict[str, Any]:
     return resolved
 
 
+def _prepare_ik_enabled_routes(
+    cmds,
+    control: str,
+    solvers: Tuple[str, ...],
+    *,
+    curve_representations=None,
+    layer_routes: Optional[Mapping[str, Mapping[str, Any]]] = None,
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Validate IK ownership before touching any solver or controller edge.
+
+    ``control.ikEnabled`` is the single EDIT writer for every solver in one
+    binding.  Existing incoming animation is therefore accepted only when it
+    is the exact controller curve recorded for the target (or the exact
+    solver source that is about to be journaled).  All other graphs fail
+    closed before a target connection is disconnected.
+    """
+    control_plug = f"{control}.ikEnabled"
+    control_incoming = [
+        str(source)
+        for source in (
+            cmds.listConnections(
+                control_plug,
+                source=True,
+                destination=False,
+                plugs=True,
+            )
+            or []
+        )
+    ]
+    if len(control_incoming) > 1:
+        raise MmdControlRigBuildError(
+            f"multiple IK enabled controller sources: {control_plug}"
+        )
+    active_control_source = control_incoming[0] if control_incoming else None
+    if active_control_source:
+        _require_animation_source(cmds, active_control_source, control_plug)
+
+    plans: List[Dict[str, Any]] = []
+    represented_sources = set()
+    solver_sources_without_representation = set()
+    for solver in solvers:
+        target = f"{solver}.enabled"
+        if not cmds.objExists(target):
+            raise MmdControlRigBuildError(f"IK solver enabled input is missing: {target}")
+        incoming = [
+            str(source)
+            for source in (
+                cmds.listConnections(
+                    target,
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                )
+                or []
+            )
+        ]
+        if len(incoming) > 1:
+            raise MmdControlRigBuildError(f"multiple IK enabled sources: {target}")
+        source = incoming[0] if incoming else None
+        layer_route = (layer_routes or {}).get(target)
+        if layer_route is not None:
+            source = layer_route.get("curve")
+            if incoming != [layer_route.get("blendOutput")]:
+                raise MmdControlRigBuildError(
+                    f"animLayer target has an unknown writer: {target}"
+                )
+            control_source = layer_route.get("curve")
+        elif source:
+            _require_animation_source(cmds, source, target)
+        else:
+            control_source = None
+        if layer_route is None:
+            control_source = (
+            _existing_control_curve(cmds, curve_representations, target)
+            if curve_representations is not None
+            else None
+            )
+
+        if active_control_source:
+            expected = control_source or source
+            if expected != active_control_source:
+                raise MmdControlRigBuildError(
+                    f"foreign IK enabled controller source: {active_control_source} -> "
+                    f"{control_plug} (expected {expected or 'none'})"
+                )
+            # A shared source is already the authoritative controller writer;
+            # journal it instead of duplicating a second curve.
+            control_source = active_control_source
+        elif control_source:
+            represented_sources.add(control_source)
+        elif source:
+            solver_sources_without_representation.add(source)
+
+        plans.append(
+            {
+                "solver": solver,
+                "target": target,
+                "source": source,
+                "controlSource": control_source,
+                "layerRoute": layer_route,
+                "value": bool(cmds.getAttr(target)),
+            }
+        )
+
+    if not active_control_source:
+        if len(represented_sources) > 1:
+            raise MmdControlRigBuildError(
+                f"IK solvers have different enabled animation sources: {control}"
+            )
+        if len(solver_sources_without_representation) > 1:
+            raise MmdControlRigBuildError(
+                f"IK solvers have different enabled animation sources: {control}"
+            )
+        if represented_sources and solver_sources_without_representation:
+            represented = next(iter(represented_sources))
+            if represented not in solver_sources_without_representation:
+                raise MmdControlRigBuildError(
+                    f"IK solvers have different enabled animation sources: {control}"
+                )
+    return plans, active_control_source
+
+
 def _connect_ik_enabled(
     cmds,
     control,
@@ -960,6 +1395,7 @@ def _connect_ik_enabled(
     *,
     created_curve_nodes=None,
     curve_representations=None,
+    layer_routes: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> None:
     solvers = resolve_mmd_control_rig_binding_ik_solvers(cmds, binding)
     if not solvers:
@@ -967,39 +1403,81 @@ def _connect_ik_enabled(
     if not cmds.attributeQuery("ikEnabled", node=control, exists=True):
         cmds.addAttr(control, longName="ikEnabled", attributeType="bool", keyable=True)
     control_plug = f"{control}.ikEnabled"
-    for solver in solvers:
-        target = f"{solver}.enabled"
-        if not cmds.objExists(target):
-            raise MmdControlRigBuildError(f"IK solver enabled input is missing: {target}")
-        incoming = cmds.listConnections(target, source=True, destination=False, plugs=True) or []
-        if len(incoming) > 1:
-            raise MmdControlRigBuildError(f"multiple IK enabled sources: {target}")
-        source = str(incoming[0]) if incoming else None
-        control_source = (
-            _existing_control_curve(cmds, curve_representations, target)
-            if curve_representations is not None
-            else None
-        )
-        if source and control_source is None:
-            control_source = _duplicate_animation_source(
-                cmds, source, created_curve_nodes if created_curve_nodes is not None else []
+    plans, active_control_source = _prepare_ik_enabled_routes(
+        cmds,
+        control,
+        solvers,
+        curve_representations=curve_representations,
+        layer_routes=layer_routes,
+    )
+    for plan in plans:
+        target = plan["target"]
+        source = plan["source"]
+        control_source = plan["controlSource"]
+        layer_route = plan.get("layerRoute")
+        value = plan["value"]
+        if layer_route is not None:
+            apply_mmd_control_rig_anim_layer_route(
+                cmds,
+                layer_route,
+                control_plug,
+                operations,
             )
-        value = bool(cmds.getAttr(target))
+            journal["ikEnabled"].append(
+                _journal_plug_row(
+                    cmds,
+                    source=source,
+                    control=control_plug,
+                    target=target,
+                    value=value,
+                    control_source=control_source,
+                    route_class=ROUTE_SAMPLED,
+                    route_reasons=("ik", "anim_layer"),
+                    layer_route=layer_route,
+                )
+            )
+            if curve_representations is not None:
+                _record_curve_representation(
+                    curve_representations,
+                    target,
+                    source,
+                    control_source,
+                    cmds,
+                )
+            continue
         if source:
-            _require_animation_source(cmds, source, target)
-            control_incoming = cmds.listConnections(
-                control_plug, source=True, destination=False, plugs=True
-            ) or []
-            if control_incoming and control_source and str(control_incoming[0]) != control_source:
+            if control_source is None:
+                if active_control_source is None:
+                    control_source = _duplicate_animation_source(
+                        cmds,
+                        source,
+                        created_curve_nodes if created_curve_nodes is not None else [],
+                    )
+                    active_control_source = control_source
+                else:
+                    control_source = active_control_source
+            elif active_control_source is None:
+                active_control_source = control_source
+            elif active_control_source != control_source:
                 raise MmdControlRigBuildError(
                     f"IK solvers have different enabled animation sources: {control}"
                 )
-            cmds.disconnectAttr(source, target)
-            operations.append(("connect", source, target))
-            if control_source and not control_incoming:
+            if not cmds.isConnected(control_source, control_plug):
                 cmds.connectAttr(control_source, control_plug, force=False)
                 operations.append(("disconnect", control_source, control_plug))
-        elif not (cmds.listConnections(control_plug, source=True, destination=False) or []):
+            cmds.disconnectAttr(source, target)
+            operations.append(("connect", source, target))
+        elif control_source:
+            if active_control_source is None:
+                active_control_source = control_source
+            elif active_control_source != control_source:
+                raise MmdControlRigBuildError(
+                    f"IK solvers have different enabled animation sources: {control}"
+                )
+            if not cmds.isConnected(control_source, control_plug):
+                cmds.connectAttr(control_source, control_plug, force=False)
+                operations.append(("disconnect", control_source, control_plug))
+        elif active_control_source is None:
             cmds.setAttr(control_plug, value)
         cmds.connectAttr(control_plug, target, force=False)
         operations.append(("disconnect", control_plug, target))
@@ -1207,6 +1685,24 @@ def _restore_curve_snapshots(cmds, snapshots):
         # A snapshot restore is part of the transaction's rollback contract.
         # Let copy failures reach ``_edit_exit_transaction`` so callers cannot
         # report a successful rollback while the original curve is incomplete.
+        # Avoid an unnecessary rewrite when a curve was not touched.  Maya can
+        # recompute quaternion/animLayer outputs by a few ulps when an
+        # otherwise identical curve is pasted back, which breaks exact graph
+        # rollback assertions and is not a meaningful restore.
+        try:
+            current = _capture_animation_curve_payload(cmds, original.split(".", 1)[0])
+            saved = _capture_animation_curve_payload(cmds, backup.split(".", 1)[0])
+            if (
+                current.get("times") == saved.get("times")
+                and current.get("values") == saved.get("values")
+                and current.get("keys") == saved.get("keys")
+                and current.get("weightedTangents") == saved.get("weightedTangents")
+                and current.get("preInfinite") == saved.get("preInfinite")
+                and current.get("postInfinite") == saved.get("postInfinite")
+            ):
+                continue
+        except Exception:
+            pass
         _copy_animation_curve(cmds, backup, original)
 
 
@@ -1258,6 +1754,374 @@ def _duplicate_animation_source(cmds, source: str, created_nodes: List[str]) -> 
     return plug
 
 
+def _create_live_rotation_converters(
+    cmds,
+    rows: List[Mapping[str, Any]],
+    authoring_bases: Mapping[str, Any],
+    operations: List[Tuple[str, str, str]],
+    created_nodes: List[str],
+) -> List[Dict[str, Any]]:
+    """Create matrix-DG conjugation for complete direct XYZ authoring groups.
+
+    Maya 2024 does not expose a quaternion DG node.  A compose/mult/decompose
+    chain implements ``B * q_control * inverse(B)`` while retaining ordinary
+    rotate channels as the artist-facing inputs. Complete direct XYZ groups
+    and optional twist-controller Append XYZ inputs are eligible; IK, partial,
+    and non-twist append routes remain fail-closed.
+    """
+
+    converters: List[Dict[str, Any]] = []
+    non_identity_rows = []
+    for row in rows:
+        target_attr = str(row.get("target", "")).rsplit(".", 1)[-1]
+        if target_attr not in {"rotateX", "rotateY", "rotateZ"} and not (
+            row.get("twistController")
+            and (
+                target_attr.startswith("baseRotate")
+                or target_attr.startswith("inputRotateElement")
+            )
+            and target_attr.endswith(("X", "Y", "Z"))
+        ):
+            continue
+        record = row.get("authoringBasis")
+        if not record:
+            continue
+        try:
+            basis = validate_basis_record(record)
+        except MmdControlRigBasisError as exc:
+            raise MmdControlRigBuildError("invalid control-rig authoring basis in EDIT journal") from exc
+        if basis.quaternion != (0.0, 0.0, 0.0, 1.0):
+            # Sampled/IK/Append routes are converted by their own route
+            # handlers.  They must not be rejected here merely because the
+            # source joint carries a non-identity authoring basis; this live
+            # Euler conjugation chain is only responsible for direct XYZ
+            # channels that share the control basis.
+            if row.get("routeClass", ROUTE_SAME_BASIS) != ROUTE_SAME_BASIS:
+                continue
+            non_identity_rows.append(row)
+            reasons = set(row.get("routeReasons") or ())
+            if reasons & {"ik", "ik_controller", "ik_link_input", "bone_morph_base"}:
+                raise MmdControlRigBuildError(
+                    "non-identity authoring basis is unsupported for IK/append route"
+                )
+            if "append_base" in reasons and not row.get("twistController"):
+                raise MmdControlRigBuildError(
+                    "non-identity authoring basis is unsupported for non-twist Append route"
+                )
+    grouped_rows = {id(row) for group in _rotation_channel_groups(rows) for row in group}
+    if any(id(row) not in grouped_rows for row in non_identity_rows):
+        raise MmdControlRigBuildError(
+            "non-identity authoring basis requires a complete XYZ rotation route"
+        )
+    for group in _rotation_channel_groups(rows):
+        # Sampled routes (animLayer, IK, Append) already carry their own
+        # route conversion.  A live Euler conjugation node here would replace
+        # the layer/blend writer during EDIT and make rollback restore a
+        # different graph than the one captured on entry.
+        if any(
+            row.get("routeClass", ROUTE_SAME_BASIS) != ROUTE_SAME_BASIS
+            for row in group
+        ):
+            continue
+        basis_record = group[0].get("authoringBasis")
+        if not basis_record:
+            continue
+        try:
+            basis = validate_basis_record(basis_record)
+        except MmdControlRigBasisError as exc:
+            raise MmdControlRigBuildError("invalid control-rig authoring basis in EDIT journal") from exc
+        if basis.quaternion == (0.0, 0.0, 0.0, 1.0):
+            continue
+        if any(row.get("authoringBasis") != basis.to_dict() for row in group):
+            raise MmdControlRigBuildError("rotation XYZ basis is inconsistent")
+        control_node = str(group[0]["control"]).rsplit(".", 1)[0]
+        target_node = str(group[0]["target"]).rsplit(".", 1)[0]
+        namespace = target_node.rsplit("|", 1)[-1].replace(":", "_")
+        try:
+            compose = str(cmds.createNode("composeMatrix", name=f"{namespace}_CR_BASIS_COMPOSE"))
+            mult = str(cmds.createNode("multMatrix", name=f"{namespace}_CR_BASIS_MULT"))
+            decompose = str(cmds.createNode("decomposeMatrix", name=f"{namespace}_CR_BASIS_DECOMPOSE"))
+            created_nodes.extend((compose, mult, decompose))
+            matrix = matrix_from_quaternion(basis.quaternion)
+            inverse_matrix = matrix_from_quaternion(
+                (-basis.quaternion[0], -basis.quaternion[1], -basis.quaternion[2], basis.quaternion[3])
+            )
+            cmds.setAttr(f"{mult}.matrixIn[0]", *matrix, type="matrix")
+            cmds.setAttr(f"{mult}.matrixIn[2]", *inverse_matrix, type="matrix")
+            for axis in "XYZ":
+                cmds.connectAttr(
+                    f"{control_node}.rotate{axis}",
+                    f"{compose}.inputRotate{axis}",
+                    force=False,
+                )
+            cmds.connectAttr(f"{compose}.outputMatrix", f"{mult}.matrixIn[1]", force=False)
+            cmds.connectAttr(f"{mult}.matrixSum", f"{decompose}.inputMatrix", force=False)
+            try:
+                rotate_order = int(cmds.getAttr(f"{target_node}.rotateOrder"))
+                cmds.setAttr(f"{decompose}.inputRotateOrder", rotate_order)
+            except Exception:
+                pass
+            for row in group:
+                axis = str(row["target"]).rsplit(".", 1)[-1][-1]
+                control = str(row["control"])
+                target = str(row["target"])
+                for incoming in cmds.listConnections(
+                    target, source=True, destination=False, plugs=True
+                ) or []:
+                    if not _plug_reaches_control(cmds, str(incoming), control):
+                        continue
+                    cmds.disconnectAttr(incoming, target)
+                    operations.append(("connect", str(incoming), target))
+                output = f"{decompose}.outputRotate{axis}"
+                cmds.connectAttr(output, target, force=False)
+                operations.append(("disconnect", output, target))
+            converters.append(
+                {
+                    "basis": basis.to_dict(),
+                    "controlNodeUuid": str((cmds.ls(control_node, uuid=True) or [""])[0]),
+                    "targetNodeUuid": str((cmds.ls(target_node, uuid=True) or [""])[0]),
+                    "composeUuid": str((cmds.ls(compose, uuid=True) or [""])[0]),
+                    "multUuid": str((cmds.ls(mult, uuid=True) or [""])[0]),
+                    "decomposeUuid": str((cmds.ls(decompose, uuid=True) or [""])[0]),
+                    "control": control_node,
+                    "target": target_node,
+                }
+            )
+        except Exception as exc:
+            raise MmdControlRigBuildError(
+                f"could not create live authoring-basis converter for {target_node}: {exc}"
+            ) from exc
+    return converters
+
+
+def _resolve_rotation_converters(cmds, metadata: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """Resolve persisted live converter nodes by UUID, failing closed."""
+
+    resolved = []
+    for row in metadata.get("rotationConverters", []) or []:
+        if not isinstance(row, Mapping):
+            raise MmdControlRigBuildError("invalid rotation converter metadata")
+        current = dict(row)
+        for key in ("composeUuid", "multUuid", "decomposeUuid"):
+            uuid = row.get(key)
+            if not uuid:
+                raise MmdControlRigBuildError(f"rotation converter UUID is missing: {key}")
+            name_key = {
+                "composeUuid": "compose",
+                "multUuid": "mult",
+                "decomposeUuid": "decompose",
+            }[key]
+            current[name_key] = _resolve_uuid(cmds, str(uuid))
+        try:
+            current["basis"] = validate_basis_record(row.get("basis")).to_dict()
+        except MmdControlRigBasisError as exc:
+            raise MmdControlRigBuildError("invalid rotation converter basis metadata") from exc
+        resolved.append(current)
+    return resolved
+
+
+def _remove_rotation_converters(cmds, converters: List[Mapping[str, Any]]) -> None:
+    """Disconnect and delete persisted live converter nodes after a commit."""
+
+    for row in reversed(converters):
+        for key in ("compose", "mult", "decompose"):
+            node = row.get(key)
+            if not node or not cmds.objExists(node):
+                continue
+            try:
+                cmds.delete(node)
+            except Exception as exc:
+                raise MmdControlRigBuildError(
+                    f"could not remove live authoring-basis converter: {node}"
+                ) from exc
+
+
+def _record_rotation_converter_nodes(
+    metadata: Dict[str, Any], converters: List[Mapping[str, Any]]
+) -> None:
+    """Add converter UUIDs to the owned-node inventory for EDIT inspection."""
+
+    rows = metadata.setdefault("nodes", [])
+    known = {str(row.get("uuid")) for row in rows if isinstance(row, Mapping)}
+    for converter in converters:
+        for uuid_key, name_key in (
+            ("composeUuid", "compose"),
+            ("multUuid", "mult"),
+            ("decomposeUuid", "decompose"),
+        ):
+            uuid = str(converter.get(uuid_key) or "")
+            if uuid and uuid not in known:
+                rows.append({"uuid": uuid, "name": str(converter.get(name_key) or uuid)})
+                known.add(uuid)
+
+
+def _drop_rotation_converter_nodes(metadata: Dict[str, Any], converters: List[Mapping[str, Any]]) -> None:
+    """Remove converter UUID rows after a successful Restore/Bake."""
+
+    uuids = {
+        str(converter.get(key))
+        for converter in converters
+        for key in ("composeUuid", "multUuid", "decomposeUuid")
+        if converter.get(key)
+    }
+    metadata["nodes"] = [
+        row
+        for row in metadata.get("nodes", [])
+        if not isinstance(row, Mapping) or str(row.get("uuid")) not in uuids
+    ]
+
+
+def _disconnect_rotation_converters(cmds, converters: List[Mapping[str, Any]]) -> None:
+    """Detach converter outputs before a Control->Bone curve transaction."""
+
+    for row in converters:
+        decompose = row.get("decompose")
+        if not decompose or not cmds.objExists(decompose):
+            continue
+        for axis in "XYZ":
+            output = f"{decompose}.outputRotate{axis}"
+            for target in cmds.listConnections(
+                output, source=False, destination=True, plugs=True
+            ) or []:
+                try:
+                    cmds.disconnectAttr(output, target)
+                except Exception:
+                    if cmds.isConnected(output, target):
+                        raise
+                # Maya inserts unitConversion nodes when a decompose angle
+                # feeds a custom Append scalar. Remove that owned wrapper's
+                # terminal edge as well, otherwise the stale wrapper remains
+                # the incoming writer during scalar bake/restore.
+                wrapper = str(target).split(".", 1)[0]
+                for wrapped_target in cmds.listConnections(
+                    wrapper, source=False, destination=True, plugs=True
+                ) or []:
+                    wrapped_node = str(wrapped_target).split(".", 1)[0]
+                    target_node = str(row.get("target") or "").rsplit(".", 1)[0]
+                    if _canonical_node_name(cmds, target_node) != _canonical_node_name(
+                        cmds, wrapped_node
+                    ):
+                        continue
+                    for wrapped_source in cmds.listConnections(
+                        wrapped_target, source=True, destination=False, plugs=True
+                    ) or []:
+                        if str(wrapped_source).split(".", 1)[0] != wrapper:
+                            continue
+                        try:
+                            cmds.disconnectAttr(wrapped_source, wrapped_target)
+                        except Exception:
+                            if cmds.isConnected(wrapped_source, wrapped_target):
+                                raise
+
+
+def _disconnect_owned_rotation_writer(
+    cmds, target: str, converters: List[Mapping[str, Any]]
+) -> None:
+    """Detach only an owned basis converter output from ``target``.
+
+    Restore must clear the converter's incoming edge before reconnecting the
+    pre-EDIT MMD source (or setting a literal value).  A generic
+    ``disconnectAttr`` against every incoming source would destroy a foreign
+    animation/solver writer, so the decompose nodes are matched against the
+    persisted converter inventory first.
+    """
+
+    owned = {
+        _canonical_node_name(cmds, str(row.get("decompose")))
+        for row in converters
+        if row.get("decompose")
+    }
+    if not owned:
+        return
+    for incoming in cmds.listConnections(
+        target, source=True, destination=False, plugs=True
+    ) or []:
+        if not _plug_reaches_owned_converter(cmds, str(incoming), owned):
+            continue
+        try:
+            cmds.disconnectAttr(incoming, target)
+        except Exception:
+            if cmds.isConnected(incoming, target):
+                raise
+
+
+def _plug_reaches_owned_converter(
+    cmds, plug: str, owned_nodes: Set[str], *, _visited: Optional[Set[str]] = None
+) -> bool:
+    """Return whether ``plug`` is fed by an owned converter node.
+
+    Maya may insert ``unitConversion`` nodes between a decompose output and a
+    custom numeric input (for example ``mmdAppend.baseRotateX``).  Resolve
+    only that upstream chain so Restore can remove the wrapper edge without
+    touching an unrelated foreign writer.
+    """
+
+    visited = _visited if _visited is not None else set()
+    node = str(plug).split(".", 1)[0]
+    if _canonical_node_name(cmds, node) in owned_nodes:
+        return True
+    if node in visited or not cmds.objExists(node):
+        return False
+    visited.add(node)
+    try:
+        upstream = cmds.listConnections(
+            node, source=True, destination=False, plugs=True
+        ) or []
+    except Exception:
+        return False
+    return any(
+        _plug_reaches_owned_converter(cmds, str(source), owned_nodes, _visited=visited)
+        for source in upstream
+    )
+
+
+def _plug_reaches_control(
+    cmds, plug: str, control: str, *, _visited: Optional[Set[str]] = None
+) -> bool:
+    """Return whether an incoming wrapper is ultimately driven by ``control``."""
+
+    if _canonical_plug(cmds, plug) == _canonical_plug(cmds, control):
+        return True
+    visited = _visited if _visited is not None else set()
+    node = str(plug).split(".", 1)[0]
+    if node in visited or not cmds.objExists(node):
+        return False
+    visited.add(node)
+    try:
+        upstream = cmds.listConnections(
+            node, source=True, destination=False, plugs=True
+        ) or []
+    except Exception:
+        return False
+    return any(
+        _plug_reaches_control(cmds, str(source), control, _visited=visited)
+        for source in upstream
+    )
+
+
+def _canonical_plug(cmds, plug: str) -> str:
+    """Canonicalize a Maya plug for short-name/long-path comparisons."""
+
+    node, separator, attribute = str(plug).partition(".")
+    if not separator:
+        return str(plug)
+    try:
+        matches = cmds.ls(node, long=True) or []
+    except Exception:
+        matches = []
+    return f"{str(matches[0]) if len(matches) == 1 else node}.{attribute}"
+
+
+def _canonical_node_name(cmds, node: str) -> str:
+    """Canonicalize a Maya node name for short-name/long-path comparisons."""
+
+    try:
+        matches = cmds.ls(str(node), long=True) or []
+    except Exception:
+        matches = []
+    return str(matches[0]) if len(matches) == 1 else str(node)
+
+
 def _rollback(cmds, operations) -> None:
     for action, source, target in reversed(operations):
         try:
@@ -1296,18 +2160,41 @@ def _rotation_channel_groups(rows: List[Mapping[str, Any]]) -> List[List[Mapping
             continue
         if control_attr not in {"rotateX", "rotateY", "rotateZ"}:
             continue
-        if target_attr != control_attr or target_attr not in {"rotateX", "rotateY", "rotateZ"}:
+        if target_attr not in {"rotateX", "rotateY", "rotateZ"}:
+            if not row.get("twistController") or not target_attr.endswith(("X", "Y", "Z")):
+                continue
+            if not (
+                target_attr.startswith("baseRotate")
+                or target_attr.startswith("inputRotateElement")
+            ):
+                continue
+        if target_attr != control_attr and not row.get("twistController"):
             continue
-        if row.get("routeClass", ROUTE_SAME_BASIS) != ROUTE_SAME_BASIS:
+        if (
+            row.get("routeClass", ROUTE_SAME_BASIS) != ROUTE_SAME_BASIS
+            and not row.get("twistController")
+        ):
             continue
         key = (control_node, target_node, ROUTE_SAME_BASIS)
-        candidates.setdefault(key, {})[target_attr] = row
+        rotation_attr = target_attr if target_attr in {"rotateX", "rotateY", "rotateZ"} else f"rotate{target_attr[-1]}"
+        candidates.setdefault(key, {})[rotation_attr] = row
 
     groups = []
     for channel_rows in candidates.values():
         if set(channel_rows) == {"rotateX", "rotateY", "rotateZ"}:
             groups.append([channel_rows[attr] for attr in ("rotateX", "rotateY", "rotateZ")])
     return groups
+
+
+def _rotation_attr_for_target(target: str) -> str:
+    """Normalize rotate/baseRotate/inputRotateElement children to rotateXYZ."""
+
+    attribute = str(target).rsplit(".", 1)[-1]
+    if attribute in {"rotateX", "rotateY", "rotateZ"}:
+        return attribute
+    if attribute.endswith(("X", "Y", "Z")):
+        return f"rotate{attribute[-1]}"
+    return attribute
 
 
 def _rotation_group_uses_quaternion(cmds, rows, sources_by_control) -> bool:
@@ -1378,7 +2265,7 @@ def _commit_control_rotation_group(
     if len(rows) != 3:
         raise MmdControlRigBuildError("incomplete quaternion rotation route")
     attrs = ("rotateX", "rotateY", "rotateZ")
-    rows_by_attr = {str(row["target"]).rsplit(".", 1)[-1]: row for row in rows}
+    rows_by_attr = {_rotation_attr_for_target(row["target"]): row for row in rows}
     if set(rows_by_attr) != set(attrs):
         raise MmdControlRigBuildError("quaternion rotation route is not standard XYZ")
 
@@ -1399,6 +2286,27 @@ def _commit_control_rotation_group(
         control_source = row.get("controlSource") or source
         control_sources.append(str(control_source) if control_source else None)
         mmd_sources.append(str(row["source"]) if row.get("source") else None)
+
+    # A non-identity authoring basis cannot be represented by copying Euler
+    # payloads.  Capture the complete XYZ union grid while the controller is
+    # still live, convert each sample by quaternion conjugation, then replace
+    # the MMD curves in place so their UUIDs and time-input graphs survive.
+    basis_record = rows_by_attr["rotateX"].get("authoringBasis")
+    if basis_record:
+        try:
+            basis = validate_basis_record(basis_record)
+        except MmdControlRigBasisError as exc:
+            raise MmdControlRigBuildError("invalid authoring basis on rotation journal") from exc
+        if any(row.get("authoringBasis") != basis.to_dict() for row in rows):
+            raise MmdControlRigBuildError("rotation XYZ basis is inconsistent")
+        if basis.quaternion != (0.0, 0.0, 0.0, 1.0):
+            return _sample_control_rotation_group_to_bone(
+                cmds,
+                rows,
+                {row["control"]: source for row, source in zip(rows, control_sources)},
+                basis.to_dict(),
+                created_curve_nodes=created_curve_nodes,
+            )
 
     # Disconnect all three control edges first.  This keeps the compound
     # intact while destination curves are connected/copied and converted.
@@ -1477,6 +2385,137 @@ def _commit_control_rotation_group(
     return result
 
 
+def _sample_control_rotation_group_to_bone(
+    cmds,
+    rows: List[Mapping[str, Any]],
+    control_sources: Mapping[str, Optional[str]],
+    basis: Mapping[str, Any],
+    *,
+    created_curve_nodes=None,
+) -> Dict[str, Optional[str]]:
+    """Sample a complete controller XYZ group through the basis inverse."""
+
+    attrs = ("rotateX", "rotateY", "rotateZ")
+    rows_by_attr = {_rotation_attr_for_target(row["target"]): row for row in rows}
+    control = str(rows_by_attr["rotateX"]["control"])
+    target = str(rows_by_attr["rotateX"]["target"])
+    control_node = control.rsplit(".", 1)[0]
+    target_node = target.rsplit(".", 1)[0]
+    sources = [control_sources.get(rows_by_attr[attr]["control"]) for attr in attrs]
+    mmd_sources = [rows_by_attr[attr].get("source") for attr in attrs]
+    times = sorted(
+        {
+            float(time)
+            for plug in (*sources, *mmd_sources)
+            if plug
+            for time in (cmds.keyframe(str(plug).split(".", 1)[0], query=True, timeChange=True) or [])
+        }
+    )
+    if not times:
+        try:
+            times = [float(cmds.currentTime(query=True))]
+        except Exception:
+            times = [0.0]
+    samples = []
+    for time in times:
+        values = [float(cmds.getAttr(f"{control_node}.{axis}", time=time)) for axis in attrs]
+        control_quaternion = _quaternion_from_euler_degrees(values)
+        bone_quaternion = control_to_bone(control_quaternion, basis)
+        samples.append((time, _euler_degrees_from_quaternion(bone_quaternion)))
+
+    # Keep the authored MMD curve nodes when present.  If an imported motion
+    # had no source curves, create one curve per axis and connect them to the
+    # target.  All three axes always receive the same union time grid.
+    result: Dict[str, Optional[str]] = {}
+    for axis, row, mmd_source in zip(attrs, (rows_by_attr[attr] for attr in attrs), mmd_sources):
+        control_plug = row["control"]
+        target_plug = row["target"]
+        if cmds.isConnected(control_plug, target_plug):
+            cmds.disconnectAttr(control_plug, target_plug)
+        if mmd_source:
+            node = str(mmd_source).split(".", 1)[0]
+            # Every pre-existing source key is part of ``times`` by
+            # construction, so setting the union grid in place preserves the
+            # animCurve node UUID without destructive ``cutKey`` (which Maya
+            # removes when its last key is cleared).
+            for time, values in samples:
+                cmds.setKeyframe(node, time=(time, time), value=float(values[attrs.index(axis)]))
+            if not cmds.isConnected(mmd_source, target_plug):
+                cmds.connectAttr(mmd_source, target_plug, force=False)
+            result[control_plug] = str(mmd_source)
+            continue
+        curve_type = "animCurveTA"
+        try:
+            node = str(cmds.createNode(curve_type))
+            if created_curve_nodes is not None:
+                created_curve_nodes.append(node)
+            for time, values in samples:
+                cmds.setKeyframe(node, time=(time, time), value=float(values[attrs.index(axis)]))
+            source = f"{node}.output"
+            cmds.connectAttr(source, target_plug, force=False)
+            result[control_plug] = source
+        except Exception as exc:
+            if "node" in locals() and cmds.objExists(node):
+                try:
+                    cmds.delete(node)
+                except Exception:
+                    pass
+            raise MmdControlRigBuildError(
+                f"could not create basis-converted MMD rotation curve: {target_plug}"
+            ) from exc
+    if all(
+        str(row["target"]).rsplit(".", 1)[-1] in {"rotateX", "rotateY", "rotateZ"}
+        for row in rows
+    ):
+        _apply_quaternion_interpolation_to_plugs(cmds, [row["target"] for row in rows])
+    return result
+
+
+def _quaternion_from_euler_degrees(values) -> Tuple[float, float, float, float]:
+    """Convert Maya XYZ Euler degrees to a normalized xyzw quaternion."""
+
+    try:
+        rotation = om.MEulerRotation(
+            math.radians(float(values[0])),
+            math.radians(float(values[1])),
+            math.radians(float(values[2])),
+            om.MEulerRotation.kXYZ,
+        )
+        q = rotation.asQuaternion()
+        return (float(q.x), float(q.y), float(q.z), float(q.w))
+    except Exception:
+        x, y, z = (math.radians(float(value)) * 0.5 for value in values)
+        cx, sx = math.cos(x), math.sin(x)
+        cy, sy = math.cos(y), math.sin(y)
+        cz, sz = math.cos(z), math.sin(z)
+        return (
+            sx * cy * cz - cx * sy * sz,
+            cx * sy * cz + sx * cy * sz,
+            cx * cy * sz - sx * sy * cz,
+            cx * cy * cz + sx * sy * sz,
+        )
+
+
+def _euler_degrees_from_quaternion(quaternion) -> Tuple[float, float, float]:
+    """Convert an xyzw quaternion to Maya XYZ Euler degrees."""
+
+    try:
+        q = om.MQuaternion(*[float(value) for value in quaternion])
+        rotation = q.asEulerRotation()
+        return tuple(math.degrees(float(value)) for value in (rotation.x, rotation.y, rotation.z))
+    except Exception:
+        x, y, z, w = (float(value) for value in quaternion)
+        sinr = 2.0 * (w * x + y * z)
+        cosr = 1.0 - 2.0 * (x * x + y * y)
+        roll = math.atan2(sinr, cosr)
+        sinp = 2.0 * (w * y - z * x)
+        pitch = math.copysign(math.pi / 2.0, sinp) if abs(sinp) >= 1.0 else math.asin(sinp)
+        siny = 2.0 * (w * z + x * y)
+        cosy = 1.0 - 2.0 * (y * y + z * z)
+        yaw = math.atan2(siny, cosy)
+        return tuple(math.degrees(value) for value in (roll, pitch, yaw))
+
+
 def _copy_rotation_curve_group(cmds, source_node: str, destination_node: str) -> None:
     """Copy sparse XYZ curve payload while retaining compound interpolation."""
     try:
@@ -1533,6 +2572,13 @@ def _commit_control_input(
     created_curve_nodes=None,
 ) -> Optional[str]:
     control, target = row["control"], row["target"]
+    if row.get("layerRoute"):
+        restore_mmd_control_rig_anim_layer_route(
+            cmds,
+            row["layerRoute"],
+            control,
+        )
+        return str(row.get("source")) if row.get("source") else None
     value = cmds.getAttr(control)
     if cmds.isConnected(control, target):
         cmds.disconnectAttr(control, target)
@@ -1720,6 +2766,10 @@ def _copy_animation_curve(cmds, source: str, destination: str) -> None:
     if not str(cmds.nodeType(destination_node)).startswith("animCurve"):
         return
     try:
+        try:
+            interpolation = cmds.rotationInterpolation(source_node, query=True)
+        except Exception:
+            interpolation = None
         payload = _capture_animation_curve_payload(cmds, source_node)
         if not isinstance(payload, Mapping) or "times" not in payload:
             # Payload inspection is best-effort across Maya versions.  When a
@@ -1751,13 +2801,29 @@ def _copy_animation_curve(cmds, source: str, destination: str) -> None:
             cmds.copyKey(source_node, option="curve")
             cmds.pasteKey(destination_node, option="replaceCompletely")
             return
-        cmds.copyKey(source_node, option="curve")
-        cmds.pasteKey(destination_node, option="replaceCompletely")
-        _restore_animation_curve_payload(
-            cmds,
-            destination_node,
-            payload,
-        )
+        # Paste through Maya's clipboard only as a last resort.  For native
+        # scalar curves, rebuilding the destination from the captured payload
+        # avoids Maya re-evaluating the source through the current transform
+        # (which can alter values on a failed transaction, especially for
+        # quaternion ``animCurveTA`` inputs).
+        _clear_animation_curve_keys(cmds, destination_node)
+        for key in payload.get("keys", ()):
+            value = key.get("value")
+            if value is None:
+                continue
+            cmds.setKeyframe(
+                destination_node,
+                time=float(key.get("time", 0.0)),
+                value=float(value),
+            )
+        _restore_animation_curve_payload(cmds, destination_node, payload)
+        if interpolation and interpolation != "none":
+            try:
+                cmds.rotationInterpolation(destination_node, convert=interpolation)
+            except Exception:
+                # Scalar curves do not all expose compound interpolation; the
+                # key/tangent payload above remains the authoritative restore.
+                pass
     except Exception as exc:
         raise MmdControlRigBuildError(
             f"could not copy control animation curve: {source} -> {destination}"
@@ -2004,23 +3070,135 @@ def _restore_animation_curve_payload(cmds, node: str, payload: Mapping[str, Any]
             pass
 
 
+def _source_identity(cmds, source: str) -> Tuple[str, Optional[str]]:
+    """Return a source plug plus its node UUID for topology comparisons."""
+
+    source = str(source)
+    node = source.split(".", 1)[0]
+    try:
+        uuids = cmds.ls(node, uuid=True) or []
+    except Exception:
+        uuids = []
+    return source, str(uuids[0]) if len(uuids) == 1 else None
+
+
+def _transaction_owned_sources(rows, curve_plugs, layer_journal) -> Set[str]:
+    """Collect source plugs that an EDIT exit transaction may legitimately use."""
+
+    sources = set()
+    for row in rows or ():
+        if not isinstance(row, Mapping):
+            continue
+        for key in ("source", "controlSource"):
+            value = row.get(key)
+            if value:
+                sources.add(str(value))
+    sources.update(str(plug) for plug in (curve_plugs or ()) if plug)
+    for route in (layer_journal or {}).get("routes", {}).values():
+        if not isinstance(route, Mapping):
+            continue
+        for key in ("curve", "source", "controlSource"):
+            value = route.get(key)
+            if value:
+                sources.add(str(value))
+    return sources
+
+
+def _assert_created_curve_nodes_safe(cmds, nodes, transaction_plugs) -> None:
+    """Refuse to delete a transaction curve carrying a foreign output edge."""
+
+    # ``listConnections`` often returns a short DAG path while journal rows
+    # persist full paths.  Compare canonical plugs so a legitimate output
+    # does not look foreign during sampled-route rollback.
+    transaction_plugs = {
+        _canonical_plug(cmds, str(plug)) for plug in (transaction_plugs or ())
+    }
+    for node in nodes or ():
+        if not node or not cmds.objExists(node):
+            continue
+        destinations = cmds.listConnections(
+            node,
+            source=False,
+            destination=True,
+            plugs=True,
+        ) or []
+        foreign = [
+            str(destination)
+            for destination in destinations
+            if _canonical_plug(cmds, str(destination)) not in transaction_plugs
+        ]
+        if foreign:
+            raise MmdControlRigBuildError(
+                f"control-rig transaction topology drift on {node}: "
+                f"foreign destinations {foreign}"
+            )
+
+
 def _capture_plug_states(cmds, plugs) -> Dict[str, Dict[str, Any]]:
     states = {}
     for plug in sorted(set(plugs)):
+        incoming = list(
+            cmds.listConnections(
+                plug, source=True, destination=False, plugs=True
+            )
+            or []
+        )
         states[plug] = {
-            "incoming": list(
-                cmds.listConnections(
-                    plug, source=True, destination=False, plugs=True
-                )
-                or []
-            ),
+            "incoming": incoming,
+            "incomingIdentity": tuple(_source_identity(cmds, source) for source in incoming),
             "type": str(cmds.getAttr(plug, type=True)),
             "value": cmds.getAttr(plug),
         }
     return states
 
 
-def _restore_plug_states(cmds, states: Mapping[str, Mapping[str, Any]]) -> None:
+def _restore_plug_states(
+    cmds,
+    states: Mapping[str, Mapping[str, Any]],
+    *,
+    allowed_sources=(),
+    owned_nodes=(),
+) -> None:
+    """Restore plugs only when no unknown writer appeared during the transaction."""
+
+    allowed_sources = {str(source) for source in (allowed_sources or ()) if source}
+    owned_nodes = {str(node) for node in (owned_nodes or ()) if node}
+    for plug, state in states.items():
+        prior_sources = [str(source) for source in (state.get("incoming") or ())]
+        prior_identity = {
+            source: identity
+            for source, identity in zip(
+                prior_sources,
+                state.get("incomingIdentity") or (),
+            )
+        }
+        current_sources = [
+            str(source)
+            for source in (
+                cmds.listConnections(
+                    plug, source=True, destination=False, plugs=True
+                )
+                or []
+            )
+        ]
+        for source in current_sources:
+            if source in prior_sources:
+                expected = prior_identity.get(source)
+                actual = _source_identity(cmds, source)
+                if expected and expected[1] and actual[1] and expected[1] != actual[1]:
+                    raise MmdControlRigBuildError(
+                        f"control-rig transaction topology drift on {plug}: "
+                        f"source identity changed for {source}"
+                    )
+                continue
+            source_node = source.split(".", 1)[0]
+            if source in allowed_sources or source_node in owned_nodes:
+                continue
+            raise MmdControlRigBuildError(
+                f"control-rig transaction topology drift on {plug}: "
+                f"foreign writer {source}"
+            )
+
     for plug in states:
         for source in cmds.listConnections(
             plug, source=True, destination=False, plugs=True

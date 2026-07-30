@@ -38,6 +38,12 @@ _BONE_EXPORT_ATTRS = ("translateX", "translateY", "translateZ", "rotateX", "rota
 _APPEND_OBSERVABLE_EPSILON = 1.0e-8
 _EXTERNAL_ORACLE_THRESHOLD = 0.01
 _EXTERNAL_ORACLE_IDENTITY = "mmd-anim-mesh-oracle"
+_EXTERNAL_ORACLE_EVIDENCE = {
+    "skeletalMesh": "gate",
+    "fullEvaluatedMesh": "diagnostic",
+    "morphContribution": "diagnostic",
+    "joAwareBoneMatrices": "route observables",
+}
 cmds = None
 
 
@@ -150,7 +156,7 @@ def _apply_evaluation_mode(requested: str) -> dict[str, Any]:
     return result
 
 
-def _import_model(model: Path) -> str:
+def _import_model(model: Path, *, skeletal_only: bool = False) -> str:
     from mmd_tools.io.mmd_importer import import_mmd_file
 
     root = import_mmd_file(
@@ -160,6 +166,7 @@ def _import_model(model: Path) -> str:
             "setup_rig": True,
             "setup_bone_orientation": True,
             "import_physics": False,
+            "import_morphs": not skeletal_only,
             "create_mmd_shaders": False,
             "use_native_pmx_parse": False,
             "require_native_pmx_parse": False,
@@ -684,11 +691,13 @@ def _run_route(
     frames: list[int | float],
     append_grants: Iterable[Mapping[str, Any]] | None = None,
     route_options: Mapping[str, Any] | None = None,
+    *,
+    skeletal_only: bool = False,
 ) -> dict[str, Any]:
     from mmd_tools.io.mmd_importer import import_mmd_file
 
     cmds.file(new=True, force=True)
-    root = _import_model(model)
+    root = _import_model(model, skeletal_only=skeletal_only)
     profile: dict[str, Any] = {}
     options = {
         "target_model": root,
@@ -704,6 +713,7 @@ def _run_route(
     except Exception as exc:  # noqa: BLE001 - route red evidence is part of the report
         return {
             "root": root,
+            "skeletalOnly": bool(skeletal_only),
             "route": _route_snapshot(root, create_control_rig, profile),
             "importStatus": "fail",
             "error": _compact_error(exc),
@@ -715,6 +725,7 @@ def _run_route(
     if not imported:
         return {
             "root": root,
+            "skeletalOnly": bool(skeletal_only),
             "route": _route_snapshot(root, create_control_rig, profile),
             "importStatus": "fail",
             "error": f"VMD import returned false: control_rig={create_control_rig}",
@@ -733,8 +744,9 @@ def _run_route(
             str(grant["targetIndex"]): _scene_append_writer_evidence(scene_route, grant)
             for grant in append_grants
         }
-    return {
+    result = {
         "root": root,
+        "skeletalOnly": bool(skeletal_only),
         "importStatus": "pass",
         "route": _route_snapshot(root, create_control_rig, profile),
         "keyframes": _keyframe_inventory(root),
@@ -743,6 +755,14 @@ def _run_route(
         "records": records,
         "appendWriterEvidence": append_writer_evidence,
     }
+    if skeletal_only:
+        try:
+            result["_skeletalMeshPoints"] = _external_oracle_module()._capture_maya_by_source_index(
+                root, [int(frame) for frame in frames]
+            )
+        except Exception as exc:  # noqa: BLE001 - external gate reports capture failure
+            result["_skeletalMeshCaptureError"] = _compact_error(exc)
+    return result
 
 
 def _external_oracle_not_run(reason: str) -> dict[str, Any]:
@@ -750,6 +770,8 @@ def _external_oracle_not_run(reason: str) -> dict[str, Any]:
 
     return {
         "identity": _EXTERNAL_ORACLE_IDENTITY,
+        "contract": "bone-lbs-only",
+        "evidence": dict(_EXTERNAL_ORACLE_EVIDENCE),
         "status": "not_run",
         "attempted": False,
         "pass": False,
@@ -863,47 +885,109 @@ def _capture_external_oracle(
     route: Mapping[str, Any],
     oracle: Mapping[str, Any],
     frames: list[int | float],
+    *,
+    skeletal_route: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Compare one imported route's evaluated mesh against the external oracle."""
+    """Compare skeletal and full route meshes against the bone-LBS oracle.
+
+    ``mmd-anim`` evaluates PMX bones and skinning, but does not evaluate the
+    model's morph output.  The skeletal-only comparison is therefore the
+    numeric gate.  Full evaluated geometry and its delta from skeletal-only
+    are retained as diagnostics so a morph residual cannot mask a skeletal
+    regression (or be misreported as one).
+    """
 
     if route.get("importStatus") != "pass":
         return _external_oracle_not_run(
             f"route importStatus={route.get('importStatus')!r}; mesh capture was not attempted"
         )
-    if oracle.get("status") != "ready":
-        return _external_oracle_not_run(str(oracle.get("reason") or "mmd-anim oracle unavailable"))
-    try:
-        oracle_module = _external_oracle_module()
-
-        comparison = oracle_module._compare(
-            oracle_module._capture_maya_by_source_index(
-                str(route["root"]), [int(frame) for frame in frames]
-            ),
-            oracle["vertices"],
-            [int(frame) for frame in frames],
-            _EXTERNAL_ORACLE_THRESHOLD,
-        )
-    except Exception as exc:  # noqa: BLE001 - preserve route-specific capture failures
+    if skeletal_route is not None and skeletal_route.get("importStatus") != "pass":
         return {
             "identity": _EXTERNAL_ORACLE_IDENTITY,
+            "contract": "bone-lbs-only",
+            "evidence": dict(_EXTERNAL_ORACLE_EVIDENCE),
             "status": "fail",
             "attempted": True,
             "pass": False,
             "threshold": _EXTERNAL_ORACLE_THRESHOLD,
             "frames": [int(frame) for frame in frames],
             "runtimeProvenance": dict(oracle.get("provenance") or {}),
+            "error": (
+                "skeletal-only route import failed: "
+                f"{skeletal_route.get('error', 'unknown error')}"
+            ),
+            "gate": "skeletalComparison",
+        }
+    if oracle.get("status") != "ready":
+        return _external_oracle_not_run(str(oracle.get("reason") or "mmd-anim oracle unavailable"))
+    integer_frames = [int(frame) for frame in frames]
+    try:
+        oracle_module = _external_oracle_module()
+        full_points = oracle_module._capture_maya_by_source_index(
+            str(route["root"]), integer_frames
+        )
+        skeletal_source = skeletal_route or route
+        if skeletal_route is not None and "_skeletalMeshPoints" in skeletal_route:
+            skeletal_points = skeletal_route["_skeletalMeshPoints"]
+        else:
+            skeletal_points = oracle_module._capture_maya_by_source_index(
+                str(skeletal_source["root"]), integer_frames
+            )
+        if skeletal_route is not None and skeletal_route.get("_skeletalMeshCaptureError"):
+            raise RuntimeError(
+                "skeletal-only mesh capture failed: "
+                f"{skeletal_route['_skeletalMeshCaptureError']}"
+            )
+        skeletal_comparison = oracle_module._compare(
+            skeletal_points,
+            oracle["vertices"],
+            integer_frames,
+            _EXTERNAL_ORACLE_THRESHOLD,
+        )
+        full_comparison = oracle_module._compare(
+            full_points,
+            oracle["vertices"],
+            integer_frames,
+            _EXTERNAL_ORACLE_THRESHOLD,
+        )
+        morph_contribution = oracle_module._compare_morph_contribution(
+            full_points,
+            skeletal_points,
+            integer_frames,
+        )
+    except Exception as exc:  # noqa: BLE001 - preserve route-specific capture failures
+        return {
+            "identity": _EXTERNAL_ORACLE_IDENTITY,
+            "contract": "bone-lbs-only",
+            "evidence": dict(_EXTERNAL_ORACLE_EVIDENCE),
+            "status": "fail",
+            "attempted": True,
+            "pass": False,
+            "threshold": _EXTERNAL_ORACLE_THRESHOLD,
+            "frames": integer_frames,
+            "runtimeProvenance": dict(oracle.get("provenance") or {}),
             "error": _compact_error(exc),
         }
-    passed = bool(comparison.get("passed"))
+    passed = bool(skeletal_comparison.get("passed"))
     return {
         "identity": _EXTERNAL_ORACLE_IDENTITY,
+        "contract": "bone-lbs-only",
+        "evidence": dict(_EXTERNAL_ORACLE_EVIDENCE),
         "status": "pass" if passed else "fail",
         "attempted": True,
         "pass": passed,
         "threshold": _EXTERNAL_ORACLE_THRESHOLD,
-        "frames": [int(frame) for frame in frames],
+        "frames": integer_frames,
         "runtimeProvenance": dict(oracle.get("provenance") or {}),
-        "comparison": comparison,
+        "skeletalRoute": {
+            "importStatus": skeletal_source.get("importStatus"),
+            "skeletalOnly": bool(skeletal_source.get("skeletalOnly")),
+        },
+        "comparison": skeletal_comparison,
+        "skeletalComparison": skeletal_comparison,
+        "fullEvaluatedComparison": full_comparison,
+        "morphContribution": morph_contribution,
+        "gate": "skeletalComparison",
     }
 
 
@@ -925,6 +1009,8 @@ def _external_oracle_summary(
         status = "pass"
     return {
         "identity": _EXTERNAL_ORACLE_IDENTITY,
+        "contract": "bone-lbs-only",
+        "evidence": dict(_EXTERNAL_ORACLE_EVIDENCE),
         "status": status,
         "attempted": status in {"pass", "fail"},
         "pass": status == "pass",
@@ -1569,10 +1655,38 @@ def run(model: Path, motion: Path, output: Path, evaluation_mode: str = "dg") ->
         interpolation_frames = list(interpolation_probe["frames"])
         frames = sorted({0, 1, end, *authored_frames, *interpolation_frames})
         external_oracle = _prepare_external_oracle(model, motion, frames)
+        legacy_skeletal = _run_route(
+            model,
+            motion,
+            False,
+            frames,
+            append_grants,
+            skeletal_only=True,
+        )
         legacy = _run_route(model, motion, False, frames, append_grants)
-        legacy["externalOracle"] = _capture_external_oracle(legacy, external_oracle, frames)
+        legacy["externalOracle"] = _capture_external_oracle(
+            legacy,
+            external_oracle,
+            frames,
+            skeletal_route=legacy_skeletal,
+        )
+        legacy_skeletal.pop("_skeletalMeshPoints", None)
+        direct_skeletal = _run_route(
+            model,
+            motion,
+            True,
+            frames,
+            append_grants,
+            skeletal_only=True,
+        )
         direct = _run_route(model, motion, True, frames, append_grants)
-        direct["externalOracle"] = _capture_external_oracle(direct, external_oracle, frames)
+        direct["externalOracle"] = _capture_external_oracle(
+            direct,
+            external_oracle,
+            frames,
+            skeletal_route=direct_skeletal,
+        )
+        direct_skeletal.pop("_skeletalMeshPoints", None)
         external_summary = _external_oracle_summary(
             {"legacy": legacy, "controlRigDirect": direct}, external_oracle
         )
@@ -1687,8 +1801,16 @@ def run(model: Path, motion: Path, output: Path, evaluation_mode: str = "dg") ->
                 "coverageMissing": coverage_missing,
                 "externalOracle": external_summary,
                 "routes": {
-                    "legacy": {key: value for key, value in legacy.items() if key != "records"},
-                    "controlRigDirect": {key: value for key, value in direct.items() if key != "records"},
+                    "legacy": {
+                        key: value
+                        for key, value in legacy.items()
+                        if key != "records" and not key.startswith("_")
+                    },
+                    "controlRigDirect": {
+                        key: value
+                        for key, value in direct.items()
+                        if key != "records" and not key.startswith("_")
+                    },
                 },
                 "routeParity": {
                     "directVsLegacy": direct_vs_legacy,

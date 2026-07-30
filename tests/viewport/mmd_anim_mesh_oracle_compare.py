@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import statistics
 import subprocess
@@ -730,6 +731,52 @@ def _compare(
     }
 
 
+def _compare_morph_contribution(
+    full_points: dict[int, dict[int, tuple[float, float, float]]],
+    skeletal_points: dict[int, dict[int, tuple[float, float, float]]],
+    frames: list[int],
+) -> dict[str, Any]:
+    """Summarize full-evaluated minus skeletal-only mesh displacement.
+
+    This is diagnostic evidence only.  It deliberately has no pass/fail
+    threshold because PMX morph output is outside the bone-LBS oracle's
+    contract; the skeletal comparison remains the external gate.
+    """
+
+    per_frame: dict[str, Any] = {}
+    all_distances: list[float] = []
+    for frame in frames:
+        full = full_points.get(frame, {})
+        skeletal = skeletal_points.get(frame, {})
+        distances: list[float] = []
+        missing = 0
+        for source_index, full_point in full.items():
+            skeletal_point = skeletal.get(source_index)
+            if skeletal_point is None:
+                missing += 1
+                continue
+            delta = tuple(
+                float(full_point[index]) - float(skeletal_point[index])
+                for index in range(3)
+            )
+            distances.append(math.sqrt(sum(value * value for value in delta)))
+        all_distances.extend(distances)
+        max_distance = max(distances) if distances else None
+        mean_distance = statistics.fmean(distances) if distances else None
+        per_frame[str(frame)] = {
+            "compared_vertices": len(distances),
+            "missing_skeletal_vertices": missing,
+            "max": round(max_distance, 6) if max_distance is not None else None,
+            "mean": round(mean_distance, 6) if mean_distance is not None else None,
+        }
+    return {
+        "status": "compared" if all_distances else "not_available",
+        "frames": per_frame,
+        "overall_max": round(max(all_distances), 6) if all_distances else None,
+        "overall_mean": round(statistics.fmean(all_distances), 6) if all_distances else None,
+    }
+
+
 def main() -> int:
     args = _parse_args()
     _initialize()
@@ -741,25 +788,26 @@ def main() -> int:
 
     pmx_data = parse_pmx_file(str(pmx_path))
     bone_count = len(pmx_data.bones)
-    if args.skeletal_only:
-        driven_bone_morphs = _active_vmd_morphs_drive_bone_morphs(
-            pmx_data,
-            parse_mmd_file(str(vmd_path)),
+    driven_bone_morphs = _active_vmd_morphs_drive_bone_morphs(
+        pmx_data,
+        parse_mmd_file(str(vmd_path)),
+    )
+    if driven_bone_morphs:
+        raise ValueError(
+            "skeletal-only mesh cannot disable PMX bone morphs driven by this VMD: "
+            + ", ".join(driven_bone_morphs)
         )
-        if driven_bone_morphs:
-            raise ValueError(
-                "--skeletal-only cannot disable PMX bone morphs driven by this VMD: "
-                + ", ".join(driven_bone_morphs)
-            )
-    root, maya_bind_world_matrices = _import_scene(
+    skeletal_root, skeletal_bind_world_matrices = _import_scene(
         pmx_path,
         vmd_path,
         args.mode,
         bone_count,
-        skeletal_only=args.skeletal_only,
+        skeletal_only=True,
         custom_namespace=args.namespace,
     )
-    bind_world_matrices = None if args.bind_source == "pmx" else maya_bind_world_matrices
+    bind_world_matrices = (
+        None if args.bind_source == "pmx" else skeletal_bind_world_matrices
+    )
     runtime_world_matrices = _compute_runtime_world_matrices(pmx_path, vmd_path, frames)
     oracle = _compute_oracle_vertices(
         pmx_path,
@@ -768,9 +816,34 @@ def main() -> int:
         bind_world_matrices,
         runtime_world_matrices,
     )
-    maya_points = _capture_maya_by_source_index(root, frames)
-    comparison = _compare(maya_points, oracle, frames, args.threshold)
-    maya_skin_capture = _capture_maya_skin_deformation_matrices(root, bone_count, frames)
+    skeletal_points = _capture_maya_by_source_index(skeletal_root, frames)
+    skeletal_comparison = _compare(skeletal_points, oracle, frames, args.threshold)
+    maya_skin_capture = _capture_maya_skin_deformation_matrices(
+        skeletal_root, bone_count, frames
+    )
+    if args.skeletal_only:
+        root = skeletal_root
+        maya_points = skeletal_points
+        full_comparison = skeletal_comparison
+        morph_contribution = _compare_morph_contribution(
+            skeletal_points, skeletal_points, frames
+        )
+        maya_bind_world_matrices = skeletal_bind_world_matrices
+    else:
+        root, maya_bind_world_matrices = _import_scene(
+            pmx_path,
+            vmd_path,
+            args.mode,
+            bone_count,
+            skeletal_only=False,
+            custom_namespace=args.namespace,
+        )
+        maya_points = _capture_maya_by_source_index(root, frames)
+        full_comparison = _compare(maya_points, oracle, frames, args.threshold)
+        morph_contribution = _compare_morph_contribution(
+            maya_points, skeletal_points, frames
+        )
+    comparison = skeletal_comparison
     bone_comparison = _compare_bone_skin_matrices(
         pmx_data,
         frames,
@@ -786,10 +859,17 @@ def main() -> int:
         else None
     )
     report = {
-        "status": "passed" if comparison["passed"] else "failed",
+        "status": "passed" if skeletal_comparison["passed"] else "failed",
         "oracle": {
             "identity": "mmd_anim_mesh_oracle_compare",
             "runtime": "mmd-anim",
+            "contract": "bone-lbs-only",
+            "evidence": {
+                "skeletalMesh": "gate",
+                "fullEvaluatedMesh": "diagnostic",
+                "morphContribution": "diagnostic",
+                "joAwareBoneMatrices": "diagnostic",
+            },
             "mode": args.mode,
             "bind_source": args.bind_source,
         },
@@ -803,6 +883,10 @@ def main() -> int:
         "skeletalOnly": bool(args.skeletal_only),
         "bind_source": args.bind_source,
         "comparison": comparison,
+        "skeletalComparison": skeletal_comparison,
+        "fullEvaluatedComparison": full_comparison,
+        "morphContribution": morph_contribution,
+        "gate": "skeletalComparison",
         "bone_diagnostics": bone_comparison,
     }
     out = Path(args.out).resolve()
@@ -817,8 +901,10 @@ def main() -> int:
         f"- bind source: `{args.bind_source}`",
         f"- pmx: `{pmx_path}`",
         f"- vmd: `{vmd_path}`",
-        f"- overall max: `{comparison['overall_max']}`",
-        f"- overall mean: `{comparison['overall_mean']}`",
+        f"- skeletal gate overall max: `{skeletal_comparison['overall_max']}`",
+        f"- skeletal gate overall mean: `{skeletal_comparison['overall_mean']}`",
+        f"- full evaluated overall max: `{full_comparison['overall_max']}`",
+        f"- morph contribution overall max: `{morph_contribution['overall_max']}`",
         f"- earliest bone divergence: `{bone_comparison['earliest_divergence']}`",
         "",
     ]

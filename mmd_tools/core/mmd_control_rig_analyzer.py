@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -18,6 +19,8 @@ from mmd_tools.core.constants import (
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
+    ATTR_MMD_FIXED_AXIS,
+    ATTR_MMD_AXIS_DIRECTION,
 )
 from mmd_tools.core.display_frame_metadata import display_frames_from_json
 from mmd_tools.core.humanik_utils import maya_cmds
@@ -88,6 +91,7 @@ class MmdControlRigBoneFact:
     ik_solvers: Tuple[str, ...] = ()
     solver_input_plugs: Tuple[str, ...] = ()
     bone_morph_base_plugs: Tuple[str, ...] = ()
+    fixed_axis: Optional[Tuple[float, float, float]] = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +108,7 @@ class MmdControlRigBoneBinding:
     blockers: Tuple[str, ...] = ()
     ik_solvers: Tuple[str, ...] = ()
     incoming: Tuple[MmdControlRigConnectionFact, ...] = ()
+    fixed_axis: Optional[Tuple[float, float, float]] = None
 
     @property
     def blocked(self) -> bool:
@@ -126,6 +131,7 @@ class MmdControlRigBoneBinding:
             "blockers": list(self.blockers),
             "ikSolvers": list(self.ik_solvers),
             "incoming": [connection.to_dict() for connection in self.incoming],
+            "fixedAxis": list(self.fixed_axis) if self.fixed_axis is not None else None,
         }
 
 
@@ -204,6 +210,7 @@ class _RoleDefinition:
     fallback_model_root: bool = False
     requires_ik_solver: bool = False
     uses_solver_input: bool = False
+    twist_primary: bool = False
 
 
 _MVP_ROLE_DEFINITIONS = (
@@ -257,6 +264,19 @@ _OPTIONAL_FK_ROLE_DEFINITIONS = (
     _RoleDefinition("right_knee", ("右ひざ", "右膝"), uses_solver_input=True),
 ) + _FINGER_ROLE_DEFINITIONS
 
+# Optional ring controllers are deliberately limited to the four canonical
+# primary twist bones. Their secondary 捩1〜3 children remain outside this
+# role table and keep the existing mmdAppend distribution.
+_OPTIONAL_TWIST_ROLE_DEFINITIONS = tuple(
+    _RoleDefinition(role, names, twist_primary=True)
+    for role, names in (
+        ("left_arm_twist", ("左腕捩",)),
+        ("right_arm_twist", ("右腕捩",)),
+        ("left_wrist_twist", ("左手捩",)),
+        ("right_wrist_twist", ("右手捩",)),
+    )
+)
+
 
 def classify_mmd_control_rig(
     model_root: str,
@@ -290,6 +310,19 @@ def classify_mmd_control_rig(
         report_blockers.extend(role.blockers)
 
     for definition in _OPTIONAL_FK_ROLE_DEFINITIONS:
+        role = _resolve_role(
+            definition,
+            facts_by_name,
+            bindings_by_joint,
+            resolved_roles,
+            model_root,
+            optional=True,
+        )
+        roles.append(role)
+        resolved_roles[role.role] = role
+        report_warnings.extend(role.warnings)
+
+    for definition in _OPTIONAL_TWIST_ROLE_DEFINITIONS:
         role = _resolve_role(
             definition,
             facts_by_name,
@@ -343,6 +376,7 @@ def analyze_mmd_control_rig(model_root: str, cmds_module=None) -> MmdControlRigS
     for joint in sorted(set(str(node) for node in joints)):
         if not _has_attr(cmds, joint, ATTR_MMD_BONE_INDEX):
             continue
+        fixed_axis = _fixed_axis_value(cmds, joint)
         bone_rows.append(
             {
                 "joint": joint,
@@ -350,6 +384,7 @@ def analyze_mmd_control_rig(model_root: str, cmds_module=None) -> MmdControlRigS
                 "bone_index": int(_get_attr(cmds, joint, ATTR_MMD_BONE_INDEX, -1)),
                 "pmx_flags": int(_get_attr(cmds, joint, ATTR_MMD_BONE_FLAGS, 0)),
                 "incoming": _collect_incoming_connections(cmds, joint),
+                "fixed_axis": fixed_axis,
             }
         )
     if not bone_rows:
@@ -376,6 +411,7 @@ def analyze_mmd_control_rig(model_root: str, cmds_module=None) -> MmdControlRigS
                 row["joint"],
                 row["incoming"],
             ),
+            fixed_axis=row["fixed_axis"],
         )
         for row in bone_rows
     ]
@@ -545,6 +581,7 @@ def _bone_binding(
         blockers=blockers,
         ik_solvers=tuple(sorted(set(fact.ik_solvers))),
         incoming=incoming,
+        fixed_axis=fact.fixed_axis,
     )
 
 
@@ -614,6 +651,19 @@ def _resolve_role(
     binding = bindings_by_joint[winner.joint]
     warnings = []
     blockers = list(binding.blockers)
+    if definition.twist_primary:
+        if not (binding.pmx_flags & int(PmxBoneFlag.AXIS_FIXED)):
+            blockers.append(
+                f"{definition.role}: primary twist ring requires PMX fixed-axis authority"
+            )
+        if binding.fixed_axis is None:
+            blockers.append(
+                f"{definition.role}: fixed-axis metadata is missing or degenerate"
+            )
+        if binding.input_kind not in {INPUT_DIRECT_CHANNEL, INPUT_APPEND_BASE}:
+            blockers.append(
+                f"{definition.role}: primary twist ring requires direct or Append-authored input"
+            )
     if definition.uses_solver_input:
         authored_plugs = winner.bone_morph_base_plugs or winner.solver_input_plugs
         if authored_plugs:
@@ -628,6 +678,7 @@ def _resolve_role(
                     sorted({plug.split(".", 1)[0] for plug in winner.solver_input_plugs})
                 ),
                 incoming=winner.incoming,
+                fixed_axis=winner.fixed_axis,
             )
             blockers = []
         else:
@@ -895,6 +946,24 @@ def _get_attr(cmds, node: str, attribute: str, default=None):
         return cmds.getAttr(f"{node}.{attribute}")
     except Exception:
         return default
+
+
+def _fixed_axis_value(cmds, node: str) -> Optional[Tuple[float, float, float]]:
+    """Read and validate imported PMX fixed-axis metadata."""
+
+    value = _get_attr(cmds, node, ATTR_MMD_FIXED_AXIS, None)
+    if value is None:
+        value = _get_attr(cmds, node, ATTR_MMD_AXIS_DIRECTION, None)
+    if isinstance(value, (list, tuple)) and len(value) == 1:
+        value = value[0]
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        return None
+    try:
+        vector = tuple(float(component) for component in value)
+    except (TypeError, ValueError):
+        return None
+    length = sum(component * component for component in vector) ** 0.5
+    return vector if length > 1.0e-8 and all(math.isfinite(component) for component in vector) else None
 
 
 def _unique_sorted(values: Iterable[str]) -> List[str]:

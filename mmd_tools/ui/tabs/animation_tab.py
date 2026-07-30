@@ -1,4 +1,4 @@
-"""Animator Toolset tab with picker tools and the experimental MMD Control Rig."""
+"""Animator Toolset tab with picker tools and the MMD Control Rig footer."""
 
 from ..qt_compat import (
     QComboBox,
@@ -69,31 +69,6 @@ class AnimationTab(BaseTab):
         visibility_layout.addStretch(1)
         main_layout.addLayout(visibility_layout)
 
-        # The native rig is intentionally marked Experimental, but is part of
-        # the normal Animator Toolset surface.  Its action buttons remain
-        # explicit state transitions so users can see which representation is
-        # currently authoritative.
-        self.control_rig_group = QGroupBox()
-        control_rig_layout = QGridLayout()
-        self.control_rig_buttons: dict[str, QPushButton] = {}
-        for index, (key, translation_key) in enumerate(
-            (
-                ("create", "control_rig_create"),
-                ("bake_control", "control_rig_bake_control"),
-                ("bake_mmd", "control_rig_bake_mmd"),
-                ("restore", "control_rig_restore"),
-                ("delete", "control_rig_delete"),
-                ("diagnostics", "control_rig_diagnostics"),
-            )
-        ):
-            button = QPushButton()
-            button._control_rig_translation_key = translation_key
-            row, column = divmod(index, 3)
-            control_rig_layout.addWidget(button, row, column)
-            self.control_rig_buttons[key] = button
-        self.control_rig_group.setLayout(control_rig_layout)
-        main_layout.addWidget(self.control_rig_group)
-
         # --- Picker sub-tabs ---
         self.picker_tabs = QTabWidget()
         self.picker_tabs.setObjectName("PickerTabs")
@@ -142,10 +117,38 @@ class AnimationTab(BaseTab):
 
         main_layout.addWidget(self.picker_tabs, 1)
 
+        # --- Common Body/Finger actions ---------------------------------
+        # Keep one action-bar instance outside both picker pages.  The
+        # presenter connects these buttons once, so switching Body/Finger
+        # cannot duplicate callbacks or transaction state.
+        self.common_action_bar = QWidget(self)
+        self.common_action_bar.setObjectName("CommonPickerActionBar")
+        common_layout = QHBoxLayout(self.common_action_bar)
+        common_layout.setContentsMargins(0, 2, 0, 2)
+        common_layout.setSpacing(4)
+        self.common_action_buttons: dict[str, QPushButton] = {}
+        for key, symbol in (
+            ("reset", "restart_alt"),
+            ("mirror", "flip"),
+            ("mirror_selection", "flip_camera_android"),
+        ):
+            button = MaterialSymbolToolButton(symbol, key)
+            button.setObjectName(f"CommonPickerAction_{key}")
+            common_layout.addWidget(button)
+            self.common_action_buttons[key] = button
+        common_layout.addStretch(1)
+        main_layout.addWidget(self.common_action_bar)
+
         # --- Status bar ---
         status_layout = QHBoxLayout()
         self.status_label = QLabel("")
         status_layout.addWidget(self.status_label, 1)
+        self.control_rig_status_label = QLabel("")
+        self.control_rig_status_label.setObjectName("ControlRigStatusLabel")
+        status_layout.addWidget(self.control_rig_status_label)
+        self.control_rig_manager_btn = QPushButton()
+        self.control_rig_manager_btn.setObjectName("ControlRigManagerButton")
+        status_layout.addWidget(self.control_rig_manager_btn)
         # Kept as hidden compatibility endpoints; the visible actions live in
         # the two blue Body picker buttons.
         self.select_all_btn = QPushButton("Select All", self)
@@ -166,8 +169,6 @@ class AnimationTab(BaseTab):
             [
                 ("copy", "Copy", "content_copy"),
                 ("paste", "Paste", "content_paste"),
-                ("mirror", "Mirror", "flip"),
-                ("reset", "Reset Pose", "restart_alt"),
                 ("clean", "Clean", "cleaning_services"),
                 ("bake", "Bake", "animation"),
             ]
@@ -208,8 +209,16 @@ class AnimationTab(BaseTab):
         development_mode = SettingsService().is_development_mode()
         picker_tab = self.picker_tabs.currentIndex() in (self.TAB_BODY, self.TAB_FINGER)
         self.tools_group.setVisible(picker_tab and development_mode)
-        self.control_rig_group.setVisible(True)
-        self.control_rig_group.setEnabled(True)
+        common_action_bar = getattr(self, "common_action_bar", None)
+        if common_action_bar is not None:
+            common_action_bar.setVisible(picker_tab)
+        # Third-party/headless views from pre-manager releases may still
+        # expose ``control_rig_group``.  Keep their visibility contract
+        # harmlessly alive while the production view uses the footer launcher.
+        legacy_group = getattr(self, "control_rig_group", None)
+        if legacy_group is not None:
+            legacy_group.setVisible(True)
+            legacy_group.setEnabled(True)
         control_rig_visibility = self.vis_checkboxes.get("control_rig")
         if control_rig_visibility is not None:
             control_rig_visibility.setVisible(True)
@@ -269,10 +278,34 @@ class AnimationTab(BaseTab):
                     tr("visibility_unavailable"),
                 )
         self.tools_group.setTitle(tr("tools"))
-        self.control_rig_group.setTitle(tr("control_rig_group_title"))
-        for button in self.control_rig_buttons.values():
-            translation_key = button._control_rig_translation_key
-            button.setText(tr(translation_key))
-            button.setToolTip(tr(f"{translation_key}_tooltip"))
+        common_action_buttons = getattr(self, "common_action_buttons", {})
+        if common_action_buttons:
+            common_labels = {
+                "reset": tr("reset"),
+                "mirror": tr("mirror"),
+                "mirror_selection": tr("mirror_selection"),
+            }
+            common_tooltips = {
+                "reset": tr("reset_pose_tooltip"),
+                "mirror": tr("mirror_pose_tooltip"),
+                "mirror_selection": tr("mirror_selection_tooltip"),
+            }
+            for key, button in common_action_buttons.items():
+                button.setText(common_labels[key])
+                button.setToolTip(common_tooltips[key])
+        manager_button = getattr(self, "control_rig_manager_btn", None)
+        if manager_button is not None:
+            manager_button.setText(tr("control_rig_manager"))
+            manager_button.setToolTip(tr("control_rig_manager_tooltip"))
+        status_label = getattr(self, "control_rig_status_label", None)
+        if status_label is not None:
+            status_label.setText(tr("control_rig_status_none"))
+        legacy_group = getattr(self, "control_rig_group", None)
+        if legacy_group is not None:
+            legacy_group.setTitle(tr("control_rig_group_title"))
+            for key, button in getattr(self, "control_rig_buttons", {}).items():
+                translation_key = f"control_rig_{key}"
+                button.setText(tr(translation_key))
+                button.setToolTip(tr(f"{translation_key}_tooltip"))
         for key, button in self.tool_buttons.items():
             button.setText(tr(key))

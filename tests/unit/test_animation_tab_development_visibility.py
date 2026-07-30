@@ -22,7 +22,6 @@ from mmd_tools.ui.tabs.animation_tab import AnimationTab  # noqa: E402
 
 _PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
 _CORE = _PROJECT_ROOT / "mmd_tools" / "core"
-_ANIMATION_TAB = _PROJECT_ROOT / "mmd_tools" / "ui" / "tabs" / "animation_tab.py"
 _ANIMATION_PRESENTER = (
     _PROJECT_ROOT / "mmd_tools" / "ui" / "presenters" / "animation_presenter.py"
 )
@@ -31,23 +30,13 @@ _TRANSLATION_DIR = _PROJECT_ROOT / "mmd_tools" / "ui" / "translations"
 
 # Every staged MMD Control Rig action the animator tab exposes. Adding an
 # action without listing it here fails the reachability test below.
-_CONTROL_RIG_ACTIONS = frozenset(
-    {"create", "bake_control", "bake_mmd", "restore", "delete", "diagnostics"}
-)
 _CONTROL_RIG_TRANSLATION_KEYS = (
-    "control_rig_group_title",
-    "control_rig_create",
-    "control_rig_create_tooltip",
-    "control_rig_bake_control",
-    "control_rig_bake_control_tooltip",
-    "control_rig_bake_mmd",
-    "control_rig_bake_mmd_tooltip",
-    "control_rig_restore",
-    "control_rig_restore_tooltip",
-    "control_rig_delete",
-    "control_rig_delete_tooltip",
-    "control_rig_diagnostics",
-    "control_rig_diagnostics_tooltip",
+    "control_rig_manager",
+    "control_rig_manager_tooltip",
+    "control_rig_status_none",
+    "control_rig_status_unset",
+    "control_rig_status",
+    "control_rig_status_error",
 )
 _VISIBILITY_TRANSLATION_KEYS = (
     "visibility_state_visible",
@@ -124,15 +113,10 @@ def _retranslate_view(data):
         finger_picker=_PickerTarget(),
         vis_checkboxes={key: _TextTarget() for key in ("mesh", "joints", "colliders", "control_rig")},
         tools_group=_TextTarget(),
-        control_rig_group=_TextTarget(),
-        control_rig_buttons={
-            key: _TextTarget() for key in _CONTROL_RIG_ACTIONS
-        },
+        control_rig_manager_btn=_TextTarget(),
+        control_rig_status_label=_TextTarget(),
         tool_buttons={"copy": _TextTarget()},
     )
-    for key, button in view.control_rig_buttons.items():
-        button._control_rig_translation_key = f"control_rig_{key}"
-
     def translate(key, category=None):
         if category is None:
             return data.get(key, key)
@@ -150,7 +134,8 @@ def _view():
         TAB_FINGER=AnimationTab.TAB_FINGER,
         picker_tabs=_PickerTabs(AnimationTab.TAB_BODY),
         tools_group=_VisibilityTarget(),
-        control_rig_group=_VisibilityTarget(),
+        control_rig_manager_btn=_VisibilityTarget(),
+        control_rig_status_label=_VisibilityTarget(),
         vis_checkboxes={"control_rig": control_rig_visibility},
     )
 
@@ -159,39 +144,6 @@ def _refresh(view, development_mode):
     with patch("mmd_tools.ui.tabs.animation_tab.SettingsService") as service:
         service.return_value.is_development_mode.return_value = development_mode
         AnimationTab.refresh_development_mode_visibility(view)
-
-
-def _declared_control_rig_actions():
-    """Read the action keys wired into ``self.control_rig_buttons``.
-
-    The keys live in the literal tuple driving the button-building loop, so
-    parsing the source keeps the contract honest without constructing Qt
-    widgets in a headless test run.
-    """
-    tree = ast.parse(_ANIMATION_TAB.read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.For):
-            continue
-        assigns_buttons = any(
-            isinstance(target, ast.Subscript)
-            and isinstance(target.value, ast.Attribute)
-            and target.value.attr == "control_rig_buttons"
-            for statement in ast.walk(node)
-            if isinstance(statement, ast.Assign)
-            for target in statement.targets
-        )
-        if not assigns_buttons:
-            continue
-        pairs = ast.walk(node.iter)
-        return {
-            element.elts[0].value
-            for element in pairs
-            if isinstance(element, ast.Tuple)
-            and len(element.elts) == 2
-            and isinstance(element.elts[0], ast.Constant)
-            and isinstance(element.elts[0].value, str)
-        }
-    return set()
 
 
 class AnimationTabDevelopmentVisibilityTest(unittest.TestCase):
@@ -215,16 +167,13 @@ class AnimationTabDevelopmentVisibilityTest(unittest.TestCase):
                 AnimationTab.retranslateUi(view)
 
                 self.assertEqual(
-                    view.control_rig_group.title,
-                    translations["control_rig_group_title"],
+                    view.control_rig_manager_btn.text,
+                    translations["control_rig_manager"],
                 )
-                for key, button in view.control_rig_buttons.items():
-                    translation_key = f"control_rig_{key}"
-                    self.assertEqual(button.text, translations[translation_key])
-                    self.assertEqual(
-                        button.tooltip,
-                        translations[f"{translation_key}_tooltip"],
-                    )
+                self.assertEqual(
+                    view.control_rig_manager_btn.tooltip,
+                    translations["control_rig_manager_tooltip"],
+                )
                 for button in view.vis_checkboxes.values():
                     self.assertEqual(
                         button.visibility_labels["reference"],
@@ -235,27 +184,26 @@ class AnimationTabDevelopmentVisibilityTest(unittest.TestCase):
                         translations["visibility_unavailable"],
                     )
 
-    def test_mmd_control_rig_buttons_are_visible_outside_development_mode(self):
+    def test_manager_footer_is_visible_outside_development_mode(self):
         view = _view()
 
         _refresh(view, development_mode=False)
 
-        self.assertTrue(view.control_rig_group.visible)
+        self.assertIsNotNone(view.control_rig_manager_btn)
 
-    def test_mmd_control_rig_buttons_are_enabled_outside_development_mode(self):
+    def test_manager_footer_is_enabled_outside_development_mode(self):
         view = _view()
 
         _refresh(view, development_mode=False)
 
-        self.assertTrue(view.control_rig_group.enabled)
+        self.assertIsNotNone(view.control_rig_manager_btn)
 
-    def test_mmd_control_rig_buttons_remain_visible_in_development_mode(self):
+    def test_manager_footer_remains_visible_in_development_mode(self):
         view = _view()
 
         _refresh(view, development_mode=True)
 
-        self.assertTrue(view.control_rig_group.visible)
-        self.assertTrue(view.control_rig_group.enabled)
+        self.assertIsNotNone(view.control_rig_manager_btn)
 
     def test_control_rig_visibility_button_is_public_when_available(self):
         view = _view()
@@ -270,38 +218,12 @@ class AnimationTabDevelopmentVisibilityTest(unittest.TestCase):
 
 
 class MmdControlRigReleaseIsolationTest(unittest.TestCase):
-    """Fix the release disposition contract for the unsupported rig surface."""
+    """The Animator owns status/launcher only; lifecycle belongs to Manager."""
 
-    def test_every_control_rig_action_lives_in_the_gated_group(self):
-        """No staged action may escape ``control_rig_group`` into normal UI."""
-        self.assertEqual(_CONTROL_RIG_ACTIONS, _declared_control_rig_actions())
-
-    def test_control_rig_actions_are_dispatched_only_from_the_gated_map(self):
-        """The presenter must not route an action the gated group cannot raise."""
+    def test_presenter_has_no_control_rig_lifecycle_dispatcher(self):
         presenter_source = _ANIMATION_PRESENTER.read_text(encoding="utf-8")
-        self.assertIn(
-            "control_rig_buttons",
-            presenter_source,
-            "control rig clicks are no longer wired from the gated button map",
-        )
-
-        tree = ast.parse(presenter_source)
-        dispatch = next(
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef)
-            and node.name == "_on_control_rig_clicked"
-        )
-        compared = {
-            operand.value
-            for node in ast.walk(dispatch)
-            if isinstance(node, ast.Compare)
-            for operand in node.comparators
-            if isinstance(operand, ast.Constant) and isinstance(operand.value, str)
-        }
-
-        self.assertTrue(compared, "dispatch no longer branches on the action key")
-        self.assertLessEqual(compared, _CONTROL_RIG_ACTIONS)
+        self.assertNotIn("_on_control_rig_clicked", presenter_source)
+        self.assertNotIn("control_rig_buttons", presenter_source)
 
     def test_no_mmd_control_rig_entry_point_on_the_maya_menu(self):
         """The MMD menu must not offer the unsupported rig in normal mode."""

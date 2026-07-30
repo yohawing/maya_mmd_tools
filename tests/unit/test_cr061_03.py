@@ -188,9 +188,18 @@ class TestControlRigImportPreflight(unittest.TestCase):
             self.converter._apply_mmd_control_rig_ik_enabled_animation(
                 _fake_vmd_data(ik_show_hide_frames=[frame]), target_model="|model"
             )
-        set_attr.assert_called_once_with("|model|right_leg_CTRL.ikEnabled", False)
-        set_key.assert_called_once()
-        self.assertEqual(set_key.call_args.kwargs["attribute"], "ikEnabled")
+        self.assertEqual(
+            [call.args for call in set_attr.call_args_list],
+            [("|model|right_leg_CTRL.ikEnabled", True), ("|model|right_leg_CTRL.ikEnabled", False)],
+        )
+        self.assertEqual(
+            [call.args[0] for call in set_key.call_args_list],
+            ["|model|right_leg_CTRL", "|model|right_leg_CTRL"],
+        )
+        self.assertEqual(
+            [call.kwargs["value"] for call in set_key.call_args_list],
+            [1, 0],
+        )
 
     def test_ik_visibility_keys_target_owned_legacy_solver_when_control_is_absent(self):
         frame = {"frame_number": 7, "ik_states": [("右髪ＩＫ", False)]}
@@ -207,12 +216,20 @@ class TestControlRigImportPreflight(unittest.TestCase):
             self.converter._apply_mmd_control_rig_ik_enabled_animation(
                 _fake_vmd_data(ik_show_hide_frames=[frame]), target_model="|model"
             )
-        set_attr.assert_called_once_with("|model|hair_ik_mmdCcdIk.enabled", False)
-        set_key.assert_called_once_with(
-            "|model|hair_ik_mmdCcdIk",
-            attribute="enabled",
-            time=7.0,
-            value=0,
+        self.assertEqual(
+            [call.args for call in set_attr.call_args_list],
+            [
+                ("|model|right_foot_CTRL.ikEnabled", True),
+                ("|model|hair_ik_mmdCcdIk.enabled", False),
+            ],
+        )
+        self.assertEqual(
+            [call.args[0] for call in set_key.call_args_list],
+            ["|model|right_foot_CTRL", "|model|hair_ik_mmdCcdIk"],
+        )
+        self.assertEqual(
+            [call.kwargs.get("value") for call in set_key.call_args_list],
+            [1, 0],
         )
 
     def test_ik_visibility_skips_names_absent_from_control_and_legacy_routes(self):
@@ -261,12 +278,20 @@ class TestControlRigImportPreflight(unittest.TestCase):
                 _fake_vmd_data(ik_show_hide_frames=[frame]), target_model="|model"
             )
         self.assertEqual(
-            [call.args[0] for call in set_attr.call_args_list],
-            ["|model|right_foot_CTRL.ikEnabled", "|model|hair_ik_mmdCcdIk.enabled"],
+            [call.args for call in set_attr.call_args_list],
+            [
+                ("|model|right_foot_CTRL.ikEnabled", True),
+                ("|model|right_foot_CTRL.ikEnabled", False),
+                ("|model|hair_ik_mmdCcdIk.enabled", True),
+            ],
         )
         self.assertEqual(
             [call.args[0] for call in set_key.call_args_list],
-            ["|model|right_foot_CTRL", "|model|hair_ik_mmdCcdIk"],
+            [
+                "|model|right_foot_CTRL",
+                "|model|right_foot_CTRL",
+                "|model|hair_ik_mmdCcdIk",
+            ],
         )
 
     def test_ik_visibility_without_property_frames_defaults_control_and_legacy_routes_on(self):
@@ -294,6 +319,124 @@ class TestControlRigImportPreflight(unittest.TestCase):
             [call.args[0] for call in set_key.call_args_list],
             ["|model|right_foot_CTRL", "|model|hair_ik_mmdCcdIk"],
         )
+
+    def test_ik_visibility_keys_existing_control_source_curve(self):
+        """CONTROL_OWNED IK property keys must land on the source animCurve."""
+        control = cmds.createNode("transform", name="cr061_ik_source_curve_control")
+        solver = cmds.createNode("network", name="cr061_ik_source_curve_solver")
+        try:
+            cmds.addAttr(control, longName="ikEnabled", attributeType="bool", keyable=True)
+            cmds.addAttr(solver, longName="enabled", attributeType="bool", keyable=True)
+            cmds.setAttr(f"{control}.ikEnabled", True)
+            cmds.setKeyframe(control, attribute="ikEnabled", time=2.0, value=1)
+            source = (
+                cmds.listConnections(
+                    f"{control}.ikEnabled",
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                )
+                or []
+            )[0]
+            cmds.connectAttr(f"{control}.ikEnabled", f"{solver}.enabled", force=False)
+
+            frame = {"frame_number": 7, "ik_states": [("右足IK", False)]}
+            with patch.object(
+                self.converter,
+                "_resolve_mmd_control_rig_ik_routes",
+                return_value=({"右足IK": control}, {}),
+            ), patch.object(
+                self.converter,
+                "_get_animation_frame_range",
+                return_value=(0, 7),
+            ):
+                self.converter._apply_mmd_control_rig_ik_enabled_animation(
+                    _fake_vmd_data(ik_show_hide_frames=[frame]),
+                    target_model="|model",
+                )
+
+            source_node = source.split(".", 1)[0]
+            self.assertEqual(
+                cmds.keyframe(source_node, query=True, timeChange=True),
+                [0.0, 2.0, 7.0],
+            )
+            self.assertEqual(
+                cmds.keyframe(source_node, query=True, valueChange=True),
+                [1.0, 1.0, 0.0],
+            )
+            self.assertEqual(
+                cmds.listConnections(
+                    f"{solver}.enabled",
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                ),
+                [f"{control}.ikEnabled"],
+            )
+        finally:
+            cmds.delete([node for node in (control, solver) if cmds.objExists(node)])
+
+    def test_ik_visibility_rejects_unknown_control_source_before_legacy_mutation(self):
+        """Unsupported CONTROL_OWNED graphs fail before any route is keyed."""
+        control = cmds.createNode("transform", name="cr061_ik_unknown_source_control")
+        unknown = cmds.createNode("network", name="cr061_ik_unknown_source_network")
+        legacy = cmds.createNode("network", name="cr061_ik_unknown_source_legacy")
+        try:
+            cmds.addAttr(control, longName="ikEnabled", attributeType="bool", keyable=True)
+            cmds.addAttr(unknown, longName="output", attributeType="bool", keyable=True)
+            cmds.addAttr(legacy, longName="enabled", attributeType="bool", keyable=True)
+            cmds.setAttr(f"{unknown}.output", True)
+            cmds.connectAttr(f"{unknown}.output", f"{control}.ikEnabled", force=False)
+
+            with patch.object(
+                self.converter,
+                "_resolve_mmd_control_rig_ik_routes",
+                return_value=(
+                    {"右足IK": control},
+                    {"右髪ＩＫ": legacy},
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    MMDImportException,
+                    "direct animCurve",
+                ) as raised:
+                    self.converter._apply_mmd_control_rig_ik_enabled_animation(
+                        _fake_vmd_data(
+                            ik_show_hide_frames=[
+                                {
+                                    "frame_number": 7,
+                                    "ik_states": [
+                                        ("右足IK", False),
+                                        ("右髪ＩＫ", False),
+                                    ],
+                                }
+                            ]
+                        ),
+                        target_model="|model",
+                    )
+
+            self.assertEqual(raised.exception.reason_code, "control_rig_ik_source_unsupported")
+            self.assertEqual(
+                cmds.listConnections(
+                    f"{legacy}.enabled",
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                )
+                or [],
+                [],
+            )
+            self.assertEqual(
+                cmds.listConnections(
+                    f"{control}.ikEnabled",
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                ),
+                [f"{unknown}.output"],
+            )
+        finally:
+            cmds.delete([node for node in (control, unknown, legacy) if cmds.objExists(node)])
 
     def test_existing_non_base_anim_layer_fails_closed_before_rig_build(self):
         with ExitStack() as stack:
@@ -1219,6 +1362,16 @@ class TestControlRigMotionClear(MayaTestBase):
             stack.enter_context(patch.object(mmd_control_rig_motion, "_restore_plug_states"))
             stack.enter_context(patch.object(mmd_control_rig_motion, "_restore_raw_metadata"))
             stack.enter_context(patch.object(mmd_control_rig_motion, "_discard_curve_snapshots"))
+            stack.enter_context(
+                patch.object(
+                    mmd_control_rig_motion,
+                    "_capture_animation_curve_payload",
+                    side_effect=(
+                        {"times": [0.0], "values": [1.0], "keys": []},
+                        {"times": [0.0], "values": [2.0], "keys": []},
+                    ),
+                )
+            )
             copy = stack.enter_context(
                 patch.object(
                     mmd_control_rig_motion,
@@ -1345,6 +1498,262 @@ class TestControlRigMotionClear(MayaTestBase):
             )
 
         self.assertEqual(routes, (f"{target_control_long}.ikEnabled",))
+
+
+class TestControlRigIkEnabledOwnership(MayaTestBase):
+    """EDIT ownership and rollback contracts for controller IK enable state."""
+
+    @staticmethod
+    def _binding(solver):
+        return {"ikSolverUuids": [cmds.ls(solver, uuid=True)[0]]}
+
+    @staticmethod
+    def _bool_anim_curve(name, value=1.0):
+        curve = cmds.createNode("animCurveTU", name=name)
+        cmds.setKeyframe(curve, time=0.0, value=value)
+        cmds.setKeyframe(curve, time=8.0, value=value)
+        return curve
+
+    def test_foreign_control_source_rejected_before_solver_mutation(self):
+        control = cmds.createNode("transform", name="cr061_ik_foreign_control")
+        solver = cmds.createNode("network", name="cr061_ik_foreign_solver")
+        foreign = cmds.createNode("network", name="cr061_ik_foreign_driver")
+        source_curve = self._bool_anim_curve("cr061_ik_foreign_solver_curve")
+        cmds.addAttr(control, longName="ikEnabled", attributeType="bool", keyable=True)
+        cmds.addAttr(solver, longName="enabled", attributeType="bool", keyable=True)
+        cmds.addAttr(foreign, longName="output", attributeType="bool", keyable=True)
+        cmds.setAttr(f"{foreign}.output", True)
+        cmds.connectAttr(f"{foreign}.output", f"{control}.ikEnabled")
+        cmds.connectAttr(f"{source_curve}.output", f"{solver}.enabled")
+        source = f"{source_curve}.output"
+        target = f"{solver}.enabled"
+        operations = []
+        journal = {"ikEnabled": []}
+
+        with self.assertRaises(MmdControlRigBuildError):
+            mmd_control_rig_motion._connect_ik_enabled(
+                cmds,
+                control,
+                self._binding(solver),
+                journal,
+                operations,
+                created_curve_nodes=[],
+            )
+
+        self.assertTrue(cmds.isConnected(source, target))
+        self.assertTrue(cmds.isConnected(f"{foreign}.output", f"{control}.ikEnabled"))
+        self.assertFalse(cmds.isConnected(f"{control}.ikEnabled", target))
+        self.assertEqual(operations, [])
+        self.assertEqual(journal["ikEnabled"], [])
+
+    def test_mismatched_solver_sources_rejected_before_first_disconnect(self):
+        control = cmds.createNode("transform", name="cr061_ik_mismatch_control")
+        solver_a = cmds.createNode("network", name="cr061_ik_mismatch_solver_a")
+        solver_b = cmds.createNode("network", name="cr061_ik_mismatch_solver_b")
+        curve_a = self._bool_anim_curve("cr061_ik_mismatch_curve_a")
+        curve_b = self._bool_anim_curve("cr061_ik_mismatch_curve_b")
+        cmds.addAttr(control, longName="ikEnabled", attributeType="bool", keyable=True)
+        for solver in (solver_a, solver_b):
+            cmds.addAttr(solver, longName="enabled", attributeType="bool", keyable=True)
+        cmds.connectAttr(f"{curve_a}.output", f"{solver_a}.enabled")
+        cmds.connectAttr(f"{curve_b}.output", f"{solver_b}.enabled")
+        operations = []
+        journal = {"ikEnabled": []}
+        binding = {
+            "ikSolverUuids": [
+                cmds.ls(solver_a, uuid=True)[0],
+                cmds.ls(solver_b, uuid=True)[0],
+            ]
+        }
+
+        with self.assertRaisesRegex(
+            MmdControlRigBuildError,
+            "different enabled animation sources",
+        ):
+            mmd_control_rig_motion._connect_ik_enabled(
+                cmds,
+                control,
+                binding,
+                journal,
+                operations,
+                created_curve_nodes=[],
+            )
+
+        self.assertTrue(cmds.isConnected(f"{curve_a}.output", f"{solver_a}.enabled"))
+        self.assertTrue(cmds.isConnected(f"{curve_b}.output", f"{solver_b}.enabled"))
+        self.assertFalse(cmds.listConnections(f"{control}.ikEnabled", source=True, destination=False))
+        self.assertEqual(operations, [])
+        self.assertEqual(journal["ikEnabled"], [])
+
+    def test_supported_control_curve_is_journaled_and_rollback_restores_edges(self):
+        control = cmds.createNode("transform", name="cr061_ik_supported_control")
+        solver = cmds.createNode("network", name="cr061_ik_supported_solver")
+        solver_curve = self._bool_anim_curve("cr061_ik_supported_solver_curve")
+        control_curve = self._bool_anim_curve("cr061_ik_supported_control_curve")
+        cmds.addAttr(control, longName="ikEnabled", attributeType="bool", keyable=True)
+        cmds.addAttr(solver, longName="enabled", attributeType="bool", keyable=True)
+        cmds.connectAttr(f"{control_curve}.output", f"{control}.ikEnabled")
+        cmds.connectAttr(f"{solver_curve}.output", f"{solver}.enabled")
+        source = f"{solver_curve}.output"
+        control_source = f"{control_curve}.output"
+        target = f"{solver}.enabled"
+        representations = [
+            {
+                "targetRef": mmd_control_rig_motion._plug_reference(cmds, target),
+                "controlRef": mmd_control_rig_motion._plug_reference(
+                    cmds, control_source
+                ),
+            }
+        ]
+        operations = []
+        journal = {"ikEnabled": []}
+
+        mmd_control_rig_motion._connect_ik_enabled(
+            cmds,
+            control,
+            self._binding(solver),
+            journal,
+            operations,
+            created_curve_nodes=[],
+            curve_representations=representations,
+        )
+
+        row = journal["ikEnabled"][0]
+        self.assertEqual(row["source"], source)
+        self.assertEqual(row["controlSource"], control_source)
+        self.assertFalse(cmds.isConnected(source, target))
+        self.assertTrue(cmds.isConnected(control_source, f"{control}.ikEnabled"))
+        self.assertTrue(cmds.isConnected(f"{control}.ikEnabled", target))
+
+        mmd_control_rig_motion._rollback(cmds, operations)
+        self.assertTrue(cmds.isConnected(source, target))
+        self.assertTrue(cmds.isConnected(control_source, f"{control}.ikEnabled"))
+        self.assertFalse(cmds.isConnected(f"{control}.ikEnabled", target))
+
+    def test_duplicated_source_rollback_restores_curve_edges_and_values(self):
+        control = cmds.createNode("transform", name="cr061_ik_duplicate_control")
+        solver = cmds.createNode("network", name="cr061_ik_duplicate_solver")
+        solver_curve = self._bool_anim_curve("cr061_ik_duplicate_solver_curve")
+        cmds.addAttr(control, longName="ikEnabled", attributeType="bool", keyable=True)
+        cmds.addAttr(solver, longName="enabled", attributeType="bool", keyable=True)
+        cmds.setAttr(f"{control}.ikEnabled", False)
+        cmds.connectAttr(f"{solver_curve}.output", f"{solver}.enabled")
+        source = f"{solver_curve}.output"
+        target = f"{solver}.enabled"
+        source_times = cmds.keyframe(solver_curve, query=True, timeChange=True)
+        source_values = cmds.keyframe(solver_curve, query=True, valueChange=True)
+        states = mmd_control_rig_motion._capture_plug_states(
+            cmds,
+            (f"{control}.ikEnabled", target),
+        )
+        operations = []
+        journal = {"ikEnabled": []}
+        created = []
+
+        mmd_control_rig_motion._connect_ik_enabled(
+            cmds,
+            control,
+            self._binding(solver),
+            journal,
+            operations,
+            created_curve_nodes=created,
+        )
+        self.assertEqual(len(created), 1)
+        self.assertTrue(cmds.isConnected(f"{control}.ikEnabled", target))
+
+        mmd_control_rig_motion._rollback(cmds, operations)
+        for node in created:
+            if cmds.objExists(node):
+                cmds.delete(node)
+        mmd_control_rig_motion._restore_plug_states(cmds, states)
+
+        self.assertTrue(cmds.isConnected(source, target))
+        self.assertFalse(cmds.listConnections(f"{control}.ikEnabled", source=True, destination=False))
+        self.assertFalse(cmds.getAttr(f"{control}.ikEnabled"))
+        self.assertEqual(cmds.keyframe(solver_curve, query=True, timeChange=True), source_times)
+        self.assertEqual(cmds.keyframe(solver_curve, query=True, valueChange=True), source_values)
+
+    def test_restore_plug_states_refuses_foreign_writer_without_disconnect(self):
+        """Rollback must not remove a writer added after the snapshot."""
+        target = cmds.createNode("network", name="cr061_topology_drift_target")
+        foreign = cmds.createNode("network", name="cr061_topology_drift_foreign")
+        owned_curve = self._bool_anim_curve("cr061_topology_drift_owned_curve")
+        cmds.addAttr(target, longName="input", attributeType="bool")
+        cmds.addAttr(foreign, longName="output", attributeType="bool")
+        cmds.connectAttr(f"{owned_curve}.output", f"{target}.input")
+
+        states = mmd_control_rig_motion._capture_plug_states(
+            cmds,
+            (f"{target}.input",),
+        )
+        cmds.disconnectAttr(f"{owned_curve}.output", f"{target}.input")
+        cmds.connectAttr(f"{foreign}.output", f"{target}.input")
+
+        with self.assertRaisesRegex(MmdControlRigBuildError, "topology drift"):
+            mmd_control_rig_motion._restore_plug_states(cmds, states)
+
+        self.assertTrue(cmds.isConnected(f"{foreign}.output", f"{target}.input"))
+
+    def test_created_curve_with_foreign_destination_is_not_deleted(self):
+        """A foreign edge on a transaction curve fails closed before delete."""
+        curve = self._bool_anim_curve("cr061_topology_drift_created_curve")
+        foreign = cmds.createNode("network", name="cr061_topology_drift_curve_foreign")
+        cmds.addAttr(foreign, longName="input", attributeType="bool")
+        cmds.connectAttr(f"{curve}.output", f"{foreign}.input")
+
+        with self.assertRaisesRegex(MmdControlRigBuildError, "topology drift"):
+            mmd_control_rig_motion._assert_created_curve_nodes_safe(
+                cmds,
+                (curve,),
+                (),
+            )
+
+        self.assertTrue(cmds.objExists(curve))
+        self.assertTrue(cmds.isConnected(f"{curve}.output", f"{foreign}.input"))
+
+    def test_edit_exit_rollback_refuses_foreign_writer_without_disconnect(self):
+        """The real exit transaction fails closed when rollback sees drift."""
+        root = cmds.group(empty=True, name="cr061_topology_drift_transaction_root")
+        cmds.addAttr(root, longName="mmd_control_rig_json", dataType="string")
+        cmds.setAttr(
+            f"{root}.mmd_control_rig_json",
+            '{"owner":"CONTROL_OWNED"}',
+            type="string",
+        )
+        control = cmds.createNode("network", name="cr061_topology_drift_transaction_control")
+        target = cmds.createNode("network", name="cr061_topology_drift_transaction_target")
+        owned = cmds.createNode("network", name="cr061_topology_drift_transaction_owned")
+        foreign = cmds.createNode("network", name="cr061_topology_drift_transaction_foreign")
+        for node, attribute in (
+            (control, "input"),
+            (target, "input"),
+            (owned, "output"),
+            (foreign, "output"),
+        ):
+            cmds.addAttr(node, longName=attribute, attributeType="bool")
+        cmds.connectAttr(f"{owned}.output", f"{target}.input")
+        rows = [
+            {
+                "control": f"{control}.input",
+                "target": f"{target}.input",
+                "source": f"{owned}.output",
+            }
+        ]
+
+        with self.assertRaisesRegex(MmdControlRigBuildError, "rollback was incomplete"):
+            with mmd_control_rig_motion._edit_exit_transaction(
+                cmds,
+                root,
+                "Topology Drift Transaction",
+                "restore",
+                rows,
+                [],
+            ):
+                cmds.disconnectAttr(f"{owned}.output", f"{target}.input")
+                cmds.connectAttr(f"{foreign}.output", f"{target}.input")
+                raise RuntimeError("forced transaction failure")
+
+        self.assertTrue(cmds.isConnected(f"{foreign}.output", f"{target}.input"))
 
 
 if __name__ == "__main__":

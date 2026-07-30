@@ -685,19 +685,9 @@ class TestAnimationPresenter(unittest.TestCase):
         self.assertEqual(cmds.killed, [1, 2])
         self.assertEqual(cmds.jobs, {})
 
-    def test_create_control_rig_also_enters_bound_edit_state(self):
-        presenter, view, _, _ = self._make(model_root="test_model")
-        with patch(
-            "mmd_tools.core.mmd_control_rig_builder.build_mmd_control_rig"
-        ) as build, patch(
-            "mmd_tools.core.mmd_control_rig_motion.enter_mmd_control_rig_edit",
-            return_value={"state": "EDIT", "owner": "CONTROL_OWNED"},
-        ) as bind, patch.object(presenter, "_sync_visibility_controls"):
-            presenter._on_control_rig_clicked("create")
-
-        build.assert_called_once_with("test_model")
-        bind.assert_called_once_with("test_model")
-        self.assertIn("EDIT / CONTROL_OWNED", view.status_label.text())
+    def test_control_rig_lifecycle_is_owned_by_manager(self):
+        presenter, _, _, _ = self._make(model_root="test_model")
+        self.assertFalse(hasattr(presenter, "_on_control_rig_clicked"))
 
     def test_tree_bone_item_has_user_data(self):
         joints = {0: "center"}
@@ -1220,6 +1210,93 @@ class TestBodyPickerPresenter(unittest.TestCase):
         self.assertNotIn("left_ik", view.body_picker.hidden_regions)
         self.assertEqual(view.body_picker.region_dim_levels, {"ik_enable_right": 0.65})
         self.assertIn("L IK enabled", view.status_label.text())
+
+    def test_leg_ik_refresh_hides_and_restores_both_knee_regions_read_only(self):
+        presenter, view, _, adapter = self._make_with_bones()
+        adapter._set_attrs.clear()
+        presenter._ik_nodes_by_side = {
+            "left": "left_leg_ik_solver",
+            "right": "right_leg_ik_solver",
+        }
+        adapter._attrs["left_leg_ik_solver", "enabled"] = True
+        adapter._attrs["right_leg_ik_solver", "enabled"] = True
+
+        presenter._sync_ik_picker_state(force=True)
+
+        self.assertEqual(
+            view.body_picker.hidden_regions,
+            {
+                "left_lower_leg",
+                "left_foot",
+                "left_toe_ik",
+                "right_lower_leg",
+                "right_foot",
+                "right_toe_ik",
+            },
+        )
+        self.assertEqual(adapter._set_attrs, {})
+
+        adapter._attrs["left_leg_ik_solver", "enabled"] = False
+        adapter._attrs["right_leg_ik_solver", "enabled"] = False
+        presenter._sync_ik_picker_state(force=True)
+
+        self.assertEqual(
+            view.body_picker.hidden_regions,
+            {"left_ik", "left_toe_ik", "right_ik", "right_toe_ik"},
+        )
+        self.assertEqual(adapter._set_attrs, {})
+
+    def test_control_owned_ik_picker_uses_control_ik_enabled_without_legacy_mutation(self):
+        presenter, view, _, adapter = self._make_with_bones()
+        presenter._ik_nodes_by_side = {"left": "legacy_left_solver"}
+        presenter._toe_ik_nodes_by_side = {"left": "legacy_left_toe_solver"}
+        adapter._attrs["legacy_left_solver", "enabled"] = False
+        adapter._attrs["legacy_left_toe_solver", "enabled"] = False
+        adapter._attrs["left_foot_ctrl", "ikEnabled"] = True
+        adapter._attrs["left_toe_ctrl", "ikEnabled"] = True
+        metadata = {
+            "owner": "CONTROL_OWNED",
+            "bindings": {
+                "left_foot_ik": {"inputKind": "ik_controller"},
+                "left_toe_ik": {"inputKind": "ik_controller"},
+            },
+        }
+        rig = SimpleNamespace(
+            owner="CONTROL_OWNED",
+            controls={
+                "left_foot_ik": "left_foot_ctrl",
+                "left_toe_ik": "left_toe_ctrl",
+            },
+        )
+
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            return_value=metadata,
+        ), patch(
+            "mmd_tools.core.mmd_control_rig_builder.inspect_mmd_control_rig",
+            return_value=rig,
+        ):
+            adapter._set_attrs.clear()
+            presenter._reload_for_model("test_model")
+
+            self.assertEqual(
+                view.body_picker.hidden_regions,
+                {
+                    "left_lower_leg",
+                    "left_foot",
+                    "left_toe",
+                    "right_ik",
+                    "right_toe_ik",
+                },
+            )
+            self.assertEqual(adapter._set_attrs, {})
+
+            view.body_picker.ik_enable_toggle_clicked.emit("left")
+
+        self.assertFalse(adapter._attrs["left_foot_ctrl", "ikEnabled"])
+        self.assertFalse(adapter._attrs["left_toe_ctrl", "ikEnabled"])
+        self.assertFalse(adapter._attrs["legacy_left_solver", "enabled"])
+        self.assertFalse(adapter._attrs["legacy_left_toe_solver", "enabled"])
 
     def test_ik_enable_toggle_switches_one_sides_solvers_without_hiding_thighs(self):
         presenter, view, _, adapter = self._make_with_bones()

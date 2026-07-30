@@ -45,13 +45,21 @@ class TestVmdRuntimeBakeRouting(MayaTestBase):
         vmd_data = create_test_vmd_data()
         self.converter.set_bone_name_mapping({"センター": "center"})
 
-        res = self.converter.convert(
-            vmd_data,
-            vmd_bytes=b"dummy",
-            pmx_bytes=None,
-            pmx_path=None,
-            target_model="model_root",
-        )
+        # This infrastructure probe intentionally uses opaque bytes and no
+        # PMX source.  Keep it on the scene-path smoke route without claiming
+        # registered sparse parity.
+        with patch.object(
+            self.converter,
+            "_compiled_registered_sparse_frames",
+            return_value=(tuple(vmd_data.bone_frames), {}),
+        ):
+            res = self.converter.convert(
+                vmd_data,
+                vmd_bytes=b"dummy",
+                pmx_bytes=None,
+                pmx_path=None,
+                target_model="model_root",
+            )
         self.assertIsInstance(res, bool)
 
         self.assertFalse(self.converter._should_use_mmd_runtime_bake(b"vmd", None, "/nonexistent.pmx"))

@@ -237,6 +237,13 @@ class TestVmdRuntimeLiveRig(MayaTestBase):
             return True
 
         with ExitStack() as stack:
+            stack.enter_context(
+                patch.object(
+                    self.converter,
+                    "_compiled_registered_sparse_frames",
+                    return_value=(tuple(vmd_data.bone_frames), {}),
+                )
+            )
             stack.enter_context(patch.object(self.converter, "_has_live_mmd_rig_for_runtime_target", return_value=True))
             stack.enter_context(patch.object(self.converter, "_build_bone_hierarchy_and_order_maps"))
             stack.enter_context(patch.object(self.converter, "_build_runtime_bind_world_maps"))

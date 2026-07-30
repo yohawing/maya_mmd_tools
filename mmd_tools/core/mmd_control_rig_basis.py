@@ -1,10 +1,10 @@
 """Pure math and metadata helpers for the static MMD control basis.
 
-This foundation records the same display-only shortest-arc basis currently
-used to rotate controller CVs.  It intentionally does not create an
-``AIM_SPACE`` transform or alter any Maya transform; later motion conversion
-work can consume the persisted quaternion without re-deriving it from shape
-geometry.
+This module owns the static authoring basis used by MMD-native Control Rigs.
+The basis is persisted as an ``xyzw`` quaternion and is deliberately usable
+from both pure-Python conversion code and Maya matrix-node authoring.  The
+builder stores it on the ``AIM_SPACE`` transform; motion conversion consumes
+the same record rather than re-deriving a basis from curve CV geometry.
 """
 
 from __future__ import annotations
@@ -151,6 +151,52 @@ def quaternion_inverse(
     """Return the normalized canonical inverse of an xyzw quaternion."""
 
     return quaternion_conjugate(quaternion)
+
+
+def matrix_from_quaternion(
+    quaternion: Tuple[float, float, float, float],
+) -> Tuple[float, ...]:
+    """Return a row-major 4x4 rotation matrix for a normalized xyzw quaternion.
+
+    Maya's ``setAttr(..., type="matrix")`` and ``xform -matrix`` consume the
+    same row-major sixteen-value payload.  Keeping this conversion here makes
+    the persisted basis contract independent of Maya's optional API stubs.
+    """
+
+    x, y, z, w = _coerce_quaternion(quaternion, "quaternion")
+    return (
+        1.0 - 2.0 * (y * y + z * z),
+        2.0 * (x * y - z * w),
+        2.0 * (x * z + y * w),
+        0.0,
+        2.0 * (x * y + z * w),
+        1.0 - 2.0 * (x * x + z * z),
+        2.0 * (y * z - x * w),
+        0.0,
+        2.0 * (x * z - y * w),
+        2.0 * (y * z + x * w),
+        1.0 - 2.0 * (x * x + y * y),
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    )
+
+
+def conjugate_rotation(
+    quaternion: Tuple[float, float, float, float],
+    basis: Any,
+) -> Tuple[float, float, float, float]:
+    """Apply the authoring-basis conjugation to one local rotation.
+
+    This named helper is intentionally explicit at conversion call sites:
+    ``bone_to_control`` and ``control_to_bone`` remain the directional API,
+    while callers that handle a live matrix can use the same contract without
+    accidentally swapping the inverse order.
+    """
+
+    return bone_to_control(quaternion, basis)
 
 
 def bone_to_control(

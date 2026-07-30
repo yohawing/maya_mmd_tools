@@ -22,6 +22,8 @@ from mmd_tools.core.constants import (
     ATTR_MMD_CONNECT_INDEX,
     ATTR_MMD_CONTROL_RIG_JSON,
     ATTR_MMD_PMX_REST_POSITION,
+    ATTR_MMD_FIXED_AXIS,
+    ATTR_MMD_AXIS_DIRECTION,
 )
 from mmd_tools.core.humanik_utils import maya_cmds
 from mmd_tools.core.mmd_control_rig_analyzer import (
@@ -39,6 +41,7 @@ from mmd_tools.core.mmd_control_rig_channels import (
 from mmd_tools.core.mmd_control_rig_basis import (
     MmdControlRigBasisError,
     basis_from_shape_rotation,
+    matrix_from_quaternion,
     validate_basis_record,
 )
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
@@ -79,6 +82,7 @@ class MmdControlRigBuildResult:
     selection_set: str
     controls: Mapping[str, str]
     zero_groups: Mapping[str, str]
+    aim_spaces: Mapping[str, str] = None
     state: str = CONTROL_RIG_ATTACHED
     owner: str = CONTROL_RIG_MMD_OWNED
     created: bool = True
@@ -106,6 +110,14 @@ _FINGER_ROLE_CHAINS = tuple(
 )
 _FINGER_ROLES = tuple(role for chain in _FINGER_ROLE_CHAINS for role in chain)
 _FINGER_ROOT_ROLES = frozenset(chain[0] for chain in _FINGER_ROLE_CHAINS)
+_TWIST_RING_ROLES = frozenset(
+    {
+        "left_arm_twist",
+        "right_arm_twist",
+        "left_wrist_twist",
+        "right_wrist_twist",
+    }
+)
 _FINGER_ROLE_PARENTS = {
     role: (f"{role.split('_', 1)[0]}_wrist" if index == 0 else chain[index - 1])
     for chain in _FINGER_ROLE_CHAINS
@@ -136,6 +148,10 @@ _ROLE_COLORS = {
     "right_arm": 13,
     "right_elbow": 13,
     "right_wrist": 13,
+    "left_arm_twist": 6,
+    "right_arm_twist": 13,
+    "left_wrist_twist": 6,
+    "right_wrist_twist": 13,
     "left_leg": 6,
     "left_knee": 6,
     "right_leg": 13,
@@ -166,6 +182,10 @@ _ROLE_PARENTS = {
     "right_arm": "right_shoulder",
     "right_elbow": "right_arm",
     "right_wrist": "right_elbow",
+    "left_arm_twist": "left_arm",
+    "right_arm_twist": "right_arm",
+    "left_wrist_twist": "left_wrist",
+    "right_wrist_twist": "right_wrist",
     "left_leg": "groove",
     "left_knee": "left_leg",
     "right_leg": "groove",
@@ -179,6 +199,10 @@ _ROLE_TEMPLATE_ALIASES = {
     "right_arm": "circle",
     "right_elbow": "left_elbow",
     "right_wrist": "left_wrist",
+    "left_arm_twist": "circle",
+    "right_arm_twist": "circle",
+    "left_wrist_twist": "circle",
+    "right_wrist_twist": "circle",
     "waist": "circle",
     "left_foot_ik_parent": "circle",
     "right_foot_ik_parent": "circle",
@@ -207,6 +231,10 @@ _AUTO_ORIENT_SHAPE_ROLES = frozenset(
         "right_leg",
         "right_knee",
         *_FINGER_ROLES,
+        "left_arm_twist",
+        "right_arm_twist",
+        "left_wrist_twist",
+        "right_wrist_twist",
     }
 )
 
@@ -253,6 +281,7 @@ def build_mmd_control_rig(
             display_reference_time = _current_time(cmds)
             controls: Dict[str, str] = {}
             zero_groups: Dict[str, str] = {}
+            aim_spaces: Dict[str, str] = {}
             role_joints: Dict[str, str] = {}
             bindings: Dict[str, Dict[str, Any]] = {}
             authoring_bases: Dict[str, Dict[str, Any]] = {}
@@ -287,22 +316,37 @@ def build_mmd_control_rig(
                     indexed_joints,
                 )
                 try:
-                    authoring_bases[role] = dict(
-                        basis_from_shape_rotation(shape_rotation).to_dict()
-                    )
+                    basis = basis_from_shape_rotation(shape_rotation)
+                    authoring_bases[role] = dict(basis.to_dict())
                 except MmdControlRigBasisError as exc:
                     raise MmdControlRigBuildError(
                         f"invalid control-rig basis for role {role}"
                     ) from exc
+                # The static authoring basis is a real transform now.  Keep
+                # the CV templates in their canonical +Z orientation so the
+                # visible shape and the motion converter share one source of
+                # truth instead of applying the basis twice.
+                aim_space = cmds.createNode(
+                    "transform",
+                    name=f"{namespace}{role}_AIM_SPACE",
+                    parent=zero,
+                )
+                cmds.xform(
+                    aim_space,
+                    objectSpace=True,
+                    matrix=matrix_from_quaternion(basis.quaternion),
+                )
+                created_roots.append(aim_space)
+                aim_spaces[role] = str(aim_space)
                 control = _create_control_curve(
                     cmds,
                     f"{namespace}{role}_CTRL",
                     role,
                     scale,
-                    shape_rotation=shape_rotation,
+                    shape_rotation=None,
                 )
                 created_roots.append(control)
-                parented = cmds.parent(control, zero)
+                parented = cmds.parent(control, aim_space)
                 if parented:
                     control = str(parented[0])
                 control = str(cmds.rename(control, f"{namespace}{role}_CTRL"))
@@ -312,7 +356,9 @@ def build_mmd_control_rig(
                 apply_mmd_control_rig_channel_policy(
                     cmds,
                     control,
-                    derive_mmd_control_rig_channel_policy(role, binding),
+                    derive_mmd_control_rig_channel_policy(
+                        _channel_policy_role(role), binding
+                    ),
                 )
                 _color_control(cmds, control, _ROLE_COLORS[role])
                 cmds.sets(control, add=selection_set)
@@ -338,6 +384,7 @@ def build_mmd_control_rig(
                 zero_groups,
                 bindings,
                 authoring_bases,
+                aim_spaces,
                 cmds_module=cmds,
             )
 
@@ -370,6 +417,10 @@ def build_mmd_control_rig(
                 "zeroGroups": {
                     role: _node_uuid(cmds, node)
                     for role, node in sorted(zero_groups.items())
+                },
+                "aimSpaces": {
+                    role: _node_uuid(cmds, node)
+                    for role, node in sorted(aim_spaces.items())
                 },
                 "bindings": bindings,
                 "authoringBases": authoring_bases,
@@ -499,12 +550,18 @@ def _result_from_metadata(
         role: resolved[uuid]
         for role, uuid in sorted(metadata.get("zeroGroups", {}).items())
     }
+    aim_spaces = {
+        role: resolved[uuid]
+        for role, uuid in sorted(metadata.get("aimSpaces", {}).items())
+        if uuid in resolved
+    }
     return MmdControlRigBuildResult(
         model_root=root,
         control_group=resolved[metadata["controlGroupUuid"]],
         selection_set=resolved[metadata["selectionSetUuid"]],
         controls=controls,
         zero_groups=zero_groups,
+        aim_spaces=aim_spaces,
         state=str(metadata["state"]),
         owner=str(metadata.get("owner", _owner_for_state(metadata["state"]))),
         created=created,
@@ -544,7 +601,9 @@ def _migrate_existing_control_channel_policy(cmds, metadata: Mapping[str, Any]) 
             )
         control = _resolve_uuid_node(cmds, uuid, f"control for role {role}")
         binding = bindings.get(role)
-        policy = derive_mmd_control_rig_channel_policy(str(role), binding)
+        policy = derive_mmd_control_rig_channel_policy(
+            _channel_policy_role(str(role)), binding
+        )
         grouped.setdefault(uuid, {"control": control, "entries": []})["entries"].append(
             (str(role), binding, policy)
         )
@@ -660,6 +719,8 @@ def _read_metadata(cmds, root: str) -> Optional[Dict[str, Any]]:
         raise MmdControlRigBuildError("control-rig metadata helperNodes must be an array")
     if "authoringBases" in metadata:
         _validate_basis_metadata(metadata["authoringBases"])
+    if "aimSpaces" in metadata and not isinstance(metadata["aimSpaces"], Mapping):
+        raise MmdControlRigBuildError("control-rig AIM_SPACE metadata must be an object")
     try:
         display_reference_time = float(metadata["displayReferenceTime"])
     except (KeyError, TypeError, ValueError) as exc:
@@ -713,6 +774,7 @@ def _resolve_owned_nodes(cmds, metadata: Mapping[str, Any]) -> Dict[str, str]:
         *metadata.get("helperNodes", []),
         *metadata.get("controls", {}).values(),
         *metadata.get("zeroGroups", {}).values(),
+        *metadata.get("aimSpaces", {}).values(),
     ):
         if not isinstance(uuid, str) or not uuid:
             raise MmdControlRigBuildError("invalid referenced control-rig UUID")
@@ -741,12 +803,33 @@ def _validate_control_rig_topology(
             or []
         )
     )
-    recorded_dag = set(resolved.values()) - {selection_set}
+    # ``nodes`` also owns DG helpers used by authoring-basis converters and
+    # animation constraints.  They are UUID-scoped lifecycle nodes but are
+    # not DAG descendants of Controls, so comparing them to listRelatives()
+    # would falsely report every valid EDIT rig as topology-corrupted.
+    recorded_dag = {
+        node
+        for node in set(resolved.values()) - {selection_set}
+        if _is_dag_node(cmds, node)
+    }
     if actual != recorded_dag:
         changed = ", ".join(sorted(actual.symmetric_difference(recorded_dag)))
         raise MmdControlRigBuildError(
             f"control group ownership topology changed: {changed}"
         )
+
+
+def _is_dag_node(cmds, node: str) -> bool:
+    """Return whether a resolved UUID belongs to the Control DAG."""
+
+    try:
+        return bool(cmds.ls(node, dag=True, long=True) or [])
+    except (AttributeError, TypeError):
+        # Lightweight inspection doubles predate the dag query.  Keep their
+        # historical behavior; real Maya command modules expose ``ls(dag=)``.
+        return True
+    except Exception:
+        return False
 
 
 @lru_cache(maxsize=1)
@@ -852,6 +935,18 @@ def _control_shape_rotation(cmds, root, role, binding, indexed_joints):
     returned shortest-arc rotation is applied only to curve CV positions.
     """
     if role not in _AUTO_ORIENT_SHAPE_ROLES:
+        return None
+    if role in _TWIST_RING_ROLES:
+        # A primary twist ring is authored around the PMX fixed axis, never
+        # around a guessed child-tail direction.  Invalid/missing vectors are
+        # rejected by the analyzer, so returning None here is fail-closed for
+        # hand-authored or stale scene metadata.
+        axis = _vector_attribute(cmds, binding.joint, ATTR_MMD_FIXED_AXIS)
+        if axis is None:
+            axis = _vector_attribute(cmds, binding.joint, ATTR_MMD_AXIS_DIRECTION)
+        if axis is not None:
+            maya_axis = (axis[0], axis[1], -axis[2])
+            return _shortest_arc_from_positive_z(maya_axis)
         return None
     if binding.pmx_flags & int(PmxBoneFlag.LOCAL_AXIS):
         return None
@@ -1038,6 +1133,17 @@ def _control_group_parent(spec: MmdControlRigSpec, root: str) -> Optional[str]:
     return root
 
 
+def _channel_policy_role(role: str) -> str:
+    """Map optional twist rings onto their existing rotate-only arm policy."""
+
+    return {
+        "left_arm_twist": "left_arm",
+        "right_arm_twist": "right_arm",
+        "left_wrist_twist": "left_wrist",
+        "right_wrist_twist": "right_wrist",
+    }.get(str(role), str(role))
+
+
 def _fallback_alias_target(role_binding: MmdControlRigRoleBinding) -> Optional[str]:
     """Return the concrete role whose control a semantic fallback aliases."""
     if role_binding.status != STATUS_FALLBACK:
@@ -1066,6 +1172,24 @@ def _binding_metadata(
         "ikSolvers": list(binding.ik_solvers),
         "fallback": role_binding.fallback,
     }
+    if role_binding.role in _TWIST_RING_ROLES:
+        metadata["twistController"] = True
+        metadata["twistAuthority"] = (
+            "append_base"
+            if binding.input_kind == "append_base"
+            else "fixed_axis_direct"
+        )
+        axis = (
+            _vector_attribute(cmds_module, binding.joint, ATTR_MMD_FIXED_AXIS)
+            if cmds_module is not None
+            else None
+        )
+        if axis is None and cmds_module is not None:
+            axis = _vector_attribute(cmds_module, binding.joint, ATTR_MMD_AXIS_DIRECTION)
+        if axis is None:
+            axis = getattr(binding, "fixed_axis", None)
+        if axis is not None:
+            metadata["fixedAxis"] = list(axis)
     if cmds_module is not None:
         metadata.update(
             {
@@ -1149,6 +1273,7 @@ def _apply_fallback_role_aliases(
     zero_groups: Dict[str, str],
     bindings: Dict[str, Dict[str, Any]],
     authoring_bases: Optional[Dict[str, Dict[str, Any]]] = None,
+    aim_spaces: Optional[Dict[str, str]] = None,
     *,
     cmds_module=None,
 ) -> None:
@@ -1167,6 +1292,12 @@ def _apply_fallback_role_aliases(
                 continue
             controls[role] = controls[target]
             zero_groups[role] = zero_groups[target]
+            if aim_spaces is not None:
+                if target not in aim_spaces:
+                    raise MmdControlRigBuildError(
+                        f"control-rig fallback AIM_SPACE is unavailable: {role}->{target}"
+                    )
+                aim_spaces[role] = aim_spaces[target]
             bindings[role] = _binding_metadata(role_binding, cmds_module=cmds_module)
             if authoring_bases is not None:
                 if target not in authoring_bases:

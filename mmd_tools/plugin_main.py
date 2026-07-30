@@ -24,6 +24,7 @@ from mmd_tools.nodes import mmd_physics_world_shape
 
 _main_window = None
 _animator_toolset_window = None
+_control_rig_manager_window = None
 # Track each rig node that this Python plug-in actually registered. The C++
 # plug-in can remain loaded after skipping duplicate Python-owned types, so its
 # loaded state alone does not prove that it currently owns either node type.
@@ -158,6 +159,36 @@ def close_animator_toolset():
             cmds.deleteUI(ws)
     except Exception:
         pass
+
+
+def close_control_rig_manager():
+    """Close the process-wide modeless Control Rig Manager."""
+    global _control_rig_manager_window
+    try:
+        from mmd_tools.ui.control_rig_manager import ControlRigManagerWindow
+
+        ControlRigManagerWindow.close_manager()
+    except Exception:
+        pass
+    _control_rig_manager_window = None
+
+
+def open_control_rig_manager(*, app_state=None, status_callback=None):
+    """Open or raise the single modeless Control Rig Manager instance."""
+    global _control_rig_manager_window
+    try:
+        from mmd_tools.ui.control_rig_manager import open_control_rig_manager as _open
+
+        _control_rig_manager_window = _open(
+            app_state=app_state,
+            status_callback=status_callback,
+        )
+        return _control_rig_manager_window
+    except Exception as exc:
+        message = f"Control Rig Manager failed to open: {exc}"
+        om.MGlobal.displayError(message)
+        om.MGlobal.displayError(traceback.format_exc())
+        raise
 
 
 def open_animator_toolset(dockable=True):
@@ -608,6 +639,7 @@ def uninitializePlugin(mobject):
         _deregister_humanik_control_rig_watch()
         _remove_active_view_callback()
         _remove_after_open_callback()
+        close_control_rig_manager()
         close_animator_toolset()
         close_main_window()
         uninstall_mmd_menu()

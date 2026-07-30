@@ -59,7 +59,14 @@ class AnimatorToolsetWindow(QWidget):
         self.animation_presenter = AnimationPresenter(
             self.animation_tab, self.app_state
         )
+        self.animation_tab.control_rig_manager_btn.clicked.connect(
+            self.open_control_rig_manager
+        )
         layout.addWidget(self.animation_tab)
+        self._control_rig_manager = None
+        self._control_rig_status_callback = None
+        self._control_rig_state_callback = None
+        self._control_rig_manager_connected = False
         self._cleanup_done = False
         self.animation_tab.destroyed.connect(
             self.animation_presenter.disconnect_signals
@@ -67,6 +74,30 @@ class AnimatorToolsetWindow(QWidget):
         self.destroyed.connect(self._on_destroyed)
 
         self.app_state.refresh_model_list()
+
+    def open_control_rig_manager(self, *_args):
+        """Open the modeless UUID-authoritative Control Rig Manager."""
+
+        from mmd_tools.ui.control_rig_manager import open_control_rig_manager
+
+        status_callback = self.animation_tab.control_rig_status_label.setText
+        manager = open_control_rig_manager(
+            app_state=self.app_state,
+            status_callback=status_callback,
+        )
+        self._control_rig_manager = manager
+        self._control_rig_status_callback = status_callback
+        # Manager actions are scene transactions; refresh the picker state
+        # after each explicit action while keeping the Animator itself read
+        # only with respect to Control Rig ownership.
+        if not getattr(self, "_control_rig_manager_connected", False):
+            def state_callback(_root, _action):
+                self.animation_presenter.refresh_for_scene_change()
+
+            manager.state_changed.connect(state_callback)
+            self._control_rig_state_callback = state_callback
+            self._control_rig_manager_connected = True
+        return manager
 
     def _setting_int(self, key: str, default: int, minimum: int) -> int:
         """Read a persisted integer while rejecting missing or invalid values."""
@@ -88,6 +119,24 @@ class AnimatorToolsetWindow(QWidget):
             return
         self._cleanup_done = True
         self._save_window_size()
+        manager = getattr(self, "_control_rig_manager", None)
+        if manager is not None:
+            try:
+                manager.clear_status_callback(
+                    getattr(self, "_control_rig_status_callback", None)
+                )
+            except Exception:
+                pass
+            state_callback = getattr(self, "_control_rig_state_callback", None)
+            if state_callback is not None:
+                try:
+                    manager.state_changed.disconnect(state_callback)
+                except (RuntimeError, TypeError):
+                    pass
+        self._control_rig_manager = None
+        self._control_rig_status_callback = None
+        self._control_rig_state_callback = None
+        self._control_rig_manager_connected = False
         self.animation_presenter.disconnect_signals()
 
     def _on_destroyed(self, *_args):

@@ -557,6 +557,11 @@ class VmdConverter:
                     motion_kind,
                 )
                 return False
+            if not bake_mode:
+                self.logger.error(
+                    "Reduce Bake Keys requires Bake Motion mode; live/legacy import was not attempted"
+                )
+                return False
         if scene_animation_only:
             return self._convert_scene_animation_only(vmd_data, layer_name, bake_mode, vmd_bytes)
         if not target_model:
@@ -584,6 +589,7 @@ class VmdConverter:
         self._enforce_humanik_import_gate(target_model)
         registered_sparse_frames = None
         registered_sparse_provenance = None
+        runtime_bake_requested = False
         if not bake_mode and getattr(vmd_data, "bone_frames", None):
             # Resolve the imported PMX index table before any Control Rig or
             # clear-existing transaction mutates the scene. Missing native
@@ -598,14 +604,42 @@ class VmdConverter:
                     target_namespace,
                 )
             )
-            registered_sparse_frames, registered_sparse_provenance = self._compiled_registered_sparse_frames(
-                vmd_bytes=sparse_vmd_bytes,
-                pmx_bytes=sparse_pmx_bytes,
-                pmx_path=sparse_pmx_path,
-                vmd_source_path=getattr(vmd_data, "source_file", None),
-                source_bone_frames=getattr(vmd_data, "bone_frames", None) or (),
-                profile=profile,
+            # Registered sparse compilation is only a legacy fallback.  When
+            # the runtime path is already selected, asking the native model
+            # parser to compile the same fake/opaque bytes first is both
+            # redundant and an unnecessary preflight failure point.
+            has_registered_source = bool(
+                sparse_vmd_bytes
+                and (
+                    sparse_pmx_bytes
+                    or (
+                        sparse_pmx_path
+                        and str(sparse_pmx_path).lower().endswith(".pmx")
+                    )
+                )
             )
+            runtime_bake_requested = (
+                not create_mmd_control_rig
+                and has_registered_source
+                and self._should_use_mmd_runtime_bake(
+                    sparse_vmd_bytes,
+                    sparse_pmx_bytes,
+                    sparse_pmx_path,
+                    self._has_live_mmd_rig_for_runtime_target(),
+                    bake_mode,
+                )
+            )
+            if not runtime_bake_requested and (
+                create_mmd_control_rig or has_registered_source
+            ):
+                registered_sparse_frames, registered_sparse_provenance = self._compiled_registered_sparse_frames(
+                    vmd_bytes=sparse_vmd_bytes,
+                    pmx_bytes=sparse_pmx_bytes,
+                    pmx_path=sparse_pmx_path,
+                    vmd_source_path=getattr(vmd_data, "source_file", None),
+                    source_bone_frames=getattr(vmd_data, "bone_frames", None) or (),
+                    profile=profile,
+                )
         control_rig_transaction = None
         if create_mmd_control_rig:
             control_rig_transaction = self._prepare_mmd_control_rig_import(
@@ -1295,8 +1329,39 @@ class VmdConverter:
         legacy_nodes_by_name = {
             name: node for name, node in legacy_nodes_by_name.items() if name not in controls_by_name
         }
+        control_sources = self._resolve_mmd_control_rig_ik_enabled_sources(
+            controls_by_name.values()
+        )
         property_states = sorted(self._iter_vmd_ik_states(vmd_data), key=lambda row: row[0])
         keyed = 0
+
+        # A Control Rig may already have an authored IK-enable curve connected
+        # to the controller.  Keying the destination plug is accepted by Maya
+        # in some contexts but leaves that incoming curve unchanged, so all
+        # control-owned writes must target the authoritative curve itself.
+        control_states = {}
+        for frame_number, name, enabled in property_states:
+            control = controls_by_name.get(name)
+            if control is not None:
+                control_states.setdefault(control, []).append((frame_number, bool(enabled)))
+
+        if controls_by_name and (property_frames or bone_frames):
+            min_frame, _max_frame = self._get_animation_frame_range(vmd_data)
+            min_time = self.vmd_frame_to_maya_time(min_frame)
+            for control in sorted(set(controls_by_name.values())):
+                states = control_states.get(control, ())
+                # Match the legacy MMD route's default-ON behavior without
+                # inserting a duplicate key when the first explicit state is
+                # already authored at the animation minimum.
+                if not states or min_frame < min(frame for frame, _enabled in states):
+                    self._key_mmd_control_rig_ik_enabled(
+                        control,
+                        control_sources.get(control),
+                        True,
+                        min_time,
+                    )
+                    keyed += 1
+
         if property_states:
             for frame_number, name, enabled in property_states:
                 control = controls_by_name.get(name)
@@ -1305,28 +1370,118 @@ class VmdConverter:
                 if target is None:
                     continue
                 value = bool(enabled)
-                attribute = "ikEnabled" if control else "enabled"
-                cmds.setAttr(f"{target}.{attribute}", value)
-                cmds.setKeyframe(
-                    target,
-                    attribute=attribute,
-                    time=self.vmd_frame_to_maya_time(frame_number),
-                    value=int(value),
-                )
+                time = self.vmd_frame_to_maya_time(frame_number)
+                if control:
+                    self._key_mmd_control_rig_ik_enabled(
+                        control,
+                        control_sources.get(control),
+                        value,
+                        time,
+                    )
+                else:
+                    attribute = "enabled"
+                    cmds.setAttr(f"{target}.{attribute}", value)
+                    cmds.setKeyframe(
+                        target,
+                        attribute=attribute,
+                        time=time,
+                        value=int(value),
+                    )
                 keyed += 1
         elif not property_frames and getattr(vmd_data, "bone_frames", None):
             min_frame, _max_frame = self._get_animation_frame_range(vmd_data)
             time = self.vmd_frame_to_maya_time(min_frame)
-            for control in sorted(set(controls_by_name.values())):
-                cmds.setAttr(f"{control}.ikEnabled", True)
-                cmds.setKeyframe(control, attribute="ikEnabled", time=time, value=1)
-                keyed += 1
+            # The Control Rig controls were seeded above.  Legacy solver
+            # routes retain their historical direct-node behavior.
             for node in sorted(set(legacy_nodes_by_name.values())):
                 cmds.setAttr(f"{node}.enabled", True)
                 cmds.setKeyframe(node, attribute="enabled", time=time, value=1)
                 keyed += 1
         if keyed:
             self.logger.info("Applied %d VMD IK state keys to Control Rig/legacy routes", keyed)
+
+    @staticmethod
+    def _resolve_mmd_control_rig_ik_enabled_sources(controls) -> Dict[str, Optional[str]]:
+        """Resolve direct animCurve writers for CONTROL_OWNED IK controls.
+
+        Control Rig EDIT routes intentionally make ``control.ikEnabled`` the
+        single writer for every connected ``mmdCcdIk.enabled`` input.  When a
+        pre-existing direct animCurve is connected to that control, VMD IK
+        property keys must be authored on the curve node rather than on the
+        destination plug.  Layer/blend/unknown graphs remain unsupported until
+        the animLayer preservation contract is implemented.
+        """
+        sources: Dict[str, Optional[str]] = {}
+        for control in sorted({str(value) for value in controls if value}):
+            plug = f"{control}.ikEnabled"
+            # Route-only unit tests may inject symbolic controls without
+            # creating Maya nodes.  A real CONTROL_OWNED route has already
+            # resolved its UUID-backed control before reaching this helper;
+            # treat a missing symbolic plug as the no-source/direct-key case.
+            if not cmds.objExists(plug):
+                sources[control] = None
+                continue
+            try:
+                incoming = cmds.listConnections(
+                    plug,
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                    skipConversionNodes=False,
+                ) or []
+            except Exception as exc:
+                raise MMDImportException(
+                    f"Unable to inspect CONTROL_OWNED IK source: {plug}: {exc}",
+                    reason_code="control_rig_ik_source_unsupported",
+                ) from exc
+            if len(incoming) > 1:
+                raise MMDImportException(
+                    f"CONTROL_OWNED IK control has multiple incoming sources: {plug}",
+                    reason_code="control_rig_ik_source_unsupported",
+                )
+            if not incoming:
+                sources[control] = None
+                continue
+            source = str(incoming[0])
+            node = source.split(".", 1)[0]
+            try:
+                node_type = str(cmds.nodeType(node))
+            except Exception as exc:
+                raise MMDImportException(
+                    f"Unable to inspect CONTROL_OWNED IK source: {source}: {exc}",
+                    reason_code="control_rig_ik_source_unsupported",
+                ) from exc
+            if not node_type.startswith("animCurve"):
+                raise MMDImportException(
+                    "CONTROL_OWNED IK source must be a direct animCurve; "
+                    f"got {source} ({node_type})",
+                    reason_code="control_rig_ik_source_unsupported",
+                )
+            sources[control] = source
+        return sources
+
+    @staticmethod
+    def _key_mmd_control_rig_ik_enabled(
+        control: str,
+        source: Optional[str],
+        enabled: bool,
+        time: float,
+    ) -> None:
+        """Key one CONTROL_OWNED IK state without creating a second writer."""
+        if source:
+            cmds.setKeyframe(
+                source.split(".", 1)[0],
+                time=time,
+                value=int(bool(enabled)),
+            )
+            return
+        cmds.setAttr(f"{control}.ikEnabled", bool(enabled))
+        cmds.setKeyframe(
+            control,
+            attribute="ikEnabled",
+            time=time,
+            value=int(bool(enabled)),
+        )
 
     def _prepare_mmd_control_rig_import(
         self,
@@ -1349,6 +1504,10 @@ class VmdConverter:
         is removed if entering EDIT fails.
         """
         from ..core.mmd_control_rig_analyzer import analyze_mmd_control_rig
+        from ..core.mmd_control_rig_anim_layers import (
+            MmdControlRigAnimLayerError,
+            capture_mmd_control_rig_anim_layers,
+        )
         from ..core.constants import ATTR_MMD_CONTROL_RIG_JSON
         from ..core.mmd_control_rig_builder import (
             CONTROL_RIG_ATTACHED,
@@ -1375,13 +1534,29 @@ class VmdConverter:
             raise MMDImportException(message, reason_code=code)
 
         def preflight_animation_layers():
-            """Reject active non-base animation-layer ownership for ON imports.
-
-            Control Rig authoring currently supports plain animCurves only.
-            Treat any populated non-base layer (or connected animBlend node) as
-            an unsupported ownership setup rather than flattening it silently.
-            Empty layer shells are harmless and remain available for the user.
-            """
+            """Validate existing target-exclusive layers before ON import."""
+            if cmds.objExists(target_model):
+                try:
+                    supported = capture_mmd_control_rig_anim_layers(
+                        cmds,
+                        target_model,
+                    )
+                    supported_layers = {
+                        str(row.get("name"))
+                        for row in supported.get("layers", []) or []
+                    }
+                except MmdControlRigAnimLayerError as exc:
+                    fail(
+                        "control_rig_anim_layer_unsupported",
+                        "MMD Control Rig import does not support this animation-layer ownership",
+                        str(exc),
+                    )
+                    return
+            else:
+                # Synthetic preflight tests and an empty import scene may not
+                # have a target root yet; retain the legacy layer scan until
+                # the builder creates/resolves the actual model.
+                supported_layers = set()
             try:
                 layers = cmds.ls(type="animLayer") or []
             except Exception as exc:
@@ -1393,6 +1568,8 @@ class VmdConverter:
             conflicts = []
             for layer in layers:
                 if str(layer) in {"BaseAnimation", "baseAnimation"}:
+                    continue
+                if str(layer) in supported_layers:
                     continue
                 try:
                     attrs = cmds.animLayer(layer, query=True, attribute=True) or []
