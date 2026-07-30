@@ -45,6 +45,7 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
 from mmd_tools.converters.bone_morph_runtime import build_bone_morph_graph
 from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
 from mmd_tools.converters.vmd_ik_enabled_animation import collect_ik_nodes_by_bone_name
+from mmd_tools.converters.vmd_rotation_time_curve import share_vmd_rotation_time_curve
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.io.vmd_exporter import VmdExporter
@@ -1728,7 +1729,12 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             )
             for frame in frames
         }
-        bake_mmd_control_rig(root)
+        with mock.patch(
+            "mmd_tools.converters.vmd_rotation_time_curve.share_vmd_rotation_time_curve",
+            wraps=share_vmd_rotation_time_curve,
+        ) as share_time_curve:
+            bake_mmd_control_rig(root)
+        self.assertGreaterEqual(share_time_curve.call_count, 1)
         bake_errors = [
             abs(actual - expected)
             for frame in frames

@@ -3055,6 +3055,15 @@ def _sample_control_rotation_group_to_bone(
         for row in rows
     ):
         _apply_quaternion_interpolation_to_plugs(cmds, [row["target"] for row in rows])
+    from mmd_tools.converters.vmd_rotation_time_curve import (
+        share_vmd_rotation_time_curve,
+    )
+
+    share_vmd_rotation_time_curve(
+        cmds,
+        sources,
+        [result.get(rows_by_attr[attr]["control"]) for attr in attrs],
+    )
     return result
 
 

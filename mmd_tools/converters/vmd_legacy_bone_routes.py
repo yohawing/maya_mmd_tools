@@ -81,15 +81,12 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
             "control_owned": bool(control_route),
             "quaternion_interpolation_safe": False,
             "fixed_axis_twist": joint in fixed_axis_twist_joints,
-            # Normal EDIT controls currently drive joint.rotate components
-            # directly, so their keyed quaternion must remain numerically in
-            # joint rotate space. FixedAxis Twist is the scalar exception:
-            # it projects into the displayed control-local Z basis.
-            "authoring_basis": (
-                authoring_bases.get(joint)
-                if joint in fixed_axis_twist_joints
-                else None
-            ),
+            # EDIT inserts a live basis converter between complete XYZ
+            # controls and joint.rotate. Author control keys in that persisted
+            # basis so the converter reconstructs the original joint-space
+            # quaternion. FixedAxis Twist consumes the same record before its
+            # scalar local-Z projection.
+            "authoring_basis": authoring_bases.get(joint),
         }
         info = append_info.get(joint)
         if info:
@@ -102,8 +99,7 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
         # bones and solver-output links retain the established legacy route.
         route["attr_targets"].update(control_route)
         # A complete owned component route is authored as one quaternion
-        # track. The control values remain in joint rotate space because the
-        # current EDIT graph connects those components directly.
+        # track in the controller's persisted authoring basis.
         route["quaternion_interpolation_safe"] = (
             all(channel in control_route for channel in ("rotateX", "rotateY", "rotateZ"))
             and joint not in fixed_axis_twist_joints

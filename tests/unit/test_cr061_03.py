@@ -589,7 +589,7 @@ class TestControlRigImportPreflight(unittest.TestCase):
         self.assertTrue(route["quaternion_interpolation_safe"])
         self.assertEqual(route["attr_targets"]["rotateX"], ("|model|right_leg_CTRL", "rotateX"))
 
-    def test_complete_control_route_uses_joint_space_quaternion_contract(self):
+    def test_complete_control_route_uses_control_authoring_basis(self):
         converter = MagicMock()
         joint = "|model|left_elbow"
         converter.bone_name_mapping = {"左ひじ": joint}
@@ -618,7 +618,7 @@ class TestControlRigImportPreflight(unittest.TestCase):
 
         self.assertTrue(route["quaternion_interpolation_safe"])
         self.assertFalse(route["fixed_axis_twist"])
-        self.assertIsNone(route["authoring_basis"])
+        self.assertEqual(route["authoring_basis"], basis)
 
     def test_rotation_target_normalization_does_not_classify_translation(self):
         self.assertEqual(
