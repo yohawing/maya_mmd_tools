@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
 from tests.viewport import mmd_control_rig_vmd_import_parity as parity
@@ -307,6 +308,89 @@ def test_interpolation_probe_is_not_applicable_without_integer_gap():
     assert result["status"] == "not_applicable"
     assert result["frames"] == []
     assert result["frameIsAuthored"] is None
+
+
+def test_evaluation_frame_selection_default_preserves_exhaustive_frames():
+    frames, metadata = parity._select_evaluation_frames(
+        [10, 0, 4, 4],
+        [3],
+    )
+
+    assert frames == [0, 1, 3, 4, 10]
+    assert metadata["mode"] == "exhaustive"
+    assert metadata["sourceAuthoredUniqueFrameCount"] == 3
+    assert metadata["requestedMaxFrames"] == 0
+    assert metadata["selectedFrameCount"] == len(frames)
+
+
+def test_evaluation_frame_selection_is_deterministic_and_timeline_spanning():
+    authored = list(range(0, 101, 10))
+    first, metadata = parity._select_evaluation_frames(authored, [50], 8)
+    second, _ = parity._select_evaluation_frames(reversed(authored), [50], 8)
+
+    assert first == second
+    assert len(first) == 8
+    assert {0, 1, 50, 100}.issubset(first)
+    assert metadata["mode"] == "sampled"
+    assert metadata["selectedFrameCount"] == 8
+    assert metadata["strategy"].startswith("mandatory anchors")
+
+
+def test_evaluation_frame_selection_retains_mandatory_frames_at_cap():
+    frames, metadata = parity._select_evaluation_frames([0, 10, 20, 30, 40], [25], 4)
+
+    assert frames == [0, 1, 25, 40]
+    assert metadata["mode"] == "sampled"
+    assert metadata["mandatoryFrames"] == [0, 1, 25, 40]
+
+
+def test_evaluation_frame_selection_caps_anchor_expansion_when_authored_fits():
+    frames, metadata = parity._select_evaluation_frames([0, 10, 20, 30], [15], 5)
+
+    assert len(frames) == 5
+    assert {0, 1, 15, 30}.issubset(frames)
+    assert metadata["mode"] == "sampled"
+    assert metadata["selectedFrameCount"] == 5
+
+
+def test_evaluation_frame_selection_rejects_cap_below_mandatory_frames():
+    try:
+        parity._select_evaluation_frames([0, 10, 20], [5], 3)
+    except ValueError as exc:
+        assert "smaller than mandatory" in str(exc)
+    else:
+        raise AssertionError("cap below mandatory frame count must fail closed")
+
+
+def test_evaluation_frame_selection_rejects_negative_cap():
+    try:
+        parity._select_evaluation_frames([0, 10], [], -1)
+    except ValueError as exc:
+        assert "non-negative" in str(exc)
+    else:
+        raise AssertionError("negative frame cap must fail closed")
+
+
+def test_main_plumbs_max_frames(monkeypatch):
+    captured = {}
+
+    def fake_run(model, motion, output, evaluation_mode, max_frames):
+        captured.update(
+            {
+                "model": model,
+                "motion": motion,
+                "output": output,
+                "evaluation_mode": evaluation_mode,
+                "max_frames": max_frames,
+            }
+        )
+        return 0
+
+    monkeypatch.setattr(parity, "run", fake_run)
+    monkeypatch.setattr(sys, "argv", ["parity", "--max-frames", "7"])
+
+    assert parity.main() == 0
+    assert captured["max_frames"] == 7
 
 
 def test_stale_export_artifacts_are_removed_or_fail_closed(tmp_path):

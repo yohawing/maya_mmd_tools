@@ -8,6 +8,8 @@ script does not change fixtures or numeric thresholds.
 Usage::
 
     mayapy -m tests.viewport.mmd_control_rig_vmd_import_parity --maya 2026
+    mayapy -m tests.viewport.mmd_control_rig_vmd_import_parity --maya 2026 \
+        --max-frames 120  # deterministic timeline-spanning sample
 """
 
 from __future__ import annotations
@@ -480,6 +482,82 @@ def _select_interpolation_probe(authored_frames: Iterable[int]) -> dict[str, Any
         "reason": "representative integer between adjacent authored keys",
         "frameIsAuthored": frame in set(values),
     }
+
+
+def _select_evaluation_frames(
+    authored_frames: Iterable[int],
+    interpolation_frames: Iterable[int | float],
+    max_frames: int = 0,
+) -> tuple[list[int | float], dict[str, Any]]:
+    """Build the exact frame list shared by every parity route.
+
+    A non-positive ``max_frames`` preserves the historical exhaustive set.
+    When a positive cap is smaller than the exhaustive frame set, mandatory
+    anchors (0, 1, the final authored frame, and interpolation probes) are
+    retained and the remaining slots are filled by deterministic quantiles of
+    the sorted authored timeline.  No hash or input-order iteration is used.
+    """
+
+    requested = int(max_frames)
+    if requested < 0:
+        raise ValueError(f"max-frames must be non-negative, got {max_frames}")
+    authored = sorted({int(frame) for frame in authored_frames})
+    if not authored:
+        raise ValueError("cannot select evaluation frames from an empty authored timeline")
+    interpolation = {_frame_value(frame) for frame in interpolation_frames}
+    mandatory = sorted(
+        {0, 1, int(authored[-1]), *interpolation},
+        key=_frame_sort_key,
+    )
+    exhaustive = sorted(
+        {*authored, *mandatory},
+        key=_frame_sort_key,
+    )
+    metadata: dict[str, Any] = {
+        "mode": "exhaustive",
+        "sourceAuthoredUniqueFrameCount": len(authored),
+        "requestedMaxFrames": requested,
+        "selectedFrameCount": len(exhaustive),
+        "selectedFrames": exhaustive,
+        "mandatoryFrames": mandatory,
+        "strategy": "all authored frames plus mandatory anchors",
+    }
+    if requested > 0 and len(mandatory) > requested:
+        raise ValueError(
+            "max-frames is smaller than mandatory evaluation frames: "
+            f"requested={requested}, mandatory={mandatory}"
+        )
+    if requested <= 0 or len(exhaustive) <= requested:
+        return exhaustive, metadata
+
+    remaining = requested - len(mandatory)
+    selected = set(mandatory)
+    authored_index = {frame: index for index, frame in enumerate(authored)}
+    for slot in range(remaining):
+        available = [frame for frame in authored if frame not in selected]
+        if not available:
+            break
+        # Interior quantiles span the authored timeline while endpoints are
+        # already covered by the mandatory frame set.
+        target = (slot + 1) * (len(authored) - 1) / (remaining + 1)
+        frame = min(
+            available,
+            key=lambda value: (
+                abs(authored_index[value] - target),
+                authored_index[value],
+            ),
+        )
+        selected.add(frame)
+    sampled = sorted(selected, key=_frame_sort_key)
+    metadata.update(
+        {
+            "mode": "sampled",
+            "selectedFrameCount": len(sampled),
+            "selectedFrames": sampled,
+            "strategy": "mandatory anchors plus timeline-spanning authored quantiles",
+        }
+    )
+    return sampled, metadata
 
 
 def _normalized_vmd(vmd: Any) -> dict[str, Any]:
@@ -1615,7 +1693,13 @@ def _coverage(
     return {"items": rows, "coverageMissing": sorted(name for name, row in rows.items() if row["status"] == "missing")}
 
 
-def run(model: Path, motion: Path, output: Path, evaluation_mode: str = "dg") -> int:
+def run(
+    model: Path,
+    motion: Path,
+    output: Path,
+    evaluation_mode: str = "dg",
+    max_frames: int = 0,
+) -> int:
     global cmds
     if cmds is None:
         import maya.cmds as maya_cmds
@@ -1626,6 +1710,10 @@ def run(model: Path, motion: Path, output: Path, evaluation_mode: str = "dg") ->
         "status": "error",
         "model": str(model),
         "motion": str(motion),
+        "frameSelection": {
+            "mode": "pending",
+            "requestedMaxFrames": int(max_frames),
+        },
         "requiredRunMatrix": {
             "requestedModes": list(_EVALUATION_MODES),
             "currentMode": str(evaluation_mode),
@@ -1650,10 +1738,14 @@ def run(model: Path, motion: Path, output: Path, evaluation_mode: str = "dg") ->
         pmx = parse_pmx_file(str(model), use_native_pmx_parse=False)
         append_grants = _pmx_append_grants(pmx)
         authored_frames = sorted({int(frame.frame_number) for frame in vmd.bone_frames})
-        end = authored_frames[-1]
         interpolation_probe = _select_interpolation_probe(authored_frames)
         interpolation_frames = list(interpolation_probe["frames"])
-        frames = sorted({0, 1, end, *authored_frames, *interpolation_frames})
+        frames, frame_selection = _select_evaluation_frames(
+            authored_frames,
+            interpolation_frames,
+            max_frames,
+        )
+        payload["frameSelection"] = frame_selection
         external_oracle = _prepare_external_oracle(model, motion, frames)
         legacy_skeletal = _run_route(
             model,
@@ -1875,6 +1967,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--maya", default="2026", help="report label; mayapy supplies the actual version")
     parser.add_argument("--evaluation-mode", choices=_EVALUATION_MODES, default="dg")
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=0,
+        help=(
+            "optional deterministic evaluation-frame cap; 0 preserves exhaustive "
+            "authored-frame behavior"
+        ),
+    )
     parser.add_argument("--model", default=str(_DEFAULT_MODEL))
     parser.add_argument("--motion", default=str(_DEFAULT_MOTION))
     parser.add_argument("--out", default=str(_ROOT / "build" / "reports" / "mmd_control_rig_vmd_import_parity.json"))
@@ -1884,6 +1985,7 @@ def main() -> int:
         Path(args.motion).resolve(),
         Path(args.out).resolve(),
         args.evaluation_mode,
+        args.max_frames,
     )
 
 
