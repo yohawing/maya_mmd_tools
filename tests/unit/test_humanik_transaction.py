@@ -22,6 +22,13 @@ class FakeCmds:
         self.values = {"dst.tx": 3.0, "node.nodeState": 0, "node.enabled": True}
         self.types = {"dst.tx": "double"}
         self.connections = {"dst.tx": ["src.tx"]}
+        self.uuids = {
+            "Target": "target-uuid",
+            "dst": "dst-uuid",
+            "node": "node-uuid",
+            "src": "src-uuid",
+            "foreign": "foreign-uuid",
+        }
         # Every node this fake knows about is treated as existing by default
         # (this fake does not model node deletion elsewhere); tests exercising
         # the missing-node skip path pass explicit names here or mutate this
@@ -52,6 +59,16 @@ class FakeCmds:
 
     def objExists(self, node):
         return node not in self.missing_nodes
+
+    def ls(self, value, uuid=False, long=False):
+        if uuid:
+            return [self.uuids[value]] if value in self.uuids and value not in self.missing_nodes else []
+        if long:
+            for node, node_uuid in self.uuids.items():
+                if value == node_uuid and node not in self.missing_nodes:
+                    return [node]
+            return []
+        return [value]
 
 
 class FakeMel:
@@ -117,11 +134,15 @@ class FakeRestoreStateStorageCmds:
 
 class TestHumanIkTransaction(unittest.TestCase):
     def test_restore_state_uses_one_non_dag_network_node(self):
-        restore_state = HumanIkRestoreState("owner:A", "Target", True, "", -1, [], [])
+        restore_state = HumanIkRestoreState(
+            "owner:A", "Target", True, "", -1, [], [], "character-uuid"
+        )
         record = {
             "modelRoot": "|model_root",
+            "modelRootUuid": "model-root-uuid",
             "ownershipId": "owner:A",
             "character": "Target",
+            "characterUuid": "character-uuid",
             "restore_state": restore_state.to_dict(),
             "active": True,
         }
@@ -138,14 +159,25 @@ class TestHumanIkTransaction(unittest.TestCase):
             lock_state=True,
             input_source="Source",
             input_type=3,
-            plugs=[HumanIkPlugSnapshot("joint.tx", ["writer.out"], [1.0, 2.0], "double3")],
-            nodes=[HumanIkNodeSnapshot("writer", {"mute": True})],
+            plugs=[
+                HumanIkPlugSnapshot(
+                    "joint.tx",
+                    ["writer.out"],
+                    [1.0, 2.0],
+                    "double3",
+                    "joint-uuid",
+                )
+            ],
+            nodes=[HumanIkNodeSnapshot("writer", {"mute": True}, "writer-uuid")],
+            character_uuid="character-uuid",
         )
         payload = serialize_humanik_restore_state(
             [{
                 "modelRoot": "|model_root",
+                "modelRootUuid": "model-root-uuid",
                 "ownershipId": "owner:A",
                 "character": "Target",
+                "characterUuid": "character-uuid",
                 "restore_state": restore_state.to_dict(),
                 "createdNodes": ["HIKControlSetNode1"],
                 "active": True,
@@ -172,8 +204,10 @@ class TestHumanIkTransaction(unittest.TestCase):
                     "ownershipId": "owner:A",
                     "character": "Other",
                     "restore_state": HumanIkRestoreState(
-                        "owner:A", "Target", True, "Source", 3, [], []
+                        "owner:A", "Target", True, "Source", 3, [], [], "character-uuid"
                     ).to_dict(),
+                    "modelRootUuid": "model-root-uuid",
+                    "characterUuid": "character-uuid",
                 }],
             })
         with self.assertRaisesRegex(ValueError, "invalid active flag"):
@@ -185,8 +219,10 @@ class TestHumanIkTransaction(unittest.TestCase):
                     "ownershipId": "owner:A",
                     "character": "Target",
                     "restore_state": HumanIkRestoreState(
-                        "owner:A", "Target", True, "Source", 3, [], []
+                        "owner:A", "Target", True, "Source", 3, [], [], "character-uuid"
                     ).to_dict(),
+                    "modelRootUuid": "model-root-uuid",
+                    "characterUuid": "character-uuid",
                     "active": "false",
                 }],
             })
@@ -295,6 +331,31 @@ class TestHumanIkTransaction(unittest.TestCase):
         # The plug reconnect failed, but unrelated entries were still restored.
         self.assertEqual(mel.source, "Source")
         self.assertEqual(cmds.values["node.nodeState"], 0)
+
+    def test_restore_rejects_foreign_topology_before_mutation(self):
+        cmds, mel = FakeCmds(), FakeMel()
+        restore_state = capture_humanik_restore_state(
+            "owner:A", "Target", ["dst.tx"], ["node"], cmds, mel
+        )
+        cmds.connections["dst.tx"] = ["foreign.out"]
+
+        with self.assertRaisesRegex(RuntimeError, "foreign topology drift"):
+            apply_humanik_restore_state(restore_state, "owner:A", cmds, mel)
+
+        self.assertEqual(cmds.connections["dst.tx"], ["foreign.out"])
+        self.assertEqual(mel.source, "Source")
+
+    def test_restore_rejects_reused_destination_name_by_uuid(self):
+        cmds, mel = FakeCmds(), FakeMel()
+        restore_state = capture_humanik_restore_state(
+            "owner:A", "Target", ["dst.tx"], ["node"], cmds, mel
+        )
+        cmds.uuids["dst"] = "foreign-dst-uuid"
+
+        with self.assertRaisesRegex(RuntimeError, "node UUID drift"):
+            apply_humanik_restore_state(restore_state, "owner:A", cmds, mel)
+
+        self.assertEqual(cmds.connections["dst.tx"], ["src.tx"])
 
 
 if __name__ == "__main__":

@@ -35,6 +35,46 @@ HUMANIK_RESTORE_STATE_TAG_ATTR = "mmd_humanik_restore_state_schema"
 HUMANIK_RESTORE_STATE_PAYLOAD_ATTR = "mmd_humanik_restore_state_payload"
 
 
+def _node_uuid(cmds, node: str) -> Optional[str]:
+    """Return one unambiguous Maya UUID for ``node`` when available."""
+    try:
+        values = cmds.ls(str(node), uuid=True) or []
+    except Exception:
+        return None
+    return str(values[0]) if len(values) == 1 and values[0] else None
+
+
+def _resolve_node_uuid(cmds, node: str, node_uuid: Optional[str]) -> Optional[str]:
+    """Resolve a captured node by UUID, rejecting a reused/foreign name.
+
+    Runtime transactions created by older host-neutral callers may not carry
+    UUIDs and therefore retain their historical name-based behavior.  Scene
+    payloads are validated strictly before they reach this helper, so a UUID
+    present here is authoritative and a name collision is never silently
+    adopted.
+    """
+    name = str(node)
+    if not node_uuid:
+        return name if cmds.objExists(name) else None
+    try:
+        matches = cmds.ls(str(node_uuid), long=True) or []
+    except Exception as exc:
+        raise RuntimeError(
+            f"HumanIK restore_state UUID lookup failed for {name}: {exc}"
+        ) from exc
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"HumanIK restore_state UUID is ambiguous for {name}: {node_uuid}"
+        )
+    if matches:
+        return str(matches[0])
+    if cmds.objExists(name):
+        raise RuntimeError(
+            f"HumanIK restore_state node UUID drift for {name}: expected {node_uuid}"
+        )
+    return None
+
+
 @dataclass
 class HumanIkPlugSnapshot:
     """Exact value and incoming sources for one destination plug."""
@@ -43,6 +83,7 @@ class HumanIkPlugSnapshot:
     sources: List[str]
     value: Any
     attr_type: str
+    node_uuid: Optional[str] = None
 
 
 @dataclass
@@ -51,6 +92,7 @@ class HumanIkNodeSnapshot:
 
     node: str
     attributes: Dict[str, Any]
+    node_uuid: Optional[str] = None
 
 
 @dataclass
@@ -64,13 +106,19 @@ class HumanIkRestoreState:
     input_type: int
     plugs: List[HumanIkPlugSnapshot]
     nodes: List[HumanIkNodeSnapshot]
+    character_uuid: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a deterministic serialisable restore_state payload."""
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, Any]) -> "HumanIkRestoreState":
+    def from_dict(
+        cls,
+        payload: Mapping[str, Any],
+        *,
+        require_authority: bool = False,
+    ) -> "HumanIkRestoreState":
         """Reconstruct a restore_state after validating its persisted shape.
 
         Scene metadata is user-editable Maya data, so restoration must fail
@@ -86,6 +134,13 @@ class HumanIkRestoreState:
         ownership_id = payload["ownership_id"]
         character = payload["character"]
         input_source = payload["input_source"]
+        character_uuid = payload.get("character_uuid")
+        if character_uuid is not None and (
+            not isinstance(character_uuid, str) or not character_uuid
+        ):
+            raise ValueError("HumanIK restore_state character_uuid is invalid")
+        if require_authority and character_uuid is None:
+            raise ValueError("HumanIK restore_state character_uuid is required")
         if not all(isinstance(value, str) and value for value in (ownership_id, character)):
             raise ValueError("HumanIK restore_state ownership_id and character must be non-empty strings")
         if not isinstance(input_source, str):
@@ -105,8 +160,17 @@ class HumanIkRestoreState:
             plug = row.get("plug")
             sources = row.get("sources")
             attr_type = row.get("attr_type")
+            node_uuid = row.get("node_uuid")
             if not isinstance(plug, str) or not plug or not isinstance(attr_type, str):
                 raise ValueError("HumanIK restore_state plug row has invalid plug or attr_type")
+            if node_uuid is not None and (
+                not isinstance(node_uuid, str) or not node_uuid
+            ):
+                raise ValueError("HumanIK restore_state plug node_uuid is invalid")
+            if require_authority and node_uuid is None:
+                raise ValueError(
+                    f"HumanIK restore_state plug node_uuid is required: {plug}"
+                )
             if not isinstance(sources, list) or not all(isinstance(source, str) for source in sources):
                 raise ValueError("HumanIK restore_state plug sources must be an array of strings")
             value = row.get("value")
@@ -114,7 +178,15 @@ class HumanIkRestoreState:
                 json.dumps(value, ensure_ascii=False)
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"HumanIK restore_state plug value is not JSON-safe: {plug}") from exc
-            plugs.append(HumanIkPlugSnapshot(plug, list(sources), value, attr_type))
+            plugs.append(
+                HumanIkPlugSnapshot(
+                    plug,
+                    list(sources),
+                    value,
+                    attr_type,
+                    node_uuid,
+                )
+            )
 
         nodes = []
         raw_nodes = payload["nodes"]
@@ -124,13 +196,28 @@ class HumanIkRestoreState:
             if not isinstance(row, Mapping) or not isinstance(row.get("node"), str) or not row.get("node"):
                 raise ValueError("HumanIK restore_state node row has invalid node")
             attributes = row.get("attributes")
+            node_uuid = row.get("node_uuid")
             if not isinstance(attributes, Mapping):
                 raise ValueError("HumanIK restore_state node attributes must be an object")
+            if node_uuid is not None and (
+                not isinstance(node_uuid, str) or not node_uuid
+            ):
+                raise ValueError("HumanIK restore_state node node_uuid is invalid")
+            if require_authority and node_uuid is None:
+                raise ValueError(
+                    f"HumanIK restore_state node node_uuid is required: {row['node']}"
+                )
             try:
                 json.dumps(attributes, ensure_ascii=False)
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"HumanIK restore_state node attributes are not JSON-safe: {row['node']}") from exc
-            nodes.append(HumanIkNodeSnapshot(str(row["node"]), dict(attributes)))
+            nodes.append(
+                HumanIkNodeSnapshot(
+                    str(row["node"]),
+                    dict(attributes),
+                    node_uuid,
+                )
+            )
         return cls(
             ownership_id=str(ownership_id),
             character=str(character),
@@ -139,6 +226,7 @@ class HumanIkRestoreState:
             input_type=int(payload["input_type"]),
             plugs=plugs,
             nodes=nodes,
+            character_uuid=character_uuid,
         )
 
 
@@ -151,7 +239,10 @@ def serialize_humanik_restore_state(records: Iterable[Mapping[str, Any]]) -> Dic
         # Validate the nested restore_state before writing scene metadata.  This is
         # also useful for callers using lightweight test doubles: a fake
         # transaction is simply not eligible for persistence in the frontend.
-        restore_state = HumanIkRestoreState.from_dict(record.get("restore_state", {}))
+        restore_state = HumanIkRestoreState.from_dict(
+            record.get("restore_state", {}),
+            require_authority=True,
+        )
         row = dict(record)
         row["restore_state"] = restore_state.to_dict()
         row["active"] = bool(row.get("active", True))
@@ -159,6 +250,15 @@ def serialize_humanik_restore_state(records: Iterable[Mapping[str, Any]]) -> Dic
             raise ValueError("HumanIK transaction modelRoot must be a non-empty string")
         if not isinstance(row.get("character"), str) or not row["character"]:
             raise ValueError("HumanIK transaction character must be a non-empty string")
+        if row["character"] != restore_state.character:
+            raise ValueError("HumanIK transaction restore_state character mismatch")
+        for key in ("modelRootUuid", "characterUuid"):
+            if not isinstance(row.get(key), str) or not row[key]:
+                raise ValueError(
+                    f"HumanIK transaction {key} must be a non-empty string"
+                )
+        if row["characterUuid"] != restore_state.character_uuid:
+            raise ValueError("HumanIK transaction character UUID mismatch")
         rows.append(row)
     rows.sort(key=lambda item: item["modelRoot"])
     return {
@@ -194,7 +294,15 @@ def deserialize_humanik_restore_state(payload: Any) -> List[Dict[str, Any]]:
             raise ValueError("HumanIK transaction scene row has invalid modelRoot")
         if not isinstance(character, str) or not character:
             raise ValueError("HumanIK transaction scene row has invalid character")
-        restore_state = HumanIkRestoreState.from_dict(row.get("restore_state", {}))
+        for key in ("modelRootUuid", "characterUuid"):
+            if not isinstance(row.get(key), str) or not row[key]:
+                raise ValueError(
+                    f"HumanIK transaction scene row has invalid {key}"
+                )
+        restore_state = HumanIkRestoreState.from_dict(
+            row.get("restore_state", {}),
+            require_authority=True,
+        )
         if restore_state.character != character:
             raise ValueError("HumanIK transaction restore_state character mismatch")
         ownership_id = row.get("ownershipId")
@@ -202,6 +310,8 @@ def deserialize_humanik_restore_state(payload: Any) -> List[Dict[str, Any]]:
             raise ValueError("HumanIK transaction scene row has invalid ownershipId")
         if restore_state.ownership_id != ownership_id:
             raise ValueError("HumanIK transaction restore_state ownership mismatch")
+        if restore_state.character_uuid != row["characterUuid"]:
+            raise ValueError("HumanIK transaction restore_state character UUID mismatch")
         active = row.get("active", True)
         if not isinstance(active, bool):
             raise ValueError("HumanIK transaction scene row has invalid active flag")
@@ -327,6 +437,7 @@ def capture_humanik_restore_state(
         input_type=input_type,
         plugs=plugs,
         nodes=node_snapshots,
+        character_uuid=_node_uuid(cmds, character),
     )
 
 
@@ -374,83 +485,124 @@ def apply_humanik_restore_state(
     warnings: List[str] = []
     failures: List[str] = []
 
-    if cmds.objExists(restore_state.character):
+    # Resolve every captured destination by its persisted node identity before
+    # touching HIK input/lock state or disconnecting any writer.  A name that
+    # now refers to another node is foreign topology, not a recoverable rename.
+    character = _resolve_node_uuid(
+        cmds,
+        restore_state.character,
+        restore_state.character_uuid,
+    )
+    live_plugs = []
+    for snapshot in restore_state.plugs:
+        node = snapshot.plug.rsplit(".", 1)[0]
+        resolved_node = _resolve_node_uuid(cmds, node, snapshot.node_uuid)
+        if resolved_node is None:
+            warnings.append(
+                f"HumanIK restore_state skip: plug node no longer exists: {snapshot.plug}"
+            )
+            continue
+        attribute = snapshot.plug.rsplit(".", 1)[-1]
+        live_plugs.append((snapshot, f"{resolved_node}.{attribute}"))
+
+    live_nodes = []
+    for snapshot in restore_state.nodes:
+        resolved_node = _resolve_node_uuid(cmds, snapshot.node, snapshot.node_uuid)
+        if resolved_node is None:
+            warnings.append(
+                f"HumanIK restore_state skip: node no longer exists: {snapshot.node}"
+            )
+            continue
+        live_nodes.append((snapshot, resolved_node))
+
+    # HIK deletion is expected to leave captured MMD writers disconnected (or
+    # already restored).  Any other incoming source is a foreign writer that
+    # appeared while the transaction was active; fail closed before the first
+    # disconnect/value/MEL mutation so the user can inspect and repair it.
+    topology_drift = []
+    for snapshot, destination in live_plugs:
+        actual = incoming_sources(cmds, destination)
+        unexpected = sorted(set(actual) - set(snapshot.sources))
+        if unexpected:
+            topology_drift.append(
+                {
+                    "destination": destination,
+                    "expected": sorted(snapshot.sources),
+                    "actual": actual,
+                    "unexpected": unexpected,
+                }
+            )
+    if topology_drift:
+        raise RuntimeError(
+            "HumanIK restore_state foreign topology drift: "
+            + "; ".join(
+                f"{row['destination']} unexpected={row['unexpected']}"
+                for row in topology_drift
+            )
+        )
+
+    if character is not None:
         try:
             current_source = str(
-                mel.eval(f"hikGetRetargetCharacterInput({mel_string(restore_state.character)})") or ""
+                mel.eval(f"hikGetRetargetCharacterInput({mel_string(character)})") or ""
             )
             if current_source != restore_state.input_source:
                 mel.eval(
-                    f"hikSetCharacterInput({mel_string(restore_state.character)}, "
+                    f"hikSetCharacterInput({mel_string(character)}, "
                     f"{mel_string(restore_state.input_source)});"
                 )
-            current_lock = get_humanik_definition_lock_state(restore_state.character, mel)
+            current_lock = get_humanik_definition_lock_state(character, mel)
             if current_lock != restore_state.lock_state:
                 mel.eval(
-                    f"hikCharacterLock({mel_string(restore_state.character)}, "
+                    f"hikCharacterLock({mel_string(character)}, "
                     f"{1 if restore_state.lock_state else 0}, 1);"
                 )
         except Exception as exc:  # noqa: BLE001 - aggregated below, character node exists
             failures.append(
-                f"character input/lock restore failed for {restore_state.character}: {exc}"
+                f"character input/lock restore failed for {character}: {exc}"
             )
     else:
         warnings.append(
             f"HumanIK restore_state skip: character node no longer exists: {restore_state.character}"
         )
 
-    live_plugs = []
-    for snapshot in restore_state.plugs:
-        node = snapshot.plug.rsplit(".", 1)[0]
-        if cmds.objExists(node):
-            live_plugs.append(snapshot)
-        else:
-            warnings.append(
-                f"HumanIK restore_state skip: plug node no longer exists: {snapshot.plug}"
-            )
-
-    for snapshot in live_plugs:
+    for snapshot, destination in live_plugs:
         try:
-            for source in incoming_sources(cmds, snapshot.plug):
-                cmds.disconnectAttr(source, snapshot.plug)
+            for source in incoming_sources(cmds, destination):
+                cmds.disconnectAttr(source, destination)
         except Exception as exc:  # noqa: BLE001 - aggregated below
-            failures.append(f"disconnect failed for {snapshot.plug}: {exc}")
-    for snapshot in live_plugs:
+            failures.append(f"disconnect failed for {destination}: {exc}")
+    for snapshot, destination in live_plugs:
         if snapshot.sources:
             continue
         try:
-            _set_plug_value(cmds, snapshot.plug, snapshot.value, snapshot.attr_type)
+            _set_plug_value(cmds, destination, snapshot.value, snapshot.attr_type)
         except Exception as exc:  # noqa: BLE001 - aggregated below
-            failures.append(f"value restore failed for {snapshot.plug}: {exc}")
-    for snapshot in live_plugs:
+            failures.append(f"value restore failed for {destination}: {exc}")
+    for snapshot, destination in live_plugs:
         for source in snapshot.sources:
             source_node = source.rsplit(".", 1)[0]
             if not cmds.objExists(source_node):
                 warnings.append(
                     f"HumanIK restore_state skip: reconnect source no longer exists: "
-                    f"{source} -> {snapshot.plug}"
+                    f"{source} -> {destination}"
                 )
                 continue
             try:
-                if not _is_connected(cmds, source, snapshot.plug):
-                    cmds.connectAttr(source, snapshot.plug, force=True)
+                if not _is_connected(cmds, source, destination):
+                    cmds.connectAttr(source, destination, force=True)
             except Exception as exc:  # noqa: BLE001 - aggregated below
                 failures.append(
-                    f"reconnect failed for {source} -> {snapshot.plug}: {exc}"
+                    f"reconnect failed for {source} -> {destination}: {exc}"
                 )
 
-    for snapshot in restore_state.nodes:
-        if not cmds.objExists(snapshot.node):
-            warnings.append(
-                f"HumanIK restore_state skip: node no longer exists: {snapshot.node}"
-            )
-            continue
+    for snapshot, node in live_nodes:
         for attr, value in snapshot.attributes.items():
             try:
-                cmds.setAttr(f"{snapshot.node}.{attr}", value)
+                cmds.setAttr(f"{node}.{attr}", value)
             except Exception as exc:  # noqa: BLE001 - aggregated below
                 failures.append(
-                    f"attribute restore failed for {snapshot.node}.{attr}: {exc}"
+                    f"attribute restore failed for {node}.{attr}: {exc}"
                 )
 
     for message in warnings:
@@ -493,11 +645,13 @@ def humanik_transaction(
 
 
 def _capture_plug(cmds, plug: str) -> HumanIkPlugSnapshot:
+    destination = str(plug)
     return HumanIkPlugSnapshot(
-        plug=str(plug),
-        sources=incoming_sources(cmds, plug),
-        value=cmds.getAttr(plug),
-        attr_type=str(cmds.getAttr(plug, type=True) or ""),
+        plug=destination,
+        sources=incoming_sources(cmds, destination),
+        value=cmds.getAttr(destination),
+        attr_type=str(cmds.getAttr(destination, type=True) or ""),
+        node_uuid=_node_uuid(cmds, destination.rsplit(".", 1)[0]),
     )
 
 
@@ -506,7 +660,11 @@ def _capture_node(cmds, node: str) -> HumanIkNodeSnapshot:
     for attr in STATE_ATTRIBUTES:
         if cmds.attributeQuery(attr, node=node, exists=True):
             attributes[attr] = cmds.getAttr(f"{node}.{attr}")
-    return HumanIkNodeSnapshot(node=str(node), attributes=attributes)
+    return HumanIkNodeSnapshot(
+        node=str(node),
+        attributes=attributes,
+        node_uuid=_node_uuid(cmds, node),
+    )
 
 
 def _is_connected(cmds, source: str, destination: str) -> bool:
