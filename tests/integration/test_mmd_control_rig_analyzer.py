@@ -831,8 +831,15 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             "right_ring_1",
             "right_pinky_1",
         )
-        self.assertEqual(len(metadata.get("helperNodes", [])), len(finger_roots))
-        for role in finger_roots:
+        arm_roles = tuple(
+            f"{side}_{role}"
+            for side in ("left", "right")
+            for role in ("shoulder", "arm", "arm_twist", "elbow", "wrist_twist", "wrist")
+            if f"{side}_{role}" in result.controls
+        )
+        follow_roles = finger_roots + arm_roles
+        self.assertEqual(len(metadata.get("helperNodes", [])), len(follow_roles))
+        for role in follow_roles:
             zero = result.zero_groups[role]
             self.assertEqual(
                 cmds.ls(cmds.listRelatives(zero, parent=True), long=True),
@@ -852,8 +859,8 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             ) or []
             joint_uuid = metadata["bindings"][role]["jointUuid"]
             joint = (cmds.ls(joint_uuid, long=True) or [None])[0]
-            wrist = (cmds.listRelatives(joint, parent=True, fullPath=True) or [None])[0]
-            self.assertEqual(cmds.ls(targets, long=True), [wrist], role)
+            concrete_parent = (cmds.listRelatives(joint, parent=True, fullPath=True) or [None])[0]
+            self.assertEqual(cmds.ls(targets, long=True), [concrete_parent], role)
         self.assertTrue(
             {
                 "master",
@@ -923,7 +930,7 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         reopened_metadata = read_mmd_control_rig_metadata(reopened_root)
         self.assertEqual(
             len(reopened_metadata.get("helperNodes", [])),
-            len(finger_roots),
+            len(follow_roles),
         )
         helper_uuids = tuple(reopened_metadata["helperNodes"])
 

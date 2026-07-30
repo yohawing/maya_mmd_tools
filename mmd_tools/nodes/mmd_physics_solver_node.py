@@ -31,7 +31,7 @@ from mmd_tools.core.physics_bind_basis import (
     BIND_BASIS_MISSING,
     BIND_BASIS_SINGULAR,
     BindBasisResolutionError,
-    resolve_saved_bind_world_matrix,
+    resolve_imported_bind_world_matrix,
 )
 
 
@@ -551,7 +551,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
                 # Never read the animated joint world matrix here.  Physics
                 # may be enabled after an arbitrary nonzero animation frame;
                 # only a validated, saved bind authority is safe at init.
-                bind_mat = resolve_saved_bind_world_matrix(joint)
+                bind_mat = resolve_imported_bind_world_matrix(joint)
                 self._kinematic_corrections[bone_idx] = mmd_rest_maya_mat * bind_mat.inverse()
             except BindBasisResolutionError:
                 raise

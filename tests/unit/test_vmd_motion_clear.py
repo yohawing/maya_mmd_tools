@@ -6,7 +6,11 @@ import maya.cmds as cmds
 
 from mmd_tools.converters.vmd_context import VmdImportStateContext
 from mmd_tools.converters.vmd_converter import VmdConverter
-from mmd_tools.converters.vmd_import_state import clear_existing_motion, record_bind_poses
+from mmd_tools.converters.vmd_import_state import (
+    clear_existing_motion,
+    get_stored_bind_translate,
+    record_bind_poses,
+)
 from mmd_tools.core.constants import ATTR_MMD_BONE_NAME
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from tests.common.maya_test_base import MayaTestBase
@@ -113,6 +117,20 @@ class TestVmdMotionClear(MayaTestBase):
 
         self.assertAlmostEqual(cmds.getAttr(f"{joint}.rotateX"), 0.0, places=4)
         self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateX"), rest_tx, places=4)
+
+    def test_reimport_does_not_overwrite_persisted_bind_translate_with_live_pose(self):
+        joint = cmds.joint(name="immutable_bind_translate_joint")
+        cmds.setAttr(f"{joint}.translate", 1.0, 2.0, 3.0)
+        self.converter.bone_name_mapping = {"test_bone": joint}
+        context = self._import_state_context()
+        record_bind_poses(context)
+        self.assertEqual(get_stored_bind_translate(joint), (1.0, 2.0, 3.0))
+
+        cmds.setAttr(f"{joint}.translate", 7.0, 8.0, 9.0)
+        record_bind_poses(context)
+
+        self.assertEqual(get_stored_bind_translate(joint), (1.0, 2.0, 3.0))
+        self.assertEqual(context.bone_bind_poses["test_bone"], (7.0, 8.0, 9.0))
 
     def test_clear_existing_motion_does_not_clear_camera_or_light_keys(self):
         """clear_existing_motion はモデル motion だけを対象にし、camera/light key は残す。"""

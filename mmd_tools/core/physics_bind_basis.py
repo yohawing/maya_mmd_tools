@@ -9,6 +9,7 @@ after finite, invertibility, and cross-candidate agreement checks.
 from __future__ import annotations
 
 import math
+import json
 import re
 
 import maya.api.OpenMaya as om
@@ -356,3 +357,90 @@ def resolve_saved_bind_world_matrix(joint):
     if skin_matrix is not None:
         return skin_matrix
     raise BindBasisResolutionError(BIND_BASIS_MISSING, joint_name)
+
+
+def _imported_bind_translate(joint, cmds):
+    """Read the importer-owned, animation-independent local bind translation."""
+    attribute = "mmd_vmd_bind_translate"
+    if not cmds.attributeQuery(attribute, node=joint, exists=True):
+        raise BindBasisResolutionError(
+            BIND_BASIS_MISSING,
+            str(joint),
+            f"{attribute} is unavailable",
+        )
+    try:
+        raw = cmds.getAttr(f"{joint}.{attribute}") or ""
+        values = tuple(float(component) for component in json.loads(raw))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise BindBasisResolutionError(
+            BIND_BASIS_NONFINITE,
+            str(joint),
+            f"{attribute} is malformed",
+        ) from exc
+    if len(values) != 3 or not all(math.isfinite(value) for value in values):
+        raise BindBasisResolutionError(
+            BIND_BASIS_NONFINITE,
+            str(joint),
+            f"{attribute} is not a finite vector",
+        )
+    return values
+
+
+def _reconstruct_imported_bind_world_matrix(joint, cmds):
+    """Rebuild static bind world space from imported joint metadata."""
+    visited = set()
+
+    def resolve(node):
+        node = str(node)
+        if node in visited:
+            raise BindBasisResolutionError(
+                BIND_BASIS_AMBIGUOUS,
+                node,
+                "joint bind hierarchy is cyclic",
+            )
+        visited.add(node)
+        translate = _imported_bind_translate(node, cmds)
+        try:
+            orient = tuple(
+                math.radians(float(cmds.getAttr(f"{node}.jointOrient{axis}") or 0.0))
+                for axis in "XYZ"
+            )
+            rotate_order = int(cmds.getAttr(f"{node}.rotateOrder") or 0)
+            local = om.MTransformationMatrix()
+            local.setTranslation(om.MVector(*translate), om.MSpace.kTransform)
+            local.setRotation(om.MEulerRotation(*orient, order=rotate_order))
+            parent = (cmds.listRelatives(node, parent=True, fullPath=True) or [None])[0]
+            if parent and str(cmds.nodeType(parent)) == "joint":
+                parent_matrix = resolve(parent)
+            elif parent:
+                parent_matrix = om.MMatrix(
+                    cmds.xform(parent, query=True, worldSpace=True, matrix=True)
+                )
+            else:
+                parent_matrix = om.MMatrix()
+            return local.asMatrix() * parent_matrix
+        finally:
+            visited.remove(node)
+
+    return _validate_matrix(
+        resolve(joint),
+        joint=str(joint),
+        label="imported bind metadata",
+    )
+
+
+def resolve_imported_bind_world_matrix(joint):
+    """Resolve saved bind space, falling back to importer-owned rest metadata.
+
+    The fallback never samples animated joint transforms.  It is needed for
+    valid PMX helper or zero-weight bones that Maya omits from both dagPose and
+    skinCluster bindPreMatrix records.
+    """
+    from maya import cmds
+
+    try:
+        return resolve_saved_bind_world_matrix(joint)
+    except BindBasisResolutionError as exc:
+        if exc.reason_code != BIND_BASIS_MISSING:
+            raise
+    return _reconstruct_imported_bind_world_matrix(joint, cmds)

@@ -392,18 +392,21 @@ def store_bind_translate(
     translate: Tuple[float, float, float],
     cmds_module=None,
 ) -> None:
-    """Persist a joint bind translate for future clear/reimport fallback.
+    """Persist an immutable joint bind translate for clear/reimport fallback.
 
     ``cmds_module`` is injectable for import paths that already own a Maya
     command facade (notably the C++ fast importer).  The normal VMD path keeps
-    the historical module-level ``maya.cmds`` default.
+    the historical module-level ``maya.cmds`` default.  Bone import owns the
+    first write; later VMD imports must not replace bind authority with the
+    currently evaluated animation pose.
     """
     maya_cmds = cmds if cmds_module is None else cmds_module
     if not joint or not maya_cmds.objExists(joint):
         return
     try:
-        if not maya_cmds.attributeQuery(_ATTR_VMD_BIND_TRANSLATE, node=joint, exists=True):
-            maya_cmds.addAttr(joint, longName=_ATTR_VMD_BIND_TRANSLATE, dataType="string")
+        if maya_cmds.attributeQuery(_ATTR_VMD_BIND_TRANSLATE, node=joint, exists=True):
+            return
+        maya_cmds.addAttr(joint, longName=_ATTR_VMD_BIND_TRANSLATE, dataType="string")
         maya_cmds.setAttr(
             f"{joint}.{_ATTR_VMD_BIND_TRANSLATE}",
             json.dumps([float(translate[0]), float(translate[1]), float(translate[2])]),

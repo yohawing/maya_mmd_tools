@@ -784,6 +784,65 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
         self.assertEqual(fake.parent_by_child["left_middle_2_ZERO"], "left_middle_1_CTRL")
         self.assertEqual(fake.parent_by_child["left_middle_3_ZERO"], "left_middle_2_CTRL")
 
+    def test_arm_roles_follow_omitted_concrete_helper_joints(self):
+        fake = _HierarchyFake(
+            {
+                "left_shoulder_JNT": "left_shoulder_p_JNT",
+                "left_arm_JNT": "left_shoulder_c_JNT",
+                "left_elbow_JNT": "left_arm_twist_JNT",
+            }
+        )
+        controls = {
+            "upper_body2": "upper_body2_CTRL",
+            "left_shoulder": "left_shoulder_CTRL",
+            "left_arm": "left_arm_CTRL",
+            "left_elbow": "left_elbow_CTRL",
+        }
+        zero_groups = {
+            role: control.replace("_CTRL", "_ZERO")
+            for role, control in controls.items()
+        }
+        helper_nodes = _parent_zero_groups(
+            fake,
+            zero_groups,
+            controls,
+            {
+                "upper_body2": "upper_body2_JNT",
+                "left_shoulder": "left_shoulder_JNT",
+                "left_arm": "left_arm_JNT",
+                "left_elbow": "left_elbow_JNT",
+            },
+        )
+
+        self.assertEqual(
+            fake.constraints,
+            [
+                (
+                    "left_shoulder_p_JNT",
+                    "left_shoulder_ZERO",
+                    {"maintainOffset": True, "name": "left_shoulder_ZERO_FOLLOW"},
+                ),
+                (
+                    "left_shoulder_c_JNT",
+                    "left_arm_ZERO",
+                    {"maintainOffset": True, "name": "left_arm_ZERO_FOLLOW"},
+                ),
+                (
+                    "left_arm_twist_JNT",
+                    "left_elbow_ZERO",
+                    {"maintainOffset": True, "name": "left_elbow_ZERO_FOLLOW"},
+                ),
+            ],
+        )
+        self.assertEqual(
+            helper_nodes,
+            (
+                "left_shoulder_ZERO_FOLLOW",
+                "left_arm_ZERO_FOLLOW",
+                "left_elbow_ZERO_FOLLOW",
+            ),
+        )
+
     def test_p0_optional_roles_resolve_and_parent_through_available_chains(self):
         facts = [
             _bone(20, "腰"),

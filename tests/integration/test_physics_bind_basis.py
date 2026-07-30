@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 import os
 import tempfile
@@ -134,6 +135,33 @@ class TestPhysicsBindBasisMaya(MayaTestBase):
         expected = om.MMatrix(bind_pre).inverse()
         resolved = basis.resolve_saved_bind_world_matrix(joint)
         self.assertListEqual(_matrix_values(resolved), _matrix_values(expected))
+
+    def test_imported_metadata_covers_zero_weight_bone_without_maya_bind_record(self):
+        root = cmds.createNode("transform", name="metadataBindModel")
+        cmds.select(clear=True)
+        parent = cmds.joint(name="metadataParent", position=(1.0, 2.0, 3.0))
+        child = cmds.joint(name="metadataChild", position=(4.0, 2.0, 3.0))
+        cmds.parent(parent, root)
+        parent = (cmds.ls(parent, long=True) or [parent])[0]
+        child = (cmds.ls(child, long=True) or [child])[0]
+        cmds.setAttr(f"{parent}.jointOrientY", 17.0)
+        for joint in (parent, child):
+            translate = cmds.getAttr(f"{joint}.translate")[0]
+            cmds.addAttr(joint, longName="mmd_vmd_bind_translate", dataType="string")
+            cmds.setAttr(
+                f"{joint}.mmd_vmd_bind_translate",
+                json.dumps([float(value) for value in translate]),
+                type="string",
+            )
+        expected = _matrix_values(om.MMatrix(cmds.getAttr(f"{child}.worldMatrix[0]")))
+
+        cmds.setAttr(f"{parent}.rotateZ", 43.0)
+        cmds.setAttr(f"{child}.translateY", 6.0)
+        live = _matrix_values(om.MMatrix(cmds.getAttr(f"{child}.worldMatrix[0]")))
+        self.assertGreater(max(abs(a - b) for a, b in zip(live, expected)), 1e-4)
+
+        resolved = basis.resolve_imported_bind_world_matrix(child)
+        self.assertListEqual(_matrix_values(resolved), expected)
 
     def test_namespace_multiple_models_survive_save_reopen(self):
         path = os.path.join(tempfile.gettempdir(), "mmd_physics_bind_basis_reopen.ma")

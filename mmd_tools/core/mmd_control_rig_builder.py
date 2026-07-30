@@ -1407,44 +1407,50 @@ def _available_parent_role(role: str, controls: Mapping[str, str]) -> Optional[s
     return parent
 
 
+def _actual_joint_parent(cmds, role: str, role_joints: Mapping[str, str]) -> Optional[str]:
+    """Return the concrete parent joint for a bound role, when unambiguous."""
+    joint = role_joints.get(role)
+    if not joint:
+        return None
+    parents = cmds.listRelatives(
+        joint,
+        parent=True,
+        fullPath=True,
+        type="joint",
+    ) or []
+    return str(parents[0]) if len(parents) == 1 else None
+
+
 def _parent_zero_groups(
     cmds,
     zero_groups: Mapping[str, str],
     controls: Mapping[str, str],
     role_joints: Mapping[str, str],
 ) -> Tuple[str, ...]:
-    """Parent concrete zero groups and attach finger roots to real wrists.
+    """Parent zero groups while preserving omitted helper-joint motion.
 
-    The visible FK hierarchy intentionally omits intermediate MMD helpers such
-    as arm/wrist twist joints.  Parenting a finger root below ``wrist_CTRL``
-    therefore loses motion contributed by those helpers and leaves the finger
-    controls behind the skinned hand.  A finger controller only drives its own
-    child joint, so following the real parent wrist joint is acyclic and keeps
-    the complete evaluated upstream transform.
+    Finger roots and arm roles may have concrete parents that are not exposed
+    as semantic controls.  Following that real parent joint is acyclic because
+    each controller only drives its own downstream joint, and retains motion
+    from helpers such as shoulderP/shoulderC or unexposed twist joints.
 
     Returns:
         Constraint nodes owned by the Control Rig lifecycle.
     """
     helper_nodes = []
     for role, zero in zero_groups.items():
-        if role in _FINGER_ROOT_ROLES:
-            joint = role_joints.get(role)
-            parents = (
-                cmds.listRelatives(
-                    joint,
-                    parent=True,
-                    fullPath=True,
-                    type="joint",
-                )
-                if joint
-                else []
-            ) or []
-            if len(parents) != 1:
+        parent_role = _available_parent_role(role, controls)
+        concrete_parent = _actual_joint_parent(cmds, role, role_joints)
+        needs_joint_follow = role in _FINGER_ROOT_ROLES or (
+            role in _ARM_ORIENTATION_ROLES and concrete_parent is not None
+        )
+        if needs_joint_follow:
+            if concrete_parent is None:
                 raise MmdControlRigBuildError(
-                    f"finger control parent joint is unresolved: {role}"
+                    f"control parent joint is unresolved: {role}"
                 )
             constraint = cmds.parentConstraint(
-                str(parents[0]),
+                concrete_parent,
                 zero,
                 maintainOffset=True,
                 name=f"{zero.rsplit('|', 1)[-1]}_FOLLOW",
@@ -1455,7 +1461,6 @@ def _parent_zero_groups(
                 )
             helper_nodes.append(str(constraint[0]))
             continue
-        parent_role = _available_parent_role(role, controls)
         if parent_role:
             cmds.parent(zero, controls[parent_role])
     return tuple(helper_nodes)
@@ -1692,35 +1697,28 @@ def _saved_bind_world_matrix(cmds, joint: str):
     from mmd_tools.core.physics_bind_basis import (
         BIND_BASIS_MISSING,
         BindBasisResolutionError,
-        resolve_saved_bind_world_matrix,
+        resolve_imported_bind_world_matrix,
     )
 
     try:
-        matrix = resolve_saved_bind_world_matrix(joint)
+        matrix = resolve_imported_bind_world_matrix(joint)
     except BindBasisResolutionError as exc:
         if exc.reason_code != BIND_BASIS_MISSING:
             raise MmdControlRigBuildError(
                 f"saved bind basis is invalid for control-rig joint: {joint}"
             ) from exc
-        # PMX-only imports do not necessarily create a dagPose or skinCluster
-        # for every helper bone. Reconstruct those joints from the importer-owned
-        # bind translations and static jointOrient hierarchy, never from a live
-        # animated matrix.
-        try:
-            return _static_bind_world_matrix_from_metadata(cmds, joint)
-        except MmdControlRigBuildError:
-            if cmds.attributeQuery(
-                ATTR_MMD_PMX_REST_POSITION,
-                node=joint,
-                exists=True,
-            ):
-                raise MmdControlRigBuildError(
-                    f"saved bind basis is unavailable for control-rig joint: {joint}"
-                ) from exc
-            # Synthetic graphs used by headless tests and non-MMD helper
-            # transforms have no PMX rest metadata and therefore no authored
-            # basis contract to preserve.  Keep their display placement.
-            return cmds.xform(joint, query=True, worldSpace=True, matrix=True)
+        if cmds.attributeQuery(
+            ATTR_MMD_PMX_REST_POSITION,
+            node=joint,
+            exists=True,
+        ):
+            raise MmdControlRigBuildError(
+                f"saved bind basis is unavailable for control-rig joint: {joint}"
+            ) from exc
+        # Synthetic graphs used by headless tests and non-MMD helper
+        # transforms have no PMX rest metadata and therefore no authored
+        # basis contract to preserve.  Keep their display placement.
+        return cmds.xform(joint, query=True, worldSpace=True, matrix=True)
     except Exception as exc:
         raise MmdControlRigBuildError(
             f"saved bind basis could not be resolved for control-rig joint: {joint}"
@@ -1735,80 +1733,6 @@ def _saved_bind_world_matrix(cmds, joint: str):
         raise MmdControlRigBuildError(
             f"saved bind basis is non-finite for control-rig joint: {joint}"
         )
-    return values
-
-
-def _static_bind_world_matrix_from_metadata(cmds, joint: str):
-    """Rebuild one static joint world matrix from importer bind metadata."""
-
-    try:
-        from maya.api import OpenMaya as om
-    except Exception as exc:  # pragma: no cover - only reached outside Maya.
-        raise MmdControlRigBuildError("Maya API is unavailable for bind reconstruction") from exc
-
-    visited = set()
-
-    def read_translate(node):
-        plug = f"{node}.mmd_vmd_bind_translate"
-        if cmds.attributeQuery("mmd_vmd_bind_translate", node=node, exists=True):
-            raw = cmds.getAttr(plug) or ""
-            try:
-                value = tuple(float(component) for component in json.loads(raw))
-            except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                raise MmdControlRigBuildError(f"invalid saved bind translation: {node}") from exc
-            if len(value) == 3 and all(math.isfinite(component) for component in value):
-                return value
-            raise MmdControlRigBuildError(f"invalid saved bind translation: {node}")
-        incoming = cmds.listConnections(
-            f"{node}.translate",
-            source=True,
-            destination=False,
-            plugs=True,
-        ) or []
-        if incoming:
-            raise MmdControlRigBuildError(
-                f"animated joint has no saved bind translation: {node}"
-            )
-        value = cmds.getAttr(f"{node}.translate")
-        value = value[0] if isinstance(value, (list, tuple)) and len(value) == 1 else value
-        try:
-            result = tuple(float(component) for component in value)
-        except (TypeError, ValueError) as exc:
-            raise MmdControlRigBuildError(f"joint bind translation is unavailable: {node}") from exc
-        if len(result) != 3 or not all(math.isfinite(component) for component in result):
-            raise MmdControlRigBuildError(f"joint bind translation is invalid: {node}")
-        return result
-
-    def resolve(node):
-        node = str(node)
-        if node in visited:
-            raise MmdControlRigBuildError(f"joint bind hierarchy is cyclic: {node}")
-        visited.add(node)
-        translate = read_translate(node)
-        orient = tuple(
-            math.radians(float(cmds.getAttr(f"{node}.jointOrient{axis}") or 0.0))
-            for axis in "XYZ"
-        )
-        rotate_order = int(cmds.getAttr(f"{node}.rotateOrder") or 0)
-        local = om.MTransformationMatrix()
-        local.setTranslation(om.MVector(*translate), om.MSpace.kTransform)
-        local.setRotation(om.MEulerRotation(*orient, order=rotate_order))
-        parent = (cmds.listRelatives(node, parent=True, fullPath=True) or [None])[0]
-        if parent and str(cmds.nodeType(parent)) == "joint":
-            parent_matrix = resolve(parent)
-        elif parent:
-            parent_matrix = om.MMatrix(
-                cmds.xform(parent, query=True, worldSpace=True, matrix=True)
-            )
-        else:
-            parent_matrix = om.MMatrix()
-        visited.remove(node)
-        return local.asMatrix() * parent_matrix
-
-    matrix = resolve(joint)
-    values = [float(matrix[index]) for index in range(16)]
-    if not all(math.isfinite(value) for value in values):
-        raise MmdControlRigBuildError(f"reconstructed bind matrix is non-finite: {joint}")
     return values
 
 
