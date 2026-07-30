@@ -4,6 +4,7 @@ import unittest
 
 from mmd_tools.core.mmd_control_rig_motion import (
     _connect_ik_control_visibility,
+    _consistent_rotation_group_basis,
     ROUTE_SAMPLED,
     _rotation_channel_groups,
     _supports_bake_authoring_basis,
@@ -86,6 +87,62 @@ class MmdControlRigMotionRoutingTest(unittest.TestCase):
 
         self.assertFalse(_supports_live_authoring_basis(row))
         self.assertTrue(_supports_bake_authoring_basis(row))
+
+    def test_rotation_group_basis_accepts_json_roundtrip_normalization_noise(self):
+        rows = [
+            {
+                "authoringBasis": {
+                    "quaternion": [
+                        0.4751920029162135,
+                        0.5188175015723054,
+                        0.0,
+                        0.7106482677293658,
+                    ],
+                    "source": "pmx_tail",
+                }
+            }
+        ]
+        rows.extend(
+            {
+                "authoringBasis": {
+                    "quaternion": [
+                        0.4751920029162135 * scale,
+                        0.5188175015723054 * scale,
+                        0.0,
+                        0.7106482677293658 * scale,
+                    ],
+                    "source": "pmx_tail",
+                }
+            }
+            for scale in (10.0, 0.1)
+        )
+
+        basis = _consistent_rotation_group_basis(rows)
+
+        self.assertAlmostEqual(basis.quaternion[0], 0.4751920029162134)
+        self.assertAlmostEqual(basis.quaternion[3], 0.7106482677293657)
+
+    def test_rotation_group_basis_rejects_genuinely_mixed_axes(self):
+        rows = [
+            {
+                "authoringBasis": {
+                    "quaternion": [0.0, 0.0, 0.0, 1.0],
+                    "source": "identity",
+                }
+            }
+            for _axis in "XY"
+        ]
+        rows.append(
+            {
+                "authoringBasis": {
+                    "quaternion": [0.0, 0.0, 0.70710678, 0.70710678],
+                    "source": "pmx_tail",
+                }
+            }
+        )
+
+        with self.assertRaisesRegex(MmdControlRigBuildError, "basis is inconsistent"):
+            _consistent_rotation_group_basis(rows)
 
     def test_ik_visibility_follows_enabled_and_reuses_canonical_connection(self):
         class FakeCmds:

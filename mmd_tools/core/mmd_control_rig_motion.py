@@ -37,6 +37,7 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
     INPUT_IK_CONTROLLER,
 )
 from mmd_tools.core.mmd_control_rig_basis import (
+    MmdControlRigBasis,
     MmdControlRigBasisError,
     control_to_bone,
     matrix_from_quaternion,
@@ -2077,6 +2078,32 @@ def _supports_bake_authoring_basis(row: Mapping[str, Any]) -> bool:
     return not bool(set(row.get("routeReasons") or ()).intersection(special_reasons))
 
 
+def _consistent_rotation_group_basis(
+    rows: List[Mapping[str, Any]],
+) -> MmdControlRigBasis:
+    """Return one canonical basis shared by a complete XYZ route.
+
+    Persisted quaternion components can acquire insignificant normalization
+    differences after JSON round-trips.  Compare validated canonical records
+    instead of raw floats while still rejecting genuinely mixed XYZ bases.
+    """
+
+    bases = [validate_basis_record(row.get("authoringBasis")) for row in rows]
+    if not bases:
+        raise MmdControlRigBasisError("rotation XYZ basis is missing")
+    basis = bases[0]
+    if any(
+        candidate.source != basis.source
+        or any(
+            abs(actual - expected) > 1.0e-9
+            for actual, expected in zip(candidate.quaternion, basis.quaternion)
+        )
+        for candidate in bases[1:]
+    ):
+        raise MmdControlRigBuildError("rotation XYZ basis is inconsistent")
+    return basis
+
+
 def _create_live_rotation_converters(
     cmds,
     rows: List[Mapping[str, Any]],
@@ -2147,17 +2174,14 @@ def _create_live_rotation_converters(
         # artist edits even when JO/parent basis made curve transfer sampled.
         if any(not _supports_live_authoring_basis(row) for row in group):
             continue
-        basis_record = group[0].get("authoringBasis")
-        if not basis_record:
+        if not group[0].get("authoringBasis"):
             continue
         try:
-            basis = validate_basis_record(basis_record)
+            basis = _consistent_rotation_group_basis(group)
         except MmdControlRigBasisError as exc:
             raise MmdControlRigBuildError("invalid control-rig authoring basis in EDIT journal") from exc
         if basis.quaternion == (0.0, 0.0, 0.0, 1.0):
             continue
-        if any(row.get("authoringBasis") != basis.to_dict() for row in group):
-            raise MmdControlRigBuildError("rotation XYZ basis is inconsistent")
         control_node = str(group[0]["control"]).rsplit(".", 1)[0]
         target_node = str(group[0]["target"]).rsplit(".", 1)[0]
         namespace = target_node.rsplit("|", 1)[-1].replace(":", "_")
@@ -2666,11 +2690,9 @@ def _commit_control_rotation_group(
     basis_record = rows_by_attr["rotateX"].get("authoringBasis")
     if basis_record and all(_supports_bake_authoring_basis(row) for row in rows):
         try:
-            basis = validate_basis_record(basis_record)
+            basis = _consistent_rotation_group_basis(rows)
         except MmdControlRigBasisError as exc:
             raise MmdControlRigBuildError("invalid authoring basis on rotation journal") from exc
-        if any(row.get("authoringBasis") != basis.to_dict() for row in rows):
-            raise MmdControlRigBuildError("rotation XYZ basis is inconsistent")
         if basis.quaternion != (0.0, 0.0, 0.0, 1.0):
             preserve_quaternion = (
                 True
