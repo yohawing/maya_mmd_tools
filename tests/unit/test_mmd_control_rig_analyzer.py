@@ -26,6 +26,9 @@ from mmd_tools.core.mmd_control_rig_builder import (
     _control_curve_template_role,
     _control_group_parent,
     _control_shape_rotation,
+    _ROLE_PARENTS,
+    _control_basis_rotations,
+    _role_controller_scale,
     _rotate_shape_point,
     _shortest_arc_from_positive_z,
     _parent_zero_groups,
@@ -381,6 +384,44 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
         self.assertEqual(
             right_points,
             [[-point[0], point[1], point[2]] for point in left_points],
+        )
+
+    def test_arm_chain_keeps_primary_twist_controls_in_parent_route(self):
+        self.assertEqual(_ROLE_PARENTS["left_elbow"], "left_arm_twist")
+        self.assertEqual(_ROLE_PARENTS["left_wrist_twist"], "left_elbow")
+        self.assertEqual(_ROLE_PARENTS["left_wrist"], "left_wrist_twist")
+        self.assertEqual(_ROLE_PARENTS["right_elbow"], "right_arm_twist")
+        self.assertEqual(_ROLE_PARENTS["right_wrist_twist"], "right_elbow")
+        self.assertEqual(_ROLE_PARENTS["right_wrist"], "right_wrist_twist")
+
+    def test_twist_scale_is_half_and_neck_uses_local_bone_length(self):
+        values = {"twist.mmd_bone_offset": [(0.0, 0.0, 1.0)]}
+        cmds = _ShapeOrientationFake(values)
+        binding = SimpleNamespace(joint="twist", bone_index=1, pmx_flags=0)
+        self.assertAlmostEqual(
+            _role_controller_scale(cmds, "root", "left_arm_twist", binding, {}, 2.0),
+            1.0,
+        )
+
+        values = {"neck.mmd_bone_offset": [(0.0, 0.0, 0.2)]}
+        cmds = _ShapeOrientationFake(values)
+        binding = SimpleNamespace(joint="neck", bone_index=2, pmx_flags=0)
+        neck_scale = _role_controller_scale(cmds, "root", "neck", binding, {}, 2.0)
+        self.assertAlmostEqual(neck_scale, 0.1)
+        self.assertLess(neck_scale, 2.0)
+
+    def test_ik_link_keeps_raw_xyz_basis_and_orients_curve_only(self):
+        rotation = ((0.0, 1.0, 0.0), 0.0, 1.0)
+        ik_binding = SimpleNamespace(input_kind=INPUT_IK_LINK_INPUT)
+        direct_binding = SimpleNamespace(input_kind="direct_channel")
+
+        self.assertEqual(
+            _control_basis_rotations(ik_binding, rotation),
+            (None, rotation),
+        )
+        self.assertEqual(
+            _control_basis_rotations(direct_binding, rotation),
+            (rotation, None),
         )
 
 

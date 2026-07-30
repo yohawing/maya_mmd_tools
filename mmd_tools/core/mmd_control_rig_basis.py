@@ -164,17 +164,20 @@ def matrix_from_quaternion(
     """
 
     x, y, z, w = _coerce_quaternion(quaternion, "quaternion")
+    # Maya matrices use row-vector transform convention. This is the
+    # transpose of the common column-vector quaternion formula and matches
+    # ``maya.api.OpenMaya.MQuaternion.asMatrix()``.
     return (
         1.0 - 2.0 * (y * y + z * z),
-        2.0 * (x * y - z * w),
-        2.0 * (x * z + y * w),
-        0.0,
         2.0 * (x * y + z * w),
-        1.0 - 2.0 * (x * x + z * z),
-        2.0 * (y * z - x * w),
-        0.0,
         2.0 * (x * z - y * w),
+        0.0,
+        2.0 * (x * y - z * w),
+        1.0 - 2.0 * (x * x + z * z),
         2.0 * (y * z + x * w),
+        0.0,
+        2.0 * (x * z + y * w),
+        2.0 * (y * z - x * w),
         1.0 - 2.0 * (x * x + y * y),
         0.0,
         0.0,

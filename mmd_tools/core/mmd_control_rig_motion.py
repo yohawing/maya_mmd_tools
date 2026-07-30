@@ -472,6 +472,18 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                 offset_controls.add(control)
 
                 if binding.get("inputKind") == INPUT_IK_CONTROLLER:
+                    visibility_controls = None
+                    if role in {"left_foot_ik", "right_foot_ik"}:
+                        side = str(role).split("_", 1)[0]
+                        visibility_controls = tuple(
+                            controls[control_role]
+                            for control_role in (
+                                f"{side}_foot_ik_parent",
+                                f"{side}_foot_ik",
+                                f"{side}_toe_ik",
+                            )
+                            if control_role in controls
+                        )
                     _connect_ik_enabled(
                         cmds,
                         control,
@@ -481,6 +493,7 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                         created_curve_nodes=created_curve_nodes,
                         curve_representations=curve_representations,
                         layer_routes=layer_journal.get("routes", {}),
+                        visibility_controls=visibility_controls,
                     )
 
             _zero_control_display_offsets(
@@ -1396,6 +1409,7 @@ def _connect_ik_enabled(
     created_curve_nodes=None,
     curve_representations=None,
     layer_routes: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    visibility_controls=None,
 ) -> None:
     solvers = resolve_mmd_control_rig_binding_ik_solvers(cmds, binding)
     if not solvers:
@@ -1497,6 +1511,75 @@ def _connect_ik_enabled(
             _record_curve_representation(
                 curve_representations, target, source, control_source, cmds
             )
+
+    # Keep visible IK shapes synchronized with the EDIT owner's single-writer
+    # state. The custom solver's enabled input is not a readable Maya source
+    # attribute, so visibility must use the controller-side ikEnabled plug.
+    if visibility_controls is not None:
+        _connect_ik_control_visibility(
+            cmds,
+            visibility_controls or (control,),
+            control_plug,
+            operations,
+        )
+
+
+def _connect_ik_control_visibility(
+    cmds,
+    controls,
+    control_plug: str,
+    operations: List[Tuple[str, str, str]],
+) -> None:
+    """Drive IK curve shapes from the EDIT-owned enabled plug."""
+
+    for control in controls:
+        shapes = cmds.listRelatives(
+            control,
+            shapes=True,
+            fullPath=True,
+        ) or []
+        for shape in shapes:
+            target = f"{shape}.visibility"
+            if not cmds.objExists(target):
+                continue
+            incoming = [
+                str(source)
+                for source in (
+                    cmds.listConnections(
+                        target,
+                        source=True,
+                        destination=False,
+                        plugs=True,
+                    )
+                    or []
+                )
+            ]
+            if incoming and not any(
+                _plugs_match(cmds, source, control_plug) for source in incoming
+            ):
+                raise MmdControlRigBuildError(
+                    f"foreign IK control visibility source: {control_plug} -> {target}"
+                )
+            if incoming and any(
+                _plugs_match(cmds, source, control_plug) for source in incoming
+            ):
+                continue
+            cmds.connectAttr(control_plug, target, force=False)
+            operations.append(("disconnect", control_plug, target))
+
+
+def _plugs_match(cmds, left: str, right: str) -> bool:
+    """Compare plugs after Maya short/long DAG-name normalization."""
+
+    left_node, left_sep, left_attr = str(left).partition(".")
+    right_node, right_sep, right_attr = str(right).partition(".")
+    if not left_sep or not right_sep or left_attr != right_attr:
+        return str(left) == str(right)
+    left_nodes = cmds.ls(left_node, long=True) or []
+    right_nodes = cmds.ls(right_node, long=True) or []
+    if len(left_nodes) == 1 and len(right_nodes) == 1:
+        return str(left_nodes[0]) == str(right_nodes[0])
+    return str(left) == str(right)
 
 
 def _zero_control_display_offsets(
@@ -1846,8 +1929,11 @@ def _create_live_rotation_converters(
             inverse_matrix = matrix_from_quaternion(
                 (-basis.quaternion[0], -basis.quaternion[1], -basis.quaternion[2], basis.quaternion[3])
             )
-            cmds.setAttr(f"{mult}.matrixIn[0]", *matrix, type="matrix")
-            cmds.setAttr(f"{mult}.matrixIn[2]", *inverse_matrix, type="matrix")
+            # Maya composes row-vector matrices. The quaternion contract
+            # q_bone = B * q_control * inverse(B) therefore uses the reversed
+            # matrix order inverse(B) * Q * B.
+            cmds.setAttr(f"{mult}.matrixIn[0]", *inverse_matrix, type="matrix")
+            cmds.setAttr(f"{mult}.matrixIn[2]", *matrix, type="matrix")
             for axis in "XYZ":
                 cmds.connectAttr(
                     f"{control_node}.rotate{axis}",

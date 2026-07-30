@@ -10,6 +10,7 @@ from mmd_tools.core.mmd_control_rig_basis import (
     basis_from_shape_rotation,
     bone_to_control,
     control_to_bone,
+    matrix_from_quaternion,
     quaternion_conjugate,
     quaternion_from_shape_rotation,
     quaternion_inverse,
@@ -37,6 +38,14 @@ class TestMmdControlRigBasis(unittest.TestCase):
         self.assertAlmostEqual(basis.quaternion[3], math.sqrt(0.5), places=12)
         self.assertAlmostEqual(sum(value * value for value in basis.quaternion), 1.0)
         self.assertGreaterEqual(basis.quaternion[3], 0.0)
+
+    def test_maya_row_matrix_rotates_positive_z_to_shortest_arc_target(self):
+        basis = basis_from_shape_rotation(((0.0, 1.0, 0.0), 0.0, 1.0))
+
+        matrix = matrix_from_quaternion(basis.quaternion)
+
+        for actual, expected in zip(matrix[8:11], (1.0, 0.0, 0.0)):
+            self.assertAlmostEqual(actual, expected, places=12)
 
     def test_opposite_axis_uses_stable_positive_tie_break(self):
         positive = quaternion_from_shape_rotation(((0.0, 1.0, 0.0), -1.0, 0.0))

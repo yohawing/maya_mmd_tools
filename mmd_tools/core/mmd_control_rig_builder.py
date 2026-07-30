@@ -29,6 +29,8 @@ from mmd_tools.core.constants import (
 )
 from mmd_tools.core.humanik_utils import maya_cmds
 from mmd_tools.core.mmd_control_rig_analyzer import (
+    INPUT_IK_CONTROLLER,
+    INPUT_IK_LINK_INPUT,
     MmdControlRigRoleBinding,
     MmdControlRigSpec,
     STATUS_FALLBACK,
@@ -121,6 +123,17 @@ _TWIST_RING_ROLES = frozenset(
         "right_wrist_twist",
     }
 )
+_TWIST_CURVE_SCALE = 0.5
+_IK_DISPLAY_ONLY_ROLES = frozenset(
+    {
+        "left_foot_ik_parent",
+        "right_foot_ik_parent",
+        "left_foot_ik",
+        "right_foot_ik",
+        "left_toe_ik",
+        "right_toe_ik",
+    }
+)
 _FINGER_ROLE_PARENTS = {
     role: (f"{role.split('_', 1)[0]}_wrist" if index == 0 else chain[index - 1])
     for chain in _FINGER_ROLE_CHAINS
@@ -179,16 +192,20 @@ _ROLE_PARENTS = {
     "head": "neck",
     "left_shoulder": "upper_body2",
     "left_arm": "left_shoulder",
-    "left_elbow": "left_arm",
-    "left_wrist": "left_elbow",
+    # Keep the optional primary twist joints in the visible FK chain.  The
+    # Kokomi hierarchy (arm -> arm twist -> elbow -> wrist twist -> wrist)
+    # needs the intermediate rings to carry authored roll into downstream
+    # controls; ``_available_parent_role`` transparently skips absent rings.
+    "left_elbow": "left_arm_twist",
+    "left_wrist_twist": "left_elbow",
+    "left_wrist": "left_wrist_twist",
     "right_shoulder": "upper_body2",
     "right_arm": "right_shoulder",
-    "right_elbow": "right_arm",
-    "right_wrist": "right_elbow",
+    "right_elbow": "right_arm_twist",
+    "right_wrist_twist": "right_elbow",
+    "right_wrist": "right_wrist_twist",
     "left_arm_twist": "left_arm",
     "right_arm_twist": "right_arm",
-    "left_wrist_twist": "left_wrist",
-    "right_wrist_twist": "right_wrist",
     "left_leg": "groove",
     "left_knee": "left_leg",
     "right_leg": "groove",
@@ -304,12 +321,24 @@ def build_mmd_control_rig(
                     name=f"{namespace}{role}_ZERO",
                     parent=control_group,
                 )
-                matrix = cmds.xform(
-                    binding.joint,
-                    query=True,
-                    worldSpace=True,
-                    matrix=True,
-                )
+                if (
+                    binding.bone_index is None
+                    or binding.input_kind == INPUT_IK_CONTROLLER
+                    or role in _IK_DISPLAY_ONLY_ROLES
+                ):
+                    # The model-root fallback is a scene transform rather
+                    # than an imported PMX bone and has no bind-pose record.
+                    # Preserve existing placement; solver-owned IK handles
+                    # likewise follow their current goal display and are not
+                    # authoring-basis rotations.
+                    matrix = cmds.xform(
+                        binding.joint,
+                        query=True,
+                        worldSpace=True,
+                        matrix=True,
+                    )
+                else:
+                    matrix = _saved_bind_world_matrix(cmds, binding.joint)
                 cmds.xform(zero, worldSpace=True, matrix=matrix)
                 shape_rotation = _control_shape_rotation(
                     cmds,
@@ -318,8 +347,12 @@ def build_mmd_control_rig(
                     binding,
                     indexed_joints,
                 )
+                authoring_rotation, display_rotation = _control_basis_rotations(
+                    binding,
+                    shape_rotation,
+                )
                 try:
-                    basis = basis_from_shape_rotation(shape_rotation)
+                    basis = basis_from_shape_rotation(authoring_rotation)
                     authoring_bases[role] = dict(basis.to_dict())
                 except MmdControlRigBasisError as exc:
                     raise MmdControlRigBuildError(
@@ -345,8 +378,15 @@ def build_mmd_control_rig(
                     cmds,
                     f"{namespace}{role}_CTRL",
                     role,
-                    scale,
-                    shape_rotation=None,
+                    _role_controller_scale(
+                        cmds,
+                        root,
+                        role,
+                        binding,
+                        indexed_joints,
+                        scale,
+                    ),
+                    shape_rotation=display_rotation,
                 )
                 created_roots.append(control)
                 parented = cmds.parent(control, aim_space)
@@ -984,6 +1024,21 @@ def _control_shape_rotation(
     return _shortest_arc_from_positive_z(maya_direction)
 
 
+def _control_basis_rotations(binding, shape_rotation):
+    """Split IK-link display orientation from its raw solver input basis.
+
+    IK link controls author ``mmdCcdIk.inputRotateElementXYZ`` directly. Those
+    plugs already use the imported joint's XYZ authoring basis, so moving the
+    visual tail alignment into ``AIM_SPACE`` would rotate the manipulator axes
+    without converting the solver input. Keep an identity transform basis and
+    apply the same rotation only to curve CVs for these controls.
+    """
+
+    if binding.input_kind == INPUT_IK_LINK_INPUT:
+        return None, shape_rotation
+    return shape_rotation, None
+
+
 def _joint_chain_local_axis_basis(
     cmds,
     joint: str,
@@ -1394,6 +1449,174 @@ def _controller_scale(cmds, root: str) -> float:
         return max(height * 0.04, 0.25)
     except Exception:
         return 1.0
+
+
+def _saved_bind_world_matrix(cmds, joint: str):
+    """Resolve one joint's static bind matrix without reading live pose.
+
+    Control ``ZERO`` groups are an authoring basis, not an animation sample.
+    A build can therefore only use a saved ``dagPose``/skin bind candidate;
+    silently falling back to ``joint.worldMatrix`` would capture an IK/VMD
+    pose and make the resulting FK controls frame-dependent.
+    """
+
+    from mmd_tools.core.physics_bind_basis import (
+        BIND_BASIS_MISSING,
+        BindBasisResolutionError,
+        resolve_saved_bind_world_matrix,
+    )
+
+    try:
+        matrix = resolve_saved_bind_world_matrix(joint)
+    except BindBasisResolutionError as exc:
+        if exc.reason_code != BIND_BASIS_MISSING:
+            raise MmdControlRigBuildError(
+                f"saved bind basis is invalid for control-rig joint: {joint}"
+            ) from exc
+        # PMX-only imports do not necessarily create a dagPose or skinCluster
+        # for every helper bone. Reconstruct those joints from the importer-owned
+        # bind translations and static jointOrient hierarchy, never from a live
+        # animated matrix.
+        try:
+            return _static_bind_world_matrix_from_metadata(cmds, joint)
+        except MmdControlRigBuildError:
+            if cmds.attributeQuery(
+                ATTR_MMD_PMX_REST_POSITION,
+                node=joint,
+                exists=True,
+            ):
+                raise MmdControlRigBuildError(
+                    f"saved bind basis is unavailable for control-rig joint: {joint}"
+                ) from exc
+            # Synthetic graphs used by headless tests and non-MMD helper
+            # transforms have no PMX rest metadata and therefore no authored
+            # basis contract to preserve.  Keep their display placement.
+            return cmds.xform(joint, query=True, worldSpace=True, matrix=True)
+    except Exception as exc:
+        raise MmdControlRigBuildError(
+            f"saved bind basis could not be resolved for control-rig joint: {joint}"
+        ) from exc
+    try:
+        values = [float(matrix[index]) for index in range(16)]
+    except (TypeError, ValueError, IndexError) as exc:
+        raise MmdControlRigBuildError(
+            f"saved bind basis is not a 4x4 matrix for control-rig joint: {joint}"
+        ) from exc
+    if len(values) != 16 or not all(math.isfinite(value) for value in values):
+        raise MmdControlRigBuildError(
+            f"saved bind basis is non-finite for control-rig joint: {joint}"
+        )
+    return values
+
+
+def _static_bind_world_matrix_from_metadata(cmds, joint: str):
+    """Rebuild one static joint world matrix from importer bind metadata."""
+
+    try:
+        from maya.api import OpenMaya as om
+    except Exception as exc:  # pragma: no cover - only reached outside Maya.
+        raise MmdControlRigBuildError("Maya API is unavailable for bind reconstruction") from exc
+
+    visited = set()
+
+    def read_translate(node):
+        plug = f"{node}.mmd_vmd_bind_translate"
+        if cmds.attributeQuery("mmd_vmd_bind_translate", node=node, exists=True):
+            raw = cmds.getAttr(plug) or ""
+            try:
+                value = tuple(float(component) for component in json.loads(raw))
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise MmdControlRigBuildError(f"invalid saved bind translation: {node}") from exc
+            if len(value) == 3 and all(math.isfinite(component) for component in value):
+                return value
+            raise MmdControlRigBuildError(f"invalid saved bind translation: {node}")
+        incoming = cmds.listConnections(
+            f"{node}.translate",
+            source=True,
+            destination=False,
+            plugs=True,
+        ) or []
+        if incoming:
+            raise MmdControlRigBuildError(
+                f"animated joint has no saved bind translation: {node}"
+            )
+        value = cmds.getAttr(f"{node}.translate")
+        value = value[0] if isinstance(value, (list, tuple)) and len(value) == 1 else value
+        try:
+            result = tuple(float(component) for component in value)
+        except (TypeError, ValueError) as exc:
+            raise MmdControlRigBuildError(f"joint bind translation is unavailable: {node}") from exc
+        if len(result) != 3 or not all(math.isfinite(component) for component in result):
+            raise MmdControlRigBuildError(f"joint bind translation is invalid: {node}")
+        return result
+
+    def resolve(node):
+        node = str(node)
+        if node in visited:
+            raise MmdControlRigBuildError(f"joint bind hierarchy is cyclic: {node}")
+        visited.add(node)
+        translate = read_translate(node)
+        orient = tuple(
+            math.radians(float(cmds.getAttr(f"{node}.jointOrient{axis}") or 0.0))
+            for axis in "XYZ"
+        )
+        rotate_order = int(cmds.getAttr(f"{node}.rotateOrder") or 0)
+        local = om.MTransformationMatrix()
+        local.setTranslation(om.MVector(*translate), om.MSpace.kTransform)
+        local.setRotation(om.MEulerRotation(*orient, order=rotate_order))
+        parent = (cmds.listRelatives(node, parent=True, fullPath=True) or [None])[0]
+        if parent and str(cmds.nodeType(parent)) == "joint":
+            parent_matrix = resolve(parent)
+        elif parent:
+            parent_matrix = om.MMatrix(
+                cmds.xform(parent, query=True, worldSpace=True, matrix=True)
+            )
+        else:
+            parent_matrix = om.MMatrix()
+        visited.remove(node)
+        return local.asMatrix() * parent_matrix
+
+    matrix = resolve(joint)
+    values = [float(matrix[index]) for index in range(16)]
+    if not all(math.isfinite(value) for value in values):
+        raise MmdControlRigBuildError(f"reconstructed bind matrix is non-finite: {joint}")
+    return values
+
+
+def _role_controller_scale(
+    cmds,
+    root: str,
+    role: str,
+    binding,
+    indexed_joints: Mapping[int, str],
+    scene_scale: float,
+) -> float:
+    """Return display-only scale for one role's authored curve template.
+
+    Primary twist rings are intentionally half-size so they remain readable
+    on top of the arm/wrist controls.  The neck shape is authored with a
+    local offset; cap it from the local PMX bone length instead of letting a
+    distant descendant/whole-model bound make the ring oversized.
+    """
+
+    scale = float(scene_scale)
+    if role in _TWIST_RING_ROLES:
+        scale *= _TWIST_CURVE_SCALE
+    if role != "neck":
+        return scale
+    local_direction = _vector_attribute(cmds, binding.joint, ATTR_MMD_BONE_OFFSET)
+    if local_direction is None:
+        local_direction = _pmx_tail_direction(cmds, binding, indexed_joints)
+    if local_direction is None:
+        return scale * 0.5
+    length = math.sqrt(sum(float(value) ** 2 for value in local_direction))
+    if not math.isfinite(length) or length <= 1.0e-8:
+        return scale * 0.5
+    # Neck's template extent is roughly two units.  Keep the displayed width
+    # below the local bone length while retaining a small usable minimum for
+    # very short stylized neck bones.
+    local_scale = length * 0.35
+    return max(scale * 0.05, min(scale * 0.75, local_scale))
 
 
 def _owned_nodes(cmds, control_group: str, selection_set: str) -> Tuple[str, ...]:
