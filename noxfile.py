@@ -54,6 +54,10 @@ DEFAULT_RELEASE_VIEWPORT_MATRIX = (
     ("2025", "glsl", "glcore"),
     ("2026", "dx11", "dx11"),
 )
+DEFAULT_RELEASE_VISUAL_PORTS = {
+    "2025": "7825",
+    "2026": "7826",
+}
 DEFAULT_GOLDEN_ORACLE_RENDER_MANIFEST = "F:/Develop/MMDDev/GoldenOracle/manifests/fixture.render.json"
 RELEASE_VISUAL_CASES = (
     "fixture-render-generated-visual-mmd-diffuse-lit-box",
@@ -3238,6 +3242,7 @@ def release_gate(session: nox.Session) -> None:
                 command = [
                     "uvx", "nox", "-s", "maya_visual_regression", "--",
                     "--maya", maya_version,
+                    "--port", DEFAULT_RELEASE_VISUAL_PORTS[maya_version],
                     "--shader-backend", shader_backend,
                     "--vp2-device", vp2_device,
                     "--manifest", str(visual_manifest),
