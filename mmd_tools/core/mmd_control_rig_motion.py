@@ -2732,10 +2732,10 @@ def _sampled_curve_tangent_types(target: str) -> Tuple[str, str]:
     """Return explicit in/out tangent types for a sampled destination plug."""
     attribute = str(target).rsplit(".", 1)[-1].lower()
     if attribute.endswith("enabled") or attribute.startswith("ik"):
-        # Maya rejects ``step`` as an in-tangent; ``stepnext`` gives the same
-        # held-state behavior on the incoming side while ``step`` is valid for
-        # outgoing boolean keys.
-        return "stepnext", "step"
+        # The outgoing ``step`` tangent owns the held-state behavior. Maya
+        # 2027 also rejects ``stepnext`` as an in-tangent, so keep the incoming
+        # side portable and non-semantic while retaining the stepped output.
+        return "auto", "step"
     return "linear", "linear"
 
 

@@ -226,7 +226,7 @@ class TestMmdControlRigRoundtrip(MayaTestBase):
         self.assertEqual(cmds.nodeType(curve_node), "animCurveTU")
         self.assertEqual(
             cmds.keyTangent(curve_node, query=True, inTangentType=True),
-            ["stepnext"] * 6,
+            ["auto"] * 6,
         )
         self.assertEqual(
             cmds.keyTangent(curve_node, query=True, outTangentType=True),
