@@ -124,6 +124,7 @@ _TWIST_RING_ROLES = frozenset(
     }
 )
 _TWIST_CURVE_SCALE = 0.5
+_NECK_CURVE_SCALE = 2.0
 _TWIST_CHILD_ROLES = {
     "left_arm_twist": "left_elbow",
     "left_wrist_twist": "left_wrist",
@@ -1757,7 +1758,8 @@ def _role_controller_scale(
     Primary twist rings are intentionally half-size so they remain readable
     on top of the arm/wrist controls.  The neck shape is authored with a
     local offset; cap it from the local PMX bone length instead of letting a
-    distant descendant/whole-model bound make the ring oversized.
+    distant descendant/whole-model bound make the ring oversized.  Its edited
+    template is then doubled to keep the neck control comfortably selectable.
     """
 
     scale = float(scene_scale)
@@ -1769,15 +1771,16 @@ def _role_controller_scale(
     if local_direction is None:
         local_direction = _pmx_tail_direction(cmds, binding, indexed_joints)
     if local_direction is None:
-        return scale * 0.5
+        return scale * 0.5 * _NECK_CURVE_SCALE
     length = math.sqrt(sum(float(value) ** 2 for value in local_direction))
     if not math.isfinite(length) or length <= 1.0e-8:
-        return scale * 0.5
+        return scale * 0.5 * _NECK_CURVE_SCALE
     # Neck's template extent is roughly two units.  Keep the displayed width
     # below the local bone length while retaining a small usable minimum for
     # very short stylized neck bones.
     local_scale = length * 0.35
-    return max(scale * 0.05, min(scale * 0.75, local_scale))
+    bounded_scale = max(scale * 0.05, min(scale * 0.75, local_scale))
+    return bounded_scale * _NECK_CURVE_SCALE
 
 
 def _owned_nodes(cmds, control_group: str, selection_set: str) -> Tuple[str, ...]:

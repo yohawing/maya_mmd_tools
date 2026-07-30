@@ -547,8 +547,21 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
         cmds = _ShapeOrientationFake(values)
         binding = SimpleNamespace(joint="neck", bone_index=2, pmx_flags=0)
         neck_scale = _role_controller_scale(cmds, "root", "neck", binding, {}, 2.0)
-        self.assertAlmostEqual(neck_scale, 0.1)
+        self.assertAlmostEqual(neck_scale, 0.2)
         self.assertLess(neck_scale, 2.0)
+
+        missing_offset_cmds = _ShapeOrientationFake({})
+        self.assertAlmostEqual(
+            _role_controller_scale(
+                missing_offset_cmds,
+                "root",
+                "neck",
+                binding,
+                {},
+                2.0,
+            ),
+            2.0,
+        )
 
     def test_ik_link_keeps_raw_xyz_basis_and_orients_curve_only(self):
         rotation = ((0.0, 1.0, 0.0), 0.0, 1.0)
