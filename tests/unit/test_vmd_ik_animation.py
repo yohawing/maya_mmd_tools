@@ -96,6 +96,55 @@ class TestVmdIkAnimation(MayaTestBase):
 
         cmds.delete(left, right)
 
+    def test_apply_ik_enabled_animation_reuses_existing_animcurve_on_reimport(self):
+        """再インポート時は接続済み enabled animCurve をそのまま更新する"""
+        node = cmds.createNode("mmdCcdIk", name="reimport_ik_solver")
+        try:
+            cmds.addAttr(node, longName="mmd_ik_bone_name", dataType="string")
+            cmds.setAttr(f"{node}.mmd_ik_bone_name", "左足ＩＫ", type="string")
+            cmds.setAttr(f"{node}.enabled", False)
+
+            vmd_data = create_test_vmd_data()
+            frame = VmdIKShowHideFrame()
+            frame.frame_number = 20
+            frame.ik_states = [("左足ＩＫ", 0)]
+            vmd_data.ik_show_hide_frames = [frame]
+
+            apply_ik_enabled_animation(self._ik_enabled_context(), vmd_data)
+            initial_times = cmds.keyframe(
+                f"{node}.enabled", query=True, timeChange=True
+            )
+            self.assertTrue(
+                cmds.listConnections(
+                    f"{node}.enabled", source=True, destination=False
+                )
+            )
+
+            # The first pass owns the incoming animCurve.  Re-importing the
+            # same VMD must update its keys instead of calling setAttr on the
+            # connected enabled plug.
+            apply_ik_enabled_animation(self._ik_enabled_context(), vmd_data)
+
+            self.assertEqual(
+                cmds.keyframe(f"{node}.enabled", query=True, timeChange=True),
+                initial_times,
+            )
+            self.assertEqual(
+                cmds.keyframe(
+                    f"{node}.enabled", query=True, time=(0, 0), valueChange=True
+                ),
+                [1.0],
+            )
+            self.assertEqual(
+                cmds.keyframe(
+                    f"{node}.enabled", query=True, time=(20, 20), valueChange=True
+                ),
+                [0.0],
+            )
+        finally:
+            if cmds.objExists(node):
+                cmds.delete(node)
+
     def test_apply_ik_enabled_animation_scopes_to_target_namespace(self):
         """複数リグがあるシーンでは target_namespace の IK node だけに key を打つ"""
         cmds.namespace(add="ModelA")

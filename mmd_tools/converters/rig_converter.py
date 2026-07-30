@@ -16,8 +16,24 @@ MMD_APPEND_SCHEMA_MODE_COMPAT = 2
 
 
 def _node_leaf_name(node_name: str) -> str:
-    """Return the DAG leaf name, preserving namespace but dropping parent paths."""
-    return str(node_name).rsplit("|", 1)[-1] if node_name else ""
+    """Return a node name safe to create in Maya's current namespace.
+
+    Maya prefixes an unqualified ``name=`` with the current namespace.  A
+    joint returned by a namespaced import is already qualified (for example
+    ``Model:leg``), so passing that full name while ``Model`` is current would
+    create ``Model:Model:leg_mmdCcdIk``.  Strip only the current namespace;
+    preserve qualified names while running in the root namespace.
+    """
+    leaf_name = str(node_name).rsplit("|", 1)[-1] if node_name else ""
+    if not leaf_name or ":" not in leaf_name:
+        return leaf_name
+
+    current_namespace = cmds.namespaceInfo(currentNamespace=True) or ":"
+    current_namespace = str(current_namespace).lstrip(":")
+    namespace, bare_name = leaf_name.rsplit(":", 1)
+    if namespace == current_namespace:
+        return bare_name
+    return leaf_name
 
 
 class RigConverter:
