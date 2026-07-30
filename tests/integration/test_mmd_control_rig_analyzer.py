@@ -725,6 +725,55 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertEqual(baked["state"], "BAKED")
         self.assertFalse(cmds.listConnections(target_x, source=True, destination=False, plugs=True) or [])
 
+    def test_bone_morph_fk_keeps_nonidentity_basis_live_and_through_bake(self):
+        """FK baseRotate uses the same quaternion basis as direct joint routes."""
+        root = self._import_fixture()
+        initial_spec = analyze_mmd_control_rig(root)
+        arm_index = initial_spec.roles_by_name["left_arm"].binding.bone_index
+        morph = self._create_bone_morph_metadata(
+            root,
+            "left_arm_basis_boneMorph",
+            0,
+            [
+                {
+                    "bone_index": arm_index,
+                    "translation": [0.0, 0.0, 0.0],
+                    "rotation": [0.0, 0.0, 0.0, 1.0],
+                }
+            ],
+        )
+        self.assertTrue(build_bone_morph_graph(root)["success"])
+
+        spec = analyze_mmd_control_rig(root)
+        binding = spec.roles_by_name["left_arm"].binding
+        self.assertEqual(binding.input_kind, "bone_morph_base")
+        rig = build_mmd_control_rig(root, spec=spec)
+        metadata = enter_mmd_control_rig_edit(root)
+        basis = metadata["authoringBases"]["left_arm"]["quaternion"]
+        self.assertGreater(
+            max(abs(float(value) - expected) for value, expected in zip(basis, (0.0, 0.0, 0.0, 1.0))),
+            1.0e-4,
+        )
+        control = rig.controls["left_arm"]
+        target = next(
+            plug for plug in binding.authored_plugs if plug.endswith(".baseRotate")
+        )
+        cmds.setAttr(f"{control}.rotateX", 20.0)
+        target_values = tuple(float(cmds.getAttr(f"{target}{axis}")) for axis in "XYZ")
+        self.assertGreater(
+            max(abs(actual - expected) for actual, expected in zip(target_values, (20.0, 0.0, 0.0))),
+            1.0e-3,
+        )
+        joint = binding.joint
+        before = tuple(cmds.getAttr(f"{joint}.worldMatrix[0]"))
+        cmds.setAttr(f"{morph}.weight", 1.0)
+        bake_mmd_control_rig(root)
+        after = tuple(cmds.getAttr(f"{joint}.worldMatrix[0]"))
+        self.assertLess(
+            max(abs(float(left) - float(right)) for left, right in zip(before, after)),
+            1.0e-6,
+        )
+
     def test_baked_ik_controller_base_channels_are_exported(self):
         """VMD collection retains identity-only IK controller edits after bake."""
         root, _center, _left_ik, _right_ik, _append_joint, _append_node = (

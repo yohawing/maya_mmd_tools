@@ -2044,42 +2044,58 @@ def _duplicate_animation_source(cmds, source: str, created_nodes: List[str]) -> 
 
 
 def _supports_live_authoring_basis(row: Mapping[str, Any]) -> bool:
-    """Allow sampled direct XYZ routes while excluding special writers."""
+    """Allow complete transform-like XYZ routes while excluding special writers."""
     if row.get("routeClass", ROUTE_SAME_BASIS) == ROUTE_SAME_BASIS:
         return True
     target_attr = str(row.get("target", "")).rsplit(".", 1)[-1]
-    if target_attr not in {"rotateX", "rotateY", "rotateZ"}:
+    reasons = set(row.get("routeReasons") or ())
+    standard_rotate = target_attr in {"rotateX", "rotateY", "rotateZ"}
+    bone_morph_base = (
+        "bone_morph_base" in reasons
+        and target_attr.startswith("baseRotate")
+        and target_attr.endswith(("X", "Y", "Z"))
+    )
+    if "bone_morph_base" in reasons and not bone_morph_base:
+        return False
+    if not standard_rotate and not bone_morph_base:
         return False
     if row.get("layerRoute") is not None:
         return False
     special_reasons = {
         "anim_layer",
         "append_base",
-        "bone_morph_base",
         "ik",
         "ik_controller",
         "ik_link_input",
         "rotate_order",
     }
-    return not bool(set(row.get("routeReasons") or ()).intersection(special_reasons))
+    return not bool(reasons.intersection(special_reasons))
 
 
 def _supports_bake_authoring_basis(row: Mapping[str, Any]) -> bool:
-    """Allow standard joint XYZ basis sampling, including non-XYZ orders."""
+    """Allow joint or bone-morph-base XYZ basis sampling."""
     target_attr = str(row.get("target", "")).rsplit(".", 1)[-1]
-    if target_attr not in {"rotateX", "rotateY", "rotateZ"}:
+    reasons = set(row.get("routeReasons") or ())
+    standard_rotate = target_attr in {"rotateX", "rotateY", "rotateZ"}
+    bone_morph_base = (
+        "bone_morph_base" in reasons
+        and target_attr.startswith("baseRotate")
+        and target_attr.endswith(("X", "Y", "Z"))
+    )
+    if "bone_morph_base" in reasons and not bone_morph_base:
+        return False
+    if not standard_rotate and not bone_morph_base:
         return False
     if row.get("layerRoute") is not None:
         return False
     special_reasons = {
         "anim_layer",
         "append_base",
-        "bone_morph_base",
         "ik",
         "ik_controller",
         "ik_link_input",
     }
-    return not bool(set(row.get("routeReasons") or ()).intersection(special_reasons))
+    return not bool(reasons.intersection(special_reasons))
 
 
 def _consistent_rotation_group_basis(
@@ -2119,22 +2135,31 @@ def _create_live_rotation_converters(
 
     Maya 2024 does not expose a quaternion DG node.  A compose/mult/decompose
     chain implements ``B * q_control * inverse(B)`` while retaining ordinary
-    rotate channels as the artist-facing inputs. Complete direct XYZ groups
-    and optional twist-controller Append XYZ inputs are eligible; IK, partial,
-    and non-twist append routes remain fail-closed.
+    rotate channels as the artist-facing inputs. Complete direct XYZ groups,
+    bone-morph base rotations, and optional twist-controller Append XYZ inputs
+    are eligible; IK, partial, and non-twist append routes remain fail-closed.
     """
 
     converters: List[Dict[str, Any]] = []
     non_identity_rows = []
     for row in rows:
         target_attr = str(row.get("target", "")).rsplit(".", 1)[-1]
-        if target_attr not in {"rotateX", "rotateY", "rotateZ"} and not (
-            row.get("twistController")
-            and (
-                target_attr.startswith("baseRotate")
-                or target_attr.startswith("inputRotateElement")
-            )
+        bone_morph_base = (
+            "bone_morph_base" in set(row.get("routeReasons") or ())
+            and target_attr.startswith("baseRotate")
             and target_attr.endswith(("X", "Y", "Z"))
+        )
+        if (
+            target_attr not in {"rotateX", "rotateY", "rotateZ"}
+            and not bone_morph_base
+            and not (
+                row.get("twistController")
+                and (
+                    target_attr.startswith("baseRotate")
+                    or target_attr.startswith("inputRotateElement")
+                )
+                and target_attr.endswith(("X", "Y", "Z"))
+            )
         ):
             continue
         record = row.get("authoringBasis")
@@ -2154,7 +2179,7 @@ def _create_live_rotation_converters(
                 continue
             non_identity_rows.append(row)
             reasons = set(row.get("routeReasons") or ())
-            if reasons & {"ik", "ik_controller", "ik_link_input", "bone_morph_base"}:
+            if reasons & {"ik", "ik_controller", "ik_link_input"}:
                 raise MmdControlRigBuildError(
                     "non-identity authoring basis is unsupported for IK/append route"
                 )
@@ -2550,8 +2575,13 @@ def _rotation_channel_groups(
         passthrough_compound = bool(include_sampled_passthrough) and target_leaf.startswith(
             ("baseRotate", "inputRotateElement")
         )
+        basis_compound = bool(include_sampled_direct) and _supports_live_authoring_basis(row)
         if target_leaf not in {"rotateX", "rotateY", "rotateZ"}:
-            if not (row.get("twistController") or passthrough_compound) or not target_leaf.endswith(("X", "Y", "Z")):
+            if not (
+                row.get("twistController")
+                or passthrough_compound
+                or basis_compound
+            ) or not target_leaf.endswith(("X", "Y", "Z")):
                 continue
             if not (
                 target_leaf.startswith("baseRotate")

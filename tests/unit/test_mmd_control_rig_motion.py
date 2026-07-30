@@ -26,6 +26,18 @@ def _twist_rows(target_prefix="baseRotate"):
     ]
 
 
+def _bone_morph_rows():
+    return [
+        {
+            "control": f"arm_CTRL.rotate{axis}",
+            "target": f"accumulator.baseRotate{axis}",
+            "routeClass": ROUTE_SAMPLED,
+            "routeReasons": ["bone_morph_base", "joint_orient"],
+        }
+        for axis in "XYZ"
+    ]
+
+
 class MmdControlRigMotionRoutingTest(unittest.TestCase):
     """Keep optional twist Append routes complete and fail closed when partial."""
 
@@ -87,6 +99,22 @@ class MmdControlRigMotionRoutingTest(unittest.TestCase):
 
         self.assertFalse(_supports_live_authoring_basis(row))
         self.assertTrue(_supports_bake_authoring_basis(row))
+
+    def test_bone_morph_base_xyz_supports_live_and_bake_basis_conversion(self):
+        rows = _bone_morph_rows()
+
+        self.assertTrue(all(_supports_live_authoring_basis(row) for row in rows))
+        self.assertTrue(all(_supports_bake_authoring_basis(row) for row in rows))
+        groups = _rotation_channel_groups(rows, include_sampled_direct=True)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(
+            [row["target"] for row in groups[0]],
+            [
+                "accumulator.baseRotateX",
+                "accumulator.baseRotateY",
+                "accumulator.baseRotateZ",
+            ],
+        )
 
     def test_rotation_group_basis_accepts_json_roundtrip_normalization_noise(self):
         rows = [
