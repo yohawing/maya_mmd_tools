@@ -124,6 +124,17 @@ _TWIST_RING_ROLES = frozenset(
     }
 )
 _TWIST_CURVE_SCALE = 0.5
+_TWIST_CHILD_ROLES = {
+    "left_arm_twist": "left_elbow",
+    "left_wrist_twist": "left_wrist",
+    "right_arm_twist": "right_elbow",
+    "right_wrist_twist": "right_wrist",
+}
+_ARM_ORIENTATION_ROLES = frozenset(
+    f"{side}_{role}"
+    for side in ("left", "right")
+    for role in ("shoulder", "arm", "arm_twist", "elbow", "wrist_twist", "wrist")
+)
 _IK_DISPLAY_ONLY_ROLES = frozenset(
     {
         "left_foot_ik_parent",
@@ -302,7 +313,12 @@ def build_mmd_control_rig(
             controls: Dict[str, str] = {}
             zero_groups: Dict[str, str] = {}
             aim_spaces: Dict[str, str] = {}
-            role_joints: Dict[str, str] = {}
+            role_joints: Dict[str, str] = {
+                role_binding.role: str(role_binding.binding.joint)
+                for role_binding in rig_spec.roles
+                if _should_build_role_control(role_binding)
+                and role_binding.binding is not None
+            }
             bindings: Dict[str, Dict[str, Any]] = {}
             authoring_bases: Dict[str, Dict[str, Any]] = {}
             indexed_joints = {
@@ -340,12 +356,23 @@ def build_mmd_control_rig(
                 else:
                     matrix = _saved_bind_world_matrix(cmds, binding.joint)
                 cmds.xform(zero, worldSpace=True, matrix=matrix)
+                basis_matrix = matrix
+                if (
+                    role in _ARM_ORIENTATION_ROLES
+                    and binding.bone_index is not None
+                    and binding.input_kind == INPUT_IK_CONTROLLER
+                ):
+                    # Solver goals may display at the live pose, but FK-style
+                    # arm authoring axes must remain bind-pose deterministic.
+                    basis_matrix = _saved_bind_world_matrix(cmds, binding.joint)
                 shape_rotation = _control_shape_rotation(
                     cmds,
                     root,
                     role,
                     binding,
                     indexed_joints,
+                    bind_world_matrix=basis_matrix,
+                    role_joints=role_joints,
                 )
                 authoring_rotation, display_rotation = _control_basis_rotations(
                     binding,
@@ -977,8 +1004,11 @@ def _control_shape_rotation(
     role,
     binding,
     indexed_joints,
+    *,
+    bind_world_matrix=None,
+    role_joints=None,
 ):
-    """Infer the joint-local authoring basis that aims control +Z at the PMX tail.
+    """Infer a stable joint-local authoring basis for one control.
 
     ``ZERO`` already carries the bound joint world matrix.  PMX tail metadata is
     stored in model/world space, so a joint with Local Axis (or one below such a
@@ -989,22 +1019,55 @@ def _control_shape_rotation(
     """
     if role not in _AUTO_ORIENT_SHAPE_ROLES:
         return None
-    if role in _TWIST_RING_ROLES:
-        # A primary twist ring is authored around the PMX fixed axis, never
-        # around a guessed child-tail direction.  Invalid/missing vectors are
-        # rejected by the analyzer, so returning None here is fail-closed for
-        # hand-authored or stale scene metadata.
-        axis = _vector_attribute(cmds, binding.joint, ATTR_MMD_FIXED_AXIS)
-        if axis is None:
-            axis = _vector_attribute(cmds, binding.joint, ATTR_MMD_AXIS_DIRECTION)
-        if axis is not None:
-            maya_axis = (axis[0], axis[1], -axis[2])
-            return _shortest_arc_from_positive_z(maya_axis)
-        return None
-    direction = _pmx_tail_direction(cmds, binding, indexed_joints)
+    direction = (
+        _twist_child_direction(
+            cmds,
+            binding,
+            (role_joints or {}).get(_TWIST_CHILD_ROLES.get(role)),
+        )
+        if role in _TWIST_RING_ROLES
+        else _pmx_tail_direction(cmds, binding, indexed_joints)
+    )
+    if direction is None and role in _TWIST_RING_ROLES:
+        direction = _vector_attribute(cmds, binding.joint, ATTR_MMD_FIXED_AXIS)
+        if direction is None:
+            direction = _vector_attribute(
+                cmds,
+                binding.joint,
+                ATTR_MMD_AXIS_DIRECTION,
+            )
     if direction is None:
         return None
     maya_direction = (direction[0], direction[1], -direction[2])
+
+    if role in _ARM_ORIENTATION_ROLES:
+        world_axes = _arm_control_world_axes(role, maya_direction)
+        if world_axes is None:
+            return None
+        bind_axes = _rotation_axes_from_matrix(bind_world_matrix)
+        if bind_axes is None:
+            has_local_axis_basis, bind_axes = _joint_chain_local_axis_basis(
+                cmds,
+                binding.joint,
+                root,
+                self_has_local_axis=bool(
+                    binding.pmx_flags & int(PmxBoneFlag.LOCAL_AXIS)
+                ),
+            )
+            if has_local_axis_basis and bind_axes is None:
+                return None
+        if bind_axes is None:
+            bind_axes = (
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            )
+        local_axes = tuple(
+            _world_direction_to_local_axes(axis, bind_axes)
+            for axis in world_axes
+        )
+        return _rotation_from_basis_rows(local_axes)
+
     has_local_axis_basis, bind_axes = _joint_chain_local_axis_basis(
         cmds,
         binding.joint,
@@ -1022,6 +1085,174 @@ def _control_shape_rotation(
         )
         return _shortest_arc_from_positive_z(local_direction)
     return _shortest_arc_from_positive_z(maya_direction)
+
+
+def _twist_child_direction(cmds, binding, child_joint=None):
+    """Return a primary twist joint's actual child direction in PMX space."""
+
+    source = _vector_attribute(
+        cmds,
+        binding.joint,
+        ATTR_MMD_PMX_REST_POSITION,
+    )
+    if source is None:
+        return None
+    children = [str(child_joint)] if child_joint else (
+        cmds.listRelatives(
+            binding.joint,
+            children=True,
+            fullPath=True,
+            type="joint",
+        ) or []
+    )
+    candidates = []
+    for child in children:
+        target = _vector_attribute(
+            cmds,
+            str(child),
+            ATTR_MMD_PMX_REST_POSITION,
+        )
+        if target is None:
+            continue
+        direction = tuple(target[index] - source[index] for index in range(3))
+        length = math.sqrt(sum(component * component for component in direction))
+        if math.isfinite(length) and length > 1.0e-8:
+            candidates.append((length, direction))
+    if not candidates:
+        return None
+    # Prefer the structural child over nearby distribution helpers.
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def _arm_control_world_axes(role, direction):
+    """Return mirrored ergonomic X/Y/Z axes with Z aimed at the child."""
+
+    z_axis = _normalized_vector(direction)
+    if z_axis is None:
+        return None
+    # Match yw_test_model: Z follows the bone and X uses mirrored depth.
+    depth_sign = -1.0 if str(role).startswith("left_") else 1.0
+    x_axis = None
+    for reference in ((0.0, 0.0, depth_sign), (0.0, 1.0, 0.0), (1.0, 0.0, 0.0)):
+        projection = sum(reference[index] * z_axis[index] for index in range(3))
+        x_axis = _normalized_vector(
+            tuple(
+                reference[index] - projection * z_axis[index]
+                for index in range(3)
+            )
+        )
+        if x_axis is not None:
+            break
+    if x_axis is None:
+        return None
+    y_axis = _normalized_vector(_cross_product(z_axis, x_axis))
+    if y_axis is None:
+        return None
+    z_axis = _normalized_vector(_cross_product(x_axis, y_axis))
+    if z_axis is None:
+        return None
+    return x_axis, y_axis, z_axis
+
+
+def _rotation_axes_from_matrix(matrix):
+    """Extract finite right-handed rotation rows from a Maya matrix payload."""
+
+    if matrix is None:
+        return None
+    try:
+        values = tuple(float(value) for value in matrix)
+    except (TypeError, ValueError):
+        return None
+    if len(values) != 16 or not all(math.isfinite(value) for value in values):
+        return None
+    x_axis = _normalized_vector(values[0:3])
+    if x_axis is None:
+        return None
+    raw_y = values[4:7]
+    projection = sum(raw_y[index] * x_axis[index] for index in range(3))
+    y_axis = _normalized_vector(
+        tuple(raw_y[index] - projection * x_axis[index] for index in range(3))
+    )
+    if y_axis is None:
+        return None
+    z_axis = _normalized_vector(_cross_product(x_axis, y_axis))
+    if z_axis is None:
+        return None
+    raw_z = values[8:11]
+    if sum(z_axis[index] * raw_z[index] for index in range(3)) < 0.0:
+        y_axis = tuple(-value for value in y_axis)
+        z_axis = tuple(-value for value in z_axis)
+    return x_axis, y_axis, z_axis
+
+
+def _rotation_from_basis_rows(axes):
+    """Convert orthonormal Maya rotation rows to an axis/cos/sin tuple."""
+
+    rows = tuple(tuple(float(value) for value in row) for row in axes)
+    if len(rows) != 3 or any(len(row) != 3 for row in rows):
+        return None
+    cosine = max(
+        -1.0,
+        min(1.0, 0.5 * (rows[0][0] + rows[1][1] + rows[2][2] - 1.0)),
+    )
+    vector = (
+        rows[1][2] - rows[2][1],
+        rows[2][0] - rows[0][2],
+        rows[0][1] - rows[1][0],
+    )
+    vector_length = math.sqrt(sum(value * value for value in vector))
+    sine = min(1.0, 0.5 * vector_length)
+    if sine > 1.0e-8:
+        return (
+            tuple(value / vector_length for value in vector),
+            cosine,
+            sine,
+        )
+    if cosine > 0.0:
+        return ((0.0, 1.0, 0.0), 1.0, 0.0)
+
+    # Stable 180-degree fallback without depending on Euler order.
+    components = [
+        math.sqrt(max(0.0, 0.5 * (rows[index][index] + 1.0)))
+        for index in range(3)
+    ]
+    largest = max(range(3), key=lambda index: components[index])
+    if components[largest] <= 1.0e-8:
+        return None
+    for index in range(3):
+        if index == largest:
+            continue
+        components[index] = math.copysign(
+            components[index],
+            rows[largest][index] + rows[index][largest],
+        )
+    axis = _normalized_vector(components)
+    return (axis, -1.0, 0.0) if axis is not None else None
+
+
+def _normalized_vector(vector):
+    """Return a finite normalized three-vector, or ``None`` if degenerate."""
+
+    try:
+        values = tuple(float(value) for value in vector)
+    except (TypeError, ValueError):
+        return None
+    if len(values) != 3 or not all(math.isfinite(value) for value in values):
+        return None
+    length = math.sqrt(sum(value * value for value in values))
+    if length <= 1.0e-8:
+        return None
+    return tuple(value / length for value in values)
+
+
+def _cross_product(left, right):
+    """Return the three-dimensional cross product of two vectors."""
+
+    return (
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    )
 
 
 def _control_basis_rotations(binding, shape_rotation):

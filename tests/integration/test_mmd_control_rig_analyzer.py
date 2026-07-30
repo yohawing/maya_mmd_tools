@@ -409,6 +409,61 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         fixture_basis = read_mmd_control_rig_metadata(fixture_root)["authoringBases"]
         self.assertIn("pmx_tail", {record["source"] for record in fixture_basis.values()})
 
+    def test_arm_controls_use_mirrored_depth_axes_and_twists_aim_at_children(self):
+        """The checked-in A-pose fixture keeps ergonomic arm axes end to end."""
+        root = self._import_fixture()
+        spec = analyze_mmd_control_rig(root)
+        rig = build_mmd_control_rig(root, spec=spec)
+        joints = {
+            role.role: role.binding.joint
+            for role in spec.roles
+            if role.binding is not None
+        }
+        next_roles = {
+            "left_shoulder": "left_arm",
+            "left_arm": "left_arm_twist",
+            "left_arm_twist": "left_elbow",
+            "left_elbow": "left_wrist_twist",
+            "left_wrist_twist": "left_wrist",
+            "right_shoulder": "right_arm",
+            "right_arm": "right_arm_twist",
+            "right_arm_twist": "right_elbow",
+            "right_elbow": "right_wrist_twist",
+            "right_wrist_twist": "right_wrist",
+        }
+
+        for role, next_role in next_roles.items():
+            matrix = cmds.xform(
+                rig.aim_spaces[role],
+                query=True,
+                worldSpace=True,
+                matrix=True,
+            )
+            x_axis = om.MVector(*matrix[0:3]).normal()
+            z_axis = om.MVector(*matrix[8:11]).normal()
+            source = om.MVector(
+                *cmds.xform(
+                    joints[role],
+                    query=True,
+                    worldSpace=True,
+                    translation=True,
+                )
+            )
+            target = om.MVector(
+                *cmds.xform(
+                    joints[next_role],
+                    query=True,
+                    worldSpace=True,
+                    translation=True,
+                )
+            )
+            child_direction = (target - source).normal()
+            expected_depth_sign = -1.0 if role.startswith("left_") else 1.0
+
+            with self.subTest(role=role):
+                self.assertGreater(z_axis * child_direction, 0.9998)
+                self.assertGreater(x_axis.z * expected_depth_sign, 0.99)
+
     def test_negative_append_ratio_preserves_signed_control_route(self):
         """Negative Append contribution remains authored through the base input."""
         root, _center, _left_ik, _right_ik, append_joint, append_node = (

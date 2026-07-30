@@ -71,8 +71,9 @@ def _connection(source, destination, node_type):
 class _ShapeOrientationFake:
     """Minimal PMX metadata reader for display-only orientation tests."""
 
-    def __init__(self, values):
+    def __init__(self, values, children=None):
         self.values = values
+        self.children = dict(children or {})
 
     def attributeQuery(self, attribute, *, node, exists):
         return exists and f"{node}.{attribute}" in self.values
@@ -81,6 +82,8 @@ class _ShapeOrientationFake:
         return self.values[plug]
 
     def listRelatives(self, node, **kwargs):
+        if kwargs.get("children"):
+            return list(self.children.get(node, ()))
         return []
 
 
@@ -301,6 +304,114 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
                 {10: "arm", 11: "elbow"},
             )
         )
+
+    def test_arm_axes_use_mirrored_depth_and_child_direction(self):
+        values = {
+            "left_arm.mmd_bone_flags": 0,
+            "left_arm.mmd_connect_index": 11,
+            "left_arm.mmd_pmx_rest_position": [(0.0, 0.0, 0.0)],
+            "left_elbow.mmd_pmx_rest_position": [(2.0, -1.0, 0.5)],
+            "right_arm.mmd_bone_flags": 0,
+            "right_arm.mmd_connect_index": 21,
+            "right_arm.mmd_pmx_rest_position": [(0.0, 0.0, 0.0)],
+            "right_elbow.mmd_pmx_rest_position": [(-2.0, -1.0, 0.5)],
+        }
+        cmds = _ShapeOrientationFake(values)
+        identity = (
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        )
+
+        for role, joint, target, z_sign in (
+            ("left_arm", "left_arm", "left_elbow", -1.0),
+            ("right_arm", "right_arm", "right_elbow", 1.0),
+        ):
+            binding = SimpleNamespace(joint=joint, bone_index=10, pmx_flags=0)
+            rotation = _control_shape_rotation(
+                cmds,
+                "root",
+                role,
+                binding,
+                {11 if role.startswith("left") else 21: target},
+                bind_world_matrix=identity,
+            )
+            control_x = _rotate_shape_point((1.0, 0.0, 0.0), rotation)
+            control_z = _rotate_shape_point((0.0, 0.0, 1.0), rotation)
+            pmx_direction = values[f"{target}.mmd_pmx_rest_position"][0]
+            maya_direction = (
+                pmx_direction[0],
+                pmx_direction[1],
+                -pmx_direction[2],
+            )
+            direction_length = math.sqrt(sum(value * value for value in maya_direction))
+            expected_z = tuple(value / direction_length for value in maya_direction)
+
+            with self.subTest(role=role):
+                for actual, expected in zip(control_z, expected_z):
+                    self.assertAlmostEqual(actual, expected, places=12)
+                self.assertGreater(control_x[2] * z_sign, 0.9)
+                self.assertAlmostEqual(
+                    sum(control_x[index] * control_z[index] for index in range(3)),
+                    0.0,
+                    places=12,
+                )
+
+    def test_arm_axis_falls_back_when_child_is_parallel_to_depth(self):
+        values = {
+            "arm.mmd_bone_flags": 0,
+            "arm.mmd_connect_index": 11,
+            "arm.mmd_pmx_rest_position": [(0.0, 0.0, 0.0)],
+            "elbow.mmd_pmx_rest_position": [(0.0, 0.0, 2.0)],
+        }
+        rotation = _control_shape_rotation(
+            _ShapeOrientationFake(values),
+            "root",
+            "left_arm",
+            SimpleNamespace(joint="arm", bone_index=10, pmx_flags=0),
+            {11: "elbow"},
+        )
+
+        self.assertIsNotNone(rotation)
+        aligned = _rotate_shape_point((0.0, 0.0, 1.0), rotation)
+        self.assertAlmostEqual(aligned[0], 0.0, places=12)
+        self.assertAlmostEqual(aligned[1], 0.0, places=12)
+        self.assertAlmostEqual(aligned[2], -1.0, places=12)
+
+    def test_twist_ring_uses_child_direction_in_bind_local_space(self):
+        values = {
+            "twist.mmd_pmx_rest_position": [(0.0, 0.0, 0.0)],
+            "elbow.mmd_pmx_rest_position": [(1.0, 0.0, 0.0)],
+            "twist.mmd_fixed_axis": [(0.0, 1.0, 0.0)],
+        }
+        cmds = _ShapeOrientationFake(values, children={"twist": ["elbow"]})
+        binding = SimpleNamespace(joint="twist", bone_index=10, pmx_flags=0)
+        bind_matrix = (
+            0.0, 0.0, -1.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        )
+
+        rotation = _control_shape_rotation(
+            cmds,
+            "root",
+            "left_arm_twist",
+            binding,
+            {},
+            bind_world_matrix=bind_matrix,
+        )
+        local_z = _rotate_shape_point((0.0, 0.0, 1.0), rotation)
+        bind_axes = (bind_matrix[0:3], bind_matrix[4:7], bind_matrix[8:11])
+        world_z = tuple(
+            sum(local_z[index] * bind_axes[index][component] for index in range(3))
+            for component in range(3)
+        )
+
+        self.assertAlmostEqual(world_z[0], 1.0, places=12)
+        self.assertAlmostEqual(world_z[1], 0.0, places=12)
+        self.assertAlmostEqual(world_z[2], 0.0, places=12)
 
     def test_arm_chain_uses_sized_mmd_z_primary_circles(self):
         templates = _control_curve_templates()
