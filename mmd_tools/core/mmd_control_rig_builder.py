@@ -24,6 +24,8 @@ from mmd_tools.core.constants import (
     ATTR_MMD_PMX_REST_POSITION,
     ATTR_MMD_FIXED_AXIS,
     ATTR_MMD_AXIS_DIRECTION,
+    ATTR_MMD_LOCAL_X_AXIS,
+    ATTR_MMD_LOCAL_Z_AXIS,
 )
 from mmd_tools.core.humanik_utils import maya_cmds
 from mmd_tools.core.mmd_control_rig_analyzer import (
@@ -44,6 +46,7 @@ from mmd_tools.core.mmd_control_rig_basis import (
     matrix_from_quaternion,
     validate_basis_record,
 )
+from mmd_tools.core.pmx_local_axis import maya_basis_from_pmx_local_axes
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
 
@@ -928,11 +931,21 @@ def _create_template_control_curve(
         raise
 
 
-def _control_shape_rotation(cmds, root, role, binding, indexed_joints):
-    """Infer a display-only curve rotation for a PMX chain without LocalAxis.
+def _control_shape_rotation(
+    cmds,
+    root,
+    role,
+    binding,
+    indexed_joints,
+):
+    """Infer the joint-local authoring basis that aims control +Z at the PMX tail.
 
-    Controller and ZERO transforms remain in the authored animation basis.  The
-    returned shortest-arc rotation is applied only to curve CV positions.
+    ``ZERO`` already carries the bound joint world matrix.  PMX tail metadata is
+    stored in model/world space, so a joint with Local Axis (or one below such a
+    joint) must first convert that direction into ``ZERO`` local space.  Applying
+    the world direction directly would double the joint orientation; returning
+    identity would leave the canonical XY control plane facing joint-local +Z
+    instead of following the bone's local +X direction.
     """
     if role not in _AUTO_ORIENT_SHAPE_ROLES:
         return None
@@ -948,28 +961,63 @@ def _control_shape_rotation(cmds, root, role, binding, indexed_joints):
             maya_axis = (axis[0], axis[1], -axis[2])
             return _shortest_arc_from_positive_z(maya_axis)
         return None
-    if binding.pmx_flags & int(PmxBoneFlag.LOCAL_AXIS):
-        return None
-    if _joint_chain_has_local_axis(cmds, binding.joint, root):
-        return None
     direction = _pmx_tail_direction(cmds, binding, indexed_joints)
     if direction is None:
         return None
     maya_direction = (direction[0], direction[1], -direction[2])
+    has_local_axis_basis, bind_axes = _joint_chain_local_axis_basis(
+        cmds,
+        binding.joint,
+        root,
+        self_has_local_axis=bool(
+            binding.pmx_flags & int(PmxBoneFlag.LOCAL_AXIS)
+        ),
+    )
+    if has_local_axis_basis:
+        if bind_axes is None:
+            return None
+        local_direction = _world_direction_to_local_axes(
+            maya_direction,
+            bind_axes,
+        )
+        return _shortest_arc_from_positive_z(local_direction)
     return _shortest_arc_from_positive_z(maya_direction)
 
 
-def _joint_chain_has_local_axis(cmds, joint: str, root: str) -> bool:
-    """Return whether an indexed ancestor contributes a PMX LocalAxis basis."""
+def _joint_chain_local_axis_basis(
+    cmds,
+    joint: str,
+    root: str,
+    *,
+    self_has_local_axis: bool = False,
+):
+    """Return the nearest PMX Local Axis bind basis affecting one joint.
+
+    Bone import authors Local Axis as ``jointOrient`` only on the declaring
+    joint.  Descendants without their own Local Axis inherit that same bind
+    rotation, so the nearest declaration is the static world basis needed to
+    convert PMX tail directions into controller-local space.
+    """
     current = str(joint)
+    is_self = True
     while current and current != root:
+        has_local_axis = bool(self_has_local_axis and is_self)
         if cmds.attributeQuery(ATTR_MMD_BONE_FLAGS, node=current, exists=True):
             flags = int(cmds.getAttr(f"{current}.{ATTR_MMD_BONE_FLAGS}") or 0)
-            if flags & int(PmxBoneFlag.LOCAL_AXIS):
-                return True
-        parents = cmds.listRelatives(current, parent=True, fullPath=True, type="joint") or []
+            has_local_axis = has_local_axis or bool(
+                flags & int(PmxBoneFlag.LOCAL_AXIS)
+            )
+        if has_local_axis:
+            return True, _local_axis_basis(cmds, current)
+        parents = cmds.listRelatives(
+            current,
+            parent=True,
+            fullPath=True,
+            type="joint",
+        ) or []
         current = str(parents[0]) if parents else ""
-    return False
+        is_self = False
+    return False, None
 
 
 def _pmx_tail_direction(cmds, binding, indexed_joints):
@@ -995,6 +1043,27 @@ def _vector_attribute(cmds, node, attribute):
         return None
     vector = tuple(float(component) for component in value)
     return vector if all(math.isfinite(component) for component in vector) else None
+
+
+def _local_axis_basis(cmds, joint):
+    """Return orthonormal Maya-world X/Y/Z rows from PMX Local Axis metadata."""
+    local_x = _vector_attribute(cmds, joint, ATTR_MMD_LOCAL_X_AXIS)
+    local_z = _vector_attribute(cmds, joint, ATTR_MMD_LOCAL_Z_AXIS)
+    if local_x is None or local_z is None:
+        return None
+    try:
+        return maya_basis_from_pmx_local_axes(local_x, local_z)
+    except ValueError:
+        return None
+
+
+def _world_direction_to_local_axes(direction, axes):
+    """Project one Maya-world direction onto orthonormal local basis rows."""
+    world = tuple(float(component) for component in direction)
+    return tuple(
+        sum(world[index] * axis[index] for index in range(3))
+        for axis in axes
+    )
 
 
 def _shortest_arc_from_positive_z(direction):

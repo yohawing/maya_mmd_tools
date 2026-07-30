@@ -1,4 +1,3 @@
-import math
 import time
 from typing import List, Optional, Tuple, Union
 
@@ -47,6 +46,7 @@ from ..core.coordinate_transform import mmd_point_to_maya
 from types import SimpleNamespace
 
 from ..core.logger import get_logger, safe_log_error
+from ..core.pmx_local_axis import maya_basis_from_pmx_local_axes
 from .rig_converter import RigConverter
 
 
@@ -747,29 +747,14 @@ class BoneConverter:
 
     def _compute_pmx_world_rotation_matrix(self, bone):
         """PMX LOCAL_AXIS の軸方向からワールド空間回転行列を計算する。"""
-        epsilon = 1.0e-8
-
-        def _axis_vector(values, label):
-            if len(values) != 3 or not all(math.isfinite(float(value)) for value in values):
-                raise ValueError(f"LOCAL_AXIS {label} axis must contain three finite values")
-            vector = om.MVector(float(values[0]), float(values[1]), -float(values[2]))
-            if vector.length() <= epsilon:
-                raise ValueError(f"LOCAL_AXIS {label} axis magnitude must be greater than {epsilon}")
-            vector.normalize()
-            return vector
-
-        x_axis = _axis_vector(bone.x_axis_direction, "X")
-        z_axis = _axis_vector(bone.z_axis_direction, "Z")
-        y_axis = z_axis ^ x_axis
-        if y_axis.length() <= epsilon:
-            raise ValueError("LOCAL_AXIS X and Z axes must not be parallel")
-        y_axis.normalize()
-        z_axis = x_axis ^ y_axis
-        z_axis.normalize()
+        x_axis, y_axis, z_axis = maya_basis_from_pmx_local_axes(
+            bone.x_axis_direction,
+            bone.z_axis_direction,
+        )
         return om.MMatrix([
-            [x_axis.x, x_axis.y, x_axis.z, 0],
-            [y_axis.x, y_axis.y, y_axis.z, 0],
-            [z_axis.x, z_axis.y, z_axis.z, 0],
+            [*x_axis, 0],
+            [*y_axis, 0],
+            [*z_axis, 0],
             [0, 0, 0, 1],
         ])
 

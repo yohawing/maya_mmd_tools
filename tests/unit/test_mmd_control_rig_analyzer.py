@@ -256,9 +256,42 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
             bone_index=10,
             pmx_flags=int(PmxBoneFlag.LOCAL_AXIS),
         )
+        local_axis_cmds = _ShapeOrientationFake(
+            {
+                "arm.mmd_bone_flags": int(PmxBoneFlag.LOCAL_AXIS),
+                "arm.mmd_connect_index": 11,
+                "arm.mmd_pmx_rest_position": [(0.0, 0.0, 0.0)],
+                "elbow.mmd_pmx_rest_position": [(0.0, 2.0, 0.0)],
+                "arm.mmd_local_x_axis": [(0.0, 1.0, 0.0)],
+                "arm.mmd_local_z_axis": [(0.0, 0.0, 1.0)],
+            }
+        )
+        local_axis_rotation = _control_shape_rotation(
+            local_axis_cmds,
+            "root",
+            "left_arm",
+            local_axis_binding,
+            {10: "arm", 11: "elbow"},
+        )
+        local_axis_aligned = _rotate_shape_point(
+            (0.0, 0.0, 1.0),
+            local_axis_rotation,
+        )
+        self.assertAlmostEqual(local_axis_aligned[0], 1.0)
+        self.assertAlmostEqual(local_axis_aligned[1], 0.0)
+        self.assertAlmostEqual(local_axis_aligned[2], 0.0)
+
+        missing_local_axis_cmds = _ShapeOrientationFake(
+            {
+                "arm.mmd_bone_flags": int(PmxBoneFlag.LOCAL_AXIS),
+                "arm.mmd_connect_index": 11,
+                "arm.mmd_pmx_rest_position": [(0.0, 0.0, 0.0)],
+                "elbow.mmd_pmx_rest_position": [(0.0, 2.0, 0.0)],
+            }
+        )
         self.assertIsNone(
             _control_shape_rotation(
-                cmds,
+                missing_local_axis_cmds,
                 "root",
                 "left_arm",
                 local_axis_binding,
