@@ -6,12 +6,15 @@ import math
 import json
 import sys
 import unittest
+from contextlib import contextmanager
 from unittest.mock import Mock, patch
 
 from tests.common.maya_stub import install_maya_stub
 
 install_maya_stub(profile="minimal")
 _om = sys.modules["maya.api.OpenMaya"]
+_MISSING = object()
+_OPENMAYA_PATCH_NAMES = ("MMatrix", "MPxNode", "MTypeId")
 
 
 class _Matrix:
@@ -47,10 +50,30 @@ class _Matrix:
         return _Matrix([item for row in identity for item in row])
 
 
-_om.MMatrix = _Matrix
-_om.MPxNode = type("_MPxNode", (), {"__init__": lambda self: None})
-_om.MTypeId = lambda value: value
-from mmd_tools.nodes import mmd_physics_solver_node as solver
+@contextmanager
+def _temporary_openmaya_attrs(**attrs):
+    """Install test-only OpenMaya symbols and restore the shared stub exactly."""
+
+    previous = {name: _om.__dict__.get(name, _MISSING) for name in attrs}
+    try:
+        for name, value in attrs.items():
+            setattr(_om, name, value)
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is _MISSING:
+                _om.__dict__.pop(name, None)
+            else:
+                setattr(_om, name, value)
+
+
+_MPxNode = type("_MPxNode", (), {"__init__": lambda self: None})
+with _temporary_openmaya_attrs(
+    MMatrix=_Matrix,
+    MPxNode=_MPxNode,
+    MTypeId=lambda value: value,
+):
+    from mmd_tools.nodes import mmd_physics_solver_node as solver
 from mmd_tools.core import physics_bind_basis as basis
 
 
@@ -139,12 +162,28 @@ def _resolver_cmds(*, dag_matrix=None, skin_pre=None, joint="|ns:joint", mismatc
 
 
 class TestPhysicsBindBasis(unittest.TestCase):
+    def test_openmaya_patch_restores_exact_symbols(self):
+        original = {
+            name: _om.__dict__.get(name, _MISSING)
+            for name in _OPENMAYA_PATCH_NAMES
+        }
+        with _temporary_openmaya_attrs(
+            MMatrix=_Matrix,
+            MPxNode=_MPxNode,
+            MTypeId=lambda value: value,
+        ):
+            self.assertIs(_om.MMatrix, _Matrix)
+            self.assertIs(_om.MPxNode, _MPxNode)
+        for name, value in original.items():
+            self.assertIs(_om.__dict__.get(name, _MISSING), value, name)
+
     def _resolve(self, cmds, joint="|ns:joint"):
         maya = sys.modules["maya"]
         old_cmds = maya.cmds
         maya.cmds = cmds
         try:
-            return basis.resolve_saved_bind_world_matrix(joint)
+            with _temporary_openmaya_attrs(MMatrix=_Matrix):
+                return basis.resolve_saved_bind_world_matrix(joint)
         finally:
             maya.cmds = old_cmds
 

@@ -32,7 +32,6 @@ class MmdControlRigMotionRoutingTest(unittest.TestCase):
             [row["target"] for row in groups[0]],
             ["append.baseRotateX", "append.baseRotateY", "append.baseRotateZ"],
         )
-
     def test_twist_append_partial_xyz_is_not_grouped(self):
         rows = _twist_rows()
         rows[-1] = dict(rows[-1], target="append.baseRotateX")
@@ -43,4 +42,3 @@ class MmdControlRigMotionRoutingTest(unittest.TestCase):
         rows = [dict(row, twistController=False) for row in _twist_rows()]
 
         self.assertEqual(_rotation_channel_groups(rows), [])
-
