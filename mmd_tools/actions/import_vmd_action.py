@@ -20,14 +20,7 @@ __all__ = [
     "ImportVmdAction",
     "ImportVmdRequest",
     "ImportVmdResult",
-    "VMD_TARGET_AUTO",
-    "VMD_TARGET_CAMERA",
 ]
-
-# Tagged target choices used by the VMD target combo.  Model choices use their
-# concrete Maya root string instead of either sentinel.
-VMD_TARGET_AUTO = "__vmd_target_auto__"
-VMD_TARGET_CAMERA = "__vmd_target_camera__"
 
 
 @dataclass
@@ -68,14 +61,6 @@ class ImportVmdAction:
     def execute(self, request: ImportVmdRequest) -> ImportVmdResult:
         """Run VMD import and convert backend failures into a result object."""
         try:
-            scene_only = bool(request.options.get("scene_animation_only", False))
-            if scene_only:
-                if "target_model" in request.options:
-                    raise ValueError("Camera Motion must not specify target_model")
-            elif request.create_new_scene:
-                raise ValueError("VMD model motion cannot create a new scene")
-            elif not request.options.get("target_model"):
-                raise ValueError("VMD model motion requires an explicit target model")
             if request.create_new_scene:
                 self._new_scene()
             importer = self._importer or import_mmd_file

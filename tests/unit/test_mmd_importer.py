@@ -272,12 +272,92 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
 
         with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data):
             with patch("mmd_tools.io.mmd_importer.vmd_importer.import_vmd_file", return_value=True) as importer:
-                result = import_mmd_file("motion.vmd", options={}, progress_callback=progress_callback)
+                result = import_mmd_file(
+                    "motion.vmd",
+                    options={"target_model": "model_root"},
+                    progress_callback=progress_callback,
+                )
 
         self.assertTrue(result)
         self.assertIs(importer.call_args.kwargs["progress_callback"], progress_callback)
         self.assertIn(5, progress)
         self.assertIn(12, progress)
+
+    def test_camera_only_vmd_automatically_uses_scene_animation_route(self):
+        parsed_data = SimpleNamespace(
+            bone_frames=[],
+            morph_frames=[],
+            ik_show_hide_frames=[],
+            camera_frames=[object()],
+            light_frames=[],
+        )
+        options = {"target_model": "current_model"}
+
+        with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data), patch(
+            "mmd_tools.io.mmd_importer.vmd_importer.import_vmd_file",
+            return_value=True,
+        ) as importer:
+            result = import_mmd_file("camera.vmd", options=options)
+
+        self.assertTrue(result)
+        self.assertTrue(options["scene_animation_only"])
+        self.assertNotIn("target_model", options)
+        self.assertIs(importer.call_args.args[0], parsed_data)
+
+    def test_light_only_vmd_needs_no_current_model(self):
+        parsed_data = SimpleNamespace(
+            bone_frames=[],
+            morph_frames=[],
+            ik_show_hide_frames=[],
+            camera_frames=[],
+            light_frames=[object()],
+        )
+        options = {}
+
+        with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data), patch(
+            "mmd_tools.io.mmd_importer.vmd_importer.import_vmd_file",
+            return_value=True,
+        ):
+            result = import_mmd_file("light.vmd", options=options)
+
+        self.assertTrue(result)
+        self.assertTrue(options["scene_animation_only"])
+
+    def test_model_vmd_without_current_model_reports_explicit_error(self):
+        parsed_data = SimpleNamespace(
+            bone_frames=[object()],
+            morph_frames=[],
+            ik_show_hide_frames=[],
+            camera_frames=[],
+            light_frames=[],
+        )
+
+        with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data), patch(
+            "mmd_tools.io.mmd_importer.vmd_importer.import_vmd_file"
+        ) as importer, self.assertRaisesRegex(MMDImportException, "requires a current model"):
+            import_mmd_file("model_motion.vmd", options={})
+
+        importer.assert_not_called()
+
+    def test_mixed_vmd_keeps_current_model_route(self):
+        parsed_data = SimpleNamespace(
+            bone_frames=[object()],
+            morph_frames=[],
+            ik_show_hide_frames=[],
+            camera_frames=[object()],
+            light_frames=[],
+        )
+        options = {"target_model": "current_model", "scene_animation_only": True}
+
+        with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data), patch(
+            "mmd_tools.io.mmd_importer.vmd_importer.import_vmd_file",
+            return_value=True,
+        ):
+            result = import_mmd_file("mixed.vmd", options=options)
+
+        self.assertTrue(result)
+        self.assertFalse(options["scene_animation_only"])
+        self.assertEqual(options["target_model"], "current_model")
 
     def test_progress_callback_error_does_not_abort_import(self):
         parsed_data = object()

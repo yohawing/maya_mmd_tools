@@ -14,6 +14,7 @@ from mmd_tools.core.mmd_control_rig_builder import build_mmd_control_rig
 from mmd_tools.core.mmd_control_rig_motion import enter_mmd_control_rig_edit
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.converters import vmd_profile
+from mmd_tools.converters.vmd_motion_kind import detect_vmd_motion_kind
 from mmd_tools.io import pmx_importer, vmd_importer
 from mmd_tools.io.cpp_fast_importer import fast_import
 from mmd_tools.core.logger import get_logger
@@ -21,6 +22,25 @@ from mmd_tools.core.logger import get_logger
 logger = get_logger("mmd_tools.io.mmd_importer")
 
 _OPTION_TO_SETTINGS_KEY = settings_keys.MODEL_OPTION_TO_SETTINGS_KEY
+
+
+def _resolve_vmd_content_route(parsed_data: Any, options: Dict[str, Any]) -> None:
+    """Select the model or scene-animation VMD route from parsed frame content.
+
+    Camera/light-only VMD files do not need a model. Bone, morph, or IK display
+    keys make the file model-owned (including mixed model/camera motions), so
+    those files must target the model currently selected in the Manager.
+    """
+    motion_kind = detect_vmd_motion_kind(parsed_data)
+    scene_animation_only = motion_kind in {"camera", "light"}
+    options["scene_animation_only"] = scene_animation_only
+    if scene_animation_only:
+        options.pop("target_model", None)
+        return
+    if not options.get("target_model"):
+        raise MMDImportException(
+            "VMD model motion requires a current model. Select a model in the Manager first."
+        )
 
 
 def _schedule_uv_editor_refresh() -> None:
@@ -277,6 +297,7 @@ def import_mmd_file(
             return _post_model_import_control_rig(model_root, options)
 
         elif suffix == ".vmd":
+            _resolve_vmd_content_route(parsed_data, options)
             return vmd_importer.import_vmd_file(
                 parsed_data,
                 filepath,

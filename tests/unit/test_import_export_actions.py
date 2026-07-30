@@ -102,12 +102,6 @@ class _ImportActionContract:
         action = self.action_cls(importer=importer, new_scene=new_scene)
         result = action.execute(self._make_request({}, create_new_scene=True))
 
-        if self.action_cls is ImportVmdAction:
-            self.assertFalse(result.succeeded)
-            self.assertEqual(result.outcome, OUTCOME_FATAL)
-            self.assertIsInstance(result.error, ValueError)
-            self.assertEqual(calls, [])
-            return
         self.assertTrue(result.succeeded)
         self.assertEqual(calls, ["new_scene", "importer"])
 

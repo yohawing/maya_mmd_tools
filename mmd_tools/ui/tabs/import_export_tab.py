@@ -19,28 +19,13 @@ from ..qt_compat import (
     QColor,
 )
 from ..base_tab import BaseTab
-from ..combo_box_utils import add_combo_item_with_tooltip, configure_model_combo_width
 from ..import_export_view_state import ImportExportViewState
 from ...core import settings_keys as setting_keys
 from ...services.settings_service import SettingsService, normalize_reduce_bake_quality
-from ...actions.import_vmd_action import VMD_TARGET_AUTO, VMD_TARGET_CAMERA
 import os
 
 
 _REDUCE_BAKE_QUALITY_DEFAULT = 1.0
-
-
-def _format_target_model_label(model_root, display_name):
-    """VMD import target combo に表示するモデル名を返す。"""
-    display_name = display_name or model_root
-    if ":" not in model_root:
-        return display_name
-
-    namespace = model_root.rsplit(":", 1)[0]
-    if "|" in namespace:
-        namespace = namespace.split("|")[-1]
-    root_name = model_root.rsplit(":", 1)[-1]
-    return f"{display_name} [{namespace}:{root_name}]"
 
 
 class ImportExportTab(BaseTab):
@@ -426,18 +411,6 @@ class ImportExportTab(BaseTab):
 
         self.vmd_path_edit.textChanged.connect(lambda text: self.view_state.set("vmd_path", text))
 
-        # Target model selection
-        self.target_model_combo = QComboBox()
-        configure_model_combo_width(self.target_model_combo)
-        # モデルリストを更新してから保存された選択を復元
-        self.refresh_model_list(restore_selection=True)
-        # 選択が変更されたら保存
-        self.target_model_combo.currentIndexChanged.connect(
-            self._save_target_model_choice
-        )
-        self.target_model_label = QLabel(self.tr("target_model", "fields"))
-        animation_layout.addRow(self.target_model_label, self.target_model_combo)
-
         self.clear_existing_motion_check = QCheckBox(self.tr("clear_existing_motion", "checkboxes"))
         self.clear_existing_motion_check.setChecked(self.settings_service.get(setting_keys.IMPORT_ANIMATION_CLEAR_EXISTING_MOTION, False))
         self.clear_existing_motion_check.toggled.connect(
@@ -645,63 +618,6 @@ class ImportExportTab(BaseTab):
         export_format = self.settings_service.get(setting_keys.EXPORT_GENERAL_EXPORT_FORMAT, "pmx")
         self.export_group.setVisible(bool(is_dev) and export_format in {"pmx", "vmd"})
 
-    def set_target_model_items(self, model_items, restore_selection=False):
-        """Presenter から渡されたモデル候補で target combo を更新する。"""
-        current_index = self.target_model_combo.currentIndex()
-        current_choice = self.target_model_combo.itemData(current_index)
-        restore_choice = (
-            self.view_state.get("target_model_choice", VMD_TARGET_AUTO)
-            if restore_selection
-            else current_choice
-        )
-
-        previous_signal_state = None
-        if hasattr(self.target_model_combo, "blockSignals"):
-            previous_signal_state = self.target_model_combo.blockSignals(True)
-        try:
-            self.target_model_combo.clear()
-            add_combo_item_with_tooltip(
-                self.target_model_combo,
-                self.tr("auto_detect", "actions"),
-                user_data=VMD_TARGET_AUTO,
-            )
-            add_combo_item_with_tooltip(
-                self.target_model_combo,
-                self.tr("camera_motion", "actions"),
-                user_data=VMD_TARGET_CAMERA,
-            )
-
-            for model_root, display_name in model_items:
-                add_combo_item_with_tooltip(
-                    self.target_model_combo,
-                    _format_target_model_label(model_root, display_name),
-                    user_data=model_root,
-                )
-
-            selected_index = 0
-            for index in range(self.target_model_combo.count()):
-                if self.target_model_combo.itemData(index) == restore_choice:
-                    selected_index = index
-                    break
-            self.target_model_combo.setCurrentIndex(selected_index)
-        finally:
-            if previous_signal_state is not None:
-                self.target_model_combo.blockSignals(previous_signal_state)
-
-    def _save_target_model_choice(self, index):
-        """Persist the tagged choice/root identity instead of a fragile combo index."""
-        choice = self.target_model_combo.itemData(index)
-        if choice is not None:
-            self.view_state.set("target_model_choice", choice)
-
-    def refresh_model_list(self, restore_selection=False):
-        """シーン内のMMDモデルリストを更新"""
-        presenter = getattr(self, "presenter", None)
-        if presenter is not None:
-            presenter.refresh_model_list(restore_selection=restore_selection)
-            return
-        self.set_target_model_items([], restore_selection=restore_selection)
-
     def get_custom_namespace(self):
         """カスタムnamespace名を取得"""
         if (
@@ -733,8 +649,6 @@ class ImportExportTab(BaseTab):
             self.import_path_label.setText(self.tr("file_path", "labels"))
         if hasattr(self, "vmd_file_label"):
             self.vmd_file_label.setText(self.tr("vmd_file", "fields"))
-        if hasattr(self, "target_model_label"):
-            self.target_model_label.setText(self.tr("target_model", "fields"))
         if hasattr(self, "export_path_label"):
             self.export_path_label.setText(self.tr("file_path", "labels"))
 
@@ -826,9 +740,6 @@ class ImportExportTab(BaseTab):
         # Tab widget texts
         if hasattr(self, "animation_settings_group"):
             self.animation_settings_group.setTitle(self.tr("animation", "tabs"))
-
-        # Refresh model list to update auto detect text
-        self.refresh_model_list()
 
     def _load_history(self, key, max_items=10):
         """履歴を読み込み"""
