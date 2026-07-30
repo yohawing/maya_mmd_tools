@@ -241,6 +241,10 @@ def _expected_bind_space_ccdik_outputs(
     goal: tuple[float, float, float],
     input_rotates_deg: list[tuple[float, float, float]] | None = None,
 ) -> list[tuple[float, float, float]]:
+    from mmd_tools.nodes.mmd_ccd_ik_node import (
+        _canonicalize_runtime_quaternion,
+    )
+
     bones = chain["bones"]
     links = chain["links"]
     solver = mmd_ik_chain_cls.create(
@@ -267,7 +271,9 @@ def _expected_bind_space_ccdik_outputs(
         if len(input_rotates_deg) < bone_count:
             input_rotates_deg = [*input_rotates_deg, *([(0.0, 0.0, 0.0)] * (bone_count - len(input_rotates_deg)))]
         q_input_rotates = [
-            om.MEulerRotation(*(math.radians(v) for v in input_rotates_deg[bone_i])).asQuaternion()
+            om.MEulerRotation(
+                *(math.radians(v) for v in input_rotates_deg[bone_i])
+            ).asQuaternion()
             for bone_i in range(bone_count)
         ]
         bind_worlds = [om.MMatrix(b["maya_bind_world_matrix"]) for b in bones]
@@ -295,7 +301,8 @@ def _expected_bind_space_ccdik_outputs(
             positions[bone_i * 3 + 1] = float(local_t.y) - float(rest[1])
             positions[bone_i * 3 + 2] = float(local_t.z) - float(rest[2])
             q = local_tfm.rotation(asQuaternion=True)
-            rotations[bone_i * 4:bone_i * 4 + 4] = [q.x, q.y, q.z, q.w]
+            canonical = _canonicalize_runtime_quaternion((q.x, q.y, q.z, q.w))
+            rotations[bone_i * 4:bone_i * 4 + 4] = canonical
 
         goal_tfm = om.MTransformationMatrix()
         goal_tfm.setTranslation(om.MVector(*goal), om.MSpace.kTransform)
