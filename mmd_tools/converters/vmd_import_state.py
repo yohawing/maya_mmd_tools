@@ -157,7 +157,13 @@ def clear_existing_motion(
     preserve_curve_nodes: bool = False,
     detached_curve_nodes=None,
 ) -> None:
-    """Delete existing VMD motion keys/layer for the target model.
+    """Delete all existing character motion keys for the target model.
+
+    When ``target_model`` is explicit, every joint below that model root is
+    cleared.  The clear scope must not depend on the incoming VMD's bone-name
+    mapping: an omitted or unsupported bone in the new motion must not leave
+    stale keys on the character.  Root ownership checks still isolate other
+    models and scene-level camera/light animation.
 
     ``preserve_curve_nodes`` is used by the Control Rig preflight transaction
     to retain legacy animCurve identity for exact rollback.  Such curves are
@@ -168,15 +174,15 @@ def clear_existing_motion(
     owned_motion_nodes = set()
 
     owned_joints = root_owned_joints(target_model) if target_model else None
-    mapped_joints = {
-        joint
-        for joint in context.bone_name_mapping.values()
-        if not target_model or _nodes_are_exclusively_owned([joint], owned_joints)
-    }
-    fallback_translates = _capture_fallback_rest_translates(mapped_joints, context.logger)
+    target_joints = (
+        set(owned_joints)
+        if target_model
+        else set(context.bone_name_mapping.values())
+    )
+    fallback_translates = _capture_fallback_rest_translates(target_joints, context.logger)
     if not preserve_curve_nodes:
-        cleared += len(delete_vmd_rotation_time_curves_for_controls(mapped_joints))
-    for joint in mapped_joints:
+        cleared += len(delete_vmd_rotation_time_curves_for_controls(target_joints))
+    for joint in target_joints:
         owned_motion_nodes.add(joint)
         cleared += cut_keyable_attrs(
             joint,
@@ -194,7 +200,7 @@ def clear_existing_motion(
     if target_model:
         control_metadata = read_mmd_control_rig_metadata(target_model)
         if control_metadata and control_metadata.get("owner") == CONTROL_RIG_CONTROL_OWNED:
-            control_routes = control_rig_edit_routes_for_joints(context.bone_name_mapping.values())
+            control_routes = control_rig_edit_routes_for_joints(target_joints)
     for route in control_routes.values():
         by_node = {}
         for target_node, target_attr in route.values():
@@ -317,12 +323,12 @@ def clear_existing_motion(
 
     # cutKey はアニメーション曲線を削除するが joint の attribute 値はポーズのまま残る。
     # 後続の _record_bind_poses が正しい rest position を取得できるよう dagPose で復元する。
-    _restore_joints_to_rest(mapped_joints, fallback_translates, context.logger)
+    _restore_joints_to_rest(target_joints, fallback_translates, context.logger)
 
     context.logger.info(
         "Cleared existing VMD motion: keys_or_layers=%d joints=%d morph_nodes=%d",
         cleared,
-        len(mapped_joints),
+        len(target_joints),
         len(morph_nodes),
     )
 

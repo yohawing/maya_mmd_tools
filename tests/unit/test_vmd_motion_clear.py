@@ -365,6 +365,51 @@ class TestVmdMotionClear(MayaTestBase):
         self.assertIsNone(cmds.keyframe(f"{ik_b}.enabled", query=True))
         self.assertTrue(cmds.objExists(layer))
 
+    def test_clear_existing_motion_clears_every_joint_below_target_root(self):
+        """Incoming bone mappings do not limit which target-character keys are cleared."""
+        root_a = cmds.group(empty=True, name="clear_all_model_a_root")
+        root_b = cmds.group(empty=True, name="clear_all_model_b_root")
+        cmds.select(clear=True)
+        mapped_joint = cmds.joint(name="clear_all_mapped_joint")
+        cmds.select(clear=True)
+        unmapped_joint = cmds.joint(name="clear_all_unmapped_joint")
+        cmds.parent(mapped_joint, unmapped_joint, root_b)
+        cmds.select(clear=True)
+        foreign_joint = cmds.joint(name="clear_all_foreign_joint")
+        cmds.parent(foreign_joint, root_a)
+
+        for joint in (mapped_joint, unmapped_joint, foreign_joint):
+            cmds.setKeyframe(joint, attribute="translateX", time=3, value=4.0)
+            cmds.setKeyframe(joint, attribute="rotateY", time=7, value=20.0)
+
+        context = VmdImportStateContext(
+            logger=self.converter.logger,
+            bone_name_mapping={"mapped": mapped_joint},
+            bone_bind_poses={},
+            morph_name_mapping={},
+            collect_append_info=lambda: {},
+            iter_morph_mappings=self.converter._iter_morph_mappings,
+            set_refresh_suspended=self.converter._set_vmd_import_refresh_suspended,
+        )
+
+        clear_existing_motion(context, "missing_layer", target_model=root_b)
+
+        for joint in (mapped_joint, unmapped_joint):
+            self.assertIsNone(
+                cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True)
+            )
+            self.assertIsNone(
+                cmds.keyframe(joint, attribute="rotateY", query=True, timeChange=True)
+            )
+        self.assertEqual(
+            cmds.keyframe(foreign_joint, attribute="translateX", query=True, timeChange=True),
+            [3.0],
+        )
+        self.assertEqual(
+            cmds.keyframe(foreign_joint, attribute="rotateY", query=True, timeChange=True),
+            [7.0],
+        )
+
     def test_clear_existing_motion_clears_layered_curves_in_place(self):
         """Layer/blend-backed curves lose keys without deleting their curve nodes."""
         root = cmds.group(empty=True, name="clear_layered_root")
