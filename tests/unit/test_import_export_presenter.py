@@ -979,7 +979,7 @@ class TestImportExportPresenter(unittest.TestCase):
         warnings = [{"message": "runtime fallback"}]
 
         class _RecordingView(_FakeView):
-            def add_import_path_to_history(self, path):
+            def add_vmd_path_to_history(self, path):
                 recorded_history.append(path)
 
         view = _RecordingView()

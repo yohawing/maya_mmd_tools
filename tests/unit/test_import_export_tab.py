@@ -386,6 +386,76 @@ class TestImportExportViewState(unittest.TestCase):
         self.assertEqual(store.values["a"], "[]")
         self.assertEqual(store.values["b"], "[]")
 
+    def test_unified_history_is_newest_first_across_file_types(self):
+        with TemporaryDirectory() as temp_dir:
+            model_path = str(Path(temp_dir) / "model.pmx")
+            motion_path = str(Path(temp_dir) / "motion.vmd")
+            export_path = str(Path(temp_dir) / "export.pmx")
+            for path in (model_path, motion_path, export_path):
+                Path(path).write_text("", encoding="utf-8")
+            view_state = ImportExportViewState(_FakeQSettings())
+
+            view_state.save_file_history("import", model_path)
+            view_state.save_file_history("export", export_path)
+            view_state.save_file_history("vmd", motion_path)
+
+            self.assertEqual(
+                view_state.load_file_history(),
+                [
+                    {"path": motion_path, "type": "vmd"},
+                    {"path": export_path, "type": "export"},
+                    {"path": model_path, "type": "import"},
+                ],
+            )
+
+    def test_unified_history_deduplicates_same_typed_path_and_honors_limit(self):
+        with TemporaryDirectory() as temp_dir:
+            first_path = str(Path(temp_dir) / "first.pmx")
+            second_path = str(Path(temp_dir) / "second.pmx")
+            for path in (first_path, second_path):
+                Path(path).write_text("", encoding="utf-8")
+            view_state = ImportExportViewState(_FakeQSettings())
+
+            view_state.save_file_history("import", first_path)
+            view_state.save_file_history("import", second_path)
+            view_state.save_file_history("import", first_path)
+
+            self.assertEqual(
+                view_state.load_file_history(max_items=1),
+                [{"path": first_path, "type": "import"}],
+            )
+
+    def test_legacy_histories_migrate_and_clear_with_unified_history(self):
+        with TemporaryDirectory() as temp_dir:
+            model_path = str(Path(temp_dir) / "model.pmx")
+            motion_path = str(Path(temp_dir) / "motion.vmd")
+            generic_motion_path = str(Path(temp_dir) / "generic_motion.vmd")
+            Path(model_path).write_text("", encoding="utf-8")
+            Path(motion_path).write_text("", encoding="utf-8")
+            Path(generic_motion_path).write_text("", encoding="utf-8")
+            store = _FakeQSettings(
+                {
+                    "import_path_history": json.dumps([model_path, generic_motion_path]),
+                    "vmd_path_history": json.dumps([motion_path]),
+                }
+            )
+            view_state = ImportExportViewState(store)
+
+            self.assertEqual(
+                view_state.load_file_history(),
+                [
+                    {"path": model_path, "type": "import"},
+                    {"path": generic_motion_path, "type": "vmd"},
+                    {"path": motion_path, "type": "vmd"},
+                ],
+            )
+
+            view_state.clear_file_history()
+
+            self.assertEqual(view_state.load_file_history(), [])
+            self.assertEqual(store.values["import_path_history"], "[]")
+            self.assertEqual(store.values["vmd_path_history"], "[]")
+
 
 class TestNormalModeVisibilitySourceInspection(unittest.TestCase):
     """Verify supported model import controls remain available in normal mode."""

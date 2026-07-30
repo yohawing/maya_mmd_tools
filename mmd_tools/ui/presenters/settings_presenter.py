@@ -96,6 +96,10 @@ class SettingsPresenter:
             state = self.settings_service.load_settings_tab_state()
             # UI設定
             self.view.development_mode_check.setChecked(state["development_mode"])
+            if hasattr(self.view, "file_history_limit_spin"):
+                self.view.file_history_limit_spin.setValue(
+                    int(state.get("file_history_limit", 20))
+                )
             if hasattr(self.view, "command_port_spin"):
                 self.view.command_port_spin.setValue(int(state.get("command_port", 3939)))
             self._refresh_dev_tools_visibility(state["development_mode"])
@@ -262,6 +266,8 @@ class SettingsPresenter:
                 "logging_level": self.view.log_level_combo.currentText(),
                 "log_file_path": self.view.log_file_path_edit.text(),
             }
+            if hasattr(self.view, "file_history_limit_spin"):
+                state["file_history_limit"] = self.view.file_history_limit_spin.value()
             if hasattr(self.view, "command_port_spin"):
                 state["command_port"] = self.view.command_port_spin.value()
             if hasattr(self.view, "language_combo"):
@@ -269,12 +275,21 @@ class SettingsPresenter:
 
             self.settings_service.save_settings_tab_state(state)
             self._refresh_development_mode_visibility()
+            self._refresh_file_history()
             logger.info("Settings saved")
             self.app_state.emit_status(self.tr("settings_saved"))
 
         except Exception as e:
             logger.error(f"Failed to save settings: {e}", exc_info=True)
             self.app_state.emit_status(self.tr_format("settings_save_failed", error=str(e)))
+
+    def _refresh_file_history(self):
+        """Apply a changed history limit to the open Import/Export tab."""
+
+        main_window = self.view.window()
+        import_export_tab = getattr(main_window, "import_export_tab", None)
+        if hasattr(import_export_tab, "refresh_unified_history"):
+            import_export_tab.refresh_unified_history()
 
     def reset_to_defaults(self):
         """デフォルト設定に戻す"""
@@ -292,6 +307,7 @@ class SettingsPresenter:
             self.settings_service.reset()
             self.load_settings()
             self._refresh_development_mode_visibility()
+            self._refresh_file_history()
             self.app_state.emit_status(self.tr("settings_reset_to_defaults"))
 
     def export_settings(self):
@@ -325,6 +341,7 @@ class SettingsPresenter:
                 # UIを更新
                 self.load_settings()
                 self._refresh_development_mode_visibility()
+                self._refresh_file_history()
 
                 logger.info(f"Imported settings: {file_path}")
                 self.app_state.emit_status(self.tr("settings_imported"))

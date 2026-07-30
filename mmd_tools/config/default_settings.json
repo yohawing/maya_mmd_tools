@@ -77,6 +77,7 @@
     "general": {
       "show_advanced_options": false,
       "development_mode": false,
+      "file_history_limit": 20,
       "language": "ja"
     },
     "dev": {

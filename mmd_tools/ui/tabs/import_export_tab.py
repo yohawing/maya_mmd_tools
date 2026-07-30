@@ -1,3 +1,5 @@
+import os
+
 from ..qt_compat import (
     QWidget,
     QVBoxLayout,
@@ -22,7 +24,6 @@ from ..base_tab import BaseTab
 from ..import_export_view_state import ImportExportViewState
 from ...core import settings_keys as setting_keys
 from ...services.settings_service import SettingsService, normalize_reduce_bake_quality
-import os
 
 
 _REDUCE_BAKE_QUALITY_DEFAULT = 1.0
@@ -741,14 +742,6 @@ class ImportExportTab(BaseTab):
         if hasattr(self, "animation_settings_group"):
             self.animation_settings_group.setTitle(self.tr("animation", "tabs"))
 
-    def _load_history(self, key, max_items=10):
-        """履歴を読み込み"""
-        return self.view_state.load_history(key, max_items)
-
-    def _save_history(self, key, new_path, max_items=10):
-        """履歴を保存"""
-        self.view_state.save_history(key, new_path, max_items)
-
     def _setup_unified_history_area(self, layout):
         """統合履歴表示エリアを設定"""
         self.history_group = QGroupBox(self.tr("file_history", "groups"))
@@ -788,39 +781,25 @@ class ImportExportTab(BaseTab):
 
     def _clear_all_history(self):
         """すべての履歴をクリア"""
-        self.view_state.clear_histories(("import_path_history", "vmd_path_history", "export_path_history"))
+        self.view_state.clear_file_history()
         self.refresh_unified_history()
 
     def refresh_unified_history(self):
         """統合履歴リストを更新"""
         self.unified_history_list.clear()
 
-        # すべての履歴を統合して表示
-        all_items = []
-
-        # インポート履歴
-        import_history = self._load_history("import_path_history")
-        for path in import_history:
-            ext = os.path.splitext(path)[1].lower()
-            if ext in [".pmd", ".pmx"]:
-                item_data = {"path": path, "type": "import", "display": f"[Model] {os.path.basename(path)}"}
-                all_items.append(item_data)
-
-        # VMD履歴
-        vmd_history = self._load_history("vmd_path_history")
-        for path in vmd_history:
-            item_data = {"path": path, "type": "vmd", "display": f"[Animation] {os.path.basename(path)}"}
-            all_items.append(item_data)
-
-        # エクスポート履歴
-        export_history = self._load_history("export_path_history")
-        for path in export_history:
-            item_data = {"path": path, "type": "export", "display": f"[Export] {os.path.basename(path)}"}
-            all_items.append(item_data)
+        history_limit = self.settings_service.resolve_file_history_limit()
+        all_items = self.view_state.load_file_history(history_limit)
+        display_prefixes = {
+            "import": "Model",
+            "vmd": "Animation",
+            "export": "Export",
+        }
 
         # リストに追加（最新のものから表示）
         for item_data in all_items:
-            item = QListWidgetItem(item_data["display"])
+            prefix = display_prefixes[item_data["type"]]
+            item = QListWidgetItem(f"[{prefix}] {os.path.basename(item_data['path'])}")
             item.setData(Qt.UserRole, item_data["path"])
             item.setData(Qt.UserRole + 1, item_data["type"])
             item.setToolTip(item_data["path"])
@@ -837,18 +816,18 @@ class ImportExportTab(BaseTab):
 
     def add_import_path_to_history(self, path):
         """インポートパスを履歴に追加"""
-        self._save_history("import_path_history", path)
+        self.view_state.save_file_history("import", path)
         # 履歴リストを更新
         self.refresh_unified_history()
 
     def add_vmd_path_to_history(self, path):
         """アニメーションパスを履歴に追加"""
-        self._save_history("vmd_path_history", path)
+        self.view_state.save_file_history("vmd", path)
         # 履歴リストを更新
         self.refresh_unified_history()
 
     def add_export_path_to_history(self, path):
         """エクスポートパスを履歴に追加"""
-        self._save_history("export_path_history", path)
+        self.view_state.save_file_history("export", path)
         # 履歴リストを更新
         self.refresh_unified_history()

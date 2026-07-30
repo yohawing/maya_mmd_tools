@@ -57,6 +57,7 @@ EXPORT_GENERAL_APPLY_SCALE = "export.general.apply_scale"
 
 UI_GENERAL_DEVELOPMENT_MODE = "ui.general.development_mode"
 UI_GENERAL_LANGUAGE = "ui.general.language"
+UI_GENERAL_FILE_HISTORY_LIMIT = "ui.general.file_history_limit"
 UI_DEV_COMMAND_PORT = "ui.dev.command_port"
 
 LOGGING_ENABLED = "logging.enabled"

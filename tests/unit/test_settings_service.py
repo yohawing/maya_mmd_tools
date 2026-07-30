@@ -122,6 +122,7 @@ class TestSettingsServiceDelegation(unittest.TestCase):
             state,
             {
                 "development_mode": False,
+                "file_history_limit": 20,
                 "command_port": 3939,
                 "logging_enabled": False,
                 "logging_level": "ERROR",
@@ -133,6 +134,7 @@ class TestSettingsServiceDelegation(unittest.TestCase):
         self.service.save_settings_tab_state(
             {
                 "development_mode": True,
+                "file_history_limit": 101,
                 "command_port": 7788,
                 "logging_enabled": True,
                 "logging_level": "INFO",
@@ -142,6 +144,7 @@ class TestSettingsServiceDelegation(unittest.TestCase):
         )
 
         self.assertTrue(self.service.get("ui.general.development_mode"))
+        self.assertEqual(self.service.get("ui.general.file_history_limit"), 100)
         self.assertEqual(self.service.get("ui.dev.command_port"), 7788)
         self.assertEqual(self.service.get("ui.general.language"), "ja")
         self.assertTrue(self.service.get("logging.enabled"))

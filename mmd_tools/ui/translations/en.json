@@ -464,6 +464,7 @@
     "target_name": "Target Name:",
     "multiplier": "Multiplier:",
     "language": "Language:",
+    "file_history_limit": "File History Count:",
     "log_level": "Log Level:",
     "log_file": "Log File:",
     "command_port": "Command Port:",

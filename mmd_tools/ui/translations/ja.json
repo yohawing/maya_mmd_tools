@@ -464,6 +464,7 @@
     "target_name": "ターゲット名:",
     "multiplier": "乗数:",
     "language": "言語:",
+    "file_history_limit": "ファイル履歴数:",
     "log_level": "ログレベル:",
     "log_file": "ログファイル:",
     "command_port": "Command Port:",

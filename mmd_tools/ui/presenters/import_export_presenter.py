@@ -460,7 +460,10 @@ class ImportExportPresenter(QObject):
                 self.app_state.refresh_model_list()
                 self.app_state.current_model_root = root_node
             self.app_state.emit_progress(100)
-            self.view.add_import_path_to_history(file_path)
+            if is_vmd:
+                self.view.add_vmd_path_to_history(file_path)
+            else:
+                self.view.add_import_path_to_history(file_path)
 
             if outcome == "partial":
                 logger.warning("Import completed with warnings.")

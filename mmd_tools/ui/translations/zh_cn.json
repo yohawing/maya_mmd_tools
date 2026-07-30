@@ -403,6 +403,7 @@
     "target_name": "目标名称:",
     "multiplier": "乘数:",
     "language": "语言:",
+    "file_history_limit": "文件历史数量:",
     "log_level": "日志级别:",
     "log_file": "日志文件:",
     "command_port": "Command Port:",

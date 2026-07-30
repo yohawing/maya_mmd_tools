@@ -14,6 +14,8 @@ from ..core.settings import get_settings
 
 
 _SETTINGS_EXPORT_CATEGORIES = ("import", "export", "logging", "ui")
+_FILE_HISTORY_LIMIT_DEFAULT = 20
+_FILE_HISTORY_LIMIT_MAX = 100
 
 # Dev-only import keys: forced to these values in normal mode (development_mode=False).
 # In dev mode the saved setting is used instead.
@@ -42,6 +44,16 @@ def normalize_reduce_bake_quality(quality):
     if not math.isfinite(quality):
         quality = 1.0
     return round(max(0.0, min(1.0, quality)), 2)
+
+
+def normalize_file_history_limit(value):
+    """Return a valid 1..100 unified file-history limit."""
+
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        value = _FILE_HISTORY_LIMIT_DEFAULT
+    return max(1, min(_FILE_HISTORY_LIMIT_MAX, value))
 
 
 def resolve_reduce_bake_tolerances_from_quality(quality):
@@ -114,6 +126,16 @@ class SettingsService:
         quality = self.get(setting_keys.IMPORT_ANIMATION_REDUCE_QUALITY, 1.0)
         return resolve_reduce_bake_tolerances_from_quality(quality)
 
+    def resolve_file_history_limit(self):
+        """Return the clamped unified file-history display limit."""
+
+        return normalize_file_history_limit(
+            self.get(
+                setting_keys.UI_GENERAL_FILE_HISTORY_LIMIT,
+                _FILE_HISTORY_LIMIT_DEFAULT,
+            )
+        )
+
     def set_development_mode_log_levels(self, enabled):
         """Set the logging level for Development Mode and return the level."""
         level_str = "INFO" if enabled else "WARNING"
@@ -124,6 +146,7 @@ class SettingsService:
         """Return settings needed by the Settings tab view."""
         return {
             "development_mode": self.get(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, False),
+            "file_history_limit": self.resolve_file_history_limit(),
             "command_port": self.get(setting_keys.UI_DEV_COMMAND_PORT, 3939),
             "logging_enabled": self.get(setting_keys.LOGGING_ENABLED, True),
             "logging_level": self.get(setting_keys.LOGGING_LEVEL, "WARNING"),
@@ -134,6 +157,11 @@ class SettingsService:
     def save_settings_tab_state(self, state):
         """Persist settings supplied by the Settings tab presenter."""
         self.set(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, state["development_mode"])
+        if "file_history_limit" in state:
+            self.set(
+                setting_keys.UI_GENERAL_FILE_HISTORY_LIMIT,
+                normalize_file_history_limit(state["file_history_limit"]),
+            )
         if "command_port" in state:
             self.set(setting_keys.UI_DEV_COMMAND_PORT, int(state["command_port"]))
         if "language" in state:

@@ -6,6 +6,15 @@ import os
 from .qt_compat import QSettings
 
 
+FILE_HISTORY_KEY = "file_history"
+FILE_HISTORY_MAX = 100
+LEGACY_HISTORY_TYPES = {
+    "import_path_history": "import",
+    "vmd_path_history": "vmd",
+    "export_path_history": "export",
+}
+
+
 class ImportExportViewState:
     """Persist ImportExportTab view-only state."""
 
@@ -44,6 +53,66 @@ class ImportExportViewState:
             history.remove(new_path)
         history.insert(0, new_path)
         self.set(key, json.dumps(history[:max_items]))
+
+    def load_file_history(self, max_items=20):
+        """Return one newest-first history shared by model, VMD, and export files."""
+
+        encoded = self.get(FILE_HISTORY_KEY, None)
+        if encoded is None:
+            history = self._migrate_legacy_history()
+        else:
+            try:
+                history = json.loads(encoded)
+            except Exception:
+                history = []
+        valid = []
+        for item in history if isinstance(history, list) else ():
+            if not isinstance(item, dict):
+                continue
+            path = item.get("path")
+            file_type = item.get("type")
+            if (
+                isinstance(path, str)
+                and file_type in LEGACY_HISTORY_TYPES.values()
+                and os.path.exists(path)
+            ):
+                valid.append({"path": path, "type": file_type})
+        return valid[: max(1, min(FILE_HISTORY_MAX, int(max_items)))]
+
+    def save_file_history(self, file_type, new_path):
+        """Move one typed path to the front of the unified history."""
+
+        if file_type not in LEGACY_HISTORY_TYPES.values():
+            raise ValueError(f"unsupported file history type: {file_type}")
+        if not new_path or not os.path.exists(new_path):
+            return
+        history = self.load_file_history(FILE_HISTORY_MAX)
+        history = [
+            item
+            for item in history
+            if not (item["type"] == file_type and item["path"] == new_path)
+        ]
+        history.insert(0, {"path": new_path, "type": file_type})
+        self.set(FILE_HISTORY_KEY, json.dumps(history[:FILE_HISTORY_MAX]))
+
+    def clear_file_history(self):
+        """Clear unified history and its legacy per-category sources."""
+
+        self.set(FILE_HISTORY_KEY, "[]")
+        self.clear_histories(LEGACY_HISTORY_TYPES)
+
+    def _migrate_legacy_history(self):
+        """Migrate legacy lists deterministically when cross-type time is unavailable."""
+
+        history = []
+        for key, file_type in LEGACY_HISTORY_TYPES.items():
+            for path in self.load_history(key, FILE_HISTORY_MAX):
+                migrated_type = file_type
+                if key == "import_path_history" and path.lower().endswith(".vmd"):
+                    migrated_type = "vmd"
+                history.append({"path": path, "type": migrated_type})
+        self.set(FILE_HISTORY_KEY, json.dumps(history[:FILE_HISTORY_MAX]))
+        return history
 
     def clear_histories(self, keys):
         """Clear multiple JSON history settings."""

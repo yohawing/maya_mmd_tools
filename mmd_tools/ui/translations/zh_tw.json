@@ -403,6 +403,7 @@
     "target_name": "目標名稱:",
     "multiplier": "乘數:",
     "language": "語言:",
+    "file_history_limit": "檔案歷史數量:",
     "log_level": "記錄層級:",
     "log_file": "記錄檔案:",
     "command_port": "Command Port:",
