@@ -21,6 +21,10 @@ from mmd_tools.core.mmd_control_rig_builder import (
     remove_mmd_control_rig,
 )
 from mmd_tools.core.mmd_control_rig_motion import (
+    ROUTE_SAMPLED,
+    _commit_control_rotation_group,
+    _euler_degrees_from_quaternion,
+    _quaternion_from_euler_degrees,
     bake_mmd_control_rig,
     control_rig_edit_routes_for_joints,
     enter_mmd_control_rig_edit,
@@ -1741,6 +1745,113 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             if row.get("target") == rows["rotateX"]["target"]
         )
         self.assertFalse(representation.get("quaternionInterpolation"))
+
+    def test_ik_link_quaternion_compound_bakes_evaluated_xyz(self):
+        control = cmds.createNode("transform", name="ik_link_bake_CTRL")
+        solver = cmds.createNode("mmdCcdIk", name="ik_link_bake_solver")
+        values = {"X": 24.0, "Y": -38.0, "Z": 17.0}
+        rows = []
+        sources = {}
+        for axis in "XYZ":
+            control_plug = f"{control}.rotate{axis}"
+            target = f"{solver}.inputRotate[0].inputRotateElement{axis}"
+            cmds.setKeyframe(control, attribute=f"rotate{axis}", time=0, value=0.0)
+            cmds.setKeyframe(
+                control,
+                attribute=f"rotate{axis}",
+                time=20,
+                value=values[axis],
+            )
+            source = cmds.listConnections(
+                control_plug,
+                source=True,
+                destination=False,
+                plugs=True,
+            )[0]
+            cmds.connectAttr(control_plug, target)
+            rows.append(
+                {
+                    "control": control_plug,
+                    "target": target,
+                    "source": None,
+                    "controlSource": source,
+                    "routeClass": ROUTE_SAMPLED,
+                    "routeReasons": ["ik"],
+                }
+            )
+            sources[control_plug] = source
+        cmds.rotationInterpolation(
+            *(f"{control}.rotate{axis}" for axis in "XYZ"),
+            convert="quaternionSlerp",
+        )
+        frames = tuple(frame * 0.5 for frame in range(0, 41))
+        before = {
+            (frame, axis): float(
+                cmds.getAttr(
+                    f"{solver}.inputRotate[0].inputRotateElement{axis}",
+                    time=frame,
+                )
+            )
+            for frame in frames
+            for axis in "XYZ"
+        }
+
+        _commit_control_rotation_group(
+            cmds,
+            rows,
+            sources,
+            quaternion_interpolation=True,
+        )
+
+        errors = [
+            abs(
+                float(
+                    cmds.getAttr(
+                        f"{solver}.inputRotate[0].inputRotateElement{axis}",
+                        time=frame,
+                    )
+                )
+                - before[(frame, axis)]
+            )
+            for frame in frames
+            for axis in "XYZ"
+        ]
+        self.assertLess(max(errors), 1.0e-2)
+        for axis in "XYZ":
+            target = f"{solver}.inputRotate[0].inputRotateElement{axis}"
+            curve = cmds.listConnections(
+                target,
+                source=True,
+                destination=False,
+                type="animCurve",
+            )[0]
+            self.assertEqual(
+                set(cmds.keyTangent(curve, query=True, inTangentType=True) or []),
+                {"linear"},
+            )
+            self.assertEqual(
+                set(cmds.keyTangent(curve, query=True, outTangentType=True) or []),
+                {"linear"},
+            )
+
+    def test_quaternion_euler_roundtrip_honors_all_maya_rotate_orders(self):
+        values = (23.0, -41.0, 67.0)
+        for rotate_order in range(6):
+            with self.subTest(rotate_order=rotate_order):
+                quaternion = _quaternion_from_euler_degrees(
+                    values,
+                    rotate_order=rotate_order,
+                )
+                euler = _euler_degrees_from_quaternion(
+                    quaternion,
+                    rotate_order=rotate_order,
+                )
+                roundtrip = _quaternion_from_euler_degrees(
+                    euler,
+                    rotate_order=rotate_order,
+                )
+                dot = abs(sum(a * b for a, b in zip(quaternion, roundtrip)))
+                self.assertAlmostEqual(dot, 1.0, places=12)
 
     def test_append_compound_authored_plugs_enter_edit_and_bake(self):
         """Expand mmdAppend compound inputs while transferring ownership."""

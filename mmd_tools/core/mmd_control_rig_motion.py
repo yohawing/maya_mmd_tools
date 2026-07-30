@@ -823,6 +823,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
         for group in _rotation_channel_groups(
             channel_rows,
             include_sampled_direct=True,
+            include_sampled_passthrough=True,
         )
         if not any(row.get("layerRoute") for row in group)
         and (
@@ -884,6 +885,9 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
                 group,
                 sources_by_control,
                 created_curve_nodes=created_curve_nodes,
+                quaternion_interpolation=all(
+                    id(row) in quaternion_grouped_rows for row in group
+                ),
             )
             mmd_sources_by_control.update(group_sources)
         for row in reversed(channel_rows):
@@ -2055,6 +2059,24 @@ def _supports_live_authoring_basis(row: Mapping[str, Any]) -> bool:
     return not bool(set(row.get("routeReasons") or ()).intersection(special_reasons))
 
 
+def _supports_bake_authoring_basis(row: Mapping[str, Any]) -> bool:
+    """Allow standard joint XYZ basis sampling, including non-XYZ orders."""
+    target_attr = str(row.get("target", "")).rsplit(".", 1)[-1]
+    if target_attr not in {"rotateX", "rotateY", "rotateZ"}:
+        return False
+    if row.get("layerRoute") is not None:
+        return False
+    special_reasons = {
+        "anim_layer",
+        "append_base",
+        "bone_morph_base",
+        "ik",
+        "ik_controller",
+        "ik_link_input",
+    }
+    return not bool(set(row.get("routeReasons") or ()).intersection(special_reasons))
+
+
 def _create_live_rotation_converters(
     cmds,
     rows: List[Mapping[str, Any]],
@@ -2476,6 +2498,7 @@ def _rotation_channel_groups(
     rows: List[Mapping[str, Any]],
     *,
     include_sampled_direct: bool = False,
+    include_sampled_passthrough: bool = False,
 ) -> List[List[Mapping[str, Any]]]:
     """Group complete direct XYZ rotation routes for compound bake transfer.
 
@@ -2490,28 +2513,35 @@ def _rotation_channel_groups(
         target = str(row.get("target") or "")
         control_node, _, control_attr = control.partition(".")
         target_node, _, target_attr = target.partition(".")
+        target_leaf = target.rsplit(".", 1)[-1]
+        target_group = target.rsplit(".", 1)[0]
         if not control_node or not target_node:
             continue
         if control_attr not in {"rotateX", "rotateY", "rotateZ"}:
             continue
-        if target_attr not in {"rotateX", "rotateY", "rotateZ"}:
-            if not row.get("twistController") or not target_attr.endswith(("X", "Y", "Z")):
+        passthrough_compound = bool(include_sampled_passthrough) and target_leaf.startswith(
+            ("baseRotate", "inputRotateElement")
+        )
+        if target_leaf not in {"rotateX", "rotateY", "rotateZ"}:
+            if not (row.get("twistController") or passthrough_compound) or not target_leaf.endswith(("X", "Y", "Z")):
                 continue
             if not (
-                target_attr.startswith("baseRotate")
-                or target_attr.startswith("inputRotateElement")
+                target_leaf.startswith("baseRotate")
+                or target_leaf.startswith("inputRotateElement")
             ):
                 continue
-        if target_attr != control_attr and not row.get("twistController"):
+        rotation_attr = _rotation_attr_for_target(target)
+        if rotation_attr != control_attr and not row.get("twistController"):
             continue
         if (
             row.get("routeClass", ROUTE_SAME_BASIS) != ROUTE_SAME_BASIS
             and not row.get("twistController")
         ):
-            if not include_sampled_direct or not _supports_live_authoring_basis(row):
+            if not include_sampled_passthrough and (
+                not include_sampled_direct or not _supports_live_authoring_basis(row)
+            ):
                 continue
-        key = (control_node, target_node, ROUTE_SAME_BASIS)
-        rotation_attr = target_attr if target_attr in {"rotateX", "rotateY", "rotateZ"} else f"rotate{target_attr[-1]}"
+        key = (control_node, target_group, ROUTE_SAME_BASIS)
         candidates.setdefault(key, {})[rotation_attr] = row
 
     groups = []
@@ -2589,6 +2619,7 @@ def _commit_control_rotation_group(
     sources_by_control: Mapping[str, Optional[str]],
     *,
     created_curve_nodes=None,
+    quaternion_interpolation: Optional[bool] = None,
 ) -> Dict[str, Optional[str]]:
     """Bake one sparse three-axis rotation compound without scalar teardown.
 
@@ -2610,6 +2641,10 @@ def _commit_control_rotation_group(
     targets = [str(rows_by_attr[attr]["target"]) for attr in attrs]
     control_node = controls[0].rsplit(".", 1)[0]
     target_node = targets[0].rsplit(".", 1)[0]
+    standard_rotate_targets = all(
+        str(target).rsplit(".", 1)[-1] in {"rotateX", "rotateY", "rotateZ"}
+        for target in targets
+    )
     if any(value.rsplit(".", 1)[0] != control_node for value in controls):
         raise MmdControlRigBuildError("quaternion rotation controls are split across nodes")
     if any(value.rsplit(".", 1)[0] != target_node for value in targets):
@@ -2629,7 +2664,7 @@ def _commit_control_rotation_group(
     # still live, convert each sample by quaternion conjugation, then replace
     # the MMD curves in place so their UUIDs and time-input graphs survive.
     basis_record = rows_by_attr["rotateX"].get("authoringBasis")
-    if basis_record:
+    if basis_record and all(_supports_bake_authoring_basis(row) for row in rows):
         try:
             basis = validate_basis_record(basis_record)
         except MmdControlRigBasisError as exc:
@@ -2637,17 +2672,27 @@ def _commit_control_rotation_group(
         if any(row.get("authoringBasis") != basis.to_dict() for row in rows):
             raise MmdControlRigBuildError("rotation XYZ basis is inconsistent")
         if basis.quaternion != (0.0, 0.0, 0.0, 1.0):
-            quaternion_interpolation = all(
-                row.get("twistController") for row in rows
-            ) or _rotation_group_uses_quaternion(cmds, rows, sources_by_control)
+            preserve_quaternion = (
+                True
+                if quaternion_interpolation is None
+                else bool(quaternion_interpolation)
+            )
             return _sample_control_rotation_group_to_bone(
                 cmds,
                 rows,
                 {row["control"]: source for row, source in zip(rows, control_sources)},
                 basis.to_dict(),
                 created_curve_nodes=created_curve_nodes,
-                quaternion_interpolation=quaternion_interpolation,
+                quaternion_interpolation=preserve_quaternion,
             )
+
+    if not standard_rotate_targets:
+        return _sample_control_rotation_group_passthrough(
+            cmds,
+            rows,
+            {row["control"]: source for row, source in zip(rows, control_sources)},
+            created_curve_nodes=created_curve_nodes,
+        )
 
     # Disconnect all three control edges first.  This keeps the compound
     # intact while destination curves are connected/copied and converted.
@@ -2665,7 +2710,10 @@ def _commit_control_rotation_group(
     # an individual animCurve.  Copy all three curves through the transform
     # nodes in one clipboard operation; scalar copyKey/pasteKey rewrites a
     # +/-180 degree quaternion curve into an unrelated Euler representation.
-    if all(control_source and mmd_source for control_source, mmd_source in zip(control_sources, mmd_sources)):
+    if standard_rotate_targets and all(
+        control_source and mmd_source
+        for control_source, mmd_source in zip(control_sources, mmd_sources)
+    ):
         for row, mmd_source in zip(rows, mmd_sources):
             target = row["target"]
             if not cmds.isConnected(mmd_source, target):
@@ -2677,7 +2725,8 @@ def _commit_control_rotation_group(
             if cmds.isConnected(control_source, control):
                 cmds.disconnectAttr(control_source, control)
             result[control] = str(mmd_source)
-        _apply_quaternion_interpolation_to_plugs(cmds, destination_plugs)
+        if quaternion_interpolation is not False:
+            _apply_quaternion_interpolation_to_plugs(cmds, destination_plugs)
         from mmd_tools.converters.vmd_rotation_time_curve import (
             share_vmd_rotation_time_curve,
         )
@@ -2713,7 +2762,8 @@ def _commit_control_rotation_group(
             cmds.setAttr(target, float(cmds.getAttr(control)))
             result[control] = None
 
-    _apply_quaternion_interpolation_to_plugs(cmds, destination_plugs)
+    if standard_rotate_targets and quaternion_interpolation is not False:
+        _apply_quaternion_interpolation_to_plugs(cmds, destination_plugs)
     from mmd_tools.converters.vmd_rotation_time_curve import (
         share_vmd_rotation_time_curve,
     )
@@ -2723,6 +2773,108 @@ def _commit_control_rotation_group(
         for control, control_source in zip(controls, control_sources)
     ]
     share_vmd_rotation_time_curve(cmds, control_sources, baked_sources)
+    return result
+
+
+def _sample_control_rotation_group_passthrough(
+    cmds,
+    rows: List[Mapping[str, Any]],
+    control_sources: Mapping[str, Optional[str]],
+    *,
+    created_curve_nodes=None,
+) -> Dict[str, Optional[str]]:
+    """Bake evaluated XYZ values into a non-transform rotation compound.
+
+    IK link inputs such as ``inputRotate[slot].inputRotateElementXYZ`` cannot
+    own Maya's transform-level quaternion interpolation. Sample all three
+    evaluated Control channels before detaching any of them, then write dense
+    angle curves so their solver input matches the live Control pose.
+    """
+
+    attrs = ("rotateX", "rotateY", "rotateZ")
+    rows_by_attr = {_rotation_attr_for_target(row["target"]): row for row in rows}
+    control_node = str(rows_by_attr["rotateX"]["control"]).rsplit(".", 1)[0]
+    sources = [control_sources.get(rows_by_attr[attr]["control"]) for attr in attrs]
+    mmd_sources = [rows_by_attr[attr].get("source") for attr in attrs]
+    times = sorted(
+        {
+            float(time)
+            for plug in (*sources, *mmd_sources)
+            if plug
+            for time in (
+                cmds.keyframe(
+                    str(plug).split(".", 1)[0],
+                    query=True,
+                    timeChange=True,
+                )
+                or []
+            )
+        }
+    )
+    if times:
+        first = math.floor(min(times))
+        last = math.ceil(max(times))
+        times = sorted({*times, *(float(frame) for frame in range(first, last + 1))})
+    else:
+        times = [float(cmds.currentTime(query=True))]
+    samples = [
+        (
+            time,
+            tuple(
+                float(cmds.getAttr(f"{control_node}.{axis}", time=time))
+                for axis in attrs
+            ),
+        )
+        for time in times
+    ]
+
+    if not any((*sources, *mmd_sources)):
+        values = samples[0][1]
+        result: Dict[str, Optional[str]] = {}
+        for index, attr in enumerate(attrs):
+            row = rows_by_attr[attr]
+            control = str(row["control"])
+            target = str(row["target"])
+            if cmds.isConnected(control, target):
+                cmds.disconnectAttr(control, target)
+            cmds.setAttr(target, float(values[index]))
+            result[control] = None
+        return result
+
+    result: Dict[str, Optional[str]] = {}
+    for index, attr in enumerate(attrs):
+        row = rows_by_attr[attr]
+        control = str(row["control"])
+        target = str(row["target"])
+        control_source = sources[index]
+        mmd_source = mmd_sources[index]
+        if cmds.isConnected(control, target):
+            cmds.disconnectAttr(control, target)
+        if control_source and cmds.isConnected(control_source, control):
+            cmds.disconnectAttr(control_source, control)
+        if mmd_source:
+            curve = str(mmd_source).split(".", 1)[0]
+            source = str(mmd_source)
+        else:
+            try:
+                curve = str(cmds.createNode("animCurveTA"))
+                if created_curve_nodes is not None:
+                    created_curve_nodes.append(curve)
+                source = f"{curve}.output"
+            except Exception as exc:
+                raise MmdControlRigBuildError(
+                    f"could not create sampled rotation curve: {target}"
+                ) from exc
+        for time, values in samples:
+            cmds.setKeyframe(
+                curve,
+                time=(time, time),
+                value=float(values[index]),
+            )
+        _set_sampled_curve_tangents(cmds, source, target)
+        if not cmds.isConnected(source, target):
+            cmds.connectAttr(source, target, force=False)
+        result[control] = source
     return result
 
 
@@ -2769,11 +2921,30 @@ def _sample_control_rotation_group_to_bone(
         last = math.ceil(max(times))
         times = sorted({*times, *(float(frame) for frame in range(first, last + 1))})
     samples = []
+    try:
+        control_rotate_order = int(cmds.getAttr(f"{control_node}.rotateOrder"))
+    except Exception:
+        control_rotate_order = 0
+    try:
+        target_rotate_order = int(cmds.getAttr(f"{target_node}.rotateOrder"))
+    except Exception:
+        target_rotate_order = 0
     for time in times:
         values = [float(cmds.getAttr(f"{control_node}.{axis}", time=time)) for axis in attrs]
-        control_quaternion = _quaternion_from_euler_degrees(values)
+        control_quaternion = _quaternion_from_euler_degrees(
+            values,
+            rotate_order=control_rotate_order,
+        )
         bone_quaternion = control_to_bone(control_quaternion, basis)
-        samples.append((time, _euler_degrees_from_quaternion(bone_quaternion)))
+        samples.append(
+            (
+                time,
+                _euler_degrees_from_quaternion(
+                    bone_quaternion,
+                    rotate_order=target_rotate_order,
+                ),
+            )
+        )
 
     # A newly authored static controller has no detached control curve yet.
     # Persist its basis-space XYZ values before replacing the live converter
@@ -2865,19 +3036,27 @@ def _sample_control_rotation_group_to_bone(
     return result
 
 
-def _quaternion_from_euler_degrees(values) -> Tuple[float, float, float, float]:
-    """Convert Maya XYZ Euler degrees to a normalized xyzw quaternion."""
+def _quaternion_from_euler_degrees(
+    values,
+    *,
+    rotate_order: int = 0,
+) -> Tuple[float, float, float, float]:
+    """Convert Maya Euler degrees and rotate order to an xyzw quaternion."""
 
     try:
+        if int(rotate_order) not in range(6):
+            raise ValueError(f"invalid Maya rotate order: {rotate_order}")
         rotation = om.MEulerRotation(
             math.radians(float(values[0])),
             math.radians(float(values[1])),
             math.radians(float(values[2])),
-            om.MEulerRotation.kXYZ,
+            int(rotate_order),
         )
         q = rotation.asQuaternion()
         return (float(q.x), float(q.y), float(q.z), float(q.w))
     except Exception:
+        if int(rotate_order) != 0:
+            raise
         x, y, z = (math.radians(float(value)) * 0.5 for value in values)
         cx, sx = math.cos(x), math.sin(x)
         cy, sy = math.cos(y), math.sin(y)
@@ -2890,14 +3069,23 @@ def _quaternion_from_euler_degrees(values) -> Tuple[float, float, float, float]:
         )
 
 
-def _euler_degrees_from_quaternion(quaternion) -> Tuple[float, float, float]:
-    """Convert an xyzw quaternion to Maya XYZ Euler degrees."""
+def _euler_degrees_from_quaternion(
+    quaternion,
+    *,
+    rotate_order: int = 0,
+) -> Tuple[float, float, float]:
+    """Convert an xyzw quaternion to Maya Euler degrees in one rotate order."""
 
     try:
+        if int(rotate_order) not in range(6):
+            raise ValueError(f"invalid Maya rotate order: {rotate_order}")
         q = om.MQuaternion(*[float(value) for value in quaternion])
         rotation = q.asEulerRotation()
+        rotation.reorderIt(int(rotate_order))
         return tuple(math.degrees(float(value)) for value in (rotation.x, rotation.y, rotation.z))
     except Exception:
+        if int(rotate_order) != 0:
+            raise
         x, y, z, w = (float(value) for value in quaternion)
         sinr = 2.0 * (w * x + y * z)
         cosr = 1.0 - 2.0 * (x * x + y * y)

@@ -6,6 +6,8 @@ from mmd_tools.core.mmd_control_rig_motion import (
     _connect_ik_control_visibility,
     ROUTE_SAMPLED,
     _rotation_channel_groups,
+    _supports_bake_authoring_basis,
+    _supports_live_authoring_basis,
 )
 from mmd_tools.core.mmd_control_rig_builder import MmdControlRigBuildError
 
@@ -44,6 +46,46 @@ class MmdControlRigMotionRoutingTest(unittest.TestCase):
         rows = [dict(row, twistController=False) for row in _twist_rows()]
 
         self.assertEqual(_rotation_channel_groups(rows), [])
+
+    def test_ik_quaternion_xyz_is_grouped_only_for_bake_passthrough(self):
+        rows = [
+            {
+                "control": f"foot_ik_CTRL.rotate{axis}",
+                "target": f"solver.inputRotate[6].inputRotateElement{axis}",
+                "routeClass": ROUTE_SAMPLED,
+                "routeReasons": ["ik"],
+            }
+            for axis in "XYZ"
+        ]
+
+        self.assertEqual(_rotation_channel_groups(rows), [])
+        self.assertEqual(
+            _rotation_channel_groups(rows, include_sampled_direct=True),
+            [],
+        )
+        groups = _rotation_channel_groups(
+            rows,
+            include_sampled_passthrough=True,
+        )
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(
+            [row["target"] for row in groups[0]],
+            [
+                "solver.inputRotate[6].inputRotateElementX",
+                "solver.inputRotate[6].inputRotateElementY",
+                "solver.inputRotate[6].inputRotateElementZ",
+            ],
+        )
+
+    def test_non_xyz_standard_joint_uses_bake_basis_but_not_live_converter(self):
+        row = {
+            "target": "joint.rotateX",
+            "routeClass": ROUTE_SAMPLED,
+            "routeReasons": ["joint_orient", "rotate_order"],
+        }
+
+        self.assertFalse(_supports_live_authoring_basis(row))
+        self.assertTrue(_supports_bake_authoring_basis(row))
 
     def test_ik_visibility_follows_enabled_and_reuses_canonical_connection(self):
         class FakeCmds:
