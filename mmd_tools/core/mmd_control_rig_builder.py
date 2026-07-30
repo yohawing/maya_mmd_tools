@@ -525,6 +525,11 @@ def remove_mmd_control_rig(model_root: str, *, cmds_module=None) -> bool:
     helper_nodes = [
         resolved[uuid] for uuid in metadata.get("helperNodes", [])
     ]
+    ik_visibility_inverters = [
+        resolved[str(row["uuid"])]
+        for row in metadata.get("ikVisibilityInverters", []) or []
+        if isinstance(row, Mapping) and row.get("uuid")
+    ]
     rotation_time_curves = []
     for row in metadata.get("rotationTimeCurves", []) or []:
         from mmd_tools.converters.vmd_rotation_time_curve import (
@@ -541,6 +546,9 @@ def remove_mmd_control_rig(model_root: str, *, cmds_module=None) -> bool:
         rotation_time_curves.append(node)
     with _undo_chunk(cmds, "Remove MMD Control Rig"):
         for node in helper_nodes:
+            if cmds.objExists(node):
+                cmds.delete(node)
+        for node in ik_visibility_inverters:
             if cmds.objExists(node):
                 cmds.delete(node)
         if cmds.objExists(selection_set):

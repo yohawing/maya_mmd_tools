@@ -37,6 +37,10 @@ from mmd_tools.core.mmd_control_rig_builder import (
     resolve_mmd_control_rig_binding_ik_solvers,
     resolve_mmd_control_rig_binding_joint,
 )
+from mmd_tools.core.mmd_control_rig_motion import (
+    ROUTE_SAMPLED,
+    _supports_live_authoring_basis,
+)
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
 
@@ -155,6 +159,31 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
         self.assertEqual(len(templates["finger"][0]["points"]), 21)
         self.assertTrue(all(shape["points"] for shapes in templates.values() for shape in shapes))
         self.assertTrue(all(shape["knots"] for shapes in templates.values() for shape in shapes))
+
+    def test_live_basis_accepts_sampled_direct_xyz_but_rejects_special_writers(self):
+        direct = {
+            "target": "wrist.rotateX",
+            "routeClass": ROUTE_SAMPLED,
+            "routeReasons": ["joint_orient"],
+        }
+        self.assertTrue(_supports_live_authoring_basis(direct))
+        for reason in (
+            "anim_layer",
+            "append_base",
+            "bone_morph_base",
+            "ik",
+            "ik_controller",
+            "ik_link_input",
+            "rotate_order",
+        ):
+            with self.subTest(reason=reason):
+                row = dict(direct, routeReasons=[reason])
+                self.assertFalse(_supports_live_authoring_basis(row))
+        self.assertFalse(
+            _supports_live_authoring_basis(
+                dict(direct, target="append.baseRotateX")
+            )
+        )
 
     def test_primary_twist_requires_fixed_axis_and_direct_or_append_input(self):
         direct = _bone(

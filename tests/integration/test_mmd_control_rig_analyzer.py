@@ -1188,6 +1188,50 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             or []
         )
 
+    def test_knee_control_visibility_is_inverse_of_leg_ik_state(self):
+        root = self._import_fixture()
+        rig = build_mmd_control_rig(root)
+        edit = enter_mmd_control_rig_edit(root)
+        foot_ik = rig.controls["left_foot_ik"]
+        knee = rig.controls["left_knee"]
+        ik_controls = tuple(
+            rig.controls[role]
+            for role in ("left_foot_ik_parent", "left_foot_ik", "left_toe_ik")
+            if role in rig.controls
+        )
+        knee_shapes = cmds.listRelatives(knee, shapes=True, fullPath=True) or []
+        ik_shapes = [
+            shape
+            for control in ik_controls
+            for shape in (cmds.listRelatives(control, shapes=True, fullPath=True) or [])
+        ]
+        self.assertTrue(knee_shapes)
+        self.assertTrue(ik_shapes)
+
+        cmds.setAttr(f"{foot_ik}.ikEnabled", True)
+        self.assertTrue(all(bool(cmds.getAttr(f"{shape}.visibility")) for shape in ik_shapes))
+        self.assertTrue(all(not bool(cmds.getAttr(f"{shape}.visibility")) for shape in knee_shapes))
+
+        cmds.setAttr(f"{foot_ik}.ikEnabled", False)
+        self.assertTrue(all(not bool(cmds.getAttr(f"{shape}.visibility")) for shape in ik_shapes))
+        self.assertTrue(all(bool(cmds.getAttr(f"{shape}.visibility")) for shape in knee_shapes))
+        inverter_uuids = {
+            row["uuid"] for row in edit.get("ikVisibilityInverters", [])
+        }
+        self.assertEqual(len(inverter_uuids), 2)
+
+        bake_mmd_control_rig(root)
+        reentered = enter_mmd_control_rig_edit(root)
+        self.assertEqual(
+            {row["uuid"] for row in reentered.get("ikVisibilityInverters", [])},
+            inverter_uuids,
+        )
+        bake_mmd_control_rig(root)
+        self.assertTrue(remove_mmd_control_rig(root))
+        self.assertTrue(
+            all(not (cmds.ls(uuid, long=True) or []) for uuid in inverter_uuids)
+        )
+
     def test_existing_vmd_edit_and_bake_preserve_world_and_anim_curves(self):
         root = self._import_fixture()
         self.assertTrue(
@@ -1583,6 +1627,120 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
                     )
                 )
         self.assertLess(max(drift), 1.0e-6, {"roles": direct_roles, "maxDrift": max(drift)})
+
+    def test_sampled_direct_rotation_keeps_control_axis_during_live_edit(self):
+        """JO-sampled direct XYZ still needs live Control-to-joint basis conversion."""
+        root = self._import_fixture()
+        rig = build_mmd_control_rig(root)
+        edit = enter_mmd_control_rig_edit(root)
+        candidates = {}
+        for row in edit["journal"]["channels"]:
+            target = str(row.get("target") or "")
+            control_plug = str(row.get("control") or "")
+            target_node, _, target_attr = target.partition(".")
+            control_node, _, control_attr = control_plug.partition(".")
+            basis = row.get("authoringBasis") or {}
+            quaternion = tuple(float(value) for value in basis.get("quaternion", ()))
+            if (
+                row.get("routeClass") != "sampled"
+                or target_attr not in {"rotateX", "rotateY", "rotateZ"}
+                or control_attr != target_attr
+                or len(quaternion) != 4
+                or max(abs(quaternion[index]) for index in range(3)) <= 1.0e-8
+            ):
+                continue
+            key = (control_node, target_node)
+            candidates.setdefault(key, {})[target_attr] = row
+        complete = [
+            (nodes, rows)
+            for nodes, rows in candidates.items()
+            if set(rows) == {"rotateX", "rotateY", "rotateZ"}
+        ]
+        self.assertTrue(complete)
+        (control, joint), rows = complete[0]
+        self.assertIn(control, rig.controls.values())
+        for axis in "XYZ":
+            incoming = cmds.listConnections(
+                rows[f"rotate{axis}"]["target"],
+                source=True,
+                destination=False,
+                plugs=True,
+            ) or []
+            self.assertEqual(len(incoming), 1)
+            self.assertEqual(cmds.nodeType(incoming[0].split(".", 1)[0]), "decomposeMatrix")
+
+        rest_control = om.MMatrix(cmds.getAttr(f"{control}.worldMatrix[0]"))
+        rest_joint = om.MMatrix(cmds.getAttr(f"{joint}.worldMatrix[0]"))
+        control_x = om.MVector(
+            rest_control.getElement(0, 0),
+            rest_control.getElement(0, 1),
+            rest_control.getElement(0, 2),
+        ).normal()
+        cmds.setAttr(f"{control}.rotateX", 10.0)
+        after = om.MMatrix(cmds.getAttr(f"{joint}.worldMatrix[0]"))
+        quaternion = om.MTransformationMatrix(rest_joint.inverse() * after).rotation(
+            asQuaternion=True
+        )
+        axis, angle = quaternion.asAxisAngle()
+        self.assertGreater(abs(float(angle)), 1.0e-4)
+        self.assertGreater(abs(axis * control_x), 0.999)
+
+        edited_world = tuple(float(value) for value in cmds.getAttr(f"{joint}.worldMatrix[0]"))
+        bake_mmd_control_rig(root)
+        baked_world = tuple(float(value) for value in cmds.getAttr(f"{joint}.worldMatrix[0]"))
+        self.assertLess(
+            max(abs(actual - expected) for actual, expected in zip(baked_world, edited_world)),
+            1.0e-6,
+        )
+
+        enter_mmd_control_rig_edit(root)
+        reentered_world = tuple(float(value) for value in cmds.getAttr(f"{joint}.worldMatrix[0]"))
+        self.assertLess(
+            max(
+                abs(actual - expected)
+                for actual, expected in zip(reentered_world, edited_world)
+            ),
+            1.0e-6,
+        )
+
+        for frame, x_value, y_value in ((0, 0.0, 0.0), (10, 35.0, 18.0)):
+            cmds.setKeyframe(
+                control,
+                attribute="rotateX",
+                time=frame,
+                value=x_value,
+            )
+            cmds.setKeyframe(
+                control,
+                attribute="rotateY",
+                time=frame,
+                value=y_value,
+            )
+        frames = range(0, 11)
+        edit_world = {
+            frame: tuple(
+                float(value)
+                for value in cmds.getAttr(f"{joint}.worldMatrix[0]", time=frame)
+            )
+            for frame in frames
+        }
+        bake_mmd_control_rig(root)
+        bake_errors = [
+            abs(actual - expected)
+            for frame in frames
+            for actual, expected in zip(
+                cmds.getAttr(f"{joint}.worldMatrix[0]", time=frame),
+                edit_world[frame],
+            )
+        ]
+        self.assertLess(max(bake_errors), 1.0e-5)
+        baked = read_mmd_control_rig_metadata(root)
+        representation = next(
+            row
+            for row in baked["curveRepresentations"]
+            if row.get("target") == rows["rotateX"]["target"]
+        )
+        self.assertFalse(representation.get("quaternionInterpolation"))
 
     def test_append_compound_authored_plugs_enter_edit_and_bake(self):
         """Expand mmdAppend compound inputs while transferring ownership."""

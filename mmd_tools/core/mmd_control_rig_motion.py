@@ -327,7 +327,12 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
     operations: List[Tuple[str, str, str]] = []
     created_curve_nodes: List[str] = []
     curve_representations = _curve_representations(metadata)
-    journal: Dict[str, Any] = {"channels": [], "offsetParentMatrix": [], "ikEnabled": []}
+    journal: Dict[str, Any] = {
+        "channels": [],
+        "offsetParentMatrix": [],
+        "ikEnabled": [],
+        "ikVisibilityInverters": [],
+    }
     claimed_targets = set()
     display_reference_time = float(metadata["displayReferenceTime"])
     offset_controls = set()
@@ -529,6 +534,7 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
 
                 if binding.get("inputKind") == INPUT_IK_CONTROLLER:
                     visibility_controls = None
+                    hidden_when_enabled_controls = None
                     if role in {"left_foot_ik", "right_foot_ik"}:
                         side = str(role).split("_", 1)[0]
                         visibility_controls = tuple(
@@ -538,6 +544,11 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                                 f"{side}_foot_ik",
                                 f"{side}_toe_ik",
                             )
+                            if control_role in controls
+                        )
+                        hidden_when_enabled_controls = tuple(
+                            controls[control_role]
+                            for control_role in (f"{side}_knee",)
                             if control_role in controls
                         )
                     _connect_ik_enabled(
@@ -550,6 +561,7 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                         curve_representations=curve_representations,
                         layer_routes=layer_journal.get("routes", {}),
                         visibility_controls=visibility_controls,
+                        hidden_when_enabled_controls=hidden_when_enabled_controls,
                     )
 
             _zero_control_display_offsets(
@@ -585,6 +597,10 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
             if rotation_converters:
                 metadata["rotationConverters"] = rotation_converters
                 _record_rotation_converter_nodes(metadata, rotation_converters)
+            _record_ik_visibility_inverter_nodes(
+                metadata,
+                journal.get("ikVisibilityInverters", ()),
+            )
             for row in curve_representations:
                 row["activeOwner"] = CONTROL_RIG_CONTROL_OWNED
             metadata["curveRepresentations"] = curve_representations
@@ -804,13 +820,27 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
 
     rotation_groups = [
         group
-        for group in _rotation_channel_groups(channel_rows)
+        for group in _rotation_channel_groups(
+            channel_rows,
+            include_sampled_direct=True,
+        )
         if not any(row.get("layerRoute") for row in group)
         and (
             all(row.get("twistController") for row in group)
+            or any(
+                row.get("routeClass", ROUTE_SAME_BASIS) == ROUTE_SAMPLED
+                for row in group
+            )
             or _rotation_group_uses_quaternion(cmds, group, sources_by_control)
         )
     ]
+    quaternion_grouped_rows = {
+        id(row)
+        for group in rotation_groups
+        if all(row.get("twistController") for row in group)
+        or _rotation_group_uses_quaternion(cmds, group, sources_by_control)
+        for row in group
+    }
     with _edit_exit_transaction(
         cmds,
         root,
@@ -877,7 +907,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
                 row.get("controlSource") or sources_by_control[row["control"]],
                 cmds,
                 quaternion_interpolation=(
-                    True
+                    id(row) in quaternion_grouped_rows
                     if id(row) in grouped_rows
                     and str(row.get("target", "")).rsplit(".", 1)[-1]
                     in {"rotateX", "rotateY", "rotateZ"}
@@ -938,6 +968,23 @@ def _entry_transaction_plugs(cmds, metadata, controls) -> Tuple[str, ...]:
             # explicitly so its removal is part of rollback.
             if cmds.attributeQuery("ikEnabled", node=control, exists=True):
                 plugs.add(f"{control}.ikEnabled")
+            if role in {"left_foot_ik", "right_foot_ik"}:
+                side = str(role).split("_", 1)[0]
+                for display_role in (
+                    f"{side}_foot_ik_parent",
+                    f"{side}_foot_ik",
+                    f"{side}_toe_ik",
+                    f"{side}_knee",
+                ):
+                    display_control = controls.get(display_role)
+                    if display_control is None:
+                        continue
+                    for shape in cmds.listRelatives(
+                        display_control,
+                        shapes=True,
+                        fullPath=True,
+                    ) or []:
+                        plugs.add(f"{shape}.visibility")
     for plug in plugs:
         if not cmds.objExists(plug):
             raise MmdControlRigBuildError(f"enter EDIT plug is missing: {plug}")
@@ -1514,6 +1561,7 @@ def _connect_ik_enabled(
     curve_representations=None,
     layer_routes: Optional[Mapping[str, Mapping[str, Any]]] = None,
     visibility_controls=None,
+    hidden_when_enabled_controls=None,
 ) -> None:
     solvers = resolve_mmd_control_rig_binding_ik_solvers(cmds, binding)
     if not solvers:
@@ -1626,6 +1674,16 @@ def _connect_ik_enabled(
             control_plug,
             operations,
         )
+    if hidden_when_enabled_controls:
+        inverters = _connect_ik_control_visibility(
+            cmds,
+            hidden_when_enabled_controls,
+            control_plug,
+            operations,
+            inverted=True,
+            created_nodes=created_curve_nodes,
+        )
+        journal.setdefault("ikVisibilityInverters", []).extend(inverters)
 
 
 def _connect_ik_control_visibility(
@@ -1633,8 +1691,14 @@ def _connect_ik_control_visibility(
     controls,
     control_plug: str,
     operations: List[Tuple[str, str, str]],
-) -> None:
-    """Drive IK curve shapes from the EDIT-owned enabled plug."""
+    *,
+    inverted: bool = False,
+    created_nodes=None,
+) -> List[Dict[str, str]]:
+    """Drive curve shapes from IK state, optionally with inverse visibility."""
+
+    inverter = None
+    inverter_records = []
 
     for control in controls:
         shapes = cmds.listRelatives(
@@ -1658,18 +1722,47 @@ def _connect_ik_control_visibility(
                     or []
                 )
             ]
+            expected_source = control_plug
+            if inverted and incoming:
+                source_node = incoming[0].split(".", 1)[0]
+                if str(cmds.nodeType(source_node)) == "reverse":
+                    inverter_inputs = cmds.listConnections(
+                        f"{source_node}.inputX",
+                        source=True,
+                        destination=False,
+                        plugs=True,
+                    ) or []
+                    if len(inverter_inputs) == 1 and _plugs_match(
+                        cmds, str(inverter_inputs[0]), control_plug
+                    ):
+                        inverter = source_node
+                        expected_source = f"{inverter}.outputX"
             if incoming and not any(
-                _plugs_match(cmds, source, control_plug) for source in incoming
+                _plugs_match(cmds, source, expected_source) for source in incoming
             ):
                 raise MmdControlRigBuildError(
                     f"foreign IK control visibility source: {control_plug} -> {target}"
                 )
             if incoming and any(
-                _plugs_match(cmds, source, control_plug) for source in incoming
+                _plugs_match(cmds, source, expected_source) for source in incoming
             ):
                 continue
-            cmds.connectAttr(control_plug, target, force=False)
-            operations.append(("disconnect", control_plug, target))
+            if inverted:
+                if inverter is None:
+                    name = f"{str(control).rsplit('|', 1)[-1]}_IK_VISIBILITY_REVERSE"
+                    inverter = str(cmds.createNode("reverse", name=name))
+                    if created_nodes is not None:
+                        created_nodes.append(inverter)
+                    cmds.connectAttr(control_plug, f"{inverter}.inputX", force=False)
+                    operations.append(("disconnect", control_plug, f"{inverter}.inputX"))
+                expected_source = f"{inverter}.outputX"
+            cmds.connectAttr(expected_source, target, force=False)
+            operations.append(("disconnect", expected_source, target))
+        if inverted and inverter is not None:
+            uuid = str((cmds.ls(inverter, uuid=True) or [""])[0])
+            if uuid and not any(row.get("uuid") == uuid for row in inverter_records):
+                inverter_records.append({"uuid": uuid, "name": inverter})
+    return inverter_records
 
 
 def _plugs_match(cmds, left: str, right: str) -> bool:
@@ -1941,6 +2034,27 @@ def _duplicate_animation_source(cmds, source: str, created_nodes: List[str]) -> 
     return plug
 
 
+def _supports_live_authoring_basis(row: Mapping[str, Any]) -> bool:
+    """Allow sampled direct XYZ routes while excluding special writers."""
+    if row.get("routeClass", ROUTE_SAME_BASIS) == ROUTE_SAME_BASIS:
+        return True
+    target_attr = str(row.get("target", "")).rsplit(".", 1)[-1]
+    if target_attr not in {"rotateX", "rotateY", "rotateZ"}:
+        return False
+    if row.get("layerRoute") is not None:
+        return False
+    special_reasons = {
+        "anim_layer",
+        "append_base",
+        "bone_morph_base",
+        "ik",
+        "ik_controller",
+        "ik_link_input",
+        "rotate_order",
+    }
+    return not bool(set(row.get("routeReasons") or ()).intersection(special_reasons))
+
+
 def _create_live_rotation_converters(
     cmds,
     rows: List[Mapping[str, Any]],
@@ -1983,7 +2097,7 @@ def _create_live_rotation_converters(
             # source joint carries a non-identity authoring basis; this live
             # Euler conjugation chain is only responsible for direct XYZ
             # channels that share the control basis.
-            if row.get("routeClass", ROUTE_SAME_BASIS) != ROUTE_SAME_BASIS:
+            if not _supports_live_authoring_basis(row):
                 continue
             non_identity_rows.append(row)
             reasons = set(row.get("routeReasons") or ())
@@ -1995,20 +2109,21 @@ def _create_live_rotation_converters(
                 raise MmdControlRigBuildError(
                     "non-identity authoring basis is unsupported for non-twist Append route"
                 )
-    grouped_rows = {id(row) for group in _rotation_channel_groups(rows) for row in group}
-    if any(id(row) not in grouped_rows for row in non_identity_rows):
+    live_groups = _rotation_channel_groups(rows, include_sampled_direct=True)
+    grouped_rows = {id(row) for group in live_groups for row in group}
+    if any(
+        id(row) not in grouped_rows
+        and row.get("routeClass", ROUTE_SAME_BASIS) == ROUTE_SAME_BASIS
+        for row in non_identity_rows
+    ):
         raise MmdControlRigBuildError(
             "non-identity authoring basis requires a complete XYZ rotation route"
         )
-    for group in _rotation_channel_groups(rows):
-        # Sampled routes (animLayer, IK, Append) already carry their own
-        # route conversion.  A live Euler conjugation node here would replace
-        # the layer/blend writer during EDIT and make rollback restore a
-        # different graph than the one captured on entry.
-        if any(
-            row.get("routeClass", ROUTE_SAME_BASIS) != ROUTE_SAME_BASIS
-            for row in group
-        ):
+    for group in live_groups:
+        # Special sampled writers (animLayer, IK, Append) carry their own route
+        # conversion. Direct joint XYZ routes still need live conjugation for
+        # artist edits even when JO/parent basis made curve transfer sampled.
+        if any(not _supports_live_authoring_basis(row) for row in group):
             continue
         basis_record = group[0].get("authoringBasis")
         if not basis_record:
@@ -2143,6 +2258,31 @@ def _record_rotation_converter_nodes(
             if uuid and uuid not in known:
                 rows.append({"uuid": uuid, "name": str(converter.get(name_key) or uuid)})
                 known.add(uuid)
+
+
+def _record_ik_visibility_inverter_nodes(
+    metadata: Dict[str, Any], inverters
+) -> None:
+    """Persist IK visibility reverse nodes in the rig-owned inventory."""
+    records = [dict(row) for row in inverters or () if isinstance(row, Mapping)]
+    if not records:
+        return
+    owned_rows = metadata.setdefault("nodes", [])
+    known = {str(row.get("uuid")) for row in owned_rows if isinstance(row, Mapping)}
+    current = {
+        str(row.get("uuid")): dict(row)
+        for row in metadata.get("ikVisibilityInverters", []) or []
+        if isinstance(row, Mapping) and row.get("uuid")
+    }
+    for record in records:
+        uuid = str(record.get("uuid") or "")
+        if not uuid:
+            continue
+        current[uuid] = record
+        if uuid not in known:
+            owned_rows.append({"uuid": uuid, "name": str(record.get("name") or uuid)})
+            known.add(uuid)
+    metadata["ikVisibilityInverters"] = list(current.values())
 
 
 def _drop_rotation_converter_nodes(metadata: Dict[str, Any], converters: List[Mapping[str, Any]]) -> None:
@@ -2332,7 +2472,11 @@ def _restore_offsets(cmds, rows, *, strict: bool = False) -> None:
                 raise
 
 
-def _rotation_channel_groups(rows: List[Mapping[str, Any]]) -> List[List[Mapping[str, Any]]]:
+def _rotation_channel_groups(
+    rows: List[Mapping[str, Any]],
+    *,
+    include_sampled_direct: bool = False,
+) -> List[List[Mapping[str, Any]]]:
     """Group complete direct XYZ rotation routes for compound bake transfer.
 
     A quaternion curve is a three-channel value.  Group only standard
@@ -2364,7 +2508,8 @@ def _rotation_channel_groups(rows: List[Mapping[str, Any]]) -> List[List[Mapping
             row.get("routeClass", ROUTE_SAME_BASIS) != ROUTE_SAME_BASIS
             and not row.get("twistController")
         ):
-            continue
+            if not include_sampled_direct or not _supports_live_authoring_basis(row):
+                continue
         key = (control_node, target_node, ROUTE_SAME_BASIS)
         rotation_attr = target_attr if target_attr in {"rotateX", "rotateY", "rotateZ"} else f"rotate{target_attr[-1]}"
         candidates.setdefault(key, {})[rotation_attr] = row
@@ -2492,12 +2637,16 @@ def _commit_control_rotation_group(
         if any(row.get("authoringBasis") != basis.to_dict() for row in rows):
             raise MmdControlRigBuildError("rotation XYZ basis is inconsistent")
         if basis.quaternion != (0.0, 0.0, 0.0, 1.0):
+            quaternion_interpolation = all(
+                row.get("twistController") for row in rows
+            ) or _rotation_group_uses_quaternion(cmds, rows, sources_by_control)
             return _sample_control_rotation_group_to_bone(
                 cmds,
                 rows,
                 {row["control"]: source for row, source in zip(rows, control_sources)},
                 basis.to_dict(),
                 created_curve_nodes=created_curve_nodes,
+                quaternion_interpolation=quaternion_interpolation,
             )
 
     # Disconnect all three control edges first.  This keeps the compound
@@ -2584,8 +2733,15 @@ def _sample_control_rotation_group_to_bone(
     basis: Mapping[str, Any],
     *,
     created_curve_nodes=None,
+    quaternion_interpolation: bool = False,
 ) -> Dict[str, Optional[str]]:
-    """Sample a complete controller XYZ group through the basis inverse."""
+    """Sample a complete controller XYZ group through the basis inverse.
+
+    Quaternion controller compounds retain their sparse union key grid. Euler
+    and Bezier compounds are sampled at every integer frame as well as their
+    authored key times, because basis conjugation couples all three channels
+    and copying only their sparse keys would change the evaluated pose.
+    """
 
     attrs = ("rotateX", "rotateY", "rotateZ")
     rows_by_attr = {_rotation_attr_for_target(row["target"]): row for row in rows}
@@ -2608,6 +2764,10 @@ def _sample_control_rotation_group_to_bone(
             times = [float(cmds.currentTime(query=True))]
         except Exception:
             times = [0.0]
+    elif not quaternion_interpolation:
+        first = math.floor(min(times))
+        last = math.ceil(max(times))
+        times = sorted({*times, *(float(frame) for frame in range(first, last + 1))})
     samples = []
     for time in times:
         values = [float(cmds.getAttr(f"{control_node}.{axis}", time=time)) for axis in attrs]
@@ -2615,6 +2775,48 @@ def _sample_control_rotation_group_to_bone(
         bone_quaternion = control_to_bone(control_quaternion, basis)
         samples.append((time, _euler_degrees_from_quaternion(bone_quaternion)))
 
+    # A newly authored static controller has no detached control curve yet.
+    # Persist its basis-space XYZ values before replacing the live converter
+    # with bone-space curves; otherwise the next EDIT would duplicate the
+    # converted bone curves and apply the authoring basis a second time.
+    control_samples = [
+        (
+            time,
+            tuple(
+                float(cmds.getAttr(f"{control_node}.{axis}", time=time))
+                for axis in attrs
+            ),
+        )
+        for time in times
+    ]
+    for index, (axis, row) in enumerate(
+        zip(attrs, (rows_by_attr[attr] for attr in attrs))
+    ):
+        if sources[index]:
+            continue
+        curve = None
+        try:
+            curve = str(cmds.createNode("animCurveTA"))
+            if created_curve_nodes is not None:
+                created_curve_nodes.append(curve)
+            for time, values in control_samples:
+                cmds.setKeyframe(
+                    curve,
+                    time=(time, time),
+                    value=float(values[index]),
+                )
+            source = f"{curve}.output"
+            sources[index] = source
+            row["controlSource"] = source
+        except Exception as exc:
+            if curve and cmds.objExists(curve):
+                try:
+                    cmds.delete(curve)
+                except Exception:
+                    pass
+            raise MmdControlRigBuildError(
+                f"could not retain basis-space control rotation curve: {row['control']}"
+            ) from exc
     # Keep the authored MMD curve nodes when present.  If an imported motion
     # had no source curves, create one curve per axis and connect them to the
     # target.  All three axes always receive the same union time grid.
@@ -2655,7 +2857,7 @@ def _sample_control_rotation_group_to_bone(
             raise MmdControlRigBuildError(
                 f"could not create basis-converted MMD rotation curve: {target_plug}"
             ) from exc
-    if all(
+    if quaternion_interpolation and all(
         str(row["target"]).rsplit(".", 1)[-1] in {"rotateX", "rotateY", "rotateZ"}
         for row in rows
     ):
