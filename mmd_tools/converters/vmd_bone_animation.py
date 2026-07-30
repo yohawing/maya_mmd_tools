@@ -4,6 +4,7 @@ from collections.abc import Mapping
 import math
 from typing import Dict, List, Optional
 
+import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
 from . import vmd_profile
@@ -11,34 +12,21 @@ from .vmd_context import VmdBoneAnimationContext
 from .vmd_scene_keying import VmdKeyingError, _ensure_fallback_allowed
 
 
-def _euler_degrees_to_quaternion(values):
-    """Convert XYZ Euler degrees to xyzw for Control Rig basis conversion."""
+def _euler_degrees_to_quaternion(values, rotate_order=0):
+    """Convert Maya Euler degrees to xyzw without losing rotateOrder."""
 
-    x, y, z = (math.radians(float(value)) * 0.5 for value in values)
-    cx, sx = math.cos(x), math.sin(x)
-    cy, sy = math.cos(y), math.sin(y)
-    cz, sz = math.cos(z), math.sin(z)
-    return (
-        sx * cy * cz - cx * sy * sz,
-        cx * sy * cz + sx * cy * sz,
-        cx * cy * sz - sx * sy * cz,
-        cx * cy * cz + sx * sy * sz,
-    )
+    euler = om.MEulerRotation(*(math.radians(float(value)) for value in values))
+    euler.order = int(rotate_order)
+    quaternion = euler.asQuaternion()
+    return (quaternion.x, quaternion.y, quaternion.z, quaternion.w)
 
 
-def _quaternion_to_euler_degrees(quaternion):
-    """Convert xyzw to XYZ Euler degrees with a stable gimbal fallback."""
+def _quaternion_to_euler_degrees(quaternion, rotate_order=0):
+    """Convert xyzw to Maya Euler degrees in the destination rotateOrder."""
 
-    x, y, z, w = (float(value) for value in quaternion)
-    sinr = 2.0 * (w * x + y * z)
-    cosr = 1.0 - 2.0 * (x * x + y * y)
-    roll = math.atan2(sinr, cosr)
-    sinp = 2.0 * (w * y - z * x)
-    pitch = math.copysign(math.pi / 2.0, sinp) if abs(sinp) >= 1.0 else math.asin(sinp)
-    siny = 2.0 * (w * z + x * y)
-    cosy = 1.0 - 2.0 * (y * y + z * z)
-    yaw = math.atan2(siny, cosy)
-    return tuple(math.degrees(value) for value in (roll, pitch, yaw))
+    euler = om.MQuaternion(*map(float, quaternion)).asEulerRotation()
+    euler.reorderIt(int(rotate_order))
+    return tuple(math.degrees(value) for value in (euler.x, euler.y, euler.z))
 
 
 def _sparse_rotation_samples(
@@ -49,6 +37,7 @@ def _sparse_rotation_samples(
 ) -> List[tuple]:
     """Convert only authored VMD rotation keys for editable rig curves."""
     samples_by_time = {}
+    previous_twist = None
     for frame in frames:
         if hasattr(frame, "frame_number"):
             frame_number = frame.frame_number
@@ -62,12 +51,25 @@ def _sparse_rotation_samples(
         if basis:
             from ..core.mmd_control_rig_basis import (
                 bone_to_control,
+                quaternion_twist_angle_degrees,
             )
 
-            bone_quaternion = _euler_degrees_to_quaternion(rotation)
-            rotation = _quaternion_to_euler_degrees(
-                bone_to_control(bone_quaternion, basis)
-            )
+            joint_order = int(cmds.getAttr(f"{joint}.rotateOrder"))
+            bone_quaternion = _euler_degrees_to_quaternion(rotation, joint_order)
+            control_quaternion = bone_to_control(bone_quaternion, basis)
+            if (key_route or {}).get("fixed_axis_twist"):
+                twist = quaternion_twist_angle_degrees(control_quaternion)
+                if previous_twist is not None:
+                    twist += 360.0 * round((previous_twist - twist) / 360.0)
+                previous_twist = twist
+                rotation = (0.0, 0.0, twist)
+            else:
+                attr_targets = (key_route or {}).get("attr_targets", {})
+                control = attr_targets.get("rotateX", (joint, "rotateX"))[0]
+                control_order = int(cmds.getAttr(f"{control}.rotateOrder"))
+                rotation = _quaternion_to_euler_degrees(
+                    control_quaternion, control_order
+                )
         samples_by_time[float(maya_time)] = tuple(float(value) for value in rotation)
     return sorted(samples_by_time.items())
 
@@ -135,6 +137,27 @@ def _configure_sparse_rotation_track(
         bool(key_route.get("control_owned"))
         and bool(key_route.get("quaternion_interpolation_safe"))
     )
+    fixed_axis_twist = bool(key_route.get("fixed_axis_twist"))
+    if fixed_axis_twist and not skip_rotate:
+        target_node, target_attr = attr_targets.get("rotateZ", (joint, "rotateZ"))
+        twist_plug = f"{target_node}.{target_attr}"
+        if (
+            (context.use_vmd_rotation_time_curve or registered_rotation_curve)
+            and len(frames) >= 2
+        ):
+            from .vmd_rotation_time_curve import apply_vmd_scalar_rotation_time_curve
+
+            context.rotation_time_curve_records.append(
+                apply_vmd_scalar_rotation_time_curve(
+                    frames,
+                    twist_plug,
+                    vmd_bone_name,
+                    time_converter=context.vmd_frame_to_maya_time,
+                    animation_layer=animation_layer,
+                )
+            )
+        return [twist_plug]
+
     quaternion_requested = (
         registered_rotation_curve and (direct_rotation_route or control_route_safe)
     ) or (
@@ -270,7 +293,12 @@ def set_bone_keyframes(
     key_route = key_route or {}
     attr_targets = key_route.get("attr_targets", {})
     skip_rotate = bool(key_route.get("skip_rotate"))
-    attrs = ["translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"]
+    rotation_attrs = (
+        ["rotateZ"]
+        if key_route.get("fixed_axis_twist")
+        else ["rotateX", "rotateY", "rotateZ"]
+    )
+    attrs = ["translateX", "translateY", "translateZ", *rotation_attrs]
     channel_interp_map = {
         attr: context.vmd_interp_channel_for_attr(attr)
         for attr in attrs
@@ -384,9 +412,17 @@ def set_bone_keyframes(
             }
             if not skip_rotate:
                 rx, ry, rz = rotation_by_time[maya_time]
-                values["rotateX"] = rx
-                values["rotateY"] = ry
-                values["rotateZ"] = rz
+                rotation_values = {
+                    "rotateX": rx,
+                    "rotateY": ry,
+                    "rotateZ": rz,
+                }
+                values.update(
+                    {
+                        attr: rotation_values[attr]
+                        for attr in rotation_attrs
+                    }
+                )
 
             for attr, value in values.items():
                 target_node, target_attr = attr_targets.get(attr, (joint, attr))

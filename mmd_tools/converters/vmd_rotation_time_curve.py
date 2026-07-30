@@ -86,6 +86,57 @@ def apply_vmd_rotation_time_curve(
         raise
 
 
+def apply_vmd_scalar_rotation_time_curve(
+    frames: Iterable[Any],
+    rotation_plug: str,
+    vmd_bone_name: str,
+    *,
+    time_converter: Callable[[float], float] = float,
+    animation_layer: str | None = None,
+) -> dict[str, Any]:
+    """Create one VMD Bezier time curve for a scalar FixedAxis Twist track."""
+
+    ordered = sorted(frames, key=get_frame_number)
+    if len(ordered) < 2:
+        raise RuntimeError("VMD rotation time curve requires at least two keys")
+    plug = str(rotation_plug)
+    control = plug.rsplit(".", 1)[0]
+    curves = _resolve_animation_curves(
+        [plug],
+        animation_layer=animation_layer,
+        require_quaternion=False,
+        required_count=1,
+    )
+    existing_time_curves = set()
+    for source in cmds.listConnections(
+        f"{curves[0]}.input", source=True, destination=False, plugs=True
+    ) or []:
+        node = str(source).split(".", 1)[0]
+        if (
+            cmds.objExists(node)
+            and cmds.nodeType(node) == "animCurveTT"
+            and cmds.attributeQuery(_MARKER_ATTR, node=node, exists=True)
+            and cmds.getAttr(f"{node}.{_MARKER_ATTR}")
+        ):
+            existing_time_curves.add(node)
+    if len(existing_time_curves) > 1:
+        raise RuntimeError(f"VMD rotation track has split time curves: {control}")
+    created = not existing_time_curves
+    time_curve = (
+        next(iter(existing_time_curves))
+        if not created
+        else cmds.createNode("animCurveTT", name=f"{control.rsplit('|', 1)[-1]}_vmdRotationTime")
+    )
+    try:
+        return _author_vmd_rotation_time_curve(
+            ordered, curves, control, time_curve, vmd_bone_name, time_converter
+        )
+    except Exception:
+        if created and cmds.objExists(time_curve):
+            detach_and_delete_vmd_rotation_time_curve(cmds, time_curve)
+        raise
+
+
 def _author_vmd_rotation_time_curve(
     ordered: list[Any],
     curves: list[str],
@@ -172,6 +223,25 @@ def _resolve_quaternion_curves(
     their authored curves directly.  Intersecting ``keyframe -name`` with the
     selected layer keeps the lookup root- and layer-scoped.
     """
+    return _resolve_animation_curves(
+        plugs,
+        animation_layer=animation_layer,
+        require_quaternion=require_quaternion,
+        required_count=3,
+    )
+
+
+def _resolve_animation_curves(
+    plugs: list[str],
+    *,
+    animation_layer: str | None,
+    require_quaternion: bool,
+    required_count: int,
+) -> list[str]:
+    """Resolve one authored animation curve for each requested sibling plug."""
+
+    if len(plugs) != required_count:
+        raise RuntimeError(f"VMD rotation track requires {required_count} curve(s)")
     layer_curves = None
     if animation_layer:
         layer_curves = set(
@@ -205,8 +275,8 @@ def _resolve_quaternion_curves(
         ):
             raise RuntimeError(f"VMD rotation source is not quaternion: {candidates[0]}")
         curves.append(candidates[0])
-    if len(set(curves)) != 3:
-        raise RuntimeError("VMD rotation track does not have three sibling curves")
+    if len(set(curves)) != required_count:
+        raise RuntimeError("VMD rotation track does not have distinct sibling curves")
     return curves
 
 
@@ -458,8 +528,8 @@ def resolve_vmd_rotation_time_curve_record(
     time_uuid = str(record.get("rotationTimeCurveUuid") or "")
     control_uuid = str(record.get("controlUuid") or "")
     rotation_uuids = [str(value) for value in record.get("rotationCurveUuids", []) or []]
-    if len(rotation_uuids) != 3 or len(set(rotation_uuids)) != 3:
-        raise RuntimeError("owned VMD rotation track does not have three sibling curves")
+    if len(rotation_uuids) not in {1, 3} or len(set(rotation_uuids)) != len(rotation_uuids):
+        raise RuntimeError("owned VMD rotation track must have one scalar or three sibling curves")
     time_curve = resolve(time_uuid, "time curve")
     control = resolve(control_uuid, "control")
     rotation_curves = [resolve(uuid, "sibling curve") for uuid in rotation_uuids]

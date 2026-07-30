@@ -236,6 +236,24 @@ def control_to_bone(
     return quaternion_multiply(quaternion_multiply(basis_quaternion, control), inverse)
 
 
+def quaternion_twist_angle_degrees(
+    quaternion: Tuple[float, float, float, float],
+) -> float:
+    """Return the signed twist angle around control-local positive Z.
+
+    FixedAxis Twist controls expose only ``rotateZ``. Projecting the
+    quaternion vector part onto local Z performs the swing-twist
+    decomposition for that axis; X/Y are the discarded swing component.
+    A pure 180-degree swing has no defined twist and maps to zero.
+    """
+
+    _x, _y, z, w = _coerce_quaternion(quaternion, "twist quaternion")
+    length = math.hypot(z, w)
+    if length <= _EPSILON:
+        return 0.0
+    return math.degrees(2.0 * math.atan2(z / length, w / length))
+
+
 def _coerce_quaternion(value: Any, description: str) -> Tuple[float, float, float, float]:
     if isinstance(value, MmdControlRigBasis):
         value = value.quaternion

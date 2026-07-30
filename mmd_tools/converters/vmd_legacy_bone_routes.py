@@ -10,7 +10,7 @@ import maya.cmds as cmds
 from ..core.mmd_control_rig_motion import (
     control_rig_edit_authoring_bases_for_joints,
     control_rig_edit_routes_for_joints,
-    control_rig_quaternion_safe_joints,
+    control_rig_fixed_axis_twist_joints,
 )
 from .vmd_runtime_rig_helper import _ls_mmd_ccd_ik_nodes
 
@@ -66,7 +66,7 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
     authoring_bases = control_rig_edit_authoring_bases_for_joints(
         converter.bone_name_mapping.values()
     )
-    quaternion_safe_joints = control_rig_quaternion_safe_joints(
+    fixed_axis_twist_joints = control_rig_fixed_axis_twist_joints(
         converter.bone_name_mapping.values()
     )
     routes: Dict[str, dict] = {}
@@ -80,7 +80,16 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
             "ik_solver_rotate": ik_info,
             "control_owned": bool(control_route),
             "quaternion_interpolation_safe": False,
-            "authoring_basis": authoring_bases.get(joint),
+            "fixed_axis_twist": joint in fixed_axis_twist_joints,
+            # Normal EDIT controls currently drive joint.rotate components
+            # directly, so their keyed quaternion must remain numerically in
+            # joint rotate space. FixedAxis Twist is the scalar exception:
+            # it projects into the displayed control-local Z basis.
+            "authoring_basis": (
+                authoring_bases.get(joint)
+                if joint in fixed_axis_twist_joints
+                else None
+            ),
         }
         info = append_info.get(joint)
         if info:
@@ -92,7 +101,13 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
         # In EDIT, the owned curve is the authored animation input. Unsupported
         # bones and solver-output links retain the established legacy route.
         route["attr_targets"].update(control_route)
-        route["quaternion_interpolation_safe"] = joint in quaternion_safe_joints
+        # A complete owned component route is authored as one quaternion
+        # track. The control values remain in joint rotate space because the
+        # current EDIT graph connects those components directly.
+        route["quaternion_interpolation_safe"] = (
+            all(channel in control_route for channel in ("rotateX", "rotateY", "rotateZ"))
+            and joint not in fixed_axis_twist_joints
+        )
 
         # A CONTROL_OWNED MMD Control Rig is a single-writer path: when all
         # rotation channels are routed to an owned controller, author those

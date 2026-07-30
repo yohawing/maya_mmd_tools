@@ -1,5 +1,6 @@
 """Focused CR061-03 VMD Control Rig option and preflight regressions."""
 
+import math
 import unittest
 from contextlib import ExitStack, nullcontext
 from unittest.mock import MagicMock, patch
@@ -585,8 +586,90 @@ class TestControlRigImportPreflight(unittest.TestCase):
         self.assertFalse(route["skip_rotate"])
         self.assertIsNone(route["ik_solver_rotate"])
         self.assertTrue(route["control_owned"])
-        self.assertFalse(route["quaternion_interpolation_safe"])
+        self.assertTrue(route["quaternion_interpolation_safe"])
         self.assertEqual(route["attr_targets"]["rotateX"], ("|model|right_leg_CTRL", "rotateX"))
+
+    def test_complete_control_route_uses_joint_space_quaternion_contract(self):
+        converter = MagicMock()
+        joint = "|model|left_elbow"
+        converter.bone_name_mapping = {"左ひじ": joint}
+        converter._collect_append_info.return_value = {}
+        converter._collect_ik_link_joints.return_value = {}
+        control_route = {
+            attr: ("|model|left_elbow_CTRL", attr)
+            for attr in ("rotateX", "rotateY", "rotateZ")
+        }
+        basis = {"source": "pmx_tail", "quaternion": [0.0, 0.0, 0.0, 1.0]}
+        with (
+            patch(
+                "mmd_tools.converters.vmd_legacy_bone_routes.control_rig_edit_routes_for_joints",
+                return_value={joint: control_route},
+            ),
+            patch(
+                "mmd_tools.converters.vmd_legacy_bone_routes.control_rig_edit_authoring_bases_for_joints",
+                return_value={joint: basis},
+            ),
+            patch(
+                "mmd_tools.converters.vmd_legacy_bone_routes.control_rig_fixed_axis_twist_joints",
+                return_value=set(),
+            ),
+        ):
+            route = build_legacy_bone_key_routes(converter)[joint]
+
+        self.assertTrue(route["quaternion_interpolation_safe"])
+        self.assertFalse(route["fixed_axis_twist"])
+        self.assertIsNone(route["authoring_basis"])
+
+    def test_rotation_target_normalization_does_not_classify_translation(self):
+        self.assertEqual(
+            mmd_control_rig_motion._rotation_attr_for_target("joint.rotateX"),
+            "rotateX",
+        )
+        self.assertEqual(
+            mmd_control_rig_motion._rotation_attr_for_target("append.baseRotateY"),
+            "rotateY",
+        )
+        self.assertEqual(
+            mmd_control_rig_motion._rotation_attr_for_target(
+                "solver.inputRotateElementZ"
+            ),
+            "rotateZ",
+        )
+        self.assertEqual(
+            mmd_control_rig_motion._rotation_attr_for_target("joint.translateX"),
+            "translateX",
+        )
+
+    def test_fixed_axis_twist_route_uses_sparse_z_contract(self):
+        converter = MagicMock()
+        joint = "|model|left_arm_twist"
+        converter.bone_name_mapping = {"左腕捩": joint}
+        converter._collect_append_info.return_value = {}
+        converter._collect_ik_link_joints.return_value = {}
+        control_route = {
+            attr: ("|model|left_arm_twist_CTRL", attr)
+            for attr in ("rotateX", "rotateY", "rotateZ")
+        }
+        basis = {"source": "pmx_tail", "quaternion": [0.0, 0.0, 0.0, 1.0]}
+        with (
+            patch(
+                "mmd_tools.converters.vmd_legacy_bone_routes.control_rig_edit_routes_for_joints",
+                return_value={joint: control_route},
+            ),
+            patch(
+                "mmd_tools.converters.vmd_legacy_bone_routes.control_rig_edit_authoring_bases_for_joints",
+                return_value={joint: basis},
+            ),
+            patch(
+                "mmd_tools.converters.vmd_legacy_bone_routes.control_rig_fixed_axis_twist_joints",
+                return_value={joint},
+            ),
+        ):
+            route = build_legacy_bone_key_routes(converter)[joint]
+
+        self.assertFalse(route["quaternion_interpolation_safe"])
+        self.assertTrue(route["fixed_axis_twist"])
+        self.assertEqual(route["authoring_basis"], basis)
 
     def test_control_route_discovers_namespaced_metadata_recursively(self):
         joint = "|ns:model|ns:center"
@@ -1098,6 +1181,54 @@ class TestControlRigMotionClear(MayaTestBase):
         self.assertEqual(
             apply_quaternion.call_args.args[1],
             [f"{control}.rotateX", f"{control}.rotateY", f"{control}.rotateZ"],
+        )
+        cmds.delete(joint, control)
+
+    def test_fixed_axis_twist_authors_only_sparse_z_with_vmd_time_curve(self):
+        joint = cmds.joint(name="cr061_fixed_twist_joint")
+        control = cmds.createNode("transform", name="cr061_fixed_twist_control")
+        converter = VmdConverter()
+        converter.use_animation_layers = False
+        converter.use_quaternion_interpolation = True
+        converter.use_vmd_rotation_time_curve = True
+        converter._bone_bind_poses["左腕捩"] = (0.0, 0.0, 0.0)
+        half_angle = math.radians(25.0)
+        frames = [
+            {
+                "frame_number": 0,
+                "position": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0, 1.0],
+            },
+            {
+                "frame_number": 30,
+                "position": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.0, math.sin(half_angle), math.cos(half_angle)],
+            },
+        ]
+        route = {
+            "control_owned": True,
+            "fixed_axis_twist": True,
+            "authoring_basis": {
+                "source": "identity",
+                "quaternion": [0.0, 0.0, 0.0, 1.0],
+            },
+            "attr_targets": {
+                attr: (control, attr) for attr in ("rotateX", "rotateY", "rotateZ")
+            },
+        }
+
+        converter._set_bone_keyframes(joint, frames, "左腕捩", route)
+
+        self.assertFalse(cmds.keyframe(f"{control}.rotateX", query=True, name=True))
+        self.assertFalse(cmds.keyframe(f"{control}.rotateY", query=True, name=True))
+        self.assertEqual(
+            cmds.keyframe(f"{control}.rotateZ", query=True, timeChange=True),
+            [0.0, 30.0],
+        )
+        self.assertEqual(len(converter._rotation_time_curve_records), 1)
+        self.assertEqual(
+            len(converter._rotation_time_curve_records[0]["rotationCurveUuids"]),
+            1,
         )
         cmds.delete(joint, control)
 

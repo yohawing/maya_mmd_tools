@@ -11,6 +11,7 @@ from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
 from mmd_tools.converters.vmd_registered_sparse import RegisteredSparseBoneFrame
 from mmd_tools.converters.vmd_rotation_time_curve import (
     apply_vmd_rotation_time_curve,
+    apply_vmd_scalar_rotation_time_curve,
     capture_vmd_rotation_time_curve_snapshot,
     commit_vmd_rotation_time_curve_disable,
     delete_vmd_rotation_time_curves_for_controls,
@@ -168,6 +169,30 @@ class TestVmdRotationTimeCurve(MayaTestBase):
                 apply_vmd_rotation_time_curve(frames, plugs, "下半身")
 
         self.assertEqual(set(cmds.ls(type="animCurveTT") or []), before)
+        cmds.delete(control)
+
+    def test_scalar_time_curve_drives_fixed_axis_twist(self):
+        control = cmds.createNode("transform", name="vmd_fixed_twist_control")
+        for time, value in ((0, 15.0), (30, 85.0)):
+            cmds.setKeyframe(control, attribute="rotateZ", time=time, value=value)
+        frames = [
+            {"frame_number": 0, "interpolation": _interpolation_bytes()},
+            {"frame_number": 30, "interpolation": _interpolation_bytes()},
+        ]
+
+        record = apply_vmd_scalar_rotation_time_curve(
+            frames, f"{control}.rotateZ", "右腕捩"
+        )
+        time_curve = cmds.ls(record["rotationTimeCurveUuid"], long=True)[0]
+        rotate_curve = cmds.ls(record["rotationCurveUuids"][0], long=True)[0]
+
+        self.assertEqual(len(record["rotationCurveUuids"]), 1)
+        self.assertEqual(
+            cmds.listConnections(
+                f"{rotate_curve}.input", source=True, destination=False, plugs=True
+            ),
+            [f"{time_curve}.output"],
+        )
         cmds.delete(control)
 
     def test_snapshot_restores_existing_curve_and_deletes_failed_new_curve(self):

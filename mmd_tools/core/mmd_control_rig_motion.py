@@ -31,7 +31,11 @@ from mmd_tools.core.mmd_control_rig_builder import (
     resolve_mmd_control_rig_binding_ik_solvers,
     resolve_mmd_control_rig_binding_joint,
 )
-from mmd_tools.core.mmd_control_rig_analyzer import INPUT_DIRECT_CHANNEL, INPUT_IK_CONTROLLER
+from mmd_tools.core.mmd_control_rig_analyzer import (
+    INPUT_BONE_MORPH_BASE,
+    INPUT_DIRECT_CHANNEL,
+    INPUT_IK_CONTROLLER,
+)
 from mmd_tools.core.mmd_control_rig_basis import (
     MmdControlRigBasisError,
     control_to_bone,
@@ -39,6 +43,7 @@ from mmd_tools.core.mmd_control_rig_basis import (
     validate_basis_record,
 )
 from mmd_tools.core.mmd_control_rig_channels import (
+    ROTATE_CHANNELS,
     derive_mmd_control_rig_channel_policy,
 )
 from mmd_tools.core.mmd_control_rig_anim_layers import (
@@ -146,6 +151,7 @@ def control_rig_edit_authoring_bases_for_joints(
             }
             if binding.get("inputKind") not in {
                 INPUT_DIRECT_CHANNEL,
+                INPUT_BONE_MORPH_BASE,
                 "append_base" if is_twist else INPUT_DIRECT_CHANNEL,
             }:
                 continue
@@ -170,6 +176,42 @@ def control_rig_edit_authoring_bases_for_joints(
                 result.pop(joint, None)
                 continue
             result[joint] = basis
+    return result
+
+
+def control_rig_fixed_axis_twist_joints(joints, *, cmds_module=None) -> set[str]:
+    """Return EDIT-owned Twist joints whose UI contract is sparse local-Z."""
+
+    cmds = cmds_module or maya_cmds()
+    wanted = set()
+    for joint in joints:
+        matches = cmds.ls(joint, long=True) or []
+        wanted.add(str(matches[0]) if len(matches) == 1 else str(joint))
+    result = set()
+    roots = cmds.ls(
+        f"*.{ATTR_MMD_CONTROL_RIG_JSON}",
+        objectsOnly=True,
+        long=True,
+        recursive=True,
+    ) or []
+    for root in roots:
+        metadata = read_mmd_control_rig_metadata(str(root), cmds_module=cmds)
+        if not metadata or metadata.get("owner") != CONTROL_RIG_CONTROL_OWNED:
+            continue
+        for role, binding in metadata.get("bindings", {}).items():
+            if not isinstance(binding, Mapping) or not binding.get("twistController"):
+                continue
+            policy = derive_mmd_control_rig_channel_policy(str(role), binding)
+            if policy.keyable_channels != ("rotateZ",) or not all(
+                channel in policy.passthrough_channels for channel in ROTATE_CHANNELS[:2]
+            ):
+                continue
+            try:
+                joint = resolve_mmd_control_rig_binding_joint(cmds, binding)
+            except MmdControlRigBuildError:
+                continue
+            if joint in wanted:
+                result.add(joint)
     return result
 
 
@@ -2340,7 +2382,9 @@ def _rotation_attr_for_target(target: str) -> str:
     attribute = str(target).rsplit(".", 1)[-1]
     if attribute in {"rotateX", "rotateY", "rotateZ"}:
         return attribute
-    if attribute.endswith(("X", "Y", "Z")):
+    if attribute.startswith(("baseRotate", "inputRotateElement")) and attribute.endswith(
+        ("X", "Y", "Z")
+    ):
         return f"rotate{attribute[-1]}"
     return attribute
 

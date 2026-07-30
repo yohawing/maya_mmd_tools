@@ -15,6 +15,7 @@ from mmd_tools.core.mmd_control_rig_basis import (
     quaternion_from_shape_rotation,
     quaternion_inverse,
     quaternion_multiply,
+    quaternion_twist_angle_degrees,
     validate_basis_record,
 )
 
@@ -83,6 +84,19 @@ class TestMmdControlRigBasis(unittest.TestCase):
         self.assertEqual(control_to_bone(q, (0.0, 0.0, 0.0, 1.0)), q)
         self.assertEqual(quaternion_inverse(q), quaternion_conjugate(q))
         self.assertEqual(quaternion_multiply(q, quaternion_inverse(q)), (0.0, 0.0, 0.0, 1.0))
+
+    def test_twist_angle_discards_swing_and_preserves_local_z_roll(self):
+        half_roll = math.radians(35.0)
+        half_swing = math.radians(20.0)
+        swing = (math.sin(half_swing), 0.0, 0.0, math.cos(half_swing))
+        twist = (0.0, 0.0, math.sin(half_roll), math.cos(half_roll))
+
+        combined = quaternion_multiply(swing, twist)
+
+        self.assertAlmostEqual(quaternion_twist_angle_degrees(combined), 70.0)
+
+    def test_twist_angle_maps_undefined_pure_swing_to_zero(self):
+        self.assertEqual(quaternion_twist_angle_degrees((1.0, 0.0, 0.0, 0.0)), 0.0)
 
     def test_non_commuting_ninety_degree_basis_conjugation(self):
         basis = quaternion_from_shape_rotation(((0.0, 0.0, 1.0), 0.0, 1.0))
