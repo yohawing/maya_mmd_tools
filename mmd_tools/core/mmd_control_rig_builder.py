@@ -1439,9 +1439,12 @@ def _parent_zero_groups(
     """Parent zero groups while preserving omitted helper-joint motion.
 
     Finger roots and arm roles may have concrete parents that are not exposed
-    as semantic controls.  Following that real parent joint is acyclic because
-    each controller only drives its own downstream joint, and retains motion
-    from helpers such as shoulderP/shoulderC or unexposed twist joints.
+    as semantic controls. Knee controls also author raw pre-solver rotation,
+    so they must follow the evaluated thigh instead of assuming the semantic
+    leg control has the same world basis. Following that real parent joint is
+    acyclic because each controller only drives its own downstream joint, and
+    retains helper/solver motion without feeding the controller world matrix
+    back into the authored input.
 
     Returns:
         Constraint nodes owned by the Control Rig lifecycle.
@@ -1450,8 +1453,10 @@ def _parent_zero_groups(
     for role, zero in zero_groups.items():
         parent_role = _available_parent_role(role, controls)
         concrete_parent = _actual_joint_parent(cmds, role, role_joints)
-        needs_joint_follow = role in _FINGER_ROOT_ROLES or (
-            role in _ARM_ORIENTATION_ROLES and concrete_parent is not None
+        needs_joint_follow = (
+            role in _FINGER_ROOT_ROLES
+            or role in {"left_knee", "right_knee"}
+            or (role in _ARM_ORIENTATION_ROLES and concrete_parent is not None)
         )
         if needs_joint_follow:
             if concrete_parent is None:
@@ -1466,7 +1471,7 @@ def _parent_zero_groups(
             ) or []
             if len(constraint) != 1:
                 raise MmdControlRigBuildError(
-                    f"finger control follow constraint was not created: {role}"
+                    f"control follow constraint was not created: {role}"
                 )
             helper_nodes.append(str(constraint[0]))
             continue

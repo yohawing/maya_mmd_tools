@@ -842,7 +842,10 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             for role in ("shoulder", "arm", "arm_twist", "elbow", "wrist_twist", "wrist")
             if f"{side}_{role}" in result.controls
         )
-        follow_roles = finger_roots + arm_roles
+        knee_roles = tuple(
+            role for role in ("left_knee", "right_knee") if role in result.controls
+        )
+        follow_roles = finger_roots + arm_roles + knee_roles
         self.assertEqual(len(metadata.get("helperNodes", [])), len(follow_roles))
         for role in follow_roles:
             zero = result.zero_groups[role]
@@ -1134,16 +1137,19 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         root = self._import_fixture()
         spec = analyze_mmd_control_rig(root)
         left_role = spec.roles_by_name["left_leg"]
+        knee_role = spec.roles_by_name["left_knee"]
         self.assertEqual(left_role.status, STATUS_READY)
         self.assertEqual(left_role.binding.input_kind, INPUT_IK_LINK_INPUT)
 
         rig = build_mmd_control_rig(root, spec=spec)
         metadata = enter_mmd_control_rig_edit(root)
         control = rig.controls["left_leg"]
+        knee_control = rig.controls["left_knee"]
         ik_control = rig.controls["left_foot_ik"]
         target_x = metadata["bindings"]["left_leg"]["authoredPlugs"][0]
         solver = target_x.split(".", 1)[0]
         thigh = left_role.binding.joint
+        knee = knee_role.binding.joint
         cycles_before = sorted(cmds.cycleCheck(all=True, list=True) or [])
 
         # EDIT exposes IK state through the owned foot-IK controller.  The
@@ -1177,20 +1183,28 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         )
 
         cmds.setAttr(f"{control}.rotateX", 7.5)
+        cmds.setAttr(f"{knee_control}.rotateX", 15.0)
         self.assertAlmostEqual(cmds.getAttr(target_x), 7.5, places=6)
+        knee_control_world = cmds.xform(
+            knee_control,
+            query=True,
+            worldSpace=True,
+            matrix=True,
+        )
+        knee_joint_world = cmds.getAttr(f"{knee}.worldMatrix[0]")
+        self.assertLess(
+            max(
+                abs(float(control_value) - float(joint_value))
+                for control_value, joint_value in zip(
+                    knee_control_world,
+                    knee_joint_world,
+                )
+            ),
+            1.0e-8,
+        )
         self.assertEqual(
             sorted(cmds.cycleCheck(all=True, list=True) or []),
             cycles_before,
-        )
-        self.assertFalse(
-            cmds.listConnections(
-                f"{thigh}.rotate",
-                source=True,
-                destination=True,
-                plugs=True,
-                type="transform",
-            )
-            or []
         )
 
     def test_knee_control_visibility_is_inverse_of_leg_ik_state(self):

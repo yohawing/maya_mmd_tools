@@ -885,6 +885,58 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
             ),
         )
 
+    def test_knee_controls_follow_evaluated_thigh_joints(self):
+        fake = _HierarchyFake(
+            {
+                "left_knee_JNT": "left_leg_JNT",
+                "right_knee_JNT": "right_leg_JNT",
+            }
+        )
+        controls = {
+            "left_leg": "left_leg_CTRL",
+            "left_knee": "left_knee_CTRL",
+            "right_leg": "right_leg_CTRL",
+            "right_knee": "right_knee_CTRL",
+        }
+        zero_groups = {
+            role: control.replace("_CTRL", "_ZERO")
+            for role, control in controls.items()
+        }
+
+        helper_nodes = _parent_zero_groups(
+            fake,
+            zero_groups,
+            controls,
+            {
+                "left_leg": "left_leg_JNT",
+                "left_knee": "left_knee_JNT",
+                "right_leg": "right_leg_JNT",
+                "right_knee": "right_knee_JNT",
+            },
+        )
+
+        self.assertNotIn("left_knee_ZERO", fake.parent_by_child)
+        self.assertNotIn("right_knee_ZERO", fake.parent_by_child)
+        self.assertEqual(
+            fake.constraints,
+            [
+                (
+                    "left_leg_JNT",
+                    "left_knee_ZERO",
+                    {"maintainOffset": True, "name": "left_knee_ZERO_FOLLOW"},
+                ),
+                (
+                    "right_leg_JNT",
+                    "right_knee_ZERO",
+                    {"maintainOffset": True, "name": "right_knee_ZERO_FOLLOW"},
+                ),
+            ],
+        )
+        self.assertEqual(
+            helper_nodes,
+            ("left_knee_ZERO_FOLLOW", "right_knee_ZERO_FOLLOW"),
+        )
+
     def test_p0_optional_roles_resolve_and_parent_through_available_chains(self):
         facts = [
             _bone(20, "腰"),
