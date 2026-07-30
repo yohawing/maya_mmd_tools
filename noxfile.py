@@ -1089,8 +1089,14 @@ def _cmake_configure(session: nox.Session, version: str, config: str = DEFAULT_C
         session.run(*args, external=True)
 
 
-def _cmake_build(session: nox.Session, version: str, config: str) -> None:
-    """Build the Maya C++ plugin."""
+def _cmake_build(
+    session: nox.Session,
+    version: str,
+    config: str,
+    *,
+    clean_first: bool = False,
+) -> None:
+    """Build the Maya C++ plugin, optionally forcing fresh tracked artifacts."""
     command = [
         "cmake",
         "--build",
@@ -1098,6 +1104,8 @@ def _cmake_build(session: nox.Session, version: str, config: str) -> None:
         "--config",
         config,
     ]
+    if clean_first:
+        command.append("--clean-first")
     if platform.system() == "Windows":
         _run_in_vs_dev_cmd(session, command)
     else:
@@ -3039,7 +3047,7 @@ def cpp_verify(session: nox.Session) -> None:
     session.run(sys.executable, "-c", _native_runtime_smoke_code(), env=runtime_env, external=True)
 
     _cmake_configure(session, version, config)
-    _cmake_build(session, version, config)
+    _cmake_build(session, version, config, clean_first=True)
 
     # Insert cpp_cli_smoke before maya_smoke when a manifest is supplied.
     # This exercises the pure C++ CLI path (no mayapy) for runtime eval.
