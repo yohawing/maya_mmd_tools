@@ -603,6 +603,48 @@ class TestControlRigSettingSourceInspection(unittest.TestCase):
             animation_settings_source,
         )
 
+    def test_rotation_time_curve_is_dev_only_and_defaults_on(self):
+        dev_only_start = self.source.index("self._dev_only_widgets = [")
+        dev_only_end = self.source.index("]", dev_only_start)
+        dev_only_source = self.source[dev_only_start:dev_only_end]
+
+        self.assertIn("self.vmd_rotation_time_curve_check", dev_only_source)
+        animation_settings_start = self.source.index("# Animation Import Settings")
+        checkbox_start = self.source.index(
+            "self.vmd_rotation_time_curve_check = self._bind_checkbox(",
+            animation_settings_start,
+        )
+        checkbox_end = self.source.index(")", checkbox_start)
+        self.assertIn("True", self.source[checkbox_start:checkbox_end])
+
+    def test_import_defaults_keep_bake_off_and_dev_time_curve_on(self):
+        defaults_path = (
+            Path(import_export_tab.__file__).resolve().parents[2]
+            / "config"
+            / "default_settings.json"
+        )
+        defaults = json.loads(defaults_path.read_text(encoding="utf-8"))
+
+        self.assertFalse(defaults["import"]["rig"]["bake_mode"])
+        self.assertTrue(defaults["import"]["animation"]["vmd_rotation_time_curve"])
+
+    def test_japanese_control_rig_label_uses_katakana(self):
+        translation_path = (
+            Path(import_export_tab.__file__).resolve().parents[1]
+            / "translations"
+            / "ja.json"
+        )
+        translations = json.loads(translation_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            translations["checkboxes"]["create_mmd_control_rig"],
+            "MMDコントロールリグを作成",
+        )
+        self.assertEqual(
+            translations["checkboxes"]["vmd_rotation_time_curve"],
+            "VMD時間補間を時間カーブとして保持",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

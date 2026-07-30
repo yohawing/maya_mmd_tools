@@ -292,7 +292,7 @@ class ImportExportTab(BaseTab):
         self.vmd_rotation_time_curve_check = self._bind_checkbox(
             "vmd_rotation_time_curve",
             setting_keys.IMPORT_ANIMATION_VMD_ROTATION_TIME_CURVE,
-            False,
+            True,
             anim_settings_layout,
             tooltip_key="vmd_rotation_time_curve",
         )
@@ -509,6 +509,7 @@ class ImportExportTab(BaseTab):
             self.other_group,
             self.use_cpp_rig_nodes_check,
             self.motion_scale_row,
+            self.vmd_rotation_time_curve_check,
             self._export_settings_tab,
         ]
         self._apply_dev_mode_visibility()

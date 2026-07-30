@@ -97,7 +97,7 @@ def import_vmd_file(
             - bake_mode: True の場合はリグ経由ではなく runtime bake を優先
             - create_mmd_control_rig: True の場合は MMD Control Rig を作成/再利用し、直接キーを作成
             - use_quaternion_interpolation: sparse回転をQuaternion slerp評価する。Control Rig直接importは既定True、legacyは既定False。
-            - use_vmd_rotation_time_curve: Control Rig回転BezierをanimCurveTTとして保持する実験機能（default False）。
+            - use_vmd_rotation_time_curve: Control Rig回転BezierをanimCurveTTとして保持するDevelopモード機能。
             - use_native_physics_bake: True かつ bake_mode のとき native physics bake を試行する（default False）
             - reduce_bake_keys: True かつ bake_mode のとき runtime pose reduction を試行する（default False）
             - reduce_translate_tolerance / reduce_rotate_tolerance / reduce_morph_tolerance: reduction tolerances

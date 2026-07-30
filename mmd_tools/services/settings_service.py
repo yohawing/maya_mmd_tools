@@ -206,10 +206,11 @@ class SettingsService:
             "motion_scale": self.get(setting_keys.IMPORT_ANIMATION_MOTION_SCALE, 1.0),
             "clear_existing_motion": self.get(setting_keys.IMPORT_ANIMATION_CLEAR_EXISTING_MOTION, False),
             "create_mmd_control_rig": create_control_rig,
-            "use_vmd_rotation_time_curve": create_control_rig
+            "use_vmd_rotation_time_curve": is_dev
+            and create_control_rig
             and self.get(
                 setting_keys.IMPORT_ANIMATION_VMD_ROTATION_TIME_CURVE,
-                False,
+                True,
             ),
             "resample_curves": self.get(setting_keys.IMPORT_ANIMATION_RESAMPLE_CURVES, False) if is_dev else False,
             "bake_mode": bake_mode,

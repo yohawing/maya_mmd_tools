@@ -297,7 +297,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertFalse(vmd_options["create_mmd_control_rig"])
         self.assertFalse(vmd_options["use_vmd_rotation_time_curve"])
 
-    def test_rotation_time_curve_option_requires_control_rig_setting(self):
+    def test_rotation_time_curve_option_requires_dev_mode_and_control_rig(self):
         self.service.set("import.animation.vmd_rotation_time_curve", True)
 
         self.assertFalse(
@@ -305,6 +305,12 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         )
 
         self.service.set("import.model.create_mmd_control_rig", True)
+
+        self.assertFalse(
+            self.service.build_vmd_import_options()["use_vmd_rotation_time_curve"]
+        )
+
+        self.service.set("ui.general.development_mode", True)
 
         self.assertTrue(
             self.service.build_vmd_import_options()["use_vmd_rotation_time_curve"]
