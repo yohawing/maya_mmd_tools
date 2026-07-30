@@ -52,7 +52,47 @@
 
 namespace {
 constexpr double kPi = 3.14159265358979323846;
+// Maya stores rotate channels as doubles, while the runtime IK ABI consumes
+// float quaternions.  Equivalent VMD poses can differ by sub-microdegree
+// Euler noise after export/reimport; iterative CCD may amplify the resulting
+// one-ULP float difference.  Snap only the runtime input quaternion (never the
+// authored Maya value or solver output) to a much finer grid than the solver's
+// angular accuracy so equivalent DCC/format poses enter CCD identically.
+constexpr float kRuntimeQuaternionQuantum = 1.0e-6f;
 using nlohmann::json;
+
+void canonicalizeRuntimeQuaternion(float* quaternion)
+{
+    // q and -q encode the same rotation.  A canonical hemisphere makes the
+    // component grid independent of which equivalent representation Maya
+    // returned.
+    if (quaternion[3] < 0.0f) {
+        for (size_t component = 0; component < 4; ++component) {
+            quaternion[component] = -quaternion[component];
+        }
+    }
+
+    double lengthSquared = 0.0;
+    for (size_t component = 0; component < 4; ++component) {
+        const float value = quaternion[component];
+        const float snapped = std::nearbyint(value / kRuntimeQuaternionQuantum) *
+                              kRuntimeQuaternionQuantum;
+        quaternion[component] = snapped;
+        lengthSquared += static_cast<double>(snapped) * static_cast<double>(snapped);
+    }
+    if (lengthSquared <= 0.0) {
+        quaternion[0] = 0.0f;
+        quaternion[1] = 0.0f;
+        quaternion[2] = 0.0f;
+        quaternion[3] = 1.0f;
+        return;
+    }
+
+    const float inverseLength = static_cast<float>(1.0 / std::sqrt(lengthSquared));
+    for (size_t component = 0; component < 4; ++component) {
+        quaternion[component] *= inverseLength;
+    }
+}
 
 struct CcdIkChainConfig;
 
@@ -845,6 +885,7 @@ bool solveChainJsonIk(
             rotations[boneIndex * 4 + 1] = static_cast<float>(q.y);
             rotations[boneIndex * 4 + 2] = static_cast<float>(q.z);
             rotations[boneIndex * 4 + 3] = static_cast<float>(q.w);
+            canonicalizeRuntimeQuaternion(&rotations[boneIndex * 4]);
         }
     } else {
         for (size_t boneIndex = 0; boneIndex < boneCount; ++boneIndex) {
@@ -859,6 +900,7 @@ bool solveChainJsonIk(
             rotations[boneIndex * 4 + 1] = static_cast<float>(-q.y);
             rotations[boneIndex * 4 + 2] = static_cast<float>(q.z);
             rotations[boneIndex * 4 + 3] = static_cast<float>(q.w);
+            canonicalizeRuntimeQuaternion(&rotations[boneIndex * 4]);
         }
     }
 

@@ -137,6 +137,26 @@ def main() -> int:
                     f"mmdCcdIk local-axis output did not use v2 solver: max_error={max_error:.8f}; "
                     f"actual={actual}; expected_v2={expected_v2}; expected_v1={expected_v1}"
                 )
+
+            # VMD export/reimport may move an Euler channel by less than one
+            # microdegree.  Both values must enter native CCD as the same
+            # canonical float pose instead of selecting divergent iterations.
+            source_degrees = (0.35377899, -7.01622930, 6.63296383)
+            fresh_degrees = (0.35377896, -7.01622999, 6.63296390)
+            cmds.setAttr(f"{node}.inputRotate[1]", *source_degrees, type="double3")
+            source_output = _output(cmds, node)
+            cmds.setAttr(f"{node}.inputRotate[1]", *fresh_degrees, type="double3")
+            fresh_output = _output(cmds, node)
+            stability_error = max(
+                abs(lhs - rhs) for lhs, rhs in zip(source_output, fresh_output)
+            )
+            if stability_error > 1.0e-8:
+                raise RuntimeError(
+                    "sub-microdegree input noise changed native CCD output: "
+                    f"max_error={stability_error:.12f}; "
+                    f"source={source_output}; fresh={fresh_output}"
+                )
+
             cmds.setAttr(f"{node}.inputRotate[2]", 12.0, -7.0, 3.0, type="double3")
             cmds.setAttr(f"{node}.inputRotate[1]", -4.0, 9.0, 6.0, type="double3")
             cmds.setAttr(f"{node}.enabled", False)
@@ -146,7 +166,11 @@ def main() -> int:
                     "disabled mmdCcdIk did not preserve raw MMD link quaternions: "
                     f"values={disabled_quaternions}"
                 )
-            print(f"OK: mmdCcdIk local-axis v2 dispatch parity (max_error={max_error:.8f}, v1_v2_delta={delta:.8f})")
+            print(
+                "OK: mmdCcdIk local-axis v2 dispatch parity "
+                f"(max_error={max_error:.8f}, v1_v2_delta={delta:.8f}, "
+                f"stability_error={stability_error:.12f})"
+            )
         finally:
             cmds.delete(node)
     finally:
