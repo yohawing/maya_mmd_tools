@@ -308,8 +308,14 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
     plug_states = _capture_plug_states(cmds, transaction_plugs)
     metadata_before = _raw_metadata(cmds, root)
     added_attributes = []
+    locked_twist_plugs = ()
+    cmds.undoInfo(openChunk=True, chunkName="Enter MMD Control Rig Edit Locks")
 
     try:
+        locked_twist_plugs = _unlock_fixed_twist_passthroughs(
+            cmds,
+            _fixed_twist_passthrough_plugs(metadata, controls),
+        )
         # Persist the in-flight boundary before any graph mutation.  A failed
         # transition must restore this exact raw payload, including omitted
         # legacy owner fields.
@@ -395,6 +401,10 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                                     .get(role, {})
                                     .get("twistController")
                                 ),
+                                fixed_axis_twist=_is_fixed_axis_twist_role(
+                                    role,
+                                    binding,
+                                ),
                             )
                         )
                         _record_curve_representation(
@@ -458,6 +468,10 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                                 metadata.get("bindings", {})
                                 .get(role, {})
                                 .get("twistController")
+                            ),
+                            fixed_axis_twist=_is_fixed_axis_twist_role(
+                                role,
+                                binding,
                             ),
                         )
                     )
@@ -599,6 +613,9 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                 f"control-rig enter EDIT failed and rollback was incomplete: {rollback_error}"
             ) from exc
         raise
+    finally:
+        _relock_fixed_twist_passthroughs(cmds, locked_twist_plugs)
+        cmds.undoInfo(closeChunk=True)
     return metadata
 
 
@@ -901,6 +918,13 @@ def _edit_exit_transaction(
     owned_nodes=(),
 ):
     """Snapshot EDIT plugs and roll back a failed state transition."""
+    twist_passthrough_plugs = tuple(
+        str(row["control"])
+        for row in rows
+        if row.get("fixedAxisTwist")
+        and str(row.get("control", "")).rsplit(".", 1)[-1]
+        in {"rotateX", "rotateY"}
+    )
     transaction_plugs = {
         str(row[key])
         for row in rows
@@ -914,12 +938,17 @@ def _edit_exit_transaction(
     rotation_states = _capture_rotation_interpolation_states(cmds, rotation_groups)
     allowed_sources = _transaction_owned_sources(rows, curve_plugs, layer_journal)
     owned_nodes = set(str(node) for node in (owned_nodes or ()))
+    locked_twist_plugs = ()
+    cmds.undoInfo(openChunk=True, chunkName=f"{label} Locks")
     try:
+        locked_twist_plugs = _unlock_fixed_twist_passthroughs(
+            cmds,
+            twist_passthrough_plugs,
+        )
         transitioning = json.loads(metadata_before)
         transitioning["owner"] = CONTROL_RIG_CONVERTING
         _write_metadata(cmds, root, transitioning)
-        with _undo_chunk(cmds, label):
-            yield
+        yield
     except Exception as exc:
         try:
             _assert_created_curve_nodes_safe(
@@ -955,6 +984,9 @@ def _edit_exit_transaction(
         raise
     else:
         _discard_curve_snapshots(cmds, curve_snapshots)
+    finally:
+        _relock_fixed_twist_passthroughs(cmds, locked_twist_plugs)
+        cmds.undoInfo(closeChunk=True)
 
 
 def _expanded_authored_plugs(
@@ -984,7 +1016,7 @@ def _owned_authored_plugs(
 ) -> Tuple[str, ...]:
     """Return only authored targets exposed by the role's channel policy."""
     policy = derive_mmd_control_rig_channel_policy(_channel_policy_role(role), binding)
-    allowed = set(policy.keyable_channels)
+    allowed = set(policy.keyable_channels + policy.passthrough_channels)
     return tuple(
         target
         for target in _expanded_authored_plugs(binding, cmds_module=cmds_module)
@@ -993,14 +1025,42 @@ def _owned_authored_plugs(
 
 
 def _channel_policy_role(role: str) -> str:
-    """Map optional twist rings onto the established rotate-only policies."""
+    """Return the semantic role used for channel-policy derivation."""
 
-    return {
-        "left_arm_twist": "left_arm",
-        "right_arm_twist": "right_arm",
-        "left_wrist_twist": "left_wrist",
-        "right_wrist_twist": "right_wrist",
-    }.get(str(role), str(role))
+    return str(role)
+
+
+def _is_fixed_axis_twist_role(role: str, binding: Mapping[str, Any]) -> bool:
+    policy = derive_mmd_control_rig_channel_policy(str(role), binding)
+    return bool(policy.passthrough_channels)
+
+
+def _fixed_twist_passthrough_plugs(metadata, controls) -> Tuple[str, ...]:
+    plugs = []
+    for role, binding in metadata.get("bindings", {}).items():
+        if not _is_fixed_axis_twist_role(str(role), binding):
+            continue
+        control = controls.get(role)
+        if control:
+            plugs.extend(f"{control}.{channel}" for channel in ("rotateX", "rotateY"))
+    return tuple(plugs)
+
+
+def _unlock_fixed_twist_passthroughs(cmds, plugs) -> Tuple[str, ...]:
+    locked = tuple(
+        str(plug)
+        for plug in dict.fromkeys(plugs)
+        if cmds.objExists(plug) and bool(cmds.getAttr(plug, lock=True))
+    )
+    for plug in locked:
+        cmds.setAttr(plug, lock=False)
+    return locked
+
+
+def _relock_fixed_twist_passthroughs(cmds, plugs) -> None:
+    for plug in plugs:
+        if cmds.objExists(plug):
+            cmds.setAttr(plug, lock=True, keyable=False, channelBox=False)
 
 
 def _control_channel_for_target(target: str) -> str:
@@ -1177,6 +1237,7 @@ def _journal_plug_row(
     layer_route: Optional[Mapping[str, Any]] = None,
     authoring_basis: Optional[Mapping[str, Any]] = None,
     twist_controller: bool = False,
+    fixed_axis_twist: bool = False,
 ) -> Dict[str, Any]:
     """Create a connection-journal row with readable and stable plug names."""
     return {
@@ -1196,6 +1257,7 @@ def _journal_plug_row(
         "layerRoute": dict(layer_route) if layer_route else None,
         "authoringBasis": dict(authoring_basis) if authoring_basis else None,
         "twistController": bool(twist_controller),
+        "fixedAxisTwist": bool(fixed_axis_twist),
     }
 
 

@@ -10,21 +10,56 @@ from mmd_tools.core.mmd_control_rig_channels import (
     derive_mmd_control_rig_channel_policy,
     union_mmd_control_rig_channel_policies,
 )
+from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
 
-def _binding(input_kind, authored_plugs, *, blocked=False):
+def _binding(
+    input_kind,
+    authored_plugs,
+    *,
+    blocked=False,
+    fixed_axis=None,
+    pmx_flags=0,
+):
     return MmdControlRigBoneBinding(
         joint="|model|joint",
         mmd_name="",
         bone_index=0,
-        pmx_flags=0,
+        pmx_flags=pmx_flags,
         input_kind=input_kind,
         authored_plugs=tuple(authored_plugs),
         blockers=("blocked",) if blocked else (),
+        fixed_axis=fixed_axis,
     )
 
 
 class TestMmdControlRigChannels(unittest.TestCase):
+    def test_only_fixed_axis_twists_expose_roll(self):
+        fixed = _binding(
+            "append_base",
+            ("append.baseRotate",),
+            fixed_axis=(1.0, 0.0, 0.0),
+            pmx_flags=int(PmxBoneFlag.AXIS_FIXED),
+        )
+        free = _binding("append_base", ("append.baseRotate",))
+
+        fixed_policy = derive_mmd_control_rig_channel_policy(
+            "left_arm_twist",
+            fixed,
+        )
+        free_policy = derive_mmd_control_rig_channel_policy(
+            "left_arm_twist",
+            free,
+        )
+
+        self.assertEqual(fixed_policy.keyable_channels, ("rotateZ",))
+        self.assertEqual(
+            fixed_policy.passthrough_channels,
+            ("rotateX", "rotateY"),
+        )
+        self.assertEqual(free_policy.keyable_channels, ROTATE_CHANNELS)
+        self.assertEqual(free_policy.passthrough_channels, ())
+
     def test_fk_and_finger_roles_are_rotate_only(self):
         binding = _binding(
             "direct_channel",

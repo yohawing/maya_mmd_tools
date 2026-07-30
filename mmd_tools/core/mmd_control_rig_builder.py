@@ -715,6 +715,8 @@ def _control_channel_policies_are_applied(snapshots, migrations) -> bool:
                 expected = _ControlChannelState(False, True, False)
             elif channel in policy.channel_box_channels:
                 expected = _ControlChannelState(False, False, True)
+            elif channel in policy.passthrough_channels:
+                expected = _ControlChannelState(True, False, False)
             else:
                 expected = _ControlChannelState(True, False, False)
             if state != expected:
@@ -1489,14 +1491,9 @@ def _control_group_parent(spec: MmdControlRigSpec, root: str) -> Optional[str]:
 
 
 def _channel_policy_role(role: str) -> str:
-    """Map optional twist rings onto their existing rotate-only arm policy."""
+    """Return the semantic role used for channel-policy derivation."""
 
-    return {
-        "left_arm_twist": "left_arm",
-        "right_arm_twist": "right_arm",
-        "left_wrist_twist": "left_wrist",
-        "right_wrist_twist": "right_wrist",
-    }.get(str(role), str(role))
+    return str(role)
 
 
 def _fallback_alias_target(role_binding: MmdControlRigRoleBinding) -> Optional[str]:
@@ -1522,6 +1519,7 @@ def _binding_metadata(
         )
     metadata = {
         "joint": binding.joint,
+        "pmxFlags": int(binding.pmx_flags),
         "inputKind": binding.input_kind,
         "authoredPlugs": list(binding.authored_plugs),
         "ikSolvers": list(binding.ik_solvers),

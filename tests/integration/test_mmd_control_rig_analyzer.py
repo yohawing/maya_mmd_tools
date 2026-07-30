@@ -464,6 +464,56 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
                 self.assertGreater(z_axis * child_direction, 0.9998)
                 self.assertGreater(x_axis.z * expected_depth_sign, 0.99)
 
+    def test_fixed_axis_twists_expose_only_roll_across_edit_restore(self):
+        """Fixed-axis twist controls keep XYZ routing but lock artist X/Y."""
+        root = self._import_fixture()
+        rig = build_mmd_control_rig(root)
+
+        for role in ("left_arm_twist", "right_wrist_twist"):
+            control = rig.controls[role]
+            with self.subTest(role=role, state="attached"):
+                for axis in "XY":
+                    self.assertTrue(cmds.getAttr(f"{control}.rotate{axis}", lock=True))
+                    self.assertFalse(cmds.getAttr(f"{control}.rotate{axis}", keyable=True))
+                self.assertFalse(cmds.getAttr(f"{control}.rotateZ", lock=True))
+                self.assertTrue(cmds.getAttr(f"{control}.rotateZ", keyable=True))
+
+        edit = enter_mmd_control_rig_edit(root)
+        self.assertEqual(edit["state"], "EDIT")
+        left_twist = rig.controls["left_arm_twist"]
+        cmds.undo()
+        self.assertEqual(read_mmd_control_rig_metadata(root)["state"], "ATTACHED")
+        self.assertTrue(cmds.getAttr(f"{left_twist}.rotateX", lock=True))
+        self.assertTrue(cmds.getAttr(f"{left_twist}.rotateY", lock=True))
+        cmds.redo()
+        self.assertEqual(read_mmd_control_rig_metadata(root)["state"], "EDIT")
+        self.assertTrue(cmds.getAttr(f"{left_twist}.rotateX", lock=True))
+        self.assertTrue(cmds.getAttr(f"{left_twist}.rotateY", lock=True))
+        with self.assertRaises(RuntimeError):
+            cmds.setAttr(f"{left_twist}.rotateX", 5.0)
+        cmds.setAttr(f"{left_twist}.rotateZ", 5.0)
+        self.assertAlmostEqual(cmds.getAttr(f"{left_twist}.rotateZ"), 5.0)
+
+        restored = restore_mmd_control_rig_attached(root)
+        self.assertEqual(restored["state"], "ATTACHED")
+        self.assertTrue(cmds.getAttr(f"{left_twist}.rotateX", lock=True))
+        self.assertTrue(cmds.getAttr(f"{left_twist}.rotateY", lock=True))
+
+        enter_mmd_control_rig_edit(root)
+        cmds.setAttr(f"{left_twist}.rotateZ", 7.0)
+        baked = bake_mmd_control_rig(root)
+        self.assertEqual(baked["state"], "BAKED")
+        self.assertTrue(cmds.getAttr(f"{left_twist}.rotateX", lock=True))
+        self.assertTrue(cmds.getAttr(f"{left_twist}.rotateY", lock=True))
+        cmds.undo()
+        self.assertEqual(read_mmd_control_rig_metadata(root)["state"], "EDIT")
+        self.assertTrue(cmds.getAttr(f"{left_twist}.rotateX", lock=True))
+        self.assertTrue(cmds.getAttr(f"{left_twist}.rotateY", lock=True))
+        cmds.redo()
+        self.assertEqual(read_mmd_control_rig_metadata(root)["state"], "BAKED")
+        self.assertTrue(cmds.getAttr(f"{left_twist}.rotateX", lock=True))
+        self.assertTrue(cmds.getAttr(f"{left_twist}.rotateY", lock=True))
+
     def test_negative_append_ratio_preserves_signed_control_route(self):
         """Negative Append contribution remains authored through the base input."""
         root, _center, _left_ik, _right_ik, append_joint, append_node = (
