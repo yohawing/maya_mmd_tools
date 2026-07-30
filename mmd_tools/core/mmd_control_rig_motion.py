@@ -3695,6 +3695,11 @@ def _assert_created_curve_nodes_safe(cmds, nodes, transaction_plugs) -> None:
     transaction_plugs = {
         _canonical_plug(cmds, str(plug)) for plug in (transaction_plugs or ())
     }
+    owned_nodes = {
+        _canonical_node_name(cmds, str(node))
+        for node in (nodes or ())
+        if node and cmds.objExists(node)
+    }
     for node in nodes or ():
         if not node or not cmds.objExists(node):
             continue
@@ -3704,11 +3709,15 @@ def _assert_created_curve_nodes_safe(cmds, nodes, transaction_plugs) -> None:
             destination=True,
             plugs=True,
         ) or []
-        foreign = [
-            str(destination)
-            for destination in destinations
-            if _canonical_plug(cmds, str(destination)) not in transaction_plugs
-        ]
+        foreign = []
+        for destination in destinations:
+            canonical_destination = _canonical_plug(cmds, str(destination))
+            destination_node = canonical_destination.split(".", 1)[0]
+            if (
+                canonical_destination not in transaction_plugs
+                and destination_node not in owned_nodes
+            ):
+                foreign.append(str(destination))
         if foreign:
             raise MmdControlRigBuildError(
                 f"control-rig transaction topology drift on {node}: "

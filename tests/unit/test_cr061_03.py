@@ -1842,6 +1842,22 @@ class TestControlRigIkEnabledOwnership(MayaTestBase):
         self.assertTrue(cmds.objExists(curve))
         self.assertTrue(cmds.isConnected(f"{curve}.output", f"{foreign}.input"))
 
+    def test_created_nodes_may_connect_to_each_other_during_rollback(self):
+        """Tool-owned converter edges are not foreign topology drift."""
+        compose = cmds.createNode("composeMatrix", name="cr061_owned_compose")
+        mult = cmds.createNode("multMatrix", name="cr061_owned_mult")
+        cmds.connectAttr(f"{compose}.outputMatrix", f"{mult}.matrixIn[1]")
+
+        mmd_control_rig_motion._assert_created_curve_nodes_safe(
+            cmds,
+            (compose, mult),
+            (),
+        )
+
+        self.assertTrue(
+            cmds.isConnected(f"{compose}.outputMatrix", f"{mult}.matrixIn[1]")
+        )
+
     def test_edit_exit_rollback_refuses_foreign_writer_without_disconnect(self):
         """The real exit transaction fails closed when rollback sees drift."""
         root = cmds.group(empty=True, name="cr061_topology_drift_transaction_root")
