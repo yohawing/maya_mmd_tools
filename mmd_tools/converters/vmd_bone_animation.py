@@ -37,7 +37,6 @@ def _sparse_rotation_samples(
 ) -> List[tuple]:
     """Convert only authored VMD rotation keys for editable rig curves."""
     samples_by_time = {}
-    previous_twist = None
     for frame in frames:
         if hasattr(frame, "frame_number"):
             frame_number = frame.frame_number
@@ -51,25 +50,17 @@ def _sparse_rotation_samples(
         if basis:
             from ..core.mmd_control_rig_basis import (
                 bone_to_control,
-                quaternion_twist_angle_degrees,
             )
 
             joint_order = int(cmds.getAttr(f"{joint}.rotateOrder"))
             bone_quaternion = _euler_degrees_to_quaternion(rotation, joint_order)
             control_quaternion = bone_to_control(bone_quaternion, basis)
-            if (key_route or {}).get("fixed_axis_twist"):
-                twist = quaternion_twist_angle_degrees(control_quaternion)
-                if previous_twist is not None:
-                    twist += 360.0 * round((previous_twist - twist) / 360.0)
-                previous_twist = twist
-                rotation = (0.0, 0.0, twist)
-            else:
-                attr_targets = (key_route or {}).get("attr_targets", {})
-                control = attr_targets.get("rotateX", (joint, "rotateX"))[0]
-                control_order = int(cmds.getAttr(f"{control}.rotateOrder"))
-                rotation = _quaternion_to_euler_degrees(
-                    control_quaternion, control_order
-                )
+            attr_targets = (key_route or {}).get("attr_targets", {})
+            control = attr_targets.get("rotateX", (joint, "rotateX"))[0]
+            control_order = int(cmds.getAttr(f"{control}.rotateOrder"))
+            rotation = _quaternion_to_euler_degrees(
+                control_quaternion, control_order
+            )
         samples_by_time[float(maya_time)] = tuple(float(value) for value in rotation)
     return sorted(samples_by_time.items())
 
@@ -137,27 +128,6 @@ def _configure_sparse_rotation_track(
         bool(key_route.get("control_owned"))
         and bool(key_route.get("quaternion_interpolation_safe"))
     )
-    fixed_axis_twist = bool(key_route.get("fixed_axis_twist"))
-    if fixed_axis_twist and not skip_rotate:
-        target_node, target_attr = attr_targets.get("rotateZ", (joint, "rotateZ"))
-        twist_plug = f"{target_node}.{target_attr}"
-        if (
-            (context.use_vmd_rotation_time_curve or registered_rotation_curve)
-            and len(frames) >= 2
-        ):
-            from .vmd_rotation_time_curve import apply_vmd_scalar_rotation_time_curve
-
-            context.rotation_time_curve_records.append(
-                apply_vmd_scalar_rotation_time_curve(
-                    frames,
-                    twist_plug,
-                    vmd_bone_name,
-                    time_converter=context.vmd_frame_to_maya_time,
-                    animation_layer=animation_layer,
-                )
-            )
-        return [twist_plug]
-
     quaternion_requested = (
         registered_rotation_curve and (direct_rotation_route or control_route_safe)
     ) or (
@@ -289,15 +259,48 @@ def set_bone_keyframes(
     vmd_bone_name: str,
     key_route: Optional[dict] = None,
 ) -> None:
-    """Set legacy VMD bone keyframes using explicit bone keying context."""
+    """Set legacy VMD bone keys while preserving hidden Twist channel locks."""
+
+    route = key_route or {}
+    states = []
+    if route.get("fixed_axis_twist"):
+        attr_targets = route.get("attr_targets", {})
+        for attr in ("rotateX", "rotateY"):
+            target_node, target_attr = attr_targets.get(attr, (joint, attr))
+            plug = f"{target_node}.{target_attr}"
+            if not cmds.objExists(plug) or not bool(cmds.getAttr(plug, lock=True)):
+                continue
+            states.append(
+                (
+                    plug,
+                    bool(cmds.getAttr(plug, keyable=True)),
+                    bool(cmds.getAttr(plug, channelBox=True)),
+                )
+            )
+            cmds.setAttr(plug, lock=False)
+    try:
+        _set_bone_keyframes_impl(context, joint, frames, vmd_bone_name, route)
+    finally:
+        for plug, keyable, channel_box in states:
+            if not cmds.objExists(plug):
+                continue
+            cmds.setAttr(plug, lock=False)
+            cmds.setAttr(plug, keyable=keyable, channelBox=channel_box)
+            cmds.setAttr(plug, lock=True)
+
+
+def _set_bone_keyframes_impl(
+    context: VmdBoneAnimationContext,
+    joint: str,
+    frames: List,
+    vmd_bone_name: str,
+    key_route: Optional[dict] = None,
+) -> None:
+    """Author one legacy VMD bone track using an explicit keying context."""
     key_route = key_route or {}
     attr_targets = key_route.get("attr_targets", {})
     skip_rotate = bool(key_route.get("skip_rotate"))
-    rotation_attrs = (
-        ["rotateZ"]
-        if key_route.get("fixed_axis_twist")
-        else ["rotateX", "rotateY", "rotateZ"]
-    )
+    rotation_attrs = ["rotateX", "rotateY", "rotateZ"]
     attrs = ["translateX", "translateY", "translateZ", *rotation_attrs]
     channel_interp_map = {
         attr: context.vmd_interp_channel_for_attr(attr)

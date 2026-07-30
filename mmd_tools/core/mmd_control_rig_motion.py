@@ -181,7 +181,11 @@ def control_rig_edit_authoring_bases_for_joints(
 
 
 def control_rig_fixed_axis_twist_joints(joints, *, cmds_module=None) -> set[str]:
-    """Return EDIT-owned Twist joints whose UI contract is sparse local-Z."""
+    """Return EDIT-owned Twist joints with local-Z-only animator controls.
+
+    Their hidden X/Y channels may still carry owned Quaternion motion curves;
+    the channel policy keeps those residual channels locked and non-keyable.
+    """
 
     cmds = cmds_module or maya_cmds()
     wanted = set()

@@ -640,7 +640,7 @@ class TestControlRigImportPreflight(unittest.TestCase):
             "translateX",
         )
 
-    def test_fixed_axis_twist_route_uses_sparse_z_contract(self):
+    def test_fixed_axis_twist_route_keeps_hidden_xyz_quaternion_contract(self):
         converter = MagicMock()
         joint = "|model|left_arm_twist"
         converter.bone_name_mapping = {"左腕捩": joint}
@@ -667,7 +667,7 @@ class TestControlRigImportPreflight(unittest.TestCase):
         ):
             route = build_legacy_bone_key_routes(converter)[joint]
 
-        self.assertFalse(route["quaternion_interpolation_safe"])
+        self.assertTrue(route["quaternion_interpolation_safe"])
         self.assertTrue(route["fixed_axis_twist"])
         self.assertEqual(route["authoring_basis"], basis)
 
@@ -1184,15 +1184,24 @@ class TestControlRigMotionClear(MayaTestBase):
         )
         cmds.delete(joint, control)
 
-    def test_fixed_axis_twist_authors_only_sparse_z_with_vmd_time_curve(self):
+    def test_fixed_axis_twist_authors_hidden_xyz_with_vmd_time_curve(self):
         joint = cmds.joint(name="cr061_fixed_twist_joint")
         control = cmds.createNode("transform", name="cr061_fixed_twist_control")
+        for axis in "XY":
+            cmds.setAttr(
+                f"{control}.rotate{axis}",
+                lock=True,
+                keyable=False,
+                channelBox=False,
+            )
         converter = VmdConverter()
         converter.use_animation_layers = False
         converter.use_quaternion_interpolation = True
         converter.use_vmd_rotation_time_curve = True
         converter._bone_bind_poses["左腕捩"] = (0.0, 0.0, 0.0)
-        half_angle = math.radians(25.0)
+        quaternion = [0.2, -0.1, 0.3, 0.9]
+        length = math.sqrt(sum(value * value for value in quaternion))
+        quaternion = [value / length for value in quaternion]
         frames = [
             {
                 "frame_number": 0,
@@ -1202,12 +1211,13 @@ class TestControlRigMotionClear(MayaTestBase):
             {
                 "frame_number": 30,
                 "position": [0.0, 0.0, 0.0],
-                "rotation": [0.0, 0.0, math.sin(half_angle), math.cos(half_angle)],
+                "rotation": quaternion,
             },
         ]
         route = {
             "control_owned": True,
             "fixed_axis_twist": True,
+            "quaternion_interpolation_safe": True,
             "authoring_basis": {
                 "source": "identity",
                 "quaternion": [0.0, 0.0, 0.0, 1.0],
@@ -1219,16 +1229,24 @@ class TestControlRigMotionClear(MayaTestBase):
 
         converter._set_bone_keyframes(joint, frames, "左腕捩", route)
 
-        self.assertFalse(cmds.keyframe(f"{control}.rotateX", query=True, name=True))
-        self.assertFalse(cmds.keyframe(f"{control}.rotateY", query=True, name=True))
-        self.assertEqual(
-            cmds.keyframe(f"{control}.rotateZ", query=True, timeChange=True),
-            [0.0, 30.0],
-        )
+        for axis in "XYZ":
+            curve = cmds.listConnections(
+                f"{control}.rotate{axis}", source=True, destination=False
+            )[0]
+            self.assertEqual(
+                cmds.keyframe(curve, query=True, timeChange=True),
+                [0.0, 30.0],
+            )
+        for axis in "XY":
+            self.assertTrue(cmds.getAttr(f"{control}.rotate{axis}", lock=True))
+            self.assertFalse(cmds.getAttr(f"{control}.rotate{axis}", keyable=True))
+            self.assertFalse(cmds.getAttr(f"{control}.rotate{axis}", channelBox=True))
+        self.assertNotAlmostEqual(cmds.getAttr(f"{control}.rotateX", time=30), 0.0)
+        self.assertNotAlmostEqual(cmds.getAttr(f"{control}.rotateY", time=30), 0.0)
         self.assertEqual(len(converter._rotation_time_curve_records), 1)
         self.assertEqual(
             len(converter._rotation_time_curve_records[0]["rotationCurveUuids"]),
-            1,
+            3,
         )
         cmds.delete(joint, control)
 

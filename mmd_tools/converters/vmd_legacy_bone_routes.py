@@ -84,8 +84,8 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
             # EDIT inserts a live basis converter between complete XYZ
             # controls and joint.rotate. Author control keys in that persisted
             # basis so the converter reconstructs the original joint-space
-            # quaternion. FixedAxis Twist consumes the same record before its
-            # scalar local-Z projection.
+            # quaternion. FixedAxis Twist keeps X/Y hidden and locked in the
+            # UI, but still authors the complete compound for exact playback.
             "authoring_basis": authoring_bases.get(joint),
         }
         info = append_info.get(joint)
@@ -102,7 +102,6 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
         # track in the controller's persisted authoring basis.
         route["quaternion_interpolation_safe"] = (
             all(channel in control_route for channel in ("rotateX", "rotateY", "rotateZ"))
-            and joint not in fixed_axis_twist_joints
         )
 
         # A CONTROL_OWNED MMD Control Rig is a single-writer path: when all
