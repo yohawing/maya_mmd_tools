@@ -29,6 +29,7 @@ from mmd_tools.core.mmd_control_rig_motion import (
     control_rig_edit_authoring_bases_for_joints,
     control_rig_edit_routes_for_joints,
     enter_mmd_control_rig_edit,
+    restore_and_remove_mmd_control_rig,
     restore_mmd_control_rig_attached,
 )
 from mmd_tools.core.mmd_control_rig_analyzer import (
@@ -1038,6 +1039,52 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         restored = restore_mmd_control_rig_attached(root)
         self.assertEqual(restored["state"], "ATTACHED")
         self.assertEqual(restored["owner"], CONTROL_RIG_MMD_OWNED)
+
+    def test_restore_and_remove_reinstates_mmd_animation_graph(self):
+        root = self._import_fixture()
+        self.assertTrue(
+            import_mmd_file(
+                _VMD_PATH,
+                options={"target_model": root, "pmx_path": _PMX_PATH},
+            )
+        )
+        rig = build_mmd_control_rig(root)
+        control_group_uuid = cmds.ls(rig.control_group, uuid=True)[0]
+        entered = enter_mmd_control_rig_edit(root)
+        journal_rows = tuple(entered["journal"]["channels"]) + tuple(
+            entered["journal"]["ikEnabled"]
+        )
+        source_rows = [row for row in journal_rows if row.get("source")]
+        self.assertTrue(source_rows)
+
+        self.assertTrue(restore_and_remove_mmd_control_rig(root))
+
+        self.assertFalse(cmds.ls(control_group_uuid, long=True))
+        self.assertFalse(
+            cmds.attributeQuery(ATTR_MMD_CONTROL_RIG_JSON, node=root, exists=True)
+        )
+        for row in source_rows:
+            layer_route = row.get("layerRoute")
+            if layer_route:
+                self.assertTrue(
+                    cmds.isConnected(layer_route["curve"], layer_route["blend"]),
+                    msg=f"animation-layer curve was not restored: {row}",
+                )
+                self.assertTrue(
+                    cmds.isConnected(layer_route["blendOutput"], row["target"]),
+                    msg=f"animation-layer output was not restored: {row}",
+                )
+                continue
+            self.assertTrue(
+                cmds.isConnected(row["source"], row["target"]),
+                msg=f"MMD writer was not restored: {row}",
+            )
+
+        cmds.undo()
+        undone = read_mmd_control_rig_metadata(root)
+        self.assertEqual(undone["state"], "EDIT")
+        self.assertEqual(undone["owner"], CONTROL_RIG_CONTROL_OWNED)
+        self.assertTrue(cmds.ls(control_group_uuid, long=True))
 
     def test_enter_edit_failure_restores_graph_values_and_raw_metadata(self):
         root = self._import_fixture()

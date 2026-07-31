@@ -93,6 +93,18 @@ def test_action_dispatch_uses_selected_uuid_root_and_core_transaction():
     manager.state_changed.emit.assert_called_once_with("|character|MMDModel", "setup")
 
 
+def test_delete_restores_mmd_graph_before_removing_control_rig():
+    manager = _manager()
+    with patch(
+        "mmd_tools.core.mmd_control_rig_motion.restore_and_remove_mmd_control_rig",
+        return_value=True,
+    ) as restore_and_remove:
+        manager.perform_action("delete")
+
+    restore_and_remove.assert_called_once_with("|character|MMDModel")
+    manager.state_changed.emit.assert_called_once_with("|character|MMDModel", "delete")
+
+
 def test_show_manager_reuses_one_modeless_instance(monkeypatch):
     monkeypatch.setattr(ControlRigManagerWindow, "__init__", lambda self, **_kwargs: None)
     for method in ("refresh", "show", "raise_", "activateWindow"):

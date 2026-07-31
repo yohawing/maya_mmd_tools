@@ -257,13 +257,11 @@ class ControlRigManagerWindow(QWidget):
             self._set_status("status_no_character")
             return
         try:
-            from ..core.mmd_control_rig_builder import (
-                build_mmd_control_rig,
-                remove_mmd_control_rig,
-            )
+            from ..core.mmd_control_rig_builder import build_mmd_control_rig
             from ..core.mmd_control_rig_motion import (
                 bake_mmd_control_rig,
                 enter_mmd_control_rig_edit,
+                restore_and_remove_mmd_control_rig,
                 restore_mmd_control_rig_attached,
             )
 
@@ -277,7 +275,11 @@ class ControlRigManagerWindow(QWidget):
             elif action == "restore":
                 metadata = restore_mmd_control_rig_attached(root)
             elif action == "delete":
-                removed = remove_mmd_control_rig(root)
+                # Delete is a user-facing lifecycle action, so it must first
+                # return EDIT/BAKED rigs to the MMD-owned graph.  The restore
+                # transaction reinstates the exact pre-EDIT MMD connections
+                # and channel values before the UUID-owned controls vanish.
+                removed = restore_and_remove_mmd_control_rig(root)
                 metadata = None
                 self._set_status("status_deleted" if removed else "status_not_found")
             else:

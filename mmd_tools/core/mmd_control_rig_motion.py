@@ -27,6 +27,7 @@ from mmd_tools.core.mmd_control_rig_builder import (
     MmdControlRigBuildError,
     inspect_mmd_control_rig,
     read_mmd_control_rig_metadata,
+    remove_mmd_control_rig,
     resolve_mmd_control_rig_binding_authored_plugs,
     resolve_mmd_control_rig_binding_ik_solvers,
     resolve_mmd_control_rig_binding_joint,
@@ -785,6 +786,26 @@ def restore_mmd_control_rig_attached(model_root: str, *, cmds_module=None) -> Di
         _write_metadata(cmds, root, metadata)
         _remove_rotation_converters(cmds, rotation_converters)
     return metadata
+
+
+def restore_and_remove_mmd_control_rig(model_root: str, *, cmds_module=None) -> bool:
+    """Restore MMD ownership, then delete the UUID-owned Control Rig.
+
+    The topology is validated before changing ownership so a malformed or
+    user-modified rig fails closed without partially restoring the scene.
+    EDIT journals are replayed by :func:`restore_mmd_control_rig_attached`,
+    which reinstates the exact MMD-side connections and channel values before
+    the controls are removed.
+    """
+
+    cmds = cmds_module or maya_cmds()
+    metadata = read_mmd_control_rig_metadata(model_root, cmds_module=cmds)
+    if metadata is None:
+        return False
+    inspect_mmd_control_rig(model_root, cmds_module=cmds)
+    with _undo_chunk(cmds, "Restore and Remove MMD Control Rig"):
+        restore_mmd_control_rig_attached(model_root, cmds_module=cmds)
+        return remove_mmd_control_rig(model_root, cmds_module=cmds)
 
 
 def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]:
