@@ -1256,7 +1256,7 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
                 cmds.setKeyframe(target, time=(frame, frame), value=value)
         target_before = {
             (frame, target): float(cmds.getAttr(target, time=frame))
-            for frame in (0.0, 10.0)
+            for frame in (0.0, 5.0, 10.0)
             for target in targets
         }
         world_before = {
@@ -1267,14 +1267,14 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
                     time=frame,
                 )
             )
-            for frame in (0.0, 10.0)
+            for frame in (0.0, 5.0, 10.0)
         }
 
         edit = enter_mmd_control_rig_edit(root)
         control = rig.controls["left_leg"]
         targets = edit["bindings"]["left_leg"]["authoredPlugs"]
         self.assertEqual(len(targets), 3)
-        for frame in (0.0, 10.0):
+        for frame in (0.0, 5.0, 10.0):
             for target in targets:
                 self.assertAlmostEqual(
                     float(cmds.getAttr(target, time=frame)),
@@ -1303,6 +1303,12 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertTrue(
             all(
                 cmds.rotationInterpolation(curve, query=True) == "quaternionSlerp"
+                for curve in control_curves
+            )
+        )
+        self.assertTrue(
+            all(
+                5.0 in (cmds.keyframe(curve, query=True, timeChange=True) or [])
                 for curve in control_curves
             )
         )

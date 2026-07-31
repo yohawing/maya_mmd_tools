@@ -2415,6 +2415,21 @@ def _rebase_new_ik_link_control_curves(
         )
         if not times:
             times = [float(cmds.currentTime(query=True))]
+        source_uses_quaternion = all(
+            str(cmds.rotationInterpolation(node, query=True)) == "quaternionSlerp"
+            for node in curve_nodes
+            if node
+        )
+        if not source_uses_quaternion and len(times) > 1:
+            # Legacy IK-link curves are solver-local Euler channels. Basis
+            # conjugation does not commute with independent Euler interpolation,
+            # so converting only their sparse endpoints changes the evaluated
+            # pose between keys. Preserve every authored animation frame before
+            # switching the artist-facing XYZ triplet to quaternion Slerp. This
+            # density is intentionally limited to non-identity IK-link routes.
+            first_frame = int(math.ceil(times[0]))
+            last_frame = int(math.floor(times[-1]))
+            times = sorted(set(times).union(range(first_frame, last_frame + 1)))
         raw_samples = [
             tuple(
                 _animation_curve_value_at_time(cmds, node, time)
