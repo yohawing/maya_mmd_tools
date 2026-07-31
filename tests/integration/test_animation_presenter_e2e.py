@@ -170,7 +170,6 @@ class _Picker:
         self.regions_selected = _Signal()
         self.goto_finger_clicked = _Signal()
         self.goto_body_clicked = _Signal()
-        self.mirror_selection_clicked = _Signal()
         self.ik_toggled = _Signal()
         self.ik_enable_toggle_clicked = _Signal()
         self.selected_regions = []

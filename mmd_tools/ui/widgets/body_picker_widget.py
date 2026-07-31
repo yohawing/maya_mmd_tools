@@ -91,7 +91,6 @@ _BODY_SOURCES = tuple(
         ("some_function", "select_all"),
         ("some_function-2", "clear_selection"),
         ("reset_pose", "reset_pose"),
-        ("mirror_sel", "mirror_sel"),
         ("fingers_left", "fingers_left"),
         ("fingers_right", "fingers_right"),
     )
@@ -103,7 +102,6 @@ class BodyPickerWidget(SvgPickerWidget):
 
     region_clicked = Signal(str)
     regions_selected = Signal(object)
-    mirror_selection_clicked = Signal()
     goto_finger_clicked = Signal()
     reset_pose_clicked = Signal()
     select_all_clicked = Signal()
@@ -120,20 +118,18 @@ class BodyPickerWidget(SvgPickerWidget):
                 "select_all": "ALL",
                 "clear_selection": "CLEAR",
                 "reset_pose": "Reset Pose",
-                "mirror_sel": "Mirror Sel",
             },
             tooltip_labels={
                 **{region["id"]: region["bone_name"] for region in _BODY_REGIONS},
                 "select_all": "現在のMMDモデルの全ボーンを選択",
                 "clear_selection": "選択をクリア",
                 "reset_pose": "選択中のボーンをバインドポーズへ戻す",
-                "mirror_sel": "反対側のボーンを選択",
                 "fingers_left": "指Pickerへ移動",
                 "fingers_right": "指Pickerへ移動",
                 "ik_enable_left": "左脚のIK Enableを切り替え",
                 "ik_enable_right": "右脚のIK Enableを切り替え",
             },
-            removed_element_ids={"bg.png", "alignment-guides"},
+            removed_element_ids={"bg.png", "alignment-guides", "mirror_sel"},
             parent=parent,
         )
         self.setObjectName("BodyPickerWidget")
@@ -149,7 +145,6 @@ class BodyPickerWidget(SvgPickerWidget):
                 "select_all",
                 "clear_selection",
                 "reset_pose",
-                "mirror_sel",
                 "fingers_left",
                 "fingers_right",
                 "ik_enable_left",
@@ -163,8 +158,6 @@ class BodyPickerWidget(SvgPickerWidget):
             self.select_all_clicked.emit()
         elif region_id == "clear_selection":
             self.clear_selection_clicked.emit()
-        elif region_id == "mirror_sel":
-            self.mirror_selection_clicked.emit()
         elif region_id in {"fingers_left", "fingers_right"}:
             self.goto_finger_clicked.emit()
         elif region_id == "reset_pose":

@@ -492,40 +492,46 @@ def run_ui_check(
             # validated UUID-backed Control Rig selection.
             control_selected = True
 
-        # Exercise all three common actions while the Control Rig owns motion.
-        # This is the success-path gate missing from the original UI smoke,
-        # which only proved that an unpaired center selection failed closed.
+        # Exercise both common actions while the Control Rig owns motion.
         reset_button = common_action_buttons.get("reset")
-        mirror_selection_button = common_action_buttons.get("mirror_selection")
         mirror_pose_button = common_action_buttons.get("mirror")
-        control_rest_applied = False
-        control_rest_restored = False
-        if reset_button is not None:
-            reset_button.click()
-            _safe_process_events()
-            control_rest_applied = (
-                getattr(
-                    animator_window.animation_presenter,
-                    "_rest_pose_transaction",
-                    None,
-                )
-                is not None
-            )
-            if control_rest_applied:
-                reset_button.click()
-                _safe_process_events()
-                control_rest_restored = (
-                    getattr(
-                        animator_window.animation_presenter,
-                        "_rest_pose_transaction",
-                        None,
-                    )
-                    is None
-                )
-
         left_control = resolved_controls.get("left_arm")
         right_control = resolved_controls.get("right_arm")
-        mirror_selection_passed = False
+        reset_pose_passed = False
+        reset_pose_keys = {}
+        if left_control and reset_button is not None:
+            reset_time = 8.0
+            cmds.currentTime(reset_time, edit=True)
+            for channel, value in zip(
+                ("rotateX", "rotateY", "rotateZ"),
+                (18.0, -12.0, 27.0),
+            ):
+                cmds.setKeyframe(left_control, attribute=channel, value=value)
+            cmds.select(left_control, replace=True)
+            reset_button.click()
+            _safe_process_events()
+            cmds.currentTime(reset_time, edit=True)
+            reset_pose_keys = {
+                axis: [
+                    float(value)
+                    for value in (
+                        cmds.keyframe(
+                            left_control,
+                            attribute=f"rotate{axis}",
+                            query=True,
+                            time=(reset_time, reset_time),
+                            valueChange=True,
+                        )
+                        or []
+                    )
+                ]
+                for axis in "XYZ"
+            }
+            reset_pose_passed = all(
+                values and abs(values[-1]) <= 1.0e-6
+                for values in reset_pose_keys.values()
+            )
+
         mirror_pose_passed = False
         target_keyed = False
         expected_translation = None
@@ -535,15 +541,6 @@ def run_ui_check(
         mirror_pose_status = ""
         target_rotation_keys = {}
         target_rotation_writers = {}
-        if left_control and right_control and mirror_selection_button is not None:
-            cmds.select(left_control, replace=True)
-            mirror_selection_button.click()
-            _safe_process_events()
-            mirrored_selection = [
-                str(item) for item in (cmds.ls(selection=True, long=True) or [])
-            ]
-            mirror_selection_passed = mirrored_selection == [right_control]
-
         if left_control and right_control and mirror_pose_button is not None:
             from mmd_tools.ui.mirror_actions import (
                 _quaternion_from_euler_degrees,
@@ -665,9 +662,9 @@ def run_ui_check(
             )
 
         report["ui"]["controlRigCommonActions"] = {
-            "restPoseApplied": control_rest_applied,
-            "restPoseRestored": control_rest_restored,
-            "mirrorSelectionPassed": mirror_selection_passed,
+            "resetPosePassed": reset_pose_passed,
+            "resetPoseKeys": reset_pose_keys,
+            "mirrorSelectionRemoved": "mirror_selection" not in common_action_buttons,
             "mirrorPosePassed": mirror_pose_passed,
             "targetKeyed": target_keyed,
             "leftControl": left_control,
@@ -680,9 +677,8 @@ def run_ui_check(
             "targetRotationKeys": target_rotation_keys,
             "targetRotationWriters": target_rotation_writers,
             "passed": bool(
-                control_rest_applied
-                and control_rest_restored
-                and mirror_selection_passed
+                reset_pose_passed
+                and "mirror_selection" not in common_action_buttons
                 and mirror_pose_passed
             ),
         }
@@ -726,73 +722,15 @@ def run_ui_check(
             )
         selection_sync_passed = "center" in selection_sync_regions
 
-        # Rest Pose is a reversible common action.  A real imported model can
-        # legitimately fail closed when an unsupported writer is present; in
-        # that case the test records the diagnostic instead of hiding it.
-        rest_channel_diagnostics = []
-        for joint in cmds.ls(type="joint", long=True) or []:
-            if "twist_1" not in str(joint):
-                continue
-            plug = f"{joint}.rotateX"
-            incoming = [
-                str(source)
-                for source in (cmds.listConnections(plug, source=True, destination=False, plugs=True) or [])
-            ]
-            rest_channel_diagnostics.append(
-                {
-                    "plug": plug,
-                    "locked": bool(cmds.getAttr(plug, lock=True)),
-                    "settable": bool(cmds.getAttr(plug, settable=True)),
-                    "incoming": incoming,
-                    "incomingTypes": [
-                        str(cmds.nodeType(str(source).rsplit(".", 1)[0])) for source in incoming
-                    ],
-                }
-            )
-        rest_error = ""
-        rest_applied = False
-        rest_restored = False
-        if reset_button is not None:
-            try:
-                reset_button.click()
-                _safe_process_events()
-                rest_applied = getattr(animator_window.animation_presenter, "_rest_pose_transaction", None) is not None
-                if rest_applied:
-                    reset_button.click()
-                    _safe_process_events()
-                    rest_restored = getattr(animator_window.animation_presenter, "_rest_pose_transaction", None) is None
-                else:
-                    rest_error = _safe_text(getattr(tab, "status_label", None))
-            except Exception as exc:
-                rest_error = str(exc)
-        report["ui"]["restPoseToggle"] = {
-            "buttonPresent": reset_button is not None,
-            "applied": rest_applied,
-            "restored": rest_restored,
-            "status": _safe_text(getattr(tab, "status_label", None)),
-            "error": rest_error,
-            "channelDiagnostics": rest_channel_diagnostics,
-            "passed": bool(reset_button is not None and rest_applied and rest_restored),
-        }
-
-        # Center is intentionally unpaired.  Mirror Select/Pose must reject it
-        # without changing the selection or writing a pose value.
-        before_mirror_selection = [str(item) for item in (cmds.ls(selection=True, long=True) or [])]
+        # Center is intentionally unpaired. Mirror Pose must reject it without
+        # changing a pose value.
         before_mirror_values = None
         if expected_joint:
             before_mirror_values = [
                 float(cmds.getAttr(f"{expected_joint}.{plug}"))
                 for plug in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
             ]
-        mirror_selection_error = ""
         mirror_pose_error = ""
-        try:
-            if mirror_selection_button is not None:
-                mirror_selection_button.click()
-                _safe_process_events()
-        except Exception as exc:
-            mirror_selection_error = str(exc)
-        after_mirror_selection = [str(item) for item in (cmds.ls(selection=True, long=True) or [])]
         try:
             if mirror_pose_button is not None:
                 mirror_pose_button.click()
@@ -806,17 +744,12 @@ def run_ui_check(
                 for plug in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
             ]
         report["ui"]["mirrorFailClosed"] = {
-            "mirrorSelectionButtonPresent": mirror_selection_button is not None,
             "mirrorPoseButtonPresent": mirror_pose_button is not None,
-            "selectionUnchanged": before_mirror_selection == after_mirror_selection,
             "poseUnchanged": before_mirror_values == after_mirror_values,
-            "selectionError": mirror_selection_error,
             "poseError": mirror_pose_error,
             "status": _safe_text(getattr(tab, "status_label", None)),
             "passed": bool(
-                mirror_selection_button is not None
-                and mirror_pose_button is not None
-                and before_mirror_selection == after_mirror_selection
+                mirror_pose_button is not None
                 and before_mirror_values == after_mirror_values
             ),
         }

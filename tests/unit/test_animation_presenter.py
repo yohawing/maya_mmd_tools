@@ -208,7 +208,6 @@ class _FakeBodyPicker:
         self.region_clicked = _FakeSignal()
         self.regions_selected = _FakeSignal()
         self.goto_finger_clicked = _FakeSignal()
-        self.mirror_selection_clicked = _FakeSignal()
         self.reset_pose_clicked = _FakeSignal()
         self.select_all_clicked = _FakeSignal()
         self.clear_selection_clicked = _FakeSignal()
@@ -244,7 +243,6 @@ class _FakeFingerPicker:
         self.region_clicked = _FakeSignal()
         self.regions_selected = _FakeSignal()
         self.goto_body_clicked = _FakeSignal()
-        self.mirror_selection_clicked = _FakeSignal()
         self.selected_regions = []
         self.additive_selection = False
         self.region_tooltips = {}
@@ -1112,29 +1110,6 @@ class TestBodyPickerPresenter(unittest.TestCase):
         self.assertEqual(accepted, ["master_uuid"])
         self.assertEqual(adapter.selected, ["master_uuid"])
 
-    def test_unrelated_mirror_candidate_is_allowed_when_skeleton_hidden(self):
-        presenter, _view, _, adapter = self._make_with_bones(
-            bone_names={"left_arm_jnt": "左腕", "right_arm_jnt": "右腕"},
-        )
-        adapter.selected = ["unrelated"]
-        adapter._long_paths["unrelated"] = "|other|unrelated"
-        self._set_group_state(adapter, "|test_model|Skeleton", "hidden")
-
-        presenter.on_mirror_selection()
-
-        self.assertEqual(adapter.selected, ["unrelated"])
-
-    def test_hidden_mirror_candidate_is_blocked_and_current_selection_preserved(self):
-        presenter, view, _, adapter = self._make_with_bones(
-            bone_names={"left_arm_jnt": "左腕", "right_arm_jnt": "右腕"},
-        )
-        for state in ("hidden", "reference"):
-            adapter.selected = ["left_arm_jnt"]
-            self._set_group_state(adapter, "|test_model|Skeleton", state)
-            presenter.on_mirror_selection()
-            self.assertEqual(adapter.selected, ["left_arm_jnt"])
-        self.assertEqual(view.body_picker.selected_regions, ["left_upper_arm"])
-
     def test_all_blocked_replace_preserves_existing_selection(self):
         presenter, _view, _, adapter = self._make_with_bones(
             bone_names={"head_jnt": "頭"},
@@ -1529,14 +1504,6 @@ class TestBodyPickerPresenter(unittest.TestCase):
         view.body_picker.clear_selection_clicked.emit()
 
         self.assertEqual(adapter.selected, [])
-
-    def test_mirror_selection(self):
-        presenter, view, _, adapter = self._make_with_bones(
-            bone_names={"left_arm_jnt": "左腕", "right_arm_jnt": "右腕"},
-        )
-        adapter.selected = ["left_arm_jnt"]
-        presenter.on_mirror_selection()
-        self.assertIn("right_arm_jnt", adapter.selected)
 
     def test_bone_name_map_cleared_on_model_clear(self):
         presenter, _, app_state, _ = self._make_with_bones(
@@ -2086,19 +2053,20 @@ class TestToolsSection(unittest.TestCase):
         self.assertEqual(adapter._transforms["j2"], ([4.0, 5.0, 6.0], [0, 0, 0]))
         self.assertTrue(view.picker_tabs.enabled)
 
-    def test_reset_pose_without_selection_only_reports_status(self):
+    def test_reset_pose_without_selection_resets_whole_model(self):
         presenter, view, _, adapter = self._make()
-        before = {joint: (list(t), list(r)) for joint, (t, r) in adapter._transforms.items()}
 
         presenter._on_tool_clicked("reset")
 
-        self.assertIn("No joints", view.status_label.text())
-        self.assertEqual(adapter._transforms, before)
-        self.assertEqual(adapter._undo_chunks, [])
+        self.assertIn("Reset Pose", view.status_label.text())
+        self.assertEqual(adapter._transforms["j1"][1], [0, 0, 0])
+        self.assertEqual(adapter._transforms["j2"][1], [0, 0, 0])
+        self.assertEqual(adapter._undo_chunks, ["Reset Pose"])
 
     def test_reset_pose_has_no_shared_mode_state(self):
         presenter, view, _, adapter = self._make()
         self.assertFalse(hasattr(presenter, "rest_pose_manager"))
+        self.assertFalse(hasattr(presenter, "_rest_pose_transaction"))
         self.assertTrue(view.picker_tabs.enabled)
         adapter.selected = ["j1"]
         presenter._on_tool_clicked("reset")

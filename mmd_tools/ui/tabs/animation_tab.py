@@ -130,7 +130,6 @@ class AnimationTab(BaseTab):
         for key, symbol in (
             ("reset", "restart_alt"),
             ("mirror", "flip"),
-            ("mirror_selection", "flip_camera_android"),
         ):
             button = MaterialSymbolToolButton(symbol, key)
             button.setObjectName(f"CommonPickerAction_{key}")
@@ -245,13 +244,11 @@ class AnimationTab(BaseTab):
                 "select_all": "ALL",
                 "clear_selection": tr("clear"),
                 "reset_pose": tr("reset"),
-                "mirror_sel": tr("mirror_selection"),
             },
             tooltips={
                 "select_all": tr("select_all_tooltip"),
                 "clear_selection": tr("clear_tooltip"),
                 "reset_pose": tr("reset_pose_tooltip"),
-                "mirror_sel": tr("mirror_selection_tooltip"),
                 "fingers_left": tr("finger_picker_tooltip"),
                 "fingers_right": tr("finger_picker_tooltip"),
                 "ik_enable_left": self.tr("ik_enable_side_tooltip"),
@@ -280,12 +277,10 @@ class AnimationTab(BaseTab):
             common_labels = {
                 "reset": tr("reset"),
                 "mirror": tr("mirror"),
-                "mirror_selection": tr("mirror_selection"),
             }
             common_tooltips = {
                 "reset": tr("reset_pose_tooltip"),
                 "mirror": tr("mirror_pose_tooltip"),
-                "mirror_selection": tr("mirror_selection_tooltip"),
             }
             for key, button in common_action_buttons.items():
                 button.setText(common_labels[key])

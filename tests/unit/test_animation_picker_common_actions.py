@@ -15,7 +15,7 @@ from mmd_tools.ui.presenters.animation_presenter import AnimationPresenter
 def _presenter_with_common_actions():
     view = _FakeView()
     view.common_action_buttons = {
-        key: _FakeButton() for key in ("reset", "mirror", "mirror_selection")
+        key: _FakeButton() for key in ("reset", "mirror")
     }
     adapter = _FakeAdapter(
         joints_by_index={0: "left_arm_jnt", 1: "right_arm_jnt"},
@@ -45,11 +45,13 @@ def test_common_buttons_are_connected_to_completed_presenter_handlers():
 
 
 def test_common_rest_pose_state_refreshes_without_duplicate_button_instances():
-    presenter, view, _adapter = _presenter_with_common_actions()
+    presenter, view, adapter = _presenter_with_common_actions()
     button = view.common_action_buttons["reset"]
     assert view.common_action_buttons["reset"] is button
-    assert not presenter._rest_pose_transaction
+    adapter.selected = ["left_arm_jnt"]
+    adapter._transforms["left_arm_jnt"] = ([1.0, 2.0, 3.0], [10.0, 20.0, 30.0])
 
-    presenter._sync_common_action_state()
+    button.clicked.emit()
 
     assert button.text == "Reset Pose"
+    assert adapter._transforms["left_arm_jnt"][1] == [0.0, 0.0, 0.0]

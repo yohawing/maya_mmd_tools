@@ -11,7 +11,6 @@ from mmd_tools.ui.mirror_actions import (
     MirrorPoseTransaction,
     build_mirror_pairs,
     mirrored_transform_values,
-    resolve_mirror_selection,
 )
 
 
@@ -103,9 +102,7 @@ class TestMirrorPairing(unittest.TestCase):
         pairs = build_mirror_pairs(entries)
         self.assertEqual(pairs["left-uuid"].identity, "right-uuid")
         self.assertEqual(pairs["left-finger"].identity, "right-finger")
-        self.assertEqual(
-            resolve_mirror_selection(["|charA|左腕"], entries), ["|charA|右腕"]
-        )
+        self.assertEqual(build_mirror_pairs(entries)["left-uuid"].node, "|charA|右腕")
 
     def test_center_unpaired_and_ambiguous_selection_fail_closed(self):
         entries = [
@@ -113,9 +110,6 @@ class TestMirrorPairing(unittest.TestCase):
             MirrorEntry("left", "|char|左腕", "|char|左腕", ("左腕",)),
         ]
         self.assertEqual(build_mirror_pairs(entries), {})
-        with self.assertRaises(MirrorActionError):
-            resolve_mirror_selection(["|char|センター"], entries)
-
         ambiguous = entries + [
             MirrorEntry("right-a", "|char|右腕A", "|char|右腕A", ("右腕",)),
             MirrorEntry("right-b", "|char|右腕B", "|char|右腕B", ("右腕",)),

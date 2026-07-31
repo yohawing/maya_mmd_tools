@@ -1,12 +1,12 @@
-"""Focused tests for the Animator model-scoped Rest Pose transaction."""
+"""Focused tests for the Animator one-shot Reset Pose transaction."""
 
 from __future__ import annotations
 
 import unittest
 
 from mmd_tools.ui.rest_pose_transaction import (
-    RestPoseTransaction,
-    RestPoseTransactionError,
+    ResetPoseTransaction,
+    ResetPoseTransactionError,
 )
 
 
@@ -19,25 +19,31 @@ class _FakeCmds:
             "|model|joint": "|model|joint",
             "joint": "|model|joint",
             "|other|joint": "|other|joint",
-            "animCurve.output": "animCurve.output",
         }
-        self.values = {
-            "|model|joint.translateX": 4.0,
-            "|model|joint.translateY": 5.0,
-            "|model|joint.translateZ": 6.0,
-            "|model|joint.rotateX": 20.0,
-            "|model|joint.rotateY": 30.0,
-            "|model|joint.rotateZ": 40.0,
-            "animCurve.output": 20.0,
-        }
-        self.locks = {plug: False for plug in self.values}
-        self.incoming = {
-            "|model|joint.rotateX": ["animCurve.output"],
-        }
-        self.set_calls = []
-        self.connections = []
+        self.values = {}
+        self.locks = {}
+        for node, values in (
+            ("|model|joint", (4.0, 5.0, 6.0, 20.0, 30.0, 40.0)),
+            ("|other|joint", (1.0, 2.0, 3.0, 4.0, 5.0, 6.0)),
+        ):
+            for channel, value in zip(
+                (
+                    "translateX",
+                    "translateY",
+                    "translateZ",
+                    "rotateX",
+                    "rotateY",
+                    "rotateZ",
+                ),
+                values,
+            ):
+                self.values[f"{node}.{channel}"] = value
+                self.locks[f"{node}.{channel}"] = False
+        self.incoming = {"|model|joint.rotateX": ["animCurve.output"]}
+        self.keyframes = []
         self.frame = 24.0
-        self.fail_next_value = None
+        self.fail_plug = None
+        self._undo_snapshot = None
 
     def ls(self, node=None, long=False, uuid=False, **_kwargs):
         if uuid:
@@ -49,196 +55,141 @@ class _FakeCmds:
             return [self.paths[value] for value in nodes if value in self.paths]
         return list(nodes)
 
-    def getAttr(self, plug, lock=False):
+    def getAttr(self, plug, lock=False, settable=False):
         if lock:
             return self.locks.get(plug, False)
+        if settable:
+            return not self.incoming.get(plug)
         return self.values[plug]
 
     def setAttr(self, plug, value=None, lock=None, **_kwargs):
         if lock is not None:
             self.locks[plug] = bool(lock)
             return
-        self.set_calls.append((plug, value))
-        if self.fail_next_value == plug:
-            self.fail_next_value = None
+        if plug == self.fail_plug:
+            self.fail_plug = None
             raise RuntimeError("setAttr failure")
-        self.values[plug] = value
+        self.values[plug] = float(value)
 
     def listConnections(self, plug, source=False, destination=False, plugs=False):
         if source and not destination and plugs:
             return list(self.incoming.get(plug, ()))
         return []
 
-    def disconnectAttr(self, source, destination):
-        self.incoming[destination].remove(source)
+    @staticmethod
+    def nodeType(node):
+        return "animCurveTA" if node == "animCurve" else "pairBlend"
 
-    def connectAttr(self, source, destination, force=False):
-        del force
-        self.incoming.setdefault(destination, []).append(source)
-        self.connections.append((source, destination))
-        if source in self.values:
-            self.values[destination] = self.values[source]
+    def currentTime(self, query=False):
+        return self.frame if query else None
 
-    def nodeType(self, source):
-        return "animCurveTA" if str(source).startswith("animCurve") else "transform"
+    def setKeyframe(self, curve, time, value):
+        self.keyframes.append((curve, tuple(time), float(value)))
+        for plug, incoming in self.incoming.items():
+            if incoming == [f"{curve}.output"]:
+                self.values[plug] = float(value)
 
-    def keyframe(self, _source, query=False, timeChange=False, valueChange=False):
-        del query
-        if timeChange:
-            return (1.0, 24.0)
-        if valueChange:
-            return (0.0, 20.0)
-        return ()
+    def begin_undo(self):
+        self._undo_snapshot = (
+            dict(self.values),
+            dict(self.locks),
+            list(self.keyframes),
+        )
 
-    def currentTime(self, value=None, query=False, edit=False):
-        del edit
-        if query:
-            return self.frame
-        self.frame = value
+    def undo(self):
+        self.values, self.locks, self.keyframes = self._undo_snapshot
 
 
 class _FakeAdapter:
-    def __init__(self, cmds):
+    def __init__(self, cmds, *, undo_available=True):
         self._cmds = cmds
-        self.selected = ["|model|joint"]
-        self.undo_chunks = []
-
-    def ls(self, *args, **kwargs):
-        if kwargs.get("selection"):
-            return list(self.selected)
-        return self._cmds.ls(*args, **kwargs)
-
-    def current_time(self):
-        return self._cmds.currentTime(query=True)
-
-    def select(self, nodes, replace=True):
-        if replace:
-            self.selected = list(nodes)
+        self.undo_available = undo_available
 
     def undo_info(self, **kwargs):
         if kwargs.get("openChunk"):
-            self.undo_chunks.append(kwargs.get("chunkName"))
+            if not self.undo_available:
+                raise RuntimeError("undo unavailable")
+            self._cmds.begin_undo()
 
 
-class TestRestPoseTransaction(unittest.TestCase):
-    def _make(self):
+class TestResetPoseTransaction(unittest.TestCase):
+    def _make(self, *, undo_available=True):
         cmds = _FakeCmds()
-        adapter = _FakeAdapter(cmds)
-        transaction = RestPoseTransaction(
+        adapter = _FakeAdapter(cmds, undo_available=undo_available)
+        transaction = ResetPoseTransaction(
             adapter,
             model_root="|model",
             model_uuid="model-uuid",
             targets=["|model|joint"],
             bind_translations={"|model|joint": (1.0, 2.0, 3.0)},
         )
-        return cmds, adapter, transaction
+        return cmds, transaction
 
-    def test_apply_restore_preserves_values_writer_curve_frame_and_locks(self):
-        cmds, adapter, transaction = self._make()
+    def test_apply_writes_rest_values_and_current_frame_curve_key(self):
+        cmds, transaction = self._make()
         cmds.locks["|model|joint.rotateZ"] = True
 
         self.assertEqual(transaction.apply(), 1)
+
         self.assertEqual(cmds.values["|model|joint.translateX"], 1.0)
         self.assertEqual(cmds.values["|model|joint.translateY"], 2.0)
         self.assertEqual(cmds.values["|model|joint.translateZ"], 3.0)
         self.assertEqual(cmds.values["|model|joint.rotateX"], 0.0)
-        self.assertEqual(cmds.incoming["|model|joint.rotateX"], [])
-        self.assertTrue(cmds.locks["|model|joint.rotateZ"])
-
-        cmds.frame = 48.0
-        adapter.selected = []
-        transaction.restore()
-
-        self.assertEqual(cmds.values["|model|joint.translateX"], 4.0)
-        self.assertEqual(cmds.values["|model|joint.rotateX"], 20.0)
+        self.assertEqual(cmds.values["|model|joint.rotateY"], 0.0)
+        self.assertEqual(cmds.values["|model|joint.rotateZ"], 0.0)
         self.assertEqual(cmds.incoming["|model|joint.rotateX"], ["animCurve.output"])
+        self.assertEqual(cmds.keyframes, [("animCurve", (24.0, 24.0), 0.0)])
         self.assertEqual(cmds.frame, 24.0)
-        self.assertEqual(adapter.selected, ["|model|joint"])
         self.assertTrue(cmds.locks["|model|joint.rotateZ"])
-        self.assertEqual(cmds.keyframe("animCurve.output", query=True, valueChange=True), (0.0, 20.0))
+        self.assertFalse(hasattr(transaction, "restore"))
 
-    def test_uuid_mismatch_is_fail_closed_before_mutation(self):
-        cmds, _adapter, transaction = self._make()
+    def test_failure_uses_single_undo_to_restore_completed_writes(self):
+        cmds, transaction = self._make()
+        original = dict(cmds.values)
+        cmds.fail_plug = "|model|joint.rotateY"
+
+        with self.assertRaises(ResetPoseTransactionError):
+            transaction.apply()
+
+        self.assertEqual(cmds.values, original)
+        self.assertEqual(cmds.keyframes, [])
+
+    def test_uuid_mismatch_and_out_of_scope_target_fail_closed(self):
+        cmds, transaction = self._make()
         cmds.uuid = "different-model"
-
-        with self.assertRaises(RestPoseTransactionError):
-            transaction.apply()
-        self.assertEqual(cmds.set_calls, [])
-
-    def test_apply_failure_rolls_back_prior_channels_and_connection(self):
-        cmds, _adapter, transaction = self._make()
-        cmds.fail_next_value = "|model|joint.rotateX"
-
-        with self.assertRaises(RestPoseTransactionError):
-            transaction.apply()
-        self.assertEqual(cmds.values["|model|joint.translateX"], 4.0)
-        self.assertEqual(cmds.values["|model|joint.rotateX"], 20.0)
-        self.assertEqual(cmds.incoming["|model|joint.rotateX"], ["animCurve.output"])
-
-    def test_multiple_writers_and_out_of_scope_target_are_rejected(self):
-        cmds, adapter, transaction = self._make()
-        cmds.incoming["|model|joint.rotateX"] = ["a.output", "b.output"]
-        with self.assertRaises(RestPoseTransactionError):
+        with self.assertRaises(ResetPoseTransactionError):
             transaction.apply()
 
-        outside = RestPoseTransaction(
-            adapter,
+        cmds.uuid = "model-uuid"
+        outside = ResetPoseTransaction(
+            _FakeAdapter(cmds),
             model_root="|model",
             model_uuid="model-uuid",
             targets=["|other|joint"],
         )
-        with self.assertRaises(RestPoseTransactionError):
+        with self.assertRaises(ResetPoseTransactionError):
             outside.apply()
 
-    def test_procedural_append_output_stays_connected_while_source_rests(self):
-        cmds, adapter, _transaction = self._make()
-        append = "|model|append"
-        cmds.paths[append] = append
-        for channel, value in zip(
-            ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"),
-            (7.0, 8.0, 9.0, 11.0, 12.0, 13.0),
-        ):
-            cmds.values[f"{append}.{channel}"] = value
-            cmds.locks[f"{append}.{channel}"] = False
-        procedural_plug = f"{append}.rotateX"
-        cmds.values["pairBlend.output"] = 11.0
-        cmds.incoming[procedural_plug] = ["pairBlend.output"]
-        cmds.locks[procedural_plug] = True
-        transaction = RestPoseTransaction(
-            adapter,
-            model_root="|model",
-            model_uuid="model-uuid",
-            targets=["|model|joint", append],
-            bind_translations={"|model|joint": (1.0, 2.0, 3.0)},
-        )
+    def test_procedural_writer_is_left_connected_and_unchanged(self):
+        cmds, transaction = self._make()
+        plug = "|model|joint.rotateY"
+        cmds.incoming[plug] = ["pairBlend.output"]
+        before = cmds.values[plug]
 
-        self.assertEqual(transaction.apply(), 2)
-        self.assertEqual(cmds.values["|model|joint.translateX"], 1.0)
-        self.assertEqual(cmds.values[procedural_plug], 11.0)
-        self.assertEqual(cmds.incoming[procedural_plug], ["pairBlend.output"])
-        self.assertTrue(cmds.locks[procedural_plug])
+        self.assertEqual(transaction.apply(), 1)
 
-        transaction.restore()
-        self.assertEqual(cmds.incoming[procedural_plug], ["pairBlend.output"])
-        self.assertTrue(cmds.locks[procedural_plug])
+        self.assertEqual(cmds.incoming[plug], ["pairBlend.output"])
+        self.assertEqual(cmds.values[plug], before)
 
-    def test_restore_refuses_foreign_writer_without_disconnect(self):
-        """A writer added after apply is never removed by rollback."""
-        cmds, _adapter, transaction = self._make()
-        transaction.apply()
+    def test_animated_channels_require_undo_support(self):
+        cmds, transaction = self._make(undo_available=False)
+        original = dict(cmds.values)
 
-        foreign_source = "foreign.output"
-        cmds.values[foreign_source] = 99.0
-        cmds.incoming["|model|joint.rotateX"] = [foreign_source]
+        with self.assertRaisesRegex(ResetPoseTransactionError, "requires Maya Undo"):
+            transaction.apply()
 
-        with self.assertRaisesRegex(RestPoseTransactionError, "topology drift"):
-            transaction.restore()
-
-        self.assertEqual(
-            cmds.incoming["|model|joint.rotateX"],
-            [foreign_source],
-            "foreign writer must remain connected after fail-closed rollback",
-        )
+        self.assertEqual(cmds.values, original)
+        self.assertEqual(cmds.keyframes, [])
 
 
 if __name__ == "__main__":

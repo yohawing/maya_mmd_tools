@@ -130,29 +130,6 @@ def build_mirror_pairs(entries: Iterable[MirrorEntry]) -> Mapping[str, MirrorEnt
     return result
 
 
-def resolve_mirror_selection(
-    selected_nodes: Iterable[str],
-    entries: Iterable[MirrorEntry],
-) -> list[str]:
-    """Return only validated opposite nodes for the complete selection."""
-
-    entry_by_node = {entry.node: entry for entry in entries}
-    pair_by_identity = build_mirror_pairs(entry_by_node.values())
-    selected = list(dict.fromkeys(str(node) for node in selected_nodes))
-    if not selected:
-        raise MirrorActionError("no nodes selected")
-    mappings = []
-    for node in selected:
-        entry = entry_by_node.get(node)
-        if entry is None:
-            raise MirrorActionError(f"selection is not a validated MMD node: {node}")
-        target = pair_by_identity.get(entry.identity)
-        if target is None:
-            raise MirrorActionError(f"no unique mirror pair for {node}")
-        mappings.append(target.node)
-    return list(dict.fromkeys(mappings))
-
-
 def mirrored_transform_values(
     translation: Iterable[float],
     rotation: Iterable[float],

@@ -105,7 +105,6 @@ class AnimationPresenter:
         self._morph_refresh_timer = None
         self._last_morph_refresh_time: float | None = None
         self._pose_clipboard: dict | None = None
-        self._rest_pose_transaction = None
         self._all_model_joints: list[str] = []
         self._ik_nodes_by_side: dict[str, str] = {}
         self._toe_ik_nodes_by_side: dict[str, str] = {}
@@ -143,7 +142,6 @@ class AnimationPresenter:
         if hasattr(self.view.body_picker, "regions_selected"):
             self.view.body_picker.regions_selected.connect(self.on_body_regions_selected)
         self.view.body_picker.goto_finger_clicked.connect(self.on_goto_finger)
-        self.view.body_picker.mirror_selection_clicked.connect(self.on_mirror_selection)
         if hasattr(self.view.body_picker, "reset_pose_clicked"):
             self.view.body_picker.reset_pose_clicked.connect(self._on_reset_pose)
         if hasattr(self.view.body_picker, "select_all_clicked"):
@@ -160,7 +158,6 @@ class AnimationPresenter:
         if hasattr(self.view.finger_picker, "regions_selected"):
             self.view.finger_picker.regions_selected.connect(self.on_finger_regions_selected)
         self.view.finger_picker.goto_body_clicked.connect(self.on_goto_body)
-        self.view.finger_picker.mirror_selection_clicked.connect(self.on_mirror_selection)
         if hasattr(self.view, "select_all_btn"):
             self.view.select_all_btn.clicked.connect(self.on_select_all)
         for key, cb in self.view.vis_checkboxes.items():
@@ -190,7 +187,6 @@ class AnimationPresenter:
         callbacks = {
             "reset": self._on_reset_pose,
             "mirror": self._on_mirror_pose,
-            "mirror_selection": self.on_mirror_selection,
         }
         for key, btn in common_actions.items():
             callback = callbacks.get(key)
@@ -207,7 +203,6 @@ class AnimationPresenter:
         """
         if self._disposed:
             return
-        self._restore_active_rest_pose(silent=True)
         self._disposed = True
         self._end_morph_edit()
         if self._morph_refresh_timer is not None:
@@ -337,7 +332,6 @@ class AnimationPresenter:
     # -- Signal handlers -----------------------------------------------
 
     def on_current_model_changed(self, model_root: str):
-        self._restore_active_rest_pose(silent=True)
         if model_root:
             self._reload_for_model(model_root)
         else:
@@ -367,10 +361,6 @@ class AnimationPresenter:
 
         if self._disposed:
             return
-        # Scene-open/new callbacks can invalidate the old DAG before Maya
-        # delivers the model-list change.  Attempt the exact restore while the
-        # old UUID is still available, then clear the transaction regardless.
-        self._restore_active_rest_pose(silent=True)
         try:
             self.app_state.clear_cache()
         except Exception:
@@ -476,19 +466,18 @@ class AnimationPresenter:
         self.view.status_label.setText(message.format(**values))
 
     def _sync_common_action_state(self) -> None:
-        """Keep the shared Rest Pose button deterministic across both tabs."""
+        """Keep the shared one-shot Reset Pose action localized."""
 
         buttons = getattr(self.view, "common_action_buttons", {})
         button = buttons.get("reset") if hasattr(buttons, "get") else None
         if button is None:
             return
-        active = self._rest_pose_transaction is not None
-        key = "rest_pose_return" if active else "reset"
-        tooltip_key = "rest_pose_return_tooltip" if active else "reset_pose_tooltip"
         try:
-            button.setText(self.view.tr(key, "animation_toolset"))
+            button.setText(self.view.tr("reset", "animation_toolset"))
             if hasattr(button, "setToolTip"):
-                button.setToolTip(self.view.tr(tooltip_key, "animation_toolset"))
+                button.setToolTip(
+                    self.view.tr("reset_pose_tooltip", "animation_toolset")
+                )
             if hasattr(button, "setEnabled"):
                 button.setEnabled(True)
         except Exception:
@@ -964,31 +953,6 @@ class AnimationPresenter:
     def on_goto_body(self):
         self.view.picker_tabs.setCurrentIndex(self.view.TAB_BODY)
 
-    def on_mirror_selection(self):
-        try:
-            raw_selected = self.maya_adapter.ls(selection=True) or []
-            selected = []
-            if getattr(self.maya_adapter, "_cmds", None) is not None:
-                for node in raw_selected:
-                    path = self._resolve_selection_path(str(node))
-                    if path is None:
-                        raise RuntimeError(
-                            f"selection is not a validated MMD node: {node}"
-                        )
-                    selected.append(path)
-            else:
-                selected = [str(node) for node in raw_selected]
-            entries, _owner, _model_uuid = self._mirror_entries()
-            from ..mirror_actions import resolve_mirror_selection
-
-            mirrored = resolve_mirror_selection(selected, entries)
-            accepted = self._select_nodes(mirrored)
-            if len(accepted) != len(mirrored):
-                raise RuntimeError("mirror selection contains blocked or stale nodes")
-            self._set_status("mirrored_selection", count=len(accepted))
-        except Exception as exc:
-            self._set_status("mirror_selection_failed", error=exc)
-
     def _mirror_entries(self):
         """Build UUID-authoritative joint/control entries for this model."""
 
@@ -1190,7 +1154,6 @@ class AnimationPresenter:
     # -- Internal ------------------------------------------------------
 
     def _reload_for_model(self, model_root: str):
-        self._restore_active_rest_pose(silent=True)
         bone_map = self._build_bone_index_map(model_root)
         self._all_model_joints = [bone_map[index] for index in sorted(bone_map)]
         self._bone_name_to_joint = self._build_bone_name_map(model_root)
@@ -1244,7 +1207,6 @@ class AnimationPresenter:
                 "select_all",
                 "clear_selection",
                 "reset_pose",
-                "mirror_sel",
                 "fingers_left",
                 "fingers_right",
             }
@@ -1464,11 +1426,10 @@ class AnimationPresenter:
                 hidden.update(_TOE_FK_REGIONS[side])
             else:
                 hidden.add(f"{side}_toe_ik")
-        # The common action bar owns Rest Pose and Mirror Select.  Hide the
-        # legacy Body SVG hit regions in the real widget so the same action is
-        # not presented twice; headless doubles retain their signal contract.
+        # The common action bar owns Reset Pose. Hide the legacy Body SVG hit
+        # region in the real widget so the same action is not presented twice.
         if hasattr(self.view.body_picker, "_region_paths"):
-            hidden.update({"reset_pose", "mirror_sel"})
+            hidden.add("reset_pose")
         if hasattr(self.view.body_picker, "set_hidden_regions"):
             self.view.body_picker.set_hidden_regions(hidden)
         if hasattr(self.view.body_picker, "set_region_dim_levels"):
@@ -1552,7 +1513,7 @@ class AnimationPresenter:
         self._bone_name_to_joint.clear()
         self._sync_picker_regions()
         if hasattr(self.view.body_picker, "set_hidden_regions"):
-            hidden = {"reset_pose", "mirror_sel"} if hasattr(
+            hidden = {"reset_pose"} if hasattr(
                 self.view.body_picker, "_region_paths"
             ) else set()
             self.view.body_picker.set_hidden_regions(hidden)
@@ -2266,40 +2227,8 @@ class AnimationPresenter:
         else:
             self._set_status("paste_failed", error=result.error)
 
-    def _restore_active_rest_pose(self, *, silent: bool = False) -> bool:
-        """Return an active Rest Pose transaction to motion before teardown."""
-
-        transaction = self._rest_pose_transaction
-        if transaction is None:
-            return True
-        try:
-            transaction.restore()
-        except Exception as exc:
-            logger.error("Rest Pose restore failed during presenter teardown", exc_info=True)
-            if not silent:
-                self._set_status("rest_pose_failed", error=exc)
-            return False
-        finally:
-            # A scene replacement can make exact restoration impossible; do
-            # not retain a stale UUID transaction that could touch a new DAG.
-            self._rest_pose_transaction = None
-        return True
-
     def _on_reset_pose(self):
-        """Toggle a reversible, model-scoped Rest Pose transaction.
-
-        Body and Finger both route their common Reset Pose control here.  On
-        real Maya adapters this snapshots writers and channels before applying
-        rest values; lightweight adapters retain the historical one-shot
-        action for headless compatibility.
-        """
-
-        if self._rest_pose_transaction is not None:
-            if self._restore_active_rest_pose():
-                self._sync_picker_to_actual_selection()
-                self._sync_common_action_state()
-                self._set_status("rest_pose_restored")
-            return
+        """Apply a one-shot Reset Pose to the selection or whole model."""
 
         targets, bind_translations = self._rest_pose_targets()
         if not targets:
@@ -2317,20 +2246,19 @@ class AnimationPresenter:
                 )
             )
             if result.succeeded:
-                self._sync_common_action_state()
                 self._set_status("reset_pose_applied", count=result.reset_count)
             else:
                 self._set_status("reset_pose_failed", error=result.error)
             return
 
         try:
-            from ..rest_pose_transaction import RestPoseTransaction
+            from ..rest_pose_transaction import ResetPoseTransaction
 
             root = self.app_state.current_model_root
             roots = cmds.ls(root, uuid=True) if root else []
             if not root or len(roots) != 1:
                 raise RuntimeError("MMD model UUID is unavailable")
-            transaction = RestPoseTransaction(
+            transaction = ResetPoseTransaction(
                 self.maya_adapter,
                 model_root=root,
                 model_uuid=str(roots[0]),
@@ -2339,25 +2267,24 @@ class AnimationPresenter:
                 scope_roots=self._rest_pose_scope_roots(root, cmds),
             )
             count = transaction.apply()
-            self._rest_pose_transaction = transaction
-            self._sync_common_action_state()
-            self._set_status("rest_pose_applied", count=count)
+            self._set_status("reset_pose_applied", count=count)
         except Exception as exc:
-            self._set_status("rest_pose_failed", error=exc)
+            self._set_status("reset_pose_failed", error=exc)
 
     def _rest_pose_targets(self) -> tuple[list[str], dict[str, tuple[float, float, float]]]:
-        """Resolve every joint/controller in the current model UUID.
+        """Resolve selected or all joint/controllers in the current model UUID.
 
-        The production Maya path is model-scoped: Body and Finger are merely
-        two entry points into the same Rest Pose transaction.  Headless
-        adapters intentionally retain the historical selected-joint fallback
-        so existing action tests remain deterministic without a Maya DAG.
+        A valid model-owned selection resets only that selection. With no
+        selection the whole current model is reset. A non-model selection
+        resolves to no targets so the action cannot unexpectedly reset all.
         """
 
         root = self.app_state.current_model_root
         cmds = getattr(self.maya_adapter, "_cmds", None)
         if not root or cmds is None:
             joints = self._selected_joints()
+            if root and not joints:
+                joints = list(self._all_model_joints)
             return joints, self._selected_bind_translations(joints)
         try:
             from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
@@ -2370,7 +2297,8 @@ class AnimationPresenter:
                 return [], {}
             joints = self._rest_pose_model_joints(root, cmds)
             if owner == "MMD_OWNED":
-                return joints, self._selected_bind_translations(joints)
+                targets = self._selected_or_all_reset_targets(joints, cmds)
+                return targets, self._selected_bind_translations(targets)
 
             # In CONTROL_OWNED mode each UUID-backed controller is the only
             # accepted writer.  Binding metadata provides the complete model
@@ -2399,10 +2327,25 @@ class AnimationPresenter:
                     targets.append(target)
                 if bound not in bound_joints:
                     bound_joints.append(bound)
+            targets = self._selected_or_all_reset_targets(targets, cmds)
             return targets, self._selected_bind_translations(bound_joints)
         except Exception:
             logger.debug("Rest Pose target resolution failed", exc_info=True)
             return [], {}
+
+    def _selected_or_all_reset_targets(self, targets: list[str], cmds) -> list[str]:
+        """Use a valid model-owned selection, otherwise the complete model."""
+
+        raw_selection = self.maya_adapter.ls(selection=True) or []
+        if not raw_selection:
+            return list(targets)
+        valid = set(targets)
+        selected = []
+        for node in raw_selection:
+            paths = cmds.ls(node, long=True) or []
+            if len(paths) == 1 and str(paths[0]) in valid:
+                selected.append(str(paths[0]))
+        return list(dict.fromkeys(selected))
 
     def _rest_pose_model_joints(self, root: str, cmds) -> list[str]:
         """Resolve all model joints to unique full DAG paths."""
