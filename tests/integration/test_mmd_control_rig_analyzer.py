@@ -26,6 +26,7 @@ from mmd_tools.core.mmd_control_rig_motion import (
     _euler_degrees_from_quaternion,
     _quaternion_from_euler_degrees,
     bake_mmd_control_rig,
+    control_rig_edit_authoring_bases_for_joints,
     control_rig_edit_routes_for_joints,
     enter_mmd_control_rig_edit,
     restore_mmd_control_rig_attached,
@@ -1181,6 +1182,98 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertFalse(cmds.listConnections(target_x, source=True, destination=False, plugs=True) or [])
         self.assertAlmostEqual(cmds.getAttr(target_x), 7.5, places=6)
 
+    def test_ik_link_fk_keeps_nonidentity_basis_live_and_through_bake(self):
+        """Child-facing leg axes round-trip through raw solver input XYZ."""
+        root = self._import_fixture()
+        spec = analyze_mmd_control_rig(root)
+        role = spec.roles_by_name["left_leg"]
+        rig = build_mmd_control_rig(root, spec=spec)
+        metadata = read_mmd_control_rig_metadata(root)
+        metadata["authoringBases"]["left_leg"] = {
+            "quaternion": [0.0, 0.7071067811865475, 0.0, 0.7071067811865476],
+            "source": "pmx_tail",
+        }
+        cmds.setAttr(
+            f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}",
+            json.dumps(metadata, ensure_ascii=False),
+            type="string",
+        )
+
+        edit = enter_mmd_control_rig_edit(root)
+        control = rig.controls["left_leg"]
+        targets = edit["bindings"]["left_leg"]["authoredPlugs"]
+        self.assertEqual(len(targets), 3)
+        bases = control_rig_edit_authoring_bases_for_joints([role.binding.joint])
+        self.assertEqual(bases[role.binding.joint]["source"], "pmx_tail")
+        target_node = targets[0].split(".", 1)[0]
+        target_uuid = (cmds.ls(target_node, uuid=True) or [None])[0]
+        self.assertTrue(
+            any(
+                converter.get("targetNodeUuid") == target_uuid
+                for converter in edit["rotationConverters"]
+            )
+        )
+
+        for axis, start, end in zip(
+            "XYZ",
+            (170.0, 40.0, -120.0),
+            (-170.0, -50.0, 130.0),
+        ):
+            cmds.setKeyframe(
+                control,
+                attribute=f"rotate{axis}",
+                time=(0.0, 0.0),
+                value=start,
+            )
+            cmds.setKeyframe(
+                control,
+                attribute=f"rotate{axis}",
+                time=(10.0, 10.0),
+                value=end,
+            )
+        curves = [
+            (cmds.listConnections(f"{control}.rotate{axis}", type="animCurve") or [None])[0]
+            for axis in "XYZ"
+        ]
+        self.assertTrue(all(curves))
+        cmds.rotationInterpolation(*curves, convert="quaternionSlerp")
+        cmds.currentTime(5.0, edit=True)
+        live_values = tuple(float(cmds.getAttr(target)) for target in targets)
+        self.assertGreater(
+            max(
+                abs(actual - expected)
+                for actual, expected in zip(
+                    live_values,
+                    tuple(float(cmds.getAttr(f"{control}.rotate{axis}")) for axis in "XYZ"),
+                )
+            ),
+            1.0e-3,
+        )
+
+        baked = bake_mmd_control_rig(root)
+        self.assertEqual(baked["state"], "BAKED")
+        self.assertFalse(baked.get("rotationConverters"))
+        cmds.currentTime(5.0, edit=True)
+        baked_values = tuple(float(cmds.getAttr(target)) for target in targets)
+        self.assertLess(
+            max(abs(actual - expected) for actual, expected in zip(live_values, baked_values)),
+            1.0e-6,
+        )
+        self.assertTrue(
+            all(
+                5.0
+                in (
+                    cmds.keyframe(
+                        target,
+                        query=True,
+                        timeChange=True,
+                    )
+                    or []
+                )
+                for target in targets
+            )
+        )
+
     def test_ik_disabled_leg_fk_keeps_pre_solver_single_writer_and_no_cycle(self):
         """IK OFF still authors the solver input while output ownership stays intact."""
         root = self._import_fixture()
@@ -1902,6 +1995,75 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
                 set(cmds.keyTangent(curve, query=True, outTangentType=True) or []),
                 {"linear"},
             )
+
+    def test_ik_link_dense_bake_removes_existing_vmd_time_warp(self):
+        """Dense raw IK samples must use scene time exactly once."""
+        control = cmds.createNode("transform", name="ik_link_time_bake_CTRL")
+        solver = cmds.createNode("mmdCcdIk", name="ik_link_time_bake_solver")
+        time_curve = cmds.createNode("animCurveTT", name="ik_link_vmd_time")
+        cmds.setKeyframe(time_curve, time=0.0, value=0.0)
+        cmds.setKeyframe(time_curve, time=5.0, value=3.0)
+        cmds.setKeyframe(time_curve, time=10.0, value=10.0)
+        rows = []
+        sources = {}
+        for index, axis in enumerate("XYZ"):
+            control_plug = f"{control}.rotate{axis}"
+            target = f"{solver}.inputRotate[0].inputRotateElement{axis}"
+            cmds.setKeyframe(control, attribute=f"rotate{axis}", time=0.0, value=0.0)
+            cmds.setKeyframe(control, attribute=f"rotate{axis}", time=10.0, value=10.0)
+            control_source = cmds.listConnections(
+                control_plug,
+                source=True,
+                destination=False,
+                plugs=True,
+            )[0]
+            mmd_curve = cmds.createNode("animCurveTA", name=f"ik_link_mmd_{axis}")
+            cmds.setKeyframe(mmd_curve, time=0.0, value=100.0 + index)
+            cmds.setKeyframe(mmd_curve, time=10.0, value=200.0 + index)
+            cmds.connectAttr(f"{time_curve}.output", f"{mmd_curve}.input")
+            cmds.connectAttr(control_plug, target)
+            rows.append(
+                {
+                    "control": control_plug,
+                    "target": target,
+                    "source": f"{mmd_curve}.output",
+                    "controlSource": control_source,
+                    "routeClass": ROUTE_SAMPLED,
+                    "routeReasons": ["ik", "ik_link_input"],
+                }
+            )
+            sources[control_plug] = control_source
+
+        samples = [
+            (float(frame), tuple(frame * (axis + 1) + axis for axis in range(3)))
+            for frame in range(11)
+        ]
+        result = _commit_control_rotation_group(
+            cmds,
+            rows,
+            sources,
+            quaternion_interpolation=False,
+            evaluated_target_samples=samples,
+        )
+
+        for index, axis in enumerate("XYZ"):
+            target = f"{solver}.inputRotate[0].inputRotateElement{axis}"
+            curve = str(result[f"{control}.rotate{axis}"]).split(".", 1)[0]
+            self.assertEqual(
+                cmds.listConnections(
+                    f"{curve}.input",
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                ),
+                ["time1.outTime"],
+            )
+            for frame, values in samples:
+                self.assertAlmostEqual(
+                    float(cmds.getAttr(target, time=frame)),
+                    values[index],
+                    places=6,
+                )
 
     def test_quaternion_euler_roundtrip_honors_all_maya_rotate_orders(self):
         values = (23.0, -41.0, 67.0)

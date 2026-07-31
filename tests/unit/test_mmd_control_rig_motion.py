@@ -38,6 +38,18 @@ def _bone_morph_rows():
     ]
 
 
+def _ik_link_rows():
+    return [
+        {
+            "control": f"leg_CTRL.rotate{axis}",
+            "target": f"solver.inputRotate[6].inputRotateElement{axis}",
+            "routeClass": ROUTE_SAMPLED,
+            "routeReasons": ["ik", "ik_link_input", "joint_orient"],
+        }
+        for axis in "XYZ"
+    ]
+
+
 class MmdControlRigMotionRoutingTest(unittest.TestCase):
     """Keep optional twist Append routes complete and fail closed when partial."""
 
@@ -60,7 +72,7 @@ class MmdControlRigMotionRoutingTest(unittest.TestCase):
 
         self.assertEqual(_rotation_channel_groups(rows), [])
 
-    def test_ik_quaternion_xyz_is_grouped_only_for_bake_passthrough(self):
+    def test_legacy_ik_quaternion_xyz_is_grouped_only_for_bake_passthrough(self):
         rows = [
             {
                 "control": f"foot_ik_CTRL.rotate{axis}",
@@ -80,6 +92,22 @@ class MmdControlRigMotionRoutingTest(unittest.TestCase):
             rows,
             include_sampled_passthrough=True,
         )
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(
+            [row["target"] for row in groups[0]],
+            [
+                "solver.inputRotate[6].inputRotateElementX",
+                "solver.inputRotate[6].inputRotateElementY",
+                "solver.inputRotate[6].inputRotateElementZ",
+            ],
+        )
+
+    def test_ik_link_xyz_supports_live_and_bake_basis_conversion(self):
+        rows = _ik_link_rows()
+
+        self.assertTrue(all(_supports_live_authoring_basis(row) for row in rows))
+        self.assertTrue(all(_supports_bake_authoring_basis(row) for row in rows))
+        groups = _rotation_channel_groups(rows, include_sampled_direct=True)
         self.assertEqual(len(groups), 1)
         self.assertEqual(
             [row["target"] for row in groups[0]],

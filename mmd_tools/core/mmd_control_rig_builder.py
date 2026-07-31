@@ -30,7 +30,6 @@ from mmd_tools.core.constants import (
 from mmd_tools.core.humanik_utils import maya_cmds
 from mmd_tools.core.mmd_control_rig_analyzer import (
     INPUT_IK_CONTROLLER,
-    INPUT_IK_LINK_INPUT,
     MmdControlRigRoleBinding,
     MmdControlRigSpec,
     STATUS_FALLBACK,
@@ -1267,17 +1266,13 @@ def _cross_product(left, right):
 
 
 def _control_basis_rotations(binding, shape_rotation):
-    """Split IK-link display orientation from its raw solver input basis.
+    """Use one authoring basis for direct, accumulator, and IK-link controls.
 
-    IK link controls author ``mmdCcdIk.inputRotateElementXYZ`` directly. Those
-    plugs already use the imported joint's XYZ authoring basis, so moving the
-    visual tail alignment into ``AIM_SPACE`` would rotate the manipulator axes
-    without converting the solver input. Keep an identity transform basis and
-    apply the same rotation only to curve CVs for these controls.
+    EDIT installs the reciprocal basis converter for complete IK-link XYZ
+    inputs, so leg and knee manipulators can use the same child-facing axes as
+    arm controls without changing the raw ``mmdCcdIk.inputRotate`` contract.
     """
 
-    if binding.input_kind == INPUT_IK_LINK_INPUT:
-        return None, shape_rotation
     return shape_rotation, None
 
 

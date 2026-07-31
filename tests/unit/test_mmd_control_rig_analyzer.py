@@ -563,14 +563,14 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
             2.0,
         )
 
-    def test_ik_link_keeps_raw_xyz_basis_and_orients_curve_only(self):
+    def test_ik_link_uses_the_same_authoring_basis_as_direct_controls(self):
         rotation = ((0.0, 1.0, 0.0), 0.0, 1.0)
         ik_binding = SimpleNamespace(input_kind=INPUT_IK_LINK_INPUT)
         direct_binding = SimpleNamespace(input_kind="direct_channel")
 
         self.assertEqual(
             _control_basis_rotations(ik_binding, rotation),
-            (None, rotation),
+            (rotation, None),
         )
         self.assertEqual(
             _control_basis_rotations(direct_binding, rotation),

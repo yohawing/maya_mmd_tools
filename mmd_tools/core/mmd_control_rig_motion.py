@@ -35,6 +35,7 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
     INPUT_BONE_MORPH_BASE,
     INPUT_DIRECT_CHANNEL,
     INPUT_IK_CONTROLLER,
+    INPUT_IK_LINK_INPUT,
 )
 from mmd_tools.core.mmd_control_rig_basis import (
     MmdControlRigBasis,
@@ -119,9 +120,9 @@ def control_rig_edit_authoring_bases_for_joints(
     The regular route helper intentionally keeps its historic two-tuple API.
     VMD keying needs the additional static basis, so expose it through a
     separate lookup and fail closed when a role has only a partial rotation
-    route or a solver input. Optional primary-twist rings may use complete
-    Append ``baseRotate``/``inputRotateElement`` inputs as their authored XYZ
-    route.
+    route. Complete IK-link ``inputRotateElement`` and optional primary-twist
+    Append inputs are valid authored XYZ routes because EDIT installs their
+    reciprocal live basis converters.
     """
 
     cmds = cmds_module or maya_cmds()
@@ -153,6 +154,7 @@ def control_rig_edit_authoring_bases_for_joints(
             if binding.get("inputKind") not in {
                 INPUT_DIRECT_CHANNEL,
                 INPUT_BONE_MORPH_BASE,
+                INPUT_IK_LINK_INPUT,
                 "append_base" if is_twist else INPUT_DIRECT_CHANNEL,
             }:
                 continue
@@ -847,6 +849,15 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
         or _rotation_group_uses_quaternion(cmds, group, sources_by_control)
         for row in group
     }
+    live_target_samples_by_group = {
+        id(group[0]): _capture_live_target_rotation_samples(
+            cmds,
+            group,
+            sources_by_control,
+        )
+        for group in rotation_groups
+        if _rotation_group_requires_live_target_sampling(group)
+    }
     with _edit_exit_transaction(
         cmds,
         root,
@@ -893,6 +904,9 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
                 quaternion_interpolation=all(
                     id(row) in quaternion_grouped_rows for row in group
                 ),
+                evaluated_target_samples=live_target_samples_by_group.get(
+                    id(group[0])
+                ),
             )
             mmd_sources_by_control.update(group_sources)
         for row in reversed(channel_rows):
@@ -912,7 +926,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
             _record_curve_representation(
                 representations,
                 row["target"],
-                row.get("source") or mmd_sources_by_control.get(row["control"]),
+                mmd_sources_by_control.get(row["control"]) or row.get("source"),
                 row.get("controlSource") or sources_by_control[row["control"]],
                 cmds,
                 quaternion_interpolation=(
@@ -1254,7 +1268,7 @@ def _classify_route(cmds, binding: Mapping[str, Any], target: str):
     input_kind = str(binding.get("inputKind") or "")
     reasons = []
     if input_kind in {"ik_controller", "ik_link_input"}:
-        reasons.append("ik")
+        reasons.extend(("ik", input_kind))
     elif input_kind in {"append_base", "bone_morph_base"}:
         reasons.append(input_kind)
     elif input_kind != "direct_channel":
@@ -2055,20 +2069,27 @@ def _supports_live_authoring_basis(row: Mapping[str, Any]) -> bool:
         and target_attr.startswith("baseRotate")
         and target_attr.endswith(("X", "Y", "Z"))
     )
+    ik_link_input = (
+        "ik_link_input" in reasons
+        and target_attr.startswith("inputRotateElement")
+        and target_attr.endswith(("X", "Y", "Z"))
+    )
     if "bone_morph_base" in reasons and not bone_morph_base:
         return False
-    if not standard_rotate and not bone_morph_base:
+    if "ik_link_input" in reasons and not ik_link_input:
+        return False
+    if not standard_rotate and not bone_morph_base and not ik_link_input:
         return False
     if row.get("layerRoute") is not None:
         return False
     special_reasons = {
         "anim_layer",
         "append_base",
-        "ik",
         "ik_controller",
-        "ik_link_input",
         "rotate_order",
     }
+    if "ik" in reasons and not ik_link_input:
+        return False
     return not bool(reasons.intersection(special_reasons))
 
 
@@ -2082,19 +2103,26 @@ def _supports_bake_authoring_basis(row: Mapping[str, Any]) -> bool:
         and target_attr.startswith("baseRotate")
         and target_attr.endswith(("X", "Y", "Z"))
     )
+    ik_link_input = (
+        "ik_link_input" in reasons
+        and target_attr.startswith("inputRotateElement")
+        and target_attr.endswith(("X", "Y", "Z"))
+    )
     if "bone_morph_base" in reasons and not bone_morph_base:
         return False
-    if not standard_rotate and not bone_morph_base:
+    if "ik_link_input" in reasons and not ik_link_input:
+        return False
+    if not standard_rotate and not bone_morph_base and not ik_link_input:
         return False
     if row.get("layerRoute") is not None:
         return False
     special_reasons = {
         "anim_layer",
         "append_base",
-        "ik",
         "ik_controller",
-        "ik_link_input",
     }
+    if "ik" in reasons and not ik_link_input:
+        return False
     return not bool(reasons.intersection(special_reasons))
 
 
@@ -2149,9 +2177,15 @@ def _create_live_rotation_converters(
             and target_attr.startswith("baseRotate")
             and target_attr.endswith(("X", "Y", "Z"))
         )
+        ik_link_input = (
+            "ik_link_input" in set(row.get("routeReasons") or ())
+            and target_attr.startswith("inputRotateElement")
+            and target_attr.endswith(("X", "Y", "Z"))
+        )
         if (
             target_attr not in {"rotateX", "rotateY", "rotateZ"}
             and not bone_morph_base
+            and not ik_link_input
             and not (
                 row.get("twistController")
                 and (
@@ -2179,7 +2213,9 @@ def _create_live_rotation_converters(
                 continue
             non_identity_rows.append(row)
             reasons = set(row.get("routeReasons") or ())
-            if reasons & {"ik", "ik_controller", "ik_link_input"}:
+            if "ik_controller" in reasons or (
+                "ik" in reasons and "ik_link_input" not in reasons
+            ):
                 raise MmdControlRigBuildError(
                     "non-identity authoring basis is unsupported for IK/append route"
                 )
@@ -2212,7 +2248,10 @@ def _create_live_rotation_converters(
         if basis.quaternion == (0.0, 0.0, 0.0, 1.0):
             continue
         control_node = str(group[0]["control"]).rsplit(".", 1)[0]
-        target_node = str(group[0]["target"]).rsplit(".", 1)[0]
+        # IK-link targets are nested compound plugs such as
+        # ``solver.inputRotate[6].inputRotateElementX``.  Persist the owning
+        # dependency-node UUID, not the intermediate compound path.
+        target_node = str(group[0]["target"]).split(".", 1)[0]
         namespace = target_node.rsplit("|", 1)[-1].replace(":", "_")
         try:
             compose = str(cmds.createNode("composeMatrix", name=f"{namespace}_CR_BASIS_COMPOSE"))
@@ -2671,6 +2710,70 @@ def _restore_rotation_interpolation_states(cmds, states) -> None:
         cmds.rotationInterpolation(*plugs, convert=mode)
 
 
+def _rotation_group_requires_live_target_sampling(
+    rows: List[Mapping[str, Any]],
+) -> bool:
+    """Return whether a non-transform basis route must bake evaluated targets."""
+
+    if any(
+        str(row["target"]).rsplit(".", 1)[-1]
+        in {"rotateX", "rotateY", "rotateZ"}
+        for row in rows
+    ):
+        return False
+    if not all(_supports_bake_authoring_basis(row) for row in rows):
+        return False
+    try:
+        basis = _consistent_rotation_group_basis(rows)
+    except MmdControlRigBasisError:
+        return False
+    return basis.quaternion != (0.0, 0.0, 0.0, 1.0)
+
+
+def _capture_live_target_rotation_samples(
+    cmds,
+    rows: List[Mapping[str, Any]],
+    sources_by_control: Mapping[str, Optional[str]],
+):
+    """Capture dense raw solver inputs while the live basis converter exists."""
+
+    attrs = ("rotateX", "rotateY", "rotateZ")
+    rows_by_attr = {_rotation_attr_for_target(row["target"]): row for row in rows}
+    sources = [sources_by_control.get(rows_by_attr[attr]["control"]) for attr in attrs]
+    mmd_sources = [rows_by_attr[attr].get("source") for attr in attrs]
+    times = sorted(
+        {
+            float(time)
+            for plug in (*sources, *mmd_sources)
+            if plug
+            for time in (
+                cmds.keyframe(
+                    str(plug).split(".", 1)[0],
+                    query=True,
+                    timeChange=True,
+                )
+                or []
+            )
+        }
+    )
+    if times:
+        first = math.floor(min(times))
+        last = math.ceil(max(times))
+        times = sorted({*times, *(float(frame) for frame in range(first, last + 1))})
+    else:
+        times = [float(cmds.currentTime(query=True))]
+    return [
+        (
+            time,
+            tuple(
+                float(cmds.getAttr(rows_by_attr[attr]["target"], time=time))
+                for attr in attrs
+            ),
+        )
+        for time in times
+    ]
+
+
 def _commit_control_rotation_group(
     cmds,
     rows: List[Mapping[str, Any]],
@@ -2678,6 +2781,7 @@ def _commit_control_rotation_group(
     *,
     created_curve_nodes=None,
     quaternion_interpolation: Optional[bool] = None,
+    evaluated_target_samples=None,
 ) -> Dict[str, Optional[str]]:
     """Bake one sparse three-axis rotation compound without scalar teardown.
 
@@ -2717,6 +2821,15 @@ def _commit_control_rotation_group(
         control_sources.append(str(control_source) if control_source else None)
         mmd_sources.append(str(row["source"]) if row.get("source") else None)
 
+    if evaluated_target_samples is not None:
+        return _sample_control_rotation_group_passthrough(
+            cmds,
+            rows,
+            {row["control"]: source for row, source in zip(rows, control_sources)},
+            created_curve_nodes=created_curve_nodes,
+            evaluated_samples=evaluated_target_samples,
+        )
+
     # A non-identity authoring basis cannot be represented by copying Euler
     # payloads.  Capture the complete XYZ union grid while the controller is
     # still live, convert each sample by quaternion conjugation, then replace
@@ -2728,7 +2841,11 @@ def _commit_control_rotation_group(
         except MmdControlRigBasisError as exc:
             raise MmdControlRigBuildError("invalid authoring basis on rotation journal") from exc
         if basis.quaternion != (0.0, 0.0, 0.0, 1.0):
-            preserve_quaternion = (
+            # Only transform rotateXYZ targets can own Maya's quaternion
+            # interpolation state. IK-link inputRotateElementXYZ must retain
+            # the evaluated live pose through dense sampling after basis
+            # conversion; sparse converted keys would interpolate as Euler.
+            preserve_quaternion = standard_rotate_targets and (
                 True
                 if quaternion_interpolation is None
                 else bool(quaternion_interpolation)
@@ -2838,6 +2955,7 @@ def _sample_control_rotation_group_passthrough(
     control_sources: Mapping[str, Optional[str]],
     *,
     created_curve_nodes=None,
+    evaluated_samples=None,
 ) -> Dict[str, Optional[str]]:
     """Bake evaluated XYZ values into a non-transform rotation compound.
 
@@ -2873,7 +2991,7 @@ def _sample_control_rotation_group_passthrough(
         times = sorted({*times, *(float(frame) for frame in range(first, last + 1))})
     else:
         times = [float(cmds.currentTime(query=True))]
-    samples = [
+    samples = list(evaluated_samples) if evaluated_samples is not None else [
         (
             time,
             tuple(
@@ -2911,6 +3029,28 @@ def _sample_control_rotation_group_passthrough(
         if mmd_source:
             curve = str(mmd_source).split(".", 1)[0]
             source = str(mmd_source)
+            if evaluated_samples is not None:
+                # The existing MMD curve may still consume a shared VMD
+                # Bezier time curve. Dense samples are already expressed in
+                # scene time, so retaining that input would apply the time
+                # warp a second time after bake. Reuse the curve UUID, but
+                # restore ordinary Maya time before replacing its keys.
+                input_plug = f"{curve}.input"
+                for incoming in cmds.listConnections(
+                    input_plug,
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                ) or []:
+                    if cmds.isConnected(incoming, input_plug):
+                        cmds.disconnectAttr(incoming, input_plug)
+                if cmds.objExists("time1.outTime"):
+                    cmds.connectAttr("time1.outTime", input_plug, force=False)
+                # Keep the curve connected and clear through MFnAnimCurve;
+                # cmds.cutKey may delete the node when its final key goes.
+                if not cmds.isConnected(source, target):
+                    cmds.connectAttr(source, target, force=False)
+                _clear_animation_curve_keys(cmds, curve)
         else:
             try:
                 curve = str(cmds.createNode("animCurveTA"))
