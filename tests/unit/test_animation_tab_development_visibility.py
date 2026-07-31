@@ -219,11 +219,14 @@ class MmdControlRigReleaseIsolationTest(unittest.TestCase):
         self.assertNotIn("_on_control_rig_clicked", presenter_source)
         self.assertNotIn("control_rig_buttons", presenter_source)
 
-    def test_no_mmd_control_rig_entry_point_on_the_maya_menu(self):
-        """The MMD menu must not offer the unsupported rig in normal mode."""
+    def test_mmd_control_rig_manager_is_available_from_the_maya_menu(self):
+        """The MMD menu reuses the authoritative modeless Manager."""
         plugin_main = _PLUGIN_MAIN.read_text(encoding="utf-8")
 
-        self.assertNotIn("mmd_control_rig", plugin_main)
+        self.assertIn("MMDControlRigManagerMenuItem", plugin_main)
+        self.assertIn("label=manager_label", plugin_main)
+        self.assertIn('translate("control_rig_manager", "animation_toolset")', plugin_main)
+        self.assertIn("open_control_rig_manager()", plugin_main)
 
     def test_control_rig_modules_hold_no_process_owned_transaction_state(self):
         """Scene new/open cannot strand a transaction that lives in metadata."""

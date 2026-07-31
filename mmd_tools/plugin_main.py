@@ -173,7 +173,7 @@ def close_control_rig_manager():
     _control_rig_manager_window = None
 
 
-def open_control_rig_manager(*, app_state=None, status_callback=None):
+def open_control_rig_manager(*, app_state=None):
     """Open or raise the single modeless Control Rig Manager instance."""
     global _control_rig_manager_window
     try:
@@ -181,7 +181,6 @@ def open_control_rig_manager(*, app_state=None, status_callback=None):
 
         _control_rig_manager_window = _open(
             app_state=app_state,
-            status_callback=status_callback,
         )
         return _control_rig_manager_window
     except Exception as exc:
@@ -249,6 +248,26 @@ def _reset_humanik_menu_session():
         return False
 
 
+def _control_rig_manager_menu_label():
+    """Return the Control Rig Manager label in the saved UI language."""
+
+    try:
+        from mmd_tools.core import settings_keys
+        from mmd_tools.services.settings_service import SettingsService
+        from mmd_tools.ui.translations import UITranslator
+
+        translator = UITranslator.instance()
+        translator.set_language(
+            SettingsService().get(
+                settings_keys.UI_GENERAL_LANGUAGE,
+                translator.get_language(),
+            )
+        )
+        return translator.translate("control_rig_manager", "animation_toolset")
+    except Exception:
+        return "コントロールリグを管理"
+
+
 def _close_humanik_window():
     """Close the standalone HumanIK Editor window before plugin unload.
 
@@ -275,7 +294,17 @@ def install_mmd_menu():
     else:
         cmds.menu("MMD", edit=True, label="MMD")
 
-    _LABELS = ("MMD Tools", "MMD Editor", "Repair Texture Paths", "Animator Toolset")
+    manager_label = _control_rig_manager_menu_label()
+    _LABELS = (
+        "MMD Tools",
+        "MMD Editor",
+        "Repair Texture Paths",
+        "Animator Toolset",
+        "コントロールリグを管理",
+        "Manage Control Rig",
+        "管理控制绑定",
+        "管理控制綁定",
+    )
     for item in cmds.menu("MMD", query=True, itemArray=True) or []:
         if cmds.menuItem(item, query=True, label=True) in _LABELS:
             cmds.deleteUI(item)
@@ -297,6 +326,12 @@ def install_mmd_menu():
         "MMDAnimatorToolsetMenuItem",
         label="Animator Toolset",
         command=lambda *args: open_animator_toolset(dockable=True),
+        parent="MMD",
+    )
+    cmds.menuItem(
+        "MMDControlRigManagerMenuItem",
+        label=manager_label,
+        command=lambda *args: open_control_rig_manager(),
         parent="MMD",
     )
 

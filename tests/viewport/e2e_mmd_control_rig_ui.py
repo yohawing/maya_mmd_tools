@@ -275,6 +275,23 @@ def run_ui_check(
             "actions": action_rows,
             "modelComboCount": int(tab.model_combo.count()),
         }
+        menu_item = "MMDControlRigManagerMenuItem"
+        menu_exists = bool(cmds.menuItem(menu_item, exists=True))
+        menu_label = (
+            str(cmds.menuItem(menu_item, query=True, label=True))
+            if menu_exists
+            else ""
+        )
+        report["ui"]["controlRigEntryPoints"] = {
+            "mayaMenuExists": menu_exists,
+            "mayaMenuLabel": menu_label,
+            "animatorButtonText": _safe_text(manager_button),
+            "passed": menu_exists
+            and menu_label == "コントロールリグを管理"
+            and _safe_text(manager_button) == "コントロールリグを管理",
+        }
+        if not report["ui"]["controlRigEntryPoints"]["passed"]:
+            raise RuntimeError("Control Rig Manager entry points are missing or mislabeled")
         if legacy_group is not None:
             # Keep the old fields only when a third-party/headless view still
             # provides them; the production footer is the public contract.
@@ -312,9 +329,11 @@ def run_ui_check(
             and body_button_ids == finger_button_ids,
         }
 
-        # Open twice through the footer.  The Manager is modeless and
-        # singleton-scoped; refresh must only re-read metadata.
-        manager_one = animator_window.open_control_rig_manager()
+        # Open through the Maya-menu callback target and then through the
+        # Animator footer. Both entry points must reuse the same singleton.
+        import mmd_tools.plugin_main as plugin_main_module
+
+        manager_one = plugin_main_module.open_control_rig_manager()
         _safe_process_events()
         manager_two = animator_window.open_control_rig_manager()
         _safe_process_events()
