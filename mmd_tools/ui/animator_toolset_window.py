@@ -64,7 +64,6 @@ class AnimatorToolsetWindow(QWidget):
         )
         layout.addWidget(self.animation_tab)
         self._control_rig_manager = None
-        self._control_rig_status_callback = None
         self._control_rig_state_callback = None
         self._control_rig_manager_connected = False
         self._cleanup_done = False
@@ -80,13 +79,10 @@ class AnimatorToolsetWindow(QWidget):
 
         from mmd_tools.ui.control_rig_manager import open_control_rig_manager
 
-        status_callback = self.animation_tab.control_rig_status_label.setText
         manager = open_control_rig_manager(
             app_state=self.app_state,
-            status_callback=status_callback,
         )
         self._control_rig_manager = manager
-        self._control_rig_status_callback = status_callback
         # Manager actions are scene transactions; refresh the picker state
         # after each explicit action while keeping the Animator itself read
         # only with respect to Control Rig ownership.
@@ -121,12 +117,6 @@ class AnimatorToolsetWindow(QWidget):
         self._save_window_size()
         manager = getattr(self, "_control_rig_manager", None)
         if manager is not None:
-            try:
-                manager.clear_status_callback(
-                    getattr(self, "_control_rig_status_callback", None)
-                )
-            except Exception:
-                pass
             state_callback = getattr(self, "_control_rig_state_callback", None)
             if state_callback is not None:
                 try:
@@ -134,7 +124,6 @@ class AnimatorToolsetWindow(QWidget):
                 except (RuntimeError, TypeError):
                     pass
         self._control_rig_manager = None
-        self._control_rig_status_callback = None
         self._control_rig_state_callback = None
         self._control_rig_manager_connected = False
         self.animation_presenter.disconnect_signals()

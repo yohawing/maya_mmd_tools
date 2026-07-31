@@ -110,41 +110,29 @@ def test_show_manager_reuses_one_modeless_instance(monkeypatch):
     ControlRigManagerWindow._instance = None
 
 
-def test_status_callback_failure_clears_destroyed_animator_sink():
+def test_status_message_stays_inside_the_manager():
     manager = ControlRigManagerWindow.__new__(ControlRigManagerWindow)
-    manager._status_callback = MagicMock(
-        side_effect=RuntimeError("wrapped C++ object has been deleted")
-    )
     manager._translator = MagicMock()
-    manager._translator.translate.return_value = "status"
-    manager.diagnostics_label = MagicMock()
+    manager._translator.translate.return_value = "operation complete"
+    manager.message_label = MagicMock()
 
-    manager._set_status("status_error", error=RuntimeError("stale"))
+    manager._set_status("status_transition")
 
-    assert manager._status_callback is None
+    manager.message_label.setText.assert_called_once_with("operation complete")
 
 
-def test_clear_status_callback_preserves_newer_animator_sink():
-    manager = ControlRigManagerWindow.__new__(ControlRigManagerWindow)
-    old_callback = MagicMock()
-    new_callback = MagicMock()
-    manager._status_callback = new_callback
+def test_manager_has_no_internal_metadata_or_diagnostics_surface():
+    actions = {action for action, _label in ControlRigManagerWindow._ACTION_LABELS}
+    assert actions == {"setup", "bake_control", "bake_mmd", "restore", "delete"}
 
-    manager.clear_status_callback(old_callback)
-    assert manager._status_callback is new_callback
-
-    manager.clear_status_callback(new_callback)
-    assert manager._status_callback is None
 
 
 def test_animator_cleanup_detaches_manager_callbacks_before_presenter_teardown():
     manager = MagicMock()
-    status_callback = MagicMock()
     state_callback = MagicMock()
     window = AnimatorToolsetWindow.__new__(AnimatorToolsetWindow)
     window._cleanup_done = False
     window._control_rig_manager = manager
-    window._control_rig_status_callback = status_callback
     window._control_rig_state_callback = state_callback
     window._control_rig_manager_connected = True
     window._save_window_size = MagicMock()
@@ -152,10 +140,8 @@ def test_animator_cleanup_detaches_manager_callbacks_before_presenter_teardown()
 
     AnimatorToolsetWindow._cleanup(window)
 
-    manager.clear_status_callback.assert_called_once_with(status_callback)
     manager.state_changed.disconnect.assert_called_once_with(state_callback)
     window.animation_presenter.disconnect_signals.assert_called_once_with()
     assert window._control_rig_manager is None
-    assert window._control_rig_status_callback is None
     assert window._control_rig_state_callback is None
     assert window._control_rig_manager_connected is False

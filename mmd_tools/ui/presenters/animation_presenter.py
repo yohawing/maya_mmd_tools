@@ -1204,7 +1204,6 @@ class AnimationPresenter:
         self._reload_morph_tab(model_root, morph_metadata)
         self._sync_visibility_controls(model_root)
         self.view.status_label.setText("")
-        self._sync_control_rig_status(model_root)
         self._sync_common_action_state()
         self._sync_picker_to_actual_selection()
 
@@ -1544,7 +1543,6 @@ class AnimationPresenter:
         self._clear_morph_tab()
         self._sync_visibility_controls(None)
         self.view.status_label.setText("")
-        self._sync_control_rig_status(None)
         self._sync_common_action_state()
         self._set_picker_selection_from_nodes([])
 
@@ -1575,43 +1573,8 @@ class AnimationPresenter:
                 self._set_visibility_button_state(cb, state)
             if hasattr(self.view, "refresh_development_mode_visibility"):
                 self.view.refresh_development_mode_visibility()
-            self._sync_control_rig_status(model_root)
         except Exception as exc:
             logger.debug("Visibility control sync failed: %s", exc)
-
-    def _sync_control_rig_status(self, model_root: str | None) -> None:
-        """Reflect UUID-owned Control Rig metadata in the Animator footer.
-
-        This is intentionally read-only.  The manager owns every lifecycle
-        transition; the Animator only reports the current scene state and
-        exposes the manager launcher.
-        """
-
-        label = getattr(self.view, "control_rig_status_label", None)
-        if label is None:
-            return
-        if not model_root:
-            label.setText(self.view.tr("control_rig_status_none", "animation_toolset"))
-            return
-        try:
-            metadata = None
-            cmds_module = getattr(self.maya_adapter, "_cmds", None)
-            if cmds_module is not None:
-                from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
-
-                metadata = read_mmd_control_rig_metadata(
-                    model_root, cmds_module=cmds_module
-                )
-            if not metadata:
-                text = self.view.tr("control_rig_status_unset", "animation_toolset")
-            else:
-                text = self.view.tr("control_rig_status", "animation_toolset").format(
-                    state=metadata.get("state", "?"),
-                    owner=metadata.get("owner", "?"),
-                )
-        except Exception:
-            text = self.view.tr("control_rig_status_error", "animation_toolset")
-        label.setText(text)
 
     @staticmethod
     def _coerce_visibility_state(state: str | VisibilityState) -> VisibilityState | None:

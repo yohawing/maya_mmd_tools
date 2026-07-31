@@ -33,10 +33,6 @@ _TRANSLATION_DIR = _PROJECT_ROOT / "mmd_tools" / "ui" / "translations"
 _CONTROL_RIG_TRANSLATION_KEYS = (
     "control_rig_manager",
     "control_rig_manager_tooltip",
-    "control_rig_status_none",
-    "control_rig_status_unset",
-    "control_rig_status",
-    "control_rig_status_error",
 )
 _VISIBILITY_TRANSLATION_KEYS = (
     "visibility_state_visible",
@@ -114,7 +110,6 @@ def _retranslate_view(data):
         vis_checkboxes={key: _TextTarget() for key in ("mesh", "joints", "colliders", "control_rig")},
         tools_group=_TextTarget(),
         control_rig_manager_btn=_TextTarget(),
-        control_rig_status_label=_TextTarget(),
         tool_buttons={"copy": _TextTarget()},
     )
     def translate(key, category=None):
@@ -135,7 +130,6 @@ def _view():
         picker_tabs=_PickerTabs(AnimationTab.TAB_BODY),
         tools_group=_VisibilityTarget(),
         control_rig_manager_btn=_VisibilityTarget(),
-        control_rig_status_label=_VisibilityTarget(),
         vis_checkboxes={"control_rig": control_rig_visibility},
     )
 

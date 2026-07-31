@@ -1,15 +1,12 @@
-"""Modeless, UUID-scoped manager for the MMD-native Control Rig.
+"""Modeless manager for the MMD-native Control Rig.
 
 The Animator picker deliberately contains no lifecycle operations.  This
-window is the single owner of Setup, Bake, Restore, Delete, and Diagnostics.
+window is the single owner of Setup, Bake, Restore, and Delete.
 Reading the character list and refreshing the selected row only queries Maya;
 scene mutation happens exclusively after an explicit action button click.
 """
 
 from __future__ import annotations
-
-import json
-from typing import Any, Callable, Mapping
 
 from ..core.logger import get_logger
 from ..services.scene_model_service import SceneModelService
@@ -45,7 +42,6 @@ class ControlRigManagerWindow(QWidget):
         ("bake_mmd", "control_rig_bake_mmd"),
         ("restore", "control_rig_restore"),
         ("delete", "control_rig_delete"),
-        ("diagnostics", "control_rig_diagnostics"),
     )
 
     def __init__(
@@ -55,7 +51,6 @@ class ControlRigManagerWindow(QWidget):
         app_state=None,
         scene_model_service=None,
         cmds_module=None,
-        status_callback: Callable[[str], None] | None = None,
     ):
         if parent is None:
             parent = self._maya_main_window()
@@ -64,7 +59,6 @@ class ControlRigManagerWindow(QWidget):
         self.setWindowFlags(Qt.Window)
         self.setWindowModality(Qt.NonModal)
         self._app_state = app_state
-        self._status_callback = status_callback
         self._cmds = cmds_module
         self._scene_model_service = scene_model_service or (
             getattr(app_state, "scene_model_service", None) or SceneModelService(cmds_module=cmds_module)
@@ -85,14 +79,6 @@ class ControlRigManagerWindow(QWidget):
         header.addWidget(self.refresh_btn)
         layout.addLayout(header)
 
-        self.uuid_label = QLabel("")
-        self.uuid_label.setObjectName("ControlRigCharacterUuid")
-        layout.addWidget(self.uuid_label)
-
-        self.state_label = QLabel("")
-        self.state_label.setObjectName("ControlRigStateLabel")
-        layout.addWidget(self.state_label)
-
         actions_group = QGroupBox()
         actions_layout = QGridLayout(actions_group)
         self.action_buttons: dict[str, QPushButton] = {}
@@ -104,10 +90,10 @@ class ControlRigManagerWindow(QWidget):
             actions_layout.addWidget(button, index // 2, index % 2)
         layout.addWidget(actions_group)
 
-        self.diagnostics_label = QLabel("")
-        self.diagnostics_label.setWordWrap(True)
-        self.diagnostics_label.setObjectName("ControlRigDiagnostics")
-        layout.addWidget(self.diagnostics_label)
+        self.message_label = QLabel("")
+        self.message_label.setWordWrap(True)
+        self.message_label.setObjectName("ControlRigMessage")
+        layout.addWidget(self.message_label)
         layout.addStretch(1)
 
         self.refresh_btn.clicked.connect(self.refresh)
@@ -139,8 +125,6 @@ class ControlRigManagerWindow(QWidget):
             instance = cls(**kwargs)
             cls._instance = instance
         else:
-            if "status_callback" in kwargs:
-                instance._status_callback = kwargs.get("status_callback")
             app_state = kwargs.get("app_state")
             if app_state is not None:
                 instance._app_state = app_state
@@ -159,7 +143,6 @@ class ControlRigManagerWindow(QWidget):
         if instance is None:
             return
         try:
-            instance._status_callback = None
             instance.close()
             instance.deleteLater()
         except Exception:
@@ -173,7 +156,6 @@ class ControlRigManagerWindow(QWidget):
     def _on_destroyed(self, *_args) -> None:
         """Drop a stale singleton if Maya tears down the QWidget externally."""
 
-        self._status_callback = None
         if type(self)._instance is self:
             type(self)._instance = None
 
@@ -184,8 +166,7 @@ class ControlRigManagerWindow(QWidget):
             return self._translator.translate(key, "control_rig_manager")
         self.setWindowTitle(tr("window_title"))
         self.refresh_btn.setText(tr("refresh"))
-        self.state_label.setText(tr("state_none"))
-        self.diagnostics_label.setText("")
+        self.message_label.setText("")
         for action, _translation_key in self._ACTION_LABELS:
             button = self.action_buttons[action]
             button.setText(tr(f"{action}"))
@@ -278,7 +259,6 @@ class ControlRigManagerWindow(QWidget):
         try:
             from ..core.mmd_control_rig_builder import (
                 build_mmd_control_rig,
-                read_mmd_control_rig_metadata,
                 remove_mmd_control_rig,
             )
             from ..core.mmd_control_rig_motion import (
@@ -300,80 +280,28 @@ class ControlRigManagerWindow(QWidget):
                 removed = remove_mmd_control_rig(root)
                 metadata = None
                 self._set_status("status_deleted" if removed else "status_not_found")
-            elif action == "diagnostics":
-                metadata = read_mmd_control_rig_metadata(root)
             else:
                 raise ValueError(f"unknown Control Rig action: {action}")
 
             if action != "delete":
                 self._set_status(
                     "status_not_found" if not metadata else "status_transition",
-                    state=(metadata or {}).get("state", "?"),
-                    owner=(metadata or {}).get("owner", "?"),
                 )
-                if action == "diagnostics" and metadata:
-                    self.diagnostics_label.setText(self.format_diagnostics(metadata))
             self.state_changed.emit(root, action)
             self.refresh()
         except Exception as exc:
             logger.error("Control Rig Manager action failed", exc_info=True)
             self._set_status("status_error", error=exc)
 
-    def format_diagnostics(self, metadata: Mapping[str, Any]) -> str:
-        """Render extensible metadata without hiding unsupported evidence."""
-
-        diagnostics = metadata.get("diagnostics") if isinstance(metadata, Mapping) else None
-        unsupported = []
-        for value in (
-            metadata.get("unsupportedRoles"),
-            metadata.get("unsupported"),
-            diagnostics.get("unsupportedRoles") if isinstance(diagnostics, Mapping) else None,
-            diagnostics.get("unsupported") if isinstance(diagnostics, Mapping) else None,
-        ):
-            if isinstance(value, (list, tuple, set)):
-                unsupported.extend(map(str, value))
-            elif value not in (None, ""):
-                unsupported.append(str(value))
-        cycle = metadata.get("cycle", metadata.get("cycleDiagnostics", "none recorded"))
-        evidence = {
-            key: metadata[key]
-            for key in ("lastBake", "lastBakeEvidence", "lastOracle", "oracleEvidence", "oracle")
-            if metadata.get(key) not in (None, "", [], {})
-        }
-        return self._translator.translate("diagnostics_format", "control_rig_manager").format(
-            state=metadata.get("state", "unknown"),
-            owner=metadata.get("owner", "unknown"),
-            unsupported=", ".join(dict.fromkeys(unsupported)) or "none",
-            cycle=cycle if cycle not in (None, "") else "none recorded",
-            evidence=json.dumps(evidence, ensure_ascii=False, sort_keys=True) if evidence else "none recorded",
-        )
-
     def _on_character_changed(self, _index: int) -> None:
+        self.message_label.clear()
         self._sync_selected_state()
 
     def _sync_selected_state(self) -> None:
-        uuid = self.selected_uuid()
-        self.uuid_label.setText(
-            self._translator.translate("uuid", "control_rig_manager").format(uuid=uuid or "-")
-        )
-        root = self.selected_model_root()
-        metadata = None
-        if root:
-            try:
-                from ..core.mmd_control_rig_builder import read_mmd_control_rig_metadata
+        """Clear stale messages when the selected character is unavailable."""
 
-                metadata = read_mmd_control_rig_metadata(root, cmds_module=self._maya_cmds())
-            except Exception:
-                metadata = None
-        if metadata:
-            self.state_label.setText(
-                self._translator.translate("state", "control_rig_manager").format(
-                    state=metadata.get("state", "?"), owner=metadata.get("owner", "?")
-                )
-            )
-        else:
-            self.state_label.setText(self._translator.translate("state_none", "control_rig_manager"))
-            self.diagnostics_label.clear()
+        if self.selected_model_root() is None:
+            self.message_label.clear()
 
     def _set_status(self, key: str, **values) -> None:
         message = self._translator.translate(key, "control_rig_manager")
@@ -381,28 +309,7 @@ class ControlRigManagerWindow(QWidget):
             message = message.format(**values)
         except (KeyError, ValueError):
             pass
-        self.diagnostics_label.setText(message)
-        callback = self._status_callback
-        if callback is None:
-            return
-        try:
-            callback(message)
-        except Exception:
-            # The Animator label may have been destroyed while this modeless
-            # manager remains alive; never surface a stale Qt callback.
-            self._status_callback = None
-            logger.debug(
-                "Control Rig Manager status callback is unavailable",
-                exc_info=True,
-            )
-
-    def clear_status_callback(
-        self, callback: Callable[[str], None] | None = None
-    ) -> None:
-        """Detach an Animator-owned status sink if it is still current."""
-
-        if callback is None or self._status_callback == callback:
-            self._status_callback = None
+        self.message_label.setText(message)
 
     def _maya_cmds(self):
         if self._cmds is not None:

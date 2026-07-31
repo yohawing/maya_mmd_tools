@@ -263,7 +263,6 @@ def run_ui_check(
             for key, button in sorted(common_action_buttons.items())
         }
         manager_button = getattr(tab, "control_rig_manager_btn", None)
-        status_label = getattr(tab, "control_rig_status_label", None)
         legacy_group = getattr(tab, "control_rig_group", None)
         report["ui"]["animatorToolset"] = {
             "windowVisible": _safe_visible(animator_window),
@@ -271,7 +270,6 @@ def run_ui_check(
             "footerManagerEnabled": _safe_enabled(manager_button),
             "footerManagerText": _safe_text(manager_button),
             "footerManagerTooltip": str(manager_button.toolTip()) if manager_button is not None else "",
-            "footerStatusText": _safe_text(status_label),
             "commonActionBarVisible": _safe_visible(getattr(tab, "common_action_bar", None)),
             "commonActionBarEnabled": _safe_enabled(getattr(tab, "common_action_bar", None)),
             "actions": action_rows,
@@ -330,7 +328,10 @@ def run_ui_check(
             "selectedUuid": str(manager_two.selected_uuid() or ""),
             "selectedModelRoot": str(manager_two.selected_model_root() or ""),
             "refreshReadOnly": metadata_before_manager_refresh == metadata_after_manager_refresh,
-            "stateLabel": _safe_text(getattr(manager_two, "state_label", None)),
+            "internalMetadataLabelsAbsent": not hasattr(manager_two, "uuid_label")
+            and not hasattr(manager_two, "state_label"),
+            "diagnosticsActionAbsent": "diagnostics"
+            not in (getattr(manager_two, "action_buttons", {}) or {}),
             "actionCount": len(getattr(manager_two, "action_buttons", {}) or {}),
         }
         report["ui"]["controlRigManager"]["passed"] = all(
@@ -338,7 +339,9 @@ def run_ui_check(
                 report["ui"]["controlRigManager"]["visible"],
                 report["ui"]["controlRigManager"]["singletonIdentity"],
                 report["ui"]["controlRigManager"]["refreshReadOnly"],
-                report["ui"]["controlRigManager"]["actionCount"] == 6,
+                report["ui"]["controlRigManager"]["internalMetadataLabelsAbsent"],
+                report["ui"]["controlRigManager"]["diagnosticsActionAbsent"],
+                report["ui"]["controlRigManager"]["actionCount"] == 5,
             )
         )
 

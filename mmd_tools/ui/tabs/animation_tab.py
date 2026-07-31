@@ -1,4 +1,4 @@
-"""Animator Toolset tab with picker tools and the MMD Control Rig footer."""
+"""Animator Toolset tab with picker tools and the MMD Control Rig manager."""
 
 from ..qt_compat import (
     QComboBox,
@@ -143,9 +143,6 @@ class AnimationTab(BaseTab):
         status_layout = QHBoxLayout()
         self.status_label = QLabel("")
         status_layout.addWidget(self.status_label, 1)
-        self.control_rig_status_label = QLabel("")
-        self.control_rig_status_label.setObjectName("ControlRigStatusLabel")
-        status_layout.addWidget(self.control_rig_status_label)
         self.control_rig_manager_btn = QPushButton()
         self.control_rig_manager_btn.setObjectName("ControlRigManagerButton")
         status_layout.addWidget(self.control_rig_manager_btn)
@@ -297,9 +294,6 @@ class AnimationTab(BaseTab):
         if manager_button is not None:
             manager_button.setText(tr("control_rig_manager"))
             manager_button.setToolTip(tr("control_rig_manager_tooltip"))
-        status_label = getattr(self, "control_rig_status_label", None)
-        if status_label is not None:
-            status_label.setText(tr("control_rig_status_none"))
         legacy_group = getattr(self, "control_rig_group", None)
         if legacy_group is not None:
             legacy_group.setTitle(tr("control_rig_group_title"))
