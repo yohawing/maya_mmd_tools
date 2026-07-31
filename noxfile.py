@@ -1301,6 +1301,26 @@ def mmd_control_rig_vmd_import_parity_matrix(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def real_asset_bake_rig_parity(session: nox.Session) -> None:
+    """Run the fail-closed five-pair Maya 2024/2026 Control Rig parity matrix.
+
+    Examples::
+
+        uvx nox -s real_asset_bake_rig_parity -- --dry-run
+        uvx nox -s real_asset_bake_rig_parity -- --manifest F:/MMD/parity-manifest.json
+    """
+
+    session.run(
+        sys.executable,
+        "-m",
+        "tests.viewport.real_asset_bake_rig_parity",
+        *session.posargs,
+        env=dict(os.environ),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def mmd_control_rig_gui_e2e(session: nox.Session) -> None:
     """Run GUI control-rig E2E followed by the mandatory mesh oracle gate.
 
