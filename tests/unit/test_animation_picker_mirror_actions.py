@@ -10,7 +10,7 @@ from mmd_tools.ui.mirror_actions import (
     MirrorMapping,
     MirrorPoseTransaction,
     build_mirror_pairs,
-    ensure_identity_authoring_bases,
+    mirrored_transform_values,
     resolve_mirror_selection,
 )
 
@@ -26,6 +26,8 @@ class _FakeCmds:
         self.values = {}
         self.incoming = {}
         self.locks = {}
+        self.keyframes = []
+        self.time = 12.0
         for node, offset in (("|model|L_arm", 1.0), ("|model|R_arm", 10.0)):
             for channel, value in zip(
                 ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"),
@@ -62,6 +64,22 @@ class _FakeCmds:
         if source and not destination and plugs:
             return list(self.incoming.get(plug, ()))
         return []
+
+    @staticmethod
+    def nodeType(node):
+        return "animCurveTA" if node.startswith("animCurve") else "transform"
+
+    def currentTime(self, query=False):
+        return self.time if query else None
+
+    def setKeyframe(self, node, time, value):
+        self.keyframes.append((node, tuple(time), float(value)))
+        for plug, incoming in self.incoming.items():
+            if incoming == [f"{node}.output"]:
+                self.values[plug] = float(value)
+
+    def undo(self):
+        pass
 
 
 class _FakeAdapter:
@@ -104,20 +122,19 @@ class TestMirrorPairing(unittest.TestCase):
         ]
         self.assertEqual(build_mirror_pairs(ambiguous), {})
 
-    def test_non_identity_control_basis_is_fail_closed(self):
-        ensure_identity_authoring_bases(
-            {"authoringBases": {"left_arm": {"quaternion": [0, 0, 0, 1]}}}
+    def test_non_identity_control_bases_mirror_in_bone_space(self):
+        quarter_turn_z = (0.0, 0.0, 2**-0.5, 2**-0.5)
+        translation, rotation = mirrored_transform_values(
+            (1.0, 2.0, 3.0),
+            (30.0, 0.0, 0.0),
+            source_basis=quarter_turn_z,
+            target_basis=quarter_turn_z,
         )
-        with self.assertRaises(MirrorActionError):
-            ensure_identity_authoring_bases(
-                {
-                    "authoringBases": {
-                        "left_arm": {
-                            "quaternion": [0.0, 0.7071068, 0.0, 0.7071068]
-                        }
-                    }
-                }
-            )
+
+        self.assertEqual(translation, (-1.0, 2.0, 3.0))
+        self.assertAlmostEqual(rotation[0], -30.0, places=6)
+        self.assertAlmostEqual(rotation[1], 0.0, places=6)
+        self.assertAlmostEqual(rotation[2], 0.0, places=6)
 
 
 class TestMirrorPoseTransaction(unittest.TestCase):
@@ -174,6 +191,24 @@ class TestMirrorPoseTransaction(unittest.TestCase):
         with self.assertRaises(MirrorActionError):
             self._transaction(adapter, mapping).apply()
         self.assertEqual(cmds.values, before)
+
+    def test_direct_anim_curve_target_gets_current_frame_keys(self):
+        cmds, adapter, mapping = self._make()
+        for channel in ("rotateX", "rotateY", "rotateZ"):
+            cmds.incoming[f"|model|R_arm.{channel}"] = [
+                f"animCurve_{channel}.output"
+            ]
+
+        self.assertEqual(self._transaction(adapter, mapping).apply(), 1)
+
+        self.assertEqual(
+            cmds.keyframes,
+            [
+                ("animCurve_rotateX", (12.0, 12.0), 4.0),
+                ("animCurve_rotateY", (12.0, 12.0), -5.0),
+                ("animCurve_rotateZ", (12.0, 12.0), -6.0),
+            ],
+        )
 
 
 if __name__ == "__main__":

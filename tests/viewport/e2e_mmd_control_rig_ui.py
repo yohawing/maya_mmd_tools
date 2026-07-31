@@ -491,6 +491,204 @@ def run_ui_check(
             # control even when ``long=True`` was requested.  It is still a
             # validated UUID-backed Control Rig selection.
             control_selected = True
+
+        # Exercise all three common actions while the Control Rig owns motion.
+        # This is the success-path gate missing from the original UI smoke,
+        # which only proved that an unpaired center selection failed closed.
+        reset_button = common_action_buttons.get("reset")
+        mirror_selection_button = common_action_buttons.get("mirror_selection")
+        mirror_pose_button = common_action_buttons.get("mirror")
+        control_rest_applied = False
+        control_rest_restored = False
+        if reset_button is not None:
+            reset_button.click()
+            _safe_process_events()
+            control_rest_applied = (
+                getattr(
+                    animator_window.animation_presenter,
+                    "_rest_pose_transaction",
+                    None,
+                )
+                is not None
+            )
+            if control_rest_applied:
+                reset_button.click()
+                _safe_process_events()
+                control_rest_restored = (
+                    getattr(
+                        animator_window.animation_presenter,
+                        "_rest_pose_transaction",
+                        None,
+                    )
+                    is None
+                )
+
+        left_control = resolved_controls.get("left_arm")
+        right_control = resolved_controls.get("right_arm")
+        mirror_selection_passed = False
+        mirror_pose_passed = False
+        target_keyed = False
+        expected_translation = None
+        actual_translation = None
+        expected_rotation = None
+        actual_rotation = None
+        mirror_pose_status = ""
+        target_rotation_keys = {}
+        target_rotation_writers = {}
+        if left_control and right_control and mirror_selection_button is not None:
+            cmds.select(left_control, replace=True)
+            mirror_selection_button.click()
+            _safe_process_events()
+            mirrored_selection = [
+                str(item) for item in (cmds.ls(selection=True, long=True) or [])
+            ]
+            mirror_selection_passed = mirrored_selection == [right_control]
+
+        if left_control and right_control and mirror_pose_button is not None:
+            from mmd_tools.ui.mirror_actions import (
+                _quaternion_from_euler_degrees,
+                mirrored_transform_values,
+            )
+
+            test_time = 12.0
+            cmds.currentTime(test_time, edit=True)
+            source_rotation = (23.0, -17.0, 31.0)
+            for channel, value in zip(
+                ("rotateX", "rotateY", "rotateZ"), source_rotation
+            ):
+                cmds.setKeyframe(left_control, attribute=channel, value=value)
+                # The compact fixture does not animate every right-arm
+                # channel.  Seed an existing target curve so the button must
+                # edit the current motion key rather than a static channel.
+                cmds.setKeyframe(
+                    right_control,
+                    attribute=channel,
+                    time=(0.0,),
+                    value=0.0,
+                )
+                cmds.setKeyframe(
+                    right_control,
+                    attribute=channel,
+                    time=(24.0,),
+                    value=0.0,
+                )
+            cmds.currentTime(test_time, edit=True)
+            source_translation = tuple(
+                float(cmds.getAttr(f"{left_control}.translate{axis}"))
+                for axis in "XYZ"
+            )
+            left_basis = (metadata or {}).get("authoringBases", {}).get("left_arm")
+            right_basis = (metadata or {}).get("authoringBases", {}).get("right_arm")
+            expected_translation, expected_rotation = mirrored_transform_values(
+                source_translation,
+                source_rotation,
+                source_basis=left_basis,
+                target_basis=right_basis,
+            )
+            cmds.select(left_control, replace=True)
+            mirror_pose_button.click()
+            _safe_process_events()
+            cmds.currentTime(test_time, edit=True)
+            mirror_pose_status = _safe_text(getattr(tab, "status_label", None))
+            actual_translation = tuple(
+                float(cmds.getAttr(f"{right_control}.translate{axis}"))
+                for axis in "XYZ"
+            )
+            actual_rotation = tuple(
+                float(cmds.getAttr(f"{right_control}.rotate{axis}"))
+                for axis in "XYZ"
+            )
+            expected_quaternion = _quaternion_from_euler_degrees(expected_rotation)
+            actual_quaternion = _quaternion_from_euler_degrees(actual_rotation)
+            quaternion_dot = abs(
+                sum(
+                    left * right
+                    for left, right in zip(expected_quaternion, actual_quaternion)
+                )
+            )
+            target_keyed = all(
+                int(
+                    cmds.keyframe(
+                        right_control,
+                        attribute=f"rotate{axis}",
+                        query=True,
+                        time=(test_time, test_time),
+                        keyframeCount=True,
+                    )
+                    or 0
+                )
+                > 0
+                for axis in "XYZ"
+            )
+            target_rotation_keys = {
+                axis: [
+                    float(value)
+                    for value in (
+                        cmds.keyframe(
+                            right_control,
+                            attribute=f"rotate{axis}",
+                            query=True,
+                            time=(test_time, test_time),
+                            valueChange=True,
+                        )
+                        or []
+                    )
+                ]
+                for axis in "XYZ"
+            }
+            target_rotation_writers = {
+                axis: [
+                    str(source)
+                    for source in (
+                        cmds.listConnections(
+                            f"{right_control}.rotate{axis}",
+                            source=True,
+                            destination=False,
+                            plugs=True,
+                        )
+                        or []
+                    )
+                ]
+                for axis in "XYZ"
+            }
+            mirror_pose_passed = (
+                max(
+                    abs(actual - expected)
+                    for actual, expected in zip(
+                        actual_translation,
+                        expected_translation,
+                    )
+                )
+                <= 1.0e-5
+                and abs(quaternion_dot - 1.0) <= 1.0e-5
+                and target_keyed
+            )
+
+        report["ui"]["controlRigCommonActions"] = {
+            "restPoseApplied": control_rest_applied,
+            "restPoseRestored": control_rest_restored,
+            "mirrorSelectionPassed": mirror_selection_passed,
+            "mirrorPosePassed": mirror_pose_passed,
+            "targetKeyed": target_keyed,
+            "leftControl": left_control,
+            "rightControl": right_control,
+            "expectedTranslation": expected_translation,
+            "actualTranslation": actual_translation,
+            "expectedRotation": expected_rotation,
+            "actualRotation": actual_rotation,
+            "mirrorPoseStatus": mirror_pose_status,
+            "targetRotationKeys": target_rotation_keys,
+            "targetRotationWriters": target_rotation_writers,
+            "passed": bool(
+                control_rest_applied
+                and control_rest_restored
+                and mirror_selection_passed
+                and mirror_pose_passed
+            ),
+        }
+        if not report["ui"]["controlRigCommonActions"]["passed"]:
+            raise RuntimeError("Control Rig common actions did not complete")
+
         restore_mmd_control_rig_attached(original_root)
         if control_group_for_picker and control_group_visibility_snapshot is not None:
             try:
@@ -531,7 +729,6 @@ def run_ui_check(
         # Rest Pose is a reversible common action.  A real imported model can
         # legitimately fail closed when an unsupported writer is present; in
         # that case the test records the diagnostic instead of hiding it.
-        reset_button = common_action_buttons.get("reset")
         rest_channel_diagnostics = []
         for joint in cmds.ls(type="joint", long=True) or []:
             if "twist_1" not in str(joint):
@@ -580,8 +777,6 @@ def run_ui_check(
 
         # Center is intentionally unpaired.  Mirror Select/Pose must reject it
         # without changing the selection or writing a pose value.
-        mirror_selection_button = common_action_buttons.get("mirror_selection")
-        mirror_pose_button = common_action_buttons.get("mirror")
         before_mirror_selection = [str(item) for item in (cmds.ls(selection=True, long=True) or [])]
         before_mirror_values = None
         if expected_joint:

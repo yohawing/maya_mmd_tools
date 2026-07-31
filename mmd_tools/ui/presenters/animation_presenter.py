@@ -1006,14 +1006,27 @@ class AnimationPresenter:
             owner = str(metadata.get("owner") or "MMD_OWNED")
             if owner not in {"MMD_OWNED", "CONTROL_OWNED"}:
                 raise RuntimeError(f"unsupported MMD Control Rig owner: {owner}")
-            if owner == "CONTROL_OWNED":
-                from ..mirror_actions import ensure_identity_authoring_bases
-
-                ensure_identity_authoring_bases(metadata)
             root_uuids = cmds.ls(root, uuid=True) or []
             if len(root_uuids) != 1:
                 raise RuntimeError("MMD model UUID is unavailable")
             model_uuid = str(root_uuids[0])
+
+        control_bases = {}
+        if owner == "CONTROL_OWNED" and cmds is not None:
+            from ...core.mmd_control_rig_basis import validate_basis_record
+
+            basis_records = metadata.get("authoringBases") or {}
+            for role, control_uuid in (metadata.get("controls") or {}).items():
+                control_paths = cmds.ls(control_uuid, long=True) or []
+                record = basis_records.get(role)
+                if len(control_paths) != 1 or record is None:
+                    raise RuntimeError(f"Control Rig mirror basis is unavailable: {role}")
+                path = str(control_paths[0])
+                basis = validate_basis_record(record).quaternion
+                previous = control_bases.get(path)
+                if previous is not None and previous != basis:
+                    raise RuntimeError(f"ambiguous Control Rig mirror basis: {path}")
+                control_bases[path] = basis
 
         candidates = list(dict.fromkeys((*self._all_model_joints, *self._bone_name_to_joint.values())))
         entries = []
@@ -1062,6 +1075,11 @@ class AnimationPresenter:
                     if len(control_paths) != 1:
                         continue
                     node = str(control_paths[0])
+                authoring_basis = control_bases.get(node)
+                if authoring_basis is None:
+                    raise RuntimeError(f"Control Rig mirror basis is unavailable: {node}")
+            else:
+                authoring_basis = (0.0, 0.0, 0.0, 1.0)
             previous_identity = seen_nodes.get(node)
             if previous_identity is not None and previous_identity != identity:
                 raise RuntimeError("ambiguous Control Rig mirror node ownership")
@@ -1071,6 +1089,7 @@ class AnimationPresenter:
                     "node": node,
                     "joint": joint,
                     "names": tuple(dict.fromkeys(names)),
+                    "authoring_basis": authoring_basis,
                 }
             )
             seen.add(identity)

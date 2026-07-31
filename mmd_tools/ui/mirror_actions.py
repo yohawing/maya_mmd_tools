@@ -10,9 +10,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import re
 import unicodedata
 from typing import Iterable, Mapping
+
+from ..core.mmd_control_rig_basis import (
+    IDENTITY_QUATERNION,
+    bone_to_control,
+    control_to_bone,
+)
 
 
 _CHANNELS = (
@@ -23,16 +30,6 @@ _CHANNELS = (
     "rotateY",
     "rotateZ",
 )
-_MIRROR_SIGN = {
-    "translateX": -1.0,
-    "translateY": 1.0,
-    "translateZ": 1.0,
-    "rotateX": 1.0,
-    "rotateY": -1.0,
-    "rotateZ": -1.0,
-}
-
-
 class MirrorActionError(RuntimeError):
     """Raised when a mirror pair or scene mutation is not provable safe."""
 
@@ -45,6 +42,7 @@ class MirrorEntry:
     node: str
     joint: str
     names: tuple[str, ...]
+    authoring_basis: tuple[float, float, float, float] = IDENTITY_QUATERNION
 
 
 @dataclass(frozen=True)
@@ -155,28 +153,26 @@ def resolve_mirror_selection(
     return list(dict.fromkeys(mappings))
 
 
-def ensure_identity_authoring_bases(metadata: Mapping[str, object]) -> None:
-    """Reject Control Rig bases that the Euler sign contract cannot reflect."""
+def mirrored_transform_values(
+    translation: Iterable[float],
+    rotation: Iterable[float],
+    *,
+    source_basis=IDENTITY_QUATERNION,
+    target_basis=IDENTITY_QUATERNION,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """Mirror one XYZ transform through source and target authoring bases."""
 
-    bases = metadata.get("authoringBases") if isinstance(metadata, Mapping) else None
-    if not bases:
-        return
-    if not isinstance(bases, Mapping):
-        raise MirrorActionError("Control Rig authoring bases are malformed")
-    for role, record in bases.items():
-        if not isinstance(record, Mapping):
-            raise MirrorActionError(f"Control Rig authoring basis is malformed: {role}")
-        quaternion = record.get("quaternion")
-        if not isinstance(quaternion, (list, tuple)) or len(quaternion) != 4:
-            raise MirrorActionError(f"Control Rig authoring basis is invalid: {role}")
-        try:
-            values = tuple(float(value) for value in quaternion)
-        except (TypeError, ValueError) as exc:
-            raise MirrorActionError(f"Control Rig authoring basis is invalid: {role}") from exc
-        if any(abs(actual - expected) > 1.0e-6 for actual, expected in zip(values, (0.0, 0.0, 0.0, 1.0))):
-            raise MirrorActionError(
-                f"non-identity Control Rig authoring basis is unsupported: {role}"
-            )
+    tx, ty, tz = (float(value) for value in translation)
+    rotation = tuple(float(value) for value in rotation)
+    if source_basis == IDENTITY_QUATERNION and target_basis == IDENTITY_QUATERNION:
+        rx, ry, rz = rotation
+        return (-tx, ty, tz), (rx, -ry, -rz)
+    control_quaternion = _quaternion_from_euler_degrees(rotation)
+    bone_quaternion = control_to_bone(control_quaternion, source_basis)
+    x, y, z, w = bone_quaternion
+    mirrored_bone = (x, -y, -z, w)
+    target_quaternion = bone_to_control(mirrored_bone, target_basis)
+    return (-tx, ty, tz), _euler_degrees_from_quaternion(target_quaternion)
 
 
 class MirrorPoseTransaction:
@@ -218,17 +214,40 @@ class MirrorPoseTransaction:
             for mapping in self.mappings:
                 source_values = self._snapshots[mapping.source.node][0]
                 target = mapping.target.node
-                for channel in _CHANNELS:
+                translation, rotation = mirrored_transform_values(
+                    (source_values[channel] for channel in _CHANNELS[:3]),
+                    (source_values[channel] for channel in _CHANNELS[3:]),
+                    source_basis=mapping.source.authoring_basis,
+                    target_basis=mapping.target.authoring_basis,
+                )
+                mirrored_values = dict(zip(_CHANNELS, (*translation, *rotation)))
+                for channel, value in mirrored_values.items():
                     incoming = self._snapshots[target][1][channel]
-                    if incoming:
+                    if incoming and not self._is_direct_anim_curve(cmds, incoming):
                         raise MirrorActionError(
-                            f"mirror target has an incoming writer: {target}.{channel}"
+                            f"mirror target has an unsupported writer: {target}.{channel}"
                         )
-                    self._set_channel(cmds, f"{target}.{channel}", source_values[channel] * _MIRROR_SIGN[channel], self._snapshots[target][2][channel])
+                    if incoming and not opened:
+                        raise MirrorActionError(
+                            "Mirror Pose requires Maya Undo for keyed targets"
+                        )
+                    self._write_channel(
+                        cmds,
+                        f"{target}.{channel}",
+                        value,
+                        self._snapshots[target][2][channel],
+                        writer=incoming[0] if incoming else None,
+                    )
             return len(self.mappings)
         except Exception as exc:
             try:
-                self._restore(cmds)
+                if opened:
+                    self._close_undo(opened)
+                    opened = False
+                    cmds.undo()
+                    self._restore(cmds)
+                else:
+                    self._restore(cmds)
             except Exception as rollback_error:
                 raise MirrorActionError(
                     f"Mirror Pose failed and rollback was incomplete: {rollback_error}"
@@ -308,6 +327,43 @@ class MirrorPoseTransaction:
             if locked:
                 cmds.setAttr(plug, lock=True)
 
+    @classmethod
+    def _write_channel(
+        cls,
+        cmds,
+        plug: str,
+        value: float,
+        locked: bool,
+        *,
+        writer: str | None,
+    ) -> None:
+        if not writer:
+            cls._set_channel(cmds, plug, value, locked)
+            return
+        if locked:
+            cmds.setAttr(plug, lock=False)
+        try:
+            curve = writer.rsplit(".", 1)[0]
+            current_time = float(cmds.currentTime(query=True))
+            cmds.setKeyframe(
+                curve,
+                time=(current_time, current_time),
+                value=float(value),
+            )
+        finally:
+            if locked:
+                cmds.setAttr(plug, lock=True)
+
+    @staticmethod
+    def _is_direct_anim_curve(cmds, incoming: tuple[str, ...]) -> bool:
+        if len(incoming) != 1:
+            return False
+        try:
+            node = incoming[0].rsplit(".", 1)[0]
+            return str(cmds.nodeType(node)).startswith("animCurve")
+        except Exception:
+            return False
+
     def _apply_headless(self) -> int:
         snapshots = {}
         try:
@@ -321,14 +377,16 @@ class MirrorPoseTransaction:
             for mapping in self.mappings:
                 translation, rotation = snapshots[mapping.source.node]
                 target = mapping.target.node
+                mirrored_translation, mirrored_rotation = mirrored_transform_values(
+                    translation,
+                    rotation,
+                    source_basis=mapping.source.authoring_basis,
+                    target_basis=mapping.target.authoring_basis,
+                )
                 self.adapter.xform(
                     target,
-                    translation=(
-                        -translation[0],
-                        translation[1],
-                        translation[2],
-                    ),
-                    rotation=(rotation[0], -rotation[1], -rotation[2]),
+                    translation=mirrored_translation,
+                    rotation=mirrored_rotation,
                 )
             return len(self.mappings)
         except Exception as exc:
@@ -377,3 +435,33 @@ class MirrorPoseTransaction:
                 self.adapter.undo_info(closeChunk=True)
             except Exception:
                 pass
+
+
+def _quaternion_from_euler_degrees(values) -> tuple[float, float, float, float]:
+    """Convert Maya XYZ Euler degrees to an xyzw quaternion."""
+
+    x, y, z = (math.radians(float(value)) * 0.5 for value in values)
+    cx, sx = math.cos(x), math.sin(x)
+    cy, sy = math.cos(y), math.sin(y)
+    cz, sz = math.cos(z), math.sin(z)
+    return (
+        sx * cy * cz - cx * sy * sz,
+        cx * sy * cz + sx * cy * sz,
+        cx * cy * sz - sx * sy * cz,
+        cx * cy * cz + sx * sy * sz,
+    )
+
+
+def _euler_degrees_from_quaternion(quaternion) -> tuple[float, float, float]:
+    """Convert an xyzw quaternion to Maya XYZ Euler degrees."""
+
+    x, y, z, w = (float(value) for value in quaternion)
+    sinr = 2.0 * (w * x + y * z)
+    cosr = 1.0 - 2.0 * (x * x + y * y)
+    roll = math.atan2(sinr, cosr)
+    sinp = 2.0 * (w * y - z * x)
+    pitch = math.copysign(math.pi / 2.0, sinp) if abs(sinp) >= 1.0 else math.asin(sinp)
+    siny = 2.0 * (w * z + x * y)
+    cosy = 1.0 - 2.0 * (y * y + z * z)
+    yaw = math.atan2(siny, cosy)
+    return tuple(math.degrees(value) for value in (roll, pitch, yaw))
