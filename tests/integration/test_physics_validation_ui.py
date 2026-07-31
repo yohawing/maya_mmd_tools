@@ -167,6 +167,22 @@ class TestPhysicsPresenterNamespace(MayaTestBase):
             cmds.setAttr(f"{shape}.nameJp", f"ジョイント{index}", type="string")
         return root
 
+    @staticmethod
+    def _enable_with_solved_stub(presenter):
+        """Exercise a successful UI toggle without requiring a full PMX rig."""
+        original_get_attr = cmds.getAttr
+
+        def get_attr(attribute, *args, **kwargs):
+            if attribute.endswith(".outSolved"):
+                return True
+            return original_get_attr(attribute, *args, **kwargs)
+
+        with patch(
+            "mmd_tools.ui.presenters.physics_presenter.cmds.getAttr",
+            side_effect=get_attr,
+        ):
+            presenter._on_physics_enable_changed(True)
+
     def test_namespaced_refresh_and_model_switch_remain_root_scoped(self):
         root_a = self._create_namespaced_model("Base", rigid_count=1, joint_count=2)
         root_b = self._create_namespaced_model("Nested:Other", rigid_count=3, joint_count=1)
@@ -243,17 +259,11 @@ class TestPhysicsPresenterNamespace(MayaTestBase):
         self.assertTrue(view.physics_enable_check.enabled)
         self.assertFalse(view.physics_enable_check.checked)
 
-        # These nodes only exercise the presenter-level world/undo scope; they
-        # intentionally do not contain indexed MMD bones for native pre-roll.
-        # Keep that runtime contract covered separately while stubbing it here.
-        with patch(
-            "mmd_tools.ui.presenters.physics_presenter.run_physics_preroll"
-        ) as preroll:
-            preroll.side_effect = lambda world, _solvers: cmds.setAttr(
-                f"{world}.enable", True
-            )
-            presenter._on_physics_enable_changed(True)
-        preroll.assert_called_once()
+        presenter._on_physics_enable_changed(True)
+        self.assertFalse(cmds.getAttr(f"{world_a}.enable"))
+        self.assertFalse(view.physics_enable_check.checked)
+
+        self._enable_with_solved_stub(presenter)
         self.assertTrue(cmds.getAttr(f"{world_a}.enable"))
         self.assertFalse(cmds.getAttr(f"{world_b}.enable"))
         self.assertTrue(view.physics_enable_check.checked)
@@ -268,14 +278,7 @@ class TestPhysicsPresenterNamespace(MayaTestBase):
         presenter.refresh_physics(force=True)
         self.assertTrue(view.physics_enable_check.enabled)
         self.assertFalse(view.physics_enable_check.checked)
-        with patch(
-            "mmd_tools.ui.presenters.physics_presenter.run_physics_preroll"
-        ) as preroll:
-            preroll.side_effect = lambda world, _solvers: cmds.setAttr(
-                f"{world}.enable", True
-            )
-            presenter._on_physics_enable_changed(True)
-        preroll.assert_called_once()
+        self._enable_with_solved_stub(presenter)
         self.assertTrue(cmds.getAttr(f"{world_a}.enable"))
         self.assertTrue(cmds.getAttr(f"{world_b}.enable"))
         app_state.current_model_root = root_a
@@ -360,14 +363,7 @@ class TestPhysicsPresenterNamespace(MayaTestBase):
                 original_source,
             )
 
-        with patch(
-            "mmd_tools.ui.presenters.physics_presenter.run_physics_preroll"
-        ) as preroll:
-            preroll.side_effect = lambda world, _solvers: cmds.setAttr(
-                f"{world}.enable", True
-            )
-            presenter._on_physics_enable_changed(True)
-        preroll.assert_called_once()
+        self._enable_with_solved_stub(presenter)
         self.assertTrue(cmds.getAttr(f"{world}.enable"))
         self.assertEqual(
             cmds.connectionInfo(
