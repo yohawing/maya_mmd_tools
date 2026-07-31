@@ -12,6 +12,7 @@ from mmd_tools.core.constants import (
 )
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.core.settings import settings
+from mmd_tools.core.namespace_utils import NamespaceUtils
 from mmd_tools.io.pmx_importer import import_pmx_file
 from tests.common.test_fixture_provider import TestFixtureProvider
 
@@ -216,6 +217,59 @@ class TestRigConverterMaya(unittest.TestCase):
             cmds.listConnections(f"{link}.rotate", source=True, destination=False, plugs=True),
             [f"{ik_node}.outputRotate[0]"],
         )
+
+    def test_native_rig_nodes_do_not_double_current_namespace(self):
+        """現行namespace内のqualified jointからDG nodeを一重namespaceで作る。"""
+        namespace = "Sangonomiya_Kokomi"
+        with NamespaceUtils.namespace_context(namespace):
+            cmds.select(clear=True)
+            root = cmds.joint(name="root", position=[0.0, 0.0, 0.0])
+            cmds.select(root)
+            source = cmds.joint(name="source", position=[0.0, 1.0, 0.0])
+            cmds.select(source)
+            link = cmds.joint(name="link", position=[1.0, 1.0, 0.0])
+            cmds.select(link)
+            target = cmds.joint(name="target", position=[2.0, 1.0, 0.0])
+            cmds.select(root)
+            controller = cmds.joint(name="controller", position=[2.0, 2.0, 0.0])
+            maya_joints = [root, source, link, target, controller]
+            manifest = RigManifest({
+                "boneCount": 5,
+                "bones": [
+                    {"parentIndex": -1, "restPosition": [0.0, 0.0, 0.0]},
+                    {"parentIndex": 0, "restPosition": [0.0, 1.0, 0.0]},
+                    {"parentIndex": 1, "restPosition": [1.0, 1.0, 0.0]},
+                    {"parentIndex": 2, "restPosition": [2.0, 1.0, 0.0]},
+                    {"parentIndex": 0, "restPosition": [2.0, 2.0, 0.0]},
+                ],
+                "grants": [{
+                    "targetBoneIndex": 2,
+                    "sourceBoneIndex": 1,
+                    "ratio": 0.5,
+                    "affectRotation": True,
+                    "affectTranslation": False,
+                    "local": False,
+                }],
+                "ikChains": [{
+                    "controllerBoneIndex": 4,
+                    "targetBoneIndex": 3,
+                    "links": [{"boneIndex": 2}],
+                    "iterationCount": 4,
+                    "limitAngle": 1.0,
+                }],
+            })
+
+            accepted_grants = self.converter._accepted_native_grants(manifest, maya_joints)
+            append_nodes = self.converter._create_append_nodes_from_manifest(
+                manifest, maya_joints, accepted_grants=accepted_grants
+            )
+            ik_nodes = self.converter._create_ik_nodes_from_manifest(
+                manifest, maya_joints, accepted_grants=accepted_grants
+            )
+
+            self.assertEqual(append_nodes, [f"{namespace}:link_mmdAppend"])
+            self.assertEqual(ik_nodes, [f"{namespace}:controller_mmdCcdIk"])
+            self.assertTrue(all(f"{namespace}:{namespace}:" not in node for node in append_nodes + ik_nodes))
 
     def test_extract_ik_chains_pmx(self):
         """PMXボーンからのIKチェーン抽出テスト"""

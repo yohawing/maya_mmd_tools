@@ -78,7 +78,6 @@ class FingerPickerWidget(SvgPickerWidget):
 
     region_clicked = Signal(str)
     regions_selected = Signal(object)
-    mirror_selection_clicked = Signal()
     goto_body_clicked = Signal()
 
     def __init__(self, parent=None):

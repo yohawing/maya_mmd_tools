@@ -423,7 +423,12 @@ def build_physics_live_graph(
 
         if physics_mode not in (1, 2) or bone_index in driven_bones:
             continue
-        if bone_index < 0 or bone_index >= len(maya_joints or []):
+        if bone_index == -1:
+            # PMX explicitly allows dynamic rigid bodies without a related
+            # bone.  They participate in the physics world but have no Maya
+            # joint to drive, so skipping the driver is expected and silent.
+            continue
+        if bone_index < -1 or bone_index >= len(maya_joints or []):
             log.warning(
                 "Skipping physics driver for rigid body %d: invalid related bone index %d",
                 rb_index,

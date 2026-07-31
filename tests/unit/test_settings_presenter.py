@@ -144,6 +144,7 @@ class _FakeView:
         self.log_file_path_edit = _FakeLineEdit("logs/mmd_tools.log")
         self.language_combo = _FakeComboBox(["Japanese", "English"], 0)
         self.command_port_spin = _FakeSpinBox()
+        self.file_history_limit_spin = _FakeSpinBox(20)
         self.dev_tools_group = _FakeGroup()
         self.save_settings_btn = _FakeButton()
         self.reset_settings_btn = _FakeButton()
@@ -160,9 +161,13 @@ class _FakeView:
 class _FakeImportExportTab:
     def __init__(self):
         self.apply_dev_mode_visibility_calls = 0
+        self.refresh_history_calls = 0
 
     def _apply_dev_mode_visibility(self):
         self.apply_dev_mode_visibility_calls += 1
+
+    def refresh_unified_history(self):
+        self.refresh_history_calls += 1
 
 
 class _FakeAppState:
@@ -347,6 +352,14 @@ class TestLoadSettings(unittest.TestCase):
             defaults = json.load(f)
         self.assertEqual(defaults["ui"]["dev"]["command_port"], 3939)
 
+    def test_file_history_limit_defaults_to_twenty(self):
+        from mmd_tools.core.settings import settings
+
+        settings.set("ui.general.file_history_limit", 20)
+        self.presenter.load_settings()
+
+        self.assertEqual(self.view.file_history_limit_spin.value(), 20)
+
     def test_dev_tools_visibility_follows_development_mode(self):
         """開発ツールは Development Mode に従って表示する。"""
         from mmd_tools.core.settings import settings
@@ -407,6 +420,15 @@ class TestSaveSettings(unittest.TestCase):
         self.presenter.save_all_settings()
 
         self.assertEqual(settings.get("ui.dev.command_port"), 7788)
+
+    def test_save_persists_history_limit_and_refreshes_list(self):
+        from mmd_tools.core.settings import settings
+
+        self.view.file_history_limit_spin.setValue(75)
+        self.presenter.save_all_settings()
+
+        self.assertEqual(settings.get("ui.general.file_history_limit"), 75)
+        self.assertEqual(self.view.import_export_tab.refresh_history_calls, 1)
 
 
 class TestCommandPortAction(unittest.TestCase):

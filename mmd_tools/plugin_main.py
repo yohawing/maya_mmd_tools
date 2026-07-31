@@ -24,6 +24,7 @@ from mmd_tools.nodes import mmd_physics_world_shape
 
 _main_window = None
 _animator_toolset_window = None
+_control_rig_manager_window = None
 # Track each rig node that this Python plug-in actually registered. The C++
 # plug-in can remain loaded after skipping duplicate Python-owned types, so its
 # loaded state alone does not prove that it currently owns either node type.
@@ -160,6 +161,35 @@ def close_animator_toolset():
         pass
 
 
+def close_control_rig_manager():
+    """Close the process-wide modeless Control Rig Manager."""
+    global _control_rig_manager_window
+    try:
+        from mmd_tools.ui.control_rig_manager import ControlRigManagerWindow
+
+        ControlRigManagerWindow.close_manager()
+    except Exception:
+        pass
+    _control_rig_manager_window = None
+
+
+def open_control_rig_manager(*, app_state=None):
+    """Open or raise the single modeless Control Rig Manager instance."""
+    global _control_rig_manager_window
+    try:
+        from mmd_tools.ui.control_rig_manager import open_control_rig_manager as _open
+
+        _control_rig_manager_window = _open(
+            app_state=app_state,
+        )
+        return _control_rig_manager_window
+    except Exception as exc:
+        message = f"Control Rig Manager failed to open: {exc}"
+        om.MGlobal.displayError(message)
+        om.MGlobal.displayError(traceback.format_exc())
+        raise
+
+
 def open_animator_toolset(dockable=True):
     """Open the standalone Animator Toolset window."""
     global _animator_toolset_window
@@ -244,7 +274,16 @@ def install_mmd_menu():
     else:
         cmds.menu("MMD", edit=True, label="MMD")
 
-    _LABELS = ("MMD Tools", "MMD Editor", "Repair Texture Paths", "Animator Toolset")
+    _LABELS = (
+        "MMD Tools",
+        "MMD Editor",
+        "Repair Texture Paths",
+        "Animator Toolset",
+        "コントロールリグを管理",
+        "Manage Control Rig",
+        "管理控制绑定",
+        "管理控制綁定",
+    )
     for item in cmds.menu("MMD", query=True, itemArray=True) or []:
         if cmds.menuItem(item, query=True, label=True) in _LABELS:
             cmds.deleteUI(item)
@@ -266,6 +305,12 @@ def install_mmd_menu():
         "MMDAnimatorToolsetMenuItem",
         label="Animator Toolset",
         command=lambda *args: open_animator_toolset(dockable=True),
+        parent="MMD",
+    )
+    cmds.menuItem(
+        "MMDControlRigManagerMenuItem",
+        label="Manage Control Rig",
+        command=lambda *args: open_control_rig_manager(),
         parent="MMD",
     )
 
@@ -349,6 +394,7 @@ def _soft_sync_existing_glsl_diffuse_contracts():
 def _after_scene_open(*_args):
     """Run strict existing-scene migration after Maya opens a scene."""
     _reset_humanik_session_after_scene_change()
+    _refresh_animator_toolset_after_scene_change()
     try:
         _soft_sync_existing_glsl_diffuse_contracts()
     except Exception:
@@ -359,6 +405,7 @@ def _after_scene_open(*_args):
 def _after_scene_new(*_args):
     """Drop process-owned HumanIK state after Maya creates a new scene."""
     _reset_humanik_session_after_scene_change()
+    _refresh_animator_toolset_after_scene_change()
     _soft_sync_dx11_device_pixel_ratio(force=True)
 
 
@@ -415,6 +462,33 @@ def _reset_humanik_session_after_scene_change():
 
         humanik_window.refresh_humanik_window_for_scene_change()
     except Exception:
+        pass
+
+
+def _refresh_animator_toolset_after_scene_change():
+    """Refresh the public Animator Toolset after a scene replacement.
+
+    Control Rig ownership is persisted on the model root, not in this
+    process.  The window therefore only drops stale model/cache references and
+    re-reads the new scene; it never restores or deletes user animation during
+    a normal window/scene lifecycle callback.
+    """
+
+    window = _animator_toolset_window
+    if window is None:
+        return
+    try:
+        refresh = getattr(window, "refresh_for_scene_change", None)
+        if callable(refresh):
+            refresh()
+        else:
+            presenter = getattr(window, "animation_presenter", None)
+            refresh = getattr(presenter, "refresh_for_scene_change", None)
+            if callable(refresh):
+                refresh()
+    except Exception:
+        # A stale Qt wrapper must never make Maya's scene-open/new callback
+        # fail; the next explicit Refresh can rebuild the panel.
         pass
 
 
@@ -579,6 +653,7 @@ def uninitializePlugin(mobject):
         _deregister_humanik_control_rig_watch()
         _remove_active_view_callback()
         _remove_after_open_callback()
+        close_control_rig_manager()
         close_animator_toolset()
         close_main_window()
         uninstall_mmd_menu()

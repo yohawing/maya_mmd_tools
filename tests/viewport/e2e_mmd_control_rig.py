@@ -11,6 +11,7 @@ Usage::
 
     python tests/viewport/e2e_mmd_control_rig.py --maya 2024
     python tests/viewport/e2e_mmd_control_rig.py --maya 2026 --port 7734
+    python tests/viewport/e2e_mmd_control_rig.py --maya 2024 --create-on-import
 """
 
 from __future__ import annotations
@@ -22,7 +23,6 @@ import logging
 import math
 import os
 import sys
-import time
 import traceback
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -31,16 +31,17 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from tests.common import maya_commandport
+from tests.viewport.maya_e2e_harness import run_maya_e2e
 
 COMMAND_PORT = 7734
 COMPLETION_MARKER = "//-- MMD_CONTROL_RIG_E2E_DONE --//"
 TEST_TIMEOUT = 600
-LOG_POLL_INTERVAL = 0.5
 MOVE_OFFSET_X = 0.35
 MOVE_EPSILON = 1.0e-5
 ROUNDTRIP_MATRIX_EPSILON = 5.0e-3
 ROUNDTRIP_FRAMES = tuple(range(0, 6))
+EVALUATION_MODE_CHOICES = ("default", "dg", "serial", "parallel")
+_EVALUATION_MODE_TO_MAYA = {"dg": "off", "serial": "serial", "parallel": "parallel"}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -99,6 +100,30 @@ def _cycle_state(label: str, cmds) -> dict[str, Any]:
     evaluation_on = bool(cmds.cycleCheck(query=True, evaluation=True))
     plugs = sorted(str(item) for item in (cmds.cycleCheck(all=True, list=True) or []))
     return {"label": label, "evaluationOn": evaluation_on, "cyclePlugs": plugs}
+
+
+def _evaluation_mode_snapshot(requested: str, cmds) -> dict[str, str]:
+    """Apply and report the requested Maya evaluation mode.
+
+    Maya exposes DG evaluation as ``off``; the report keeps the user-facing
+    ``dg`` spelling while retaining the raw Maya mode for diagnostics.
+    ``default`` intentionally leaves the current Maya mode untouched.
+    """
+
+    requested = str(requested or "default").lower()
+    if requested not in EVALUATION_MODE_CHOICES:
+        raise ValueError(f"unsupported evaluation mode: {requested}")
+    target = _EVALUATION_MODE_TO_MAYA.get(requested)
+    if target is not None:
+        cmds.evaluationManager(mode=target)
+    raw = cmds.evaluationManager(query=True, mode=True) or []
+    maya_mode = str(raw[0]) if raw else "unknown"
+    active = {"off": "dg"}.get(maya_mode, maya_mode)
+    if target is not None and maya_mode != target:
+        raise RuntimeError(
+            f"requested evaluation mode {requested!r}, Maya reported {maya_mode!r}"
+        )
+    return {"requested": requested, "active": active, "mayaMode": maya_mode}
 
 
 def _joint_worlds(cmds, frames: Iterable[int]) -> dict[str, dict[str, list[float]]]:
@@ -387,6 +412,58 @@ def _control_worlds(controls: Mapping[str, str], cmds) -> dict[str, list[float]]
     }
 
 
+def _dag_descendant_roles(
+    controls: Mapping[str, str], ancestor_role: str, cmds
+) -> set[str]:
+    """Return controls that are DAG descendants of ``ancestor_role``.
+
+    Control zero groups are intentionally nested below their nearest parent
+    control.  Moving a parent therefore changes each child control's world
+    matrix even though no child channel was authored.  Resolve long DAG paths
+    before comparing them so namespace and nested-group changes do not turn
+    expected inherited motion into an unrelated-control failure.
+    """
+
+    ancestor = controls.get(ancestor_role)
+    if not ancestor:
+        return set()
+    try:
+        ancestor_paths = cmds.ls(str(ancestor), long=True) or [str(ancestor)]
+    except RuntimeError:
+        ancestor_paths = [str(ancestor)]
+
+    descendants: set[str] = set()
+    for ancestor_path in ancestor_paths:
+        try:
+            descendants.update(
+                str(node)
+                for node in (
+                    cmds.listRelatives(
+                        str(ancestor_path),
+                        allDescendents=True,
+                        fullPath=True,
+                    )
+                    or []
+                )
+            )
+        except RuntimeError:
+            continue
+    if not descendants:
+        return set()
+
+    result: set[str] = set()
+    for role, node in controls.items():
+        if str(role) == str(ancestor_role):
+            continue
+        try:
+            node_paths = cmds.ls(str(node), long=True) or [str(node)]
+        except RuntimeError:
+            node_paths = [str(node)]
+        if descendants.intersection(str(path) for path in node_paths):
+            result.add(str(role))
+    return result
+
+
 def _find_rig_root(cmds) -> str:
     from mmd_tools.core.constants import ATTR_MMD_CONTROL_RIG_JSON
 
@@ -394,6 +471,124 @@ def _find_rig_root(cmds) -> str:
     if len(roots) != 1:
         raise RuntimeError(f"expected one MMD control-rig metadata root, found {roots}")
     return str(roots[0])
+
+
+def _animation_layer_diagnostics(cmds) -> dict[str, Any]:
+    """Capture animation-layer and blend ownership relevant to VMD import."""
+
+    rows = []
+    for layer in cmds.ls(type="animLayer") or []:
+        layer_name = str(layer)
+        try:
+            attributes = [
+                str(value)
+                for value in (cmds.animLayer(layer, query=True, attribute=True) or [])
+            ]
+        except RuntimeError:
+            attributes = []
+        try:
+            blend_nodes = [
+                str(value)
+                for value in (
+                    cmds.listConnections(
+                        layer,
+                        source=False,
+                        destination=True,
+                        type="animBlendNodeBase",
+                    )
+                    or []
+                )
+            ]
+        except RuntimeError:
+            blend_nodes = []
+        rows.append(
+            {
+                "name": layer_name,
+                "attributes": sorted(set(attributes)),
+                "animBlendNodes": sorted(set(blend_nodes)),
+                "base": layer_name in {"BaseAnimation", "baseAnimation"},
+            }
+        )
+    vmd_rows = [row for row in rows if row["name"] == "VMD_Motion"]
+    populated_non_base = [
+        row
+        for row in rows
+        if not row["base"] and (row["attributes"] or row["animBlendNodes"])
+    ]
+    return {
+        "layers": sorted(rows, key=lambda row: row["name"]),
+        "vmdMotion": vmd_rows,
+        "populatedNonBase": populated_non_base,
+        "vmdMotionOwnershipPass": not any(
+            row["attributes"] or row["animBlendNodes"] for row in vmd_rows
+        ),
+        "singleWriterPass": not populated_non_base,
+    }
+
+
+def _vmd_role_diagnostics(vmd_data) -> dict[str, dict[str, Any]]:
+    """Classify VMD bone roles by authored non-identity payload."""
+
+    rows: dict[str, dict[str, Any]] = {}
+    for frame in getattr(vmd_data, "bone_frames", []) or []:
+        name = str(frame.bone_name)
+        position = [float(value) for value in frame.position]
+        rotation = [float(value) for value in frame.rotation]
+        non_identity_position = any(abs(value) > MOVE_EPSILON for value in position)
+        non_identity_rotation = (
+            len(rotation) >= 4
+            and (
+                any(abs(value) > MOVE_EPSILON for value in rotation[:3])
+                or abs(rotation[3] - 1.0) > MOVE_EPSILON
+            )
+        )
+        row = rows.setdefault(
+            name,
+            {
+                "frameCount": 0,
+                "nonRestFrameCount": 0,
+                "hasNonIdentityPosition": False,
+                "hasNonIdentityRotation": False,
+                "frames": [],
+            },
+        )
+        row["frameCount"] += 1
+        row["hasNonIdentityPosition"] |= non_identity_position
+        row["hasNonIdentityRotation"] |= non_identity_rotation
+        if non_identity_position or non_identity_rotation:
+            row["nonRestFrameCount"] += 1
+        row["frames"].append(int(frame.frame_number))
+    for row in rows.values():
+        row["frames"] = sorted(set(row["frames"]))
+        row["identityOnly"] = row["nonRestFrameCount"] == 0
+    return dict(sorted(rows.items()))
+
+
+def _record_control_rig_diagnostics(
+    report: dict[str, Any],
+    profile: Mapping[str, Any],
+    vmd_roles: Mapping[str, Mapping[str, Any]],
+) -> None:
+    """Persist converter diagnostics with VMD role payload classification."""
+
+    diagnostics = dict(profile.get("mmd_control_rig") or {})
+    rows = []
+    for diagnostic in diagnostics.get("diagnostics", []) or []:
+        detail = diagnostic.get("detail", []) if isinstance(diagnostic, Mapping) else []
+        if not isinstance(detail, list):
+            continue
+        for role in detail:
+            rows.append(
+                {
+                    "role": str(role),
+                    **dict(vmd_roles.get(str(role), {})),
+                }
+            )
+    diagnostics["unsupportedRoleClassification"] = rows
+    converter_profile = profile.get("vmd_converter")
+    if isinstance(converter_profile, Mapping):
+        diagnostics["vmdConverter"] = dict(converter_profile)
+    report["createOnImport"]["diagnostics"] = diagnostics
 
 
 def _write_maya_report(report_path: Path, report: Mapping[str, Any]) -> None:
@@ -414,8 +609,16 @@ def run_e2e_check(
     report_path: str,
     scene_path: str,
     exported_vmd_path: str,
+    evaluation_mode: str = "default",
+    create_on_import: bool = False,
 ) -> None:
-    """Execute the complete control-rig workflow in a live Maya GUI."""
+    """Execute the complete control-rig workflow in a live Maya GUI.
+
+    ``create_on_import`` is opt-in so the default invocation continues to
+    exercise the legacy PMX import -> VMD import -> explicit rig-build route.
+    When enabled, VMD import itself owns the transactional Control Rig create
+    or reuse and direct controller keying path.
+    """
 
     import maya.cmds as cmds
 
@@ -434,8 +637,30 @@ def run_e2e_check(
         },
         "status": "error",
         "mayaVersion": None,
+        "evaluationMode": {
+            "requested": str(evaluation_mode or "default"),
+            "active": None,
+            "mayaMode": None,
+        },
         "model": str(model_path),
         "motion": str(motion_path),
+        "createOnImport": {
+            "requested": bool(create_on_import),
+            "options": {
+                "create_mmd_control_rig": bool(create_on_import),
+                "bake_mode": False,
+                "clear_existing_motion": bool(create_on_import),
+            },
+            "route": "vmd_import_control_rig"
+            if create_on_import
+            else "explicit_control_rig_build",
+            "owner": None,
+            "state": None,
+            "rig": {},
+            "diagnostics": {},
+            "clearExistingMotion": {},
+            "animationLayers": {},
+        },
         "states": {},
         "roles": [],
         "vmdApplicability": {},
@@ -480,9 +705,37 @@ def run_e2e_check(
             cmds.loadPlugin(str(plugin_path), quiet=True)
             _log(f"loaded plugin: {plugin_path}")
 
+        if create_on_import:
+            # Preserve Maya's script-editor diagnostics alongside the JSON
+            # report so a fail-closed import exception retains its exact Maya
+            # API or route error alongside the structured summary.
+            history_path = log_file.with_suffix(".maya_history.log")
+            try:
+                cmds.scriptEditorInfo(
+                    historyFilename=str(history_path),
+                    writeHistory=True,
+                    suppressInfo=False,
+                    suppressWarnings=False,
+                    suppressErrors=False,
+                )
+                report["createOnImport"]["mayaScriptEditorHistory"] = str(history_path)
+            except Exception:
+                report["createOnImport"]["mayaScriptEditorHistory"] = None
+
+        report["evaluationMode"] = _evaluation_mode_snapshot(evaluation_mode, cmds)
+        _log(
+            "evaluation mode: requested=%s active=%s maya=%s"
+            % (
+                report["evaluationMode"]["requested"],
+                report["evaluationMode"]["active"],
+                report["evaluationMode"]["mayaMode"],
+            )
+        )
+
         from mmd_tools.core.mmd_control_rig_builder import (
             CONTROL_RIG_ATTACHED,
             CONTROL_RIG_BAKED,
+            CONTROL_RIG_CONTROL_OWNED,
             CONTROL_RIG_EDIT,
             build_mmd_control_rig,
             read_mmd_control_rig_metadata,
@@ -500,6 +753,9 @@ def run_e2e_check(
         report["vmdApplicability"]["boneFrameCount"] = len(source_vmd.bone_frames)
         if not source_vmd.bone_frames:
             raise RuntimeError("fixture VMD contains no bone frames")
+        vmd_role_diagnostics = _vmd_role_diagnostics(source_vmd)
+        if create_on_import:
+            report["createOnImport"]["vmdRoles"] = vmd_role_diagnostics
 
         cmds.file(new=True, force=True)
         root = import_mmd_file(
@@ -515,13 +771,98 @@ def run_e2e_check(
         root = str(root)
         _log(f"imported PMX root: {root}")
 
-        imported_motion = import_mmd_file(
-            str(motion_path),
-            options={"target_model": root, "pmx_path": str(model_path)},
-        )
+        # Seed one target joint with an out-of-band key only for the opt-in
+        # route.  The VMD import's clear_existing_motion=True contract must
+        # remove it before authored Control Rig keys are created.
+        clear_seed: dict[str, Any] = {}
+        if create_on_import:
+            seed_joint = None
+            for candidate in sorted(
+                source_vmd.bone_frames,
+                key=lambda item: (int(item.frame_number), str(item.bone_name)),
+            ):
+                seed_joint = _find_joint_for_mmd_name(candidate.bone_name, cmds)
+                if seed_joint:
+                    break
+            if not seed_joint:
+                raise RuntimeError(
+                    "fixture VMD has no PMX joint available for clear-existing-motion seed"
+                )
+            seed_frame = 999
+            seed_attr = "rotateX"
+            cmds.setKeyframe(seed_joint, attribute=seed_attr, time=seed_frame, value=17.0)
+            clear_seed = {
+                "node": seed_joint,
+                "attribute": seed_attr,
+                "frame": seed_frame,
+                "seeded": True,
+            }
+
+        vmd_profile: dict[str, Any] = {}
+        vmd_options = {"target_model": root, "pmx_path": str(model_path)}
+        if create_on_import:
+            vmd_options.update(
+                {
+                    "create_mmd_control_rig": True,
+                    "bake_mode": False,
+                    "clear_existing_motion": True,
+                    "profile": vmd_profile,
+                }
+            )
+        try:
+            imported_motion = import_mmd_file(
+                str(motion_path),
+                options=vmd_options,
+            )
+        except Exception:
+            if create_on_import:
+                _record_control_rig_diagnostics(
+                    report,
+                    vmd_profile,
+                    vmd_role_diagnostics,
+                )
+                report["createOnImport"]["animationLayers"] = (
+                    _animation_layer_diagnostics(cmds)
+                )
+            raise
         if not imported_motion:
+            if create_on_import:
+                _record_control_rig_diagnostics(
+                    report,
+                    vmd_profile,
+                    vmd_role_diagnostics,
+                )
+                report["createOnImport"]["animationLayers"] = (
+                    _animation_layer_diagnostics(cmds)
+                )
             raise RuntimeError(f"VMD import returned no result: {motion_path}")
         _log(f"imported VMD: {motion_path}")
+
+        if create_on_import:
+            remaining_seed_frames = [
+                int(value)
+                for value in (
+                    cmds.keyframe(
+                        clear_seed["node"],
+                        attribute=clear_seed["attribute"],
+                        query=True,
+                        timeChange=True,
+                    )
+                    or []
+                )
+            ]
+            clear_seed["remainingFrames"] = remaining_seed_frames
+            clear_seed["pass"] = clear_seed["frame"] not in remaining_seed_frames
+            report["createOnImport"]["clearExistingMotion"] = clear_seed
+            if not clear_seed["pass"]:
+                raise RuntimeError(
+                    "clear_existing_motion=True left the seeded target-joint key"
+                )
+            _record_control_rig_diagnostics(
+                report,
+                vmd_profile,
+                vmd_role_diagnostics,
+            )
 
         sample = None
         sample_joint = None
@@ -571,10 +912,53 @@ def run_e2e_check(
         baseline_cycle = _cycle_state("after_vmd_import", cmds)
         report["cycles"].append(baseline_cycle)
 
+        metadata_before_build = read_mmd_control_rig_metadata(root)
         rig = build_mmd_control_rig(root)
         report["states"]["afterBuild"] = rig.state
         report["roles"] = sorted(str(role) for role in rig.controls)
-        if rig.state != CONTROL_RIG_ATTACHED:
+        if create_on_import:
+            metadata = read_mmd_control_rig_metadata(root)
+            if not metadata:
+                raise RuntimeError("VMD create-on-import did not persist control-rig metadata")
+            report["createOnImport"].update(
+                {
+                    "owner": metadata.get("owner"),
+                    "state": metadata.get("state"),
+                    "rig": {
+                        "metadataPresentBeforeImport": metadata_before_build is not None,
+                        "createdByImport": metadata_before_build is None,
+                        "reusedLookup": not bool(rig.created),
+                        "buildResultCreated": bool(rig.created),
+                        "controlCount": len(rig.controls),
+                    },
+                }
+            )
+            if metadata.get("owner") != CONTROL_RIG_CONTROL_OWNED:
+                raise RuntimeError(
+                    "create-on-import did not make Control Rig the motion owner: "
+                    f"{metadata.get('owner')}"
+                )
+            if metadata.get("state") != CONTROL_RIG_EDIT:
+                raise RuntimeError(
+                    "create-on-import did not enter EDIT state: "
+                    f"{metadata.get('state')}"
+                )
+            if rig.owner != CONTROL_RIG_CONTROL_OWNED or rig.state != CONTROL_RIG_EDIT:
+                raise RuntimeError(
+                    "build lookup disagrees with create-on-import ownership/state: "
+                    f"owner={rig.owner} state={rig.state}"
+                )
+            animation_layers = _animation_layer_diagnostics(cmds)
+            report["createOnImport"]["animationLayers"] = animation_layers
+            if not animation_layers["vmdMotionOwnershipPass"]:
+                raise RuntimeError(
+                    "create-on-import created VMD_Motion animLayer/animBlend ownership"
+                )
+            if not animation_layers["singleWriterPass"]:
+                raise RuntimeError(
+                    "create-on-import left populated non-base animation-layer ownership"
+                )
+        elif rig.state != CONTROL_RIG_ATTACHED:
             raise RuntimeError(f"build did not produce ATTACHED state: {rig.state}")
         if "left_foot_ik" not in rig.controls:
             raise RuntimeError("fixture has no left_foot_ik control")
@@ -583,11 +967,16 @@ def run_e2e_check(
         metadata = read_mmd_control_rig_metadata(root)
         if not metadata:
             raise RuntimeError("control-rig metadata missing after build")
+        if create_on_import:
+            report["createOnImport"]["owner"] = metadata.get("owner")
+            report["createOnImport"]["state"] = metadata.get("state")
         solver, effector = _resolve_foot_solver(root, metadata, cmds)
         control = str(rig.controls["left_foot_ik"])
         _log(f"left foot control={control}, solver={solver}, effector={effector}")
 
-        edit_metadata = enter_mmd_control_rig_edit(root)
+        edit_metadata = (
+            metadata if create_on_import else enter_mmd_control_rig_edit(root)
+        )
         report["states"]["afterEdit"] = edit_metadata.get("state")
         if edit_metadata.get("state") != CONTROL_RIG_EDIT:
             raise RuntimeError(f"EDIT transition failed: {edit_metadata.get('state')}")
@@ -627,10 +1016,16 @@ def run_e2e_check(
             role: _distance(before_controls.get(role, []), after_controls.get(role, []))
             for role in sorted(set(before_controls) | set(after_controls))
         }
+        descendant_roles = _dag_descendant_roles(rig.controls, "left_foot_ik", cmds)
+        descendant_control_deltas = {
+            role: delta
+            for role, delta in control_deltas.items()
+            if role in descendant_roles
+        }
         other_control_deltas = {
             role: delta
             for role, delta in control_deltas.items()
-            if role != "left_foot_ik"
+            if role != "left_foot_ik" and role not in descendant_roles
         }
         report["ikMove"] = {
             "frame": frame,
@@ -643,6 +1038,8 @@ def run_e2e_check(
             "outputRotateDelta": output_delta,
             "effectorWorldMatrixDelta": effector_delta,
             "controlWorldDeltas": control_deltas,
+            "descendantControlRoles": sorted(descendant_roles),
+            "descendantControlWorldDeltas": descendant_control_deltas,
             "otherControlWorldDeltas": other_control_deltas,
             "pass": bool(
                 goal_delta > MOVE_EPSILON
@@ -654,6 +1051,16 @@ def run_e2e_check(
             "IK move: goalDelta=%.8f outputDelta=%.8f effectorDelta=%.8f"
             % (goal_delta, output_delta, effector_delta)
         )
+        if descendant_control_deltas:
+            _log(
+                "IK move: inherited descendant control deltas=%s"
+                % json.dumps(descendant_control_deltas, sort_keys=True)
+            )
+        if other_control_deltas:
+            _log(
+                "IK move: unrelated control deltas=%s"
+                % json.dumps(other_control_deltas, sort_keys=True)
+            )
         if not report["ikMove"]["pass"]:
             raise RuntimeError("left foot IK move did not produce an owned solver response")
 
@@ -968,43 +1375,6 @@ def _repo_path(value: str) -> Path:
     return path
 
 
-def _wait_for_file(path: Path, timeout: float) -> None:
-    start = time.time()
-    while time.time() - start < timeout:
-        if path.is_file():
-            return
-        time.sleep(LOG_POLL_INTERVAL)
-    raise TimeoutError(f"timed out waiting for file: {path}")
-
-
-def _monitor_result(log_path: Path, report_path: Path, timeout: float) -> dict[str, Any]:
-    log_path.touch(exist_ok=True)
-    start = time.time()
-    result: dict[str, Any] | None = None
-    with log_path.open("r", encoding="utf-8", errors="replace") as handle:
-        # The command may finish before the host opens the log.  Start at the
-        # beginning of this freshly removed file so a fast failure/pass cannot
-        # hide its completion marker behind an end seek.
-        handle.seek(0)
-        while time.time() - start < timeout:
-            line = handle.readline()
-            if line:
-                print(line, end="")
-                if line.strip().startswith("RESULT_JSON:"):
-                    result = json.loads(line.split("RESULT_JSON:", 1)[1].strip())
-                if COMPLETION_MARKER in line:
-                    break
-            else:
-                time.sleep(LOG_POLL_INTERVAL)
-        else:
-            raise TimeoutError(f"timed out waiting for completion marker: {log_path}")
-    _wait_for_file(report_path, timeout=30)
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    if result is not None and result.get("status") != report.get("status"):
-        raise RuntimeError("Maya RESULT_JSON and report status disagree")
-    return report
-
-
 # ===================================================================
 # Host-side: launch a fresh GUI process and drive commandPort
 # ===================================================================
@@ -1024,46 +1394,35 @@ def main() -> int:
     )
     parser.add_argument("--port", type=int, default=COMMAND_PORT)
     parser.add_argument("--timeout", type=float, default=TEST_TIMEOUT)
+    parser.add_argument(
+        "--evaluation-mode",
+        choices=EVALUATION_MODE_CHOICES,
+        default="default",
+        help="Maya evaluation mode (default preserves the current Maya setting)",
+    )
+    parser.add_argument(
+        "--create-on-import",
+        action="store_true",
+        help=(
+            "Create or reuse the MMD Control Rig during VMD import, key "
+            "controllers directly, and clear existing motion"
+        ),
+    )
     parser.add_argument("--out-dir", default=str(_PROJECT_ROOT / "build" / "e2e"))
     args = parser.parse_args()
 
     out_dir = _repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    report_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}.json"
-    log_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}.log"
-    scene_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}.ma"
-    exported_vmd_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}.vmd"
+    mode_suffix = "" if args.evaluation_mode == "default" else f"_{args.evaluation_mode}"
+    route_suffix = "_create_on_import" if args.create_on_import else ""
+    output_suffix = f"{mode_suffix}{route_suffix}"
+    report_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{output_suffix}.json"
+    log_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{output_suffix}.log"
+    scene_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{output_suffix}.ma"
+    exported_vmd_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{output_suffix}.vmd"
     model_path = _repo_path(args.model)
     motion_path = _repo_path(args.motion)
-    maya_commandport.remove_stale_logs(
-        [log_path, report_path, scene_path, exported_vmd_path]
-    )
-
-    proc = None
-    maya_owned = False
     try:
-        if maya_commandport.is_port_open(args.port):
-            raise RuntimeError(
-                f"commandPort :{args.port} is already open; refusing to attach; choose a free port"
-            )
-        proc = maya_commandport.launch_maya(
-            version=args.maya,
-            project_root=_PROJECT_ROOT,
-            output_dir=out_dir,
-            port=args.port,
-            launch_mode="explorer" if sys.platform == "win32" else "direct",
-        )
-        # On Windows the Explorer launcher is detached and returns no PID, so
-        # commandPort preflight is the available ownership guard.  A port that
-        # was already open is rejected above; a residual launch race is logged.
-        maya_owned = True
-        maya_commandport.wait_for_port(args.port, timeout=120, process=proc)
-        logger.info("fresh Maya commandPort :%d ready", args.port)
-        if proc is None:
-            logger.warning(
-                "Explorer launch is detached; commandPort ownership is guarded by the preflight only"
-            )
-
         model_posix = model_path.as_posix()
         motion_posix = motion_path.as_posix()
         command = (
@@ -1073,10 +1432,27 @@ def main() -> int:
             "if str(project_root) not in sys.path:\n"
             "    sys.path.insert(0, str(project_root))\n"
             "from tests.viewport.e2e_mmd_control_rig import run_e2e_check\n"
-            f"run_e2e_check(r'{log_path.as_posix()}', r'{model_posix}', r'{motion_posix}', r'{report_path.as_posix()}', r'{scene_path.as_posix()}', r'{exported_vmd_path.as_posix()}')\n"
+            f"run_e2e_check(r'{log_path.as_posix()}', r'{model_posix}', r'{motion_posix}', r'{report_path.as_posix()}', r'{scene_path.as_posix()}', r'{exported_vmd_path.as_posix()}', r'{args.evaluation_mode}', {bool(args.create_on_import)!r})\n"
         )
-        maya_commandport.send_python(args.port, command, label="<mmd-control-rig-e2e>")
-        report = _monitor_result(log_path, report_path, args.timeout)
+        report = run_maya_e2e(
+            project_root=_PROJECT_ROOT,
+            version=args.maya,
+            out_dir=out_dir,
+            port=args.port,
+            timeout=args.timeout,
+            log_path=log_path,
+            report_path=report_path,
+            command=command,
+            marker=COMPLETION_MARKER,
+            send_label="<mmd-control-rig-e2e>",
+            stale_paths=[log_path, report_path, scene_path, exported_vmd_path],
+            port_error=(
+                f"commandPort :{args.port} is already open; refusing to attach; choose a free port"
+            ),
+            report_error=f"timed out waiting for file: {report_path}",
+            log_ready=logger,
+            warn_detached=True,
+        )
         logger.info("MMD control-rig E2E status: %s", report.get("status"))
         logger.info("report: %s", report_path)
         if report.get("errors"):
@@ -1089,22 +1465,12 @@ def main() -> int:
             "status": "blocked",
             "maya": args.maya,
             "port": args.port,
+            "evaluationMode": args.evaluation_mode,
             "error": str(exc),
         }
         _write_maya_report(report_path, blocked)
         logger.error("MMD control-rig GUI E2E blocked: %s", exc)
         return 2
-    finally:
-        if maya_owned:
-            try:
-                maya_commandport.quit_maya(args.port)
-                time.sleep(3)
-            finally:
-                try:
-                    if proc is not None and proc.poll() is None:
-                        proc.terminate()
-                finally:
-                    maya_commandport.close_process_logs(proc)
 
 
 if __name__ == "__main__":

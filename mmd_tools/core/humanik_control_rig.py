@@ -14,7 +14,7 @@ Control Rig active for editing until the normal restore path runs.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Set
 
 from mmd_tools.core.humanik_builder import create_humanik_control_rig, ensure_humanik_mel_loaded
 from mmd_tools.core.humanik_constraints import (
@@ -30,11 +30,16 @@ from mmd_tools.core.humanik_preview import (
     re_isolate_reviewed_edges,
     row_hik_writes,
 )
+from mmd_tools.core.humanik_mmd_control_rig import (
+    HumanIkMmdControlRigInterop,
+    inspect_humanik_mmd_control_rig_interop,
+)
 from mmd_tools.core.humanik_transaction import (
     HumanIkRestoreState,
     capture_humanik_restore_state,
     deserialize_humanik_restore_state,
     apply_humanik_restore_state,
+    _node_uuid,
 )
 from mmd_tools.core.humanik_utils import maya_cmds, maya_mel, mel_string
 from mmd_tools.core.logger import get_logger
@@ -63,6 +68,9 @@ class HumanIkControlRigTransaction:
     pre_cycle_baseline: List[str] = field(default_factory=list)
     post_cycle_plugs: List[str] = field(default_factory=list)
     preview: Optional[HumanIkTargetPreview] = None
+    # Snapshot of the MMD-native rig lease captured before HIK creation.  The
+    # field is optional for legacy/pure-HIK transactions and old scene payloads.
+    mmd_control_rig_interop: Optional[Dict[str, Any]] = None
     active: bool = True
     baked: bool = False
 
@@ -78,16 +86,42 @@ class HumanIkControlRigTransaction:
             "preCycleBaseline": list(self.pre_cycle_baseline),
             "postCyclePlugs": list(self.post_cycle_plugs),
             "preview": self.preview.to_dict() if self.preview is not None else None,
+            "mmdControlRigInterop": (
+                dict(self.mmd_control_rig_interop)
+                if self.mmd_control_rig_interop is not None
+                else None
+            ),
             "active": self.active,
             "baked": bool(self.baked),
         }
 
-    def to_scene_dict(self, model_root: str) -> Dict[str, Any]:
+    def to_scene_dict(
+        self,
+        model_root: str,
+        *,
+        cmds_module=None,
+        model_root_uuid: Optional[str] = None,
+        character_uuid: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Return the minimal active transaction facts persisted in a scene."""
+        if cmds_module is not None:
+            model_root_uuid = model_root_uuid or _node_uuid(cmds_module, model_root)
+            character_uuid = character_uuid or _node_uuid(
+                cmds_module, self.character
+            )
+        interop_model_root_uuid = None
+        if self.mmd_control_rig_interop is not None:
+            interop_model_root_uuid = self.mmd_control_rig_interop.get("modelRootUuid")
+        model_root_uuid = model_root_uuid or interop_model_root_uuid
+        character_uuid = character_uuid or getattr(
+            self.restore_state, "character_uuid", None
+        )
         return {
             "modelRoot": str(model_root),
+            "modelRootUuid": model_root_uuid,
             "ownershipId": self.ownership_id,
             "character": self.character,
+            "characterUuid": character_uuid,
             "restore_state": self.restore_state.to_dict(),
             "disconnected": list(self.disconnected),
             "retainedNodes": list(self.retained_nodes),
@@ -97,6 +131,11 @@ class HumanIkControlRigTransaction:
             "postCyclePlugs": list(self.post_cycle_plugs),
             "preview": (
                 self.preview.to_scene_dict() if self.preview is not None else None
+            ),
+            "mmdControlRigInterop": (
+                dict(self.mmd_control_rig_interop)
+                if self.mmd_control_rig_interop is not None
+                else None
             ),
             "active": bool(self.active),
             "baked": bool(self.baked),
@@ -112,6 +151,17 @@ class HumanIkControlRigTransaction:
         })
         row = rows[0]
         restore_state = HumanIkRestoreState.from_dict(row["restore_state"])
+        interop_payload = row.get("mmdControlRigInterop")
+        if interop_payload is not None:
+            if not isinstance(interop_payload, Mapping):
+                raise ValueError(
+                    "HumanIK transaction MMD-native interop must be an object"
+                )
+            interop_model_root_uuid = interop_payload.get("modelRootUuid")
+            if interop_model_root_uuid != row["modelRootUuid"]:
+                raise ValueError(
+                    "HumanIK transaction MMD-native interop modelRootUuid mismatch"
+                )
         def _string_list(key: str) -> List[str]:
             value = row.get(key, [])
             if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
@@ -128,6 +178,9 @@ class HumanIkControlRigTransaction:
         )
         if preview is not None and preview.target_character != row["character"]:
             raise ValueError("HumanIK transaction preview character mismatch")
+        interop = None
+        if interop_payload is not None:
+            interop = HumanIkMmdControlRigInterop.from_dict(interop_payload).to_dict()
         baked = row.get("baked", False)
         if not isinstance(baked, bool):
             raise ValueError("HumanIK transaction baked must be a boolean")
@@ -142,6 +195,7 @@ class HumanIkControlRigTransaction:
             pre_cycle_baseline=_string_list("preCycleBaseline"),
             post_cycle_plugs=_string_list("postCyclePlugs"),
             preview=preview,
+            mmd_control_rig_interop=interop,
             active=bool(row.get("active", True)),
             baked=baked,
         )
@@ -235,6 +289,7 @@ def begin_humanik_control_rig(
     cmds_module=None,
     mel_module=None,
     assignments: Optional[Iterable[Any]] = None,
+    mmd_control_rig_interop: Optional[Mapping[str, Any]] = None,
 ) -> HumanIkControlRigTransaction:
     """Create a Control Rig with MMD writer isolation and DG-cycle gating.
 
@@ -258,6 +313,9 @@ def begin_humanik_control_rig(
         assignments: Optional HIK slot assignments used to recognize the
             narrowly supported importer-created leg/toe ``mmdCcdIk`` graph.
             Without assignments, feedback blockers remain fail-closed.
+        mmd_control_rig_interop: Optional read-only lease captured by the
+            frontend before mutation.  When present it must be an allowed
+            ``HumanIkMmdControlRigInterop`` snapshot.
 
     Returns:
         The active :class:`HumanIkControlRigTransaction`.
@@ -271,6 +329,21 @@ def begin_humanik_control_rig(
     """
     cmds = cmds_module or maya_cmds()
     mel = mel_module or maya_mel()
+    interop_snapshot = None
+    if mmd_control_rig_interop is not None:
+        try:
+            interop_snapshot = HumanIkMmdControlRigInterop.from_dict(
+                mmd_control_rig_interop
+            )
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "HumanIK Control Rig creation received invalid MMD-native interop state"
+            ) from exc
+        if not interop_snapshot.allowed:
+            raise RuntimeError(
+                "HumanIK Control Rig creation is blocked by the MMD-native ownership "
+                f"contract: {interop_snapshot.reason}"
+            )
     ensure_humanik_mel_loaded(mel)
     hik_joint_set = {str(joint) for joint in hik_joints}
 
@@ -368,6 +441,11 @@ def begin_humanik_control_rig(
         isolated_feedback_nodes=feedback_nodes,
         pre_cycle_baseline=pre_cycle_baseline,
         post_cycle_plugs=post_cycle_plugs,
+        mmd_control_rig_interop=(
+            interop_snapshot.to_dict()
+            if interop_snapshot is not None
+            else None
+        ),
     )
     register_control_rig_transaction(character, transaction)
     return transaction
@@ -398,6 +476,10 @@ def bake_humanik_control_rig(
     """
     if transaction is None or not bool(getattr(transaction, "active", False)):
         raise RuntimeError("HumanIK Control Rig transaction is not active")
+    # A native MMD rig may have been entered into EDIT by another UI while
+    # this HIK transaction was live.  Refuse to bake against that changed
+    # ownership instead of allowing two authoring writers to proceed.
+    _assert_mmd_control_rig_interop(transaction, cmds_module=cmds_module)
     try:
         bake_start = int(start)
         bake_end = int(end)
@@ -508,6 +590,7 @@ def stop_humanik_control_rig(
     """
     if not transaction.active:
         return
+    _assert_mmd_control_rig_interop(transaction, cmds_module=cmds_module)
     cmds = cmds_module or maya_cmds()
     mel = mel_module or maya_mel()
     try:
@@ -634,3 +717,57 @@ def _delete_control_rig(character: str, created_nodes: Iterable[str], cmds, mel)
 
 def _snapshot_scene_nodes(cmds) -> Set[str]:
     return {str(node) for node in (cmds.ls(long=True) or [])}
+
+
+def _assert_mmd_control_rig_interop(
+    transaction: HumanIkControlRigTransaction,
+    *,
+    cmds_module=None,
+) -> None:
+    """Ensure a live HIK transaction still owns its recorded native-rig lease."""
+    payload = getattr(transaction, "mmd_control_rig_interop", None)
+    if payload is None:
+        return
+    try:
+        snapshot = HumanIkMmdControlRigInterop.from_dict(payload)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "HumanIK Control Rig transaction has invalid MMD-native interop state"
+        ) from exc
+    # A host-neutral transaction created outside Maya cannot be re-probed.
+    if not snapshot.scene_available:
+        return
+    model_root = snapshot.model_root
+    if snapshot.model_root_uuid:
+        try:
+            matches = (cmds_module or maya_cmds()).ls(
+                snapshot.model_root_uuid,
+                long=True,
+            ) or []
+        except Exception as exc:
+            raise RuntimeError(
+                "HumanIK Control Rig transaction cannot resolve its MMD model root UUID"
+            ) from exc
+        if len(matches) != 1:
+            raise RuntimeError(
+                "HumanIK Control Rig transaction lost its MMD model root UUID authority"
+            )
+        model_root = str(matches[0])
+    current = inspect_humanik_mmd_control_rig_interop(
+        model_root,
+        cmds_module=cmds_module,
+    )
+    if not current.allowed:
+        raise RuntimeError(
+            "HumanIK Control Rig transaction lost its MMD-native ownership lease: "
+            f"{current.reason}"
+        )
+    if (
+        current.model_root_uuid != snapshot.model_root_uuid
+        or current.present != snapshot.present
+        or current.state != snapshot.state
+        or current.owner != snapshot.owner
+    ):
+        raise RuntimeError(
+            "HumanIK Control Rig transaction MMD-native ownership changed while active"
+        )

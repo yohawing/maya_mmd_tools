@@ -35,6 +35,10 @@ from mmd_tools.core.humanik_control_rig import (
     register_control_rig_transaction,
     stop_humanik_control_rig,
 )
+from mmd_tools.core.humanik_mmd_control_rig import (
+    inspect_humanik_mmd_control_rig_interop,
+    require_humanik_mmd_control_rig_interop,
+)
 from mmd_tools.core.humanik_preview import (
     HumanIkTargetPreview,
     begin_humanik_target_preview,
@@ -96,6 +100,7 @@ REASON_NO_ACTIVE_CONTROL_RIG = "no_active_control_rig"
 REASON_ALREADY_CHARACTERIZED_OTHER_PROFILE = "already_characterized_other_profile"
 REASON_NOTHING_TO_RESTORE = "nothing_to_restore"
 REASON_MODEL_REQUIRED = "model_required"
+REASON_MMD_CONTROL_RIG_OWNER = "mmd_control_rig_owner"
 
 # VMD import lock reasons, mirroring ``humanik_retarget.HumanIkImportLock.blocked``.
 REASON_IMPORT_BLOCKED_TARGET_PREVIEW = "import_blocked_target_preview"
@@ -453,13 +458,35 @@ class HumanIkFrontendSession:
             try:
                 model_root = str(row["modelRoot"])
                 character = str(row["character"])
-                if not model_root or not character:
+                model_root_uuid = str(row["modelRootUuid"])
+                character_uuid = str(row["characterUuid"])
+                if not model_root or not character or not model_root_uuid or not character_uuid:
                     continue
-                if not cmds.objExists(model_root) or not cmds.objExists(character):
+                model_matches = cmds.ls(model_root_uuid, long=True) or []
+                character_matches = cmds.ls(character_uuid, long=True) or []
+                if len(model_matches) != 1 or len(character_matches) != 1:
                     continue
+                model_root = str(model_matches[0])
+                character = str(character_matches[0])
                 if _find_mmd_model_root_for_character(character, cmds) != model_root:
                     continue
-                transaction = HumanIkControlRigTransaction.from_scene_dict(row)
+                normalized_row = dict(row)
+                normalized_row["modelRoot"] = model_root
+                normalized_row["character"] = character
+                restore_payload = dict(normalized_row["restore_state"])
+                restore_payload["character"] = character
+                normalized_row["restore_state"] = restore_payload
+                preview_payload = normalized_row.get("preview")
+                if isinstance(preview_payload, Mapping):
+                    normalized_preview = dict(preview_payload)
+                    normalized_preview["targetCharacter"] = character
+                    preview_restore = normalized_preview.get("restore_state")
+                    if isinstance(preview_restore, Mapping):
+                        preview_restore = dict(preview_restore)
+                        preview_restore["character"] = character
+                        normalized_preview["restore_state"] = preview_restore
+                    normalized_row["preview"] = normalized_preview
+                transaction = HumanIkControlRigTransaction.from_scene_dict(normalized_row)
                 if not transaction.active:
                     continue
             except Exception as exc:  # noqa: BLE001 - stale/foreign metadata is rejected
@@ -481,7 +508,12 @@ class HumanIkFrontendSession:
                 if to_scene_dict is None:
                     continue
                 try:
-                    records.append(to_scene_dict(model_root))
+                    records.append(
+                        to_scene_dict(
+                            model_root,
+                            cmds_module=self._cmds,
+                        )
+                    )
                 except Exception as exc:  # noqa: BLE001 - test doubles/foreign transactions
                     logger.warning("HumanIK transaction persistence skipped: %s", exc)
         persist_humanik_restore_state(records, cmds_module=self._cmds)
@@ -1021,6 +1053,17 @@ class HumanIkFrontendSession:
                 return self._preview
             raise RuntimeError("A HumanIK target preview is already active")
         target = self._require_binding(key)
+        # Retain the selected target root while ownership/preflight diagnostics
+        # are being assembled.  A blocker must remain inspectable even though
+        # no preview transaction has been created yet.
+        self._target_model_root = key
+        # The native MMD Control Rig is allowed only in its attached display
+        # state.  This check is read-only and runs before ownership scanning or
+        # preview mutation, so HIK cannot become a second authoring writer.
+        require_humanik_mmd_control_rig_interop(
+            key,
+            cmds_module=self._cmds,
+        )
         if self._external_source_character is not None:
             if target.character == self._external_source_character:
                 raise ValueError("HumanIK source and target characters must differ")
@@ -1043,7 +1086,6 @@ class HumanIkFrontendSession:
             target.assignments,
             self._cmds,
         )
-        self._target_model_root = key
         self._ownership_report = report
         blockers = [
             row for row in report.get("rows", [])
@@ -1107,6 +1149,10 @@ class HumanIkFrontendSession:
             raise RuntimeError(
                 f"Cannot create_control_rig while model is the active HumanIK SOURCE: {key}"
             )
+        native_interop = require_humanik_mmd_control_rig_interop(
+            key,
+            cmds_module=self._cmds,
+        )
         existing = self._control_rig_transactions.get(key)
         if existing is not None and existing.active:
             return True
@@ -1118,6 +1164,7 @@ class HumanIkFrontendSession:
             cmds_module=self._cmds,
             mel_module=self._mel,
             assignments=binding.assignments,
+            mmd_control_rig_interop=native_interop.to_dict(),
         )
         try:
             cmds = self._cmds or maya_cmds()
@@ -1942,6 +1989,16 @@ class HumanIkFrontendSession:
             return _action_blocked(
                 REASON_NOT_CHARACTERIZED, f"HumanIK model is not characterized: {key}"
             )
+        interop = inspect_humanik_mmd_control_rig_interop(
+            key,
+            cmds_module=self._cmds,
+        )
+        if not interop.allowed:
+            return _action_blocked(
+                REASON_MMD_CONTROL_RIG_OWNER,
+                "HumanIK overlay is blocked by the MMD-native Control Rig ownership "
+                f"contract: {interop.reason}",
+            )
         target_binding = self._bindings[key]
         if self._external_source_character is not None:
             if target_binding.character == self._external_source_character:
@@ -1974,6 +2031,16 @@ class HumanIkFrontendSession:
         if key not in self._bindings:
             return _action_blocked(
                 REASON_NOT_CHARACTERIZED, f"HumanIK model is not characterized: {key}"
+            )
+        interop = inspect_humanik_mmd_control_rig_interop(
+            key,
+            cmds_module=self._cmds,
+        )
+        if not interop.allowed:
+            return _action_blocked(
+                REASON_MMD_CONTROL_RIG_OWNER,
+                "HumanIK overlay is blocked by the MMD-native Control Rig ownership "
+                f"contract: {interop.reason}",
             )
         if key == self._source_model_root:
             return _action_blocked(

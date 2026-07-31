@@ -1,4 +1,4 @@
-"""ImportExportTab の Maya 非依存 helper と model combo 更新を検証する。"""
+"""ImportExportTab の Maya 非依存 helper を検証する。"""
 
 import json
 import unittest
@@ -11,46 +11,6 @@ install_headless_ui_stubs()
 
 from mmd_tools.ui.import_export_view_state import ImportExportViewState  # noqa: E402
 from mmd_tools.ui.tabs import import_export_tab  # noqa: E402
-
-
-class _FakeComboBox:
-    def __init__(self, current_index=0):
-        self._current_index = current_index
-        self.items = []
-        self.blocked_states = []
-
-    def currentIndex(self):
-        return self._current_index
-
-    def clear(self):
-        self.items.clear()
-
-    def addItem(self, text, userData=None):
-        self.items.append((text, userData))
-
-    def count(self):
-        return len(self.items)
-
-    def itemData(self, index):
-        return self.items[index][1] if 0 <= index < len(self.items) else None
-
-    def setCurrentIndex(self, index):
-        self._current_index = index
-
-    def blockSignals(self, blocked):
-        self.blocked_states.append(blocked)
-        return False
-
-
-class _FakeViewState:
-    def __init__(self, value):
-        self._value = value
-
-    def get(self, _key, _default=None):
-        return self._value
-
-    def set(self, _key, value):
-        self._value = value
 
 
 class _FakeSettingsService:
@@ -122,114 +82,22 @@ class _FakeSlider(_FakeSpinBox):
         self.visible = visible
 
 
-class _FakePresenter:
-    def __init__(self):
-        self.calls = []
-
-    def refresh_model_list(self, restore_selection=False):
-        self.calls.append(restore_selection)
-
-
-class TestImportExportTabModelLabels(unittest.TestCase):
-    def test_format_target_model_label_uses_display_name_without_namespace(self):
-        label = import_export_tab._format_target_model_label("miku_root", "Miku")
-
-        self.assertEqual(label, "Miku")
-
-    def test_format_target_model_label_adds_namespace_and_root(self):
-        label = import_export_tab._format_target_model_label("ModelA:miku_root", "Miku")
-
-        self.assertEqual(label, "Miku [ModelA:miku_root]")
-
-    def test_format_target_model_label_handles_dag_paths(self):
-        label = import_export_tab._format_target_model_label("|group|ModelA:miku_root", "Miku")
-
-        self.assertEqual(label, "Miku [ModelA:miku_root]")
-
-
-class TestImportExportTabRefreshModelList(unittest.TestCase):
-    def _make_tab(self, current_index=0, saved_choice=None):
-        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
-        tab.target_model_combo = _FakeComboBox(current_index=current_index)
-        tab.view_state = _FakeViewState(saved_choice or import_export_tab.VMD_TARGET_AUTO)
-        tab.tr = lambda key, _category: f"<{key}>"
-        return tab
-
-    def test_set_target_model_items_adds_tagged_auto_and_camera_choices(self):
-        tab = self._make_tab()
-
-        import_export_tab.ImportExportTab.set_target_model_items(tab, [])
-
-        self.assertEqual(
-            tab.target_model_combo.items,
-            [
-                ("<auto_detect>", import_export_tab.VMD_TARGET_AUTO),
-                ("<camera_motion>", import_export_tab.VMD_TARGET_CAMERA),
-            ],
-        )
-
-    def test_set_target_model_items_shows_namespace_label_but_keeps_model_userdata(self):
-        tab = self._make_tab()
-
-        import_export_tab.ImportExportTab.set_target_model_items(tab, [("ModelA:miku_root", "Miku")])
-
-        self.assertEqual(
-            tab.target_model_combo.items,
-            [
-                ("<auto_detect>", import_export_tab.VMD_TARGET_AUTO),
-                ("<camera_motion>", import_export_tab.VMD_TARGET_CAMERA),
-                ("Miku [ModelA:miku_root]", "ModelA:miku_root"),
-            ],
-        )
-
-    def test_set_target_model_items_distinguishes_same_display_name_by_namespace(self):
-        tab = self._make_tab()
-
-        import_export_tab.ImportExportTab.set_target_model_items(
-            tab,
-            [("ModelA:miku_root", "Miku"), ("ModelB:miku_root", "Miku")],
-        )
-
-        self.assertEqual(
-            tab.target_model_combo.items,
-            [
-                ("<auto_detect>", import_export_tab.VMD_TARGET_AUTO),
-                ("<camera_motion>", import_export_tab.VMD_TARGET_CAMERA),
-                ("Miku [ModelA:miku_root]", "ModelA:miku_root"),
-                ("Miku [ModelB:miku_root]", "ModelB:miku_root"),
-            ],
-        )
-
-    def test_set_target_model_items_restores_root_identity_and_stale_root_falls_back_to_auto(self):
-        tab = self._make_tab(current_index=0, saved_choice="ModelA:miku_root")
-
-        import_export_tab.ImportExportTab.set_target_model_items(
-            tab,
-            [("ModelA:miku_root", "Miku")],
-            restore_selection=True,
-        )
-
-        self.assertEqual(tab.target_model_combo.currentIndex(), 2)
-        self.assertEqual(tab.target_model_combo.blocked_states, [True, False])
-
-        tab.view_state._value = "missing_mmd_root"
-        import_export_tab.ImportExportTab.set_target_model_items(
-            tab,
-            [("ModelA:miku_root", "Miku")],
-            restore_selection=True,
-        )
-        self.assertEqual(tab.target_model_combo.currentIndex(), 0)
-
-    def test_refresh_model_list_delegates_to_presenter(self):
-        tab = self._make_tab()
-        tab.presenter = _FakePresenter()
-
-        import_export_tab.ImportExportTab.refresh_model_list(tab, restore_selection=True)
-
-        self.assertEqual(tab.presenter.calls, [True])
-
-
 class TestImportExportTabDevModeVisibility(unittest.TestCase):
+    def test_mmd_control_rig_option_is_not_development_mode_gated(self):
+        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
+        tab._dev_only_widgets = []
+        tab.create_mmd_control_rig_check = _FakeWidget()
+        tab.create_mmd_control_rig_check.visible = True
+        tab.scale_spin = _FakeSpinBox(value=1.0)
+        tab.settings_service = _FakeSettingsService({"ui.general.development_mode": False})
+
+        import_export_tab.ImportExportTab._apply_dev_mode_visibility(tab)
+        self.assertTrue(tab.create_mmd_control_rig_check.visible)
+
+        tab.settings_service.set("ui.general.development_mode", True)
+        import_export_tab.ImportExportTab._apply_dev_mode_visibility(tab)
+        self.assertTrue(tab.create_mmd_control_rig_check.visible)
+
     def test_dev_only_controls_follow_development_mode(self):
         tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
         scale_row = _FakeWidget()
@@ -406,6 +274,25 @@ class TestImportExportTabReducedBakeVisibility(unittest.TestCase):
         self.assertTrue(tab.reduce_quality_slider.enabled)
         self.assertTrue(tab.reduce_quality_row.visible)
 
+    def test_rotation_time_curve_requires_direct_control_rig_import(self):
+        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
+        tab.create_mmd_control_rig_check = _FakeWidget()
+        tab.bake_mode_check = _FakeWidget()
+        tab.vmd_rotation_time_curve_check = _FakeWidget()
+
+        tab.create_mmd_control_rig_check.isChecked = lambda: False
+        tab.bake_mode_check.isChecked = lambda: False
+        import_export_tab.ImportExportTab._sync_vmd_rotation_time_curve_enabled(tab)
+        self.assertFalse(tab.vmd_rotation_time_curve_check.enabled)
+
+        tab.create_mmd_control_rig_check.isChecked = lambda: True
+        import_export_tab.ImportExportTab._sync_vmd_rotation_time_curve_enabled(tab)
+        self.assertTrue(tab.vmd_rotation_time_curve_check.enabled)
+
+        tab.bake_mode_check.isChecked = lambda: True
+        import_export_tab.ImportExportTab._sync_vmd_rotation_time_curve_enabled(tab)
+        self.assertFalse(tab.vmd_rotation_time_curve_check.enabled)
+
 
 class TestImportExportTabExportVisibility(unittest.TestCase):
     def _make_tab(self, development_mode=True):
@@ -499,9 +386,79 @@ class TestImportExportViewState(unittest.TestCase):
         self.assertEqual(store.values["a"], "[]")
         self.assertEqual(store.values["b"], "[]")
 
+    def test_unified_history_is_newest_first_across_file_types(self):
+        with TemporaryDirectory() as temp_dir:
+            model_path = str(Path(temp_dir) / "model.pmx")
+            motion_path = str(Path(temp_dir) / "motion.vmd")
+            export_path = str(Path(temp_dir) / "export.pmx")
+            for path in (model_path, motion_path, export_path):
+                Path(path).write_text("", encoding="utf-8")
+            view_state = ImportExportViewState(_FakeQSettings())
 
-class TestPhysicsVisibilitySourceInspection(unittest.TestCase):
-    """Verify that the physics import UI is available in normal mode."""
+            view_state.save_file_history("import", model_path)
+            view_state.save_file_history("export", export_path)
+            view_state.save_file_history("vmd", motion_path)
+
+            self.assertEqual(
+                view_state.load_file_history(),
+                [
+                    {"path": motion_path, "type": "vmd"},
+                    {"path": export_path, "type": "export"},
+                    {"path": model_path, "type": "import"},
+                ],
+            )
+
+    def test_unified_history_deduplicates_same_typed_path_and_honors_limit(self):
+        with TemporaryDirectory() as temp_dir:
+            first_path = str(Path(temp_dir) / "first.pmx")
+            second_path = str(Path(temp_dir) / "second.pmx")
+            for path in (first_path, second_path):
+                Path(path).write_text("", encoding="utf-8")
+            view_state = ImportExportViewState(_FakeQSettings())
+
+            view_state.save_file_history("import", first_path)
+            view_state.save_file_history("import", second_path)
+            view_state.save_file_history("import", first_path)
+
+            self.assertEqual(
+                view_state.load_file_history(max_items=1),
+                [{"path": first_path, "type": "import"}],
+            )
+
+    def test_legacy_histories_migrate_and_clear_with_unified_history(self):
+        with TemporaryDirectory() as temp_dir:
+            model_path = str(Path(temp_dir) / "model.pmx")
+            motion_path = str(Path(temp_dir) / "motion.vmd")
+            generic_motion_path = str(Path(temp_dir) / "generic_motion.vmd")
+            Path(model_path).write_text("", encoding="utf-8")
+            Path(motion_path).write_text("", encoding="utf-8")
+            Path(generic_motion_path).write_text("", encoding="utf-8")
+            store = _FakeQSettings(
+                {
+                    "import_path_history": json.dumps([model_path, generic_motion_path]),
+                    "vmd_path_history": json.dumps([motion_path]),
+                }
+            )
+            view_state = ImportExportViewState(store)
+
+            self.assertEqual(
+                view_state.load_file_history(),
+                [
+                    {"path": model_path, "type": "import"},
+                    {"path": generic_motion_path, "type": "vmd"},
+                    {"path": motion_path, "type": "vmd"},
+                ],
+            )
+
+            view_state.clear_file_history()
+
+            self.assertEqual(view_state.load_file_history(), [])
+            self.assertEqual(store.values["import_path_history"], "[]")
+            self.assertEqual(store.values["vmd_path_history"], "[]")
+
+
+class TestNormalModeVisibilitySourceInspection(unittest.TestCase):
+    """Verify supported model import controls remain available in normal mode."""
 
     def setUp(self):
         self.source = Path(import_export_tab.__file__).read_text(encoding="utf-8")
@@ -520,6 +477,96 @@ class TestPhysicsVisibilitySourceInspection(unittest.TestCase):
             if in_dev_only and "]" in line:
                 in_dev_only = False
         self.assertFalse(found, "self.physics_group must remain visible in normal mode")
+
+    def test_separate_meshes_is_not_in_dev_only_widgets(self):
+        dev_only_start = self.source.index("self._dev_only_widgets = [")
+        dev_only_end = self.source.index("]", dev_only_start)
+
+        self.assertNotIn("self.separate_meshes_check", self.source[dev_only_start:dev_only_end])
+
+
+class TestControlRigSettingSourceInspection(unittest.TestCase):
+    """Ensure the model-scoped control-rig checkbox has one UI owner."""
+
+    def setUp(self):
+        self.source = Path(import_export_tab.__file__).read_text(encoding="utf-8")
+
+    def test_control_rig_checkbox_is_declared_in_model_settings(self):
+        model_start = self.source.index("# Model Settings Group")
+        animation_start = self.source.index("# Animation Import Group (VMD)")
+        model_source = self.source[model_start:animation_start]
+
+        self.assertIn("self.create_mmd_control_rig_check = self._bind_checkbox(", model_source)
+        self.assertIn("setting_keys.IMPORT_MODEL_CREATE_MMD_CONTROL_RIG", model_source)
+        self.assertIn("False", model_source)
+
+    def test_animation_group_does_not_create_a_duplicate_control_rig_checkbox(self):
+        animation_start = self.source.index("# Animation Import Group (VMD)")
+        animation_source = self.source[animation_start:]
+
+        self.assertNotIn("self.create_mmd_control_rig_check = QCheckBox", animation_source)
+
+    def test_rotation_time_curve_checkbox_is_declared_in_animation_settings(self):
+        model_start = self.source.index("# Model Settings Group")
+        animation_settings_start = self.source.index("# Animation Import Settings")
+        animation_import_start = self.source.index("# Animation Import Group (VMD)")
+
+        model_source = self.source[model_start:animation_settings_start]
+        animation_settings_source = self.source[
+            animation_settings_start:animation_import_start
+        ]
+
+        self.assertNotIn("self.vmd_rotation_time_curve_check", model_source)
+        self.assertIn(
+            "self.vmd_rotation_time_curve_check = self._bind_checkbox(",
+            animation_settings_source,
+        )
+        self.assertIn(
+            "setting_keys.IMPORT_ANIMATION_VMD_ROTATION_TIME_CURVE",
+            animation_settings_source,
+        )
+
+    def test_rotation_time_curve_is_dev_only_and_defaults_on(self):
+        dev_only_start = self.source.index("self._dev_only_widgets = [")
+        dev_only_end = self.source.index("]", dev_only_start)
+        dev_only_source = self.source[dev_only_start:dev_only_end]
+
+        self.assertIn("self.vmd_rotation_time_curve_check", dev_only_source)
+        animation_settings_start = self.source.index("# Animation Import Settings")
+        checkbox_start = self.source.index(
+            "self.vmd_rotation_time_curve_check = self._bind_checkbox(",
+            animation_settings_start,
+        )
+        checkbox_end = self.source.index(")", checkbox_start)
+        self.assertIn("True", self.source[checkbox_start:checkbox_end])
+
+    def test_import_defaults_keep_bake_off_and_dev_time_curve_on(self):
+        defaults_path = (
+            Path(import_export_tab.__file__).resolve().parents[2]
+            / "config"
+            / "default_settings.json"
+        )
+        defaults = json.loads(defaults_path.read_text(encoding="utf-8"))
+
+        self.assertFalse(defaults["import"]["rig"]["bake_mode"])
+        self.assertTrue(defaults["import"]["animation"]["vmd_rotation_time_curve"])
+
+    def test_japanese_control_rig_label_uses_katakana(self):
+        translation_path = (
+            Path(import_export_tab.__file__).resolve().parents[1]
+            / "translations"
+            / "ja.json"
+        )
+        translations = json.loads(translation_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            translations["checkboxes"]["create_mmd_control_rig"],
+            "MMDコントロールリグを作成",
+        )
+        self.assertEqual(
+            translations["checkboxes"]["vmd_rotation_time_curve"],
+            "VMD時間補間を時間カーブとして保持",
+        )
 
 
 if __name__ == "__main__":

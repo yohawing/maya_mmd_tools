@@ -54,6 +54,10 @@ DEFAULT_RELEASE_VIEWPORT_MATRIX = (
     ("2025", "glsl", "glcore"),
     ("2026", "dx11", "dx11"),
 )
+DEFAULT_RELEASE_VISUAL_PORTS = {
+    "2025": "7825",
+    "2026": "7826",
+}
 DEFAULT_GOLDEN_ORACLE_RENDER_MANIFEST = "F:/Develop/MMDDev/GoldenOracle/manifests/fixture.render.json"
 RELEASE_VISUAL_CASES = (
     "fixture-render-generated-visual-mmd-diffuse-lit-box",
@@ -1089,8 +1093,14 @@ def _cmake_configure(session: nox.Session, version: str, config: str = DEFAULT_C
         session.run(*args, external=True)
 
 
-def _cmake_build(session: nox.Session, version: str, config: str) -> None:
-    """Build the Maya C++ plugin."""
+def _cmake_build(
+    session: nox.Session,
+    version: str,
+    config: str,
+    *,
+    clean_first: bool = False,
+) -> None:
+    """Build the Maya C++ plugin, optionally forcing fresh tracked artifacts."""
     command = [
         "cmake",
         "--build",
@@ -1098,6 +1108,8 @@ def _cmake_build(session: nox.Session, version: str, config: str) -> None:
         "--config",
         config,
     ]
+    if clean_first:
+        command.append("--clean-first")
     if platform.system() == "Windows":
         _run_in_vs_dev_cmd(session, command)
     else:
@@ -1169,11 +1181,11 @@ def ci_unit(session: nox.Session) -> None:
     without Maya, so any new tests added to tests/unit are automatically
     included — no manual listing required.
 
-    A test file is included when it can be imported successfully with a
-    plain ``python -c "import tests.unit.<stem>"`` probe (i.e. it has no
-    transitive dependency on an allowlisted environment-only module). Files
-    that fail for one of those expected dependencies are skipped with a notice;
-    other import failures abort the session.
+    A test file is included when it can be imported successfully in a
+    pytest-enabled ``uvx`` probe (i.e. it has no transitive dependency on an
+    allowlisted environment-only module). Files that fail for one of those
+    expected dependencies are skipped with a notice; other import failures
+    abort the session.
 
     Examples:
         uvx nox -s ci_unit
@@ -1185,7 +1197,11 @@ def ci_unit(session: nox.Session) -> None:
     for py_file in sorted(unit_dir.glob("test_*.py")):
         module_name = f"tests.unit.{py_file.stem}"
         probe = subprocess.run(
-            [sys.executable, "-c", f"import {module_name}"],
+            # The probe must use the same pytest-enabled environment as the
+            # actual test command.  Probing with the bare Nox interpreter made
+            # every pytest-using unit module look like a non-environment import
+            # failure and aborted ci_unit before pytest could run it.
+            ["uvx", "--with", "pytest", "--", "python", "-c", f"import {module_name}"],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -1265,6 +1281,51 @@ def mmd_control_rig_vmd_roundtrip_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def mmd_control_rig_vmd_import_parity_matrix(session: nox.Session) -> None:
+    """Run the Maya Control Rig VMD-import parity matrix host runner.
+
+    The host runner owns the Maya-version/evaluation-mode matrix and invokes
+    each configured ``mayapy`` process itself.  Nox only supplies the current
+    Python interpreter and forwards every positional argument unchanged, so
+    environment overrides such as ``MMD_TOOLS_CPP_PLUGIN_2026`` remain intact.
+
+    Examples:
+        uvx nox -s mmd_control_rig_vmd_import_parity_matrix
+        uvx nox -s mmd_control_rig_vmd_import_parity_matrix -- --versions 2024 --modes dg
+        uvx nox -s mmd_control_rig_vmd_import_parity_matrix -- --cases coverage --out build/reports/cr-matrix.json --timeout 600
+    """
+    session.run(
+        sys.executable,
+        "-m",
+        "tests.viewport.mmd_control_rig_vmd_import_parity_matrix",
+        *session.posargs,
+        env=dict(os.environ),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def real_asset_bake_rig_parity(session: nox.Session) -> None:
+    """Run the fail-closed five-pair Maya 2024/2026 Control Rig parity matrix.
+
+    Examples::
+
+        uvx nox -s real_asset_bake_rig_parity -- --dry-run
+        uvx nox -s real_asset_bake_rig_parity -- --manifest F:/MMD/parity-manifest.json
+        uvx nox -s real_asset_bake_rig_parity -- --manifest F:/MMD/parity-manifest.json --resume
+    """
+
+    session.run(
+        sys.executable,
+        "-m",
+        "tests.viewport.real_asset_bake_rig_parity",
+        *session.posargs,
+        env=dict(os.environ),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def mmd_control_rig_gui_e2e(session: nox.Session) -> None:
     """Run GUI control-rig E2E followed by the mandatory mesh oracle gate.
 
@@ -1281,8 +1342,12 @@ def mmd_control_rig_gui_e2e(session: nox.Session) -> None:
         "--out-dir",
     )
     model = _option(args, "--model", "tests/data/mmt_test_model.pmx")
-    gui_report = out_dir / f"mmd_control_rig_e2e_maya{maya_version}.json"
-    exported_vmd = out_dir / f"mmd_control_rig_e2e_maya{maya_version}.vmd"
+    evaluation_mode = _option(args, "--evaluation-mode", "default")
+    mode_suffix = "" if evaluation_mode == "default" else f"_{evaluation_mode}"
+    route_suffix = "_create_on_import" if "--create-on-import" in args else ""
+    output_suffix = f"{mode_suffix}{route_suffix}"
+    gui_report = out_dir / f"mmd_control_rig_e2e_maya{maya_version}{output_suffix}.json"
+    exported_vmd = out_dir / f"mmd_control_rig_e2e_maya{maya_version}{output_suffix}.vmd"
     session.run(
         sys.executable,
         str(ROOT / "tests" / "viewport" / "e2e_mmd_control_rig.py"),
@@ -1304,7 +1369,7 @@ def mmd_control_rig_gui_e2e(session: nox.Session) -> None:
             "mmd-anim FFI release directory is required for the external oracle: "
             f"{ffi_path}"
         )
-    oracle_report = out_dir / f"mmd_anim_mesh_oracle_compare_maya{maya_version}.json"
+    oracle_report = out_dir / f"mmd_anim_mesh_oracle_compare_maya{maya_version}{output_suffix}.json"
     _clear_probe_report(session, oracle_report, "mmd-anim mesh oracle")
     oracle_args = [
         "--pmx",
@@ -2757,31 +2822,6 @@ def shader_visual_semantic_gate(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
-def visual_regression_gallery(session: nox.Session) -> None:
-    """Build a local HTML gallery from visual-regression run reports.
-
-    Examples:
-        uvx nox -s visual_regression_gallery
-        uvx nox -s visual_regression_gallery -- --root build/visual-regression --out build/visual-regression/gallery.html
-    """
-    root = _require_build_path(session, _option(session.posargs, "--root", "build/visual-regression"), "--root")
-    output = _require_build_path(
-        session,
-        _option(session.posargs, "--out", "build/visual-regression/visual-regression-gallery.html"),
-        "--out",
-    )
-    session.run(
-        sys.executable,
-        "scripts/visual-regression/generate_gallery.py",
-        "--root",
-        str(root),
-        "--out",
-        str(output),
-        external=True,
-    )
-
-
-@nox.session(venv_backend="none")
 def maya_batch_import(session: nox.Session) -> None:
     """Run Track 6 manifest-driven Maya batch import checks.
 
@@ -3011,7 +3051,7 @@ def cpp_verify(session: nox.Session) -> None:
     session.run(sys.executable, "-c", _native_runtime_smoke_code(), env=runtime_env, external=True)
 
     _cmake_configure(session, version, config)
-    _cmake_build(session, version, config)
+    _cmake_build(session, version, config, clean_first=True)
 
     # Insert cpp_cli_smoke before maya_smoke when a manifest is supplied.
     # This exercises the pure C++ CLI path (no mayapy) for runtime eval.
@@ -3202,6 +3242,7 @@ def release_gate(session: nox.Session) -> None:
                 command = [
                     "uvx", "nox", "-s", "maya_visual_regression", "--",
                     "--maya", maya_version,
+                    "--port", DEFAULT_RELEASE_VISUAL_PORTS[maya_version],
                     "--shader-backend", shader_backend,
                     "--vp2-device", vp2_device,
                     "--manifest", str(visual_manifest),

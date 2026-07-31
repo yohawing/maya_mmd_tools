@@ -129,22 +129,28 @@ def launch_maya(
     launch_mode: str = "explorer" if platform.system() == "Windows" else "direct",
     env_overrides: Optional[dict[str, str]] = None,
 ) -> Optional[subprocess.Popen]:
-    """Launch Maya GUI with a Python commandPort.
+    """Launch Maya GUI with a Python commandPort and isolated preferences.
 
     On Windows, ``explorer`` opens a temporary BAT that starts Maya with a MEL
     commandPort script. This detaches Maya from the automation console and is
-    the stable local route for Autodesk license checkout.
+    the stable local route for Autodesk license checkout. Unless explicitly
+    overridden, ``MAYA_APP_DIR`` is kept under the test output directory so an
+    automated shutdown cannot rewrite the user's Maya preferences.
     """
     executable = maya_exe(version)
     if not executable.is_file():
         raise FileNotFoundError(f"maya.exe not found: {executable}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    effective_overrides = dict(env_overrides or {})
+    effective_overrides.setdefault(
+        "MAYA_APP_DIR",
+        str((output_dir / f"maya-app-{version}-{port}").resolve()),
+    )
     env = os.environ.copy()
     _prepend_env_path(env, "PYTHONPATH", project_root)
     _prepend_env_path(env, "MAYA_MODULE_PATH", project_root)
-    if env_overrides:
-        env.update(env_overrides)
+    env.update(effective_overrides)
 
     if platform.system() == "Windows" and launch_mode == "direct":
         raise ValueError(
@@ -152,13 +158,14 @@ def launch_maya(
             "to avoid Maya license-checkout exit 253"
         )
 
-    command = [str(executable), "-command", f'commandPort -name ":{port}" -sourceType "python";']
+    command_port_mel = f'commandPort -name ":{port}" -sourceType "python";'
+    command = [str(executable), "-command", command_port_mel]
     if platform.system() == "Windows" and launch_mode == "explorer":
         mel_path = (output_dir / f"commandport_{port}.mel").resolve()
         bat_path = (output_dir / f"launch_maya_{version}_{port}.bat").resolve()
-        mel_path.write_text(f'commandPort -name ":{port}" -sourceType "python";\n', encoding="utf-8")
+        mel_path.write_text(command_port_mel + "\n", encoding="utf-8")
         env_lines = [f'set "{name}={env[name]}"' for name in ("PYTHONPATH", "MAYA_MODULE_PATH")]
-        env_lines.extend(f'set "{name}={value}"' for name, value in (env_overrides or {}).items())
+        env_lines.extend(f'set "{name}={value}"' for name, value in effective_overrides.items())
         bat_lines = [
             "@echo off",
             *env_lines,

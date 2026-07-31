@@ -121,9 +121,17 @@ def _find_blend_shapes(shape: str) -> list[str]:
     return [node for node in history if cmds.nodeType(node) == "blendShape"]
 
 
-def _collect_skin_bones(skin_cluster: str) -> tuple[list[dict], dict[str, int]]:
-    """Collect exporter bone dicts from skinCluster influences."""
-    influences = cmds.skinCluster(skin_cluster, query=True, influence=True) or []
+def _joint_identity(joint: str) -> str:
+    """Return a stable scene identity for a joint across short/long DAG names."""
+    uuids = cmds.ls(joint, uuid=True) or []
+    if uuids:
+        return uuids[0]
+    long_names = cmds.ls(joint, long=True) or []
+    return long_names[0] if long_names else joint
+
+
+def _collect_bones_from_joints(joints: list[str]) -> tuple[list[dict], dict[str, int]]:
+    """Collect exporter bones from MMD-tagged joints in metadata order."""
 
     def sort_key(joint):
         stored_index = _get_attr(joint, ATTR_MMD_BONE_INDEX)
@@ -131,7 +139,7 @@ def _collect_skin_bones(skin_cluster: str) -> tuple[list[dict], dict[str, int]]:
             return (1, joint)
         return (0, int(stored_index))
 
-    ordered = sorted(influences, key=sort_key)
+    ordered = sorted(joints, key=sort_key)
     export_index_by_joint = {joint: index for index, joint in enumerate(ordered)}
     stored_to_export = {}
     for joint, index in export_index_by_joint.items():
@@ -159,6 +167,24 @@ def _collect_skin_bones(skin_cluster: str) -> tuple[list[dict], dict[str, int]]:
             "source_joint": joint,
         })
     return bones, export_index_by_joint
+
+
+def _collect_skin_bones(skin_cluster: str) -> tuple[list[dict], dict[str, int]]:
+    """Collect exporter bone dicts from skinCluster influences."""
+    influences = cmds.skinCluster(skin_cluster, query=True, influence=True) or []
+    return _collect_bones_from_joints(influences)
+
+
+def _collect_model_bones(root: str) -> list[dict]:
+    """Collect every MMD metadata joint below a model root, including zero-weight bones."""
+    joints = cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or []
+    tagged_joints = [
+        joint
+        for joint in joints
+        if cmds.attributeQuery(ATTR_MMD_BONE_INDEX, node=joint, exists=True)
+    ]
+    bones, _export_index_by_joint = _collect_bones_from_joints(tagged_joints)
+    return bones
 
 
 def _joint_export_index_from_dag_path(path: om.MDagPath, export_index_by_joint: dict[str, int]) -> int:
@@ -682,22 +708,35 @@ class ExportSceneCollector:
         merged_vertices = []
         merged_faces = []
         merged_materials = []
-        merged_bones = []
+        merged_bones = _collect_model_bones(root)
         vertex_morphs_by_name = {}
-        global_bone_by_key = {}
+        global_bone_by_key = {
+            _joint_identity(bone["source_joint"]): index
+            for index, bone in enumerate(merged_bones)
+            if bone.get("source_joint")
+        }
         vertex_offset = 0
 
         for shape in shapes:
             mesh_data = self.collect_from_mesh(shape)
             local_bones = mesh_data["bones"] or []
             bone_index_map = {}
+            added_global_indices = set()
             for local_index, bone in enumerate(local_bones):
-                key = bone.get("source_joint") or f"{bone.get('name')}:{bone.get('name_english')}:{bone.get('position')}"
+                source_joint = bone.get("source_joint")
+                key = (
+                    _joint_identity(source_joint)
+                    if source_joint
+                    else f"{bone.get('name')}:{bone.get('name_english')}:{bone.get('position')}"
+                )
                 if key not in global_bone_by_key:
                     global_bone_by_key[key] = len(merged_bones)
                     merged_bones.append(dict(bone))
+                    added_global_indices.add(global_bone_by_key[key])
                 bone_index_map[local_index] = global_bone_by_key[key]
             for local_index, bone in enumerate(local_bones):
+                if bone_index_map[local_index] not in added_global_indices:
+                    continue
                 parent_index = bone.get("parent_index", -1)
                 merged_bones[bone_index_map[local_index]]["parent_index"] = bone_index_map.get(parent_index, -1)
 
@@ -732,8 +771,7 @@ class ExportSceneCollector:
         morphs.extend(MorphConverter().collect_morphs_from_scene_for_export())
 
         bone_index_by_joint: dict[str, int] = {}
-        for key, index in global_bone_by_key.items():
-            bone = merged_bones[index]
+        for index, bone in enumerate(merged_bones):
             source_joint = bone.get("source_joint")
             if source_joint:
                 bone_index_by_joint[source_joint] = index

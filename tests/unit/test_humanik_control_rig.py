@@ -618,6 +618,7 @@ class TestBakeHumanIkControlRig(unittest.TestCase):
             -1,
             [],
             [],
+            "character-uuid",
         )
         transaction = HumanIkControlRigTransaction(
             ownership_id="owner:rig",
@@ -629,7 +630,11 @@ class TestBakeHumanIkControlRig(unittest.TestCase):
             baked=True,
         )
 
-        payload = transaction.to_scene_dict("|model")
+        payload = transaction.to_scene_dict(
+            "|model",
+            model_root_uuid="model-root-uuid",
+            character_uuid="character-uuid",
+        )
         self.assertTrue(payload["baked"])
         restored = HumanIkControlRigTransaction.from_scene_dict(payload)
         self.assertTrue(restored.baked)

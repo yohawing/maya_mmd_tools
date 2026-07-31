@@ -13,6 +13,7 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
     INPUT_UNSUPPORTED,
     STATUS_BLOCKED,
     STATUS_FALLBACK,
+    STATUS_MISSING,
     STATUS_READY,
     MmdControlRigBoneFact,
     MmdControlRigConnectionFact,
@@ -21,10 +22,14 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
 from mmd_tools.core.mmd_control_rig_builder import (
     MmdControlRigBuildError,
     _apply_fallback_role_aliases,
+    _control_curve_display_rotation,
     _control_curve_templates,
     _control_curve_template_role,
     _control_group_parent,
     _control_shape_rotation,
+    _ROLE_PARENTS,
+    _control_basis_rotations,
+    _role_controller_scale,
     _rotate_shape_point,
     _shortest_arc_from_positive_z,
     _parent_zero_groups,
@@ -33,10 +38,24 @@ from mmd_tools.core.mmd_control_rig_builder import (
     resolve_mmd_control_rig_binding_ik_solvers,
     resolve_mmd_control_rig_binding_joint,
 )
+from mmd_tools.core.mmd_control_rig_motion import (
+    ROUTE_SAMPLED,
+    _supports_live_authoring_basis,
+)
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
 
-def _bone(index, name, *, pmx_flags=0, incoming=(), ik_solvers=(), solver_input_plugs=()):
+def _bone(
+    index,
+    name,
+    *,
+    pmx_flags=0,
+    incoming=(),
+    ik_solvers=(),
+    solver_input_plugs=(),
+    bone_morph_base_plugs=(),
+    fixed_axis=None,
+):
     return MmdControlRigBoneFact(
         joint=f"|model|bone_{index}",
         mmd_name=name,
@@ -45,6 +64,8 @@ def _bone(index, name, *, pmx_flags=0, incoming=(), ik_solvers=(), solver_input_
         incoming=tuple(incoming),
         ik_solvers=tuple(ik_solvers),
         solver_input_plugs=tuple(solver_input_plugs),
+        bone_morph_base_plugs=tuple(bone_morph_base_plugs),
+        fixed_axis=tuple(fixed_axis) if fixed_axis is not None else None,
     )
 
 
@@ -55,8 +76,9 @@ def _connection(source, destination, node_type):
 class _ShapeOrientationFake:
     """Minimal PMX metadata reader for display-only orientation tests."""
 
-    def __init__(self, values):
+    def __init__(self, values, children=None):
         self.values = values
+        self.children = dict(children or {})
 
     def attributeQuery(self, attribute, *, node, exists):
         return exists and f"{node}.{attribute}" in self.values
@@ -65,17 +87,21 @@ class _ShapeOrientationFake:
         return self.values[plug]
 
     def listRelatives(self, node, **kwargs):
+        if kwargs.get("children"):
+            return list(self.children.get(node, ()))
         return []
 
 
 class _HierarchyFake:
     """Minimal parent graph that rejects introducing a descendant cycle."""
 
-    def __init__(self):
+    def __init__(self, joint_parents=None):
         self.parent_by_child = {
             "master_CTRL": "master_ZERO",
             "center_CTRL": "center_ZERO",
         }
+        self.joint_parents = dict(joint_parents or {})
+        self.constraints = []
 
     def parent(self, child, parent):
         ancestor = parent
@@ -84,6 +110,14 @@ class _HierarchyFake:
                 raise AssertionError(f"self-parent cycle: {child} -> {parent}")
             ancestor = self.parent_by_child[ancestor]
         self.parent_by_child[child] = parent
+
+    def listRelatives(self, node, **kwargs):
+        parent = self.joint_parents.get(node)
+        return [parent] if parent else []
+
+    def parentConstraint(self, target, zero, **kwargs):
+        self.constraints.append((target, zero, dict(kwargs)))
+        return [f"{zero}_FOLLOW"]
 
 
 class MmdControlRigCurveTemplateTest(unittest.TestCase):
@@ -126,6 +160,89 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
         self.assertEqual(len(templates["finger"][0]["points"]), 21)
         self.assertTrue(all(shape["points"] for shapes in templates.values() for shape in shapes))
         self.assertTrue(all(shape["knots"] for shapes in templates.values() for shape in shapes))
+
+    def test_foot_ik_parent_circle_faces_positive_y_without_changing_shared_template(self):
+        templates = _control_curve_templates()
+        circle = templates["circle"][0]
+
+        for role in ("left_foot_ik_parent", "right_foot_ik_parent"):
+            rotation = _control_curve_display_rotation(role)
+            normal = _rotate_shape_point((0.0, 0.0, 1.0), rotation)
+            points = [_rotate_shape_point(point, rotation) for point in circle["points"]]
+            with self.subTest(role=role):
+                self.assertEqual(normal, (0.0, 1.0, 0.0))
+                self.assertTrue(all(abs(point[1]) < 1.0e-12 for point in points))
+
+        sentinel = ((0.0, 1.0, 0.0), 1.0, 0.0)
+        self.assertIs(_control_curve_display_rotation("left_arm", sentinel), sentinel)
+
+    def test_live_basis_accepts_sampled_direct_xyz_but_rejects_special_writers(self):
+        direct = {
+            "target": "wrist.rotateX",
+            "routeClass": ROUTE_SAMPLED,
+            "routeReasons": ["joint_orient"],
+        }
+        self.assertTrue(_supports_live_authoring_basis(direct))
+        for reason in (
+            "anim_layer",
+            "append_base",
+            "bone_morph_base",
+            "ik",
+            "ik_controller",
+            "ik_link_input",
+            "rotate_order",
+        ):
+            with self.subTest(reason=reason):
+                row = dict(direct, routeReasons=[reason])
+                self.assertFalse(_supports_live_authoring_basis(row))
+        self.assertFalse(
+            _supports_live_authoring_basis(
+                dict(direct, target="append.baseRotateX")
+            )
+        )
+
+    def test_primary_twist_requires_fixed_axis_and_direct_or_append_input(self):
+        direct = _bone(
+            1,
+            "左腕捩",
+            pmx_flags=int(PmxBoneFlag.AXIS_FIXED),
+            fixed_axis=(1.0, 0.0, 0.0),
+        )
+        ready = classify_mmd_control_rig("|model", [direct]).roles_by_name[
+            "left_arm_twist"
+        ]
+        self.assertEqual(ready.status, STATUS_READY)
+        self.assertEqual(ready.binding.fixed_axis, (1.0, 0.0, 0.0))
+
+        missing_axis = _bone(
+            2,
+            "左腕捩",
+            pmx_flags=int(PmxBoneFlag.AXIS_FIXED),
+        )
+        blocked = classify_mmd_control_rig("|model", [missing_axis]).roles_by_name[
+            "left_arm_twist"
+        ]
+        self.assertEqual(blocked.status, STATUS_BLOCKED)
+        self.assertTrue(any("fixed-axis" in text for text in blocked.blockers))
+
+        append = _bone(
+            3,
+            "左腕捩",
+            pmx_flags=int(PmxBoneFlag.AXIS_FIXED),
+            fixed_axis=(0.0, 1.0, 0.0),
+            incoming=(
+                _connection(
+                    "append.outputRotate",
+                    "|model|bone_3.rotate",
+                    "mmdAppend",
+                ),
+            ),
+        )
+        append_ready = classify_mmd_control_rig("|model", [append]).roles_by_name[
+            "left_arm_twist"
+        ]
+        self.assertEqual(append_ready.status, STATUS_READY)
+        self.assertEqual(append_ready.binding.input_kind, INPUT_APPEND_BASE)
 
     def test_shape_only_shortest_arc_aligns_positive_z_without_scaling(self):
         direction = (2.0, 3.0, -4.0)
@@ -190,15 +307,156 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
             bone_index=10,
             pmx_flags=int(PmxBoneFlag.LOCAL_AXIS),
         )
+        local_axis_cmds = _ShapeOrientationFake(
+            {
+                "arm.mmd_bone_flags": int(PmxBoneFlag.LOCAL_AXIS),
+                "arm.mmd_connect_index": 11,
+                "arm.mmd_pmx_rest_position": [(0.0, 0.0, 0.0)],
+                "elbow.mmd_pmx_rest_position": [(0.0, 2.0, 0.0)],
+                "arm.mmd_local_x_axis": [(0.0, 1.0, 0.0)],
+                "arm.mmd_local_z_axis": [(0.0, 0.0, 1.0)],
+            }
+        )
+        local_axis_rotation = _control_shape_rotation(
+            local_axis_cmds,
+            "root",
+            "left_arm",
+            local_axis_binding,
+            {10: "arm", 11: "elbow"},
+        )
+        local_axis_aligned = _rotate_shape_point(
+            (0.0, 0.0, 1.0),
+            local_axis_rotation,
+        )
+        self.assertAlmostEqual(local_axis_aligned[0], 1.0)
+        self.assertAlmostEqual(local_axis_aligned[1], 0.0)
+        self.assertAlmostEqual(local_axis_aligned[2], 0.0)
+
+        missing_local_axis_cmds = _ShapeOrientationFake(
+            {
+                "arm.mmd_bone_flags": int(PmxBoneFlag.LOCAL_AXIS),
+                "arm.mmd_connect_index": 11,
+                "arm.mmd_pmx_rest_position": [(0.0, 0.0, 0.0)],
+                "elbow.mmd_pmx_rest_position": [(0.0, 2.0, 0.0)],
+            }
+        )
         self.assertIsNone(
             _control_shape_rotation(
-                cmds,
+                missing_local_axis_cmds,
                 "root",
                 "left_arm",
                 local_axis_binding,
                 {10: "arm", 11: "elbow"},
             )
         )
+
+    def test_arm_axes_use_mirrored_depth_and_child_direction(self):
+        values = {
+            "left_arm.mmd_bone_flags": 0,
+            "left_arm.mmd_connect_index": 11,
+            "left_arm.mmd_pmx_rest_position": [(0.0, 0.0, 0.0)],
+            "left_elbow.mmd_pmx_rest_position": [(2.0, -1.0, 0.5)],
+            "right_arm.mmd_bone_flags": 0,
+            "right_arm.mmd_connect_index": 21,
+            "right_arm.mmd_pmx_rest_position": [(0.0, 0.0, 0.0)],
+            "right_elbow.mmd_pmx_rest_position": [(-2.0, -1.0, 0.5)],
+        }
+        cmds = _ShapeOrientationFake(values)
+        identity = (
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        )
+
+        for role, joint, target, z_sign in (
+            ("left_arm", "left_arm", "left_elbow", -1.0),
+            ("right_arm", "right_arm", "right_elbow", 1.0),
+        ):
+            binding = SimpleNamespace(joint=joint, bone_index=10, pmx_flags=0)
+            rotation = _control_shape_rotation(
+                cmds,
+                "root",
+                role,
+                binding,
+                {11 if role.startswith("left") else 21: target},
+                bind_world_matrix=identity,
+            )
+            control_x = _rotate_shape_point((1.0, 0.0, 0.0), rotation)
+            control_z = _rotate_shape_point((0.0, 0.0, 1.0), rotation)
+            pmx_direction = values[f"{target}.mmd_pmx_rest_position"][0]
+            maya_direction = (
+                pmx_direction[0],
+                pmx_direction[1],
+                -pmx_direction[2],
+            )
+            direction_length = math.sqrt(sum(value * value for value in maya_direction))
+            expected_z = tuple(value / direction_length for value in maya_direction)
+
+            with self.subTest(role=role):
+                for actual, expected in zip(control_z, expected_z):
+                    self.assertAlmostEqual(actual, expected, places=12)
+                self.assertGreater(control_x[2] * z_sign, 0.9)
+                self.assertAlmostEqual(
+                    sum(control_x[index] * control_z[index] for index in range(3)),
+                    0.0,
+                    places=12,
+                )
+
+    def test_arm_axis_falls_back_when_child_is_parallel_to_depth(self):
+        values = {
+            "arm.mmd_bone_flags": 0,
+            "arm.mmd_connect_index": 11,
+            "arm.mmd_pmx_rest_position": [(0.0, 0.0, 0.0)],
+            "elbow.mmd_pmx_rest_position": [(0.0, 0.0, 2.0)],
+        }
+        rotation = _control_shape_rotation(
+            _ShapeOrientationFake(values),
+            "root",
+            "left_arm",
+            SimpleNamespace(joint="arm", bone_index=10, pmx_flags=0),
+            {11: "elbow"},
+        )
+
+        self.assertIsNotNone(rotation)
+        aligned = _rotate_shape_point((0.0, 0.0, 1.0), rotation)
+        self.assertAlmostEqual(aligned[0], 0.0, places=12)
+        self.assertAlmostEqual(aligned[1], 0.0, places=12)
+        self.assertAlmostEqual(aligned[2], -1.0, places=12)
+
+    def test_twist_ring_uses_child_direction_in_bind_local_space(self):
+        values = {
+            "twist.mmd_pmx_rest_position": [(0.0, 0.0, 0.0)],
+            "elbow.mmd_pmx_rest_position": [(1.0, 0.0, 0.0)],
+            "twist.mmd_fixed_axis": [(0.0, 1.0, 0.0)],
+        }
+        cmds = _ShapeOrientationFake(values, children={"twist": ["elbow"]})
+        binding = SimpleNamespace(joint="twist", bone_index=10, pmx_flags=0)
+        bind_matrix = (
+            0.0, 0.0, -1.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        )
+
+        rotation = _control_shape_rotation(
+            cmds,
+            "root",
+            "left_arm_twist",
+            binding,
+            {},
+            bind_world_matrix=bind_matrix,
+        )
+        local_z = _rotate_shape_point((0.0, 0.0, 1.0), rotation)
+        bind_axes = (bind_matrix[0:3], bind_matrix[4:7], bind_matrix[8:11])
+        world_z = tuple(
+            sum(local_z[index] * bind_axes[index][component] for index in range(3))
+            for component in range(3)
+        )
+
+        self.assertAlmostEqual(world_z[0], 1.0, places=12)
+        self.assertAlmostEqual(world_z[1], 0.0, places=12)
+        self.assertAlmostEqual(world_z[2], 0.0, places=12)
 
     def test_arm_chain_uses_sized_mmd_z_primary_circles(self):
         templates = _control_curve_templates()
@@ -284,6 +542,57 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
             [[-point[0], point[1], point[2]] for point in left_points],
         )
 
+    def test_arm_chain_keeps_primary_twist_controls_in_parent_route(self):
+        self.assertEqual(_ROLE_PARENTS["left_elbow"], "left_arm_twist")
+        self.assertEqual(_ROLE_PARENTS["left_wrist_twist"], "left_elbow")
+        self.assertEqual(_ROLE_PARENTS["left_wrist"], "left_wrist_twist")
+        self.assertEqual(_ROLE_PARENTS["right_elbow"], "right_arm_twist")
+        self.assertEqual(_ROLE_PARENTS["right_wrist_twist"], "right_elbow")
+        self.assertEqual(_ROLE_PARENTS["right_wrist"], "right_wrist_twist")
+
+    def test_twist_scale_is_half_and_neck_uses_local_bone_length(self):
+        values = {"twist.mmd_bone_offset": [(0.0, 0.0, 1.0)]}
+        cmds = _ShapeOrientationFake(values)
+        binding = SimpleNamespace(joint="twist", bone_index=1, pmx_flags=0)
+        self.assertAlmostEqual(
+            _role_controller_scale(cmds, "root", "left_arm_twist", binding, {}, 2.0),
+            1.0,
+        )
+
+        values = {"neck.mmd_bone_offset": [(0.0, 0.0, 0.2)]}
+        cmds = _ShapeOrientationFake(values)
+        binding = SimpleNamespace(joint="neck", bone_index=2, pmx_flags=0)
+        neck_scale = _role_controller_scale(cmds, "root", "neck", binding, {}, 2.0)
+        self.assertAlmostEqual(neck_scale, 0.3)
+        self.assertLess(neck_scale, 2.0)
+
+        missing_offset_cmds = _ShapeOrientationFake({})
+        self.assertAlmostEqual(
+            _role_controller_scale(
+                missing_offset_cmds,
+                "root",
+                "neck",
+                binding,
+                {},
+                2.0,
+            ),
+            3.0,
+        )
+
+    def test_ik_link_uses_the_same_authoring_basis_as_direct_controls(self):
+        rotation = ((0.0, 1.0, 0.0), 0.0, 1.0)
+        ik_binding = SimpleNamespace(input_kind=INPUT_IK_LINK_INPUT)
+        direct_binding = SimpleNamespace(input_kind="direct_channel")
+
+        self.assertEqual(
+            _control_basis_rotations(ik_binding, rotation),
+            (rotation, None),
+        )
+        self.assertEqual(
+            _control_basis_rotations(direct_binding, rotation),
+            (rotation, None),
+        )
+
 
 class _UuidBindingFake:
     """Resolve renamed scene nodes from stable UUIDs in binding metadata."""
@@ -359,6 +668,36 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
         )
         self.assertTrue(spec.can_build_mvp)
 
+    def test_missing_optional_semistandard_roles_are_omitted_without_blocker(self):
+        """Core MVP bones must remain buildable without semi-standard extras."""
+        facts = [
+            _bone(0, "センター"),
+            _bone(1, "左足ＩＫ", ik_solvers=("left_leg_ik_mmdCcdIk",)),
+            _bone(2, "右足IK", ik_solvers=("right_leg_ik_mmdCcdIk",)),
+        ]
+
+        spec = classify_mmd_control_rig("|model", facts)
+        roles = spec.roles_by_name
+
+        for role in (
+            "waist",
+            "left_foot_ik_parent",
+            "right_foot_ik_parent",
+            "left_toe_ik",
+            "right_toe_ik",
+            "upper_body",
+            "left_arm",
+            "left_leg",
+            "left_index_1",
+        ):
+            with self.subTest(role=role):
+                self.assertEqual(roles[role].status, STATUS_MISSING)
+                self.assertFalse(roles[role].blockers)
+                self.assertIsNone(roles[role].binding)
+
+        self.assertFalse(spec.blockers)
+        self.assertTrue(spec.can_build_mvp)
+
     def test_role_control_builder_aliases_semantic_fallback_but_keeps_model_root(self):
         facts = [_bone(0, "センター")]
 
@@ -403,7 +742,7 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
         }
 
         fake = _HierarchyFake()
-        _parent_zero_groups(fake, concrete_zeros, concrete_controls)
+        _parent_zero_groups(fake, concrete_zeros, concrete_controls, {})
         _apply_fallback_role_aliases(
             spec.roles,
             concrete_controls,
@@ -428,7 +767,7 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
             aliased_bindings,
         )
         with self.assertRaises(AssertionError):
-            _parent_zero_groups(aliased_fake, aliased_zeros, aliased_controls)
+            _parent_zero_groups(aliased_fake, aliased_zeros, aliased_controls, {})
 
     def test_finger_roles_resolve_variants_and_parent_as_fk_chains(self):
         facts = [
@@ -467,7 +806,7 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
             30,
         )
 
-        fake = _HierarchyFake()
+        fake = _HierarchyFake({"left_middle_1_JNT": "left_wrist_JNT"})
         controls = {
             "left_wrist": "left_wrist_CTRL",
             "left_middle_1": "left_middle_1_CTRL",
@@ -478,11 +817,141 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
             role: control.replace("_CTRL", "_ZERO")
             for role, control in controls.items()
         }
-        _parent_zero_groups(fake, zero_groups, controls)
+        helper_nodes = _parent_zero_groups(
+            fake,
+            zero_groups,
+            controls,
+            {"left_middle_1": "left_middle_1_JNT"},
+        )
 
-        self.assertEqual(fake.parent_by_child["left_middle_1_ZERO"], "left_wrist_CTRL")
+        self.assertNotIn("left_middle_1_ZERO", fake.parent_by_child)
+        self.assertEqual(
+            fake.constraints,
+            [
+                (
+                    "left_wrist_JNT",
+                    "left_middle_1_ZERO",
+                    {
+                        "maintainOffset": True,
+                        "name": "left_middle_1_ZERO_FOLLOW",
+                    },
+                )
+            ],
+        )
+        self.assertEqual(helper_nodes, ("left_middle_1_ZERO_FOLLOW",))
         self.assertEqual(fake.parent_by_child["left_middle_2_ZERO"], "left_middle_1_CTRL")
         self.assertEqual(fake.parent_by_child["left_middle_3_ZERO"], "left_middle_2_CTRL")
+
+    def test_arm_roles_follow_omitted_concrete_helper_joints(self):
+        fake = _HierarchyFake(
+            {
+                "left_shoulder_JNT": "left_shoulder_p_JNT",
+                "left_arm_JNT": "left_shoulder_c_JNT",
+                "left_elbow_JNT": "left_arm_twist_JNT",
+            }
+        )
+        controls = {
+            "upper_body2": "upper_body2_CTRL",
+            "left_shoulder": "left_shoulder_CTRL",
+            "left_arm": "left_arm_CTRL",
+            "left_elbow": "left_elbow_CTRL",
+        }
+        zero_groups = {
+            role: control.replace("_CTRL", "_ZERO")
+            for role, control in controls.items()
+        }
+        helper_nodes = _parent_zero_groups(
+            fake,
+            zero_groups,
+            controls,
+            {
+                "upper_body2": "upper_body2_JNT",
+                "left_shoulder": "left_shoulder_JNT",
+                "left_arm": "left_arm_JNT",
+                "left_elbow": "left_elbow_JNT",
+            },
+        )
+
+        self.assertEqual(
+            fake.constraints,
+            [
+                (
+                    "left_shoulder_p_JNT",
+                    "left_shoulder_ZERO",
+                    {"maintainOffset": True, "name": "left_shoulder_ZERO_FOLLOW"},
+                ),
+                (
+                    "left_shoulder_c_JNT",
+                    "left_arm_ZERO",
+                    {"maintainOffset": True, "name": "left_arm_ZERO_FOLLOW"},
+                ),
+                (
+                    "left_arm_twist_JNT",
+                    "left_elbow_ZERO",
+                    {"maintainOffset": True, "name": "left_elbow_ZERO_FOLLOW"},
+                ),
+            ],
+        )
+        self.assertEqual(
+            helper_nodes,
+            (
+                "left_shoulder_ZERO_FOLLOW",
+                "left_arm_ZERO_FOLLOW",
+                "left_elbow_ZERO_FOLLOW",
+            ),
+        )
+
+    def test_knee_controls_follow_evaluated_thigh_joints(self):
+        fake = _HierarchyFake(
+            {
+                "left_knee_JNT": "left_leg_JNT",
+                "right_knee_JNT": "right_leg_JNT",
+            }
+        )
+        controls = {
+            "left_leg": "left_leg_CTRL",
+            "left_knee": "left_knee_CTRL",
+            "right_leg": "right_leg_CTRL",
+            "right_knee": "right_knee_CTRL",
+        }
+        zero_groups = {
+            role: control.replace("_CTRL", "_ZERO")
+            for role, control in controls.items()
+        }
+
+        helper_nodes = _parent_zero_groups(
+            fake,
+            zero_groups,
+            controls,
+            {
+                "left_leg": "left_leg_JNT",
+                "left_knee": "left_knee_JNT",
+                "right_leg": "right_leg_JNT",
+                "right_knee": "right_knee_JNT",
+            },
+        )
+
+        self.assertNotIn("left_knee_ZERO", fake.parent_by_child)
+        self.assertNotIn("right_knee_ZERO", fake.parent_by_child)
+        self.assertEqual(
+            fake.constraints,
+            [
+                (
+                    "left_leg_JNT",
+                    "left_knee_ZERO",
+                    {"maintainOffset": True, "name": "left_knee_ZERO_FOLLOW"},
+                ),
+                (
+                    "right_leg_JNT",
+                    "right_knee_ZERO",
+                    {"maintainOffset": True, "name": "right_knee_ZERO_FOLLOW"},
+                ),
+            ],
+        )
+        self.assertEqual(
+            helper_nodes,
+            ("left_knee_ZERO_FOLLOW", "right_knee_ZERO_FOLLOW"),
+        )
 
     def test_p0_optional_roles_resolve_and_parent_through_available_chains(self):
         facts = [
@@ -513,7 +982,7 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
             role: control.replace("_CTRL", "_ZERO")
             for role, control in controls.items()
         }
-        _parent_zero_groups(fake, zero_groups, controls)
+        _parent_zero_groups(fake, zero_groups, controls, {})
 
         self.assertEqual(fake.parent_by_child["waist_ZERO"], "groove_CTRL")
         self.assertEqual(fake.parent_by_child["upper_body_ZERO"], "waist_CTRL")
@@ -549,6 +1018,97 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
             ("upper_mmdAppend.baseRotate", "upper_mmdAppend.baseTranslate"),
         )
         self.assertFalse(binding.blocked)
+
+    def test_bone_morph_accumulator_routes_direct_joint_to_base_inputs(self):
+        target = _bone(
+            3,
+            "左足IK",
+            ik_solvers=("left_leg_mmdCcdIk",),
+            incoming=(
+                _connection(
+                    "left_foot_boneMorphAccum.outputTranslate",
+                    "|model|bone_3.translate",
+                    "mmdBoneMorphAccum",
+                ),
+                _connection(
+                    "left_foot_boneMorphAccum.outputRotate",
+                    "|model|bone_3.rotate",
+                    "mmdBoneMorphAccum",
+                ),
+            ),
+            bone_morph_base_plugs=(
+                "left_foot_boneMorphAccum.baseTranslate",
+                "left_foot_boneMorphAccum.baseRotate",
+            ),
+        )
+
+        spec = classify_mmd_control_rig("|model", [target])
+        binding = spec.bones[0]
+        role = spec.roles_by_name["left_foot_ik"]
+
+        self.assertEqual(binding.input_kind, INPUT_IK_CONTROLLER)
+        self.assertEqual(role.binding.input_kind, INPUT_IK_CONTROLLER)
+        self.assertEqual(
+            role.binding.authored_plugs,
+            (
+                "left_foot_boneMorphAccum.baseRotate",
+                "left_foot_boneMorphAccum.baseTranslate",
+            ),
+        )
+        self.assertFalse(role.blockers)
+
+    def test_bone_morph_accumulator_routes_thigh_fk_to_base_before_solver(self):
+        thigh = _bone(
+            0,
+            "左足",
+            incoming=(
+                _connection(
+                    "left_leg_mmdCcdIk.outputRotate[0]",
+                    "|model|bone_0.rotate",
+                    "mmdCcdIk",
+                ),
+            ),
+            solver_input_plugs=tuple(
+                f"left_leg_mmdCcdIk.inputRotate[7].inputRotateElement{axis}"
+                for axis in "XYZ"
+            ),
+            bone_morph_base_plugs=("left_leg_boneMorphAccum.baseRotate",),
+        )
+
+        spec = classify_mmd_control_rig("|model", [thigh])
+        role = spec.roles_by_name["left_leg"]
+        self.assertEqual(role.status, STATUS_READY)
+        self.assertEqual(role.binding.input_kind, INPUT_IK_LINK_INPUT)
+        self.assertEqual(
+            role.binding.authored_plugs,
+            ("left_leg_boneMorphAccum.baseRotate",),
+        )
+
+    def test_bone_morph_route_with_unknown_composer_stays_blocked(self):
+        target = _bone(
+            3,
+            "左足IK",
+            ik_solvers=("left_leg_mmdCcdIk",),
+            incoming=(
+                _connection(
+                    "left_foot_boneMorphAccum.outputTranslate",
+                    "|model|bone_3.translate",
+                    "mmdBoneMorphAccum",
+                ),
+                _connection(
+                    "unknown_composer.outputTranslate",
+                    "|model|bone_3.translate",
+                    "mysteryComposer",
+                ),
+            ),
+            bone_morph_base_plugs=("left_foot_boneMorphAccum.baseTranslate",),
+        )
+
+        spec = classify_mmd_control_rig("|model", [target])
+        role = spec.roles_by_name["left_foot_ik"]
+        self.assertEqual(role.status, STATUS_BLOCKED)
+        self.assertTrue(role.blockers)
+        self.assertEqual(role.binding.input_kind, INPUT_UNSUPPORTED)
 
     def test_solver_outputs_physics_and_external_writers_fail_closed(self):
         solver_link = _bone(

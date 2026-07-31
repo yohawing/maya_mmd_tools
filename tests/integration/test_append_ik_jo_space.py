@@ -65,6 +65,57 @@ def _assert_angles_close(test_case, actual, expected, tol=0.01, msg=""):
         )
 
 
+def _reflect_world_matrix(matrix):
+    """MMD/Maya の Z 反転を Maya の行列型で適用する。"""
+    signs = (1.0, 1.0, -1.0)
+    reflected = om.MMatrix(matrix)
+    for row in range(3):
+        for col in range(3):
+            index = row * 4 + col
+            reflected[index] = matrix[index] * signs[row] * signs[col]
+    for col in range(3):
+        reflected[12 + col] = matrix[12 + col] * signs[col]
+    return reflected
+
+
+def _rotation_matrix(quaternion):
+    transform = om.MTransformationMatrix()
+    transform.setRotation(quaternion)
+    return transform.asMatrix()
+
+
+def _native_bind_space_output(
+    base_rotate, target_jo, grant_mmd, target_bind, target_no_orient,
+    parent_bind, parent_no_orient,
+):
+    """mmdAppend の native bind-space 式を独立な Python 参照として評価する。"""
+    base_total = _degrees_to_quat(*base_rotate) * target_jo
+    maya_local = _rotation_matrix(base_total)
+    runtime_local_maya = (
+        target_no_orient * target_bind.inverse() * maya_local
+        * parent_bind * parent_no_orient.inverse()
+    )
+    runtime_final = _reflect_world_matrix(runtime_local_maya) * _rotation_matrix(grant_mmd)
+    maya_final = (
+        target_bind * target_no_orient.inverse()
+        * _reflect_world_matrix(runtime_final)
+        * parent_no_orient * parent_bind.inverse()
+    )
+    final_total = om.MTransformationMatrix(maya_final).rotation().asQuaternion()
+    final_rotate = final_total * target_jo.inverse()
+    final_rotate.normalizeIt()
+    return final_rotate
+
+
+def _double_array_values(value):
+    """Maya の doubleArray getAttr 結果を平坦な tuple にする。"""
+    if value is None:
+        return ()
+    if len(value) == 2 and isinstance(value[1], (list, tuple)):
+        return tuple(value[1])
+    return tuple(value)
+
+
 @unittest.skipUnless(is_rig_primitive_available(), "mmd-anim runtime not available")
 class TestMmdAppendJointOrient(MayaTestBase):
     """mmdAppend ノードの JO 空間変換テスト"""
@@ -209,6 +260,108 @@ class TestMmdAppendJointOrient(MayaTestBase):
             source, base, src_jo, target_jo, 0.7
         )
         _assert_angles_close(self, actual, expected, msg="large multi-axis JO")
+
+    def test_native_foot_d_quaternion_bind_and_jo_aware_skin_contract(self):
+        """IK link quaternion → 足D local → JO-aware skin の契約を固定する。
+
+        実際の rig converter と同じ bind capture を通し、sourceRotate の
+        互換入力ではなく native ``sourceMmdLinkQuaternions`` が bind-space
+        式へ渡ることを確認する。skin 行列は target の初期 bind inverse を
+        左から掛け、JO を含む Maya の実ジオメトリ空間で比較する。
+        """
+        from mmd_tools.converters.rig_converter import RigConverter
+
+        parent = cmds.createNode("joint", name="append_foot_d_parent")
+        cmds.setAttr(f"{parent}.translate", 2.0, 3.0, 4.0, type="double3")
+        cmds.setAttr(f"{parent}.jointOrient", 0.0, 12.0, -7.0, type="double3")
+
+        target = cmds.createNode("joint", name="append_foot_d")
+        cmds.parent(target, parent)
+        target_jo_deg = (17.0, -11.0, 23.0)
+        cmds.setAttr(f"{target}.translate", 0.0, 6.0, 0.0, type="double3")
+        cmds.setAttr(f"{target}.jointOrient", *target_jo_deg, type="double3")
+
+        target_bind = om.MMatrix(cmds.getAttr(f"{target}.worldMatrix[0]"))
+        source_q = _degrees_to_quat(19.0, -13.0, 8.0)
+        source_values = (source_q.x, source_q.y, source_q.z, source_q.w)
+
+        node = cmds.createNode("mmdAppend", name="append_foot_d_native")
+        if not cmds.attributeQuery("sourceMmdLinkQuaternions", node=node, exists=True):
+            self.skipTest("C++ mmdAppend bind-space attributes are not loaded")
+        cmds.setAttr(f"{node}.schemaMode", 2)
+        cmds.setAttr(f"{node}.baseRotate", 0.0, 0.0, 0.0, type="double3")
+        cmds.setAttr(f"{node}.sourceRotate", 0.0, 0.0, 0.0, type="double3")
+        cmds.setAttr(f"{node}.sourceJointOrient", 0.0, 0.0, 0.0, type="double3")
+        cmds.setAttr(f"{node}.targetJointOrient", *target_jo_deg, type="double3")
+        cmds.setAttr(f"{node}.ratio", 1.0)
+        cmds.setAttr(f"{node}.affectRotation", True)
+        cmds.setAttr(f"{node}.affectTranslation", False)
+        cmds.setAttr(
+            f"{node}.sourceMmdLinkQuaternions", list(source_values), type="doubleArray"
+        )
+        cmds.setAttr(f"{node}.sourceMmdLinkIndex", 0)
+        RigConverter._configure_append_bind_space(node, target)
+
+        bind_attrs = {
+            attr: om.MMatrix(cmds.getAttr(f"{node}.{attr}"))
+            for attr in (
+                "targetMayaBindWorldMatrix",
+                "targetNoOrientBindWorldMatrix",
+                "parentMayaBindWorldMatrix",
+                "parentNoOrientBindWorldMatrix",
+            )
+        }
+        self.assertTrue(cmds.getAttr(f"{node}.useTargetBindMatrices"))
+
+        # (1) grant/source quaternion: native link data and index must be the
+        # values consumed by the append node, not the zero compatibility input.
+        self.assertEqual(cmds.getAttr(f"{node}.sourceMmdLinkIndex"), 0)
+        self.assertListAlmostEqual(
+            _double_array_values(cmds.getAttr(f"{node}.sourceMmdLinkQuaternions")),
+            source_values,
+            places=7,
+        )
+        append_rot = cmds.getAttr(f"{node}.appendRotate")[0]
+        _assert_angles_close(
+            self, append_rot, _quat_to_degrees(source_q), tol=1e-4,
+            msg="native grant/source quaternion",
+        )
+
+        # (2) target local: independently evaluate the native bind-space
+        # conversion and compare the actual outputRotate plug.
+        expected_q = _native_bind_space_output(
+            (0.0, 0.0, 0.0),
+            _degrees_to_quat(*target_jo_deg),
+            source_q,
+            bind_attrs["targetMayaBindWorldMatrix"],
+            bind_attrs["targetNoOrientBindWorldMatrix"],
+            bind_attrs["parentMayaBindWorldMatrix"],
+            bind_attrs["parentNoOrientBindWorldMatrix"],
+        )
+        expected_local = _quat_to_degrees(expected_q)
+        actual_local = cmds.getAttr(f"{node}.outputRotate")[0]
+        _assert_angles_close(self, actual_local, expected_local, tol=1e-4, msg="foot D target local")
+
+        # (3) JO-aware skin: connect the same output to a real joint and compare
+        # bindPreMatrix * worldMatrix against a separately authored reference
+        # joint. This catches a local-rotation-only false positive.
+        cmds.connectAttr(f"{node}.outputRotate", f"{target}.rotate", force=True)
+        expected_target = cmds.createNode("joint", name="append_foot_d_expected")
+        cmds.parent(expected_target, parent)
+        cmds.setAttr(f"{expected_target}.translate", 0.0, 6.0, 0.0, type="double3")
+        cmds.setAttr(f"{expected_target}.jointOrient", *target_jo_deg, type="double3")
+        cmds.setAttr(f"{expected_target}.rotate", *expected_local, type="double3")
+
+        actual_skin = target_bind.inverse() * om.MMatrix(cmds.getAttr(f"{target}.worldMatrix[0]"))
+        expected_skin = target_bind.inverse() * om.MMatrix(
+            cmds.getAttr(f"{expected_target}.worldMatrix[0]")
+        )
+        self.assertListAlmostEqual(
+            [float(value) for value in actual_skin],
+            [float(value) for value in expected_skin],
+            places=5,
+            msg="foot D JO-aware skin matrix",
+        )
 
 
 @unittest.skipUnless(is_rig_primitive_available(), "mmd-anim runtime not available")

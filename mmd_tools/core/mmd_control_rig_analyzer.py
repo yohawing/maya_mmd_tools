@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -18,6 +19,8 @@ from mmd_tools.core.constants import (
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
+    ATTR_MMD_FIXED_AXIS,
+    ATTR_MMD_AXIS_DIRECTION,
 )
 from mmd_tools.core.display_frame_metadata import display_frames_from_json
 from mmd_tools.core.humanik_utils import maya_cmds
@@ -30,6 +33,7 @@ CONTROL_RIG_SPEC_VERSION = 1
 
 INPUT_DIRECT_CHANNEL = "direct_channel"
 INPUT_APPEND_BASE = "append_base"
+INPUT_BONE_MORPH_BASE = "bone_morph_base"
 INPUT_IK_CONTROLLER = "ik_controller"
 INPUT_IK_LINK_INPUT = "ik_link_input"
 INPUT_SOLVER_OUTPUT = "solver_output"
@@ -86,6 +90,8 @@ class MmdControlRigBoneFact:
     incoming: Tuple[MmdControlRigConnectionFact, ...] = ()
     ik_solvers: Tuple[str, ...] = ()
     solver_input_plugs: Tuple[str, ...] = ()
+    bone_morph_base_plugs: Tuple[str, ...] = ()
+    fixed_axis: Optional[Tuple[float, float, float]] = None
 
 
 @dataclass(frozen=True)
@@ -102,6 +108,7 @@ class MmdControlRigBoneBinding:
     blockers: Tuple[str, ...] = ()
     ik_solvers: Tuple[str, ...] = ()
     incoming: Tuple[MmdControlRigConnectionFact, ...] = ()
+    fixed_axis: Optional[Tuple[float, float, float]] = None
 
     @property
     def blocked(self) -> bool:
@@ -124,6 +131,7 @@ class MmdControlRigBoneBinding:
             "blockers": list(self.blockers),
             "ikSolvers": list(self.ik_solvers),
             "incoming": [connection.to_dict() for connection in self.incoming],
+            "fixedAxis": list(self.fixed_axis) if self.fixed_axis is not None else None,
         }
 
 
@@ -202,6 +210,7 @@ class _RoleDefinition:
     fallback_model_root: bool = False
     requires_ik_solver: bool = False
     uses_solver_input: bool = False
+    twist_primary: bool = False
 
 
 _MVP_ROLE_DEFINITIONS = (
@@ -255,6 +264,19 @@ _OPTIONAL_FK_ROLE_DEFINITIONS = (
     _RoleDefinition("right_knee", ("右ひざ", "右膝"), uses_solver_input=True),
 ) + _FINGER_ROLE_DEFINITIONS
 
+# Optional ring controllers are deliberately limited to the four canonical
+# primary twist bones. Their secondary 捩1〜3 children remain outside this
+# role table and keep the existing mmdAppend distribution.
+_OPTIONAL_TWIST_ROLE_DEFINITIONS = tuple(
+    _RoleDefinition(role, names, twist_primary=True)
+    for role, names in (
+        ("left_arm_twist", ("左腕捩",)),
+        ("right_arm_twist", ("右腕捩",)),
+        ("left_wrist_twist", ("左手捩",)),
+        ("right_wrist_twist", ("右手捩",)),
+    )
+)
+
 
 def classify_mmd_control_rig(
     model_root: str,
@@ -294,6 +316,20 @@ def classify_mmd_control_rig(
             bindings_by_joint,
             resolved_roles,
             model_root,
+            optional=True,
+        )
+        roles.append(role)
+        resolved_roles[role.role] = role
+        report_warnings.extend(role.warnings)
+
+    for definition in _OPTIONAL_TWIST_ROLE_DEFINITIONS:
+        role = _resolve_role(
+            definition,
+            facts_by_name,
+            bindings_by_joint,
+            resolved_roles,
+            model_root,
+            optional=True,
         )
         roles.append(role)
         resolved_roles[role.role] = role
@@ -340,6 +376,7 @@ def analyze_mmd_control_rig(model_root: str, cmds_module=None) -> MmdControlRigS
     for joint in sorted(set(str(node) for node in joints)):
         if not _has_attr(cmds, joint, ATTR_MMD_BONE_INDEX):
             continue
+        fixed_axis = _fixed_axis_value(cmds, joint)
         bone_rows.append(
             {
                 "joint": joint,
@@ -347,6 +384,7 @@ def analyze_mmd_control_rig(model_root: str, cmds_module=None) -> MmdControlRigS
                 "bone_index": int(_get_attr(cmds, joint, ATTR_MMD_BONE_INDEX, -1)),
                 "pmx_flags": int(_get_attr(cmds, joint, ATTR_MMD_BONE_FLAGS, 0)),
                 "incoming": _collect_incoming_connections(cmds, joint),
+                "fixed_axis": fixed_axis,
             }
         )
     if not bone_rows:
@@ -368,6 +406,12 @@ def analyze_mmd_control_rig(model_root: str, cmds_module=None) -> MmdControlRigS
                 )
             ),
             solver_input_plugs=_solver_input_rotate_plugs(cmds, row["incoming"]),
+            bone_morph_base_plugs=_bone_morph_base_plugs(
+                cmds,
+                row["joint"],
+                row["incoming"],
+            ),
+            fixed_axis=row["fixed_axis"],
         )
         for row in bone_rows
     ]
@@ -416,12 +460,25 @@ def _classify_bone_input(fact: MmdControlRigBoneFact) -> MmdControlRigBoneBindin
             or ".outputTranslate" in row.source_plug
         )
     ]
+    bone_morph_outputs = [
+        row
+        for row in incoming
+        if row.source_node_type == "mmdBoneMorphAccum"
+        and (
+            ".outputRotate" in row.source_plug
+            or ".outputTranslate" in row.source_plug
+        )
+    ]
+    bone_morph_base_plugs = tuple(
+        _unique_sorted(fact.bone_morph_base_plugs)
+    )
     unsupported = [
         row
         for row in incoming
         if row not in physics
         and row not in solver_outputs
         and row not in append_outputs
+        and row not in bone_morph_outputs
         and not _is_animation_source(row.source_node_type)
     ]
 
@@ -458,6 +515,23 @@ def _classify_bone_input(fact: MmdControlRigBoneFact) -> MmdControlRigBoneBindin
             )
         )
         return _bone_binding(fact, INPUT_UNSUPPORTED, (), incoming, blockers=blockers)
+    if bone_morph_base_plugs:
+        if fact.ik_solvers:
+            # IK controllers remain responsible for solver state, but their
+            # authored TRS must enter the accumulator so morph and control
+            # values have one effective writer before the solver goal.
+            return _bone_binding(
+                fact,
+                INPUT_IK_CONTROLLER,
+                bone_morph_base_plugs,
+                incoming,
+            )
+        return _bone_binding(
+            fact,
+            INPUT_BONE_MORPH_BASE,
+            bone_morph_base_plugs,
+            incoming,
+        )
     if append_outputs:
         authored = []
         for row in append_outputs:
@@ -507,6 +581,7 @@ def _bone_binding(
         blockers=blockers,
         ik_solvers=tuple(sorted(set(fact.ik_solvers))),
         incoming=incoming,
+        fixed_axis=fact.fixed_axis,
     )
 
 
@@ -516,6 +591,8 @@ def _resolve_role(
     bindings_by_joint: Mapping[str, MmdControlRigBoneBinding],
     resolved_roles: Mapping[str, MmdControlRigRoleBinding],
     model_root: str,
+    *,
+    optional: bool = False,
 ) -> MmdControlRigRoleBinding:
     candidates: List[MmdControlRigBoneFact] = []
     for name in definition.mmd_names:
@@ -556,6 +633,13 @@ def _resolve_role(
                 fallback="model_root",
                 warnings=(warning,),
             )
+        if optional:
+            warning = f"{definition.role}: optional MMD bone is missing; control omitted"
+            return MmdControlRigRoleBinding(
+                role=definition.role,
+                status=STATUS_MISSING,
+                warnings=(warning,),
+            )
         blocker = f"{definition.role}: required MMD bone is missing"
         return MmdControlRigRoleBinding(
             role=definition.role,
@@ -567,19 +651,34 @@ def _resolve_role(
     binding = bindings_by_joint[winner.joint]
     warnings = []
     blockers = list(binding.blockers)
+    if definition.twist_primary:
+        if not (binding.pmx_flags & int(PmxBoneFlag.AXIS_FIXED)):
+            blockers.append(
+                f"{definition.role}: primary twist ring requires PMX fixed-axis authority"
+            )
+        if binding.fixed_axis is None:
+            blockers.append(
+                f"{definition.role}: fixed-axis metadata is missing or degenerate"
+            )
+        if binding.input_kind not in {INPUT_DIRECT_CHANNEL, INPUT_APPEND_BASE}:
+            blockers.append(
+                f"{definition.role}: primary twist ring requires direct or Append-authored input"
+            )
     if definition.uses_solver_input:
-        if winner.solver_input_plugs:
+        authored_plugs = winner.bone_morph_base_plugs or winner.solver_input_plugs
+        if authored_plugs:
             binding = MmdControlRigBoneBinding(
                 joint=winner.joint,
                 mmd_name=winner.mmd_name,
                 bone_index=winner.bone_index,
                 pmx_flags=winner.pmx_flags,
                 input_kind=INPUT_IK_LINK_INPUT,
-                authored_plugs=winner.solver_input_plugs,
+                authored_plugs=authored_plugs,
                 ik_solvers=tuple(
                     sorted({plug.split(".", 1)[0] for plug in winner.solver_input_plugs})
                 ),
                 incoming=winner.incoming,
+                fixed_axis=winner.fixed_axis,
             )
             blockers = []
         else:
@@ -636,6 +735,135 @@ def _solver_input_rotate_plugs(
         base = f"{node}.inputRotate[{slot}]"
         plugs.extend(f"{base}.inputRotateElement{axis}" for axis in "XYZ")
     return tuple(_unique_sorted(plugs))
+
+
+def _bone_morph_base_plugs(
+    cmds,
+    joint: str,
+    incoming: Iterable[MmdControlRigConnectionFact],
+) -> Tuple[str, ...]:
+    """Resolve supported accumulator outputs to their writable base inputs.
+
+    ``mmdBoneMorphAccum`` is an intermediate composer, never an authoring
+    output.  Only the known MMD routes are followed: accumulator output to a
+    joint, an ``mmdAppend`` base, or an ``mmdCcdIk`` pre-input.  Unknown
+    composer/writer graphs intentionally return no route and remain blocked by
+    :func:`_classify_bone_input`.
+    """
+
+    plugs = []
+    for row in incoming:
+        source_node, source_attr = row.source_plug.split(".", 1)
+        if row.source_node_type == "mmdBoneMorphAccum":
+            base = _accum_base_from_output(source_node, source_attr)
+            if base:
+                plugs.append(base)
+            continue
+        if row.source_node_type == "mmdAppend":
+            append_base = _append_base_from_output(source_attr)
+            plugs.extend(
+                _accum_bases_from_destination(
+                    cmds,
+                    f"{source_node}.{append_base}" if append_base else None,
+                )
+            )
+            continue
+        if row.source_node_type == "mmdCcdIk" and ".outputRotate" in source_attr:
+            input_plug = _ccd_ik_input_compound_from_output(
+                cmds,
+                source_node,
+                source_attr,
+            )
+            plugs.extend(_accum_bases_from_destination(cmds, input_plug))
+
+    # A solver's input may be the effective destination even when its output
+    # is the only source visible on the authored link joint.  Resolve the
+    # solver pre-input separately so thigh/knee FK does not bypass the morph
+    # composer.
+    for target in _solver_input_rotate_plugs(cmds, incoming):
+        input_compound = target.rsplit(".inputRotateElement", 1)[0]
+        plugs.extend(_accum_bases_from_destination(cmds, input_compound))
+
+    return tuple(_unique_sorted(plugs))
+
+
+def _accum_base_from_output(node: str, source_attr: str) -> Optional[str]:
+    if source_attr.startswith("outputRotate"):
+        return f"{node}.baseRotate"
+    if source_attr.startswith("outputTranslate"):
+        return f"{node}.baseTranslate"
+    return None
+
+
+def _append_base_from_output(source_attr: str) -> Optional[str]:
+    if source_attr.startswith("outputRotate"):
+        return "baseRotate"
+    if source_attr.startswith("outputTranslate"):
+        return "baseTranslate"
+    return None
+
+
+def _accum_bases_from_destination(cmds, destination: Optional[str]) -> Tuple[str, ...]:
+    """Find accumulator sources feeding a known pre-input destination."""
+    if not destination:
+        return ()
+    plugs = []
+    destinations = [destination]
+    if ".inputRotate[" in destination:
+        destinations.extend(
+            f"{destination}.inputRotateElement{axis}" for axis in "XYZ"
+        )
+    elif destination.endswith(("baseRotate", "baseTranslate")):
+        destinations.extend(f"{destination}{axis}" for axis in "XYZ")
+    for target in destinations:
+        try:
+            sources = cmds.listConnections(
+                target,
+                source=True,
+                destination=False,
+                plugs=True,
+            ) or []
+        except Exception:
+            sources = []
+        for source in sources:
+            source_node, source_attr = str(source).split(".", 1)
+            try:
+                source_type = str(cmds.nodeType(source_node))
+            except Exception:
+                continue
+            if source_type != "mmdBoneMorphAccum":
+                continue
+            base = _accum_base_from_output(source_node, source_attr)
+            if base:
+                plugs.append(base)
+    return tuple(_unique_sorted(plugs))
+
+
+def _ccd_ik_input_compound_from_output(
+    cmds,
+    ik_node: str,
+    source_attr: str,
+) -> Optional[str]:
+    link_index = _array_index(source_attr, "outputRotate")
+    if link_index is None:
+        return None
+    try:
+        chain = json.loads(cmds.getAttr(f"{ik_node}.chainJson") or "{}")
+        links = chain.get("links") or []
+        slot = int(links[link_index].get("bone_slot", link_index))
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        slot = link_index
+    return f"{ik_node}.inputRotate[{slot}]"
+
+
+def _array_index(source_attr: str, array_name: str) -> Optional[int]:
+    match = re.match(rf"^{re.escape(array_name)}\[(\d+)\]", source_attr)
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
 
 
 def _collect_incoming_connections(cmds, joint: str) -> Tuple[MmdControlRigConnectionFact, ...]:
@@ -718,6 +946,24 @@ def _get_attr(cmds, node: str, attribute: str, default=None):
         return cmds.getAttr(f"{node}.{attribute}")
     except Exception:
         return default
+
+
+def _fixed_axis_value(cmds, node: str) -> Optional[Tuple[float, float, float]]:
+    """Read and validate imported PMX fixed-axis metadata."""
+
+    value = _get_attr(cmds, node, ATTR_MMD_FIXED_AXIS, None)
+    if value is None:
+        value = _get_attr(cmds, node, ATTR_MMD_AXIS_DIRECTION, None)
+    if isinstance(value, (list, tuple)) and len(value) == 1:
+        value = value[0]
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        return None
+    try:
+        vector = tuple(float(component) for component in value)
+    except (TypeError, ValueError):
+        return None
+    length = sum(component * component for component in vector) ** 0.5
+    return vector if length > 1.0e-8 and all(math.isfinite(component) for component in vector) else None
 
 
 def _unique_sorted(values: Iterable[str]) -> List[str]:

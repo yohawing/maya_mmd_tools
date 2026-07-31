@@ -20,6 +20,8 @@ class TestFixtureProvider:
     # registered merely because a similarly named PMX happens to be present.
     _FIXTURE_MANIFESTS = {
         "yw_test_model": "yw_test_model.fixture.json",
+        "yw_test_model_control_rig_vmd": "yw_test_model_control_rig_vmd.fixture.json",
+        "yw_test_model_control_rig_bone_morph": "yw_test_model_control_rig_bone_morph.fixture.json",
     }
 
     def __init__(self, data_dir: str = None):
@@ -128,6 +130,22 @@ class TestFixtureProvider:
             if entry.get("kind") == "pmx":
                 return verified["files"][entry["path"]]
         raise ValueError(f"Fixture '{name}' has no PMX file entry")
+
+    def get_verified_vmd_file(self, name: str = "yw_test_model_control_rig_vmd") -> str:
+        """Return a manifest-backed VMD path after size and SHA-256 checks."""
+        verified = self.get_verified_fixture(name)
+        for entry in verified["manifest"]["files"]:
+            if entry.get("kind") == "vmd":
+                return verified["files"][entry["path"]]
+        raise ValueError(f"Fixture '{name}' has no VMD file entry")
+
+    def get_verified_source_file(self, name: str = "yw_test_model_control_rig_vmd") -> str:
+        """Return deterministic fixture source JSON after manifest verification."""
+        verified = self.get_verified_fixture(name)
+        for entry in verified["manifest"]["files"]:
+            if entry.get("kind") == "source":
+                return verified["files"][entry["path"]]
+        raise ValueError(f"Fixture '{name}' has no source file entry")
 
     def _get_default_data_dir(self) -> str:
         """デフォルトのデータディレクトリを取得

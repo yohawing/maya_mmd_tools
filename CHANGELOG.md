@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- Made the Physics tab Enable checkbox toggle simulation immediately instead of automatically pre-rolling every frame from the saved start frame.
+
+## [0.6.1] - 2026-07-30
+
+### Added
+- Added an opt-in MMD Control Rig authoring workflow with model-import creation, automatic binding, a manager and picker, IK/FK and twist controls, animation-layer support, reversible bake/restore operations, and direct VMD import to existing controls.
+- Added experimental registered sparse VMD import and per-control rotation time curves so editable Control Rig keys can retain MMD Bezier timing and quaternion short-path evaluation.
+- Added model-scoped Bone Morph routing for Control Rig motion and export, saved physics bind-basis evaluation, physics enable pre-roll, and tri-state Animator visibility controls.
+
+### Changed
+- Updated the bundled `mmd-anim` runtime to 0.3.3 and expanded runtime provenance and compiled-track introspection used by VMD import.
+- Made MMD Control Rig and HumanIK ownership explicit so only one authoring route writes the underlying MMD rig at a time.
+- Locked Control Rig authoring channels and preserved their authored basis, animation-layer ownership, and sparse key timing across creation, reimport, bake, save, and reopen workflows.
+
+### Fixed
+- Stabilized native and Python CCD IK handling for local axes, bind-space reconstruction, root-space goals, non-finite inputs, near-zero quaternions, and Maya-authored iteration and angle-limit values.
+- Made VMD reimport transactional across namespaced models, IK state keys, registered rotation timing, curve connections, metadata, and pre-existing motion, with exact rollback on failure.
+- Kept finger controls attached to evaluated wrists, excluded zero-weight skin influences, isolated HumanIK Bone Morph writers, and preserved model-scoped morph weights during export.
+- Improved live physics startup and playback with saved bind bases, deterministic pre-roll, unchanged-pose caching, and support for unattached rigid bodies.
+
+### Known Issues
+- MMD Control Rig, registered sparse VMD keys, and rotation time curves remain experimental and opt-in. For the broadest compatibility, use the normal high-precision Bake path.
+- The external world-space mesh oracle can show a shared residual on SDEF-deformed vertices (observed maximum `0.026398` on the coverage fixture). Because the same residual appears on both legacy and Control Rig routes, it is excluded from bone-route parity and release acceptance.
+- HumanIK retargeting remains experimental and may require manual lower-body or locomotion correction on some models.
+- User-facing PMX/PMD/VMD export remains unavailable; current writer and round-trip paths are development-only.
+- Additional UV, Flip, Impulse, and PMX 2.1 soft-body workflows remain unsupported.
+
 ## [0.6.0] - 2026-07-26
 
 ### Added

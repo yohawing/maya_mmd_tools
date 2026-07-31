@@ -6,7 +6,11 @@ import maya.cmds as cmds
 
 from mmd_tools.converters.vmd_context import VmdImportStateContext
 from mmd_tools.converters.vmd_converter import VmdConverter
-from mmd_tools.converters.vmd_import_state import clear_existing_motion, record_bind_poses
+from mmd_tools.converters.vmd_import_state import (
+    clear_existing_motion,
+    get_stored_bind_translate,
+    record_bind_poses,
+)
 from mmd_tools.core.constants import ATTR_MMD_BONE_NAME
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from tests.common.maya_test_base import MayaTestBase
@@ -114,6 +118,20 @@ class TestVmdMotionClear(MayaTestBase):
         self.assertAlmostEqual(cmds.getAttr(f"{joint}.rotateX"), 0.0, places=4)
         self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateX"), rest_tx, places=4)
 
+    def test_reimport_does_not_overwrite_persisted_bind_translate_with_live_pose(self):
+        joint = cmds.joint(name="immutable_bind_translate_joint")
+        cmds.setAttr(f"{joint}.translate", 1.0, 2.0, 3.0)
+        self.converter.bone_name_mapping = {"test_bone": joint}
+        context = self._import_state_context()
+        record_bind_poses(context)
+        self.assertEqual(get_stored_bind_translate(joint), (1.0, 2.0, 3.0))
+
+        cmds.setAttr(f"{joint}.translate", 7.0, 8.0, 9.0)
+        record_bind_poses(context)
+
+        self.assertEqual(get_stored_bind_translate(joint), (1.0, 2.0, 3.0))
+        self.assertEqual(context.bone_bind_poses["test_bone"], (7.0, 8.0, 9.0))
+
     def test_clear_existing_motion_does_not_clear_camera_or_light_keys(self):
         """clear_existing_motion はモデル motion だけを対象にし、camera/light key は残す。"""
         camera = self.converter._get_or_create_camera()
@@ -152,10 +170,74 @@ class TestVmdMotionClear(MayaTestBase):
         append_a = cmds.createNode("transform", name="clear_model_a_append")
         append_b = cmds.createNode("transform", name="clear_model_b_append")
         for append_node, joint in ((append_a, joint_a), (append_b, joint_b)):
-            cmds.addAttr(append_node, longName="baseRotateX", attributeType="double", keyable=True)
+            for attribute in ("baseTranslateX", "baseRotateX"):
+                cmds.addAttr(append_node, longName=attribute, attributeType="double", keyable=True)
             cmds.addAttr(append_node, longName="mmd_owner_joint", attributeType="message")
+            cmds.addAttr(append_node, longName="mmd_model_root", attributeType="message")
             cmds.connectAttr(f"{joint}.message", f"{append_node}.mmd_owner_joint")
-            cmds.setKeyframe(append_node, attribute="baseRotateX", time=4, value=10.0)
+            root = root_a if append_node == append_a else root_b
+            cmds.connectAttr(f"{root}.message", f"{append_node}.mmd_model_root")
+            cmds.setKeyframe(append_node, attribute="baseTranslateX", time=4, value=10.0)
+            cmds.setKeyframe(append_node, attribute="baseRotateX", time=7, value=20.0)
+
+        append_attrs = ("baseTranslateX", "baseRotateX")
+        append_snapshots = {}
+        for append_node, joint, root in (
+            (append_a, joint_a, root_a),
+            (append_b, joint_b, root_b),
+        ):
+            append_snapshots[append_node] = {
+                "uuid": cmds.ls(append_node, uuid=True)[0],
+                "joint_connection": cmds.listConnections(
+                    f"{append_node}.mmd_owner_joint",
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                ),
+                "root_connection": cmds.listConnections(
+                    f"{append_node}.mmd_model_root",
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                ),
+                "curves": {
+                    attribute: {
+                        "nodes": cmds.listConnections(
+                            f"{append_node}.{attribute}",
+                            source=True,
+                            destination=False,
+                            type="animCurve",
+                        )
+                        or [],
+                        "connections": cmds.listConnections(
+                            f"{append_node}.{attribute}",
+                            source=True,
+                            destination=False,
+                            plugs=True,
+                        )
+                        or [],
+                        "times": cmds.keyframe(
+                            f"{append_node}.{attribute}",
+                            query=True,
+                            timeChange=True,
+                        ),
+                        "values": cmds.keyframe(
+                            f"{append_node}.{attribute}",
+                            query=True,
+                            valueChange=True,
+                        ),
+                    }
+                    for attribute in append_attrs
+                },
+            }
+            self.assertEqual(append_snapshots[append_node]["joint_connection"], [f"{joint}.message"])
+            self.assertEqual(append_snapshots[append_node]["root_connection"], [f"{root}.message"])
+            for attribute in append_attrs:
+                curve_nodes = append_snapshots[append_node]["curves"][attribute]["nodes"]
+                self.assertEqual(len(curve_nodes), 1)
+                append_snapshots[append_node]["curves"][attribute]["uuids"] = [
+                    cmds.ls(curve, uuid=True)[0] for curve in curve_nodes
+                ]
 
         ik_a = cmds.createNode("network", name="clear_model_a_ik")
         ik_b = cmds.createNode("network", name="clear_model_b_ik")
@@ -190,11 +272,186 @@ class TestVmdMotionClear(MayaTestBase):
         ):
             clear_existing_motion(context, layer, target_model=root_b)
 
-        self.assertEqual(cmds.keyframe(f"{append_a}.baseRotateX", query=True, timeChange=True), [4.0])
-        self.assertIsNone(cmds.keyframe(f"{append_b}.baseRotateX", query=True))
+        self.assertEqual(cmds.ls(append_a, uuid=True)[0], append_snapshots[append_a]["uuid"])
+        self.assertEqual(cmds.ls(append_b, uuid=True)[0], append_snapshots[append_b]["uuid"])
+        for attribute in append_attrs:
+            target_snapshot = append_snapshots[append_b]["curves"][attribute]
+            foreign_snapshot = append_snapshots[append_a]["curves"][attribute]
+            self.assertIsNone(cmds.keyframe(f"{append_b}.{attribute}", query=True, timeChange=True))
+            self.assertIsNone(cmds.keyframe(f"{append_b}.{attribute}", query=True, valueChange=True))
+            self.assertEqual(
+                cmds.listConnections(
+                    f"{append_b}.{attribute}",
+                    source=True,
+                    destination=False,
+                    type="animCurve",
+                )
+                or [],
+                target_snapshot["nodes"],
+            )
+            self.assertEqual(
+                [cmds.ls(curve, uuid=True)[0] for curve in target_snapshot["nodes"]],
+                target_snapshot["uuids"],
+            )
+            self.assertEqual(
+                cmds.listConnections(
+                    f"{append_b}.{attribute}",
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                )
+                or [],
+                target_snapshot["connections"],
+            )
+            self.assertEqual(
+                cmds.keyframe(f"{append_a}.{attribute}", query=True, timeChange=True),
+                foreign_snapshot["times"],
+            )
+            self.assertEqual(
+                cmds.keyframe(f"{append_a}.{attribute}", query=True, valueChange=True),
+                foreign_snapshot["values"],
+            )
+            self.assertEqual(
+                [cmds.ls(curve, uuid=True)[0] for curve in foreign_snapshot["nodes"]],
+                foreign_snapshot["uuids"],
+            )
+            self.assertEqual(
+                cmds.listConnections(
+                    f"{append_a}.{attribute}",
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                )
+                or [],
+                foreign_snapshot["connections"],
+            )
+        self.assertEqual(
+            cmds.listConnections(
+                f"{append_b}.mmd_owner_joint",
+                source=True,
+                destination=False,
+                plugs=True,
+            ),
+            append_snapshots[append_b]["joint_connection"],
+        )
+        self.assertEqual(
+            cmds.listConnections(
+                f"{append_b}.mmd_model_root",
+                source=True,
+                destination=False,
+                plugs=True,
+            ),
+            append_snapshots[append_b]["root_connection"],
+        )
+        self.assertEqual(
+            cmds.listConnections(
+                f"{append_a}.mmd_owner_joint",
+                source=True,
+                destination=False,
+                plugs=True,
+            ),
+            append_snapshots[append_a]["joint_connection"],
+        )
+        self.assertEqual(
+            cmds.listConnections(
+                f"{append_a}.mmd_model_root",
+                source=True,
+                destination=False,
+                plugs=True,
+            ),
+            append_snapshots[append_a]["root_connection"],
+        )
         self.assertEqual(cmds.keyframe(f"{ik_a}.enabled", query=True, timeChange=True), [6.0])
         self.assertIsNone(cmds.keyframe(f"{ik_b}.enabled", query=True))
         self.assertTrue(cmds.objExists(layer))
+
+    def test_clear_existing_motion_clears_every_joint_below_target_root(self):
+        """Incoming bone mappings do not limit which target-character keys are cleared."""
+        root_a = cmds.group(empty=True, name="clear_all_model_a_root")
+        root_b = cmds.group(empty=True, name="clear_all_model_b_root")
+        cmds.select(clear=True)
+        mapped_joint = cmds.joint(name="clear_all_mapped_joint")
+        cmds.select(clear=True)
+        unmapped_joint = cmds.joint(name="clear_all_unmapped_joint")
+        cmds.parent(mapped_joint, unmapped_joint, root_b)
+        cmds.select(clear=True)
+        foreign_joint = cmds.joint(name="clear_all_foreign_joint")
+        cmds.parent(foreign_joint, root_a)
+
+        for joint in (mapped_joint, unmapped_joint, foreign_joint):
+            cmds.setKeyframe(joint, attribute="translateX", time=3, value=4.0)
+            cmds.setKeyframe(joint, attribute="rotateY", time=7, value=20.0)
+
+        context = VmdImportStateContext(
+            logger=self.converter.logger,
+            bone_name_mapping={"mapped": mapped_joint},
+            bone_bind_poses={},
+            morph_name_mapping={},
+            collect_append_info=lambda: {},
+            iter_morph_mappings=self.converter._iter_morph_mappings,
+            set_refresh_suspended=self.converter._set_vmd_import_refresh_suspended,
+        )
+
+        clear_existing_motion(context, "missing_layer", target_model=root_b)
+
+        for joint in (mapped_joint, unmapped_joint):
+            self.assertIsNone(
+                cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True)
+            )
+            self.assertIsNone(
+                cmds.keyframe(joint, attribute="rotateY", query=True, timeChange=True)
+            )
+        self.assertEqual(
+            cmds.keyframe(foreign_joint, attribute="translateX", query=True, timeChange=True),
+            [3.0],
+        )
+        self.assertEqual(
+            cmds.keyframe(foreign_joint, attribute="rotateY", query=True, timeChange=True),
+            [7.0],
+        )
+
+    def test_clear_existing_motion_clears_layered_curves_in_place(self):
+        """Layer/blend-backed curves lose keys without deleting their curve nodes."""
+        root = cmds.group(empty=True, name="clear_layered_root")
+        cmds.select(clear=True)
+        joint = cmds.joint(name="clear_layered_joint")
+        cmds.parent(joint, root)
+        append = cmds.createNode("transform", name="clear_layered_append")
+        cmds.addAttr(append, longName="baseTranslateX", attributeType="double", keyable=True)
+        cmds.addAttr(append, longName="mmd_owner_joint", attributeType="message")
+        cmds.addAttr(append, longName="mmd_model_root", attributeType="message")
+        cmds.connectAttr(f"{joint}.message", f"{append}.mmd_owner_joint")
+        cmds.connectAttr(f"{root}.message", f"{append}.mmd_model_root")
+
+        layer = cmds.animLayer("clear_layered_layer", override=False, weight=1.0)
+        foreign_layer_node = cmds.createNode("transform", name="clear_layered_foreign")
+        cmds.animLayer(layer, edit=True, attribute=f"{foreign_layer_node}.translateX")
+        cmds.animLayer(layer, edit=True, attribute=f"{append}.baseTranslateX")
+        cmds.setKeyframe(append, attribute="baseTranslateX", time=4, value=10.0, animLayer=layer)
+        layer_curves = cmds.animLayer(layer, query=True, animCurves=True) or []
+        self.assertTrue(layer_curves)
+        curve_uuids = [cmds.ls(curve, uuid=True)[0] for curve in layer_curves]
+
+        context = VmdImportStateContext(
+            logger=self.converter.logger,
+            bone_name_mapping={},
+            bone_bind_poses=self.converter._bone_bind_poses,
+            morph_name_mapping={},
+            collect_append_info=lambda: {joint: {"node": append}},
+            iter_morph_mappings=self.converter._iter_morph_mappings,
+            set_refresh_suspended=self.converter._set_vmd_import_refresh_suspended,
+        )
+        clear_existing_motion(context, "missing_layer", target_model=root)
+
+        self.assertIsNone(
+            cmds.keyframe(append, attribute="baseTranslateX", query=True, timeChange=True)
+        )
+        self.assertTrue(cmds.objExists(layer))
+        remaining_curves = cmds.animLayer(layer, query=True, animCurves=True) or []
+        self.assertEqual(
+            [cmds.ls(curve, uuid=True)[0] for curve in remaining_curves],
+            curve_uuids,
+        )
 
     def test_clear_existing_motion_preserves_append_shared_across_model_roots(self):
         """A shared append node is fail-closed even when its reported target is model B."""
@@ -245,13 +502,21 @@ class TestVmdMotionClear(MayaTestBase):
         vmd_data.light_frames = []
 
         self.converter.use_animation_layers = False
-        self.assertTrue(
-            self.converter.convert(
-                vmd_data,
-                clear_existing_motion=True,
-                target_model=target_model,
+        # The fixture has no paired raw PMX/VMD bytes; bypass only the
+        # registered sparse compiler so this test remains focused on clearing
+        # and replacing legacy scene keys.
+        with patch.object(
+            self.converter,
+            "_compiled_registered_sparse_frames",
+            return_value=(tuple(vmd_data.bone_frames), {}),
+        ):
+            self.assertTrue(
+                self.converter.convert(
+                    vmd_data,
+                    clear_existing_motion=True,
+                    target_model=target_model,
+                )
             )
-        )
 
         self.assertNotIn(1.0, cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True) or [])
         self.assertIn(8.0, cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True) or [])

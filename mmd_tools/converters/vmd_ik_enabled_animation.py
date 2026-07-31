@@ -107,6 +107,28 @@ def _resolve_ik_enabled_animation_context(
     )
 
 
+def _key_ik_enabled(node: str, time: float, value: bool, set_value: bool) -> None:
+    """Key ``enabled`` without writing through a potentially connected plug.
+
+    IK state application can be repeated during VMD re-import.  Once the
+    first pass creates an animCurve, ``mmdCcdIk.enabled`` is connected and a
+    direct ``setAttr`` can raise in Maya.  ``setKeyframe`` updates the
+    existing owned animCurve (or creates one on the first pass) without
+    disconnecting any incoming connection.  The direct write is retained for
+    the first pass so the helper preserves the existing current-value
+    behavior; callers disable it for nodes that were already connected when
+    the conversion started.
+    """
+    if set_value:
+        cmds.setAttr(f"{node}.enabled", bool(value))
+    cmds.setKeyframe(
+        node,
+        attribute="enabled",
+        time=time,
+        value=int(bool(value)),
+    )
+
+
 def apply_ik_enabled_animation(
     converter_or_context: Union[Any, VmdIkEnabledAnimationContext],
     vmd_data,
@@ -136,9 +158,17 @@ def apply_ik_enabled_animation(
     if property_frames or default_nodes:
         min_frame, _max_frame = context.get_animation_frame_range(vmd_data)
         min_time = context.vmd_frame_to_maya_time(min_frame)
+        connected_before_keying = {
+            node
+            for node in ik_nodes.values()
+            if cmds.listConnections(
+                f"{node}.enabled",
+                source=True,
+                destination=False,
+            )
+        }
         for node in (ik_nodes.values() if property_frames else default_nodes):
-            cmds.setAttr(f"{node}.enabled", True)
-            cmds.setKeyframe(node, attribute="enabled", time=min_time, value=1)
+            _key_ik_enabled(node, min_time, True, node not in connected_before_keying)
 
     if property_frames:
         keyed = 0
@@ -149,12 +179,11 @@ def apply_ik_enabled_animation(
                 if not node:
                     continue
                 value = bool(show_flag)
-                cmds.setAttr(f"{node}.enabled", value)
-                cmds.setKeyframe(
+                _key_ik_enabled(
                     node,
-                    attribute="enabled",
-                    time=context.vmd_frame_to_maya_time(frame_number),
-                    value=int(value),
+                    context.vmd_frame_to_maya_time(frame_number),
+                    value,
+                    node not in connected_before_keying,
                 )
                 keyed += 1
         if keyed:

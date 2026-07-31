@@ -40,6 +40,13 @@ import noxfile
 
 
 class ReleaseGateContractTest(unittest.TestCase):
+    def test_release_visual_ports_do_not_reuse_development_command_port(self):
+        ports = noxfile.DEFAULT_RELEASE_VISUAL_PORTS
+
+        self.assertEqual(set(ports), {"2025", "2026"})
+        self.assertEqual(len(set(ports.values())), len(ports))
+        self.assertNotIn("7721", ports.values())
+
     def test_release_visual_matrix_excludes_unreachable_outline_case(self):
         outline = "fixture-render-generated-visual-mmd-outline-normal-silhouette"
         self.assertNotIn(outline, noxfile._release_visual_cases("dx11"))
@@ -64,13 +71,19 @@ class ReleaseGateContractTest(unittest.TestCase):
         mayapy_env = {"MAYA_SKIP_USERSETUP_PY": "1"}
         with mock.patch("noxfile._configure_bullet3_dir"):
             with mock.patch("noxfile._cmake_configure"):
-                with mock.patch("noxfile._cmake_build"):
+                with mock.patch("noxfile._cmake_build") as cmake_build:
                     with mock.patch("noxfile._run_cli_smoke"):
                         with mock.patch("noxfile._mayapy", return_value=mayapy):
                             with mock.patch("pathlib.Path.exists", return_value=True):
                                 with mock.patch("noxfile._mayapy_env", return_value=mayapy_env) as env_mock:
                                     noxfile.cpp_verify(session)
 
+        cmake_build.assert_called_once_with(
+            session,
+            "2024",
+            "Release",
+            clean_first=True,
+        )
         self.assertEqual(env_mock.call_args.kwargs["MAYA_SKIP_USERSETUP_PY"], "1")
         mayapy_runs = [
             kwargs

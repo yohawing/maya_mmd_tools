@@ -59,7 +59,13 @@ class AnimatorToolsetWindow(QWidget):
         self.animation_presenter = AnimationPresenter(
             self.animation_tab, self.app_state
         )
+        self.animation_tab.control_rig_manager_btn.clicked.connect(
+            self.open_control_rig_manager
+        )
         layout.addWidget(self.animation_tab)
+        self._control_rig_manager = None
+        self._control_rig_state_callback = None
+        self._control_rig_manager_connected = False
         self._cleanup_done = False
         self.animation_tab.destroyed.connect(
             self.animation_presenter.disconnect_signals
@@ -67,6 +73,27 @@ class AnimatorToolsetWindow(QWidget):
         self.destroyed.connect(self._on_destroyed)
 
         self.app_state.refresh_model_list()
+
+    def open_control_rig_manager(self, *_args):
+        """Open the modeless UUID-authoritative Control Rig Manager."""
+
+        from mmd_tools.ui.control_rig_manager import open_control_rig_manager
+
+        manager = open_control_rig_manager(
+            app_state=self.app_state,
+        )
+        self._control_rig_manager = manager
+        # Manager actions are scene transactions; refresh the picker state
+        # after each explicit action while keeping the Animator itself read
+        # only with respect to Control Rig ownership.
+        if not getattr(self, "_control_rig_manager_connected", False):
+            def state_callback(_root, _action):
+                self.animation_presenter.refresh_for_scene_change()
+
+            manager.state_changed.connect(state_callback)
+            self._control_rig_state_callback = state_callback
+            self._control_rig_manager_connected = True
+        return manager
 
     def _setting_int(self, key: str, default: int, minimum: int) -> int:
         """Read a persisted integer while rejecting missing or invalid values."""
@@ -88,6 +115,17 @@ class AnimatorToolsetWindow(QWidget):
             return
         self._cleanup_done = True
         self._save_window_size()
+        manager = getattr(self, "_control_rig_manager", None)
+        if manager is not None:
+            state_callback = getattr(self, "_control_rig_state_callback", None)
+            if state_callback is not None:
+                try:
+                    manager.state_changed.disconnect(state_callback)
+                except (RuntimeError, TypeError):
+                    pass
+        self._control_rig_manager = None
+        self._control_rig_state_callback = None
+        self._control_rig_manager_connected = False
         self.animation_presenter.disconnect_signals()
 
     def _on_destroyed(self, *_args):
@@ -104,10 +142,26 @@ class AnimatorToolsetWindow(QWidget):
             self.animation_presenter.retranslate_ui()
 
     def refresh_development_mode_visibility(self):
-        """Refresh Development Mode-only controls in the standalone window."""
+        """Refresh legacy Development Mode-only pose controls."""
 
         if hasattr(self, "animation_tab"):
             self.animation_tab.refresh_development_mode_visibility()
+
+    def refresh_for_scene_change(self) -> None:
+        """Refresh the presenter after Maya opens or creates a scene.
+
+        Scene replacement invalidates the old model root and any UUID lookup;
+        delegate to the presenter so ownership metadata is re-read from the
+        new scene.  This is deliberately non-destructive and does not touch
+        user animation curves.
+        """
+
+        if self._cleanup_done:
+            return
+        presenter = getattr(self, "animation_presenter", None)
+        refresh = getattr(presenter, "refresh_for_scene_change", None)
+        if callable(refresh):
+            refresh()
 
     def _apply_floating_window_size(self) -> None:
         """Restore the saved size on Maya's floating Qt wrapper.

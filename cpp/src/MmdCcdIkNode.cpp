@@ -21,6 +21,8 @@
 #include <maya/MDataHandle.h>
 #include <maya/MArrayDataBuilder.h>
 #include <maya/MArrayDataHandle.h>
+#include <maya/MDagPath.h>
+#include <maya/MFnDagNode.h>
 #include <maya/MPlug.h>
 #include <maya/MPlugArray.h>
 #include <maya/MGlobal.h>
@@ -32,24 +34,66 @@
 #include <maya/MVector.h>
 
 #include "mmd_runtime.h"
+#include "MmdCoordinateUtils.h"
 #include "third_party/json.hpp"
 
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <utility>
 #include <string>
 #include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
-#elif defined(__APPLE__)
+#else
 #include <dlfcn.h>
 #endif
 
 namespace {
 constexpr double kPi = 3.14159265358979323846;
+// Maya stores rotate channels as doubles, while the runtime IK ABI consumes
+// float quaternions.  Equivalent VMD poses can differ by sub-microdegree
+// Euler noise after export/reimport; iterative CCD may amplify the resulting
+// one-ULP float difference.  Snap only the runtime input quaternion (never the
+// authored Maya value or solver output) to a much finer grid than the solver's
+// angular accuracy so equivalent DCC/format poses enter CCD identically.
+constexpr float kRuntimeQuaternionQuantum = 1.0e-6f;
 using nlohmann::json;
+
+void canonicalizeRuntimeQuaternion(float* quaternion)
+{
+    // q and -q encode the same rotation.  A canonical hemisphere makes the
+    // component grid independent of which equivalent representation Maya
+    // returned.
+    if (quaternion[3] < 0.0f) {
+        for (size_t component = 0; component < 4; ++component) {
+            quaternion[component] = -quaternion[component];
+        }
+    }
+
+    double lengthSquared = 0.0;
+    for (size_t component = 0; component < 4; ++component) {
+        const float value = quaternion[component];
+        const float snapped = std::nearbyint(value / kRuntimeQuaternionQuantum) *
+                              kRuntimeQuaternionQuantum;
+        quaternion[component] = snapped;
+        lengthSquared += static_cast<double>(snapped) * static_cast<double>(snapped);
+    }
+    if (lengthSquared <= 0.0) {
+        quaternion[0] = 0.0f;
+        quaternion[1] = 0.0f;
+        quaternion[2] = 0.0f;
+        quaternion[3] = 1.0f;
+        return;
+    }
+
+    const float inverseLength = static_cast<float>(1.0 / std::sqrt(lengthSquared));
+    for (size_t component = 0; component < 4; ++component) {
+        quaternion[component] *= inverseLength;
+    }
+}
 
 struct CcdIkChainConfig;
 
@@ -70,6 +114,28 @@ mmd_runtime_ik_chain_t* createNativeIkChain(const CcdIkChainConfig& cfg);
 IkChainCreateV2Fn resolveIkChainCreateV2()
 {
 #ifdef _WIN32
+    // ``mmd_runtime_ik_chain_create`` is imported into this plugin through
+    // the IAT, so GetModuleHandleEx(FROM_ADDRESS) identifies the plugin
+    // rather than the dependency that exports the v2 symbol. Resolve the
+    // already-loaded runtime DLL by module name first; never LoadLibrary here
+    // because node evaluation must not change DLL lifetime.
+    constexpr const char* kRuntimeDllNames[] = {
+        "mmd_runtime_ffi.dll",
+        "mmd_anim_ffi.dll",
+    };
+    for (const char* runtimeDllName : kRuntimeDllNames) {
+        HMODULE runtimeModule = GetModuleHandleA(runtimeDllName);
+        if (runtimeModule) {
+            auto fn = reinterpret_cast<IkChainCreateV2Fn>(
+                GetProcAddress(runtimeModule, "mmd_runtime_ik_chain_create_v2"));
+            if (fn) {
+                return fn;
+            }
+        }
+    }
+
+    // Keep compatibility with statically linked/runtime-hosted builds where
+    // the v2 symbol lives in the same image as the imported entry point.
     HMODULE ownerModule = nullptr;
     if (!GetModuleHandleExA(
             GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -80,12 +146,20 @@ IkChainCreateV2Fn resolveIkChainCreateV2()
     }
     return reinterpret_cast<IkChainCreateV2Fn>(
         GetProcAddress(ownerModule, "mmd_runtime_ik_chain_create_v2"));
-#elif defined(__APPLE__)
+#else
+    // ``mmd_runtime_ik_chain_create`` may be imported by this plugin while
+    // another loaded image exports a symbol with the same name.  Resolve the
+    // v2 entry point from the exact image that owns the legacy symbol instead
+    // of searching the process-wide symbol scope.
     Dl_info ownerInfo{};
     if (dladdr(reinterpret_cast<const void*>(&mmd_runtime_ik_chain_create), &ownerInfo) == 0 ||
         !ownerInfo.dli_fname) {
         return nullptr;
     }
+
+    // RTLD_NOLOAD observes an already-loaded image without loading a new one.
+    // Keep the temporary handle alive while dlsym runs, then release the
+    // balanced handle before returning the function pointer.
     void* ownerModule = dlopen(ownerInfo.dli_fname, RTLD_LAZY | RTLD_NOLOAD);
     if (!ownerModule) {
         return nullptr;
@@ -95,7 +169,6 @@ IkChainCreateV2Fn resolveIkChainCreateV2()
     dlclose(ownerModule);
     return fn;
 #endif
-    return nullptr;
 }
 
 struct CcdIkChainConfig {
@@ -145,14 +218,21 @@ bool readJsonVec3(const json& obj, const char* key, std::array<float, 3>& out, c
 {
     out = fallback;
     auto it = obj.find(key);
-    if (it == obj.end() || !it->is_array() || it->size() < 3) {
+    if (it == obj.end()) {
         return true;
+    }
+    if (!it->is_array() || it->size() != 3) {
+        return false;
     }
     for (size_t i = 0; i < 3; ++i) {
         if (!(*it)[i].is_number()) {
             return false;
         }
-        out[i] = (*it)[i].get<float>();
+        const double value = (*it)[i].get<double>();
+        if (!std::isfinite(value) || std::abs(value) > std::numeric_limits<float>::max()) {
+            return false;
+        }
+        out[i] = static_cast<float>(value);
     }
     return true;
 }
@@ -161,14 +241,20 @@ bool readJsonVec3Double(const json& obj, const char* key, std::array<double, 3>&
 {
     out = fallback;
     auto it = obj.find(key);
-    if (it == obj.end() || !it->is_array() || it->size() < 3) {
+    if (it == obj.end()) {
         return true;
+    }
+    if (!it->is_array() || it->size() != 3) {
+        return false;
     }
     for (size_t i = 0; i < 3; ++i) {
         if (!(*it)[i].is_number()) {
             return false;
         }
         out[i] = (*it)[i].get<double>();
+        if (!std::isfinite(out[i])) {
+            return false;
+        }
     }
     return true;
 }
@@ -176,10 +262,10 @@ bool readJsonVec3Double(const json& obj, const char* key, std::array<double, 3>&
 bool readJsonMatrix(const json& obj, const char* key, MMatrix& out)
 {
     auto it = obj.find(key);
-    if (it == obj.end() || it->is_null()) {
+    if (it == obj.end()) {
         return false;
     }
-    if (!it->is_array() || it->size() < 16) {
+    if (!it->is_array() || it->size() != 16) {
         return false;
     }
     double values[4][4]{};
@@ -190,10 +276,82 @@ bool readJsonMatrix(const json& obj, const char* key, MMatrix& out)
                 return false;
             }
             values[row][col] = value.get<double>();
+            if (!std::isfinite(values[row][col])) {
+                return false;
+            }
         }
     }
     out = MMatrix(values);
+    return !out.isSingular();
+}
+
+bool readJsonInt32(const json& obj, const char* key, int32_t fallback, int32_t& out)
+{
+    out = fallback;
+    const auto it = obj.find(key);
+    if (it == obj.end()) {
+        return true;
+    }
+    if (!it->is_number_integer()) {
+        return false;
+    }
+    const int64_t value = it->get<int64_t>();
+    if (value < std::numeric_limits<int32_t>::min() ||
+        value > std::numeric_limits<int32_t>::max()) {
+        return false;
+    }
+    out = static_cast<int32_t>(value);
     return true;
+}
+
+bool readJsonUint32(const json& obj, const char* key, uint32_t fallback, uint32_t& out)
+{
+    out = fallback;
+    const auto it = obj.find(key);
+    if (it == obj.end()) {
+        return true;
+    }
+    if (!it->is_number_integer()) {
+        return false;
+    }
+    const uint64_t value = it->get<uint64_t>();
+    if (value > std::numeric_limits<uint32_t>::max()) {
+        return false;
+    }
+    out = static_cast<uint32_t>(value);
+    return true;
+}
+
+bool readJsonBool(const json& obj, const char* key, bool fallback, bool& out)
+{
+    out = fallback;
+    const auto it = obj.find(key);
+    if (it == obj.end()) {
+        return true;
+    }
+    if (!it->is_boolean()) {
+        return false;
+    }
+    out = it->get<bool>();
+    return true;
+}
+
+bool readJsonFloat(const json& obj, const char* key, float fallback, float& out)
+{
+    out = fallback;
+    const auto it = obj.find(key);
+    if (it == obj.end()) {
+        return true;
+    }
+    if (!it->is_number()) {
+        return false;
+    }
+    const double value = it->get<double>();
+    if (!std::isfinite(value) || std::abs(value) > std::numeric_limits<float>::max()) {
+        return false;
+    }
+    out = static_cast<float>(value);
+    return std::isfinite(out);
 }
 
 MQuaternion jointOrientFromDegrees(const std::array<double, 3>& degrees)
@@ -204,28 +362,57 @@ MQuaternion jointOrientFromDegrees(const std::array<double, 3>& degrees)
         degrees[2] * kPi / 180.0).asQuaternion();
 }
 
-MMatrix mmdWorldToMaya(const MMatrix& matrix)
+bool connectedGoalModelRootWorldMatrix(
+    const MObject& node,
+    const MObject& goalWorldMatrixAttr,
+    MMatrix& outRootWorld)
 {
-    const double signs[3] = {1.0, 1.0, -1.0};
-    MMatrix result(matrix);
-    for (unsigned int row = 0; row < 3; ++row) {
-        for (unsigned int col = 0; col < 3; ++col) {
-            result(row, col) = matrix(row, col) * signs[row] * signs[col];
+    MPlug goalPlug(node, goalWorldMatrixAttr);
+    MPlugArray sources;
+    if (!goalPlug.connectedTo(sources, true, false) || sources.length() == 0) {
+        return false;
+    }
+
+    for (unsigned int sourceIndex = 0; sourceIndex < sources.length(); ++sourceIndex) {
+        MDagPath path;
+        MStatus status = MDagPath::getAPathTo(sources[sourceIndex].node(), path);
+        if (status != MS::kSuccess) {
+            continue;
+        }
+
+        // The solver inputs are root-relative, while goalWorldMatrix is a
+        // world-space controller value.  Strip only the imported model root
+        // transform (matching the Python prototype); arbitrary top-level
+        // locators deliberately remain in world space.
+        for (unsigned int depth = path.length(); depth > 1; --depth) {
+            if (path.pop() != MS::kSuccess) {
+                break;
+            }
+            MFnDagNode dagNode(path, &status);
+            if (status != MS::kSuccess) {
+                continue;
+            }
+            std::string leaf = dagNode.name(&status).asChar();
+            if (status != MS::kSuccess) {
+                continue;
+            }
+            for (char& value : leaf) {
+                if (value >= 'A' && value <= 'Z') {
+                    value = static_cast<char>(value - 'A' + 'a');
+                }
+            }
+            if (leaf.size() >= 4 &&
+                leaf.compare(leaf.size() - 4, 4, "root") == 0) {
+                outRootWorld = path.inclusiveMatrix();
+                return true;
+            }
         }
     }
-    for (unsigned int col = 0; col < 3; ++col) {
-        result(3, col) = matrix(3, col) * signs[col];
-    }
-    return result;
+    return false;
 }
-
-MMatrix mayaWorldToMmd(const MMatrix& matrix)
-{
-    return mmdWorldToMaya(matrix);
-}
-
 bool parseCcdIkChainJson(const MString& chainJson, CcdIkChainConfig& cfg)
 {
+    try {
     const std::string text = chainJson.asChar();
     if (text.empty()) {
         return false;
@@ -267,8 +454,10 @@ bool parseCcdIkChainJson(const MString& chainJson, CcdIkChainConfig& cfg)
             return false;
         }
         mmd_runtime_ffi_rig_bone_t bone{};
-        bone.parent_slot = boneJson.value("parent_slot", -1);
-        bone.flags = boneJson.value("flags", 0u);
+        if (!readJsonInt32(boneJson, "parent_slot", -1, bone.parent_slot) ||
+            !readJsonUint32(boneJson, "flags", 0u, bone.flags)) {
+            return false;
+        }
 
         std::array<float, 3> rest{0.0f, 0.0f, 0.0f};
         if (!readJsonVec3(boneJson, "rest_position", rest, rest)) {
@@ -346,8 +535,16 @@ bool parseCcdIkChainJson(const MString& chainJson, CcdIkChainConfig& cfg)
 
         MMatrix bindWorld;
         MMatrix noOrientBindWorld;
-        const bool hasBindWorld = readJsonMatrix(boneJson, "maya_bind_world_matrix", bindWorld);
-        const bool hasNoOrientBindWorld = readJsonMatrix(boneJson, "no_orient_bind_world_matrix", noOrientBindWorld);
+        const auto bindWorldIt = boneJson.find("maya_bind_world_matrix");
+        const auto noOrientBindWorldIt = boneJson.find("no_orient_bind_world_matrix");
+        const bool hasBindWorld = bindWorldIt != boneJson.end() &&
+                                  readJsonMatrix(boneJson, "maya_bind_world_matrix", bindWorld);
+        const bool hasNoOrientBindWorld = noOrientBindWorldIt != boneJson.end() &&
+                                          readJsonMatrix(boneJson, "no_orient_bind_world_matrix", noOrientBindWorld);
+        if ((bindWorldIt != boneJson.end() && !hasBindWorld) ||
+            (noOrientBindWorldIt != boneJson.end() && !hasNoOrientBindWorld)) {
+            return false;
+        }
         if (hasBindWorld && hasNoOrientBindWorld) {
             cfg.mayaBindWorldMatrices.push_back(bindWorld);
             cfg.noOrientBindWorldMatrices.push_back(noOrientBindWorld);
@@ -355,6 +552,13 @@ bool parseCcdIkChainJson(const MString& chainJson, CcdIkChainConfig& cfg)
             cfg.mayaBindWorldMatrices.push_back(MMatrix::identity);
             cfg.noOrientBindWorldMatrices.push_back(MMatrix::identity);
             allBindMatrices = false;
+        }
+    }
+    for (size_t boneIndex = 0; boneIndex < cfg.parentSlots.size(); ++boneIndex) {
+        const int32_t parentSlot = cfg.parentSlots[boneIndex];
+        if (parentSlot < -1 ||
+            (parentSlot >= 0 && static_cast<size_t>(parentSlot) >= cfg.bones.size())) {
+            return false;
         }
     }
     cfg.hasBindMatrices = allBindMatrices && cfg.mayaBindWorldMatrices.size() == cfg.bones.size() &&
@@ -367,11 +571,17 @@ bool parseCcdIkChainJson(const MString& chainJson, CcdIkChainConfig& cfg)
             return false;
         }
         mmd_runtime_ffi_rig_ik_link_t link{};
-        link.bone_slot = linkJson.at("bone_slot").get<uint32_t>();
+        if (!readJsonUint32(linkJson, "bone_slot", 0u, link.bone_slot)) {
+            return false;
+        }
         if (link.bone_slot >= cfg.bones.size()) {
             return false;
         }
-        link.has_angle_limit = linkJson.value("has_angle_limit", false);
+        bool hasAngleLimit = false;
+        if (!readJsonBool(linkJson, "has_angle_limit", false, hasAngleLimit)) {
+            return false;
+        }
+        link.has_angle_limit = hasAngleLimit ? 1 : 0;
 
         std::array<float, 3> limitMin{0.0f, 0.0f, 0.0f};
         std::array<float, 3> limitMax{0.0f, 0.0f, 0.0f};
@@ -382,20 +592,38 @@ bool parseCcdIkChainJson(const MString& chainJson, CcdIkChainConfig& cfg)
         for (size_t axis = 0; axis < 3; ++axis) {
             link.angle_limit_min_xyz[axis] = limitMin[axis];
             link.angle_limit_max_xyz[axis] = limitMax[axis];
+            if (link.has_angle_limit && limitMin[axis] > limitMax[axis]) {
+                return false;
+            }
         }
 
         cfg.links.push_back(link);
         cfg.linkSlots.push_back(link.bone_slot);
     }
 
-    cfg.targetBoneSlot = root.value("targetBoneSlot", 0u);
+    if (!readJsonUint32(root, "targetBoneSlot", 0u, cfg.targetBoneSlot)) {
+        return false;
+    }
     if (cfg.targetBoneSlot >= cfg.bones.size()) {
         return false;
     }
-    cfg.controllerBoneSlot = root.value("controllerBoneSlot", -1);
-    cfg.iterationCount = root.value("iterationCount", 40u);
-    cfg.limitAngle = root.value("limitAngle", 0.0628f);
+    if (!readJsonInt32(root, "controllerBoneSlot", -1, cfg.controllerBoneSlot) ||
+        !readJsonUint32(root, "iterationCount", 40u, cfg.iterationCount) ||
+        !readJsonFloat(root, "limitAngle", 0.0628f, cfg.limitAngle)) {
+        return false;
+    }
+    if ((cfg.controllerBoneSlot < -1) ||
+        (cfg.controllerBoneSlot >= 0 &&
+         static_cast<size_t>(cfg.controllerBoneSlot) >= cfg.bones.size()) ||
+        cfg.iterationCount == 0 || cfg.limitAngle < 0.0f) {
+        return false;
+    }
     return true;
+    } catch (const std::exception&) {
+        // Typed JSON conversion (for example a string where a scalar is
+        // expected) must invalidate this chain rather than escaping compute.
+        return false;
+    }
 }
 
 bool plugOrChildrenHasInputConnection(const MObject& node, const MObject& attr)
@@ -608,8 +836,27 @@ void copyInputRotateLinksToOutput(
     }
 }
 
+void copyMmdLinkQuaternionsToOutput(
+    const CcdIkChainConfig& cfg,
+    const std::vector<float>& rotations,
+    std::vector<std::array<double, 4>>& outMmdLinkQuaternions)
+{
+    outMmdLinkQuaternions.clear();
+    outMmdLinkQuaternions.reserve(cfg.linkSlots.size());
+    for (uint32_t slot : cfg.linkSlots) {
+        const size_t offset = static_cast<size_t>(slot) * 4;
+        outMmdLinkQuaternions.push_back({
+            static_cast<double>(rotations[offset]),
+            static_cast<double>(rotations[offset + 1]),
+            static_cast<double>(rotations[offset + 2]),
+            static_cast<double>(rotations[offset + 3]),
+        });
+    }
+}
+
 std::array<float, 3> readGoalPositionMmd(
     const CcdIkChainConfig& cfg,
+    const MObject& node,
     MDataBlock& data,
     bool useGoalWorldMatrix)
 {
@@ -621,6 +868,16 @@ std::array<float, 3> readGoalPositionMmd(
         MTransformationMatrix goalTfm;
         goalTfm.setTranslation(MVector(goal[0], goal[1], goal[2]), MSpace::kTransform);
         goalMatrix = goalTfm.asMatrix();
+    }
+
+    if (useGoalWorldMatrix) {
+        MMatrix rootWorld;
+        if (connectedGoalModelRootWorldMatrix(
+                node,
+                MmdCcdIkNode::aGoalWorldMatrix,
+                rootWorld)) {
+            goalMatrix = goalMatrix * rootWorld.inverse();
+        }
     }
 
     if (cfg.hasBindMatrices &&
@@ -644,14 +901,27 @@ std::array<float, 3> readGoalPositionMmd(
 bool solveChainJsonIk(
     const CcdIkChainConfig& cfg,
     mmd_runtime_ik_chain_t* chain,
+    const MObject& node,
     MDataBlock& data,
+    bool solveEnabled,
     bool useGoalWorldMatrix,
     bool goalHasInputConnection,
     bool& outSolved,
-    std::vector<std::array<double, 3>>& outEulerRadians)
+    std::vector<std::array<double, 3>>& outEulerRadians,
+    std::vector<std::array<double, 4>>& outMmdLinkQuaternions)
 {
     if (!chain) {
-        return false;
+        // A valid cached configuration owns a native chain.  If that handle
+        // is unavailable, keep this request on the chain path and fail closed
+        // rather than allowing compute() to run the unrelated legacy solver.
+        copyInputRotateLinksToOutput(cfg, data, outEulerRadians);
+        std::vector<float> neutralRotations(cfg.bones.size() * 4, 0.0f);
+        for (size_t boneIndex = 0; boneIndex < cfg.bones.size(); ++boneIndex) {
+            neutralRotations[boneIndex * 4 + 3] = 1.0f;
+        }
+        copyMmdLinkQuaternionsToOutput(cfg, neutralRotations, outMmdLinkQuaternions);
+        outSolved = false;
+        return true;
     }
 
     const size_t boneCount = cfg.bones.size();
@@ -733,6 +1003,7 @@ bool solveChainJsonIk(
             rotations[boneIndex * 4 + 1] = static_cast<float>(q.y);
             rotations[boneIndex * 4 + 2] = static_cast<float>(q.z);
             rotations[boneIndex * 4 + 3] = static_cast<float>(q.w);
+            canonicalizeRuntimeQuaternion(&rotations[boneIndex * 4]);
         }
     } else {
         for (size_t boneIndex = 0; boneIndex < boneCount; ++boneIndex) {
@@ -747,7 +1018,15 @@ bool solveChainJsonIk(
             rotations[boneIndex * 4 + 1] = static_cast<float>(-q.y);
             rotations[boneIndex * 4 + 2] = static_cast<float>(q.z);
             rotations[boneIndex * 4 + 3] = static_cast<float>(q.w);
+            canonicalizeRuntimeQuaternion(&rotations[boneIndex * 4]);
         }
+    }
+
+    if (!solveEnabled) {
+        copyInputRotateLinksToOutput(cfg, data, outEulerRadians);
+        copyMmdLinkQuaternionsToOutput(cfg, rotations, outMmdLinkQuaternions);
+        outSolved = false;
+        return true;
     }
 
     const bool useControllerGoal = cfg.controllerBoneSlot >= 0 &&
@@ -755,7 +1034,7 @@ bool solveChainJsonIk(
                                    !goalHasInputConnection;
     const std::array<float, 3> goal = useControllerGoal
         ? computeFkWorldPosition(cfg, positions, rotations, cfg.controllerBoneSlot)
-        : readGoalPositionMmd(cfg, data, useGoalWorldMatrix);
+        : readGoalPositionMmd(cfg, node, data, useGoalWorldMatrix);
 
     // Pass-through gate: FK input pose が target を既に goal 上に置いている
     // なら solve しない（VMD bake 済み final pose の二重 solve 防止）。
@@ -769,6 +1048,7 @@ bool solveChainJsonIk(
             std::abs(fkTarget[1] - goal[1]) <= kGoalMatchEpsilon &&
             std::abs(fkTarget[2] - goal[2]) <= kGoalMatchEpsilon) {
             copyInputRotateLinksToOutput(cfg, data, outEulerRadians);
+            copyMmdLinkQuaternionsToOutput(cfg, rotations, outMmdLinkQuaternions);
             outSolved = false;
             return true;
         }
@@ -788,9 +1068,26 @@ bool solveChainJsonIk(
         outQuats.size(),
         &stats);
     if (!ok) {
-        return false;
+        // A valid chain that cannot solve is still handled by the native
+        // path.  Preserve the input pose and expose solved=false; never fall
+        // through to the legacy one-link solver with unrelated inputs.
+        copyInputRotateLinksToOutput(cfg, data, outEulerRadians);
+        copyMmdLinkQuaternionsToOutput(cfg, rotations, outMmdLinkQuaternions);
+        outSolved = false;
+        return true;
     }
     outSolved = true;
+    outMmdLinkQuaternions.clear();
+    outMmdLinkQuaternions.reserve(cfg.links.size());
+    for (size_t linkIndex = 0; linkIndex < cfg.links.size(); ++linkIndex) {
+        const size_t offset = linkIndex * 4;
+        outMmdLinkQuaternions.push_back({
+            static_cast<double>(outQuats[offset]),
+            static_cast<double>(outQuats[offset + 1]),
+            static_cast<double>(outQuats[offset + 2]),
+            static_cast<double>(outQuats[offset + 3]),
+        });
+    }
 
     outEulerRadians.clear();
     outEulerRadians.reserve(cfg.links.size());
@@ -957,6 +1254,7 @@ MObject MmdCcdIkNode::aOutputLinkAngles;
 
 // --- 出力: outputLinkRotates ---
 MObject MmdCcdIkNode::aOutputLinkRotates;
+MObject MmdCcdIkNode::aOutputMmdLinkQuaternions;
 
 
 MmdCcdIkNode::MmdCcdIkNode() = default;
@@ -979,7 +1277,7 @@ bool MmdCcdIkNode::ensureChainCache(const MString& chainJson)
     CcdIkChainConfig parsed;
     const bool parsedOk = parseCcdIkChainJson(chainJson, parsed);
 
-    // 置換前に旧 native chain を解放し、parse/create 失敗時は必ず無効化する。
+    // 置換前に旧 native chain を解放し、parse 失敗時は必ず無効化する。
     // この順序により malformed config が直前の有効 chain を再利用しない。
     if (chainCache_->nativeChain) {
         mmd_runtime_ik_chain_free(chainCache_->nativeChain);
@@ -994,12 +1292,11 @@ bool MmdCcdIkNode::ensureChainCache(const MString& chainJson)
     }
 
     mmd_runtime_ik_chain_t* nativeChain = createNativeIkChain(parsed);
-    if (!nativeChain) {
-        return false;
-    }
-
     chainCache_->config = std::move(parsed);
     chainCache_->nativeChain = nativeChain;
+    // A syntactically valid chain remains on the native path even when the
+    // runtime handle cannot be created.  solveChainJsonIk() handles the null
+    // handle fail-closed; legacy one-link inputs must never be mixed in.
     chainCache_->valid = true;
     return true;
 }
@@ -1306,6 +1603,15 @@ MStatus MmdCcdIkNode::initialize() {
     tAttr.setHidden(true);
     addAttribute(aOutputLinkRotates);
 
+    aOutputMmdLinkQuaternions = tAttr.create(
+        "outputMmdLinkQuaternions", "omlq", MFnData::kDoubleArray, MObject::kNullObj, &status);
+    tAttr.setWritable(false);
+    tAttr.setReadable(true);
+    tAttr.setStorable(false);
+    tAttr.setKeyable(false);
+    tAttr.setHidden(true);
+    addAttribute(aOutputMmdLinkQuaternions);
+
     // --- attributeAffects ---
     // 既存 1-link の既存出力との依存を維持
     attributeAffects(aInputRootX, aOutputRotateX);
@@ -1402,6 +1708,14 @@ MStatus MmdCcdIkNode::initialize() {
     attributeAffects(aIterations, aOutputLinkRotates);
     attributeAffects(aAngleLimit, aOutputLinkRotates);
     attributeAffects(aInputChain, aOutputLinkRotates);
+    attributeAffects(aEnabled, aOutputMmdLinkQuaternions);
+    attributeAffects(aChainJson, aOutputMmdLinkQuaternions);
+    attributeAffects(aGoalX, aOutputMmdLinkQuaternions);
+    attributeAffects(aGoalY, aOutputMmdLinkQuaternions);
+    attributeAffects(aGoalZ, aOutputMmdLinkQuaternions);
+    attributeAffects(aGoalWorldMatrix, aOutputMmdLinkQuaternions);
+    attributeAffects(aInputRotateArray, aOutputMmdLinkQuaternions);
+    attributeAffects(aInputTranslateArray, aOutputMmdLinkQuaternions);
 
     attributeAffects(aChainJson, aOutputRotateX);
     attributeAffects(aChainJson, aOutputRotateY);
@@ -1456,8 +1770,9 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
     bool isSolved = (plug == aSolved);
     bool isLinkAngles = (plug == aOutputLinkAngles);
     bool isLinkRotates = (plug == aOutputLinkRotates);
+    bool isMmdLinkQuaternions = (plug == aOutputMmdLinkQuaternions);
 
-    if (!isRotate && !isAngle && !isSolved && !isLinkAngles && !isLinkRotates) {
+    if (!isRotate && !isAngle && !isSolved && !isLinkAngles && !isLinkRotates && !isMmdLinkQuaternions) {
         return MS::kUnknownParameter;
     }
 
@@ -1471,6 +1786,7 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
     double outRotX = 0.0, outRotY = 0.0, outRotZ = 0.0;
     MDoubleArray outLinkAngles;
     MDoubleArray outLinkRotates;
+    MDoubleArray outMmdLinkQuaternions;
     const double eps = 1e-12;
 
     // chainJson の parse/native chain create はノードインスタンス内で内容変更時
@@ -1481,37 +1797,24 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
     if (ensureChainCache(chainJson)) {
         const CcdIkChainConfig& chainCfg = chainCache_->config;
         std::vector<std::array<double, 3>> chainRotationsRadians;
+        std::vector<std::array<double, 4>> chainMmdLinkQuaternions;
         bool chainSolved = false;
         bool chainPathHandled = false;
 
-        if (enabled) {
-            const MObject thisNode = thisMObject();
-            const bool goalWorldConnected = plugOrChildrenHasInputConnection(thisNode, aGoalWorldMatrix);
-            const bool goalConnected = goalWorldConnected || plugOrChildrenHasInputConnection(thisNode, aGoal);
-            chainPathHandled = solveChainJsonIk(
-                chainCfg,
-                chainCache_->nativeChain,
-                data,
-                goalWorldConnected,
-                goalConnected,
-                chainSolved,
-                chainRotationsRadians);
-        } else {
-            MArrayDataHandle rotateArray = data.inputArrayValue(aInputRotateArray, &status);
-            chainRotationsRadians.reserve(chainCfg.linkSlots.size());
-            for (uint32_t slot : chainCfg.linkSlots) {
-                std::array<double, 3> eulerRadians{0.0, 0.0, 0.0};
-                readInputRotateElement(
-                    rotateArray,
-                    slot,
-                    aInputRotateArrayX,
-                    aInputRotateArrayY,
-                    aInputRotateArrayZ,
-                    eulerRadians);
-                chainRotationsRadians.push_back(eulerRadians);
-            }
-            chainPathHandled = true;
-        }
+        const MObject thisNode = thisMObject();
+        const bool goalWorldConnected = plugOrChildrenHasInputConnection(thisNode, aGoalWorldMatrix);
+        const bool goalConnected = goalWorldConnected || plugOrChildrenHasInputConnection(thisNode, aGoal);
+        chainPathHandled = solveChainJsonIk(
+            chainCfg,
+            chainCache_->nativeChain,
+            thisNode,
+            data,
+            enabled,
+            goalWorldConnected,
+            goalConnected,
+            chainSolved,
+            chainRotationsRadians,
+            chainMmdLinkQuaternions);
 
         if (chainPathHandled) {
             // どの output plug が要求された場合でも、一度の solve 結果で関連
@@ -1550,6 +1853,17 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
             MDataHandle hLinkRotates = data.outputValue(aOutputLinkRotates, &status);
             hLinkRotates.setMObject(linkRotatesObj);
             hLinkRotates.setClean();
+
+            for (const auto& quaternion : chainMmdLinkQuaternions) {
+                outMmdLinkQuaternions.append(quaternion[0]);
+                outMmdLinkQuaternions.append(quaternion[1]);
+                outMmdLinkQuaternions.append(quaternion[2]);
+                outMmdLinkQuaternions.append(quaternion[3]);
+            }
+            MObject mmdQuaternionsObj = dataObject.create(outMmdLinkQuaternions, &status);
+            MDataHandle hMmdQuaternions = data.outputValue(aOutputMmdLinkQuaternions, &status);
+            hMmdQuaternions.setMObject(mmdQuaternionsObj);
+            hMmdQuaternions.setClean();
 
             data.setClean(plug);
             return MS::kSuccess;
@@ -1707,6 +2021,11 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
     MDataHandle hLinkRotates = data.outputValue(aOutputLinkRotates, &status);
     hLinkRotates.setMObject(linkRotatesObj);
     hLinkRotates.setClean();
+
+    MObject mmdQuaternionsObj = dataObject.create(outMmdLinkQuaternions, &status);
+    MDataHandle hMmdQuaternions = data.outputValue(aOutputMmdLinkQuaternions, &status);
+    hMmdQuaternions.setMObject(mmdQuaternionsObj);
+    hMmdQuaternions.setClean();
 
     data.setClean(plug);
     return MS::kSuccess;

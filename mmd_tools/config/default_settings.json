@@ -12,6 +12,7 @@
       "separate_meshes_by_material": false,
       "auto_resolve_textures": true,
       "create_mmd_shaders": true,
+      "create_mmd_control_rig": false,
       "mmd_shader_backend": "auto",
       "texture_search_path": "",
       "show_texture_issue_dialog": true,
@@ -39,6 +40,7 @@
       "vmd_fps": 30,
       "motion_scale": 1.0,
       "clear_existing_motion": false,
+      "vmd_rotation_time_curve": true,
       "resample_curves": false,
       "use_native_physics_bake": false,
       "reduce_bake_keys": false,
@@ -75,6 +77,7 @@
     "general": {
       "show_advanced_options": false,
       "development_mode": false,
+      "file_history_limit": 20,
       "language": "ja"
     },
     "dev": {

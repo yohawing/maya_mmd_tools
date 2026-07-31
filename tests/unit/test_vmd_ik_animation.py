@@ -1,9 +1,11 @@
 """VMD IK enable animation and mmdCcdIk node behavior tests."""
 
 import json
+import math
 import os
 from pathlib import Path
 
+import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
 from mmd_tools.converters.vmd_context import VmdIkEnabledAnimationContext
@@ -11,6 +13,7 @@ from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters.vmd_ik_enabled_animation import apply_ik_enabled_animation, collect_ik_nodes_by_bone_name
 from mmd_tools.converters.vmd_timeline import get_animation_frame_range
 from mmd_tools.core.vmd_data.ik_show_hide_frame import VmdIKShowHideFrame
+from mmd_tools.nodes.mmd_ccd_ik_node import _canonicalize_runtime_quaternion
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.vmd_mock import create_test_vmd_data
 
@@ -41,6 +44,21 @@ class TestVmdIkAnimation(MayaTestBase):
     def setUp(self):
         super().setUp()
         self.converter = VmdConverter()
+
+    def test_runtime_ik_input_canonicalizes_sub_microdegree_vmd_noise(self):
+        """VMD roundtrip noise must not select a different native CCD path."""
+        source_degrees = (0.35377899, -7.01622930, 6.63296383)
+        fresh_degrees = (0.35377896, -7.01622999, 6.63296390)
+
+        def canonical(degrees):
+            quat = om.MEulerRotation(
+                *(math.radians(value) for value in degrees)
+            ).asQuaternion()
+            return _canonicalize_runtime_quaternion(
+                [-quat.x, -quat.y, quat.z, quat.w]
+            )
+
+        self.assertEqual(canonical(source_degrees), canonical(fresh_degrees))
 
     def _ik_enabled_context(self) -> VmdIkEnabledAnimationContext:
         return VmdIkEnabledAnimationContext(
@@ -77,6 +95,55 @@ class TestVmdIkAnimation(MayaTestBase):
         self.assertEqual(cmds.keyframe(f"{right}.enabled", query=True, time=(0, 0), valueChange=True), [1.0])
 
         cmds.delete(left, right)
+
+    def test_apply_ik_enabled_animation_reuses_existing_animcurve_on_reimport(self):
+        """再インポート時は接続済み enabled animCurve をそのまま更新する"""
+        node = cmds.createNode("mmdCcdIk", name="reimport_ik_solver")
+        try:
+            cmds.addAttr(node, longName="mmd_ik_bone_name", dataType="string")
+            cmds.setAttr(f"{node}.mmd_ik_bone_name", "左足ＩＫ", type="string")
+            cmds.setAttr(f"{node}.enabled", False)
+
+            vmd_data = create_test_vmd_data()
+            frame = VmdIKShowHideFrame()
+            frame.frame_number = 20
+            frame.ik_states = [("左足ＩＫ", 0)]
+            vmd_data.ik_show_hide_frames = [frame]
+
+            apply_ik_enabled_animation(self._ik_enabled_context(), vmd_data)
+            initial_times = cmds.keyframe(
+                f"{node}.enabled", query=True, timeChange=True
+            )
+            self.assertTrue(
+                cmds.listConnections(
+                    f"{node}.enabled", source=True, destination=False
+                )
+            )
+
+            # The first pass owns the incoming animCurve.  Re-importing the
+            # same VMD must update its keys instead of calling setAttr on the
+            # connected enabled plug.
+            apply_ik_enabled_animation(self._ik_enabled_context(), vmd_data)
+
+            self.assertEqual(
+                cmds.keyframe(f"{node}.enabled", query=True, timeChange=True),
+                initial_times,
+            )
+            self.assertEqual(
+                cmds.keyframe(
+                    f"{node}.enabled", query=True, time=(0, 0), valueChange=True
+                ),
+                [1.0],
+            )
+            self.assertEqual(
+                cmds.keyframe(
+                    f"{node}.enabled", query=True, time=(20, 20), valueChange=True
+                ),
+                [0.0],
+            )
+        finally:
+            if cmds.objExists(node):
+                cmds.delete(node)
 
     def test_apply_ik_enabled_animation_scopes_to_target_namespace(self):
         """複数リグがあるシーンでは target_namespace の IK node だけに key を打つ"""

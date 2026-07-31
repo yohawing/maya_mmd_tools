@@ -7,7 +7,11 @@ from typing import Dict, List
 
 import maya.cmds as cmds
 
-from ..core.mmd_control_rig_motion import control_rig_edit_routes_for_joints
+from ..core.mmd_control_rig_motion import (
+    control_rig_edit_authoring_bases_for_joints,
+    control_rig_edit_routes_for_joints,
+    control_rig_fixed_axis_twist_joints,
+)
 from .vmd_runtime_rig_helper import _ls_mmd_ccd_ik_nodes
 
 
@@ -59,14 +63,30 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
     append_info = converter._collect_append_info()
     ik_link_joints = converter._collect_ik_link_joints()
     control_routes = control_rig_edit_routes_for_joints(converter.bone_name_mapping.values())
+    authoring_bases = control_rig_edit_authoring_bases_for_joints(
+        converter.bone_name_mapping.values()
+    )
+    fixed_axis_twist_joints = control_rig_fixed_axis_twist_joints(
+        converter.bone_name_mapping.values()
+    )
     routes: Dict[str, dict] = {}
 
     for joint in set(converter.bone_name_mapping.values()):
         ik_info = ik_link_joints.get(joint)
+        control_route = control_routes.get(joint, {})
         route = {
             "attr_targets": {},
             "skip_rotate": joint in ik_link_joints,
             "ik_solver_rotate": ik_info,
+            "control_owned": bool(control_route),
+            "quaternion_interpolation_safe": False,
+            "fixed_axis_twist": joint in fixed_axis_twist_joints,
+            # EDIT inserts a live basis converter between complete XYZ
+            # controls and joint.rotate. Author control keys in that persisted
+            # basis so the converter reconstructs the original joint-space
+            # quaternion. FixedAxis Twist keeps X/Y hidden and locked in the
+            # UI, but still authors the complete compound for exact playback.
+            "authoring_basis": authoring_bases.get(joint),
         }
         info = append_info.get(joint)
         if info:
@@ -77,7 +97,21 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
 
         # In EDIT, the owned curve is the authored animation input. Unsupported
         # bones and solver-output links retain the established legacy route.
-        route["attr_targets"].update(control_routes.get(joint, {}))
+        route["attr_targets"].update(control_route)
+        # A complete owned component route is authored as one quaternion
+        # track in the controller's persisted authoring basis.
+        route["quaternion_interpolation_safe"] = (
+            all(channel in control_route for channel in ("rotateX", "rotateY", "rotateZ"))
+        )
+
+        # A CONTROL_OWNED MMD Control Rig is a single-writer path: when all
+        # rotation channels are routed to an owned controller, author those
+        # channels there and do not also key the solver's ``inputRotate``
+        # array.  The latter is a connected/locked solver input in EDIT and
+        # can both fail API key creation and violate controller ownership.
+        if all(channel in route["attr_targets"] for channel in ("rotateX", "rotateY", "rotateZ")):
+            route["skip_rotate"] = False
+            route["ik_solver_rotate"] = None
 
         if route["attr_targets"] or route["skip_rotate"] or ik_info:
             routes[joint] = route

@@ -5,6 +5,7 @@ VmdConverter の初期状態、timeline 設定、基本的な camera/light 生�
 """
 
 import maya.cmds as cmds
+from unittest.mock import patch
 
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.core.constants import ATTR_MMD_CAMERA, ATTR_MMD_LIGHT
@@ -54,7 +55,15 @@ class TestVmdConverterBasics(MayaTestBase):
         vmd_data = create_test_vmd_data()
         self.converter.set_bone_name_mapping({"センター": "center", "上半身": "upper_body", "頭": "head"})
 
-        self.converter.convert(vmd_data, target_model="model_root")
+        # This host-neutral test only exercises timeline setup.  Registered
+        # sparse model conversion requires paired raw PMX/VMD bytes, which the
+        # synthetic VmdData fixture intentionally does not provide.
+        with patch.object(
+            self.converter,
+            "_compiled_registered_sparse_frames",
+            return_value=(tuple(vmd_data.bone_frames), {}),
+        ):
+            self.converter.convert(vmd_data, target_model="model_root")
 
         self.assertEqual(cmds.playbackOptions(q=True, max=True), 30)
 

@@ -551,6 +551,27 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertEqual(weights[2], (3, 0.2))
         self.assertEqual(weights[3], (4, 0.1))
 
+    def test_get_mesh_used_bone_indices_excludes_zero_weight_bones(self):
+        """mesh influence集合には正のweightを持つPMX boneだけを含める。"""
+        pmx_data = Mock()
+        pmx_data.bones = [Mock() for _ in range(5)]
+        vertex_a = Mock(
+            weight_transform_type=2,
+            bone_indices=[3, 4, 1, 2],
+            bone_weights=[0.75, 0.0, 0.25, 0.0],
+        )
+        vertex_b = Mock(
+            weight_transform_type=1,
+            bone_indices=[1, 2, 0, 0],
+            bone_weights=[1.0, 0.0, 0.0, 0.0],
+        )
+        pmx_data.vertices = [vertex_a, vertex_b]
+
+        self.assertEqual(
+            self.converter._get_mesh_used_bone_indices(pmx_data, self.test_mesh),
+            [1, 3],
+        )
+
     @patch("mmd_tools.converters.bone_converter.maya_mesh_utils.apply_vertex_weights")
     def test_apply_pmx_vertex_weights_uses_source_vertex_indices_for_compact_split(self, mock_apply_weights):
         """compact material split mesh では local vertex 順に対応する元 PMX vertex の weight を適用する。"""
@@ -577,6 +598,29 @@ class TestBoneConverterMaya(unittest.TestCase):
         applied_weights = mock_apply_weights.call_args[0][2]
         self.assertEqual(applied_weights, [[0.0, 1.0], [1.0, 0.0]])
 
+    @patch("mmd_tools.converters.bone_converter.maya_mesh_utils.apply_vertex_weights")
+    def test_apply_pmx_vertex_weights_packs_only_selected_influences(self, mock_apply_weights):
+        """PMX bone indexをsubset skinClusterのinfluence indexへ写像する。"""
+        pmx_data = Mock()
+        vertex = Mock(weight_transform_type=2)
+        vertex.bone_indices = [3, 1, 4, 2]
+        vertex.bone_weights = [0.75, 0.25, 0.0, 0.0]
+        pmx_data.vertices = [vertex, vertex, vertex]
+
+        self.converter._apply_pmx_vertex_weights(
+            pmx_data,
+            ["joint_0", "joint_1", "joint_2", "joint_3", "joint_4"],
+            "skinCluster",
+            self.test_mesh,
+            influence_bone_indices=[1, 3],
+        )
+
+        mock_apply_weights.assert_called_once()
+        self.assertEqual(
+            mock_apply_weights.call_args[0][2],
+            [[0.25, 0.75], [0.25, 0.75], [0.25, 0.75]],
+        )
+
     @patch("mmd_tools.converters.bone_converter.RigConverter")
     def test_convert_pmx_bones_integration(self, mock_rig_converter_class):
         """PMXボーン変換の統合テスト（実際のMaya環境）"""
@@ -599,7 +643,10 @@ class TestBoneConverterMaya(unittest.TestCase):
             self._create_mock_pmx_bone(0, "center"),
             self._create_mock_pmx_bone(1, "upper_body", parent_index=0),
         ]
-        pmx_data.vertices = []
+        pmx_data.vertices = [
+            Mock(weight_transform_type=0, bone_indices=[0, 0, 0, 0])
+            for _ in range(8)
+        ]
 
         with patch("mmd_tools.converters.bone_converter.maya_name_utils.sanitize_bone_name") as mock_sanitize:
             mock_sanitize.side_effect = lambda x: x
@@ -611,6 +658,9 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertTrue(cmds.objExists(maya_joints[0]))
         self.assertTrue(cmds.objExists(maya_joints[1]))
         self.assertTrue(cmds.objExists(skin_cluster))
+        influences = cmds.skinCluster(skin_cluster, query=True, influence=True) or []
+        self.assertEqual(len(influences), 1)
+        self.assertEqual(cmds.getAttr(f"{influences[0]}.{ATTR_MMD_BONE_INDEX}"), 0)
 
         # スケルトングループが作成されているか確認
         skeleton_groups = cmds.ls("Skeleton", type="transform")
@@ -632,7 +682,10 @@ class TestBoneConverterMaya(unittest.TestCase):
             self._create_mock_pmx_bone(0, "center"),
             self._create_mock_pmx_bone(1, "upper_body", parent_index=0),
         ]
-        pmx_data.vertices = []
+        pmx_data.vertices = [
+            Mock(weight_transform_type=0, bone_indices=[0, 0, 0, 0])
+            for _ in range(8)
+        ]
 
         with patch("mmd_tools.converters.bone_converter.maya_name_utils.sanitize_bone_name") as mock_sanitize:
             mock_sanitize.side_effect = lambda x: x

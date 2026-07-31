@@ -84,7 +84,10 @@ def _create_anim_curve_for_plug(plug_path: str) -> oma.MFnAnimCurve:
     selection.add(plug_path)
     plug = selection.getPlug(0)
     curve = oma.MFnAnimCurve()
-    curve.create(plug)
+    # Maya 2024 can dispatch the one-argument overload as ``create(type)``
+    # and reject an MPlug as an integer.  The explicit Unknown type selects
+    # the documented MPlug overload and lets the destination infer units.
+    curve.create(plug, oma.MFnAnimCurve.kAnimCurveUnknown)
     return curve
 
 

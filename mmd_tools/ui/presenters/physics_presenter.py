@@ -366,6 +366,32 @@ class PhysicsPresenter:
             repairs = self._solvers_requiring_world_settings_version_repair(world)
             self._repair_world_settings_version_connections(world, repairs)
             cmds.setAttr(f"{world}.enable", bool(enabled))
+            if enabled:
+                for solver in solvers:
+                    if not cmds.getAttr(f"{solver}.enable"):
+                        continue
+                    if not cmds.getAttr(f"{solver}.outSolved"):
+                        status = cmds.getAttr(f"{solver}.outStatus")
+                        raise RuntimeError(f"solver={solver} status={status}")
+        except Exception as exc:
+            if enabled:
+                try:
+                    cmds.setAttr(f"{world}.enable", False)
+                except Exception:
+                    logger.error(
+                        "Failed to disable MMD Physics after enable failure",
+                        exc_info=True,
+                    )
+            logger.warning(
+                "event=mmd_physics_toggle_failed enabled=%s detail=%s",
+                bool(enabled),
+                exc,
+            )
+            try:
+                action = "enable" if enabled else "disable"
+                cmds.warning(f"MMD Physics {action} failed")
+            except Exception:
+                pass
         finally:
             cmds.undoInfo(closeChunk=True)
         self._sync_physics_enable_checkbox()

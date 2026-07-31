@@ -135,6 +135,58 @@ def main() -> int:
             if malformed[1] or malformed[2] or malformed[4] != 1 or abs(malformed[5]) > 1e-9:
                 raise RuntimeError(f"malformed config retained stale outputs: {malformed}")
 
+            # Typed/scalar and range-invalid fields must invalidate the JSON
+            # cache cleanly.  In particular, a scalar rest_position used to
+            # be treated as an absent optional field, while typed root values
+            # could throw through compute().
+            malformed_cases = []
+            scalar_case = _chain(1)
+            scalar_case["bones"][0]["rest_position"] = "not-a-vector"
+            malformed_cases.append(("scalar-vector", scalar_case))
+            typed_case = _chain(1)
+            typed_case["iterationCount"] = "not-an-integer"
+            malformed_cases.append(("typed-iteration", typed_case))
+            range_case = _chain(1)
+            range_case["iterationCount"] = 0
+            malformed_cases.append(("zero-iteration", range_case))
+            nonfinite_case = _chain(1)
+            nonfinite_case["bones"][1]["rest_position"] = [math.inf, 0.0, 0.0]
+            malformed_cases.append(("non-finite-vector", nonfinite_case))
+            singular_case = _chain(1)
+            singular_matrix = [
+                0.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 1.0,
+            ]
+            for bone in singular_case["bones"]:
+                bone["maya_bind_world_matrix"] = singular_matrix
+                bone["no_orient_bind_world_matrix"] = singular_matrix
+            malformed_cases.append(("singular-bind-matrix", singular_case))
+            for label, malformed_case in malformed_cases:
+                cmds.setAttr(f"{node}.chainJson", json.dumps(malformed_case), type="string")
+                typed_malformed = _read_snapshot(cmds, node)
+                if (
+                    typed_malformed[1]
+                    or typed_malformed[2]
+                    or typed_malformed[4] != 1
+                    or abs(typed_malformed[5]) > 1e-9
+                ):
+                    raise RuntimeError(f"{label} config was not rejected safely: {typed_malformed}")
+
+            # A valid native chain with a non-finite goal makes the runtime
+            # solve fail.  The chain shape must remain visible with solved=False;
+            # falling through to legacy would collapse it to one output slot.
+            valid_chain = _chain(2)
+            cmds.setAttr(f"{node}.chainJson", json.dumps(valid_chain), type="string")
+            cmds.setAttr(f"{node}.inputRoot", 0.0, 0.0, 0.0, type="double3")
+            cmds.setAttr(f"{node}.inputEffector", 1.0, 0.0, 0.0, type="double3")
+            cmds.setAttr(f"{node}.target", 0.0, 1.0, 0.0, type="double3")
+            cmds.setAttr(f"{node}.goal", math.nan, 0.0, 0.0, type="double3")
+            failed_native = _read_snapshot(cmds, node)
+            if failed_native[3] or failed_native[4] != 2 or len(failed_native[1]) != 2:
+                raise RuntimeError(f"valid-chain native failure fell through legacy path: {failed_native}")
+
             print("OK: mmdCcdIk chain cache and single-compute output coherence")
         finally:
             cmds.delete(node)

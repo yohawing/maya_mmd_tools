@@ -170,7 +170,6 @@ class _Picker:
         self.regions_selected = _Signal()
         self.goto_finger_clicked = _Signal()
         self.goto_body_clicked = _Signal()
-        self.mirror_selection_clicked = _Signal()
         self.ik_toggled = _Signal()
         self.ik_enable_toggle_clicked = _Signal()
         self.selected_regions = []
@@ -234,6 +233,7 @@ class _View:
             "copied_pose": "Copied pose ({count} joints)",
             "pasted_pose": "Pasted pose ({count} joints)",
             "reset_pose_applied": "Reset Pose ({count} joints)",
+            "rest_pose_applied": "Reset Pose ({count} joints)",
         }.get(key, key)
 
 

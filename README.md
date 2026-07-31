@@ -2,13 +2,13 @@
 
 [日本語ドキュメント](docs/README_ja.md)
 
-![feature](docs/assets/feature.png)
-
-> Credits — Model: [Sour](https://bowlroll.net/file/146103) / Motion: [mobiusP](https://www.nicovideo.jp/watch/sm42576784)
-
 Maya MMD Tools is a tool for importing MikuMikuDance (MMD) PMD/PMX models and VMD motions into Autodesk Maya.
 
 Its long-term goal is to provide a complete workflow for editing and exporting models and animations.
+
+![feature](docs/assets/feature.png)
+
+> Credits — Model: [Sour](https://bowlroll.net/file/146103) / Motion: [mobiusP](https://www.nicovideo.jp/watch/sm42576784)
 
 > [!WARNING]
 > Maya MMD Tools is currently in alpha, and its UI and workflows may change. Comprehensive guides for individual features are not yet available. See the feature support matrix below for details.
@@ -21,7 +21,7 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental · �
 
 | Feature | Status | Notes |
 |---|---|---|
-| Mesh | ✅ | |
+| Mesh | ℹ️ | QDEF and SDEF are not supported. |
 | Materials & textures | ℹ️ | MMD toon shaders are implemented for DX11 and OpenGL. Reproduction fidelity is limited by Viewport 2.0 constraints. |
 | Maya name resolution | ✅ | Names are converted to safe Maya names using a dictionary or a hash. Texture paths are also resolved automatically to safe paths. |
 | Edge / outline flags | ℹ️ | Can be enabled as an option, subject to Viewport 2.0 constraints. |
@@ -41,16 +41,18 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental · �
 | Morph animation | ℹ️ | Vertex, bone, material, and UV morphs are supported. Flip and Impulse morphs are not supported. |
 | Camera animation | ✅ | Creates and keys `mmd_camera`. Lighting drives the `mmd_light` controller. Self-shadow is not supported. |
 | IK on/off frames | ℹ️ | Supported for import and bake. Runtime bake applies the state to the final pose; rig mode keys `mmdCcdIk.enabled`. |
-| Physics | ℹ️ | Supports mmd-anim-backed real-time physics and physics bake. Live evaluation is off by default and can be enabled from the Physics tab. Accuracy is still limited. |
+| Physics | ℹ️ | Supports Bullet-based real-time physics and physics bake. Live evaluation is off by default and can be enabled from the Physics tab. Accuracy is still limited. |
 | HumanIK / retargeting | 🧪 | Experimental support for retargeting between imported MMD models. Try it from `MMD > HumanIK (Experimental)`. |
+| Control Rig | 🧪 | A Control Rig is generated automatically based on the semi-standard bone layout. |
 | Export | ⛔ | Not supported. Partial public support is planned after import and editing features mature. |
 
 ## Known Limitations
 
 - **Detailed documentation is not written yet.** This is an alpha release, and development speed is prioritized over documentation maintenance.
 - **Various features are still incomplete.** This is an experimental alpha release; feedback is welcome.
-- **Parity is not guaranteed for complex rigs or motions.** Editable `mmdCcdIk` / `mmdAppend` nodes are preserved, but cases involving joint orientation, IK, append transforms, or local axes may not exactly match Bake mode or MMD mesh deformation.
+- **QDEF and SDEF are not supported.** Meshes may appear thinner with some model and motion combinations.
 - **HumanIK is published as an experimental feature.** Only the minimum workflow is exposed. Try it from `MMD > HumanIK (Experimental)`.
+- **Leg rotations and bones that conflict with bone morphs work only under the Control Rig.** Bones may become immovable when their connections conflict with bone morphs.
 
 ## System Requirements
 

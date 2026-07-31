@@ -32,6 +32,7 @@ class VmdImportContext:
     progress_callback: Optional[Callable[[int], None]]
     import_camera_animation: bool
     import_light_animation: bool
+    create_mmd_control_rig: bool = False
     # Explicit opt-in only (default OFF). Requires bake_mode=True.
     use_native_physics_bake: bool = False
     # Explicit programmatic opt-in only (default OFF). Requires bake_mode=True.
@@ -47,12 +48,15 @@ class VmdBoneAnimationContext:
 
     logger: Any
     bone_name_mapping: Mapping[str, str]
+    bone_index_to_joint: Mapping[int, str]
     bone_bind_poses: Mapping[str, Tuple[float, float, float]]
     failed_bones: MutableSet[str]
     use_animation_layers: bool
     anim_layer: Optional[str]
     motion_scale: float
     use_quaternion_interpolation: bool
+    use_vmd_rotation_time_curve: bool
+    rotation_time_curve_records: List[Dict[str, Any]]
     set_bone_keyframes: Callable[[str, List[Any], str, Optional[dict]], None]
     build_legacy_bone_key_routes: Callable[[], Mapping[str, dict]]
     collect_ik_link_joints: Callable[[], Mapping[str, dict]]

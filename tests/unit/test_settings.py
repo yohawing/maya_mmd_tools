@@ -10,11 +10,14 @@ import os
 import json
 from pathlib import Path
 import unittest
+from importlib import import_module
+from unittest.mock import patch
 
 # プロジェクトルートを sys.path に追加
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from mmd_tools.core.settings import Settings, get_settings
+settings_module = import_module("mmd_tools.core.settings")
 
 
 def _reset_singleton():
@@ -265,6 +268,64 @@ class TestSettingsOptionVarKey(unittest.TestCase):
         """optionVar キーに元のキー名が含まれることを確認する。"""
         key = self.settings.get_option_var_key("some.key")
         self.assertIn("some.key", key)
+
+
+class _FakeOptionVar:
+    """Minimal optionVar store for settings migration tests."""
+
+    def __init__(self, values=None):
+        self.values = dict(values or {})
+
+    def __call__(self, *, exists=None, q=None, iv=None, **_kwargs):
+        if exists is not None:
+            return exists in self.values
+        if q is not None:
+            return self.values[q]
+        if iv is not None:
+            key, value = iv
+            self.values[key] = value
+            return None
+        raise AssertionError("unsupported optionVar operation")
+
+
+class TestSettingsControlRigOptionVarMigration(unittest.TestCase):
+    """Verify one-way migration from the former animation-scoped key."""
+
+    def setUp(self):
+        _reset_singleton()
+
+    def tearDown(self):
+        _reset_singleton()
+
+    def _load_with_option_vars(self, values):
+        option_var = _FakeOptionVar(values)
+        cmds = type("_FakeCmds", (), {"optionVar": option_var})()
+        with patch.object(settings_module, "MAYA_AVAILABLE", True), patch.object(
+            settings_module, "cmds", cmds, create=True
+        ):
+            loaded = Settings()
+        return loaded, option_var
+
+    def test_legacy_control_rig_option_var_is_copied_to_model_scope(self):
+        prefix = Settings._prefix
+        loaded, option_var = self._load_with_option_vars(
+            {f"{prefix}import::animation::create_mmd_control_rig": 1}
+        )
+
+        self.assertTrue(loaded.get("import.model.create_mmd_control_rig"))
+        self.assertEqual(option_var.values[f"{prefix}import::model::create_mmd_control_rig"], 1)
+
+    def test_existing_model_control_rig_option_var_wins_over_legacy_value(self):
+        prefix = Settings._prefix
+        loaded, option_var = self._load_with_option_vars(
+            {
+                f"{prefix}import::animation::create_mmd_control_rig": 1,
+                f"{prefix}import::model::create_mmd_control_rig": 0,
+            }
+        )
+
+        self.assertFalse(loaded.get("import.model.create_mmd_control_rig"))
+        self.assertEqual(option_var.values[f"{prefix}import::model::create_mmd_control_rig"], 0)
 
 
 class TestSettingsProxy(unittest.TestCase):

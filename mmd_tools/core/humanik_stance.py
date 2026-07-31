@@ -3,10 +3,11 @@
 The implementation is the productionized, single-model form of the stance
 helpers used by ``tests/viewport/humanik_roundtrip_smoke.py``.  It snapshots
 the characterized joints, isolates reviewed ``mute_for_hik`` edges, VMD
-animation writers, direct arm-pose writers, and the narrowly supported
-importer-owned mmdCcdIk foot feedback edges.  VMD-driven skeletons enter their
-stored rest pose before the canonical arm stance is applied; the transaction
-then restores the exact motion pose and original topology.
+animation writers, direct arm-pose writers, characterized-joint
+``mmdBoneMorphAccum`` writers, and the narrowly supported importer-owned
+mmdCcdIk foot feedback edges.  VMD-driven skeletons enter their stored rest
+pose before the canonical arm stance is applied; the transaction then restores
+the exact motion pose and original topology.
 """
 
 from __future__ import annotations
@@ -247,6 +248,42 @@ def _stored_vmd_bind_translate(cmds, joint: str) -> Optional[Tuple[float, float,
 def _is_animation_writer_type(node_type: str) -> bool:
     """Return whether a direct writer belongs to Maya's animation graph."""
     return str(node_type).startswith(("animCurve", "animBlendNode"))
+
+
+def _is_characterized_direct_writer_type(node_type: str) -> bool:
+    """Return whether a direct transform writer is owned by an MMD joint.
+
+    ``mmdBoneMorphAccum`` is the importer-owned additive bone-morph node.  It
+    writes the characterized joint's translate/rotate channels directly, so
+    it must be isolated while the canonical stance transaction edits those
+    channels.  Keep this allow-list narrow: arbitrary third-party writers on
+    non-arm joints remain outside the stance transaction's ownership scope.
+    """
+    return str(node_type) == "mmdBoneMorphAccum"
+
+
+def _is_characterized_direct_writer_edge(
+    source: str,
+    destination: str,
+    attribute: str,
+    node_type: str,
+) -> bool:
+    """Return whether an accumulator output matches a joint channel exactly."""
+    _, separator, source_attribute = str(source).rpartition(".")
+    if not separator or not _is_characterized_direct_writer_type(node_type):
+        return False
+    destination_attribute = str(destination).rsplit(".", 1)[-1]
+    expected = {
+        "translate": "outputTranslate",
+        "translateX": "outputTranslateX",
+        "translateY": "outputTranslateY",
+        "translateZ": "outputTranslateZ",
+        "rotate": "outputRotate",
+        "rotateX": "outputRotateX",
+        "rotateY": "outputRotateY",
+        "rotateZ": "outputRotateZ",
+    }
+    return attribute in {"translate", "rotate"} and expected.get(destination_attribute) == source_attribute
 
 
 def _restore_attribute_if_changed(
@@ -584,8 +621,8 @@ class HumanIkStanceTransaction:
         failure path (aggregated attribute failures, residual-verification
         failure, or any other exception raised while restoring) before the
         error is surfaced, so a restore failure never strands either the
-        reviewed ``mute_for_hik`` edges or temporary arm-pose writers
-        disconnected.
+        reviewed ``mute_for_hik`` edges, temporary arm-pose writers, or
+        characterized-joint direct writers disconnected.
         """
         if not self.active:
             result = dict(self.stance_evidence.get("restore") or {"passed": True})
@@ -794,6 +831,50 @@ class HumanIkStanceTransaction:
                                 "node": source_node,
                                 "nodeType": source_type,
                                 "classification": "temporary_animation_writer",
+                                "hikBone": slot,
+                                "attribute": attribute,
+                                "baselineIncomingSources": baseline,
+                            }
+                        )
+        arm_joints = {joint for joint, _ in chains.values()}
+        for joint, slot in assignments_by_joint.items():
+            if joint in arm_joints:
+                # The existing arm-pose loop below intentionally owns every
+                # direct writer on the two posed arm joints and preserves its
+                # historical classification/evidence shape.
+                continue
+            # Bone-morph accumulation is an importer-owned direct transform
+            # writer.  Unlike an animation curve, it is not part of the
+            # ownership report's supported node set, so capture its exact
+            # compound/component edges explicitly for every characterized
+            # joint (including fingers and other non-arm slots).
+            for attribute in ("translate", "rotate"):
+                destinations = (*(f"{joint}.{attribute}{axis}" for axis in "XYZ"), f"{joint}.{attribute}")
+                component_sources = set()
+                for destination in destinations:
+                    baseline = incoming_sources(self.cmds, destination)
+                    for source in baseline:
+                        if destination == f"{joint}.{attribute}" and source in component_sources:
+                            continue
+                        component_sources.add(source)
+                        source_node = source.rsplit(".", 1)[0]
+                        try:
+                            source_type = str(self.cmds.nodeType(source_node))
+                        except Exception:
+                            source_type = "unknown"
+                        if not _is_characterized_direct_writer_edge(source, destination, attribute, source_type):
+                            continue
+                        edge = (source, destination)
+                        if edge in seen:
+                            continue
+                        seen.add(edge)
+                        pose_writer_edges.append(
+                            {
+                                "source": source,
+                                "destination": destination,
+                                "node": source_node,
+                                "nodeType": source_type,
+                                "classification": "temporary_characterized_pose_writer",
                                 "hikBone": slot,
                                 "attribute": attribute,
                                 "baselineIncomingSources": baseline,

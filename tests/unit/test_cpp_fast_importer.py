@@ -377,6 +377,18 @@ class TestFastSkeletonSkin(unittest.TestCase):
         cmds.group.return_value = "skeleton_group1"
         cmds.skinCluster.return_value = ["skinCluster1"]
         cmds.objExists.return_value = True
+        # New joints do not have authored metadata before the importer writes it.
+        # MagicMock's default return value is truthy, which would make the
+        # immutable bind-translate helper incorrectly treat the attribute as
+        # pre-existing and skip authoring it.  The skin policy attributes,
+        # however, already exist on a Maya-created skinCluster.
+        def _attribute_query(attribute, node=None, **_kwargs):
+            return node == "skinCluster1" and attribute in {
+                "deformUserNormals",
+                "blockGPU",
+            }
+
+        cmds.attributeQuery.side_effect = _attribute_query
         return cmds
 
     def test_skeleton_skin_happy_path(self):
@@ -394,6 +406,12 @@ class TestFastSkeletonSkin(unittest.TestCase):
                     "englishName": "arm_L",
                     "parentIndex": 0,
                     "position": [2.0, 10.0, 0.0],
+                },
+                {
+                    "name": "IK target",
+                    "englishName": "ik_target",
+                    "parentIndex": 0,
+                    "position": [0.0, 0.0, 0.0],
                 },
             ]
         })
@@ -429,8 +447,8 @@ class TestFastSkeletonSkin(unittest.TestCase):
             parent="root1",
         )
 
-        # Two joints created
-        self.assertEqual(cmds.joint.call_count, 2)
+        # Skeleton keeps all joints, including the zero-weight IK target.
+        self.assertEqual(cmds.joint.call_count, 3)
         call_names = [c[1]["name"] for c in cmds.joint.call_args_list]
         self.assertIn("center", call_names)
         self.assertIn("arm_L", call_names)
@@ -441,7 +459,7 @@ class TestFastSkeletonSkin(unittest.TestCase):
             any("arm_L" in str(a) for a in parent_args)
         )
 
-        # skinCluster created with both joints
+        # skinCluster contains only the two positive-weight joints.
         skin_call = cmds.skinCluster.call_args
         self.assertIsNotNone(skin_call)
         joints_arg = skin_call[0][0]
@@ -459,12 +477,12 @@ class TestFastSkeletonSkin(unittest.TestCase):
         # segmentScaleCompensate set to False on both
         ssc_calls = [c for c in cmds.setAttr.call_args_list
                      if "segmentScaleCompensate" in str(c)]
-        self.assertEqual(len(ssc_calls), 2)
+        self.assertEqual(len(ssc_calls), 3)
         bind_translate_calls = [
             c for c in cmds.setAttr.call_args_list
             if "mmd_vmd_bind_translate" in str(c)
         ]
-        self.assertEqual(len(bind_translate_calls), 2)
+        self.assertEqual(len(bind_translate_calls), 3)
         self.mock_apply_weights.assert_called_once_with(
             "skinCluster1",
             "mesh1",

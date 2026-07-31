@@ -181,6 +181,32 @@ class TestDragDropImporter(unittest.TestCase):
         self.assertEqual(calls[0][0], ".pmd")
         self.assertEqual(calls[0][1]["scale"], 2.5)
 
+    @patch.object(drag_drop_importer, "_display_warning")
+    @patch.object(drag_drop_importer, "_display_info")
+    def test_import_dropped_model_root_with_control_rig_warning_is_partial(
+        self,
+        display_info,
+        display_warning,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "model.pmx"
+            model.write_text("", encoding="utf-8")
+
+            def importer(_file_path, options=None):
+                options["profile"] = {"warnings": [{"code": "control_rig_create_failed"}]}
+                return "|model_root"
+
+            result = drag_drop_importer.import_dropped_files(
+                [str(model)],
+                importer=importer,
+                settings_service=_FakeSettingsService(),
+            )
+
+        self.assertTrue(result)
+        display_warning.assert_called_once()
+        self.assertIn("control_rig_create_failed", display_warning.call_args.args[0])
+        self.assertEqual(display_info.call_count, 1)  # initial batch status only
+
     @patch.object(drag_drop_importer, "_display_info")
     def test_import_dropped_pmx_and_pmd_show_each_model_readme_once(self, _display_info):
         with tempfile.TemporaryDirectory() as tmp:
@@ -234,6 +260,36 @@ class TestDragDropImporter(unittest.TestCase):
         importer.assert_called_once()
         self.assertEqual(importer.call_args.args[0], str(motion))
         self.assertEqual(importer.call_args.kwargs["options"], {"kind": "vmd", "target_model": "|selected_model"})
+
+    @patch.object(drag_drop_importer, "_selected_model_root", return_value="|selected_model")
+    @patch.object(drag_drop_importer, "_display_warning")
+    @patch.object(drag_drop_importer, "_display_info")
+    def test_import_dropped_vmd_profile_warning_is_partial(
+        self,
+        display_info,
+        display_warning,
+        _selected_model_root,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            motion = Path(tmp) / "motion.vmd"
+            motion.write_text("", encoding="utf-8")
+
+            def importer(_file_path, options=None):
+                options["profile"] = {
+                    "vmd_converter": {"warnings": [{"code": "runtime_fallback"}]}
+                }
+                return True
+
+            result = drag_drop_importer.import_dropped_files(
+                [str(motion)],
+                importer=importer,
+                settings_service=_FakeSettingsService(),
+            )
+
+        self.assertTrue(result)
+        display_warning.assert_called_once()
+        self.assertIn("runtime_fallback", display_warning.call_args.args[0])
+        self.assertEqual(display_info.call_count, 1)  # initial batch status only
 
     @patch.object(drag_drop_importer, "_selected_model_root", return_value="|selected_model")
     @patch.object(drag_drop_importer, "_display_info")

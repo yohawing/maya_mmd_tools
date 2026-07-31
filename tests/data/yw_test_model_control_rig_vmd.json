@@ -1,0 +1,81 @@
+{
+  "schema": 1,
+  "case": "yw_test_model_control_rig_vmd",
+  "model": "yw_test_model.pmx",
+  "output": "yw_test_model_control_rig_vmd.vmd",
+  "model_name": "YWテスト用モデル",
+  "description": "Deterministic CC0 Control Rig VMD coverage for foot/toe IK and grant-source routes.",
+  "selection": {
+    "left_foot_ik": {
+      "side": "left",
+      "kind": "foot_ik"
+    },
+    "right_foot_ik": {
+      "side": "right",
+      "kind": "foot_ik"
+    },
+    "left_toe_ik": {
+      "side": "left",
+      "kind": "toe_ik"
+    },
+    "right_toe_ik": {
+      "side": "right",
+      "kind": "toe_ik"
+    },
+    "left_grant_source": {
+      "side": "left",
+      "kind": "grant_source",
+      "target_suffix": "足D"
+    },
+    "right_grant_source": {
+      "side": "right",
+      "kind": "grant_source",
+      "target_suffix": "足D"
+    }
+  },
+  "bone_motion": {
+    "frames": [0, 10, 20],
+    "tracks": {
+      "left_foot_ik": [
+        {"frame": 0, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]},
+        {"frame": 10, "position": [0.22, 0.12, 0.08], "rotation": [0.0, 0.04997917, 0.0, 0.99875027]},
+        {"frame": 20, "position": [0.36, 0.06, 0.16], "rotation": [0.0, 0.09983342, 0.0, 0.99500417]}
+      ],
+      "right_foot_ik": [
+        {"frame": 0, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]},
+        {"frame": 10, "position": [-0.22, 0.12, 0.08], "rotation": [0.0, -0.04997917, 0.0, 0.99875027]},
+        {"frame": 20, "position": [-0.36, 0.06, 0.16], "rotation": [0.0, -0.09983342, 0.0, 0.99500417]}
+      ],
+      "left_toe_ik": [
+        {"frame": 0, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]},
+        {"frame": 10, "position": [0.0, 0.0, 0.10], "rotation": [0.04997917, 0.0, 0.0, 0.99875027]},
+        {"frame": 20, "position": [0.0, 0.0, 0.20], "rotation": [0.09983342, 0.0, 0.0, 0.99500417]}
+      ],
+      "right_toe_ik": [
+        {"frame": 0, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]},
+        {"frame": 10, "position": [0.0, 0.0, 0.10], "rotation": [-0.04997917, 0.0, 0.0, 0.99875027]},
+        {"frame": 20, "position": [0.0, 0.0, 0.20], "rotation": [-0.09983342, 0.0, 0.0, 0.99500417]}
+      ],
+      "left_grant_source": [
+        {"frame": 0, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]},
+        {"frame": 10, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.04997917, 0.99875027]},
+        {"frame": 20, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.09983342, 0.99500417]}
+      ],
+      "right_grant_source": [
+        {"frame": 0, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]},
+        {"frame": 10, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, -0.04997917, 0.99875027]},
+        {"frame": 20, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, -0.09983342, 0.99500417]}
+      ]
+    }
+  },
+  "ik_enable": [
+    {"frame": 0, "left": true, "right": true},
+    {"frame": 6, "left": false, "right": true},
+    {"frame": 12, "left": false, "right": false},
+    {"frame": 20, "left": true, "right": false}
+  ],
+  "bone_morph": {
+    "status": "absent",
+    "reason": "The CC0 PMX has zero morphs; this fixture does not fabricate Bone Morph channels."
+  }
+}

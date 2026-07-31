@@ -24,10 +24,36 @@ from __future__ import annotations
 
 import json
 import math
+from ctypes import c_float
 
 import maya.api.OpenMaya as om
 
 from mmd_tools.core.native.mmd_anim_runtime import MmdIkChain, is_rig_primitive_available
+
+
+# Keep this contract in sync with cpp/src/MmdCcdIkNode.cpp.  This grid is
+# roughly 1e-4 degrees at quaternion scale: large enough to absorb the
+# sub-microdegree Euler noise introduced by VMD export/reimport, but far below
+# the native solver's meaningful angular accuracy.
+_RUNTIME_QUATERNION_QUANTUM = c_float(1.0e-6).value
+
+
+def _canonicalize_runtime_quaternion(values):
+    """Return one deterministic float quaternion for the native IK input."""
+    quaternion = [c_float(value).value for value in values]
+    if quaternion[3] < 0.0:
+        quaternion = [-value for value in quaternion]
+    snapped = []
+    for value in quaternion:
+        scaled = c_float(value / _RUNTIME_QUATERNION_QUANTUM).value
+        snapped.append(
+            c_float(round(scaled) * _RUNTIME_QUATERNION_QUANTUM).value
+        )
+    length_squared = sum(float(value) * float(value) for value in snapped)
+    if length_squared <= 0.0:
+        return [0.0, 0.0, 0.0, 1.0]
+    inverse_length = c_float(1.0 / math.sqrt(length_squared)).value
+    return [c_float(value * inverse_length).value for value in snapped]
 
 
 def maya_useNewAPI():
@@ -434,7 +460,9 @@ class MmdCcdIkNode(om.MPxNode):
                 positions[bone_i * 3 + 2] = -(tz - maya_rest[2])
                 q = euler.asQuaternion()
                 q_off = bone_i * 4
-                rotations[q_off:q_off + 4] = [-q.x, -q.y, q.z, q.w]
+                rotations[q_off:q_off + 4] = _canonicalize_runtime_quaternion(
+                    [-q.x, -q.y, q.z, q.w]
+                )
             return positions, rotations
 
         maya_worlds = [om.MMatrix() for _ in range(self._bone_count)]
@@ -476,7 +504,9 @@ class MmdCcdIkNode(om.MPxNode):
 
             q = local_tfm.rotation(asQuaternion=True)
             q_off = bone_i * 4
-            rotations[q_off:q_off + 4] = [q.x, q.y, q.z, q.w]
+            rotations[q_off:q_off + 4] = _canonicalize_runtime_quaternion(
+                [q.x, q.y, q.z, q.w]
+            )
 
         return positions, rotations
 

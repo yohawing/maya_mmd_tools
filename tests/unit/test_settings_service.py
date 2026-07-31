@@ -22,6 +22,7 @@ class _FakeSettingsStore:
                 "model": {
                     "import_models": False,
                     "create_mmd_shaders": False,
+                    "create_mmd_control_rig": False,
                     "separate_meshes_by_material": True,
                     "auto_resolve_textures": True,
                     "disable_backface_culling": False,
@@ -121,6 +122,7 @@ class TestSettingsServiceDelegation(unittest.TestCase):
             state,
             {
                 "development_mode": False,
+                "file_history_limit": 20,
                 "command_port": 3939,
                 "logging_enabled": False,
                 "logging_level": "ERROR",
@@ -132,6 +134,7 @@ class TestSettingsServiceDelegation(unittest.TestCase):
         self.service.save_settings_tab_state(
             {
                 "development_mode": True,
+                "file_history_limit": 101,
                 "command_port": 7788,
                 "logging_enabled": True,
                 "logging_level": "INFO",
@@ -141,6 +144,7 @@ class TestSettingsServiceDelegation(unittest.TestCase):
         )
 
         self.assertTrue(self.service.get("ui.general.development_mode"))
+        self.assertEqual(self.service.get("ui.general.file_history_limit"), 100)
         self.assertEqual(self.service.get("ui.dev.command_port"), 7788)
         self.assertEqual(self.service.get("ui.general.language"), "ja")
         self.assertTrue(self.service.get("logging.enabled"))
@@ -174,6 +178,33 @@ class TestSettingsServiceJson(unittest.TestCase):
         self.assertEqual(self.service.get("logging.level"), "ERROR")
         self.assertIn(("logging.level", "ERROR"), self.store.set_calls)
 
+    def test_import_settings_migrates_legacy_control_rig_key_to_model_scope(self):
+        data = {
+            "import": {
+                "animation": {"create_mmd_control_rig": True},
+                "model": {"create_mmd_shaders": False},
+            }
+        }
+
+        self.service.import_settings_data(data)
+
+        self.assertTrue(self.service.get("import.model.create_mmd_control_rig"))
+        self.assertIsNone(self.service.get("import.animation.create_mmd_control_rig"))
+        self.assertIn(("import.model", {"create_mmd_shaders": False, "create_mmd_control_rig": True}), self.store.set_calls)
+
+    def test_import_settings_model_control_rig_value_wins_over_legacy_key(self):
+        data = {
+            "import": {
+                "animation": {"create_mmd_control_rig": True},
+                "model": {"create_mmd_control_rig": False},
+            }
+        }
+
+        self.service.import_settings_data(data)
+
+        self.assertFalse(self.service.get("import.model.create_mmd_control_rig"))
+        self.assertIsNone(self.service.get("import.animation.create_mmd_control_rig"))
+
 
 class TestSettingsServiceImportOptions(unittest.TestCase):
     def setUp(self):
@@ -202,7 +233,10 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertTrue(options["import_models"])
         self.assertFalse(options["import_physics"])
         self.assertNotIn("enable_maya_bullet_preview", options)
-        self.assertFalse(options["separate_meshes_by_material"])
+        # Separate Meshes By Material is a normal-mode import option.  Its
+        # persisted value must remain user-controllable instead of being
+        # silently forced off by the Development Mode policy.
+        self.assertTrue(options["separate_meshes_by_material"])
         self.assertNotIn("split_meshes_by_morph_groups", options)
         self.assertNotIn("hide_hidden_geometry", options)
         self.assertNotIn("auto_classify_transparency", options)
@@ -242,6 +276,48 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertFalse(options["translate_names"])
         self.assertNotIn("setup_rig", options)
         self.assertNotIn("setup_bone_orientation", options)
+
+    def test_model_control_rig_setting_feeds_pmx_and_vmd_options(self):
+        self.service.set("import.model.create_mmd_control_rig", True)
+
+        pmx_options = self.service.build_pmx_import_options()
+        vmd_options = self.service.build_vmd_import_options()
+
+        self.assertTrue(pmx_options["create_mmd_control_rig"])
+        self.assertTrue(vmd_options["create_mmd_control_rig"])
+
+    def test_vmd_bake_mode_overrides_model_control_rig_import_route(self):
+        """Bake Motion wins only for VMD while PMX still creates its rig."""
+        self.service.set("import.model.create_mmd_control_rig", True)
+        self.service.set("import.animation.vmd_rotation_time_curve", True)
+        self.service.set("import.rig.bake_mode", True)
+
+        pmx_options = self.service.build_pmx_import_options()
+        vmd_options = self.service.build_vmd_import_options(target_model="model")
+
+        self.assertTrue(pmx_options["create_mmd_control_rig"])
+        self.assertTrue(vmd_options["bake_mode"])
+        self.assertFalse(vmd_options["create_mmd_control_rig"])
+        self.assertFalse(vmd_options["use_vmd_rotation_time_curve"])
+
+    def test_rotation_time_curve_option_requires_dev_mode_and_control_rig(self):
+        self.service.set("import.animation.vmd_rotation_time_curve", True)
+
+        self.assertFalse(
+            self.service.build_vmd_import_options()["use_vmd_rotation_time_curve"]
+        )
+
+        self.service.set("import.model.create_mmd_control_rig", True)
+
+        self.assertFalse(
+            self.service.build_vmd_import_options()["use_vmd_rotation_time_curve"]
+        )
+
+        self.service.set("ui.general.development_mode", True)
+
+        self.assertTrue(
+            self.service.build_vmd_import_options()["use_vmd_rotation_time_curve"]
+        )
 
     def test_normal_mode_preserves_import_physics_enabled(self):
         self.service.set("import.physics.import_physics", True)

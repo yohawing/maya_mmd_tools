@@ -16,8 +16,24 @@ MMD_APPEND_SCHEMA_MODE_COMPAT = 2
 
 
 def _node_leaf_name(node_name: str) -> str:
-    """Return the DAG leaf name, preserving namespace but dropping parent paths."""
-    return str(node_name).rsplit("|", 1)[-1] if node_name else ""
+    """Return a node name safe to create in Maya's current namespace.
+
+    Maya prefixes an unqualified ``name=`` with the current namespace.  A
+    joint returned by a namespaced import is already qualified (for example
+    ``Model:leg``), so passing that full name while ``Model`` is current would
+    create ``Model:Model:leg_mmdCcdIk``.  Strip only the current namespace;
+    preserve qualified names while running in the root namespace.
+    """
+    leaf_name = str(node_name).rsplit("|", 1)[-1] if node_name else ""
+    if not leaf_name or ":" not in leaf_name:
+        return leaf_name
+
+    current_namespace = cmds.namespaceInfo(currentNamespace=True) or ":"
+    current_namespace = str(current_namespace).lstrip(":")
+    namespace, bare_name = leaf_name.rsplit(":", 1)
+    if namespace == current_namespace:
+        return bare_name
+    return leaf_name
 
 
 class RigConverter:
@@ -908,6 +924,66 @@ class RigConverter:
     # Native rig: manifest → mmdAppend / mmdCcdIk DG nodes
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _configure_append_bind_space(node: str, target_joint: str) -> None:
+        """Store bind matrices needed by the native MMD append conversion.
+
+        ``mmdCcdIk`` exposes the effective link rotation in MMD local space,
+        while Maya's rotate plug is a JO-less local rotation.  The append node
+        therefore needs both bind-space transforms for its target and parent.
+        Missing attributes (older Python node implementation) leave the
+        compatibility path untouched.
+        """
+        attrs = (
+            "useTargetBindMatrices",
+            "targetMayaBindWorldMatrix",
+            "targetNoOrientBindWorldMatrix",
+            "parentMayaBindWorldMatrix",
+            "parentNoOrientBindWorldMatrix",
+        )
+        if not all(cmds.attributeQuery(attr, node=node, exists=True) for attr in attrs):
+            return
+
+        def matrix_values(joint: Optional[str]) -> List[float]:
+            if not joint:
+                return [
+                    1.0, 0.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 1.0, 0.0,
+                    0.0, 0.0, 0.0, 1.0,
+                ]
+            values = [float(value) for value in cmds.getAttr(f"{joint}.worldMatrix[0]")]
+            if len(values) < 16:
+                raise ValueError(f"invalid bind matrix for {joint}")
+            return values[:16]
+
+        try:
+            target_bind = matrix_values(target_joint)
+            target_no_orient = matrix_values(None)
+            target_no_orient[12:15] = target_bind[12:15]
+
+            parent_joint: Optional[str] = None
+            parents = cmds.listRelatives(target_joint, parent=True, fullPath=True) or []
+            if parents and cmds.nodeType(parents[0]) == "joint":
+                parent_joint = parents[0]
+            parent_bind = matrix_values(parent_joint)
+            parent_no_orient = matrix_values(None)
+            parent_no_orient[12:15] = parent_bind[12:15]
+
+            for attr, values in (
+                ("targetMayaBindWorldMatrix", target_bind),
+                ("targetNoOrientBindWorldMatrix", target_no_orient),
+                ("parentMayaBindWorldMatrix", parent_bind),
+                ("parentNoOrientBindWorldMatrix", parent_no_orient),
+            ):
+                cmds.setAttr(f"{node}.{attr}", *values, type="matrix")
+            cmds.setAttr(f"{node}.useTargetBindMatrices", True)
+        except Exception:
+            # Bind capture is an optional optimization.  Keep the established
+            # JO-only path when a partially mocked/legacy Maya scene cannot
+            # provide world matrices.
+            return
+
     def _create_append_nodes_from_manifest(
         self,
         manifest,
@@ -959,6 +1035,7 @@ class RigConverter:
                     cmds.setAttr(f"{node}.localAppend", bool(local_append))
                 if cmds.attributeQuery("schemaMode", node=node, exists=True):
                     cmds.setAttr(f"{node}.schemaMode", MMD_APPEND_SCHEMA_MODE_COMPAT)
+                self._configure_append_bind_space(node, target_joint)
 
                 source_append_node = append_nodes_by_target.get(source_joint)
 
@@ -1226,18 +1303,24 @@ class RigConverter:
         links: List[Dict[str, Any]],
         all_chain_links: List[Tuple[int, set]],
         controller_idx: int,
+        chain_bones: Iterable[int],
         rotation_grant_edges: Iterable[Tuple[int, int]] = (),
     ) -> set:
         """Return PMX bones excluded from inputRotate to avoid DG cycles.
 
-        The initial exclusions are the chain's own links and downstream chains'
-        links.  Accepted rotation grants are then followed transitively because
-        a grant target is also an output of the excluded source's evaluation.
+        A downstream IK link can form a DG cycle only if this mini-chain reads
+        that exact link.  Restrict the cycle break to the mini-chain's slots;
+        blanket exclusion can otherwise remove an ancestor reached through a
+        rotation grant (KOTORA ArmTwistExt7 -> ElbowExt).
+
+        Accepted rotation grants are then followed transitively because a grant
+        target is also an output of the excluded source's evaluation.
         """
         seed_bones = {lk["boneIndex"] for lk in links}
+        chain_bone_set = {int(index) for index in chain_bones}
         for other_ctrl, other_links in all_chain_links:
             if other_ctrl > controller_idx:
-                seed_bones.update(other_links)
+                seed_bones.update(chain_bone_set.intersection(other_links))
         return RigConverter._grant_dependency_closure(seed_bones, rotation_grant_edges)
 
     def _connect_ik_input_channels(
@@ -1250,6 +1333,7 @@ class RigConverter:
         links: List[Dict[str, Any]],
         all_chain_links: List[Tuple[int, set]],
         controller_idx: int,
+        chain_bones: Iterable[int],
         rotation_grant_edges: Iterable[Tuple[int, int]] = (),
     ) -> None:
         """Connect rotate/translate inputs for a native IK node."""
@@ -1257,6 +1341,7 @@ class RigConverter:
             links,
             all_chain_links,
             controller_idx,
+            chain_bones,
             rotation_grant_edges,
         )
 
@@ -1320,6 +1405,28 @@ class RigConverter:
                         pass
 
             cmds.connectAttr(f"{node}.outputRotate[{link_i}]", f"{link_joint}.rotate")
+
+            if not cmds.attributeQuery("outputMmdLinkQuaternions", node=node, exists=True):
+                continue
+            append_destinations = cmds.listConnections(
+                f"{link_joint}.rotate", source=False, destination=True, plugs=True
+            ) or []
+            for destination in append_destinations:
+                append_node, _, append_attr = str(destination).partition(".")
+                if not append_attr.startswith("sourceRotate"):
+                    continue
+                if cmds.nodeType(append_node) != self._append_node_type():
+                    continue
+                if not cmds.attributeQuery(
+                    "sourceMmdLinkQuaternions", node=append_node, exists=True
+                ):
+                    continue
+                cmds.connectAttr(
+                    f"{node}.outputMmdLinkQuaternions",
+                    f"{append_node}.sourceMmdLinkQuaternions",
+                    force=True,
+                )
+                cmds.setAttr(f"{append_node}.sourceMmdLinkIndex", link_i)
 
     def _create_ik_nodes_from_manifest(
         self,
@@ -1389,6 +1496,7 @@ class RigConverter:
                 links,
                 all_chain_links,
                 controller_idx,
+                slot_to_pmx.values(),
                 rotation_grant_edges,
             )
 
@@ -1422,9 +1530,9 @@ class RigConverter:
                 )
 
                 # inputRotate: exclude own links AND downstream chains' links.
-                # Downstream = higher controllerBoneIndex (evaluated later in MMD).
-                # This prevents DG cycles (leg_ik <-> toe_ik) while still
-                # allowing downstream chains to read upstream results.
+                # A downstream link is excluded only when this mini-chain reads
+                # it, preserving the leg/toe cycle break without dropping an
+                # unrelated grant-driven ancestor.
                 self._connect_ik_input_channels(
                     node,
                     bone_count=bone_count,
@@ -1433,6 +1541,7 @@ class RigConverter:
                     links=links,
                     all_chain_links=all_chain_links,
                     controller_idx=controller_idx,
+                    chain_bones=slot_to_pmx.values(),
                     rotation_grant_edges=rotation_grant_edges,
                 )
                 self._connect_ik_output_rotates(node, link_slots, slot_to_pmx, maya_joints)

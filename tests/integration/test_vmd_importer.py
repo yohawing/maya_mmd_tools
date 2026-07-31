@@ -175,8 +175,8 @@ class TestVmdImporter(MayaTestBase):
 
         vmd_path = os.path.join(self.test_data_dir, vmd_files[0])
 
-        # model motion は明示targetなしでは開始しない。
-        with self.assertRaisesRegex(MMDImportException, "explicit target model"):
+        # model motion は現在モデルなしでは開始しない。
+        with self.assertRaisesRegex(MMDImportException, "requires a current model"):
             import_mmd_file(vmd_path)
 
         # ジョイントが存在しないことを確認
@@ -275,7 +275,7 @@ class TestVmdImporter(MayaTestBase):
         parser.parse_file(vmd_path)
 
         # VMDファイルをインポート
-        result = import_mmd_file(vmd_path, options={"scene_animation_only": True})
+        result = import_mmd_file(vmd_path)
         self.assertTrue(result, "VMDファイルのインポートに失敗しました")
 
         # MMDカメラが作成されたことを確認
@@ -325,7 +325,7 @@ class TestVmdImporter(MayaTestBase):
         parser.parse_file(vmd_path)
 
         # VMDファイルをインポート
-        result = import_mmd_file(vmd_path, options={"scene_animation_only": True})
+        result = import_mmd_file(vmd_path)
         self.assertTrue(result, "VMDファイルのインポートに失敗しました")
 
         # MMD照明が作成されたことを確認

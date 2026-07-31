@@ -4,6 +4,7 @@ This module keeps UI presenters independent from the core settings singleton
 while preserving the existing optionVar-backed storage behavior.
 """
 
+import copy
 import json
 import math
 
@@ -13,12 +14,13 @@ from ..core.settings import get_settings
 
 
 _SETTINGS_EXPORT_CATEGORIES = ("import", "export", "logging", "ui")
+_FILE_HISTORY_LIMIT_DEFAULT = 20
+_FILE_HISTORY_LIMIT_MAX = 100
 
 # Dev-only import keys: forced to these values in normal mode (development_mode=False).
 # In dev mode the saved setting is used instead.
 _NORMAL_MODE_IMPORT_OVERRIDES = {
     "import_models": True,
-    "separate_meshes_by_material": False,
     "disable_backface_culling": True,
     "uv_set_name": "map#",
     "texture_search_path": "",
@@ -42,6 +44,16 @@ def normalize_reduce_bake_quality(quality):
     if not math.isfinite(quality):
         quality = 1.0
     return round(max(0.0, min(1.0, quality)), 2)
+
+
+def normalize_file_history_limit(value):
+    """Return a valid 1..100 unified file-history limit."""
+
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        value = _FILE_HISTORY_LIMIT_DEFAULT
+    return max(1, min(_FILE_HISTORY_LIMIT_MAX, value))
 
 
 def resolve_reduce_bake_tolerances_from_quality(quality):
@@ -114,6 +126,16 @@ class SettingsService:
         quality = self.get(setting_keys.IMPORT_ANIMATION_REDUCE_QUALITY, 1.0)
         return resolve_reduce_bake_tolerances_from_quality(quality)
 
+    def resolve_file_history_limit(self):
+        """Return the clamped unified file-history display limit."""
+
+        return normalize_file_history_limit(
+            self.get(
+                setting_keys.UI_GENERAL_FILE_HISTORY_LIMIT,
+                _FILE_HISTORY_LIMIT_DEFAULT,
+            )
+        )
+
     def set_development_mode_log_levels(self, enabled):
         """Set the logging level for Development Mode and return the level."""
         level_str = "INFO" if enabled else "WARNING"
@@ -124,6 +146,7 @@ class SettingsService:
         """Return settings needed by the Settings tab view."""
         return {
             "development_mode": self.get(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, False),
+            "file_history_limit": self.resolve_file_history_limit(),
             "command_port": self.get(setting_keys.UI_DEV_COMMAND_PORT, 3939),
             "logging_enabled": self.get(setting_keys.LOGGING_ENABLED, True),
             "logging_level": self.get(setting_keys.LOGGING_LEVEL, "WARNING"),
@@ -134,6 +157,11 @@ class SettingsService:
     def save_settings_tab_state(self, state):
         """Persist settings supplied by the Settings tab presenter."""
         self.set(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, state["development_mode"])
+        if "file_history_limit" in state:
+            self.set(
+                setting_keys.UI_GENERAL_FILE_HISTORY_LIMIT,
+                normalize_file_history_limit(state["file_history_limit"]),
+            )
         if "command_port" in state:
             self.set(setting_keys.UI_DEV_COMMAND_PORT, int(state["command_port"]))
         if "language" in state:
@@ -160,9 +188,23 @@ class SettingsService:
 
     def import_settings_data(self, data):
         """Import settings data for supported top-level categories."""
+        normalized_data = copy.deepcopy(data)
+        import_settings = normalized_data.get("import")
+        if isinstance(import_settings, dict):
+            animation_settings = import_settings.get("animation")
+            if isinstance(animation_settings, dict) and "create_mmd_control_rig" in animation_settings:
+                model_settings = import_settings.get("model")
+                if not isinstance(model_settings, dict):
+                    model_settings = {}
+                    import_settings["model"] = model_settings
+                # A model-scoped value, including explicit False, wins over
+                # the former animation-scoped value during JSON import.
+                model_settings.setdefault("create_mmd_control_rig", animation_settings["create_mmd_control_rig"])
+                animation_settings.pop("create_mmd_control_rig", None)
+
         for category in _SETTINGS_EXPORT_CATEGORIES:
-            if category in data:
-                for key, value in data[category].items():
+            if category in normalized_data:
+                for key, value in normalized_data[category].items():
                     self.set(f"{category}.{key}", value)
 
     def import_settings_json(self, file_path):
@@ -173,6 +215,14 @@ class SettingsService:
         """Build VMD import options from persisted settings."""
         is_dev = self.is_development_mode()
         bake_mode = bool(self.get(setting_keys.IMPORT_RIG_BAKE_MODE, False))
+        create_control_rig_setting = bool(
+            self.get(setting_keys.IMPORT_MODEL_CREATE_MMD_CONTROL_RIG, False)
+        )
+        # The Control Rig checkbox is also a PMX model-import preference, so it
+        # may legitimately remain enabled while Bake Motion is selected for a
+        # VMD import.  Bake Motion owns the VMD route in that case; the explicit
+        # converter API still rejects callers that directly request both modes.
+        create_control_rig = create_control_rig_setting and not bake_mode
         tolerances = self.resolve_reduce_bake_tolerances()
         return {
             "start_frame": self.get(setting_keys.IMPORT_ANIMATION_START_FRAME, 1),
@@ -183,6 +233,13 @@ class SettingsService:
             "import_light_animation": self.get(setting_keys.IMPORT_ANIMATION_IMPORT_LIGHT_ANIMATION, True),
             "motion_scale": self.get(setting_keys.IMPORT_ANIMATION_MOTION_SCALE, 1.0),
             "clear_existing_motion": self.get(setting_keys.IMPORT_ANIMATION_CLEAR_EXISTING_MOTION, False),
+            "create_mmd_control_rig": create_control_rig,
+            "use_vmd_rotation_time_curve": is_dev
+            and create_control_rig
+            and self.get(
+                setting_keys.IMPORT_ANIMATION_VMD_ROTATION_TIME_CURVE,
+                True,
+            ),
             "resample_curves": self.get(setting_keys.IMPORT_ANIMATION_RESAMPLE_CURVES, False) if is_dev else False,
             "bake_mode": bake_mode,
             "use_native_physics_bake": self.get(setting_keys.IMPORT_ANIMATION_USE_NATIVE_PHYSICS_BAKE, False),
@@ -202,6 +259,7 @@ class SettingsService:
             "custom_namespace": custom_namespace,
             "import_models": self.get(setting_keys.IMPORT_MODEL_IMPORT_MODELS, True),
             "create_mmd_shaders": self.get(setting_keys.IMPORT_MODEL_CREATE_MMD_SHADERS, True),
+            "create_mmd_control_rig": self.get(setting_keys.IMPORT_MODEL_CREATE_MMD_CONTROL_RIG, False),
             "separate_meshes_by_material": self.get(setting_keys.IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL, False),
             "auto_resolve_textures": self.get(setting_keys.IMPORT_MODEL_AUTO_RESOLVE_TEXTURES, True),
             "disable_backface_culling": self.get(setting_keys.IMPORT_MODEL_DISABLE_BACKFACE_CULLING, True),

@@ -1,3 +1,5 @@
+import os
+
 from ..qt_compat import (
     QWidget,
     QVBoxLayout,
@@ -19,28 +21,12 @@ from ..qt_compat import (
     QColor,
 )
 from ..base_tab import BaseTab
-from ..combo_box_utils import add_combo_item_with_tooltip, configure_model_combo_width
 from ..import_export_view_state import ImportExportViewState
 from ...core import settings_keys as setting_keys
 from ...services.settings_service import SettingsService, normalize_reduce_bake_quality
-from ...actions.import_vmd_action import VMD_TARGET_AUTO, VMD_TARGET_CAMERA
-import os
 
 
 _REDUCE_BAKE_QUALITY_DEFAULT = 1.0
-
-
-def _format_target_model_label(model_root, display_name):
-    """VMD import target combo に表示するモデル名を返す。"""
-    display_name = display_name or model_root
-    if ":" not in model_root:
-        return display_name
-
-    namespace = model_root.rsplit(":", 1)[0]
-    if "|" in namespace:
-        namespace = namespace.split("|")[-1]
-    root_name = model_root.rsplit(":", 1)[-1]
-    return f"{display_name} [{namespace}:{root_name}]"
 
 
 class ImportExportTab(BaseTab):
@@ -144,6 +130,14 @@ class ImportExportTab(BaseTab):
             tooltip_key="create_mmd_shaders",
         )
 
+        self.create_mmd_control_rig_check = self._bind_checkbox(
+            "create_mmd_control_rig",
+            setting_keys.IMPORT_MODEL_CREATE_MMD_CONTROL_RIG,
+            False,
+            model_layout,
+            tooltip_key="create_mmd_control_rig",
+        )
+
         self.separate_meshes_check = self._bind_checkbox(
             "separate_meshes",
             setting_keys.IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL,
@@ -243,13 +237,13 @@ class ImportExportTab(BaseTab):
         self.vmd_fps_label = QLabel(self.tr("vmd_fps", "fields"))
         fps_layout.addWidget(self.vmd_fps_label)
         self.vmd_fps_combo = QComboBox()
-        self.vmd_fps_combo.addItems(["30", "60"])
+        self.vmd_fps_combo.addItems(["24", "30", "60"])
         vmd_fps_val = self.settings_service.get(setting_keys.IMPORT_ANIMATION_VMD_FPS, 30)
         try:
             vmd_fps_int = int(vmd_fps_val)
         except (TypeError, ValueError):
             vmd_fps_int = 30
-        if vmd_fps_int not in (30, 60):
+        if vmd_fps_int not in (24, 30, 60):
             vmd_fps_int = 30
             self.settings_service.set(setting_keys.IMPORT_ANIMATION_VMD_FPS, 30)
         self.vmd_fps_combo.setCurrentText(str(vmd_fps_int))
@@ -281,6 +275,13 @@ class ImportExportTab(BaseTab):
         self.bake_mode_check = self._bind_checkbox(
             "bake_mode", setting_keys.IMPORT_RIG_BAKE_MODE, False, anim_settings_layout, tooltip_key="bake_mode"
         )
+        self.vmd_rotation_time_curve_check = self._bind_checkbox(
+            "vmd_rotation_time_curve",
+            setting_keys.IMPORT_ANIMATION_VMD_ROTATION_TIME_CURVE,
+            True,
+            anim_settings_layout,
+            tooltip_key="vmd_rotation_time_curve",
+        )
         self.native_physics_bake_check = self._bind_checkbox(
             "native_physics_bake",
             setting_keys.IMPORT_ANIMATION_USE_NATIVE_PHYSICS_BAKE,
@@ -304,10 +305,15 @@ class ImportExportTab(BaseTab):
         self.bake_mode_check.toggled.connect(self._sync_native_physics_bake_enabled)
         self.bake_mode_check.toggled.connect(self._sync_reduce_bake_keys_enabled)
         self.bake_mode_check.toggled.connect(self._sync_reduce_bake_quality_enabled)
+        self.bake_mode_check.toggled.connect(self._sync_vmd_rotation_time_curve_enabled)
+        self.create_mmd_control_rig_check.toggled.connect(
+            self._sync_vmd_rotation_time_curve_enabled
+        )
         self.reduce_bake_keys_check.toggled.connect(self._sync_reduce_bake_quality_enabled)
         self._sync_native_physics_bake_enabled(self.bake_mode_check.isChecked())
         self._sync_reduce_bake_keys_enabled(self.bake_mode_check.isChecked())
         self._sync_reduce_bake_quality_enabled()
+        self._sync_vmd_rotation_time_curve_enabled()
 
         self.animation_settings_group.setLayout(anim_settings_layout)
         model_settings_layout.addWidget(self.animation_settings_group)
@@ -406,18 +412,6 @@ class ImportExportTab(BaseTab):
 
         self.vmd_path_edit.textChanged.connect(lambda text: self.view_state.set("vmd_path", text))
 
-        # Target model selection
-        self.target_model_combo = QComboBox()
-        configure_model_combo_width(self.target_model_combo)
-        # モデルリストを更新してから保存された選択を復元
-        self.refresh_model_list(restore_selection=True)
-        # 選択が変更されたら保存
-        self.target_model_combo.currentIndexChanged.connect(
-            self._save_target_model_choice
-        )
-        self.target_model_label = QLabel(self.tr("target_model", "fields"))
-        animation_layout.addRow(self.target_model_label, self.target_model_combo)
-
         self.clear_existing_motion_check = QCheckBox(self.tr("clear_existing_motion", "checkboxes"))
         self.clear_existing_motion_check.setChecked(self.settings_service.get(setting_keys.IMPORT_ANIMATION_CLEAR_EXISTING_MOTION, False))
         self.clear_existing_motion_check.toggled.connect(
@@ -482,7 +476,6 @@ class ImportExportTab(BaseTab):
         # Export UI/entry is also develop-mode only (export_group via _apply_export_visibility).
         self._dev_only_widgets = [
             self.scale_row,
-            self.separate_meshes_check,
             self.disable_backface_culling_check,
             self.texture_row,
             self.uv_row,
@@ -490,6 +483,7 @@ class ImportExportTab(BaseTab):
             self.other_group,
             self.use_cpp_rig_nodes_check,
             self.motion_scale_row,
+            self.vmd_rotation_time_curve_check,
             self._export_settings_tab,
         ]
         self._apply_dev_mode_visibility()
@@ -520,6 +514,14 @@ class ImportExportTab(BaseTab):
             row.setVisible(enabled)
         if slider is not None:
             slider.setEnabled(enabled)
+
+    def _sync_vmd_rotation_time_curve_enabled(self, *_args):
+        """Enable sparse rotation time curves only for direct Control Rig import."""
+        enabled = (
+            self.create_mmd_control_rig_check.isChecked()
+            and not self.bake_mode_check.isChecked()
+        )
+        self.vmd_rotation_time_curve_check.setEnabled(enabled)
 
     def _create_reduction_quality_row(self):
         """Create the embedded 0..1 Reduce Quality slider row."""
@@ -617,63 +619,6 @@ class ImportExportTab(BaseTab):
         export_format = self.settings_service.get(setting_keys.EXPORT_GENERAL_EXPORT_FORMAT, "pmx")
         self.export_group.setVisible(bool(is_dev) and export_format in {"pmx", "vmd"})
 
-    def set_target_model_items(self, model_items, restore_selection=False):
-        """Presenter から渡されたモデル候補で target combo を更新する。"""
-        current_index = self.target_model_combo.currentIndex()
-        current_choice = self.target_model_combo.itemData(current_index)
-        restore_choice = (
-            self.view_state.get("target_model_choice", VMD_TARGET_AUTO)
-            if restore_selection
-            else current_choice
-        )
-
-        previous_signal_state = None
-        if hasattr(self.target_model_combo, "blockSignals"):
-            previous_signal_state = self.target_model_combo.blockSignals(True)
-        try:
-            self.target_model_combo.clear()
-            add_combo_item_with_tooltip(
-                self.target_model_combo,
-                self.tr("auto_detect", "actions"),
-                user_data=VMD_TARGET_AUTO,
-            )
-            add_combo_item_with_tooltip(
-                self.target_model_combo,
-                self.tr("camera_motion", "actions"),
-                user_data=VMD_TARGET_CAMERA,
-            )
-
-            for model_root, display_name in model_items:
-                add_combo_item_with_tooltip(
-                    self.target_model_combo,
-                    _format_target_model_label(model_root, display_name),
-                    user_data=model_root,
-                )
-
-            selected_index = 0
-            for index in range(self.target_model_combo.count()):
-                if self.target_model_combo.itemData(index) == restore_choice:
-                    selected_index = index
-                    break
-            self.target_model_combo.setCurrentIndex(selected_index)
-        finally:
-            if previous_signal_state is not None:
-                self.target_model_combo.blockSignals(previous_signal_state)
-
-    def _save_target_model_choice(self, index):
-        """Persist the tagged choice/root identity instead of a fragile combo index."""
-        choice = self.target_model_combo.itemData(index)
-        if choice is not None:
-            self.view_state.set("target_model_choice", choice)
-
-    def refresh_model_list(self, restore_selection=False):
-        """シーン内のMMDモデルリストを更新"""
-        presenter = getattr(self, "presenter", None)
-        if presenter is not None:
-            presenter.refresh_model_list(restore_selection=restore_selection)
-            return
-        self.set_target_model_items([], restore_selection=restore_selection)
-
     def get_custom_namespace(self):
         """カスタムnamespace名を取得"""
         if (
@@ -705,8 +650,6 @@ class ImportExportTab(BaseTab):
             self.import_path_label.setText(self.tr("file_path", "labels"))
         if hasattr(self, "vmd_file_label"):
             self.vmd_file_label.setText(self.tr("vmd_file", "fields"))
-        if hasattr(self, "target_model_label"):
-            self.target_model_label.setText(self.tr("target_model", "fields"))
         if hasattr(self, "export_path_label"):
             self.export_path_label.setText(self.tr("file_path", "labels"))
 
@@ -751,6 +694,12 @@ class ImportExportTab(BaseTab):
         if hasattr(self, "reduce_quality_label"):
             self.reduce_quality_label.setText(self.tr("reduce_quality", "fields"))
         self.clear_existing_motion_check.setText(self.tr("clear_existing_motion", "checkboxes"))
+        if hasattr(self, "create_mmd_control_rig_check"):
+            self.create_mmd_control_rig_check.setText(self.tr("create_mmd_control_rig", "checkboxes"))
+        if hasattr(self, "vmd_rotation_time_curve_check"):
+            self.vmd_rotation_time_curve_check.setText(
+                self.tr("vmd_rotation_time_curve", "checkboxes")
+            )
         self.use_cpp_rig_nodes_check.setText(self.tr("use_cpp_rig_nodes", "checkboxes"))
         self.apply_scale_check.setText(self.tr("apply_scale", "checkboxes"))
         self.new_file_check.setText(self.tr("new_file", "checkboxes"))
@@ -769,6 +718,12 @@ class ImportExportTab(BaseTab):
         if hasattr(self, "reduce_quality_slider"):
             self.reduce_quality_slider.setToolTip(self.tr("reduce_quality", "tooltips"))
         self.clear_existing_motion_check.setToolTip(self.tr("clear_existing_motion", "tooltips"))
+        if hasattr(self, "create_mmd_control_rig_check"):
+            self.create_mmd_control_rig_check.setToolTip(self.tr("create_mmd_control_rig", "tooltips"))
+        if hasattr(self, "vmd_rotation_time_curve_check"):
+            self.vmd_rotation_time_curve_check.setToolTip(
+                self.tr("vmd_rotation_time_curve", "tooltips")
+            )
         self.use_cpp_rig_nodes_check.setToolTip(self.tr("use_cpp_rig_nodes", "tooltips"))
         if hasattr(self, "animation_start_frame"):
             self.animation_start_frame.setToolTip(self.tr("start_frame", "tooltips"))
@@ -786,17 +741,6 @@ class ImportExportTab(BaseTab):
         # Tab widget texts
         if hasattr(self, "animation_settings_group"):
             self.animation_settings_group.setTitle(self.tr("animation", "tabs"))
-
-        # Refresh model list to update auto detect text
-        self.refresh_model_list()
-
-    def _load_history(self, key, max_items=10):
-        """履歴を読み込み"""
-        return self.view_state.load_history(key, max_items)
-
-    def _save_history(self, key, new_path, max_items=10):
-        """履歴を保存"""
-        self.view_state.save_history(key, new_path, max_items)
 
     def _setup_unified_history_area(self, layout):
         """統合履歴表示エリアを設定"""
@@ -837,39 +781,25 @@ class ImportExportTab(BaseTab):
 
     def _clear_all_history(self):
         """すべての履歴をクリア"""
-        self.view_state.clear_histories(("import_path_history", "vmd_path_history", "export_path_history"))
+        self.view_state.clear_file_history()
         self.refresh_unified_history()
 
     def refresh_unified_history(self):
         """統合履歴リストを更新"""
         self.unified_history_list.clear()
 
-        # すべての履歴を統合して表示
-        all_items = []
-
-        # インポート履歴
-        import_history = self._load_history("import_path_history")
-        for path in import_history:
-            ext = os.path.splitext(path)[1].lower()
-            if ext in [".pmd", ".pmx"]:
-                item_data = {"path": path, "type": "import", "display": f"[Model] {os.path.basename(path)}"}
-                all_items.append(item_data)
-
-        # VMD履歴
-        vmd_history = self._load_history("vmd_path_history")
-        for path in vmd_history:
-            item_data = {"path": path, "type": "vmd", "display": f"[Animation] {os.path.basename(path)}"}
-            all_items.append(item_data)
-
-        # エクスポート履歴
-        export_history = self._load_history("export_path_history")
-        for path in export_history:
-            item_data = {"path": path, "type": "export", "display": f"[Export] {os.path.basename(path)}"}
-            all_items.append(item_data)
+        history_limit = self.settings_service.resolve_file_history_limit()
+        all_items = self.view_state.load_file_history(history_limit)
+        display_prefixes = {
+            "import": "Model",
+            "vmd": "Animation",
+            "export": "Export",
+        }
 
         # リストに追加（最新のものから表示）
         for item_data in all_items:
-            item = QListWidgetItem(item_data["display"])
+            prefix = display_prefixes[item_data["type"]]
+            item = QListWidgetItem(f"[{prefix}] {os.path.basename(item_data['path'])}")
             item.setData(Qt.UserRole, item_data["path"])
             item.setData(Qt.UserRole + 1, item_data["type"])
             item.setToolTip(item_data["path"])
@@ -886,18 +816,18 @@ class ImportExportTab(BaseTab):
 
     def add_import_path_to_history(self, path):
         """インポートパスを履歴に追加"""
-        self._save_history("import_path_history", path)
+        self.view_state.save_file_history("import", path)
         # 履歴リストを更新
         self.refresh_unified_history()
 
     def add_vmd_path_to_history(self, path):
         """アニメーションパスを履歴に追加"""
-        self._save_history("vmd_path_history", path)
+        self.view_state.save_file_history("vmd", path)
         # 履歴リストを更新
         self.refresh_unified_history()
 
     def add_export_path_to_history(self, path):
         """エクスポートパスを履歴に追加"""
-        self._save_history("export_path_history", path)
+        self.view_state.save_file_history("export", path)
         # 履歴リストを更新
         self.refresh_unified_history()

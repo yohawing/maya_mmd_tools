@@ -5,7 +5,7 @@ to Maya's time evaluation.  Outputs bone world matrices (Maya-space) as a flat
 doubleArray plus metadata.
 
 Time state machine:
-- same time → idempotent (cached result)
+- same time → idempotent (cached result); Maya-pose inputs are compared first
 - forward step → step_runtime(dt)
 - bounded forward jump → fixed-step catch-up
 - backward / first eval / oversized jump → reset
@@ -27,6 +27,12 @@ import maya.api.OpenMaya as om
 
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.native.mmd_anim_runtime import is_native_physics_available
+from mmd_tools.core.physics_bind_basis import (
+    BIND_BASIS_MISSING,
+    BIND_BASIS_SINGULAR,
+    BindBasisResolutionError,
+    resolve_imported_bind_world_matrix,
+)
 
 
 logger = get_logger(__name__)
@@ -80,12 +86,14 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._rb_shape_mobjects = {}
         self._last_time = None
         self._cached_flat = None
+        self._last_kinematic_pose_signature = None
         self._initialized = False
         self._last_reset_generation = -1
         self._last_world_settings_version = None
         self._last_descriptor_version = None
         self._initialization_failure_signatures: set[tuple] = set()
         self._initialization_failure_descriptor_version = None
+        self._latched_validation_failure_descriptor_version = None
 
     def compute(self, plug, data):
         attr = plug.attribute()
@@ -116,6 +124,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         if not world_enable:
             self._last_time = None
             self._write_outputs(data, solved=False, status="disabled")
+            self._last_kinematic_pose_signature = None
             return
 
         world_settings_changed = (
@@ -135,10 +144,14 @@ class MmdPhysicsSolverNode(om.MPxNode):
         if descriptor_changed:
             self._free_handles()
 
-        if not self._initialized:
+        if (
+            not self._initialized
+            and self._latched_validation_failure_descriptor_version != descriptor_version
+        ):
             self._try_initialize()
 
         if self._world is None or self._instance is None:
+            self._last_kinematic_pose_signature = None
             self._write_outputs(data, solved=False, status="no physics data")
             return
 
@@ -148,6 +161,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         world_enable, reset_gen = self._read_world_settings()
         if not world_enable:
             self._last_time = None
+            self._last_kinematic_pose_signature = None
             self._write_outputs(data, solved=False, status="disabled")
             return
 
@@ -162,12 +176,22 @@ class MmdPhysicsSolverNode(om.MPxNode):
             and abs(current_time - self._last_time) < _TIME_EPSILON
         )
 
+        pose_input = None
+        if same_time and input_mode == INPUT_MODE_MAYA_POSE:
+            pose_input = self._read_kinematic_pose_inputs(data)
+            if (
+                pose_input is not None
+                and pose_input[2] == self._last_kinematic_pose_signature
+            ):
+                self._write_outputs(data, solved=True, status="cached")
+                return
+
         if same_time and input_mode != INPUT_MODE_MAYA_POSE:
             self._write_outputs(data, solved=True, status="cached")
             return
 
         if same_time:
-            if not self._reset_world(input_mode, data):
+            if not self._reset_world(input_mode, data, pose_input=pose_input):
                 self._write_failure(data)
                 return
             status = "pose-updated"
@@ -191,6 +215,12 @@ class MmdPhysicsSolverNode(om.MPxNode):
         if not self._update_cached_matrices():
             self._write_failure(data)
             return
+        if input_mode != INPUT_MODE_MAYA_POSE:
+            self._last_kinematic_pose_signature = None
+        elif not self._kinematic_corrections:
+            # No kinematic bones means the effective Maya-pose input is the
+            # empty tuple; remember it so duplicate pulls remain idempotent.
+            self._last_kinematic_pose_signature = ()
         self._last_time = current_time
         self._update_rigid_body_visual_cache()
         self._write_outputs(data, solved=True, status=status)
@@ -219,7 +249,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
             return False
         return self._instance.evaluate_current_pose_after_physics()
 
-    def _reset_world(self, input_mode: int, data=None) -> bool:
+    def _reset_world(self, input_mode: int, data=None, pose_input=None) -> bool:
         from mmd_tools.core.native.mmd_anim_runtime_types import MMD_RUNTIME_PHYSICS_MODE_LIVE
 
         if not self._instance.set_physics_mode(MMD_RUNTIME_PHYSICS_MODE_LIVE):
@@ -227,7 +257,10 @@ class MmdPhysicsSolverNode(om.MPxNode):
         if not self._instance.evaluate_rest_pose():
             return False
         if input_mode == INPUT_MODE_MAYA_POSE and self._kinematic_corrections:
-            if not self._inject_kinematic_poses(data):
+            if pose_input is None:
+                if not self._inject_kinematic_poses(data):
+                    return False
+            elif not self._apply_kinematic_pose_inputs(pose_input):
                 return False
             if not self._instance.evaluate_current_pose_before_physics():
                 return False
@@ -237,6 +270,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         raw = self._instance.get_world_matrices()
         if raw is None:
             self._cached_flat = None
+            self._last_kinematic_pose_signature = None
             return False
 
         from mmd_tools.core.coordinate_transform import mmd_matrix_to_maya
@@ -280,6 +314,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         stage: str,
         error_type: str,
         reason: str,
+        reason_code: str | None = None,
         validation_errors=None,
     ) -> None:
         """Emit one structured diagnostic for each unique initialization failure."""
@@ -296,12 +331,17 @@ class MmdPhysicsSolverNode(om.MPxNode):
             "errorType": error_type,
             "reason": reason,
         }
+        if reason_code:
+            # Keep ``reason`` backwards compatible for existing diagnostics,
+            # while exposing a machine-stable code for new fail-closed paths.
+            payload["reasonCode"] = reason_code
         signature = (
             model_root,
             descriptor_version,
             stage,
             error_type,
             reason,
+            reason_code,
             validation_signature,
         )
         if signature in self._initialization_failure_signatures:
@@ -323,6 +363,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         stage: str,
         error_type: str,
         reason: str,
+        reason_code: str | None = None,
         validation_errors=None,
     ) -> bool:
         """Record a non-exception failure, release partial handles, and stop."""
@@ -332,6 +373,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
             stage=stage,
             error_type=error_type,
             reason=reason,
+            reason_code=reason_code,
             validation_errors=validation_errors,
         )
         self._free_handles()
@@ -374,6 +416,10 @@ class MmdPhysicsSolverNode(om.MPxNode):
 
             stage = "validate physics descriptors"
             if world_descriptors.validation_errors:
+                # Descriptor validation is deterministic for a given version.
+                # Do not rebuild/emit the same failure on every DG pull; a
+                # descriptor edit changes the version and unlocks retry.
+                self._latched_validation_failure_descriptor_version = descriptor_version
                 return self._fail_initialization(
                     model_root=model_root,
                     descriptor_version=descriptor_version,
@@ -429,6 +475,17 @@ class MmdPhysicsSolverNode(om.MPxNode):
 
             stage = "build rigid body mapping"
             self._build_rigid_body_shape_mapping(model_root)
+        except BindBasisResolutionError as exc:
+            self._record_initialization_failure(
+                model_root=model_root,
+                descriptor_version=descriptor_version,
+                stage=stage,
+                error_type="BindBasisError",
+                reason=str(exc),
+                reason_code=exc.reason_code,
+            )
+            self._free_handles()
+            return False
         except Exception as exc:
             self._record_initialization_failure(
                 model_root=model_root,
@@ -441,6 +498,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
             return False
 
         self._initialized = True
+        self._latched_validation_failure_descriptor_version = None
         self._initialization_failure_signatures.clear()
         self._initialization_failure_descriptor_version = descriptor_version
         return True
@@ -456,7 +514,6 @@ class MmdPhysicsSolverNode(om.MPxNode):
         correction = mmd_matrix_to_maya(mmd_rest) * maya_bind^(-1)
         At runtime:  mmd_world = maya_matrix_to_mmd(correction * maya_animated)
         """
-        from maya import cmds
         from mmd_tools.core.coordinate_transform import mmd_matrix_to_maya
 
         all_bone_indices, kinematic_bone_indices = self._find_physics_bone_indices(model_root)
@@ -464,27 +521,46 @@ class MmdPhysicsSolverNode(om.MPxNode):
         if not all_bone_indices:
             return
 
-        self._instance.evaluate_rest_pose()
+        if not self._instance.evaluate_rest_pose():
+            raise BindBasisResolutionError(
+                BIND_BASIS_MISSING,
+                str(model_root),
+                "runtime rest pose is unavailable",
+            )
         mmd_rest_matrices = self._instance.get_world_matrices()
         if not mmd_rest_matrices:
-            return
+            raise BindBasisResolutionError(
+                BIND_BASIS_MISSING,
+                str(model_root),
+                "runtime rest world matrices are unavailable",
+            )
 
         for bone_idx in all_bone_indices:
             if bone_idx >= len(mmd_rest_matrices) or bone_idx >= len(self._bone_joints):
-                continue
+                raise BindBasisResolutionError(
+                    BIND_BASIS_MISSING,
+                    f"{model_root}[bone:{bone_idx}]",
+                    "physics bone has no matching rest/joint entry",
+                )
             joint = self._bone_joints[bone_idx]
-            if not joint or not cmds.objExists(joint):
-                continue
+            if not joint:
+                raise BindBasisResolutionError(BIND_BASIS_MISSING, str(joint))
             try:
                 mmd_rest_maya = mmd_matrix_to_maya(mmd_rest_matrices[bone_idx])
                 mmd_rest_maya_mat = om.MMatrix(mmd_rest_maya)
-
-                maya_bind = [float(v) for v in cmds.getAttr(f"{joint}.worldMatrix[0]")]
-                bind_mat = om.MMatrix(maya_bind)
-
+                # Never read the animated joint world matrix here.  Physics
+                # may be enabled after an arbitrary nonzero animation frame;
+                # only a validated, saved bind authority is safe at init.
+                bind_mat = resolve_imported_bind_world_matrix(joint)
                 self._kinematic_corrections[bone_idx] = mmd_rest_maya_mat * bind_mat.inverse()
-            except Exception:
-                continue
+            except BindBasisResolutionError:
+                raise
+            except Exception as exc:
+                raise BindBasisResolutionError(
+                    BIND_BASIS_SINGULAR,
+                    str(joint),
+                    str(exc) or type(exc).__name__,
+                ) from exc
 
     @staticmethod
     def _find_physics_bone_indices(model_root: str) -> tuple[set, set]:
@@ -543,55 +619,102 @@ class MmdPhysicsSolverNode(om.MPxNode):
             pass
         return all_indices, kinematic_indices - dynamic_indices
 
-    def _inject_kinematic_poses(self, data) -> bool:
-        """Read kinematic bone world matrices from DG inputs and inject into the instance."""
+    def _read_kinematic_pose_inputs(self, data):
+        """Read effective kinematic matrices and return an exact signature.
+
+        The connected matrix array is authoritative when an element exists.
+        The joint world-matrix fallback is restricted to physics-kinematic
+        bones; dynamic bones with no pre-physics input are intentionally not
+        read so this node cannot form a DG feedback cycle.
+        """
         from mmd_tools.core.coordinate_transform import maya_matrix_to_mmd
 
         bone_count = self._bone_count
         if bone_count <= 0:
-            return False
+            return None
 
         flat = [0.0] * (bone_count * 16)
         mask = [0] * bone_count
+        signature = []
 
         try:
             array_handle = data.inputArrayValue(self.aInKinematicWorldMatrix)
-        except Exception:
+        except AttributeError:
             array_handle = None
+        except Exception:
+            return None
 
-        for bone_idx, correction_inv in self._kinematic_corrections.items():
+        for bone_idx in sorted(self._kinematic_corrections):
+            correction_inv = self._kinematic_corrections[bone_idx]
             try:
                 maya_mat = None
+                source = "none"
                 if array_handle is not None:
                     try:
                         array_handle.jumpToElement(bone_idx)
-                        maya_mat = array_handle.inputValue().asMatrix()
                     except Exception:
                         pass
+                    else:
+                        source = "matrix"
+                        try:
+                            maya_mat = array_handle.inputValue().asMatrix()
+                        except Exception:
+                            return None
+                        if maya_mat is None:
+                            return None
                 if maya_mat is None:
                     if bone_idx not in self._kinematic_bone_indices:
+                        signature.append((bone_idx, source))
                         continue
                     from maya import cmds
                     joint = self._bone_joints[bone_idx] if bone_idx < len(self._bone_joints) else None
                     if not joint:
-                        continue
-                    maya_world = [float(v) for v in cmds.getAttr(f"{joint}.worldMatrix[0]")]
-                    maya_mat = om.MMatrix(maya_world)
+                        return None
+                    try:
+                        maya_world = [float(v) for v in cmds.getAttr(f"{joint}.worldMatrix[0]")]
+                        maya_mat = om.MMatrix(maya_world)
+                    except Exception:
+                        return None
+                    source = "joint"
 
                 corrected = correction_inv * maya_mat
                 corrected_flat = [
                     corrected.getElement(r, c) for r in range(4) for c in range(4)
                 ]
+                corrected_mmd = tuple(float(v) for v in maya_matrix_to_mmd(corrected_flat))
                 offset = bone_idx * 16
-                flat[offset : offset + 16] = maya_matrix_to_mmd(corrected_flat)
+                flat[offset : offset + 16] = corrected_mmd
                 mask[bone_idx] = 1
+                signature.append((bone_idx, source, corrected_mmd))
             except Exception:
-                continue
+                return None
+
+        return flat, mask, tuple(signature)
+
+    def _apply_kinematic_pose_inputs(self, pose_input) -> bool:
+        """Apply a previously read pose snapshot and retain its signature."""
+        flat, mask, signature = pose_input
 
         if any(mask):
             result = self._instance.apply_physics_world_matrices(flat, mask)
-            return result is not None
+            if result is None:
+                self._last_kinematic_pose_signature = None
+                return False
+        self._last_kinematic_pose_signature = signature
         return True
+
+    def _inject_kinematic_poses(self, data) -> bool:
+        """Read and inject kinematic matrices from the Maya pose sources.
+
+        ``_read_kinematic_pose_inputs`` performs the ``cmds.getAttr`` fallback
+        for ``worldMatrix[0]`` and the ``maya_matrix_to_mmd`` conversion; this
+        wrapper applies the result through ``apply_physics_world_matrices``.
+        """
+        pose_input = self._read_kinematic_pose_inputs(data)
+        if pose_input is None:
+            self._last_kinematic_pose_signature = None
+            return False
+        return self._apply_kinematic_pose_inputs(pose_input)
 
     def _build_rigid_body_shape_mapping(self, model_root: str) -> None:
         """Build dense native state index → shape DAG path mapping."""
@@ -720,6 +843,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         """Publish a failed evaluation without exposing a prior successful pose."""
         self._last_time = None
         self._cached_flat = None
+        self._last_kinematic_pose_signature = None
         self._write_outputs(data, solved=False, status=status)
 
     def _free_handles(self) -> None:
@@ -742,6 +866,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._rb_shape_mobjects = {}
         self._last_time = None
         self._cached_flat = None
+        self._last_kinematic_pose_signature = None
 
     def __del__(self):
         try:

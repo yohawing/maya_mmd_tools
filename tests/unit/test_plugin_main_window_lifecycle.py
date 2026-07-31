@@ -229,6 +229,29 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         ]
         self.assertEqual(len(animator_calls), 1)
 
+        manager_calls = [
+            call
+            for call in self.plugin_main.cmds.menuItem.call_args_list
+            if call[1].get("label") == "Manage Control Rig"
+        ]
+        self.assertEqual(len(manager_calls), 1)
+
+    def test_control_rig_manager_menu_opens_the_shared_manager(self):
+        self.plugin_main.cmds.menu.side_effect = lambda *_args, **kwargs: (
+            False if kwargs.get("exists") else [] if kwargs.get("query") else "MMD"
+        )
+        self.plugin_main.open_control_rig_manager = MagicMock(return_value="manager")
+
+        self.plugin_main.install_mmd_menu()
+
+        menu_call = next(
+            call
+            for call in self.plugin_main.cmds.menuItem.call_args_list
+            if call[1].get("label") == "Manage Control Rig"
+        )
+        self.assertEqual(menu_call[1]["command"]("menu-click"), "manager")
+        self.plugin_main.open_control_rig_manager.assert_called_once_with()
+
     def test_install_menu_without_module_file_binding(self):
         """Maya's scripted plug-in loader can exec plugin_main with no __file__."""
         self.plugin_main.cmds.menu.side_effect = lambda *_args, **kwargs: (

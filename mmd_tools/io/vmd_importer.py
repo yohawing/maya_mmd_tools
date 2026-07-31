@@ -14,6 +14,37 @@ from ..core.namespace_utils import NamespaceUtils
 from ..core.native.mmd_anim_runtime import is_mmd_runtime_available
 
 
+def _normalize_vmd_fps(value: Any, logger=None) -> int:
+    """Return the supported Maya scene FPS while preserving VMD frame numbers."""
+    try:
+        fps = int(value)
+    except (TypeError, ValueError, OverflowError):
+        fps = 30
+    if fps not in (24, 30, 60):
+        if logger is not None:
+            logger.warning(
+                f"Invalid vmd_fps={value} (only 24, 30, or 60 allowed), falling back to 30"
+            )
+        return 30
+    return fps
+
+
+def _resolve_quaternion_interpolation(options: Dict[str, Any]) -> bool:
+    """Resolve the sparse rotation interpolation policy for one VMD import.
+
+    Quaternion slerp is an experimental Control Rig feature.  Keep the
+    legacy joint-side import unchanged unless the caller explicitly opts in,
+    while making the normal ``create_mmd_control_rig=True`` route activate the
+    experimentally validated mode.  An explicit option remains authoritative
+    for probes and compatibility callers.
+    """
+    create_control_rig = bool(options.get("create_mmd_control_rig", False))
+    override = options.get("use_quaternion_interpolation")
+    if override is None:
+        return create_control_rig
+    return bool(override)
+
+
 def _try_recover_physics_drivers(target_model, logger, profile):
     """Attempt to reconnect orphaned physics drivers after VMD import.
 
@@ -64,10 +95,13 @@ def import_vmd_file(
             - pmx_path: 対応する PMX ファイルのパス
             - pmx_bytes: 生 PMX バイト
             - bake_mode: True の場合はリグ経由ではなく runtime bake を優先
+            - create_mmd_control_rig: True の場合は MMD Control Rig を作成/再利用し、直接キーを作成
+            - use_quaternion_interpolation: sparse回転をQuaternion slerp評価する。Control Rig直接importは既定True、legacyは既定False。
+            - use_vmd_rotation_time_curve: Control Rig回転BezierをanimCurveTTとして保持するDevelopモード機能。
             - use_native_physics_bake: True かつ bake_mode のとき native physics bake を試行する（default False）
             - reduce_bake_keys: True かつ bake_mode のとき runtime pose reduction を試行する（default False）
             - reduce_translate_tolerance / reduce_rotate_tolerance / reduce_morph_tolerance: reduction tolerances
-            - vmd_fps: VMDインポート時のMayaシーンFPS (30 or 60, default 30)。VMDフレーム番号はリスケールせず、シーンのタイムユニットのみ変更。
+            - vmd_fps: VMDインポート時のMayaシーンFPS (24, 30, or 60, default 30)。VMDフレーム番号はリスケールせず、シーンのタイムユニットのみ変更。
         progress_callback (Callable[[int], None]): フェーズ進捗通知コールバック。
 
     Returns:
@@ -134,35 +168,32 @@ def import_vmd_file(
             except Exception:
                 logger.debug("Failed to restore PMX source from target model", exc_info=True)
 
-        if not scene_animation_only and not pmx_bytes and not pmx_path:
-            # 同じディレクトリに .pmx/.pmd があるか簡易推定
-            try:
-                vmd_dir = os.path.dirname(os.path.abspath(filepath))
-                candidates = [f for f in os.listdir(vmd_dir) if f.lower().endswith((".pmx", ".pmd"))] if os.path.isdir(vmd_dir) else []
-                if candidates:
-                    pmx_path = os.path.join(vmd_dir, candidates[0])
-                    logger.info(f"Auto-detected PMX source: {pmx_path} (explicit path recommended)")
-            except Exception:
-                logger.debug("Failed to auto-detect PMX source next to VMD", exc_info=True)
         _emit_progress(35)
 
         # VMDコンバーターを使用してアニメーションを変換
         converter = VmdConverter()
         # Apply VMD import FPS setting (sets Maya scene time unit; VMD frame numbers are not rescaled)
-        vmd_fps = options.get("vmd_fps", 30)
-        if vmd_fps not in (30, 60):
-            try:
-                v = int(vmd_fps)
-                if v not in (30, 60):
-                    raise ValueError(v)
-                vmd_fps = v
-            except (TypeError, ValueError):
-                logger.warning(f"Invalid vmd_fps={vmd_fps} (only 30 or 60 allowed), falling back to 30")
-                vmd_fps = 30
+        vmd_fps = _normalize_vmd_fps(options.get("vmd_fps", 30), logger)
         converter.fps = float(vmd_fps)
         converter.motion_scale = float(options.get("motion_scale", 1.0))
         converter.import_camera_animation = bool(options.get("import_camera_animation", True))
         converter.import_light_animation = bool(options.get("import_light_animation", True))
+        converter.use_quaternion_interpolation = _resolve_quaternion_interpolation(options)
+        converter.use_vmd_rotation_time_curve = bool(
+            options.get("use_vmd_rotation_time_curve", False)
+        )
+        if converter.use_vmd_rotation_time_curve and not bool(
+            options.get("create_mmd_control_rig", False)
+        ):
+            raise MMDImportException(
+                "VMD Rotation Time Curve requires MMD Control Rig import",
+                reason_code="vmd_rotation_time_curve_requires_control_rig",
+            )
+        if converter.use_vmd_rotation_time_curve and not converter.use_quaternion_interpolation:
+            raise MMDImportException(
+                "VMD Rotation Time Curve requires Quaternion interpolation",
+                reason_code="vmd_rotation_time_curve_requires_quaternion",
+            )
         profile = options.get("profile")
         if not isinstance(profile, dict):
             profile = {}
@@ -187,6 +218,7 @@ def import_vmd_file(
                     target_namespace,
                     bake_mode=options.get("bake_mode", False),
                     clear_existing_motion=options.get("clear_existing_motion", False),
+                    create_mmd_control_rig=bool(options.get("create_mmd_control_rig", False)),
                     vmd_bytes=vmd_bytes,
                     pmx_bytes=pmx_bytes,
                     pmx_path=pmx_path,

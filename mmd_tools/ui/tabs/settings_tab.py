@@ -92,6 +92,12 @@ class SettingsTab(BaseTab):
         self.language_label = QLabel(self.tr("language", "fields"))
         ui_layout.addRow(self.language_label, self.language_combo)
 
+        self.file_history_limit_spin = QSpinBox()
+        self.file_history_limit_spin.setRange(1, 100)
+        self.file_history_limit_spin.setValue(20)
+        self.file_history_limit_label = QLabel(self.tr("file_history_limit", "fields"))
+        ui_layout.addRow(self.file_history_limit_label, self.file_history_limit_spin)
+
         self.ui_group.setLayout(ui_layout)
         layout.addWidget(self.ui_group)
 
@@ -171,6 +177,8 @@ class SettingsTab(BaseTab):
         # Labels
         if hasattr(self, "language_label"):
             self.language_label.setText(self.tr("language", "fields"))
+        if hasattr(self, "file_history_limit_label"):
+            self.file_history_limit_label.setText(self.tr("file_history_limit", "fields"))
         if hasattr(self, "log_level_label"):
             self.log_level_label.setText(self.tr("log_level", "fields"))
         if hasattr(self, "log_file_label"):

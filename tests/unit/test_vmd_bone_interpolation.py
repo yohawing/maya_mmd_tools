@@ -1,5 +1,7 @@
 """VMD bone interpolation regression tests."""
 
+import json
+from pathlib import Path
 from unittest.mock import patch
 
 import maya.api.OpenMaya as om
@@ -32,6 +34,13 @@ def _bone_interp_bytes_by_channel(**overrides):
 class TestVmdBoneInterpolation(MayaTestBase):
     """Bone interpolation and tangent regression tests."""
 
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        plugin_path = Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py"
+        if not cmds.pluginInfo(str(plugin_path), query=True, loaded=True):
+            cls.plugins_loaded.extend(cmds.loadPlugin(str(plugin_path), quiet=True) or [])
+
     def setUp(self):
         super().setUp()
         self.converter = VmdConverter()
@@ -40,6 +49,117 @@ class TestVmdBoneInterpolation(MayaTestBase):
     def tearDown(self):
         super().tearDown()
         self.fixture_provider.cleanup_temp_files()
+
+    @staticmethod
+    def _rotation_frames(bone_name):
+        """Return a two-key, nonlinear VMD rotation fixture."""
+        frame0 = VmdBoneFrame()
+        frame0.bone_name = bone_name
+        frame0.frame_number = 0
+        frame0.rotation = (0.0, 0.0, 0.0, 1.0)
+
+        frame10 = VmdBoneFrame()
+        frame10.bone_name = bone_name
+        frame10.frame_number = 10
+        frame10.rotation = (0.0, 0.70710678, 0.0, 0.70710678)
+        # A strongly nonlinear segment: an accidental dense bake creates keys
+        # at frames 1..9, while a live rig must retain only authored keys.
+        frame10.interpolation = _bone_interp_bytes_by_channel(rotation=(0, 20, 107, 127))
+        return [frame0, frame10]
+
+    @staticmethod
+    def _assert_authored_key_times(test_case, plug):
+        """Assert that a destination plug contains exactly the VMD key times."""
+        times = [float(time) for time in (cmds.keyframe(plug, query=True, timeChange=True) or [])]
+        test_case.assertEqual(times, [0.0, 10.0], plug)
+        count = cmds.keyframe(plug, query=True, keyframeCount=True) or 0
+        if isinstance(count, (list, tuple)):
+            count = count[0] if count else 0
+        test_case.assertEqual(int(count), 2, plug)
+        for frame in range(1, 10):
+            intermediate_count = cmds.keyframe(
+                plug,
+                query=True,
+                time=(frame, frame),
+                keyframeCount=True,
+            ) or 0
+            if isinstance(intermediate_count, (list, tuple)):
+                intermediate_count = intermediate_count[0] if intermediate_count else 0
+            test_case.assertEqual(int(intermediate_count), 0, f"{plug} unexpectedly keyed at {frame}")
+
+    def test_non_linear_rotation_preserves_authored_keys_on_all_live_rig_routes(self):
+        """Live rig routes keep the two authored VMD keys and never dense-bake."""
+        ordinary_joint = cmds.joint(name="sparse_ordinary_joint")
+        append_joint = cmds.joint(name="sparse_append_joint")
+        ik_joint = cmds.joint(name="sparse_ik_link_joint")
+        cmds.select(clear=True)
+
+        append_node = cmds.createNode("transform", name="sparse_append_route")
+        for attr in ("baseRotateX", "baseRotateY", "baseRotateZ"):
+            cmds.addAttr(append_node, longName=attr, attributeType="double", keyable=True)
+
+        ik_node = cmds.createNode("mmdCcdIk", name="sparse_ik_solver")
+        chain_json = {
+            "bones": [{"rest_position": [0, 0, 0], "parent_slot": -1} for _ in range(3)],
+            "controllerBoneSlot": -1,
+            "targetBoneSlot": 0,
+            "links": [{"bone_slot": 2}],
+            "iterationCount": 1,
+            "limitAngle": 0.1,
+        }
+        cmds.setAttr(f"{ik_node}.chainJson", json.dumps(chain_json), type="string")
+        cmds.connectAttr(f"{ik_node}.outputRotate[0]", f"{ik_joint}.rotate", force=True)
+
+        self.converter.use_animation_layers = False
+        self.converter.set_bone_name_mapping(
+            {
+                "通常": ordinary_joint,
+                "付与": append_joint,
+                "IKリンク": ik_joint,
+            }
+        )
+        self.converter._bone_bind_poses = {
+            "通常": (0.0, 0.0, 0.0),
+            "付与": (0.0, 0.0, 0.0),
+            "IKリンク": (0.0, 0.0, 0.0),
+        }
+        append_info = {
+            append_joint: {
+                "node": append_node,
+                "attr_map": {
+                    "rotateX": "baseRotateX",
+                    "rotateY": "baseRotateY",
+                    "rotateZ": "baseRotateZ",
+                },
+            }
+        }
+        frames = (
+            self._rotation_frames("通常")
+            + self._rotation_frames("付与")
+            + self._rotation_frames("IKリンク")
+        )
+
+        # API 2.0 batch keying is required for this regression fixture.  If a
+        # route reintroduces the slow fallback it must fail loudly.
+        with patch(
+            "mmd_tools.converters.vmd_bone_animation.cmds.setKeyframe",
+            side_effect=AssertionError("sparse rig route used cmds.setKeyframe fallback"),
+        ), patch.object(self.converter, "_collect_append_info", return_value=append_info):
+            self.assertTrue(self.converter._convert_bone_animation(frames))
+
+        for attr in ("rotateX", "rotateY", "rotateZ"):
+            self._assert_authored_key_times(self, f"{ordinary_joint}.{attr}")
+            self.assertIsNone(cmds.keyframe(f"{append_joint}.{attr}", query=True, timeChange=True))
+            self.assertIsNone(cmds.keyframe(f"{ik_joint}.{attr}", query=True, timeChange=True))
+        for attr in ("baseRotateX", "baseRotateY", "baseRotateZ"):
+            self._assert_authored_key_times(self, f"{append_node}.{attr}")
+
+        chain_slot = 2
+        for axis in "XYZ":
+            self._assert_authored_key_times(
+                self,
+                f"{ik_node}.inputRotate[{chain_slot}].inputRotateElement{axis}",
+            )
 
     def test_bone_bezier_tangents_use_api_on_animation_layer(self):
         """大量 model VMD の tangent 適用で cmds.keyTangent hot path に落ちない。"""

@@ -164,11 +164,14 @@ class TestHumanIkFrontend(unittest.TestCase):
             -1,
             [],
             [],
+            "character-target-uuid",
         )
         load_state.return_value = [{
             "modelRoot": "|target",
+            "modelRootUuid": "model-target-uuid",
             "ownershipId": restore_state.ownership_id,
             "character": restore_state.character,
+            "characterUuid": "character-target-uuid",
             "restore_state": restore_state.to_dict(),
             "disconnected": [],
             "retainedNodes": [],
@@ -193,6 +196,21 @@ class TestHumanIkFrontend(unittest.TestCase):
         class Cmds:
             def objExists(self, name):
                 return name in {"|target", "Character_target"}
+
+            def ls(self, value, long=False, uuid=False):
+                by_uuid = {
+                    "model-target-uuid": "|target",
+                    "character-target-uuid": "Character_target",
+                }
+                if uuid:
+                    return [
+                        key
+                        for key, node in by_uuid.items()
+                        if value in {node, key}
+                    ]
+                if long:
+                    return [by_uuid.get(value, value)]
+                return [value]
 
         session = HumanIkFrontendSession(cmds_module=Cmds())
 

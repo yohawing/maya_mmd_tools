@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "case": "yw_test_model_control_rig_bone_morph",
+  "model": "yw_test_model_control_rig_bone_morph.pmx",
+  "output": "yw_test_model_control_rig_bone_morph.vmd",
+  "model_name": "YWテスト用モデル",
+  "description": "Repository-authored MIT deterministic Control Rig BoneMorph coverage derived from the CC0 yw_test_model PMX.",
+  "selection": {
+    "left_foot_ik": {"side": "left", "kind": "foot_ik"},
+    "right_foot_ik": {"side": "right", "kind": "foot_ik"},
+    "left_toe_ik": {"side": "left", "kind": "toe_ik"},
+    "right_toe_ik": {"side": "right", "kind": "toe_ik"},
+    "left_grant_source": {"side": "left", "kind": "grant_source", "target_suffix": "足D"},
+    "right_grant_source": {"side": "right", "kind": "grant_source", "target_suffix": "足D"}
+  },
+  "bone_motion": {
+    "frames": [0, 10, 20],
+    "tracks": {
+      "left_foot_ik": [
+        {"frame": 0, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]},
+        {"frame": 10, "position": [0.22, 0.12, 0.08], "rotation": [0.0, 0.04997917, 0.0, 0.99875027]},
+        {"frame": 20, "position": [0.36, 0.06, 0.16], "rotation": [0.0, 0.09983342, 0.0, 0.99500417]}
+      ],
+      "right_foot_ik": [
+        {"frame": 0, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]},
+        {"frame": 10, "position": [-0.22, 0.12, 0.08], "rotation": [0.0, -0.04997917, 0.0, 0.99875027]},
+        {"frame": 20, "position": [-0.36, 0.06, 0.16], "rotation": [0.0, -0.09983342, 0.0, 0.99500417]}
+      ],
+      "left_toe_ik": [
+        {"frame": 0, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]},
+        {"frame": 10, "position": [0.0, 0.0, 0.10], "rotation": [0.04997917, 0.0, 0.0, 0.99875027]},
+        {"frame": 20, "position": [0.0, 0.0, 0.20], "rotation": [0.09983342, 0.0, 0.0, 0.99500417]}
+      ],
+      "right_toe_ik": [
+        {"frame": 0, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]},
+        {"frame": 10, "position": [0.0, 0.0, 0.10], "rotation": [-0.04997917, 0.0, 0.0, 0.99875027]},
+        {"frame": 20, "position": [0.0, 0.0, 0.20], "rotation": [-0.09983342, 0.0, 0.0, 0.99500417]}
+      ],
+      "left_grant_source": [
+        {"frame": 0, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]},
+        {"frame": 10, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.04997917, 0.99875027]},
+        {"frame": 20, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.09983342, 0.99500417]}
+      ],
+      "right_grant_source": [
+        {"frame": 0, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]},
+        {"frame": 10, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, -0.04997917, 0.99875027]},
+        {"frame": 20, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, -0.09983342, 0.99500417]}
+      ]
+    }
+  },
+  "ik_enable": [
+    {"frame": 0, "left": true, "right": true},
+    {"frame": 6, "left": false, "right": true},
+    {"frame": 12, "left": false, "right": false},
+    {"frame": 20, "left": true, "right": false}
+  ],
+  "bone_morph": {
+    "name": "CR_BoneMorph",
+    "name_english": "CR_BoneMorph",
+    "bone_name": "センター",
+    "translation": [0.25, 0.0, 0.0],
+    "rotation": [0.0, 0.0, 0.0, 1.0],
+    "panel": 4,
+    "frames": [
+      {"frame": 0, "weight": 0.0},
+      {"frame": 10, "weight": 0.75},
+      {"frame": 20, "weight": 1.0}
+    ]
+  }
+}
