@@ -123,7 +123,7 @@ _TWIST_RING_ROLES = frozenset(
     }
 )
 _TWIST_CURVE_SCALE = 0.5
-_NECK_CURVE_SCALE = 2.0
+_NECK_CURVE_SCALE = 3.0
 _TWIST_CHILD_ROLES = {
     "left_arm_twist": "left_elbow",
     "left_wrist_twist": "left_wrist",
@@ -1759,7 +1759,7 @@ def _role_controller_scale(
     on top of the arm/wrist controls.  The neck shape is authored with a
     local offset; cap it from the local PMX bone length instead of letting a
     distant descendant/whole-model bound make the ring oversized.  Its edited
-    template is then doubled to keep the neck control comfortably selectable.
+    template is then tripled to keep the neck control comfortably selectable.
     """
 
     scale = float(scene_scale)

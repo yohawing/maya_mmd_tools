@@ -547,7 +547,7 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
         cmds = _ShapeOrientationFake(values)
         binding = SimpleNamespace(joint="neck", bone_index=2, pmx_flags=0)
         neck_scale = _role_controller_scale(cmds, "root", "neck", binding, {}, 2.0)
-        self.assertAlmostEqual(neck_scale, 0.2)
+        self.assertAlmostEqual(neck_scale, 0.3)
         self.assertLess(neck_scale, 2.0)
 
         missing_offset_cmds = _ShapeOrientationFake({})
@@ -560,7 +560,7 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
                 {},
                 2.0,
             ),
-            2.0,
+            3.0,
         )
 
     def test_ik_link_uses_the_same_authoring_basis_as_direct_controls(self):
