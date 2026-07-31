@@ -205,6 +205,41 @@ def run_ui_check(
         report["models"]["controlRigCreatedDuringImport"] = control_rig_created_during_import
         if not imported_rig_metadata:
             raise RuntimeError("Create MMD Control Rig did not build a rig during model import")
+        ik_parent_curve_y_values = {}
+        for role in ("left_foot_ik_parent", "right_foot_ik_parent"):
+            control_uuid = imported_rig_metadata.get("controls", {}).get(role)
+            controls = cmds.ls(control_uuid, long=True) or []
+            if len(controls) != 1:
+                raise RuntimeError(f"missing IK parent control: {role}")
+            shapes = cmds.listRelatives(
+                controls[0],
+                shapes=True,
+                fullPath=True,
+                type="nurbsCurve",
+            ) or []
+            if not shapes:
+                raise RuntimeError(f"missing IK parent curve shape: {role}")
+            values = cmds.xform(
+                f"{shapes[0]}.cv[*]",
+                query=True,
+                objectSpace=True,
+                translation=True,
+            ) or []
+            ik_parent_curve_y_values[role] = [
+                float(values[index]) for index in range(1, len(values), 3)
+            ]
+        report["models"]["ikParentCurvesFaceY"] = {
+            "maxAbsLocalY": {
+                role: max((abs(value) for value in values), default=float("inf"))
+                for role, values in ik_parent_curve_y_values.items()
+            },
+            "passed": all(
+                values and max(abs(value) for value in values) <= 1.0e-8
+                for values in ik_parent_curve_y_values.values()
+            ),
+        }
+        if not report["models"]["ikParentCurvesFaceY"]["passed"]:
+            raise RuntimeError("IK parent control circles do not face local Y")
         report["models"]["controlRigBoundDuringImport"] = {
             "state": imported_rig_metadata.get("state"),
             "owner": imported_rig_metadata.get("owner"),
@@ -836,6 +871,7 @@ def run_ui_check(
             "secondRoot": second_root,
             "controlRigCreatedDuringImport": control_rig_created_during_import,
             "controlRigBoundDuringImport": report["models"].get("controlRigBoundDuringImport"),
+            "ikParentCurvesFaceY": report["models"].get("ikParentCurvesFaceY"),
             "vmdImport": report["models"].get("vmdImport"),
             "availableRoots": model_roots,
             "comboCount": int(combo.count()),

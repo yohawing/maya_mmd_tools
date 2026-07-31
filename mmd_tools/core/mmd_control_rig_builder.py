@@ -269,6 +269,8 @@ _AUTO_ORIENT_SHAPE_ROLES = frozenset(
     }
 )
 
+_IK_PARENT_CURVE_ROTATION = ((-1.0, 0.0, 0.0), 0.0, 1.0)
+
 
 def build_mmd_control_rig(
     model_root: str,
@@ -413,7 +415,10 @@ def build_mmd_control_rig(
                         indexed_joints,
                         scale,
                     ),
-                    shape_rotation=display_rotation,
+                    shape_rotation=_control_curve_display_rotation(
+                        role,
+                        display_rotation,
+                    ),
                 )
                 created_roots.append(control)
                 parented = cmds.parent(control, aim_space)
@@ -957,6 +962,14 @@ def _control_curve_template_role(role: str) -> str:
     """Return the shared artist template key for one concrete control role."""
 
     return _ROLE_TEMPLATE_ALIASES.get(role, role)
+
+
+def _control_curve_display_rotation(role: str, basis_rotation=None):
+    """Return a CV-only display rotation without changing control authoring axes."""
+
+    if role in {"left_foot_ik_parent", "right_foot_ik_parent"}:
+        return _IK_PARENT_CURVE_ROTATION
+    return basis_rotation
 
 
 def _create_template_control_curve(

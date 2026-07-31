@@ -22,6 +22,7 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
 from mmd_tools.core.mmd_control_rig_builder import (
     MmdControlRigBuildError,
     _apply_fallback_role_aliases,
+    _control_curve_display_rotation,
     _control_curve_templates,
     _control_curve_template_role,
     _control_group_parent,
@@ -159,6 +160,21 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
         self.assertEqual(len(templates["finger"][0]["points"]), 21)
         self.assertTrue(all(shape["points"] for shapes in templates.values() for shape in shapes))
         self.assertTrue(all(shape["knots"] for shapes in templates.values() for shape in shapes))
+
+    def test_foot_ik_parent_circle_faces_positive_y_without_changing_shared_template(self):
+        templates = _control_curve_templates()
+        circle = templates["circle"][0]
+
+        for role in ("left_foot_ik_parent", "right_foot_ik_parent"):
+            rotation = _control_curve_display_rotation(role)
+            normal = _rotate_shape_point((0.0, 0.0, 1.0), rotation)
+            points = [_rotate_shape_point(point, rotation) for point in circle["points"]]
+            with self.subTest(role=role):
+                self.assertEqual(normal, (0.0, 1.0, 0.0))
+                self.assertTrue(all(abs(point[1]) < 1.0e-12 for point in points))
+
+        sentinel = ((0.0, 1.0, 0.0), 1.0, 0.0)
+        self.assertIs(_control_curve_display_rotation("left_arm", sentinel), sentinel)
 
     def test_live_basis_accepts_sampled_direct_xyz_but_rejects_special_writers(self):
         direct = {
