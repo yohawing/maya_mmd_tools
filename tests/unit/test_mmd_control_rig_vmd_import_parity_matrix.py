@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-import pytest
-
 from tests.viewport import mmd_control_rig_vmd_import_parity_matrix as matrix
 
 
@@ -265,6 +263,8 @@ def test_default_dry_run_expands_two_cases(tmp_path):
 
 
 def test_custom_model_motion_invocation_is_explicitly_rejected(tmp_path):
+    import pytest
+
     model = tmp_path / "custom.pmx"
     motion = tmp_path / "custom.vmd"
     with pytest.raises(SystemExit) as error:

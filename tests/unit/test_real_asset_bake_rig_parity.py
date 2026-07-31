@@ -7,8 +7,6 @@ from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 from tests.viewport import real_asset_bake_rig_parity as parity
 from tests.viewport.real_asset_bake_rig_parity import (
     PAIR_COUNT,
@@ -41,6 +39,8 @@ def test_manifest_requires_exactly_five_unique_pairs(tmp_path):
 
 
 def test_manifest_rejects_duplicate_pair(tmp_path):
+    import pytest
+
     pmx, vmd = _assets(tmp_path, 0)
     rows = [{"name": f"pair-{index}", "pmx": str(pmx), "vmd": str(vmd)} for index in range(PAIR_COUNT)]
     with pytest.raises(ValueError, match="duplicate PMX/VMD pair"):
@@ -48,6 +48,8 @@ def test_manifest_rejects_duplicate_pair(tmp_path):
 
 
 def test_discovery_requires_manifest_when_exact_stems_are_insufficient(tmp_path):
+    import pytest
+
     pmx = tmp_path / "models" / "sample.pmx"
     vmd = tmp_path / "motions" / "sample.vmd"
     pmx.parent.mkdir()
