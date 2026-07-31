@@ -1308,6 +1308,7 @@ def real_asset_bake_rig_parity(session: nox.Session) -> None:
 
         uvx nox -s real_asset_bake_rig_parity -- --dry-run
         uvx nox -s real_asset_bake_rig_parity -- --manifest F:/MMD/parity-manifest.json
+        uvx nox -s real_asset_bake_rig_parity -- --manifest F:/MMD/parity-manifest.json --resume
     """
 
     session.run(

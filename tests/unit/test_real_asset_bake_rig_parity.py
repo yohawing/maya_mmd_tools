@@ -114,6 +114,19 @@ def test_host_passes_unicode_pair_only_via_utf8_config(tmp_path, monkeypatch):
     assert result == 0
     assert len(commands) == PAIR_COUNT * 2
 
+    commands.clear()
+    result = parity._run_host(
+        Namespace(
+            out=str(tmp_path / "aggregate.json"),
+            versions="2024,2026",
+            manifest=str(manifest),
+            asset_root="",
+            resume=True,
+        )
+    )
+    assert result == 0
+    assert commands == []
+
 
 def test_matrix_coverage_is_union_across_assets_and_versions():
     payloads = []

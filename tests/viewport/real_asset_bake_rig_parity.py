@@ -10,7 +10,7 @@ Examples::
 
     python -m tests.viewport.real_asset_bake_rig_parity --dry-run
     python -m tests.viewport.real_asset_bake_rig_parity \
-        --manifest F:/MMD/parity-manifest.json --out build/reports/real-asset
+        --manifest F:/MMD/parity-manifest.json --out build/reports/real-asset --resume
     mayapy -m tests.viewport.real_asset_bake_rig_parity --child \
         --maya 2026 --pair-config build/reports/pair-input.json \
         --out build/reports/real-asset_child.json
@@ -857,6 +857,23 @@ def _run_host(args: argparse.Namespace) -> int:
                 child = _require_ascii_path(out_dir / f"{artifact_stem}.json", label="child report")
                 pair_config = _write_child_pair_config(out_dir / f"{artifact_stem}.input.json", pair)
                 child.parent.mkdir(parents=True, exist_ok=True)
+                if bool(getattr(args, "resume", False)) and child.is_file():
+                    payload = _read_json(child)
+                    errors = validate_child_report(payload, pair=pair, version=version)
+                    if not errors:
+                        aggregate["children"].append(
+                            {
+                                "pair": pair["name"],
+                                "maya": version,
+                                "report": str(child),
+                                "returncode": 0,
+                                "status": payload.get("status"),
+                                "errors": [],
+                                "reused": True,
+                            }
+                        )
+                        child_payloads.append(payload)
+                        continue
                 try:
                     child.unlink()
                 except FileNotFoundError:
@@ -901,6 +918,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--manifest")
     parser.add_argument("--out", default=str(ROOT / "build" / "reports" / "real_asset_bake_rig_parity.json"))
     parser.add_argument("--pair-config", help="ASCII-safe UTF-8 JSON pair payload for --child")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="reuse only existing child reports that still pass strict validation",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     if args.child:
