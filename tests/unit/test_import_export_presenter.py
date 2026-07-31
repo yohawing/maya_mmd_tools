@@ -120,16 +120,22 @@ class _FakeAppState:
 
 
 class _FakeSceneModelService:
-    def __init__(self, models=None, display_names=None, error=None, attrs=None):
+    def __init__(self, models=None, display_names=None, error=None, attrs=None, object_exists=None):
         self.models = models or []
         self.display_names = display_names or {}
         self.error = error
         self.attrs = dict(attrs or {})
+        self._object_exists = object_exists
 
     def list_mmd_models(self):
         if self.error:
             raise self.error
         return list(self.models)
+
+    def object_exists(self, model_root):
+        if self._object_exists is not None:
+            return bool(self._object_exists)
+        return model_root in self.models
 
     def get_model_display_name(self, model_root):
         return self.display_names.get(model_root, model_root)
@@ -1101,7 +1107,7 @@ class TestImportExportPresenter(unittest.TestCase):
         options = action.requests[0].options
         self.assertEqual(options["target_model"], "model_root")
 
-    def test_import_vmd_ignores_removed_target_choice_and_uses_current_model(self):
+    def test_import_vmd_drops_target_not_in_current_model_list(self):
         view = _FakeView()
         app_state = _FakeAppState(_FakeSceneModelService(models=["explicit_model_root"]))
         app_state.current_model_root = "current_model_root"
@@ -1112,7 +1118,43 @@ class TestImportExportPresenter(unittest.TestCase):
 
         self.assertEqual(len(action.requests), 1)
         options = action.requests[0].options
-        self.assertEqual(options["target_model"], "current_model_root")
+        self.assertNotIn("target_model", options)
+
+    def test_import_vmd_drops_deleted_current_model_before_options_build(self):
+        view = _FakeView()
+        service = _FakeSceneModelService(models=["deleted_model"], object_exists=False)
+        app_state = _FakeAppState(service)
+        app_state.current_model_root = "deleted_model"
+        action = _RecordingImportVmdAction(
+            ImportVmdResult(root_node=True, succeeded=True)
+        )
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        with patch.object(
+            presenter,
+            "_build_vmd_import_options",
+            wraps=presenter._build_vmd_import_options,
+        ) as build_options:
+            presenter.import_vmd_file()
+
+        build_options.assert_called_once_with(None)
+        self.assertNotIn("target_model", action.requests[0].options)
+
+    def test_import_vmd_ignores_cached_model_list_after_scene_replacement(self):
+        view = _FakeView()
+        service = _FakeSceneModelService(models=[], object_exists=True)
+        app_state = _FakeAppState(service)
+        app_state.available_models = ["reused_model_path"]
+        app_state.current_model_root = "reused_model_path"
+        action = _RecordingImportVmdAction(
+            ImportVmdResult(root_node=True, succeeded=True)
+        )
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        presenter.import_vmd_file()
+
+        self.assertIsNone(presenter._get_vmd_target_model())
+        self.assertNotIn("target_model", action.requests[0].options)
 
 
 class TestImportFileGuards(unittest.TestCase):

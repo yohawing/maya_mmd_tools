@@ -138,10 +138,19 @@ class TestPhysicsBindBasisMaya(MayaTestBase):
 
     def test_imported_metadata_covers_zero_weight_bone_without_maya_bind_record(self):
         root = cmds.createNode("transform", name="metadataBindModel")
+        skeleton = cmds.group(empty=True, name="metadataSkeleton", parent=root)
+        for attribute, value in (
+            ("mmd_model_name", "metadataBindModel"),
+            ("mmd_source_file", "metadataBindModel.pmx"),
+        ):
+            cmds.addAttr(root, longName=attribute, dataType="string")
+            cmds.setAttr(f"{root}.{attribute}", value, type="string")
         cmds.select(clear=True)
         parent = cmds.joint(name="metadataParent", position=(1.0, 2.0, 3.0))
+        cmds.select(clear=True)
         child = cmds.joint(name="metadataChild", position=(4.0, 2.0, 3.0))
-        cmds.parent(parent, root)
+        cmds.parent(parent, skeleton, absolute=True)
+        cmds.parent(child, parent, absolute=True)
         parent = (cmds.ls(parent, long=True) or [parent])[0]
         child = (cmds.ls(child, long=True) or [child])[0]
         cmds.setAttr(f"{parent}.jointOrientY", 17.0)

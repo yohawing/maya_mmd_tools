@@ -40,6 +40,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <utility>
 #include <string>
 #include <vector>
@@ -217,14 +218,21 @@ bool readJsonVec3(const json& obj, const char* key, std::array<float, 3>& out, c
 {
     out = fallback;
     auto it = obj.find(key);
-    if (it == obj.end() || !it->is_array() || it->size() < 3) {
+    if (it == obj.end()) {
         return true;
+    }
+    if (!it->is_array() || it->size() != 3) {
+        return false;
     }
     for (size_t i = 0; i < 3; ++i) {
         if (!(*it)[i].is_number()) {
             return false;
         }
-        out[i] = (*it)[i].get<float>();
+        const double value = (*it)[i].get<double>();
+        if (!std::isfinite(value) || std::abs(value) > std::numeric_limits<float>::max()) {
+            return false;
+        }
+        out[i] = static_cast<float>(value);
     }
     return true;
 }
@@ -233,14 +241,20 @@ bool readJsonVec3Double(const json& obj, const char* key, std::array<double, 3>&
 {
     out = fallback;
     auto it = obj.find(key);
-    if (it == obj.end() || !it->is_array() || it->size() < 3) {
+    if (it == obj.end()) {
         return true;
+    }
+    if (!it->is_array() || it->size() != 3) {
+        return false;
     }
     for (size_t i = 0; i < 3; ++i) {
         if (!(*it)[i].is_number()) {
             return false;
         }
         out[i] = (*it)[i].get<double>();
+        if (!std::isfinite(out[i])) {
+            return false;
+        }
     }
     return true;
 }
@@ -248,10 +262,10 @@ bool readJsonVec3Double(const json& obj, const char* key, std::array<double, 3>&
 bool readJsonMatrix(const json& obj, const char* key, MMatrix& out)
 {
     auto it = obj.find(key);
-    if (it == obj.end() || it->is_null()) {
+    if (it == obj.end()) {
         return false;
     }
-    if (!it->is_array() || it->size() < 16) {
+    if (!it->is_array() || it->size() != 16) {
         return false;
     }
     double values[4][4]{};
@@ -262,10 +276,82 @@ bool readJsonMatrix(const json& obj, const char* key, MMatrix& out)
                 return false;
             }
             values[row][col] = value.get<double>();
+            if (!std::isfinite(values[row][col])) {
+                return false;
+            }
         }
     }
     out = MMatrix(values);
+    return !out.isSingular();
+}
+
+bool readJsonInt32(const json& obj, const char* key, int32_t fallback, int32_t& out)
+{
+    out = fallback;
+    const auto it = obj.find(key);
+    if (it == obj.end()) {
+        return true;
+    }
+    if (!it->is_number_integer()) {
+        return false;
+    }
+    const int64_t value = it->get<int64_t>();
+    if (value < std::numeric_limits<int32_t>::min() ||
+        value > std::numeric_limits<int32_t>::max()) {
+        return false;
+    }
+    out = static_cast<int32_t>(value);
     return true;
+}
+
+bool readJsonUint32(const json& obj, const char* key, uint32_t fallback, uint32_t& out)
+{
+    out = fallback;
+    const auto it = obj.find(key);
+    if (it == obj.end()) {
+        return true;
+    }
+    if (!it->is_number_integer()) {
+        return false;
+    }
+    const uint64_t value = it->get<uint64_t>();
+    if (value > std::numeric_limits<uint32_t>::max()) {
+        return false;
+    }
+    out = static_cast<uint32_t>(value);
+    return true;
+}
+
+bool readJsonBool(const json& obj, const char* key, bool fallback, bool& out)
+{
+    out = fallback;
+    const auto it = obj.find(key);
+    if (it == obj.end()) {
+        return true;
+    }
+    if (!it->is_boolean()) {
+        return false;
+    }
+    out = it->get<bool>();
+    return true;
+}
+
+bool readJsonFloat(const json& obj, const char* key, float fallback, float& out)
+{
+    out = fallback;
+    const auto it = obj.find(key);
+    if (it == obj.end()) {
+        return true;
+    }
+    if (!it->is_number()) {
+        return false;
+    }
+    const double value = it->get<double>();
+    if (!std::isfinite(value) || std::abs(value) > std::numeric_limits<float>::max()) {
+        return false;
+    }
+    out = static_cast<float>(value);
+    return std::isfinite(out);
 }
 
 MQuaternion jointOrientFromDegrees(const std::array<double, 3>& degrees)
@@ -274,26 +360,6 @@ MQuaternion jointOrientFromDegrees(const std::array<double, 3>& degrees)
         degrees[0] * kPi / 180.0,
         degrees[1] * kPi / 180.0,
         degrees[2] * kPi / 180.0).asQuaternion();
-}
-
-MMatrix mmdWorldToMaya(const MMatrix& matrix)
-{
-    const double signs[3] = {1.0, 1.0, -1.0};
-    MMatrix result(matrix);
-    for (unsigned int row = 0; row < 3; ++row) {
-        for (unsigned int col = 0; col < 3; ++col) {
-            result(row, col) = matrix(row, col) * signs[row] * signs[col];
-        }
-    }
-    for (unsigned int col = 0; col < 3; ++col) {
-        result(3, col) = matrix(3, col) * signs[col];
-    }
-    return result;
-}
-
-MMatrix mayaWorldToMmd(const MMatrix& matrix)
-{
-    return mmdWorldToMaya(matrix);
 }
 
 bool connectedGoalModelRootWorldMatrix(
@@ -346,6 +412,7 @@ bool connectedGoalModelRootWorldMatrix(
 }
 bool parseCcdIkChainJson(const MString& chainJson, CcdIkChainConfig& cfg)
 {
+    try {
     const std::string text = chainJson.asChar();
     if (text.empty()) {
         return false;
@@ -387,8 +454,10 @@ bool parseCcdIkChainJson(const MString& chainJson, CcdIkChainConfig& cfg)
             return false;
         }
         mmd_runtime_ffi_rig_bone_t bone{};
-        bone.parent_slot = boneJson.value("parent_slot", -1);
-        bone.flags = boneJson.value("flags", 0u);
+        if (!readJsonInt32(boneJson, "parent_slot", -1, bone.parent_slot) ||
+            !readJsonUint32(boneJson, "flags", 0u, bone.flags)) {
+            return false;
+        }
 
         std::array<float, 3> rest{0.0f, 0.0f, 0.0f};
         if (!readJsonVec3(boneJson, "rest_position", rest, rest)) {
@@ -466,8 +535,16 @@ bool parseCcdIkChainJson(const MString& chainJson, CcdIkChainConfig& cfg)
 
         MMatrix bindWorld;
         MMatrix noOrientBindWorld;
-        const bool hasBindWorld = readJsonMatrix(boneJson, "maya_bind_world_matrix", bindWorld);
-        const bool hasNoOrientBindWorld = readJsonMatrix(boneJson, "no_orient_bind_world_matrix", noOrientBindWorld);
+        const auto bindWorldIt = boneJson.find("maya_bind_world_matrix");
+        const auto noOrientBindWorldIt = boneJson.find("no_orient_bind_world_matrix");
+        const bool hasBindWorld = bindWorldIt != boneJson.end() &&
+                                  readJsonMatrix(boneJson, "maya_bind_world_matrix", bindWorld);
+        const bool hasNoOrientBindWorld = noOrientBindWorldIt != boneJson.end() &&
+                                          readJsonMatrix(boneJson, "no_orient_bind_world_matrix", noOrientBindWorld);
+        if ((bindWorldIt != boneJson.end() && !hasBindWorld) ||
+            (noOrientBindWorldIt != boneJson.end() && !hasNoOrientBindWorld)) {
+            return false;
+        }
         if (hasBindWorld && hasNoOrientBindWorld) {
             cfg.mayaBindWorldMatrices.push_back(bindWorld);
             cfg.noOrientBindWorldMatrices.push_back(noOrientBindWorld);
@@ -475,6 +552,13 @@ bool parseCcdIkChainJson(const MString& chainJson, CcdIkChainConfig& cfg)
             cfg.mayaBindWorldMatrices.push_back(MMatrix::identity);
             cfg.noOrientBindWorldMatrices.push_back(MMatrix::identity);
             allBindMatrices = false;
+        }
+    }
+    for (size_t boneIndex = 0; boneIndex < cfg.parentSlots.size(); ++boneIndex) {
+        const int32_t parentSlot = cfg.parentSlots[boneIndex];
+        if (parentSlot < -1 ||
+            (parentSlot >= 0 && static_cast<size_t>(parentSlot) >= cfg.bones.size())) {
+            return false;
         }
     }
     cfg.hasBindMatrices = allBindMatrices && cfg.mayaBindWorldMatrices.size() == cfg.bones.size() &&
@@ -487,11 +571,17 @@ bool parseCcdIkChainJson(const MString& chainJson, CcdIkChainConfig& cfg)
             return false;
         }
         mmd_runtime_ffi_rig_ik_link_t link{};
-        link.bone_slot = linkJson.at("bone_slot").get<uint32_t>();
+        if (!readJsonUint32(linkJson, "bone_slot", 0u, link.bone_slot)) {
+            return false;
+        }
         if (link.bone_slot >= cfg.bones.size()) {
             return false;
         }
-        link.has_angle_limit = linkJson.value("has_angle_limit", false);
+        bool hasAngleLimit = false;
+        if (!readJsonBool(linkJson, "has_angle_limit", false, hasAngleLimit)) {
+            return false;
+        }
+        link.has_angle_limit = hasAngleLimit ? 1 : 0;
 
         std::array<float, 3> limitMin{0.0f, 0.0f, 0.0f};
         std::array<float, 3> limitMax{0.0f, 0.0f, 0.0f};
@@ -502,20 +592,38 @@ bool parseCcdIkChainJson(const MString& chainJson, CcdIkChainConfig& cfg)
         for (size_t axis = 0; axis < 3; ++axis) {
             link.angle_limit_min_xyz[axis] = limitMin[axis];
             link.angle_limit_max_xyz[axis] = limitMax[axis];
+            if (link.has_angle_limit && limitMin[axis] > limitMax[axis]) {
+                return false;
+            }
         }
 
         cfg.links.push_back(link);
         cfg.linkSlots.push_back(link.bone_slot);
     }
 
-    cfg.targetBoneSlot = root.value("targetBoneSlot", 0u);
+    if (!readJsonUint32(root, "targetBoneSlot", 0u, cfg.targetBoneSlot)) {
+        return false;
+    }
     if (cfg.targetBoneSlot >= cfg.bones.size()) {
         return false;
     }
-    cfg.controllerBoneSlot = root.value("controllerBoneSlot", -1);
-    cfg.iterationCount = root.value("iterationCount", 40u);
-    cfg.limitAngle = root.value("limitAngle", 0.0628f);
+    if (!readJsonInt32(root, "controllerBoneSlot", -1, cfg.controllerBoneSlot) ||
+        !readJsonUint32(root, "iterationCount", 40u, cfg.iterationCount) ||
+        !readJsonFloat(root, "limitAngle", 0.0628f, cfg.limitAngle)) {
+        return false;
+    }
+    if ((cfg.controllerBoneSlot < -1) ||
+        (cfg.controllerBoneSlot >= 0 &&
+         static_cast<size_t>(cfg.controllerBoneSlot) >= cfg.bones.size()) ||
+        cfg.iterationCount == 0 || cfg.limitAngle < 0.0f) {
+        return false;
+    }
     return true;
+    } catch (const std::exception&) {
+        // Typed JSON conversion (for example a string where a scalar is
+        // expected) must invalidate this chain rather than escaping compute.
+        return false;
+    }
 }
 
 bool plugOrChildrenHasInputConnection(const MObject& node, const MObject& attr)
@@ -803,7 +911,17 @@ bool solveChainJsonIk(
     std::vector<std::array<double, 4>>& outMmdLinkQuaternions)
 {
     if (!chain) {
-        return false;
+        // A valid cached configuration owns a native chain.  If that handle
+        // is unavailable, keep this request on the chain path and fail closed
+        // rather than allowing compute() to run the unrelated legacy solver.
+        copyInputRotateLinksToOutput(cfg, data, outEulerRadians);
+        std::vector<float> neutralRotations(cfg.bones.size() * 4, 0.0f);
+        for (size_t boneIndex = 0; boneIndex < cfg.bones.size(); ++boneIndex) {
+            neutralRotations[boneIndex * 4 + 3] = 1.0f;
+        }
+        copyMmdLinkQuaternionsToOutput(cfg, neutralRotations, outMmdLinkQuaternions);
+        outSolved = false;
+        return true;
     }
 
     const size_t boneCount = cfg.bones.size();
@@ -950,7 +1068,13 @@ bool solveChainJsonIk(
         outQuats.size(),
         &stats);
     if (!ok) {
-        return false;
+        // A valid chain that cannot solve is still handled by the native
+        // path.  Preserve the input pose and expose solved=false; never fall
+        // through to the legacy one-link solver with unrelated inputs.
+        copyInputRotateLinksToOutput(cfg, data, outEulerRadians);
+        copyMmdLinkQuaternionsToOutput(cfg, rotations, outMmdLinkQuaternions);
+        outSolved = false;
+        return true;
     }
     outSolved = true;
     outMmdLinkQuaternions.clear();
@@ -1153,7 +1277,7 @@ bool MmdCcdIkNode::ensureChainCache(const MString& chainJson)
     CcdIkChainConfig parsed;
     const bool parsedOk = parseCcdIkChainJson(chainJson, parsed);
 
-    // 置換前に旧 native chain を解放し、parse/create 失敗時は必ず無効化する。
+    // 置換前に旧 native chain を解放し、parse 失敗時は必ず無効化する。
     // この順序により malformed config が直前の有効 chain を再利用しない。
     if (chainCache_->nativeChain) {
         mmd_runtime_ik_chain_free(chainCache_->nativeChain);
@@ -1168,12 +1292,11 @@ bool MmdCcdIkNode::ensureChainCache(const MString& chainJson)
     }
 
     mmd_runtime_ik_chain_t* nativeChain = createNativeIkChain(parsed);
-    if (!nativeChain) {
-        return false;
-    }
-
     chainCache_->config = std::move(parsed);
     chainCache_->nativeChain = nativeChain;
+    // A syntactically valid chain remains on the native path even when the
+    // runtime handle cannot be created.  solveChainJsonIk() handles the null
+    // handle fail-closed; legacy one-link inputs must never be mixed in.
     chainCache_->valid = true;
     return true;
 }

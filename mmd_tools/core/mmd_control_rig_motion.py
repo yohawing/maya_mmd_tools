@@ -58,6 +58,7 @@ from mmd_tools.core.mmd_control_rig_anim_layers import (
     restore_mmd_control_rig_anim_layer_journal,
     restore_mmd_control_rig_anim_layer_route,
 )
+from mmd_tools.core.maya_animation_utils import is_plug_animated_or_driven
 
 
 _CHANNELS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
@@ -1291,6 +1292,32 @@ def _assert_bake_route_supported(
                     )
 
 
+def _parent_basis_is_animated_or_driven(cmds, parent: str) -> bool:
+    """Return whether a parent's rotation/scale basis can vary over time.
+
+    Reading the current value is insufficient: an animCurve or another DG
+    driver may evaluate to identity at the current frame while changing the
+    basis elsewhere.  Query both incoming connections and keyed times for the
+    scalar channels (plus compound plugs for wrappers that only expose those
+    connections).  Missing command features are treated as inconclusive so
+    lightweight command doubles retain the static-value path.
+    """
+
+    for attribute in ("rotate", "scale"):
+        if is_plug_animated_or_driven(
+            f"{parent}.{attribute}",
+            cmds_module=cmds,
+        ):
+            return True
+        for axis in "XYZ":
+            if is_plug_animated_or_driven(
+                f"{parent}.{attribute}{axis}",
+                cmds_module=cmds,
+            ):
+                return True
+    return False
+
+
 def _classify_route(cmds, binding: Mapping[str, Any], target: str):
     """Return ``(route class, reasons)`` for one authored input plug."""
     input_kind = str(binding.get("inputKind") or "")
@@ -1325,15 +1352,31 @@ def _classify_route(cmds, binding: Mapping[str, Any], target: str):
         except Exception:
             pass
         try:
-            parents = cmds.listRelatives(joint, parent=True, fullPath=True) or []
-            if parents:
+            current = str(joint)
+            visited_parents = set()
+            while True:
+                parents = cmds.listRelatives(current, parent=True, fullPath=True) or []
+                if not parents:
+                    break
                 parent = str(parents[0])
-                rotation = [float(cmds.getAttr(f"{parent}.rotate{axis}") or 0.0) for axis in "XYZ"]
-                scale = [float(cmds.getAttr(f"{parent}.scale{axis}") or 1.0) for axis in "XYZ"]
-                if any(abs(value) > 1.0e-8 for value in rotation) or any(
-                    abs(value - 1.0) > 1.0e-8 for value in scale
+                if parent in visited_parents:
+                    break
+                visited_parents.add(parent)
+                rotation = [
+                    float(cmds.getAttr(f"{parent}.rotate{axis}") or 0.0)
+                    for axis in "XYZ"
+                ]
+                scale = []
+                for axis in "XYZ":
+                    raw_value = cmds.getAttr(f"{parent}.scale{axis}")
+                    scale.append(1.0 if raw_value is None else float(raw_value))
+                if (
+                    any(abs(value) > 1.0e-8 for value in rotation)
+                    or any(abs(value - 1.0) > 1.0e-8 for value in scale)
+                    or _parent_basis_is_animated_or_driven(cmds, parent)
                 ):
                     reasons.append("parent_basis")
+                current = parent
         except Exception:
             pass
     return (ROUTE_SAMPLED if reasons else ROUTE_SAME_BASIS), tuple(sorted(set(reasons)))

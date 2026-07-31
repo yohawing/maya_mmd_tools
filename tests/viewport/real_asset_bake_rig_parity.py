@@ -26,7 +26,9 @@ import hashlib
 import json
 import math
 import os
+import platform
 import subprocess
+import sys
 import traceback
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -52,6 +54,16 @@ def _resolve_path(value: str | os.PathLike[str], *, base: Path | None = None) ->
 
 def _pair_row(name: str, pmx: Path, vmd: Path) -> dict[str, str]:
     return {"name": str(name), "pmx": str(pmx.resolve()), "vmd": str(vmd.resolve())}
+
+
+def _sha256_file(path: Path) -> str:
+    """Return the SHA-256 digest for a file."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _validate_pair_rows(rows: Iterable[Mapping[str, Any]], *, count: int = PAIR_COUNT) -> list[dict[str, str]]:
@@ -124,81 +136,6 @@ def _same_stem_candidates(pmx_files: Sequence[Path], vmd_files: Sequence[Path]) 
     return pairs
 
 
-_NON_BODY_TOKENS = (
-    "camera",
-    "light",
-    "lip",
-    "face",
-    "morph",
-    "表情",
-    "カメラ",
-    "照明",
-    "リップ",
-    "口パク",
-)
-_PROP_TOKENS = (
-    "stage",
-    "ステージ",
-    "camera",
-    "weapon",
-    "sword",
-    "gun",
-    "box",
-    "chair",
-    "背景",
-    "小物",
-    "武器",
-    "弓",
-    "注射",
-    "泡泡枪",
-    "药丸",
-    "子弹",
-    "剑",
-    "枪",
-    "花",
-    "球",
-    "猫",
-    "章鱼",
-    "寄居蟹",
-    "结晶虫",
-    "笔记",
-)
-
-
-def _default_character_pairs(asset_root: Path, *, count: int) -> list[dict[str, str]]:
-    """Select character PMX and body-motion VMD files when names do not match.
-
-    F:/MMD stores models and motion packs in separate trees, so exact-stem
-    matching is insufficient.  Restrict models to ``pmx/`` (never background
-    trees), reject obvious props, reject camera/lip/face-only motions, then
-    choose a deterministic hash-ordered one-to-one sample.  A manifest remains
-    the authority for intentional model/motion compatibility choices.
-    """
-
-    pmx_root = asset_root / "pmx"
-    vmd_root = asset_root / "vmd"
-    pmx_files = [
-        path
-        for path in pmx_root.rglob("*.pmx")
-        if path.is_file() and not any(token in path.stem.casefold() for token in _PROP_TOKENS)
-    ]
-    vmd_files = [
-        path
-        for path in vmd_root.rglob("*.vmd")
-        if path.is_file() and not any(token.casefold() in str(path.relative_to(vmd_root)).casefold() for token in _NON_BODY_TOKENS)
-    ]
-    if len(pmx_files) < count or len(vmd_files) < count:
-        raise ValueError(
-            f"character/body discovery needs {count} candidates; found {len(pmx_files)} PMX and {len(vmd_files)} VMD"
-        )
-    pmx_files.sort(key=lambda path: hashlib.sha256(str(path).encode("utf-8")).hexdigest())
-    vmd_files.sort(key=lambda path: hashlib.sha256(str(path).encode("utf-8")).hexdigest())
-    return [
-        _pair_row(f"character-{index + 1}-{pmx.stem}", pmx, vmd)
-        for index, (pmx, vmd) in enumerate(zip(pmx_files[:count], vmd_files[:count]))
-    ]
-
-
 def discover_asset_pairs(asset_root: Path, *, count: int = PAIR_COUNT) -> list[dict[str, str]]:
     """Discover deterministic non-duplicate exact-stem pairs from ``F:/MMD``.
 
@@ -219,9 +156,10 @@ def discover_asset_pairs(asset_root: Path, *, count: int = PAIR_COUNT) -> list[d
         key=lambda row: hashlib.sha256(f"{row['pmx']}\0{row['vmd']}".encode("utf-8")).hexdigest()
     )
     if len(candidates) < count:
-        # Separate model/motion trees are the normal F:/MMD layout.  The
-        # fallback remains conservative (character PMX + body VMD filters).
-        return _validate_pair_rows(_default_character_pairs(root, count=count), count=count)
+        raise ValueError(
+            f"exact-stem discovery found {len(candidates)} compatible PMX/VMD pair(s), "
+            f"but {count} are required; provide --manifest with intentional pairs"
+        )
     # A model bundle can legitimately contain the same stem in two folders.
     # Keep report filenames collision-free while retaining readable labels.
     selected = candidates[:count]
@@ -242,11 +180,189 @@ def _read_json(path: Path) -> Mapping[str, Any]:
     return payload
 
 
+def _file_provenance(path: Path) -> dict[str, Any]:
+    """Return a stable identity for one input/runtime/harness file."""
+
+    resolved = path.expanduser().resolve()
+    return {
+        "path": str(resolved),
+        "sha256": _sha256_file(resolved) if resolved.is_file() else None,
+    }
+
+
+def _python_source_tree_files(root: Path | None = None) -> list[tuple[str, Path]]:
+    """Return ``mmd_tools`` Python files as stable relative-path records.
+
+    The helper is intentionally injectable for host-side tests.  The default
+    implementation never shells out to Git, so a dirty working tree is still
+    represented by the bytes that the child process actually imports.
+    """
+
+    source_root = (root or ROOT / "mmd_tools").resolve()
+    if not source_root.is_dir():
+        return []
+    files = [path for path in source_root.rglob("*.py") if path.is_file()]
+    return sorted(
+        ((path.relative_to(source_root).as_posix(), path.resolve()) for path in files),
+        key=lambda item: item[0].casefold(),
+    )
+
+
+def _python_source_tree_provenance(root: Path | None = None) -> dict[str, Any]:
+    """Hash Python source paths and contents into one deterministic identity."""
+
+    digest = hashlib.sha256()
+    records = _python_source_tree_files(root)
+    for relative, path in records:
+        encoded_path = relative.encode("utf-8")
+        content_digest = bytes.fromhex(_sha256_file(path))
+        digest.update(len(encoded_path).to_bytes(8, "big"))
+        digest.update(encoded_path)
+        digest.update(content_digest)
+    return {
+        "root": "mmd_tools",
+        "fileCount": len(records),
+        "algorithm": "sha256(relative-path + content-sha256)",
+        "sha256": digest.hexdigest(),
+    }
+
+
+def _runtime_library_names() -> tuple[str, ...]:
+    """Return the platform names recognized by the runtime loader."""
+
+    if platform.system() == "Windows":
+        return ("mmd_runtime_ffi.dll", "mmd_anim_ffi.dll")
+    if platform.system() == "Darwin":
+        return (
+            "libmmd_runtime_ffi.dylib",
+            "mmd_runtime_ffi.dylib",
+            "libmmd_anim_ffi.dylib",
+            "mmd_anim_ffi.dylib",
+        )
+    return ("libmmd_runtime_ffi.so", "mmd_runtime_ffi.so", "libmmd_anim_ffi.so", "mmd_anim_ffi.so")
+
+
+def _configured_runtime_library_candidates(
+    maya_major: str,
+    plugin_paths: Mapping[str, Path],
+) -> list[Path]:
+    """Resolve all runtime-library paths the configured routes could load."""
+
+    names = _runtime_library_names()
+    candidates: list[Path] = []
+    configured = os.environ.get("MMD_ANIM_FFI_PATH")
+    if configured:
+        override = Path(configured).expanduser().resolve()
+        if override.suffix.lower() in {Path(name).suffix.lower() for name in names}:
+            candidates.append(override)
+        else:
+            for name in names:
+                candidates.extend((override / name, override / "debug" / name, override / "release" / name))
+
+    platform_dir = {
+        "Windows": "win64",
+        "Darwin": "macos",
+    }.get(platform.system(), "linux")
+    bundled = (ROOT / "mmd_tools" / "native" / platform_dir).resolve()
+    for name in names:
+        candidates.extend((bundled / name, bundled / "debug" / name, bundled / "release" / name))
+
+    # A custom native plug-in route may place its runtime beside the plug-in.
+    # Include those candidates even when they are currently absent, so adding
+    # or replacing a dependency invalidates --resume instead of reusing stale
+    # results.
+    native_plugin = plugin_paths.get("native")
+    if native_plugin is not None:
+        plugin_dir = Path(native_plugin).resolve().parent
+        for name in names:
+            candidates.extend((plugin_dir / name, plugin_dir / "debug" / name, plugin_dir / "release" / name))
+
+    unique: dict[str, Path] = {}
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        unique.setdefault(str(resolved).casefold(), resolved)
+    return [unique[key] for key in sorted(unique)]
+
+
+def _configured_plugin_paths(maya_major: str) -> dict[str, Path]:
+    """Resolve the native and Python plug-in paths used by a child process."""
+
+    cpp_override = os.environ.get(f"MMD_TOOLS_CPP_PLUGIN_{maya_major}") or os.environ.get("MMD_TOOLS_CPP_PLUGIN")
+    native = (
+        Path(cpp_override).expanduser().resolve()
+        if cpp_override
+        else ROOT / "plug-ins" / maya_major / "Debug" / "mmd_tools_cpp.mll"
+    )
+    return {"native": native, "python": (ROOT / "mmd_tools" / "plugin_main.py").resolve()}
+
+
+def _build_provenance(
+    *,
+    pair: Mapping[str, str],
+    maya_major: str,
+    executable: Path,
+    plugin_paths: Mapping[str, Path],
+    python_source_tree: Mapping[str, Any] | None = None,
+    runtime_libraries: Sequence[Path] | None = None,
+) -> dict[str, Any]:
+    """Build the resume identity for assets, Maya, plug-ins, and this harness."""
+
+    return {
+        "schema": 1,
+        "assets": {
+            "pmx": _file_provenance(Path(pair["pmx"])),
+            "vmd": _file_provenance(Path(pair["vmd"])),
+        },
+        "runtime": {
+            "mayaMajor": str(maya_major),
+            "executable": _file_provenance(executable),
+            "libraries": [
+                _file_provenance(path)
+                for path in (
+                    runtime_libraries
+                    if runtime_libraries is not None
+                    else _configured_runtime_library_candidates(maya_major, plugin_paths)
+                )
+            ],
+        },
+        "plugins": {
+            name: _file_provenance(Path(path))
+            for name, path in sorted(plugin_paths.items())
+        },
+        "harness": {
+            "module": MODULE_NAME,
+            "source": _file_provenance(Path(__file__)),
+        },
+        "pythonSourceTree": dict(python_source_tree or _python_source_tree_provenance()),
+    }
+
+
+def _expected_provenance(
+    pair: Mapping[str, str],
+    version: str,
+    *,
+    python_source_tree: Mapping[str, Any] | None = None,
+    runtime_libraries: Sequence[Path] | None = None,
+    plugin_paths: Mapping[str, Path] | None = None,
+) -> dict[str, Any]:
+    """Return the host-side identity required before a child report is reused."""
+
+    return _build_provenance(
+        pair=pair,
+        maya_major=str(version),
+        executable=_mayapy(str(version)),
+        plugin_paths=plugin_paths or _configured_plugin_paths(str(version)),
+        python_source_tree=python_source_tree,
+        runtime_libraries=runtime_libraries,
+    )
+
+
 def validate_child_report(
     payload: Mapping[str, Any],
     *,
     pair: Mapping[str, str],
     version: str,
+    expected_provenance: Mapping[str, Any] | None = None,
 ) -> list[str]:
     """Return actionable validation errors; an empty list is the only green result."""
 
@@ -260,6 +376,14 @@ def validate_child_report(
     for key in ("pmx", "vmd"):
         if _resolve_path(str(payload.get(key, ""))) != _resolve_path(str(pair[key])):
             errors.append(f"{key} path mismatch")
+    if str(payload.get("pairName", "")) != str(pair.get("name", "")):
+        errors.append("pair name mismatch")
+    provenance = payload.get("provenance")
+    expected = expected_provenance or _expected_provenance(pair, version)
+    if not isinstance(provenance, Mapping):
+        errors.append("missing provenance")
+    elif dict(provenance) != dict(expected):
+        errors.append("provenance mismatch; rerun instead of resuming this child report")
     frames = payload.get("frames")
     if not isinstance(frames, list) or 0 not in [int(item) for item in frames if str(item).lstrip("-").isdigit()] or not any(int(item) > 0 for item in frames if str(item).lstrip("-").isdigit()):
         errors.append("frames must include 0 and a non-zero representative frame")
@@ -447,15 +571,15 @@ def _first_probe_frame(vmd: Any) -> int:
 
 
 def _load_plugins(cmds: Any, maya_major: str) -> dict[str, str]:
-    cpp_override = os.environ.get(f"MMD_TOOLS_CPP_PLUGIN_{maya_major}") or os.environ.get("MMD_TOOLS_CPP_PLUGIN")
-    cpp = Path(cpp_override).expanduser().resolve() if cpp_override else ROOT / "plug-ins" / maya_major / "Debug" / "mmd_tools_cpp.mll"
+    configured = _configured_plugin_paths(maya_major)
+    cpp = configured["native"]
     if not cpp.is_file():
         raise RuntimeError(f"required native plugin is missing: {cpp}")
     if str(cpp.parent) not in os.environ.get("PATH", "").split(os.pathsep):
         os.environ["PATH"] = str(cpp.parent) + os.pathsep + os.environ.get("PATH", "")
     if not cmds.pluginInfo(str(cpp), query=True, loaded=True):
         cmds.loadPlugin(str(cpp), quiet=True)
-    py_plugin = ROOT / "mmd_tools" / "plugin_main.py"
+    py_plugin = configured["python"]
     if not cmds.pluginInfo(py_plugin.stem, query=True, loaded=True):
         cmds.loadPlugin(str(py_plugin), quiet=True)
     return {"native": str(cpp), "python": str(py_plugin)}
@@ -494,6 +618,12 @@ def _run_child(args: argparse.Namespace) -> int:
         report["mayaVersion"] = str(cmds.about(version=True))
         major = report["mayaVersion"].split(".", 1)[0]
         report["plugins"] = _load_plugins(cmds, major)
+        report["provenance"] = _build_provenance(
+            pair={"pmx": report["pmx"], "vmd": report["vmd"]},
+            maya_major=major,
+            executable=Path(sys.executable),
+            plugin_paths={name: Path(path) for name, path in report["plugins"].items()},
+        )
         source_vmd = VmdData().parse_file(str(Path(args.vmd).resolve()))
         nonzero = _first_probe_frame(source_vmd)
         frames = [0, nonzero]
@@ -844,6 +974,17 @@ def _run_host(args: argparse.Namespace) -> int:
         aggregate["pairs"] = pairs
         out_dir = output if output.suffix == "" else output.parent / output.stem
         out_dir.mkdir(parents=True, exist_ok=True)
+        # Hash the product Python tree once for this host invocation.  The
+        # child reports still record the same identity, while ten matrix runs
+        # do not repeatedly walk and hash every mmd_tools module.
+        python_source_tree = _python_source_tree_provenance()
+        provenance_context: dict[str, tuple[dict[str, Path], list[Path]]] = {}
+        for version in versions:
+            plugin_paths = _configured_plugin_paths(version)
+            provenance_context[version] = (
+                plugin_paths,
+                _configured_runtime_library_candidates(version, plugin_paths),
+            )
         child_payloads = []
         for pair_index, pair in enumerate(pairs):
             for version in versions:
@@ -857,23 +998,43 @@ def _run_host(args: argparse.Namespace) -> int:
                 child = _require_ascii_path(out_dir / f"{artifact_stem}.json", label="child report")
                 pair_config = _write_child_pair_config(out_dir / f"{artifact_stem}.input.json", pair)
                 child.parent.mkdir(parents=True, exist_ok=True)
+                plugin_paths, runtime_libraries = provenance_context[version]
+                expected_provenance = _expected_provenance(
+                    pair,
+                    version,
+                    python_source_tree=python_source_tree,
+                    runtime_libraries=runtime_libraries,
+                    plugin_paths=plugin_paths,
+                )
                 if bool(getattr(args, "resume", False)) and child.is_file():
-                    payload = _read_json(child)
-                    errors = validate_child_report(payload, pair=pair, version=version)
-                    if not errors:
-                        aggregate["children"].append(
-                            {
-                                "pair": pair["name"],
-                                "maya": version,
-                                "report": str(child),
-                                "returncode": 0,
-                                "status": payload.get("status"),
-                                "errors": [],
-                                "reused": True,
-                            }
+                    try:
+                        payload = _read_json(child)
+                    except (OSError, TypeError, ValueError):
+                        # A malformed report is stale input, not a reason to
+                        # trust or reuse it.  The exact child is removed below
+                        # and rerun with the current assets/runtime.
+                        payload = None
+                    if payload is not None:
+                        errors = validate_child_report(
+                            payload,
+                            pair=pair,
+                            version=version,
+                            expected_provenance=expected_provenance,
                         )
-                        child_payloads.append(payload)
-                        continue
+                        if not errors:
+                            aggregate["children"].append(
+                                {
+                                    "pair": pair["name"],
+                                    "maya": version,
+                                    "report": str(child),
+                                    "returncode": 0,
+                                    "status": payload.get("status"),
+                                    "errors": [],
+                                    "reused": True,
+                                }
+                            )
+                            child_payloads.append(payload)
+                            continue
                 try:
                     child.unlink()
                 except FileNotFoundError:
@@ -890,7 +1051,12 @@ def _run_host(args: argparse.Namespace) -> int:
                 if not child.is_file():
                     raise RuntimeError(f"missing child report after mayapy exit {completed.returncode}: {child}")
                 payload = _read_json(child)
-                errors = validate_child_report(payload, pair=pair, version=version)
+                errors = validate_child_report(
+                    payload,
+                    pair=pair,
+                    version=version,
+                    expected_provenance=expected_provenance,
+                )
                 aggregate["children"].append({"pair": pair["name"], "maya": version, "report": str(child), "returncode": completed.returncode, "status": payload.get("status"), "errors": errors})
                 if errors:
                     raise RuntimeError(f"child gate failed for {pair['name']} Maya {version}: {'; '.join(errors)}")

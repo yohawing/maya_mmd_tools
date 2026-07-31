@@ -377,6 +377,18 @@ class TestFastSkeletonSkin(unittest.TestCase):
         cmds.group.return_value = "skeleton_group1"
         cmds.skinCluster.return_value = ["skinCluster1"]
         cmds.objExists.return_value = True
+        # New joints do not have authored metadata before the importer writes it.
+        # MagicMock's default return value is truthy, which would make the
+        # immutable bind-translate helper incorrectly treat the attribute as
+        # pre-existing and skip authoring it.  The skin policy attributes,
+        # however, already exist on a Maya-created skinCluster.
+        def _attribute_query(attribute, node=None, **_kwargs):
+            return node == "skinCluster1" and attribute in {
+                "deformUserNormals",
+                "blockGPU",
+            }
+
+        cmds.attributeQuery.side_effect = _attribute_query
         return cmds
 
     def test_skeleton_skin_happy_path(self):

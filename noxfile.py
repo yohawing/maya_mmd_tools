@@ -1181,11 +1181,11 @@ def ci_unit(session: nox.Session) -> None:
     without Maya, so any new tests added to tests/unit are automatically
     included — no manual listing required.
 
-    A test file is included when it can be imported successfully with a
-    plain ``python -c "import tests.unit.<stem>"`` probe (i.e. it has no
-    transitive dependency on an allowlisted environment-only module). Files
-    that fail for one of those expected dependencies are skipped with a notice;
-    other import failures abort the session.
+    A test file is included when it can be imported successfully in a
+    pytest-enabled ``uvx`` probe (i.e. it has no transitive dependency on an
+    allowlisted environment-only module). Files that fail for one of those
+    expected dependencies are skipped with a notice; other import failures
+    abort the session.
 
     Examples:
         uvx nox -s ci_unit
@@ -1197,7 +1197,11 @@ def ci_unit(session: nox.Session) -> None:
     for py_file in sorted(unit_dir.glob("test_*.py")):
         module_name = f"tests.unit.{py_file.stem}"
         probe = subprocess.run(
-            [sys.executable, "-c", f"import {module_name}"],
+            # The probe must use the same pytest-enabled environment as the
+            # actual test command.  Probing with the bare Nox interpreter made
+            # every pytest-using unit module look like a non-environment import
+            # failure and aborted ci_unit before pytest could run it.
+            ["uvx", "--with", "pytest", "--", "python", "-c", f"import {module_name}"],
             cwd=ROOT,
             capture_output=True,
             text=True,

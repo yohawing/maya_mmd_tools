@@ -574,33 +574,34 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--cases", default=None, help="comma-separated parity cases (default: base,coverage,boneMorph)")
     parser.add_argument("--versions", default=",".join(VERSIONS), help="comma-separated Maya versions")
     parser.add_argument("--modes", default=",".join(MODES), help="comma-separated evaluation modes")
-    parser.add_argument("--model", default=None, help="single-case model override (legacy CLI compatibility)")
-    parser.add_argument("--motion", default=None, help="single-case motion override (legacy CLI compatibility)")
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="deprecated custom model override (rejected; use a named CASE_PATHS entry)",
+    )
+    parser.add_argument(
+        "--motion",
+        default=None,
+        help="deprecated custom motion override (rejected; use a named CASE_PATHS entry)",
+    )
     parser.add_argument("--out", default=str(ROOT / "build" / "reports" / "mmd_control_rig_vmd_import_parity_matrix.json"))
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--dry-run", action="store_true", help="print all case/version/mode commands and do not launch Maya")
     args = parser.parse_args(argv)
+    if args.model is not None or args.motion is not None:
+        parser.error(
+            "custom --model/--motion invocations are not supported by the release matrix; "
+            "use --cases with one of the named built-in fixtures"
+        )
     try:
         versions = _parse_csv(args.versions, VERSIONS, "versions")
         modes = _parse_csv(args.modes, MODES, "modes")
-        if args.cases is None:
-            cases = ("custom",) if args.model or args.motion else CASES
-        else:
-            cases = _parse_csv(args.cases, CASES, "cases")
+        cases = CASES if args.cases is None else _parse_csv(args.cases, CASES, "cases")
     except ValueError as exc:
         parser.error(str(exc))
-    if (args.model is None) != (args.motion is None):
-        parser.error("--model and --motion must be supplied together")
-    if args.cases is not None and (args.model is not None or args.motion is not None) and len(cases) != 1:
-        parser.error("--model/--motion overrides require exactly one --cases entry")
     case_specs = {}
     for case in cases:
-        if case == "custom":
-            case_specs[case] = (Path(args.model).resolve(), Path(args.motion).resolve())
-        elif args.model is not None:
-            case_specs[case] = (Path(args.model).resolve(), Path(args.motion).resolve())
-        else:
-            case_specs[case] = tuple(path.resolve() for path in CASE_PATHS[case])
+        case_specs[case] = tuple(path.resolve() for path in CASE_PATHS[case])
     output = Path(args.out).resolve()
     runs = []
     for case in cases:

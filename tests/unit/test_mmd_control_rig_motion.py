@@ -4,8 +4,10 @@ import unittest
 
 from mmd_tools.core.mmd_control_rig_motion import (
     _connect_ik_control_visibility,
+    _classify_route,
     _consistent_rotation_group_basis,
     ROUTE_SAMPLED,
+    ROUTE_SAME_BASIS,
     _rotation_channel_groups,
     _supports_bake_authoring_basis,
     _supports_live_authoring_basis,
@@ -127,6 +129,69 @@ class MmdControlRigMotionRoutingTest(unittest.TestCase):
 
         self.assertFalse(_supports_live_authoring_basis(row))
         self.assertTrue(_supports_bake_authoring_basis(row))
+
+    def test_parent_basis_driver_is_sampled_even_when_current_value_is_identity(self):
+        class FakeCmds:
+            def __init__(self, *, incoming=None, keyed=None, scale_values=None):
+                self.incoming = incoming or {}
+                self.keyed = keyed or {}
+                self.scale_values = scale_values or {}
+
+            def objExists(self, node):
+                return node in {"|joint", "|parent"}
+
+            def attributeQuery(self, attribute, *, node, exists=False, **_kwargs):
+                return exists and node == "|joint" and attribute.startswith("jointOrient")
+
+            def getAttr(self, plug):
+                if plug.endswith("rotateOrder"):
+                    return 0
+                if ".rotate" in plug:
+                    return 0.0
+                if ".scale" in plug:
+                    return self.scale_values.get(plug[-1], 1.0)
+                return 0.0
+
+            def listRelatives(self, node, **kwargs):
+                if kwargs.get("parent") and node == "|joint":
+                    return ["|parent"]
+                return []
+
+            def listConnections(self, plug, **_kwargs):
+                return list(self.incoming.get(plug, ()))
+
+            def keyframe(self, target, **kwargs):
+                attribute = kwargs.get("attribute")
+                key = (target, attribute) if attribute else target
+                return list(self.keyed.get(key, ()))
+
+        binding = {"inputKind": "direct_channel", "joint": "|joint"}
+        static_route = _classify_route(FakeCmds(), binding, "|joint.rotateX")
+        self.assertEqual(static_route, (ROUTE_SAME_BASIS, ()))
+
+        zero_scale_route = _classify_route(
+            FakeCmds(scale_values={"Y": 0.0}),
+            binding,
+            "|joint.rotateX",
+        )
+        self.assertEqual(zero_scale_route[0], ROUTE_SAMPLED)
+        self.assertIn("parent_basis", zero_scale_route[1])
+
+        driven_route = _classify_route(
+            FakeCmds(incoming={"|parent.rotateX": ["|animCurve.output"]}),
+            binding,
+            "|joint.rotateX",
+        )
+        self.assertEqual(driven_route[0], ROUTE_SAMPLED)
+        self.assertIn("parent_basis", driven_route[1])
+
+        keyed_route = _classify_route(
+            FakeCmds(keyed={"|parent.scaleY": [1.0, 12.0]}),
+            binding,
+            "|joint.rotateX",
+        )
+        self.assertEqual(keyed_route[0], ROUTE_SAMPLED)
+        self.assertIn("parent_basis", keyed_route[1])
 
     def test_bone_morph_base_xyz_supports_live_and_bake_basis_conversion(self):
         rows = _bone_morph_rows()

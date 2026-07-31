@@ -144,6 +144,62 @@ class _SparsePoseCmds(_Cmds):
         return super().listConnections(plug, **kwargs)
 
 
+class _ImportedHierarchyCmds(_Cmds):
+    """Small hierarchy facade for importer-metadata parent regressions."""
+
+    def __init__(self, *, marked_root=False, root_scale=1.0):
+        attrs = {
+            "|root|parent.mmd_vmd_bind_translate": "[1.0, 0.0, 0.0]",
+            "|root|child.mmd_vmd_bind_translate": "[2.0, 0.0, 0.0]",
+            "|root|parent.jointOrientX": 0.0,
+            "|root|parent.jointOrientY": 0.0,
+            "|root|parent.jointOrientZ": 0.0,
+            "|root|parent.rotateOrder": 0,
+            "|root|child.jointOrientX": 0.0,
+            "|root|child.jointOrientY": 0.0,
+            "|root|child.jointOrientZ": 0.0,
+            "|root|child.rotateOrder": 0,
+        }
+        if marked_root:
+            attrs.update(
+                {
+                    "|root.mmd_model_name": "markedModel",
+                    "|root.mmd_source_file": "markedModel.pmx",
+                    "|root.translateX": 0.0,
+                    "|root.translateY": 0.0,
+                    "|root.translateZ": 0.0,
+                    "|root.rotateX": 0.0,
+                    "|root.rotateY": 0.0,
+                    "|root.rotateZ": 0.0,
+                    "|root.scaleX": root_scale,
+                    "|root.scaleY": root_scale,
+                    "|root.scaleZ": root_scale,
+                }
+            )
+        super().__init__(attrs=attrs)
+        self.parent_map = {
+            "|root|child": "|root|parent",
+            "|root|parent": "|root",
+        }
+        self.world_reads = []
+
+    def attributeQuery(self, attribute, *, node, exists=False, **_kwargs):
+        return f"{node}.{attribute}" in self.attrs if exists else False
+
+    def listRelatives(self, node, **kwargs):
+        if kwargs.get("parent"):
+            parent = self.parent_map.get(str(node))
+            return [parent] if parent else []
+        return []
+
+    def nodeType(self, node):
+        return "joint" if str(node).endswith(("parent", "child")) else "transform"
+
+    def xform(self, node, **_kwargs):
+        self.world_reads.append(str(node))
+        raise AssertionError("live non-joint parent world matrix was queried")
+
+
 def _resolver_cmds(*, dag_matrix=None, skin_pre=None, joint="|ns:joint", mismatch=False):
     dag = {
         ("poses", joint): ["|ns:bindPose"],
@@ -184,6 +240,16 @@ class TestPhysicsBindBasis(unittest.TestCase):
         try:
             with _temporary_openmaya_attrs(MMatrix=_Matrix):
                 return basis.resolve_saved_bind_world_matrix(joint)
+        finally:
+            maya.cmds = old_cmds
+
+    def _resolve_imported(self, cmds, joint):
+        maya = sys.modules["maya"]
+        old_cmds = maya.cmds
+        maya.cmds = cmds
+        try:
+            with _temporary_openmaya_attrs(MMatrix=_Matrix):
+                return basis.resolve_imported_bind_world_matrix(joint)
         finally:
             maya.cmds = old_cmds
 
@@ -259,6 +325,20 @@ class TestPhysicsBindBasis(unittest.TestCase):
         with self.assertRaises(basis.BindBasisResolutionError) as context:
             self._resolve(_resolver_cmds(dag_matrix=singular))
         self.assertEqual(context.exception.reason_code, basis.BIND_BASIS_SINGULAR)
+
+    def test_imported_bind_rejects_live_non_joint_parent_world_matrix(self):
+        cmds = _ImportedHierarchyCmds()
+        with self.assertRaises(basis.BindBasisResolutionError) as context:
+            self._resolve_imported(cmds, joint="|root|child")
+        self.assertEqual(context.exception.reason_code, basis.BIND_BASIS_MISSING)
+        self.assertIn("non-joint parent", str(context.exception))
+        self.assertEqual(cmds.world_reads, [])
+
+    def test_imported_bind_rejects_zero_scale_in_marked_root_chain(self):
+        cmds = _ImportedHierarchyCmds(marked_root=True, root_scale=0.0)
+        with self.assertRaises(basis.BindBasisResolutionError) as context:
+            self._resolve_imported(cmds, joint="|root|child")
+        self.assertEqual(context.exception.reason_code, basis.BIND_BASIS_MISSING)
 
 
 if __name__ == "__main__":

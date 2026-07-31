@@ -45,6 +45,7 @@ _USER_ROLE = 0x0100  # Qt.UserRole
 _SELECTION_VISIBLE = "visible"
 _SELECTION_BLOCKED = "blocked"
 _SELECTION_UNKNOWN = "unknown"
+_IK_AUTHORITY_UNKNOWN = "UNKNOWN"
 
 _IK_BONE_NAMES = {
     "left": "左足ＩＫ",
@@ -110,7 +111,10 @@ class AnimationPresenter:
         self._toe_ik_nodes_by_side: dict[str, str] = {}
         self._control_ik_nodes_by_side: dict[str, str] = {}
         self._control_toe_ik_nodes_by_side: dict[str, str] = {}
-        self._ik_authority_owner = "MMD_OWNED"
+        # Ownership is unknown until the model metadata has been read.  A
+        # failed read must not make the legacy solver look authoritative.
+        self._ik_authority_owner = _IK_AUTHORITY_UNKNOWN
+        self._ik_authority_model_root: str | None = None
         self._last_ik_states: dict[str, bool] = {}
         self._visibility_history_jobs: list[int] = []
         self._selection_sync_jobs: list[int] = []
@@ -361,6 +365,14 @@ class AnimationPresenter:
 
         if self._disposed:
             return
+        # A scene replacement may reuse the same DAG path.  Do not let the
+        # same-root transient-failure preservation below carry UUID-owned
+        # controls from the previous scene into the new one.
+        self._ik_authority_owner = _IK_AUTHORITY_UNKNOWN
+        self._ik_authority_model_root = None
+        self._control_ik_nodes_by_side = {}
+        self._control_toe_ik_nodes_by_side = {}
+        self._last_ik_states = {}
         try:
             self.app_state.clear_cache()
         except Exception:
@@ -1154,16 +1166,35 @@ class AnimationPresenter:
     # -- Internal ------------------------------------------------------
 
     def _reload_for_model(self, model_root: str):
+        previous_owner = self._ik_authority_owner
+        previous_model_root = self._ik_authority_model_root
+        previous_control_ik = self._control_ik_nodes_by_side
+        previous_control_toe_ik = self._control_toe_ik_nodes_by_side
         bone_map = self._build_bone_index_map(model_root)
         self._all_model_joints = [bone_map[index] for index in sorted(bone_map)]
         self._bone_name_to_joint = self._build_bone_name_map(model_root)
         self._ik_nodes_by_side = self._collect_leg_ik_nodes(model_root)
         self._toe_ik_nodes_by_side = self._collect_toe_ik_nodes(model_root)
         (
-            self._control_ik_nodes_by_side,
-            self._control_toe_ik_nodes_by_side,
-            self._ik_authority_owner,
+            control_ik_nodes,
+            control_toe_ik_nodes,
+            authority_owner,
         ) = self._collect_control_rig_ik_nodes(model_root)
+        # If a known Control-owned model temporarily loses readable metadata,
+        # retain that authority and its UUID-resolved controls for this same
+        # model. Never carry those nodes across a model-root replacement.
+        if (
+            authority_owner == _IK_AUTHORITY_UNKNOWN
+            and previous_owner == "CONTROL_OWNED"
+            and previous_model_root == model_root
+        ):
+            control_ik_nodes = previous_control_ik
+            control_toe_ik_nodes = previous_control_toe_ik
+            authority_owner = previous_owner
+        self._control_ik_nodes_by_side = control_ik_nodes
+        self._control_toe_ik_nodes_by_side = control_toe_ik_nodes
+        self._ik_authority_owner = authority_owner
+        self._ik_authority_model_root = model_root
         self._last_ik_states = {}
         self._sync_picker_regions()
         self._sync_ik_picker_state(force=True)
@@ -1284,7 +1315,7 @@ class AnimationPresenter:
         # A model without Control Rig metadata is the normal MMD-owned route.
         # Once metadata has been read successfully, a known CONTROL_OWNED
         # value is retained even if a later topology inspection fails.
-        owner = "MMD_OWNED"
+        owner = _IK_AUTHORITY_UNKNOWN
         try:
             from ...core.mmd_control_rig_builder import (
                 CONTROL_RIG_CONTROL_OWNED,
@@ -1293,7 +1324,11 @@ class AnimationPresenter:
             )
 
             metadata = read_mmd_control_rig_metadata(model_root)
+            # ``None`` is a successful read for a model without a Control
+            # Rig; only an exception means that ownership is unknown.
             owner = str((metadata or {}).get("owner") or "MMD_OWNED")
+            if owner not in {"MMD_OWNED", CONTROL_RIG_CONTROL_OWNED}:
+                return {}, {}, _IK_AUTHORITY_UNKNOWN
             if owner != CONTROL_RIG_CONTROL_OWNED:
                 return {}, {}, owner
             rig = inspect_mmd_control_rig(model_root)
@@ -1334,7 +1369,11 @@ class AnimationPresenter:
             # Preserve a known CONTROL_OWNED authority on transient
             # inspection failures; using a legacy solver here would violate
             # the single-writer contract.  The next refresh retries.
-            return {}, {}, owner
+            return {}, {}, (
+                owner
+                if owner == CONTROL_RIG_CONTROL_OWNED
+                else _IK_AUTHORITY_UNKNOWN
+            )
 
     def _active_ik_nodes_by_side(self) -> dict[str, str]:
         """Return the IK source selected by the persisted motion owner."""
@@ -1354,10 +1393,14 @@ class AnimationPresenter:
             return self._toe_ik_nodes_by_side
         return {}
 
-    def _active_ik_attribute(self) -> str:
+    def _active_ik_attribute(self) -> str | None:
         """Return the read/write plug attribute for the active owner."""
 
-        return "ikEnabled" if self._ik_authority_owner == "CONTROL_OWNED" else "enabled"
+        if self._ik_authority_owner == "CONTROL_OWNED":
+            return "ikEnabled"
+        if self._ik_authority_owner == "MMD_OWNED":
+            return "enabled"
+        return None
 
     def _refresh_ik_authority(self) -> None:
         """Re-read ownership metadata when a Control Rig transaction changes it."""
@@ -1370,9 +1413,18 @@ class AnimationPresenter:
 
             metadata = read_mmd_control_rig_metadata(model_root)
             owner = str((metadata or {}).get("owner") or "MMD_OWNED")
+            if owner not in {"MMD_OWNED", "CONTROL_OWNED"}:
+                owner = _IK_AUTHORITY_UNKNOWN
         except Exception:
             # A failed metadata read is not evidence that the scene is
-            # MMD-owned.  Keep the previous authority and retry later.
+            # MMD-owned. Keep a known Control-owned authority safe, but
+            # disable legacy writes for every other prior state.
+            if self._ik_authority_owner != "CONTROL_OWNED":
+                self._ik_authority_owner = _IK_AUTHORITY_UNKNOWN
+                self._control_ik_nodes_by_side = {}
+                self._control_toe_ik_nodes_by_side = {}
+                self._last_ik_states = {}
+                self._sync_picker_regions()
             return
         if owner != self._ik_authority_owner or (
             owner == "CONTROL_OWNED"
@@ -1385,6 +1437,7 @@ class AnimationPresenter:
                 self._control_toe_ik_nodes_by_side,
                 self._ik_authority_owner,
             ) = self._collect_control_rig_ik_nodes(model_root)
+            self._ik_authority_model_root = model_root
             self._last_ik_states = {}
             self._sync_picker_regions()
 
@@ -1508,7 +1561,8 @@ class AnimationPresenter:
         self._toe_ik_nodes_by_side = {}
         self._control_ik_nodes_by_side = {}
         self._control_toe_ik_nodes_by_side = {}
-        self._ik_authority_owner = "MMD_OWNED"
+        self._ik_authority_owner = _IK_AUTHORITY_UNKNOWN
+        self._ik_authority_model_root = None
         self._last_ik_states = {}
         self._bone_name_to_joint.clear()
         self._sync_picker_regions()

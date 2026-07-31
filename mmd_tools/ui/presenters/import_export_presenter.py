@@ -86,7 +86,38 @@ class ImportExportPresenter(QObject):
 
     def _get_vmd_target_model(self):
         """VMD model motionの対象としてManagerの現在モデルを返す。"""
-        return getattr(self.app_state, "current_model_root", None)
+        target_model = getattr(self.app_state, "current_model_root", None)
+        if not target_model:
+            return None
+
+        # ``current_model_root`` can outlive a deleted/replaced Maya scene.
+        # Validate it against the scene's current model list before options
+        # are built; a stale target must not be handed to VMD conversion.
+        scene_service = getattr(self.app_state, "scene_model_service", None)
+        list_models = getattr(scene_service, "list_mmd_models", None)
+        if callable(list_models):
+            try:
+                # The cached ApplicationState list can describe the previous
+                # scene when Maya reuses the same DAG path after replacement.
+                # Always query the live scene service when available.
+                available_models = list_models()
+            except Exception:
+                logger.debug("Could not validate VMD target model list", exc_info=True)
+                return None
+        else:
+            available_models = getattr(self.app_state, "available_models", None)
+        if available_models is not None and target_model not in available_models:
+            return None
+
+        object_exists = getattr(scene_service, "object_exists", None)
+        if callable(object_exists):
+            try:
+                if not object_exists(target_model):
+                    return None
+            except Exception:
+                logger.debug("Could not validate VMD target model", exc_info=True)
+                return None
+        return target_model
 
     def _build_vmd_import_options(self, target_model):
         """VMD import用のオプションを現在モデルから組み立てる。"""

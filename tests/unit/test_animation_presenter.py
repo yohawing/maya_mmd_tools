@@ -647,6 +647,23 @@ class TestAnimationPresenter(unittest.TestCase):
         self.assertEqual(app_state.cache_clear_count, 1)
         reload_model.assert_called_once_with("test_model")
 
+    def test_scene_change_drops_same_path_control_authority_on_metadata_failure(self):
+        presenter, _, _, _ = self._make(model_root="test_model")
+        presenter._ik_authority_owner = "CONTROL_OWNED"
+        presenter._ik_authority_model_root = "test_model"
+        presenter._control_ik_nodes_by_side = {"left": "old_scene_left_ctrl"}
+        presenter._control_toe_ik_nodes_by_side = {"left": "old_scene_left_toe_ctrl"}
+
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            side_effect=RuntimeError("new scene metadata unavailable"),
+        ):
+            presenter.refresh_for_scene_change()
+
+        self.assertEqual(presenter._ik_authority_owner, "UNKNOWN")
+        self.assertEqual(presenter._active_ik_nodes_by_side(), {})
+        self.assertEqual(presenter._active_toe_ik_nodes_by_side(), {})
+
     def test_undo_redo_jobs_read_back_visibility_and_are_removed(self):
         presenter, _, _, adapter = self._make(model_root="test_model")
 
@@ -880,6 +897,14 @@ class TestBodyPickerPresenter(unittest.TestCase):
         adapter._attrs[(group, "visibility")] = state != "hidden"
         adapter._attrs[(group, "overrideEnabled")] = state == "reference"
         adapter._attrs[(group, "overrideDisplayType")] = 2 if state == "reference" else 0
+
+    @staticmethod
+    def _mmd_owned_metadata():
+        """Make legacy IK tests explicit about their scene authority."""
+        return patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            return_value={"owner": "MMD_OWNED"},
+        )
 
     def test_region_click_selects_bone(self):
         presenter, view, _, adapter = self._make_with_bones(
@@ -1168,7 +1193,9 @@ class TestBodyPickerPresenter(unittest.TestCase):
         adapter._attrs["left_leg_ik_solver", "enabled"] = False
         adapter._attrs["right_leg_ik_solver", "enabled"] = False
 
-        view.body_picker.ik_toggled.emit("left", True)
+        with self._mmd_owned_metadata():
+            presenter._refresh_ik_authority()
+            view.body_picker.ik_toggled.emit("left", True)
 
         self.assertTrue(adapter._attrs["left_leg_ik_solver", "enabled"])
         self.assertEqual(
@@ -1196,7 +1223,8 @@ class TestBodyPickerPresenter(unittest.TestCase):
         adapter._attrs["left_leg_ik_solver", "enabled"] = True
         adapter._attrs["right_leg_ik_solver", "enabled"] = True
 
-        presenter._sync_ik_picker_state(force=True)
+        with self._mmd_owned_metadata():
+            presenter._sync_ik_picker_state(force=True)
 
         self.assertEqual(
             view.body_picker.hidden_regions,
@@ -1213,7 +1241,8 @@ class TestBodyPickerPresenter(unittest.TestCase):
 
         adapter._attrs["left_leg_ik_solver", "enabled"] = False
         adapter._attrs["right_leg_ik_solver", "enabled"] = False
-        presenter._sync_ik_picker_state(force=True)
+        with self._mmd_owned_metadata():
+            presenter._sync_ik_picker_state(force=True)
 
         self.assertEqual(
             view.body_picker.hidden_regions,
@@ -1273,6 +1302,58 @@ class TestBodyPickerPresenter(unittest.TestCase):
         self.assertFalse(adapter._attrs["legacy_left_solver", "enabled"])
         self.assertFalse(adapter._attrs["legacy_left_toe_solver", "enabled"])
 
+    def test_metadata_read_failure_disables_legacy_ik_writer(self):
+        presenter, _view, _, adapter = self._make_with_bones()
+        adapter._attrs["legacy_left_solver", "enabled"] = False
+
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            side_effect=RuntimeError("metadata unavailable"),
+        ):
+            presenter._reload_for_model("test_model")
+            presenter._ik_nodes_by_side = {"left": "legacy_left_solver"}
+            presenter.on_ik_toggled("left", True)
+
+        self.assertEqual(presenter._ik_authority_owner, "UNKNOWN")
+        self.assertEqual(presenter._active_ik_nodes_by_side(), {})
+        self.assertFalse(adapter._attrs["legacy_left_solver", "enabled"])
+        self.assertNotIn("legacy_left_solver.enabled", adapter._set_attrs)
+
+    def test_control_owned_authority_survives_later_metadata_read_failure(self):
+        presenter, _view, _, adapter = self._make_with_bones()
+        adapter._attrs["left_foot_ctrl", "ikEnabled"] = True
+        adapter._attrs["legacy_left_solver", "enabled"] = False
+        metadata = {
+            "owner": "CONTROL_OWNED",
+            "bindings": {
+                "left_foot_ik": {"inputKind": "ik_controller"},
+            },
+        }
+        rig = SimpleNamespace(
+            controls={"left_foot_ik": "left_foot_ctrl"},
+        )
+
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            return_value=metadata,
+        ), patch(
+            "mmd_tools.core.mmd_control_rig_builder.inspect_mmd_control_rig",
+            return_value=rig,
+        ):
+            presenter._reload_for_model("test_model")
+
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            side_effect=RuntimeError("transient metadata failure"),
+        ):
+            presenter._sync_ik_picker_state(force=True)
+            presenter.on_ik_toggled("left", False)
+
+        self.assertEqual(presenter._ik_authority_owner, "CONTROL_OWNED")
+        self.assertEqual(adapter._attrs["left_foot_ctrl", "ikEnabled"], False)
+        self.assertFalse(adapter._attrs["legacy_left_solver", "enabled"])
+        self.assertNotIn("legacy_left_solver.enabled", adapter._set_attrs)
+
     def test_ik_enable_toggle_switches_one_sides_solvers_without_hiding_thighs(self):
         presenter, view, _, adapter = self._make_with_bones()
         presenter._ik_nodes_by_side = {
@@ -1288,7 +1369,9 @@ class TestBodyPickerPresenter(unittest.TestCase):
         adapter._attrs["left_toe_ik_solver", "enabled"] = False
         adapter._attrs["right_toe_ik_solver", "enabled"] = False
 
-        view.body_picker.ik_enable_toggle_clicked.emit("left")
+        with self._mmd_owned_metadata():
+            presenter._refresh_ik_authority()
+            view.body_picker.ik_enable_toggle_clicked.emit("left")
 
         self.assertTrue(adapter._attrs["left_leg_ik_solver", "enabled"])
         self.assertFalse(adapter._attrs["right_leg_ik_solver", "enabled"])
@@ -1306,7 +1389,8 @@ class TestBodyPickerPresenter(unittest.TestCase):
         )
         self.assertEqual(view.body_picker.region_dim_levels, {"ik_enable_right": 0.65})
 
-        view.body_picker.ik_enable_toggle_clicked.emit("left")
+        with self._mmd_owned_metadata():
+            view.body_picker.ik_enable_toggle_clicked.emit("left")
 
         self.assertFalse(adapter._attrs["left_leg_ik_solver", "enabled"])
         self.assertFalse(adapter._attrs["right_leg_ik_solver", "enabled"])
@@ -1338,7 +1422,9 @@ class TestBodyPickerPresenter(unittest.TestCase):
 
         adapter.set_attr = fail_toe_solver
 
-        view.body_picker.ik_enable_toggle_clicked.emit("left")
+        with self._mmd_owned_metadata():
+            presenter._refresh_ik_authority()
+            view.body_picker.ik_enable_toggle_clicked.emit("left")
 
         self.assertFalse(adapter._attrs["left_leg_ik_solver", "enabled"])
         self.assertFalse(adapter._attrs["left_toe_ik_solver", "enabled"])

@@ -11,6 +11,57 @@ from .logger import get_logger
 logger = get_logger(__name__)
 
 
+def is_plug_animated_or_driven(plug, *, cmds_module=None):
+    """Return whether a Maya plug has an incoming driver or keyed samples.
+
+    Args:
+        plug (str): Fully qualified Maya plug (for example ``node.rotateX``).
+        cmds_module: Optional Maya ``cmds``-compatible facade used by tests.
+
+    Returns:
+        bool: ``True`` when an incoming connection or one or more key times
+        are present; ``False`` when neither can be observed.
+    """
+
+    maya_cmds = cmds if cmds_module is None else cmds_module
+    try:
+        incoming = maya_cmds.listConnections(
+            plug,
+            source=True,
+            destination=False,
+            plugs=True,
+        ) or []
+    except Exception:
+        try:
+            incoming = maya_cmds.listConnections(
+                plug,
+                source=True,
+                destination=False,
+            ) or []
+        except Exception:
+            incoming = []
+    if incoming:
+        return True
+
+    try:
+        keyed = maya_cmds.keyframe(plug, query=True, timeChange=True) or []
+    except Exception:
+        keyed = []
+    if keyed:
+        return True
+    try:
+        node, attribute = str(plug).split(".", 1)
+        keyed = maya_cmds.keyframe(
+            node,
+            attribute=attribute,
+            query=True,
+            timeChange=True,
+        ) or []
+    except Exception:
+        keyed = []
+    return bool(keyed)
+
+
 def _parse_array_attribute_part(attr_part):
     if not attr_part.endswith("]") or "[" not in attr_part:
         return attr_part, None

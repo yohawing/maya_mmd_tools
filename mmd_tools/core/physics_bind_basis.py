@@ -14,6 +14,8 @@ import re
 
 import maya.api.OpenMaya as om
 
+from .maya_animation_utils import is_plug_animated_or_driven
+
 
 BIND_MATRIX_TOLERANCE = 1e-5
 BIND_SINGULAR_TOLERANCE = 1e-12
@@ -303,10 +305,8 @@ def _skin_bind_candidates(joint, cmds):
     return candidates
 
 
-def resolve_saved_bind_world_matrix(joint):
-    """Resolve a saved Maya bind world matrix, never using live pose."""
-    from maya import cmds
-
+def _resolve_saved_bind_world_matrix_with_cmds(joint, cmds):
+    """Resolve a saved bind matrix through an injected Maya command facade."""
     joint_name = str(joint)
     dag_candidates = _dag_pose_bind_candidates(joint, cmds)
     skin_candidates = _skin_bind_candidates(joint, cmds)
@@ -359,6 +359,13 @@ def resolve_saved_bind_world_matrix(joint):
     raise BindBasisResolutionError(BIND_BASIS_MISSING, joint_name)
 
 
+def resolve_saved_bind_world_matrix(joint):
+    """Resolve a saved Maya bind world matrix, never using live pose."""
+    from maya import cmds
+
+    return _resolve_saved_bind_world_matrix_with_cmds(joint, cmds)
+
+
 def _imported_bind_translate(joint, cmds):
     """Read the importer-owned, animation-independent local bind translation."""
     attribute = "mmd_vmd_bind_translate"
@@ -390,6 +397,69 @@ def _reconstruct_imported_bind_world_matrix(joint, cmds):
     """Rebuild static bind world space from imported joint metadata."""
     visited = set()
 
+    def _has_import_root_marker(node):
+        # ModelImportPipeline attaches these attributes to the MMD model root
+        # before creating the Skeleton transform.  They are import provenance,
+        # not a live pose value; require the marker so arbitrary scene
+        # transforms cannot silently become an identity bind parent.
+        try:
+            return all(
+                cmds.attributeQuery(attribute, node=node, exists=True)
+                for attribute in ("mmd_model_name", "mmd_source_file")
+            )
+        except Exception:
+            return False
+
+    def _import_root_identity_chain(parent):
+        """Accept only an explicitly marked, static identity import root."""
+        current = str(parent)
+        chain = set()
+        marked_root = None
+        while current:
+            if current in chain:
+                return False
+            chain.add(current)
+            try:
+                if str(cmds.nodeType(current)) == "joint":
+                    return False
+            except Exception:
+                return False
+            if _has_import_root_marker(current):
+                marked_root = current
+            for attribute, default in (
+                ("translate", 0.0),
+                ("rotate", 0.0),
+                ("scale", 1.0),
+            ):
+                for axis in "XYZ":
+                    plug = f"{current}.{attribute}{axis}"
+                    try:
+                        raw_value = cmds.getAttr(plug)
+                        value = float(default if raw_value is None else raw_value)
+                    except Exception:
+                        return False
+                    if abs(value - default) > 1.0e-8 or is_plug_animated_or_driven(
+                        plug,
+                        cmds_module=cmds,
+                    ):
+                        return False
+            try:
+                parents = cmds.listRelatives(current, parent=True, fullPath=True) or []
+            except Exception:
+                return False
+            current = str(parents[0]) if parents else ""
+
+        if marked_root is None:
+            return False
+        try:
+            # A marked model root is created world-parented by the importer;
+            # an external parent would require its own saved bind authority.
+            if cmds.listRelatives(marked_root, parent=True, fullPath=True) or []:
+                return False
+        except Exception:
+            return False
+        return True
+
     def resolve(node):
         node = str(node)
         if node in visited:
@@ -413,9 +483,31 @@ def _reconstruct_imported_bind_world_matrix(joint, cmds):
             if parent and str(cmds.nodeType(parent)) == "joint":
                 parent_matrix = resolve(parent)
             elif parent:
-                parent_matrix = om.MMatrix(
-                    cmds.xform(parent, query=True, worldSpace=True, matrix=True)
-                )
+                # A non-joint parent is outside the importer-owned joint
+                # hierarchy.  Its live world matrix is a pose value, not a bind
+                # authority, and must never be consumed here.  The one
+                # importer-owned exception is a marked model-root chain whose
+                # local channels are all static identity; no world matrix is
+                # read for that path either.
+                try:
+                    parent_matrix = _resolve_saved_bind_world_matrix_with_cmds(
+                        parent,
+                        cmds,
+                    )
+                except BindBasisResolutionError as exc:
+                    if exc.reason_code != BIND_BASIS_MISSING:
+                        raise
+                    if _import_root_identity_chain(parent):
+                        parent_matrix = om.MMatrix()
+                    else:
+                        raise BindBasisResolutionError(
+                            BIND_BASIS_MISSING,
+                            str(joint),
+                            (
+                                f"non-joint parent {parent} has no saved bind metadata; "
+                                "live world transform is not a bind basis"
+                            ),
+                        ) from exc
             else:
                 parent_matrix = om.MMatrix()
             return local.asMatrix() * parent_matrix
