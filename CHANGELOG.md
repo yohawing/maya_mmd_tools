@@ -7,9 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-- Made the Physics tab Enable checkbox toggle simulation immediately instead of automatically pre-rolling every frame from the saved start frame.
-
 ## [0.6.1] - 2026-07-30
 
 ### Added
@@ -21,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated the bundled `mmd-anim` runtime to 0.3.3 and expanded runtime provenance and compiled-track introspection used by VMD import.
 - Made MMD Control Rig and HumanIK ownership explicit so only one authoring route writes the underlying MMD rig at a time.
 - Locked Control Rig authoring channels and preserved their authored basis, animation-layer ownership, and sparse key timing across creation, reimport, bake, save, and reopen workflows.
+- Made the Physics tab Enable checkbox toggle simulation immediately instead of automatically pre-rolling every frame from the saved start frame.
 
 ### Fixed
 - Stabilized native and Python CCD IK handling for local axes, bind-space reconstruction, root-space goals, non-finite inputs, near-zero quaternions, and Maya-authored iteration and angle-limit values.
