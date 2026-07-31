@@ -2822,31 +2822,6 @@ def shader_visual_semantic_gate(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
-def visual_regression_gallery(session: nox.Session) -> None:
-    """Build a local HTML gallery from visual-regression run reports.
-
-    Examples:
-        uvx nox -s visual_regression_gallery
-        uvx nox -s visual_regression_gallery -- --root build/visual-regression --out build/visual-regression/gallery.html
-    """
-    root = _require_build_path(session, _option(session.posargs, "--root", "build/visual-regression"), "--root")
-    output = _require_build_path(
-        session,
-        _option(session.posargs, "--out", "build/visual-regression/visual-regression-gallery.html"),
-        "--out",
-    )
-    session.run(
-        sys.executable,
-        "scripts/visual-regression/generate_gallery.py",
-        "--root",
-        str(root),
-        "--out",
-        str(output),
-        external=True,
-    )
-
-
-@nox.session(venv_backend="none")
 def maya_batch_import(session: nox.Session) -> None:
     """Run Track 6 manifest-driven Maya batch import checks.
 
