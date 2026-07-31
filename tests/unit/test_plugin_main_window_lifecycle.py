@@ -109,9 +109,6 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
 
         self.plugin_main = importlib.import_module("mmd_tools.plugin_main")
         self.plugin_main.mmd_shader = shader_mod
-        self.plugin_main._control_rig_manager_menu_label = MagicMock(
-            return_value="コントロールリグを管理"
-        )
         self.plugin_main.cmds = MagicMock()
         self.plugin_main.cmds.window.return_value = False
         self.plugin_main.cmds.workspaceControl.return_value = False
@@ -235,7 +232,7 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         manager_calls = [
             call
             for call in self.plugin_main.cmds.menuItem.call_args_list
-            if call[1].get("label") == "コントロールリグを管理"
+            if call[1].get("label") == "Manage Control Rig"
         ]
         self.assertEqual(len(manager_calls), 1)
 
@@ -250,7 +247,7 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         menu_call = next(
             call
             for call in self.plugin_main.cmds.menuItem.call_args_list
-            if call[1].get("label") == "コントロールリグを管理"
+            if call[1].get("label") == "Manage Control Rig"
         )
         self.assertEqual(menu_call[1]["command"]("menu-click"), "manager")
         self.plugin_main.open_control_rig_manager.assert_called_once_with()

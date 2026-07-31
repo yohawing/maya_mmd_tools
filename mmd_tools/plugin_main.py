@@ -248,26 +248,6 @@ def _reset_humanik_menu_session():
         return False
 
 
-def _control_rig_manager_menu_label():
-    """Return the Control Rig Manager label in the saved UI language."""
-
-    try:
-        from mmd_tools.core import settings_keys
-        from mmd_tools.services.settings_service import SettingsService
-        from mmd_tools.ui.translations import UITranslator
-
-        translator = UITranslator.instance()
-        translator.set_language(
-            SettingsService().get(
-                settings_keys.UI_GENERAL_LANGUAGE,
-                translator.get_language(),
-            )
-        )
-        return translator.translate("control_rig_manager", "animation_toolset")
-    except Exception:
-        return "コントロールリグを管理"
-
-
 def _close_humanik_window():
     """Close the standalone HumanIK Editor window before plugin unload.
 
@@ -294,7 +274,6 @@ def install_mmd_menu():
     else:
         cmds.menu("MMD", edit=True, label="MMD")
 
-    manager_label = _control_rig_manager_menu_label()
     _LABELS = (
         "MMD Tools",
         "MMD Editor",
@@ -330,7 +309,7 @@ def install_mmd_menu():
     )
     cmds.menuItem(
         "MMDControlRigManagerMenuItem",
-        label=manager_label,
+        label="Manage Control Rig",
         command=lambda *args: open_control_rig_manager(),
         parent="MMD",
     )

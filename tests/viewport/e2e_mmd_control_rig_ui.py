@@ -322,7 +322,7 @@ def run_ui_check(
             "mayaMenuLabel": menu_label,
             "animatorButtonText": _safe_text(manager_button),
             "passed": menu_exists
-            and menu_label == "コントロールリグを管理"
+            and menu_label == "Manage Control Rig"
             and _safe_text(manager_button) == "コントロールリグを管理",
         }
         if not report["ui"]["controlRigEntryPoints"]["passed"]:

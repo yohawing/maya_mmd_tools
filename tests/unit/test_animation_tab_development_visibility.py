@@ -224,8 +224,7 @@ class MmdControlRigReleaseIsolationTest(unittest.TestCase):
         plugin_main = _PLUGIN_MAIN.read_text(encoding="utf-8")
 
         self.assertIn("MMDControlRigManagerMenuItem", plugin_main)
-        self.assertIn("label=manager_label", plugin_main)
-        self.assertIn('translate("control_rig_manager", "animation_toolset")', plugin_main)
+        self.assertIn('label="Manage Control Rig"', plugin_main)
         self.assertIn("open_control_rig_manager()", plugin_main)
 
     def test_control_rig_modules_hold_no_process_owned_transaction_state(self):
