@@ -41,6 +41,7 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
 from mmd_tools.core.mmd_control_rig_basis import (
     MmdControlRigBasis,
     MmdControlRigBasisError,
+    bone_to_control,
     control_to_bone,
     matrix_from_quaternion,
     validate_basis_record,
@@ -572,6 +573,12 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                         hidden_when_enabled_controls=hidden_when_enabled_controls,
                     )
 
+            _rebase_new_ik_link_control_curves(
+                cmds,
+                journal["channels"],
+                created_curve_nodes,
+                curve_representations,
+            )
             _zero_control_display_offsets(
                 cmds,
                 sorted(offset_controls),
@@ -2332,6 +2339,158 @@ def _create_live_rotation_converters(
                 f"could not create live authoring-basis converter for {target_node}: {exc}"
             ) from exc
     return converters
+
+
+def _rebase_new_ik_link_control_curves(
+    cmds,
+    rows: List[Mapping[str, Any]],
+    created_curve_nodes: List[str],
+    curve_representations: List[Dict[str, Any]],
+) -> None:
+    """Convert first-entry IK-link curves from solver XYZ into control basis.
+
+    Legacy VMD import owns ``mmdCcdIk.inputRotate`` in solver-local space.
+    Entering EDIT duplicates those curves before installing the reciprocal live
+    converter.  Only freshly duplicated curves are rebased here; UUID-backed
+    control curves from an earlier EDIT/BAKE cycle are already in control space.
+    """
+
+    created = {_canonical_node(cmds, node) for node in created_curve_nodes}
+    for group in _rotation_channel_groups(rows, include_sampled_direct=True):
+        if not all(
+            "ik_link_input" in set(row.get("routeReasons") or ())
+            for row in group
+        ):
+            continue
+        if not group[0].get("authoringBasis"):
+            # Legacy metadata without a persisted display basis retains the
+            # historical direct XYZ route.
+            continue
+        basis = _consistent_rotation_group_basis(group)
+        if basis.quaternion == (0.0, 0.0, 0.0, 1.0):
+            continue
+        attrs = ("rotateX", "rotateY", "rotateZ")
+        rows_by_attr = {
+            _rotation_attr_for_target(row["target"]): row for row in group
+        }
+        control_node = str(rows_by_attr["rotateX"]["control"]).rsplit(".", 1)[0]
+        target_node = str(rows_by_attr["rotateX"]["target"]).split(".", 1)[0]
+        control_sources = [
+            rows_by_attr[attr].get("controlSource") for attr in attrs
+        ]
+        if not any(control_sources):
+            raw_values = tuple(
+                float(rows_by_attr[attr]["value"]) for attr in attrs
+            )
+            converted = _convert_rotation_values_between_bases(
+                cmds,
+                raw_values,
+                basis,
+                source_node=target_node,
+                destination_node=control_node,
+            )
+            for attr, value in zip(attrs, converted):
+                cmds.setAttr(f"{control_node}.{attr}", value)
+            continue
+        curve_nodes = [
+            _canonical_node(cmds, str(source).split(".", 1)[0])
+            if source
+            else None
+            for source in control_sources
+        ]
+        new_sources = [node in created if node else False for node in curve_nodes]
+        if not any(new_sources):
+            continue
+        if any(node and node not in created for node in curve_nodes):
+            # A legacy partial representation may already contain control-space
+            # curves. Do not reinterpret those persisted values as solver XYZ.
+            continue
+        times = sorted(
+            {
+                float(time)
+                for node in curve_nodes
+                if node
+                for time in (cmds.keyframe(node, query=True, timeChange=True) or [])
+            }
+        )
+        if not times:
+            times = [float(cmds.currentTime(query=True))]
+        raw_samples = [
+            tuple(
+                _animation_curve_value_at_time(cmds, node, time)
+                if node
+                else float(rows_by_attr[attr]["value"])
+                for attr, node in zip(attrs, curve_nodes)
+            )
+            for time in times
+        ]
+        for index, (attr, node) in enumerate(zip(attrs, curve_nodes)):
+            if node:
+                continue
+            node = str(cmds.createNode("animCurveTA"))
+            created_curve_nodes.append(node)
+            created.add(_canonical_node(cmds, node))
+            source = f"{node}.output"
+            control_plug = str(rows_by_attr[attr]["control"])
+            cmds.connectAttr(source, control_plug, force=False)
+            rows_by_attr[attr]["controlSource"] = source
+            rows_by_attr[attr]["controlSourceRef"] = _plug_reference(cmds, source)
+            control_sources[index] = source
+            curve_nodes[index] = _canonical_node(cmds, node)
+            _record_curve_representation(
+                curve_representations,
+                str(rows_by_attr[attr]["target"]),
+                rows_by_attr[attr].get("source"),
+                source,
+                cmds,
+            )
+        for time, raw_values in zip(times, raw_samples):
+            converted = _convert_rotation_values_between_bases(
+                cmds,
+                raw_values,
+                basis,
+                source_node=target_node,
+                destination_node=control_node,
+            )
+            for node, value in zip(curve_nodes, converted):
+                cmds.setKeyframe(node, time=(time, time), value=value)
+        _apply_quaternion_interpolation_to_plugs(cmds, curve_nodes)
+
+
+def _animation_curve_value_at_time(cmds, node: str, time: float) -> float:
+    """Evaluate one time-input animCurve in Maya UI units, bypassing time warps."""
+
+    selection = om.MSelectionList()
+    selection.add(node)
+    curve = oma.MFnAnimCurve(selection.getDependNode(0))
+    value = float(curve.evaluate(om.MTime(float(time), om.MTime.uiUnit())))
+    return math.degrees(value) if str(cmds.nodeType(node)) == "animCurveTA" else value
+
+
+def _convert_rotation_values_between_bases(
+    cmds,
+    values,
+    basis,
+    *,
+    source_node: str,
+    destination_node: str,
+) -> Tuple[float, float, float]:
+    """Convert one solver-local Euler tuple into the persisted control basis."""
+
+    try:
+        source_order = int(cmds.getAttr(f"{source_node}.rotateOrder"))
+    except Exception:
+        source_order = 0
+    try:
+        destination_order = int(cmds.getAttr(f"{destination_node}.rotateOrder"))
+    except Exception:
+        destination_order = 0
+    quaternion = _quaternion_from_euler_degrees(values, rotate_order=source_order)
+    converted = bone_to_control(quaternion, basis)
+    return _euler_degrees_from_quaternion(
+        converted,
+        rotate_order=destination_order,
+    )
 
 
 def _resolve_rotation_converters(cmds, metadata: Mapping[str, Any]) -> List[Dict[str, Any]]:

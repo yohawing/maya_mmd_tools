@@ -1246,10 +1246,66 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             type="string",
         )
 
+        targets = metadata["bindings"]["left_leg"]["authoredPlugs"]
+        cmds.setAttr(targets[2], -0.7)
+        for frame, values in (
+            (0.0, (14.0, -2.0)),
+            (10.0, (25.0, 3.0)),
+        ):
+            for target, value in zip(targets[:2], values):
+                cmds.setKeyframe(target, time=(frame, frame), value=value)
+        target_before = {
+            (frame, target): float(cmds.getAttr(target, time=frame))
+            for frame in (0.0, 10.0)
+            for target in targets
+        }
+        world_before = {
+            frame: tuple(
+                float(value)
+                for value in cmds.getAttr(
+                    f"{role.binding.joint}.worldMatrix[0]",
+                    time=frame,
+                )
+            )
+            for frame in (0.0, 10.0)
+        }
+
         edit = enter_mmd_control_rig_edit(root)
         control = rig.controls["left_leg"]
         targets = edit["bindings"]["left_leg"]["authoredPlugs"]
         self.assertEqual(len(targets), 3)
+        for frame in (0.0, 10.0):
+            for target in targets:
+                self.assertAlmostEqual(
+                    float(cmds.getAttr(target, time=frame)),
+                    target_before[(frame, target)],
+                    places=6,
+                )
+            world_after = tuple(
+                float(value)
+                for value in cmds.getAttr(
+                    f"{role.binding.joint}.worldMatrix[0]",
+                    time=frame,
+                )
+            )
+            self.assertLess(
+                max(
+                    abs(actual - expected)
+                    for actual, expected in zip(world_after, world_before[frame])
+                ),
+                1.0e-6,
+            )
+        control_curves = [
+            (cmds.listConnections(f"{control}.rotate{axis}", type="animCurve") or [None])[0]
+            for axis in "XYZ"
+        ]
+        self.assertTrue(all(control_curves))
+        self.assertTrue(
+            all(
+                cmds.rotationInterpolation(curve, query=True) == "quaternionSlerp"
+                for curve in control_curves
+            )
+        )
         bases = control_rig_edit_authoring_bases_for_joints([role.binding.joint])
         self.assertEqual(bases[role.binding.joint]["source"], "pmx_tail")
         target_node = targets[0].split(".", 1)[0]
