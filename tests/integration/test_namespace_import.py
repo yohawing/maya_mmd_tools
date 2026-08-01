@@ -96,6 +96,51 @@ class TestNamespaceImport(unittest.TestCase):
         # 連番が付与されていることを確認
         self.assertTrue(ns2.endswith("_2") or ns2.endswith("_3"))
 
+    def test_split_mesh_import_from_existing_namespace_does_not_nest_namespace(self):
+        """既存namespace内からの分割メッシュインポートでnamespaceを二重化しない。"""
+        if not os.path.exists(self.pmx_file):
+            self.skipTest(f"テストフィクスチャが見つかりません: {self.pmx_file}")
+
+        existing_namespace = "MMT_TestModel"
+        cmds.namespace(add=existing_namespace)
+        cmds.namespace(set=f":{existing_namespace}")
+
+        options = {
+            "use_namespace": True,
+            "separate_meshes_by_material": True,
+            "create_mmd_shaders": False,
+            "import_physics": False,
+            "import_morphs": False,
+            "setup_rig": False,
+            "scale": 1.0,
+        }
+
+        try:
+            root_node = import_mmd_file(self.pmx_file, options=options)
+            self.assertIsNotNone(root_node)
+            self.assertEqual(
+                NamespaceUtils.get_namespace_from_node(root_node),
+                f"{existing_namespace}_2",
+            )
+
+            current_namespace = cmds.namespaceInfo(currentNamespace=True)
+            self.assertEqual(current_namespace.lstrip(":"), existing_namespace)
+
+            mesh_shapes = cmds.listRelatives(
+                root_node,
+                allDescendents=True,
+                type="mesh",
+                fullPath=True,
+            ) or []
+            self.assertTrue(mesh_shapes)
+            for shape in mesh_shapes:
+                leaf_name = shape.rsplit("|", 1)[-1]
+                self.assertEqual(leaf_name.count(":"), 1)
+                self.assertEqual(len(cmds.ls(leaf_name, long=True) or []), 1)
+                self.assertTrue(cmds.attributeQuery("doubleSided", node=shape, exists=True))
+        finally:
+            cmds.namespace(set=":")
+
     def test_namespace_disabled(self):
         """namespace無効時の動作確認"""
         if not os.path.exists(self.pmx_file):

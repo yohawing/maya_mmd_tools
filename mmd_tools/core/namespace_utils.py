@@ -72,15 +72,19 @@ class NamespaceUtils:
         Returns:
             重複しないnamespace名
         """
-        if not cmds.namespace(exists=base_name):
-            return base_name
+        # Maya resolves namespace names relative to the current namespace.
+        # Import callers may already be inside a model namespace, so all
+        # scene-global collision checks must be performed from the root.
+        with NamespaceUtils.root_namespace_context():
+            if not cmds.namespace(exists=base_name):
+                return base_name
 
-        # 連番を付与
-        for counter in range(2, _MAX_NAMESPACE_SUFFIX_ATTEMPTS + 1):
-            candidate = f"{base_name}_{counter}"
-            if not cmds.namespace(exists=candidate):
-                logger.debug(f"Unique namespace found: {candidate}")
-                return candidate
+            # 連番を付与
+            for counter in range(2, _MAX_NAMESPACE_SUFFIX_ATTEMPTS + 1):
+                candidate = f"{base_name}_{counter}"
+                if not cmds.namespace(exists=candidate):
+                    logger.debug(f"Unique namespace found: {candidate}")
+                    return candidate
 
         raise RuntimeError(
             f"Could not find unique namespace for {base_name!r} "
@@ -115,12 +119,15 @@ class NamespaceUtils:
     @contextmanager
     def root_namespace_context():
         """Temporarily create scene-global nodes in Maya's root namespace."""
-        current_ns = cmds.namespaceInfo(currentNamespace=True)
+        current_ns = cmds.namespaceInfo(currentNamespace=True) or ":"
+        restore_ns = str(current_ns)
+        if not restore_ns.startswith(":"):
+            restore_ns = f":{restore_ns}"
         try:
             cmds.namespace(set=":")
             yield
         finally:
-            cmds.namespace(set=current_ns)
+            cmds.namespace(set=restore_ns)
 
     @staticmethod
     @contextmanager
@@ -144,10 +151,9 @@ class NamespaceUtils:
             yield None
             return
 
-        # 現在のnamespaceを保存
-        current_ns = cmds.namespaceInfo(currentNamespace=True)
-
-        try:
+        # Namespace existence and selection are scene-global operations.  The
+        # root context also restores the caller's exact namespace afterwards.
+        with NamespaceUtils.root_namespace_context():
             # namespaceが存在しない場合は作成
             if not cmds.namespace(exists=namespace_name):
                 cmds.namespace(add=namespace_name)
@@ -157,11 +163,6 @@ class NamespaceUtils:
             cmds.namespace(set=f":{namespace_name}")
             logger.debug(f"Switched to namespace: {namespace_name}")
             yield namespace_name
-
-        finally:
-            # 元のnamespaceに戻す
-            cmds.namespace(set=current_ns)
-            logger.debug(f"Restored namespace: {current_ns}")
 
     @staticmethod
     def cleanup_namespace(namespace_name: str, force: bool = True):
