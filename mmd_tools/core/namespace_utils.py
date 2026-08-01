@@ -40,11 +40,6 @@ class NamespaceUtils:
         if not sanitized:
             sanitized = "MMDModel"
 
-        # Maya namespace制約に合わせて調整
-        # 数字で始まる場合は接頭辞を追加
-        if sanitized and sanitized[0].isdigit():
-            sanitized = f"Model_{sanitized}"
-
         # 特殊文字を除去（アンダースコアは許可）
         sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", sanitized)
 
@@ -57,6 +52,12 @@ class NamespaceUtils:
         # 空になった場合のフォールバック
         if not sanitized:
             sanitized = "MMDModel"
+
+        # Maya namespace cannot start with a digit.  This check must happen
+        # after trimming because the Unicode converter represents a numeric
+        # name such as ``1`` as ``_1`` before it reaches this helper.
+        if sanitized[0].isdigit():
+            sanitized = f"Model_{sanitized}"
 
         logger.debug(f"Generated namespace: {model_name} -> {sanitized}")
         return sanitized

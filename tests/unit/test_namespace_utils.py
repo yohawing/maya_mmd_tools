@@ -35,6 +35,11 @@ class TestNamespaceUtils(unittest.TestCase):
             result = NamespaceUtils.generate_namespace("01_model")
             self.assertEqual(result, "Model_01_model")
 
+    def test_generate_namespace_numeric_name_after_unicode_conversion(self):
+        """Unicode変換で補助underscoreが付いた数字名も安全にする。"""
+        result = NamespaceUtils.generate_namespace("1")
+        self.assertEqual(result, "Model_1")
+
     def test_generate_namespace_special_chars(self):
         """特殊文字を含む名前の処理テスト"""
         with patch("mmd_tools.core.namespace_utils.sanitize_text") as mock_sanitize:
