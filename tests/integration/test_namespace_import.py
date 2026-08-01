@@ -5,6 +5,7 @@ Namespace機能の統合テスト
 """
 
 import os
+import re
 import unittest
 
 from maya import cmds
@@ -172,6 +173,20 @@ class TestNamespaceImport(unittest.TestCase):
         self.assertTrue(namespace.replace("_", "").isalnum())
         self.assertNotIn(" ", namespace)
         self.assertNotIn("@", namespace)
+
+    def test_generated_namespace_is_maya_safe_for_edge_case_model_names(self):
+        """記号・数字・Unicodeを含むモデル名からMaya namespaceを作成できる。"""
+        sources = ("1", "123_model", "!model", "!1", "@@@", "+1", "-Model", "___", "日本語", ":", "a:b")
+        identifier = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+        for source in sources:
+            with self.subTest(source=source):
+                generated = NamespaceUtils.generate_namespace(source)
+                self.assertRegex(generated, identifier)
+                namespace = NamespaceUtils.ensure_unique_namespace(generated)
+                with NamespaceUtils.namespace_context(namespace):
+                    node = cmds.group(empty=True, name="edge_case_root")
+                self.assertTrue(cmds.objExists(node))
 
     def test_vmd_import_with_namespace(self):
         """namespace付きモデルへのVMDインポート"""
