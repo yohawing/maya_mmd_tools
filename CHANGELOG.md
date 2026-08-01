@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-08-01
+
+### Fixed
+- Fixed PMX/PMD imports under current and numeric Maya namespaces, including generated namespace regression coverage.
+- Fixed split-mesh shape resolution by using the full DAG path when applying mesh attributes.
+- Welded UV-seam duplicate geometric vertices through the native C++ mesh path while preserving face-corner UVs, authored normals, and source metadata for skin/morph processing.
+
 ## [0.6.1] - 2026-07-30
 
 ### Added
