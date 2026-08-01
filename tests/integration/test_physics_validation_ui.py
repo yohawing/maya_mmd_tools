@@ -10,7 +10,6 @@ from maya import cmds
 import maya.api.OpenMaya as om
 
 from mmd_tools.core.collider_authoring import (
-    connect_collider_authoring_follow,
     connect_collider_authoring_transform,
 )
 from mmd_tools.core.physics_form_validation import PhysicsFormValidationError
@@ -425,7 +424,22 @@ class TestPhysicsPresenterNamespace(MayaTestBase):
         cmds.xform(transform, objectSpace=True, matrix=list(legacy_rest_matrix))
         connect_collider_authoring_transform(transform, shape)
         cmds.connectAttr(f"{bone}.message", f"{shape}.relatedBone")
-        connect_collider_authoring_follow(transform, shape)
+        # Recreate the graph written by pre-OPM scenes so this test exercises
+        # the migration path instead of the current importer path.
+        legacy_constraint = cmds.parentConstraint(
+            bone, transform, maintainOffset=True
+        )[0]
+        cmds.addAttr(legacy_constraint, longName="mmdColliderAuthoringFollow", attributeType="bool")
+        cmds.setAttr(f"{legacy_constraint}.mmdColliderAuthoringFollow", True)
+        if not cmds.attributeQuery(
+            "mmdColliderAuthoringPoseVersion", node=shape, exists=True
+        ):
+            cmds.addAttr(
+                shape,
+                longName="mmdColliderAuthoringPoseVersion",
+                attributeType="long",
+            )
+        cmds.setAttr(f"{shape}.mmdColliderAuthoringPoseVersion", 3)
         cmds.move(2.0, -1.0, 0.5, root, relative=True)
         cmds.rotate(4.0, -7.0, 11.0, bone, relative=True, objectSpace=True)
 

@@ -3,7 +3,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from maya import cmds
 
@@ -11,6 +11,7 @@ from mmd_tools.converters.physics_scene_builder import (
     _find_drivers_for_solver,
     _find_solver_for_model,
     _find_target_joint_for_driver,
+    _prune_solver_kinematic_cycles,
     build_physics_live_graph,
     recover_physics_driver_connections,
 )
@@ -121,6 +122,35 @@ class TestPhysicsGraphAuthority(MayaTestBase):
 
         self.assertEqual(len(graph["drivers"]), 1)
         logger.warning.assert_not_called()
+
+    def test_kinematic_cycle_filter_disconnects_only_reported_inputs(self):
+        cycle_plug = "cycleModel_solver.inKinematicWorldMatrix[7]"
+        cycle_check = Mock(
+            side_effect=[
+                [cycle_plug, "cycleModel_solver.outSolved"],
+                [],
+                [],
+            ]
+        )
+        with patch.object(cmds, "cycleCheck", cycle_check), patch.object(
+            cmds, "ls", return_value=["cycleModel_solver"]
+        ), patch.object(
+            cmds,
+            "listConnections",
+            return_value=["cycleModel_bone.worldMatrix[0]"],
+        ), patch.object(cmds, "disconnectAttr") as disconnect:
+            summary = _prune_solver_kinematic_cycles(
+                "cycleModel_solver",
+                [cycle_plug, "cycleModel_solver.inKinematicWorldMatrix[9]"],
+            )
+
+        self.assertEqual(summary["candidate_count"], 2)
+        self.assertEqual(summary["pruned_count"], 1)
+        self.assertEqual(summary["pruned_bone_indices"], [7])
+        self.assertEqual(summary["remaining_count"], 0)
+        disconnect.assert_called_once_with(
+            "cycleModel_bone.worldMatrix[0]", cycle_plug
+        )
 
     def test_two_namespaced_models_share_one_world(self):
         _root_a, _joints_a, graph_a = self._build_graph("modelA")

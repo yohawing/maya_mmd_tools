@@ -14,7 +14,13 @@ from mmd_tools.core.maya_angle import maya_angle_to_radians, radians_to_maya_ang
 
 _FOLLOW_TAG = "mmdColliderAuthoringFollow"
 _POSE_VERSION_ATTR = "mmdColliderAuthoringPoseVersion"
-_CURRENT_POSE_VERSION = 3
+_CURRENT_POSE_VERSION = 4
+_IDENTITY_MATRIX = [
+    1.0, 0.0, 0.0, 0.0,
+    0.0, 1.0, 0.0, 0.0,
+    0.0, 0.0, 1.0, 0.0,
+    0.0, 0.0, 0.0, 1.0,
+]
 
 
 def _is_referenced(node: str) -> bool:
@@ -74,6 +80,41 @@ def _authoring_follow_constraints(transform: str) -> list[str]:
     ]
 
 
+def _authoring_follow_matrix_nodes(transform: str) -> list[str]:
+    """Return tagged matrix nodes driving the collider's offset parent matrix."""
+    nodes = cmds.listConnections(
+        f"{transform}.offsetParentMatrix",
+        source=True,
+        destination=False,
+        type="multMatrix",
+    ) or []
+    return [
+        node
+        for node in set(nodes)
+        if cmds.attributeQuery(_FOLLOW_TAG, node=node, exists=True)
+        and cmds.getAttr(f"{node}.{_FOLLOW_TAG}")
+    ]
+
+
+def _remove_authoring_follow_nodes(transform: str) -> None:
+    """Remove both the current OPM follow graph and the legacy constraint."""
+    matrix_nodes = _authoring_follow_matrix_nodes(transform)
+    if matrix_nodes:
+        destination = f"{transform}.offsetParentMatrix"
+        for node in matrix_nodes:
+            source = f"{node}.matrixSum"
+            if cmds.isConnected(source, destination):
+                cmds.disconnectAttr(source, destination)
+        # Do not leave the previous evaluated OPM as a hidden transform offset
+        # after deleting the graph.  The authored TRS values remain intact.
+        cmds.setAttr(destination, _IDENTITY_MATRIX, type="matrix")
+        cmds.delete(matrix_nodes)
+
+    constraints = _authoring_follow_constraints(transform)
+    if constraints:
+        cmds.delete(constraints)
+
+
 def _bind_pose_world_matrix(node: str) -> om.MMatrix | None:
     """Read *node*'s saved bind world matrix without changing Maya time."""
     bind_poses = set(cmds.dagPose(node, query=True, bindPose=True) or [])
@@ -112,19 +153,42 @@ def connect_collider_authoring_transform(transform: str, shape: str) -> None:
         cmds.connectAttr(matrix_source, matrix_destination, force=True)
 
 
-def connect_collider_authoring_follow(transform: str, shape: str) -> str | None:
-    """Make a bound collider follow its related bone while preserving its rest offset."""
+def connect_collider_authoring_follow(
+    transform: str,
+    shape: str,
+    *,
+    follow_offset: om.MMatrix | None = None,
+) -> str | None:
+    """Make a bound collider follow its related bone while preserving its rest offset.
+
+    Maya's ``offsetParentMatrix`` keeps this authoring-only relationship in a
+    small matrix graph instead of creating one evaluating ``parentConstraint``
+    per rigid body.  ``follow_offset`` is used only by legacy-scene migration
+    to preserve the already-authored relationship exactly.
+    """
     connect_collider_authoring_transform(transform, shape)
-    existing = _authoring_follow_constraints(transform)
+    existing = _authoring_follow_matrix_nodes(transform)
     if existing:
         return existing[0]
+    # Keep old scenes stable until the explicit migration path converts their
+    # parentConstraint.  Creating both relationships would double-transform a
+    # collider.
+    existing_constraints = _authoring_follow_constraints(transform)
+    if existing_constraints:
+        return existing_constraints[0]
 
     bones = cmds.listConnections(f"{shape}.relatedBone", source=True, destination=False) or []
     if not bones or not cmds.objExists(bones[0]):
         return None
 
-    bone_bind_world = _bind_pose_world_matrix(bones[0])
-    if bone_bind_world is not None:
+    parents = cmds.listRelatives(transform, parent=True, fullPath=True) or []
+    parent_world = (
+        om.MMatrix(cmds.xform(parents[0], query=True, worldSpace=True, matrix=True))
+        if parents
+        else om.MMatrix()
+    )
+    if follow_offset is None:
+        bone_bind_world = _bind_pose_world_matrix(bones[0])
         position = cmds.getAttr(f"{shape}.position")[0]
         rotation_radians = maya_angle_to_radians(cmds.getAttr(f"{shape}.rotation")[0])
         display_scale = float(cmds.getAttr(f"{transform}.scaleX"))
@@ -134,26 +198,81 @@ def connect_collider_authoring_follow(transform: str, shape: str) -> str | None:
         # Collider display scale is shape geometry, not part of the rigid
         # transform offset from its related bone.
         body_bind_local.setScale((1.0, 1.0, 1.0), om.MSpace.kTransform)
-        parents = cmds.listRelatives(transform, parent=True, fullPath=True) or []
-        parent_world = (
-            om.MMatrix(cmds.xform(parents[0], query=True, worldSpace=True, matrix=True))
-            if parents
-            else om.MMatrix()
-        )
         body_bind_world = body_bind_local.asMatrix() * parent_world
-        bone_world = om.MMatrix(
-            cmds.xform(bones[0], query=True, worldSpace=True, matrix=True)
-        )
-        body_from_bone = body_bind_world * bone_bind_world.inverse()
-        cmds.xform(transform, worldSpace=True, matrix=list(body_from_bone * bone_world))
-        cmds.setAttr(
-            f"{transform}.scale",
-            display_scale,
-            display_scale,
-            display_scale,
-            type="double3",
-        )
+        if bone_bind_world is None:
+            bone_bind_world = om.MMatrix(
+                cmds.xform(bones[0], query=True, worldSpace=True, matrix=True)
+            )
+        follow_offset = body_bind_world * bone_bind_world.inverse()
 
+    if cmds.attributeQuery("offsetParentMatrix", node=transform, exists=True):
+        local_matrix = om.MMatrix(
+            cmds.xform(transform, query=True, objectSpace=True, matrix=True)
+        )
+        opm_constant = local_matrix.inverse() * follow_offset
+        short_name = transform.rsplit("|", 1)[-1].replace(":", "_")
+        matrix_node = None
+        try:
+            matrix_node = cmds.createNode(
+                "multMatrix", name=f"{short_name}_authoringFollowMatrix"
+            )
+            cmds.setAttr(
+                f"{matrix_node}.matrixIn[0]", list(opm_constant), type="matrix"
+            )
+            cmds.connectAttr(
+                f"{bones[0]}.worldMatrix[0]",
+                f"{matrix_node}.matrixIn[1]",
+                force=True,
+            )
+            if parents:
+                cmds.connectAttr(
+                    f"{parents[0]}.worldInverseMatrix[0]",
+                    f"{matrix_node}.matrixIn[2]",
+                    force=True,
+                )
+            else:
+                cmds.setAttr(
+                    f"{matrix_node}.matrixIn[2]", _IDENTITY_MATRIX, type="matrix"
+                )
+            cmds.addAttr(matrix_node, longName=_FOLLOW_TAG, attributeType="bool")
+            cmds.setAttr(f"{matrix_node}.{_FOLLOW_TAG}", True)
+            cmds.addAttr(
+                matrix_node,
+                longName=_POSE_VERSION_ATTR,
+                attributeType="long",
+                defaultValue=_CURRENT_POSE_VERSION,
+            )
+            cmds.setAttr(
+                f"{matrix_node}.{_POSE_VERSION_ATTR}", _CURRENT_POSE_VERSION
+            )
+            cmds.connectAttr(
+                f"{matrix_node}.matrixSum",
+                f"{transform}.offsetParentMatrix",
+                force=True,
+            )
+            return matrix_node
+        except Exception:
+            if matrix_node and cmds.objExists(matrix_node):
+                destination = f"{transform}.offsetParentMatrix"
+                source = f"{matrix_node}.matrixSum"
+                if cmds.isConnected(source, destination):
+                    cmds.disconnectAttr(source, destination)
+                cmds.setAttr(destination, _IDENTITY_MATRIX, type="matrix")
+                cmds.delete(matrix_node)
+
+    # Maya versions without offsetParentMatrix retain the legacy behavior.
+    bone_world = om.MMatrix(
+        cmds.xform(bones[0], query=True, worldSpace=True, matrix=True)
+    )
+    cmds.xform(transform, worldSpace=True, matrix=list(follow_offset * bone_world))
+    display_scale = float(cmds.getAttr(f"{transform}.scaleX"))
+    cmds.setAttr(
+        f"{transform}.scale",
+        display_scale,
+        display_scale,
+        display_scale,
+        type="double3",
+    )
     short_name = transform.rsplit("|", 1)[-1].replace(":", "_")
     constraint = cmds.parentConstraint(
         bones[0],
@@ -181,9 +300,7 @@ def set_collider_authoring_pose(
     display_scale: float = 1.0,
 ) -> None:
     """Persist a raw PMX pose and place the display transform in Maya space."""
-    existing_constraints = _authoring_follow_constraints(transform)
-    if existing_constraints:
-        cmds.delete(existing_constraints)
+    _remove_authoring_follow_nodes(transform)
     cmds.setAttr(f"{shape}.position", *position, type="double3")
     to_ui_angle = radians_to_maya_angle
     cmds.setAttr(
@@ -224,15 +341,18 @@ def migrate_legacy_collider_authoring_pose(
     """Upgrade a stored legacy display pose while preserving its live bone offset."""
     if _is_referenced(transform) or _is_referenced(shape):
         return False
-    if (
-        cmds.attributeQuery(_POSE_VERSION_ATTR, node=shape, exists=True)
-        and cmds.getAttr(f"{shape}.{_POSE_VERSION_ATTR}") >= _CURRENT_POSE_VERSION
-    ):
+    pose_version = (
+        int(cmds.getAttr(f"{shape}.{_POSE_VERSION_ATTR}") or 0)
+        if cmds.attributeQuery(_POSE_VERSION_ATTR, node=shape, exists=True)
+        else 0
+    )
+    constraints = _authoring_follow_constraints(transform)
+    matrix_nodes = _authoring_follow_matrix_nodes(transform)
+    if pose_version >= _CURRENT_POSE_VERSION and not constraints:
         return False
 
     position = cmds.getAttr(f"{shape}.position")[0]
     rotation_radians = maya_angle_to_radians(cmds.getAttr(f"{shape}.rotation")[0])
-    constraints = _authoring_follow_constraints(transform)
     bones = cmds.listConnections(f"{shape}.relatedBone", source=True, destination=False) or []
     if constraints and bones and cmds.objExists(bones[0]):
         collider_world = om.MMatrix(
@@ -245,11 +365,15 @@ def migrate_legacy_collider_authoring_pose(
         canonical_offset = canonical_rest * legacy_rest.inverse() * old_offset
         canonical_world = canonical_offset * bone_world
 
-        cmds.delete(constraints)
+        _remove_authoring_follow_nodes(transform)
         cmds.xform(transform, worldSpace=True, matrix=list(canonical_world))
         _mark_pose_version(shape)
         connect_collider_authoring_transform(transform, shape)
-        connect_collider_authoring_follow(transform, shape)
+        connect_collider_authoring_follow(
+            transform, shape, follow_offset=canonical_offset
+        )
+    elif matrix_nodes:
+        _mark_pose_version(shape)
     else:
         set_collider_authoring_pose(
             transform,
