@@ -22,6 +22,7 @@
 #include "mmdRuntimeBridge.h"
 #include "mmdRuntimeNode.h"
 #include "mmdFastLoad.h"
+#include "MmdWeldUvSeamVertices.h"
 #include "MmdAppendNode.h"
 #include "MmdCcdIkNode.h"
 #include "MmdPhysicsBoneDriverNode.h"
@@ -77,6 +78,12 @@ MStatus initializePlugin(MObject obj)
     status = plugin.registerCommand("mmdFastLoad",
                                     MmdFastLoad::creator,
                                     MmdFastLoad::newSyntax);
+    CHECK_MSTATUS_AND_RETURN_IT(status);
+
+    // Native topology normalization used by the Python PMX mesh importer.
+    status = plugin.registerCommand("mmdWeldUvSeamVertices",
+                                    MmdWeldUvSeamVertices::creator,
+                                    MmdWeldUvSeamVertices::newSyntax);
     CHECK_MSTATUS_AND_RETURN_IT(status);
 
     // mmdAppend 登録 (Python 版と統一した typeName)
@@ -139,6 +146,9 @@ MStatus uninitializePlugin(MObject obj)
     CHECK_MSTATUS_AND_RETURN_IT(status);
 
     status = plugin.deregisterCommand("mmdFastLoad");
+    CHECK_MSTATUS_AND_RETURN_IT(status);
+
+    status = plugin.deregisterCommand("mmdWeldUvSeamVertices");
     CHECK_MSTATUS_AND_RETURN_IT(status);
 
     // C++ が登録したノードのみ deregister

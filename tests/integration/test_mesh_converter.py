@@ -2,6 +2,7 @@ import re
 from types import SimpleNamespace
 
 from maya import cmds
+from maya.api import OpenMaya as om
 
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.settings import settings
@@ -110,6 +111,35 @@ class TestMeshConverter(MayaTestBase):
                 uv_sets = cmds.polyUVSet(child, query=True, allUVSets=True)
                 self.assertIsNotNone(uv_sets, f"{child} にUVセットがありません")
                 self.assertGreaterEqual(len(uv_sets), 1, f"{child} には少なくとも1つのUVセットが必要です")
+
+    def test_uv_seam_duplicates_are_welded_before_mesh_creation(self):
+        """Merge safe UV-split source vertices while retaining corner UV IDs."""
+        pmx_file_path = self.fixture_provider.get_pmx_file("mmt_test_model")
+        pmx_data = parse_pmx_file(pmx_file_path)
+        root_group = cmds.group(empty=True, name="test_uv_weld_root")
+
+        converter = MeshConverter(pmx_file_path)
+        _mesh_group, mesh_name = converter.convert_pmx_mesh(pmx_data, root_group)
+        self.assertLess(
+            int(cmds.polyEvaluate(mesh_name, vertex=True)),
+            len(pmx_data.vertices),
+            "UV-split duplicate source vertices were not welded",
+        )
+        self.assertEqual(
+            int(cmds.polyEvaluate(mesh_name, face=True)),
+            len(pmx_data.faces),
+            "UV weld changed the imported polygon count",
+        )
+        self.assertGreater(converter.profile["uv_welded_vertex_count"], 0)
+
+        selection = om.MSelectionList()
+        selection.add(mesh_name)
+        mesh_path = selection.getDagPath(0)
+        mesh_path.extendToShape()
+        mesh_fn = om.MFnMesh(mesh_path)
+        uv_counts, uv_ids = mesh_fn.getAssignedUVs()
+        self.assertEqual(len(uv_counts), len(pmx_data.faces))
+        self.assertEqual(len(uv_ids), len(pmx_data.faces) * 3)
 
     def test_material_custom_attributes_on_pmx(self):
         """
