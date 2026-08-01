@@ -419,8 +419,19 @@ def _set_shader_attribute_checked(shader, attr_name, attr_value, attr_type) -> b
 
 
 def _set_mesh_double_sided(mesh_transform_or_shape, enabled: bool) -> None:
-    """Set Maya mesh shape doubleSided from an MMD material draw flag."""
-    mesh_shapes = cmds.listRelatives(mesh_transform_or_shape, shapes=True, type="mesh") or []
+    """Set Maya mesh shape doubleSided from an MMD material draw flag.
+
+    Use full DAG paths because material-split imports can briefly contain an
+    unparented and a parented shape with the same short name.  OpenMaya's
+    selection lookup must not choose between those paths while the mesh is
+    being attached to the model hierarchy.
+    """
+    mesh_shapes = cmds.listRelatives(
+        mesh_transform_or_shape,
+        shapes=True,
+        type="mesh",
+        fullPath=True,
+    ) or []
     for shape in mesh_shapes:
         maya_attribute_utils.set_attribute(shape, "doubleSided", 1 if enabled else 0, "bool")
 

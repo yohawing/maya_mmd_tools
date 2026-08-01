@@ -58,7 +58,9 @@ class TestSetMeshDoubleSided(unittest.TestCase):
 
             _set_mesh_double_sided("meshTransform", True)
 
-        mock_cmds.listRelatives.assert_called_once_with("meshTransform", shapes=True, type="mesh")
+        mock_cmds.listRelatives.assert_called_once_with(
+            "meshTransform", shapes=True, type="mesh", fullPath=True
+        )
         self.assertEqual(
             mock_set_attribute.call_args_list,
             [
@@ -75,7 +77,9 @@ class TestSetMeshDoubleSided(unittest.TestCase):
 
             _set_mesh_double_sided("meshTransform", False)
 
-        mock_cmds.listRelatives.assert_called_once_with("meshTransform", shapes=True, type="mesh")
+        mock_cmds.listRelatives.assert_called_once_with(
+            "meshTransform", shapes=True, type="mesh", fullPath=True
+        )
         mock_set_attribute.assert_called_once_with("meshShape1", "doubleSided", 0, "bool")
 
 
