@@ -64,6 +64,10 @@ from noxlib.release import (  # noqa: E402
     _run_release_gate_command as _common_run_release_gate_command,
     _write_release_gate_reports as _common_write_release_gate_reports,
 )
+from noxlib.release_matrix import (  # noqa: E402
+    tier0_commands as _release_gate_tier0_commands,
+    tier1_commands as _release_gate_tier1_commands,
+)
 from tests.common.maya_location import mayapy as _mayapy  # noqa: E402
 from tests.common.maya_location import path_for_maya_process as _maya_process_path  # noqa: E402
 from tests.common.output_hygiene import (  # noqa: E402
@@ -2719,38 +2723,16 @@ def release_gate(session: nox.Session) -> None:
                 f"{_release_gate_failure_label(results[-1])}"
             )
 
-    tier0_commands = [
-        (
-            "tier0:ruff",
-            ["uvx", "--from", "ruff==0.16.0", "ruff", "check", "--no-fix", "."],
-        ),
-        ("tier0:diff-check", ["git", "diff", "--check"]),
-    ]
+    tier0_commands = _release_gate_tier0_commands()
     for name, command in tier0_commands:
         _run_release_gate_command(name, command, results, verbose=verbose)
     _run_release_gate_callable("tier0:version-markers", _release_gate_version_check, results)
 
-    tier1_commands = [
-        ("tier1:ci_unit", ["uvx", "nox", "-s", "ci_unit"]),
-        ("tier1:golden_oracle", ["uvx", "nox", "-s", "golden_oracle"]),
-        ("tier1:release-package", ["uvx", "nox", "-s", "release_package"]),
-    ]
-    if not quick:
-        ffi_build_command = ["uvx", "nox", "-s", "ffi_build"]
-        native_smoke_command = ["uvx", "nox", "-s", "native_smoke"]
-        native_export_smoke_command = ["uvx", "nox", "-s", "native_export_smoke", "--", "--strict"]
-        if ffi_cargo_target_dir:
-            ffi_build_command.extend(["--", "--release", "--cargo-target-dir", ffi_cargo_target_dir])
-        if ffi_path:
-            native_smoke_command.extend(["--", "--ffi-path", ffi_path])
-            native_export_smoke_command.extend(["--ffi-path", ffi_path])
-        tier1_commands.extend(
-            [
-                ("tier1:ffi_build", ffi_build_command),
-                ("tier1:native_smoke", native_smoke_command),
-                ("tier1:native_export_smoke", native_export_smoke_command),
-            ]
-        )
+    tier1_commands = _release_gate_tier1_commands(
+        quick=quick,
+        ffi_cargo_target_dir=ffi_cargo_target_dir,
+        ffi_path=ffi_path,
+    )
     for name, command in tier1_commands:
         _run_release_gate_command(name, command, results, verbose=verbose)
 
