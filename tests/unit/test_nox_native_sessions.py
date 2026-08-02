@@ -17,6 +17,11 @@ from noxlib.native_sessions import (
     run_reduction_abi_probe,
 )
 from noxlib.maya_sessions import run_cpp_plugin_smoke
+from noxlib.maya_sessions import (
+    run_model_readme_dialog_e2e,
+    run_viewport_capture,
+    run_yw_test_model_fixture_gate,
+)
 
 
 class _FakeSession:
@@ -129,6 +134,77 @@ class NativeSessionsTest(unittest.TestCase):
         self.assertEqual(session.runs[1][0][1], "tests/cpp/b.py")
         self.assertEqual(env["MMD_TOOLS_CPP_CONFIG"], "Debug")
         self.assertEqual(Path(env["MMD_TOOLS_CPP_PLUGIN"]), plugin)
+
+    def test_viewport_capture_forwards_dimensions_without_plugin_environment(self):
+        session = _FakeSession(["--maya", "2024", "--out", "build/capture.png", "--width", "320"])
+        mayapy = mock.Mock()
+        mayapy.exists.return_value = True
+        env = {"MAYA_VERSION": "2024"}
+        run_viewport_capture(
+            session,
+            posargs=session.posargs,
+            option=_option,
+            default_maya_version="2026",
+            root=Path("F:/repo"),
+            mayapy=lambda _version: mayapy,
+            mayapy_env=lambda _mayapy, **_values: env,
+            mayapy_arg_path=lambda _mayapy, path: str(path),
+            mayapy_script=lambda _mayapy, script: script,
+        )
+        args, kwargs = session.runs[0]
+        self.assertEqual(args[1], "tests/viewport/smoke_viewport_capture.py")
+        self.assertEqual(args[-6:], ("--frame", "1", "--width", "320", "--height", "480"))
+        self.assertNotIn("MMD_TOOLS_CPP_PLUGIN", kwargs["env"])
+
+    def test_model_readme_gate_validates_each_child_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            out_dir = root / "reports"
+            out_dir.mkdir()
+            for version in ("2024", "2026"):
+                (out_dir / f"maya-{version}.json").write_text('{"status": "pass"}\n', encoding="utf-8")
+            session = _FakeSession(["--out-dir", "reports"])
+            run_model_readme_dialog_e2e(
+                session,
+                posargs=session.posargs,
+                options=lambda _args, _name: ["2024", "2026"],
+                option=_option,
+                root=root,
+                require_build_path=lambda _session, value, _name: root / value,
+                python_executable="python.exe",
+            )
+        self.assertEqual(len(session.runs), 2)
+        self.assertEqual(session.runs[0][0][-1], "7731")
+        self.assertEqual(session.runs[1][0][-1], "7732")
+
+    def test_yw_fixture_gate_preserves_manifest_and_report_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "fixture.json"
+            manifest.write_text("{}\n", encoding="utf-8")
+            out_dir = root / "out"
+            out_dir.mkdir()
+            (out_dir / "maya-2024.json").write_text("{}\n", encoding="utf-8")
+            session = _FakeSession(["--maya", "2024", "--manifest", str(manifest), "--out-dir", "out"])
+            mayapy = mock.Mock()
+            mayapy.exists.return_value = True
+            run_yw_test_model_fixture_gate(
+                session,
+                posargs=session.posargs,
+                options=lambda _args, _name: ["2024"],
+                option=_option,
+                default_maya_versions=("2024", "2026"),
+                root=root,
+                require_build_path=lambda _session, value, _name: root / value,
+                mayapy=lambda _version: mayapy,
+                mayapy_env=lambda _mayapy, **_values: {},
+                mayapy_arg_path=lambda _mayapy, path: str(path),
+                mayapy_script=lambda _mayapy, script: script,
+            )
+        args, _kwargs = session.runs[0]
+        self.assertEqual(args[1], "tests/viewport/yw_test_model_fixture_gate.py")
+        self.assertIn(str(manifest), args)
+        self.assertIn(str(out_dir / "maya-2024.json"), args)
 
 
 if __name__ == "__main__":

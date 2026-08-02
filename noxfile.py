@@ -90,7 +90,12 @@ from noxlib.native_sessions import (  # noqa: E402
     run_native_smoke as _run_native_smoke,
     run_reduction_abi_probe as _run_reduction_abi_probe,
 )
-from noxlib.maya_sessions import run_cpp_plugin_smoke as _run_cpp_plugin_smoke  # noqa: E402
+from noxlib.maya_sessions import (  # noqa: E402
+    run_cpp_plugin_smoke as _run_cpp_plugin_smoke,
+    run_model_readme_dialog_e2e as _run_model_readme_dialog_e2e,
+    run_viewport_capture as _run_viewport_capture,
+    run_yw_test_model_fixture_gate as _run_yw_test_model_fixture_gate,
+)
 from tests.common.maya_location import mayapy as _mayapy  # noqa: E402
 from tests.common.maya_location import path_for_maya_process as _maya_process_path  # noqa: E402
 from tests.common.output_hygiene import (  # noqa: E402
@@ -1212,42 +1217,19 @@ def yw_test_model_fixture_gate(session: nox.Session) -> None:
         uvx nox -s yw_test_model_fixture_gate -- --maya 2024
         uvx nox -s yw_test_model_fixture_gate -- --out-dir build/yw-test-model-fixture
     """
-    args = list(session.posargs)
-    requested_versions = _options(args, "--maya")
-    versions = requested_versions or ["2024", "2026"]
-    unsupported = [version for version in versions if version not in {"2024", "2026"}]
-    if unsupported:
-        session.error("--maya must be 2024 or 2026 for the YW test-model gate")
-    manifest = _option(args, "--manifest", "tests/data/yw_test_model.fixture.json")
-    manifest_path = Path(manifest)
-    if not manifest_path.is_absolute():
-        manifest_path = ROOT / manifest_path
-    manifest_path = manifest_path.resolve()
-    if not manifest_path.is_file():
-        session.error(f"Fixture manifest not found: {manifest_path}")
-    out_dir = _require_build_path(
+    _run_yw_test_model_fixture_gate(
         session,
-        _option(args, "--out-dir", "build/yw-test-model-fixture"),
-        "--out-dir",
+        posargs=session.posargs,
+        options=_options,
+        option=_option,
+        default_maya_versions=("2024", "2026"),
+        root=ROOT,
+        require_build_path=_require_build_path,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_arg_path=_mayapy_arg_path,
+        mayapy_script=_mayapy_script,
     )
-    for version in versions:
-        mayapy = _mayapy(version)
-        if not mayapy.exists():
-            session.error(f"mayapy not found for Maya {version}: {mayapy}")
-        out_path = out_dir / f"maya-{version}.json"
-        env = _mayapy_env(mayapy, MAYA_VERSION=version, preserve_pythonpath=True)
-        session.run(
-            str(mayapy),
-            _mayapy_script(mayapy, "tests/viewport/yw_test_model_fixture_gate.py"),
-            "--manifest",
-            _mayapy_arg_path(mayapy, manifest_path),
-            "--out",
-            _mayapy_arg_path(mayapy, out_path),
-            env=env,
-            external=True,
-        )
-        if not out_path.is_file():
-            session.error(f"Fixture gate did not write report: {out_path}")
 
 
 @nox.session(venv_backend="none")
@@ -1269,69 +1251,31 @@ def maya_viewport_capture(session: nox.Session) -> None:
         uvx nox -s maya_viewport_capture -- --maya 2024
         uvx nox -s maya_viewport_capture -- --maya 2024 --out build/captures/viewport_smoke.png --frame 1 --width 640 --height 480
     """
-    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    out = _option(session.posargs, "--out", str(ROOT / "build/captures/viewport_smoke.png"))
-    frame = _option(session.posargs, "--frame", "1")
-    width = _option(session.posargs, "--width", "640")
-    height = _option(session.posargs, "--height", "480")
-
-    mayapy = _mayapy(version)
-    if not mayapy.exists():
-        raise FileNotFoundError(f"mayapy not found: {mayapy}")
-
-    env = _mayapy_env(
-        mayapy,
-        MAYA_VERSION=version,
-        # Intentionally no MMD_TOOLS_CPP_* or plugin env; this smoke is plugin-free.
-    )
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/viewport/smoke_viewport_capture.py"),
-        "--out",
-        _mayapy_arg_path(mayapy, out),
-        "--frame",
-        frame,
-        "--width",
-        width,
-        "--height",
-        height,
-        env=env,
-        external=True,
+    _run_viewport_capture(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        root=ROOT,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_arg_path=_mayapy_arg_path,
+        mayapy_script=_mayapy_script,
     )
 
 
 @nox.session(venv_backend="none")
 def model_readme_dialog_e2e(session: nox.Session) -> None:
     """Run the real Maya GUI model-readme modal gate for Maya 2024/2026."""
-    args = list(session.posargs)
-    versions = _options(args, "--maya") or ["2024", "2026"]
-    unsupported = [version for version in versions if version not in {"2024", "2026"}]
-    if unsupported:
-        session.error("--maya must be 2024 or 2026 for the model-readme GUI gate")
-    model = _option(args, "--model", "tests/data/yw_test_model.pmx")
-    out_dir = _require_build_path(
+    _run_model_readme_dialog_e2e(
         session,
-        _option(args, "--out-dir", "build/reports/model-readme-dialog-e2e"),
-        "--out-dir",
+        posargs=session.posargs,
+        options=_options,
+        option=_option,
+        root=ROOT,
+        require_build_path=_require_build_path,
+        python_executable=sys.executable,
     )
-    for index, version in enumerate(versions):
-        report = out_dir / f"maya-{version}.json"
-        session.run(
-            sys.executable,
-            str(ROOT / "tests/viewport/model_readme_dialog_e2e.py"),
-            "--maya",
-            version,
-            "--model",
-            model,
-            "--out",
-            str(report),
-            "--port",
-            str(7731 + index),
-            external=True,
-        )
-        result = json.loads(report.read_text(encoding="utf-8"))
-        if result.get("status") != "pass":
-            session.error(f"Maya {version} model-readme GUI gate failed: {result}")
 
 
 @nox.session(venv_backend="none")
