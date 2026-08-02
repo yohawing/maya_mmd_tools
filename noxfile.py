@@ -56,6 +56,7 @@ from noxlib.native import (  # noqa: E402
     _vswhere_path as _common_vswhere_path,
 )
 from noxlib.release import (  # noqa: E402
+    _new_release_gate_run as _common_new_release_gate_run,
     _release_gate_failure_label as _common_release_gate_failure_label,
     _release_gate_mmd_anim_pin_check as _common_release_gate_mmd_anim_pin_check,
     _release_gate_version_check as _common_release_gate_version_check,
@@ -482,9 +483,23 @@ def _release_gate_failure_label(result: dict[str, object]) -> str:
     return _common_release_gate_failure_label(result)
 
 
-def _write_release_gate_reports(results: list[dict[str, object]], quick: bool) -> tuple[Path, Path]:
+def _write_release_gate_reports(
+    results: list[dict[str, object]],
+    quick: bool,
+    *,
+    run_id: str | None = None,
+    timestamp: str | None = None,
+) -> tuple[Path, Path]:
     """Write release-gate Markdown and JSON summaries."""
-    return _common_write_release_gate_reports(ROOT, results, quick)
+    if run_id is None and timestamp is None:
+        return _common_write_release_gate_reports(ROOT, results, quick)
+    return _common_write_release_gate_reports(
+        ROOT,
+        results,
+        quick,
+        run_id=run_id,
+        timestamp=timestamp,
+    )
 
 
 def _normalize_local_gate_report(
@@ -2587,6 +2602,7 @@ def release_gate(session: nox.Session) -> None:
         uvx nox -s release_gate -- --ffi-cargo-target-dir build/mmd-anim-unlocked-target
         uvx nox -s release_gate -- --strict-local --local-parity-manifest F:/local/parity.json --local-physics-manifest F:/local/physics-parity.json
     """
+    run_id, run_timestamp = _common_new_release_gate_run()
     args = list(session.posargs)
     quick = _has_flag(args, "--quick")
     version = _option(args, "--maya", DEFAULT_MAYA_VERSION)
@@ -2621,7 +2637,12 @@ def release_gate(session: nox.Session) -> None:
             results,
         )
         if results[-1]["status"] == "fail":
-            md_path, json_path = _write_release_gate_reports(results, quick)
+            md_path, json_path = _write_release_gate_reports(
+                results,
+                quick,
+                run_id=run_id,
+                timestamp=run_timestamp,
+            )
             session.log(f"Release gate report: {md_path}")
             session.log(f"Release gate JSON: {json_path}")
             session.error(
@@ -2686,7 +2707,12 @@ def release_gate(session: nox.Session) -> None:
                 verbose=verbose,
             )
 
-    md_path, json_path = _write_release_gate_reports(results, quick)
+    md_path, json_path = _write_release_gate_reports(
+        results,
+        quick,
+        run_id=run_id,
+        timestamp=run_timestamp,
+    )
     counts = {
         status: sum(result["status"] == status for result in results)
         for status in ("pass", "fail", "skip")

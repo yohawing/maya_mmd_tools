@@ -51,6 +51,9 @@ class NoxReleaseTest(unittest.TestCase):
             payload = json.loads(json_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["status"], "pass")
             self.assertEqual(payload["summary"], {"pass": 1, "fail": 0, "skip": 1})
+            self.assertRegex(payload["run_id"], r"^\d{8}T\d{12}Z-[0-9a-f]{8}$")
+            self.assertTrue(payload["timestamp"].endswith("+00:00"))
+            self.assertEqual(payload["log_dir"], str(root / "build" / "reports" / "release_gate"))
             self.assertIn("pass=1, fail=0, skip=1", markdown_path.read_text(encoding="utf-8"))
 
             local_report = root / "local.json"

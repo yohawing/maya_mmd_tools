@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
+from uuid import uuid4
 
 
 def _release_gate_version_check(root: Path, expected_version: str | None = None) -> None:
@@ -252,8 +254,24 @@ def _release_gate_failure_label(result: dict[str, object]) -> str:
     )
 
 
-def _write_release_gate_reports(root: Path, results: list[dict[str, object]], quick: bool) -> tuple[Path, Path]:
+def _new_release_gate_run() -> tuple[str, str]:
+    """Return a unique run ID and an RFC 3339 UTC timestamp for reports."""
+    started_at = datetime.now(timezone.utc)
+    timestamp = started_at.isoformat()
+    run_id = f"{started_at.strftime('%Y%m%dT%H%M%S%fZ')}-{uuid4().hex[:8]}"
+    return run_id, timestamp
+
+
+def _write_release_gate_reports(
+    root: Path,
+    results: list[dict[str, object]],
+    quick: bool,
+    *,
+    run_id: str | None = None,
+    timestamp: str | None = None,
+) -> tuple[Path, Path]:
     """Write release-gate Markdown and JSON summaries."""
+    run_id, timestamp = (run_id, timestamp) if run_id and timestamp else _new_release_gate_run()
     report_dir = root / "build" / "reports"
     report_dir.mkdir(parents=True, exist_ok=True)
     json_path = report_dir / "release_gate.json"
@@ -262,9 +280,12 @@ def _write_release_gate_reports(root: Path, results: list[dict[str, object]], qu
     counts = {status: sum(result["status"] == status for result in results) for status in ("pass", "fail", "skip")}
     aggregate_status = "fail" if counts["fail"] else "pass" if counts["pass"] else "skip"
     payload = {
+        "run_id": run_id,
+        "timestamp": timestamp,
         "quick": quick,
         "status": aggregate_status,
         "summary": counts,
+        "log_dir": str(report_dir / "release_gate"),
         "results": results,
     }
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -272,9 +293,12 @@ def _write_release_gate_reports(root: Path, results: list[dict[str, object]], qu
     lines = [
         "# Release Gate",
         "",
+        f"- Run ID: {run_id}",
+        f"- Timestamp: {timestamp}",
         f"- Mode: {'quick' if quick else 'full'}",
         f"- Status: {payload['status']}",
         f"- Summary: pass={counts['pass']}, fail={counts['fail']}, skip={counts['skip']}",
+        f"- Log directory: {payload['log_dir']}",
         "",
         "| Step | Status | Seconds | Command |",
         "| --- | --- | ---: | --- |",
