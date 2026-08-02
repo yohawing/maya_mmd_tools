@@ -21,9 +21,57 @@ except ModuleNotFoundError:
 
 import noxfile
 from noxlib import release
+from noxlib.release_sessions import run_flip_report, run_golden_oracle
 
 
 class NoxReleaseTest(unittest.TestCase):
+    def test_flip_report_builds_report_only_command(self):
+        session = types.SimpleNamespace(posargs=[
+            "--reference", "reference.png",
+            "--test", "test.png",
+            "--out-dir", "build/flip-report",
+            "--basename", "case",
+            "--csv", "build/flip-report/results.csv",
+        ], runs=[], logs=[])
+        session.run = lambda *args, **kwargs: session.runs.append((args, kwargs))
+        session.log = lambda message: session.logs.append(message)
+        session.error = lambda message: (_ for _ in ()).throw(AssertionError(message))
+        with mock.patch("noxlib.release_sessions.shutil.which", return_value="flip.exe"):
+            run_flip_report(
+                session,
+                posargs=session.posargs,
+                option=noxfile._option,
+                require_build_path=lambda _session, value, _name: Path("F:/repo") / value,
+            )
+        args, kwargs = session.runs[0]
+        self.assertEqual(args[:6], ("flip.exe", "-r", "reference.png", "-t", "test.png", "-d"))
+        self.assertIn(("-c", str(Path("F:/repo/build/flip-report/results.csv"))), zip(args, args[1:]))
+        self.assertTrue(kwargs["external"])
+
+    def test_golden_oracle_uses_downloaded_cli_and_manifest_default(self):
+        session = types.SimpleNamespace(posargs=[], runs=[])
+        session.run = lambda *args, **kwargs: session.runs.append((args, kwargs))
+        run_golden_oracle(
+            session,
+            posargs=session.posargs,
+            option=noxfile._option,
+            root=Path("F:/repo"),
+            downloaded_mmd_anim_cli=lambda _session: Path("F:/tools/mmd-anim.exe"),
+        )
+        self.assertEqual(
+            session.runs[0],
+            (
+                (
+                    str(Path("F:/tools/mmd-anim.exe")),
+                    "verify",
+                    str(Path("F:/repo/tests/golden-oracle/manifest.json")),
+                    "--mode",
+                    "numeric",
+                ),
+                {"external": True},
+            ),
+        )
+
     def test_version_check_uses_explicit_root(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

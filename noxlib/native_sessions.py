@@ -209,3 +209,99 @@ def run_maya_smoke(
         "tests/cpp/focused_physics_solver_world_toggle.py",
     ):
         session.run(str(mayapy_path), mayapy_script(mayapy_path, script), env=env, external=True)
+
+
+def run_cpp_cli_smoke(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    default_maya_version: str,
+    default_config: str,
+    run_cli_smoke,
+) -> None:
+    """Run the standalone C++ runtime smoke against a required manifest."""
+    version = option(posargs, "--maya", default_maya_version)
+    config = option(posargs, "--config", default_config)
+    manifest = option(posargs, "--manifest", "")
+    case_name = option(posargs, "--case", "")
+    limit = option(posargs, "--limit", "")
+    if not manifest:
+        session.error("--manifest <path> is required for cpp_cli_smoke")
+    run_cli_smoke(session, version, config, manifest, case_name, limit)
+
+
+def run_cpp_verify(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    default_maya_version: str,
+    default_config: str,
+    root: Path,
+    configure_bullet3_dir,
+    native_runtime_smoke_code,
+    configure,
+    build,
+    run_cli_smoke,
+    mayapy,
+    mayapy_env,
+    mayapy_script,
+    python_executable: str = sys.executable,
+) -> None:
+    """Run the CLI-only native verification chain before the mayapy checks."""
+    version = option(posargs, "--maya", default_maya_version)
+    config = option(posargs, "--config", default_config)
+
+    env = os.environ.copy()
+    configure_bullet3_dir(session, env)
+    session.run(
+        "cargo",
+        "build",
+        "-p",
+        "mmd-anim-ffi",
+        "--manifest-path",
+        "external/mmd-anim/Cargo.toml",
+        "--release",
+        "--features",
+        "physics-bullet-native",
+        env=env,
+        external=True,
+    )
+
+    runtime_env = os.environ.copy()
+    runtime_env["MMD_ANIM_FFI_PATH"] = str((root / "external" / "mmd-anim" / "target" / "release").resolve())
+    session.run(python_executable, "-c", native_runtime_smoke_code(), env=runtime_env, external=True)
+
+    configure(session, version, config)
+    build(session, version, config, clean_first=True)
+
+    # Keep the standalone CLI step before mayapy when a manifest is supplied.
+    manifest = option(posargs, "--manifest", "")
+    case_name = option(posargs, "--case", "")
+    limit = option(posargs, "--limit", "")
+    run_cli_smoke(session, version, config, manifest, case_name, limit)
+
+    mayapy_path = mayapy(version)
+    if not mayapy_path.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy_path}")
+
+    env = mayapy_env(
+        mayapy_path,
+        MAYA_VERSION=version,
+        MAYA_SKIP_USERSETUP_PY="1",
+        MMD_TOOLS_CPP_CONFIG=config,
+        MMD_ANIM_FFI_PATH=runtime_env["MMD_ANIM_FFI_PATH"],
+    )
+    session.run(
+        str(mayapy_path),
+        mayapy_script(mayapy_path, "tests/cpp/smoke_runtime_node.py"),
+        env=env,
+        external=True,
+    )
+    session.run(
+        str(mayapy_path),
+        mayapy_script(mayapy_path, "tests/cpp/focused_physics_solver_world_toggle.py"),
+        env=env,
+        external=True,
+    )

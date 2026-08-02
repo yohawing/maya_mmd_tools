@@ -7,6 +7,21 @@ import sys
 from pathlib import Path
 
 
+def _runner_args_without_maya(posargs: list[str]) -> list[str]:
+    """Return child-runner arguments after removing Nox's ``--maya`` option."""
+    runner_args: list[str] = []
+    skip_next = False
+    for arg in posargs:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--maya":
+            skip_next = True
+            continue
+        runner_args.append(arg)
+    return runner_args
+
+
 def run_cpp_plugin_smoke(
     session,
     *,
@@ -136,6 +151,87 @@ def run_viewport_capture(
         width,
         "--height",
         height,
+        env=env,
+        external=True,
+    )
+
+
+def run_maya_batch_import(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    default_maya_version: str,
+    root: Path,
+    mayapy,
+    mayapy_env,
+    mayapy_script,
+    convert_mayapy_path_options,
+) -> None:
+    """Run the Track 6 manifest-driven Maya batch import runner."""
+    version = option(posargs, "--maya", default_maya_version)
+    runner_args = _runner_args_without_maya(posargs)
+    if not runner_args:
+        runner_args = [
+            "--manifest",
+            str(root / "tests/track6/manifest_template.json"),
+            "--limit",
+            "1",
+        ]
+
+    mayapy_path = mayapy(version)
+    if not mayapy_path.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy_path}")
+    env = mayapy_env(mayapy_path, MAYA_VERSION=version)
+    session.run(
+        str(mayapy_path),
+        mayapy_script(mayapy_path, "tests/track6/track6_runner.py"),
+        *convert_mayapy_path_options(
+            mayapy_path,
+            runner_args,
+            {"--manifest", "--out-dir", "--scan-root", "--write-manifest"},
+        ),
+        env=env,
+        external=True,
+    )
+
+
+def run_pmx_roundtrip(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    default_maya_version: str,
+    root: Path,
+    mayapy,
+    mayapy_env,
+    mayapy_script,
+    convert_mayapy_path_options,
+) -> None:
+    """Run the manifest-driven PMX import/export/re-import roundtrip runner."""
+    version = option(posargs, "--maya", default_maya_version)
+    runner_args = _runner_args_without_maya(posargs)
+    if not runner_args:
+        runner_args = [
+            "--manifest",
+            str(root / "tests/roundtrip/manifest_template.json"),
+            "--limit",
+            "1",
+        ]
+
+    mayapy_path = mayapy(version)
+    if not mayapy_path.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy_path}")
+    env = mayapy_env(
+        mayapy_path,
+        MAYA_VERSION=version,
+        MAYA_SKIP_USERSETUP_PY="1",
+        MMD_TOOLS_SKIP_SHADER_OVERRIDE="1",
+    )
+    session.run(
+        str(mayapy_path),
+        mayapy_script(mayapy_path, "tests/roundtrip/pmx_roundtrip_runner.py"),
+        *convert_mayapy_path_options(mayapy_path, runner_args, {"--manifest", "--out-dir"}),
         env=env,
         external=True,
     )

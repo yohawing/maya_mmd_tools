@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import shutil
 from pathlib import Path
 
 
@@ -74,3 +75,64 @@ def run_native_physics_release_gate(
         str(comparison_md),
         external=True,
     )
+
+
+def run_flip_report(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    require_build_path,
+) -> None:
+    """Run the report-only NVIDIA FLIP image comparison CLI."""
+    reference = option(posargs, "--reference", "")
+    test = option(posargs, "--test", "")
+    out_dir = option(posargs, "--out-dir", "build/flip-reports/report")
+    basename = option(posargs, "--basename", "flip_result")
+    csv = option(posargs, "--csv", "")
+
+    if not reference:
+        session.error("--reference <path> is required")
+    if not test:
+        session.error("--test <path> is required")
+
+    out_path = require_build_path(session, out_dir, "--out-dir")
+    out_path.mkdir(parents=True, exist_ok=True)
+    csv_arg = ["-c", str(require_build_path(session, csv, "--csv"))] if csv else []
+    flip_exe = shutil.which("flip")
+    if not flip_exe:
+        session.error(
+            "NVIDIA FLIP CLI not found. Install dev dependencies with: "
+            "python -m pip install -e .[dev]"
+        )
+
+    command: list[str] = [
+        flip_exe,
+        "-r",
+        reference,
+        "-t",
+        test,
+        "-d",
+        str(out_path),
+        "-b",
+        basename,
+        "-txt",
+        *csv_arg,
+    ]
+    session.log(f"FLIP report-only: reference={reference}, test={test}")
+    session.log(f"  out-dir={out_path}, basename={basename}")
+    session.run(*command, external=True)
+
+
+def run_golden_oracle(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    root: Path,
+    downloaded_mmd_anim_cli,
+) -> None:
+    """Verify the pinned mmd-anim CLI against the numeric GoldenOracle manifest."""
+    manifest = option(posargs, "--manifest", str(root / "tests/golden-oracle/manifest.json"))
+    mmd_anim = downloaded_mmd_anim_cli(session)
+    session.run(str(mmd_anim), "verify", manifest, "--mode", "numeric", external=True)

@@ -72,6 +72,10 @@ from noxlib.release_matrix import (  # noqa: E402
     tier3_commands as _release_gate_tier3_commands,
 )
 from noxlib.release_sessions import run_native_physics_release_gate as _run_native_physics_release_gate  # noqa: E402
+from noxlib.release_sessions import (  # noqa: E402
+    run_flip_report as _run_flip_report,
+    run_golden_oracle as _run_golden_oracle,
+)
 from noxlib.sessions import (  # noqa: E402
     run_control_rig_vmd_roundtrip as _run_control_rig_vmd_roundtrip,
     run_ci_unit as _run_ci_unit,
@@ -85,6 +89,8 @@ from noxlib.native_sessions import (  # noqa: E402
     run_bundled_native_smoke as _run_bundled_native_smoke,
     run_cpp_build as _run_cpp_build,
     run_cpp_config as _run_cpp_config,
+    run_cpp_cli_smoke as _run_cpp_cli_smoke,
+    run_cpp_verify as _run_cpp_verify,
     run_ffi_build as _run_ffi_build,
     run_maya_smoke as _run_maya_smoke,
     run_native_export_smoke as _run_native_export_smoke,
@@ -100,7 +106,9 @@ from noxlib.maya_sessions import (  # noqa: E402
     run_humanik_vmd_import_gate_smoke as _run_humanik_vmd_import_gate_smoke,
     run_humanik_vmd_parity_smoke as _run_humanik_vmd_parity_smoke,
     run_model_readme_dialog_e2e as _run_model_readme_dialog_e2e,
+    run_maya_batch_import as _run_maya_batch_import,
     run_native_physics_bake as _run_native_physics_bake,
+    run_pmx_roundtrip as _run_pmx_roundtrip,
     run_physics_solver_cycle_probe as _run_physics_solver_cycle_probe,
     run_root_move_ik_target_probe as _run_root_move_ik_target_probe,
     run_root_move_skin_parity_probe as _run_root_move_skin_parity_probe,
@@ -1723,41 +1731,16 @@ def maya_batch_import(session: nox.Session) -> None:
         uvx nox -s maya_batch_import -- --maya 2024 --manifest build/batch-import/manifest.json --case failing_case --save-scenes
         uvx nox -s maya_batch_import -- --maya 2024 --manifest build/batch-import/manifest.json --limit 1 --save-scenes --capture
     """
-    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    runner_args: list[str] = []
-    skip_next = False
-    for arg in session.posargs:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == "--maya":
-            skip_next = True
-            continue
-        runner_args.append(arg)
-
-    if not runner_args:
-        runner_args = [
-            "--manifest",
-            str(ROOT / "tests/track6/manifest_template.json"),
-            "--limit",
-            "1",
-        ]
-
-    mayapy = _mayapy(version)
-    if not mayapy.exists():
-        raise FileNotFoundError(f"mayapy not found: {mayapy}")
-
-    env = _mayapy_env(mayapy, MAYA_VERSION=version)
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/track6/track6_runner.py"),
-        *_convert_mayapy_path_options(
-            mayapy,
-            runner_args,
-            {"--manifest", "--out-dir", "--scan-root", "--write-manifest"},
-        ),
-        env=env,
-        external=True,
+    _run_maya_batch_import(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        root=ROOT,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_script=_mayapy_script,
+        convert_mayapy_path_options=_convert_mayapy_path_options,
     )
 
 
@@ -1781,42 +1764,16 @@ def pmx_roundtrip(session: nox.Session) -> None:
         uvx nox -s pmx_roundtrip -- --maya 2024 --case 1bone
         uvx nox -s pmx_roundtrip -- --maya 2024 --manifest tests/roundtrip/manifest_supported.json --require-clean --out-dir build/roundtrip/supported-clean
     """
-    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    runner_args: list[str] = []
-    skip_next = False
-    for arg in session.posargs:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == "--maya":
-            skip_next = True
-            continue
-        runner_args.append(arg)
-
-    if not runner_args:
-        runner_args = [
-            "--manifest",
-            str(ROOT / "tests/roundtrip/manifest_template.json"),
-            "--limit",
-            "1",
-        ]
-
-    mayapy = _mayapy(version)
-    if not mayapy.exists():
-        raise FileNotFoundError(f"mayapy not found: {mayapy}")
-
-    env = _mayapy_env(
-        mayapy,
-        MAYA_VERSION=version,
-        MAYA_SKIP_USERSETUP_PY="1",
-        MMD_TOOLS_SKIP_SHADER_OVERRIDE="1",
-    )
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/roundtrip/pmx_roundtrip_runner.py"),
-        *_convert_mayapy_path_options(mayapy, runner_args, {"--manifest", "--out-dir"}),
-        env=env,
-        external=True,
+    _run_pmx_roundtrip(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        root=ROOT,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_script=_mayapy_script,
+        convert_mayapy_path_options=_convert_mayapy_path_options,
     )
 
 
@@ -1843,44 +1800,12 @@ def flip_report(session: nox.Session) -> None:
             --basename static_render_1bone_cube \\
             --csv build/flip-reports/static-render-1bone/results.csv
     """
-    args = session.posargs
-
-    reference = _option(args, "--reference", "")
-    test = _option(args, "--test", "")
-    out_dir = _option(args, "--out-dir", "build/flip-reports/report")
-    basename = _option(args, "--basename", "flip_result")
-    csv = _option(args, "--csv", "")
-
-    if not reference:
-        session.error("--reference <path> is required")
-    if not test:
-        session.error("--test <path> is required")
-
-    out_path = _require_build_path(session, out_dir, "--out-dir")
-    out_path.mkdir(parents=True, exist_ok=True)
-
-    csv_arg = ["-c", str(_require_build_path(session, csv, "--csv"))] if csv else []
-    flip_exe = shutil.which("flip")
-    if not flip_exe:
-        session.error("NVIDIA FLIP CLI not found. Install dev dependencies with: python -m pip install -e .[dev]")
-
-    cmd: list[str] = [
-        flip_exe,
-        "-r",
-        reference,
-        "-t",
-        test,
-        "-d",
-        str(out_path),
-        "-b",
-        basename,
-        "-txt",
-        *csv_arg,
-    ]
-
-    session.log(f"FLIP report-only: reference={reference}, test={test}")
-    session.log(f"  out-dir={out_path}, basename={basename}")
-    session.run(*cmd, external=True)
+    _run_flip_report(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        require_build_path=_require_build_path,
+    )
 
 
 @nox.session(venv_backend="none")
@@ -1901,14 +1826,14 @@ def cpp_cli_smoke(session: nox.Session) -> None:
     The exe is produced by 'cpp_build' (placed under build/cpp/maya<ver>/<config>/).
     Use --maya/--config to select which built exe to invoke (defaults 2024/Debug).
     """
-    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
-    manifest = _option(session.posargs, "--manifest", "")
-    case_name = _option(session.posargs, "--case", "")
-    limit = _option(session.posargs, "--limit", "")
-    if not manifest:
-        session.error("--manifest <path> is required for cpp_cli_smoke")
-    _run_cli_smoke(session, version, config, manifest, case_name, limit)
+    _run_cpp_cli_smoke(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        default_config=DEFAULT_CMAKE_CONFIG,
+        run_cli_smoke=_run_cli_smoke,
+    )
 
 
 @nox.session(venv_backend="none")
@@ -1919,61 +1844,22 @@ def cpp_verify(session: nox.Session) -> None:
     If --manifest is supplied: also runs cpp_cli_smoke (C++ standalone exe path)
     *before* the maya_smoke (mayapy) step.
     """
-    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
-
-    env = os.environ.copy()
-    _configure_bullet3_dir(session, env)
-    session.run(
-        "cargo",
-        "build",
-        "-p",
-        "mmd-anim-ffi",
-        "--manifest-path",
-        "external/mmd-anim/Cargo.toml",
-        "--release",
-        "--features",
-        "physics-bullet-native",
-        env=env,
-        external=True,
-    )
-
-    runtime_env = os.environ.copy()
-    runtime_env["MMD_ANIM_FFI_PATH"] = str((ROOT / "external" / "mmd-anim" / "target" / "release").resolve())
-    session.run(sys.executable, "-c", _native_runtime_smoke_code(), env=runtime_env, external=True)
-
-    _cmake_configure(session, version, config)
-    _cmake_build(session, version, config, clean_first=True)
-
-    # Insert cpp_cli_smoke before maya_smoke when a manifest is supplied.
-    # This exercises the pure C++ CLI path (no mayapy) for runtime eval.
-    manifest = _option(session.posargs, "--manifest", "")
-    case_name = _option(session.posargs, "--case", "")
-    limit = _option(session.posargs, "--limit", "")
-    _run_cli_smoke(session, version, config, manifest, case_name, limit)
-
-    mayapy = _mayapy(version)
-    if not mayapy.exists():
-        raise FileNotFoundError(f"mayapy not found: {mayapy}")
-
-    env = _mayapy_env(
-        mayapy,
-        MAYA_VERSION=version,
-        MAYA_SKIP_USERSETUP_PY="1",
-        MMD_TOOLS_CPP_CONFIG=config,
-        MMD_ANIM_FFI_PATH=runtime_env["MMD_ANIM_FFI_PATH"],
-    )
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/cpp/smoke_runtime_node.py"),
-        env=env,
-        external=True,
-    )
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/cpp/focused_physics_solver_world_toggle.py"),
-        env=env,
-        external=True,
+    _run_cpp_verify(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        default_config=DEFAULT_CMAKE_CONFIG,
+        root=ROOT,
+        configure_bullet3_dir=_configure_bullet3_dir,
+        native_runtime_smoke_code=_native_runtime_smoke_code,
+        configure=_cmake_configure,
+        build=_cmake_build,
+        run_cli_smoke=_run_cli_smoke,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_script=_mayapy_script,
+        python_executable=sys.executable,
     )
 
 
@@ -1990,13 +1876,13 @@ def golden_oracle(session: nox.Session) -> None:
         uvx nox -s golden_oracle
         uvx nox -s golden_oracle -- --manifest tests/golden-oracle/manifest.json
     """
-    manifest = _option(
-        session.posargs, "--manifest",
-        str(ROOT / "tests/golden-oracle/manifest.json"),
+    _run_golden_oracle(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        root=ROOT,
+        downloaded_mmd_anim_cli=_downloaded_mmd_anim_cli,
     )
-    mmd_anim = _downloaded_mmd_anim_cli(session)
-
-    session.run(str(mmd_anim), "verify", manifest, "--mode", "numeric", external=True)
 
 
 @nox.session(venv_backend="none")

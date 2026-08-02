@@ -12,6 +12,8 @@ from unittest import mock
 from noxlib.common import _option, _without_option
 from noxlib.native_sessions import (
     run_cpp_build,
+    run_cpp_cli_smoke,
+    run_cpp_verify,
     run_maya_smoke,
     run_native_export_smoke,
     run_reduction_abi_probe,
@@ -19,7 +21,9 @@ from noxlib.native_sessions import (
 from noxlib.maya_sessions import (
     run_cpp_plugin_smoke,
     run_model_readme_dialog_e2e,
+    run_maya_batch_import,
     run_native_physics_bake,
+    run_pmx_roundtrip,
     run_physics_solver_cycle_probe,
     run_root_move_ik_target_probe,
     run_root_move_skin_parity_probe,
@@ -38,6 +42,98 @@ class _FakeSession:
 
 
 class NativeSessionsTest(unittest.TestCase):
+    def test_cpp_cli_smoke_requires_manifest_and_forwards_selection(self):
+        session = _FakeSession(
+            ["--maya", "2026", "--config", "Release", "--manifest", "manifest.json", "--case", "case", "--limit", "2"]
+        )
+        calls = []
+        run_cpp_cli_smoke(
+            session,
+            posargs=session.posargs,
+            option=_option,
+            default_maya_version="2024",
+            default_config="Debug",
+            run_cli_smoke=lambda *args: calls.append(args),
+        )
+        self.assertEqual(calls, [(session, "2026", "Release", "manifest.json", "case", "2")])
+
+    def test_cpp_verify_keeps_native_cli_and_mayapy_order(self):
+        session = _FakeSession(
+            ["--maya", "2026", "--config", "Release", "--manifest", "manifest.json", "--case", "case"]
+        )
+        calls = []
+        mayapy = mock.Mock()
+        mayapy.exists.return_value = True
+        run_cpp_verify(
+            session,
+            posargs=session.posargs,
+            option=_option,
+            default_maya_version="2024",
+            default_config="Debug",
+            root=Path("F:/repo"),
+            configure_bullet3_dir=lambda _session, _env: calls.append("bullet"),
+            native_runtime_smoke_code=lambda: "runtime-smoke",
+            configure=lambda *args: calls.append(("configure", args)),
+            build=lambda *args, **kwargs: calls.append(("build", args, kwargs)),
+            run_cli_smoke=lambda *args: calls.append(("cli", args)),
+            mayapy=lambda _version: mayapy,
+            mayapy_env=lambda _mayapy, **values: values,
+            mayapy_script=lambda _mayapy, script: script,
+            python_executable="python.exe",
+        )
+        self.assertEqual(calls[:4], [
+            "bullet",
+            ("configure", (session, "2026", "Release")),
+            ("build", (session, "2026", "Release"), {"clean_first": True}),
+            ("cli", (session, "2026", "Release", "manifest.json", "case", "")),
+        ])
+        self.assertEqual(session.runs[0][0][:5], ("cargo", "build", "-p", "mmd-anim-ffi", "--manifest-path"))
+        self.assertEqual(session.runs[1][0][:2], ("python.exe", "-c"))
+        self.assertEqual([run[0][1] for run in session.runs[2:]], [
+            "tests/cpp/smoke_runtime_node.py",
+            "tests/cpp/focused_physics_solver_world_toggle.py",
+        ])
+
+    def test_maya_batch_import_removes_nox_maya_option(self):
+        session = _FakeSession(["--maya", "2024", "--manifest", "manifest.json", "--limit", "1"])
+        mayapy = mock.Mock()
+        mayapy.exists.return_value = True
+        run_maya_batch_import(
+            session,
+            posargs=session.posargs,
+            option=_option,
+            default_maya_version="2026",
+            root=Path("F:/repo"),
+            mayapy=lambda _version: mayapy,
+            mayapy_env=lambda _mayapy, **values: values,
+            mayapy_script=lambda _mayapy, script: script,
+            convert_mayapy_path_options=lambda _mayapy, args, _options: args,
+        )
+        args, kwargs = session.runs[0]
+        self.assertEqual(args[1:], ("tests/track6/track6_runner.py", "--manifest", "manifest.json", "--limit", "1"))
+        self.assertEqual(kwargs["env"]["MAYA_VERSION"], "2024")
+
+    def test_pmx_roundtrip_adds_default_manifest_and_shader_environment(self):
+        session = _FakeSession(["--maya", "2025"])
+        mayapy = mock.Mock()
+        mayapy.exists.return_value = True
+        run_pmx_roundtrip(
+            session,
+            posargs=session.posargs,
+            option=_option,
+            default_maya_version="2024",
+            root=Path("F:/repo"),
+            mayapy=lambda _version: mayapy,
+            mayapy_env=lambda _mayapy, **values: values,
+            mayapy_script=lambda _mayapy, script: script,
+            convert_mayapy_path_options=lambda _mayapy, args, _options: args,
+        )
+        args, kwargs = session.runs[0]
+        self.assertEqual(args[1], "tests/roundtrip/pmx_roundtrip_runner.py")
+        self.assertIn(str(Path("F:/repo/tests/roundtrip/manifest_template.json")), args)
+        self.assertEqual(kwargs["env"]["MAYA_SKIP_USERSETUP_PY"], "1")
+        self.assertEqual(kwargs["env"]["MMD_TOOLS_SKIP_SHADER_OVERRIDE"], "1")
+
     def test_native_export_smoke_removes_ffi_path_from_child_arguments(self):
         session = _FakeSession(["--strict", "--ffi-path", "build/custom-ffi"])
         run_native_export_smoke(
