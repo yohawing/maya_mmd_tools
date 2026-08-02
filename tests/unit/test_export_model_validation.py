@@ -22,6 +22,7 @@ from mmd_tools.validation.export_validator import (  # noqa: E402
     PMD_MAX_BONE_COUNT,
     validate_model_data,
 )
+from mmd_tools.validation.snapshot import ExportValidationSnapshot, fingerprint_payload  # noqa: E402
 
 
 def _valid_model_data():
@@ -1188,6 +1189,7 @@ class TestExportModelValidation(unittest.TestCase):
                 self.assertFalse(writer_path.exists())
                 self.assertEqual(output_path.read_bytes(), f"fake {export_format} bytes".encode())
                 self.assertTrue(result.validation_report.valid)
+                self.assertEqual(result.payload_fingerprint, fingerprint_payload(_valid_model_data()))
 
     def test_action_does_not_call_writer_or_modify_existing_file_when_preflight_fails(self):
         for export_format in ("pmx", "pmd"):
@@ -1303,3 +1305,81 @@ class TestExportModelValidation(unittest.TestCase):
             self.assertEqual(result.validation_report.issues[0].code, "OUTPUT_PARSE_FAILED")
             self.assertEqual(output_path.read_bytes(), original_bytes)
             self.assertFalse(Path(exporter.calls[0][0]).exists())
+
+    def test_expected_payload_fingerprint_mismatch_blocks_writer(self):
+        exporter = _FakeExporter()
+        model_data = _valid_model_data()
+        result = ExportModelAction(
+            pmx_exporter=exporter,
+            collector=None,
+            output_verifier=None,
+        ).execute(
+            ExportModelRequest(
+                file_path="out.pmx",
+                options={
+                    "export_format": "pmx",
+                    "model_data": model_data,
+                    "expected_payload_fingerprint": "sha256:stale",
+                },
+            )
+        )
+
+        self.assertFalse(result.succeeded)
+        self.assertIsInstance(result.error, ExportValidationError)
+        self.assertEqual(result.validation_report.issues[0].code, "STALE_VALIDATION_SNAPSHOT")
+        self.assertEqual(exporter.calls, [])
+        self.assertEqual(result.payload_fingerprint, fingerprint_payload(model_data))
+
+    def test_non_finite_payload_still_returns_validation_report(self):
+        exporter = _FakeExporter()
+        model_data = _valid_model_data()
+        model_data["vertices"][0]["position"][0] = math.nan
+
+        result = ExportModelAction(
+            pmx_exporter=exporter,
+            collector=None,
+            output_verifier=None,
+        ).execute(
+            ExportModelRequest(
+                file_path="out.pmx",
+                options={"export_format": "pmx", "model_data": model_data},
+            )
+        )
+
+        self.assertFalse(result.succeeded)
+        self.assertIsInstance(result.error, ExportValidationError)
+        self.assertIn("NON_FINITE_NUMBER", [issue.code for issue in result.validation_report.issues])
+        self.assertEqual(exporter.calls, [])
+
+    def test_stale_validation_snapshot_blocks_writer_and_preserves_target(self):
+        exporter = _FakeExporter()
+        snapshot_data = _valid_model_data()
+        snapshot = ExportValidationSnapshot.capture(snapshot_data, "pmx", scene_revision="12")
+        current_data = _valid_model_data()
+        current_data["model_name"] = "ChangedAfterValidation"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "stale.pmx"
+            original_bytes = b"existing export bytes"
+            output_path.write_bytes(original_bytes)
+            result = ExportModelAction(
+                pmx_exporter=exporter,
+                collector=None,
+                output_verifier=None,
+            ).execute(
+                ExportModelRequest(
+                    file_path=str(output_path),
+                    options={
+                        "export_format": "pmx",
+                        "model_data": current_data,
+                        "validation_snapshot": snapshot,
+                        "scene_revision": "12",
+                    },
+                )
+            )
+            self.assertEqual(output_path.read_bytes(), original_bytes)
+
+        self.assertFalse(result.succeeded)
+        self.assertIsInstance(result.error, ExportValidationError)
+        self.assertEqual(result.validation_report.issues[0].code, "STALE_VALIDATION_SNAPSHOT")
+        self.assertEqual(exporter.calls, [])

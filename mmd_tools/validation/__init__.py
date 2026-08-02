@@ -22,6 +22,7 @@ from .issue_catalog import (
     validate_issue_catalog,
 )
 from .output_verifier import verify_model_output
+from .snapshot import ExportValidationSnapshot, fingerprint_payload
 
 __all__ = [
     "BoneValidator",
@@ -29,10 +30,12 @@ __all__ = [
     "ExportValidationError",
     "ExportValidationIssue",
     "ExportValidationReport",
+    "ExportValidationSnapshot",
     "IssueCatalogEntry",
     "PMD_MAX_VERTEX_COUNT",
     "UnknownValidationIssueError",
     "get_issue_catalog_entry",
+    "fingerprint_payload",
     "validate_export_model",
     "validate_issue_catalog",
     "validate_model_data",
