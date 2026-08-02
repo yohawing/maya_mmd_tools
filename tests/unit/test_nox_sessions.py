@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 from tools.nox.common import _option
-from tools.nox.sessions import run_control_rig_vmd_roundtrip, run_python_module
+from tools.nox.sessions import (
+    run_control_rig_vmd_roundtrip,
+    run_mmd_anim_python_tests,
+    run_python_module,
+)
 
 
 class _FakeSession:
@@ -15,6 +21,9 @@ class _FakeSession:
 
     def run(self, *args, **kwargs):
         self.runs.append((args, kwargs))
+
+    def error(self, message):
+        raise RuntimeError(message)
 
 
 class NoxSessionsTest(unittest.TestCase):
@@ -63,6 +72,72 @@ class NoxSessionsTest(unittest.TestCase):
                 {"external": True},
             ),
         )
+
+    def test_mmd_anim_python_tests_builds_binding_contract_command(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            binding_dir = root / "external" / "mmd-anim" / "bindings" / "python"
+            (binding_dir / "tests").mkdir(parents=True)
+            runtime_library = root / "external" / "mmd-anim" / "target" / "release" / "mmd_runtime_ffi.dll"
+            runtime_library.parent.mkdir(parents=True)
+            runtime_library.touch()
+            session = _FakeSession()
+
+            run_mmd_anim_python_tests(
+                session,
+                posargs=[],
+                option=_option,
+                root=root,
+                python_executable="python.exe",
+                environment={"PATH": "path"},
+                platform_name="Windows",
+            )
+
+            self.assertEqual(
+                session.runs,
+                [
+                    (
+                        (
+                            "python.exe",
+                            "-m",
+                            "unittest",
+                            "discover",
+                            "-s",
+                            str(binding_dir / "tests"),
+                        ),
+                        {
+                            "env": {
+                                "PATH": "path",
+                                "PYTHONPATH": str(binding_dir),
+                                "MMD_RUNTIME_LIBRARY": str(runtime_library),
+                            },
+                            "external": True,
+                        },
+                    )
+                ],
+            )
+
+    def test_mmd_anim_python_tests_accepts_explicit_runtime_library(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            binding_dir = root / "external" / "mmd-anim" / "bindings" / "python"
+            (binding_dir / "tests").mkdir(parents=True)
+            runtime_library = root / "custom" / "mmd_runtime_ffi.dll"
+            runtime_library.parent.mkdir()
+            runtime_library.touch()
+            session = _FakeSession(["--runtime-library", str(runtime_library)])
+
+            run_mmd_anim_python_tests(
+                session,
+                posargs=session.posargs,
+                option=_option,
+                root=root,
+                python_executable="python.exe",
+                environment={},
+                platform_name="Windows",
+            )
+
+            self.assertEqual(session.runs[0][1]["env"]["MMD_RUNTIME_LIBRARY"], str(runtime_library))
 
 
 if __name__ == "__main__":
