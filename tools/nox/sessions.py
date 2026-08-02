@@ -39,6 +39,11 @@ def _resolve_mmd_anim_runtime_library(
         if not candidate.is_absolute():
             candidate = root / candidate
         candidate = candidate.resolve()
+        if candidate.is_dir():
+            for library_name in _mmd_anim_runtime_library_names(platform_name):
+                library_candidate = candidate / library_name
+                if library_candidate.is_file():
+                    return library_candidate.resolve()
         if not candidate.is_file():
             session.error(f"mmd_anim_python_tests: runtime library not found: {candidate}")
         return candidate
