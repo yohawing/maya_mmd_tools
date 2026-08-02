@@ -26,6 +26,7 @@ from .mmd_anim_verifier import verify_mmd_anim_asset
 from .output_verifier import verify_model_output
 from .report_artifacts import ValidationReportArtifactPaths, write_validation_report_artifacts
 from .snapshot import ExportValidationSnapshot, fingerprint_payload
+from .scene_preflight import ScenePreflight, ScenePreflightResult
 from .vmd_validator import VMD_MODE_A, VMD_MODE_C, validate_vmd_data, verify_vmd_output
 
 __all__ = [
@@ -36,6 +37,8 @@ __all__ = [
     "ExportValidationIssue",
     "ExportValidationReport",
     "ExportValidationSnapshot",
+    "ScenePreflight",
+    "ScenePreflightResult",
     "IssueCatalogEntry",
     "PMD_MAX_VERTEX_COUNT",
     "UnknownValidationIssueError",

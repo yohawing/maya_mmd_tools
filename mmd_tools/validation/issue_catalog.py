@@ -150,6 +150,20 @@ _KNOWN_ISSUE_CODES = (
     "RIGID_BODY_FIELD_TYPE",
     "RIGID_BODY_NOT_MAPPING",
     "RIGID_BODIES_NOT_SEQUENCE",
+    "SCENE_COLLECT_FAILED",
+    "SCENE_FORMAT_UNSUPPORTED",
+    "SCENE_FRAME_RANGE_INVALID",
+    "SCENE_FRAME_STEP_INVALID",
+    "SCENE_OUTPUT_DIRECTORY",
+    "SCENE_OUTPUT_EXTENSION_MISMATCH",
+    "SCENE_OUTPUT_PATH_INVALID",
+    "SCENE_OUTPUT_SAME_AS_SOURCE",
+    "SCENE_OWNER_CONTROL_RIG",
+    "SCENE_OWNER_HUMANIK",
+    "SCENE_OWNER_QUERY_FAILED",
+    "SCENE_SCALE_INVALID",
+    "SCENE_TARGET_MISSING",
+    "SCENE_TARGET_STALE",
     "STALE_VALIDATION_SNAPSHOT",
     "TEXT_FIELD_TYPE",
     "TEXTURE_NOT_STRING",
@@ -217,6 +231,11 @@ _CATEGORY_TEXT = {
         "impact": "The exported physics section would be invalid or would lose authored data.",
         "remediation": "Repair the physics references/fields or remove unsupported physics data.",
     },
+    "references": {
+        "expected": "The Maya target, ownership state, frame range, and output path must be valid for this export.",
+        "impact": "The exporter cannot establish a trustworthy scene-to-output boundary.",
+        "remediation": "Select a live MMD target, bake or restore scene ownership, and repair the export options.",
+    },
 }
 
 
@@ -226,6 +245,8 @@ def _category_for_code(code: str) -> str:
         return "output"
     if code.startswith("VMD_"):
         return "animation"
+    if code.startswith("SCENE_"):
+        return "references"
     if code.startswith("BONE") or code.startswith("PMD_BONE") or code.startswith("PMX_BONE"):
         return "bones"
     if code.startswith("DISPLAY") or code.startswith("PMD_DISPLAY"):
