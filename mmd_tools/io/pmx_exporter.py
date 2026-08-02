@@ -99,8 +99,8 @@ class PmxExporter:
         pmx.header.encoding = PmxEncoding.UTF16LE
         pmx.header.additional_uv = 0
         pmx.header.vertex_index_size = vertex_index_size
-        textures = maya_data.get("textures", [])
-        materials_raw = maya_data.get("materials", [])
+        textures = maya_data.get("textures") or []
+        materials_raw = maya_data.get("materials") or []
         pmx.header.texture_index_size = _choose_reference_index_size(len(textures))
         pmx.header.material_index_size = _choose_reference_index_size(len(materials_raw))
         pmx.header.morph_index_size = _choose_reference_index_size(len(morphs_raw))

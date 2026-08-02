@@ -1,12 +1,15 @@
 """Action boundary for PMX/PMD model export execution."""
 
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
+import tempfile
 from typing import Any, Callable, Dict, List, Optional
 
 from ..core.logger import get_logger
 from ..io.pmd_exporter import PmdExporter
 from ..io.pmx_exporter import PmxExporter
+from ..validation.export_validator import ExportValidationError, ExportValidationReport, validate_model_data
 
 logger = get_logger(__name__)
 
@@ -30,6 +33,7 @@ class ExportModelResult:
     status_message: str = ""
     error: Optional[Exception] = None
     warnings: List[Any] = field(default_factory=list)
+    validation_report: Optional[ExportValidationReport] = None
 
 
 def _default_collect_model_data(options: Dict[str, Any]) -> dict:
@@ -75,6 +79,8 @@ class ExportModelAction:
 
     def execute(self, request: ExportModelRequest) -> ExportModelResult:
         """Export a PMX/PMD model and return a small result object."""
+        validation_report: Optional[ExportValidationReport] = None
+        temporary_path: Optional[str] = None
         try:
             export_format = (request.options.get("export_format") or "").lower()
             if not export_format:
@@ -88,19 +94,61 @@ class ExportModelAction:
                     raise ValueError("Model export requires model_data or a collector")
                 model_data = self._collector(request.options)
 
-            if export_format == "pmx":
-                self._pmx_exporter.export_pmx_model(request.file_path, model_data)
-            elif export_format == "pmd":
-                self._pmd_exporter.export_pmd_model(request.file_path, model_data)
-            else:
+            if export_format not in ("pmx", "pmd"):
                 raise ValueError(f"Unsupported model export format: {export_format}")
+
+            validation_report = validate_model_data(model_data, export_format)
+            if validation_report.is_blocking:
+                validation_error = ExportValidationError(validation_report)
+                logger.error("Model export preflight failed: %s", validation_error)
+                return ExportModelResult(
+                    status_message=f"Export failed: {validation_error}",
+                    error=validation_error,
+                    warnings=list(validation_report.issues),
+                    validation_report=validation_report,
+                )
+
+            target_path = Path(request.file_path)
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_fd, temporary_path = tempfile.mkstemp(
+                prefix=f".{target_path.stem}.",
+                suffix=f".{export_format}",
+                dir=str(target_path.parent),
+            )
+            os.close(temporary_fd)
+
+            if export_format == "pmx":
+                self._pmx_exporter.export_pmx_model(temporary_path, model_data)
+            else:
+                self._pmd_exporter.export_pmd_model(temporary_path, model_data)
+
+            if not os.path.isfile(temporary_path) or os.path.getsize(temporary_path) == 0:
+                raise FileNotFoundError(
+                    f"Export writer did not create a non-empty temporary output: {temporary_path}"
+                )
+            os.replace(temporary_path, request.file_path)
+            temporary_path = None
 
             logger.info("Exported %s model: %s", export_format.upper(), request.file_path)
             return ExportModelResult(
                 exported_path=request.file_path,
                 succeeded=True,
                 status_message=f"Export complete: {request.file_path}",
+                validation_report=validation_report,
             )
         except Exception as exc:
             logger.error("Model export failed: %s", exc, exc_info=True)
-            return ExportModelResult(status_message=f"Export failed: {exc}", error=exc)
+            return ExportModelResult(
+                status_message=f"Export failed: {exc}",
+                error=exc,
+                warnings=list(validation_report.issues) if validation_report else [],
+                validation_report=validation_report,
+            )
+        finally:
+            if temporary_path is not None:
+                try:
+                    os.unlink(temporary_path)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    logger.warning("Failed to remove temporary export file: %s", temporary_path)

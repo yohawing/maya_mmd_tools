@@ -1,5 +1,7 @@
 """Import/export action の Maya 非依存の実行境界をまとめて検証する。"""
 
+from pathlib import Path
+import tempfile
 import unittest
 
 from tests.common.maya_stub import install_headless_ui_stubs
@@ -341,28 +343,52 @@ class TestExportModelAction(unittest.TestCase):
     """PMX/PMD model export action の最小依存境界を検証する。"""
 
     def test_execute_exports_pmx_from_model_data(self):
-        model_data = {"vertices": [1], "faces": [[0, 1, 2]]}
-        exporter = _FakePmxExporter()
-        options = {"file_path": "out.pmx", "export_format": "pmx", "model_data": model_data}
-        action = ExportModelAction(pmx_exporter=exporter, collector=None)
+        model_data = {
+            "vertices": [{"position": [0.0, 0.0, 0.0]}],
+            "faces": [[0, 0, 0]],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "out.pmx"
+            exporter = _FakePmxExporter()
+            options = {
+                "file_path": str(output_path),
+                "export_format": "pmx",
+                "model_data": model_data,
+            }
+            action = ExportModelAction(pmx_exporter=exporter, collector=None)
 
-        result = action.execute(ExportModelRequest(file_path="out.pmx", options=options))
+            result = action.execute(ExportModelRequest(file_path=str(output_path), options=options))
 
-        self.assertTrue(result.succeeded)
-        self.assertEqual(result.exported_path, "out.pmx")
-        self.assertIsNone(result.error)
-        self.assertEqual(exporter.calls, [("out.pmx", model_data)])
+            self.assertTrue(result.succeeded)
+            self.assertEqual(result.exported_path, str(output_path))
+            self.assertIsNone(result.error)
+            self.assertEqual(output_path.read_bytes(), b"fake pmx bytes")
+            writer_path = Path(exporter.calls[0][0])
+            self.assertEqual(writer_path.parent, output_path.parent)
+            self.assertEqual(writer_path.suffix, ".pmx")
+            self.assertNotEqual(writer_path, output_path)
+            self.assertFalse(writer_path.exists())
 
     def test_execute_exports_pmd_from_collector_data(self):
-        model_data = {"vertices": [1], "faces": [[0, 1, 2]]}
-        exporter = _FakePmdExporter()
-        options = {"file_path": "out.pmd", "export_format": "pmd"}
-        action = ExportModelAction(pmd_exporter=exporter, collector=lambda received: model_data)
+        model_data = {
+            "vertices": [{"position": [0.0, 0.0, 0.0]}],
+            "faces": [[0, 0, 0]],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "out.pmd"
+            exporter = _FakePmdExporter()
+            options = {"file_path": str(output_path), "export_format": "pmd"}
+            action = ExportModelAction(pmd_exporter=exporter, collector=lambda received: model_data)
 
-        result = action.execute(ExportModelRequest(file_path="out.pmd", options=options))
+            result = action.execute(ExportModelRequest(file_path=str(output_path), options=options))
 
-        self.assertTrue(result.succeeded)
-        self.assertEqual(exporter.calls, [("out.pmd", model_data)])
+            self.assertTrue(result.succeeded)
+            self.assertEqual(output_path.read_bytes(), b"fake pmd bytes")
+            writer_path = Path(exporter.calls[0][0])
+            self.assertEqual(writer_path.parent, output_path.parent)
+            self.assertEqual(writer_path.suffix, ".pmd")
+            self.assertNotEqual(writer_path, output_path)
+            self.assertFalse(writer_path.exists())
 
     def test_execute_reports_missing_collector_or_data(self):
         options = {"file_path": "out.pmx", "export_format": "pmx"}
@@ -399,6 +425,7 @@ class _FakePmxExporter:
 
     def export_pmx_model(self, file_path, model_data):
         self.calls.append((file_path, model_data))
+        Path(file_path).write_bytes(b"fake pmx bytes")
 
 
 class _FakePmdExporter:
@@ -407,6 +434,7 @@ class _FakePmdExporter:
 
     def export_pmd_model(self, file_path, model_data):
         self.calls.append((file_path, model_data))
+        Path(file_path).write_bytes(b"fake pmd bytes")
 
 
 class TestExportVmdAction(unittest.TestCase):
