@@ -89,6 +89,14 @@ _KNOWN_ISSUE_CODES = (
     "MATERIAL_TOON_TEXTURE_INDEX_RANGE",
     "MATERIAL_TOON_TEXTURE_INDEX_TYPE",
     "MATERIALS_NOT_SEQUENCE",
+    "MMD_ANIM_CLI_UNAVAILABLE",
+    "MMD_ANIM_COMMAND_FAILED",
+    "MMD_ANIM_COUNT_MISMATCH",
+    "MMD_ANIM_DIAGNOSTICS",
+    "MMD_ANIM_INSPECT_JSON_INVALID",
+    "MMD_ANIM_ROUNDTRIP_FAILED",
+    "MMD_ANIM_ROUNDTRIP_JSON_INVALID",
+    "MMD_ANIM_TIMEOUT",
     "MODEL_DATA_NOT_MAPPING",
     "MORPH_FIELD_RANGE",
     "MORPH_FIELD_TYPE",
@@ -197,7 +205,7 @@ _CATEGORY_TEXT = {
 
 def _category_for_code(code: str) -> str:
     """Return the fixed report category for a registered issue code."""
-    if code.startswith("OUTPUT_"):
+    if code.startswith("OUTPUT_") or code.startswith("MMD_ANIM_"):
         return "output"
     if code.startswith("BONE") or code.startswith("PMD_BONE") or code.startswith("PMX_BONE"):
         return "bones"

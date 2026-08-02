@@ -16,6 +16,7 @@ from ..validation.export_validator import (
     validate_model_data,
 )
 from ..validation.output_verifier import verify_model_output
+from ..validation.mmd_anim_verifier import verify_mmd_anim_asset
 from ..validation.snapshot import ExportValidationSnapshot
 
 logger = get_logger(__name__)
@@ -252,6 +253,21 @@ class ExportModelAction:
                         tuple(validation_report.issues) + tuple(output_report.issues),
                     )
                 if output_report is not None and output_report.is_blocking:
+                    raise ExportValidationError(validation_report)
+
+            if request.options.get("verify_mmd_anim") or request.options.get("mmd_anim_cli"):
+                mmd_anim_report = verify_mmd_anim_asset(
+                    temporary_path,
+                    model_data=writer_model_data,
+                    cli_path=request.options.get("mmd_anim_cli") or "mmd-anim",
+                    timeout=float(request.options.get("mmd_anim_timeout", 60.0)),
+                )
+                if mmd_anim_report.issues:
+                    validation_report = ExportValidationReport(
+                        export_format,
+                        tuple(validation_report.issues) + tuple(mmd_anim_report.issues),
+                    )
+                if mmd_anim_report.is_blocking:
                     raise ExportValidationError(validation_report)
 
             if not os.path.isfile(temporary_path) or os.path.getsize(temporary_path) == 0:

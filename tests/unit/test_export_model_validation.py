@@ -1383,3 +1383,31 @@ class TestExportModelValidation(unittest.TestCase):
         self.assertIsInstance(result.error, ExportValidationError)
         self.assertEqual(result.validation_report.issues[0].code, "STALE_VALIDATION_SNAPSHOT")
         self.assertEqual(exporter.calls, [])
+
+    def test_mmd_anim_opt_in_failure_preserves_existing_target(self):
+        exporter = _FakeExporter()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "mmd-anim.pmx"
+            original_bytes = b"existing export bytes"
+            output_path.write_bytes(original_bytes)
+            result = ExportModelAction(
+                pmx_exporter=exporter,
+                collector=None,
+                output_verifier=None,
+            ).execute(
+                ExportModelRequest(
+                    file_path=str(output_path),
+                    options={
+                        "export_format": "pmx",
+                        "model_data": _valid_model_data(),
+                        "verify_mmd_anim": True,
+                        "mmd_anim_cli": "missing-mmd-anim-cli",
+                    },
+                )
+            )
+            self.assertEqual(output_path.read_bytes(), original_bytes)
+
+        self.assertFalse(result.succeeded)
+        self.assertIsInstance(result.error, ExportValidationError)
+        self.assertEqual(result.validation_report.issues[0].code, "MMD_ANIM_CLI_UNAVAILABLE")
+        self.assertFalse(Path(exporter.calls[0][0]).exists())

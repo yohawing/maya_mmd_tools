@@ -21,6 +21,7 @@ from .issue_catalog import (
     get_issue_catalog_entry,
     validate_issue_catalog,
 )
+from .mmd_anim_verifier import verify_mmd_anim_asset
 from .output_verifier import verify_model_output
 from .snapshot import ExportValidationSnapshot, fingerprint_payload
 
@@ -40,4 +41,5 @@ __all__ = [
     "validate_issue_catalog",
     "validate_model_data",
     "verify_model_output",
+    "verify_mmd_anim_asset",
 ]
