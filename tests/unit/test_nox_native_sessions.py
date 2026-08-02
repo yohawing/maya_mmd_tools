@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from noxlib.common import _option, _without_option
 from noxlib.native_sessions import (
@@ -14,6 +16,7 @@ from noxlib.native_sessions import (
     run_native_export_smoke,
     run_reduction_abi_probe,
 )
+from noxlib.maya_sessions import run_cpp_plugin_smoke
 
 
 class _FakeSession:
@@ -96,6 +99,36 @@ class NativeSessionsTest(unittest.TestCase):
             "tests/cpp/focused_physics_solver_world_toggle.py",
         ])
         self.assertTrue(all(kwargs["env"] is env for _args, kwargs in session.runs))
+
+    def test_cpp_plugin_smoke_constructs_plugin_environment_for_each_script(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plugin = root / "plug-ins" / "2024" / "Debug" / "mmd_tools_cpp.mll"
+            plugin.parent.mkdir(parents=True)
+            plugin.write_bytes(b"plugin")
+            session = _FakeSession(["--maya", "2024", "--config", "Debug"])
+            mayapy = mock.Mock()
+            mayapy.exists.return_value = True
+            env = {"MAYA_VERSION": "2024"}
+            run_cpp_plugin_smoke(
+                session,
+                posargs=session.posargs,
+                option=_option,
+                default_maya_version="2026",
+                default_config="Release",
+                root=root,
+                mayapy=lambda _version: mayapy,
+                mayapy_env=lambda _mayapy, **values: (env.update(values) or env),
+                mayapy_arg_path=lambda _mayapy, path: str(path),
+                mayapy_script=lambda _mayapy, script: script,
+                scripts=("tests/cpp/a.py", "tests/cpp/b.py"),
+                require_plugin=True,
+            )
+        self.assertEqual(len(session.runs), 2)
+        self.assertEqual(session.runs[0][0][1], "tests/cpp/a.py")
+        self.assertEqual(session.runs[1][0][1], "tests/cpp/b.py")
+        self.assertEqual(env["MMD_TOOLS_CPP_CONFIG"], "Debug")
+        self.assertEqual(Path(env["MMD_TOOLS_CPP_PLUGIN"]), plugin)
 
 
 if __name__ == "__main__":

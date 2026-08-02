@@ -90,6 +90,7 @@ from noxlib.native_sessions import (  # noqa: E402
     run_native_smoke as _run_native_smoke,
     run_reduction_abi_probe as _run_reduction_abi_probe,
 )
+from noxlib.maya_sessions import run_cpp_plugin_smoke as _run_cpp_plugin_smoke  # noqa: E402
 from tests.common.maya_location import mayapy as _mayapy  # noqa: E402
 from tests.common.maya_location import path_for_maya_process as _maya_process_path  # noqa: E402
 from tests.common.output_hygiene import (  # noqa: E402
@@ -1103,140 +1104,98 @@ def maya_smoke(session: nox.Session) -> None:
 @nox.session(venv_backend="none")
 def ccdik_dirty_smoke(session: nox.Session) -> None:
     """Run the focused mmdCcdIk goal-child dirty propagation regression."""
-    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
-    mayapy = _mayapy(version)
-    if not mayapy.exists():
-        raise FileNotFoundError(f"mayapy not found: {mayapy}")
-
-    env = _mayapy_env(mayapy, MAYA_VERSION=version, MMD_TOOLS_CPP_CONFIG=config)
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/cpp/focused_ccdik_goal_dirty.py"),
-        env=env,
-        external=True,
+    _run_cpp_plugin_smoke(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        default_config=DEFAULT_CMAKE_CONFIG,
+        root=ROOT,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_arg_path=_mayapy_arg_path,
+        mayapy_script=_mayapy_script,
+        scripts=("tests/cpp/focused_ccdik_goal_dirty.py",),
+        require_plugin=False,
     )
 
 
 @nox.session(venv_backend="none")
 def ccdik_cache_smoke(session: nox.Session) -> None:
     """Run the focused mmdCcdIk cache/output-coherence regression."""
-    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
-    mayapy = _mayapy(version)
-    if not mayapy.exists():
-        raise FileNotFoundError(f"mayapy not found: {mayapy}")
-
-    plugin = ROOT / "plug-ins" / version / config / "mmd_tools_cpp.mll"
-    if not plugin.exists():
-        session.error(
-            f"C++ plugin not found at {plugin}; run 'uvx nox -s cpp_build "
-            f"-- --maya {version} --config {config}' first."
-        )
-    env = _mayapy_env(
-        mayapy,
-        MAYA_VERSION=version,
-        MMD_TOOLS_CPP_CONFIG=config,
-        MMD_TOOLS_CPP_PLUGIN=_mayapy_arg_path(mayapy, plugin),
-    )
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/cpp/focused_ccdik_cache.py"),
-        env=env,
-        external=True,
+    _run_cpp_plugin_smoke(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        default_config=DEFAULT_CMAKE_CONFIG,
+        root=ROOT,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_arg_path=_mayapy_arg_path,
+        mayapy_script=_mayapy_script,
+        scripts=("tests/cpp/focused_ccdik_cache.py",),
+        require_plugin=True,
     )
 
 
 @nox.session(venv_backend="none")
 def fast_load_normals_smoke(session: nox.Session) -> None:
     """Verify authored normals in mmdFastLoad and its skinned import path."""
-    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
-    mayapy = _mayapy(version)
-    if not mayapy.exists():
-        raise FileNotFoundError(f"mayapy not found: {mayapy}")
-
-    plugin = ROOT / "plug-ins" / version / config / "mmd_tools_cpp.mll"
-    if not plugin.exists():
-        session.error(
-            f"C++ plugin not found at {plugin}; run 'uvx nox -s cpp_build "
-            f"-- --maya {version} --config {config}' first."
-        )
-    env = _mayapy_env(
-        mayapy,
-        MAYA_VERSION=version,
-        MMD_TOOLS_CPP_CONFIG=config,
-        MMD_TOOLS_CPP_PLUGIN=_mayapy_arg_path(mayapy, plugin),
-    )
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/cpp/focused_fast_load_normals.py"),
-        env=env,
-        external=True,
-    )
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/cpp/focused_fast_importer_skin.py"),
-        env=env,
-        external=True,
+    _run_cpp_plugin_smoke(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        default_config=DEFAULT_CMAKE_CONFIG,
+        root=ROOT,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_arg_path=_mayapy_arg_path,
+        mayapy_script=_mayapy_script,
+        scripts=(
+            "tests/cpp/focused_fast_load_normals.py",
+            "tests/cpp/focused_fast_importer_skin.py",
+        ),
+        require_plugin=True,
     )
 
 
 @nox.session(venv_backend="none")
 def uv_weld_smoke(session: nox.Session) -> None:
     """Verify the Python-callable C++ UV seam topology normalization command."""
-    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
-    mayapy = _mayapy(version)
-    if not mayapy.exists():
-        raise FileNotFoundError(f"mayapy not found: {mayapy}")
-
-    plugin = ROOT / "plug-ins" / version / config / "mmd_tools_cpp.mll"
-    if not plugin.exists():
-        session.error(
-            f"C++ plugin not found at {plugin}; run 'uvx nox -s cpp_build "
-            f"-- --maya {version} --config {config}' first."
-        )
-    env = _mayapy_env(
-        mayapy,
-        MAYA_VERSION=version,
-        MMD_TOOLS_CPP_CONFIG=config,
-        MMD_TOOLS_CPP_PLUGIN=_mayapy_arg_path(mayapy, plugin),
-    )
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/cpp/focused_uv_weld.py"),
-        env=env,
-        external=True,
+    _run_cpp_plugin_smoke(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        default_config=DEFAULT_CMAKE_CONFIG,
+        root=ROOT,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_arg_path=_mayapy_arg_path,
+        mayapy_script=_mayapy_script,
+        scripts=("tests/cpp/focused_uv_weld.py",),
+        require_plugin=True,
     )
 
 
 @nox.session(venv_backend="none")
 def ccdik_ancestor_residual_smoke(session: nox.Session) -> None:
     """Run the deterministic rotated-ancestor CCD residual probe."""
-    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
-    mayapy = _mayapy(version)
-    if not mayapy.exists():
-        raise FileNotFoundError(f"mayapy not found: {mayapy}")
-
-    plugin = ROOT / "plug-ins" / version / config / "mmd_tools_cpp.mll"
-    if not plugin.exists():
-        session.error(
-            f"C++ plugin not found at {plugin}; run 'uvx nox -s cpp_build "
-            f"-- --maya {version} --config {config}' first."
-        )
-    env = _mayapy_env(
-        mayapy,
-        MAYA_VERSION=version,
-        MMD_TOOLS_CPP_CONFIG=config,
-        MMD_TOOLS_CPP_PLUGIN=_mayapy_arg_path(mayapy, plugin),
-    )
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/cpp/focused_ccdik_ancestor_residual.py"),
-        env=env,
-        external=True,
+    _run_cpp_plugin_smoke(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        default_config=DEFAULT_CMAKE_CONFIG,
+        root=ROOT,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_arg_path=_mayapy_arg_path,
+        mayapy_script=_mayapy_script,
+        scripts=("tests/cpp/focused_ccdik_ancestor_residual.py",),
+        require_plugin=True,
     )
 
 
