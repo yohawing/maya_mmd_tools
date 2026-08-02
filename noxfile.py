@@ -75,6 +75,13 @@ from noxlib.release_sessions import run_native_physics_release_gate as _run_nati
 from noxlib.release_sessions import (  # noqa: E402
     run_flip_report as _run_flip_report,
     run_golden_oracle as _run_golden_oracle,
+    run_release_camera_motion_oracle as _run_release_camera_motion_oracle,
+)
+from noxlib.local_sessions import (  # noqa: E402
+    run_local_assets_check as _run_local_assets_check,
+    run_local_camera_motion_oracle as _run_local_camera_motion_oracle,
+    run_local_parity as _run_local_parity,
+    run_semistandard_name_audit as _run_semistandard_name_audit,
 )
 from noxlib.sessions import (  # noqa: E402
     run_control_rig_vmd_roundtrip as _run_control_rig_vmd_roundtrip,
@@ -2061,81 +2068,20 @@ def local_assets_check(session: nox.Session) -> None:
         uvx nox -s local_assets_check
         uvx nox -s local_assets_check -- --manifest F:/local/assets.json --strict-local
     """
-    args = list(session.posargs)
-    version = _option(args, "--maya", DEFAULT_MAYA_VERSION)
-    manifest = Path(_option(args, "--manifest", "local-assets-manifest.json"))
-    strict = _has_flag(args, "--strict-local")
-    out_json = _require_build_path(
+    _run_local_assets_check(
         session,
-        _option(args, "--out-json", "build/reports/local_assets_check.json"),
-        "--out-json",
+        posargs=session.posargs,
+        option=_option,
+        has_flag=_has_flag,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        root=ROOT,
+        require_build_path=_require_build_path,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_arg_path=_mayapy_arg_path,
+        mayapy_script=_mayapy_script,
+        normalize_local_gate_report=_normalize_local_gate_report,
     )
-    out_md = _require_build_path(
-        session,
-        _option(args, "--out-md", "build/reports/local_assets_check.md"),
-        "--out-md",
-    )
-
-    if not manifest.is_absolute():
-        manifest = ROOT / manifest
-    manifest = manifest.resolve()
-
-    if not manifest.exists():
-        out_json.parent.mkdir(parents=True, exist_ok=True)
-        out_md.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "status": "fail" if strict else "skip",
-            "results": [
-                {
-                    "name": str(manifest),
-                    "status": "fail" if strict else "skip",
-                    "duration_sec": 0.0,
-                    "detail": "manifest not found",
-                }
-            ],
-        }
-        out_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        out_md.write_text(
-            "\n".join(
-                [
-                    "# Local Assets Check",
-                    "",
-                    f"- Status: {payload['status']}",
-                    "",
-                    "| Asset | Status | Seconds | Detail |",
-                    "| --- | --- | ---: | --- |",
-                    f"| {manifest} | {payload['status']} | 0.0 | manifest not found |",
-                ]
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        session.log(f"Local assets manifest not found: {manifest}")
-        session.log(f"Local assets report: {out_md}")
-        if strict:
-            session.error("Local assets manifest is required with --strict-local")
-        return
-
-    mayapy = _mayapy(version)
-    env = _mayapy_env(mayapy, MAYA_VERSION=version)
-    command = [
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/local/local_assets_check.py"),
-        "--manifest",
-        _mayapy_arg_path(mayapy, manifest),
-        "--out-json",
-        _mayapy_arg_path(mayapy, out_json),
-        "--out-md",
-        _mayapy_arg_path(mayapy, out_md),
-    ]
-    if strict:
-        command.append("--strict-local")
-    session.run(*command, env=env, external=True)
-    status = _normalize_local_gate_report(out_json, strict, out_md)
-    session.log(f"Local assets report: {out_md}")
-    session.log(f"Local assets JSON: {out_json}")
-    if status == "fail":
-        session.error("Local assets check failed")
 
 
 @nox.session(venv_backend="none")
@@ -2146,58 +2092,14 @@ def semistandard_name_audit(session: nox.Session) -> None:
         uvx nox -s semistandard_name_audit -- --scan-root F:/MMD --max-files 200
         uvx nox -s semistandard_name_audit -- --manifest build/batch-import/manifest.json --strict-local
     """
-    args = list(session.posargs)
-    out_json = _require_build_path(
+    _run_semistandard_name_audit(
         session,
-        _option(args, "--out-json", "build/reports/semistandard_name_audit.json"),
-        "--out-json",
+        posargs=session.posargs,
+        option=_option,
+        root=ROOT,
+        require_build_path=_require_build_path,
+        python_executable=sys.executable,
     )
-    out_md = _require_build_path(
-        session,
-        _option(args, "--out-md", "build/reports/semistandard_name_audit.md"),
-        "--out-md",
-    )
-
-    passthrough: list[str] = []
-    i = 0
-    value_options = {
-        "--manifest",
-        "--scan-root",
-        "--max-files",
-        "--out-json",
-        "--out-md",
-        "--limit-findings",
-        "--min-candidate-files",
-        "--min-candidate-findings",
-    }
-    flag_options = {"--strict-local"}
-    while i < len(args):
-        arg = args[i]
-        if arg in value_options and i + 1 < len(args):
-            value = args[i + 1]
-            if arg in {"--manifest", "--scan-root", "--out-json", "--out-md"}:
-                path = Path(value)
-                value = str(path.resolve() if path.is_absolute() else (ROOT / path).resolve())
-            passthrough.extend([arg, value])
-            i += 2
-            continue
-        if arg in flag_options:
-            passthrough.append(arg)
-            i += 1
-            continue
-        passthrough.append(arg)
-        i += 1
-
-    if "--out-json" not in passthrough:
-        passthrough.extend(["--out-json", str(out_json)])
-    if "--out-md" not in passthrough:
-        passthrough.extend(["--out-md", str(out_md)])
-
-    env = os.environ.copy()
-    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(ROOT), env.get("PYTHONPATH", "")]))
-    session.run(sys.executable, "tests/local/semistandard_name_audit.py", *passthrough, env=env, external=True)
-    session.log(f"Semistandard name audit report: {out_md}")
-    session.log(f"Semistandard name audit JSON: {out_json}")
 
 
 @nox.session(venv_backend="none")
@@ -2213,50 +2115,18 @@ def local_camera_motion_oracle(session: nox.Session) -> None:
         uvx nox -s local_camera_motion_oracle -- --current-epsilon 0.0005 --case camera-edge-generated-vmd
         uvx nox -s local_camera_motion_oracle -- --current-report-only --case camera-shake-it-nanoem
     """
-    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    mayapy = _mayapy(maya_ver)
-    passthrough: list[str] = []
-    args = list(session.posargs)
-    i = 0
-    value_options = {
-        "--manifest",
-        "--case",
-        "--limit",
-        "--mode",
-        "--max-current-frames",
-        "--epsilon",
-        "--current-epsilon",
-        "--current-frame-zero",
-        "--out",
-    }
-    while i < len(args):
-        if args[i] == "--maya" and i + 1 < len(args):
-            i += 2
-            continue
-        if args[i] in value_options and i + 1 < len(args):
-            passthrough.extend([args[i], args[i + 1]])
-            i += 2
-            continue
-        if args[i] in {"--all-frames", "--current-report-only"}:
-            passthrough.append(args[i])
-            i += 1
-            continue
-        passthrough.append(args[i])
-        i += 1
-    passthrough = _copy_parity_vmd_for_mayapy(session, passthrough)
-
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/local/camera_motion_oracle_runner.py"),
-        "--repo-root",
-        _maya_process_path(mayapy, ROOT),
-        *_convert_mayapy_path_options(
-            mayapy,
-            passthrough,
-            {"--manifest", "--out", "--parity-vmd"},
-        ),
-        env=_mayapy_env(mayapy),
-        external=True,
+    _run_local_camera_motion_oracle(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        root=ROOT,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_script=_mayapy_script,
+        maya_process_path=_maya_process_path,
+        convert_mayapy_path_options=_convert_mayapy_path_options,
+        copy_parity_vmd=_copy_parity_vmd_for_mayapy,
     )
 
 
@@ -2279,189 +2149,27 @@ def release_camera_motion_oracle(session: nox.Session) -> None:
         uvx nox -s release_camera_motion_oracle -- --skip-addiction-parity
         uvx nox -s release_camera_motion_oracle -- --strict-local
     """
-    args = list(session.posargs)
-    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    mayapy = _mayapy(maya_ver)
-    manifest = _option(
-        session.posargs,
-        "--manifest",
-        "tests/data/camera_motion/manifest.json",
-    )
-    out_dir = _require_build_path(
+    _run_release_camera_motion_oracle(
         session,
-        _option(session.posargs, "--out-dir", "build/local-camera-motion-oracle/release"),
-        "--out-dir",
+        posargs=session.posargs,
+        option=_option,
+        has_flag=_has_flag,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        root=ROOT,
+        require_build_path=_require_build_path,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_script=_mayapy_script,
+        maya_process_path=_maya_process_path,
+        convert_mayapy_path_options=_convert_mayapy_path_options,
+        copy_parity_vmd=_copy_parity_vmd_for_mayapy,
+        current_epsilon=RELEASE_CAMERA_CURRENT_EPSILON,
+        addiction_camera_vmd=RELEASE_ADDICTION_CAMERA_VMD,
+        interpolation_eye_max=RELEASE_ADDICTION_INTERPOLATION_EYE_MAX,
+        interpolation_forward_max_deg=RELEASE_ADDICTION_INTERPOLATION_FORWARD_MAX_DEG,
+        interpolation_up_max_deg=RELEASE_ADDICTION_INTERPOLATION_UP_MAX_DEG,
+        interpolation_rotation_max_deg=RELEASE_ADDICTION_INTERPOLATION_ROTATION_MAX_DEG,
     )
-    manifest_path = Path(manifest)
-    if not manifest_path.is_absolute():
-        manifest_path = ROOT / manifest_path
-    manifest_path = manifest_path.resolve()
-    if not manifest_path.exists():
-        out_dir.mkdir(parents=True, exist_ok=True)
-        skip_report = out_dir / "manifest-skip.json"
-        payload = {
-            "status": "fail" if _has_flag(args, "--strict-local") else "skip",
-            "summary": {"passed": 0, "failed": 1 if _has_flag(args, "--strict-local") else 0, "skipped": 1},
-            "manifest": str(manifest_path),
-            "detail": "manifest not found",
-        }
-        skip_report.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        session.log(f"Camera motion manifest not found: {manifest_path}")
-        session.log(f"Camera motion skip report: {skip_report}")
-        if _has_flag(args, "--strict-local"):
-            session.error("Camera motion manifest is required with --strict-local")
-        return
-    default_release_cases = [
-        "camera-edge-generated-vmd",
-        "camera-interpolation-isolated-vmd",
-    ]
-    requested_case = _option(session.posargs, "--case", "")
-    if _has_flag(session.posargs, "--all-cases"):
-        selected_cases = [""]
-    elif requested_case:
-        selected_cases = [requested_case]
-    else:
-        selected_cases = default_release_cases
-    args = list(session.posargs)
-    common_args = ["--manifest", manifest]
-    if "--current-epsilon" not in args:
-        common_args.extend(["--current-epsilon", RELEASE_CAMERA_CURRENT_EPSILON])
-    parity_args: list[str] = [
-        "--parity-current-report-only",
-        "--all-frames",
-        "--parity-interpolation-eye-max",
-        _option(session.posargs, "--parity-interpolation-eye-max", RELEASE_ADDICTION_INTERPOLATION_EYE_MAX),
-        "--parity-interpolation-forward-max-deg",
-        _option(
-            session.posargs,
-            "--parity-interpolation-forward-max-deg",
-            RELEASE_ADDICTION_INTERPOLATION_FORWARD_MAX_DEG,
-        ),
-        "--parity-interpolation-up-max-deg",
-        _option(session.posargs, "--parity-interpolation-up-max-deg", RELEASE_ADDICTION_INTERPOLATION_UP_MAX_DEG),
-        "--parity-interpolation-rotation-max-deg",
-        _option(
-            session.posargs,
-            "--parity-interpolation-rotation-max-deg",
-            RELEASE_ADDICTION_INTERPOLATION_ROTATION_MAX_DEG,
-        ),
-    ]
-    parity_epsilon = _option(session.posargs, "--parity-epsilon", "")
-    if parity_epsilon:
-        parity_args.extend(["--parity-epsilon", parity_epsilon])
-    i = 0
-    passthrough_value_options = {
-        "--case",
-        "--limit",
-        "--max-current-frames",
-        "--epsilon",
-        "--current-epsilon",
-        "--current-frame-zero",
-        "--parity-interpolation-eye-max",
-        "--parity-interpolation-forward-max-deg",
-        "--parity-interpolation-up-max-deg",
-        "--parity-interpolation-rotation-max-deg",
-    }
-    consumed_value_options = {
-        "--maya",
-        "--manifest",
-        "--out-dir",
-        "--case",
-        "--parity-epsilon",
-        "--parity-interpolation-eye-max",
-        "--parity-interpolation-forward-max-deg",
-        "--parity-interpolation-up-max-deg",
-        "--parity-interpolation-rotation-max-deg",
-    }
-    while i < len(args):
-        if args[i] in consumed_value_options and i + 1 < len(args):
-            i += 2
-            continue
-        if args[i] in passthrough_value_options and i + 1 < len(args):
-            common_args.extend([args[i], args[i + 1]])
-            i += 2
-            continue
-        if args[i] in {"--all-frames", "--all-cases", "--current-report-only"}:
-            if args[i] == "--all-cases":
-                i += 1
-                continue
-            common_args.append(args[i])
-            i += 1
-            continue
-        i += 1
-
-    failed_reports: list[str] = []
-    for case_name in selected_cases:
-        case_args = list(common_args)
-        case_suffix = "all-cases"
-        if case_name:
-            case_args.extend(["--case", case_name])
-            case_suffix = case_name
-        for mode in ("bake", "sparse"):
-            report_path = out_dir / f"{mode}-{case_suffix}.json"
-            runner_args = [
-                *case_args,
-                "--mode",
-                mode,
-                "--out",
-                str(report_path),
-            ]
-            if mode == "sparse" and not _has_flag(session.posargs, "--strict-sparse-current"):
-                runner_args.append("--current-report-only")
-            session.run(
-                str(mayapy),
-                _mayapy_script(mayapy, "tests/local/camera_motion_oracle_runner.py"),
-                "--repo-root",
-                _maya_process_path(mayapy, ROOT),
-                *_convert_mayapy_path_options(
-                    mayapy,
-                    runner_args,
-                    {"--manifest", "--out"},
-                ),
-                env=_mayapy_env(mayapy),
-                external=True,
-                success_codes=[0, 1],
-            )
-            try:
-                report = json.loads(report_path.read_text(encoding="utf-8"))
-                failed = int((report.get("summary") or {}).get("failed", 0))
-            except Exception:
-                failed = 1
-            if failed:
-                failed_reports.append(str(report_path))
-    if not _has_flag(session.posargs, "--skip-addiction-parity"):
-        addiction_vmd = Path(RELEASE_ADDICTION_CAMERA_VMD)
-        if addiction_vmd.exists():
-            report_path = out_dir / "bake-rig-camera-addiction.json"
-            addiction_args = _copy_parity_vmd_for_mayapy(
-                session,
-                ["--parity-vmd", str(addiction_vmd), *parity_args],
-            )
-            session.run(
-                str(mayapy),
-                _mayapy_script(mayapy, "tests/local/camera_motion_oracle_runner.py"),
-                "--repo-root",
-                _maya_process_path(mayapy, ROOT),
-                "--parity-case-name",
-                "camera-addiction-bake-rig-parity",
-                "--out",
-                _maya_process_path(mayapy, report_path),
-                *_convert_mayapy_path_options(mayapy, addiction_args, {"--parity-vmd"}),
-                env=_mayapy_env(mayapy),
-                external=True,
-                success_codes=[0, 1],
-            )
-            try:
-                report = json.loads(report_path.read_text(encoding="utf-8"))
-                failed = int((report.get("summary") or {}).get("failed", 0))
-            except Exception:
-                failed = 1
-            if failed:
-                failed_reports.append(str(report_path))
-        else:
-            session.log(f"Skipping Addiction camera parity; local VMD not found: {addiction_vmd}")
-    if failed_reports:
-        session.error("Camera motion release gate failed; reports: " + ", ".join(failed_reports))
 
 
 @nox.session(venv_backend="none")
@@ -2478,77 +2186,18 @@ def local_parity(session: nox.Session) -> None:
         uvx nox -s local_parity -- --maya 2024 --manifest F:/local/parity.json
         uvx nox -s local_parity -- --maya 2024 --skip-fbx
     """
-    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    mayapy = _mayapy(maya_ver)
-    passthrough: list[str] = []
-    args = list(session.posargs)
-    manifest = _option(args, "--manifest", "")
-    out_json = _option(args, "--out", "build/reports/local_asset_motion_compare.json")
-    if manifest:
-        manifest_path = Path(manifest)
-        if not manifest_path.is_absolute():
-            manifest_path = ROOT / manifest_path
-        manifest_path = manifest_path.resolve()
-        if not manifest_path.exists():
-            out_path = _require_build_path(session, out_json, "--out")
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            md_path = out_path.with_suffix(".md")
-            status = "failed" if _has_flag(args, "--strict-local") else "skipped"
-            payload = {
-                "status": status,
-                "vertex_threshold": None,
-                "fbx_threshold": None,
-                "cases": [
-                    {
-                        "name": str(manifest_path),
-                        "status": status,
-                        "reason": "manifest_not_found",
-                    }
-                ],
-            }
-            out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            md_path.write_text(
-                "\n".join(
-                    [
-                        "# Local Asset Motion Compare",
-                        "",
-                        f"- status: `{status}`",
-                        "- cases: `1`",
-                        "",
-                        f"## {manifest_path}",
-                        "",
-                        f"- status: `{status}`",
-                        "- reason: `manifest_not_found`",
-                    ]
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            session.log(f"Local parity manifest not found: {manifest_path}")
-            session.log(f"Local parity report: {md_path}")
-            if _has_flag(args, "--strict-local"):
-                session.error("Local parity manifest is required with --strict-local")
-            return
-    i = 0
-    while i < len(args):
-        if args[i] == "--maya" and i + 1 < len(args):
-            i += 2
-            continue
-        if args[i] in ("--case", "--frame", "--out", "--manifest") and i + 1 < len(args):
-            passthrough.extend([args[i], args[i + 1]])
-            i += 2
-            continue
-        if args[i] in ("--skip-fbx", "--strict-local"):
-            passthrough.append(args[i])
-            i += 1
-            continue
-        i += 1
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/viewport/local_asset_motion_compare.py"),
-        *_convert_mayapy_path_options(mayapy, passthrough, {"--out"}),
-        env=_mayapy_env(mayapy, preserve_pythonpath=True),
-        external=True,
+    _run_local_parity(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        has_flag=_has_flag,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        root=ROOT,
+        require_build_path=_require_build_path,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_script=_mayapy_script,
+        convert_mayapy_path_options=_convert_mayapy_path_options,
     )
 
 

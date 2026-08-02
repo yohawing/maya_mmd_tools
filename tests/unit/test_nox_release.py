@@ -21,10 +21,42 @@ except ModuleNotFoundError:
 
 import noxfile
 from noxlib import release
-from noxlib.release_sessions import run_flip_report, run_golden_oracle
+from noxlib.release_sessions import run_flip_report, run_golden_oracle, run_release_camera_motion_oracle
 
 
 class NoxReleaseTest(unittest.TestCase):
+    def test_release_camera_oracle_missing_manifest_is_optional_by_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = types.SimpleNamespace(posargs=["--manifest", "missing.json"], runs=[], logs=[])
+            session.run = lambda *args, **kwargs: session.runs.append((args, kwargs))
+            session.log = lambda message: session.logs.append(message)
+            session.error = lambda message: (_ for _ in ()).throw(AssertionError(message))
+            run_release_camera_motion_oracle(
+                session,
+                posargs=session.posargs,
+                option=noxfile._option,
+                has_flag=noxfile._has_flag,
+                default_maya_version="2024",
+                root=root,
+                require_build_path=lambda _session, value, _name: root / value,
+                mayapy=mock.Mock(),
+                mayapy_env=mock.Mock(),
+                mayapy_script=mock.Mock(),
+                maya_process_path=mock.Mock(),
+                convert_mayapy_path_options=mock.Mock(),
+                copy_parity_vmd=mock.Mock(),
+                current_epsilon="18.25",
+                addiction_camera_vmd="F:/missing/addiction.vmd",
+                interpolation_eye_max="2.0",
+                interpolation_forward_max_deg="5.0",
+                interpolation_up_max_deg="5.0",
+                interpolation_rotation_max_deg="5.0",
+            )
+            report = root / "build/local-camera-motion-oracle/release/manifest-skip.json"
+            self.assertEqual(json.loads(report.read_text(encoding="utf-8"))["status"], "skip")
+            self.assertFalse(session.runs)
+
     def test_flip_report_builds_report_only_command(self):
         session = types.SimpleNamespace(posargs=[
             "--reference", "reference.png",
