@@ -1029,6 +1029,36 @@ def release_package(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def export_validation_gate(session: nox.Session) -> None:
+    """Run the external export-validation evidence gate.
+
+    The preceding release-matrix ``ci_unit`` step discovers the validation
+    unittest surface. When no explicit CLI is supplied, resolve the pinned
+    compatible CLI through ``_downloaded_mmd_anim_cli``; that helper honors
+    ``MMD_ANIM_CLI`` as an explicit override. All session arguments are
+    forwarded to ``tools/export_validation_gate.py``; the session remains
+    strict by default so a known external-version mismatch cannot be reported
+    as green.
+
+    Examples:
+        uvx nox -s export_validation_gate
+        uvx nox -s export_validation_gate -- --cli F:/tools/mmd-anim.exe
+        uvx nox -s export_validation_gate -- --out build/reports/export-validation.json
+    """
+    gate_args = list(session.posargs)
+    if not any(argument == "--cli" or argument.startswith("--cli=") for argument in gate_args):
+        gate_args = ["--cli", str(_downloaded_mmd_anim_cli(session)), *gate_args]
+    if "--strict" not in gate_args:
+        gate_args.append("--strict")
+    session.run(
+        sys.executable,
+        "tools/export_validation_gate.py",
+        *gate_args,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def cpp_config(session: nox.Session) -> None:
     """Configure the Maya C++ plugin build."""
     _run_cpp_config(

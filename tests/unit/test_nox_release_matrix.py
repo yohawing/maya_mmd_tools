@@ -73,6 +73,17 @@ class ReleaseMatrixTest(unittest.TestCase):
                         "build/custom-target/release",
                     ],
                 ),
+                (
+                    "tier1:export-validation",
+                    [
+                        "uvx",
+                        "nox",
+                        "-s",
+                        "export_validation_gate",
+                        "--",
+                        "--strict",
+                    ],
+                ),
             ],
         )
 

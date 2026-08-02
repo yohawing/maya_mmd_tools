@@ -52,6 +52,17 @@ def tier1_commands(
             ("tier1:ffi_build", ffi_build_command),
             ("tier1:native_smoke", native_smoke_command),
             ("tier1:native_export_smoke", native_export_smoke_command),
+            (
+                "tier1:export-validation",
+                [
+                    "uvx",
+                    "nox",
+                    "-s",
+                    "export_validation_gate",
+                    "--",
+                    "--strict",
+                ],
+            ),
         ]
     )
     return commands
