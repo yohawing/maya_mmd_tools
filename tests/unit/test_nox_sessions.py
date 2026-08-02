@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import unittest
 
-from noxlib.common import _option
-from noxlib.sessions import run_control_rig_vmd_roundtrip, run_python_module
+from tools.nox.common import _option
+from tools.nox.sessions import run_control_rig_vmd_roundtrip, run_python_module
 
 
 class _FakeSession:

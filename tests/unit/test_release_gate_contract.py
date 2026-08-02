@@ -37,8 +37,8 @@ except ModuleNotFoundError:
     sys.modules["tomllib"] = tomllib_stub
 
 import noxfile
-from noxlib.release_matrix import tier2_commands
-from noxlib.release_sessions import run_native_physics_release_gate
+from tools.nox.release_matrix import tier2_commands
+from tools.nox.release_sessions import run_native_physics_release_gate
 
 
 class ReleaseGateContractTest(unittest.TestCase):

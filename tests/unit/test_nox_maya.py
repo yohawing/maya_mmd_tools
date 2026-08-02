@@ -19,7 +19,7 @@ except ModuleNotFoundError:
     sys.modules["nox"] = nox_stub
 
 import noxfile
-from noxlib import maya
+from tools.nox import maya
 
 
 class NoxMayaTest(unittest.TestCase):

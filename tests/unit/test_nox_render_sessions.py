@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from noxlib.common import _has_flag, _option, _options
-from noxlib.maya_sessions import run_static_render, run_visual_regression
+from tools.nox.common import _has_flag, _option, _options
+from tools.nox.maya_sessions import run_static_render, run_visual_regression
 
 
 class _FakeSession:

@@ -9,8 +9,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from noxlib.common import _option, _without_option
-from noxlib.native_sessions import (
+from tools.nox.common import _option, _without_option
+from tools.nox.native_sessions import (
     run_cpp_build,
     run_cpp_cli_smoke,
     run_cpp_verify,
@@ -18,7 +18,7 @@ from noxlib.native_sessions import (
     run_native_export_smoke,
     run_reduction_abi_probe,
 )
-from noxlib.maya_sessions import (
+from tools.nox.maya_sessions import (
     run_cpp_plugin_smoke,
     run_control_rig_gui_e2e,
     run_import_order_e2e,

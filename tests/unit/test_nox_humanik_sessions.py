@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from noxlib.common import _option
-from noxlib.maya_sessions import (
+from tools.nox.common import _option
+from tools.nox.maya_sessions import (
     run_humanik_citlali_stance_smoke,
     run_humanik_definition_smoke,
     run_humanik_roundtrip_smoke,

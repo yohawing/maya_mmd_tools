@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from noxlib.release_matrix import tier0_commands, tier1_commands, tier2_commands, tier3_commands
+from tools.nox.release_matrix import tier0_commands, tier1_commands, tier2_commands, tier3_commands
 
 
 class ReleaseMatrixTest(unittest.TestCase):

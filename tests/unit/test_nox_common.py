@@ -20,7 +20,7 @@ except ModuleNotFoundError:
     sys.modules["nox"] = nox_stub
 
 import noxfile
-from noxlib import common
+from tools.nox import common
 
 
 class NoxCommonTest(unittest.TestCase):

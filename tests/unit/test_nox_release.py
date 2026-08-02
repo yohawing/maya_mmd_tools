@@ -20,8 +20,8 @@ except ModuleNotFoundError:
     sys.modules["nox"] = nox_stub
 
 import noxfile
-from noxlib import release
-from noxlib.release_sessions import run_flip_report, run_golden_oracle, run_release_camera_motion_oracle
+from tools.nox import release
+from tools.nox.release_sessions import run_flip_report, run_golden_oracle, run_release_camera_motion_oracle
 
 
 class NoxReleaseTest(unittest.TestCase):
@@ -68,7 +68,7 @@ class NoxReleaseTest(unittest.TestCase):
         session.run = lambda *args, **kwargs: session.runs.append((args, kwargs))
         session.log = lambda message: session.logs.append(message)
         session.error = lambda message: (_ for _ in ()).throw(AssertionError(message))
-        with mock.patch("noxlib.release_sessions.shutil.which", return_value="flip.exe"):
+        with mock.patch("tools.nox.release_sessions.shutil.which", return_value="flip.exe"):
             run_flip_report(
                 session,
                 posargs=session.posargs,

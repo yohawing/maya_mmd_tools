@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from noxlib.common import _has_flag, _option
-from noxlib.local_sessions import (
+from tools.nox.common import _has_flag, _option
+from tools.nox.local_sessions import (
     run_local_assets_check,
     run_local_camera_motion_oracle,
     run_local_parity,

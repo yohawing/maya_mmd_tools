@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from noxlib.common import (  # noqa: E402
+from tools.nox.common import (  # noqa: E402
     _cargo_args_with_physics_feature,
     _download_file,
     _extract_archive,
@@ -33,17 +33,17 @@ from noxlib.common import (  # noqa: E402
     _sha256_file,
     _without_option,
 )
-from noxlib.common import _mmd_anim_cli_version as _common_mmd_anim_cli_version  # noqa: E402
-from noxlib.common import (  # noqa: E402
+from tools.nox.common import _mmd_anim_cli_version as _common_mmd_anim_cli_version  # noqa: E402
+from tools.nox.common import (  # noqa: E402
     _resolve_existing_or_repo_path as _common_resolve_existing_or_repo_path,
 )
-from noxlib.maya import (  # noqa: E402
+from tools.nox.maya import (  # noqa: E402
     _convert_mayapy_path_options as _common_convert_mayapy_path_options,
     _mayapy_arg_path as _common_mayapy_arg_path,
     _mayapy_env as _common_mayapy_env,
     _mayapy_script as _common_mayapy_script,
 )
-from noxlib.native import (  # noqa: E402
+from tools.nox.native import (  # noqa: E402
     _cmake_build as _common_cmake_build,
     _cmake_configure as _common_cmake_configure,
     _cpp_build_dir as _common_cpp_build_dir,
@@ -55,7 +55,7 @@ from noxlib.native import (  # noqa: E402
     _run_in_vs_dev_cmd as _common_run_in_vs_dev_cmd,
     _vswhere_path as _common_vswhere_path,
 )
-from noxlib.release import (  # noqa: E402
+from tools.nox.release import (  # noqa: E402
     _new_release_gate_run as _common_new_release_gate_run,
     _release_gate_failure_label as _common_release_gate_failure_label,
     _release_gate_mmd_anim_pin_check as _common_release_gate_mmd_anim_pin_check,
@@ -65,26 +65,26 @@ from noxlib.release import (  # noqa: E402
     _run_release_gate_command as _common_run_release_gate_command,
     _write_release_gate_reports as _common_write_release_gate_reports,
 )
-from noxlib.release_matrix import (  # noqa: E402
+from tools.nox.release_matrix import (  # noqa: E402
     tier0_commands as _release_gate_tier0_commands,
     tier1_commands as _release_gate_tier1_commands,
     tier2_commands as _release_gate_tier2_commands,
     tier3_commands as _release_gate_tier3_commands,
 )
-from noxlib.release_sessions import run_native_physics_release_gate as _run_native_physics_release_gate  # noqa: E402
-from noxlib.release_sessions import (  # noqa: E402
+from tools.nox.release_sessions import run_native_physics_release_gate as _run_native_physics_release_gate  # noqa: E402
+from tools.nox.release_sessions import (  # noqa: E402
     run_flip_report as _run_flip_report,
     run_golden_oracle as _run_golden_oracle,
     run_release_camera_motion_oracle as _run_release_camera_motion_oracle,
     run_release_gate as _run_release_gate,
 )
-from noxlib.local_sessions import (  # noqa: E402
+from tools.nox.local_sessions import (  # noqa: E402
     run_local_assets_check as _run_local_assets_check,
     run_local_camera_motion_oracle as _run_local_camera_motion_oracle,
     run_local_parity as _run_local_parity,
     run_semistandard_name_audit as _run_semistandard_name_audit,
 )
-from noxlib.sessions import (  # noqa: E402
+from tools.nox.sessions import (  # noqa: E402
     run_control_rig_vmd_roundtrip as _run_control_rig_vmd_roundtrip,
     run_ci_unit as _run_ci_unit,
     run_gui_tests as _run_gui_tests,
@@ -93,7 +93,7 @@ from noxlib.sessions import (  # noqa: E402
     run_python_module as _run_python_module,
     run_tests as _run_tests,
 )
-from noxlib.native_sessions import (  # noqa: E402
+from tools.nox.native_sessions import (  # noqa: E402
     run_bundled_native_smoke as _run_bundled_native_smoke,
     run_cpp_build as _run_cpp_build,
     run_cpp_config as _run_cpp_config,
@@ -105,7 +105,7 @@ from noxlib.native_sessions import (  # noqa: E402
     run_native_smoke as _run_native_smoke,
     run_reduction_abi_probe as _run_reduction_abi_probe,
 )
-from noxlib.maya_sessions import (  # noqa: E402
+from tools.nox.maya_sessions import (  # noqa: E402
     run_cpp_plugin_smoke as _run_cpp_plugin_smoke,
     run_control_rig_gui_e2e as _run_control_rig_gui_e2e,
     run_humanik_citlali_stance_smoke as _run_humanik_citlali_stance_smoke,
