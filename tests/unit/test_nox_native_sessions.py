@@ -21,6 +21,7 @@ from noxlib.maya_sessions import (
     run_model_readme_dialog_e2e,
     run_viewport_capture,
     run_yw_test_model_fixture_gate,
+    run_native_physics_bake,
 )
 
 
@@ -205,6 +206,35 @@ class NativeSessionsTest(unittest.TestCase):
         self.assertEqual(args[1], "tests/viewport/yw_test_model_fixture_gate.py")
         self.assertIn(str(manifest), args)
         self.assertIn(str(out_dir / "maya-2024.json"), args)
+
+    def test_native_physics_bake_keeps_capture_and_route_argument_shapes(self):
+        mayapy = mock.Mock()
+        mayapy.exists.return_value = True
+        for verify_bake_route in (False, True):
+            session = _FakeSession(["--maya", "2024", "--ffi-path", "build/ffi"])
+            run_native_physics_bake(
+                session,
+                posargs=session.posargs,
+                option=_option,
+                default_maya_version="2026",
+                root=Path("F:/repo"),
+                resolve_existing_or_repo_path=lambda value: Path("F:/repo") / value,
+                mayapy=lambda _version: mayapy,
+                mayapy_env=lambda _mayapy, **values: values,
+                mayapy_arg_path=lambda _mayapy, path: str(path),
+                mayapy_script=lambda _mayapy, script: script,
+                verify_bake_route=verify_bake_route,
+            )
+            args, kwargs = session.runs[0]
+            if verify_bake_route:
+                self.assertIn("--verify-bake-route", args)
+                self.assertIn("--eval-frames", args)
+                self.assertNotIn("--out", args)
+            else:
+                self.assertNotIn("--verify-bake-route", args)
+                self.assertIn("--out", args)
+                self.assertIn("--width", args)
+            self.assertEqual(kwargs["env"]["MMD_ANIM_FFI_PATH"], str(Path("F:/repo/build/ffi")))
 
 
 if __name__ == "__main__":

@@ -93,6 +93,7 @@ from noxlib.native_sessions import (  # noqa: E402
 from noxlib.maya_sessions import (  # noqa: E402
     run_cpp_plugin_smoke as _run_cpp_plugin_smoke,
     run_model_readme_dialog_e2e as _run_model_readme_dialog_e2e,
+    run_native_physics_bake as _run_native_physics_bake,
     run_viewport_capture as _run_viewport_capture,
     run_yw_test_model_fixture_gate as _run_yw_test_model_fixture_gate,
 )
@@ -1296,56 +1297,18 @@ def native_physics_bake_capture(session: nox.Session) -> None:
             --out build/captures/native_physics_bake.png \\
             --report build/reports/native_physics_bake_capture.json --frame 0
     """
-    args = list(session.posargs)
-    version = _option(args, "--maya", DEFAULT_MAYA_VERSION)
-    ffi_path = _option(args, "--ffi-path", "")
-    if not ffi_path:
-        raise ValueError(
-            "native_physics_bake_capture requires --ffi-path pointing to a "
-            "physics-feature-enabled mmd-anim-ffi directory or DLL"
-        )
-    pmx = _option(args, "--pmx", str(ROOT / "tests/data/mmt_test_model.pmx"))
-    vmd = _option(args, "--vmd", str(ROOT / "tests/data/mmt_test_model_test_motion.vmd"))
-    out = _option(args, "--out", str(ROOT / "build/captures/native_physics_bake.png"))
-    report = _option(args, "--report", str(ROOT / "build/reports/native_physics_bake_capture.json"))
-    frame = _option(args, "--frame", "0")
-    fps = _option(args, "--fps", "30")
-    width = _option(args, "--width", "640")
-    height = _option(args, "--height", "480")
-
-    mayapy = _mayapy(version)
-    if not mayapy.exists():
-        raise FileNotFoundError(f"mayapy not found: {mayapy}")
-
-    resolved_ffi = _resolve_existing_or_repo_path(ffi_path)
-    env = _mayapy_env(
-        mayapy,
-        MAYA_VERSION=version,
-        MMD_ANIM_FFI_PATH=str(resolved_ffi),
-        MAYA_SKIP_USERSETUP_PY="1",
-        MMD_TOOLS_SKIP_SHADER_OVERRIDE="1",
-    )
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/viewport/native_physics_bake_capture.py"),
-        "--pmx",
-        _mayapy_arg_path(mayapy, pmx),
-        "--vmd",
-        _mayapy_arg_path(mayapy, vmd),
-        "--out",
-        _mayapy_arg_path(mayapy, out),
-        "--report",
-        _mayapy_arg_path(mayapy, report),
-        "--frame",
-        frame,
-        "--fps",
-        fps,
-        "--width",
-        width,
-        "--height",
-        height,
-        env=env,
-        external=True,
+    _run_native_physics_bake(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        root=ROOT,
+        resolve_existing_or_repo_path=_resolve_existing_or_repo_path,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_arg_path=_mayapy_arg_path,
+        mayapy_script=_mayapy_script,
+        verify_bake_route=False,
     )
 
 
@@ -1373,55 +1336,18 @@ def native_physics_bake_route_e2e(session: nox.Session) -> None:
             --eval-frames 0,1,2,3,4,5 \\
             --report build/reports/native_physics_bake_route_e2e.json
     """
-    args = list(session.posargs)
-    version = _option(args, "--maya", DEFAULT_MAYA_VERSION)
-    ffi_path = _option(args, "--ffi-path", "")
-    if not ffi_path:
-        raise ValueError(
-            "native_physics_bake_route_e2e requires --ffi-path pointing to a "
-            "physics-feature-enabled mmd-anim-ffi directory or DLL"
-        )
-    pmx = _option(args, "--pmx", str(ROOT / "tests/data/physics/test_hair_physics.pmx"))
-    vmd = _option(args, "--vmd", str(ROOT / "tests/data/mmt_test_model_test_motion.vmd"))
-    report = _option(
-        args,
-        "--report",
-        str(ROOT / "build/reports/native_physics_bake_route_e2e.json"),
-    )
-    eval_frames = _option(args, "--eval-frames", "0,1,2,3,4,5")
-    delta_epsilon = _option(args, "--delta-epsilon", "0.001")
-    fps = _option(args, "--fps", "30")
-
-    mayapy = _mayapy(version)
-    if not mayapy.exists():
-        raise FileNotFoundError(f"mayapy not found: {mayapy}")
-
-    resolved_ffi = _resolve_existing_or_repo_path(ffi_path)
-    env = _mayapy_env(
-        mayapy,
-        MAYA_VERSION=version,
-        MMD_ANIM_FFI_PATH=str(resolved_ffi),
-        MAYA_SKIP_USERSETUP_PY="1",
-        MMD_TOOLS_SKIP_SHADER_OVERRIDE="1",
-    )
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/viewport/native_physics_bake_capture.py"),
-        "--verify-bake-route",
-        "--pmx",
-        _mayapy_arg_path(mayapy, pmx),
-        "--vmd",
-        _mayapy_arg_path(mayapy, vmd),
-        "--report",
-        _mayapy_arg_path(mayapy, report),
-        "--eval-frames",
-        eval_frames,
-        "--delta-epsilon",
-        delta_epsilon,
-        "--fps",
-        fps,
-        env=env,
-        external=True,
+    _run_native_physics_bake(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        root=ROOT,
+        resolve_existing_or_repo_path=_resolve_existing_or_repo_path,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_arg_path=_mayapy_arg_path,
+        mayapy_script=_mayapy_script,
+        verify_bake_route=True,
     )
 
 

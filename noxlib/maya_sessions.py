@@ -180,3 +180,105 @@ def run_model_readme_dialog_e2e(
         result = json.loads(report.read_text(encoding="utf-8"))
         if result.get("status") != "pass":
             session.error(f"Maya {version} model-readme GUI gate failed: {result}")
+
+
+def run_native_physics_bake(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    default_maya_version: str,
+    root: Path,
+    resolve_existing_or_repo_path,
+    mayapy,
+    mayapy_env,
+    mayapy_arg_path,
+    mayapy_script,
+    verify_bake_route: bool,
+) -> None:
+    """Run either the native-physics capture or the dual-route verification smoke."""
+    args = list(posargs)
+    version = option(args, "--maya", default_maya_version)
+    ffi_path = option(args, "--ffi-path", "")
+    session_name = "native_physics_bake_route_e2e" if verify_bake_route else "native_physics_bake_capture"
+    if not ffi_path:
+        raise ValueError(
+            f"{session_name} requires --ffi-path pointing to a "
+            "physics-feature-enabled mmd-anim-ffi directory or DLL"
+        )
+    if verify_bake_route:
+        pmx = option(args, "--pmx", str(root / "tests/data/physics/test_hair_physics.pmx"))
+        vmd = option(args, "--vmd", str(root / "tests/data/mmt_test_model_test_motion.vmd"))
+        report = option(
+            args,
+            "--report",
+            str(root / "build/reports/native_physics_bake_route_e2e.json"),
+        )
+        eval_frames = option(args, "--eval-frames", "0,1,2,3,4,5")
+        delta_epsilon = option(args, "--delta-epsilon", "0.001")
+        fps = option(args, "--fps", "30")
+    else:
+        pmx = option(args, "--pmx", str(root / "tests/data/mmt_test_model.pmx"))
+        vmd = option(args, "--vmd", str(root / "tests/data/mmt_test_model_test_motion.vmd"))
+        out = option(args, "--out", str(root / "build/captures/native_physics_bake.png"))
+        report = option(args, "--report", str(root / "build/reports/native_physics_bake_capture.json"))
+        frame = option(args, "--frame", "0")
+        fps = option(args, "--fps", "30")
+        width = option(args, "--width", "640")
+        height = option(args, "--height", "480")
+
+    mayapy_path = mayapy(version)
+    if not mayapy_path.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy_path}")
+    resolved_ffi = resolve_existing_or_repo_path(ffi_path)
+    env = mayapy_env(
+        mayapy_path,
+        MAYA_VERSION=version,
+        MMD_ANIM_FFI_PATH=str(resolved_ffi),
+        MAYA_SKIP_USERSETUP_PY="1",
+        MMD_TOOLS_SKIP_SHADER_OVERRIDE="1",
+    )
+    command = [
+        str(mayapy_path),
+        mayapy_script(mayapy_path, "tests/viewport/native_physics_bake_capture.py"),
+    ]
+    if verify_bake_route:
+        command.extend(
+            [
+                "--verify-bake-route",
+                "--pmx",
+                mayapy_arg_path(mayapy_path, pmx),
+                "--vmd",
+                mayapy_arg_path(mayapy_path, vmd),
+                "--report",
+                mayapy_arg_path(mayapy_path, report),
+                "--eval-frames",
+                eval_frames,
+                "--delta-epsilon",
+                delta_epsilon,
+                "--fps",
+                fps,
+            ]
+        )
+    else:
+        command.extend(
+            [
+                "--pmx",
+                mayapy_arg_path(mayapy_path, pmx),
+                "--vmd",
+                mayapy_arg_path(mayapy_path, vmd),
+                "--out",
+                mayapy_arg_path(mayapy_path, out),
+                "--report",
+                mayapy_arg_path(mayapy_path, report),
+                "--frame",
+                frame,
+                "--fps",
+                fps,
+                "--width",
+                width,
+                "--height",
+                height,
+            ]
+        )
+    session.run(*command, env=env, external=True)
