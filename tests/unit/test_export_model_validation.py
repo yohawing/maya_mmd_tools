@@ -1167,7 +1167,11 @@ class TestExportModelValidation(unittest.TestCase):
             with self.subTest(export_format=export_format), tempfile.TemporaryDirectory() as temp_dir:
                 output_path = Path(temp_dir) / f"out.{export_format}"
                 exporter = _FakeExporter()
-                action_kwargs = {f"{export_format}_exporter": exporter, "collector": None}
+                action_kwargs = {
+                    f"{export_format}_exporter": exporter,
+                    "collector": None,
+                    "output_verifier": None,
+                }
                 result = ExportModelAction(**action_kwargs).execute(
                     ExportModelRequest(
                         file_path=str(output_path),
@@ -1196,7 +1200,10 @@ class TestExportModelValidation(unittest.TestCase):
                 model_data = _valid_model_data()
                 model_data["faces"] = [[0, 1]]
                 result = ExportModelAction(
-                    **{f"{export_format}_exporter": exporter, "collector": None}
+                    **{
+                        f"{export_format}_exporter": exporter,
+                        "collector": None,
+                    }
                 ).execute(
                     ExportModelRequest(
                         file_path=str(output_path),
@@ -1253,7 +1260,46 @@ class TestExportModelValidation(unittest.TestCase):
                 )
 
                 self.assertFalse(result.succeeded)
-                self.assertIsInstance(result.error, FileNotFoundError)
+                self.assertIsInstance(result.error, ExportValidationError)
+                self.assertEqual(result.validation_report.issues[0].code, "OUTPUT_FILE_EMPTY")
                 self.assertEqual(output_path.read_bytes(), original_bytes)
                 self.assertEqual(len(exporter.calls), 1)
                 self.assertFalse(Path(exporter.calls[0][0]).exists())
+
+    def test_output_verifier_failure_preserves_existing_file_and_cleans_temp(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "verified.pmx"
+            original_bytes = b"existing export bytes"
+            output_path.write_bytes(original_bytes)
+            exporter = _FakeExporter()
+
+            def reject_output(file_path, export_format, model_data):
+                return ExportValidationReport(
+                    export_format,
+                    (
+                        ExportValidationIssue(
+                            "OUTPUT_PARSE_FAILED",
+                            "fatal",
+                            True,
+                            "output",
+                            "parser rejected temporary output",
+                        ),
+                    ),
+                )
+
+            result = ExportModelAction(
+                pmx_exporter=exporter,
+                collector=None,
+                output_verifier=reject_output,
+            ).execute(
+                ExportModelRequest(
+                    file_path=str(output_path),
+                    options={"export_format": "pmx", "model_data": _valid_model_data()},
+                )
+            )
+
+            self.assertFalse(result.succeeded)
+            self.assertIsInstance(result.error, ExportValidationError)
+            self.assertEqual(result.validation_report.issues[0].code, "OUTPUT_PARSE_FAILED")
+            self.assertEqual(output_path.read_bytes(), original_bytes)
+            self.assertFalse(Path(exporter.calls[0][0]).exists())

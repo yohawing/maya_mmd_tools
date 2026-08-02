@@ -355,7 +355,11 @@ class TestExportModelAction(unittest.TestCase):
                 "export_format": "pmx",
                 "model_data": model_data,
             }
-            action = ExportModelAction(pmx_exporter=exporter, collector=None)
+            action = ExportModelAction(
+                pmx_exporter=exporter,
+                collector=None,
+                output_verifier=None,
+            )
 
             result = action.execute(ExportModelRequest(file_path=str(output_path), options=options))
 
@@ -378,7 +382,11 @@ class TestExportModelAction(unittest.TestCase):
             output_path = Path(temp_dir) / "out.pmd"
             exporter = _FakePmdExporter()
             options = {"file_path": str(output_path), "export_format": "pmd"}
-            action = ExportModelAction(pmd_exporter=exporter, collector=lambda received: model_data)
+            action = ExportModelAction(
+                pmd_exporter=exporter,
+                collector=lambda received: model_data,
+                output_verifier=None,
+            )
 
             result = action.execute(ExportModelRequest(file_path=str(output_path), options=options))
 

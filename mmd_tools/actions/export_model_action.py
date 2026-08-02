@@ -10,10 +10,12 @@ from ..core.logger import get_logger
 from ..io.pmd_exporter import PmdExporter
 from ..io.pmx_exporter import PmxExporter
 from ..validation.export_validator import ExportValidationError, ExportValidationReport, validate_model_data
+from ..validation.output_verifier import verify_model_output
 
 logger = get_logger(__name__)
 
 _DEFAULT_COLLECTOR = object()
+_DEFAULT_OUTPUT_VERIFIER = object()
 
 
 @dataclass
@@ -69,6 +71,7 @@ class ExportModelAction:
         pmx_exporter: Optional[PmxExporter] = None,
         pmd_exporter: Optional[PmdExporter] = None,
         collector: Optional[Callable[[Dict[str, Any]], dict]] = _DEFAULT_COLLECTOR,
+        output_verifier: Any = _DEFAULT_OUTPUT_VERIFIER,
     ):
         self._pmx_exporter = pmx_exporter or PmxExporter()
         self._pmd_exporter = pmd_exporter or PmdExporter()
@@ -76,6 +79,9 @@ class ExportModelAction:
             self._collector = _default_collect_model_data
         else:
             self._collector = collector
+        self._output_verifier = (
+            verify_model_output if output_verifier is _DEFAULT_OUTPUT_VERIFIER else output_verifier
+        )
 
     def execute(self, request: ExportModelRequest) -> ExportModelResult:
         """Export a PMX/PMD model and return a small result object."""
@@ -121,6 +127,16 @@ class ExportModelAction:
                 self._pmx_exporter.export_pmx_model(temporary_path, model_data)
             else:
                 self._pmd_exporter.export_pmd_model(temporary_path, model_data)
+
+            if self._output_verifier is not None:
+                output_report = self._output_verifier(temporary_path, export_format, model_data)
+                if output_report is not None and output_report.issues:
+                    validation_report = ExportValidationReport(
+                        export_format,
+                        tuple(validation_report.issues) + tuple(output_report.issues),
+                    )
+                if output_report is not None and output_report.is_blocking:
+                    raise ExportValidationError(validation_report)
 
             if not os.path.isfile(temporary_path) or os.path.getsize(temporary_path) == 0:
                 raise FileNotFoundError(

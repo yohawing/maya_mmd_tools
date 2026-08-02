@@ -102,6 +102,15 @@ _KNOWN_ISSUE_CODES = (
     "MORPHS_NOT_SEQUENCE",
     "NON_FINITE_NUMBER",
     "NUMERIC_VALUE_TYPE",
+    "OUTPUT_BONE_COUNT_MISMATCH",
+    "OUTPUT_FACE_COUNT_MISMATCH",
+    "OUTPUT_FILE_EMPTY",
+    "OUTPUT_FILE_MISSING",
+    "OUTPUT_FORMAT_UNSUPPORTED",
+    "OUTPUT_HEADER_INVALID",
+    "OUTPUT_MATERIAL_COUNT_MISMATCH",
+    "OUTPUT_PARSE_FAILED",
+    "OUTPUT_VERTEX_COUNT_MISMATCH",
     "PMD_ADDITIONAL_UV_UNSUPPORTED",
     "PMD_BONE_LIMIT",
     "PMD_BONE_REFERENCE_OUT_OF_RANGE",
@@ -172,6 +181,11 @@ _CATEGORY_TEXT = {
         "impact": "The exporter cannot produce a trustworthy model file from this payload.",
         "remediation": "Repair the model payload before exporting.",
     },
+    "output": {
+        "expected": "The temporary output must have a valid header, parse successfully, and preserve required counts.",
+        "impact": "The generated file cannot be accepted as a trustworthy export artifact.",
+        "remediation": "Inspect the writer output and fix the export path before replacing the target file.",
+    },
     "physics": {
         "expected": "Rigid-body and joint entries must use valid supported references and fields.",
         "impact": "The exported physics section would be invalid or would lose authored data.",
@@ -182,6 +196,8 @@ _CATEGORY_TEXT = {
 
 def _category_for_code(code: str) -> str:
     """Return the fixed report category for a registered issue code."""
+    if code.startswith("OUTPUT_"):
+        return "output"
     if code.startswith("BONE") or code.startswith("PMD_BONE") or code.startswith("PMX_BONE"):
         return "bones"
     if code.startswith("DISPLAY") or code.startswith("PMD_DISPLAY"):

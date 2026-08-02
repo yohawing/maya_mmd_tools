@@ -21,6 +21,7 @@ from .issue_catalog import (
     get_issue_catalog_entry,
     validate_issue_catalog,
 )
+from .output_verifier import verify_model_output
 
 __all__ = [
     "BoneValidator",
@@ -35,4 +36,5 @@ __all__ = [
     "validate_export_model",
     "validate_issue_catalog",
     "validate_model_data",
+    "verify_model_output",
 ]
