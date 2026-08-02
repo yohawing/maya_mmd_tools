@@ -121,6 +121,124 @@ class ExportValidationReport:
             "issues": [issue.to_dict() for issue in self.issues],
         }
 
+    def to_canonical_dict(
+        self,
+        *,
+        target_identity: Optional[str] = None,
+        snapshot_fingerprint: Optional[str] = None,
+        provenance: str = "PayloadValidator",
+        evidence: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Return the catalog-backed report used by audit artifacts.
+
+        ``to_dict`` remains the small compatibility representation used by
+        existing callers.  This method is the v0.7 contract representation:
+        every issue is enriched from the source-controlled issue catalog and
+        an unregistered issue code fails closed.
+        """
+        from .issue_catalog import canonical_issue_dict
+
+        return {
+            "schema_version": 1,
+            "status": self.to_dict()["status"],
+            "requires_warning_ack": self.to_dict()["requires_warning_ack"],
+            "format": self.export_format,
+            "mode": "model",
+            "target_identity": target_identity,
+            "snapshot_fingerprint": snapshot_fingerprint,
+            "summary": self.to_dict()["summary"],
+            "issues": [
+                canonical_issue_dict(
+                    issue,
+                    provenance=provenance,
+                    snapshot_fingerprint=snapshot_fingerprint,
+                    evidence=evidence,
+                )
+                for issue in self.issues
+            ],
+        }
+
+    def to_canonical_json(
+        self,
+        *,
+        target_identity: Optional[str] = None,
+        snapshot_fingerprint: Optional[str] = None,
+        provenance: str = "PayloadValidator",
+        evidence: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Return deterministic JSON for the catalog-backed audit report."""
+        return json.dumps(
+            self.to_canonical_dict(
+                target_identity=target_identity,
+                snapshot_fingerprint=snapshot_fingerprint,
+                provenance=provenance,
+                evidence=evidence,
+            ),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def write_canonical_json(
+        self,
+        file_path,
+        *,
+        target_identity: Optional[str] = None,
+        snapshot_fingerprint: Optional[str] = None,
+        provenance: str = "PayloadValidator",
+        evidence: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Write the catalog-backed audit JSON with one final newline."""
+        with open(file_path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(
+                self.to_canonical_json(
+                    target_identity=target_identity,
+                    snapshot_fingerprint=snapshot_fingerprint,
+                    provenance=provenance,
+                    evidence=evidence,
+                )
+            )
+            handle.write("\n")
+
+    def to_markdown(
+        self,
+        *,
+        target_identity: Optional[str] = None,
+        snapshot_fingerprint: Optional[str] = None,
+        provenance: str = "PayloadValidator",
+        evidence: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Return the deterministic human-audit Markdown report."""
+        from .issue_catalog import render_validation_report_markdown
+
+        return render_validation_report_markdown(
+            self,
+            target_identity=target_identity,
+            snapshot_fingerprint=snapshot_fingerprint,
+            provenance=provenance,
+            evidence=evidence,
+        )
+
+    def write_markdown(
+        self,
+        file_path,
+        *,
+        target_identity: Optional[str] = None,
+        snapshot_fingerprint: Optional[str] = None,
+        provenance: str = "PayloadValidator",
+        evidence: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Write the human-audit Markdown report with one final newline."""
+        with open(file_path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(
+                self.to_markdown(
+                    target_identity=target_identity,
+                    snapshot_fingerprint=snapshot_fingerprint,
+                    provenance=provenance,
+                    evidence=evidence,
+                )
+            )
+
     def to_json(self) -> str:
         """Return the canonical JSON representation of this report."""
         return json.dumps(
