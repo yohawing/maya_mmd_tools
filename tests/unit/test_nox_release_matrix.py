@@ -74,6 +74,10 @@ class ReleaseMatrixTest(unittest.TestCase):
                     ],
                 ),
                 (
+                    "tier1:mmd-anim-python-bindings",
+                    ["uvx", "nox", "-s", "mmd_anim_python_tests"],
+                ),
+                (
                     "tier1:export-validation",
                     [
                         "uvx",

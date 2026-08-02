@@ -53,6 +53,10 @@ def tier1_commands(
             ("tier1:native_smoke", native_smoke_command),
             ("tier1:native_export_smoke", native_export_smoke_command),
             (
+                "tier1:mmd-anim-python-bindings",
+                ["uvx", "nox", "-s", "mmd_anim_python_tests"],
+            ),
+            (
                 "tier1:export-validation",
                 [
                     "uvx",
