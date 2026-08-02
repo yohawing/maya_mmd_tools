@@ -453,14 +453,22 @@ class TestExportVmdAction(unittest.TestCase):
         action = ExportVmdAction(exporter=exporter)
         vmd_data = VmdData()
 
-        result = action.execute(
-            ExportVmdRequest(file_path="out.vmd", options={"export_format": "vmd"}, animation_data=vmd_data)
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            file_path = str(Path(directory) / "out.vmd")
+            result = action.execute(
+                ExportVmdRequest(
+                    file_path=file_path,
+                    options={"export_format": "vmd"},
+                    animation_data=vmd_data,
+                )
+            )
 
-        self.assertTrue(result.succeeded)
-        self.assertEqual(result.exported_path, "out.vmd")
-        self.assertIsNone(result.error)
-        self.assertEqual(exporter.calls, [("out.vmd", vmd_data)])
+            self.assertTrue(result.succeeded)
+            self.assertEqual(result.exported_path, file_path)
+            self.assertIsNone(result.error)
+            self.assertEqual(len(exporter.calls), 1)
+            self.assertEqual(exporter.calls[0][1], vmd_data)
+            self.assertTrue(Path(file_path).is_file())
 
     def test_execute_uses_collector_when_animation_data_is_missing(self):
         exporter = _FakeVmdExporter()
@@ -468,11 +476,15 @@ class TestExportVmdAction(unittest.TestCase):
         options = {"target_model": "model_root"}
         action = ExportVmdAction(exporter=exporter, collector=lambda received: collected)
 
-        result = action.execute(ExportVmdRequest(file_path="out.vmd", options=options))
+        with tempfile.TemporaryDirectory() as directory:
+            file_path = str(Path(directory) / "out.vmd")
+            result = action.execute(ExportVmdRequest(file_path=file_path, options=options))
 
-        self.assertTrue(result.succeeded)
-        self.assertEqual(result.exported_path, "out.vmd")
-        self.assertEqual(exporter.calls, [("out.vmd", collected)])
+            self.assertTrue(result.succeeded)
+            self.assertEqual(result.exported_path, file_path)
+            self.assertEqual(len(exporter.calls), 1)
+            self.assertEqual(exporter.calls[0][1], collected)
+            self.assertTrue(Path(file_path).is_file())
 
     def test_execute_reports_missing_collector_or_data(self):
         action = ExportVmdAction(exporter=_FakeVmdExporter(), collector=None)
@@ -507,6 +519,7 @@ class _FakeVmdExporter:
 
     def export_vmd_animation(self, file_path, animation_data):
         self.calls.append((file_path, animation_data))
+        VmdData().write_file(file_path)
 
 
 if __name__ == "__main__":

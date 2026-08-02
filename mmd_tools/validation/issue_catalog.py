@@ -156,6 +156,18 @@ _KNOWN_ISSUE_CODES = (
     "VERTEX_NOT_MAPPING",
     "VERTICES_EMPTY",
     "VERTICES_NOT_SEQUENCE",
+    "VMD_BONE_INTERPOLATION_LENGTH",
+    "VMD_CAMERA_INTERPOLATION_LENGTH",
+    "VMD_FRAME_NEGATIVE",
+    "VMD_FRAME_RANGE",
+    "VMD_IK_FLAG_RANGE",
+    "VMD_MODE_UNSUPPORTED",
+    "VMD_NAME_EMPTY",
+    "VMD_NON_FINITE_NUMBER",
+    "VMD_PERSPECTIVE_RANGE",
+    "VMD_QUATERNION_INVALID",
+    "VMD_RAW_PROVENANCE_MISSING",
+    "VMD_SHADOW_MODE_RANGE",
 )
 
 
@@ -195,6 +207,11 @@ _CATEGORY_TEXT = {
         "impact": "The generated file cannot be accepted as a trustworthy export artifact.",
         "remediation": "Inspect the writer output and fix the export path before replacing the target file.",
     },
+    "animation": {
+        "expected": "VMD frame names, ranges, interpolation payloads, and numeric values must match the selected mode.",
+        "impact": "The exported motion would be malformed, ambiguous, or lose raw animation provenance.",
+        "remediation": "Repair the VMD frame payload or use the supported Mode A/C export route.",
+    },
     "physics": {
         "expected": "Rigid-body and joint entries must use valid supported references and fields.",
         "impact": "The exported physics section would be invalid or would lose authored data.",
@@ -207,6 +224,8 @@ def _category_for_code(code: str) -> str:
     """Return the fixed report category for a registered issue code."""
     if code.startswith("OUTPUT_") or code.startswith("MMD_ANIM_"):
         return "output"
+    if code.startswith("VMD_"):
+        return "animation"
     if code.startswith("BONE") or code.startswith("PMD_BONE") or code.startswith("PMX_BONE"):
         return "bones"
     if code.startswith("DISPLAY") or code.startswith("PMD_DISPLAY"):

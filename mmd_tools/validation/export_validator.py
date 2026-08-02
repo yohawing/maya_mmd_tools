@@ -68,6 +68,7 @@ class ExportValidationReport:
 
     export_format: Optional[str]
     issues: Tuple[ExportValidationIssue, ...]
+    mode: str = "model"
 
     @property
     def is_blocking(self) -> bool:
@@ -128,7 +129,7 @@ class ExportValidationReport:
             "status": status,
             "requires_warning_ack": has_non_blocking_warning,
             "format": self.export_format,
-            "mode": "model",
+            "mode": self.mode,
             "summary": counts,
             "issues": [issue.to_dict() for issue in self.issues],
         }
@@ -156,7 +157,7 @@ class ExportValidationReport:
             "status": self.to_dict()["status"],
             "requires_warning_ack": self.to_dict()["requires_warning_ack"],
             "format": self.export_format,
-            "mode": "model",
+            "mode": self.mode,
             "target_identity": target_identity,
             "snapshot_fingerprint": snapshot_fingerprint,
             "summary": self.to_dict()["summary"],
