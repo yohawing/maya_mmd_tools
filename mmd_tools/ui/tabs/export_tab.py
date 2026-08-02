@@ -8,13 +8,17 @@ from ..qt_compat import (
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
+    QSplitter,
     QVBoxLayout,
     QWidget,
+    Qt,
     Signal,
 )
 from ..validation_console import ValidationConsole
@@ -38,18 +42,30 @@ class ExportTab(BaseTab):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        """Build the workflow controls without embedding validation policy."""
-        layout = QVBoxLayout(self)
-        form = QFormLayout()
+        """Build the Import-style settings sidebar and export workflow pane."""
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(5, 5, 5, 5)
+
+        splitter = QSplitter(Qt.Horizontal)
+
+        # Left side: export settings, matching the Import tab's sidebar.
+        settings_scroll = QScrollArea()
+        settings_scroll.setObjectName("exportSettingsScroll")
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        settings_widget = QWidget()
+        settings_layout = QVBoxLayout(settings_widget)
+        self.settings_group = QGroupBox(self.tr("export", "settings"))
+        settings_form = QFormLayout()
 
         self.target_combo = QComboBox()
-        self.target_combo.addItem("Current selection", "")
-        form.addRow("Target", self.target_combo)
+        self.target_combo.addItem(self.tr("current_model", "fields").rstrip(":"), "")
+        settings_form.addRow(self.tr("target_model", "fields"), self.target_combo)
 
         self.format_combo = QComboBox()
         self.format_combo.addItems(["pmx", "pmd", "vmd"])
         self.format_combo.currentTextChanged.connect(self._sync_mode_visibility)
-        form.addRow("Format", self.format_combo)
+        settings_form.addRow(self.tr("format", "fields"), self.format_combo)
 
         self.mode_label = QLabel("VMD mode")
         self.mode_combo = QComboBox()
@@ -59,7 +75,7 @@ class ExportTab(BaseTab):
         mode_layout.setContentsMargins(0, 0, 0, 0)
         mode_layout.addWidget(self.mode_combo)
         mode_layout.addStretch()
-        form.addRow(self.mode_label, mode_row)
+        settings_form.addRow(self.mode_label, mode_row)
 
         self.frame_range_check = QCheckBox("Use frame range")
         self.frame_start_spin = QSpinBox()
@@ -68,30 +84,38 @@ class ExportTab(BaseTab):
         self.frame_end_spin = QSpinBox()
         self.frame_end_spin.setRange(0, 1000000)
         self.frame_end_spin.setValue(120)
-        range_row = QWidget(self)
-        range_layout = QHBoxLayout(range_row)
-        range_layout.setContentsMargins(0, 0, 0, 0)
-        range_layout.addWidget(self.frame_range_check)
-        range_layout.addWidget(QLabel("Start"))
-        range_layout.addWidget(self.frame_start_spin)
-        range_layout.addWidget(QLabel("End"))
-        range_layout.addWidget(self.frame_end_spin)
-        range_layout.addStretch()
-        form.addRow("Range", range_row)
+        settings_form.addRow("Range", self.frame_range_check)
+        settings_form.addRow("Start", self.frame_start_spin)
+        settings_form.addRow("End", self.frame_end_spin)
 
-        self.apply_scale_check = QCheckBox("Apply scale")
+        self.apply_scale_check = QCheckBox(self.tr("apply_scale", "checkboxes"))
         self.apply_scale_check.setChecked(True)
-        form.addRow("Options", self.apply_scale_check)
+        settings_form.addRow("Options", self.apply_scale_check)
+
+        self.settings_group.setLayout(settings_form)
+        settings_layout.addWidget(self.settings_group)
+        settings_layout.addStretch()
+        settings_scroll.setWidget(settings_widget)
+
+        # Right side: output/action controls followed by the validation console.
+        workflow_scroll = QScrollArea()
+        workflow_scroll.setObjectName("exportWorkflowScroll")
+        workflow_scroll.setWidgetResizable(True)
+        workflow_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        workflow_widget = QWidget()
+        workflow_layout = QVBoxLayout(workflow_widget)
+
+        self.export_group = QGroupBox(self.tr("export", "groups"))
+        export_form = QFormLayout()
 
         self.output_path_edit = QLineEdit()
-        self.output_browse_button = QPushButton("Browse")
+        self.output_browse_button = QPushButton(self.tr("browse", "buttons"))
         output_row = QWidget(self)
         output_layout = QHBoxLayout(output_row)
         output_layout.setContentsMargins(0, 0, 0, 0)
         output_layout.addWidget(self.output_path_edit)
         output_layout.addWidget(self.output_browse_button)
-        form.addRow("Output", output_row)
-        layout.addLayout(form)
+        export_form.addRow(self.tr("file_path", "labels"), output_row)
 
         buttons = QHBoxLayout()
         self.validate_button = QPushButton("Validate")
@@ -103,11 +127,22 @@ class ExportTab(BaseTab):
         self.state_label = QLabel(STATE_EDITING)
         buttons.addWidget(self.state_label)
         buttons.addStretch()
-        layout.addLayout(buttons)
+        export_form.addRow(buttons)
+        self.export_group.setLayout(export_form)
+        workflow_layout.addWidget(self.export_group)
 
         self.validation_console = ValidationConsole(self)
         self.validation_console.revalidate_requested.connect(self.validate_requested.emit)
-        layout.addWidget(self.validation_console)
+        workflow_layout.addWidget(self.validation_console, 1)
+        workflow_layout.addStretch()
+        workflow_scroll.setWidget(workflow_widget)
+
+        splitter.addWidget(settings_scroll)
+        splitter.addWidget(workflow_scroll)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        splitter.setSizes([300, 600])
+        main_layout.addWidget(splitter)
 
         self.output_browse_button.clicked.connect(self._browse_output)
         for widget, signal_name in (
@@ -151,7 +186,7 @@ class ExportTab(BaseTab):
         """Refresh live model targets while retaining the current selection."""
         self.target_combo.blockSignals(True)
         self.target_combo.clear()
-        self.target_combo.addItem("Current selection", "")
+        self.target_combo.addItem(self.tr("current_model", "fields").rstrip(":"), "")
         for target in targets or []:
             self.target_combo.addItem(str(target), str(target))
         if current_target:
