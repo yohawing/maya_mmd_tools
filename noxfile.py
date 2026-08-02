@@ -72,10 +72,12 @@ from noxlib.release_matrix import (  # noqa: E402
     tier3_commands as _release_gate_tier3_commands,
 )
 from noxlib.sessions import (  # noqa: E402
+    run_control_rig_vmd_roundtrip as _run_control_rig_vmd_roundtrip,
     run_ci_unit as _run_ci_unit,
     run_gui_tests as _run_gui_tests,
     run_release_package as _run_release_package,
     run_release_version as _run_release_version,
+    run_python_module as _run_python_module,
     run_tests as _run_tests,
 )
 from noxlib.native_sessions import (  # noqa: E402
@@ -787,17 +789,12 @@ def tests(session: nox.Session) -> None:
 @nox.session(venv_backend="none")
 def mmd_control_rig_vmd_roundtrip_smoke(session: nox.Session) -> None:
     """Run the focused MMD control-rig import/edit/bake/VMD round-trip gate."""
-    maya_version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    session.run(
-        sys.executable,
-        "tests/run_tests.py",
-        "--type",
-        "integration",
-        "--test",
-        "test_mmd_control_rig_analyzer",
-        "--maya",
-        maya_version,
-        external=True,
+    _run_control_rig_vmd_roundtrip(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        python_executable=sys.executable,
     )
 
 
@@ -815,13 +812,12 @@ def mmd_control_rig_vmd_import_parity_matrix(session: nox.Session) -> None:
         uvx nox -s mmd_control_rig_vmd_import_parity_matrix -- --versions 2024 --modes dg
         uvx nox -s mmd_control_rig_vmd_import_parity_matrix -- --cases coverage --out build/reports/cr-matrix.json --timeout 600
     """
-    session.run(
-        sys.executable,
-        "-m",
-        "tests.viewport.mmd_control_rig_vmd_import_parity_matrix",
-        *session.posargs,
-        env=dict(os.environ),
-        external=True,
+    _run_python_module(
+        session,
+        module="tests.viewport.mmd_control_rig_vmd_import_parity_matrix",
+        posargs=session.posargs,
+        python_executable=sys.executable,
+        environment=dict(os.environ),
     )
 
 
@@ -836,13 +832,12 @@ def real_asset_bake_rig_parity(session: nox.Session) -> None:
         uvx nox -s real_asset_bake_rig_parity -- --manifest F:/MMD/parity-manifest.json --resume
     """
 
-    session.run(
-        sys.executable,
-        "-m",
-        "tests.viewport.real_asset_bake_rig_parity",
-        *session.posargs,
-        env=dict(os.environ),
-        external=True,
+    _run_python_module(
+        session,
+        module="tests.viewport.real_asset_bake_rig_parity",
+        posargs=session.posargs,
+        python_executable=sys.executable,
+        environment=dict(os.environ),
     )
 
 

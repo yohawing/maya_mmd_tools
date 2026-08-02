@@ -91,6 +91,34 @@ def run_tests(session, *, posargs: list[str], python_executable: str) -> None:
     session.run(python_executable, "tests/run_tests.py", *args, external=True)
 
 
+def run_python_module(session, *, module: str, posargs: list[str], python_executable: str, environment) -> None:
+    """Run a repository Python module with the caller's environment unchanged."""
+    session.run(
+        python_executable,
+        "-m",
+        module,
+        *posargs,
+        env=environment,
+        external=True,
+    )
+
+
+def run_control_rig_vmd_roundtrip(session, *, posargs: list[str], option, default_maya_version: str, python_executable: str) -> None:
+    """Run the focused Control Rig import/edit/bake/VMD round-trip test."""
+    maya_version = option(posargs, "--maya", default_maya_version)
+    session.run(
+        python_executable,
+        "tests/run_tests.py",
+        "--type",
+        "integration",
+        "--test",
+        "test_mmd_control_rig_analyzer",
+        "--maya",
+        maya_version,
+        external=True,
+    )
+
+
 def run_gui_tests(session, *, posargs: list[str], python_executable: str, default_maya_version: str) -> None:
     """Run the existing Maya GUI test runner."""
     args = posargs or ["--maya_version", default_maya_version]
