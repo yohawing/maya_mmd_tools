@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import shutil
 from pathlib import Path
@@ -325,3 +326,175 @@ def run_release_camera_motion_oracle(
 
     if failed_reports:
         session.error("Camera motion release gate failed; reports: " + ", ".join(failed_reports))
+
+
+def run_release_gate(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    options,
+    has_flag,
+    root: Path,
+    default_maya_version: str,
+    default_cpp_config: str,
+    default_cpp_versions: tuple[str, ...],
+    release_maya_versions: tuple[str, ...],
+    viewport_matrix: tuple[tuple[str, str, str], ...],
+    default_visual_manifest: str,
+    release_visual_ports: dict[str, str],
+    release_visual_cases,
+    new_release_gate_run,
+    release_gate_pin_check,
+    release_gate_version_check,
+    release_gate_tier0_commands,
+    release_gate_tier1_commands,
+    release_gate_tier2_commands,
+    release_gate_tier3_commands,
+    run_release_gate_callable,
+    run_release_gate_command,
+    write_release_gate_reports,
+    release_gate_failure_label,
+    format_test_summary,
+    environment=None,
+) -> None:
+    """Run release verification tiers with keep-going reporting."""
+    run_id, run_timestamp = new_release_gate_run()
+    args = list(posargs)
+    quick = has_flag(args, "--quick")
+    version = option(args, "--maya", default_maya_version)
+    cpp_versions = options(args, "--cpp-maya") or list(default_cpp_versions)
+    cpp_config = option(args, "--cpp-config", default_cpp_config)
+    ffi_cargo_target_dir = option(args, "--ffi-cargo-target-dir", "")
+    ffi_path = option(args, "--ffi-path", "")
+    if ffi_cargo_target_dir and not ffi_path:
+        ffi_path = str(Path(ffi_cargo_target_dir) / "release")
+    strict_local = has_flag(args, "--strict-local")
+    verbose = has_flag(args, "--verbose")
+    local_assets_manifest = option(args, "--local-assets-manifest", "local-assets-manifest.json")
+    camera_manifest = option(args, "--camera-manifest", "tests/data/camera_motion/manifest.json")
+    local_parity_manifest = option(args, "--local-parity-manifest", "local-parity-manifest.json")
+    env = os.environ if environment is None else environment
+    visual_manifest = Path(
+        option(
+            args,
+            "--visual-manifest",
+            env.get("GOLDEN_ORACLE_RENDER_MANIFEST", default_visual_manifest),
+        )
+    )
+    results: list[dict[str, object]] = []
+
+    if not quick:
+        run_release_gate_callable("tier0:mmd-anim-pin", release_gate_pin_check, results)
+        if results[-1]["status"] == "fail":
+            md_path, json_path = write_release_gate_reports(
+                results,
+                quick,
+                run_id=run_id,
+                timestamp=run_timestamp,
+            )
+            session.log(f"Release gate report: {md_path}")
+            session.log(f"Release gate JSON: {json_path}")
+            session.error(
+                "Release gate preflight failed: "
+                f"{release_gate_failure_label(results[-1])}"
+            )
+
+    for name, command in release_gate_tier0_commands():
+        run_release_gate_command(name, command, results, verbose=verbose)
+    run_release_gate_callable("tier0:version-markers", release_gate_version_check, results)
+
+    for name, command in release_gate_tier1_commands(
+        quick=quick,
+        ffi_cargo_target_dir=ffi_cargo_target_dir,
+        ffi_path=ffi_path,
+    ):
+        run_release_gate_command(name, command, results, verbose=verbose)
+
+    if not quick:
+        if not visual_manifest.is_file():
+            run_release_gate_callable(
+                "tier2:generated-pmx-visual-manifest",
+                lambda: (_ for _ in ()).throw(
+                    FileNotFoundError(
+                        f"GoldenOracle render manifest not found: {visual_manifest}. "
+                        "Pass --visual-manifest or set GOLDEN_ORACLE_RENDER_MANIFEST."
+                    )
+                ),
+                results,
+            )
+        for name, command in release_gate_tier2_commands(
+            version=version,
+            cpp_versions=cpp_versions,
+            cpp_config=cpp_config,
+            release_maya_versions=release_maya_versions,
+            viewport_matrix=viewport_matrix,
+            visual_manifest=visual_manifest,
+            visual_ports=release_visual_ports,
+            visual_cases=release_visual_cases,
+            include_cpp=has_flag(args, "--with-cpp"),
+            verbose=verbose,
+        ):
+            run_release_gate_command(name, command, results, verbose=verbose)
+
+        for name, command, result_report in release_gate_tier3_commands(
+            root=root,
+            version=version,
+            local_assets_manifest=local_assets_manifest,
+            camera_manifest=camera_manifest,
+            local_parity_manifest=local_parity_manifest,
+            strict_local=strict_local,
+        ):
+            run_release_gate_command(
+                name,
+                command,
+                results,
+                result_report=result_report,
+                required_local=True,
+                strict_local=strict_local,
+                verbose=verbose,
+            )
+
+    md_path, json_path = write_release_gate_reports(
+        results,
+        quick,
+        run_id=run_id,
+        timestamp=run_timestamp,
+    )
+    counts = {
+        status: sum(result["status"] == status for result in results)
+        for status in ("pass", "fail", "skip")
+    }
+    print(
+        format_test_summary(
+            "release_gate",
+            total=len(results),
+            passed=counts["pass"],
+            skipped=counts["skip"],
+            failed=counts["fail"],
+            duration_sec=sum(float(result["duration_sec"]) for result in results),
+        )
+    )
+    session.log(f"Release gate report: {md_path}")
+    session.log(f"Release gate JSON: {json_path}")
+
+    failed = [result for result in results if result["status"] == "fail"]
+    if failed:
+        failed_names = ", ".join(str(result["name"]) for result in failed)
+        print("[release_gate] first failure: " f"{release_gate_failure_label(failed[0])}")
+        print(f"[release_gate] failed gates: {failed_names}")
+        failed_tests = list(
+            dict.fromkeys(
+                str(test)
+                for result in failed
+                for test in result.get("failed_tests", [])
+            )
+        )
+        if failed_tests:
+            print(f"[release_gate] failed tests: {', '.join(failed_tests)}")
+        failed_logs = [str(result["log"]) for result in failed if result.get("log")]
+        if any(not result.get("log") for result in failed):
+            failed_logs.append(str(json_path))
+        if failed_logs:
+            print(f"[release_gate] failure logs: {', '.join(failed_logs)}")
+        session.error(f"Release gate failed: {failed_names}")

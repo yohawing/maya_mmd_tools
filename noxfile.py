@@ -76,6 +76,7 @@ from noxlib.release_sessions import (  # noqa: E402
     run_flip_report as _run_flip_report,
     run_golden_oracle as _run_golden_oracle,
     run_release_camera_motion_oracle as _run_release_camera_motion_oracle,
+    run_release_gate as _run_release_gate,
 )
 from noxlib.local_sessions import (  # noqa: E402
     run_local_assets_check as _run_local_assets_check,
@@ -1837,157 +1838,35 @@ def release_gate(session: nox.Session) -> None:
         uvx nox -s release_gate -- --ffi-cargo-target-dir build/mmd-anim-unlocked-target
         uvx nox -s release_gate -- --strict-local --local-parity-manifest F:/local/parity.json --local-physics-manifest F:/local/physics-parity.json
     """
-    run_id, run_timestamp = _common_new_release_gate_run()
-    args = list(session.posargs)
-    quick = _has_flag(args, "--quick")
-    version = _option(args, "--maya", DEFAULT_MAYA_VERSION)
-    cpp_versions = _options(args, "--cpp-maya") or list(DEFAULT_CPP_VERIFY_MAYA_VERSIONS)
-    cpp_config = _option(args, "--cpp-config", DEFAULT_CMAKE_CONFIG)
-    ffi_cargo_target_dir = _option(args, "--ffi-cargo-target-dir", "")
-    ffi_path = _option(args, "--ffi-path", "")
-    if ffi_cargo_target_dir and not ffi_path:
-        ffi_path = str(Path(ffi_cargo_target_dir) / "release")
-    strict_local = _has_flag(args, "--strict-local")
-    verbose = _has_flag(args, "--verbose")
-    local_assets_manifest = _option(args, "--local-assets-manifest", "local-assets-manifest.json")
-    camera_manifest = _option(
-        args,
-        "--camera-manifest",
-        "tests/data/camera_motion/manifest.json",
+    _run_release_gate(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        options=_options,
+        has_flag=_has_flag,
+        root=ROOT,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        default_cpp_config=DEFAULT_CMAKE_CONFIG,
+        default_cpp_versions=DEFAULT_CPP_VERIFY_MAYA_VERSIONS,
+        release_maya_versions=DEFAULT_RELEASE_MAYA_VERSIONS,
+        viewport_matrix=DEFAULT_RELEASE_VIEWPORT_MATRIX,
+        default_visual_manifest=DEFAULT_GOLDEN_ORACLE_RENDER_MANIFEST,
+        release_visual_ports=DEFAULT_RELEASE_VISUAL_PORTS,
+        release_visual_cases=_release_visual_cases,
+        new_release_gate_run=_common_new_release_gate_run,
+        release_gate_pin_check=_release_gate_mmd_anim_pin_check,
+        release_gate_version_check=_release_gate_version_check,
+        release_gate_tier0_commands=_release_gate_tier0_commands,
+        release_gate_tier1_commands=_release_gate_tier1_commands,
+        release_gate_tier2_commands=_release_gate_tier2_commands,
+        release_gate_tier3_commands=_release_gate_tier3_commands,
+        run_release_gate_callable=_run_release_gate_callable,
+        run_release_gate_command=_run_release_gate_command,
+        write_release_gate_reports=_write_release_gate_reports,
+        release_gate_failure_label=_release_gate_failure_label,
+        format_test_summary=_format_test_summary,
+        environment=os.environ,
     )
-    local_parity_manifest = _option(args, "--local-parity-manifest", "local-parity-manifest.json")
-    visual_manifest = Path(
-        _option(
-            args,
-            "--visual-manifest",
-            os.environ.get("GOLDEN_ORACLE_RENDER_MANIFEST", DEFAULT_GOLDEN_ORACLE_RENDER_MANIFEST),
-        )
-    )
-    results: list[dict[str, object]] = []
-
-    if not quick:
-        _run_release_gate_callable(
-            "tier0:mmd-anim-pin",
-            _release_gate_mmd_anim_pin_check,
-            results,
-        )
-        if results[-1]["status"] == "fail":
-            md_path, json_path = _write_release_gate_reports(
-                results,
-                quick,
-                run_id=run_id,
-                timestamp=run_timestamp,
-            )
-            session.log(f"Release gate report: {md_path}")
-            session.log(f"Release gate JSON: {json_path}")
-            session.error(
-                "Release gate preflight failed: "
-                f"{_release_gate_failure_label(results[-1])}"
-            )
-
-    tier0_commands = _release_gate_tier0_commands()
-    for name, command in tier0_commands:
-        _run_release_gate_command(name, command, results, verbose=verbose)
-    _run_release_gate_callable("tier0:version-markers", _release_gate_version_check, results)
-
-    tier1_commands = _release_gate_tier1_commands(
-        quick=quick,
-        ffi_cargo_target_dir=ffi_cargo_target_dir,
-        ffi_path=ffi_path,
-    )
-    for name, command in tier1_commands:
-        _run_release_gate_command(name, command, results, verbose=verbose)
-
-    if not quick:
-        if not visual_manifest.is_file():
-            _run_release_gate_callable(
-                "tier2:generated-pmx-visual-manifest",
-                lambda: (_ for _ in ()).throw(FileNotFoundError(
-                    f"GoldenOracle render manifest not found: {visual_manifest}. "
-                    "Pass --visual-manifest or set GOLDEN_ORACLE_RENDER_MANIFEST."
-                )),
-                results,
-            )
-        tier2_commands = _release_gate_tier2_commands(
-            version=version,
-            cpp_versions=cpp_versions,
-            cpp_config=cpp_config,
-            release_maya_versions=DEFAULT_RELEASE_MAYA_VERSIONS,
-            viewport_matrix=DEFAULT_RELEASE_VIEWPORT_MATRIX,
-            visual_manifest=visual_manifest,
-            visual_ports=DEFAULT_RELEASE_VISUAL_PORTS,
-            visual_cases=_release_visual_cases,
-            include_cpp=_has_flag(args, "--with-cpp"),
-            verbose=verbose,
-        )
-        for name, command in tier2_commands:
-            _run_release_gate_command(name, command, results, verbose=verbose)
-
-        tier3_commands = _release_gate_tier3_commands(
-            root=ROOT,
-            version=version,
-            local_assets_manifest=local_assets_manifest,
-            camera_manifest=camera_manifest,
-            local_parity_manifest=local_parity_manifest,
-            strict_local=strict_local,
-        )
-        for name, command, result_report in tier3_commands:
-            _run_release_gate_command(
-                name,
-                command,
-                results,
-                result_report=result_report,
-                required_local=True,
-                strict_local=strict_local,
-                verbose=verbose,
-            )
-
-    md_path, json_path = _write_release_gate_reports(
-        results,
-        quick,
-        run_id=run_id,
-        timestamp=run_timestamp,
-    )
-    counts = {
-        status: sum(result["status"] == status for result in results)
-        for status in ("pass", "fail", "skip")
-    }
-    print(
-        _format_test_summary(
-            "release_gate",
-            total=len(results),
-            passed=counts["pass"],
-            skipped=counts["skip"],
-            failed=counts["fail"],
-            duration_sec=sum(float(result["duration_sec"]) for result in results),
-        )
-    )
-    session.log(f"Release gate report: {md_path}")
-    session.log(f"Release gate JSON: {json_path}")
-
-    failed = [result for result in results if result["status"] == "fail"]
-    if failed:
-        failed_names = ", ".join(str(result["name"]) for result in failed)
-        print(
-            "[release_gate] first failure: "
-            f"{_release_gate_failure_label(failed[0])}"
-        )
-        print(f"[release_gate] failed gates: {failed_names}")
-        failed_tests = list(
-            dict.fromkeys(
-                str(test)
-                for result in failed
-                for test in result.get("failed_tests", [])
-            )
-        )
-        if failed_tests:
-            print(f"[release_gate] failed tests: {', '.join(failed_tests)}")
-        failed_logs = [str(result["log"]) for result in failed if result.get("log")]
-        if any(not result.get("log") for result in failed):
-            failed_logs.append(str(json_path))
-        if failed_logs:
-            print(f"[release_gate] failure logs: {', '.join(failed_logs)}")
-        session.error(f"Release gate failed: {failed_names}")
 
 
 @nox.session(venv_backend="none")
