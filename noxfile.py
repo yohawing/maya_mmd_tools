@@ -12,14 +12,9 @@ import hashlib
 import json
 import os
 import platform
-import re
 import shutil
 import subprocess
 import sys
-import tarfile
-import time
-import urllib.request
-import zipfile
 from pathlib import Path
 
 import nox
@@ -28,12 +23,49 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tests.common.maya_location import maya_location as _maya_location  # noqa: E402
+from noxlib.common import (  # noqa: E402
+    _cargo_args_with_physics_feature,
+    _download_file,
+    _extract_archive,
+    _has_flag,
+    _option,
+    _options,
+    _sha256_file,
+    _without_option,
+)
+from noxlib.common import _mmd_anim_cli_version as _common_mmd_anim_cli_version  # noqa: E402
+from noxlib.common import (  # noqa: E402
+    _resolve_existing_or_repo_path as _common_resolve_existing_or_repo_path,
+)
+from noxlib.maya import (  # noqa: E402
+    _convert_mayapy_path_options as _common_convert_mayapy_path_options,
+    _mayapy_arg_path as _common_mayapy_arg_path,
+    _mayapy_env as _common_mayapy_env,
+    _mayapy_script as _common_mayapy_script,
+)
+from noxlib.native import (  # noqa: E402
+    _cmake_build as _common_cmake_build,
+    _cmake_configure as _common_cmake_configure,
+    _cpp_build_dir as _common_cpp_build_dir,
+    _cpp_smoke_exe as _common_cpp_smoke_exe,
+    _find_vsdevcmd as _common_find_vsdevcmd,
+    _is_expected_environment_import_failure as _common_is_expected_environment_import_failure,
+    _maya_devkit_root as _common_maya_devkit_root,
+    _run_cli_smoke as _common_run_cli_smoke,
+    _run_in_vs_dev_cmd as _common_run_in_vs_dev_cmd,
+    _vswhere_path as _common_vswhere_path,
+)
+from noxlib.release import (  # noqa: E402
+    _release_gate_failure_label as _common_release_gate_failure_label,
+    _release_gate_mmd_anim_pin_check as _common_release_gate_mmd_anim_pin_check,
+    _release_gate_version_check as _common_release_gate_version_check,
+    _normalize_local_gate_report as _common_normalize_local_gate_report,
+    _run_release_gate_callable as _common_run_release_gate_callable,
+    _run_release_gate_command as _common_run_release_gate_command,
+    _write_release_gate_reports as _common_write_release_gate_reports,
+)
 from tests.common.maya_location import mayapy as _mayapy  # noqa: E402
-from tests.common.maya_location import convert_path_options_for_maya_process as _convert_maya_path_options  # noqa: E402
 from tests.common.maya_location import path_for_maya_process as _maya_process_path  # noqa: E402
-from tests.common.maya_location import pythonpath_for_maya_process as _maya_pythonpath  # noqa: E402
-from tests.common.maya_location import resolve_path_for_maya_process as _resolve_maya_path  # noqa: E402
 from tests.common.output_hygiene import (  # noqa: E402
     compact_failure_details_from_log as _compact_failure_details_from_log,
 )
@@ -98,76 +130,6 @@ def _release_visual_cases(_shader_backend: str) -> tuple[str, ...]:
     return RELEASE_VISUAL_CASES
 
 
-def _option(args: list[str], name: str, default: str) -> str:
-    """Return a string option value from nox positional arguments."""
-    try:
-        index = args.index(name)
-    except ValueError:
-        return default
-    try:
-        return args[index + 1]
-    except IndexError as exc:
-        raise ValueError(f"{name} requires a value") from exc
-
-
-def _options(args: list[str], name: str) -> list[str]:
-    """Return all string option values from nox positional arguments."""
-    values: list[str] = []
-    i = 0
-    while i < len(args):
-        if args[i] == name:
-            if i + 1 >= len(args):
-                raise ValueError(f"{name} requires a value")
-            values.append(args[i + 1])
-            i += 2
-            continue
-        i += 1
-    return values
-
-
-def _without_option(args: list[str], name: str) -> list[str]:
-    """Return args with a single value option removed."""
-    filtered: list[str] = []
-    i = 0
-    while i < len(args):
-        if args[i] == name:
-            if i + 1 >= len(args):
-                raise ValueError(f"{name} requires a value")
-            i += 2
-            continue
-        filtered.append(args[i])
-        i += 1
-    return filtered
-
-
-def _has_flag(args: list[str], name: str) -> bool:
-    """Return True if a boolean flag is present in positional arguments."""
-    return name in args
-
-
-def _cargo_args_with_physics_feature(args: list[str]) -> list[str]:
-    """Return cargo args that enable the native Bullet physics runtime feature."""
-    feature = "physics-bullet-native"
-    cargo_args = list(args)
-    for index, value in enumerate(cargo_args):
-        if value == "--features":
-            if index + 1 >= len(cargo_args):
-                raise ValueError("--features requires a value")
-            features = cargo_args[index + 1].replace(",", " ").split()
-            if feature not in features:
-                features.append(feature)
-                cargo_args[index + 1] = " ".join(features)
-            return cargo_args
-        if value.startswith("--features="):
-            features = value.split("=", 1)[1].replace(",", " ").split()
-            if feature not in features:
-                features.append(feature)
-                cargo_args[index] = "--features=" + " ".join(features)
-            return cargo_args
-    cargo_args.extend(["--features", feature])
-    return cargo_args
-
-
 def _native_runtime_smoke_code() -> str:
     """Return Python code that verifies the runtime ABI and required features."""
     return (
@@ -217,53 +179,12 @@ def _require_build_path(session: nox.Session, value: str, option_name: str) -> P
 
 def _resolve_existing_or_repo_path(value: str) -> Path:
     """Resolve an input path from absolute or repository-relative text."""
-    path = Path(value)
-    if not path.is_absolute():
-        path = ROOT / path
-    return path.resolve()
-
-
-def _sha256_file(path: Path) -> str:
-    """Return the SHA-256 digest for a file."""
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return _common_resolve_existing_or_repo_path(value, ROOT)
 
 
 def _mmd_anim_cli_version(exe: Path) -> str:
     """Return the first non-empty line of the mmd-anim CLI version output."""
-    result = subprocess.run(
-        [str(exe), "--version"],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return next((line.strip() for line in result.stdout.splitlines() if line.strip()), "")
-
-
-def _download_file(url: str, destination: Path) -> None:
-    """Download a URL to a local file."""
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with urllib.request.urlopen(url) as response, destination.open("wb") as handle:
-        shutil.copyfileobj(response, handle)
-
-
-def _extract_archive(archive: Path, destination: Path) -> None:
-    """Extract a supported mmd-anim release archive."""
-    if destination.exists():
-        shutil.rmtree(destination)
-    destination.mkdir(parents=True)
-    if archive.suffix == ".zip":
-        with zipfile.ZipFile(archive) as zip_file:
-            zip_file.extractall(destination)
-    elif archive.name.endswith(".tar.gz"):
-        with tarfile.open(archive, "r:gz") as tar_file:
-            tar_file.extractall(destination)
-    else:
-        raise ValueError(f"Unsupported archive format: {archive}")
+    return _common_mmd_anim_cli_version(exe, ROOT)
 
 
 def _windows_processes_locking_module(path: Path) -> list[str]:
@@ -364,32 +285,22 @@ def _downloaded_mmd_anim_cli(session: nox.Session) -> Path:
 
 def _mayapy_env(mayapy: Path, preserve_pythonpath: bool = False, **extra: str) -> dict[str, str]:
     """Return environment values with repo paths suitable for mayapy."""
-    env = {
-        **os.environ,
-        "PYTHONPATH": _maya_pythonpath(
-            mayapy,
-            ROOT,
-            os.environ.get("PYTHONPATH"),
-            preserve_existing=preserve_pythonpath,
-        ),
-    }
-    env.update(extra)
-    return env
+    return _common_mayapy_env(mayapy, ROOT, preserve_pythonpath=preserve_pythonpath, **extra)
 
 
 def _mayapy_script(mayapy: Path, relative_script: str) -> str:
     """Return an absolute script path suitable for the resolved mayapy."""
-    return _maya_process_path(mayapy, ROOT / relative_script)
+    return _common_mayapy_script(mayapy, ROOT, relative_script)
 
 
 def _mayapy_arg_path(mayapy: Path, value: str | Path) -> str:
     """Return a path argument suitable for the resolved mayapy."""
-    return _resolve_maya_path(mayapy, ROOT, value)
+    return _common_mayapy_arg_path(mayapy, ROOT, value)
 
 
 def _convert_mayapy_path_options(mayapy: Path, args: list[str], path_options: set[str]) -> list[str]:
     """Convert values following path-like options for a mayapy child process."""
-    return _convert_maya_path_options(mayapy, ROOT, args, path_options)
+    return _common_convert_mayapy_path_options(mayapy, ROOT, args, path_options)
 
 
 def _probe_passthrough(
@@ -491,118 +402,15 @@ def _copy_parity_vmd_for_mayapy(session: nox.Session, args: list[str]) -> list[s
 
 def _release_gate_version_check(expected_version: str | None = None) -> None:
     """Validate release version markers before running expensive gates."""
-    import re
-    import tomllib
-
-    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    version = pyproject["project"]["version"]
-    if expected_version and version != expected_version:
-        raise RuntimeError(f"pyproject.toml version {version} does not match requested release version {expected_version}")
-
-    init_text = (ROOT / "mmd_tools" / "__init__.py").read_text(encoding="utf-8")
-    init_match = re.search(r'__version__\s*=\s*"([^"]+)"', init_text)
-    if not init_match or init_match.group(1) != version:
-        raise RuntimeError(f"mmd_tools/__init__.py version does not match pyproject.toml: {version}")
-
-    mod_text = (ROOT / "maya_mmd_tools.mod").read_text(encoding="utf-8")
-    mod_versions = set(re.findall(r"maya_mmd_tools\s+([0-9]+\.[0-9]+\.[0-9]+)", mod_text))
-    if mod_versions != {version}:
-        raise RuntimeError(f"maya_mmd_tools.mod versions {sorted(mod_versions)} do not match {version}")
-
-    plugin_text = (ROOT / "cpp" / "src" / "pluginMain.cpp").read_text(encoding="utf-8")
-    plugin_match = re.search(
-        r'MFnPlugin\s+plugin\s*\(\s*obj\s*,\s*"[^"]+"\s*,\s*"([^"]+)"',
-        plugin_text,
-    )
-    if not plugin_match or plugin_match.group(1) != version:
-        raise RuntimeError(f"cpp/src/pluginMain.cpp version does not match pyproject.toml: {version}")
-
-    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    heading = f"## [{version}]"
-    start = changelog.find(heading)
-    if start == -1:
-        raise RuntimeError(f"CHANGELOG.md is missing {heading}")
-    next_heading = changelog.find("\n## [", start + len(heading))
-    section = changelog[start: next_heading if next_heading != -1 else len(changelog)]
-    body_lines = [
-        line.strip()
-        for line in section.splitlines()[1:]
-        if line.strip() and not line.strip().startswith("[")
-    ]
-    if not body_lines:
-        raise RuntimeError(f"CHANGELOG.md section {heading} is empty")
+    return _common_release_gate_version_check(ROOT, expected_version=expected_version)
 
 
 def _release_gate_mmd_anim_pin_check(root: Path | None = None) -> None:
     """Require the checked-out mmd-anim HEAD to match the parent gitlink."""
-    root = ROOT if root is None else root
-    relative_path = "external/mmd-anim"
-    submodule = root / "external" / "mmd-anim"
-    if not submodule.is_dir() or not (submodule / ".git").exists():
-        raise RuntimeError(
-            f"{relative_path} is not initialized; release provenance cannot be verified. "
-            "Initialize the pinned submodule before running release_gate."
-        )
-
-    def git_output(arguments: list[str], cwd: Path) -> str:
-        try:
-            completed = subprocess.run(
-                ["git", *arguments],
-                cwd=cwd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                check=False,
-            )
-        except FileNotFoundError as exc:
-            raise RuntimeError(
-                "Git executable is unavailable; release provenance cannot be verified."
-            ) from exc
-        if completed.returncode != 0:
-            detail = (completed.stderr or completed.stdout).strip()
-            suffix = f": {detail}" if detail else ""
-            raise RuntimeError(
-                f"Failed to verify {relative_path} release provenance with "
-                f"git {' '.join(arguments)}{suffix}"
-            )
-        return completed.stdout.rstrip("\r\n")
-
-    gitlink_line = git_output(["ls-tree", "HEAD", "--", relative_path], root)
-    gitlink_match = re.fullmatch(
-        rf"160000 commit ([0-9a-fA-F]{{40,64}})\t{re.escape(relative_path)}",
-        gitlink_line,
+    return _common_release_gate_mmd_anim_pin_check(
+        ROOT if root is None else root,
+        run_process=subprocess.run,
     )
-    if gitlink_match is None:
-        raise RuntimeError(
-            f"Parent HEAD does not contain a valid gitlink for {relative_path}; "
-            "release provenance cannot be verified."
-        )
-    parent_head = gitlink_match.group(1).lower()
-
-    checkout_head = git_output(["rev-parse", "--verify", "HEAD"], submodule).lower()
-    if re.fullmatch(r"[0-9a-f]{40,64}", checkout_head) is None:
-        raise RuntimeError(
-            f"{relative_path} returned an invalid checkout HEAD {checkout_head!r}; "
-            "release provenance cannot be verified."
-        )
-    if checkout_head != parent_head:
-        raise RuntimeError(
-            f"{relative_path} pin mismatch: parent gitlink={parent_head}, "
-            f"checkout HEAD={checkout_head}. Restore or initialize the pinned submodule "
-            "before running release_gate; automatic checkout/reset is intentionally disabled."
-        )
-    dirty_status = git_output(
-        ["status", "--porcelain=v1", "--untracked-files=all"],
-        submodule,
-    )
-    if dirty_status:
-        status_summary = dirty_status.replace("\r\n", "\n").replace("\n", "; ")
-        raise RuntimeError(
-            f"{relative_path} worktree is dirty; release provenance cannot be verified. "
-            f"Git status: {status_summary}. Commit, stash, or remove these changes before "
-            "running release_gate; automatic cleanup is intentionally disabled."
-        )
 
 
 def _run_release_gate_command(
@@ -616,65 +424,20 @@ def _run_release_gate_command(
     verbose: bool = False,
 ) -> None:
     """Run a command quietly, retain its transcript, and record its result."""
-    started = time.perf_counter()
-    if result_report is not None and result_report.exists():
-        result_report.unlink()
-    returncode, log_path, (_, repeated_warnings) = _run_logged_subprocess(
+    return _common_run_release_gate_command(
+        name,
         command,
-        log_path=ROOT / "build" / "reports" / "release_gate" / f"{_safe_log_name(name)}.log",
-        cwd=ROOT,
+        results,
+        root=ROOT,
+        run_logged_subprocess=_run_logged_subprocess,
+        safe_log_name=_safe_log_name,
+        compact_failure_details_from_log=_compact_failure_details_from_log,
+        format_test_summary=_format_test_summary,
+        result_report=result_report,
+        required_local=required_local,
+        strict_local=strict_local,
         verbose=verbose,
     )
-    status = "pass" if returncode == 0 else "fail"
-    detail = None
-    if result_report is not None and result_report.is_file():
-        try:
-            child_status = str(json.loads(result_report.read_text(encoding="utf-8")).get("status", "")).lower()
-        except (OSError, ValueError, TypeError) as exc:
-            status = "fail"
-            detail = f"invalid child report {result_report}: {exc}"
-        else:
-            status_aliases = {"pass": "pass", "passed": "pass", "fail": "fail", "failed": "fail", "skip": "skip", "skipped": "skip"}
-            if child_status not in status_aliases:
-                status = "fail"
-                detail = f"invalid child status in {result_report}: {child_status!r}"
-            elif returncode == 0:
-                status = status_aliases[child_status]
-    if status == "skip" and required_local and strict_local:
-        status = "fail"
-        detail = "required local gate skipped under --strict-local"
-    duration_sec = round(time.perf_counter() - started, 3)
-    first_failure, failed_tests = _compact_failure_details_from_log(log_path)
-    result = {
-        "name": name,
-        "command": command,
-        "status": status,
-        "returncode": returncode,
-        "duration_sec": duration_sec,
-        "log": str(log_path),
-        "repeated_warnings_suppressed": repeated_warnings,
-        **({"first_failure": first_failure} if first_failure else {}),
-        **({"failed_tests": failed_tests} if failed_tests else {}),
-        **({"detail": detail} if detail else {}),
-    }
-    results.append(result)
-    print(
-        _format_test_summary(
-            name,
-            total=1,
-            passed=int(status == "pass"),
-            skipped=int(status == "skip"),
-            failed=int(status == "fail"),
-            duration_sec=duration_sec,
-        )
-    )
-    if repeated_warnings and not verbose:
-        print(f"[{name}] repeated warnings suppressed from terminal: {repeated_warnings}")
-    if status == "fail":
-        print(f"[{name}] first failure: {first_failure or name}")
-        if failed_tests:
-            print(f"[{name}] failed tests: {', '.join(failed_tests)}")
-        print(f"[{name}] full log: {log_path}")
 
 
 def _run_release_gate_callable(
@@ -683,87 +446,22 @@ def _run_release_gate_callable(
     results: list[dict[str, object]],
 ) -> None:
     """Run an in-process release-gate step and append a keep-going result entry."""
-    started = time.perf_counter()
-    try:
-        func()
-    except Exception as exc:
-        result = {
-                "name": name,
-                "command": [],
-                "status": "fail",
-                "returncode": 1,
-                "duration_sec": round(time.perf_counter() - started, 3),
-                "error": str(exc),
-            }
-    else:
-        result = {
-                "name": name,
-                "command": [],
-                "status": "pass",
-                "returncode": 0,
-                "duration_sec": round(time.perf_counter() - started, 3),
-            }
-    results.append(result)
-    print(
-        _format_test_summary(
-            name,
-            total=1,
-            passed=int(result["status"] == "pass"),
-            skipped=0,
-            failed=int(result["status"] == "fail"),
-            duration_sec=float(result["duration_sec"]),
-        )
+    return _common_run_release_gate_callable(
+        name,
+        func,
+        results,
+        format_test_summary=_format_test_summary,
     )
-    if result["status"] == "fail":
-        print(f"[{name}] first failure: {result.get('error', name)}")
 
 
 def _release_gate_failure_label(result: dict[str, object]) -> str:
     """Return the best available compact failure detail for an aggregate gate."""
-    return str(
-        result.get("first_failure")
-        or result.get("error")
-        or result.get("name")
-        or "unknown failure"
-    )
+    return _common_release_gate_failure_label(result)
 
 
 def _write_release_gate_reports(results: list[dict[str, object]], quick: bool) -> tuple[Path, Path]:
     """Write release-gate Markdown and JSON summaries."""
-    report_dir = ROOT / "build" / "reports"
-    report_dir.mkdir(parents=True, exist_ok=True)
-    json_path = report_dir / "release_gate.json"
-    md_path = report_dir / "release_gate.md"
-
-    counts = {status: sum(result["status"] == status for result in results) for status in ("pass", "fail", "skip")}
-    aggregate_status = "fail" if counts["fail"] else "pass" if counts["pass"] else "skip"
-    payload = {
-        "quick": quick,
-        "status": aggregate_status,
-        "summary": counts,
-        "results": results,
-    }
-    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-    lines = [
-        "# Release Gate",
-        "",
-        f"- Mode: {'quick' if quick else 'full'}",
-        f"- Status: {payload['status']}",
-        f"- Summary: pass={counts['pass']}, fail={counts['fail']}, skip={counts['skip']}",
-        "",
-        "| Step | Status | Seconds | Command |",
-        "| --- | --- | ---: | --- |",
-    ]
-    for result in results:
-        command = " ".join(str(part) for part in result.get("command") or [])
-        if not command:
-            command = str(result.get("error", "in-process"))
-        lines.append(
-            f"| {result['name']} | {result['status']} | {result['duration_sec']} | `{command}` |"
-        )
-    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return md_path, json_path
+    return _common_write_release_gate_reports(ROOT, results, quick)
 
 
 def _normalize_local_gate_report(
@@ -772,46 +470,7 @@ def _normalize_local_gate_report(
     markdown_path: Path | None = None,
 ) -> str:
     """Derive and persist a local child gate status in its JSON and Markdown reports."""
-    payload = json.loads(report_path.read_text(encoding="utf-8"))
-    results = payload.get("results")
-    if not isinstance(results, list):
-        raise ValueError(f"Local gate report has no results list: {report_path}")
-    aliases = {"pass": "pass", "passed": "pass", "fail": "fail", "failed": "fail", "skip": "skip", "skipped": "skip"}
-    statuses = []
-    for result in results:
-        raw_status = str(result.get("status", "")).lower() if isinstance(result, dict) else ""
-        if raw_status not in aliases:
-            raise ValueError(f"Invalid local gate result status in {report_path}: {raw_status!r}")
-        statuses.append(aliases[raw_status])
-    if "fail" in statuses or not statuses:
-        status = "fail"
-    elif "pass" in statuses:
-        status = "pass"
-    else:
-        status = "fail" if strict_local else "skip"
-    payload["status"] = status
-    summary = {
-        candidate: statuses.count(candidate) for candidate in ("pass", "fail", "skip")
-    }
-    payload["summary"] = summary
-    report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    if markdown_path is not None and markdown_path.is_file():
-        lines = markdown_path.read_text(encoding="utf-8").splitlines()
-        status_line = f"- Status: {status}"
-        summary_line = (
-            f"- Summary: pass={summary['pass']}, fail={summary['fail']}, skip={summary['skip']}"
-        )
-        status_index = next((index for index, line in enumerate(lines) if line.startswith("- Status:")), None)
-        if status_index is None:
-            lines.extend(["", status_line, summary_line])
-        else:
-            lines[status_index] = status_line
-            if status_index + 1 < len(lines) and lines[status_index + 1].startswith("- Summary:"):
-                lines[status_index + 1] = summary_line
-            else:
-                lines.insert(status_index + 1, summary_line)
-        markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return status
+    return _common_normalize_local_gate_report(report_path, strict_local, markdown_path)
 
 
 def _import_order_manifest_asset_path(value: str) -> str:
@@ -982,115 +641,32 @@ def _write_import_order_local_manifest(
 
 def _maya_devkit_root(version: str) -> Path:
     """Return the Maya devkit root, allowing environment overrides."""
-    version_env = os.environ.get(f"MAYA_DEVKIT_ROOT_{version}")
-    if version_env:
-        return Path(version_env)
-
-    common_env = os.environ.get("MAYA_DEVKIT_ROOT")
-    if common_env:
-        return Path(common_env)
-
-    return _maya_location(version) / "devkit"
+    return _common_maya_devkit_root(version)
 
 
 def _cpp_build_dir(version: str) -> Path:
     """Return the CMake build directory for a Maya version."""
-    return ROOT / "build" / "cpp" / f"maya{version}"
+    return _common_cpp_build_dir(ROOT, version)
 
 
 def _vswhere_path() -> Path:
     """Return the default vswhere path."""
-    explicit = os.environ.get("VSWHERE_PATH")
-    if explicit:
-        return Path(explicit)
-    return Path("C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe")
+    return _common_vswhere_path()
 
 
 def _find_vsdevcmd() -> Path | None:
     """Find VsDevCmd.bat for Windows C++ builds."""
-    explicit = os.environ.get("VSDEVCMD_PATH")
-    if explicit:
-        path = Path(explicit)
-        return path if path.exists() else None
-
-    vswhere = _vswhere_path()
-    if vswhere.exists():
-        try:
-            result = subprocess.run(
-                [
-                    str(vswhere),
-                    "-latest",
-                    "-prerelease",
-                    "-products",
-                    "*",
-                    "-requires",
-                    "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-                    "-property",
-                    "installationPath",
-                ],
-                check=False,
-                text=True,
-                capture_output=True,
-            )
-            for line in result.stdout.splitlines():
-                candidate = Path(line.strip()) / "Common7" / "Tools" / "VsDevCmd.bat"
-                if candidate.exists():
-                    return candidate
-        except OSError:
-            pass
-
-    for root in (
-        Path("C:/Program Files/Microsoft Visual Studio/18"),
-        Path("C:/Program Files/Microsoft Visual Studio/2022"),
-        Path("C:/Program Files (x86)/Microsoft Visual Studio/2022"),
-    ):
-        if not root.exists():
-            continue
-        for candidate in root.glob("*/Common7/Tools/VsDevCmd.bat"):
-            if candidate.exists():
-                return candidate
-
-    return None
+    return _common_find_vsdevcmd()
 
 
 def _run_in_vs_dev_cmd(session: nox.Session, command: list[str]) -> None:
     """Run a Windows command after initializing Visual Studio C++ tools."""
-    vsdevcmd = _find_vsdevcmd()
-    if vsdevcmd is None or os.environ.get("MMD_TOOLS_SKIP_VSDEVCMD"):
-        session.run(*command, external=True)
-        return
-
-    body = subprocess.list2cmdline(command)
-    session.log(f"Using Visual Studio developer environment: {vsdevcmd}")
-    result = subprocess.run(
-        f'"{vsdevcmd}" -arch=x64 -host_arch=x64 >nul && {body}',
-        cwd=ROOT,
-        shell=True,
-    )
-    if result.returncode != 0:
-        session.error(f"Command failed with exit code {result.returncode}: {body}")
+    return _common_run_in_vs_dev_cmd(session, ROOT, command)
 
 
 def _cmake_configure(session: nox.Session, version: str, config: str = DEFAULT_CMAKE_CONFIG) -> None:
     """Configure the Maya C++ plugin build."""
-    args = [
-        "cmake",
-        "-S",
-        "cpp/src",
-        "-B",
-        str(_cpp_build_dir(version)),
-        f"-DMAYA_VERSION={version}",
-        f"-DREPO_ROOT={ROOT}",
-        f"-DMAYA_DEVKIT_ROOT={_maya_devkit_root(version)}",
-    ]
-
-    if platform.system() == "Windows" and not os.environ.get("CMAKE_GENERATOR"):
-        args.extend(["-G", "Ninja", f"-DCMAKE_BUILD_TYPE={config}"])
-
-    if platform.system() == "Windows":
-        _run_in_vs_dev_cmd(session, args)
-    else:
-        session.run(*args, external=True)
+    return _common_cmake_configure(session, ROOT, version, config)
 
 
 def _cmake_build(
@@ -1101,28 +677,12 @@ def _cmake_build(
     clean_first: bool = False,
 ) -> None:
     """Build the Maya C++ plugin, optionally forcing fresh tracked artifacts."""
-    command = [
-        "cmake",
-        "--build",
-        str(_cpp_build_dir(version)),
-        "--config",
-        config,
-    ]
-    if clean_first:
-        command.append("--clean-first")
-    if platform.system() == "Windows":
-        _run_in_vs_dev_cmd(session, command)
-    else:
-        session.run(*command, external=True)
+    return _common_cmake_build(session, ROOT, version, config, clean_first=clean_first)
 
 
 def _cpp_smoke_exe(version: str, config: str) -> Path:
     """Return path to the standalone mmd_runtime_smoke exe produced by cpp build."""
-    build_dir = _cpp_build_dir(version) / config
-    exe = build_dir / "mmd_runtime_smoke"
-    if platform.system() == "Windows":
-        exe = exe.with_suffix(".exe")
-    return exe
+    return _common_cpp_smoke_exe(ROOT, version, config)
 
 
 def _run_cli_smoke(
@@ -1134,43 +694,12 @@ def _run_cli_smoke(
     limit: str = "",
 ) -> None:
     """Run the CLI smoke exe (if manifest provided). Used by cpp_cli_smoke and conditionally by cpp_verify."""
-    if not manifest:
-        return
-    exe = _cpp_smoke_exe(version, config)
-    if not exe.exists():
-        raise FileNotFoundError(
-            f"mmd_runtime_smoke not found at {exe}. "
-            f"Run 'uvx nox -s cpp_build -- --maya {version} --config {config}' first."
-        )
-    smoke_args: list[str] = ["--manifest", manifest]
-    if case:
-        smoke_args.extend(["--case", case])
-    if limit:
-        smoke_args.extend(["--limit", limit])
-    session.run(str(exe), *smoke_args, external=True)
-
-
-_EXPECTED_ENVIRONMENT_MODULE_PREFIXES = ("maya", "PySide2", "PySide6")
-_TERMINAL_EXCEPTION_RE = re.compile(r"^(?P<type>[\w.]+(?:Error|Exception)):\s*(?P<message>.*)$")
-_MISSING_MODULE_RE = re.compile(
-    r"No module named ['\"](?P<module>[^'\"]+)['\"](?:;.*)?\.?$"
-)
+    return _common_run_cli_smoke(session, ROOT, version, config, manifest, case, limit)
 
 
 def _is_expected_environment_import_failure(stderr: str) -> bool:
     """Return whether the final exception is an allowlisted missing environment module."""
-    for line in reversed(stderr.splitlines()):
-        match = _TERMINAL_EXCEPTION_RE.match(line.strip())
-        if not match:
-            continue
-        if match.group("type") != "ModuleNotFoundError":
-            return False
-        missing = _MISSING_MODULE_RE.fullmatch(match.group("message"))
-        if not missing:
-            return False
-        prefix = missing.group("module").split(".", 1)[0]
-        return prefix in _EXPECTED_ENVIRONMENT_MODULE_PREFIXES
-    return False
+    return _common_is_expected_environment_import_failure(stderr)
 
 
 @nox.session(venv_backend="none")
