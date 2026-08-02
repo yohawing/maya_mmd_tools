@@ -95,6 +95,9 @@ from noxlib.maya_sessions import (  # noqa: E402
     run_cpp_plugin_smoke as _run_cpp_plugin_smoke,
     run_model_readme_dialog_e2e as _run_model_readme_dialog_e2e,
     run_native_physics_bake as _run_native_physics_bake,
+    run_physics_solver_cycle_probe as _run_physics_solver_cycle_probe,
+    run_root_move_ik_target_probe as _run_root_move_ik_target_probe,
+    run_root_move_skin_parity_probe as _run_root_move_skin_parity_probe,
     run_viewport_capture as _run_viewport_capture,
     run_yw_test_model_fixture_gate as _run_yw_test_model_fixture_gate,
 )
@@ -1674,39 +1677,17 @@ def physics_solver_cycle_probe(session: nox.Session) -> None:
         uvx nox -s physics_solver_cycle_probe -- --maya 2024
         uvx nox -s physics_solver_cycle_probe -- --maya 2026 --frames 0,1,2,1,0
     """
-    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    mayapy = _mayapy(maya_ver)
-    args = list(session.posargs)
-    out_value = _option(args, "--out", str(ROOT / "build/reports/physics_solver_cycle_probe.json"))
-    pmx_value = _option(
-        args,
-        "--pmx",
-        str(ROOT / "build/fixtures/citlali_ascii_file/citlali.pmx"),
-    )
-    frames_value = _option(args, "--frames", "0,1,2,1,0")
-    modes_value = _option(args, "--modes", "off,serial,parallel")
-    report_path = Path(out_value)
-    passthrough = [
-        "--pmx", pmx_value,
-        "--out", out_value,
-        "--frames", frames_value,
-        "--modes", modes_value,
-    ]
-    _clear_probe_report(session, report_path, "physics solver cycle probe")
-    _run_mayapy_probe(
+    _run_physics_solver_cycle_probe(
         session,
-        mayapy,
-        "tests/viewport/physics_solver_cycle_probe.py",
-        passthrough,
-        {"--pmx", "--out"},
-        utf8=True,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        root=ROOT,
+        mayapy=_mayapy,
+        clear_probe_report=_clear_probe_report,
+        run_mayapy_probe=_run_mayapy_probe,
+        read_probe_report=_read_probe_report,
     )
-    report = _read_probe_report(session, report_path, "Physics solver cycle probe")
-    if report.get("status") != "pass":
-        session.error(
-            "Physics solver cycle probe failed: "
-            f"errors={report.get('errors')}, solver={report.get('solver')}"
-        )
 
 
 @nox.session(venv_backend="none")
@@ -1721,39 +1702,17 @@ def root_move_skin_parity_probe(session: nox.Session) -> None:
     Example:
         uvx nox -s root_move_skin_parity_probe -- --maya 2024
     """
-    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    mayapy = _mayapy(maya_ver)
-    args = list(session.posargs)
-    out_value = _option(args, "--out", str(ROOT / "build/reports/root_move_skin_parity_probe.json"))
-    pmx_value = _option(
-        args,
-        "--pmx",
-        str(ROOT / "build/fixtures/citlali_ascii_file/citlali.pmx"),
-    )
-    delta_value = _option(args, "--delta", "17.5,-8.25,11.0")
-    vertices_value = _option(args, "--vertices-per-mesh", "8")
-    tolerance_value = _option(args, "--tolerance", "1.0e-4")
-    report_path = Path(out_value)
-    passthrough = [
-        "--pmx", pmx_value,
-        "--out", out_value,
-        "--delta", delta_value,
-        "--vertices-per-mesh", vertices_value,
-        "--expect-parity",
-        "--tolerance", tolerance_value,
-    ]
-    _clear_probe_report(session, report_path, "root move parity")
-    _run_mayapy_probe(
+    _run_root_move_skin_parity_probe(
         session,
-        mayapy,
-        "tests/viewport/root_move_skin_parity_probe.py",
-        passthrough,
-        {"--pmx", "--out"},
-        utf8=True,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        root=ROOT,
+        mayapy=_mayapy,
+        clear_probe_report=_clear_probe_report,
+        run_mayapy_probe=_run_mayapy_probe,
+        read_probe_report=_read_probe_report,
     )
-    report = _read_probe_report(session, report_path, "Root move parity")
-    if report.get("status") != "pass":
-        session.error(f"Root move parity probe failed: errors={report.get('errors')}")
 
 
 @nox.session(venv_backend="none")
@@ -1768,37 +1727,17 @@ def root_move_ik_target_probe(session: nox.Session) -> None:
     Example:
         uvx nox -s root_move_ik_target_probe -- --maya 2024
     """
-    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    mayapy = _mayapy(maya_ver)
-    args = list(session.posargs)
-    out_value = _option(args, "--out", str(ROOT / "build/reports/root_move_ik_target_probe.json"))
-    pmx_value = _option(
-        args,
-        "--pmx",
-        str(ROOT / "build/fixtures/citlali_ascii_file/citlali.pmx"),
-    )
-    delta_value = _option(args, "--delta", "17.5,-8.25,11.0")
-    tolerance_value = _option(args, "--tolerance", "1.0e-4")
-    report_path = Path(out_value)
-    passthrough = [
-        "--pmx", pmx_value,
-        "--out", out_value,
-        "--delta", delta_value,
-        "--expect-root-parity",
-        "--tolerance", tolerance_value,
-    ]
-    _clear_probe_report(session, report_path, "root move IK target")
-    _run_mayapy_probe(
+    _run_root_move_ik_target_probe(
         session,
-        mayapy,
-        "tests/viewport/root_move_ik_target_probe.py",
-        passthrough,
-        {"--pmx", "--out"},
-        utf8=True,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        root=ROOT,
+        mayapy=_mayapy,
+        clear_probe_report=_clear_probe_report,
+        run_mayapy_probe=_run_mayapy_probe,
+        read_probe_report=_read_probe_report,
     )
-    report = _read_probe_report(session, report_path, "Root move IK target")
-    if report.get("status") != "pass":
-        session.error(f"Root move IK target probe failed: errors={report.get('errors')}")
 
 
 @nox.session(venv_backend="none")

@@ -282,3 +282,145 @@ def run_native_physics_bake(
             ]
         )
     session.run(*command, env=env, external=True)
+
+
+def run_physics_solver_cycle_probe(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    default_maya_version: str,
+    root: Path,
+    mayapy,
+    clear_probe_report,
+    run_mayapy_probe,
+    read_probe_report,
+) -> None:
+    """Capture the Citlali physics-solver cycle evidence report."""
+    maya_version = option(posargs, "--maya", default_maya_version)
+    mayapy_path = mayapy(maya_version)
+    args = list(posargs)
+    out_value = option(args, "--out", str(root / "build/reports/physics_solver_cycle_probe.json"))
+    pmx_value = option(
+        args,
+        "--pmx",
+        str(root / "build/fixtures/citlali_ascii_file/citlali.pmx"),
+    )
+    frames_value = option(args, "--frames", "0,1,2,1,0")
+    modes_value = option(args, "--modes", "off,serial,parallel")
+    report_path = Path(out_value)
+    passthrough = [
+        "--pmx", pmx_value,
+        "--out", out_value,
+        "--frames", frames_value,
+        "--modes", modes_value,
+    ]
+    clear_probe_report(session, report_path, "physics solver cycle probe")
+    run_mayapy_probe(
+        session,
+        mayapy_path,
+        "tests/viewport/physics_solver_cycle_probe.py",
+        passthrough,
+        {"--pmx", "--out"},
+        utf8=True,
+    )
+    report = read_probe_report(session, report_path, "Physics solver cycle probe")
+    if report.get("status") != "pass":
+        session.error(
+            "Physics solver cycle probe failed: "
+            f"errors={report.get('errors')}, solver={report.get('solver')}"
+        )
+
+
+def run_root_move_skin_parity_probe(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    default_maya_version: str,
+    root: Path,
+    mayapy,
+    clear_probe_report,
+    run_mayapy_probe,
+    read_probe_report,
+) -> None:
+    """Capture root-motion skin and world-space mesh parity evidence."""
+    maya_version = option(posargs, "--maya", default_maya_version)
+    mayapy_path = mayapy(maya_version)
+    args = list(posargs)
+    out_value = option(args, "--out", str(root / "build/reports/root_move_skin_parity_probe.json"))
+    pmx_value = option(
+        args,
+        "--pmx",
+        str(root / "build/fixtures/citlali_ascii_file/citlali.pmx"),
+    )
+    delta_value = option(args, "--delta", "17.5,-8.25,11.0")
+    vertices_value = option(args, "--vertices-per-mesh", "8")
+    tolerance_value = option(args, "--tolerance", "1.0e-4")
+    report_path = Path(out_value)
+    passthrough = [
+        "--pmx", pmx_value,
+        "--out", out_value,
+        "--delta", delta_value,
+        "--vertices-per-mesh", vertices_value,
+        "--expect-parity",
+        "--tolerance", tolerance_value,
+    ]
+    clear_probe_report(session, report_path, "root move parity")
+    run_mayapy_probe(
+        session,
+        mayapy_path,
+        "tests/viewport/root_move_skin_parity_probe.py",
+        passthrough,
+        {"--pmx", "--out"},
+        utf8=True,
+    )
+    report = read_probe_report(session, report_path, "Root move parity")
+    if report.get("status") != "pass":
+        session.error(f"Root move parity probe failed: errors={report.get('errors')}")
+
+
+def run_root_move_ik_target_probe(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    default_maya_version: str,
+    root: Path,
+    mayapy,
+    clear_probe_report,
+    run_mayapy_probe,
+    read_probe_report,
+) -> None:
+    """Capture root-motion foot and IK-target drift evidence."""
+    maya_version = option(posargs, "--maya", default_maya_version)
+    mayapy_path = mayapy(maya_version)
+    args = list(posargs)
+    out_value = option(args, "--out", str(root / "build/reports/root_move_ik_target_probe.json"))
+    pmx_value = option(
+        args,
+        "--pmx",
+        str(root / "build/fixtures/citlali_ascii_file/citlali.pmx"),
+    )
+    delta_value = option(args, "--delta", "17.5,-8.25,11.0")
+    tolerance_value = option(args, "--tolerance", "1.0e-4")
+    report_path = Path(out_value)
+    passthrough = [
+        "--pmx", pmx_value,
+        "--out", out_value,
+        "--delta", delta_value,
+        "--expect-root-parity",
+        "--tolerance", tolerance_value,
+    ]
+    clear_probe_report(session, report_path, "root move IK target")
+    run_mayapy_probe(
+        session,
+        mayapy_path,
+        "tests/viewport/root_move_ik_target_probe.py",
+        passthrough,
+        {"--pmx", "--out"},
+        utf8=True,
+    )
+    report = read_probe_report(session, report_path, "Root move IK target")
+    if report.get("status") != "pass":
+        session.error(f"Root move IK target probe failed: errors={report.get('errors')}")

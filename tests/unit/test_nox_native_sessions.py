@@ -16,12 +16,15 @@ from noxlib.native_sessions import (
     run_native_export_smoke,
     run_reduction_abi_probe,
 )
-from noxlib.maya_sessions import run_cpp_plugin_smoke
 from noxlib.maya_sessions import (
+    run_cpp_plugin_smoke,
     run_model_readme_dialog_e2e,
+    run_native_physics_bake,
+    run_physics_solver_cycle_probe,
+    run_root_move_ik_target_probe,
+    run_root_move_skin_parity_probe,
     run_viewport_capture,
     run_yw_test_model_fixture_gate,
-    run_native_physics_bake,
 )
 
 
@@ -235,6 +238,29 @@ class NativeSessionsTest(unittest.TestCase):
                 self.assertIn("--out", args)
                 self.assertIn("--width", args)
             self.assertEqual(kwargs["env"]["MMD_ANIM_FFI_PATH"], str(Path("F:/repo/build/ffi")))
+
+    def test_report_only_maya_probes_keep_their_script_and_default_options(self):
+        cases = (
+            (run_physics_solver_cycle_probe, "tests/viewport/physics_solver_cycle_probe.py", "--frames"),
+            (run_root_move_skin_parity_probe, "tests/viewport/root_move_skin_parity_probe.py", "--delta"),
+            (run_root_move_ik_target_probe, "tests/viewport/root_move_ik_target_probe.py", "--expect-root-parity"),
+        )
+        for runner, script, expected_option in cases:
+            session = _FakeSession(["--maya", "2026"])
+            probe_calls = []
+            runner(
+                session,
+                posargs=session.posargs,
+                option=_option,
+                default_maya_version="2024",
+                root=Path("F:/repo"),
+                mayapy=lambda version: f"mayapy-{version}",
+                clear_probe_report=lambda *_args: None,
+                run_mayapy_probe=lambda *args, **kwargs: probe_calls.append((args, kwargs)),
+                read_probe_report=lambda *_args: {"status": "pass"},
+            )
+            self.assertEqual(probe_calls[0][0][2], script)
+            self.assertIn(expected_option, probe_calls[0][0][3])
 
 
 if __name__ == "__main__":
