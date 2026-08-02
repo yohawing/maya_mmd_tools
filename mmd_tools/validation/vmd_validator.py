@@ -1,7 +1,7 @@
 """Maya-independent structural validation for VMD Mode A/C export."""
 
 import math
-from typing import Any, Iterable, List, Optional, Tuple
+from typing import Any, Iterable, List, Mapping, Optional, Tuple
 
 from ..core.vmd_data import VmdData
 from .export_validator import ExportValidationIssue, ExportValidationReport
@@ -263,7 +263,12 @@ def _frame_sections(vmd_data: VmdData) -> Iterable[Tuple[str, Iterable[Any]]]:
     )
 
 
-def verify_vmd_output(file_path: str, mode: str = VMD_MODE_C) -> ExportValidationReport:
+def verify_vmd_output(
+    file_path: str,
+    mode: str = VMD_MODE_C,
+    *,
+    expected_counts: Optional[Mapping[str, int]] = None,
+) -> ExportValidationReport:
     """Parse and structurally validate one temporary VMD output."""
     try:
         vmd_data = VmdData().parse_file(file_path)
@@ -279,11 +284,39 @@ def verify_vmd_output(file_path: str, mode: str = VMD_MODE_C) -> ExportValidatio
             ),
             mode=str(mode or "").upper(),
         )
-    return validate_vmd_data(
+    report = validate_vmd_data(
         vmd_data,
         mode=mode,
         require_raw_provenance=False,
     )
+    section_names = {
+        "bone_frames": vmd_data.bone_frames,
+        "morph_frames": vmd_data.morph_frames,
+        "camera_frames": vmd_data.camera_frames,
+        "light_frames": vmd_data.light_frames,
+        "shadow_frames": vmd_data.shadow_frames,
+        "ik_show_hide_frames": vmd_data.ik_show_hide_frames,
+    }
+    count_issues = list(report.issues)
+    for section_name, expected in (expected_counts or {}).items():
+        if section_name not in section_names:
+            continue
+        try:
+            expected_value = int(expected)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        actual_value = len(section_names[section_name])
+        if actual_value != expected_value:
+            count_issues.append(
+                _issue(
+                    "VMD_FRAME_COUNT_MISMATCH",
+                    f"output.{section_name}",
+                    f"VMD {section_name} count {actual_value} does not match expected count {expected_value}",
+                )
+            )
+    if len(count_issues) != len(report.issues):
+        return ExportValidationReport("vmd", tuple(count_issues), mode=report.mode)
+    return report
 
 
 __all__ = [

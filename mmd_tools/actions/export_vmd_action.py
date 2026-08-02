@@ -237,7 +237,29 @@ class ExportVmdAction:
             self._exporter.export_vmd_animation(temporary_path, animation_data)
 
             if self._output_verifier is not None:
-                output_report = self._output_verifier(temporary_path, mode)
+                expected_counts = {
+                    section_name: len(getattr(vmd_data, section_name, ()) or ())
+                    for section_name in (
+                        "bone_frames",
+                        "morph_frames",
+                        "camera_frames",
+                        "light_frames",
+                        "shadow_frames",
+                        "ik_show_hide_frames",
+                    )
+                }
+                try:
+                    verifier_parameters = inspect.signature(self._output_verifier).parameters
+                except (TypeError, ValueError):
+                    verifier_parameters = {}
+                accepts_verifier_kwargs = any(
+                    parameter.kind == inspect.Parameter.VAR_KEYWORD
+                    for parameter in verifier_parameters.values()
+                )
+                verifier_kwargs = {}
+                if accepts_verifier_kwargs or "expected_counts" in verifier_parameters:
+                    verifier_kwargs["expected_counts"] = expected_counts
+                output_report = self._output_verifier(temporary_path, mode, **verifier_kwargs)
                 validation_report = self._append_report(validation_report, output_report, mode)
                 if output_report is not None and output_report.is_blocking:
                     raise ExportValidationError(validation_report)

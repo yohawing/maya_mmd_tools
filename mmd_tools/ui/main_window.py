@@ -19,6 +19,8 @@ from ..core.logger import get_logger, install_maya_script_editor_handler
 from ..services.settings_service import SettingsService
 from .tabs.import_export_tab import ImportExportTab
 from .presenters.import_export_presenter import ImportExportPresenter
+from .tabs.export_tab import ExportTab
+from .presenters.export_presenter import ExportPresenter
 from .tabs.info_tab import InfoTab
 from .presenters.info_presenter import InfoPresenter
 from .tabs.material_tab import MaterialTab
@@ -229,6 +231,17 @@ class MainWindow(QMainWindow):
         self.import_export_presenter = ImportExportPresenter(import_export_tab, self.app_state)
         self.tab_widget.addTab(import_export_tab, translator.translate("file_io", "tabs"))
 
+        # Export workflow tab: import settings remain in File I/O while all
+        # public export decisions and the Validation Console live here.
+        export_tab = ExportTab(settings_service=self.settings_service)
+        self.export_tab = export_tab
+        self.export_presenter = ExportPresenter(
+            export_tab,
+            self.app_state,
+            workflow_service=None,
+        )
+        self.tab_widget.addTab(export_tab, translator.translate("export_workflow", "tabs"))
+
         # Info Tab
         info_tab = InfoTab()
         self.info_presenter = InfoPresenter(info_tab, self.app_state)
@@ -267,6 +280,7 @@ class MainWindow(QMainWindow):
         # タブリストを保存（retranslate用）
         self.tabs = [
             import_export_tab,
+            export_tab,
             info_tab,
             material_tab,
             bone_tab,
@@ -327,6 +341,7 @@ class MainWindow(QMainWindow):
         # タブのタイトルを実際に追加されたタブに合わせて再設定
         tab_entries = [
             (self.import_export_tab, "file_io"),
+            (self.export_tab, "export_workflow"),
             (self.info_presenter.view, "info"),
             (self.material_presenter.view, "material"),
             (self.bone_presenter.view, "bone"),

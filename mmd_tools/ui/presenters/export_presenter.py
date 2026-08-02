@@ -1,0 +1,102 @@
+"""Presenter for the top-level validated Export workflow."""
+
+from ..qt_compat import QObject
+from ...core.logger import get_logger
+from ...services.export_workflow_service import (
+    ExportWorkflowService,
+    STATE_EXPORTING,
+    STATE_VALIDATING,
+)
+
+
+logger = get_logger(__name__)
+
+
+class ExportPresenter(QObject):
+    """Keep ExportTab presentation thin and route all decisions to the service."""
+
+    def __init__(self, view, app_state, workflow_service=None):
+        super().__init__()
+        self.view = view
+        self.app_state = app_state
+        self.workflow_service = workflow_service or ExportWorkflowService(
+            scene_service=getattr(app_state, "scene_model_service", None),
+        )
+        self.view.presenter = self
+        self.view.validate_requested.connect(self.validate)
+        self.view.export_requested.connect(self.export)
+        self.view.validation_console.acknowledgement_changed.connect(
+            self._on_acknowledgement_changed
+        )
+        model_list_updated = getattr(app_state, "model_list_updated", None)
+        if model_list_updated is not None:
+            model_list_updated.connect(self.refresh_targets)
+        current_model_changed = getattr(app_state, "current_model_changed", None)
+        if current_model_changed is not None:
+            current_model_changed.connect(self._on_current_model_changed)
+        self.refresh_targets()
+
+    def refresh_targets(self, *_args):
+        """Refresh target choices from the live ApplicationState model list."""
+        self.view.set_targets(
+            getattr(self.app_state, "available_models", []) or [],
+            getattr(self.app_state, "current_model_root", None),
+        )
+
+    def _on_current_model_changed(self, model_root):
+        """Prefer the current model when Maya reports a model switch."""
+        self.view.set_targets(
+            getattr(self.app_state, "available_models", []) or [],
+            model_root or None,
+        )
+
+    def _on_acknowledgement_changed(self, _acknowledged):
+        """Acknowledgement changes affect only the next service execution."""
+        return None
+
+    def validate(self):
+        """Run preflight and payload validation without writing an output."""
+        self.view.set_state(STATE_VALIDATING)
+        try:
+            result = self.workflow_service.validate(self.view.build_request())
+        except Exception as exc:
+            logger.error("Export validation failed before result creation: %s", exc, exc_info=True)
+            self.app_state.emit_status(f"Export validation failed: {exc}")
+            return None
+        self.view.set_result(result)
+        self._emit_status(result)
+        return result
+
+    def export(self):
+        """Revalidate and execute the validated export action."""
+        self.view.set_state(STATE_EXPORTING)
+        try:
+            result = self.workflow_service.execute(
+                self.view.build_request(),
+                acknowledge_warnings=self.view.validation_console.warnings_acknowledged,
+            )
+        except Exception as exc:
+            logger.error("Export workflow failed before result creation: %s", exc, exc_info=True)
+            self.app_state.emit_status(f"Export failed: {exc}")
+            return None
+        self.view.set_result(result)
+        self._emit_status(result)
+        return result
+
+    def _emit_status(self, result):
+        """Expose workflow state without replacing the Validation Console."""
+        if result.succeeded:
+            self.app_state.emit_status(f"Export complete: {result.metadata.get('output_path') or ''}")
+        elif result.error is not None:
+            self.app_state.emit_status(f"Export failed: {result.error}")
+        elif result.report.is_blocking:
+            self.app_state.emit_status(
+                f"Export blocked: {len(result.report.blocking_issues)} blocking issue(s)"
+            )
+        elif result.report.requires_warning_ack:
+            self.app_state.emit_status("Export requires warning acknowledgement")
+        else:
+            self.app_state.emit_status(f"Export state: {result.state}")
+
+
+__all__ = ["ExportPresenter"]

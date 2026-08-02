@@ -83,6 +83,19 @@ class TestVmdValidator(unittest.TestCase):
         self.assertTrue(report.valid)
         self.assertEqual(report.export_format, "vmd")
 
+    def test_verify_output_rejects_section_count_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "motion.vmd"
+            VmdData().write_file(path)
+
+            report = verify_vmd_output(
+                str(path),
+                VMD_MODE_C,
+                expected_counts={"bone_frames": 1},
+            )
+
+        self.assertEqual(report.issues[0].code, "VMD_FRAME_COUNT_MISMATCH")
+
 
 class _WritingVmdExporter:
     """Small writer spy that emits a parseable empty VMD file."""
