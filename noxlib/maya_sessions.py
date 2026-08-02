@@ -424,3 +424,282 @@ def run_root_move_ik_target_probe(
     report = read_probe_report(session, report_path, "Root move IK target")
     if report.get("status") != "pass":
         session.error(f"Root move IK target probe failed: errors={report.get('errors')}")
+
+
+def run_humanik_definition_smoke(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    mayapy,
+    probe_passthrough,
+    convert_mayapy_path_options,
+    mayapy_script,
+    mayapy_env,
+) -> None:
+    """Create a minimal HumanIK definition under mayapy."""
+    maya_version = option(posargs, "--maya", "2024")
+    mayapy_path = mayapy(maya_version)
+    passthrough = probe_passthrough(
+        list(posargs),
+        {"--out", "--name", "--fixture"},
+        {"--create-control-rig"},
+    )
+    session.run(
+        str(mayapy_path),
+        mayapy_script(mayapy_path, "tests/viewport/humanik_definition_smoke.py"),
+        *convert_mayapy_path_options(mayapy_path, passthrough, {"--out"}),
+        env=mayapy_env(mayapy_path),
+        external=True,
+    )
+
+
+def run_humanik_retarget_smoke(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    mayapy,
+    probe_passthrough,
+    run_mayapy_probe,
+) -> None:
+    """Run the direct HumanIK S0 fixture smoke under mayapy."""
+    maya_version = option(posargs, "--maya", "2024")
+    mayapy_path = mayapy(maya_version)
+    path_options = {"--pmx", "--target-pmx", "--vmd", "--out"}
+    value_options = path_options | {
+        "--pmx-base64",
+        "--target-pmx-base64",
+        "--vmd-base64",
+        "--name-prefix",
+        "--translation",
+        "--tolerance",
+        "--motion-frames",
+        "--evaluation-modes",
+    }
+    passthrough = probe_passthrough(list(posargs), value_options)
+    run_mayapy_probe(
+        session,
+        mayapy_path,
+        "tests/viewport/humanik_retarget_smoke.py",
+        passthrough,
+        path_options,
+    )
+
+
+def run_humanik_roundtrip_smoke(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    mayapy,
+    root: Path,
+    probe_passthrough,
+    clear_probe_report,
+    run_mayapy_probe,
+) -> None:
+    """Run the HumanIK S5 self-retarget matrix and validate every report."""
+    maya_version = option(posargs, "--maya", "2024")
+    mayapy_path = mayapy(maya_version)
+    args = list(posargs)
+    requested_mode = option(args, "--evaluation-mode", "")
+    modes = [requested_mode] if requested_mode else ["off", "serial", "parallel"]
+    out_value = option(args, "--out", str(root / "build/reports/humanik_roundtrip_smoke.json"))
+    value_options = {"--pmx", "--vmd", "--start", "--end", "--hik-profile", "--characterization-stance"}
+    path_options = {"--pmx", "--vmd", "--out"}
+    passthrough = probe_passthrough(args, value_options)
+    base_out = Path(out_value)
+    failed_modes: list[str] = []
+    for mode in modes:
+        mode_out = base_out if requested_mode else base_out.with_name(f"{base_out.stem}.{mode}{base_out.suffix}")
+        clear_probe_report(session, mode_out, "HumanIK S5")
+        mode_args = [*passthrough, "--evaluation-mode", mode, "--out", str(mode_out)]
+        run_mayapy_probe(
+            session,
+            mayapy_path,
+            "tests/viewport/humanik_roundtrip_smoke.py",
+            mode_args,
+            path_options,
+            success_codes=(0, 1),
+        )
+        if not mode_out.is_file():
+            failed_modes.append(f"{mode}: report missing ({mode_out})")
+            continue
+        try:
+            report = json.loads(mode_out.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            failed_modes.append(f"{mode}: invalid report ({exc})")
+            continue
+        if not isinstance(report, dict):
+            failed_modes.append(f"{mode}: report root is not an object")
+            continue
+        if report.get("evaluationMode") != mode:
+            failed_modes.append(f"{mode}: evaluationMode={report.get('evaluationMode', 'missing')}")
+            continue
+        if report.get("status") != "pass":
+            failed_modes.append(f"{mode}: status={report.get('status', 'missing')}")
+    if failed_modes:
+        session.error("HumanIK S5 round-trip matrix failed: " + "; ".join(failed_modes))
+
+
+def run_humanik_vmd_parity_smoke(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    mayapy,
+    root: Path,
+    probe_passthrough,
+    clear_probe_report,
+    run_mayapy_probe,
+) -> None:
+    """Run the HumanIK SOURCE/VMD reproduction matrix with stop evidence policy."""
+    maya_version = option(posargs, "--maya", "2024")
+    mayapy_path = mayapy(maya_version)
+    args = list(posargs)
+    requested_mode = option(args, "--evaluation", "")
+    modes = [requested_mode] if requested_mode else ["off", "serial", "parallel"]
+    allow_stop = "--allow-stop" in args
+    out_value = option(args, "--out", str(root / "build/reports/humanik_vmd_parity_smoke.json"))
+    value_options = {"--model", "--motion", "--frames"}
+    path_options = {"--model", "--motion", "--out"}
+    passthrough = probe_passthrough(args, value_options, {"--inject-restore-failure"})
+    base_out = Path(out_value)
+    failed_modes: list[str] = []
+    stopped_modes: list[str] = []
+    for mode in modes:
+        mode_out = base_out if requested_mode else base_out.with_name(f"{base_out.stem}.{mode}{base_out.suffix}")
+        clear_probe_report(session, mode_out, "HumanIK VMD parity")
+        mode_args = [*passthrough, "--evaluation", mode, "--out", str(mode_out)]
+        run_mayapy_probe(
+            session,
+            mayapy_path,
+            "tests/viewport/humanik_vmd_parity_smoke.py",
+            mode_args,
+            path_options,
+            utf8=True,
+            success_codes=(0, 1, 2),
+        )
+        if not mode_out.is_file():
+            failed_modes.append(f"{mode}: report missing ({mode_out})")
+            continue
+        try:
+            report = json.loads(mode_out.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            failed_modes.append(f"{mode}: invalid report ({exc})")
+            continue
+        if not isinstance(report, dict):
+            failed_modes.append(f"{mode}: report root is not an object")
+            continue
+        status = report.get("status")
+        if status == "pass":
+            continue
+        if status == "stop" and allow_stop:
+            stopped_modes.append(f"{mode}: status=stop")
+            continue
+        failed_modes.append(f"{mode}: status={status}, error={report.get('error')}")
+    if stopped_modes:
+        session.log("HumanIK VMD parity smoke stopped (evidence captured, not failing): " + "; ".join(stopped_modes))
+    if failed_modes:
+        session.error("HumanIK VMD parity smoke failed: " + "; ".join(failed_modes))
+
+
+def run_humanik_vmd_import_gate_smoke(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    mayapy,
+    root: Path,
+    probe_passthrough,
+    clear_probe_report,
+    run_mayapy_probe,
+    read_probe_report,
+) -> None:
+    """Run and validate the fail-closed HumanIK VMD-import mode gate."""
+    maya_version = option(posargs, "--maya", "2024")
+    mayapy_path = mayapy(maya_version)
+    args = list(posargs)
+    out_value = option(args, "--out", str(root / "build/reports/humanik_vmd_import_gate_smoke.json"))
+    report_path = Path(out_value)
+    path_options = {"--model", "--motion", "--out"}
+    passthrough = probe_passthrough(args, path_options)
+    if "--out" not in passthrough:
+        passthrough.extend(["--out", out_value])
+    clear_probe_report(session, report_path, "HumanIK VMD import gate")
+    run_mayapy_probe(
+        session,
+        mayapy_path,
+        "tests/viewport/humanik_vmd_import_gate_smoke.py",
+        passthrough,
+        path_options,
+        utf8=True,
+        success_codes=(0, 1),
+    )
+    report = read_probe_report(session, report_path, "HumanIK VMD import gate")
+    status = report.get("status")
+    if status != "pass":
+        session.error(
+            "HumanIK VMD import gate smoke failed: "
+            f"status={status}, error={report.get('error')}, "
+            f"gateRaised={report.get('gateRaised')}, "
+            f"topologyUnchangedAfterRefusal={report.get('topologyUnchangedAfterRefusal')}, "
+            f"postRestoreImportSucceeded={report.get('postRestoreImportSucceeded')}"
+        )
+
+
+def run_humanik_citlali_stance_smoke(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    mayapy,
+    root: Path,
+    clear_probe_report,
+    run_mayapy_probe,
+    read_probe_report,
+) -> None:
+    """Run the strict Citlali HumanIK setup/restore evidence gate."""
+    maya_version = option(posargs, "--maya", "2024")
+    mayapy_path = mayapy(maya_version)
+    args = list(posargs)
+    out_value = option(args, "--out", str(root / "build/reports/humanik_citlali_stance_smoke.json"))
+    pmx_value = option(args, "--pmx", str(root / "build/fixtures/citlali_ascii_file/citlali.pmx"))
+    profile = option(args, "--profile", "body-only")
+    report_path = Path(out_value)
+    passthrough = ["--pmx", pmx_value, "--out", out_value, "--profile", profile]
+    clear_probe_report(session, report_path, "Citlali HumanIK")
+    run_mayapy_probe(
+        session,
+        mayapy_path,
+        "tests/viewport/humanik_citlali_stance_smoke.py",
+        passthrough,
+        {"--pmx", "--out"},
+        utf8=True,
+    )
+    report = read_probe_report(session, report_path, "Citlali HumanIK")
+    stance = report.get("stance", {})
+    restore = stance.get("restore") or stance.get("stanceEvidence", {}).get("restore", {})
+    required = {
+        "status": report.get("status"),
+        "restorePassed": restore.get("passed"),
+        "topologyRestored": restore.get("topologyRestored"),
+        "maxRotateResidual": restore.get("maxRotateResidual"),
+        "maxJointOrientResidual": restore.get("maxJointOrientResidual"),
+        "maxSkinMatrixResidual": restore.get("maxSkinMatrixResidual"),
+        "maxAllSkinMatrixResidual": restore.get("maxAllSkinMatrixResidual"),
+        "tolerance": restore.get("tolerance"),
+        "transformDiffCount": len(report.get("transformDiffs", [])),
+    }
+    if (
+        required["status"] != "pass"
+        or required["restorePassed"] is not True
+        or required["topologyRestored"] is not True
+        or required["transformDiffCount"] != 0
+        or any(
+            value is None or float(value) > float(required["tolerance"])
+            for key, value in required.items()
+            if key.endswith("Residual")
+        )
+    ):
+        session.error(f"Citlali HumanIK strict restore gate failed: {required}")
