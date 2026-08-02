@@ -20,6 +20,10 @@ from noxlib.native_sessions import (
 )
 from noxlib.maya_sessions import (
     run_cpp_plugin_smoke,
+    run_control_rig_gui_e2e,
+    run_import_order_e2e,
+    run_import_scale_drift_e2e,
+    run_anim_layer_graph_compare,
     run_model_readme_dialog_e2e,
     run_maya_batch_import,
     run_native_physics_bake,
@@ -27,6 +31,7 @@ from noxlib.maya_sessions import (
     run_physics_solver_cycle_probe,
     run_root_move_ik_target_probe,
     run_root_move_skin_parity_probe,
+    run_runtime_bake_bench,
     run_viewport_capture,
     run_yw_test_model_fixture_gate,
 )
@@ -42,6 +47,85 @@ class _FakeSession:
 
 
 class NativeSessionsTest(unittest.TestCase):
+    def test_control_rig_gui_e2e_runs_external_oracle_after_gui(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            out_dir = root / "build/e2e"
+            out_dir.mkdir(parents=True)
+            (out_dir / "mmd_control_rig_e2e_maya2024.vmd").write_bytes(b"vmd")
+            (root / "external/mmd-anim/target/release").mkdir(parents=True)
+            session = _FakeSession(["--maya", "2024"])
+            mayapy = mock.Mock()
+            mayapy.exists.return_value = True
+
+            def read_report(_session, report_path, label):
+                if "GUI" in label:
+                    return {"status": "pass"}
+                return {"status": "passed", "comparison": {"max": 0.0}}
+
+            run_control_rig_gui_e2e(
+                session,
+                posargs=session.posargs,
+                option=_option,
+                default_maya_version="2026",
+                root=root,
+                require_build_path=lambda _session, value, _name: root / value,
+                read_probe_report=read_report,
+                clear_probe_report=lambda *_args: None,
+                mayapy=lambda _version: mayapy,
+                mayapy_env=lambda _mayapy, **values: values,
+                mayapy_arg_path=lambda _mayapy, path: str(path),
+                mayapy_script=lambda _mayapy, script: script,
+                python_executable="python.exe",
+            )
+            self.assertEqual(session.runs[0][0][1], str(root / "tests/viewport/e2e_mmd_control_rig.py"))
+            self.assertEqual(session.runs[1][0][1], "tests/viewport/mmd_anim_mesh_oracle_compare.py")
+            self.assertEqual(session.runs[1][1]["success_codes"], (0, 1, 2))
+
+    def test_remaining_mayapy_diagnostics_keep_scripts_and_filter_maya(self):
+        runners = (
+            (run_import_scale_drift_e2e, "tests/viewport/import_scale_drift_e2e.py"),
+            (run_anim_layer_graph_compare, "tests/viewport/anim_layer_graph_compare.py"),
+            (run_runtime_bake_bench, "tests/viewport/runtime_bake_benchmark.py"),
+        )
+        for runner, script in runners:
+            session = _FakeSession(["--maya", "2026", "--case", "case"])
+            mayapy = mock.Mock()
+            runner(
+                session,
+                posargs=session.posargs,
+                option=_option,
+                mayapy=lambda _version: mayapy,
+                mayapy_env=lambda _mayapy, **values: values,
+                mayapy_script=lambda _mayapy, child: child,
+                convert_mayapy_path_options=lambda _mayapy, args, _options: args,
+            )
+            args, _kwargs = session.runs[0]
+            self.assertEqual(args[1], script)
+            self.assertNotIn("--maya", args)
+
+    def test_import_order_e2e_generates_manifest_and_profile_when_requested(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = _FakeSession(["--maya", "2024", "--require-zero-fallback"])
+            mayapy = mock.Mock()
+            run_import_order_e2e(
+                session,
+                posargs=session.posargs,
+                option=_option,
+                has_flag=lambda args, flag: flag in args,
+                root=root,
+                mayapy=lambda _version: mayapy,
+                mayapy_env=lambda _mayapy, **values: values,
+                mayapy_script=lambda _mayapy, child: child,
+                convert_mayapy_path_options=lambda _mayapy, args, _options: args,
+                write_local_manifest=lambda *_args: root / "build/generated-manifest.json",
+            )
+            args, kwargs = session.runs[0]
+            self.assertEqual(args[1], "tests/viewport/import_order_e2e.py")
+            self.assertIn("--manifest", args)
+            self.assertIn("MMD_TOOLS_VMD_PROFILE_JSONL", kwargs["env"])
+
     def test_cpp_cli_smoke_requires_manifest_and_forwards_selection(self):
         session = _FakeSession(
             ["--maya", "2026", "--config", "Release", "--manifest", "manifest.json", "--case", "case", "--limit", "2"]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -276,6 +277,113 @@ def run_model_readme_dialog_e2e(
         result = json.loads(report.read_text(encoding="utf-8"))
         if result.get("status") != "pass":
             session.error(f"Maya {version} model-readme GUI gate failed: {result}")
+
+
+def run_control_rig_gui_e2e(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    default_maya_version: str,
+    root: Path,
+    require_build_path,
+    read_probe_report,
+    clear_probe_report,
+    mayapy,
+    mayapy_env,
+    mayapy_arg_path,
+    mayapy_script,
+    python_executable: str = sys.executable,
+) -> None:
+    """Run the GUI Control Rig E2E and its mandatory mmd-anim mesh oracle."""
+    args = list(posargs) or ["--maya", default_maya_version]
+    maya_version = option(args, "--maya", default_maya_version)
+    out_dir = require_build_path(
+        session,
+        option(args, "--out-dir", "build/e2e"),
+        "--out-dir",
+    )
+    model = option(args, "--model", "tests/data/mmt_test_model.pmx")
+    evaluation_mode = option(args, "--evaluation-mode", "default")
+    mode_suffix = "" if evaluation_mode == "default" else f"_{evaluation_mode}"
+    route_suffix = "_create_on_import" if "--create-on-import" in args else ""
+    output_suffix = f"{mode_suffix}{route_suffix}"
+    gui_report = out_dir / f"mmd_control_rig_e2e_maya{maya_version}{output_suffix}.json"
+    exported_vmd = out_dir / f"mmd_control_rig_e2e_maya{maya_version}{output_suffix}.vmd"
+
+    session.run(
+        python_executable,
+        str(root / "tests" / "viewport" / "e2e_mmd_control_rig.py"),
+        *args,
+        external=True,
+    )
+    gui_report_data = read_probe_report(session, gui_report, "MMD control-rig GUI E2E")
+    if gui_report_data.get("status") != "pass":
+        session.error(f"Maya GUI control-rig E2E did not pass: {gui_report_data}")
+    if not exported_vmd.is_file() or exported_vmd.stat().st_size == 0:
+        session.error(f"GUI E2E did not produce a canonical exported VMD: {exported_vmd}")
+
+    mayapy_path = mayapy(maya_version)
+    if not mayapy_path.exists():
+        session.error(f"mayapy not found for Maya {maya_version}: {mayapy_path}")
+    ffi_path = (root / "external" / "mmd-anim" / "target" / "release").resolve()
+    if not ffi_path.is_dir():
+        session.error(
+            "mmd-anim FFI release directory is required for the external oracle: "
+            f"{ffi_path}"
+        )
+    oracle_report = out_dir / f"mmd_anim_mesh_oracle_compare_maya{maya_version}{output_suffix}.json"
+    clear_probe_report(session, oracle_report, "mmd-anim mesh oracle")
+    oracle_args = [
+        "--pmx",
+        mayapy_arg_path(mayapy_path, model),
+        "--vmd",
+        mayapy_arg_path(mayapy_path, exported_vmd),
+        "--out",
+        mayapy_arg_path(mayapy_path, oracle_report),
+        "--mode",
+        "rig",
+        "--bind-source",
+        "pmx",
+        "--threshold",
+        "0.01",
+    ]
+    for frame in range(6):
+        oracle_args.extend(("--frame", str(frame)))
+    oracle_env = mayapy_env(
+        mayapy_path,
+        MAYA_VERSION=maya_version,
+        MAYA_SKIP_USERSETUP_PY="1",
+        MMD_TOOLS_CPP_PLUGIN=mayapy_arg_path(
+            mayapy_path,
+            root / "plug-ins" / maya_version / "Debug" / "mmd_tools_cpp.mll",
+        ),
+        MMD_ANIM_FFI_PATH=str(ffi_path),
+    )
+    session.run(
+        str(mayapy_path),
+        mayapy_script(mayapy_path, "tests/viewport/mmd_anim_mesh_oracle_compare.py"),
+        *oracle_args,
+        env=oracle_env,
+        external=True,
+        success_codes=(0, 1, 2),
+    )
+    external_report = read_probe_report(session, oracle_report, "mmd-anim mesh oracle")
+    external_pass = external_report.get("status") == "passed"
+    gui_report_data["externalOracle"] = {
+        "identity": "mmd_anim_mesh_oracle_compare_rig_pmx_bind",
+        "status": "pass" if external_pass else "fail",
+        "report": str(oracle_report),
+        "threshold": 0.01,
+        "frames": list(range(6)),
+        "comparison": external_report.get("comparison"),
+    }
+    gui_report.write_text(
+        json.dumps(gui_report_data, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    if not external_pass:
+        session.error(f"External mmd-anim mesh oracle failed: {external_report}")
 
 
 def run_native_physics_bake(
@@ -1028,5 +1136,196 @@ def run_shader_visual_semantic_gate(
         str(out_path / "visual-regression-report.json"),
         "--out",
         str(out_path / "shader-semantic-report.json"),
+        external=True,
+    )
+
+
+def run_import_order_e2e(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    has_flag,
+    root: Path,
+    mayapy,
+    mayapy_env,
+    mayapy_script,
+    convert_mayapy_path_options,
+    write_local_manifest,
+) -> None:
+    """Run manifest-driven mayapy checks for model/motion import ordering."""
+    maya_version = option(posargs, "--maya", "2024")
+    mayapy_path = mayapy(maya_version)
+    passthrough: list[str] = []
+    args = list(posargs)
+    manifest = option(args, "--manifest", "")
+    path_options = {"--manifest", "--out-dir", "--log"}
+    value_options = path_options | {
+        "--background-model",
+        "--character-model",
+        "--character-motion",
+        "--case",
+        "--limit",
+        "--order-limit",
+    }
+    flag_options = {"--require-zero-fallback"}
+    if not manifest:
+        generated_manifest = write_local_manifest(
+            session,
+            option(args, "--background-model", str(root / "tests/data/for_unit_test/test_1bone_cube.pmx")),
+            option(args, "--character-model", str(root / "tests/data/mmt_test_model.pmx")),
+            option(args, "--character-motion", str(root / "tests/data/mmt_test_model_test_motion.vmd")),
+        )
+        passthrough.extend(["--manifest", str(generated_manifest)])
+    env = mayapy_env(mayapy_path, preserve_pythonpath=True)
+    if has_flag(args, "--require-zero-fallback"):
+        profile_value = os.environ.get("MMD_TOOLS_VMD_PROFILE_JSONL")
+        if profile_value:
+            profile_path = Path(profile_value)
+            if not profile_path.is_absolute():
+                profile_path = root / profile_path
+        else:
+            out_dir_value = option(args, "--out-dir", str(root / "build/import-order-e2e"))
+            out_dir_path = Path(out_dir_value)
+            if not out_dir_path.is_absolute():
+                out_dir_path = root / out_dir_path
+            profile_path = out_dir_path / "vmd_profile.jsonl"
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        if profile_path.exists():
+            profile_path.unlink()
+        env["MMD_TOOLS_VMD_PROFILE_JSONL"] = str(profile_path)
+    i = 0
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if not manifest and args[i] in {"--background-model", "--character-model", "--character-motion"}:
+            i += 2
+            continue
+        if args[i] in value_options and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        if args[i] in flag_options:
+            passthrough.append(args[i])
+            i += 1
+            continue
+        i += 1
+    session.run(
+        str(mayapy_path),
+        mayapy_script(mayapy_path, "tests/viewport/import_order_e2e.py"),
+        *convert_mayapy_path_options(mayapy_path, passthrough, path_options),
+        env=env,
+        external=True,
+    )
+
+
+def run_import_scale_drift_e2e(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    mayapy,
+    mayapy_env,
+    mayapy_script,
+    convert_mayapy_path_options,
+) -> None:
+    """Run mayapy diagnostics for import scale and skin bind drift."""
+    maya_version = option(posargs, "--maya", "2024")
+    mayapy_path = mayapy(maya_version)
+    passthrough: list[str] = []
+    args = list(posargs)
+    path_options = {"--model", "--log"}
+    value_options = path_options | {"--scale", "--expect", "--clean-threshold", "--drift-threshold", "--parser"}
+    i = 0
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in value_options and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        i += 1
+    session.run(
+        str(mayapy_path),
+        mayapy_script(mayapy_path, "tests/viewport/import_scale_drift_e2e.py"),
+        *convert_mayapy_path_options(mayapy_path, passthrough, path_options),
+        env=mayapy_env(mayapy_path, preserve_pythonpath=True),
+        external=True,
+    )
+
+
+def run_anim_layer_graph_compare(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    mayapy,
+    mayapy_env,
+    mayapy_script,
+    convert_mayapy_path_options,
+) -> None:
+    """Run mayapy diagnostics comparing setKeyframe and API animLayer graphs."""
+    maya_version = option(posargs, "--maya", "2024")
+    mayapy_path = mayapy(maya_version)
+    passthrough: list[str] = []
+    args = list(posargs)
+    path_options = {"--out"}
+    value_options = path_options | {"--case", "--tolerance"}
+    i = 0
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in value_options and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        i += 1
+    session.run(
+        str(mayapy_path),
+        mayapy_script(mayapy_path, "tests/viewport/anim_layer_graph_compare.py"),
+        *convert_mayapy_path_options(mayapy_path, passthrough, path_options),
+        env=mayapy_env(mayapy_path, preserve_pythonpath=True),
+        external=True,
+    )
+
+
+def run_runtime_bake_bench(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    mayapy,
+    mayapy_env,
+    mayapy_script,
+    convert_mayapy_path_options,
+) -> None:
+    """Measure the Maya runtime-bake import path."""
+    maya_version = option(posargs, "--maya", "2024")
+    mayapy_path = mayapy(maya_version)
+    passthrough: list[str] = []
+    args = list(posargs)
+    value_options = {"--case", "--pmx", "--vmd", "--out", "--log", "--repeat"}
+    i = 0
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in value_options and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        i += 1
+    session.run(
+        str(mayapy_path),
+        mayapy_script(mayapy_path, "tests/viewport/runtime_bake_benchmark.py"),
+        *convert_mayapy_path_options(
+            mayapy_path,
+            passthrough,
+            {"--pmx", "--vmd", "--out", "--log"},
+        ),
+        env=mayapy_env(mayapy_path, preserve_pythonpath=True),
         external=True,
     )

@@ -106,12 +106,15 @@ from noxlib.native_sessions import (  # noqa: E402
 )
 from noxlib.maya_sessions import (  # noqa: E402
     run_cpp_plugin_smoke as _run_cpp_plugin_smoke,
+    run_control_rig_gui_e2e as _run_control_rig_gui_e2e,
     run_humanik_citlali_stance_smoke as _run_humanik_citlali_stance_smoke,
     run_humanik_definition_smoke as _run_humanik_definition_smoke,
     run_humanik_retarget_smoke as _run_humanik_retarget_smoke,
     run_humanik_roundtrip_smoke as _run_humanik_roundtrip_smoke,
     run_humanik_vmd_import_gate_smoke as _run_humanik_vmd_import_gate_smoke,
     run_humanik_vmd_parity_smoke as _run_humanik_vmd_parity_smoke,
+    run_import_order_e2e as _run_import_order_e2e,
+    run_import_scale_drift_e2e as _run_import_scale_drift_e2e,
     run_model_readme_dialog_e2e as _run_model_readme_dialog_e2e,
     run_maya_batch_import as _run_maya_batch_import,
     run_native_physics_bake as _run_native_physics_bake,
@@ -119,6 +122,8 @@ from noxlib.maya_sessions import (  # noqa: E402
     run_physics_solver_cycle_probe as _run_physics_solver_cycle_probe,
     run_root_move_ik_target_probe as _run_root_move_ik_target_probe,
     run_root_move_skin_parity_probe as _run_root_move_skin_parity_probe,
+    run_anim_layer_graph_compare as _run_anim_layer_graph_compare,
+    run_runtime_bake_bench as _run_runtime_bake_bench,
     run_shader_override_smoke as _run_shader_override_smoke,
     run_shader_visual_semantic_gate as _run_shader_visual_semantic_gate,
     run_static_render as _run_static_render,
@@ -886,93 +891,21 @@ def mmd_control_rig_gui_e2e(session: nox.Session) -> None:
         uvx nox -s mmd_control_rig_gui_e2e -- --maya 2024
     """
 
-    args = list(session.posargs) or ["--maya", DEFAULT_MAYA_VERSION]
-    maya_version = _option(args, "--maya", DEFAULT_MAYA_VERSION)
-    out_dir = _require_build_path(
+    _run_control_rig_gui_e2e(
         session,
-        _option(args, "--out-dir", "build/e2e"),
-        "--out-dir",
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        root=ROOT,
+        require_build_path=_require_build_path,
+        read_probe_report=_read_probe_report,
+        clear_probe_report=_clear_probe_report,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_arg_path=_mayapy_arg_path,
+        mayapy_script=_mayapy_script,
+        python_executable=sys.executable,
     )
-    model = _option(args, "--model", "tests/data/mmt_test_model.pmx")
-    evaluation_mode = _option(args, "--evaluation-mode", "default")
-    mode_suffix = "" if evaluation_mode == "default" else f"_{evaluation_mode}"
-    route_suffix = "_create_on_import" if "--create-on-import" in args else ""
-    output_suffix = f"{mode_suffix}{route_suffix}"
-    gui_report = out_dir / f"mmd_control_rig_e2e_maya{maya_version}{output_suffix}.json"
-    exported_vmd = out_dir / f"mmd_control_rig_e2e_maya{maya_version}{output_suffix}.vmd"
-    session.run(
-        sys.executable,
-        str(ROOT / "tests" / "viewport" / "e2e_mmd_control_rig.py"),
-        *args,
-        external=True,
-    )
-    gui_report_data = _read_probe_report(session, gui_report, "MMD control-rig GUI E2E")
-    if gui_report_data.get("status") != "pass":
-        session.error(f"Maya GUI control-rig E2E did not pass: {gui_report_data}")
-    if not exported_vmd.is_file() or exported_vmd.stat().st_size == 0:
-        session.error(f"GUI E2E did not produce a canonical exported VMD: {exported_vmd}")
-
-    mayapy = _mayapy(maya_version)
-    if not mayapy.exists():
-        session.error(f"mayapy not found for Maya {maya_version}: {mayapy}")
-    ffi_path = (ROOT / "external" / "mmd-anim" / "target" / "release").resolve()
-    if not ffi_path.is_dir():
-        session.error(
-            "mmd-anim FFI release directory is required for the external oracle: "
-            f"{ffi_path}"
-        )
-    oracle_report = out_dir / f"mmd_anim_mesh_oracle_compare_maya{maya_version}{output_suffix}.json"
-    _clear_probe_report(session, oracle_report, "mmd-anim mesh oracle")
-    oracle_args = [
-        "--pmx",
-        _mayapy_arg_path(mayapy, model),
-        "--vmd",
-        _mayapy_arg_path(mayapy, exported_vmd),
-        "--out",
-        _mayapy_arg_path(mayapy, oracle_report),
-        "--mode",
-        "rig",
-        "--bind-source",
-        "pmx",
-        "--threshold",
-        "0.01",
-    ]
-    for frame in range(6):
-        oracle_args.extend(("--frame", str(frame)))
-    oracle_env = _mayapy_env(
-        mayapy,
-        MAYA_VERSION=maya_version,
-        MAYA_SKIP_USERSETUP_PY="1",
-        MMD_TOOLS_CPP_PLUGIN=_mayapy_arg_path(
-            mayapy,
-            ROOT / "plug-ins" / maya_version / "Debug" / "mmd_tools_cpp.mll",
-        ),
-        MMD_ANIM_FFI_PATH=str(ffi_path),
-    )
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/viewport/mmd_anim_mesh_oracle_compare.py"),
-        *oracle_args,
-        env=oracle_env,
-        external=True,
-        success_codes=(0, 1, 2),
-    )
-    external_report = _read_probe_report(session, oracle_report, "mmd-anim mesh oracle")
-    external_pass = external_report.get("status") == "passed"
-    gui_report_data["externalOracle"] = {
-        "identity": "mmd_anim_mesh_oracle_compare_rig_pmx_bind",
-        "status": "pass" if external_pass else "fail",
-        "report": str(oracle_report),
-        "threshold": 0.01,
-        "frames": list(range(6)),
-        "comparison": external_report.get("comparison"),
-    }
-    gui_report.write_text(
-        json.dumps(gui_report_data, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    if not external_pass:
-        session.error(f"External mmd-anim mesh oracle failed: {external_report}")
 
 
 @nox.session(venv_backend="none")
@@ -2211,62 +2144,17 @@ def import_order_e2e(session: nox.Session) -> None:
         uvx nox -s import_order_e2e -- --maya 2024 --manifest build/import-order-e2e/local-manifest.json
         uvx nox -s import_order_e2e -- --maya 2024 --background-model F:/MMD/stage/stage.pmx --character-model F:/MMD/pmx/miku.pmx --character-motion F:/MMD/vmd/dance.vmd
     """
-    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    mayapy = _mayapy(maya_ver)
-    passthrough: list[str] = []
-    args = list(session.posargs)
-    manifest = _option(args, "--manifest", "")
-    path_options = {"--manifest", "--out-dir", "--log"}
-    value_options = path_options | {"--background-model", "--character-model", "--character-motion", "--case", "--limit", "--order-limit"}
-    flag_options = {"--require-zero-fallback"}
-    if not manifest:
-        generated_manifest = _write_import_order_local_manifest(
-            session,
-            _option(args, "--background-model", str(ROOT / "tests/data/for_unit_test/test_1bone_cube.pmx")),
-            _option(args, "--character-model", str(ROOT / "tests/data/mmt_test_model.pmx")),
-            _option(args, "--character-motion", str(ROOT / "tests/data/mmt_test_model_test_motion.vmd")),
-        )
-        passthrough.extend(["--manifest", str(generated_manifest)])
-    env = _mayapy_env(mayapy, preserve_pythonpath=True)
-    if _has_flag(args, "--require-zero-fallback"):
-        profile_value = os.environ.get("MMD_TOOLS_VMD_PROFILE_JSONL")
-        if profile_value:
-            profile_path = Path(profile_value)
-            if not profile_path.is_absolute():
-                profile_path = ROOT / profile_path
-        else:
-            out_dir_value = _option(args, "--out-dir", str(ROOT / "build/import-order-e2e"))
-            out_dir_path = Path(out_dir_value)
-            if not out_dir_path.is_absolute():
-                out_dir_path = ROOT / out_dir_path
-            profile_path = out_dir_path / "vmd_profile.jsonl"
-        profile_path.parent.mkdir(parents=True, exist_ok=True)
-        if profile_path.exists():
-            profile_path.unlink()
-        env["MMD_TOOLS_VMD_PROFILE_JSONL"] = str(profile_path)
-    i = 0
-    while i < len(args):
-        if args[i] == "--maya" and i + 1 < len(args):
-            i += 2
-            continue
-        if not manifest and args[i] in {"--background-model", "--character-model", "--character-motion"}:
-            i += 2
-            continue
-        if args[i] in value_options and i + 1 < len(args):
-            passthrough.extend([args[i], args[i + 1]])
-            i += 2
-            continue
-        if args[i] in flag_options:
-            passthrough.append(args[i])
-            i += 1
-            continue
-        i += 1
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/viewport/import_order_e2e.py"),
-        *_convert_mayapy_path_options(mayapy, passthrough, path_options),
-        env=env,
-        external=True,
+    _run_import_order_e2e(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        has_flag=_has_flag,
+        root=ROOT,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_script=_mayapy_script,
+        convert_mayapy_path_options=_convert_mayapy_path_options,
+        write_local_manifest=_write_import_order_local_manifest,
     )
 
 
@@ -2279,28 +2167,14 @@ def import_scale_drift_e2e(session: nox.Session) -> None:
         uvx nox -s import_scale_drift_e2e -- --maya 2024 --expect fixed
         uvx nox -s import_scale_drift_e2e -- --maya 2024 --scale 1.0 --scale 2.0 --log build/import-scale-drift/run.jsonl
     """
-    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    mayapy = _mayapy(maya_ver)
-    passthrough: list[str] = []
-    args = list(session.posargs)
-    path_options = {"--model", "--log"}
-    value_options = path_options | {"--scale", "--expect", "--clean-threshold", "--drift-threshold", "--parser"}
-    i = 0
-    while i < len(args):
-        if args[i] == "--maya" and i + 1 < len(args):
-            i += 2
-            continue
-        if args[i] in value_options and i + 1 < len(args):
-            passthrough.extend([args[i], args[i + 1]])
-            i += 2
-            continue
-        i += 1
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/viewport/import_scale_drift_e2e.py"),
-        *_convert_mayapy_path_options(mayapy, passthrough, path_options),
-        env=_mayapy_env(mayapy, preserve_pythonpath=True),
-        external=True,
+    _run_import_scale_drift_e2e(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_script=_mayapy_script,
+        convert_mayapy_path_options=_convert_mayapy_path_options,
     )
 
 
@@ -2313,28 +2187,14 @@ def anim_layer_graph_compare(session: nox.Session) -> None:
         uvx nox -s anim_layer_graph_compare -- --maya 2024 --case joint_translate --case joint_rotate
         uvx nox -s anim_layer_graph_compare -- --maya 2024 --out build/reports/anim_layer_graph_compare.json
     """
-    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    mayapy = _mayapy(maya_ver)
-    passthrough: list[str] = []
-    args = list(session.posargs)
-    path_options = {"--out"}
-    value_options = path_options | {"--case", "--tolerance"}
-    i = 0
-    while i < len(args):
-        if args[i] == "--maya" and i + 1 < len(args):
-            i += 2
-            continue
-        if args[i] in value_options and i + 1 < len(args):
-            passthrough.extend([args[i], args[i + 1]])
-            i += 2
-            continue
-        i += 1
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/viewport/anim_layer_graph_compare.py"),
-        *_convert_mayapy_path_options(mayapy, passthrough, path_options),
-        env=_mayapy_env(mayapy, preserve_pythonpath=True),
-        external=True,
+    _run_anim_layer_graph_compare(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_script=_mayapy_script,
+        convert_mayapy_path_options=_convert_mayapy_path_options,
     )
 
 
@@ -2349,24 +2209,12 @@ def runtime_bake_bench(session: nox.Session) -> None:
         uvx nox -s runtime_bake_bench -- --maya 2024 --case eunice_rabbithole
         uvx nox -s runtime_bake_bench -- --pmx tests/data/mmt_test_model.pmx --vmd tests/data/mmt_test_model_test_motion.vmd
     """
-    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    mayapy = _mayapy(maya_ver)
-    passthrough: list[str] = []
-    args = list(session.posargs)
-    i = 0
-    while i < len(args):
-        if args[i] == "--maya" and i + 1 < len(args):
-            i += 2
-            continue
-        if args[i] in ("--case", "--pmx", "--vmd", "--out", "--log", "--repeat") and i + 1 < len(args):
-            passthrough.extend([args[i], args[i + 1]])
-            i += 2
-            continue
-        i += 1
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/viewport/runtime_bake_benchmark.py"),
-        *_convert_mayapy_path_options(mayapy, passthrough, {"--pmx", "--vmd", "--out", "--log"}),
-        env=_mayapy_env(mayapy, preserve_pythonpath=True),
-        external=True,
+    _run_runtime_bake_bench(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_script=_mayapy_script,
+        convert_mayapy_path_options=_convert_mayapy_path_options,
     )
