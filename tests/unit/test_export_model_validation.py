@@ -1463,21 +1463,22 @@ class TestExportModelValidation(unittest.TestCase):
             )
 
         exporter = _FakeExporter()
-        result = ExportModelAction(
-            pmx_exporter=exporter,
-            collector=None,
-            output_verifier=None,
-            validator=warning_validator,
-        ).execute(
-            ExportModelRequest(
-                file_path="out.pmx",
-                options={
-                    "export_format": "pmx",
-                    "model_data": _valid_model_data(),
-                    "ack_warnings": True,
-                },
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = ExportModelAction(
+                pmx_exporter=exporter,
+                collector=None,
+                output_verifier=None,
+                validator=warning_validator,
+            ).execute(
+                ExportModelRequest(
+                    file_path=str(Path(temp_dir) / "acknowledged.pmx"),
+                    options={
+                        "export_format": "pmx",
+                        "model_data": _valid_model_data(),
+                        "ack_warnings": True,
+                    },
+                )
             )
-        )
 
         self.assertTrue(result.succeeded)
         self.assertEqual(len(exporter.calls), 1)
