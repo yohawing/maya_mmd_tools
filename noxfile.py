@@ -67,6 +67,8 @@ from noxlib.release import (  # noqa: E402
 from noxlib.release_matrix import (  # noqa: E402
     tier0_commands as _release_gate_tier0_commands,
     tier1_commands as _release_gate_tier1_commands,
+    tier2_commands as _release_gate_tier2_commands,
+    tier3_commands as _release_gate_tier3_commands,
 )
 from tests.common.maya_location import mayapy as _mayapy  # noqa: E402
 from tests.common.maya_location import path_for_maya_process as _maya_process_path  # noqa: E402
@@ -2737,78 +2739,7 @@ def release_gate(session: nox.Session) -> None:
         _run_release_gate_command(name, command, results, verbose=verbose)
 
     if not quick:
-        tier2_commands = []
-        for maya_version in DEFAULT_RELEASE_MAYA_VERSIONS:
-            tier2_commands.extend(
-                [
-                    (
-                        f"tier2:mayapy-unit-{maya_version}",
-                        [
-                            "uvx", "nox", "-s", "tests", "--",
-                            "--type", "unit", "--maya", maya_version,
-                        ],
-                    ),
-                    (
-                        f"tier2:mayapy-integration-{maya_version}",
-                        [
-                            "uvx", "nox", "-s", "tests", "--",
-                            "--type", "integration", "--maya", maya_version,
-                        ],
-                    ),
-                ]
-            )
-        for maya_version, shader_backend, vp2_device in DEFAULT_RELEASE_VIEWPORT_MATRIX:
-            tier2_commands.append(
-                (
-                    f"tier2:viewport-{shader_backend}-{maya_version}",
-                    [
-                        "uvx", "nox", "-s", "maya_static_render", "--",
-                        "--maya", maya_version,
-                        "--shader",
-                        "--shader-backend", shader_backend,
-                        "--vp2-device", vp2_device,
-                        "--out",
-                        f"build/release-gate/viewport/maya{maya_version}-{shader_backend}.png",
-                        "--diagnostics-out",
-                        f"build/release-gate/viewport/maya{maya_version}-{shader_backend}.json",
-                    ],
-                )
-            )
-        if visual_manifest.is_file():
-            visual_outputs = {}
-            for maya_version, shader_backend, vp2_device in DEFAULT_RELEASE_VIEWPORT_MATRIX:
-                output = f"build/release-gate/visual/maya{maya_version}-{shader_backend}"
-                visual_outputs[shader_backend] = output
-                command = [
-                    "uvx", "nox", "-s", "maya_visual_regression", "--",
-                    "--maya", maya_version,
-                    "--port", DEFAULT_RELEASE_VISUAL_PORTS[maya_version],
-                    "--shader-backend", shader_backend,
-                    "--vp2-device", vp2_device,
-                    "--manifest", str(visual_manifest),
-                    "--out", output,
-                ]
-                for case in _release_visual_cases(shader_backend):
-                    command.extend(["--case", case])
-                tier2_commands.append((f"tier2:generated-pmx-visual-{shader_backend}-{maya_version}", command))
-            tier2_commands.append(
-                (
-                    "tier2:generated-pmx-glsl-dx11-diff",
-                    [
-                        sys.executable,
-                        "tests/viewport/visual_regression_compare.py",
-                        "--reference-capture-report",
-                        f"{visual_outputs['dx11']}/visual-regression-report.json",
-                        "--capture-report",
-                        f"{visual_outputs['glsl']}/visual-regression-report.json",
-                        "--out",
-                        "build/release-gate/visual/glsl-dx11-comparison.json",
-                        "--default-threshold",
-                        "0.12",
-                    ],
-                )
-            )
-        else:
+        if not visual_manifest.is_file():
             _run_release_gate_callable(
                 "tier2:generated-pmx-visual-manifest",
                 lambda: (_ for _ in ()).throw(FileNotFoundError(
@@ -2817,134 +2748,29 @@ def release_gate(session: nox.Session) -> None:
                 )),
                 results,
             )
-        tier2_commands.extend([
-            (
-                "tier2:bundled-native-smoke",
-                ["uvx", "nox", "-s", "bundled_native_smoke"],
-            ),
-            (
-                "tier2:native-physics-release-gate",
-                ["uvx", "nox", "-s", "native_physics_release_gate"],
-            ),
-            (
-                "tier2:pmx-roundtrip-v0_4",
-                [
-                    "uvx",
-                    "nox",
-                    "-s",
-                    "pmx_roundtrip",
-                    "--",
-                    "--maya",
-                    version,
-                    "--manifest",
-                    "tests/roundtrip/manifest_v0_4.json",
-                    "--require-clean",
-                    "--out-dir",
-                    "build/release-gate/pmx_roundtrip_v0_4",
-                ],
-            ),
-            (
-                "tier2:import-scale-drift",
-                ["uvx", "nox", "-s", "import_scale_drift_e2e", "--", "--maya", version, "--expect", "fixed"],
-            ),
-            ("tier2:anim-layer-graph", ["uvx", "nox", "-s", "anim_layer_graph_compare", "--", "--maya", version]),
-            (
-                "tier2:import-order-e2e",
-                ["uvx", "nox", "-s", "import_order_e2e", "--", "--maya", version, "--require-zero-fallback"],
-            ),
-            (
-                "tier2:humanik-control-rig",
-                [
-                    "uvx",
-                    "nox",
-                    "-s",
-                    "humanik_definition_smoke",
-                    "--",
-                    "--maya",
-                    version,
-                    "--fixture",
-                    "body",
-                    "--create-control-rig",
-                    "--out",
-                    "build/release-gate/humanik_control_rig_smoke.json",
-                ],
-            ),
-        ])
-        if _has_flag(args, "--with-cpp"):
-            for cpp_version in cpp_versions:
-                tier2_commands.append(
-                    (
-                        f"tier2:cpp-verify-{cpp_version}",
-                        ["uvx", "nox", "-s", "cpp_verify", "--", "--maya", cpp_version, "--config", cpp_config],
-                    )
-                )
-        if verbose:
-            for name, command in tier2_commands:
-                if name.startswith("tier2:mayapy-") and "--verbose" not in command:
-                    command.append("--verbose")
+        tier2_commands = _release_gate_tier2_commands(
+            version=version,
+            cpp_versions=cpp_versions,
+            cpp_config=cpp_config,
+            release_maya_versions=DEFAULT_RELEASE_MAYA_VERSIONS,
+            viewport_matrix=DEFAULT_RELEASE_VIEWPORT_MATRIX,
+            visual_manifest=visual_manifest,
+            visual_ports=DEFAULT_RELEASE_VISUAL_PORTS,
+            visual_cases=_release_visual_cases,
+            include_cpp=_has_flag(args, "--with-cpp"),
+            verbose=verbose,
+        )
         for name, command in tier2_commands:
             _run_release_gate_command(name, command, results, verbose=verbose)
 
-        tier3_commands = [
-            (
-                "tier3:local-assets-check",
-                [
-                    "uvx",
-                    "nox",
-                    "-s",
-                    "local_assets_check",
-                    "--",
-                    "--maya",
-                    version,
-                    "--manifest",
-                    local_assets_manifest,
-                    "--out-json",
-                    "build/reports/release_gate_local_assets.json",
-                    "--out-md",
-                    "build/reports/release_gate_local_assets.md",
-                ],
-                ROOT / "build/reports/release_gate_local_assets.json",
-            ),
-            (
-                "tier3:release-camera-motion-oracle",
-                [
-                    "uvx",
-                    "nox",
-                    "-s",
-                    "release_camera_motion_oracle",
-                    "--",
-                    "--maya",
-                    version,
-                    "--manifest",
-                    camera_manifest,
-                    "--skip-addiction-parity",
-                    "--out-dir",
-                    "build/release-gate/camera-motion",
-                ],
-                ROOT / "build/release-gate/camera-motion/manifest-skip.json",
-            ),
-            (
-                "tier3:local-parity",
-                [
-                    "uvx",
-                    "nox",
-                    "-s",
-                    "local_parity",
-                    "--",
-                    "--maya",
-                    version,
-                    "--manifest",
-                    local_parity_manifest,
-                    "--skip-fbx",
-                    "--out",
-                    "build/reports/release_gate_local_parity.json",
-                ],
-                ROOT / "build/reports/release_gate_local_parity.json",
-            ),
-        ]
-        if strict_local:
-            for _, command, _ in tier3_commands:
-                command.append("--strict-local")
+        tier3_commands = _release_gate_tier3_commands(
+            root=ROOT,
+            version=version,
+            local_assets_manifest=local_assets_manifest,
+            camera_manifest=camera_manifest,
+            local_parity_manifest=local_parity_manifest,
+            strict_local=strict_local,
+        )
         for name, command, result_report in tier3_commands:
             _run_release_gate_command(
                 name,
