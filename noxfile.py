@@ -77,6 +77,16 @@ from noxlib.sessions import (  # noqa: E402
     run_release_version as _run_release_version,
     run_tests as _run_tests,
 )
+from noxlib.native_sessions import (  # noqa: E402
+    run_bundled_native_smoke as _run_bundled_native_smoke,
+    run_cpp_build as _run_cpp_build,
+    run_cpp_config as _run_cpp_config,
+    run_ffi_build as _run_ffi_build,
+    run_maya_smoke as _run_maya_smoke,
+    run_native_export_smoke as _run_native_export_smoke,
+    run_native_smoke as _run_native_smoke,
+    run_reduction_abi_probe as _run_reduction_abi_probe,
+)
 from tests.common.maya_location import mayapy as _mayapy  # noqa: E402
 from tests.common.maya_location import path_for_maya_process as _maya_process_path  # noqa: E402
 from tests.common.output_hygiene import (  # noqa: E402
@@ -938,41 +948,17 @@ def ffi_build(session: nox.Session) -> None:
         uvx nox -s ffi_build
         uvx nox -s ffi_build -- --release --cargo-target-dir build/mmd-anim-unlocked-target
     """
-    args = session.posargs or ["--release"]
-    cargo_target_dir_raw = _option(args, "--cargo-target-dir", "")
-    cargo_args = _without_option(args, "--cargo-target-dir") if cargo_target_dir_raw else list(args)
-    cargo_args = _cargo_args_with_physics_feature(cargo_args)
-    cargo_target_dir = None
-    if cargo_target_dir_raw:
-        cargo_target_dir = _require_build_path(session, cargo_target_dir_raw, "--cargo-target-dir")
-    profile = "release" if "--release" in args else "debug"
-    library_name = {
-        "Windows": "mmd_runtime_ffi.dll",
-        "Darwin": "libmmd_runtime_ffi.dylib",
-    }.get(platform.system(), "libmmd_runtime_ffi.so")
-    output_root = cargo_target_dir or (ROOT / "external" / "mmd-anim" / "target")
-    locked_by = _windows_processes_locking_module(
-        output_root / profile / library_name
-    )
-    if locked_by:
-        session.error(
-            "mmd-anim FFI output DLL is currently loaded and cannot be replaced: "
-            + "; ".join(locked_by)
-        )
-    env = os.environ.copy()
-    if cargo_target_dir is not None:
-        env["CARGO_TARGET_DIR"] = str(cargo_target_dir)
-    _configure_bullet3_dir(session, env)
-    session.run(
-        "cargo",
-        "build",
-        "-p",
-        "mmd-anim-ffi",
-        "--manifest-path",
-        "external/mmd-anim/Cargo.toml",
-        *cargo_args,
-        env=env,
-        external=True,
+    _run_ffi_build(
+        session,
+        posargs=session.posargs,
+        root=ROOT,
+        option=_option,
+        without_option=_without_option,
+        cargo_args_with_physics_feature=_cargo_args_with_physics_feature,
+        require_build_path=_require_build_path,
+        windows_processes_locking_module=_windows_processes_locking_module,
+        configure_bullet3_dir=_configure_bullet3_dir,
+        platform_name=platform.system(),
     )
 
 
@@ -984,12 +970,13 @@ def native_smoke(session: nox.Session) -> None:
         uvx nox -s native_smoke
         uvx nox -s native_smoke -- --ffi-path build/mmd-anim-unlocked-target/release
     """
-    args = list(session.posargs)
-    ffi_path = _option(args, "--ffi-path", "")
-    env = os.environ.copy()
-    if ffi_path:
-        env["MMD_ANIM_FFI_PATH"] = str(_resolve_existing_or_repo_path(ffi_path))
-    session.run(sys.executable, "-c", _native_runtime_smoke_code(), env=env, external=True)
+    _run_native_smoke(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        resolve_existing_or_repo_path=_resolve_existing_or_repo_path,
+        runtime_smoke_code=_native_runtime_smoke_code(),
+    )
 
 
 @nox.session(venv_backend="none")
@@ -1000,61 +987,24 @@ def reduction_abi_probe(session: nox.Session) -> None:
         uvx nox -s reduction_abi_probe
         uvx nox -s reduction_abi_probe -- --ffi-path build/mmd-anim-unlocked-target/release
     """
-    args = list(session.posargs)
-    ffi_path = _resolve_existing_or_repo_path(
-        _option(args, "--ffi-path", "external/mmd-anim/target/release")
-    )
-    out_json = _require_build_path(
+    _run_reduction_abi_probe(
         session,
-        _option(args, "--out-json", "build/reports/reduction_abi_probe.json"),
-        "--out-json",
-    )
-    out_md = _require_build_path(
-        session,
-        _option(args, "--out-md", "build/reports/reduction_abi_probe.md"),
-        "--out-md",
-    )
-    session.run(
-        sys.executable,
-        "tests/release/reduction_abi_probe.py",
-        "--ffi-path",
-        str(ffi_path),
-        "--out-json",
-        str(out_json),
-        "--out-md",
-        str(out_md),
-        external=True,
+        posargs=session.posargs,
+        option=_option,
+        resolve_existing_or_repo_path=_resolve_existing_or_repo_path,
+        require_build_path=_require_build_path,
     )
 
 
 @nox.session(venv_backend="none")
 def bundled_native_smoke(session: nox.Session) -> None:
     """Verify only the native binaries bundled in release distribution paths."""
-    out_json = _require_build_path(
+    _run_bundled_native_smoke(
         session,
-        _option(session.posargs, "--out-json", "build/reports/bundled_native_smoke.json"),
-        "--out-json",
-    )
-    out_md = _require_build_path(
-        session,
-        _option(session.posargs, "--out-md", "build/reports/bundled_native_smoke.md"),
-        "--out-md",
-    )
-    import tomllib
-
-    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    session.run(
-        sys.executable,
-        "tests/release/bundled_native_smoke.py",
-        "--root",
-        str(ROOT),
-        "--expected-version",
-        project["project"]["version"],
-        "--out-json",
-        str(out_json),
-        "--out-md",
-        str(out_md),
-        external=True,
+        posargs=session.posargs,
+        root=ROOT,
+        option=_option,
+        require_build_path=_require_build_path,
     )
 
 
@@ -1069,13 +1019,13 @@ def native_export_smoke(session: nox.Session) -> None:
         uvx nox -s native_export_smoke
         uvx nox -s native_export_smoke -- --strict --ffi-path build/mmd-anim-unlocked-target/release
     """
-    args = list(session.posargs)
-    ffi_path = _option(args, "--ffi-path", "")
-    smoke_args = _without_option(args, "--ffi-path") if ffi_path else args
-    env = os.environ.copy()
-    if ffi_path:
-        env["MMD_ANIM_FFI_PATH"] = str(_resolve_existing_or_repo_path(ffi_path))
-    session.run(sys.executable, "tests/native_export_smoke.py", *smoke_args, env=env, external=True)
+    _run_native_export_smoke(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        without_option=_without_option,
+        resolve_existing_or_repo_path=_resolve_existing_or_repo_path,
+    )
 
 
 @nox.session(venv_backend="none")
@@ -1101,47 +1051,42 @@ def release_package(session: nox.Session) -> None:
 @nox.session(venv_backend="none")
 def cpp_config(session: nox.Session) -> None:
     """Configure the Maya C++ plugin build."""
-    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
-    _cmake_configure(session, version, config)
+    _run_cpp_config(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        default_config=DEFAULT_CMAKE_CONFIG,
+        configure=_cmake_configure,
+    )
 
 
 @nox.session(venv_backend="none")
 def cpp_build(session: nox.Session) -> None:
     """Configure and build the Maya C++ plugin."""
-    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
-    _cmake_configure(session, version, config)
-    _cmake_build(session, version, config)
+    _run_cpp_build(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        default_config=DEFAULT_CMAKE_CONFIG,
+        configure=_cmake_configure,
+        build=_cmake_build,
+    )
 
 
 @nox.session(venv_backend="none")
 def maya_smoke(session: nox.Session) -> None:
     """Load the C++ plugin in mayapy and create the runtime node."""
-    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
-    mayapy = _mayapy(version)
-    if not mayapy.exists():
-        raise FileNotFoundError(f"mayapy not found: {mayapy}")
-
-    env = _mayapy_env(mayapy, MAYA_VERSION=version, MMD_TOOLS_CPP_CONFIG=config)
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/cpp/smoke_python_rig_fallback.py"),
-        env=env,
-        external=True,
-    )
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/cpp/smoke_runtime_node.py"),
-        env=env,
-        external=True,
-    )
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/cpp/focused_physics_solver_world_toggle.py"),
-        env=env,
-        external=True,
+    _run_maya_smoke(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        default_config=DEFAULT_CMAKE_CONFIG,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_script=_mayapy_script,
     )
 
 

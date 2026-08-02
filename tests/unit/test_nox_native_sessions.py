@@ -1,0 +1,102 @@
+"""Focused tests for native-session command delegation."""
+
+from __future__ import annotations
+
+import sys
+import types
+import unittest
+from pathlib import Path
+
+from noxlib.common import _option, _without_option
+from noxlib.native_sessions import (
+    run_cpp_build,
+    run_maya_smoke,
+    run_native_export_smoke,
+    run_reduction_abi_probe,
+)
+
+
+class _FakeSession:
+    def __init__(self, posargs=None):
+        self.posargs = list(posargs or [])
+        self.runs = []
+
+    def run(self, *args, **kwargs):
+        self.runs.append((args, kwargs))
+
+
+class NativeSessionsTest(unittest.TestCase):
+    def test_native_export_smoke_removes_ffi_path_from_child_arguments(self):
+        session = _FakeSession(["--strict", "--ffi-path", "build/custom-ffi"])
+        run_native_export_smoke(
+            session,
+            posargs=session.posargs,
+            option=_option,
+            without_option=_without_option,
+            resolve_existing_or_repo_path=lambda value: Path("F:/resolved") / value,
+        )
+        args, kwargs = session.runs[0]
+        self.assertEqual(args, (sys.executable, "tests/native_export_smoke.py", "--strict"))
+        self.assertEqual(kwargs["env"]["MMD_ANIM_FFI_PATH"], str(Path("F:/resolved") / "build/custom-ffi"))
+        self.assertTrue(kwargs["external"])
+
+    def test_reduction_probe_resolves_paths_and_build_reports(self):
+        session = _FakeSession(["--ffi-path", "ffi", "--out-json", "build/probe.json"])
+
+        def require_build_path(_session, value, _option_name):
+            return Path("F:/root") / value
+
+        run_reduction_abi_probe(
+            session,
+            posargs=session.posargs,
+            option=_option,
+            resolve_existing_or_repo_path=lambda value: Path("F:/root") / value,
+            require_build_path=require_build_path,
+        )
+        args, kwargs = session.runs[0]
+        self.assertEqual(args[0], sys.executable)
+        self.assertEqual(args[1], "tests/release/reduction_abi_probe.py")
+        self.assertEqual(args[2], "--ffi-path")
+        self.assertEqual(Path(args[3]), Path("F:/root/ffi"))
+        self.assertIn(str(Path("F:/root/build/probe.json")), args)
+        self.assertIn(str(Path("F:/root/build/reports/reduction_abi_probe.md")), args)
+        self.assertTrue(kwargs["external"])
+
+    def test_cpp_build_keeps_configure_before_build(self):
+        session = _FakeSession(["--maya", "2026", "--config", "Release"])
+        calls = []
+        run_cpp_build(
+            session,
+            posargs=session.posargs,
+            option=_option,
+            default_maya_version="2024",
+            default_config="Debug",
+            configure=lambda *args: calls.append(("configure", args)),
+            build=lambda *args: calls.append(("build", args)),
+        )
+        self.assertEqual(calls, [("configure", (session, "2026", "Release")), ("build", (session, "2026", "Release"))])
+
+    def test_maya_smoke_runs_all_runtime_scripts_with_one_environment(self):
+        session = _FakeSession(["--maya", "2024", "--config", "Debug"])
+        mayapy = types.SimpleNamespace(exists=lambda: True)
+        env = {"MAYA_VERSION": "2024"}
+        run_maya_smoke(
+            session,
+            posargs=session.posargs,
+            option=_option,
+            default_maya_version="2026",
+            default_config="Release",
+            mayapy=lambda _version: mayapy,
+            mayapy_env=lambda _mayapy, **_values: env,
+            mayapy_script=lambda _mayapy, script: script,
+        )
+        self.assertEqual([args[1] for args, _kwargs in session.runs], [
+            "tests/cpp/smoke_python_rig_fallback.py",
+            "tests/cpp/smoke_runtime_node.py",
+            "tests/cpp/focused_physics_solver_world_toggle.py",
+        ])
+        self.assertTrue(all(kwargs["env"] is env for _args, kwargs in session.runs))
+
+
+if __name__ == "__main__":
+    unittest.main()
