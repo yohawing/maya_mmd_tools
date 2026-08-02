@@ -24,6 +24,7 @@ from .issue_catalog import (
 )
 from .mmd_anim_verifier import verify_mmd_anim_asset
 from .output_verifier import verify_model_output
+from .report_artifacts import ValidationReportArtifactPaths, write_validation_report_artifacts
 from .snapshot import ExportValidationSnapshot, fingerprint_payload
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "IssueCatalogEntry",
     "PMD_MAX_VERTEX_COUNT",
     "UnknownValidationIssueError",
+    "ValidationReportArtifactPaths",
     "get_issue_catalog_entry",
     "fingerprint_payload",
     "validate_export_model",
@@ -44,4 +46,5 @@ __all__ = [
     "validate_model_data",
     "verify_model_output",
     "verify_mmd_anim_asset",
+    "write_validation_report_artifacts",
 ]

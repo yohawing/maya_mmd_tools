@@ -48,6 +48,7 @@ class ValidationReportCatalogTests(unittest.TestCase):
         self.assertEqual(payload["status"], "ready")
         self.assertEqual(payload["target_identity"], "modelRoot")
         self.assertEqual(payload["snapshot_fingerprint"], "sha256:fixture")
+        self.assertEqual(payload["evidence"], {"fixture": "valid-model"})
         self.assertEqual(payload["issues"], [])
 
     def test_blocking_issue_is_enriched_from_catalog(self):

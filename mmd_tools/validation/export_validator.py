@@ -150,6 +150,7 @@ class ExportValidationReport:
         """
         from .issue_catalog import canonical_issue_dict
 
+        evidence_payload = dict(evidence or {})
         return {
             "schema_version": 1,
             "status": self.to_dict()["status"],
@@ -159,12 +160,13 @@ class ExportValidationReport:
             "target_identity": target_identity,
             "snapshot_fingerprint": snapshot_fingerprint,
             "summary": self.to_dict()["summary"],
+            "evidence": evidence_payload,
             "issues": [
                 canonical_issue_dict(
                     issue,
                     provenance=provenance,
                     snapshot_fingerprint=snapshot_fingerprint,
-                    evidence=evidence,
+                    evidence=evidence_payload,
                 )
                 for issue in self.issues
             ],

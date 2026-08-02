@@ -1147,6 +1147,110 @@ class TestExportModelValidation(unittest.TestCase):
         self.assertEqual(exporter.calls, [])
         self.assertEqual(result.warnings, list(result.validation_report.issues))
 
+    def test_action_writes_requested_blocked_validation_report_artifacts(self):
+        exporter = _FakeExporter()
+        model_data = _valid_model_data()
+        model_data["faces"] = [[0, 1]]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "blocked.pmx"
+            report_directory = Path(temp_dir) / "reports" / "run-001"
+            result = ExportModelAction(
+                pmx_exporter=exporter,
+                collector=None,
+                output_verifier=None,
+            ).execute(
+                ExportModelRequest(
+                    file_path=str(output_path),
+                    options={
+                        "export_format": "pmx",
+                        "model_data": model_data,
+                        "target_identity": "modelRoot",
+                        "validation_report_dir": report_directory,
+                    },
+                )
+            )
+
+            self.assertFalse(result.succeeded)
+            self.assertEqual(exporter.calls, [])
+            self.assertIsNotNone(result.validation_report_artifacts)
+            self.assertEqual(
+                result.validation_report_artifacts.json_path,
+                report_directory / "report.json",
+            )
+            report_json = json.loads(
+                result.validation_report_artifacts.json_path.read_text(encoding="utf-8")
+            )
+            self.assertEqual(report_json["status"], "blocked")
+            self.assertEqual(report_json["target_identity"], "modelRoot")
+            self.assertEqual(report_json["issues"][0]["code"], "FACE_TOO_SHORT")
+            self.assertIn("`FACE_TOO_SHORT`", result.validation_report_artifacts.markdown_path.read_text(encoding="utf-8"))
+
+    def test_action_writes_requested_ready_validation_report_on_success(self):
+        exporter = _FakeExporter()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "ready.pmx"
+            report_directory = Path(temp_dir) / "reports" / "run-002"
+            result = ExportModelAction(
+                pmx_exporter=exporter,
+                collector=None,
+                output_verifier=None,
+            ).execute(
+                ExportModelRequest(
+                    file_path=str(output_path),
+                    options={
+                        "export_format": "pmx",
+                        "model_data": _valid_model_data(),
+                        "target_identity": "modelRoot",
+                        "validation_report_dir": report_directory,
+                        "validation_report_evidence": {"fixture": "valid-model"},
+                    },
+                )
+            )
+
+            self.assertTrue(result.succeeded)
+            self.assertTrue(output_path.is_file())
+            self.assertIsNotNone(result.validation_report_artifacts)
+            report_json = json.loads(
+                result.validation_report_artifacts.json_path.read_text(encoding="utf-8")
+            )
+            self.assertEqual(report_json["status"], "ready")
+            self.assertEqual(report_json["snapshot_fingerprint"], result.payload_fingerprint)
+            self.assertEqual(report_json["issues"], [])
+            self.assertIn('"fixture": "valid-model"', result.validation_report_artifacts.markdown_path.read_text(encoding="utf-8"))
+
+    def test_report_artifact_write_failure_preserves_existing_target(self):
+        exporter = _FakeExporter()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "existing.pmx"
+            original_bytes = b"existing export bytes"
+            output_path.write_bytes(original_bytes)
+            report_path = Path(temp_dir) / "report-path-is-a-file"
+            report_path.write_bytes(b"not a directory")
+
+            result = ExportModelAction(
+                pmx_exporter=exporter,
+                collector=None,
+                output_verifier=None,
+            ).execute(
+                ExportModelRequest(
+                    file_path=str(output_path),
+                    options={
+                        "export_format": "pmx",
+                        "model_data": _valid_model_data(),
+                        "validation_report_dir": report_path,
+                    },
+                )
+            )
+
+            self.assertFalse(result.succeeded)
+            self.assertIsInstance(result.error, OSError)
+            self.assertEqual(output_path.read_bytes(), original_bytes)
+            self.assertEqual(len(exporter.calls), 1)
+            self.assertFalse(Path(exporter.calls[0][0]).exists())
+
     def test_action_does_not_call_writer_when_pmd_skin_preflight_fails(self):
         exporter = _FakeExporter()
         model_data = _valid_model_data()

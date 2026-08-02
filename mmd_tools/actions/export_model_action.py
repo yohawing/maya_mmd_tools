@@ -1,6 +1,7 @@
 """Action boundary for PMX/PMD model export execution."""
 
 from dataclasses import dataclass, field
+from collections.abc import Mapping
 import os
 from pathlib import Path
 import tempfile
@@ -18,6 +19,10 @@ from ..validation.export_validator import (
 )
 from ..validation.output_verifier import verify_model_output
 from ..validation.mmd_anim_verifier import verify_mmd_anim_asset
+from ..validation.report_artifacts import (
+    ValidationReportArtifactPaths,
+    write_validation_report_artifacts,
+)
 from ..validation.snapshot import ExportValidationSnapshot
 
 logger = get_logger(__name__)
@@ -46,6 +51,7 @@ class ExportModelResult:
     warnings: List[Any] = field(default_factory=list)
     validation_report: Optional[ExportValidationReport] = None
     payload_fingerprint: Optional[str] = None
+    validation_report_artifacts: Optional[ValidationReportArtifactPaths] = None
 
 
 def _default_collect_model_data(options: Dict[str, Any]) -> dict:
@@ -95,11 +101,64 @@ class ExportModelAction:
         )
         self._validator = validate_model_data if validator is _DEFAULT_VALIDATOR else validator
 
+    @staticmethod
+    def _write_requested_report(
+        request: ExportModelRequest,
+        report: Optional[ExportValidationReport],
+        payload_fingerprint: Optional[str],
+    ) -> Optional[ValidationReportArtifactPaths]:
+        """Write a report only when the caller supplied an explicit run directory."""
+        report_directory = request.options.get("validation_report_dir")
+        if report is None or report_directory in (None, ""):
+            return None
+
+        configured_evidence = request.options.get("validation_report_evidence") or {}
+        if not isinstance(configured_evidence, Mapping):
+            raise TypeError("validation_report_evidence must be a mapping")
+        evidence = dict(configured_evidence)
+        evidence.setdefault("target_path", str(request.file_path))
+        return write_validation_report_artifacts(
+            report,
+            report_directory,
+            target_identity=request.options.get("target_identity"),
+            snapshot_fingerprint=payload_fingerprint,
+            provenance=request.options.get("validation_report_provenance", "PayloadValidator"),
+            evidence=evidence,
+        )
+
     def execute(self, request: ExportModelRequest) -> ExportModelResult:
         """Export a PMX/PMD model and return a small result object."""
         validation_report: Optional[ExportValidationReport] = None
         payload_fingerprint: Optional[str] = None
+        validation_report_artifacts: Optional[ValidationReportArtifactPaths] = None
         temporary_path: Optional[str] = None
+
+        def build_result(
+            *,
+            exported_path: Optional[str] = None,
+            succeeded: bool = False,
+            status_message: str = "",
+            error: Optional[Exception] = None,
+            warnings: Optional[List[Any]] = None,
+        ) -> ExportModelResult:
+            """Build a result and persist its final validation report if requested."""
+            nonlocal validation_report_artifacts
+            validation_report_artifacts = self._write_requested_report(
+                request,
+                validation_report,
+                payload_fingerprint,
+            )
+            return ExportModelResult(
+                exported_path=exported_path,
+                succeeded=succeeded,
+                status_message=status_message,
+                error=error,
+                warnings=list(warnings or []),
+                validation_report=validation_report,
+                payload_fingerprint=payload_fingerprint,
+                validation_report_artifacts=validation_report_artifacts,
+            )
+
         try:
             export_format = (request.options.get("export_format") or "").lower()
             if not export_format:
@@ -134,11 +193,10 @@ class ExportModelAction:
                         raise
                     validation_error = ExportValidationError(validation_report)
                     logger.error("Model export preflight failed: %s", validation_error)
-                    return ExportModelResult(
+                    return build_result(
                         status_message=f"Export failed: {validation_error}",
                         error=validation_error,
                         warnings=list(validation_report.issues),
-                        validation_report=validation_report,
                     )
             elif isinstance(provided_snapshot, ExportValidationSnapshot):
                 snapshot = provided_snapshot
@@ -162,12 +220,10 @@ class ExportModelAction:
                     )
                     validation_error = ExportValidationError(validation_report)
                     logger.error("Model export preflight failed: %s", validation_error)
-                    return ExportModelResult(
+                    return build_result(
                         status_message=f"Export failed: {validation_error}",
                         error=validation_error,
                         warnings=list(validation_report.issues),
-                        validation_report=validation_report,
-                        payload_fingerprint=snapshot.payload_fingerprint,
                     )
             else:
                 raise TypeError("validation_snapshot must be an ExportValidationSnapshot")
@@ -192,12 +248,10 @@ class ExportModelAction:
                 )
                 validation_error = ExportValidationError(validation_report)
                 logger.error("Model export preflight failed: %s", validation_error)
-                return ExportModelResult(
+                return build_result(
                     status_message=f"Export failed: {validation_error}",
                     error=validation_error,
                     warnings=list(validation_report.issues),
-                    validation_report=validation_report,
-                    payload_fingerprint=payload_fingerprint,
                 )
 
             model_data = snapshot.model_data
@@ -205,23 +259,19 @@ class ExportModelAction:
             if validation_report.is_blocking:
                 validation_error = ExportValidationError(validation_report)
                 logger.error("Model export preflight failed: %s", validation_error)
-                return ExportModelResult(
+                return build_result(
                     status_message=f"Export failed: {validation_error}",
                     error=validation_error,
                     warnings=list(validation_report.issues),
-                    validation_report=validation_report,
-                    payload_fingerprint=payload_fingerprint,
                 )
 
             if validation_report.requires_warning_ack and request.options.get("ack_warnings") is not True:
                 acknowledgement_error = ExportValidationAcknowledgementRequired(validation_report)
                 logger.error("Model export is waiting for warning acknowledgement: %s", acknowledgement_error)
-                return ExportModelResult(
+                return build_result(
                     status_message=f"Export failed: {acknowledgement_error}",
                     error=acknowledgement_error,
                     warnings=list(validation_report.issues),
-                    validation_report=validation_report,
-                    payload_fingerprint=payload_fingerprint,
                 )
 
             if not snapshot.matches(
@@ -292,6 +342,12 @@ class ExportModelAction:
                 raise FileNotFoundError(
                     f"Export writer did not create a non-empty temporary output: {temporary_path}"
                 )
+
+            validation_report_artifacts = self._write_requested_report(
+                request,
+                validation_report,
+                payload_fingerprint,
+            )
             os.replace(temporary_path, request.file_path)
             temporary_path = None
 
@@ -302,15 +358,30 @@ class ExportModelAction:
                 status_message=f"Export complete: {request.file_path}",
                 validation_report=validation_report,
                 payload_fingerprint=payload_fingerprint,
+                validation_report_artifacts=validation_report_artifacts,
             )
         except Exception as exc:
             logger.error("Model export failed: %s", exc, exc_info=True)
+            if validation_report is not None and validation_report_artifacts is None:
+                try:
+                    validation_report_artifacts = self._write_requested_report(
+                        request,
+                        validation_report,
+                        payload_fingerprint,
+                    )
+                except Exception as artifact_error:
+                    logger.error(
+                        "Failed to write validation report artifacts: %s",
+                        artifact_error,
+                        exc_info=True,
+                    )
             return ExportModelResult(
                 status_message=f"Export failed: {exc}",
                 error=exc,
                 warnings=list(validation_report.issues) if validation_report else [],
                 validation_report=validation_report,
                 payload_fingerprint=payload_fingerprint,
+                validation_report_artifacts=validation_report_artifacts,
             )
         finally:
             if temporary_path is not None:

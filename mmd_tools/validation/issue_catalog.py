@@ -346,6 +346,10 @@ def render_validation_report_markdown(
         f"- Info: {summary['info']}",
         f"- Warning acknowledgement required: `{str(payload['requires_warning_ack']).lower()}`",
         "",
+        "## Evidence",
+        "",
+        f"- Report evidence: `{json.dumps(payload['evidence'], ensure_ascii=False, sort_keys=True)}`",
+        "",
         "## Issues",
         "",
     ]
