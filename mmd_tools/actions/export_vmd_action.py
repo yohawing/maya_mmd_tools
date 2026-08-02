@@ -17,6 +17,7 @@ from ..validation.export_validator import (
     ExportValidationReport,
 )
 from ..validation.mmd_anim_verifier import verify_mmd_anim_asset
+from ..validation.mmd_anim_binding_verifier import verify_mmd_anim_binding_asset
 from ..validation.report_artifacts import (
     ValidationReportArtifactPaths,
     write_validation_report_artifacts,
@@ -272,6 +273,22 @@ class ExportVmdAction:
                 )
                 validation_report = self._append_report(validation_report, mmd_anim_report, mode)
                 if mmd_anim_report.is_blocking:
+                    raise ExportValidationError(validation_report)
+
+            if request.options.get("verify_mmd_anim_binding"):
+                binding_counts = request.options.get("mmd_anim_binding_expected_counts")
+                if not isinstance(binding_counts, Mapping):
+                    binding_counts = None
+                binding_report = verify_mmd_anim_binding_asset(
+                    request.options.get("mmd_anim_binding_model_path", ""),
+                    motion_path=temporary_path,
+                    binding_root=request.options.get("mmd_anim_binding_root"),
+                    runtime_library=request.options.get("mmd_anim_binding_library"),
+                    frame=request.options.get("mmd_anim_binding_frame", 0.0),
+                    expected_counts=binding_counts,
+                )
+                validation_report = self._append_report(validation_report, binding_report, mode)
+                if binding_report.is_blocking:
                     raise ExportValidationError(validation_report)
 
             if validation_report.requires_warning_ack and request.options.get("ack_warnings") is not True:

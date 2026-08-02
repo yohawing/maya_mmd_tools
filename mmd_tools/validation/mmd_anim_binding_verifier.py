@@ -166,6 +166,16 @@ def verify_mmd_anim_binding_asset(
                 ),
             )
         )
+    if model.suffix.lower() != ".pmx":
+        return _report(
+            (
+                _issue(
+                    "MMD_ANIM_BINDING_INPUT_INVALID",
+                    "binding.model",
+                    "mmd-anim Python binding integration accepts PMX model bytes only",
+                ),
+            )
+        )
     try:
         numeric_frame = float(frame)
     except (TypeError, ValueError, OverflowError):

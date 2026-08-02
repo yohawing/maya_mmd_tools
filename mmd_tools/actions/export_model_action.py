@@ -19,6 +19,7 @@ from ..validation.export_validator import (
 )
 from ..validation.output_verifier import verify_model_output
 from ..validation.mmd_anim_verifier import verify_mmd_anim_asset
+from ..validation.mmd_anim_binding_verifier import verify_mmd_anim_binding_asset
 from ..validation.report_artifacts import (
     ValidationReportArtifactPaths,
     write_validation_report_artifacts,
@@ -333,6 +334,36 @@ class ExportModelAction:
                         tuple(validation_report.issues) + tuple(mmd_anim_report.issues),
                     )
                 if mmd_anim_report.is_blocking:
+                    raise ExportValidationError(validation_report)
+
+            if request.options.get("verify_mmd_anim_binding"):
+                expected_binding_counts = {}
+                if isinstance(writer_model_data, Mapping):
+                    bones = writer_model_data.get("bones")
+                    if bones is None:
+                        expected_binding_counts["bones"] = 1
+                    elif not isinstance(bones, (str, bytes, bytearray)):
+                        expected_binding_counts["bones"] = len(bones)
+                    morphs = writer_model_data.get("morphs")
+                    if morphs is not None and not isinstance(morphs, (str, bytes, bytearray)):
+                        expected_binding_counts["morphs"] = len(morphs)
+                configured_counts = request.options.get("mmd_anim_binding_expected_counts")
+                if isinstance(configured_counts, Mapping):
+                    expected_binding_counts.update(configured_counts)
+                binding_report = verify_mmd_anim_binding_asset(
+                    temporary_path,
+                    motion_path=request.options.get("mmd_anim_binding_motion_path"),
+                    binding_root=request.options.get("mmd_anim_binding_root"),
+                    runtime_library=request.options.get("mmd_anim_binding_library"),
+                    frame=request.options.get("mmd_anim_binding_frame", 0.0),
+                    expected_counts=expected_binding_counts,
+                )
+                if binding_report.issues:
+                    validation_report = ExportValidationReport(
+                        export_format,
+                        tuple(validation_report.issues) + tuple(binding_report.issues),
+                    )
+                if binding_report.is_blocking:
                     raise ExportValidationError(validation_report)
 
             if validation_report.requires_warning_ack and request.options.get("ack_warnings") is not True:
