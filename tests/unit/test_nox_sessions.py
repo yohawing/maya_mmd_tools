@@ -9,6 +9,7 @@ from pathlib import Path
 from tools.nox.common import _option
 from tools.nox.sessions import (
     run_control_rig_vmd_roundtrip,
+    run_mmd_anim_binding_gate,
     run_mmd_anim_python_tests,
     run_python_module,
 )
@@ -138,6 +139,45 @@ class NoxSessionsTest(unittest.TestCase):
             )
 
             self.assertEqual(session.runs[0][1]["env"]["MMD_RUNTIME_LIBRARY"], str(runtime_library))
+
+    def test_mmd_anim_binding_gate_forwards_fixture_gate_and_runtime_library(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            binding_dir = root / "external" / "mmd-anim" / "bindings" / "python"
+            binding_dir.mkdir(parents=True)
+            runtime_library = root / "external" / "mmd-anim" / "target" / "release" / "mmd_runtime_ffi.dll"
+            runtime_library.parent.mkdir(parents=True)
+            runtime_library.touch()
+            session = _FakeSession(["--frame", "12"])
+
+            run_mmd_anim_binding_gate(
+                session,
+                posargs=session.posargs,
+                option=_option,
+                root=root,
+                python_executable="python.exe",
+                environment={"PATH": "path"},
+                platform_name="Windows",
+            )
+
+            self.assertEqual(
+                session.runs,
+                [
+                    (
+                        (
+                            "python.exe",
+                            "tools/mmd_anim_binding_gate.py",
+                            "--binding-root",
+                            str(binding_dir),
+                            "--runtime-library",
+                            str(runtime_library),
+                            "--frame",
+                            "12",
+                        ),
+                        {"env": {"PATH": "path"}, "external": True},
+                    )
+                ],
+            )
 
 
 if __name__ == "__main__":

@@ -88,6 +88,7 @@ from tools.nox.sessions import (  # noqa: E402
     run_control_rig_vmd_roundtrip as _run_control_rig_vmd_roundtrip,
     run_ci_unit as _run_ci_unit,
     run_gui_tests as _run_gui_tests,
+    run_mmd_anim_binding_gate as _run_mmd_anim_binding_gate,
     run_mmd_anim_python_tests as _run_mmd_anim_python_tests,
     run_release_package as _run_release_package,
     run_release_version as _run_release_version,
@@ -838,6 +839,20 @@ def mmd_anim_python_tests(session: nox.Session) -> None:
         uvx nox -s mmd_anim_python_tests -- --runtime-library F:/path/mmd_runtime_ffi.dll
     """
     _run_mmd_anim_python_tests(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        root=ROOT,
+        python_executable=sys.executable,
+        environment=dict(os.environ),
+        platform_name=platform.system(),
+    )
+
+
+@nox.session(venv_backend="none")
+def mmd_anim_binding_gate(session: nox.Session) -> None:
+    """Run PMX/VMD export bytes through the external mmd-anim binding."""
+    _run_mmd_anim_binding_gate(
         session,
         posargs=session.posargs,
         option=_option,

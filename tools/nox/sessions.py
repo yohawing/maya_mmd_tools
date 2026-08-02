@@ -106,6 +106,47 @@ def run_mmd_anim_python_tests(
     )
 
 
+def run_mmd_anim_binding_gate(
+    session,
+    *,
+    posargs: Sequence[str],
+    option,
+    root: Path,
+    python_executable: Union[PathLike, str],
+    environment: Mapping[str, str],
+    platform_name: Optional[str] = None,
+) -> None:
+    """Run the repository's PMX/VMD export integration through the binding."""
+    binding_dir = (root / _MMD_ANIM_BINDING_RELATIVE_DIR).resolve()
+    if not binding_dir.is_dir():
+        session.error(f"mmd_anim_binding_gate: binding directory not found: {binding_dir}")
+
+    try:
+        runtime_library_arg = option(list(posargs), "--runtime-library", "")
+    except ValueError as exc:
+        session.error(f"mmd_anim_binding_gate: {exc}")
+    remaining = list(posargs)
+    if "--runtime-library" in remaining:
+        index = remaining.index("--runtime-library")
+        del remaining[index : index + 2]
+    runtime_library = _resolve_mmd_anim_runtime_library(
+        session,
+        root=root,
+        runtime_library=runtime_library_arg,
+        platform_name=platform_name or "",
+    )
+    command = [
+        str(python_executable),
+        "tools/mmd_anim_binding_gate.py",
+        "--binding-root",
+        str(binding_dir),
+        "--runtime-library",
+        str(runtime_library),
+        *remaining,
+    ]
+    session.run(*command, env=dict(environment), external=True)
+
+
 def run_ci_unit(
     session,
     *,
