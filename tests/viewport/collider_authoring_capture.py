@@ -373,13 +373,33 @@ def run_capture(output_dir: str, log_path: str) -> None:
         follow_constraints = cmds.listConnections(
             real_transform, source=True, destination=False, type="parentConstraint"
         ) or []
-        report["checks"]["boundFollowConstraint"] = any(
+        follow_matrix_nodes = cmds.listConnections(
+            f"{real_transform}.offsetParentMatrix",
+            source=True,
+            destination=False,
+            type="multMatrix",
+        ) or []
+        legacy_follow = any(
             cmds.attributeQuery(
                 "mmdColliderAuthoringFollow", node=constraint, exists=True
             )
             and cmds.getAttr(f"{constraint}.mmdColliderAuthoringFollow")
             for constraint in follow_constraints
         )
+        opm_follow = any(
+            cmds.attributeQuery(
+                "mmdColliderAuthoringFollow", node=node, exists=True
+            )
+            and cmds.getAttr(f"{node}.mmdColliderAuthoringFollow")
+            for node in follow_matrix_nodes
+        )
+        # Keep the legacy report key for downstream consumers while exposing
+        # the actual follow implementation used by the current importer.
+        report["checks"]["boundFollowConstraint"] = legacy_follow or opm_follow
+        report["checks"]["boundFollowNodeType"] = (
+            "multMatrix" if opm_follow else "parentConstraint" if legacy_follow else None
+        )
+        report["checks"]["boundFollowUsesOffsetParentMatrix"] = opm_follow
         report["checks"]["physicsModeLineStyles"] = [
             physics_mode_line_style(mode) for mode in range(3)
         ]

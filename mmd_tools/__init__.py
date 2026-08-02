@@ -4,7 +4,7 @@ MMD Tools - Maya MMD import/export toolkit
 
 # パッケージのメタデータ
 __name__ = "mmd_tools"
-__version__ = "0.6.1"
+__version__ = "0.6.2"
 __author__ = "MMD Tools Team"
 
 # コアモジュールを直接アクセス可能にする

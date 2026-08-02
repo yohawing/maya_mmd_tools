@@ -35,6 +35,11 @@ class TestNamespaceUtils(unittest.TestCase):
             result = NamespaceUtils.generate_namespace("01_model")
             self.assertEqual(result, "Model_01_model")
 
+    def test_generate_namespace_numeric_name_after_unicode_conversion(self):
+        """Unicode変換で補助underscoreが付いた数字名も安全にする。"""
+        result = NamespaceUtils.generate_namespace("1")
+        self.assertEqual(result, "Model_1")
+
     def test_generate_namespace_special_chars(self):
         """特殊文字を含む名前の処理テスト"""
         with patch("mmd_tools.core.namespace_utils.sanitize_text") as mock_sanitize:
@@ -59,34 +64,54 @@ class TestNamespaceUtils(unittest.TestCase):
             result = NamespaceUtils.generate_namespace("model___test____name")
             self.assertEqual(result, "model_test_name")
 
+    @patch("maya.cmds.namespaceInfo", return_value=":")
     @patch("maya.cmds.namespace")
-    def test_ensure_unique_namespace_not_exists(self, mock_namespace):
+    def test_ensure_unique_namespace_not_exists(self, mock_namespace, _mock_info):
         """重複しないnamespaceの場合のテスト"""
         # cmds.namespace(exists="TestModel") がFalseを返すように設定
-        mock_namespace.return_value = False
+        def namespace_side_effect(**kwargs):
+            if "exists" in kwargs:
+                return False
+            return None
+
+        mock_namespace.side_effect = namespace_side_effect
 
         result = NamespaceUtils.ensure_unique_namespace("TestModel")
         self.assertEqual(result, "TestModel")
-        mock_namespace.assert_called_once_with(exists="TestModel")
+        mock_namespace.assert_any_call(exists="TestModel")
 
+    @patch("maya.cmds.namespaceInfo", return_value=":")
     @patch("maya.cmds.namespace")
-    def test_ensure_unique_namespace_exists(self, mock_namespace):
+    def test_ensure_unique_namespace_exists(self, mock_namespace, _mock_info):
         """既存namespaceがある場合のテスト"""
-        # 最初の1回はTrue（既存）、2回目はFalse（利用可能）
-        mock_namespace.side_effect = [True, False]
+        def namespace_side_effect(**kwargs):
+            if kwargs.get("exists") == "TestModel":
+                return True
+            if kwargs.get("exists") == "TestModel_2":
+                return False
+            return None
+
+        mock_namespace.side_effect = namespace_side_effect
 
         result = NamespaceUtils.ensure_unique_namespace("TestModel")
         self.assertEqual(result, "TestModel_2")
 
         # 呼び出し順序を確認
         expected_calls = [call(exists="TestModel"), call(exists="TestModel_2")]
-        self.assertEqual(mock_namespace.call_args_list, expected_calls)
+        exists_calls = [entry for entry in mock_namespace.call_args_list if "exists" in entry[1]]
+        self.assertEqual(exists_calls, expected_calls)
 
     @patch("mmd_tools.core.namespace_utils._MAX_NAMESPACE_SUFFIX_ATTEMPTS", 3)
+    @patch("maya.cmds.namespaceInfo", return_value=":")
     @patch("maya.cmds.namespace")
-    def test_ensure_unique_namespace_raises_after_suffix_limit(self, mock_namespace):
+    def test_ensure_unique_namespace_raises_after_suffix_limit(self, mock_namespace, _mock_info):
         """namespace衝突探索が無限に回らないことを確認する。"""
-        mock_namespace.return_value = True
+        def namespace_side_effect(**kwargs):
+            if "exists" in kwargs:
+                return True
+            return None
+
+        mock_namespace.side_effect = namespace_side_effect
 
         with self.assertRaisesRegex(RuntimeError, "Could not find unique namespace"):
             NamespaceUtils.ensure_unique_namespace("TestModel")
@@ -96,7 +121,8 @@ class TestNamespaceUtils(unittest.TestCase):
             call(exists="TestModel_2"),
             call(exists="TestModel_3"),
         ]
-        self.assertEqual(mock_namespace.call_args_list, expected_calls)
+        exists_calls = [entry for entry in mock_namespace.call_args_list if "exists" in entry[1]]
+        self.assertEqual(exists_calls, expected_calls)
 
     @patch("maya.cmds.namespace")
     def test_create_namespace_success(self, mock_namespace):

@@ -298,7 +298,7 @@ def _connect_kinematic_joint_inputs(
     maya_joints,
     root_group: str,
     logger=None,
-) -> None:
+) -> list[str]:
     """Connect kinematic (physicsMode=0) joint worldMatrices to the solver.
 
     This creates proper DG dependencies so that moving a controller at the
@@ -346,6 +346,106 @@ def _connect_kinematic_joint_inputs(
                 "event=kinematic_input_connect_failed bone=%d joint=%s error=%s",
                 bone_index, joint, exc,
             )
+    return [
+        f"{solver}.inKinematicWorldMatrix[{bone_index}]"
+        for bone_index in sorted(connected)
+    ]
+
+
+def _cycle_check_plugs() -> list[str]:
+    """Return Maya's current cycle plugs without changing cycle-check state."""
+    try:
+        raw_plugs = cmds.cycleCheck(all=True, list=True) or []
+    except Exception:
+        return []
+    if isinstance(raw_plugs, str):
+        return [raw_plugs]
+    return sorted({str(plug) for plug in raw_plugs})
+
+
+def _prune_solver_kinematic_cycles(
+    solver: str,
+    candidate_plugs: list[str],
+    logger=None,
+) -> dict:
+    """Drop only kinematic inputs that close a solver/DG cycle.
+
+    Imported rigs can contain append/IK graphs that already drive a joint
+    which the live solver also drives.  Keeping that joint's world matrix as a
+    kinematic input makes the solver depend on its own output.  Kinematic
+    inputs are optional for the current solver mode, so disconnecting the
+    offending edges is a safe fail-closed fallback while preserving the other
+    pre-physics inputs.
+    """
+    log = logger or _logger
+    if not candidate_plugs:
+        return {"candidate_count": 0, "pruned_count": 0, "remaining_count": 0}
+
+    solver_names = {str(solver)}
+    try:
+        solver_names.update(cmds.ls(solver, long=True) or [])
+    except Exception:
+        pass
+    solver_leaf = _node_leaf_name(solver)
+    candidates_by_index = {
+        int(plug.rsplit("[", 1)[1].rstrip("]")): plug
+        for plug in candidate_plugs
+    }
+
+    def candidate_indices(cycle_plugs: list[str]) -> set[int]:
+        indices: set[int] = set()
+        for plug in cycle_plugs:
+            node, _, attr = plug.partition(".")
+            if node not in solver_names and _node_leaf_name(node) != solver_leaf:
+                continue
+            match = re.fullmatch(r"inKinematicWorldMatrix\[(\d+)\]", attr)
+            if match:
+                index = int(match.group(1))
+                if index in candidates_by_index:
+                    indices.add(index)
+        return indices
+
+    pruned: set[int] = set()
+    for _ in range(len(candidates_by_index) + 1):
+        cycle_indices = candidate_indices(_cycle_check_plugs()) - pruned
+        if not cycle_indices:
+            break
+        disconnected = False
+        for index in sorted(cycle_indices):
+            destination = candidates_by_index.get(index)
+            if not destination:
+                continue
+            sources = cmds.listConnections(
+                destination, source=True, destination=False, plugs=True
+            ) or []
+            for source in sources:
+                try:
+                    cmds.disconnectAttr(source, destination)
+                except Exception as exc:
+                    log.warning(
+                        "event=physics_kinematic_cycle_disconnect_failed destination=%s "
+                        "source=%s error=%s",
+                        destination, source, exc,
+                    )
+                    continue
+                pruned.add(index)
+                disconnected = True
+        if not disconnected:
+            break
+
+    remaining = candidate_indices(_cycle_check_plugs())
+    if pruned:
+        log.info(
+            "event=physics_kinematic_cycles_pruned solver=%s pruned=%d remaining=%d",
+            solver, len(pruned), len(remaining),
+        )
+    return {
+        "candidate_count": len(candidates_by_index),
+        "pruned_count": len(pruned),
+        "remaining_count": len(remaining),
+        "pruned_bone_indices": sorted(pruned),
+        "remaining_bone_indices": sorted(remaining),
+    }
 
 
 def build_physics_live_graph(
@@ -404,14 +504,6 @@ def build_physics_live_graph(
         if solver and cmds.objExists(solver):
             cmds.delete(solver)
         return {"solver": None, "drivers": [], "reason": "solver_node_unavailable"}
-
-    _connect_kinematic_joint_inputs(
-        solver=solver,
-        rigid_bodies=rigid_bodies,
-        maya_joints=maya_joints,
-        root_group=root_group,
-        logger=log,
-    )
 
     driven_bones: set[int] = set()
     for rb_index, rb in enumerate(rigid_bodies or []):
@@ -553,10 +645,22 @@ def build_physics_live_graph(
             _restore_input_connections(previous_translate_inputs, log)
             _restore_input_connections(previous_rotate_inputs, log)
 
+    kinematic_plugs = _connect_kinematic_joint_inputs(
+        solver=solver,
+        rigid_bodies=rigid_bodies,
+        maya_joints=maya_joints,
+        root_group=root_group,
+        logger=log,
+    )
+    kinematic_cycle_summary = _prune_solver_kinematic_cycles(
+        solver, kinematic_plugs, logger=log
+    )
+
     return {
         "solver": solver,
         "drivers": drivers,
         "driven_bone_count": len(drivers),
+        "kinematic_inputs": kinematic_cycle_summary,
     }
 
 

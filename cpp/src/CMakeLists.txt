@@ -65,6 +65,7 @@ set(SOURCES
     mmdRuntimeBridge.cpp
     mmdRuntimeNode.cpp
     mmdFastLoad.cpp
+    MmdWeldUvSeamVertices.cpp
     MmdAppendNode.cpp
     MmdCcdIkNode.cpp
     MmdPhysicsBoneDriverNode.cpp
@@ -74,6 +75,7 @@ set(HEADERS
     mmdRuntimeBridge.h
     mmdRuntimeNode.h
     mmdFastLoad.h
+    MmdWeldUvSeamVertices.h
     MmdAppendNode.h
     MmdCcdIkNode.h
     MmdCoordinateUtils.h

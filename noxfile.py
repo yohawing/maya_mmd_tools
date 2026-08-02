@@ -1734,6 +1734,35 @@ def fast_load_normals_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def uv_weld_smoke(session: nox.Session) -> None:
+    """Verify the Python-callable C++ UV seam topology normalization command."""
+    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
+    mayapy = _mayapy(version)
+    if not mayapy.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy}")
+
+    plugin = ROOT / "plug-ins" / version / config / "mmd_tools_cpp.mll"
+    if not plugin.exists():
+        session.error(
+            f"C++ plugin not found at {plugin}; run 'uvx nox -s cpp_build "
+            f"-- --maya {version} --config {config}' first."
+        )
+    env = _mayapy_env(
+        mayapy,
+        MAYA_VERSION=version,
+        MMD_TOOLS_CPP_CONFIG=config,
+        MMD_TOOLS_CPP_PLUGIN=_mayapy_arg_path(mayapy, plugin),
+    )
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/cpp/focused_uv_weld.py"),
+        env=env,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def ccdik_ancestor_residual_smoke(session: nox.Session) -> None:
     """Run the deterministic rotated-ancestor CCD residual probe."""
     version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)

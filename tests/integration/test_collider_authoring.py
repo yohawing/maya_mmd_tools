@@ -177,8 +177,22 @@ class TestColliderAuthoringTransform(MayaTestBase):
         rotation = (0.15, -0.25, 0.35)
         set_collider_authoring_pose(transform, shape, position, rotation)
         cmds.connectAttr(f"{bone}.message", f"{shape}.relatedBone")
-        constraint = connect_collider_authoring_follow(transform, shape)
-        self.assertTrue(constraint)
+        follow_node = connect_collider_authoring_follow(transform, shape)
+        self.assertTrue(follow_node)
+        self.assertEqual(cmds.nodeType(follow_node), "multMatrix")
+        self.assertTrue(
+            cmds.isConnected(
+                f"{follow_node}.matrixSum", f"{transform}.offsetParentMatrix"
+            )
+        )
+        self.assertFalse(
+            cmds.listConnections(
+                f"{transform}.translate",
+                source=True,
+                destination=False,
+                type="parentConstraint",
+            )
+        )
 
         def relative_matrix():
             collider_world = om.MMatrix(cmds.xform(transform, query=True, worldSpace=True, matrix=True))
@@ -224,7 +238,7 @@ class TestColliderAuthoringTransform(MayaTestBase):
         transform = "followCollider"
         shape = "followColliderShape"
         bone = "followBone"
-        self.assertEqual(connect_collider_authoring_follow(transform, shape), constraint)
+        self.assertEqual(connect_collider_authoring_follow(transform, shape), follow_node)
         cmds.currentTime(1)
         reopen_rest = relative_matrix()
         cmds.currentTime(12)
