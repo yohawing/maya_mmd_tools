@@ -703,3 +703,234 @@ def run_humanik_citlali_stance_smoke(
         )
     ):
         session.error(f"Citlali HumanIK strict restore gate failed: {required}")
+
+
+def run_shader_override_smoke(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    default_maya_version: str,
+    root: Path,
+    mayapy,
+    mayapy_env,
+    mayapy_arg_path,
+    mayapy_script,
+) -> None:
+    """Run the legacy MMDShader VP2.0 offscreen smoke."""
+    version = option(posargs, "--maya", default_maya_version)
+    out = option(posargs, "--out", str(root / "build/captures/shader_override_smoke.png"))
+    frame = option(posargs, "--frame", "1")
+    width = option(posargs, "--width", "640")
+    height = option(posargs, "--height", "480")
+    mayapy_path = mayapy(version)
+    if not mayapy_path.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy_path}")
+    env = mayapy_env(mayapy_path, MAYA_VERSION=version)
+    session.run(
+        str(mayapy_path),
+        mayapy_script(mayapy_path, "tests/viewport/smoke_shader_override.py"),
+        "--out",
+        mayapy_arg_path(mayapy_path, out),
+        "--frame",
+        frame,
+        "--width",
+        width,
+        "--height",
+        height,
+        env=env,
+        external=True,
+    )
+
+
+def run_static_render(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    has_flag,
+    default_maya_version: str,
+    root: Path,
+    require_build_path,
+    mayapy,
+    mayapy_env,
+    mayapy_arg_path,
+    mayapy_script,
+) -> None:
+    """Construct and run the fixed-camera PMX static-render capture."""
+    shader_flag = "--shader" if has_flag(posargs, "--shader") else "--no-shader"
+    version = option(posargs, "--maya", default_maya_version)
+    model = option(posargs, "--model", str(root / "tests/data/for_unit_test/test_1bone_cube.pmx"))
+    out = option(posargs, "--out", str(root / "build/captures/static_render_1bone_cube.png"))
+    frame = option(posargs, "--frame", "0")
+    width = option(posargs, "--width", "1024")
+    height = option(posargs, "--height", "1024")
+    shader_backend = option(posargs, "--shader-backend", "auto")
+    if shader_backend not in {"auto", "dx11", "glsl", "standard"}:
+        session.error(f"Unsupported --shader-backend: {shader_backend}")
+    vp2_device = option(posargs, "--vp2-device", "default")
+    if vp2_device not in {"default", "gl", "glcore", "dx11"}:
+        session.error(f"Unsupported --vp2-device: {vp2_device}")
+    view_transform = option(posargs, "--view-transform", "Un-tone-mapped (sRGB)")
+    display = option(posargs, "--display", "sRGB")
+    rendering_space = option(posargs, "--rendering-space", "ACEScg")
+    diagnostics_out = option(posargs, "--diagnostics-out", "")
+    mayapy_path = mayapy(version)
+    if not mayapy_path.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy_path}")
+    diagnostics_args: list[str] = []
+    if diagnostics_out:
+        diagnostics_path = require_build_path(session, diagnostics_out, "--diagnostics-out")
+        diagnostics_args.extend(["--diagnostics-out", mayapy_arg_path(mayapy_path, diagnostics_path)])
+    if has_flag(posargs, "--allow-blank"):
+        diagnostics_args.append("--allow-blank")
+    env = mayapy_env(mayapy_path, MAYA_VERSION=version)
+    vp2_device_map = {"gl": "VirtualDeviceGL", "glcore": "VirtualDeviceGLCore", "dx11": "VirtualDeviceDx11"}
+    if vp2_device in vp2_device_map:
+        env["MAYA_VP2_DEVICE_OVERRIDE"] = vp2_device_map[vp2_device]
+    command = [
+        str(mayapy_path),
+        mayapy_script(mayapy_path, "tests/viewport/static_render_capture.py"),
+        shader_flag,
+        "--out", mayapy_arg_path(mayapy_path, out),
+        "--model", mayapy_arg_path(mayapy_path, model),
+        "--frame", frame,
+        "--width", width,
+        "--height", height,
+        "--shader-backend", shader_backend,
+        "--view-transform", view_transform,
+        "--display", display,
+        "--rendering-space", rendering_space,
+        *diagnostics_args,
+    ]
+    session.run(*command, env=env, external=True)
+
+
+def run_visual_regression(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    options,
+    has_flag,
+    default_maya_version: str,
+    require_build_path,
+    python_executable: str = sys.executable,
+) -> None:
+    """Run manifest-driven viewport capture and its optional comparison."""
+    version = option(posargs, "--maya", default_maya_version)
+    manifest = option(posargs, "--manifest", "")
+    if not manifest:
+        session.error("--manifest is required for maya_visual_regression")
+    shader_backend = option(posargs, "--shader-backend", "dx11")
+    if shader_backend not in {"dx11", "glsl"}:
+        session.error(f"Unsupported --shader-backend: {shader_backend}")
+    vp2_device = option(posargs, "--vp2-device", "default")
+    if vp2_device not in {"default", "gl", "glcore", "dx11"}:
+        session.error(f"Unsupported --vp2-device: {vp2_device}")
+    display_textures = option(posargs, "--display-textures", "on")
+    if display_textures not in {"on", "off"}:
+        session.error(f"Unsupported --display-textures: {display_textures}")
+    out = option(posargs, "--out", f"build/visual-regression/maya-{shader_backend}")
+    out_path = require_build_path(session, out, "--out")
+    port = option(posargs, "--port", "7721")
+    width = option(posargs, "--width", "1024")
+    height = option(posargs, "--height", "1024")
+    timeout = option(posargs, "--timeout", "420")
+    forwarded: list[str] = []
+    passthrough_flags = {
+        "--keep-maya", "--no-compare", "--attach-existing", "--debug-lambert-control",
+        "--debug-outline-sentinel", "--hide-orig-shapes",
+    }
+    passthrough_options = {"--case", "--tag", "--limit", "--launch-mode", "--shader-fx"}
+    i = 0
+    while i < len(posargs):
+        arg = posargs[i]
+        if arg in passthrough_flags:
+            forwarded.append(arg)
+            i += 1
+            continue
+        if arg in passthrough_options:
+            if i + 1 >= len(posargs):
+                session.error(f"{arg} requires a value")
+            forwarded.extend([arg, posargs[i + 1]])
+            i += 2
+            continue
+        i += 1
+    command = [
+        python_executable,
+        "tests/viewport/visual_regression_capture.py",
+        "--maya", version,
+        "--manifest", manifest,
+        "--out", str(out_path),
+        "--port", port,
+        "--width", width,
+        "--height", height,
+        "--timeout", timeout,
+        "--shader-backend", shader_backend,
+        "--vp2-device", vp2_device,
+        "--display-textures", display_textures,
+        *forwarded,
+    ]
+    session.run(*command, external=True)
+    if not has_flag(posargs, "--no-compare"):
+        comparison_command = [
+            python_executable,
+            "tests/viewport/visual_regression_compare.py",
+            "--capture-report", str(out_path / "visual-regression-report.json"),
+            "--out", str(out_path / "visual-regression-comparison.json"),
+        ]
+        for threshold in options(posargs, "--threshold"):
+            comparison_command.extend(["--threshold", threshold])
+        session.run(*comparison_command, external=True)
+
+
+def run_shader_visual_semantic_gate(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    default_maya_version: str,
+    require_build_path,
+    python_executable: str = sys.executable,
+) -> None:
+    """Capture the DX11 semantic cases and run their report-only gate."""
+    from tests.viewport.shader_visual_semantic_gate import CASE_MIN_FOREGROUND
+
+    version = option(posargs, "--maya", default_maya_version)
+    manifest = option(posargs, "--manifest", "")
+    if not manifest:
+        session.error("--manifest <fixture.render.json> is required")
+    out_path = require_build_path(
+        session,
+        option(posargs, "--out", "build/visual-regression/shader-semantic"),
+        "--out",
+    )
+    port = option(posargs, "--port", "7721")
+    timeout = option(posargs, "--timeout", "240")
+    capture_command = [
+        python_executable,
+        "tests/viewport/visual_regression_capture.py",
+        "--maya", version,
+        "--manifest", manifest,
+        "--out", str(out_path),
+        "--port", port,
+        "--timeout", timeout,
+        "--shader-backend", "dx11",
+        "--vp2-device", "dx11",
+        "--display-textures", "on",
+        "--debug-outline-sentinel",
+        "--no-compare",
+    ]
+    for case_name in CASE_MIN_FOREGROUND:
+        capture_command.extend(["--case", case_name])
+    session.run(*capture_command, external=True)
+    session.run(
+        python_executable,
+        "tests/viewport/shader_visual_semantic_gate.py",
+        "--capture-report",
+        str(out_path / "visual-regression-report.json"),
+        "--out",
+        str(out_path / "shader-semantic-report.json"),
+        external=True,
+    )
