@@ -7,9 +7,28 @@ retains the public Nox decorators and injects repository-specific helpers.
 from __future__ import annotations
 
 import os
+import re
 import sys
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Maya 2024's Python may not bundle tomllib.
+    try:
+        import tomli as tomllib
+    except ModuleNotFoundError:  # pragma: no cover - the fallback is exercised in Maya only.
+        tomllib = None
+
+
+def _project_version(root: Path) -> str:
+    """Read the project version on both CPython and Maya's Python runtimes."""
+    project_text = (root / "pyproject.toml").read_text(encoding="utf-8")
+    if tomllib is not None:
+        return str(tomllib.loads(project_text)["project"]["version"])
+    match = re.search(r"(?m)^version\s*=\s*[\"']([^\"']+)[\"']\s*$", project_text)
+    if match is None:
+        raise ValueError("pyproject.toml project.version not found")
+    return match.group(1)
 
 
 def run_ffi_build(
@@ -127,14 +146,13 @@ def run_bundled_native_smoke(session, *, posargs: list[str], root: Path, option,
         option(posargs, "--out-md", "build/reports/bundled_native_smoke.md"),
         "--out-md",
     )
-    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     session.run(
         sys.executable,
         "tests/release/bundled_native_smoke.py",
         "--root",
         str(root),
         "--expected-version",
-        project["project"]["version"],
+        _project_version(root),
         "--out-json",
         str(out_json),
         "--out-md",
