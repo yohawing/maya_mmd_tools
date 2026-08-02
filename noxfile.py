@@ -70,6 +70,13 @@ from noxlib.release_matrix import (  # noqa: E402
     tier2_commands as _release_gate_tier2_commands,
     tier3_commands as _release_gate_tier3_commands,
 )
+from noxlib.sessions import (  # noqa: E402
+    run_ci_unit as _run_ci_unit,
+    run_gui_tests as _run_gui_tests,
+    run_release_package as _run_release_package,
+    run_release_version as _run_release_version,
+    run_tests as _run_tests,
+)
 from tests.common.maya_location import mayapy as _mayapy  # noqa: E402
 from tests.common.maya_location import path_for_maya_process as _maya_process_path  # noqa: E402
 from tests.common.output_hygiene import (  # noqa: E402
@@ -725,65 +732,20 @@ def ci_unit(session: nox.Session) -> None:
     Examples:
         uvx nox -s ci_unit
     """
-    unit_dir = ROOT / "tests" / "unit"
-    importable: list[str] = []
-    skipped: list[str] = []
-
-    for py_file in sorted(unit_dir.glob("test_*.py")):
-        module_name = f"tests.unit.{py_file.stem}"
-        probe = subprocess.run(
-            # The probe must use the same pytest-enabled environment as the
-            # actual test command.  Probing with the bare Nox interpreter made
-            # every pytest-using unit module look like a non-environment import
-            # failure and aborted ci_unit before pytest could run it.
-            ["uvx", "--with", "pytest", "--", "python", "-c", f"import {module_name}"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if probe.returncode == 0:
-            importable.append(module_name)
-            continue
-        stderr = probe.stderr or ""
-        if _is_expected_environment_import_failure(stderr):
-            skipped.append(py_file.name)
-        else:
-            session.error(
-                f"ci_unit: {py_file.name} failed to import for a non-environment reason; "
-                "update _EXPECTED_ENVIRONMENT_MODULE_PREFIXES only for an intentional dependency:\n"
-                + stderr.strip()[-2000:]
-            )
-
-    if skipped:
-        session.log(
-            f"Skipping {len(skipped)} test file(s) that require environment-only dependencies: "
-            + ", ".join(skipped)
-        )
-
-    if not importable:
-        session.error("No importable pure-python unit tests found in tests/unit/")
-
-    session.log(f"Running {len(importable)} pure-python unit test module(s)")
-    command = ["uvx", "--with", "pytest", "--", "python", "-m", "pytest", "--pyargs", *importable]
-    returncode, log_path, (_, repeated_warnings) = _run_logged_subprocess(
-        command,
-        log_path=ROOT / "build" / "reports" / "ci_unit_tests.log",
-        cwd=ROOT,
-        verbose=False,
+    _run_ci_unit(
+        session,
+        root=ROOT,
+        run_process=subprocess.run,
+        glob_files=Path.glob,
+        is_expected_environment_import_failure=_is_expected_environment_import_failure,
+        run_logged_subprocess=_run_logged_subprocess,
     )
-    if returncode != 0:
-        session.error(f"ci_unit failed with exit code {returncode}; full log: {log_path}")
-    detail = f"; repeated warnings suppressed: {repeated_warnings}" if repeated_warnings else ""
-    session.log(f"ci_unit passed; full log: {log_path}{detail}")
 
 
 @nox.session(venv_backend="none")
 def release_version(session: nox.Session) -> None:
     """Validate all release version markers, optionally against a tag version."""
-    expected_version = _option(session.posargs, "--version", "") or None
-    _release_gate_version_check(expected_version=expected_version)
-    session.log(f"Release version markers match {expected_version or 'the project version'}")
+    _run_release_version(session, option=_option, version_check=_release_gate_version_check)
 
 
 @nox.session(venv_backend="none")
@@ -794,8 +756,7 @@ def tests(session: nox.Session) -> None:
         uvx nox -s tests
         uvx nox -s tests -- --type integration --test test_maya_utils
     """
-    args = session.posargs or ["--type", "unit"]
-    session.run(sys.executable, "tests/run_tests.py", *args, external=True)
+    _run_tests(session, posargs=session.posargs, python_executable=sys.executable)
 
 
 @nox.session(venv_backend="none")
@@ -961,8 +922,12 @@ def mmd_control_rig_gui_e2e(session: nox.Session) -> None:
 @nox.session(venv_backend="none")
 def gui_tests(session: nox.Session) -> None:
     """Run existing Maya GUI tests."""
-    args = session.posargs or ["--maya_version", DEFAULT_MAYA_VERSION]
-    session.run(sys.executable, "tests/run_gui_tests.py", *args, external=True)
+    _run_gui_tests(
+        session,
+        posargs=session.posargs,
+        python_executable=sys.executable,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+    )
 
 
 @nox.session(venv_backend="none")
@@ -1122,21 +1087,15 @@ def release_package(session: nox.Session) -> None:
         uvx nox -s release_package -- --version 0.3.1
         uvx nox -s release_package -- --out-dir dist
     """
-    manifest = _resolve_existing_or_repo_path(
-        _option(session.posargs, "--manifest", str(_PACKAGE_MANIFEST_PATH))
+    _run_release_package(
+        session,
+        posargs=session.posargs,
+        root=ROOT,
+        package_manifest_path=_PACKAGE_MANIFEST_PATH,
+        option=_option,
+        resolve_existing_or_repo_path=_resolve_existing_or_repo_path,
+        build_release_package=_build_release_package,
     )
-    output_dir = _resolve_existing_or_repo_path(_option(session.posargs, "--out-dir", "dist"))
-    root = ROOT.resolve()
-    if output_dir != root and root not in output_dir.parents:
-        session.error(f"--out-dir must stay inside the repository: {output_dir}")
-    result = _build_release_package(
-        root,
-        manifest_path=manifest,
-        output_dir=output_dir,
-        expected_version=_option(session.posargs, "--version", "") or None,
-    )
-    session.log(f"Release package: {result['archive']}")
-    session.log("Release package evidence: build/reports/release_package.json and .md")
 
 
 @nox.session(venv_backend="none")
