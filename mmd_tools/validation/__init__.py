@@ -7,6 +7,7 @@ including bone structure validation and naming convention checks.
 
 from .bone_validator import BoneValidator
 from .export_validator import (
+    ExportValidationAcknowledgementRequired,
     ExportValidationError,
     ExportValidationIssue,
     ExportValidationReport,
@@ -29,6 +30,7 @@ __all__ = [
     "BoneValidator",
     "ISSUE_CATALOG",
     "ExportValidationError",
+    "ExportValidationAcknowledgementRequired",
     "ExportValidationIssue",
     "ExportValidationReport",
     "ExportValidationSnapshot",

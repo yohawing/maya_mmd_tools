@@ -16,6 +16,7 @@ from mmd_tools.actions.export_model_action import (  # noqa: E402
 )
 from mmd_tools.core.pmd_data.bone import PmdBoneType  # noqa: E402
 from mmd_tools.validation.export_validator import (  # noqa: E402
+    ExportValidationAcknowledgementRequired,
     ExportValidationError,
     ExportValidationIssue,
     ExportValidationReport,
@@ -1411,3 +1412,72 @@ class TestExportModelValidation(unittest.TestCase):
         self.assertIsInstance(result.error, ExportValidationError)
         self.assertEqual(result.validation_report.issues[0].code, "MMD_ANIM_CLI_UNAVAILABLE")
         self.assertFalse(Path(exporter.calls[0][0]).exists())
+
+    def test_warning_report_requires_ack_before_writer(self):
+        def warning_validator(model_data, export_format):
+            return ExportValidationReport(
+                export_format,
+                (
+                    ExportValidationIssue(
+                        "TEXT_FIELD_TYPE",
+                        "warning",
+                        False,
+                        "comment",
+                        "comment will use the writer default",
+                    ),
+                ),
+            )
+
+        exporter = _FakeExporter()
+        action = ExportModelAction(
+            pmx_exporter=exporter,
+            collector=None,
+            output_verifier=None,
+            validator=warning_validator,
+        )
+        result = action.execute(
+            ExportModelRequest(
+                file_path="out.pmx",
+                options={"export_format": "pmx", "model_data": _valid_model_data()},
+            )
+        )
+
+        self.assertFalse(result.succeeded)
+        self.assertIsInstance(result.error, ExportValidationAcknowledgementRequired)
+        self.assertTrue(result.validation_report.requires_warning_ack)
+        self.assertEqual(exporter.calls, [])
+
+    def test_warning_report_exports_only_after_ack(self):
+        def warning_validator(model_data, export_format):
+            return ExportValidationReport(
+                export_format,
+                (
+                    ExportValidationIssue(
+                        "TEXT_FIELD_TYPE",
+                        "warning",
+                        False,
+                        "comment",
+                        "comment will use the writer default",
+                    ),
+                ),
+            )
+
+        exporter = _FakeExporter()
+        result = ExportModelAction(
+            pmx_exporter=exporter,
+            collector=None,
+            output_verifier=None,
+            validator=warning_validator,
+        ).execute(
+            ExportModelRequest(
+                file_path="out.pmx",
+                options={
+                    "export_format": "pmx",
+                    "model_data": _valid_model_data(),
+                    "ack_warnings": True,
+                },
+            )
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(len(exporter.calls), 1)

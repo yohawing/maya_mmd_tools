@@ -10,6 +10,7 @@ from ..core.logger import get_logger
 from ..io.pmd_exporter import PmdExporter
 from ..io.pmx_exporter import PmxExporter
 from ..validation.export_validator import (
+    ExportValidationAcknowledgementRequired,
     ExportValidationError,
     ExportValidationIssue,
     ExportValidationReport,
@@ -23,6 +24,7 @@ logger = get_logger(__name__)
 
 _DEFAULT_COLLECTOR = object()
 _DEFAULT_OUTPUT_VERIFIER = object()
+_DEFAULT_VALIDATOR = object()
 
 
 @dataclass
@@ -80,6 +82,7 @@ class ExportModelAction:
         pmd_exporter: Optional[PmdExporter] = None,
         collector: Optional[Callable[[Dict[str, Any]], dict]] = _DEFAULT_COLLECTOR,
         output_verifier: Any = _DEFAULT_OUTPUT_VERIFIER,
+        validator: Any = _DEFAULT_VALIDATOR,
     ):
         self._pmx_exporter = pmx_exporter or PmxExporter()
         self._pmd_exporter = pmd_exporter or PmdExporter()
@@ -90,6 +93,7 @@ class ExportModelAction:
         self._output_verifier = (
             verify_model_output if output_verifier is _DEFAULT_OUTPUT_VERIFIER else output_verifier
         )
+        self._validator = validate_model_data if validator is _DEFAULT_VALIDATOR else validator
 
     def execute(self, request: ExportModelRequest) -> ExportModelResult:
         """Export a PMX/PMD model and return a small result object."""
@@ -197,13 +201,24 @@ class ExportModelAction:
                 )
 
             model_data = snapshot.model_data
-            validation_report = validate_model_data(model_data, export_format)
+            validation_report = self._validator(model_data, export_format)
             if validation_report.is_blocking:
                 validation_error = ExportValidationError(validation_report)
                 logger.error("Model export preflight failed: %s", validation_error)
                 return ExportModelResult(
                     status_message=f"Export failed: {validation_error}",
                     error=validation_error,
+                    warnings=list(validation_report.issues),
+                    validation_report=validation_report,
+                    payload_fingerprint=payload_fingerprint,
+                )
+
+            if validation_report.requires_warning_ack and request.options.get("ack_warnings") is not True:
+                acknowledgement_error = ExportValidationAcknowledgementRequired(validation_report)
+                logger.error("Model export is waiting for warning acknowledgement: %s", acknowledgement_error)
+                return ExportModelResult(
+                    status_message=f"Export failed: {acknowledgement_error}",
+                    error=acknowledgement_error,
                     warnings=list(validation_report.issues),
                     validation_report=validation_report,
                     payload_fingerprint=payload_fingerprint,
@@ -269,6 +284,9 @@ class ExportModelAction:
                     )
                 if mmd_anim_report.is_blocking:
                     raise ExportValidationError(validation_report)
+
+            if validation_report.requires_warning_ack and request.options.get("ack_warnings") is not True:
+                raise ExportValidationAcknowledgementRequired(validation_report)
 
             if not os.path.isfile(temporary_path) or os.path.getsize(temporary_path) == 0:
                 raise FileNotFoundError(

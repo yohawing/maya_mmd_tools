@@ -84,6 +84,20 @@ class ExportValidationReport:
         """Return only issues that prevent export."""
         return tuple(issue for issue in self.issues if issue.blocking)
 
+    @property
+    def warning_issues(self) -> Tuple[ExportValidationIssue, ...]:
+        """Return non-blocking warnings that require explicit acknowledgement."""
+        return tuple(
+            issue
+            for issue in self.issues
+            if issue.severity == "warning" and not issue.blocking
+        )
+
+    @property
+    def requires_warning_ack(self) -> bool:
+        """Return whether export must wait for a warning acknowledgement."""
+        return bool(self.warning_issues)
+
     def has_blocking_issues(self) -> bool:
         """Compatibility-friendly method form of :attr:`is_blocking`."""
         return self.is_blocking
@@ -102,9 +116,7 @@ class ExportValidationReport:
             "warning": sum(issue.severity == "warning" for issue in self.issues),
             "info": sum(issue.severity == "info" for issue in self.issues),
         }
-        has_non_blocking_warning = any(
-            issue.severity == "warning" and not issue.blocking for issue in self.issues
-        )
+        has_non_blocking_warning = self.requires_warning_ack
         if self.is_blocking:
             status = "blocked"
         elif has_non_blocking_warning:
@@ -262,6 +274,17 @@ class ExportValidationError(ValueError):
         self.report = report
         format_name = (report.export_format or "model").upper()
         super().__init__(f"{format_name} export validation failed: {report.summary}")
+
+
+class ExportValidationAcknowledgementRequired(ValueError):
+    """Error returned when a warning report has not been acknowledged."""
+
+    def __init__(self, report: ExportValidationReport):
+        self.report = report
+        format_name = (report.export_format or "model").upper()
+        super().__init__(
+            f"{format_name} export requires warning acknowledgement: {report.summary}"
+        )
 
 
 def _is_sequence(value: Any) -> bool:
@@ -1672,6 +1695,7 @@ ModelValidationReport = ExportValidationReport
 
 
 __all__ = [
+    "ExportValidationAcknowledgementRequired",
     "ExportValidationError",
     "ExportValidationIssue",
     "ExportValidationReport",
