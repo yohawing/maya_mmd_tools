@@ -38,6 +38,7 @@ except ModuleNotFoundError:
 
 import noxfile
 from noxlib.release_matrix import tier2_commands
+from noxlib.release_sessions import run_native_physics_release_gate
 
 
 class ReleaseGateContractTest(unittest.TestCase):
@@ -434,10 +435,10 @@ class ReleaseGateContractTest(unittest.TestCase):
             ),
             commands,
         )
-        gate_source = inspect.getsource(noxfile.native_physics_release_gate)
+        gate_source = inspect.getsource(run_native_physics_release_gate)
         self.assertIn('tests/data/physics/test_hair_physics.pmx', gate_source)
         self.assertIn('tests/data/mmt_test_model_test_motion.vmd', gate_source)
-        self.assertIn("_bundled_physics_runtime()", gate_source)
+        self.assertIn("bundled_physics_runtime()", gate_source)
 
     def test_bundled_physics_runtime_selects_supported_platform(self):
         windows = noxfile._bundled_physics_runtime("Windows")
@@ -448,7 +449,7 @@ class ReleaseGateContractTest(unittest.TestCase):
             noxfile._bundled_physics_runtime("Linux")
 
     def test_native_physics_release_gate_clears_all_reports_before_inputs(self):
-        source = inspect.getsource(noxfile.native_physics_release_gate)
+        source = inspect.getsource(run_native_physics_release_gate)
         cleanup = source.index("for stale_report in")
         input_check = source.index("for required in")
         self.assertLess(cleanup, input_check)
