@@ -77,7 +77,12 @@ def _default_collect_model_data(options: Dict[str, Any]) -> dict:
         target = selection[0] if selection else None
     if target is None:
         raise ValueError("Model export requires model_data, target_model, target_mesh, or a selected mesh")
-    return collector.collect({"target_mesh": target})
+    return collector.collect(
+        {
+            "target_mesh": target,
+            "export_format": options.get("export_format"),
+        }
+    )
 
 
 class ExportModelAction:
@@ -171,7 +176,9 @@ class ExportModelAction:
             if model_data is None:
                 if self._collector is None:
                     raise ValueError("Model export requires model_data or a collector")
-                model_data = self._collector(request.options)
+                collector_options = dict(request.options)
+                collector_options["export_format"] = export_format
+                model_data = self._collector(collector_options)
 
             if export_format not in ("pmx", "pmd"):
                 raise ValueError(f"Unsupported model export format: {export_format}")

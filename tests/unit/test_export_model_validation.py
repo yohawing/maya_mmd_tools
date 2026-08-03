@@ -23,6 +23,7 @@ from mmd_tools.validation.export_validator import (  # noqa: E402
     PMD_MAX_BONE_COUNT,
     validate_model_data,
 )
+from mmd_tools.validation.issue_catalog import get_issue_catalog_entry  # noqa: E402
 from mmd_tools.validation.snapshot import ExportValidationSnapshot, fingerprint_payload  # noqa: E402
 
 
@@ -580,6 +581,47 @@ class TestExportModelValidation(unittest.TestCase):
         missing_shared_toon_index["materials"][0]["shared_toon_flag"] = 1
         report = validate_model_data(missing_shared_toon_index, "pmx")
         self.assertEqual(report.issues[0].code, "MATERIAL_TOON_TEXTURE_INDEX_MISSING")
+
+    def test_material_semantic_missing_blocks_with_registered_issue(self):
+        model_data = _valid_model_data()
+        model_data["materials"][0]["semantic_missing"] = ["texture_table"]
+
+        report = validate_model_data(model_data, "pmx")
+
+        self.assertFalse(report.valid)
+        self.assertEqual(
+            [(issue.code, issue.path, issue.message) for issue in report.issues],
+            [
+                (
+                    "MATERIAL_SEMANTIC_MISSING",
+                    "materials[0].semantic_missing",
+                    "material semantic data is missing: texture_table",
+                )
+            ],
+        )
+        self.assertEqual(
+            get_issue_catalog_entry("MATERIAL_SEMANTIC_MISSING").code,
+            "MATERIAL_SEMANTIC_MISSING",
+        )
+
+    def test_untagged_material_without_semantic_missing_remains_valid(self):
+        model_data = _valid_model_data()
+
+        report = validate_model_data(model_data, "pmx")
+
+        self.assertTrue(report.valid)
+        self.assertFalse(report.issues)
+
+    def test_pmd_texture_file_name_overflow_is_blocking(self):
+        model_data = _valid_model_data()
+        model_data["materials"][0]["texture_file_name"] = "a" * 20
+
+        report = validate_model_data(model_data, "pmd")
+
+        self.assertEqual(
+            [(issue.code, issue.path) for issue in report.issues],
+            [("FIELD_LENGTH", "materials[0].texture_file_name")],
+        )
 
     def test_texture_table_shape_and_pmd_loss_are_blocking(self):
         for value in (None, [], ()):

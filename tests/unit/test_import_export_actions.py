@@ -3,6 +3,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from tests.common.maya_stub import install_headless_ui_stubs
 
@@ -11,6 +12,7 @@ install_headless_ui_stubs()
 from mmd_tools.actions.export_model_action import (  # noqa: E402
     ExportModelAction,
     ExportModelRequest,
+    _default_collect_model_data,
 )
 from mmd_tools.actions.export_vmd_action import ExportVmdAction, ExportVmdRequest  # noqa: E402
 from mmd_tools.actions.import_model_action import (  # noqa: E402
@@ -397,6 +399,52 @@ class TestExportModelAction(unittest.TestCase):
             self.assertEqual(writer_path.suffix, ".pmd")
             self.assertNotEqual(writer_path, output_path)
             self.assertFalse(writer_path.exists())
+
+    def test_execute_passes_inferred_format_to_collector(self):
+        model_data = {
+            "vertices": [{"position": [0.0, 0.0, 0.0]}],
+            "faces": [[0, 0, 0]],
+        }
+        received_options = []
+
+        def collector(options):
+            received_options.append(options)
+            return model_data
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "out.pmd"
+            action = ExportModelAction(
+                pmd_exporter=_FakePmdExporter(),
+                collector=collector,
+                output_verifier=None,
+            )
+
+            result = action.execute(ExportModelRequest(file_path=str(output_path), options={}))
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(received_options[0]["export_format"], "pmd")
+
+    def test_default_selection_collection_keeps_export_format(self):
+        received_options = []
+
+        class FakeCollector:
+            def collect(self, options):
+                received_options.append(options)
+                return {}
+
+        with (
+            mock.patch("maya.cmds.ls", return_value=["selectedMesh"]),
+            mock.patch(
+                "mmd_tools.converters.export_scene_collector.ExportSceneCollector",
+                FakeCollector,
+            ),
+        ):
+            _default_collect_model_data({"export_format": "pmd"})
+
+        self.assertEqual(
+            received_options,
+            [{"target_mesh": "selectedMesh", "export_format": "pmd"}],
+        )
 
     def test_execute_reports_missing_collector_or_data(self):
         options = {"file_path": "out.pmx", "export_format": "pmx"}

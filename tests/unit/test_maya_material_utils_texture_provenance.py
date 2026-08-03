@@ -11,6 +11,28 @@ from mmd_tools.core.constants import ATTR_MMD_ORIGINAL_TEXTURE_PATH  # noqa: E40
 
 
 class TestMayaMaterialUtilsTextureProvenance(unittest.TestCase):
+    def test_glsl_main_texture_is_found_for_provenance(self):
+        def node_type(node):
+            return "file" if node == "file1" else "GLSLShader"
+
+        with (
+            patch.object(maya_material_utils.cmds, "nodeType", side_effect=node_type),
+            patch.object(
+                maya_material_utils.cmds,
+                "attributeQuery",
+                side_effect=lambda attr, node, exists: exists and attr == "MainTexture",
+            ),
+            patch.object(
+                maya_material_utils.cmds,
+                "listConnections",
+                return_value=["file1.outColor"],
+            ),
+        ):
+            self.assertEqual(
+                maya_material_utils.find_material_texture_file_node("shader1"),
+                "file1",
+            )
+
     def test_mark_mmd_texture_file_node_stores_plain_original_path(self):
         with patch.object(maya_attribute_utils, "set_custom_attributes") as mock_set:
             maya_material_utils.mark_mmd_texture_file_node(

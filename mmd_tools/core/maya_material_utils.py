@@ -115,7 +115,7 @@ def find_material_texture_file_node(material):
     texture_attrs = []
     if shader_type == "standardSurface":
         texture_attrs.append(f"{material}.baseColor")
-    elif shader_type == "dx11Shader":
+    elif shader_type in {"dx11Shader", "GLSLShader"}:
         if cmds.attributeQuery("MainTexture", node=material, exists=True):
             texture_attrs.append(f"{material}.MainTexture")
         if cmds.attributeQuery("DiffuseTexture", node=material, exists=True):

@@ -19,16 +19,38 @@ import maya.api.OpenMaya as om
 import maya.api.OpenMayaAnim as oma
 from maya import cmds
 
+from mmd_tools.converters.material_shader_parameters import (
+    ATTR_MMD_DIFFUSE_ALPHA,
+    ATTR_MMD_EDGE_ALPHA,
+)
+from mmd_tools.converters.mesh_material_properties import PMX_EDGE_DRAWING_DRAW_FLAG
 from mmd_tools.converters.morph_converter import MorphConverter
 from mmd_tools.core.constants import (
+    ATTR_MMD_AMBIENT_COLOR,
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_BONE_PARENT_INDEX,
+    ATTR_MMD_DIFFUSE_COLOR,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
+    ATTR_MMD_DRAW_FLAGS,
+    ATTR_MMD_EDGE_FLAG,
+    ATTR_MMD_EDGE_COLOR,
+    ATTR_MMD_EDGE_SIZE,
+    ATTR_MMD_MATERIAL,
     ATTR_MMD_MATERIAL_NAME,
+    ATTR_MMD_MATERIAL_NAME_EN,
+    ATTR_MMD_MEMO,
     ATTR_MMD_MODEL_NAME,
+    ATTR_MMD_SHARED_TOON_FLAG,
+    ATTR_MMD_SHININESS,
+    ATTR_MMD_SPECULAR_COLOR,
+    ATTR_MMD_SPHERE_MODE,
+    ATTR_MMD_SPHERE_PATH,
+    ATTR_MMD_SPHERE_TEXTURE_INDEX,
+    ATTR_MMD_TEXTURE_INDEX,
+    ATTR_MMD_TOON_TEXTURE_INDEX,
 )
 from mmd_tools.core.coordinate_transform import maya_point_to_mmd
 from mmd_tools.core.display_frame_metadata import display_frames_from_json
@@ -519,17 +541,277 @@ def _make_material_dict(mat_name: str) -> dict:
     }
 
 
-def _resolve_shader_name(sg_node_name: str) -> str:
+def _read_shader_attr(shader: str, attr: str) -> tuple[bool, object]:
+    """Read one custom shader attribute without manufacturing a fallback value."""
+    if not cmds.attributeQuery(attr, node=shader, exists=True):
+        return False, None
+    value = cmds.getAttr(f"{shader}.{attr}")
+    return value is not None, value
+
+
+def _read_shader_scalar(shader: str, attr: str, converter) -> tuple[bool, object]:
+    """Read and convert a scalar shader attribute, treating malformed data as missing."""
+    if converter is int:
+        return _read_shader_integer(shader, attr)
+    present, value = _read_shader_attr(shader, attr)
+    if not present:
+        return False, None
+    try:
+        return True, converter(value)
+    except (TypeError, ValueError):
+        return False, None
+
+
+def _shader_texture_provenance(shader: str) -> tuple[bool, str | None]:
+    """Return whether a main texture file node is connected and its source path."""
+    try:
+        from mmd_tools.core import maya_material_utils
+
+        file_node = maya_material_utils.find_material_texture_file_node(shader)
+        if not file_node:
+            return False, None
+        return True, maya_material_utils.get_mmd_original_texture_path(file_node)
+    except Exception:
+        # A tagged shader must not lose a connected texture merely because
+        # provenance inspection failed. Treat the connection as unknown and
+        # let the writer-facing validator reject the incomplete semantics.
+        return True, None
+
+
+def _read_shader_texture_path(
+    shader: str,
+    attr: str,
+    *,
+    resolve_file_node: bool = False,
+) -> tuple[bool, str | None, bool]:
+    """Read a texture path without exporting a Maya-resolved absolute path."""
+    present, value = _read_shader_scalar(shader, attr, str)
+    if present and not value:
+        connected, _ = _shader_texture_provenance(shader) if resolve_file_node else (False, None)
+        return False, None, connected
+    if not present:
+        if not resolve_file_node:
+            return False, None, False
+        connected, original_path = _shader_texture_provenance(shader)
+        return bool(original_path), original_path, connected
+    if not Path(value).is_absolute():
+        return present, value, False
+    if not resolve_file_node:
+        return False, value, False
+
+    connected, original_path = _shader_texture_provenance(shader)
+    return bool(original_path), original_path or value, connected
+
+
+def _read_shader_integer(shader: str, attr: str) -> tuple[bool, int | None]:
+    """Read an integer attribute without silently truncating fractional values."""
+    present, value = _read_shader_attr(shader, attr)
+    if not present or isinstance(value, bool):
+        return False, None
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return False, None
+    if not numeric_value.is_integer():
+        return False, None
+    return True, int(numeric_value)
+
+
+def _read_shader_vector(shader: str, attr: str, size: int) -> tuple[bool, list[float] | None]:
+    """Read a Maya vector attribute in either flat or single-item nested form."""
+    present, value = _read_shader_attr(shader, attr)
+    if not present:
+        return False, None
+    if isinstance(value, (list, tuple)) and len(value) == 1 and isinstance(value[0], (list, tuple)):
+        value = value[0]
+    try:
+        if len(value) != size:
+            return False, None
+        return True, [float(component) for component in value]
+    except (TypeError, ValueError):
+        return False, None
+
+
+def _collect_mmd_material_dict(shader: str, is_pmd: bool = False) -> dict:
+    """Read persisted PMX or PMD semantic values from an MMD-tagged shader.
+
+    Missing semantic values are omitted instead of being replaced with the
+    ordinary Maya/default material values.  ``semantic_missing`` is kept in a
+    stable order so later validation can distinguish incomplete authoring from
+    an authored PMX default.
+    """
+    material = {}
+    semantic_missing = []
+
+    string_fields = [("name", ATTR_MMD_MATERIAL_NAME)]
+    if not is_pmd:
+        string_fields.append(("name_english", ATTR_MMD_MATERIAL_NAME_EN))
+    for payload_key, attr in string_fields:
+        present, value = _read_shader_scalar(shader, attr, str)
+        if present:
+            material[payload_key] = value
+        else:
+            semantic_missing.append(payload_key)
+
+    diffuse_present, diffuse = _read_shader_vector(shader, ATTR_MMD_DIFFUSE_COLOR, 3)
+    alpha_present, diffuse_alpha = _read_shader_scalar(shader, ATTR_MMD_DIFFUSE_ALPHA, float)
+    if diffuse_present and alpha_present:
+        material["diffuse"] = diffuse + [diffuse_alpha]
+    else:
+        semantic_missing.append("diffuse")
+
+    vector_fields = (
+        ("specular", ATTR_MMD_SPECULAR_COLOR),
+        ("ambient", ATTR_MMD_AMBIENT_COLOR),
+    )
+    for payload_key, attr in vector_fields:
+        present, value = _read_shader_vector(shader, attr, 3)
+        if present:
+            material[payload_key] = value
+        else:
+            semantic_missing.append(payload_key)
+
+    scalar_fields = [("specular_power" if is_pmd else "specular_coefficient", ATTR_MMD_SHININESS, float)]
+    pmd_edge_from_draw_flags = False
+    if is_pmd:
+        edge_present, edge_value = _read_shader_scalar(shader, ATTR_MMD_EDGE_FLAG, int)
+        if edge_present:
+            material["edge_flag"] = edge_value
+        else:
+            scalar_fields.append(("edge_flag", ATTR_MMD_DRAW_FLAGS, int))
+            pmd_edge_from_draw_flags = True
+        scalar_fields.append(("toon_texture_index", ATTR_MMD_TOON_TEXTURE_INDEX, int))
+    else:
+        scalar_fields.extend(
+            (
+                ("draw_flag", ATTR_MMD_DRAW_FLAGS, int),
+                ("edge_size", ATTR_MMD_EDGE_SIZE, float),
+                ("texture_index", ATTR_MMD_TEXTURE_INDEX, int),
+                ("sphere_texture_index", ATTR_MMD_SPHERE_TEXTURE_INDEX, int),
+                ("sphere_mode", ATTR_MMD_SPHERE_MODE, int),
+                ("shared_toon_flag", ATTR_MMD_SHARED_TOON_FLAG, int),
+                ("toon_texture_index", ATTR_MMD_TOON_TEXTURE_INDEX, int),
+                ("memo", ATTR_MMD_MEMO, str),
+            )
+        )
+    for payload_key, attr, converter in scalar_fields:
+        present, value = _read_shader_scalar(shader, attr, converter)
+        if present:
+            material[payload_key] = value
+        else:
+            semantic_missing.append(payload_key)
+
+    if is_pmd:
+        if pmd_edge_from_draw_flags and "edge_flag" in material:
+            material["edge_flag"] = int(bool(material["edge_flag"] & PMX_EDGE_DRAWING_DRAW_FLAG))
+    else:
+        edge_present, edge_color = _read_shader_vector(shader, ATTR_MMD_EDGE_COLOR, 3)
+        edge_alpha_present, edge_alpha = _read_shader_scalar(shader, ATTR_MMD_EDGE_ALPHA, float)
+        if edge_present and edge_alpha_present:
+            material["edge_color"] = edge_color + [edge_alpha]
+        else:
+            semantic_missing.append("edge_color")
+
+    # These paths are provenance only.  No texture table or index remapping is
+    # inferred from them in this collector slice.
+    texture_present, texture_path, texture_connected = _read_shader_texture_path(
+        shader,
+        "mmd_texture_path",
+        resolve_file_node=True,
+    )
+    sphere_present, sphere_path, _ = _read_shader_texture_path(shader, ATTR_MMD_SPHERE_PATH)
+    if not texture_present and (texture_path or texture_connected):
+        semantic_missing.append("texture_path")
+    if not sphere_present and sphere_path:
+        semantic_missing.append("sphere_texture_path")
+    if is_pmd:
+        texture_index_present, texture_index = _read_shader_scalar(shader, ATTR_MMD_TEXTURE_INDEX, int)
+        sphere_index_present, sphere_index = _read_shader_scalar(shader, ATTR_MMD_SPHERE_TEXTURE_INDEX, int)
+        if texture_present or sphere_present:
+            material["texture_file_name"] = (
+                f"{texture_path or ''}*{sphere_path}"
+                if sphere_present and sphere_path
+                else texture_path or ""
+            )
+        if (
+            texture_index_present
+            and texture_index >= 0
+            and not texture_present
+            and "texture_path" not in semantic_missing
+        ):
+            semantic_missing.append("texture_path")
+        if (
+            sphere_index_present
+            and sphere_index >= 0
+            and not sphere_present
+            and "sphere_texture_path" not in semantic_missing
+        ):
+            semantic_missing.append("sphere_texture_path")
+    else:
+        if texture_present:
+            material["texture_path"] = texture_path
+        if sphere_present:
+            material["sphere_texture_path"] = sphere_path
+        if texture_present and (
+            not isinstance(material.get("texture_index"), int)
+            or material["texture_index"] < 0
+        ) and "texture_table" not in semantic_missing:
+            semantic_missing.append("texture_table")
+        if sphere_present and (
+            not isinstance(material.get("sphere_texture_index"), int)
+            or material["sphere_texture_index"] < 0
+        ) and "texture_table" not in semantic_missing:
+            semantic_missing.append("texture_table")
+
+    # The collector does not own a top-level PMX texture table yet.  Keep
+    # authored indices only as provenance until a later slice can resolve
+    # them; shared toon indices are built-in PMX values and remain usable.
+    texture_reference_fields = () if is_pmd else (
+        ("texture_index", "source_texture_index"),
+        ("sphere_texture_index", "source_sphere_texture_index"),
+        ("toon_texture_index", "source_toon_texture_index"),
+    )
+    texture_table_missing = False
+    for payload_key, source_key in texture_reference_fields:
+        value = material.get(payload_key)
+        if not isinstance(value, int) or value < 0:
+            continue
+        if payload_key == "toon_texture_index" and material.get("shared_toon_flag") == 1:
+            continue
+        material[source_key] = material.pop(payload_key)
+        texture_table_missing = True
+    if texture_table_missing and "texture_table" not in semantic_missing:
+        semantic_missing.append("texture_table")
+
+    material["semantic_missing"] = semantic_missing
+    return material
+
+
+def _collect_shader_material_dict(sg_node_name: str, is_pmd: bool = False) -> dict:
+    """Collect one SG material, preserving legacy behavior for untagged shaders."""
+    shaders = cmds.listConnections(f"{sg_node_name}.surfaceShader") or []
+    if not shaders:
+        return _make_material_dict(sg_node_name)
+
+    shader = shaders[0]
+    tagged, tag_value = _read_shader_attr(shader, ATTR_MMD_MATERIAL)
+    if tagged and bool(tag_value):
+        return _collect_mmd_material_dict(shader, is_pmd=is_pmd)
+    return _make_material_dict(_resolve_shader_name(sg_node_name, shader=shader))
+
+
+def _resolve_shader_name(sg_node_name: str, shader: Optional[str] = None) -> str:
     """Return the display name for the shader connected to a shadingEngine node.
 
     Reads ``mmd_material_name`` if the attribute is present; otherwise falls
     back to the shader node name.  Falls back to *sg_node_name* when no
     ``surfaceShader`` connection exists.
     """
-    shaders = cmds.listConnections(f"{sg_node_name}.surfaceShader") or []
-    if not shaders:
-        return sg_node_name
-    shader = shaders[0]
+    if shader is None:
+        shaders = cmds.listConnections(f"{sg_node_name}.surfaceShader") or []
+        if not shaders:
+            return sg_node_name
+        shader = shaders[0]
     if cmds.attributeQuery(ATTR_MMD_MATERIAL_NAME, node=shader, exists=True):
         val = cmds.getAttr(f"{shader}.{ATTR_MMD_MATERIAL_NAME}")
         if val:
@@ -537,7 +819,7 @@ def _resolve_shader_name(sg_node_name: str) -> str:
     return shader
 
 
-def _collect_materials_per_face(shape: str, fn) -> tuple:
+def _collect_materials_per_face(shape: str, fn, is_pmd: bool = False) -> tuple:
     """Return ``(materials, faces)`` with polygons grouped by per-face material.
 
     Uses ``MFnMesh.getConnectedShaders`` to obtain the per-polygon shading-group
@@ -599,8 +881,11 @@ def _collect_materials_per_face(shape: str, fn) -> tuple:
     for sg_key in mat_order:
         poly_ids = poly_by_sg[sg_key]
         group_faces = [list(fn.getPolygonVertices(i)) for i in poly_ids]
-        mat_name = "Default" if sg_key == "__unassigned__" else _resolve_shader_name(sg_key)
-        mat = _make_material_dict(mat_name)
+        mat = (
+            _make_material_dict("Default")
+            if sg_key == "__unassigned__"
+            else _collect_shader_material_dict(sg_key, is_pmd=is_pmd)
+        )
         group_faces = [list(reversed(face)) for face in group_faces]
         mat["face_count"] = sum(max(0, len(f) - 2) * 3 for f in group_faces)
         materials.append(mat)
@@ -634,19 +919,21 @@ class ExportSceneCollector:
         ``target_mesh`` / ``export_mesh`` / ``mesh`` collect a single mesh.
         """
         model_root = options.get("target_model") or options.get("model_root")
+        export_format = options.get("export_format") or Path(str(options.get("file_path") or "")).suffix
+        is_pmd = str(export_format).lower().lstrip(".") == "pmd"
         if model_root:
-            model_data = self.collect_from_model_root(model_root)
+            model_data = self.collect_from_model_root(model_root, is_pmd=is_pmd)
         else:
             target_mesh = options.get("target_mesh") or options.get("export_mesh") or options.get("mesh")
             if not target_mesh:
                 raise ValueError("ExportSceneCollector requires target_model, model_root, or target_mesh")
-            model_data = self.collect_from_mesh(target_mesh)
+            model_data = self.collect_from_mesh(target_mesh, is_pmd=is_pmd)
 
-        if str(options.get("export_format", "")).lower() == "pmd":
+        if is_pmd:
             return _apply_pmd_export_policy(model_data, model_root)
         return model_data
 
-    def collect_from_mesh(self, transform_or_shape: str) -> dict:
+    def collect_from_mesh(self, transform_or_shape: str, is_pmd: bool = False) -> dict:
         """Collect scene data from a single polygon mesh transform or shape.
 
         Coordinate system: Maya world-space (Y-up, right-handed, units in cm).
@@ -726,7 +1013,7 @@ class ExportSceneCollector:
             })
 
         # Collect per-face material assignments and group faces contiguously.
-        materials, faces = _collect_materials_per_face(shape, fn)
+        materials, faces = _collect_materials_per_face(shape, fn, is_pmd=is_pmd)
 
         return {
             "model_name": model_name,
@@ -738,7 +1025,7 @@ class ExportSceneCollector:
             "morphs": _collect_vertex_morphs(shape),
         }
 
-    def collect_from_model_root(self, root: str) -> dict:
+    def collect_from_model_root(self, root: str, is_pmd: bool = False) -> dict:
         """Collect and merge all polygon meshes below an MMD model root.
 
         This keeps the same minimum-slice limitations as ``collect_from_mesh``:
@@ -760,9 +1047,8 @@ class ExportSceneCollector:
             if bone.get("source_joint")
         }
         vertex_offset = 0
-
         for shape in shapes:
-            mesh_data = self.collect_from_mesh(shape)
+            mesh_data = self.collect_from_mesh(shape, is_pmd=is_pmd)
             local_bones = mesh_data["bones"] or []
             bone_index_map = {}
             added_global_indices = set()

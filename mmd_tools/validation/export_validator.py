@@ -20,6 +20,7 @@ PMD_MAX_VERTEX_COUNT = 0xFFFF + 1
 PMD_MAX_BONE_COUNT = 0xFFFF
 PMD_MAX_BONE_WEIGHT = 100
 PMD_MAX_EDGE_FLAG = 0xFF
+PMD_MAX_TEXTURE_FILE_NAME_BYTES = 19
 UINT32_MAX = 0xFFFFFFFF
 
 _SEQUENCE_TYPES = (str, bytes, bytearray)
@@ -412,6 +413,58 @@ def _validate_text_fields(
                 _path_for_key(path, field_name),
                 "field must be a string",
             )
+
+
+def _validate_pmd_texture_file_name(
+    mapping: Mapping,
+    path: str,
+    issues: List[ExportValidationIssue],
+) -> None:
+    """Reject PMD texture names that the fixed CP932 field would truncate."""
+    field_name = "texture_file_name"
+    if field_name not in mapping or not isinstance(mapping[field_name], str):
+        return
+    field_path = _path_for_key(path, field_name)
+    error = _pmd_texture_file_name_error(mapping[field_name])
+    if error:
+        _issue(
+            issues,
+            "FIELD_LENGTH",
+            field_path,
+            error,
+        )
+
+
+def _pmd_texture_file_name_error(value: str) -> Optional[str]:
+    """Return a fixed-field error for one PMD texture filename, if any."""
+    try:
+        encoded = value.encode("cp932")
+    except UnicodeEncodeError:
+        return "PMD texture_file_name must be encodable in CP932"
+    if len(encoded) > PMD_MAX_TEXTURE_FILE_NAME_BYTES:
+        return f"PMD texture_file_name must fit within {PMD_MAX_TEXTURE_FILE_NAME_BYTES} CP932 bytes"
+    return None
+
+
+def ensure_writer_safe_materials(model_data: Mapping, export_format: str) -> None:
+    """Reject collector semantics that low-level writers would otherwise default or truncate."""
+    for material_index, material in enumerate(model_data.get("materials") or ()):
+        if not isinstance(material, Mapping):
+            continue
+        missing = material.get("semantic_missing")
+        if missing:
+            raise ValueError(
+                f"material {material_index} has incomplete semantic data: "
+                f"{', '.join(str(value) for value in missing)}"
+            )
+        if export_format != "pmd":
+            continue
+        texture_name = material.get("texture_file_name")
+        if not isinstance(texture_name, str):
+            continue
+        error = _pmd_texture_file_name_error(texture_name)
+        if error:
+            raise ValueError(f"material {material_index}: {error}")
 
 
 def _validate_vector_field(
@@ -1364,8 +1417,21 @@ def _validate_materials(
             _issue(issues, "MATERIAL_NOT_MAPPING", material_path, "material must be a mapping")
             all_face_counts_specified = False
             continue
+        semantic_missing = material.get("semantic_missing")
+        if semantic_missing:
+            if _is_sequence(semantic_missing):
+                missing_fields = ", ".join(str(value) for value in semantic_missing)
+            else:
+                missing_fields = str(semantic_missing)
+            _issue(
+                issues,
+                "MATERIAL_SEMANTIC_MISSING",
+                _path_for_key(material_path, "semantic_missing"),
+                f"material semantic data is missing: {missing_fields}",
+            )
         if export_format == "pmd":
             _validate_text_fields(material, ("texture_file_name",), material_path, issues)
+            _validate_pmd_texture_file_name(material, material_path, issues)
         else:
             _validate_text_fields(material, ("name", "name_english", "memo"), material_path, issues)
         _validate_vector_field(material, "diffuse", 4, material_path, issues)
@@ -1707,7 +1773,9 @@ __all__ = [
     "PMD_MAX_BONE_COUNT",
     "PMD_MAX_BONE_WEIGHT",
     "PMD_MAX_EDGE_FLAG",
+    "PMD_MAX_TEXTURE_FILE_NAME_BYTES",
     "PMD_MAX_VERTEX_COUNT",
+    "ensure_writer_safe_materials",
     "validate_export_model",
     "validate_model_data",
 ]

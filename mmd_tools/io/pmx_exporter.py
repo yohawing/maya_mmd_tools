@@ -25,6 +25,7 @@ from mmd_tools.core.utils import (
     choose_reference_index_size as _choose_reference_index_size,
     fan_triangulate as _fan_triangulate,
 )
+from mmd_tools.validation.export_validator import ensure_writer_safe_materials
 
 
 class PmxExporter:
@@ -62,6 +63,7 @@ class PmxExporter:
             raise ValueError("vertices must not be empty")
         if not faces_raw:
             raise ValueError("faces must not be empty")
+        ensure_writer_safe_materials(maya_data, "pmx")
 
         # --- ensure parent dir exists ---
         parent_dir = os.path.dirname(file_path)
