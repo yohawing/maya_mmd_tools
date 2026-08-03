@@ -84,6 +84,122 @@ def _attribute_value(node: str, name: str) -> Any:
         return None
 
 
+def _scalar_attribute_value(node: str, name: str, converter: type) -> Any:
+    """Read and convert one scalar attribute, returning ``None`` when absent."""
+    value = _attribute_value(node, name)
+    if isinstance(value, (list, tuple)) and len(value) == 1:
+        value = value[0]
+    if value is None:
+        return None
+    try:
+        return converter(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _vector_attribute_value(node: str, name: str) -> list[float]:
+    """Read a Maya compound/vector attribute in a JSON-stable shape."""
+    value = _attribute_value(node, name)
+    if isinstance(value, (list, tuple)) and len(value) == 1 and isinstance(value[0], (list, tuple)):
+        value = value[0]
+    if not isinstance(value, (list, tuple)):
+        return []
+    try:
+        return _round_values(value)
+    except (TypeError, ValueError):
+        return []
+
+
+def _find_material_nodes(meshes: Iterable[str]) -> list[str]:
+    """Find unique MMD material nodes assigned below the supplied mesh transforms."""
+    from maya import cmds
+
+    materials = []
+    for transform in meshes:
+        shapes = cmds.listRelatives(transform, shapes=True, fullPath=True, type="mesh") or []
+        for shape in shapes:
+            shading_groups = cmds.listConnections(shape, type="shadingEngine") or []
+            for shading_group in shading_groups:
+                connected = cmds.listConnections(
+                    shading_group,
+                    source=True,
+                    destination=False,
+                ) or []
+                for material in cmds.ls(connected, materials=True) or []:
+                    if material in materials:
+                        continue
+                    if _scalar_attribute_value(material, "mmd_material", bool):
+                        materials.append(str(material))
+    return sorted(materials)
+
+
+def _capture_material_oracle(meshes: Iterable[str]) -> list[dict[str, Any]]:
+    """Capture authored MMD material semantics from shader nodes below a model."""
+    from mmd_tools.converters.material_shader_parameters import ATTR_MMD_DIFFUSE_ALPHA, ATTR_MMD_EDGE_ALPHA
+    from mmd_tools.core.constants import (
+        ATTR_MMD_AMBIENT_COLOR,
+        ATTR_MMD_DIFFUSE_COLOR,
+        ATTR_MMD_DRAW_FLAGS,
+        ATTR_MMD_EDGE_COLOR,
+        ATTR_MMD_EDGE_SIZE,
+        ATTR_MMD_EDGE_FLAG,
+        ATTR_MMD_MATERIAL_INDEX,
+        ATTR_MMD_MATERIAL_NAME,
+        ATTR_MMD_MATERIAL_NAME_EN,
+        ATTR_MMD_MEMO,
+        ATTR_MMD_SHININESS,
+        ATTR_MMD_SPECULAR_COLOR,
+        ATTR_MMD_SHARED_TOON_FLAG,
+        ATTR_MMD_SPHERE_PATH,
+        ATTR_MMD_SPHERE_MODE,
+        ATTR_MMD_SPHERE_TEXTURE_INDEX,
+        ATTR_MMD_TEXTURE_INDEX,
+        ATTR_MMD_TOON_TEXTURE_INDEX,
+    )
+
+    materials = []
+    for node in _find_material_nodes(meshes):
+        material_index = _scalar_attribute_value(node, ATTR_MMD_MATERIAL_INDEX, int)
+        diffuse = _vector_attribute_value(node, ATTR_MMD_DIFFUSE_COLOR)
+        diffuse_alpha = _scalar_attribute_value(node, ATTR_MMD_DIFFUSE_ALPHA, float)
+        if diffuse_alpha is not None:
+            diffuse.append(round(diffuse_alpha, 7))
+        edge_color = _vector_attribute_value(node, ATTR_MMD_EDGE_COLOR)
+        edge_alpha = _scalar_attribute_value(node, ATTR_MMD_EDGE_ALPHA, float)
+        if edge_alpha is not None:
+            edge_color.append(round(edge_alpha, 7))
+        materials.append(
+            {
+                "index": material_index,
+                "name": _attribute_value(node, ATTR_MMD_MATERIAL_NAME),
+                "name_en": _attribute_value(node, ATTR_MMD_MATERIAL_NAME_EN),
+                "diffuse": diffuse,
+                "specular": _vector_attribute_value(node, ATTR_MMD_SPECULAR_COLOR),
+                "ambient": _vector_attribute_value(node, ATTR_MMD_AMBIENT_COLOR),
+                "edge_color": edge_color,
+                "shininess": _scalar_attribute_value(node, ATTR_MMD_SHININESS, float),
+                "draw_flags": _scalar_attribute_value(node, ATTR_MMD_DRAW_FLAGS, int),
+                "edge_flag": _scalar_attribute_value(node, ATTR_MMD_EDGE_FLAG, int),
+                "edge_size": _scalar_attribute_value(node, ATTR_MMD_EDGE_SIZE, float),
+                "sphere_mode": _scalar_attribute_value(node, ATTR_MMD_SPHERE_MODE, int),
+                "sphere_texture_index": _scalar_attribute_value(
+                    node, ATTR_MMD_SPHERE_TEXTURE_INDEX, int
+                ),
+                "texture_index": _scalar_attribute_value(node, ATTR_MMD_TEXTURE_INDEX, int),
+                "toon_texture_index": _scalar_attribute_value(
+                    node, ATTR_MMD_TOON_TEXTURE_INDEX, int
+                ),
+                "shared_toon_flag": _scalar_attribute_value(
+                    node, ATTR_MMD_SHARED_TOON_FLAG, int
+                ),
+                "memo": _attribute_value(node, ATTR_MMD_MEMO),
+                "texture_path": _attribute_value(node, "mmd_texture_path"),
+                "sphere_texture_path": _attribute_value(node, ATTR_MMD_SPHERE_PATH),
+            }
+        )
+    return sorted(materials, key=lambda item: (item["index"] is None, item["index"] or -1, item["name"] or ""))
+
+
 def _find_mesh_transforms(root: str) -> list[str]:
     """Return stable mesh transforms below a model root."""
     from maya import cmds
@@ -181,6 +297,7 @@ def _capture_scene_oracle(root: str, frames: Iterable[int]) -> dict[str, Any]:
     }
     return {
         "mesh": mesh_oracle,
+        "materials": _capture_material_oracle(meshes),
         "pose": {"joint_count": len(indexed_joints), "joints": indexed_joints, "frames": pose_by_frame},
         "metadata": metadata,
     }
@@ -193,14 +310,22 @@ def _compare_float_lists(expected: list[float], actual: list[float]) -> float:
     return max((abs(float(a) - float(b)) for a, b in zip(expected, actual)), default=0.0)
 
 
+def _normalize_material_field(field: str, value: Any) -> Any:
+    """Normalize equivalent unset texture-path representations before comparison."""
+    if field in ("texture_path", "sphere_texture_path") and value == "":
+        return None
+    return value
+
+
 def _compare_scene_oracles(
     expected: Mapping[str, Any],
     actual: Mapping[str, Any],
     *,
     pose: bool,
     mesh: bool = True,
+    materials: bool = True,
 ) -> list[str]:
-    """Compare required mesh/pose/metadata oracle fields and return failures."""
+    """Compare required material/mesh/pose/metadata oracle fields and return failures."""
     failures: list[str] = []
     if mesh:
         expected_mesh = list(expected.get("mesh", []))
@@ -216,6 +341,67 @@ def _compare_scene_oracles(
             difference = _compare_float_lists(source.get("vertices", []), result.get("vertices", []))
             if difference > FLOAT_TOLERANCE:
                 failures.append(f"mesh[{index}].vertices max error {difference:g}")
+
+    if materials:
+        expected_materials = list(expected.get("materials", []))
+        actual_materials = list(actual.get("materials", []))
+        if len(expected_materials) != len(actual_materials):
+            failures.append(
+                f"material count differs: expected {len(expected_materials)}, actual {len(actual_materials)}"
+            )
+        for index, (source, result) in enumerate(zip(expected_materials, actual_materials)):
+            for field in (
+                "index",
+                "name",
+                "name_en",
+                "memo",
+                "texture_path",
+                "sphere_texture_path",
+                "draw_flags",
+                "edge_flag",
+                "sphere_mode",
+                "sphere_texture_index",
+                "texture_index",
+                "toon_texture_index",
+                "shared_toon_flag",
+            ):
+                expected_value = _normalize_material_field(field, source.get(field))
+                actual_value = _normalize_material_field(field, result.get(field))
+                if expected_value != actual_value:
+                    failures.append(
+                        f"material[{index}].{field}: expected {expected_value!r}, "
+                        f"actual {actual_value!r}"
+                    )
+            for field in ("diffuse", "specular", "ambient", "edge_color"):
+                difference = _compare_float_lists(source.get(field, []), result.get(field, []))
+                if difference > FLOAT_TOLERANCE:
+                    failures.append(f"material[{index}].{field} max error {difference:g}")
+            expected_edge_size = source.get("edge_size")
+            actual_edge_size = result.get("edge_size")
+            if expected_edge_size is None or actual_edge_size is None:
+                if expected_edge_size != actual_edge_size:
+                    failures.append(
+                        f"material[{index}].edge_size: expected {expected_edge_size!r}, "
+                        f"actual {actual_edge_size!r}"
+                    )
+            elif abs(float(expected_edge_size) - float(actual_edge_size)) > FLOAT_TOLERANCE:
+                failures.append(
+                    f"material[{index}].edge_size max error "
+                    f"{abs(float(expected_edge_size) - float(actual_edge_size)):g}"
+                )
+            expected_shininess = source.get("shininess")
+            actual_shininess = result.get("shininess")
+            if expected_shininess is None or actual_shininess is None:
+                if expected_shininess != actual_shininess:
+                    failures.append(
+                        f"material[{index}].shininess: expected {expected_shininess!r}, "
+                        f"actual {actual_shininess!r}"
+                    )
+            elif abs(float(expected_shininess) - float(actual_shininess)) > FLOAT_TOLERANCE:
+                failures.append(
+                    f"material[{index}].shininess max error "
+                    f"{abs(float(expected_shininess) - float(actual_shininess)):g}"
+                )
 
     expected_metadata = expected.get("metadata", {})
     actual_metadata = actual.get("metadata", {})
@@ -253,6 +439,59 @@ def _compare_scene_oracles(
                 if difference > FLOAT_TOLERANCE:
                     failures.append(f"pose frame {frame} bone {expected_joint['name']} max error {difference:g}")
     return failures
+
+
+def _edit_first_material_with_material_tab(root: str) -> dict[str, Any]:
+    """Edit one imported PMX material through the real MaterialTab presenter."""
+    from mmd_tools.ui.presenters.material_presenter import MaterialPresenter
+    from mmd_tools.ui.qt_compat import QApplication
+    from mmd_tools.ui.tabs.material_tab import MaterialTab
+    from mmd_tools.ui.application_state import ApplicationState
+
+    application = QApplication.instance()
+    if application is None:
+        application = QApplication([])
+
+    view = MaterialTab()
+    state = ApplicationState()
+    presenter = MaterialPresenter(view, state)
+    state.current_model_root = root
+    presenter.load_materials()
+    if view.material_list.count() < 1:
+        raise RuntimeError("MaterialTab found no imported PMX materials")
+
+    view.material_list.setCurrentRow(0)
+    application.processEvents()
+    item = view.material_list.currentItem()
+    if not presenter.current_material and item is not None:
+        presenter.on_material_selected(item, None)
+    if not presenter.current_material:
+        raise RuntimeError("MaterialTab did not select the first imported PMX material")
+
+    before = float(view.specular_coefficient_spin.value())
+    maximum = float(view.specular_coefficient_spin.maximum())
+    minimum = float(view.specular_coefficient_spin.minimum())
+    delta = 0.01 if before + 0.01 <= maximum else -0.01
+    after_target = max(minimum, min(maximum, before + delta))
+    view.specular_coefficient_spin.setValue(after_target)
+    application.processEvents()
+    after = float(view.specular_coefficient_spin.value())
+    if abs(after - before) <= FLOAT_TOLERANCE:
+        raise RuntimeError("MaterialTab edit was clamped and did not change the specular coefficient")
+
+    presenter.apply_changes()
+    application.processEvents()
+    authored = _scalar_attribute_value(presenter.current_material, "shininess", float)
+    if authored is None or abs(authored - after) > FLOAT_TOLERANCE:
+        raise RuntimeError(
+            f"MaterialTab Apply did not persist shininess: expected {after:g}, actual {authored!r}"
+        )
+    return {
+        "material": presenter.current_material,
+        "field": "shininess",
+        "before": round(before, 7),
+        "after": round(after, 7),
+    }
 
 
 def _import_options() -> dict[str, Any]:
@@ -312,7 +551,7 @@ def _run_model_case(
                 "gate": "V070-EXPORT-RELEASE-GATE-1",
                 "fixture": source_model.name,
                 "fresh_import": True,
-                "oracles": ["mesh", "pose", "metadata"],
+                "oracles": ["materials", "mesh", "pose", "metadata"],
             },
         },
     )
@@ -351,6 +590,7 @@ def _run_model_case(
             "policy_code": "PMD_EXPORT_POLICY_REJECT",
             "import_oracles": {
                 "mesh": source_oracle["mesh"],
+                "materials": source_oracle["materials"],
                 "pose": source_oracle["pose"],
                 "metadata": source_oracle["metadata"],
             },
@@ -386,6 +626,7 @@ def _run_model_case(
         },
         "oracles": {
             "mesh": result_oracle["mesh"],
+            "materials": result_oracle["materials"],
             "pose": result_oracle["pose"],
             "metadata": result_oracle["metadata"],
         },
@@ -440,7 +681,7 @@ def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str
     fresh_root = _fresh_import(source_pmx)
     fresh_root = _import_vmd_into_current_scene(fresh_root, source_pmx, output)
     result_oracle = _capture_scene_oracle(fresh_root, ORACLE_FRAMES)
-    failures = _compare_scene_oracles(source_oracle, result_oracle, pose=True, mesh=False)
+    failures = _compare_scene_oracles(source_oracle, result_oracle, pose=True, mesh=False, materials=False)
     if failures:
         raise AssertionError("; ".join(failures))
     return {

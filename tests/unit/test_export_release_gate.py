@@ -11,6 +11,7 @@ from tools.export_release_gate import (
     _run_fail_fixture_matrix,
     _validate_maya_probe_report,
 )
+from tools.export_release_maya_probe import _compare_scene_oracles
 
 
 class ExportReleaseGateTests(unittest.TestCase):
@@ -79,6 +80,54 @@ class ExportReleaseGateTests(unittest.TestCase):
             step = {"name": "maya_probe_2024", "status": "pass"}
             self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
             self.assertEqual(step["status"], "fail")
+
+    def test_scene_oracle_detects_material_semantic_drift(self):
+        source = {
+            "materials": [
+                {
+                    "index": 0,
+                    "name": "face",
+                    "name_en": "Face",
+                    "diffuse": [1.0, 0.5, 0.25, 1.0],
+                    "specular": [0.2, 0.2, 0.2],
+                    "ambient": [0.1, 0.1, 0.1],
+                    "edge_color": [0.0, 0.0, 0.0, 1.0],
+                    "edge_size": 1.0,
+                    "shininess": 0.99,
+                    "memo": "",
+                    "texture_path": None,
+                    "sphere_texture_path": "",
+                    "draw_flags": 14,
+                    "edge_flag": None,
+                    "sphere_mode": 0,
+                    "sphere_texture_index": -1,
+                    "texture_index": -1,
+                    "toon_texture_index": -1,
+                    "shared_toon_flag": 0,
+                }
+            ],
+            "metadata": {"mmd_file_type": "pmx", "mmd_model_name": "fixture"},
+            "pose": {"joint_count": 0, "frames": {}},
+        }
+        actual = {
+            **source,
+            "materials": [
+                {
+                    **source["materials"][0],
+                    "shininess": 0.5,
+                    "edge_size": 0.5,
+                    "memo": "drift",
+                    "sphere_texture_path": None,
+                }
+            ],
+        }
+
+        failures = _compare_scene_oracles(source, actual, pose=False, mesh=False)
+
+        self.assertTrue(any("material[0].shininess" in failure for failure in failures))
+        self.assertTrue(any("material[0].edge_size" in failure for failure in failures))
+        self.assertTrue(any("material[0].memo" in failure for failure in failures))
+        self.assertFalse(any("material[0].sphere_texture_path" in failure for failure in failures))
 
 
 if __name__ == "__main__":
