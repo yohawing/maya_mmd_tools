@@ -28,6 +28,7 @@
   },
   "tabs": {
     "file_io": "ファイルI/O",
+    "export_workflow": "エクスポート",
     "info": "情報",
     "material": "材質",
     "bone": "ボーン",

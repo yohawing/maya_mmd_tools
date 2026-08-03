@@ -28,6 +28,7 @@
   },
   "tabs": {
     "file_io": "File I/O",
+    "export_workflow": "Export",
     "info": "Info",
     "material": "Material",
     "bone": "Bone",

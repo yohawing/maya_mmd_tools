@@ -372,6 +372,48 @@ class TestPmxExporterFromDict(TestBase):
         # Verify face
         self.assertEqual(pmx.faces[0].indices, (0, 1, 2))
 
+    def test_export_none_textures_writes_valid_pmx(self):
+        """textures=None は空テーブルとしてPMXを書き出せる。"""
+        data = {
+            "model_name": "NoneTextures",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "textures": None,
+        }
+        out_path = os.path.join(self.temp_dir, "none_textures.pmx")
+        PmxExporter(native_parts_exporter=None).export_pmx_model(out_path, data)
+
+        with open(out_path, "rb") as handle:
+            payload = handle.read()
+
+        self.assertGreater(len(payload), 8)
+        self.assertEqual(payload[:4], b"PMX ")
+
+    def test_export_none_materials_writes_valid_pmx(self):
+        """materials=None は空テーブルとしてdefault材質でPMXを書き出せる。"""
+        data = {
+            "model_name": "NoneMaterials",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "materials": None,
+        }
+        out_path = os.path.join(self.temp_dir, "none_materials.pmx")
+        PmxExporter(native_parts_exporter=None).export_pmx_model(out_path, data)
+
+        with open(out_path, "rb") as handle:
+            payload = handle.read()
+
+        self.assertGreater(len(payload), 8)
+        self.assertEqual(payload[:4], b"PMX ")
+
     def test_exporter_uses_native_parts_writer_for_basic_model(self):
         """basic PMX は native parts writer に flat buffers と descriptor を渡す。"""
         calls = []

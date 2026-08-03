@@ -42,16 +42,39 @@ def tier1_commands(
         "--",
         "--strict",
     ]
+    binding_tests_command = ["uvx", "nox", "-s", "mmd_anim_python_tests"]
+    binding_gate_command = ["uvx", "nox", "-s", "mmd_anim_binding_gate"]
     if ffi_cargo_target_dir:
         ffi_build_command.extend(["--", "--release", "--cargo-target-dir", ffi_cargo_target_dir])
     if ffi_path:
         native_smoke_command.extend(["--", "--ffi-path", ffi_path])
         native_export_smoke_command.extend(["--ffi-path", ffi_path])
+        binding_tests_command.extend(["--", "--runtime-library", ffi_path])
+        binding_gate_command.extend(["--", "--runtime-library", ffi_path])
     commands.extend(
         [
             ("tier1:ffi_build", ffi_build_command),
             ("tier1:native_smoke", native_smoke_command),
             ("tier1:native_export_smoke", native_export_smoke_command),
+            (
+                "tier1:mmd-anim-python-bindings",
+                binding_tests_command,
+            ),
+            (
+                "tier1:mmd-anim-binding-gate",
+                binding_gate_command,
+            ),
+            (
+                "tier1:export-validation",
+                [
+                    "uvx",
+                    "nox",
+                    "-s",
+                    "export_validation_gate",
+                    "--",
+                    "--strict",
+                ],
+            ),
         ]
     )
     return commands

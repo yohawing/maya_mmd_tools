@@ -88,6 +88,8 @@ from tools.nox.sessions import (  # noqa: E402
     run_control_rig_vmd_roundtrip as _run_control_rig_vmd_roundtrip,
     run_ci_unit as _run_ci_unit,
     run_gui_tests as _run_gui_tests,
+    run_mmd_anim_binding_gate as _run_mmd_anim_binding_gate,
+    run_mmd_anim_python_tests as _run_mmd_anim_python_tests,
     run_release_package as _run_release_package,
     run_release_version as _run_release_version,
     run_python_module as _run_python_module,
@@ -829,6 +831,39 @@ def tests(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def mmd_anim_python_tests(session: nox.Session) -> None:
+    """Run the external mmd-anim Python binding contract tests.
+
+    Examples:
+        uvx nox -s mmd_anim_python_tests
+        uvx nox -s mmd_anim_python_tests -- --runtime-library F:/path/mmd_runtime_ffi.dll
+    """
+    _run_mmd_anim_python_tests(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        root=ROOT,
+        python_executable=sys.executable,
+        environment=dict(os.environ),
+        platform_name=platform.system(),
+    )
+
+
+@nox.session(venv_backend="none")
+def mmd_anim_binding_gate(session: nox.Session) -> None:
+    """Run PMX/VMD export bytes through the external mmd-anim binding."""
+    _run_mmd_anim_binding_gate(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        root=ROOT,
+        python_executable=sys.executable,
+        environment=dict(os.environ),
+        platform_name=platform.system(),
+    )
+
+
+@nox.session(venv_backend="none")
 def mmd_control_rig_vmd_roundtrip_smoke(session: nox.Session) -> None:
     """Run the focused MMD control-rig import/edit/bake/VMD round-trip gate."""
     _run_control_rig_vmd_roundtrip(
@@ -1025,6 +1060,36 @@ def release_package(session: nox.Session) -> None:
         option=_option,
         resolve_existing_or_repo_path=_resolve_existing_or_repo_path,
         build_release_package=_build_release_package,
+    )
+
+
+@nox.session(venv_backend="none")
+def export_validation_gate(session: nox.Session) -> None:
+    """Run the external export-validation evidence gate.
+
+    The preceding release-matrix ``ci_unit`` step discovers the validation
+    unittest surface. When no explicit CLI is supplied, resolve the pinned
+    compatible CLI through ``_downloaded_mmd_anim_cli``; that helper honors
+    ``MMD_ANIM_CLI`` as an explicit override. All session arguments are
+    forwarded to ``tools/export_validation_gate.py``; the session remains
+    strict by default so a known external-version mismatch cannot be reported
+    as green.
+
+    Examples:
+        uvx nox -s export_validation_gate
+        uvx nox -s export_validation_gate -- --cli F:/tools/mmd-anim.exe
+        uvx nox -s export_validation_gate -- --out build/reports/export-validation.json
+    """
+    gate_args = list(session.posargs)
+    if not any(argument == "--cli" or argument.startswith("--cli=") for argument in gate_args):
+        gate_args = ["--cli", str(_downloaded_mmd_anim_cli(session)), *gate_args]
+    if "--strict" not in gate_args:
+        gate_args.append("--strict")
+    session.run(
+        sys.executable,
+        "tools/export_validation_gate.py",
+        *gate_args,
+        external=True,
     )
 
 

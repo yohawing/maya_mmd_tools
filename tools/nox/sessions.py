@@ -8,7 +8,148 @@ are passed explicitly so this module does not import or depend on
 
 from __future__ import annotations
 
+from os import PathLike
 from pathlib import Path
+from typing import Mapping, Optional, Sequence, Union
+
+
+_MMD_ANIM_BINDING_RELATIVE_DIR = Path("external") / "mmd-anim" / "bindings" / "python"
+_MMD_ANIM_RUNTIME_RELATIVE_DIR = Path("external") / "mmd-anim" / "target" / "release"
+
+
+def _mmd_anim_runtime_library_names(platform_name: str) -> tuple[str, ...]:
+    """Return the supported release-library names for a host platform."""
+    if platform_name == "Windows":
+        return ("mmd_runtime_ffi.dll", "libmmd_runtime_ffi.dll")
+    if platform_name == "Darwin":
+        return ("libmmd_runtime_ffi.dylib", "mmd_runtime_ffi.dylib")
+    return ("libmmd_runtime_ffi.so", "mmd_runtime_ffi.so")
+
+
+def _resolve_mmd_anim_runtime_library(
+    session,
+    *,
+    root: Path,
+    runtime_library: str,
+    platform_name: str,
+) -> Path:
+    """Resolve and validate the runtime library used by binding tests."""
+    if runtime_library:
+        candidate = Path(runtime_library)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        candidate = candidate.resolve()
+        if candidate.is_dir():
+            for library_name in _mmd_anim_runtime_library_names(platform_name):
+                library_candidate = candidate / library_name
+                if library_candidate.is_file():
+                    return library_candidate.resolve()
+        if not candidate.is_file():
+            session.error(f"mmd_anim_python_tests: runtime library not found: {candidate}")
+        return candidate
+
+    runtime_dir = (root / _MMD_ANIM_RUNTIME_RELATIVE_DIR).resolve()
+    for library_name in _mmd_anim_runtime_library_names(platform_name):
+        candidate = runtime_dir / library_name
+        if candidate.is_file():
+            return candidate.resolve()
+    expected = ", ".join(str(runtime_dir / name) for name in _mmd_anim_runtime_library_names(platform_name))
+    session.error(f"mmd_anim_python_tests: runtime library not found; expected one of: {expected}")
+    raise AssertionError("session.error must terminate the Nox session")
+
+
+def run_mmd_anim_python_tests(
+    session,
+    *,
+    posargs: Sequence[str],
+    option,
+    root: Path,
+    python_executable: Union[PathLike, str],
+    environment: Mapping[str, str],
+    platform_name: Optional[str] = None,
+) -> None:
+    """Run the external mmd-anim Python binding contract tests."""
+    binding_dir = (root / _MMD_ANIM_BINDING_RELATIVE_DIR).resolve()
+    tests_dir = binding_dir / "tests"
+    if not binding_dir.is_dir():
+        session.error(f"mmd_anim_python_tests: binding directory not found: {binding_dir}")
+    if not tests_dir.is_dir():
+        session.error(f"mmd_anim_python_tests: binding tests directory not found: {tests_dir}")
+
+    try:
+        runtime_library_arg = option(list(posargs), "--runtime-library", "")
+    except ValueError as exc:
+        session.error(f"mmd_anim_python_tests: {exc}")
+    remaining = list(posargs)
+    if "--runtime-library" in remaining:
+        index = remaining.index("--runtime-library")
+        del remaining[index : index + 2]
+    if remaining:
+        session.error(
+            "mmd_anim_python_tests: unsupported arguments; only --runtime-library is accepted: "
+            + " ".join(remaining)
+        )
+
+    runtime_library = _resolve_mmd_anim_runtime_library(
+        session,
+        root=root,
+        runtime_library=runtime_library_arg,
+        platform_name=platform_name or "",
+    )
+    env = dict(environment)
+    env["PYTHONPATH"] = str(binding_dir)
+    env["MMD_RUNTIME_LIBRARY"] = str(runtime_library)
+    session.run(
+        str(python_executable),
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        str(tests_dir),
+        env=env,
+        external=True,
+    )
+
+
+def run_mmd_anim_binding_gate(
+    session,
+    *,
+    posargs: Sequence[str],
+    option,
+    root: Path,
+    python_executable: Union[PathLike, str],
+    environment: Mapping[str, str],
+    platform_name: Optional[str] = None,
+) -> None:
+    """Run the repository's PMX/VMD export integration through the binding."""
+    binding_dir = (root / _MMD_ANIM_BINDING_RELATIVE_DIR).resolve()
+    if not binding_dir.is_dir():
+        session.error(f"mmd_anim_binding_gate: binding directory not found: {binding_dir}")
+
+    try:
+        runtime_library_arg = option(list(posargs), "--runtime-library", "")
+    except ValueError as exc:
+        session.error(f"mmd_anim_binding_gate: {exc}")
+    remaining = list(posargs)
+    if "--runtime-library" in remaining:
+        index = remaining.index("--runtime-library")
+        del remaining[index : index + 2]
+    runtime_library = _resolve_mmd_anim_runtime_library(
+        session,
+        root=root,
+        runtime_library=runtime_library_arg,
+        platform_name=platform_name or "",
+    )
+    command = [
+        str(python_executable),
+        "tools/mmd_anim_binding_gate.py",
+        "--binding-root",
+        str(binding_dir),
+        "--runtime-library",
+        str(runtime_library),
+        *remaining,
+    ]
+    session.run(*command, env=dict(environment), external=True)
 
 
 def run_ci_unit(
