@@ -24,6 +24,7 @@ from mmd_tools.core.model_registry import get_model_registry
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.converters.export_scene_collector import ExportSceneCollector
 from mmd_tools.io import pmx_importer
+from mmd_tools.io.pmx_exporter import PmxExporter
 from mmd_tools.io.pmx_importer import import_pmx_file
 from mmd_tools.core.mmd_parser import MMDParseException, parse_pmx_file
 
@@ -167,6 +168,34 @@ class TestPmxImporter(MayaTestBase):
             self.assertNotIn("source_texture_index", material)
             self.assertNotIn("source_sphere_texture_index", material)
             self.assertNotIn("texture_table", material.get("semantic_missing", []))
+
+        roundtrip_path = self.get_temp_filename("yw_texture_roundtrip.pmx")
+        PmxExporter().export_pmx_model(roundtrip_path, collected)
+        roundtrip = parse_pmx_file(roundtrip_path)
+
+        self.assertEqual(roundtrip.textures, parser.textures)
+        self.assertEqual(
+            [
+                (
+                    material.texture_index,
+                    material.sphere_texture_index,
+                    material.sphere_mode,
+                    material.toon_texture_index,
+                    int(material.shared_toon_flag),
+                )
+                for material in roundtrip.materials
+            ],
+            [
+                (
+                    material.texture_index,
+                    material.sphere_texture_index,
+                    int(material.sphere_mode),
+                    material.toon_texture_index,
+                    int(material.shared_toon_flag),
+                )
+                for material in parser.materials
+            ],
+        )
 
     def test_local_axis_scale_preserves_real_import_world_positions(self):
         """Real PMX import keeps LOCAL_AXIS bone positions at each import scale."""
