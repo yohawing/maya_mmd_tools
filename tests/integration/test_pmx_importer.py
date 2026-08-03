@@ -158,6 +158,42 @@ class TestPmxImporter(MayaTestBase):
 
         self.assertEqual(root_table, expected_textures)
         self.assertEqual(collected["textures"], expected_textures)
+        self.assertEqual(len(collected["materials"]), len(parser.materials))
+        for collected_material, source_material in zip(collected["materials"], parser.materials):
+            self.assertEqual(collected_material["name"], source_material.name)
+            self.assertEqual(collected_material["name_english"], source_material.name_english)
+            for field in ("diffuse", "specular", "ambient", "edge_color"):
+                self.assertListAlmostEqual(
+                    collected_material[field],
+                    getattr(source_material, field),
+                    places=5,
+                    msg=f"collector lost material field: {field}",
+                )
+            for field in ("specular_coefficient", "edge_size"):
+                self.assertAlmostEqual(
+                    collected_material[field],
+                    getattr(source_material, field),
+                    places=5,
+                    msg=f"collector lost material field: {field}",
+                )
+            for field in ("draw_flag", "sphere_mode", "shared_toon_flag"):
+                self.assertEqual(
+                    collected_material[field],
+                    int(getattr(source_material, field)),
+                    f"collector lost material field: {field}",
+                )
+            for field in (
+                "texture_index",
+                "sphere_texture_index",
+                "toon_texture_index",
+            ):
+                self.assertEqual(
+                    collected_material[field],
+                    getattr(source_material, field),
+                    f"collector lost material field: {field}",
+                )
+            self.assertEqual(collected_material["memo"], source_material.memo)
+            self.assertEqual(collected_material["semantic_missing"], [])
         textured_materials = [
             material
             for material in collected["materials"]
@@ -196,6 +232,25 @@ class TestPmxImporter(MayaTestBase):
                 for material in parser.materials
             ],
         )
+        for actual, expected in zip(roundtrip.materials, parser.materials):
+            self.assertEqual(actual.name, expected.name)
+            self.assertEqual(actual.name_english, expected.name_english)
+            for field in ("diffuse", "specular", "ambient", "edge_color"):
+                self.assertListAlmostEqual(
+                    getattr(actual, field),
+                    getattr(expected, field),
+                    places=5,
+                    msg=f"writer lost material field: {field}",
+                )
+            for field in ("specular_coefficient", "edge_size"):
+                self.assertAlmostEqual(
+                    getattr(actual, field),
+                    getattr(expected, field),
+                    places=5,
+                    msg=f"writer lost material field: {field}",
+                )
+            self.assertEqual(int(actual.draw_flag), int(expected.draw_flag))
+            self.assertEqual(actual.memo, expected.memo)
 
     def test_local_axis_scale_preserves_real_import_world_positions(self):
         """Real PMX import keeps LOCAL_AXIS bone positions at each import scale."""
