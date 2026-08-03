@@ -12,6 +12,7 @@ later collector pass.
 """
 
 import json
+from pathlib import Path
 from typing import Optional
 
 import maya.api.OpenMaya as om
@@ -75,6 +76,46 @@ def _get_attr(node: str, attr: str, default=None):
 def _collect_display_frames(root: str) -> list[dict]:
     """Return root-level PMX display-frame metadata collected during import."""
     return display_frames_from_json(_get_attr(root, ATTR_MMD_DISPLAY_FRAMES_JSON, ""))
+
+
+def _is_default_pmd_display_frame(frame: dict) -> bool:
+    """Return whether one PMD-to-PMX synthetic display frame is present."""
+    name = frame.get("name", "")
+    elements = frame.get("elements", [])
+    if name == "Root":
+        return elements == [{"type": 0, "index": 0}]
+    if name in {"表情", "Exp"}:
+        return all(element.get("type") == 1 for element in elements)
+    return False
+
+
+def _apply_pmd_export_policy(model_data: dict, model_root: str | None) -> dict:
+    """Normalize only PMD-safe defaults without hiding unsupported source data.
+
+    PMD import is routed through a PMX scene representation, which necessarily
+    adds the standard ``Root``/``Exp`` display frames.  Those frames are
+    synthetic and are not PMD source data.  Custom PMD frames remain in the
+    payload and are rejected by the PMD validator instead of being discarded.
+    The collector also uses PMD's valid toon index sentinel for an untextured
+    material; PMD has no PMX ``-1`` index representation.
+    """
+    normalized = dict(model_data)
+    normalized["materials"] = [
+        {
+            **material,
+            "toon_texture_index": 0
+            if material.get("toon_texture_index") == -1
+            else material.get("toon_texture_index", 0),
+        }
+        for material in model_data.get("materials", [])
+    ]
+
+    source_path = _get_attr(model_root, "mmd_source_file", "") if model_root else ""
+    if str(Path(str(source_path))).lower().endswith(".pmd"):
+        frames = list(model_data.get("display_frames") or [])
+        if frames and all(_is_default_pmd_display_frame(frame) for frame in frames):
+            normalized["display_frames"] = []
+    return normalized
 
 
 def _maya_to_mmd_vector(values) -> list[float]:
@@ -594,13 +635,16 @@ class ExportSceneCollector:
         """
         model_root = options.get("target_model") or options.get("model_root")
         if model_root:
-            return self.collect_from_model_root(model_root)
+            model_data = self.collect_from_model_root(model_root)
+        else:
+            target_mesh = options.get("target_mesh") or options.get("export_mesh") or options.get("mesh")
+            if not target_mesh:
+                raise ValueError("ExportSceneCollector requires target_model, model_root, or target_mesh")
+            model_data = self.collect_from_mesh(target_mesh)
 
-        target_mesh = options.get("target_mesh") or options.get("export_mesh") or options.get("mesh")
-        if target_mesh:
-            return self.collect_from_mesh(target_mesh)
-
-        raise ValueError("ExportSceneCollector requires target_model, model_root, or target_mesh")
+        if str(options.get("export_format", "")).lower() == "pmd":
+            return _apply_pmd_export_policy(model_data, model_root)
+        return model_data
 
     def collect_from_mesh(self, transform_or_shape: str) -> dict:
         """Collect scene data from a single polygon mesh transform or shape.
@@ -768,7 +812,9 @@ class ExportSceneCollector:
             vertex_offset += len(mesh_vertices)
 
         morphs = list(vertex_morphs_by_name.values())
-        morphs.extend(MorphConverter().collect_morphs_from_scene_for_export())
+        morphs.extend(
+            MorphConverter().collect_morphs_from_scene_for_export(root_group=root)
+        )
 
         bone_index_by_joint: dict[str, int] = {}
         for index, bone in enumerate(merged_bones):

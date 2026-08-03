@@ -15,7 +15,12 @@ from mmd_tools.services.export_workflow_service import (  # noqa: E402
     STATE_READY,
     STATE_SUCCEEDED,
 )
-from mmd_tools.validation.export_validator import validate_model_data  # noqa: E402
+from mmd_tools.validation.export_validator import (  # noqa: E402
+    ExportValidationError,
+    ExportValidationIssue,
+    ExportValidationReport,
+    validate_model_data,
+)
 from mmd_tools.validation.scene_preflight import ScenePreflight  # noqa: E402
 
 
@@ -214,6 +219,137 @@ class TestExportWorkflowService(unittest.TestCase):
 
         self.assertEqual(result.state, STATE_BLOCKED)
         self.assertEqual(result.report.issues[0].code, "SCENE_TARGET_MISSING")
+
+    def test_collector_validation_error_preserves_report_and_wrapper(self):
+        payload = _valid_model_data()
+        action = _FakeModelAction(payload)
+        lower_report = ExportValidationReport(
+            "pmx",
+            (
+                ExportValidationIssue(
+                    "MODEL_DATA_NOT_MAPPING",
+                    "fatal",
+                    True,
+                    "model_data",
+                    "model data must be a mapping",
+                ),
+                ExportValidationIssue(
+                    "VERTICES_EMPTY",
+                    "fatal",
+                    True,
+                    "vertices",
+                    "vertices must not be empty",
+                ),
+            ),
+        )
+        error = ExportValidationError(lower_report)
+        action._collector = lambda _options: (_ for _ in ()).throw(error)
+        service = ExportWorkflowService(
+            scene_preflight=ScenePreflight(
+                scene_service=_SceneService(),
+                ownership_checker=lambda _target: {},
+            ),
+            model_action=action,
+            vmd_action=object(),
+        )
+
+        result = service.validate(
+            ExportWorkflowRequest(
+                "model.pmx",
+                {"export_format": "pmx", "target_model": "model_ROOT"},
+            )
+        )
+
+        self.assertEqual(result.state, STATE_BLOCKED)
+        self.assertIs(result.error, error)
+        self.assertEqual(
+            [issue.code for issue in result.report.issues],
+            ["SCENE_COLLECT_FAILED", "MODEL_DATA_NOT_MAPPING", "VERTICES_EMPTY"],
+        )
+        self.assertEqual(
+            [issue.message for issue in result.report.issues[1:]],
+            [
+                "model data must be a mapping",
+                "vertices must not be empty",
+            ],
+        )
+        self.assertEqual(action.calls, [])
+
+    def test_collector_report_does_not_duplicate_existing_wrapper(self):
+        payload = _valid_model_data()
+        action = _FakeModelAction(payload)
+        lower_report = ExportValidationReport(
+            "pmx",
+            (
+                ExportValidationIssue(
+                    "SCENE_COLLECT_FAILED",
+                    "fatal",
+                    True,
+                    "collector",
+                    "pre-existing collector failure",
+                ),
+                ExportValidationIssue(
+                    "MODEL_DATA_NOT_MAPPING",
+                    "fatal",
+                    True,
+                    "model_data",
+                    "model data must be a mapping",
+                ),
+            ),
+        )
+        action._collector = lambda _options: (_ for _ in ()).throw(
+            ExportValidationError(lower_report)
+        )
+        service = ExportWorkflowService(
+            scene_preflight=ScenePreflight(
+                scene_service=_SceneService(),
+                ownership_checker=lambda _target: {},
+            ),
+            model_action=action,
+            vmd_action=object(),
+        )
+
+        result = service.validate(
+            ExportWorkflowRequest(
+                "model.pmx",
+                {"export_format": "pmx", "target_model": "model_ROOT"},
+            )
+        )
+
+        self.assertEqual(
+            [issue.code for issue in result.report.issues],
+            ["SCENE_COLLECT_FAILED", "MODEL_DATA_NOT_MAPPING"],
+        )
+
+    def test_generic_collector_error_includes_detail_and_blocks_writer(self):
+        payload = _valid_model_data()
+        action = _FakeModelAction(payload)
+        error = RuntimeError("collector detail: missing scene mesh")
+        action._collector = lambda _options: (_ for _ in ()).throw(error)
+        service = ExportWorkflowService(
+            scene_preflight=ScenePreflight(
+                scene_service=_SceneService(),
+                ownership_checker=lambda _target: {},
+            ),
+            model_action=action,
+            vmd_action=object(),
+        )
+
+        result = service.execute(
+            ExportWorkflowRequest(
+                "model.pmx",
+                {"export_format": "pmx", "target_model": "model_ROOT"},
+            )
+        )
+
+        self.assertEqual(result.state, STATE_BLOCKED)
+        self.assertIs(result.error, error)
+        self.assertEqual(
+            [issue.code for issue in result.report.issues],
+            ["SCENE_COLLECT_FAILED"],
+        )
+        self.assertIn("collector detail: missing scene mesh", result.report.issues[0].message)
+        self.assertEqual(action.calls, [])
 
 
 if __name__ == "__main__":

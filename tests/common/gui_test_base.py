@@ -65,13 +65,14 @@ class GuiTestRunner:
     """
 
     @staticmethod
-    def run_tests_from_command(log_file_path, test_dir_str):
+    def run_tests_from_command(log_file_path, test_dir_str, test_filter=None):
         """
         Discovers and runs tests, redirecting output to a log file.
 
         Args:
             log_file_path (str): The absolute path to the log file.
             test_dir_str (str): The relative path to the test directory.
+            test_filter (str | None): Optional substring matched against test IDs.
         """
         import logging
         import sys
@@ -106,6 +107,8 @@ class GuiTestRunner:
         try:
             print(f"Starting GUI tests. Project root: {project_root}")
             print(f"Test directory: {test_dir}")
+            if test_filter:
+                print(f"Test filter: {test_filter}")
             print(f"Log file: {log_file_path}")
 
             # Discover tests
@@ -114,6 +117,8 @@ class GuiTestRunner:
 
             # Use discover to find all test modules in the specified directory
             discovered_suite = loader.discover(str(test_dir), pattern="guitest_*.py", top_level_dir=str(project_root))
+            if test_filter:
+                discovered_suite = GuiTestRunner._filter_suite(discovered_suite, test_filter)
             suite.addTest(discovered_suite)
 
             if suite.countTestCases() == 0:
@@ -145,3 +150,16 @@ class GuiTestRunner:
             for handler in original_handlers:
                 logging.root.addHandler(handler)
             logging.root.setLevel(original_log_level)
+
+    @staticmethod
+    def _filter_suite(suite, test_filter):
+        """Return the discovered tests whose IDs contain ``test_filter``."""
+        filtered_suite = unittest.TestSuite()
+        for test in suite:
+            if isinstance(test, unittest.TestSuite):
+                nested_suite = GuiTestRunner._filter_suite(test, test_filter)
+                if nested_suite.countTestCases():
+                    filtered_suite.addTest(nested_suite)
+            elif test_filter in test.id():
+                filtered_suite.addTest(test)
+        return filtered_suite

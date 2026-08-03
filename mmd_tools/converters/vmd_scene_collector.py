@@ -90,6 +90,25 @@ _MAYA_TIME_UNIT_FPS = {
 }
 
 
+def _canonical_dag_path(node: str) -> Optional[str]:
+    """Resolve one Maya node to an unambiguous long DAG path."""
+    try:
+        matches = cmds.ls(node, long=True) or []
+    except Exception:
+        return None
+    if len(matches) != 1:
+        return None
+    return str(matches[0])
+
+
+def _dag_path_is_under_root(node: str, root_path: str) -> bool:
+    """Return whether a DAG node is the root or a descendant of it."""
+    node_path = _canonical_dag_path(node)
+    if not node_path:
+        return False
+    return node_path == root_path or node_path.startswith(f"{root_path}|")
+
+
 class VmdSceneCollector:
     """Collect minimum VMD-compatible animation data from a Maya scene."""
 
@@ -97,16 +116,27 @@ class VmdSceneCollector:
         """Collect VMD exporter input from the current Maya scene.
 
         Args:
-            options: Optional mapping. Supported keys are ``target_model``,
-                ``joints``, ``blend_shapes``, ``start_frame``, ``end_frame``,
-                ``model_name``, ``motion_scale``, and ``bone_bind_poses``.
+            options: Optional mapping. Supported keys are ``target_model`` /
+                ``model_root``, ``joints``, ``blend_shapes``, ``cameras``,
+                ``lights``, ``start_frame``, ``end_frame``, ``model_name``,
+                ``motion_scale``, and ``bone_bind_poses``. Automatic DAG
+                discovery is scoped to the selected model root; explicit node
+                lists remain authoritative for scene-level callers.
         """
         options = options or {}
-        target_model = options.get("target_model")
+        target_model = options.get("target_model") or options.get("model_root")
         joints = list(options.get("joints") or self._find_joints(target_model))
-        blend_shapes = list(options.get("blend_shapes") or self._find_blend_shapes())
-        cameras = list(options.get("cameras") or self._find_tagged_nodes(ATTR_MMD_CAMERA))
-        lights = list(options.get("lights") or self._find_tagged_nodes(ATTR_MMD_LIGHT))
+        blend_shapes = list(
+            options.get("blend_shapes") or self._find_blend_shapes(target_model)
+        )
+        cameras = list(
+            options.get("cameras")
+            or self._find_tagged_nodes(ATTR_MMD_CAMERA, target_model)
+        )
+        lights = list(
+            options.get("lights")
+            or self._find_tagged_nodes(ATTR_MMD_LIGHT, target_model)
+        )
         start_frame = _optional_float(options.get("start_frame"))
         end_frame = _optional_float(options.get("end_frame"))
         motion_scale = float(options.get("motion_scale", 1.0) or 1.0)
@@ -615,11 +645,79 @@ class VmdSceneCollector:
         nodes.extend(descendants)
         return nodes
 
-    def _find_blend_shapes(self) -> list[str]:
-        return cmds.ls(type="blendShape") or []
+    def _find_blend_shapes(self, target_model: Optional[str] = None) -> list[str]:
+        """Find blendShapes on mesh history below the selected model root.
 
-    def _find_tagged_nodes(self, attr: str) -> list[str]:
-        return cmds.ls(f"*.{attr}", objectsOnly=True) or []
+        A global ``cmds.ls(type="blendShape")`` query is safe only when no
+        model target exists.  With a target, history is resolved from its mesh
+        shapes so another namespaced model cannot contribute vertex morph keys.
+        """
+        if not target_model:
+            return cmds.ls(type="blendShape") or []
+
+        try:
+            target_type = cmds.nodeType(target_model)
+        except Exception:
+            target_type = None
+        if target_type == "mesh":
+            shapes = [target_model]
+        else:
+            shapes = list(
+                cmds.listRelatives(
+                    target_model,
+                    shapes=True,
+                    type="mesh",
+                    fullPath=True,
+                )
+                or []
+            )
+            shapes.extend(
+                cmds.listRelatives(
+                    target_model,
+                    allDescendents=True,
+                    type="mesh",
+                    fullPath=True,
+                )
+                or []
+            )
+
+        result = []
+        seen = set()
+        for shape in shapes:
+            try:
+                history = cmds.listHistory(shape, pruneDagObjects=True) or []
+            except Exception:
+                continue
+            for node in history:
+                if node in seen:
+                    continue
+                try:
+                    is_blend_shape = cmds.nodeType(node) == "blendShape"
+                except Exception:
+                    is_blend_shape = False
+                if is_blend_shape:
+                    seen.add(node)
+                    result.append(node)
+        return result
+
+    def _find_tagged_nodes(
+        self,
+        attr: str,
+        target_model: Optional[str] = None,
+    ) -> list[str]:
+        """Find tagged DAG nodes, restricting automatic discovery to a root."""
+        nodes = cmds.ls(f"*.{attr}", objectsOnly=True, long=True) or []
+        if not target_model:
+            return nodes
+
+        root_path = _canonical_dag_path(target_model)
+        if not root_path:
+            return []
+        return [
+            node
+            for node in nodes
+            if _dag_path_is_under_root(node, root_path)
+        ]
 
     def _model_name(self, target_model: Optional[str]) -> str:
         if target_model and _has_attr(target_model, ATTR_MMD_MODEL_NAME):

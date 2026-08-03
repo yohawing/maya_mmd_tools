@@ -214,10 +214,11 @@ class TestPmdExtendedDataLogging(unittest.TestCase):
         path = None
         try:
             fd, path = tempfile.mkstemp(suffix=".pmd")
-            # PmdDisplayFrame consumes five of the mock's trailing bytes as its
-            # zero link count. Remove the remaining five bytes to stop exactly
-            # at the legacy extension boundary.
-            os.write(fd, PmdMock.create_minimal_pmd()[:-5])
+            # Stop exactly at the legacy extension boundary after the display
+            # frame link count.  The complete mock also contains the PMD
+            # extended toon-table and zero physics counts.
+            extension_size = 1 + (10 * 100) + (2 * 4)
+            os.write(fd, PmdMock.create_minimal_pmd()[:-extension_size])
             os.close(fd)
 
             with patch.object(pmd_data_module, "logger") as mock_logger:

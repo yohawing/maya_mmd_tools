@@ -356,11 +356,23 @@ class MorphConverter:
                 return True
         return False
 
-    def collect_morphs_from_scene_for_export(self) -> List[Dict[str, Any]]:
-        """シーン内の network モーフノードから exporter 用の morph dict を収集する。"""
+    def collect_morphs_from_scene_for_export(
+        self,
+        root_group: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Collect exporter morph dicts from network nodes owned by a model root.
+
+        Args:
+            root_group: Optional model root used to scope the network query.
+                ``None`` preserves the legacy scene-wide query for callers that
+                do not have a model ownership boundary.
+        """
         morphs = []
 
-        for metadata in iter_morph_network_metadata(morph_types={"bone", "material"}):
+        for metadata in iter_morph_network_metadata(
+            root_group=root_group,
+            morph_types={"bone", "material"},
+        ):
             morph_node = metadata.node
             try:
                 offsets_attr = (

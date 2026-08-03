@@ -40,12 +40,12 @@ class _FailingCase(unittest.TestCase):
 
 
 class GuiTestRunnerTests(unittest.TestCase):
-    def run_runner(self, discovered_suite=None, discover_error=None):
+    def run_runner(self, discovered_suite=None, discover_error=None, test_filter=None):
         with tempfile.TemporaryDirectory() as temp_dir:
             log_path = Path(temp_dir) / "gui.log"
             with mock.patch.object(unittest.TestLoader, "discover", side_effect=discover_error or (lambda *args, **kwargs: discovered_suite)):
                 with redirect_stdout(sys.__stdout__), redirect_stderr(sys.__stderr__):
-                    status = GuiTestRunner.run_tests_from_command(str(log_path), "tests/gui")
+                    status = GuiTestRunner.run_tests_from_command(str(log_path), "tests/gui", test_filter)
             return status, log_path.read_text(encoding="utf-8")
 
     def test_pass_status_is_encoded(self):
@@ -62,6 +62,18 @@ class GuiTestRunnerTests(unittest.TestCase):
         status, log = self.run_runner(unittest.TestSuite())
         self.assertEqual("NO_TESTS", status)
         self.assertIn("//-- GUI TEST FINISHED --// status=NO_TESTS", log)
+
+    def test_filter_keeps_matching_test_ids(self):
+        suite = unittest.TestSuite(
+            [
+                _PassingCase("test_pass"),
+                _FailingCase("test_fail"),
+            ]
+        )
+        status, log = self.run_runner(suite, test_filter="_PassingCase")
+        self.assertEqual("PASS", status)
+        self.assertIn("_PassingCase.test_pass", log)
+        self.assertNotIn("_FailingCase.test_fail", log)
 
     def test_exception_status_is_encoded(self):
         status, log = self.run_runner(discover_error=RuntimeError("discover failed"))

@@ -117,9 +117,13 @@ class PmdMock:
 
         # ボーン枠データ（なし）
         data.extend(struct.pack("<B", 0))  # ボーン枠数
+        data.extend(struct.pack("<L", 0))  # ボーン枠リンク数
 
         # 英語名データ（なし）
         data.extend(struct.pack("<B", 0))  # 英語名存在フラグ
+
+        # トゥーンテクスチャ（10個、各100バイト）
+        data.extend(b"\x00" * (10 * 100))
 
         # 追加データ（なし）
         data.extend(struct.pack("<L", 0))  # 剛体数

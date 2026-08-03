@@ -87,6 +87,7 @@ def main():
         "--maya_version", default=DEFAULT_MAYA_VERSION, help=f"Maya version to use (default: {DEFAULT_MAYA_VERSION})"
     )
     parser.add_argument("--test_path", default="tests/gui", help="Path to the test directory (relative to project root)")
+    parser.add_argument("--test_filter", default=None, help="Optional substring matched against discovered test IDs")
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent.parent
@@ -137,7 +138,8 @@ if str(project_root) not in sys.path:
 from tests.common.gui_test_base import GuiTestRunner
 log_path = {str(log_file_path)!r}
 test_dir = {args.test_path!r}
-GuiTestRunner.run_tests_from_command(log_path, test_dir)
+test_filter = {args.test_filter!r}
+GuiTestRunner.run_tests_from_command(log_path, test_dir, test_filter)
 """
         maya_commandport.send_python(COMMAND_PORT, test_command, label="<gui-test-runner-command>")
 

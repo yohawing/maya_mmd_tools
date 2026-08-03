@@ -7,7 +7,14 @@ from maya import cmds
 from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
-from mmd_tools.core.constants import ATTR_MMD_BONE_NAME, ATTR_MMD_CAMERA, ATTR_MMD_LIGHT, ATTR_MMD_MODEL_NAME
+from mmd_tools.core.constants import (
+    ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
+    ATTR_MMD_BONE_NAME,
+    ATTR_MMD_CAMERA,
+    ATTR_MMD_LIGHT,
+    ATTR_MMD_MODEL_NAME,
+)
+from mmd_tools.core.namespace_utils import NamespaceUtils
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.io.vmd_exporter import VmdExporter
@@ -156,6 +163,38 @@ class TestVmdSceneCollector(MayaTestBase):
         self.assertAlmostEqual(light_frame.position[0], -1.0)
         self.assertAlmostEqual(light_frame.position[1], 0.0)
         self.assertAlmostEqual(light_frame.position[2], 0.0)
+
+    def test_namespaced_target_scopes_automatic_blendshape_discovery(self):
+        hero_root = self._make_namespaced_keyed_blendshape("hero", "hero_morph")
+        self._make_namespaced_keyed_blendshape("rival", "rival_morph")
+
+        maya_data = VmdSceneCollector().collect({"target_model": hero_root})
+
+        self.assertEqual(
+            {frame["morph_name"] for frame in maya_data["morph_frames"]},
+            {"hero_morph"},
+        )
+
+    def _make_namespaced_keyed_blendshape(self, namespace, morph_name):
+        with NamespaceUtils.namespace_context(namespace):
+            root = cmds.group(empty=True, name="model_ROOT")
+            base, _base_shape = cmds.polyCube(name="Geometry")
+            target, _target_shape = cmds.polyCube(name="GeometryTarget")
+            cmds.parent(base, root)
+            cmds.parent(target, root)
+            blend_shape = cmds.blendShape(target, base, name="faceBlendShape")[0]
+            cmds.addAttr(
+                blend_shape,
+                longName=ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
+                dataType="string",
+            )
+            cmds.setAttr(
+                f"{blend_shape}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}",
+                '{"0": "' + morph_name + '"}',
+                type="string",
+            )
+            cmds.setKeyframe(blend_shape, attribute="weight[0]", time=5, value=0.5)
+            return (cmds.ls(root, long=True) or [root])[0]
 
     def _make_keyed_joint_scene(self, bind_pose=(0.0, 0.0, 0.0), keyed_pose=(5.0, 1.0, 2.0)):
         root = cmds.group(empty=True, name="model_root")

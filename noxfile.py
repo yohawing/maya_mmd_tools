@@ -1094,6 +1094,33 @@ def export_validation_gate(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def export_release_gate(session: nox.Session) -> None:
+    """Run the reproducible v0.7 PMX/PMD/VMD export release summary.
+
+    The session resolves the pinned external MMD-Anim CLI when the caller does
+    not provide one. Maya probes and GUI tests are enabled by default; use
+    ``--skip-gui`` only for a deliberately partial local investigation.
+
+    Examples:
+        uvx nox -s export_release_gate
+        uvx nox -s export_release_gate -- --skip-gui
+        uvx nox -s export_release_gate -- --out-dir build/release-gate/v070-local
+    """
+    gate_args = list(session.posargs)
+    if not any(
+        argument == "--mmd-anim-cli" or argument.startswith("--mmd-anim-cli=")
+        for argument in gate_args
+    ):
+        gate_args = ["--mmd-anim-cli", str(_downloaded_mmd_anim_cli(session)), *gate_args]
+    session.run(
+        sys.executable,
+        "tools/export_release_gate.py",
+        *gate_args,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def cpp_config(session: nox.Session) -> None:
     """Configure the Maya C++ plugin build."""
     _run_cpp_config(

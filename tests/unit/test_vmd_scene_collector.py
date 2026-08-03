@@ -67,6 +67,7 @@ class FakeCmds:
         self.attrs = {}
         self.keys = {}
         self.connections = {}
+        self.histories = {}
         self.translations = {}
         self.world_matrices = {}
         self.current_time = 0.0
@@ -102,6 +103,9 @@ class FakeCmds:
 
     def nodeType(self, node):  # noqa: N802
         return self.node_types.get(node)
+
+    def listHistory(self, node, pruneDagObjects=False):  # noqa: N802,N803
+        return list(self.histories.get(node, []))
 
     def attributeQuery(self, attr, node, exists=False):  # noqa: N802
         return exists and (node, attr) in self.attrs
@@ -210,6 +214,53 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(result["bone_frames"][1]["position"], (2.0, 3.0, -4.0))
         self.assertAlmostEqual(result["bone_frames"][1]["rotation"][2], 0.7071067811865476)
         self.assertAlmostEqual(result["bone_frames"][1]["rotation"][3], 0.7071067811865476)
+
+    def test_auto_discovery_is_scoped_to_namespaced_model_root(self):
+        root = "|hero:model_ROOT"
+        mesh_group = "|hero:model_ROOT|hero:Geometry"
+        mesh_shape = "|hero:model_ROOT|hero:Geometry|hero:meshShape"
+        owned_blend_shape = "|hero:faceBlendShape"
+        foreign_blend_shape = "|rival:faceBlendShape"
+        owned_camera = "|hero:model_ROOT|hero:mmd_camera"
+        foreign_camera = "|rival:mmd_camera"
+        owned_light = "|hero:model_ROOT|hero:mmd_light"
+        foreign_light = "|rival:mmd_light"
+        self.cmds.node_types.update(
+            {
+                root: "transform",
+                mesh_group: "transform",
+                mesh_shape: "mesh",
+                owned_blend_shape: "blendShape",
+                foreign_blend_shape: "blendShape",
+                owned_camera: "transform",
+                foreign_camera: "transform",
+                owned_light: "transform",
+                foreign_light: "transform",
+            }
+        )
+        self.cmds.children[root] = [mesh_group, owned_camera, owned_light]
+        self.cmds.children[mesh_group] = [mesh_shape]
+        self.cmds.histories[mesh_shape] = [owned_blend_shape]
+        self.cmds.attrs.update(
+            {
+                (owned_camera, ATTR_MMD_CAMERA): True,
+                (foreign_camera, ATTR_MMD_CAMERA): True,
+                (owned_light, ATTR_MMD_LIGHT): True,
+                (foreign_light, ATTR_MMD_LIGHT): True,
+            }
+        )
+
+        collector = VmdSceneCollector()
+
+        self.assertEqual(collector._find_blend_shapes(root), [owned_blend_shape])
+        self.assertEqual(
+            collector._find_tagged_nodes(ATTR_MMD_CAMERA, root),
+            [owned_camera],
+        )
+        self.assertEqual(
+            collector._find_tagged_nodes(ATTR_MMD_LIGHT, root),
+            [owned_light],
+        )
 
     def test_collects_bone_morph_base_channels_from_control_rig_metadata(self):
         self.cmds.node_types.update(
@@ -567,7 +618,12 @@ class TestVmdSceneCollector(unittest.TestCase):
             SimpleNamespace(morph_type="material", name="other_morph", index=4),
         ]
         with mock.patch.object(collector_module, "iter_morph_network_metadata", return_value=metadata):
-            result = VmdSceneCollector().collect({"target_model": "model_root"})
+            result = VmdSceneCollector().collect(
+                {
+                    "target_model": "model_root",
+                    "blend_shapes": ["face_bs"],
+                }
+            )
 
         self.assertEqual(
             result["morph_frames"],

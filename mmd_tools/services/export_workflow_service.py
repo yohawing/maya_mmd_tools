@@ -78,18 +78,26 @@ def _collect_failure_report(
     mode: str,
     error: Exception,
 ) -> ExportValidationReport:
-    """Normalize collector failures into the canonical issue catalog."""
+    """Normalize collector failures without hiding a lower-level report."""
+    wrapper_issue = ExportValidationIssue(
+        "SCENE_COLLECT_FAILED",
+        "fatal",
+        True,
+        "collector",
+        f"scene collector failed: {type(error).__name__}: {error}",
+    )
+    lower_report = getattr(error, "report", None)
+    if isinstance(lower_report, ExportValidationReport):
+        lower_issues = tuple(lower_report.issues)
+        if any(issue.code == wrapper_issue.code for issue in lower_issues):
+            issues = lower_issues
+        else:
+            issues = (wrapper_issue,) + lower_issues
+    else:
+        issues = (wrapper_issue,)
     return ExportValidationReport(
         export_format,
-        (
-            ExportValidationIssue(
-                "SCENE_COLLECT_FAILED",
-                "fatal",
-                True,
-                "collector",
-                f"scene collector failed: {type(error).__name__}",
-            ),
-        ),
+        issues,
         mode=mode,
     )
 
