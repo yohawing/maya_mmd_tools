@@ -147,6 +147,21 @@ class TestModelImportPipelineLogging(unittest.TestCase):
             force=True,
         )
 
+    def test_registry_owns_new_texture_nodes_without_root_fanout(self):
+        pipeline = self._make_pipeline(MagicMock())
+        with patch.object(model_import_pipeline, "register_model_members") as register_members:
+            pipeline.connect_texture_nodes_to_root(
+                "ModelRoot",
+                ["texture_file"],
+                model_registry="ModelRegistry",
+            )
+
+        register_members.assert_called_once_with(
+            "ModelRegistry",
+            "texture",
+            ["texture_file"],
+        )
+
     def test_all_generated_network_morph_types_receive_root_ownership(self):
         """Normal PMX import ownership includes bone, group, and material morph nodes."""
         pipeline = self._make_pipeline(MagicMock())
@@ -179,6 +194,26 @@ class TestModelImportPipelineLogging(unittest.TestCase):
             },
         )
         self.assertTrue(all(call.kwargs == {} for call in connect_attr.call_args_list))
+
+    def test_registry_owns_new_morph_nodes_without_root_fanout(self):
+        pipeline = self._make_pipeline(MagicMock())
+        morph_result = {
+            "bone_morph_nodes": ["bone_morph"],
+            "group_morph_nodes": ["group_morph"],
+            "material_morph_nodes": ["material_morph"],
+        }
+        with patch.object(model_import_pipeline, "register_model_members") as register_members:
+            pipeline.connect_morph_nodes_to_root(
+                "ModelRoot",
+                morph_result,
+                model_registry="ModelRegistry",
+            )
+
+        register_members.assert_called_once_with(
+            "ModelRegistry",
+            "morph",
+            ["bone_morph", "group_morph", "material_morph"],
+        )
 
     def test_mesh_converter_records_glsl_hardware_backend(self):
         converter = MeshConverter()

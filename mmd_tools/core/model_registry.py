@@ -184,6 +184,11 @@ def list_model_registry_members_from_adapter(
         registry = registries[0]
         if not adapter.attribute_exists(ATTR_MMD_REGISTRY_SCHEMA, registry):
             return []
+        get_attr = getattr(adapter, "get_attr", None)
+        if not callable(get_attr):
+            return []
+        if str(get_attr(f"{registry}.{ATTR_MMD_REGISTRY_SCHEMA}") or "") != REGISTRY_SCHEMA_VERSION:
+            return []
         if not adapter.attribute_exists(ATTR_MMD_REGISTRY_ROOT, registry):
             return []
         roots = adapter.list_connections(

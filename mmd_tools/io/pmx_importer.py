@@ -153,6 +153,7 @@ def import_pmx_file(
                     "mmd_source_file": filepath,
                 },
             )
+            model_registry = pipeline.create_model_registry(root_group)
 
             # メッシュを変換
             logger.debug("Converting mesh...")
@@ -162,6 +163,7 @@ def import_pmx_file(
             pipeline.connect_texture_nodes_to_root(
                 root_group,
                 mesh_converter.created_texture_file_nodes,
+                model_registry=model_registry,
             )
             pipeline.record_phase("mesh_conversion_sec", phase_start)
             pipeline.emit_progress(35)
@@ -178,7 +180,11 @@ def import_pmx_file(
             logger.debug("Morph conversion complete")
 
             # network morph ノードをモデルルートに message 接続で紐付ける
-            pipeline.connect_morph_nodes_to_root(root_group, morph_result)
+            pipeline.connect_morph_nodes_to_root(
+                root_group,
+                morph_result,
+                model_registry=model_registry,
+            )
             morph_converter.build_morph_controller(parser, root_group, morph_result)
 
             # ボーンを変換
@@ -218,6 +224,7 @@ def import_pmx_file(
                 parser=parser,
                 maya_joints=maya_joints,
                 root_group=root_group,
+                model_registry=model_registry,
             )
 
             # MMD ライトコントローラ（操作可能なヌル）を作成（get-or-create）。

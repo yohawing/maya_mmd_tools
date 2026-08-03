@@ -219,6 +219,12 @@ def fast_import(
 
     metadata = _apply_basic_materials(filepath, mesh_node, cmds) if mesh_node else None
     _apply_fast_root_metadata(filepath, transform_node, metadata, cmds)
+    try:
+        from mmd_tools.core.model_registry import ensure_model_registry
+
+        ensure_model_registry(transform_node)
+    except Exception as exc:
+        logger.warning("Fast import ownership registry unavailable for %s: %s", transform_node, exc)
     if include_morphs and mesh_node:
         _apply_fast_morph_metadata(filepath, mesh_node, cmds)
 

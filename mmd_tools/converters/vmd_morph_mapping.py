@@ -6,6 +6,11 @@ from typing import List, Optional, Set, Tuple
 
 import maya.cmds as cmds
 
+from ..core.model_registry import (
+    ModelRegistryError,
+    REGISTRY_CATEGORY_MORPH,
+    list_model_registry_members,
+)
 from .morph_scene_metadata import (
     iter_morph_network_metadata,
     read_blendshape_morph_entries,
@@ -86,6 +91,13 @@ def _blendshape_is_owned_by_root(blend_shape: str, target_model: str, owned_dag_
 
 def _network_is_owned_by_root(node: str, target_model: str) -> bool:
     """Network morph ownership is connection-based and intentionally fail-closed."""
+    try:
+        registry_members = list_model_registry_members(target_model, REGISTRY_CATEGORY_MORPH)
+    except ModelRegistryError:
+        return False
+    if registry_members is not None:
+        return bool(_long_names([node]) & _long_names(registry_members))
+
     if not cmds.attributeQuery("mmd_model_root", node=node, exists=True):
         return False
     connected_roots = cmds.listConnections(f"{node}.mmd_model_root") or []

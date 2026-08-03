@@ -17,6 +17,10 @@ from tests.common.maya_test_base import MayaTestBase
 
 from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX
 from mmd_tools.core.mmd_parser import parse_pmx_file
+from mmd_tools.core.model_registry import (
+    REGISTRY_CATEGORY_PHYSICS,
+    list_model_registry_members,
+)
 from mmd_tools.core.native.mmd_anim_runtime import is_native_physics_available
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "data" / "physics" / "test_hair_physics.pmx"
@@ -30,7 +34,7 @@ def _native_physics_available() -> bool:
 
 
 def _import_payload_free_scene(pmx_file):
-    """Import a normal physics scene and assert that the solver is DAG-backed."""
+    """Import a normal physics scene and resolve its registry-owned solver."""
     from mmd_tools.io.pmx_importer import import_pmx_file
 
     parser = parse_pmx_file(str(pmx_file))
@@ -39,13 +43,28 @@ def _import_payload_free_scene(pmx_file):
         str(pmx_file),
         options={"import_physics": True, "create_mmd_shaders": False},
     )
-    solvers = cmds.listConnections(
-        f"{root}.message", source=False, destination=True, type="mmdPhysicsSolver"
-    ) or []
+    solvers = _model_physics_solvers(root)
     if not solvers:
         raise AssertionError(f"imported physics scene has no solver: {root}")
     joints = cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or []
     return root, joints, solvers[0]
+
+
+def _model_physics_solvers(root):
+    """Resolve new registry ownership while retaining legacy test coverage."""
+    try:
+        registry_members = list_model_registry_members(root, REGISTRY_CATEGORY_PHYSICS)
+    except Exception:
+        return []
+    if registry_members is None:
+        return cmds.listConnections(
+            f"{root}.message", source=False, destination=True, type="mmdPhysicsSolver"
+        ) or []
+    return [
+        node
+        for node in registry_members
+        if cmds.objExists(node) and cmds.nodeType(node) == "mmdPhysicsSolver"
+    ]
 
 
 def _connect_enabled_world(solver):
@@ -93,9 +112,7 @@ class TestPhysicsSolverNode(MayaTestBase):
 
     def _create_solver(self, root):
         """Use the solver created by the importer and enable its world."""
-        solvers = cmds.listConnections(
-            f"{root}.message", source=False, destination=True, type="mmdPhysicsSolver"
-        ) or []
+        solvers = _model_physics_solvers(root)
         self.assertTrue(solvers, f"No solver connected to imported root {root}")
         solver = solvers[0]
         _connect_enabled_world(solver)
@@ -972,12 +989,7 @@ class TestSolverLifecycle(MayaTestBase):
         reopened_roots = cmds.ls(root_name, long=True) or []
         self.assertEqual(len(reopened_roots), 1, "Model root must survive save/open")
         reopened_root = reopened_roots[0]
-        reopened_solvers = cmds.listConnections(
-            f"{reopened_root}.message",
-            source=False,
-            destination=True,
-            type="mmdPhysicsSolver",
-        ) or []
+        reopened_solvers = _model_physics_solvers(reopened_root)
         self.assertEqual(len(reopened_solvers), 1, "Solver must survive save/open")
         reopened_solver = reopened_solvers[0]
 
@@ -994,12 +1006,7 @@ class TestSolverLifecycle(MayaTestBase):
         _ = cmds.getAttr(f"{solver}.outSolved")
 
         duplicate_root = cmds.duplicate(root, name="unsupported_physics_duplicate")[0]
-        duplicate_solvers = cmds.listConnections(
-            f"{duplicate_root}.message",
-            source=False,
-            destination=True,
-            type="mmdPhysicsSolver",
-        ) or []
+        duplicate_solvers = _model_physics_solvers(duplicate_root)
         self.assertEqual(duplicate_solvers, [])
         self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
 

@@ -62,6 +62,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
     aInputMode = None
     aInTime = None
     aModelRoot = None
+    aModelRegistry = None
 
     aInWorldSettings = None
     aInWorldSettingsVersion = None
@@ -812,6 +813,18 @@ class MmdPhysicsSolverNode(om.MPxNode):
     def _get_connected_model_root(self):
         try:
             fn = om.MFnDependencyNode(self.thisMObject())
+            registry_plug = fn.findPlug("modelRegistry", False)
+            registry_connections = registry_plug.connectedTo(True, False)
+            if registry_connections:
+                registry_fn = om.MFnDependencyNode(registry_connections[0].node())
+                root_plug = registry_fn.findPlug("modelRoot", False)
+                root_connections = root_plug.connectedTo(True, False)
+                if root_connections:
+                    return om.MFnDependencyNode(root_connections[0].node()).name()
+        except Exception:
+            pass
+        try:
+            fn = om.MFnDependencyNode(self.thisMObject())
             plug = fn.findPlug("modelRoot", False)
             connections = plug.connectedTo(True, False)
             if connections:
@@ -906,6 +919,9 @@ def initialize():
 
     MmdPhysicsSolverNode.aModelRoot = msgAttr.create("modelRoot", "mr")
     MmdPhysicsSolverNode.addAttribute(MmdPhysicsSolverNode.aModelRoot)
+
+    MmdPhysicsSolverNode.aModelRegistry = msgAttr.create("modelRegistry", "mreg")
+    MmdPhysicsSolverNode.addAttribute(MmdPhysicsSolverNode.aModelRegistry)
 
     MmdPhysicsSolverNode.aInWorldSettings = msgAttr.create("inWorldSettings", "iws")
     MmdPhysicsSolverNode.addAttribute(MmdPhysicsSolverNode.aInWorldSettings)

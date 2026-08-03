@@ -18,6 +18,7 @@ from mmd_tools.core.constants import (
 )
 from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.native.mmd_anim_runtime import is_native_physics_available
+from mmd_tools.core.model_registry import get_model_registry
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.io import pmx_importer
 from mmd_tools.io.pmx_importer import import_pmx_file
@@ -329,8 +330,13 @@ class TestPmxImporter(MayaTestBase):
         self.assertGreater(len(drivers), 0)
         self.assertEqual(world_shapes, ["|MMD_PhysicsWorld|MMD_PhysicsWorldShape"])
         self.assertFalse(cmds.getAttr(f"{world_shapes[0]}.enable"))
-        self.assertTrue(
-            root in (cmds.listConnections(f"{solvers[0]}.modelRoot", source=True, destination=False) or [])
+        registry = get_model_registry(root)
+        self.assertEqual(
+            [registry],
+            cmds.listConnections(f"{solvers[0]}.modelRegistry", source=True, destination=False) or [],
+        )
+        self.assertFalse(
+            cmds.listConnections(f"{solvers[0]}.modelRoot", source=True, destination=False) or []
         )
         self.assertTrue(cmds.listConnections(f"{solvers[0]}.inTime", source=True, destination=False))
         self.assertTrue(

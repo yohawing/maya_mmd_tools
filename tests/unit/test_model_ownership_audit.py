@@ -60,6 +60,7 @@ class TestModelOwnershipAudit(unittest.TestCase):
                 ],
             ),
             mock.patch.object(model_ownership_audit, "_legacy_owner_links", return_value=[]),
+            mock.patch.object(model_ownership_audit, "get_model_registry", return_value=None),
         ):
             report = model_ownership_audit.audit_model_root("hero:Model_root")
 
@@ -84,6 +85,7 @@ class TestModelOwnershipAudit(unittest.TestCase):
                 ],
             ),
             mock.patch.object(model_ownership_audit, "_legacy_owner_links", return_value=[]),
+            mock.patch.object(model_ownership_audit, "get_model_registry", return_value=None),
         ):
             report = model_ownership_audit.audit_model_root("Model_root")
 

@@ -16,8 +16,11 @@ from .constants import (
     ATTR_MMD_MODEL_NAME,
     ATTR_MMD_MODEL_NAME_EN,
     ATTR_MMD_MODEL_ROOT,
+    ATTR_MMD_REGISTRY_ROOT,
+    ATTR_MMD_REGISTRY_SCHEMA,
     SCENE_ROOT_SUFFIX,
 )
+from .model_registry import ModelRegistryError, get_model_registry
 
 
 AUDIT_SCHEMA_VERSION = 1
@@ -52,6 +55,15 @@ def audit_model_root(model_root: str) -> Dict[str, Any]:
 
     connections = _root_message_connections(canonical_root)
     legacy_owner_links = _legacy_owner_links(canonical_root)
+    try:
+        model_registry = get_model_registry(canonical_root)
+        registry_status = "present" if model_registry else "legacy_fallback"
+    except ModelRegistryError as exc:
+        model_registry = None
+        registry_status = "invalid"
+        registry_error = str(exc)
+    else:
+        registry_error = None
     findings: List[Dict[str, str]] = []
 
     legacy_fanout_count = sum(
@@ -79,6 +91,14 @@ def audit_model_root(model_root: str) -> Dict[str, Any]:
                 "message": f"root.message has {len(unknown_destinations)} unknown destination(s)",
             }
         )
+    if registry_status == "invalid":
+        findings.append(
+            {
+                "code": "MODEL_REGISTRY_AMBIGUITY",
+                "severity": "error",
+                "message": registry_error or "model registry connection is invalid",
+            }
+        )
 
     ambiguous = [
         link for link in legacy_owner_links if link["status"] in {"orphaned", "ambiguous", "invalid"}
@@ -101,6 +121,10 @@ def audit_model_root(model_root: str) -> Dict[str, Any]:
         "root": canonical_root,
         "namespace": _namespace_from_root(canonical_root),
         "status": status,
+        "model_registry": {
+            "node": model_registry,
+            "status": registry_status,
+        },
         "root_message": {
             "connection_count": len(connections),
             "legacy_fanout_count": legacy_fanout_count,
@@ -142,6 +166,9 @@ def discover_model_roots() -> List[str]:
     candidates = set()
     for pattern in (f"*{SCENE_ROOT_SUFFIX}", f"*:*{SCENE_ROOT_SUFFIX}"):
         candidates.update(cmds.ls(pattern, type="transform", long=True) or [])
+    # The optional C++ fast importer may preserve model metadata on a root
+    # whose generated name does not use the conventional ``*_root`` suffix.
+    candidates.update(cmds.ls(type="transform", long=True) or [])
 
     roots = []
     for candidate in sorted(candidates):
@@ -215,6 +242,12 @@ def _classify_root_message_destination(node: str, attr: str) -> Tuple[str, str]:
     node_type = _node_type(node)
     if node_type in {"bindPose", "dagPose"} and attr.startswith("members["):
         return "maya_bind_pose", "standard"
+    if (
+        node_type == "network"
+        and attr == ATTR_MMD_REGISTRY_ROOT
+        and _has_attr(node, ATTR_MMD_REGISTRY_SCHEMA)
+    ):
+        return "model_registry", "standard"
     if attr.split("[", 1)[0] == ATTR_MMD_MODEL_ROOT:
         return "legacy_owner_link", "migration_required"
     if node_type == "mmdPhysicsSolver" and attr == "modelRoot":
@@ -231,9 +264,11 @@ def _canonical_dag_root(node: Any) -> Optional[str]:
     candidate = str(matches[0])
     if not candidate.startswith("|"):
         return None
-    if not candidate.rsplit("|", 1)[-1].endswith(SCENE_ROOT_SUFFIX):
-        return None
-    if not (_has_attr(candidate, ATTR_MMD_MODEL_NAME) or _has_attr(candidate, ATTR_MMD_MODEL_NAME_EN)):
+    if not (
+        candidate.rsplit("|", 1)[-1].endswith(SCENE_ROOT_SUFFIX)
+        or _has_attr(candidate, ATTR_MMD_MODEL_NAME)
+        or _has_attr(candidate, ATTR_MMD_MODEL_NAME_EN)
+    ):
         return None
     return candidate
 
