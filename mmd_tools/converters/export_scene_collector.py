@@ -50,11 +50,19 @@ from mmd_tools.core.constants import (
     ATTR_MMD_SPHERE_PATH,
     ATTR_MMD_SPHERE_TEXTURE_INDEX,
     ATTR_MMD_TEXTURE_INDEX,
+    ATTR_MMD_TEXTURE_TABLE_JSON,
     ATTR_MMD_TOON_TEXTURE_INDEX,
 )
 from mmd_tools.core.coordinate_transform import maya_point_to_mmd
 from mmd_tools.core.display_frame_metadata import display_frames_from_json
 from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_names
+
+
+_PMX_TEXTURE_REFERENCE_FIELDS = (
+    ("texture_index", "source_texture_index"),
+    ("sphere_texture_index", "source_sphere_texture_index"),
+    ("toon_texture_index", "source_toon_texture_index"),
+)
 
 
 def _get_mesh_shape(node: str) -> str:
@@ -98,6 +106,73 @@ def _get_attr(node: str, attr: str, default=None):
 def _collect_display_frames(root: str) -> list[dict]:
     """Return root-level PMX display-frame metadata collected during import."""
     return display_frames_from_json(_get_attr(root, ATTR_MMD_DISPLAY_FRAMES_JSON, ""))
+
+
+def _read_texture_table(root: str | None) -> list[str] | None:
+    """Read the imported PMX texture table without reconstructing missing entries."""
+    if not root:
+        return None
+    raw_value = _get_attr(root, ATTR_MMD_TEXTURE_TABLE_JSON, None)
+    if raw_value in (None, ""):
+        return None
+    try:
+        table = json.loads(raw_value) if isinstance(raw_value, str) else raw_value
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(table, list) or not all(isinstance(path, str) for path in table):
+        return None
+    return list(table)
+
+
+def _resolve_material_texture_indices(materials: list[dict], texture_table: list[str]) -> None:
+    """Restore writer-facing texture indices from the authoritative PMX table."""
+    for material in materials:
+        had_semantic_missing = "semantic_missing" in material
+        semantic_missing = list(material.get("semantic_missing") or [])
+        for payload_key, source_key in _PMX_TEXTURE_REFERENCE_FIELDS:
+            source_index = material.get(source_key)
+            if isinstance(source_index, bool) or not isinstance(source_index, int):
+                continue
+            if source_index < 0 or source_index >= len(texture_table):
+                if "texture_table" not in semantic_missing:
+                    semantic_missing.append("texture_table")
+                continue
+            material[payload_key] = source_index
+            material.pop(source_key, None)
+
+        unresolved_path = any(
+            material.get(path_key)
+            and not (
+                isinstance(material.get(index_key), int)
+                and not isinstance(material.get(index_key), bool)
+                and 0 <= material[index_key] < len(texture_table)
+            )
+            for path_key, index_key in (
+                ("texture_path", "texture_index"),
+                ("sphere_texture_path", "sphere_texture_index"),
+            )
+        )
+        unresolved_source = any(
+            source_key in material for _, source_key in _PMX_TEXTURE_REFERENCE_FIELDS
+        )
+        if unresolved_path or unresolved_source:
+            if "texture_table" not in semantic_missing:
+                semantic_missing.append("texture_table")
+        else:
+            semantic_missing = [
+                field for field in semantic_missing if field != "texture_table"
+            ]
+        if had_semantic_missing or semantic_missing:
+            material["semantic_missing"] = semantic_missing
+
+
+def _apply_texture_table(model_data: dict, model_root: str | None) -> None:
+    """Attach the imported PMX table and resolve material source indices."""
+    texture_table = _read_texture_table(model_root)
+    if texture_table is None:
+        return
+    _resolve_material_texture_indices(model_data.get("materials", []), texture_table)
+    model_data["textures"] = texture_table
 
 
 def _is_default_pmd_display_frame(frame: dict) -> bool:
@@ -766,11 +841,7 @@ def _collect_mmd_material_dict(shader: str, is_pmd: bool = False) -> dict:
     # The collector does not own a top-level PMX texture table yet.  Keep
     # authored indices only as provenance until a later slice can resolve
     # them; shared toon indices are built-in PMX values and remain usable.
-    texture_reference_fields = () if is_pmd else (
-        ("texture_index", "source_texture_index"),
-        ("sphere_texture_index", "source_sphere_texture_index"),
-        ("toon_texture_index", "source_toon_texture_index"),
-    )
+    texture_reference_fields = () if is_pmd else _PMX_TEXTURE_REFERENCE_FIELDS
     texture_table_missing = False
     for payload_key, source_key in texture_reference_fields:
         value = material.get(payload_key)
@@ -1114,7 +1185,7 @@ class ExportSceneCollector:
         from .physics_export_collector import collect_physics_from_scene
         rigid_bodies, joints = collect_physics_from_scene(root, bone_index_by_joint)
 
-        return {
+        model_data = {
             "model_name": _get_model_name(root),
             "vertices": merged_vertices,
             "faces": merged_faces,
@@ -1125,3 +1196,6 @@ class ExportSceneCollector:
             "rigid_bodies": rigid_bodies,
             "joints": joints,
         }
+        if not is_pmd:
+            _apply_texture_table(model_data, root)
+        return model_data

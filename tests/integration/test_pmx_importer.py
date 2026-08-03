@@ -3,6 +3,7 @@ PMXインポーターの統合テスト
 """
 
 import os
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -15,11 +16,13 @@ from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.core.constants import (
     ATTR_MMD_DISPLAY_FRAMES_JSON,
     ATTR_MMD_PMX_REST_POSITION,
+    ATTR_MMD_TEXTURE_TABLE_JSON,
 )
 from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.native.mmd_anim_runtime import is_native_physics_available
 from mmd_tools.core.model_registry import get_model_registry
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
+from mmd_tools.converters.export_scene_collector import ExportSceneCollector
 from mmd_tools.io import pmx_importer
 from mmd_tools.io.pmx_importer import import_pmx_file
 from mmd_tools.core.mmd_parser import MMDParseException, parse_pmx_file
@@ -103,6 +106,8 @@ class TestPmxImporter(MayaTestBase):
             "表示枠 metadata が root に保存されていません",
         )
         self.assertTrue(cmds.getAttr(f"{result}.{ATTR_MMD_DISPLAY_FRAMES_JSON}"))
+        texture_table = json.loads(cmds.getAttr(f"{result}.{ATTR_MMD_TEXTURE_TABLE_JSON}"))
+        self.assertEqual(texture_table, [str(path) for path in parser.textures])
 
         # テクスチャ file ノードがあれば、パスが有効であることを確認
         file_nodes = cmds.ls(type="file") or []
@@ -130,6 +135,38 @@ class TestPmxImporter(MayaTestBase):
                 for msg in info_messages
             )
         )
+
+    def test_imported_texture_table_resolves_export_material_indices(self):
+        """Imported PMX texture order is preserved through scene collection."""
+        pmx_file = self.fixture_provider.get_verified_pmx_file("yw_test_model")
+        parser = parse_pmx_file(pmx_file)
+
+        result = import_pmx_file(
+            parser,
+            pmx_file,
+            options={
+                "setup_rig": False,
+                "import_physics": False,
+                "import_morphs": False,
+            },
+        )
+
+        expected_textures = [str(path) for path in parser.textures]
+        root_table = json.loads(cmds.getAttr(f"{result}.{ATTR_MMD_TEXTURE_TABLE_JSON}"))
+        collected = ExportSceneCollector().collect_from_model_root(result)
+
+        self.assertEqual(root_table, expected_textures)
+        self.assertEqual(collected["textures"], expected_textures)
+        textured_materials = [
+            material
+            for material in collected["materials"]
+            if material.get("texture_path") or material.get("sphere_texture_path")
+        ]
+        self.assertTrue(textured_materials)
+        for material in textured_materials:
+            self.assertNotIn("source_texture_index", material)
+            self.assertNotIn("source_sphere_texture_index", material)
+            self.assertNotIn("texture_table", material.get("semantic_missing", []))
 
     def test_local_axis_scale_preserves_real_import_world_positions(self):
         """Real PMX import keeps LOCAL_AXIS bone positions at each import scale."""

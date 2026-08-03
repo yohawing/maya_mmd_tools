@@ -158,6 +158,57 @@ class TestExportScope(unittest.TestCase):
         self.assertEqual(material["texture_path"], "textures/body.png")
         self.assertIn("texture_table", material["semantic_missing"])
 
+    def test_model_texture_table_restores_writer_indices_without_reconstructing_paths(self):
+        model_data = {
+            "materials": [
+                {
+                    "texture_path": "textures/body.png",
+                    "source_texture_index": 1,
+                    "sphere_texture_path": "textures/body.spa",
+                    "source_sphere_texture_index": 2,
+                    "semantic_missing": ["texture_table"],
+                }
+            ]
+        }
+
+        with mock.patch.object(
+            export_scene_collector_module,
+            "_get_attr",
+            return_value='["unused.png", "textures/body.png", "textures/body.spa"]',
+        ):
+            export_scene_collector_module._apply_texture_table(model_data, "|model_ROOT")
+
+        material = model_data["materials"][0]
+        self.assertEqual(model_data["textures"], ["unused.png", "textures/body.png", "textures/body.spa"])
+        self.assertEqual(material["texture_index"], 1)
+        self.assertEqual(material["sphere_texture_index"], 2)
+        self.assertNotIn("source_texture_index", material)
+        self.assertNotIn("source_sphere_texture_index", material)
+        self.assertEqual(material["semantic_missing"], [])
+
+    def test_invalid_texture_table_keeps_source_index_fail_closed(self):
+        model_data = {
+            "materials": [
+                {
+                    "source_texture_index": 4,
+                    "semantic_missing": ["texture_table"],
+                }
+            ]
+        }
+
+        with mock.patch.object(
+            export_scene_collector_module,
+            "_get_attr",
+            return_value='["only.png"]',
+        ):
+            export_scene_collector_module._apply_texture_table(model_data, "|model_ROOT")
+
+        material = model_data["materials"][0]
+        self.assertEqual(model_data["textures"], ["only.png"])
+        self.assertEqual(material["source_texture_index"], 4)
+        self.assertNotIn("texture_index", material)
+        self.assertEqual(material["semantic_missing"], ["texture_table"])
+
     def test_pmd_toon_index_stays_embedded_and_pmd_fields_are_collected(self):
         material = self._collect_single_material(
             {

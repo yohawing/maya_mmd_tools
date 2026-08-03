@@ -24,6 +24,7 @@ from ..core.constants import (
     ATTR_MMD_MODEL_NAME,
     ATTR_MMD_MODEL_NAME_EN,
     ATTR_MMD_MORPH_DATA,
+    ATTR_MMD_TEXTURE_TABLE_JSON,
 )
 from ..core.display_frame_metadata import display_frames_to_json
 from ..core.namespace_utils import NamespaceUtils
@@ -81,6 +82,17 @@ def _serialize_pmx_morph_data(morphs: Any) -> str:
             }
         )
     return json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
+
+
+def _serialize_pmx_texture_table(textures: Any) -> str:
+    """Serialize the authoritative PMX texture table for the model root."""
+    if not isinstance(textures, (list, tuple)):
+        return "[]"
+    return json.dumps(
+        [str(texture_path) for texture_path in textures],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def import_pmx_file(
@@ -148,6 +160,9 @@ def import_pmx_file(
                     ),
                     ATTR_MMD_MORPH_DATA: _serialize_pmx_morph_data(
                         getattr(parser, "morphs", [])
+                    ),
+                    ATTR_MMD_TEXTURE_TABLE_JSON: _serialize_pmx_texture_table(
+                        getattr(parser, "textures", [])
                     ),
                     # Phase 1: runtime bake で VMD インポート時に PMX ソースを容易に見つけるため
                     "mmd_source_file": filepath,
