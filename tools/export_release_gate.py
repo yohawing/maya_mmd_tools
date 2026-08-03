@@ -426,9 +426,14 @@ def _validate_maya_probe_report(
         failures.append(f"formats={sorted(by_format)}")
     for export_format in sorted(required_formats):
         case = by_format.get(export_format)
-        if not isinstance(case, dict) or case.get("status") != "pass":
+        allowed_statuses = {"pass"}
+        if export_format == "pmd":
+            allowed_statuses.add("policy-reject")
+        if not isinstance(case, dict) or case.get("status") not in allowed_statuses:
             failures.append(f"{export_format}.status={case.get('status') if isinstance(case, dict) else None!r}")
             continue
+        if export_format == "pmd" and case.get("policy_code") != "PMD_EXPORT_POLICY_REJECT":
+            failures.append("pmd.policy_code='PMD_EXPORT_POLICY_REJECT' expected")
         if not case.get("report_json") or not case.get("report_md"):
             failures.append(f"{export_format}.report_pair_missing")
 
@@ -607,7 +612,7 @@ def build_release_summary(
         "maya_versions": list(maya_versions),
         "coverage": {
             "proven": [
-                "PMX/PMD/VMD parseable output",
+                "PMX/VMD parseable output and PMD import/policy-reject",
                 "Maya fresh-import mesh/pose/metadata oracle",
                 "fatal fail-closed and warning acknowledgement boundaries",
                 "focused ExportTab format/mode UI, button routing, and Validation Console catalog rendering",

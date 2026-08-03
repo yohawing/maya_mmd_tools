@@ -62,6 +62,10 @@ class ExportReleaseGateTests(unittest.TestCase):
                     for export_format in ("pmx", "pmd", "vmd")
                 ],
             }
+            report["cases"][1].update(
+                status="policy-reject",
+                policy_code="PMD_EXPORT_POLICY_REJECT",
+            )
             report_path.write_text(json.dumps(report), encoding="utf-8")
 
             step = {"name": "maya_probe_2024", "status": "pass"}

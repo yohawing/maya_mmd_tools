@@ -2,9 +2,9 @@
 """Run the Maya-side v0.7 export release probes.
 
 The probe deliberately starts a fresh Maya scene for each import boundary.  It
-exports a small PMX fixture, a reproducibly generated PMD payload, and a VMD
-motion, then re-imports each output and records mesh, pose, and metadata
-oracles.  The JSON output is consumed by :mod:`tools.export_release_gate`.
+exports a small PMX fixture, verifies PMD import plus the explicit public
+export policy rejection, and exports a VMD motion.  The JSON output is
+consumed by :mod:`tools.export_release_gate`.
 """
 
 from __future__ import annotations
@@ -290,7 +290,6 @@ def _run_model_case(
     out_dir: Path,
 ) -> dict[str, Any]:
     """Export one model format, fresh-import it, and compare scene oracles."""
-    from mmd_tools.core.pmd_data import PmdData
     from mmd_tools.core.pmx_data import PmxData
     from mmd_tools.services.export_workflow_service import (
         ExportWorkflowRequest,
@@ -301,41 +300,75 @@ def _run_model_case(
     report_dir = out_dir / "report"
     source_root = _fresh_import(source_model)
     source_oracle = _capture_scene_oracle(source_root, (0,))
-    result = ExportWorkflowService().execute(
-        ExportWorkflowRequest(
-            str(output),
-            {
-                "export_format": export_format,
-                "require_target": True,
-                "target_model": source_root,
-                "target_identity": source_root,
-                "validation_report_dir": str(report_dir),
-                "validation_report_evidence": {
-                    "gate": "V070-EXPORT-RELEASE-GATE-1",
-                    "fixture": source_model.name,
-                    "fresh_import": True,
-                    "oracles": ["mesh", "pose", "metadata"],
-                },
+    request = ExportWorkflowRequest(
+        str(output),
+        {
+            "export_format": export_format,
+            "require_target": True,
+            "target_model": source_root,
+            "target_identity": source_root,
+            "validation_report_dir": str(report_dir),
+            "validation_report_evidence": {
+                "gate": "V070-EXPORT-RELEASE-GATE-1",
+                "fixture": source_model.name,
+                "fresh_import": True,
+                "oracles": ["mesh", "pose", "metadata"],
             },
-        )
+        },
     )
+    workflow = ExportWorkflowService()
+    if export_format == "pmd":
+        validation = workflow.validate(request)
+        policy_codes = [issue.code for issue in validation.report.issues]
+        if validation.state != "Blocked" or policy_codes != ["PMD_EXPORT_POLICY_REJECT"]:
+            raise AssertionError(
+                f"PMD policy probe expected one blocking rejection, got "
+                f"state={validation.state!r}, issues={policy_codes!r}"
+            )
+        report_dir.mkdir(parents=True, exist_ok=True)
+        evidence = request.options["validation_report_evidence"]
+        validation.report.write_canonical_json(
+            report_dir / "report.json",
+            target_identity=source_root,
+            provenance="ExportWorkflowService",
+            evidence=evidence,
+        )
+        validation.report.write_markdown(
+            report_dir / "report.md",
+            target_identity=source_root,
+            provenance="ExportWorkflowService",
+            evidence=evidence,
+        )
+        if output.exists():
+            raise AssertionError(f"PMD policy rejection created an output: {output}")
+        return {
+            "status": "policy-reject",
+            "format": export_format,
+            "source": str(source_model),
+            "output": None,
+            "report_json": str(report_dir / "report.json"),
+            "report_md": str(report_dir / "report.md"),
+            "policy_code": "PMD_EXPORT_POLICY_REJECT",
+            "import_oracles": {
+                "mesh": source_oracle["mesh"],
+                "pose": source_oracle["pose"],
+                "metadata": source_oracle["metadata"],
+            },
+            "collection": {
+                "collector": "ExportWorkflowService validation -> PMD policy",
+                "target_model": source_root,
+                "source_fresh_import": True,
+                "export_writer_called": False,
+            },
+        }
+
+    result = workflow.execute(request)
     if not result.succeeded:
         raise RuntimeError(f"{export_format} export failed: {result.error or result.report}")
-    if export_format == "pmx":
-        parsed = PmxData().parse_file(str(output))
-    else:
-        parsed = PmdData().parse_file(str(output))
+    parsed = PmxData().parse_file(str(output))
     result_root = _fresh_import(output)
     result_oracle = _capture_scene_oracle(result_root, (0,))
     failures = _compare_scene_oracles(source_oracle, result_oracle, pose=True)
-    if export_format == "pmd":
-        expected_names = [
-            str(bone.get("name", ""))
-            for bone in (result.payload or {}).get("bones", [])
-        ]
-        actual_names = [str(joint["name"]) for joint in result_oracle["pose"]["joints"]]
-        if expected_names != actual_names:
-            failures.append(f"PMD bone names differ: expected {expected_names!r}, actual {actual_names!r}")
     if failures:
         raise AssertionError("; ".join(failures))
     return {
@@ -500,11 +533,12 @@ def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
                 "traceback": traceback.format_exc(limit=12),
             }
         )
+    accepted_case_statuses = {"pass", "policy-reject"}
     report = {
         "schema_version": 1,
         "gate": "V070-EXPORT-RELEASE-GATE-1",
         "maya_version": _maya_version(),
-        "status": "pass" if all(case["status"] == "pass" for case in cases) else "fail",
+        "status": "pass" if all(case["status"] in accepted_case_statuses for case in cases) else "fail",
         "fixture": {"pmx": str(pmx_path), "pmd": str(pmd_path), "vmd": str(vmd_path)},
         "cases": cases,
     }

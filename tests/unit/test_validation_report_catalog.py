@@ -8,6 +8,7 @@ import unittest
 from mmd_tools.validation.export_validator import (
     ExportValidationIssue,
     ExportValidationReport,
+    pmd_export_policy_report,
     validate_model_data,
 )
 from mmd_tools.validation.issue_catalog import (
@@ -124,6 +125,15 @@ class ValidationReportCatalogTests(unittest.TestCase):
         self.assertEqual(entry.loss_policy, "reject")
         self.assertEqual(entry.title_key, "validation.pmx_vertex_sdef_unsupported.title")
         self.assertEqual(entry.action_key, "validation.pmx_vertex_sdef_unsupported.action")
+
+    def test_pmd_policy_reject_is_canonical(self):
+        payload = pmd_export_policy_report().to_canonical_dict(target_identity="modelRoot")
+        issue = payload["issues"][0]
+
+        self.assertEqual(payload["status"], "blocked")
+        self.assertEqual(issue["code"], "PMD_EXPORT_POLICY_REJECT")
+        self.assertEqual(issue["path"], "export_format")
+        self.assertEqual(issue["category"], "model")
 
 
 if __name__ == "__main__":

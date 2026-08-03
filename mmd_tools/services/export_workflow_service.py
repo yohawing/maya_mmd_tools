@@ -9,6 +9,7 @@ from ..actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
 from ..validation.export_validator import (
     ExportValidationIssue,
     ExportValidationReport,
+    pmd_export_policy_report,
 )
 from ..validation.scene_preflight import ScenePreflight
 from ..validation.snapshot import ExportValidationSnapshot
@@ -177,9 +178,18 @@ class ExportWorkflowService:
         mode = metadata.get("mode") or "model"
         if report.is_blocking:
             return ExportWorkflowResult(STATE_BLOCKED, report, metadata)
+        if export_format == "pmd":
+            policy_report = pmd_export_policy_report()
+            report = _combine_reports(
+                report,
+                policy_report,
+                export_format=export_format,
+                mode=mode,
+            )
+            return ExportWorkflowResult(STATE_BLOCKED, report, metadata)
 
         try:
-            if export_format in {"pmx", "pmd"}:
+            if export_format == "pmx":
                 payload = self._collect_model(request, self._target_options(options, metadata))
                 validator = getattr(self.model_action, "_validator", None)
                 if validator is None:

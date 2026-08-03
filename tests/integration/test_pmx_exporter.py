@@ -23,7 +23,6 @@ from mmd_tools.core.constants import (
     ATTR_MMD_MODEL_NAME,
 )
 from mmd_tools.io.pmx_exporter import PmxExporter
-from mmd_tools.core.pmd_data import PmdData
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from tests.common.maya_test_base import MayaTestBase
@@ -333,8 +332,8 @@ class TestPmxExporter(MayaTestBase):
         self.assertEqual(len(pmx.faces), 1)
         self.assertEqual(pmx.materials[0].name, shader)
 
-    def test_export_model_action_collects_target_mesh_and_writes_pmd(self):
-        """ExportModelAction の default collector 経由で PMD を書き出せる。"""
+    def test_export_model_action_rejects_pmd_before_writing(self):
+        """公開 ExportModelAction は PMD writer を呼ばず policy-reject する。"""
         transform, _ = self._make_triangle(name="action_pmd_tri_mesh")
         cmds.addAttr(transform, longName=ATTR_MMD_MODEL_NAME, dataType="string")
         cmds.setAttr(f"{transform}.{ATTR_MMD_MODEL_NAME}", "PmdTri", type="string")
@@ -348,18 +347,12 @@ class TestPmxExporter(MayaTestBase):
             )
         )
 
-        self.assertTrue(result.succeeded)
-        self.assertEqual(result.exported_path, output_path)
-        self.assertTrue(os.path.exists(output_path), "PMD file was not written")
-
-        pmd = PmdData()
-        pmd.parse_file(output_path)
-        self.assertEqual(pmd.header.model_name, "PmdTri")
-        self.assertEqual(len(pmd.vertices), 3)
-        self.assertEqual(len(pmd.faces), 1)
-        self.assertEqual(len(pmd.materials), 1)
-        self.assertEqual(pmd.materials[0].face_count, 3)
-        self.assertEqual(len(pmd.bones), 1)
+        self.assertFalse(result.succeeded)
+        self.assertEqual(
+            result.validation_report.issues[0].code,
+            "PMD_EXPORT_POLICY_REJECT",
+        )
+        self.assertFalse(os.path.exists(output_path))
 
     def test_export_model_action_collects_model_root_meshes_to_pmx(self):
         """target_model 配下の複数 mesh を PMX の単一 model data にまとめる。"""
@@ -382,28 +375,6 @@ class TestPmxExporter(MayaTestBase):
         self.assertEqual(len(pmx.materials), 2)
         self.assertEqual([mat.face_count for mat in pmx.materials], [3, 3])
         self.assertEqual({mat.name for mat in pmx.materials}, set(shaders))
-
-    def test_export_model_action_collects_model_root_meshes_to_pmd(self):
-        """target_model 配下の複数 mesh を PMD の単一 model data にまとめる。"""
-        root, _meshes, _shaders = self._make_two_mesh_model_root("pmd_multi_root")
-        output_path = self.get_temp_filename("multi_mesh_model.pmd")
-
-        result = ExportModelAction().execute(
-            ExportModelRequest(
-                file_path=output_path,
-                options={"export_format": "pmd", "target_model": root},
-            )
-        )
-
-        self.assertTrue(result.succeeded)
-        pmd = PmdData()
-        pmd.parse_file(output_path)
-
-        self.assertEqual(pmd.header.model_name, "MergedExport")
-        self.assertEqual(len(pmd.vertices), 6)
-        self.assertEqual(len(pmd.faces), 2)
-        self.assertEqual(len(pmd.materials), 2)
-        self.assertEqual([mat.face_count for mat in pmd.materials], [3, 3])
 
     def test_export_model_action_collects_scene_morph_metadata_to_pmx(self):
         """target_model export は scene の vertex/bone/material morph metadata を PMX に書き戻す。"""
@@ -625,31 +596,6 @@ class TestPmxExporter(MayaTestBase):
         pmx = _parse_pmx(output_path)
         self.assertEqual([bone.name for bone in pmx.bones], ["センター", "上半身", "ＩＫ先"])
         self.assertEqual([bone.parent_bone_index for bone in pmx.bones], [-1, 0, 1])
-
-    def test_export_model_action_collects_skincluster_weights_to_pmd(self):
-        """skinCluster の influence と weight を PMD bones/vertex weight に書き出す。"""
-        transform, _joints, _skin_cluster = self._make_skinned_triangle("pmd_skinned_tri")
-        output_path = self.get_temp_filename("skinned_triangle.pmd")
-
-        result = ExportModelAction().execute(
-            ExportModelRequest(
-                file_path=output_path,
-                options={"export_format": "pmd", "target_mesh": transform},
-            )
-        )
-
-        self.assertTrue(result.succeeded)
-        pmd = PmdData()
-        pmd.parse_file(output_path)
-
-        self.assertEqual([bone.name for bone in pmd.bones], ["センター", "上半身"])
-        self.assertEqual([bone.parent_bone_index for bone in pmd.bones], [-1, 0])
-        self.assertEqual(pmd.vertices[0].bone_indices, (0, 0))
-        self.assertEqual(pmd.vertices[0].bone_weight, 100)
-        self.assertEqual(pmd.vertices[1].bone_indices, (1, 0))
-        self.assertEqual(pmd.vertices[1].bone_weight, 75)
-        self.assertEqual(pmd.vertices[2].bone_indices, (1, 0))
-        self.assertEqual(pmd.vertices[2].bone_weight, 100)
 
     def test_roundtrip_quad_triangulates_to_two_faces(self):
         """Quad polygon → fan triangulation → 2 PmxFace objects, face_count=6."""

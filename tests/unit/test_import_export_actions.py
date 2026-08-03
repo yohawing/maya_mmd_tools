@@ -27,6 +27,7 @@ from mmd_tools.actions.import_vmd_action import (  # noqa: E402
     ImportVmdRequest,
 )
 from mmd_tools.core.vmd_data import VmdData  # noqa: E402
+from mmd_tools.validation.export_validator import ExportValidationError  # noqa: E402
 
 
 class _FakeMayaAdapter:
@@ -375,41 +376,45 @@ class TestExportModelAction(unittest.TestCase):
             self.assertNotEqual(writer_path, output_path)
             self.assertFalse(writer_path.exists())
 
-    def test_execute_exports_pmd_from_collector_data(self):
-        model_data = {
-            "vertices": [{"position": [0.0, 0.0, 0.0]}],
-            "faces": [[0, 0, 0]],
-        }
+    def test_execute_rejects_pmd_before_collecting_or_writing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = Path(temp_dir) / "out.pmd"
             exporter = _FakePmdExporter()
-            options = {"file_path": str(output_path), "export_format": "pmd"}
+            collector_calls = []
+
+            def collector(options):
+                collector_calls.append(options)
+                raise AssertionError("PMD policy must reject before collection")
+
             action = ExportModelAction(
                 pmd_exporter=exporter,
-                collector=lambda received: model_data,
+                collector=collector,
                 output_verifier=None,
             )
 
-            result = action.execute(ExportModelRequest(file_path=str(output_path), options=options))
+            result = action.execute(
+                ExportModelRequest(
+                    file_path=str(output_path),
+                    options={"export_format": "pmd"},
+                )
+            )
 
-            self.assertTrue(result.succeeded)
-            self.assertEqual(output_path.read_bytes(), b"fake pmd bytes")
-            writer_path = Path(exporter.calls[0][0])
-            self.assertEqual(writer_path.parent, output_path.parent)
-            self.assertEqual(writer_path.suffix, ".pmd")
-            self.assertNotEqual(writer_path, output_path)
-            self.assertFalse(writer_path.exists())
+            self.assertFalse(result.succeeded)
+            self.assertIsInstance(result.error, ExportValidationError)
+            self.assertEqual(
+                [issue.code for issue in result.validation_report.issues],
+                ["PMD_EXPORT_POLICY_REJECT"],
+            )
+            self.assertEqual(collector_calls, [])
+            self.assertEqual(exporter.calls, [])
+            self.assertFalse(output_path.exists())
 
-    def test_execute_passes_inferred_format_to_collector(self):
-        model_data = {
-            "vertices": [{"position": [0.0, 0.0, 0.0]}],
-            "faces": [[0, 0, 0]],
-        }
+    def test_execute_rejects_inferred_pmd_before_collecting(self):
         received_options = []
 
         def collector(options):
             received_options.append(options)
-            return model_data
+            raise AssertionError("PMD policy must reject before collection")
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = Path(temp_dir) / "out.pmd"
@@ -421,8 +426,13 @@ class TestExportModelAction(unittest.TestCase):
 
             result = action.execute(ExportModelRequest(file_path=str(output_path), options={}))
 
-        self.assertTrue(result.succeeded)
-        self.assertEqual(received_options[0]["export_format"], "pmd")
+        self.assertFalse(result.succeeded)
+        self.assertIsInstance(result.error, ExportValidationError)
+        self.assertEqual(received_options, [])
+        self.assertEqual(
+            [issue.code for issue in result.validation_report.issues],
+            ["PMD_EXPORT_POLICY_REJECT"],
+        )
 
     def test_default_selection_collection_keeps_export_format(self):
         received_options = []

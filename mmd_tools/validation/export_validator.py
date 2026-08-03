@@ -1627,6 +1627,22 @@ def _effective_material_count(materials: Any) -> int:
     return 1
 
 
+def pmd_export_policy_report() -> ExportValidationReport:
+    """Return the explicit policy rejection for the unpublished PMD route."""
+    return ExportValidationReport(
+        "pmd",
+        (
+            ExportValidationIssue(
+                "PMD_EXPORT_POLICY_REJECT",
+                "fatal",
+                True,
+                "export_format",
+                "PMD export is not part of the published v0.7.0 export surface",
+            ),
+        ),
+    )
+
+
 def validate_model_data(
     model_data: Any,
     export_format: Optional[str] = None,
@@ -1776,6 +1792,7 @@ __all__ = [
     "PMD_MAX_TEXTURE_FILE_NAME_BYTES",
     "PMD_MAX_VERTEX_COUNT",
     "ensure_writer_safe_materials",
+    "pmd_export_policy_report",
     "validate_export_model",
     "validate_model_data",
 ]

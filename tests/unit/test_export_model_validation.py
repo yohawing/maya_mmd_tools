@@ -462,8 +462,8 @@ class TestExportModelValidation(unittest.TestCase):
 
         self.assertTrue(report.valid)
 
-    def test_material_face_count_total_mismatch_blocks_both_writers(self):
-        for export_format in ("pmx", "pmd"):
+    def test_material_face_count_total_mismatch_blocks_pmx_writer(self):
+        for export_format in ("pmx",):
             with self.subTest(export_format=export_format):
                 exporter = _FakeExporter()
                 model_data = _valid_model_data()
@@ -1293,7 +1293,7 @@ class TestExportModelValidation(unittest.TestCase):
             self.assertEqual(len(exporter.calls), 1)
             self.assertFalse(Path(exporter.calls[0][0]).exists())
 
-    def test_action_does_not_call_writer_when_pmd_skin_preflight_fails(self):
+    def test_action_rejects_pmd_before_skin_preflight(self):
         exporter = _FakeExporter()
         model_data = _valid_model_data()
         model_data["vertices"][0]["bone_weights"] = [0.5, 0.25, 0.25]
@@ -1308,10 +1308,13 @@ class TestExportModelValidation(unittest.TestCase):
         self.assertFalse(result.succeeded)
         self.assertIsInstance(result.error, ExportValidationError)
         self.assertEqual(exporter.calls, [])
-        self.assertEqual(result.validation_report.issues[0].code, "BONE_WEIGHTS_LENGTH")
+        self.assertEqual(
+            result.validation_report.issues[0].code,
+            "PMD_EXPORT_POLICY_REJECT",
+        )
 
-    def test_action_passes_valid_data_to_both_writers(self):
-        for export_format in ("pmx", "pmd"):
+    def test_action_passes_valid_data_to_pmx_writer(self):
+        for export_format in ("pmx",):
             with self.subTest(export_format=export_format), tempfile.TemporaryDirectory() as temp_dir:
                 output_path = Path(temp_dir) / f"out.{export_format}"
                 exporter = _FakeExporter()
@@ -1339,7 +1342,7 @@ class TestExportModelValidation(unittest.TestCase):
                 self.assertEqual(result.payload_fingerprint, fingerprint_payload(_valid_model_data()))
 
     def test_action_does_not_call_writer_or_modify_existing_file_when_preflight_fails(self):
-        for export_format in ("pmx", "pmd"):
+        for export_format in ("pmx",):
             with self.subTest(export_format=export_format), tempfile.TemporaryDirectory() as temp_dir:
                 output_path = Path(temp_dir) / f"existing.{export_format}"
                 original_bytes = b"existing export bytes"
@@ -1366,7 +1369,7 @@ class TestExportModelValidation(unittest.TestCase):
                 self.assertEqual(output_path.read_bytes(), original_bytes)
 
     def test_writer_exception_preserves_valid_report_and_original_error(self):
-        for export_format in ("pmx", "pmd"):
+        for export_format in ("pmx",):
             with self.subTest(export_format=export_format), tempfile.TemporaryDirectory() as temp_dir:
                 output_path = Path(temp_dir) / f"existing.{export_format}"
                 original_bytes = b"existing export bytes"
@@ -1392,7 +1395,7 @@ class TestExportModelValidation(unittest.TestCase):
                 self.assertFalse(Path(exporter.calls[0][0]).exists())
 
     def test_empty_temporary_output_fails_and_preserves_existing_file(self):
-        for export_format in ("pmx", "pmd"):
+        for export_format in ("pmx",):
             with self.subTest(export_format=export_format), tempfile.TemporaryDirectory() as temp_dir:
                 output_path = Path(temp_dir) / f"empty.{export_format}"
                 original_bytes = b"existing export bytes"
