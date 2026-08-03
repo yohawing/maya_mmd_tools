@@ -33,6 +33,12 @@ ATTR_MMD_MORPH_DATA = "mmdMorphData"
 # ownership registration will migrate away from root.message fan-out, but the
 # name remains part of the compatibility/audit contract for existing scenes.
 ATTR_MMD_MODEL_ROOT = "mmd_model_root"
+ATTR_MMD_MODEL_REGISTRY = "mmd_model_registry"
+ATTR_MMD_REGISTRY_SCHEMA = "mmd_model_registry_schema"
+ATTR_MMD_REGISTRY_ROOT = "modelRoot"
+ATTR_MMD_REGISTRY_MORPH_MEMBERS = "morphMembers"
+ATTR_MMD_REGISTRY_TEXTURE_MEMBERS = "textureMembers"
+ATTR_MMD_REGISTRY_PHYSICS_MEMBERS = "physicsMembers"
 
 # Animator Toolset viewport visibility state on the imported model root.
 ATTR_MMD_SHOW_MESH = "mmd_show_mesh"
