@@ -139,6 +139,7 @@ class TestCppFastImportRouting(unittest.TestCase):
             2.5,
             {"scale": 2.5, "use_cpp_fast_load": True},
             progress_callback=None,
+            is_pmd=True,
         )
         self.assertEqual(result, "pmd_root")
 

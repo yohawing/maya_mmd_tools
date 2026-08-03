@@ -101,6 +101,7 @@ def import_pmx_file(
     scale: float = 1.0,
     options: Optional[Dict[str, Any]] = None,
     progress_callback: Optional[Callable[[int], None]] = None,
+    is_pmd: bool = False,
 ) -> Optional[str]:
     """
     PMXファイルをMayaシーンにインポートします。
@@ -111,6 +112,7 @@ def import_pmx_file(
         scale (float): スケール値（互換性のため）
         options (dict): インポートオプション
         progress_callback (Callable[[int], None]): フェーズ進捗通知コールバック。
+        is_pmd (bool): PMDから変換されたデータとしてPMD専用属性を作成するかどうか。
 
     Returns:
         str: 作成したモデルルートノード名。
@@ -174,7 +176,7 @@ def import_pmx_file(
             logger.debug("Converting mesh...")
             mesh_converter = MeshConverter(filepath, scale=scale)
             phase_start = time.perf_counter()
-            mesh_group, mesh_name = mesh_converter.convert_pmx_mesh(parser, root_group)
+            mesh_group, mesh_name = mesh_converter.convert_pmx_mesh(parser, root_group, is_pmd=is_pmd)
             pipeline.connect_texture_nodes_to_root(
                 root_group,
                 mesh_converter.created_texture_file_nodes,

@@ -45,6 +45,7 @@ from mmd_tools.core.constants import (
 )
 from mmd_tools.converters.mesh_material_properties import (
     PMX_DOUBLE_SIDED_DRAW_FLAG as _PMX_DOUBLE_SIDED_DRAW_FLAG,
+    PMX_EDGE_DRAWING_DRAW_FLAG as _PMX_EDGE_DRAWING_DRAW_FLAG,
     material_is_double_sided as _material_is_double_sided,
 )
 from mmd_tools.converters.material_shader_parameters import (
@@ -1480,13 +1481,19 @@ class MeshConverter:
 
         self._add_profile_time("transparency_classify_sec", classify_start)
 
-    def convert_pmx_mesh(self, pmx_data: PmxData, root_group: str) -> Tuple[str, Union[str, List[str]]]:
+    def convert_pmx_mesh(
+        self,
+        pmx_data: PmxData,
+        root_group: str,
+        is_pmd: bool = False,
+    ) -> Tuple[str, Union[str, List[str]]]:
         """
         PMXのメッシュデータをMayaのメッシュノードに変換する。
 
         Args:
             pmx_data (pmx_parser.PmxParser): 解析されたPMXデータオブジェクト。
             root_group (str): ルートグループの名前。
+            is_pmd (bool): PMD由来のデータとしてPMD専用属性を作成するかどうか。
 
         Returns:
             str: 作成されたMayaメッシュをまとめるグループノードの名前。
@@ -1535,7 +1542,7 @@ class MeshConverter:
                 all_materials,
                 all_textures,
                 geo_group,
-                is_pmd=False,
+                is_pmd=is_pmd,
                 weld_keys=weld_keys,
             )
         else:
@@ -1546,6 +1553,7 @@ class MeshConverter:
                 all_materials,
                 all_textures,
                 geo_group,
+                is_pmd=is_pmd,
                 weld_keys=weld_keys,
             )
 
@@ -2085,7 +2093,12 @@ class MeshConverter:
             custom_attrs[ATTR_MMD_MATERIAL_NAME_EN] = ""
 
         if is_pmd:
-            custom_attrs[ATTR_MMD_EDGE_FLAG] = int(material.edge_flag)
+            # PMD is converted to a temporary PMX and parsed again before
+            # this stage, so recover the PMD semantic from the serialized PMX
+            # EDGE_DRAWING flag rather than relying on a transient attribute.
+            custom_attrs[ATTR_MMD_EDGE_FLAG] = int(
+                bool(int(material.draw_flag) & _PMX_EDGE_DRAWING_DRAW_FLAG)
+            )
             custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = False
         else:
             custom_attrs[ATTR_MMD_SPHERE_MODE] = int(material.sphere_mode)
@@ -2330,11 +2343,11 @@ class MeshConverter:
 
         # OGSFX exposes the same texture-slot contract as the DX11 effect.  The
         # previous GLSL setup stopped after scalar uniforms, leaving every
-        # material untextured even when the PMX texture paths were valid.
+        # material untextured even when the PMX/PMD texture paths were valid.
         self._connect_dx11_main_texture(shader, material, texture_path, original_texture_path)
 
         sphere_texture_path = None
-        if not is_pmd and getattr(material, "sphere_texture_index", -1) >= 0:
+        if getattr(material, "sphere_texture_index", -1) >= 0:
             sphere_index = int(material.sphere_texture_index)
             if all_textures and sphere_index < len(all_textures):
                 sphere_texture_path = all_textures[sphere_index]
@@ -2350,33 +2363,32 @@ class MeshConverter:
                     "Sphere",
                 )
 
-        if not is_pmd:
-            full_toon_path = _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)
-            if full_toon_path and os.path.exists(full_toon_path):
-                toon_original_path = ""
-                toon_source_kind = "shared_toon"
-                toon_shared_id = ""
-                if (
-                    getattr(material, "shared_toon_flag", 1) == 0
-                    and all_textures
-                    and 0 <= int(getattr(material, "toon_texture_index", -1)) < len(all_textures)
-                ):
-                    toon_original_path = all_textures[int(material.toon_texture_index)]
-                    toon_source_kind = "pmx_texture"
-                elif hasattr(material, "toon_texture_index"):
-                    toon_shared_id = f"shared_toon:{int(material.toon_texture_index) + 1}"
-                self._connect_dx11_secondary_texture(
-                    shader,
-                    material,
-                    toon_original_path,
-                    full_toon_path,
-                    "ToonTexture",
-                    "HasToonTexture",
-                    "_toon_texture",
-                    "Toon",
-                    source_kind=toon_source_kind,
-                    shared_toon_id=toon_shared_id,
-                )
+        full_toon_path = _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)
+        if full_toon_path and os.path.exists(full_toon_path):
+            toon_original_path = ""
+            toon_source_kind = "shared_toon"
+            toon_shared_id = ""
+            if (
+                getattr(material, "shared_toon_flag", 1) == 0
+                and all_textures
+                and 0 <= int(getattr(material, "toon_texture_index", -1)) < len(all_textures)
+            ):
+                toon_original_path = all_textures[int(material.toon_texture_index)]
+                toon_source_kind = "pmx_texture"
+            elif hasattr(material, "toon_texture_index"):
+                toon_shared_id = f"shared_toon:{int(material.toon_texture_index) + 1}"
+            self._connect_dx11_secondary_texture(
+                shader,
+                material,
+                toon_original_path,
+                full_toon_path,
+                "ToonTexture",
+                "HasToonTexture",
+                "_toon_texture",
+                "Toon",
+                source_kind=toon_source_kind,
+                shared_toon_id=toon_shared_id,
+            )
 
         self._apply_custom_attributes(
             shader,
@@ -2547,9 +2559,9 @@ class MeshConverter:
         # テクスチャ設定
         self._connect_dx11_main_texture(shader, material, texture_path, original_texture_path)
 
-        # スフィアテクスチャ設定（PMXのみ）
+        # PMD-to-PMX conversion preserves sphere texture metadata as well.
         sphere_texture_path = None
-        if not is_pmd and hasattr(material, "sphere_texture_index") and material.sphere_texture_index >= 0:
+        if hasattr(material, "sphere_texture_index") and material.sphere_texture_index >= 0:
             if all_textures and material.sphere_texture_index < len(all_textures):
                 sphere_texture_path = all_textures[material.sphere_texture_index]
                 full_sphere_path = _resolve_texture_path(self.texture_dir, sphere_texture_path)
@@ -2570,39 +2582,38 @@ class MeshConverter:
                         "Sphere",
                     )
 
-        # Toon texture setting. PMX custom toon uses the regular texture table;
+        # Toon texture setting. Custom toon uses the regular texture table;
         # shared toon uses bundled toon01.bmp..toon10.bmp assets.
-        if not is_pmd:
-            full_toon_path = _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)
-            if full_toon_path and os.path.exists(full_toon_path) and cmds.attributeQuery("ToonTexture", node=shader, exists=True):
-                toon_original_path = ""
-                toon_source_kind = "shared_toon"
-                toon_shared_id = ""
-                if (
-                    hasattr(material, "shared_toon_flag")
-                    and hasattr(material, "toon_texture_index")
-                    and int(material.shared_toon_flag) == 0
-                    and all_textures
-                    and 0 <= int(material.toon_texture_index) < len(all_textures)
-                ):
-                    toon_original_path = all_textures[int(material.toon_texture_index)]
-                    toon_source_kind = "pmx_texture"
-                elif hasattr(material, "toon_texture_index"):
-                    toon_shared_id = f"shared_toon:{int(material.toon_texture_index) + 1}"
-                self._connect_dx11_secondary_texture(
-                    shader,
-                    material,
-                    toon_original_path,
-                    full_toon_path,
-                    "ToonTexture",
-                    "HasToonTexture",
-                    "_toon_texture",
-                    "Toon",
-                    source_kind=toon_source_kind,
-                    shared_toon_id=toon_shared_id,
-                )
-            elif full_toon_path:
-                cmds.warning(f"Toon texture file not found: {full_toon_path}")
+        full_toon_path = _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)
+        if full_toon_path and os.path.exists(full_toon_path) and cmds.attributeQuery("ToonTexture", node=shader, exists=True):
+            toon_original_path = ""
+            toon_source_kind = "shared_toon"
+            toon_shared_id = ""
+            if (
+                hasattr(material, "shared_toon_flag")
+                and hasattr(material, "toon_texture_index")
+                and int(material.shared_toon_flag) == 0
+                and all_textures
+                and 0 <= int(material.toon_texture_index) < len(all_textures)
+            ):
+                toon_original_path = all_textures[int(material.toon_texture_index)]
+                toon_source_kind = "pmx_texture"
+            elif hasattr(material, "toon_texture_index"):
+                toon_shared_id = f"shared_toon:{int(material.toon_texture_index) + 1}"
+            self._connect_dx11_secondary_texture(
+                shader,
+                material,
+                toon_original_path,
+                full_toon_path,
+                "ToonTexture",
+                "HasToonTexture",
+                "_toon_texture",
+                "Toon",
+                source_kind=toon_source_kind,
+                shared_toon_id=toon_shared_id,
+            )
+        elif full_toon_path:
+            cmds.warning(f"Toon texture file not found: {full_toon_path}")
 
         # カスタムアトリビュートを適用
         self._apply_custom_attributes(
