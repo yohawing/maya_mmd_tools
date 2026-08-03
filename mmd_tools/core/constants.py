@@ -29,6 +29,10 @@ ATTR_MMD_DISPLAY_FRAMES_JSON = "mmd_display_frames_json"
 ATTR_MMD_CONTROL_RIG_JSON = "mmd_control_rig_json"
 ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON = "mmd_vmd_import_provenance_json"
 ATTR_MMD_MORPH_DATA = "mmdMorphData"
+# Legacy reverse ownership link used by imported non-DAG nodes.  New scene
+# ownership registration will migrate away from root.message fan-out, but the
+# name remains part of the compatibility/audit contract for existing scenes.
+ATTR_MMD_MODEL_ROOT = "mmd_model_root"
 
 # Animator Toolset viewport visibility state on the imported model root.
 ATTR_MMD_SHOW_MESH = "mmd_show_mesh"
