@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Documented the v0.7 export scope: public PMX/PMD/VMD export remains unavailable, while the development PMX path has focused material and fresh-import evidence and PMD export fails closed with `PMD_EXPORT_POLICY_REJECT`.
+- Clarified that additional UV layers and some IK metadata are lossy on the development PMX export path, and that VMD Mode A requires raw imported key/interpolation provenance.
+
 ## [0.6.2] - 2026-08-01
 
 ### Fixed

@@ -21,16 +21,16 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental · �
 
 | Feature | Status | Notes |
 |---|---|---|
-| Mesh | ℹ️ | QDEF and SDEF are not supported. |
-| Materials & textures | ℹ️ | MMD toon shaders are implemented for DX11 and OpenGL. Reproduction fidelity is limited by Viewport 2.0 constraints. |
+| Mesh | ℹ️ | QDEF and SDEF are not supported. Additional UV layers are not preserved by the development PMX export path. |
+| Materials & textures | ℹ️ | MMD toon shaders are implemented for DX11 and OpenGL. Supported PMX material fields have focused import/edit/export/fresh-import checks. PMD material import/display/edit is supported, but PMD export is rejected. Reproduction fidelity is limited by Viewport 2.0 constraints. |
 | Maya name resolution | ✅ | Names are converted to safe Maya names using a dictionary or a hash. Texture paths are also resolved automatically to safe paths. |
 | Edge / outline flags | ℹ️ | Can be enabled as an option, subject to Viewport 2.0 constraints. |
-| Bones, skeleton & rig (IK / append / local axis) | ℹ️ | Partially supported. Some complex models still have known issues. |
+| Bones, skeleton & rig (IK / append / local axis) | ℹ️ | Partially supported. Some complex models still have known issues, and some IK metadata is not preserved by the development PMX export path. |
 | Display frames (表示枠) | ℹ️ | Display-frame names, special-frame flags, and ordered bone/morph items can be edited. |
 | Morphs (vertex / bone / material / group / UV) | ℹ️ | Vertex, bone, material, and UV morphs are supported. Flip and Impulse morphs are not supported. |
 | Physics (rigid bodies & joints) | ℹ️ | Some physics editing operations remain unsupported. PMX/PMD physics data is imported by default; object creation, duplication, and deletion are not yet supported. |
 | Soft body (PMX 2.1) | ⛔ | Not supported |
-| Export | ⛔ | Not supported. Partial public support is planned after import and editing features mature. |
+| Export | ⛔ | Public PMX/PMD export is not available. The development PMX path has focused parse/fresh-import checks; PMD requests fail closed with a policy rejection. Unsupported or lossy fields are not a public guarantee. |
 
 ### Animation (VMD)
 
@@ -44,13 +44,14 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental · �
 | Physics | ℹ️ | Supports Bullet-based real-time physics and physics bake. Live evaluation is off by default and can be enabled from the Physics tab. Accuracy is still limited. |
 | HumanIK / retargeting | 🧪 | Experimental support for retargeting between imported MMD models. Try it from `MMD > HumanIK (Experimental)`. |
 | Control Rig | 🧪 | A Control Rig is generated automatically based on the semi-standard bone layout. |
-| Export | ⛔ | Not supported. Partial public support is planned after import and editing features mature. |
+| Export | ⛔ | Public VMD export is not available. Development Mode C is gated; Mode A requires raw imported key/interpolation provenance, and routes without it must reject or use Mode C. |
 
 ## Known Limitations
 
 - **Detailed documentation is not written yet.** This is an alpha release, and development speed is prioritized over documentation maintenance.
 - **Various features are still incomplete.** This is an experimental alpha release; feedback is welcome.
 - **QDEF and SDEF are not supported.** Meshes may appear thinner with some model and motion combinations.
+- **Export remains development-only.** Additional UV layers and some IK metadata are not preserved by the development PMX export path. PMD export is rejected, and VMD Mode A requires raw imported key/interpolation provenance.
 - **HumanIK is published as an experimental feature.** Only the minimum workflow is exposed. Try it from `MMD > HumanIK (Experimental)`.
 - **Leg rotations and bones that conflict with bone morphs work only under the Control Rig.** Bones may become immovable when their connections conflict with bone morphs.
 
