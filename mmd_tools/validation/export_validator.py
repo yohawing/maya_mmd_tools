@@ -24,6 +24,7 @@ PMD_MAX_TEXTURE_FILE_NAME_BYTES = 19
 UINT32_MAX = 0xFFFFFFFF
 
 _SEQUENCE_TYPES = (str, bytes, bytearray)
+_PathComponent = Tuple[str, Any]
 _BONE_REFERENCE_FIELDS = (
     "parent_index",
     "tail_pos_bone_index",
@@ -350,6 +351,16 @@ def _path_for_index(path: str, index: int) -> str:
     return f"{path}[{index}]" if path else f"[{index}]"
 
 
+def _render_path_components(path: str, components: Sequence[_PathComponent]) -> str:
+    """Render deferred mapping and sequence path components."""
+    for component_type, component in components:
+        if component_type == "key":
+            path = _path_for_key(path, component)
+        else:
+            path = _path_for_index(path, component)
+    return path
+
+
 def _issue(
     issues: List[ExportValidationIssue],
     code: str,
@@ -374,6 +385,17 @@ def _scan_non_finite_numbers(
     issues: List[ExportValidationIssue],
     active: Set[int],
 ) -> None:
+    """Find non-finite numbers while deferring path construction."""
+    _scan_non_finite_numbers_impl(value, path, issues, active, [])
+
+
+def _scan_non_finite_numbers_impl(
+    value: Any,
+    path: str,
+    issues: List[ExportValidationIssue],
+    active: Set[int],
+    components: List[_PathComponent],
+) -> None:
     """Find non-finite numeric payloads without assuming a full schema.
 
     Only mappings and sequences are traversed.  This keeps the validator
@@ -385,13 +407,21 @@ def _scan_non_finite_numbers(
         return
 
     if isinstance(value, Number):
+        issue_path = None
         try:
             finite = math.isfinite(value)
         except (TypeError, ValueError):
-            _issue(issues, "NUMERIC_VALUE_TYPE", path, "numeric payload must be a real number")
+            issue_path = _render_path_components(path, components)
+            _issue(
+                issues,
+                "NUMERIC_VALUE_TYPE",
+                issue_path,
+                "numeric payload must be a real number",
+            )
         else:
             if not finite:
-                _issue(issues, "NON_FINITE_NUMBER", path, "numeric payload must be finite")
+                issue_path = _render_path_components(path, components)
+                _issue(issues, "NON_FINITE_NUMBER", issue_path, "numeric payload must be finite")
         return
 
     if not isinstance(value, (Mapping, Sequence)):
@@ -404,10 +434,18 @@ def _scan_non_finite_numbers(
     try:
         if isinstance(value, Mapping):
             for key, child in value.items():
-                _scan_non_finite_numbers(child, _path_for_key(path, key), issues, active)
+                components.append(("key", key))
+                try:
+                    _scan_non_finite_numbers_impl(child, path, issues, active, components)
+                finally:
+                    components.pop()
         else:
             for index, child in enumerate(value):
-                _scan_non_finite_numbers(child, _path_for_index(path, index), issues, active)
+                components.append(("index", index))
+                try:
+                    _scan_non_finite_numbers_impl(child, path, issues, active, components)
+                finally:
+                    components.pop()
     finally:
         active.remove(value_id)
 

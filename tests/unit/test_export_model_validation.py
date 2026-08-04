@@ -5,11 +5,13 @@ import math
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
 
 install_headless_ui_stubs()
 
+import mmd_tools.validation.export_validator as export_validator  # noqa: E402
 from mmd_tools.actions.export_model_action import (  # noqa: E402
     ExportModelAction,
     ExportModelRequest,
@@ -1309,6 +1311,41 @@ class TestExportModelValidation(unittest.TestCase):
         report = validate_model_data(model_data, "pmx")
 
         self.assertIn("NON_FINITE_NUMBER", [issue.code for issue in report.issues])
+
+    def test_recursive_scan_defers_path_construction_for_finite_payload(self):
+        payload = {
+            "vertices": [
+                {"position": [float(index), 0.0, 0.0]}
+                for index in range(4096)
+            ]
+        }
+        issues = []
+
+        with patch.object(export_validator, "_path_for_key", wraps=export_validator._path_for_key) as key_path, patch.object(
+            export_validator,
+            "_path_for_index",
+            wraps=export_validator._path_for_index,
+        ) as index_path:
+            export_validator._scan_non_finite_numbers(payload, "", issues, set())
+
+        self.assertEqual(issues, [])
+        self.assertEqual(key_path.call_count, 0)
+        self.assertEqual(index_path.call_count, 0)
+
+    def test_recursive_scan_preserves_issue_paths_order_and_cycle_protection(self):
+        payload = {"values": [{"bad": math.nan}, {"bad": math.inf}]}
+        payload["cycle"] = payload
+        issues = []
+
+        export_validator._scan_non_finite_numbers(payload, "", issues, set())
+
+        self.assertEqual(
+            [(issue.code, issue.path) for issue in issues],
+            [
+                ("NON_FINITE_NUMBER", "values[0].bad"),
+                ("NON_FINITE_NUMBER", "values[1].bad"),
+            ],
+        )
 
     def test_action_does_not_call_writer_when_morph_preflight_fails(self):
         exporter = _FakeExporter()
