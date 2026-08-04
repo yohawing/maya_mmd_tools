@@ -4,7 +4,9 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
+import tools.export_release_gate as RELEASE_GATE
 from tools.export_release_gate import (
     _not_run,
     _require_build_path,
@@ -80,6 +82,123 @@ class ExportReleaseGateTests(unittest.TestCase):
             step = {"name": "maya_probe_2024", "status": "pass"}
             self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
             self.assertEqual(step["status"], "fail")
+
+    def test_release_summary_keeps_cli_and_submodule_provenance_separate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out_dir = Path(directory) / "release"
+
+            def run_command(name, command, **_kwargs):
+                if name == "mmd_anim_validation":
+                    report_path = Path(command[-1])
+                    report_path.write_text(
+                        json.dumps(
+                            {
+                                "status": "pass",
+                                "cli": "C:/downloads/mmd-anim.exe",
+                                "cli_version": "mmd-anim 0.2.0",
+                                "expected_cli_version": "mmd-anim 0.2.0",
+                                "version_match": True,
+                                "submodule_revision": "v0.3.3",
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                return {"name": name, "status": "pass", "returncode": 0}
+
+            with mock.patch.object(
+                RELEASE_GATE,
+                "_run_fail_fixture_matrix",
+                return_value={"status": "pass", "fixtures": [], "report_paths": []},
+            ), mock.patch.object(
+                RELEASE_GATE,
+                "_run_command",
+                side_effect=run_command,
+            ), mock.patch.object(
+                RELEASE_GATE,
+                "_report_consistency_step",
+                return_value={"name": "report_consistency", "status": "pass", "checked": [], "failures": []},
+            ):
+                summary = RELEASE_GATE.build_release_summary(
+                    out_dir=out_dir,
+                    maya_versions=(),
+                    mmd_anim_cli="C:/downloads/mmd-anim.exe",
+                    skip_gui=True,
+                    full_gui=False,
+                    skip_focused_tests=True,
+            )
+
+            provenance = summary["mmd_anim_provenance"]
+            self.assertEqual(summary["status"], "fail")
+            self.assertIn("focused_tests", summary["unexecuted"])
+            self.assertEqual(provenance["cli_version"], "mmd-anim 0.2.0")
+            self.assertEqual(provenance["expected_cli_version"], "mmd-anim 0.2.0")
+            self.assertTrue(provenance["version_match"])
+            self.assertEqual(provenance["submodule_revision"], "v0.3.3")
+            self.assertEqual(
+                provenance["relationship"]["cli_submodule_direct_comparison"],
+                "not_applicable",
+            )
+            markdown = (out_dir / "release-summary.md").read_text(encoding="utf-8")
+            self.assertIn("## MMD-Anim Provenance", markdown)
+            self.assertIn("Observed CLI version: `mmd-anim 0.2.0`", markdown)
+            self.assertIn("Checked-out submodule revision: `v0.3.3`", markdown)
+
+    def test_release_summary_does_not_reuse_stale_mmd_anim_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out_dir = Path(directory) / "release"
+            out_dir.mkdir(parents=True)
+            stale_report = out_dir / "mmd-anim-validation.json"
+            stale_report.write_text(
+                json.dumps(
+                    {
+                        "status": "pass",
+                        "cli_version": "mmd-anim 0.1.9",
+                        "expected_cli_version": "mmd-anim 0.1.9",
+                        "version_match": True,
+                        "submodule_revision": "stale",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def run_command(name, _command, **_kwargs):
+                if name == "mmd_anim_validation":
+                    return {
+                        "name": name,
+                        "status": "fail",
+                        "returncode": 1,
+                        "stderr": "timeout",
+                    }
+                return {"name": name, "status": "pass", "returncode": 0}
+
+            with mock.patch.object(
+                RELEASE_GATE,
+                "_run_fail_fixture_matrix",
+                return_value={"status": "pass", "fixtures": [], "report_paths": []},
+            ), mock.patch.object(
+                RELEASE_GATE,
+                "_run_command",
+                side_effect=run_command,
+            ), mock.patch.object(
+                RELEASE_GATE,
+                "_report_consistency_step",
+                return_value={"name": "report_consistency", "status": "pass", "checked": [], "failures": []},
+            ):
+                summary = RELEASE_GATE.build_release_summary(
+                    out_dir=out_dir,
+                    maya_versions=(),
+                    mmd_anim_cli="C:/downloads/mmd-anim.exe",
+                    skip_gui=True,
+                    full_gui=False,
+                    skip_focused_tests=True,
+                )
+
+            provenance = summary["mmd_anim_provenance"]
+            self.assertEqual(summary["status"], "fail")
+            self.assertFalse(stale_report.exists())
+            self.assertEqual(provenance["evidence_status"], "unavailable")
+            self.assertEqual(provenance["validation_status"], None)
+            self.assertIn("not written", provenance["reason"])
 
     def test_scene_oracle_detects_material_semantic_drift(self):
         source = {

@@ -484,6 +484,50 @@ def _maya_path(version: str) -> Path:
     return Path(f"C:/Program Files/Autodesk/Maya{version}/bin/mayapy.exe")
 
 
+def _mmd_anim_provenance(report_path: Path | None) -> dict[str, Any]:
+    """Keep executable and checkout provenance distinct in the release summary."""
+    provenance: dict[str, Any] = {
+        "evidence_status": "not_run" if report_path is None else "unavailable",
+        "validation_report": str(report_path) if report_path is not None else None,
+        "validation_status": None,
+        "cli": None,
+        "cli_version": None,
+        "expected_cli_version": None,
+        "version_match": None,
+        "submodule_revision": None,
+        "relationship": {
+            "cli_version_compared_to": "expected_cli_version",
+            "submodule_revision_role": "checked-out source provenance",
+            "cli_submodule_direct_comparison": "not_applicable",
+        },
+    }
+    if report_path is None:
+        return provenance
+    if not report_path.is_file():
+        provenance["reason"] = "MMD-Anim validation report was not written"
+        return provenance
+    try:
+        report = _load_json(report_path)
+    except (OSError, ValueError, TypeError) as exc:
+        provenance["reason"] = f"invalid MMD-Anim validation report: {type(exc).__name__}: {exc}"
+        return provenance
+    if not isinstance(report, dict):
+        provenance["reason"] = "MMD-Anim validation report must be a JSON object"
+        return provenance
+    provenance.update(
+        {
+            "evidence_status": "recorded",
+            "validation_status": report.get("status"),
+            "cli": report.get("cli"),
+            "cli_version": report.get("cli_version"),
+            "expected_cli_version": report.get("expected_cli_version"),
+            "version_match": report.get("version_match"),
+            "submodule_revision": report.get("submodule_revision"),
+        }
+    )
+    return provenance
+
+
 def build_release_summary(
     *,
     out_dir: Path,
@@ -575,8 +619,12 @@ def build_release_summary(
                 )
             )
 
+    mmd_report: Path | None = None
     if mmd_anim_cli:
         mmd_report = out_dir / "mmd-anim-validation.json"
+        for stale_report in (mmd_report, mmd_report.with_suffix(".md")):
+            if stale_report.exists():
+                stale_report.unlink()
         steps.append(
             _run_command(
                 "mmd_anim_validation",
@@ -605,6 +653,7 @@ def build_release_summary(
         for step in steps
         if step["status"] == "fail"
     ]
+    mmd_anim_provenance = _mmd_anim_provenance(mmd_report)
     summary = {
         "schema_version": 1,
         "gate": "V070-EXPORT-RELEASE-GATE-1",
@@ -624,6 +673,7 @@ def build_release_summary(
                 "full legacy GUI regression suite",
             ],
         },
+        "mmd_anim_provenance": mmd_anim_provenance,
         "steps": steps,
         "unexecuted": unexecuted,
         "blockers": blockers,
@@ -637,6 +687,19 @@ def build_release_summary(
         f"- Status: `{summary['status'].upper()}`",
         f"- Gate: `{summary['gate']}`",
         f"- Maya versions: `{', '.join(summary['maya_versions'])}`",
+        "",
+        "## MMD-Anim Provenance",
+        "",
+        f"- Evidence status: `{mmd_anim_provenance['evidence_status']}`",
+        f"- Validation report: `{mmd_anim_provenance['validation_report'] or 'not generated'}`",
+        f"- Validation status: `{mmd_anim_provenance['validation_status'] or 'unavailable'}`",
+        f"- CLI: `{mmd_anim_provenance['cli'] or 'unavailable'}`",
+        f"- Observed CLI version: `{mmd_anim_provenance['cli_version'] or 'unavailable'}`",
+        f"- Expected CLI version: `{mmd_anim_provenance['expected_cli_version'] or 'not configured'}`",
+        f"- CLI version match: `{str(mmd_anim_provenance['version_match']).lower()}`",
+        f"- Checked-out submodule revision: `{mmd_anim_provenance['submodule_revision'] or 'unavailable'}`",
+        "- Relationship: CLI version is compared only with expected CLI version; "
+        "the checked-out submodule revision is separate source provenance and is not directly compared.",
         "",
         "## Steps",
         "",
