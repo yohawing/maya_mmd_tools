@@ -1,5 +1,7 @@
 """Focused contracts for the v0.7 export release-gate orchestrator."""
 
+import ast
+import inspect
 import json
 from pathlib import Path
 import tempfile
@@ -14,7 +16,7 @@ from tools.export_release_gate import (
     _maya_path,
     _validate_maya_probe_report,
 )
-from tools.export_release_maya_probe import _compare_scene_oracles
+from tools.export_release_maya_probe import _compare_scene_oracles, _run_vmd_case
 
 
 class ExportReleaseGateTests(unittest.TestCase):
@@ -29,6 +31,36 @@ class ExportReleaseGateTests(unittest.TestCase):
         ) as resolver:
             self.assertEqual(_maya_path("2024"), Path("custom-maya/mayapy"))
         resolver.assert_called_once_with("2024")
+
+    def test_maya_vmd_probe_explicitly_acknowledges_mode_c_warning(self):
+        """The Maya probe accepts the explicit Mode C raw-provenance warning."""
+        function = ast.parse(inspect.getsource(_run_vmd_case))
+        execute = next(
+            node
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "execute"
+        )
+        keyword_values = {keyword.arg: keyword.value for keyword in execute.keywords}
+        self.assertIs(ast.literal_eval(keyword_values["acknowledge_warnings"]), True)
+
+        request = next(
+            node
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "ExportWorkflowRequest"
+        )
+        options = request.args[1]
+        self.assertIn(
+            "C",
+            [
+                ast.literal_eval(value)
+                for key, value in zip(options.keys, options.values)
+                if isinstance(key, ast.Constant) and key.value == "vmd_mode"
+            ],
+        )
 
     def test_require_build_path_rejects_paths_outside_build(self):
         with self.assertRaises(ValueError):
@@ -77,20 +109,178 @@ class ExportReleaseGateTests(unittest.TestCase):
                         "report_json": str(root / export_format / "report.json"),
                         "report_md": str(root / export_format / "report.md"),
                     }
-                    for export_format in ("pmx", "pmd", "vmd")
+                    for export_format in (
+                        "pmx",
+                        "pmx_morph",
+                        "pmx_physics",
+                        "pmx_soft_body",
+                        "pmx_sdef",
+                        "pmx_impulse",
+                        "pmd",
+                        "vmd",
+                    )
                 ],
             }
-            report["cases"][1].update(
+            pmd_case = next(case for case in report["cases"] if case["format"] == "pmd")
+            pmd_case.update(
                 status="policy-reject",
                 policy_code="PMD_EXPORT_POLICY_REJECT",
             )
+            physics_case = next(case for case in report["cases"] if case["format"] == "pmx_physics")
+            physics_case.update(
+                parsed_counts={"rigid_bodies": 16, "joints": 19},
+                input_normalizations=[],
+            )
+            morph_case = next(case for case in report["cases"] if case["format"] == "pmx_morph")
+            morph_entries = [
+                {"index": 0, "name": "vertex", "type": "vertex"},
+                {
+                    "index": 1,
+                    "name": "bone",
+                    "name_en": "bone",
+                    "type": "bone",
+                    "panel": 0,
+                    "offsets": [{"bone_index": 0}],
+                },
+                {
+                    "index": 2,
+                    "name": "material",
+                    "name_en": "material",
+                    "type": "material",
+                    "panel": 0,
+                    "offsets": [{"material_index": 0}],
+                },
+                {
+                    "index": 3,
+                    "name": "group",
+                    "name_en": "group",
+                    "type": "group",
+                    "panel": 0,
+                    "offsets": [{"morph_index": 0, "morph_rate": 1.0}],
+                },
+            ]
+            controller_outputs = {
+                str(index): [1.0 if index == output else 0.0 for output in range(4)]
+                for index in range(4)
+            }
+            morph_case.update(
+                parsed_counts={"morphs": 4},
+                morph_coverage={
+                    "verified_types": list(RELEASE_GATE.MORPH_ORACLE_TYPES),
+                    "verified_fields": {
+                        name: list(fields) for name, fields in RELEASE_GATE.MORPH_ORACLE_FIELDS.items()
+                    },
+                    "excluded_boundaries": list(RELEASE_GATE.MORPH_ORACLE_EXCLUSIONS),
+                    "source_oracle": "PMX parser payload",
+                    "scene_oracle": "direct Maya DAG/network attributes and controller outputs",
+                },
+                morph_oracle={
+                    "source": {
+                        "morphs": morph_entries,
+                        "vertex_offsets": {
+                            "0": [{"vertex_index": 0, "object_space_delta": [0.0, 1.0, 0.0]}]
+                        },
+                        "controller_outputs": controller_outputs,
+                        "unsupported_types": [],
+                    },
+                    "fresh_import": {
+                        "morphs": morph_entries,
+                        "vertex_meshes": [{"vertex_count": 1, "source_vertex_indices": None}],
+                        "vertex_runtime_deltas": {"0": [[0.0, 1.0, 0.0]]},
+                        "controller_outputs": controller_outputs,
+                        "unsupported_types": [],
+                    },
+                    "comparison": {
+                        "status": "pass",
+                        "checked_types": list(RELEASE_GATE.MORPH_ORACLE_TYPES),
+                    },
+                },
+            )
+            soft_body_case = next(
+                case for case in report["cases"] if case["format"] == "pmx_soft_body"
+            )
+            soft_body_case.update(
+                status="policy-reject",
+                policy_code="PMX_SOFT_BODIES_UNSUPPORTED",
+                import_oracles={"soft_body_count": 1},
+                output=None,
+                collection={
+                    "source_fresh_import": True,
+                    "export_writer_called": False,
+                },
+            )
+            for export_format, policy_code, prefix in (
+                ("pmx_sdef", "PMX_VERTEX_SDEF_UNSUPPORTED", "sdef"),
+                ("pmx_impulse", "MORPH_TYPE_UNSUPPORTED", "impulse"),
+            ):
+                policy_case = next(case for case in report["cases"] if case["format"] == export_format)
+                policy_case.update(
+                    status="policy-reject",
+                    policy_code=policy_code,
+                    import_oracles={
+                        f"source_{prefix}_{'vertex' if prefix == 'sdef' else 'morph'}_count": 1,
+                        f"fresh_import_{prefix}_{'vertex' if prefix == 'sdef' else 'morph'}_count": 1,
+                        "provenance_vertex_count" if prefix == "sdef" else "provenance_offset_count": 1,
+                        f"collected_{prefix}_{'vertex' if prefix == 'sdef' else 'morph'}_count": 1,
+                    },
+                    collection={
+                        "source_fresh_import": True,
+                        "export_writer_called": False,
+                    },
+                    output_safety={
+                        "target_existed_before": True,
+                        "target_exists_after": True,
+                        "created": False,
+                        "overwritten": False,
+                        "preserved": True,
+                        "writer_called": False,
+                    },
+                )
             report_path.write_text(json.dumps(report), encoding="utf-8")
 
             step = {"name": "maya_probe_2024", "status": "pass"}
             report_paths = _validate_maya_probe_report(step, report_path, "2024")
 
             self.assertEqual(step["status"], "pass")
-            self.assertEqual({path.parent.name for path in report_paths}, {"pmx", "pmd", "vmd"})
+            self.assertEqual(
+                {path.parent.name for path in report_paths},
+                {
+                    "pmx",
+                    "pmx_morph",
+                    "pmx_physics",
+                    "pmx_soft_body",
+                    "pmx_sdef",
+                    "pmx_impulse",
+                    "pmd",
+                    "vmd",
+                },
+            )
+
+            soft_body_case["collection"] = {
+                "source_fresh_import": False,
+                "export_writer_called": True,
+            }
+            soft_body_case["output"] = str(root / "pmx_soft_body" / "model.pmx")
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            step = {"name": "maya_probe_2024", "status": "pass"}
+            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
+            self.assertEqual(step["status"], "fail")
+            self.assertIn("source_fresh_import must be true", step["error"])
+            self.assertIn("export_writer_called must be false", step["error"])
+            self.assertIn("output must be null", step["error"])
+
+            soft_body_case["collection"] = {
+                "source_fresh_import": True,
+                "export_writer_called": False,
+            }
+            soft_body_case["output"] = None
+
+            morph_case["morph_oracle"]["fresh_import"]["controller_outputs"] = {}
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            step = {"name": "maya_probe_2024", "status": "pass"}
+            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
+            self.assertEqual(step["status"], "fail")
+            self.assertIn("controller_outputs", step["error"])
 
             report["cases"][-1]["status"] = "fail"
             report_path.write_text(json.dumps(report), encoding="utf-8")
@@ -262,6 +452,94 @@ class ExportReleaseGateTests(unittest.TestCase):
         self.assertTrue(any("material[0].edge_size" in failure for failure in failures))
         self.assertTrue(any("material[0].memo" in failure for failure in failures))
         self.assertFalse(any("material[0].sphere_texture_path" in failure for failure in failures))
+
+    def test_scene_oracle_detects_physics_semantic_drift(self):
+        source = {
+            "metadata": {"mmd_file_type": "pmx", "mmd_model_name": "fixture"},
+            "physics": {
+                "rigid_bodies": [
+                    {
+                        "pmx_index": 0,
+                        "name": "hair",
+                        "name_en": "Hair",
+                        "related_bone_index": 2,
+                        "group": 1,
+                        "collision_mask": 65534,
+                        "shape_type": 0,
+                        "physics_mode": 2,
+                        "size": [0.2, 0.3, 0.4],
+                        "position": [1.0, 2.0, 3.0],
+                        "rotation": [0.0, 0.1, 0.2],
+                        "mass": 0.5,
+                        "velocity_attenuation": 0.1,
+                        "rotation_attenuation": 0.2,
+                        "elasticity": 0.3,
+                        "friction": 0.4,
+                    }
+                ],
+                "joints": [
+                    {
+                        "pmx_index": 0,
+                        "name": "joint",
+                        "name_en": "Joint",
+                        "joint_type": 0,
+                        "rigid_body_a_index": 0,
+                        "rigid_body_b_index": 1,
+                        "position": [0.0, 1.0, 2.0],
+                        "rotation": [0.1, 0.2, 0.3],
+                        "translation_limit_min": [-1.0, -1.0, -1.0],
+                        "translation_limit_max": [1.0, 1.0, 1.0],
+                        "rotation_limit_min": [-0.1, -0.2, -0.3],
+                        "rotation_limit_max": [0.1, 0.2, 0.3],
+                        "spring_translation": [0.0, 0.0, 0.0],
+                        "spring_rotation": [0.0, 0.0, 0.0],
+                    }
+                ],
+            },
+        }
+        actual = {
+            **source,
+            "physics": {
+                **source["physics"],
+                "rigid_bodies": [
+                    {
+                        **source["physics"]["rigid_bodies"][0],
+                        "mass": 0.75,
+                    }
+                ],
+            },
+        }
+
+        failures = _compare_scene_oracles(source, actual, pose=False, mesh=False, materials=False, physics=True)
+
+        self.assertTrue(any("physics.rigid_bodies[0].mass" in failure for failure in failures))
+
+    def test_scene_oracle_detects_morph_runtime_drift(self):
+        source = {
+            "metadata": {"mmd_file_type": "pmx", "mmd_model_name": "fixture"},
+            "morphs": {
+                "morphs": [{"index": 0, "name": "smile", "type": "vertex"}],
+                "vertex_offsets": {
+                    "0": [{"vertex_index": 0, "object_space_delta": [0.0, 1.0, 2.0]}]
+                },
+                "controller_outputs": {"0": [1.0]},
+                "unsupported_types": [],
+            },
+        }
+        actual = {
+            **source,
+            "morphs": {
+                "morphs": [{"index": 0, "name": "smile", "type": "vertex"}],
+                "vertex_meshes": [{"vertex_count": 1, "source_vertex_indices": None}],
+                "vertex_runtime_deltas": {"0": [[0.0, 1.0, 2.25]]},
+                "controller_outputs": {"0": [1.0]},
+                "unsupported_types": [],
+            },
+        }
+
+        failures = _compare_scene_oracles(source, actual, pose=False, mesh=False, materials=False, morphs=True)
+
+        self.assertTrue(any("morphs[0] mesh[0] vertices max error" in failure for failure in failures))
 
 
 if __name__ == "__main__":

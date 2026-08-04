@@ -9,6 +9,7 @@ import sys
 import time
 import argparse
 import logging
+import os
 import re
 import shutil
 import tempfile
@@ -27,6 +28,8 @@ LOG_FILE_NAME = "ui_test_results.log"
 MAYA_START_TIMEOUT = 120  # seconds
 TEST_EXECUTION_TIMEOUT = 600  # seconds
 LOG_POLL_INTERVAL = 1  # second
+MAYA_PYTHON_READY_TIMEOUT = 120  # seconds
+MAYA_PYTHON_READY_POLL_INTERVAL = 0.25  # second
 GUI_TEST_FINISHED_MARKER = "//-- GUI TEST FINISHED --//"
 GUI_TEST_STATUSES = frozenset(("PASS", "FAIL", "NO_TESTS", "ERROR"))
 _COMPLETION_RE = re.compile(
@@ -72,6 +75,21 @@ def monitor_log_file(log_path, timeout):
     raise TimeoutError("Timed out waiting for test completion.")
 
 
+def wait_for_maya_python_ready(marker_path, timeout=MAYA_PYTHON_READY_TIMEOUT):
+    """Wait until Maya has executed the commandPort readiness payload."""
+    marker_path = Path(marker_path)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            if marker_path.is_file() and marker_path.read_text(encoding="utf-8") == "ready":
+                return
+        except (OSError, UnicodeError):
+            pass
+        remaining = max(0.0, deadline - time.time())
+        time.sleep(min(MAYA_PYTHON_READY_POLL_INTERVAL, remaining))
+    raise TimeoutError(f"Timed out waiting for Maya Python readiness marker: {marker_path}")
+
+
 def main():
     """
     Main function to orchestrate the test run.
@@ -88,18 +106,29 @@ def main():
     )
     parser.add_argument("--test_path", default="tests/gui", help="Path to the test directory (relative to project root)")
     parser.add_argument("--test_filter", default=None, help="Optional substring matched against discovered test IDs")
+    parser.add_argument(
+        "--log_path",
+        default=None,
+        help="Path to the GUI test log (relative to project root; default: logs/ui_test_results.log)",
+    )
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent.parent
-    log_dir = project_root / "logs"
-    log_dir.mkdir(exist_ok=True)
-    log_file_path = log_dir / LOG_FILE_NAME
+    log_file_path = Path(args.log_path) if args.log_path else Path("logs") / LOG_FILE_NAME
+    if not log_file_path.is_absolute():
+        log_file_path = project_root / log_file_path
+    log_file_path = log_file_path.resolve()
+    log_file_path.parent.mkdir(parents=True, exist_ok=True)
+    log_dir = log_file_path.parent
+    readiness_marker = log_dir / f".maya_commandport_ready_{args.maya_version}_{os.getpid()}.txt"
+    commandport_script = (log_dir / f"commandport_{COMMAND_PORT}.mel").resolve()
 
     # Clean up old log file
     if log_file_path.exists():
         log_file_path.unlink()
 
     maya_process = None
+    maya_process_id = None
     command_port_ready = False
     maya_app_dir = Path(tempfile.mkdtemp(prefix=f"maya_mmd_tools_gui_{args.maya_version}_"))
     maya_launched = False
@@ -108,6 +137,7 @@ def main():
         # 1. Find and launch Maya
         maya_exe = maya_commandport.maya_exe(args.maya_version)
         logger.info("Maya executable: %s", maya_exe)
+        maya_commandport.ensure_port_available(COMMAND_PORT)
         maya_process = maya_commandport.launch_maya(
             version=args.maya_version,
             project_root=project_root,
@@ -125,7 +155,25 @@ def main():
         )
         maya_launched = True
         maya_commandport.wait_for_port(COMMAND_PORT, MAYA_START_TIMEOUT, maya_process)
+        if maya_process is None and sys.platform == "win32":
+            maya_process_id = maya_commandport.wait_for_maya_process_id(commandport_script, MAYA_START_TIMEOUT)
         command_port_ready = True
+
+        try:
+            readiness_marker.unlink()
+        except FileNotFoundError:
+            pass
+        readiness_command = f"""
+from pathlib import Path
+Path({str(readiness_marker)!r}).write_text("ready", encoding="utf-8")
+"""
+        maya_commandport.send_python(
+            COMMAND_PORT,
+            readiness_command,
+            label="<maya-commandport-readiness>",
+        )
+        wait_for_maya_python_ready(readiness_marker)
+        logger.info("Maya Python commandPort readiness marker found: %s", readiness_marker)
 
         # 2. Prepare and send the test execution command
         test_command = f"""
@@ -163,15 +211,34 @@ GuiTestRunner.run_tests_from_command(log_path, test_dir, test_filter)
                 maya_commandport.quit_maya(COMMAND_PORT)
                 if maya_process:
                     maya_process.wait(timeout=30)
+                elif maya_process_id is not None:
+                    maya_commandport.wait_for_port_close(COMMAND_PORT, timeout=30)
+                    maya_exited = maya_commandport.wait_for_maya_process_exit(
+                        maya_process_id,
+                        commandport_script,
+                        timeout=30,
+                    )
+                    if not maya_exited:
+                        maya_exited = maya_commandport.terminate_maya_process(
+                            maya_process_id,
+                            commandport_script,
+                        )
                 else:
                     maya_commandport.wait_for_port_close(COMMAND_PORT, timeout=30)
-                maya_exited = True
+                if maya_process is not None:
+                    maya_exited = True
             except Exception as e:
                 if maya_process:
                     logger.warning("Failed to quit owned Maya process gracefully, killing it: %s", e)
                     maya_process.kill()
                     maya_process.wait(timeout=30)
                     maya_exited = True
+                elif maya_process_id is not None:
+                    logger.warning("Failed to quit owned Explorer-launched Maya gracefully: %s", e)
+                    maya_exited = maya_commandport.terminate_maya_process(
+                        maya_process_id,
+                        commandport_script,
+                    )
                 else:
                     logger.warning("Failed to request Explorer-launched Maya quit: %s", e)
         elif maya_process:
@@ -181,6 +248,10 @@ GuiTestRunner.run_tests_from_command(log_path, test_dir, test_filter)
                 maya_process.wait(timeout=30)
             maya_exited = True
         maya_commandport.close_process_logs(maya_process)
+        try:
+            readiness_marker.unlink()
+        except FileNotFoundError:
+            pass
         if maya_exited or not maya_launched:
             shutil.rmtree(maya_app_dir, ignore_errors=True)
         else:

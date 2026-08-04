@@ -58,6 +58,59 @@ class GuiTestBase(unittest.TestCase):
                     pass
 
 
+class _LifecycleTextTestResult(unittest.TextTestResult):
+    """Text result that flushes per-test lifecycle messages to its stream."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._unfinished_test_ids = set()
+
+    def _write_lifecycle(self, test, phase, outcome=None):
+        message = f"[GUI TEST] {phase} {test.id()}"
+        if outcome is not None:
+            message += f" outcome={outcome}"
+        self.stream.write(message + "\n")
+        self.stream.flush()
+
+    def startTest(self, test):
+        super().startTest(test)
+        self._unfinished_test_ids.add(id(test))
+        self._write_lifecycle(test, "START")
+
+    def _write_test_end(self, test, outcome):
+        self._unfinished_test_ids.discard(id(test))
+        self._write_lifecycle(test, "END", outcome)
+
+    def addSuccess(self, test):
+        super().addSuccess(test)
+        self._write_test_end(test, "success")
+
+    def addError(self, test, err):
+        super().addError(test, err)
+        self._write_test_end(test, "error")
+
+    def addFailure(self, test, err):
+        super().addFailure(test, err)
+        self._write_test_end(test, "failure")
+
+    def addSkip(self, test, reason):
+        super().addSkip(test, reason)
+        self._write_test_end(test, "skipped")
+
+    def addExpectedFailure(self, test, err):
+        super().addExpectedFailure(test, err)
+        self._write_test_end(test, "expected_failure")
+
+    def addUnexpectedSuccess(self, test):
+        super().addUnexpectedSuccess(test)
+        self._write_test_end(test, "unexpected_success")
+
+    def stopTest(self, test):
+        if id(test) in self._unfinished_test_ids:
+            self._write_test_end(test, "unknown")
+        super().stopTest(test)
+
+
 class GuiTestRunner:
     """
     A static class to run GUI tests from an external command.
@@ -128,7 +181,11 @@ class GuiTestRunner:
 
             # Run tests
             print(f"Found {suite.countTestCases()} tests to run.")
-            runner = unittest.TextTestRunner(stream=log_file, verbosity=2)
+            runner = unittest.TextTestRunner(
+                stream=log_file,
+                verbosity=2,
+                resultclass=_LifecycleTextTestResult,
+            )
             result = runner.run(suite)
             status = "PASS" if result.wasSuccessful() else "FAIL"
             return status
@@ -138,6 +195,7 @@ class GuiTestRunner:
             return status
         finally:
             print(f"\n//-- GUI TEST FINISHED --// status={status}")
+            log_file.flush()
             log_file.close()
             # Restore original stdout/stderr
             sys.stdout = original_stdout

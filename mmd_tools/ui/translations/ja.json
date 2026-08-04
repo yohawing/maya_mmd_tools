@@ -440,6 +440,8 @@
     "sphere_mode": "スフィアモード:",
     "toon_texture": "トゥーンテクスチャ:",
     "toon_sharing": "トゥーン共有:",
+    "toon_texture_path": "カスタムトゥーンテクスチャパス:",
+    "toon_texture_index": "カスタムトゥーンテクスチャインデックス:",
     "memo": "メモ:",
     "face_count": "面数:",
     "edge_color": "エッジ色:",

@@ -9,7 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Documented the v0.7 export scope: public PMX/PMD/VMD export remains unavailable, while the development PMX path has focused material and fresh-import evidence and PMD export fails closed with `PMD_EXPORT_POLICY_REJECT`.
-- Clarified that additional UV layers and some IK metadata are lossy on the development PMX export path, and that VMD Mode A requires raw imported key/interpolation provenance.
+- Clarified that some IK metadata is lossy on the development PMX export path, and that VMD Mode A requires raw imported key/interpolation provenance.
+- Clarified that PMX UV morphs preserve raw four-component metadata for development round-trip, while Maya UV-set runtime evaluation remains unverified and is not exposed as a supported editing capability.
+- Defined the public PMX policy for PMX 2.0 SDEF vertices and PMX 2.1 Impulse morphs: import raw provenance and SDEF skin readback remain available, but model export rejects both explicitly instead of claiming semantic round-trip support.
+- Added canonical MaterialTab authoring for shared toon indices and non-shared custom toon path/index, with PMX parse and Maya 2024/2026 fresh-import evidence.
 
 ## [0.6.2] - 2026-08-01
 

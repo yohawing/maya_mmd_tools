@@ -18,6 +18,8 @@ from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_EDGE_SIZE,
     ATTR_MMD_SHADER_OUTLINE_ENABLED,
     ATTR_MMD_DRAW_FLAGS,
+    ATTR_MMD_SHARED_TOON_FLAG,
+    ATTR_MMD_TOON_PATH,
     ATTR_MMD_TOON_TEXTURE_INDEX,
 )
 
@@ -39,6 +41,9 @@ class TestMaterialPresenter(unittest.TestCase):
                 "sphere_map_path_edit",
                 "sphere_mode_combo",
                 "toon_texture_combo",
+                "toon_sharing_check",
+                "toon_texture_path_edit",
+                "toon_texture_index_spin",
                 "diffuse_color_widget",
                 "specular_color_widget",
                 "ambient_color_widget",
@@ -113,6 +118,9 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_view.sphere_map_path_edit.text.return_value = ""
         self.mock_view.sphere_mode_combo.currentIndex.return_value = 0
         self.mock_view.toon_texture_combo.currentIndex.return_value = 0
+        self.mock_view.toon_sharing_check.isChecked.return_value = True
+        self.mock_view.toon_texture_path_edit.text.return_value = ""
+        self.mock_view.toon_texture_index_spin.value.return_value = -1
         self.mock_view.edge_size_spin.value.return_value = 1.5
         for checkbox in [
             self.mock_view.both_face_check,
@@ -895,6 +903,59 @@ class TestMaterialPresenter(unittest.TestCase):
             "mmd_specular_coefficient",
         ):
             self.assertNotIn(attr, defaults)
+        self.assertEqual(defaults[ATTR_MMD_SHARED_TOON_FLAG], 1)
+        self.assertEqual(defaults[ATTR_MMD_TOON_TEXTURE_INDEX], 0)
+        self.assertNotIn("mmd_toon_index", defaults)
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_apply_mmd_attributes_writes_shared_toon_canonical_fields(self, mock_maya_attribute_utils):
+        """Shared Toon uses the built-in combo and never writes custom provenance."""
+        self._configure_apply_inputs()
+        self.mock_view.toon_sharing_check.isChecked.return_value = True
+        self.mock_view.toon_texture_combo.currentIndex.return_value = 4
+        self.mock_maya_adapter.attribute_exists.return_value = True
+
+        self.presenter._apply_mmd_attributes()
+
+        mock_maya_attribute_utils.set_attribute.assert_any_call(
+            "test_material", ATTR_MMD_SHARED_TOON_FLAG, 1, "int"
+        )
+        mock_maya_attribute_utils.set_attribute.assert_any_call(
+            "test_material", ATTR_MMD_TOON_TEXTURE_INDEX, 4, "int"
+        )
+        self.assertFalse(
+            any(
+                call.args[1] == ATTR_MMD_TOON_PATH
+                for call in mock_maya_attribute_utils.set_attribute.call_args_list
+            )
+        )
+        self.assertFalse(
+            any("mmd_toon_index" in call.args[1] for call in mock_maya_attribute_utils.set_attribute.call_args_list)
+        )
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_apply_mmd_attributes_writes_custom_toon_canonical_fields(self, mock_maya_attribute_utils):
+        """Custom Toon preserves its relative path and texture-table index."""
+        self._configure_apply_inputs()
+        self.mock_view.toon_sharing_check.isChecked.return_value = False
+        self.mock_view.toon_texture_path_edit.text.return_value = "textures/custom_toon.png"
+        self.mock_view.toon_texture_index_spin.value.return_value = 3
+        self.mock_maya_adapter.attribute_exists.return_value = True
+
+        self.presenter._apply_mmd_attributes()
+
+        mock_maya_attribute_utils.set_attribute.assert_any_call(
+            "test_material", ATTR_MMD_SHARED_TOON_FLAG, 0, "int"
+        )
+        mock_maya_attribute_utils.set_attribute.assert_any_call(
+            "test_material", ATTR_MMD_TOON_TEXTURE_INDEX, 3, "int"
+        )
+        mock_maya_attribute_utils.set_custom_attributes.assert_any_call(
+            "test_material", {ATTR_MMD_TOON_PATH: "textures/custom_toon.png"}
+        )
+        self.assertFalse(
+            any("mmd_toon_index" in call.args[1] for call in mock_maya_attribute_utils.set_attribute.call_args_list)
+        )
 
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
     def test_standard_surface_preserves_mmd_coefficient_and_direct_specular_without_edit(

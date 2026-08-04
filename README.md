@@ -21,13 +21,13 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental · �
 
 | Feature | Status | Notes |
 |---|---|---|
-| Mesh | ℹ️ | QDEF and SDEF are not supported. Additional UV layers are not preserved by the development PMX export path. |
-| Materials & textures | ℹ️ | MMD toon shaders are implemented for DX11 and OpenGL. Supported PMX material fields have focused import/edit/export/fresh-import checks. PMD material import/display/edit is supported, but PMD export is rejected. Reproduction fidelity is limited by Viewport 2.0 constraints. |
+| Mesh | ℹ️ | QDEF and SDEF are not supported. Additional UV layers are preserved as PMX metadata by the development export path; UV morph runtime evaluation in Maya is not verified. |
+| Materials & textures | ℹ️ | MMD toon shaders are implemented for DX11 and OpenGL. Supported PMX material fields, including shared toon indices and non-shared custom toon path/index authoring, have focused import/edit/export/fresh-import checks. PMD material import/display/edit is supported, but PMD export is rejected. Reproduction fidelity is limited by Viewport 2.0 constraints. |
 | Maya name resolution | ✅ | Names are converted to safe Maya names using a dictionary or a hash. Texture paths are also resolved automatically to safe paths. |
 | Edge / outline flags | ℹ️ | Can be enabled as an option, subject to Viewport 2.0 constraints. |
 | Bones, skeleton & rig (IK / append / local axis) | ℹ️ | Partially supported. Some complex models still have known issues, and some IK metadata is not preserved by the development PMX export path. |
 | Display frames (表示枠) | ℹ️ | Display-frame names, special-frame flags, and ordered bone/morph items can be edited. |
-| Morphs (vertex / bone / material / group / UV) | ℹ️ | Vertex, bone, material, and UV morphs are supported. Flip and Impulse morphs are not supported. |
+| Morphs (vertex / bone / material / group / UV) | ℹ️ | Vertex, bone, material, and group morphs are supported. UV morphs preserve PMX metadata for development round-trip, but do not currently deform Maya UV sets and remain unverified. Flip and Impulse morphs are not supported. |
 | Physics (rigid bodies & joints) | ℹ️ | Some physics editing operations remain unsupported. PMX/PMD physics data is imported by default; object creation, duplication, and deletion are not yet supported. |
 | Soft body (PMX 2.1) | ⛔ | Not supported |
 | Export | ⛔ | Public PMX/PMD export is not available. The development PMX path has focused parse/fresh-import checks; PMD requests fail closed with a policy rejection. Unsupported or lossy fields are not a public guarantee. |
@@ -38,7 +38,7 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental · �
 |---|---|---|
 | Bone animation | ℹ️ | Basic MMD rigs are supported, but complex mechanisms are not. Bake mode uses [mmd-anim](https://github.com/yohawing/mmd-anim) for high-accuracy baking. |
 | VPD | ✅ | Drag-and-drop import only |
-| Morph animation | ℹ️ | Vertex, bone, material, and UV morphs are supported. Flip and Impulse morphs are not supported. |
+| Morph animation | ℹ️ | Vertex, bone, and material morphs are supported. UV morph metadata is preserved for development round-trip, but Maya UV-set runtime evaluation remains unverified. Flip and Impulse morphs are not supported. |
 | Camera animation | ✅ | Creates and keys `mmd_camera`. Lighting drives the `mmd_light` controller. Self-shadow is not supported. |
 | IK on/off frames | ℹ️ | Supported for import and bake. Runtime bake applies the state to the final pose; rig mode keys `mmdCcdIk.enabled`. |
 | Physics | ℹ️ | Supports Bullet-based real-time physics and physics bake. Live evaluation is off by default and can be enabled from the Physics tab. Accuracy is still limited. |
@@ -51,7 +51,7 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental · �
 - **Detailed documentation is not written yet.** This is an alpha release, and development speed is prioritized over documentation maintenance.
 - **Various features are still incomplete.** This is an experimental alpha release; feedback is welcome.
 - **QDEF and SDEF are not supported.** Meshes may appear thinner with some model and motion combinations.
-- **Export remains development-only.** Additional UV layers and some IK metadata are not preserved by the development PMX export path. PMD export is rejected, and VMD Mode A requires raw imported key/interpolation provenance.
+- **Export remains development-only.** UV morphs preserve raw PMX metadata but are not evaluated on Maya UV sets; some IK metadata remains lossy on the development PMX path. PMD export is rejected, and VMD Mode A requires raw imported key/interpolation provenance.
 - **HumanIK is published as an experimental feature.** Only the minimum workflow is exposed. Try it from `MMD > HumanIK (Experimental)`.
 - **Leg rotations and bones that conflict with bone morphs work only under the Control Rig.** Bones may become immovable when their connections conflict with bone morphs.
 

@@ -698,7 +698,7 @@ class TestPmxExporter(MayaTestBase):
         self.assertFalse(os.path.exists(output_path))
 
     def test_roundtrip_single_tagged_material_preserves_texture_table(self):
-        """Direct collection resolves tagged material paths before PMX export."""
+        """Tagged material semantics survive collection, export, and parsing."""
         transform, _ = self._make_triangle(name="tagged_texture_mesh")
         self._assign_tagged_shader_with_textures(transform)
 
@@ -706,8 +706,21 @@ class TestPmxExporter(MayaTestBase):
 
         self.assertEqual(maya_data["textures"], ["textures/body.png", "textures/body.spa"])
         material = maya_data["materials"][0]
+        self.assertEqual(material["name"], "Tagged material")
+        self.assertEqual(material["name_english"], "Tagged material")
+        self.assertListAlmostEqual(material["diffuse"], [0.8, 0.7, 0.6, 1.0])
+        self.assertListAlmostEqual(material["specular"], [0.2, 0.3, 0.4])
+        self.assertAlmostEqual(material["specular_coefficient"], 5.0)
+        self.assertListAlmostEqual(material["ambient"], [0.1, 0.1, 0.1])
+        self.assertEqual(material["draw_flag"], 0x13)
+        self.assertListAlmostEqual(material["edge_color"], [0.0, 0.0, 0.0, 1.0])
+        self.assertAlmostEqual(material["edge_size"], 1.0)
         self.assertEqual(material["texture_index"], 0)
         self.assertEqual(material["sphere_texture_index"], 1)
+        self.assertEqual(material["sphere_mode"], 0)
+        self.assertEqual(material["shared_toon_flag"], 1)
+        self.assertEqual(material["toon_texture_index"], 0)
+        self.assertEqual(material["memo"], "")
         self.assertEqual(material["semantic_missing"], [])
 
         output_path = self.get_temp_filename("tagged_texture_triangle.pmx")
@@ -715,8 +728,22 @@ class TestPmxExporter(MayaTestBase):
 
         pmx = _parse_pmx(output_path)
         self.assertEqual(pmx.textures, ["textures/body.png", "textures/body.spa"])
-        self.assertEqual(pmx.materials[0].texture_index, 0)
-        self.assertEqual(pmx.materials[0].sphere_texture_index, 1)
+        parsed_material = pmx.materials[0]
+        self.assertEqual(parsed_material.name, "Tagged material")
+        self.assertEqual(parsed_material.name_english, "Tagged material")
+        self.assertListAlmostEqual(parsed_material.diffuse, [0.8, 0.7, 0.6, 1.0])
+        self.assertListAlmostEqual(parsed_material.specular, [0.2, 0.3, 0.4])
+        self.assertAlmostEqual(parsed_material.specular_coefficient, 5.0)
+        self.assertListAlmostEqual(parsed_material.ambient, [0.1, 0.1, 0.1])
+        self.assertEqual(int(parsed_material.draw_flag), 0x13)
+        self.assertListAlmostEqual(parsed_material.edge_color, [0.0, 0.0, 0.0, 1.0])
+        self.assertAlmostEqual(parsed_material.edge_size, 1.0)
+        self.assertEqual(parsed_material.texture_index, 0)
+        self.assertEqual(parsed_material.sphere_texture_index, 1)
+        self.assertEqual(int(parsed_material.sphere_mode), 0)
+        self.assertEqual(int(parsed_material.shared_toon_flag), 1)
+        self.assertEqual(parsed_material.toon_texture_index, 0)
+        self.assertEqual(parsed_material.memo, "")
 
     def test_collect_single_mesh_orders_tagged_materials_and_faces_by_source_index(self):
         """Reverse face/SG order is restored to the canonical PMX material order."""

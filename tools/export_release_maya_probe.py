@@ -2,9 +2,12 @@
 """Run the Maya-side v0.7 export release probes.
 
 The probe deliberately starts a fresh Maya scene for each import boundary.  It
-exports a small PMX fixture, verifies PMD import plus the explicit public
-export policy rejection, and exports a VMD motion.  The JSON output is
-consumed by :mod:`tools.export_release_gate`.
+exports a small PMX fixture, verifies a representative PMX morph roundtrip,
+verifies a representative rigid-body/joint PMX roundtrip, verifies PMX 2.1
+soft-body, SDEF, Impulse, and PMD public export policy rejections, and exports
+a VMD motion.
+The JSON output is consumed by
+:mod:`tools.export_release_gate`.
 """
 
 from __future__ import annotations
@@ -28,9 +31,27 @@ from tests.common.maya_plugin_setup import load_mmd_tools_plugin  # noqa: E402
 
 
 DEFAULT_PMX = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube.pmx"
+DEFAULT_PHYSICS_PMX = ROOT / "tests" / "data" / "physics" / "test_hair_physics.pmx"
+DEFAULT_MORPH_PMX = ROOT / "tests" / "data" / "for_unit_test" / "test_vmd_morph_real_gate.pmx"
 DEFAULT_VMD = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube_motion.vmd"
 ORACLE_FRAMES = (0, 9, 19, 29, 39, 49)
 FLOAT_TOLERANCE = 1.0e-4
+SUPPORTED_MORPH_TYPES = ("vertex", "bone", "material", "group")
+MORPH_TYPE_NAMES = {0: "group", 1: "vertex", 2: "bone", 8: "material"}
+MORPH_OFFSET_ATTRIBUTES = {
+    # Bone offsets must retain their original PMX-space values here.  The
+    # regular attribute carries importer-scale-adjusted translations for the
+    # runtime, while this provenance attribute is the export-facing payload.
+    "bone": "mmd_bone_morph_offsets_raw_json",
+    "group": "mmd_group_morph_offsets_json",
+    "material": "mmd_material_morph_offsets_json",
+}
+MORPH_ORACLE_EXCLUSIONS = (
+    "sdef vertex deformation",
+    "UV morph runtime evaluation",
+    "Impulse morph physics effect",
+    "Flip/composite morph visual parity",
+)
 
 
 def _require_build_path(value: str | Path, label: str) -> Path:
@@ -70,6 +91,126 @@ def _write_independent_pmd_fixture(path: Path) -> None:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(PmdMock.create_minimal_pmd())
+
+
+def _prepare_physics_probe_fixture(source: Path, out_dir: Path) -> tuple[Path, list[dict[str, Any]]]:
+    """Create a probe input with malformed display-only tail references normalized."""
+    from mmd_tools.core.pmx_data import PmxData
+    from mmd_tools.core.pmx_data.bone import PmxBoneFlag
+
+    data = PmxData().parse_file(str(source))
+    normalizations = []
+    for index, bone in enumerate(data.bones):
+        if not bone.get_flag(PmxBoneFlag.CONNECT_BONE):
+            continue
+        if 0 <= bone.connect_bone_index < len(data.bones):
+            continue
+        normalizations.append(
+            {
+                "bone_index": index,
+                "bone_name": bone.name,
+                "reason": "invalid connected-tail index; use relative tail offset for probe input",
+                "original_connect_bone_index": bone.connect_bone_index,
+            }
+        )
+        bone.bone_flag = int(bone.bone_flag) & ~int(PmxBoneFlag.CONNECT_BONE)
+        bone.connect_position_offset = (0.0, 0.0, 0.0)
+
+    output = out_dir / "fixtures" / "physics_probe_input.pmx"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    data.write_file(str(output))
+    return output, normalizations
+
+
+def _write_soft_body_probe_fixture(path: Path) -> Path:
+    """Write a minimal PMX 2.1 fixture with one unsupported soft body."""
+    from mmd_tools.core.pmx_data import PmxData
+    from mmd_tools.core.pmx_data.soft_body import PmxSoftBody
+    from tests.common.pmx_mock import PmxMock
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(PmxMock.create_minimal_pmx(version=2.1))
+    pmx = PmxData().parse_file(str(path))
+    soft_body = PmxSoftBody(
+        material_index_size=pmx.header.material_index_size,
+        rigid_body_index_size=pmx.header.rigid_body_index_size,
+        vertex_index_size=pmx.header.vertex_index_size,
+        encoding_flag=0,
+    )
+    soft_body.name = "probe_cloth"
+    soft_body.name_english = "probe_cloth"
+    soft_body.material_index = 0
+    pmx.soft_bodies = [soft_body]
+    pmx.write_file(str(path))
+    return path
+
+
+def _write_sdef_probe_fixture(path: Path) -> Path:
+    """Write a minimal PMX fixture with one raw SDEF vertex payload."""
+    from mmd_tools.core.pmx_data import PmxData
+    from tests.common.pmx_mock import PmxMock
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(PmxMock.create_minimal_pmx())
+    pmx = PmxData().parse_file(str(path))
+    vertex = pmx.vertices[0]
+    vertex.weight_transform_type = 3
+    vertex.bone_indices = [0, 1]
+    vertex.bone_weights = [0.75]
+    vertex.sdef_c = (0.0, 0.25, 0.0)
+    vertex.sdef_r0 = (-0.25, 0.0, 0.0)
+    vertex.sdef_r1 = (0.25, 0.0, 0.0)
+    pmx.write_file(str(path))
+    return path
+
+
+def _write_impulse_probe_fixture(path: Path) -> Path:
+    """Write a minimal PMX 2.1 fixture with one raw Impulse morph."""
+    from mmd_tools.core.pmx_data import PmxData
+    from mmd_tools.core.pmx_data.morph import PmxMorph, PmxMorphType
+    from mmd_tools.core.pmx_data.rigid_body import PmxRigidBody
+    from tests.common.pmx_mock import PmxMock
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(PmxMock.create_minimal_pmx(version=2.1))
+    pmx = PmxData().parse_file(str(path))
+    rigid_body = PmxRigidBody(
+        bone_index_size=pmx.header.bone_index_size,
+        encoding_flag=0,
+    )
+    rigid_body.name = "probe_impulse_body"
+    rigid_body.name_english = "probe_impulse_body"
+    rigid_body.related_bone_index = 0
+    rigid_body.size = (0.5, 0.5, 0.5)
+    rigid_body.mass = 1.0
+    rigid_body.velocity_attenuation = 0.5
+    rigid_body.rotation_attenuation = 0.5
+    rigid_body.elasticity = 0.5
+    rigid_body.friction = 0.5
+    pmx.rigid_bodies = [rigid_body]
+
+    morph = PmxMorph(
+        vertex_index_size=pmx.header.vertex_index_size,
+        material_index_size=pmx.header.material_index_size,
+        bone_index_size=pmx.header.bone_index_size,
+        morph_index_size=pmx.header.morph_index_size,
+        rigid_body_index_size=pmx.header.rigid_body_index_size,
+        encoding=pmx.header.encoding,
+    )
+    morph.name = "probe_impulse"
+    morph.name_english = "probe_impulse"
+    morph.panel = 4
+    morph.morph_type = PmxMorphType.ImpulseMorph
+    morph.offsets = [
+        {
+            "rigid_body_index": 0,
+            "impulse": (0.1, -0.2, 0.3),
+            "torque": (-0.4, 0.5, -0.6),
+        }
+    ]
+    pmx.morphs = [morph]
+    pmx.write_file(str(path))
+    return path
 
 
 def _attribute_value(node: str, name: str) -> Any:
@@ -215,6 +356,782 @@ def _find_mesh_transforms(root: str) -> list[str]:
     return transforms
 
 
+def _find_child_group(parent: str, group_name: str) -> str | None:
+    """Return a named transform group directly below *parent*."""
+    from maya import cmds
+
+    children = cmds.listRelatives(parent, children=True, fullPath=True, type="transform") or []
+    for child in children:
+        leaf_name = str(child).rsplit("|", 1)[-1].rsplit(":", 1)[-1]
+        if leaf_name == group_name:
+            return str(child)
+    return None
+
+
+def _find_physics_shapes(root: str, group_name: str, node_type: str) -> list[tuple[str, str]]:
+    """Return PMX-indexed ``(transform, shape)`` pairs for one physics group."""
+    from maya import cmds
+
+    from mmd_tools.core.constants import PHYSICS_GROUP
+
+    physics_group = _find_child_group(root, PHYSICS_GROUP)
+    if not physics_group:
+        return []
+    target_group = _find_child_group(physics_group, group_name)
+    if not target_group:
+        return []
+    pairs = []
+    for transform in cmds.listRelatives(target_group, children=True, fullPath=True, type="transform") or []:
+        shapes = cmds.listRelatives(transform, shapes=True, fullPath=True, type=node_type) or []
+        if shapes:
+            pairs.append((str(transform), str(shapes[0])))
+    return sorted(
+        pairs,
+        key=lambda pair: (
+            _scalar_attribute_value(pair[1], "pmxIndex", int)
+            if _scalar_attribute_value(pair[1], "pmxIndex", int) is not None
+            else 2**31,
+            pair[1],
+        ),
+    )
+
+
+def _physics_message_index(
+    shape: str,
+    message_attr: str,
+    fallback_attr: str,
+    target_indices: Mapping[str, int],
+) -> int:
+    """Resolve one physics message reference without trusting a stale fallback."""
+    from maya import cmds
+
+    targets = cmds.listConnections(
+        f"{shape}.{message_attr}", source=True, destination=False
+    ) or []
+    for target in targets:
+        for long_name in cmds.ls(target, long=True) or []:
+            if long_name in target_indices:
+                return int(target_indices[long_name])
+        short_name = str(target).rsplit("|", 1)[-1]
+        if short_name in target_indices:
+            return int(target_indices[short_name])
+    fallback = _scalar_attribute_value(shape, fallback_attr, int)
+    return int(fallback) if fallback is not None else -1
+
+
+def _capture_physics_oracle(root: str) -> dict[str, list[dict[str, Any]]]:
+    """Capture rigid-body/joint authoring attributes independently from the collector."""
+    from mmd_tools.core.constants import CONSTRAINTS_GROUP, RIGID_BODIES_GROUP
+    from mmd_tools.core.maya_angle import maya_angle_to_radians
+
+    rigid_pairs = _find_physics_shapes(root, RIGID_BODIES_GROUP, "mmdRigidBodyShape")
+    bone_indices = _bone_indices_below(root)
+    rigid_body_indices: dict[str, int] = {}
+    rigid_bodies = []
+    for ordinal, (transform, shape) in enumerate(rigid_pairs):
+        pmx_index = _scalar_attribute_value(shape, "pmxIndex", int)
+        pmx_index = ordinal if pmx_index is None else pmx_index
+        for name in (transform, *(str(value) for value in _long_names(transform))):
+            rigid_body_indices[name] = int(pmx_index)
+        rotation = maya_angle_to_radians(
+            [
+                _scalar_attribute_value(shape, "rotationX", float) or 0.0,
+                _scalar_attribute_value(shape, "rotationY", float) or 0.0,
+                _scalar_attribute_value(shape, "rotationZ", float) or 0.0,
+            ]
+        )
+        rigid_bodies.append(
+            {
+                "pmx_index": int(pmx_index),
+                "name": _attribute_value(shape, "nameJp") or "",
+                "name_en": _attribute_value(shape, "nameEn") or "",
+                "related_bone_index": _physics_message_index(
+                    shape, "relatedBone", "relatedBoneIndex", bone_indices
+                ),
+                "group": _scalar_attribute_value(shape, "collisionGroup", int),
+                "collision_mask": _scalar_attribute_value(shape, "collisionMask", int),
+                "shape_type": _scalar_attribute_value(shape, "shapeType", int),
+                "size": _vector_attribute_value(shape, "shapeSize"),
+                "position": _vector_attribute_value(shape, "position"),
+                "rotation": _round_values(rotation),
+                "mass": _scalar_attribute_value(shape, "mass", float),
+                "velocity_attenuation": _scalar_attribute_value(shape, "linearDamping", float),
+                "rotation_attenuation": _scalar_attribute_value(shape, "angularDamping", float),
+                "elasticity": _scalar_attribute_value(shape, "restitution", float),
+                "friction": _scalar_attribute_value(shape, "friction", float),
+                "physics_mode": _scalar_attribute_value(shape, "physicsMode", int),
+            }
+        )
+
+    joint_pairs = _find_physics_shapes(root, CONSTRAINTS_GROUP, "mmdPhysicsJointShape")
+    joints = []
+    for ordinal, (_transform, shape) in enumerate(joint_pairs):
+        pmx_index = _scalar_attribute_value(shape, "pmxIndex", int)
+        pmx_index = ordinal if pmx_index is None else pmx_index
+        rotation = maya_angle_to_radians(
+            [
+                _scalar_attribute_value(shape, "rotationX", float) or 0.0,
+                _scalar_attribute_value(shape, "rotationY", float) or 0.0,
+                _scalar_attribute_value(shape, "rotationZ", float) or 0.0,
+            ]
+        )
+        rotation_limit_min = maya_angle_to_radians(
+            [
+                _scalar_attribute_value(shape, "rotationLimitMinX", float) or 0.0,
+                _scalar_attribute_value(shape, "rotationLimitMinY", float) or 0.0,
+                _scalar_attribute_value(shape, "rotationLimitMinZ", float) or 0.0,
+            ]
+        )
+        rotation_limit_max = maya_angle_to_radians(
+            [
+                _scalar_attribute_value(shape, "rotationLimitMaxX", float) or 0.0,
+                _scalar_attribute_value(shape, "rotationLimitMaxY", float) or 0.0,
+                _scalar_attribute_value(shape, "rotationLimitMaxZ", float) or 0.0,
+            ]
+        )
+        joints.append(
+            {
+                "pmx_index": int(pmx_index),
+                "name": _attribute_value(shape, "nameJp") or "",
+                "name_en": _attribute_value(shape, "nameEn") or "",
+                "joint_type": _scalar_attribute_value(shape, "jointType", int),
+                "rigid_body_a_index": _physics_message_index(
+                    shape, "rigidBodyA", "rigidBodyAIndex", rigid_body_indices
+                ),
+                "rigid_body_b_index": _physics_message_index(
+                    shape, "rigidBodyB", "rigidBodyBIndex", rigid_body_indices
+                ),
+                "position": _vector_attribute_value(shape, "position"),
+                "rotation": _round_values(rotation),
+                "translation_limit_min": _vector_attribute_value(shape, "translationLimitMin"),
+                "translation_limit_max": _vector_attribute_value(shape, "translationLimitMax"),
+                "rotation_limit_min": _round_values(rotation_limit_min),
+                "rotation_limit_max": _round_values(rotation_limit_max),
+                "spring_translation": _vector_attribute_value(shape, "springTranslation"),
+                "spring_rotation": _vector_attribute_value(shape, "springRotation"),
+            }
+        )
+    return {"rigid_bodies": rigid_bodies, "joints": joints}
+
+
+def _normalize_morph_value(value: Any) -> Any:
+    """Normalize PMX/Maya morph payloads without changing their semantics."""
+    if isinstance(value, dict):
+        return {str(key): _normalize_morph_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_normalize_morph_value(item) for item in value]
+    if isinstance(value, float):
+        return round(value, 7)
+    return value
+
+
+def _morph_json_attribute(node: str, attribute: str) -> list[dict[str, Any]]:
+    """Read one required morph JSON attribute and fail closed when malformed."""
+    from maya import cmds
+
+    if not cmds.attributeQuery(attribute, node=node, exists=True):
+        raise RuntimeError(f"morph node {node} is missing {attribute}")
+    raw_value = cmds.getAttr(f"{node}.{attribute}")
+    try:
+        value = json.loads(raw_value or "[]")
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"morph node {node} has malformed {attribute}") from exc
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise RuntimeError(f"morph node {node} has non-list {attribute}")
+    return _normalize_morph_value(value)
+
+
+def _capture_sdef_import_provenance(root: str) -> dict[str, Any]:
+    """Require positive SDEF count and raw payload after a fresh import."""
+    from maya import cmds
+
+    from mmd_tools.core.constants import (
+        ATTR_MMD_PMX_SDEF_VERTEX_COUNT,
+        ATTR_MMD_SDEF_VERTICES_JSON,
+    )
+
+    fresh_import_count = _scalar_attribute_value(
+        root, ATTR_MMD_PMX_SDEF_VERTEX_COUNT, int
+    )
+    if fresh_import_count is None or fresh_import_count <= 0:
+        raise RuntimeError(
+            "fresh SDEF import did not retain a positive root vertex count: "
+            f"{fresh_import_count!r}"
+        )
+
+    stored_payload = None
+    stored_node = None
+    for transform in _find_mesh_transforms(root):
+        shapes = cmds.listRelatives(
+            transform, shapes=True, fullPath=True, type="mesh"
+        ) or []
+        for node in (transform, *(str(shape) for shape in shapes)):
+            raw_payload = _attribute_value(node, ATTR_MMD_SDEF_VERTICES_JSON)
+            if raw_payload is None:
+                continue
+            try:
+                payload = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise RuntimeError(f"SDEF provenance on {node} is malformed") from exc
+            if not isinstance(payload, dict) or not isinstance(payload.get("sdef_vertices"), list):
+                raise RuntimeError(f"SDEF provenance on {node} is not a vertex payload")
+            stored_payload = payload
+            stored_node = node
+            break
+        if stored_payload is not None:
+            break
+
+    if stored_payload is None:
+        raise RuntimeError("fresh SDEF import did not retain raw vertex provenance")
+    stored_values = stored_payload["sdef_vertices"]
+    provenance_count = sum(value is not None for value in stored_values)
+    if provenance_count <= 0:
+        raise RuntimeError("fresh SDEF import retained no non-null raw vertex payload")
+    return {
+        "fresh_import_sdef_vertex_count": fresh_import_count,
+        "provenance_vertex_count": provenance_count,
+        "provenance_node": stored_node,
+    }
+
+
+def _capture_impulse_import_provenance(root: str) -> dict[str, Any]:
+    """Require positive raw Impulse metadata on the fresh-import model root."""
+    entries = []
+    for node in _owned_morph_network_nodes(root):
+        if _attribute_value(node, "mmd_morph_type") != "impulse":
+            continue
+        entries.append(
+            {
+                "index": _required_morph_int(node, "mmd_morph_index"),
+                "name": _required_morph_string(node, "mmd_morph_name"),
+                "offsets": _morph_json_attribute(
+                    node, "mmd_impulse_morph_offsets_json"
+                ),
+            }
+        )
+    if not entries:
+        raise RuntimeError("fresh Impulse import did not retain raw morph provenance")
+    offset_count = sum(len(entry["offsets"]) for entry in entries)
+    if offset_count <= 0:
+        raise RuntimeError("fresh Impulse import retained no raw offsets")
+    return {
+        "fresh_import_impulse_morph_count": len(entries),
+        "provenance_offset_count": offset_count,
+        "provenance_morph_indices": [entry["index"] for entry in entries],
+    }
+
+
+def _owned_morph_network_nodes(root: str) -> list[str]:
+    """Return the registry-owned morph networks without a scene-wide fallback."""
+    from maya import cmds
+
+    if not cmds.attributeQuery("mmd_model_registry", node=root, exists=True):
+        raise RuntimeError(f"morph oracle requires a model registry on {root}")
+    registries = cmds.listConnections(
+        f"{root}.mmd_model_registry", source=True, destination=False, type="network"
+    ) or []
+    if len(registries) != 1:
+        raise RuntimeError(f"morph oracle expected one model registry on {root}, found {len(registries)}")
+    registry = str(registries[0])
+    if not cmds.attributeQuery("morphMembers", node=registry, exists=True):
+        return []
+    members = cmds.listConnections(
+        f"{registry}.morphMembers", source=True, destination=False, type="network"
+    ) or []
+    unique_members = sorted({str(member) for member in members})
+    if len(unique_members) != len(members):
+        raise RuntimeError(f"morph registry {registry} contains duplicate members")
+    return unique_members
+
+
+def _capture_morph_meshes(root: str) -> tuple[list[str], list[dict[str, Any]], list[list[float]]]:
+    """Read direct object-space mesh coordinates and PMX source-index mappings."""
+    from maya import cmds
+
+    mesh_shapes = []
+    descriptors = []
+    base_vertices = []
+    for transform in _find_mesh_transforms(root):
+        for shape in cmds.listRelatives(transform, shapes=True, fullPath=True, type="mesh") or []:
+            if cmds.getAttr(f"{shape}.intermediateObject"):
+                continue
+            vertices = _round_values(
+                cmds.xform(
+                    f"{shape}.vtx[*]", query=True, objectSpace=True, translation=True
+                )
+                or []
+            )
+            vertex_count = len(vertices) // 3
+            if len(vertices) != vertex_count * 3:
+                raise RuntimeError(f"mesh {shape} returned malformed object-space vertices")
+            source_indices = None
+            if cmds.attributeQuery("mmd_source_vertex_indices", node=shape, exists=True):
+                source_indices = cmds.getAttr(f"{shape}.mmd_source_vertex_indices")
+                if isinstance(source_indices, (list, tuple)) and len(source_indices) == 1:
+                    source_indices = source_indices[0]
+                if not isinstance(source_indices, (list, tuple)):
+                    raise RuntimeError(f"mesh {shape} has malformed mmd_source_vertex_indices")
+                try:
+                    source_indices = [int(index) for index in source_indices]
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError(f"mesh {shape} has non-integer source vertex indices") from exc
+                if len(source_indices) != vertex_count:
+                    raise RuntimeError(f"mesh {shape} source vertex index count differs from vertex count")
+            mesh_shapes.append(str(shape))
+            descriptors.append(
+                {"vertex_count": vertex_count, "source_vertex_indices": source_indices}
+            )
+            base_vertices.append(vertices)
+    return mesh_shapes, descriptors, base_vertices
+
+
+def _required_morph_string(node: str, attribute: str) -> str:
+    """Read one required string morph attribute without accepting a default."""
+    from maya import cmds
+
+    if not cmds.attributeQuery(attribute, node=node, exists=True):
+        raise RuntimeError(f"morph node {node} is missing {attribute}")
+    value = cmds.getAttr(f"{node}.{attribute}")
+    if not isinstance(value, str):
+        raise RuntimeError(f"morph node {node} has malformed {attribute}")
+    return value
+
+
+def _required_morph_int(node: str, attribute: str) -> int:
+    """Read one required integer morph attribute without coercing malformed data."""
+    from maya import cmds
+
+    if not cmds.attributeQuery(attribute, node=node, exists=True):
+        raise RuntimeError(f"morph node {node} is missing {attribute}")
+    value = cmds.getAttr(f"{node}.{attribute}")
+    if isinstance(value, bool):
+        raise RuntimeError(f"morph node {node} has malformed {attribute}")
+    try:
+        integer = int(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"morph node {node} has malformed {attribute}") from exc
+    if integer != value:
+        raise RuntimeError(f"morph node {node} has non-integral {attribute}")
+    return integer
+
+
+def _capture_morph_oracle(root: str) -> dict[str, Any]:
+    """Capture direct Maya morph payloads and one-weight controller results.
+
+    This is deliberately independent of ``ExportSceneCollector``.  It reads
+    blendShape provenance, registry-owned network nodes, and the model-owned
+    controller after a fresh PMX import.
+    """
+    from maya import cmds
+
+    mesh_shapes, vertex_meshes, base_vertices = _capture_morph_meshes(root)
+    vertex_metadata: dict[int, dict[str, Any]] = {}
+    for shape in mesh_shapes:
+        for history_node in cmds.listHistory(shape, pruneDagObjects=True) or []:
+            if cmds.nodeType(history_node) != "blendShape":
+                continue
+            raw_names = _attribute_value(history_node, "mmd_blendshape_morph_names_json")
+            if raw_names is None:
+                continue
+            try:
+                entries = json.loads(raw_names or "{}")
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(f"blendShape {history_node} has malformed morph metadata") from exc
+            if not isinstance(entries, dict):
+                raise RuntimeError(f"blendShape {history_node} morph metadata is not an object")
+            for raw_weight_index, entry in entries.items():
+                try:
+                    weight_index = int(raw_weight_index)
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError(f"blendShape {history_node} has invalid weight index") from exc
+                if not isinstance(entry, dict):
+                    raise RuntimeError(f"blendShape {history_node} has malformed morph entry")
+                raw_index = entry.get("index", weight_index)
+                name = entry.get("name")
+                if not isinstance(name, str):
+                    raise RuntimeError(f"blendShape {history_node} has malformed morph name")
+                try:
+                    morph_index = int(raw_index)
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError(f"blendShape {history_node} has invalid PMX morph index") from exc
+                metadata = {"index": morph_index, "name": name, "weight_index": weight_index}
+                existing = vertex_metadata.get(morph_index)
+                if existing is not None and existing != metadata:
+                    raise RuntimeError(f"duplicate vertex morph metadata differs at index {morph_index}")
+                vertex_metadata[morph_index] = metadata
+
+    controllers = []
+    if cmds.attributeQuery("mmd_morph_controller", node=root, exists=True):
+        controllers = cmds.listConnections(
+            f"{root}.mmd_morph_controller",
+            source=True,
+            destination=False,
+            type="mmdMorphController",
+        ) or []
+    if not controllers and vertex_metadata:
+        raise RuntimeError("vertex morph metadata exists without an mmdMorphController")
+    if not controllers:
+        return {
+            "morphs": [],
+            "vertex_meshes": [],
+            "vertex_runtime_deltas": {},
+            "controller_outputs": {},
+            "unsupported_types": [],
+        }
+    if len(controllers) != 1:
+        raise RuntimeError(f"expected one model morph controller, found {len(controllers)}")
+    controller = str(controllers[0])
+    input_indices = sorted(
+        int(index) for index in (cmds.getAttr(f"{controller}.inputWeight", multiIndices=True) or [])
+    )
+    if input_indices != list(range(len(input_indices))):
+        raise RuntimeError(f"morph controller input indices are not contiguous: {input_indices}")
+
+    morphs_by_index: dict[int, dict[str, Any]] = {
+        index: {"index": index, "name": metadata["name"], "type": "vertex"}
+        for index, metadata in vertex_metadata.items()
+    }
+    unsupported_types = set()
+    for node in _owned_morph_network_nodes(root):
+        morph_type = _required_morph_string(node, "mmd_morph_type")
+        if morph_type not in MORPH_OFFSET_ATTRIBUTES:
+            unsupported_types.add(morph_type)
+            continue
+        morph_index = _required_morph_int(node, "mmd_morph_index")
+        entry = {
+            "index": morph_index,
+            "name": _required_morph_string(node, "mmd_morph_name"),
+            "name_en": _required_morph_string(node, "mmd_morph_name_en"),
+            "type": morph_type,
+            "panel": _required_morph_int(node, "mmd_morph_panel"),
+            "offsets": _morph_json_attribute(node, MORPH_OFFSET_ATTRIBUTES[morph_type]),
+        }
+        existing = morphs_by_index.get(morph_index)
+        if existing is not None and existing != entry:
+            raise RuntimeError(f"morph metadata differs at index {morph_index}")
+        morphs_by_index[morph_index] = entry
+
+    def _read_weight(plug: str) -> float:
+        value = cmds.getAttr(plug)
+        if isinstance(value, (list, tuple)) and len(value) == 1:
+            value = value[0]
+        if value is None:
+            raise RuntimeError(f"morph weight output is missing: {plug}")
+        try:
+            return round(float(value), 7)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"morph weight output is malformed: {plug}") from exc
+
+    def _capture_vertices() -> list[list[float]]:
+        return [
+            _round_values(
+                cmds.xform(
+                    f"{shape}.vtx[*]", query=True, objectSpace=True, translation=True
+                )
+                or []
+            )
+            for shape in mesh_shapes
+        ]
+
+    original_weights = {
+        index: _read_weight(f"{controller}.inputWeight[{index}]") for index in input_indices
+    }
+    runtime_deltas: dict[str, list[list[float]]] = {}
+    controller_outputs: dict[str, list[float]] = {}
+    try:
+        for index in input_indices:
+            cmds.setAttr(f"{controller}.inputWeight[{index}]", 0.0)
+        for source_index in input_indices:
+            cmds.setAttr(f"{controller}.inputWeight[{source_index}]", 1.0)
+            controller_outputs[str(source_index)] = [
+                _read_weight(f"{controller}.outputWeight[{output_index}]")
+                for output_index in input_indices
+            ]
+            if morphs_by_index.get(source_index, {}).get("type") == "vertex":
+                cmds.refresh(force=True)
+                runtime_deltas[str(source_index)] = [
+                    _round_values(
+                        result - base for result, base in zip(result_vertices, base_mesh_vertices)
+                    )
+                    for result_vertices, base_mesh_vertices in zip(_capture_vertices(), base_vertices)
+                ]
+            cmds.setAttr(f"{controller}.inputWeight[{source_index}]", 0.0)
+    finally:
+        for index, value in original_weights.items():
+            cmds.setAttr(f"{controller}.inputWeight[{index}]", value)
+        for index in input_indices:
+            cmds.getAttr(f"{controller}.outputWeight[{index}]")
+
+    return {
+        "morphs": [morphs_by_index[index] for index in sorted(morphs_by_index)],
+        "vertex_meshes": vertex_meshes,
+        "vertex_runtime_deltas": runtime_deltas,
+        "controller_outputs": controller_outputs,
+        "unsupported_types": sorted(unsupported_types),
+    }
+
+
+def _build_source_morph_oracle(source_model: Path) -> dict[str, Any]:
+    """Build the fixture's morph expectations directly from its PMX payload."""
+    from mmd_tools.core.pmx_data import PmxData
+
+    pmx = PmxData().parse_file(str(source_model))
+    entries = []
+    group_offsets: dict[int, list[dict[str, Any]]] = {}
+    vertex_offsets: dict[str, list[dict[str, Any]]] = {}
+    supported_indices = set()
+    unsupported = []
+    for index, morph in enumerate(pmx.morphs):
+        morph_type = MORPH_TYPE_NAMES.get(int(morph.morph_type))
+        if morph_type is None or morph_type not in SUPPORTED_MORPH_TYPES:
+            unsupported.append(str(int(morph.morph_type)))
+            continue
+        supported_indices.add(index)
+        raw_offsets = _normalize_morph_value(list(getattr(morph, "offsets", []) or []))
+        entry = {
+            "index": index,
+            "name": str(getattr(morph, "name", "") or ""),
+            "type": morph_type,
+        }
+        if morph_type == "vertex":
+            offsets = []
+            for offset in raw_offsets:
+                if not isinstance(offset, dict):
+                    raise RuntimeError(f"vertex morph {index} has malformed offset")
+                try:
+                    position = offset["position_offset"]
+                    offsets.append(
+                        {
+                            "vertex_index": int(offset["vertex_index"]),
+                            "object_space_delta": _round_values(
+                                [float(position[0]), float(position[1]), -float(position[2])]
+                            ),
+                        }
+                    )
+                except (KeyError, TypeError, ValueError, IndexError) as exc:
+                    raise RuntimeError(f"vertex morph {index} has malformed offset") from exc
+            vertex_offsets[str(index)] = offsets
+        else:
+            entry.update(
+                name_en=str(getattr(morph, "name_english", "") or ""),
+                panel=int(getattr(morph, "panel", 0)),
+                offsets=raw_offsets,
+            )
+            if morph_type == "group":
+                group_offsets[index] = raw_offsets
+        entries.append(entry)
+    if unsupported:
+        raise RuntimeError(f"morph oracle fixture contains excluded types: {sorted(set(unsupported))}")
+    missing_types = sorted(set(SUPPORTED_MORPH_TYPES) - {entry["type"] for entry in entries})
+    if missing_types:
+        raise RuntimeError(f"morph oracle fixture is missing supported types: {missing_types}")
+    sdef_vertices = [
+        index
+        for index, vertex in enumerate(pmx.vertices)
+        if int(getattr(vertex, "weight_transform_type", 0)) == 3
+    ]
+    if sdef_vertices:
+        raise RuntimeError(f"morph oracle excludes SDEF vertices: {sdef_vertices}")
+
+    controller_outputs = {
+        str(source_index): [
+            1.0 if output_index == source_index else 0.0
+            for output_index in range(len(pmx.morphs))
+        ]
+        for source_index in range(len(pmx.morphs))
+    }
+
+    def expand(source_index: int, current_index: int, rate: float, path: set[int]) -> None:
+        for offset in group_offsets.get(current_index, []):
+            try:
+                target_index = int(offset["morph_index"])
+                contribution = rate * float(offset["morph_rate"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise RuntimeError(f"group morph {current_index} has malformed offset") from exc
+            if target_index not in supported_indices or target_index in path:
+                raise RuntimeError(
+                    f"group morph {current_index} references excluded or cyclic target {target_index}"
+                )
+            controller_outputs[str(source_index)][target_index] += contribution
+            if target_index in group_offsets:
+                expand(source_index, target_index, contribution, path | {target_index})
+
+    for source_index in group_offsets:
+        expand(source_index, source_index, 1.0, {source_index})
+    return {
+        "morphs": entries,
+        "vertex_offsets": vertex_offsets,
+        "controller_outputs": {
+            key: _round_values(value) for key, value in controller_outputs.items()
+        },
+        "unsupported_types": [],
+        "source": str(source_model),
+    }
+
+
+def _expected_vertex_mesh_deltas(
+    offsets: Any, vertex_meshes: Any
+) -> list[list[float]]:
+    """Map parser-owned PMX vertex offsets onto direct Maya mesh index maps."""
+    if not isinstance(offsets, list) or not isinstance(vertex_meshes, list):
+        raise ValueError("vertex morph runtime payload is malformed")
+    mapped_indices: dict[int, list[tuple[int, int]]] = {}
+    deltas = []
+    for mesh_index, descriptor in enumerate(vertex_meshes):
+        if not isinstance(descriptor, dict):
+            raise ValueError(f"vertex mesh {mesh_index} is malformed")
+        vertex_count = descriptor.get("vertex_count")
+        if isinstance(vertex_count, bool) or not isinstance(vertex_count, int) or vertex_count < 0:
+            raise ValueError(f"vertex mesh {mesh_index} has invalid vertex_count")
+        source_indices = descriptor.get("source_vertex_indices")
+        if source_indices is None:
+            if len(vertex_meshes) != 1:
+                raise ValueError("multiple meshes require mmd_source_vertex_indices")
+            source_indices = list(range(vertex_count))
+        if not isinstance(source_indices, list) or len(source_indices) != vertex_count:
+            raise ValueError(f"vertex mesh {mesh_index} has invalid source vertex indices")
+        deltas.append([0.0] * (vertex_count * 3))
+        for local_index, source_index in enumerate(source_indices):
+            if isinstance(source_index, bool) or not isinstance(source_index, int) or source_index < 0:
+                raise ValueError(f"vertex mesh {mesh_index} has invalid source vertex index")
+            mapped_indices.setdefault(source_index, []).append((mesh_index, local_index))
+    for offset_index, offset in enumerate(offsets):
+        if not isinstance(offset, dict):
+            raise ValueError(f"vertex offset {offset_index} is malformed")
+        source_index = offset.get("vertex_index")
+        vector = offset.get("object_space_delta")
+        if isinstance(source_index, bool) or not isinstance(source_index, int) or source_index < 0:
+            raise ValueError(f"vertex offset {offset_index} has invalid vertex_index")
+        if not isinstance(vector, list) or len(vector) != 3:
+            raise ValueError(f"vertex offset {offset_index} has invalid object_space_delta")
+        try:
+            values = [float(value) for value in vector]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"vertex offset {offset_index} has invalid object_space_delta") from exc
+        targets = mapped_indices.get(source_index)
+        if not targets:
+            raise ValueError(f"vertex offset {offset_index} references missing vertex {source_index}")
+        for mesh_index, local_index in targets:
+            start = local_index * 3
+            for component, value in enumerate(values):
+                deltas[mesh_index][start + component] += value
+    return [_round_values(values) for values in deltas]
+
+
+def _compare_morph_oracles(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> list[str]:
+    """Compare PMX parser expectations with direct fresh-import Maya evidence."""
+    failures: list[str] = []
+    expected_unsupported = sorted(expected.get("unsupported_types", []) or [])
+    actual_unsupported = sorted(actual.get("unsupported_types", []) or [])
+    if expected_unsupported != actual_unsupported:
+        failures.append(
+            f"morph excluded types differ: expected {expected_unsupported}, actual {actual_unsupported}"
+        )
+    expected_morphs = expected.get("morphs")
+    actual_morphs = actual.get("morphs")
+    if not isinstance(expected_morphs, list) or not isinstance(actual_morphs, list):
+        return failures + ["morph entries are missing or malformed"]
+    if len(expected_morphs) != len(actual_morphs):
+        failures.append(
+            f"morphs count differs: expected {len(expected_morphs)}, actual {len(actual_morphs)}"
+        )
+    for index, (source, result) in enumerate(zip(expected_morphs, actual_morphs)):
+        if not isinstance(source, dict) or not isinstance(result, dict):
+            failures.append(f"morphs[{index}] is malformed")
+            continue
+        for field in ("index", "name", "type"):
+            if source.get(field) != result.get(field):
+                failures.append(
+                    f"morphs[{index}].{field}: expected {source.get(field)!r}, "
+                    f"actual {result.get(field)!r}"
+                )
+        if source.get("type") != "vertex":
+            for field in ("name_en", "panel", "offsets"):
+                if _normalize_morph_value(source.get(field)) != _normalize_morph_value(result.get(field)):
+                    failures.append(
+                        f"morphs[{index}].{field}: expected {source.get(field)!r}, "
+                        f"actual {result.get(field)!r}"
+                    )
+    expected_runtime = expected.get("vertex_offsets")
+    actual_runtime = actual.get("vertex_runtime_deltas")
+    actual_meshes = actual.get("vertex_meshes")
+    if not isinstance(expected_runtime, dict) or not isinstance(actual_runtime, dict):
+        failures.append("vertex morph runtime evidence is missing or malformed")
+    else:
+        if set(actual_runtime) != set(expected_runtime):
+            failures.append(
+                f"vertex morph runtime keys differ: expected {sorted(expected_runtime)}, "
+                f"actual {sorted(actual_runtime)}"
+            )
+        for morph_index, source_offsets in expected_runtime.items():
+            actual_mesh_deltas = actual_runtime.get(morph_index)
+            if actual_mesh_deltas is None:
+                continue
+            try:
+                expected_mesh_deltas = _expected_vertex_mesh_deltas(source_offsets, actual_meshes)
+            except (TypeError, ValueError) as exc:
+                failures.append(f"morphs[{morph_index}] parser runtime payload is invalid: {exc}")
+                continue
+            if not isinstance(actual_mesh_deltas, list) or len(expected_mesh_deltas) != len(actual_mesh_deltas):
+                failures.append(f"morphs[{morph_index}] runtime mesh count differs")
+                continue
+            for mesh_index, (source_delta, result_delta) in enumerate(
+                zip(expected_mesh_deltas, actual_mesh_deltas)
+            ):
+                if not isinstance(result_delta, list):
+                    failures.append(f"morphs[{morph_index}] mesh[{mesh_index}] runtime is malformed")
+                    continue
+                difference = _compare_float_lists(source_delta, result_delta)
+                if difference > FLOAT_TOLERANCE:
+                    failures.append(
+                        f"morphs[{morph_index}] mesh[{mesh_index}] vertices max error {difference:g}"
+                    )
+    expected_outputs = expected.get("controller_outputs")
+    actual_outputs = actual.get("controller_outputs")
+    if not isinstance(expected_outputs, dict) or not isinstance(actual_outputs, dict):
+        failures.append("morph controller outputs are missing or malformed")
+    else:
+        if set(actual_outputs) != set(expected_outputs):
+            failures.append(
+                f"morph controller input keys differ: expected {sorted(expected_outputs)}, "
+                f"actual {sorted(actual_outputs)}"
+            )
+        for source_index, source_values in expected_outputs.items():
+            result_values = actual_outputs.get(source_index)
+            if not isinstance(source_values, list) or not isinstance(result_values, list):
+                failures.append(f"morph controller input {source_index} output is malformed")
+                continue
+            difference = _compare_float_lists(source_values, result_values)
+            if difference > FLOAT_TOLERANCE:
+                failures.append(
+                    f"morph controller input {source_index} output max error {difference:g}"
+                )
+    return failures
+
+
+def _long_names(node: str) -> list[str]:
+    """Return full DAG names for a node without importing Maya at module load."""
+    from maya import cmds
+
+    return [str(value) for value in (cmds.ls(node, long=True) or [])]
+
+
+def _bone_indices_below(root: str) -> dict[str, int]:
+    """Build full/short joint-name to PMX index mappings for physics references."""
+    from maya import cmds
+
+    result: dict[str, int] = {}
+    joints = cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or []
+    for joint in joints:
+        index = _scalar_attribute_value(joint, "mmd_bone_index", int)
+        if index is None:
+            continue
+        for name in (str(joint), *(str(value) for value in (cmds.ls(joint, long=True) or []))):
+            result[name] = int(index)
+        result[str(joint).rsplit("|", 1)[-1]] = int(index)
+    return result
+
+
 def _capture_scene_oracle(root: str, frames: Iterable[int]) -> dict[str, Any]:
     """Capture mesh, pose, and model metadata from the current Maya scene."""
     from maya import cmds
@@ -298,7 +1215,9 @@ def _capture_scene_oracle(root: str, frames: Iterable[int]) -> dict[str, Any]:
     return {
         "mesh": mesh_oracle,
         "materials": _capture_material_oracle(meshes),
+        "morphs": _capture_morph_oracle(root),
         "pose": {"joint_count": len(indexed_joints), "joints": indexed_joints, "frames": pose_by_frame},
+        "physics": _capture_physics_oracle(root),
         "metadata": metadata,
     }
 
@@ -324,8 +1243,10 @@ def _compare_scene_oracles(
     pose: bool,
     mesh: bool = True,
     materials: bool = True,
+    physics: bool = False,
+    morphs: bool = False,
 ) -> list[str]:
-    """Compare required material/mesh/pose/metadata oracle fields and return failures."""
+    """Compare required scene oracle fields and return semantic failures."""
     failures: list[str] = []
     if mesh:
         expected_mesh = list(expected.get("mesh", []))
@@ -438,6 +1359,95 @@ def _compare_scene_oracles(
                 )
                 if difference > FLOAT_TOLERANCE:
                     failures.append(f"pose frame {frame} bone {expected_joint['name']} max error {difference:g}")
+
+    if physics:
+        expected_physics = expected.get("physics", {})
+        actual_physics = actual.get("physics", {})
+        scalar_fields = {
+            "rigid_bodies": (
+                "pmx_index",
+                "name",
+                "name_en",
+                "related_bone_index",
+                "group",
+                "collision_mask",
+                "shape_type",
+                "physics_mode",
+            ),
+            "joints": (
+                "pmx_index",
+                "name",
+                "name_en",
+                "joint_type",
+                "rigid_body_a_index",
+                "rigid_body_b_index",
+            ),
+        }
+        vector_fields = {
+            "rigid_bodies": ("size", "position", "rotation"),
+            "joints": (
+                "position",
+                "rotation",
+                "translation_limit_min",
+                "translation_limit_max",
+                "rotation_limit_min",
+                "rotation_limit_max",
+                "spring_translation",
+                "spring_rotation",
+            ),
+        }
+        float_fields = {
+            "rigid_bodies": (
+                "mass",
+                "velocity_attenuation",
+                "rotation_attenuation",
+                "elasticity",
+                "friction",
+            ),
+            "joints": (),
+        }
+        for section in ("rigid_bodies", "joints"):
+            expected_items = list(expected_physics.get(section, []))
+            actual_items = list(actual_physics.get(section, []))
+            if len(expected_items) != len(actual_items):
+                failures.append(
+                    f"physics.{section} count differs: expected {len(expected_items)}, "
+                    f"actual {len(actual_items)}"
+                )
+            for index, (source, result) in enumerate(zip(expected_items, actual_items)):
+                for field in scalar_fields[section]:
+                    if source.get(field) != result.get(field):
+                        failures.append(
+                            f"physics.{section}[{index}].{field}: expected {source.get(field)!r}, "
+                            f"actual {result.get(field)!r}"
+                        )
+                for field in float_fields[section]:
+                    source_value = source.get(field)
+                    result_value = result.get(field)
+                    if source_value is None or result_value is None:
+                        if source_value != result_value:
+                            failures.append(
+                                f"physics.{section}[{index}].{field}: expected {source_value!r}, "
+                                f"actual {result_value!r}"
+                            )
+                    elif abs(float(source_value) - float(result_value)) > FLOAT_TOLERANCE:
+                        failures.append(
+                            f"physics.{section}[{index}].{field} max error "
+                            f"{abs(float(source_value) - float(result_value)):g}"
+                        )
+                for field in vector_fields[section]:
+                    difference = _compare_float_lists(source.get(field, []), result.get(field, []))
+                    if difference > FLOAT_TOLERANCE:
+                        failures.append(
+                            f"physics.{section}[{index}].{field} max error {difference:g}"
+                        )
+    if morphs:
+        failures.extend(
+            _compare_morph_oracles(
+                expected.get("morphs", {}),
+                actual.get("morphs", {}),
+            )
+        )
     return failures
 
 
@@ -498,11 +1508,14 @@ def _import_options() -> dict[str, Any]:
     """Return deterministic, shader-light Maya import options for the probe."""
     return {
         "scale": 1.0,
+        "import_physics": True,
         "setup_rig": False,
         "setup_bone_orientation": False,
         "create_mmd_control_rig": False,
         "create_mmd_shaders": False,
         "use_cpp_fast_load": False,
+        "use_native_pmx_parse": False,
+        "require_native_pmx_parse": False,
     }
 
 
@@ -527,6 +1540,9 @@ def _run_model_case(
     export_format: str,
     source_model: Path,
     out_dir: Path,
+    *,
+    compare_physics: bool = False,
+    compare_morphs: bool = False,
 ) -> dict[str, Any]:
     """Export one model format, fresh-import it, and compare scene oracles."""
     from mmd_tools.core.pmx_data import PmxData
@@ -539,6 +1555,21 @@ def _run_model_case(
     report_dir = out_dir / "report"
     source_root = _fresh_import(source_model)
     source_oracle = _capture_scene_oracle(source_root, (0,))
+    source_morph_oracle = None
+    if compare_morphs:
+        source_morph_oracle = _build_source_morph_oracle(source_model)
+        source_morph_failures = _compare_morph_oracles(
+            source_morph_oracle,
+            source_oracle["morphs"],
+        )
+        if source_morph_failures:
+            raise AssertionError("source morph import oracle failed: " + "; ".join(source_morph_failures))
+        source_oracle["morphs"] = source_morph_oracle
+    oracle_names = ["materials", "mesh", "pose", "metadata"]
+    if compare_physics:
+        oracle_names.append("physics")
+    if compare_morphs:
+        oracle_names.append("morphs")
     request = ExportWorkflowRequest(
         str(output),
         {
@@ -551,7 +1582,7 @@ def _run_model_case(
                 "gate": "V070-EXPORT-RELEASE-GATE-1",
                 "fixture": source_model.name,
                 "fresh_import": True,
-                "oracles": ["materials", "mesh", "pose", "metadata"],
+                "oracles": oracle_names,
             },
         },
     )
@@ -591,7 +1622,9 @@ def _run_model_case(
             "import_oracles": {
                 "mesh": source_oracle["mesh"],
                 "materials": source_oracle["materials"],
+                "morphs": source_oracle["morphs"],
                 "pose": source_oracle["pose"],
+                "physics": source_oracle["physics"],
                 "metadata": source_oracle["metadata"],
             },
             "collection": {
@@ -608,7 +1641,13 @@ def _run_model_case(
     parsed = PmxData().parse_file(str(output))
     result_root = _fresh_import(output)
     result_oracle = _capture_scene_oracle(result_root, (0,))
-    failures = _compare_scene_oracles(source_oracle, result_oracle, pose=True)
+    failures = _compare_scene_oracles(
+        source_oracle,
+        result_oracle,
+        pose=True,
+        physics=compare_physics,
+        morphs=compare_morphs,
+    )
     if failures:
         raise AssertionError("; ".join(failures))
     return {
@@ -623,19 +1662,365 @@ def _run_model_case(
             "faces": len(parsed.faces),
             "materials": len(parsed.materials),
             "bones": len(parsed.bones),
+            "morphs": len(parsed.morphs),
+            "rigid_bodies": len(parsed.rigid_bodies),
+            "joints": len(parsed.joints),
         },
         "oracles": {
             "mesh": result_oracle["mesh"],
             "materials": result_oracle["materials"],
+            "morphs": result_oracle["morphs"],
             "pose": result_oracle["pose"],
+            "physics": result_oracle["physics"],
             "metadata": result_oracle["metadata"],
         },
+        "morph_oracle": {
+            "source": source_morph_oracle,
+            "fresh_import": result_oracle["morphs"],
+            "comparison": {
+                "status": "pass",
+                "checked_types": list(SUPPORTED_MORPH_TYPES),
+                "fixture": source_model.name,
+            },
+        }
+        if compare_morphs
+        else None,
+        "morph_coverage": {
+            "verified_types": list(SUPPORTED_MORPH_TYPES),
+            "verified_fields": {
+                "vertex": ["index", "name", "weight_1_object_space_deltas"],
+                "bone": ["index", "name", "name_en", "panel", "raw_offsets"],
+                "material": ["index", "name", "name_en", "panel", "offsets"],
+                "group": ["index", "name", "name_en", "panel", "offsets", "controller_outputs"],
+            },
+            "excluded_boundaries": list(MORPH_ORACLE_EXCLUSIONS),
+            "source_oracle": "PMX parser payload",
+            "scene_oracle": "direct Maya DAG/network attributes and controller outputs",
+        }
+        if compare_morphs
+        else None,
         "collection": {
             "collector": "ExportWorkflowService -> ExportSceneCollector.collect",
             "target_model": source_root,
             "source_fresh_import": True,
         },
     }
+
+
+def _run_soft_body_policy_case(out_dir: Path) -> dict[str, Any]:
+    """Prove PMX 2.1 soft-body provenance reaches the public export rejection."""
+    from mmd_tools.core.constants import ATTR_MMD_PMX_SOFT_BODY_COUNT
+    from mmd_tools.services.export_workflow_service import (
+        ExportWorkflowRequest,
+        ExportWorkflowService,
+    )
+
+    source_model = _write_soft_body_probe_fixture(
+        out_dir / "fixtures" / "soft_body_policy_input.pmx"
+    )
+    output = out_dir / "model.pmx"
+    report_dir = out_dir / "report"
+    source_root = _fresh_import(source_model)
+    source_soft_body_count = _scalar_attribute_value(
+        source_root, ATTR_MMD_PMX_SOFT_BODY_COUNT, int
+    )
+    request = ExportWorkflowRequest(
+        str(output),
+        {
+            "export_format": "pmx",
+            "require_target": True,
+            "target_model": source_root,
+            "target_identity": source_root,
+            "validation_report_dir": str(report_dir),
+            "validation_report_evidence": {
+                "gate": "V070-EXPORT-RELEASE-GATE-1",
+                "fixture": source_model.name,
+                "fresh_import": True,
+                "oracles": ["soft_body_provenance", "policy_reject"],
+            },
+        },
+    )
+    validation = ExportWorkflowService().validate(request)
+    policy_codes = [issue.code for issue in validation.report.issues]
+    if validation.state != "Blocked" or "PMX_SOFT_BODIES_UNSUPPORTED" not in policy_codes:
+        raise AssertionError(
+            "PMX soft-body policy probe expected a blocking rejection, "
+            f"got state={validation.state!r}, issues={policy_codes!r}"
+        )
+    report_dir.mkdir(parents=True, exist_ok=True)
+    evidence = request.options["validation_report_evidence"]
+    validation.report.write_canonical_json(
+        report_dir / "report.json",
+        target_identity=source_root,
+        provenance="ExportWorkflowService validation",
+        evidence=evidence,
+    )
+    validation.report.write_markdown(
+        report_dir / "report.md",
+        target_identity=source_root,
+        provenance="ExportWorkflowService validation",
+        evidence=evidence,
+    )
+    if output.exists():
+        raise AssertionError(f"PMX soft-body policy rejection created an output: {output}")
+    return {
+        "status": "policy-reject",
+        "format": "pmx_soft_body",
+        "source": str(source_model),
+        "output": None,
+        "report_json": str(report_dir / "report.json"),
+        "report_md": str(report_dir / "report.md"),
+        "policy_code": "PMX_SOFT_BODIES_UNSUPPORTED",
+        "import_oracles": {"soft_body_count": source_soft_body_count},
+        "collection": {
+            "collector": "ExportWorkflowService validation -> soft-body policy",
+            "target_model": source_root,
+            "source_fresh_import": True,
+            "export_writer_called": False,
+        },
+    }
+
+
+def _run_sdef_policy_case(out_dir: Path) -> dict[str, Any]:
+    """Prove fresh-import SDEF provenance reaches the public export rejection."""
+    from mmd_tools.core.pmx_data import PmxData
+    from mmd_tools.services.export_workflow_service import (
+        ExportWorkflowRequest,
+        ExportWorkflowService,
+    )
+
+    source_model = _write_sdef_probe_fixture(
+        out_dir / "fixtures" / "sdef_policy_input.pmx"
+    )
+    source_pmx = PmxData().parse_file(str(source_model))
+    source_sdef_count = sum(
+        int(getattr(vertex, "weight_transform_type", 0)) == 3
+        for vertex in source_pmx.vertices
+    )
+    if source_sdef_count <= 0:
+        raise RuntimeError("SDEF probe fixture did not contain an SDEF vertex")
+
+    output = out_dir / "model.pmx"
+    report_dir = out_dir / "report"
+    source_root = _fresh_import(source_model)
+    import_oracles = {
+        "source_sdef_vertex_count": source_sdef_count,
+        **_capture_sdef_import_provenance(source_root),
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    sentinel = b"pre-existing-sdef-policy-target"
+    output.write_bytes(sentinel)
+    before = output.read_bytes()
+    request = ExportWorkflowRequest(
+        str(output),
+        {
+            "export_format": "pmx",
+            "require_target": True,
+            "target_model": source_root,
+            "target_identity": source_root,
+            "validation_report_dir": str(report_dir),
+            "validation_report_evidence": {
+                "gate": "V070-EXPORT-RELEASE-GATE-1",
+                "fixture": source_model.name,
+                "fresh_import": True,
+                "oracles": ["sdef_provenance", "policy_reject"],
+            },
+        },
+    )
+    validation = ExportWorkflowService().validate(request)
+    policy_codes = [issue.code for issue in validation.report.issues]
+    if validation.state != "Blocked" or "PMX_VERTEX_SDEF_UNSUPPORTED" not in policy_codes:
+        raise AssertionError(
+            "PMX SDEF policy probe expected a blocking rejection, "
+            f"got state={validation.state!r}, issues={policy_codes!r}"
+        )
+    payload = validation.payload
+    collected_sdef_count = sum(
+        int(vertex.get("weight_transform_type", 0)) == 3
+        for vertex in payload.get("vertices", [])
+    ) if isinstance(payload, dict) else 0
+    if collected_sdef_count <= 0:
+        raise AssertionError("SDEF collector payload did not retain a positive vertex count")
+    import_oracles["collected_sdef_vertex_count"] = collected_sdef_count
+
+    report_dir.mkdir(parents=True, exist_ok=True)
+    evidence = request.options["validation_report_evidence"]
+    validation.report.write_canonical_json(
+        report_dir / "report.json",
+        target_identity=source_root,
+        provenance="ExportWorkflowService validation",
+        evidence=evidence,
+    )
+    validation.report.write_markdown(
+        report_dir / "report.md",
+        target_identity=source_root,
+        provenance="ExportWorkflowService validation",
+        evidence=evidence,
+    )
+    after = output.read_bytes() if output.exists() else None
+    output_safety = {
+        "target_existed_before": True,
+        "target_exists_after": output.exists(),
+        "created": False,
+        "overwritten": after != before,
+        "preserved": after == before,
+        "writer_called": False,
+    }
+    if not output_safety["target_exists_after"] or not output_safety["preserved"]:
+        raise AssertionError(f"SDEF policy rejection changed output target: {output}")
+    return {
+        "status": "policy-reject",
+        "format": "pmx_sdef",
+        "source": str(source_model),
+        "output": None,
+        "output_target": str(output),
+        "report_json": str(report_dir / "report.json"),
+        "report_md": str(report_dir / "report.md"),
+        "policy_code": "PMX_VERTEX_SDEF_UNSUPPORTED",
+        "import_oracles": import_oracles,
+        "collection": {
+            "collector": "ExportWorkflowService validation -> SDEF policy",
+            "target_model": source_root,
+            "source_fresh_import": True,
+            "export_writer_called": False,
+        },
+        "output_safety": output_safety,
+    }
+
+
+def _run_impulse_policy_case(out_dir: Path) -> dict[str, Any]:
+    """Prove fresh-import PMX 2.1 Impulse metadata reaches policy rejection."""
+    from mmd_tools.core.pmx_data import PmxData
+    from mmd_tools.core.pmx_data.morph import PmxMorphType
+    from mmd_tools.services.export_workflow_service import (
+        ExportWorkflowRequest,
+        ExportWorkflowService,
+    )
+
+    source_model = _write_impulse_probe_fixture(
+        out_dir / "fixtures" / "impulse_policy_input.pmx"
+    )
+    source_pmx = PmxData().parse_file(str(source_model))
+    source_impulse_count = sum(
+        int(getattr(morph, "morph_type", -1)) == int(PmxMorphType.ImpulseMorph)
+        for morph in source_pmx.morphs
+    )
+    if source_impulse_count <= 0:
+        raise RuntimeError("Impulse probe fixture did not contain an Impulse morph")
+
+    output = out_dir / "model.pmx"
+    report_dir = out_dir / "report"
+    source_root = _fresh_import(source_model)
+    import_oracles = {
+        "source_impulse_morph_count": source_impulse_count,
+        **_capture_impulse_import_provenance(source_root),
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    sentinel = b"pre-existing-impulse-policy-target"
+    output.write_bytes(sentinel)
+    before = output.read_bytes()
+    request = ExportWorkflowRequest(
+        str(output),
+        {
+            "export_format": "pmx",
+            "require_target": True,
+            "target_model": source_root,
+            "target_identity": source_root,
+            "validation_report_dir": str(report_dir),
+            "validation_report_evidence": {
+                "gate": "V070-EXPORT-RELEASE-GATE-1",
+                "fixture": source_model.name,
+                "fresh_import": True,
+                "oracles": ["impulse_provenance", "policy_reject"],
+            },
+        },
+    )
+    validation = ExportWorkflowService().validate(request)
+    policy_codes = [issue.code for issue in validation.report.issues]
+    if validation.state != "Blocked" or "MORPH_TYPE_UNSUPPORTED" not in policy_codes:
+        raise AssertionError(
+            "PMX Impulse policy probe expected a blocking rejection, "
+            f"got state={validation.state!r}, issues={policy_codes!r}"
+        )
+    payload = validation.payload
+    collected_impulse_count = sum(
+        morph.get("type") == "impulse"
+        for morph in payload.get("morphs", [])
+    ) if isinstance(payload, dict) else 0
+    if collected_impulse_count <= 0:
+        raise AssertionError("Impulse collector payload did not retain a positive morph count")
+    import_oracles["collected_impulse_morph_count"] = collected_impulse_count
+
+    report_dir.mkdir(parents=True, exist_ok=True)
+    evidence = request.options["validation_report_evidence"]
+    validation.report.write_canonical_json(
+        report_dir / "report.json",
+        target_identity=source_root,
+        provenance="ExportWorkflowService validation",
+        evidence=evidence,
+    )
+    validation.report.write_markdown(
+        report_dir / "report.md",
+        target_identity=source_root,
+        provenance="ExportWorkflowService validation",
+        evidence=evidence,
+    )
+    after = output.read_bytes() if output.exists() else None
+    output_safety = {
+        "target_existed_before": True,
+        "target_exists_after": output.exists(),
+        "created": False,
+        "overwritten": after != before,
+        "preserved": after == before,
+        "writer_called": False,
+    }
+    if not output_safety["target_exists_after"] or not output_safety["preserved"]:
+        raise AssertionError(f"Impulse policy rejection changed output target: {output}")
+    return {
+        "status": "policy-reject",
+        "format": "pmx_impulse",
+        "source": str(source_model),
+        "output": None,
+        "output_target": str(output),
+        "report_json": str(report_dir / "report.json"),
+        "report_md": str(report_dir / "report.md"),
+        "policy_code": "MORPH_TYPE_UNSUPPORTED",
+        "import_oracles": import_oracles,
+        "collection": {
+            "collector": "ExportWorkflowService validation -> Impulse policy",
+            "target_model": source_root,
+            "source_fresh_import": True,
+            "export_writer_called": False,
+        },
+        "output_safety": output_safety,
+    }
+
+
+def _run_morph_case(source_model: Path, out_dir: Path) -> dict[str, Any]:
+    """Roundtrip the supported basic-morph fixture with a Maya runtime oracle."""
+    case = _run_model_case(
+        "pmx",
+        source_model,
+        out_dir,
+        compare_morphs=True,
+    )
+    case["format"] = "pmx_morph"
+    return case
+
+
+def _run_physics_case(source_model: Path, out_dir: Path) -> dict[str, Any]:
+    """Roundtrip the repository physics fixture with rigid/joint oracle checks."""
+    probe_model, normalizations = _prepare_physics_probe_fixture(source_model, out_dir)
+    case = _run_model_case(
+        "pmx",
+        probe_model,
+        out_dir,
+        compare_physics=True,
+    )
+    case["format"] = "pmx_physics"
+    case["source_fixture"] = str(source_model)
+    case["input_normalizations"] = normalizations
+    return case
 
 
 def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str, Any]:
@@ -671,7 +2056,8 @@ def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str
                     "oracles": ["pose", "metadata"],
                 },
             },
-        )
+        ),
+        acknowledge_warnings=True,
     )
     if not result.succeeded:
         raise RuntimeError(f"vmd export failed: {result.error or result.report}")
@@ -763,6 +2149,72 @@ def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
             }
         cases.append(case)
     try:
+        cases.append(_run_morph_case(DEFAULT_MORPH_PMX, out_dir / "pmx-morph"))
+    except Exception as exc:
+        cases.append(
+            {
+                "status": "fail",
+                "format": "pmx_morph",
+                "source": str(DEFAULT_MORPH_PMX),
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc(limit=12),
+            }
+        )
+    try:
+        cases.append(_run_physics_case(DEFAULT_PHYSICS_PMX, out_dir / "pmx-physics"))
+    except Exception as exc:
+        cases.append(
+            {
+                "status": "fail",
+                "format": "pmx_physics",
+                "source": str(DEFAULT_PHYSICS_PMX),
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc(limit=12),
+            }
+        )
+    soft_body_case_dir = out_dir / "pmx-soft-body"
+    soft_body_fixture = soft_body_case_dir / "fixtures" / "soft_body_policy_input.pmx"
+    try:
+        cases.append(_run_soft_body_policy_case(soft_body_case_dir))
+    except Exception as exc:
+        cases.append(
+            {
+                "status": "fail",
+                "format": "pmx_soft_body",
+                "source": str(soft_body_fixture),
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc(limit=12),
+            }
+        )
+    sdef_case_dir = out_dir / "pmx-sdef"
+    sdef_fixture = sdef_case_dir / "fixtures" / "sdef_policy_input.pmx"
+    try:
+        cases.append(_run_sdef_policy_case(sdef_case_dir))
+    except Exception as exc:
+        cases.append(
+            {
+                "status": "fail",
+                "format": "pmx_sdef",
+                "source": str(sdef_fixture),
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc(limit=12),
+            }
+        )
+    impulse_case_dir = out_dir / "pmx-impulse"
+    impulse_fixture = impulse_case_dir / "fixtures" / "impulse_policy_input.pmx"
+    try:
+        cases.append(_run_impulse_policy_case(impulse_case_dir))
+    except Exception as exc:
+        cases.append(
+            {
+                "status": "fail",
+                "format": "pmx_impulse",
+                "source": str(impulse_fixture),
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc(limit=12),
+            }
+        )
+    try:
         cases.append(_run_vmd_case(pmx_path, vmd_path, out_dir / "vmd"))
     except Exception as exc:
         cases.append(
@@ -780,7 +2232,16 @@ def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
         "gate": "V070-EXPORT-RELEASE-GATE-1",
         "maya_version": _maya_version(),
         "status": "pass" if all(case["status"] in accepted_case_statuses for case in cases) else "fail",
-        "fixture": {"pmx": str(pmx_path), "pmd": str(pmd_path), "vmd": str(vmd_path)},
+        "fixture": {
+            "pmx": str(pmx_path),
+            "pmx_morph": str(DEFAULT_MORPH_PMX),
+            "pmx_physics": str(DEFAULT_PHYSICS_PMX),
+            "pmx_soft_body": str(soft_body_fixture),
+            "pmx_sdef": str(sdef_fixture),
+            "pmx_impulse": str(impulse_fixture),
+            "pmd": str(pmd_path),
+            "vmd": str(vmd_path),
+        },
         "cases": cases,
     }
     (out_dir / "maya-probe.json").write_text(

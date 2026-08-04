@@ -290,7 +290,11 @@ class TestExportModelValidation(unittest.TestCase):
                 "sdef_r1": [0.0, 0.0, 0.1],
             }
         )
-        self.assertTrue(validate_model_data(sdef_model, "pmx").valid)
+        report = validate_model_data(sdef_model, "pmx")
+        self.assertEqual(
+            [(issue.code, issue.path) for issue in report.issues],
+            [("PMX_VERTEX_SDEF_UNSUPPORTED", "vertices[0].weight_transform_type")],
+        )
 
     def test_pmx_vertex_payloads_not_retained_by_writer_are_blocking(self):
         cases = (
@@ -364,7 +368,16 @@ class TestExportModelValidation(unittest.TestCase):
     def test_pmx_vertex_unsupported_payload_does_not_call_writer(self):
         exporter = _FakeExporter()
         model_data = _valid_model_data()
-        model_data["vertices"][0]["sdef_c"] = [0.0, 0.0, 0.0]
+        model_data["vertices"][0].update(
+            {
+                "weight_transform_type": 3,
+                "bone_indices": [0, 0],
+                "bone_weights": [0.75],
+                "sdef_c": [0.0, 0.0, 0.0],
+                "sdef_r0": [0.0, 0.0, 0.0],
+                "sdef_r1": [0.0, 0.0, 0.0],
+            }
+        )
 
         result = ExportModelAction(pmx_exporter=exporter, collector=None).execute(
             ExportModelRequest(
@@ -919,7 +932,6 @@ class TestExportModelValidation(unittest.TestCase):
             "additional_uv4",
             "material",
             "flip",
-            "impulse",
             0,
             1,
             2,
@@ -930,7 +942,6 @@ class TestExportModelValidation(unittest.TestCase):
             7,
             8,
             9,
-            10,
         ):
             with self.subTest(morph_type=morph_type):
                 model_data = _valid_model_data()
@@ -972,61 +983,44 @@ class TestExportModelValidation(unittest.TestCase):
 
                 self.assertTrue(any(issue.code == expected_code for issue in report.issues), report.issues)
 
-    def test_pmx21_flip_and_impulse_offsets_validate_references_and_vectors(self):
+    def test_pmx21_flip_offsets_validate_and_impulse_is_policy_rejected(self):
         model_data = _valid_model_data()
         model_data["rigid_bodies"] = [{}]
         model_data["morphs"] = [
-            {
-                "type": "flip",
-                "offsets": [{"morph_index": 0, "flip_rate": 0.25}],
-            },
-            {
-                "type": "impulse",
-                "offsets": [
-                    {
-                        "rigid_body_index": 0,
-                        "impulse": [0.1, 0.2, 0.3],
-                        "torque": [0.4, 0.5, 0.6],
-                    }
-                ],
-            },
+            {"type": "flip", "offsets": [{"morph_index": 0, "flip_rate": 0.25}]}
         ]
 
         report = validate_model_data(model_data, "pmx")
 
         self.assertTrue(report.valid, report.issues)
 
-    def test_pmx21_flip_and_impulse_offsets_reject_invalid_payload(self):
+        for morph_type in ("impulse", 10):
+            with self.subTest(morph_type=morph_type):
+                model_data["morphs"] = [
+                    {
+                        "type": morph_type,
+                        "offsets": [
+                            {
+                                "rigid_body_index": 0,
+                                "impulse": [0.1, 0.2, 0.3],
+                                "torque": [0.4, 0.5, 0.6],
+                            }
+                        ],
+                    }
+                ]
+
+                report = validate_model_data(model_data, "pmx")
+
+                self.assertEqual(
+                    [(issue.code, issue.path) for issue in report.issues],
+                    [("MORPH_TYPE_UNSUPPORTED", "morphs[0].type")],
+                )
+
+    def test_pmx21_flip_offsets_reject_invalid_payload(self):
         cases = (
             (
                 {"type": "flip", "offsets": [{"morph_index": 2, "flip_rate": 0.25}]},
                 "MORPH_OFFSET_INDEX_OUT_OF_RANGE",
-            ),
-            (
-                {
-                    "type": "impulse",
-                    "offsets": [
-                        {
-                            "rigid_body_index": 1,
-                            "impulse": [0.0, 0.0, 0.0],
-                            "torque": [0.0, 0.0, 0.0],
-                        }
-                    ],
-                },
-                "MORPH_OFFSET_INDEX_OUT_OF_RANGE",
-            ),
-            (
-                {
-                    "type": "impulse",
-                    "offsets": [
-                        {
-                            "rigid_body_index": 0,
-                            "impulse": [0.0, 0.0],
-                            "torque": [0.0, 0.0, 0.0],
-                        }
-                    ],
-                },
-                "FIELD_LENGTH",
             ),
             (
                 {"type": "flip", "offsets": [{"morph_index": 0, "flip_rate": float("nan")}]},
@@ -1039,6 +1033,28 @@ class TestExportModelValidation(unittest.TestCase):
                 model_data["morphs"] = [morph]
                 report = validate_model_data(model_data, "pmx")
                 self.assertTrue(any(issue.code == expected_code for issue in report.issues), report.issues)
+
+    def test_action_does_not_call_writer_when_impulse_morph_is_policy_rejected(self):
+        for morph_type in ("impulse", 10):
+            with self.subTest(morph_type=morph_type):
+                exporter = _FakeExporter()
+                model_data = _valid_model_data()
+                model_data["morphs"] = [{"type": morph_type, "offsets": []}]
+
+                result = ExportModelAction(pmx_exporter=exporter, collector=None).execute(
+                    ExportModelRequest(
+                        file_path="out.pmx",
+                        options={"export_format": "pmx", "model_data": model_data},
+                    )
+                )
+
+                self.assertFalse(result.succeeded)
+                self.assertIsInstance(result.error, ExportValidationError)
+                self.assertEqual(exporter.calls, [])
+                self.assertEqual(
+                    [(issue.code, issue.path) for issue in result.validation_report.issues],
+                    [("MORPH_TYPE_UNSUPPORTED", "morphs[0].type")],
+                )
 
     def test_pmx_morph_group_vertex_bone_and_material_references_are_range_checked(self):
         cases = (

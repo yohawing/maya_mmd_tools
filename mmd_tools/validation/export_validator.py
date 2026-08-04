@@ -1493,6 +1493,15 @@ def _validate_morphs(
             )
             continue
 
+        if normalized_type == "impulse":
+            _issue(
+                issues,
+                "MORPH_TYPE_UNSUPPORTED",
+                _path_for_key(morph_path, type_field),
+                "PMX model-data export policy rejects impulse morphs",
+            )
+            continue
+
         _validate_text_fields(morph, ("name", "name_english"), morph_path, issues)
         _validate_integer_range_field(
             morph,
@@ -1650,6 +1659,12 @@ def _validate_pmx_vertex_unsupported_fields(
                 )
                 continue
             _validate_vector_field(vertex, field_name, 3, vertex_path, issues)
+        _issue(
+            issues,
+            "PMX_VERTEX_SDEF_UNSUPPORTED",
+            _path_for_key(vertex_path, "weight_transform_type"),
+            "PMX model-data export policy rejects SDEF vertices",
+        )
         return
 
     for field_name in ("sdef_c", "sdef_r0", "sdef_r1"):
@@ -1668,7 +1683,7 @@ def _validate_pmx_vertex_unsupported_fields(
         issues,
         "PMX_VERTEX_SKINNING_TYPE_UNSUPPORTED",
         _path_for_key(vertex_path, "weight_transform_type"),
-        "PMX model-data export only retains BDEF or fully-authored SDEF weight data",
+        "PMX model-data export only retains BDEF weight data; SDEF and QDEF are unsupported",
     )
 
 

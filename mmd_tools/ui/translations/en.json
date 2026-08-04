@@ -440,6 +440,8 @@
     "sphere_mode": "Sphere Mode:",
     "toon_texture": "Toon Texture:",
     "toon_sharing": "Toon Sharing:",
+    "toon_texture_path": "Custom Toon Texture Path:",
+    "toon_texture_index": "Custom Toon Texture Index:",
     "memo": "Memo:",
     "face_count": "Face Count:",
     "edge_color": "Edge Color:",

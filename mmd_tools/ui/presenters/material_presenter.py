@@ -21,6 +21,8 @@ from mmd_tools.core.constants import (
     ATTR_MMD_SHADER_OUTLINE_ENABLED,
     ATTR_MMD_SPHERE_MODE,
     ATTR_MMD_SPHERE_PATH,
+    ATTR_MMD_SHARED_TOON_FLAG,
+    ATTR_MMD_TOON_PATH,
     ATTR_MMD_TOON_TEXTURE_INDEX,
 )
 from mmd_tools.actions import (
@@ -86,6 +88,15 @@ class MaterialPresenter:
         self.view.edge_size_spin.valueChanged.connect(self._on_value_changed)
         self.view.sphere_mode_combo.currentIndexChanged.connect(self._on_value_changed)
         self.view.toon_texture_combo.currentIndexChanged.connect(self._on_value_changed)
+        for control_name in ("toon_texture_path_edit", "toon_texture_index_spin"):
+            control = getattr(self.view, control_name, None)
+            if control is not None:
+                signal = getattr(control, "textChanged", None) or getattr(control, "valueChanged", None)
+                if signal is not None:
+                    signal.connect(self._on_value_changed)
+        toon_sharing_check = getattr(self.view, "toon_sharing_check", None)
+        if toon_sharing_check is not None:
+            toon_sharing_check.stateChanged.connect(self._on_toon_sharing_changed)
 
         # Slider connections for transparency and specular coefficient
         self.view.transparency_slider.valueChanged.connect(lambda v: self.view.transparency_spin.setValue(v / 100.0))
@@ -513,9 +524,32 @@ class MaterialPresenter:
         self.view.sphere_mode_combo.setCurrentIndex(sphere_mode)
 
         # Toon texture
+        shared_toon_flag = self._get_attr_safe(material_name, ATTR_MMD_SHARED_TOON_FLAG, 1)
+        try:
+            shared_toon_flag = int(shared_toon_flag)
+        except (TypeError, ValueError):
+            shared_toon_flag = 1
+        shared_toon_flag = 1 if shared_toon_flag else 0
         toon_index = self._get_attr_safe(material_name, ATTR_MMD_TOON_TEXTURE_INDEX, 0)
+        try:
+            toon_index = int(toon_index)
+        except (TypeError, ValueError):
+            toon_index = 0
+        self.material_data["shared_toon_flag"] = shared_toon_flag
         self.material_data["toon_index"] = toon_index
-        self.view.toon_texture_combo.setCurrentIndex(toon_index)
+        self.view.toon_texture_combo.setCurrentIndex(max(0, min(9, toon_index)))
+        toon_sharing_check = getattr(self.view, "toon_sharing_check", None)
+        toon_texture_path_edit = getattr(self.view, "toon_texture_path_edit", None)
+        toon_texture_index_spin = getattr(self.view, "toon_texture_index_spin", None)
+        if toon_sharing_check is not None:
+            toon_sharing_check.setChecked(bool(shared_toon_flag))
+        if toon_texture_path_edit is not None:
+            toon_texture_path_edit.setText(
+                "" if shared_toon_flag else self._get_attr_safe(material_name, ATTR_MMD_TOON_PATH, "")
+            )
+        if toon_texture_index_spin is not None:
+            toon_texture_index_spin.setValue(toon_index if not shared_toon_flag else -1)
+        self._set_toon_controls_enabled(bool(shared_toon_flag))
 
         # Draw flags
         draw_flags = self._get_attr_safe(material_name, ATTR_MMD_DRAW_FLAGS, 0x1F)
@@ -995,13 +1029,37 @@ class MaterialPresenter:
             "int",
         )
 
-        # Toon index
+        # Toon semantics: shared toon uses the built-in 0..9 combo; custom toon
+        # uses the regular PMX texture table and preserves its relative path.
+        shared_toon_flag = self._toon_shared_flag()
+        toon_index = self.view.toon_texture_combo.currentIndex()
+        if not shared_toon_flag:
+            toon_texture_index_spin = getattr(self.view, "toon_texture_index_spin", None)
+            if toon_texture_index_spin is not None:
+                toon_index = toon_texture_index_spin.value()
+        try:
+            toon_index = int(toon_index)
+        except (TypeError, ValueError):
+            toon_index = int(self.material_data.get("toon_index", 0) or 0)
         maya_attribute_utils.set_attribute(
             self.current_material,
-            "mmd_toon_index",
-            self.view.toon_texture_combo.currentIndex(),
+            ATTR_MMD_SHARED_TOON_FLAG,
+            shared_toon_flag,
             "int",
         )
+        maya_attribute_utils.set_attribute(
+            self.current_material,
+            ATTR_MMD_TOON_TEXTURE_INDEX,
+            toon_index,
+            "int",
+        )
+        if not shared_toon_flag:
+            toon_texture_path_edit = getattr(self.view, "toon_texture_path_edit", None)
+            toon_path = toon_texture_path_edit.text() if toon_texture_path_edit is not None else ""
+            maya_attribute_utils.set_custom_attributes(
+                self.current_material,
+                {ATTR_MMD_TOON_PATH: toon_path},
+            )
 
         # Draw flags
         draw_flags = 0
@@ -1056,7 +1114,8 @@ class MaterialPresenter:
         defaults = {
             "mmd_sphere_path": "",
             "mmd_sphere_mode": 0,
-            "mmd_toon_index": 0,
+            ATTR_MMD_SHARED_TOON_FLAG: 1,
+            ATTR_MMD_TOON_TEXTURE_INDEX: 0,
             "mmd_draw_flags": 0x1F,
             "mmd_edge_color": [0.0, 0.0, 0.0],
             ATTR_MMD_EDGE_ALPHA: 1.0,
@@ -1073,6 +1132,30 @@ class MaterialPresenter:
         # 一括で作成・設定
         if attrs_to_create:
             maya_attribute_utils.set_custom_attributes(material, attrs_to_create)
+
+    def _toon_shared_flag(self):
+        """Return the authored shared-toon mode, with legacy-view fallback."""
+        toon_sharing_check = getattr(self.view, "toon_sharing_check", None)
+        if toon_sharing_check is not None:
+            return int(bool(toon_sharing_check.isChecked()))
+        return int(bool(self.material_data.get("shared_toon_flag", 1)))
+
+    def _set_toon_controls_enabled(self, shared_toon):
+        """Enable the UI controls belonging to the selected PMX toon mode."""
+        toon_texture_combo = getattr(self.view, "toon_texture_combo", None)
+        toon_texture_path_edit = getattr(self.view, "toon_texture_path_edit", None)
+        toon_texture_index_spin = getattr(self.view, "toon_texture_index_spin", None)
+        if toon_texture_combo is not None:
+            toon_texture_combo.setEnabled(bool(shared_toon))
+        if toon_texture_path_edit is not None:
+            toon_texture_path_edit.setEnabled(not shared_toon)
+        if toon_texture_index_spin is not None:
+            toon_texture_index_spin.setEnabled(not shared_toon)
+
+    def _on_toon_sharing_changed(self, state):
+        """Switch between built-in shared toon and custom texture-table controls."""
+        self._set_toon_controls_enabled(bool(state))
+        self._on_value_changed(state)
 
     def reset_changes(self):
         """Reset material properties to original values"""

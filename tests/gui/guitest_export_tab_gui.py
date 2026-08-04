@@ -7,7 +7,7 @@
 import unittest
 
 from tests.common.gui_test_base import GuiTestBase, requires_gui
-from mmd_tools.ui.qt_compat import QApplication
+from mmd_tools.ui.qt_compat import QApplication, QtCore
 from mmd_tools.ui.presenters.export_presenter import ExportPresenter
 from mmd_tools.ui.tabs.export_tab import ExportTab
 from mmd_tools.services.export_workflow_service import (
@@ -69,7 +69,11 @@ class TestExportTabGUI(GuiTestBase):
         """テストで生成した widget を Maya の Qt 階層から確実に外す。"""
         tab.close()
         tab.deleteLater()
-        QApplication.processEvents()
+        app = QApplication.instance()
+        if app is None:
+            return
+        app.processEvents()
+        app.sendPostedEvents(tab, QtCore.QEvent.DeferredDelete)
 
     def test_format_combo_has_three_formats_and_vmd_only_shows_mode(self):
         """PMX/PMD/VMD の形式と VMD 専用 mode UI を確認する。"""
@@ -217,7 +221,7 @@ class TestExportTabGUI(GuiTestBase):
         )
         workflow = _WarningWorkflow(report)
         app_state = _GuiAppState()
-        ExportPresenter(tab, app_state, workflow_service=workflow)
+        presenter = ExportPresenter(tab, app_state, workflow_service=workflow)
         try:
             tab.validation_console.set_report(report, {"fixture": "mode-c-raw-loss"})
             QApplication.processEvents()
@@ -234,6 +238,8 @@ class TestExportTabGUI(GuiTestBase):
             self.assertEqual(workflow.acknowledgements, [True])
             self.assertEqual(tab.state_label.text(), STATE_SUCCEEDED)
         finally:
+            presenter.deleteLater()
+            QApplication.processEvents()
             self._delete_tab(tab)
 
     def test_validate_and_export_buttons_emit_workflow_requests(self):

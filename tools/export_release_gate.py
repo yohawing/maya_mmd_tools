@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -25,6 +26,19 @@ ROOT = Path(__file__).resolve().parents[1]
 BUILD_ROOT = (ROOT / "build").resolve()
 MAX_OUTPUT = 1800
 MAYA_VERSIONS = ("2024", "2026")
+MORPH_ORACLE_TYPES = ("vertex", "bone", "material", "group")
+MORPH_ORACLE_FIELDS = {
+    "vertex": ("index", "name", "weight_1_object_space_deltas"),
+    "bone": ("index", "name", "name_en", "panel", "raw_offsets"),
+    "material": ("index", "name", "name_en", "panel", "offsets"),
+    "group": ("index", "name", "name_en", "panel", "offsets", "controller_outputs"),
+}
+MORPH_ORACLE_EXCLUSIONS = (
+    "sdef vertex deformation",
+    "UV morph runtime evaluation",
+    "Impulse morph physics effect",
+    "Flip/composite morph visual parity",
+)
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -392,6 +406,170 @@ def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _validate_morph_oracle_case(case: Mapping[str, Any]) -> list[str]:
+    """Require the structural evidence emitted by the all-type morph probe."""
+    failures: list[str] = []
+    coverage = case.get("morph_coverage")
+    expected_fields = {name: list(fields) for name, fields in MORPH_ORACLE_FIELDS.items()}
+    if not isinstance(coverage, dict):
+        failures.append("pmx_morph.morph_coverage_missing")
+    else:
+        if coverage.get("verified_types") != list(MORPH_ORACLE_TYPES):
+            failures.append("pmx_morph.morph_coverage.verified_types mismatch")
+        if coverage.get("verified_fields") != expected_fields:
+            failures.append("pmx_morph.morph_coverage.verified_fields mismatch")
+        if coverage.get("excluded_boundaries") != list(MORPH_ORACLE_EXCLUSIONS):
+            failures.append("pmx_morph.morph_coverage.excluded_boundaries mismatch")
+        if coverage.get("source_oracle") != "PMX parser payload":
+            failures.append("pmx_morph.morph_coverage.source_oracle mismatch")
+        if coverage.get("scene_oracle") != "direct Maya DAG/network attributes and controller outputs":
+            failures.append("pmx_morph.morph_coverage.scene_oracle mismatch")
+
+    oracle = case.get("morph_oracle")
+    if not isinstance(oracle, dict):
+        return failures + ["pmx_morph.morph_oracle_missing"]
+    comparison = oracle.get("comparison")
+    if not isinstance(comparison, dict):
+        failures.append("pmx_morph.morph_oracle.comparison_missing")
+    else:
+        if comparison.get("status") != "pass":
+            failures.append("pmx_morph.morph_oracle.comparison.status must be pass")
+        if comparison.get("checked_types") != list(MORPH_ORACLE_TYPES):
+            failures.append("pmx_morph.morph_oracle.comparison.checked_types mismatch")
+
+    expected_types = set(MORPH_ORACLE_TYPES)
+    all_indices: set[str] = set()
+    vertex_indices: set[str] = set()
+    for label in ("source", "fresh_import"):
+        payload = oracle.get(label)
+        if not isinstance(payload, dict):
+            failures.append(f"pmx_morph.morph_oracle.{label}_missing")
+            continue
+        morphs = payload.get("morphs")
+        if not isinstance(morphs, list) or not morphs:
+            failures.append(f"pmx_morph.morph_oracle.{label}.morphs_missing")
+            continue
+        indices: set[str] = set()
+        types: set[str] = set()
+        for entry_index, entry in enumerate(morphs):
+            if not isinstance(entry, dict):
+                failures.append(f"pmx_morph.morph_oracle.{label}.morphs[{entry_index}] malformed")
+                continue
+            morph_index = entry.get("index")
+            morph_type = entry.get("type")
+            if isinstance(morph_index, bool) or not isinstance(morph_index, int) or morph_index < 0:
+                failures.append(f"pmx_morph.morph_oracle.{label}.morphs[{entry_index}].index malformed")
+                continue
+            if not isinstance(entry.get("name"), str) or not entry["name"]:
+                failures.append(f"pmx_morph.morph_oracle.{label}.morphs[{entry_index}].name malformed")
+            if morph_type not in expected_types:
+                failures.append(f"pmx_morph.morph_oracle.{label}.morphs[{entry_index}].type malformed")
+                continue
+            key = str(morph_index)
+            if key in indices:
+                failures.append(f"pmx_morph.morph_oracle.{label} duplicate morph index {morph_index}")
+            indices.add(key)
+            types.add(morph_type)
+            if morph_type == "vertex":
+                vertex_indices.add(key)
+            else:
+                if not isinstance(entry.get("name_en"), str):
+                    failures.append(f"pmx_morph.morph_oracle.{label}.morphs[{entry_index}].name_en malformed")
+                panel = entry.get("panel")
+                if isinstance(panel, bool) or not isinstance(panel, int):
+                    failures.append(f"pmx_morph.morph_oracle.{label}.morphs[{entry_index}].panel malformed")
+                if not isinstance(entry.get("offsets"), list):
+                    failures.append(f"pmx_morph.morph_oracle.{label}.morphs[{entry_index}].offsets malformed")
+        if types != expected_types:
+            failures.append(
+                f"pmx_morph.morph_oracle.{label}.types mismatch: expected {sorted(expected_types)}, "
+                f"actual {sorted(types)}"
+            )
+        if label == "source":
+            all_indices = indices
+            vertex_offsets = payload.get("vertex_offsets")
+            if not isinstance(vertex_offsets, dict):
+                failures.append("pmx_morph.morph_oracle.source.vertex_offsets_missing")
+            elif set(vertex_offsets) != vertex_indices:
+                failures.append("pmx_morph.morph_oracle.source.vertex_offsets mismatch")
+        else:
+            if indices != all_indices:
+                failures.append("pmx_morph.morph_oracle source/fresh morph indices mismatch")
+            vertex_meshes = payload.get("vertex_meshes")
+            if not isinstance(vertex_meshes, list) or not vertex_meshes:
+                failures.append("pmx_morph.morph_oracle.fresh_import.vertex_meshes_missing")
+            runtime = payload.get("vertex_runtime_deltas")
+            if not isinstance(runtime, dict) or set(runtime) != vertex_indices:
+                failures.append("pmx_morph.morph_oracle.fresh_import.vertex_runtime_deltas mismatch")
+            elif any(not isinstance(value, list) or not value for value in runtime.values()):
+                failures.append("pmx_morph.morph_oracle.fresh_import.vertex_runtime_deltas malformed")
+
+        outputs = payload.get("controller_outputs")
+        if not isinstance(outputs, dict) or set(outputs) != indices:
+            failures.append(f"pmx_morph.morph_oracle.{label}.controller_outputs mismatch")
+        elif morphs:
+            for key, values in outputs.items():
+                if not isinstance(values, list) or len(values) != len(morphs):
+                    failures.append(f"pmx_morph.morph_oracle.{label}.controller_outputs[{key}] malformed")
+                elif any(
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                    for value in values
+                ):
+                    failures.append(f"pmx_morph.morph_oracle.{label}.controller_outputs[{key}] non-finite")
+        unsupported = payload.get("unsupported_types")
+        if unsupported != []:
+            failures.append(f"pmx_morph.morph_oracle.{label}.unsupported_types must be empty")
+    return failures
+
+
+def _validate_policy_reject_case(
+    case: Mapping[str, Any], export_format: str, policy_code: str, count_fields: tuple[str, ...]
+) -> list[str]:
+    """Require positive fresh-import provenance and output safety for one policy case."""
+    failures: list[str] = []
+    if case.get("policy_code") != policy_code:
+        failures.append(f"{export_format}.policy_code={policy_code!r} expected")
+    import_oracles = case.get("import_oracles")
+    if not isinstance(import_oracles, dict):
+        failures.append(f"{export_format}.import_oracles_missing")
+    else:
+        for field in count_fields:
+            value = import_oracles.get(field)
+            try:
+                positive = not isinstance(value, bool) and int(value) > 0
+            except (TypeError, ValueError, OverflowError):
+                positive = False
+            if not positive:
+                failures.append(f"{export_format}.import_oracles.{field} must be positive")
+    output_safety = case.get("output_safety")
+    if export_format in {"pmx_sdef", "pmx_impulse"}:
+        if not isinstance(output_safety, dict):
+            failures.append(f"{export_format}.output_safety_missing")
+        else:
+            expected_safety = {
+                "target_existed_before": True,
+                "target_exists_after": True,
+                "created": False,
+                "overwritten": False,
+                "preserved": True,
+                "writer_called": False,
+            }
+            for field, expected in expected_safety.items():
+                if output_safety.get(field) is not expected:
+                    failures.append(f"{export_format}.output_safety.{field} must be {expected!r}")
+    collection = case.get("collection")
+    if not isinstance(collection, dict):
+        failures.append(f"{export_format}.collection_missing")
+    else:
+        if collection.get("source_fresh_import") is not True:
+            failures.append(f"{export_format}.collection.source_fresh_import must be true")
+        if collection.get("export_writer_called") is not False:
+            failures.append(f"{export_format}.collection.export_writer_called must be false")
+    return failures
+
+
 def _validate_maya_probe_report(
     step: dict[str, Any],
     report_path: Path,
@@ -417,7 +595,16 @@ def _validate_maya_probe_report(
         if isinstance(cases, list)
         else {}
     )
-    required_formats = {"pmx", "pmd", "vmd"}
+    required_formats = {
+        "pmx",
+        "pmx_morph",
+        "pmx_physics",
+        "pmx_soft_body",
+        "pmx_sdef",
+        "pmx_impulse",
+        "pmd",
+        "vmd",
+    }
     failures = []
     if report.get("gate") != "V070-EXPORT-RELEASE-GATE-1":
         failures.append(f"gate={report.get('gate')!r}")
@@ -430,13 +617,72 @@ def _validate_maya_probe_report(
     for export_format in sorted(required_formats):
         case = by_format.get(export_format)
         allowed_statuses = {"pass"}
-        if export_format == "pmd":
+        if export_format in {"pmd", "pmx_soft_body", "pmx_sdef", "pmx_impulse"}:
             allowed_statuses.add("policy-reject")
         if not isinstance(case, dict) or case.get("status") not in allowed_statuses:
             failures.append(f"{export_format}.status={case.get('status') if isinstance(case, dict) else None!r}")
             continue
         if export_format == "pmd" and case.get("policy_code") != "PMD_EXPORT_POLICY_REJECT":
             failures.append("pmd.policy_code='PMD_EXPORT_POLICY_REJECT' expected")
+        if export_format == "pmx_soft_body" and case.get("policy_code") != "PMX_SOFT_BODIES_UNSUPPORTED":
+            failures.append("pmx_soft_body.policy_code='PMX_SOFT_BODIES_UNSUPPORTED' expected")
+        if export_format == "pmx_soft_body":
+            import_oracles = case.get("import_oracles")
+            if not isinstance(import_oracles, dict) or int(import_oracles.get("soft_body_count", 0) or 0) <= 0:
+                failures.append("pmx_soft_body.import_oracles.soft_body_count must be positive")
+            collection = case.get("collection")
+            if not isinstance(collection, dict):
+                failures.append("pmx_soft_body.collection_missing")
+            else:
+                if collection.get("source_fresh_import") is not True:
+                    failures.append("pmx_soft_body.collection.source_fresh_import must be true")
+                if collection.get("export_writer_called") is not False:
+                    failures.append("pmx_soft_body.collection.export_writer_called must be false")
+            if "output" not in case or case.get("output") is not None:
+                failures.append("pmx_soft_body.output must be null")
+        if export_format == "pmx_sdef":
+            failures.extend(
+                _validate_policy_reject_case(
+                    case,
+                    "pmx_sdef",
+                    "PMX_VERTEX_SDEF_UNSUPPORTED",
+                    (
+                        "source_sdef_vertex_count",
+                        "fresh_import_sdef_vertex_count",
+                        "provenance_vertex_count",
+                        "collected_sdef_vertex_count",
+                    ),
+                )
+            )
+        if export_format == "pmx_impulse":
+            failures.extend(
+                _validate_policy_reject_case(
+                    case,
+                    "pmx_impulse",
+                    "MORPH_TYPE_UNSUPPORTED",
+                    (
+                        "source_impulse_morph_count",
+                        "fresh_import_impulse_morph_count",
+                        "provenance_offset_count",
+                        "collected_impulse_morph_count",
+                    ),
+                )
+            )
+        if export_format == "pmx_physics":
+            parsed_counts = case.get("parsed_counts")
+            if not isinstance(parsed_counts, dict):
+                failures.append("pmx_physics.parsed_counts_missing")
+            else:
+                for field in ("rigid_bodies", "joints"):
+                    if int(parsed_counts.get(field, 0) or 0) <= 0:
+                        failures.append(f"pmx_physics.parsed_counts.{field} must be positive")
+            if not isinstance(case.get("input_normalizations"), list):
+                failures.append("pmx_physics.input_normalizations_missing")
+        if export_format == "pmx_morph":
+            parsed_counts = case.get("parsed_counts")
+            if not isinstance(parsed_counts, dict) or int(parsed_counts.get("morphs", 0) or 0) <= 0:
+                failures.append("pmx_morph.parsed_counts.morphs must be positive")
+            failures.extend(_validate_morph_oracle_case(case))
         if not case.get("report_json") or not case.get("report_md"):
             failures.append(f"{export_format}.report_pair_missing")
 
@@ -604,6 +850,8 @@ def build_release_summary(
             gui_args = [
                 "--maya_version",
                 version,
+                "--log_path",
+                str(out_dir / f"gui-{version}.log"),
             ]
             if not full_gui:
                 gui_args.extend(
@@ -665,13 +913,17 @@ def build_release_summary(
         "coverage": {
             "proven": [
                 "PMX/VMD parseable output and PMD import/policy-reject",
-                "Maya fresh-import mesh/pose/metadata oracle",
+                "Maya fresh-import mesh/pose/metadata and rigid-body/joint physics oracle",
+                "Maya fresh-import supported vertex/bone/material/group morph oracle",
+                "PMX 2.1 soft-body provenance and public policy-reject",
+                "PMX 2.0 SDEF and PMX 2.1 Impulse provenance and public policy-reject",
                 "fatal fail-closed and warning acknowledgement boundaries",
                 "focused ExportTab format/mode UI, button routing, and Validation Console catalog rendering",
                 "canonical JSON/Markdown validation-report consistency",
             ],
             "outside_this_gate": [
-                "full PMX/PMD material/morph/physics field parity",
+                "full PMX/PMD material/morph field parity beyond the representative physics/morph oracles",
+                "UV morph viewport/runtime evaluation and Flip/composite visual parity",
                 "VMD camera/light/morph and raw interpolation provenance parity",
                 "full legacy GUI regression suite",
             ],

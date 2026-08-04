@@ -370,6 +370,8 @@
     "sphere_mode": "球体模式:",
     "toon_texture": "卡通贴图:",
     "toon_sharing": "卡通共享:",
+    "toon_texture_path": "自定义卡通贴图路径:",
+    "toon_texture_index": "自定义卡通贴图索引:",
     "memo": "备注:",
     "face_count": "面数:",
     "edge_color": "边缘颜色:",
