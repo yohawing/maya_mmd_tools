@@ -21,15 +21,14 @@ import sys
 import time
 from typing import Any, Iterable, Mapping
 
-from tests.common.maya_location import mayapy as resolve_mayapy
-
-
 ROOT = Path(__file__).resolve().parents[1]
 BUILD_ROOT = (ROOT / "build").resolve()
 MAX_OUTPUT = 1800
 MAYA_VERSIONS = ("2024", "2026")
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from tests.common.maya_location import mayapy as resolve_mayapy  # noqa: E402
 
 
 def _require_build_path(value: str | Path, label: str) -> Path:

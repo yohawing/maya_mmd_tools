@@ -70,6 +70,21 @@ class ValidationReportCatalogTests(unittest.TestCase):
         self.assertEqual(issue["observed"], issue["message"])
         self.assertIn("sha256:bad-face", issue["evidence"].values())
 
+    def test_non_sequence_texture_payload_produces_cataloged_report(self):
+        model_data = _valid_model_data()
+        model_data["textures"] = {}
+
+        report = validate_model_data(model_data, "pmx")
+
+        payload = report.to_canonical_dict()
+
+        self.assertEqual(payload["status"], "blocked")
+        self.assertEqual(payload["summary"]["fatal"], 1)
+        issue = payload["issues"][0]
+        self.assertEqual(issue["code"], "TEXTURES_NOT_SEQUENCE")
+        self.assertEqual(issue["category"], "materials")
+        self.assertEqual(issue["title_key"], "validation.textures_not_sequence.title")
+
     def test_markdown_is_deterministic_and_keeps_audit_order(self):
         model_data = _valid_model_data()
         model_data["faces"] = [[0, 0]]
