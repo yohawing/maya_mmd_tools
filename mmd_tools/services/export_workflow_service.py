@@ -153,7 +153,12 @@ class ExportWorkflowService:
             raise ValueError("model export requires model_data or a collector")
         return collector(dict(options))
 
-    def _collect_vmd(self, request: ExportWorkflowRequest, options: Mapping[str, Any]) -> Any:
+    def _collect_vmd(
+        self,
+        request: ExportWorkflowRequest,
+        options: Mapping[str, Any],
+        mode: str = "C",
+    ) -> Any:
         """Collect and normalize VMD payload through the configured action."""
         animation_data = request.animation_data
         if animation_data is None:
@@ -162,7 +167,9 @@ class ExportWorkflowService:
             collector = getattr(self.vmd_action, "_collector", None)
             if collector is None:
                 raise ValueError("VMD export requires animation_data or a collector")
-            animation_data = collector(dict(options))
+            collector_options = dict(options)
+            collector_options.setdefault("vmd_mode", mode)
+            animation_data = collector(collector_options)
         converter = getattr(self.vmd_action, "_to_vmd_data", None)
         if callable(converter):
             return converter(animation_data)
@@ -204,7 +211,11 @@ class ExportWorkflowService:
                         target_identity=metadata.get("target_identity"),
                     )
             elif export_format == "vmd":
-                payload = self._collect_vmd(request, self._target_options(options, metadata))
+                payload = self._collect_vmd(
+                    request,
+                    self._target_options(options, metadata),
+                    mode=mode,
+                )
                 raw_provenance = getattr(payload, "raw_provenance", None)
                 if options.get("raw_provenance") is None and raw_provenance is not None:
                     options["raw_provenance"] = raw_provenance

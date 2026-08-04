@@ -1,6 +1,7 @@
 """Integration tests for VMD export via VmdSceneCollector + VmdExporter."""
 
 import json
+import math
 import os
 
 from maya import cmds
@@ -112,7 +113,71 @@ class TestVmdSceneCollector(MayaTestBase):
         self.assertEqual(result.exported_path, output_path)
         parsed = VmdData().parse_file(output_path)
         self.assertEqual(parsed.header.model_name, "ExportModel")
-        self.assertEqual(len(parsed.bone_frames), 2)
+        self.assertEqual(len(parsed.bone_frames), 11)
+
+    def test_mode_c_frame_range_matches_maya_numeric_oracle(self):
+        cmds.currentUnit(time="ntsc")
+        root, joint = self._make_keyed_joint_scene(
+            keyed_pose=(2.0, 1.0, 2.0),
+            keyed_frame=2,
+        )
+        blend_shape = self._make_keyed_blendshape(root)
+        camera = self._make_keyed_camera()
+        light = self._make_keyed_light()
+        output_path = self.get_temp_filename("mode_c_numeric_oracle.vmd")
+
+        result = ExportVmdAction().execute(
+            ExportVmdRequest(
+                file_path=output_path,
+                options={
+                    "target_model": root,
+                    "export_format": "vmd",
+                    "vmd_mode": "C",
+                    "frame_range": (0, 2),
+                    "blend_shapes": [blend_shape],
+                    "cameras": [camera],
+                    "lights": [light],
+                },
+            )
+        )
+
+        self.assertTrue(result.succeeded, result.error)
+        parsed = VmdData().parse_file(output_path)
+        self.assertEqual(
+            [frame.frame_number for frame in parsed.bone_frames],
+            [0, 1, 2],
+        )
+        for frame in parsed.bone_frames:
+            cmds.currentTime(frame.frame_number, edit=True)
+            expected_x = float(cmds.getAttr(f"{joint}.translateX"))
+            expected_y = float(cmds.getAttr(f"{joint}.translateY"))
+            expected_z = float(cmds.getAttr(f"{joint}.translateZ"))
+            expected_angle = math.radians(float(cmds.getAttr(f"{joint}.rotateZ")))
+            expected_rotation = (
+                0.0,
+                0.0,
+                math.sin(expected_angle / 2.0),
+                math.cos(expected_angle / 2.0),
+            )
+            rotation_dot = abs(
+                sum(actual * expected for actual, expected in zip(frame.rotation, expected_rotation))
+            )
+            self.assertAlmostEqual(frame.position[0], expected_x, places=5)
+            self.assertAlmostEqual(frame.position[1], expected_y, places=5)
+            self.assertAlmostEqual(frame.position[2], -expected_z, places=5)
+            self.assertAlmostEqual(rotation_dot, 1.0, places=5)
+        self.assertEqual(
+            [frame.frame_number for frame in parsed.morph_frames],
+            [0, 1, 2],
+        )
+        self.assertEqual(
+            [frame.frame_number for frame in parsed.camera_frames],
+            [0, 1, 2],
+        )
+        self.assertEqual(
+            [frame.frame_number for frame in parsed.light_frames],
+            [0, 1, 2],
+        )
 
     def test_roundtrip_imported_fixture_motion_exports_parseable_vmd(self):
         pmx_path = self.fixture_provider.get_pmx_file("mmt_test_model")
@@ -223,7 +288,32 @@ class TestVmdSceneCollector(MayaTestBase):
             cmds.setKeyframe(blend_shape, attribute="weight[0]", time=5, value=0.5)
             return (cmds.ls(root, long=True) or [root])[0]
 
-    def _make_keyed_joint_scene(self, bind_pose=(0.0, 0.0, 0.0), keyed_pose=(5.0, 1.0, 2.0)):
+    def _make_keyed_blendshape(self, root):
+        base, _base_shape = cmds.polyCube(name="mode_c_base")
+        target, _target_shape = cmds.polyCube(name="mode_c_target")
+        cmds.parent(base, root)
+        cmds.parent(target, root)
+        blend_shape = cmds.blendShape(target, base, name="modeCBlendShape")[0]
+        cmds.addAttr(
+            blend_shape,
+            longName=ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
+            dataType="string",
+        )
+        cmds.setAttr(
+            f"{blend_shape}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}",
+            '{"0": "笑い"}',
+            type="string",
+        )
+        cmds.setKeyframe(blend_shape, attribute="weight[0]", time=0, value=0.0)
+        cmds.setKeyframe(blend_shape, attribute="weight[0]", time=2, value=1.0)
+        return blend_shape
+
+    def _make_keyed_joint_scene(
+        self,
+        bind_pose=(0.0, 0.0, 0.0),
+        keyed_pose=(5.0, 1.0, 2.0),
+        keyed_frame=10,
+    ):
         root = cmds.group(empty=True, name="model_root")
         cmds.addAttr(root, longName=ATTR_MMD_MODEL_NAME, dataType="string")
         cmds.setAttr(f"{root}.{ATTR_MMD_MODEL_NAME}", "ExportModel", type="string")
@@ -235,13 +325,13 @@ class TestVmdSceneCollector(MayaTestBase):
         cmds.setAttr(f"{joint}.{ATTR_MMD_BONE_NAME}", "センター", type="string")
 
         cmds.setKeyframe(joint, attribute="translateX", time=0, value=bind_pose[0])
-        cmds.setKeyframe(joint, attribute="translateX", time=10, value=keyed_pose[0])
+        cmds.setKeyframe(joint, attribute="translateX", time=keyed_frame, value=keyed_pose[0])
         cmds.setKeyframe(joint, attribute="translateY", time=0, value=bind_pose[1])
-        cmds.setKeyframe(joint, attribute="translateY", time=10, value=keyed_pose[1])
+        cmds.setKeyframe(joint, attribute="translateY", time=keyed_frame, value=keyed_pose[1])
         cmds.setKeyframe(joint, attribute="translateZ", time=0, value=bind_pose[2])
-        cmds.setKeyframe(joint, attribute="translateZ", time=10, value=keyed_pose[2])
+        cmds.setKeyframe(joint, attribute="translateZ", time=keyed_frame, value=keyed_pose[2])
         cmds.setKeyframe(joint, attribute="rotateZ", time=0, value=0.0)
-        cmds.setKeyframe(joint, attribute="rotateZ", time=10, value=90.0)
+        cmds.setKeyframe(joint, attribute="rotateZ", time=keyed_frame, value=90.0)
         return root, joint
 
     def _make_keyed_camera(self):

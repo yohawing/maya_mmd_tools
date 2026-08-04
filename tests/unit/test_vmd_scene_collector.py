@@ -216,6 +216,26 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertAlmostEqual(result["bone_frames"][1]["rotation"][2], 0.7071067811865476)
         self.assertAlmostEqual(result["bone_frames"][1]["rotation"][3], 0.7071067811865476)
 
+    def test_mode_c_dense_samples_requested_frame_range(self):
+        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
+        for attribute in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
+            self.cmds.keys[("center_joint", attribute)] = {0.0: 0.0, 2.0: 1.0}
+
+        result = VmdSceneCollector().collect(
+            {
+                "target_model": "model_root",
+                "vmd_mode": "C",
+                "frame_range": (0, 2),
+            }
+        )
+
+        self.assertEqual(
+            [frame["frame_number"] for frame in result["bone_frames"]],
+            [0, 1, 2],
+        )
+
     def test_uses_complete_raw_interpolation_provenance_from_model_root(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
         self.cmds.children["model_root"] = ["center_joint"]

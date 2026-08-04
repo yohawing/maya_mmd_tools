@@ -203,7 +203,9 @@ class ExportVmdAction:
             if animation_data is None:
                 if self._collector is None:
                     raise ValueError("VMD export requires animation_data or a collector")
-                animation_data = self._collector(request.options)
+                collector_options = dict(request.options)
+                collector_options.setdefault("vmd_mode", mode)
+                animation_data = self._collector(collector_options)
             if request.options.get("raw_provenance") is None:
                 if isinstance(animation_data, Mapping):
                     collected_provenance = animation_data.get("raw_provenance")

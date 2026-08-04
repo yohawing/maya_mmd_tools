@@ -4,7 +4,9 @@ This collector gathers keyed joint transforms, blendShape weights, and
 model-scoped PMX network morph controller weights into the dict contract
 consumed by ``VmdExporter``. Bone translation can be converted back to VMD
 offsets when a bind-pose map is supplied, and XYZ joint rotations are
-converted back to VMD quaternions with jointOrient compensation.
+converted back to VMD quaternions with jointOrient compensation. Explicit
+Mode C requests sample the selected Maya frame range at one-frame intervals;
+Mode A and low-level collector callers retain sparse collection semantics.
 """
 
 import json
@@ -173,10 +175,11 @@ class VmdSceneCollector:
         Args:
             options: Optional mapping. Supported keys are ``target_model`` /
                 ``model_root``, ``joints``, ``blend_shapes``, ``cameras``,
-                ``lights``, ``start_frame``, ``end_frame``, ``model_name``,
-                ``motion_scale``, and ``bone_bind_poses``. Automatic DAG
-                discovery is scoped to the selected model root; explicit node
-                lists remain authoritative for scene-level callers.
+                ``lights``, ``start_frame`` / ``end_frame`` or ``frame_range``,
+                ``vmd_mode``, ``model_name``, ``motion_scale``, and
+                ``bone_bind_poses``. Automatic DAG discovery is scoped to the
+                selected model root; explicit node lists remain authoritative
+                for scene-level callers.
         """
         options = options or {}
         target_model = options.get("target_model") or options.get("model_root")
@@ -192,17 +195,32 @@ class VmdSceneCollector:
             options.get("lights")
             or self._find_tagged_nodes(ATTR_MMD_LIGHT, target_model)
         )
-        start_frame = _optional_float(options.get("start_frame"))
-        end_frame = _optional_float(options.get("end_frame"))
+        start_frame, end_frame = _resolve_collection_frame_range(options)
         motion_scale = float(options.get("motion_scale", 1.0) or 1.0)
         bone_bind_poses = options.get("bone_bind_poses") or {}
         maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
+        mode = str(options.get("vmd_mode", options.get("mode", "")) or "").upper()
         dense_control_rig_export = self._control_rig_dense_export(target_model)
+        dense_mode_c_export = mode == "C"
+        authored_routes = self._scene_authored_input_routes(joints, target_model)
+        mode_c_dense_frames = (
+            self._mode_c_dense_frame_samples(
+                joints,
+                blend_shapes,
+                cameras,
+                lights,
+                target_model,
+                authored_routes,
+                start_frame,
+                end_frame,
+            )
+            if dense_mode_c_export
+            else None
+        )
         rotation_interpolation = self._rotation_time_curve_interpolation(target_model)
         raw_provenance = _read_vmd_import_provenance(target_model)
         for bone_name, values in _raw_vmd_rotation_interpolation(raw_provenance).items():
             rotation_interpolation.setdefault(bone_name, {}).update(values)
-        authored_routes = self._scene_authored_input_routes(joints, target_model)
 
         return {
             "model_name": str(options.get("model_name") or self._model_name(target_model)),
@@ -214,9 +232,11 @@ class VmdSceneCollector:
                 motion_scale=motion_scale,
                 bone_bind_poses=bone_bind_poses,
                 input_routes=authored_routes,
-                dense_sample=dense_control_rig_export,
+                dense_sample=dense_control_rig_export or dense_mode_c_export,
+                force_dense_sample=dense_mode_c_export,
                 time_converter=maya_time_to_vmd,
                 rotation_interpolation=rotation_interpolation,
+                dense_frame_samples=mode_c_dense_frames,
             ),
             "morph_frames": self.collect_morph_frames(
                 blend_shapes,
@@ -224,26 +244,86 @@ class VmdSceneCollector:
                 end_frame,
                 time_converter=maya_time_to_vmd,
                 target_model=target_model,
+                dense_sample=dense_mode_c_export,
+                dense_frame_samples=mode_c_dense_frames,
             ),
             "camera_frames": self.collect_camera_frames(
                 cameras,
                 start_frame,
                 end_frame,
                 time_converter=maya_time_to_vmd,
+                dense_sample=dense_mode_c_export,
+                dense_frame_samples=mode_c_dense_frames,
             ),
             "light_frames": self.collect_light_frames(
                 lights,
                 start_frame,
                 end_frame,
                 time_converter=maya_time_to_vmd,
+                dense_sample=dense_mode_c_export,
+                dense_frame_samples=mode_c_dense_frames,
             ),
             "ik_show_hide_frames": self.collect_ik_show_hide_frames(
                 target_model,
                 start_frame,
                 end_frame,
                 time_converter=maya_time_to_vmd,
+                dense_sample=dense_mode_c_export,
+                dense_frame_samples=mode_c_dense_frames,
             ),
         }
+
+    def _mode_c_dense_frame_samples(
+        self,
+        joints: Sequence[str],
+        blend_shapes: Sequence[str],
+        cameras: Sequence[str],
+        lights: Sequence[str],
+        target_model: Optional[str],
+        input_routes: Mapping[str, Mapping[str, tuple[str, str]]],
+        start_frame: Optional[float],
+        end_frame: Optional[float],
+    ) -> Optional[list[int]]:
+        """Build one Maya-time sample range shared by Mode C tracks."""
+        keyed_times = []
+        for joint in joints:
+            long_name = (cmds.ls(joint, long=True) or [joint])[0]
+            keyed_times.extend(
+                _routed_key_times(joint, input_routes.get(str(long_name), {}))
+            )
+        for blend_shape in blend_shapes:
+            morph_names = self._blendshape_morph_names(blend_shape)
+            keyed_times.extend(
+                _key_times(
+                    blend_shape,
+                    [f"weight[{index}]" for index in morph_names],
+                )
+            )
+        if target_model:
+            controller = _morph_controller_for_model(target_model)
+            if controller:
+                entries = iter_morph_network_metadata(root_group=target_model)
+                attrs = {
+                    f"inputWeight[{int(entry.index)}]"
+                    for entry in entries
+                    if entry.index is not None
+                    and str(entry.morph_type or "") != "vertex"
+                }
+                keyed_times.extend(_key_times(controller, attrs))
+        for camera in cameras:
+            camera_root = _camera_root_node(camera)
+            camera_target = _camera_target_node(camera)
+            camera_shape = _camera_shape(camera)
+            keyed_times.extend(_key_times(camera, _CAMERA_EXPORT_ATTRS))
+            if camera_root:
+                keyed_times.extend(_key_times(camera_root, _BONE_EXPORT_ATTRS))
+            if camera_target:
+                keyed_times.extend(_key_times(camera_target, _TRANSFORM_EXPORT_ATTRS))
+            if camera_shape:
+                keyed_times.extend(_key_times(camera_shape, _CAMERA_SHAPE_EXPORT_ATTRS))
+        for light in lights:
+            keyed_times.extend(_key_times(light, _LIGHT_COLOR_ATTRS + _LIGHT_ROTATE_ATTRS))
+        return _dense_frame_samples(keyed_times, start_frame, end_frame)
 
     def collect_bone_frames(
         self,
@@ -256,41 +336,68 @@ class VmdSceneCollector:
         dense_sample: bool = False,
         time_converter=None,
         rotation_interpolation: Optional[Mapping[str, Mapping[int, bytes]]] = None,
+        force_dense_sample: bool = False,
+        dense_frame_samples: Optional[Sequence[float]] = None,
     ) -> list[dict]:
-        """Collect keyed local joint transform frames."""
+        """Collect keyed or one-frame-sampled local joint transforms.
+
+        ``dense_sample`` is retained for the baked control-rig route, where a
+        rotation-time curve may intentionally keep sparse VMD keys.  Mode C
+        uses ``force_dense_sample`` so its numeric pose export is not
+        accidentally changed back to sparse collection by raw interpolation
+        metadata.
+        """
         bone_bind_poses = bone_bind_poses or {}
         input_routes = input_routes or {}
         time_converter = time_converter or _scene_maya_time_to_vmd_frame()
         rotation_context = _build_rotation_export_context(joints)
         rotation_interpolation = rotation_interpolation or {}
         frames = []
-        dense_frames = None
+        dense_frames = (
+            list(dense_frame_samples)
+            if dense_frame_samples is not None
+            else None
+        )
+        keyed_times_by_joint = {}
         if dense_sample:
             all_keyed = []
             for joint in joints:
                 long_names = cmds.ls(joint, long=True) or [joint]
                 route = input_routes.get(str(long_names[0]), {})
-                all_keyed.extend(_routed_key_times(joint, route))
-            ranged = _filter_frame_range(all_keyed, start_frame, end_frame)
-            if ranged:
-                dense_frames = list(
-                    range(int(math.floor(min(ranged))), int(math.ceil(max(ranged))) + 1)
-                )
+                joint_keyed = _routed_key_times(joint, route)
+                keyed_times_by_joint[joint] = joint_keyed
+                all_keyed.extend(joint_keyed)
+            if dense_frames is None:
+                if force_dense_sample and start_frame is not None and end_frame is not None:
+                    dense_frames = list(
+                        range(int(math.ceil(start_frame)), int(math.floor(end_frame)) + 1)
+                    )
+                else:
+                    ranged = _filter_frame_range(all_keyed, start_frame, end_frame)
+                    if ranged:
+                        dense_frames = list(
+                            range(int(math.floor(min(ranged))), int(math.ceil(max(ranged))) + 1)
+                        )
         for joint in joints:
             bone_name = self._mmd_bone_name(joint)
             bind_pose = _resolve_bind_pose(bone_bind_poses, bone_name, joint)
             long_names = cmds.ls(joint, long=True) or [joint]
             route = input_routes.get(str(long_names[0]), {})
+            all_joint_keyed = keyed_times_by_joint.get(joint)
+            if all_joint_keyed is None:
+                all_joint_keyed = _routed_key_times(joint, route)
             sparse_frames = _filter_frame_range(
-                _routed_key_times(joint, route),
+                all_joint_keyed,
                 start_frame,
                 end_frame,
             )
-            preserve_sparse_rotation = bone_name in rotation_interpolation
+            preserve_sparse_rotation = (
+                not force_dense_sample and bone_name in rotation_interpolation
+            )
             keyed_frames = (
                 dense_frames
                 if dense_frames is not None
-                and sparse_frames
+                and all_joint_keyed
                 and not preserve_sparse_rotation
                 else sparse_frames
             )
@@ -329,6 +436,8 @@ class VmdSceneCollector:
         start_frame: Optional[float] = None,
         end_frame: Optional[float] = None,
         time_converter=None,
+        dense_sample: bool = False,
+        dense_frame_samples: Optional[Sequence[float]] = None,
     ) -> list[dict]:
         """Collect keyed owned ``mmdCcdIk.enabled`` values as VMD properties."""
         if not target_model:
@@ -342,14 +451,25 @@ class VmdSceneCollector:
                 for frame in _key_times(node, ("enabled",))
             }
         )
-        keyed_frames = _filter_frame_range(
-            all_keyed_frames,
-            start_frame,
-            end_frame,
+        keyed_frames = (
+            list(dense_frame_samples)
+            if dense_sample
+            and dense_frame_samples is not None
+            and nodes_by_name
+            else _filter_frame_range(
+                all_keyed_frames,
+                start_frame,
+                end_frame,
+            )
         )
         frames = []
         baseline_time = _ik_baseline_time(start_frame, end_frame)
-        if nodes_by_name and baseline_time is not None and baseline_time not in all_keyed_frames:
+        if (
+            not dense_sample
+            and nodes_by_name
+            and baseline_time is not None
+            and baseline_time not in all_keyed_frames
+        ):
             baseline_frame = _vmd_frame_number(baseline_time, time_converter)
             if baseline_frame >= 0:
                 frames.append(
@@ -486,6 +606,8 @@ class VmdSceneCollector:
         end_frame: Optional[float] = None,
         time_converter=None,
         target_model: Optional[str] = None,
+        dense_sample: bool = False,
+        dense_frame_samples: Optional[Sequence[float]] = None,
     ) -> list[dict]:
         """Collect keyed blendShape and model-owned network morph frames.
 
@@ -501,10 +623,13 @@ class VmdSceneCollector:
         for blend_shape in blend_shapes:
             for weight_index, morph_name in self._blendshape_morph_names(blend_shape).items():
                 attr = f"weight[{weight_index}]"
-                keyed_frames = _filter_frame_range(
-                    _key_times(blend_shape, (attr,)),
-                    start_frame,
-                    end_frame,
+                source_frames = _key_times(blend_shape, (attr,))
+                keyed_frames = (
+                    list(dense_frame_samples)
+                    if dense_sample
+                    and dense_frame_samples is not None
+                    and source_frames
+                    else _filter_frame_range(source_frames, start_frame, end_frame)
                 )
                 for frame_number in keyed_frames:
                     frames.append(
@@ -545,10 +670,13 @@ class VmdSceneCollector:
                     if len(metadata_by_name.get(str(entry.name), ())) != 1:
                         continue
                     attr = f"inputWeight[{index}]"
-                    keyed_frames = _filter_frame_range(
-                        _key_times(controller, (attr,)),
-                        start_frame,
-                        end_frame,
+                    source_frames = _key_times(controller, (attr,))
+                    keyed_frames = (
+                        list(dense_frame_samples)
+                        if dense_sample
+                        and dense_frame_samples is not None
+                        and source_frames
+                        else _filter_frame_range(source_frames, start_frame, end_frame)
                     )
                     for frame_number in keyed_frames:
                         frames.append(
@@ -566,6 +694,8 @@ class VmdSceneCollector:
         start_frame: Optional[float] = None,
         end_frame: Optional[float] = None,
         time_converter=None,
+        dense_sample: bool = False,
+        dense_frame_samples: Optional[Sequence[float]] = None,
     ) -> list[dict]:
         """Collect keyed MMD camera controller frames."""
         time_converter = time_converter or _scene_maya_time_to_vmd_frame()
@@ -576,15 +706,22 @@ class VmdSceneCollector:
                 camera_target = _camera_target_node(camera)
                 camera_root = _camera_root_node(camera)
                 camera_shape = _camera_shape(camera)
-                keyed_frames = _filter_frame_range(
-                    sorted(
-                        set(_key_times(camera, _CAMERA_EXPORT_ATTRS))
-                        | (set(_key_times(camera_root, _BONE_EXPORT_ATTRS)) if camera_root else set())
-                        | (set(_key_times(camera_target, _TRANSFORM_EXPORT_ATTRS)) if camera_target else set())
-                        | (set(_key_times(camera_shape, _CAMERA_SHAPE_EXPORT_ATTRS)) if camera_shape else set())
-                    ),
-                    start_frame,
-                    end_frame,
+                source_frames = sorted(
+                    set(_key_times(camera, _CAMERA_EXPORT_ATTRS))
+                    | (set(_key_times(camera_root, _BONE_EXPORT_ATTRS)) if camera_root else set())
+                    | (set(_key_times(camera_target, _TRANSFORM_EXPORT_ATTRS)) if camera_target else set())
+                    | (set(_key_times(camera_shape, _CAMERA_SHAPE_EXPORT_ATTRS)) if camera_shape else set())
+                )
+                keyed_frames = (
+                    list(dense_frame_samples)
+                    if dense_sample
+                    and dense_frame_samples is not None
+                    and source_frames
+                    else _filter_frame_range(
+                        source_frames,
+                        start_frame,
+                        end_frame,
+                    )
                 )
                 for frame_number in keyed_frames:
                     uses_raw_mmd_attrs = _uses_raw_mmd_camera_attrs(camera)
@@ -670,15 +807,24 @@ class VmdSceneCollector:
         start_frame: Optional[float] = None,
         end_frame: Optional[float] = None,
         time_converter=None,
+        dense_sample: bool = False,
+        dense_frame_samples: Optional[Sequence[float]] = None,
     ) -> list[dict]:
         """Collect keyed MMD light controller frames."""
         time_converter = time_converter or _scene_maya_time_to_vmd_frame()
         frames = []
         for light in lights:
-            keyed_frames = _filter_frame_range(
-                _key_times(light, _LIGHT_COLOR_ATTRS + _LIGHT_ROTATE_ATTRS),
-                start_frame,
-                end_frame,
+            source_frames = _key_times(light, _LIGHT_COLOR_ATTRS + _LIGHT_ROTATE_ATTRS)
+            keyed_frames = (
+                list(dense_frame_samples)
+                if dense_sample
+                and dense_frame_samples is not None
+                and source_frames
+                else _filter_frame_range(
+                    source_frames,
+                    start_frame,
+                    end_frame,
+                )
             )
             for frame_number in keyed_frames:
                 frames.append(
@@ -996,6 +1142,29 @@ def _filter_frame_range(
             continue
         result.append(frame)
     return result
+
+
+def _dense_frame_samples(
+    frames: Iterable[float],
+    start_frame: Optional[float],
+    end_frame: Optional[float],
+) -> Optional[list[int]]:
+    """Return one-frame integer samples for a Mode C animation range."""
+    observed = [float(value) for value in frames]
+    if not observed:
+        return None
+    if start_frame is not None and end_frame is not None:
+        first = int(math.ceil(float(start_frame)))
+        last = int(math.floor(float(end_frame)))
+    else:
+        ranged = _filter_frame_range(observed, start_frame, end_frame)
+        if not ranged:
+            return None
+        first = int(math.floor(min(ranged)))
+        last = int(math.ceil(max(ranged)))
+    if last < first:
+        return []
+    return list(range(first, last + 1))
 
 
 def _plug_float(node: str, attr: str, frame: float) -> float:
@@ -1356,3 +1525,21 @@ def _optional_float(value: Any) -> Optional[float]:
     if value is None:
         return None
     return float(value)
+
+
+def _resolve_collection_frame_range(
+    options: Mapping[str, Any],
+) -> tuple[Optional[float], Optional[float]]:
+    """Resolve the public frame-range option shapes used by export callers."""
+    value = options.get("frame_range")
+    if value is None and "frame_start" in options and "frame_end" in options:
+        value = (options.get("frame_start"), options.get("frame_end"))
+    if value is not None:
+        try:
+            return _optional_float(value[0]), _optional_float(value[1])
+        except (IndexError, KeyError, TypeError, ValueError, OverflowError):
+            return None, None
+    return (
+        _optional_float(options.get("start_frame")),
+        _optional_float(options.get("end_frame")),
+    )
