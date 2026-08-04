@@ -104,13 +104,21 @@ class TestVmdRuntimeProvenance(unittest.TestCase):
             runtime_abi_version=3,
             runtime_feature_flags=1,
             raw_bone_frames=[
-                {"bone_name": "センター", "frame_number": 0, "interpolation": [20] * 64}
+                {
+                    "bone_name": "センター",
+                    "frame_number": 0,
+                    "position": (1.0, 2.0, 3.0),
+                    "rotation": (0.0, 0.0, 0.0, 1.0),
+                    "interpolation": [20] * 64,
+                }
             ],
         )
 
         self.assertTrue(result["raw_bone_interpolation_complete"])
+        self.assertTrue(result["raw_bone_transform_complete"])
         self.assertEqual(result["raw_bone_key_count"], 1)
         self.assertEqual(result["raw_bone_interpolation"][0]["interpolation"], [20] * 64)
+        self.assertEqual(result["raw_bone_interpolation"][0]["position"], [1.0, 2.0, 3.0])
 
     def test_legacy_profile_keeps_raw_source_authority_without_runtime_identity(self):
         result = build_raw_vmd_source_provenance(

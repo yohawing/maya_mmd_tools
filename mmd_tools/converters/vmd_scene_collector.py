@@ -134,6 +134,78 @@ def _raw_vmd_rotation_interpolation(
     return result
 
 
+def _raw_vmd_bone_transforms(
+    provenance: Optional[Mapping[str, Any]],
+) -> dict[tuple[str, int], tuple[tuple[float, ...], tuple[float, ...]]]:
+    """Decode complete raw bone position/rotation records for Mode A reuse."""
+    if not isinstance(provenance, Mapping) or not provenance.get(
+        "raw_bone_transform_complete"
+    ):
+        return {}
+    records = provenance.get("raw_bone_interpolation")
+    if not isinstance(records, list):
+        return {}
+    try:
+        expected_count = int(provenance.get("raw_bone_key_count", len(records)))
+    except (TypeError, ValueError, OverflowError):
+        return {}
+    if expected_count != len(records):
+        return {}
+    result = {}
+    for record in records:
+        if not isinstance(record, Mapping):
+            return {}
+        name = str(record.get("bone_name") or "")
+        try:
+            frame_number = int(record.get("frame_number"))
+            position = tuple(float(value) for value in record.get("position", ()))
+            rotation = tuple(float(value) for value in record.get("rotation", ()))
+        except (TypeError, ValueError, OverflowError):
+            return {}
+        key = (name, frame_number)
+        if (
+            not name
+            or frame_number < 0
+            or len(position) != 3
+            or len(rotation) != 4
+            or not all(math.isfinite(value) for value in position + rotation)
+            or key in result
+        ):
+            return {}
+        result[key] = (position, rotation)
+    return result
+
+
+def _raw_bone_transform_matches(
+    position: Sequence[float],
+    rotation: Sequence[float],
+    expected: tuple[tuple[float, ...], tuple[float, ...]],
+) -> bool:
+    """Return whether Maya reconstruction still represents the raw payload."""
+    expected_position, expected_rotation = expected
+    try:
+        if len(position) != 3 or len(rotation) != 4:
+            return False
+        if any(
+            not math.isclose(float(actual), float(source), rel_tol=0.0, abs_tol=1.0e-5)
+            for actual, source in zip(position, expected_position)
+        ):
+            return False
+        actual_rotation = tuple(float(value) for value in rotation)
+        source_rotation = tuple(float(value) for value in expected_rotation)
+        actual_norm = math.sqrt(sum(value * value for value in actual_rotation))
+        source_norm = math.sqrt(sum(value * value for value in source_rotation))
+        if actual_norm <= 1.0e-12 or source_norm <= 1.0e-12:
+            return False
+        dot = abs(
+            sum(actual * source for actual, source in zip(actual_rotation, source_rotation))
+            / (actual_norm * source_norm)
+        )
+        return math.isclose(dot, 1.0, rel_tol=0.0, abs_tol=1.0e-5)
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 def _read_vmd_import_provenance(target_model: Optional[str]) -> Optional[dict[str, Any]]:
     """Read complete raw VMD bone provenance from one model root."""
     if not target_model:
@@ -221,6 +293,7 @@ class VmdSceneCollector:
         raw_provenance = _read_vmd_import_provenance(target_model)
         for bone_name, values in _raw_vmd_rotation_interpolation(raw_provenance).items():
             rotation_interpolation.setdefault(bone_name, {}).update(values)
+        raw_bone_transforms = _raw_vmd_bone_transforms(raw_provenance)
 
         return {
             "model_name": str(options.get("model_name") or self._model_name(target_model)),
@@ -237,6 +310,7 @@ class VmdSceneCollector:
                 time_converter=maya_time_to_vmd,
                 rotation_interpolation=rotation_interpolation,
                 dense_frame_samples=mode_c_dense_frames,
+                raw_bone_transforms=raw_bone_transforms,
             ),
             "morph_frames": self.collect_morph_frames(
                 blend_shapes,
@@ -338,6 +412,9 @@ class VmdSceneCollector:
         rotation_interpolation: Optional[Mapping[str, Mapping[int, bytes]]] = None,
         force_dense_sample: bool = False,
         dense_frame_samples: Optional[Sequence[float]] = None,
+        raw_bone_transforms: Optional[
+            Mapping[tuple[str, int], tuple[tuple[float, ...], tuple[float, ...]]]
+        ] = None,
     ) -> list[dict]:
         """Collect keyed or one-frame-sampled local joint transforms.
 
@@ -352,6 +429,7 @@ class VmdSceneCollector:
         time_converter = time_converter or _scene_maya_time_to_vmd_frame()
         rotation_context = _build_rotation_export_context(joints)
         rotation_interpolation = rotation_interpolation or {}
+        raw_bone_transforms = raw_bone_transforms or {}
         frames = []
         dense_frames = (
             list(dense_frame_samples)
@@ -427,6 +505,17 @@ class VmdSceneCollector:
                 interpolation = rotation_interpolation.get(bone_name, {}).get(vmd_frame)
                 if interpolation is not None:
                     payload["interpolation"] = interpolation
+                raw_transform = (
+                    None
+                    if force_dense_sample
+                    else raw_bone_transforms.get((bone_name, vmd_frame))
+                )
+                if raw_transform is not None and _raw_bone_transform_matches(
+                    payload["position"],
+                    payload["rotation"],
+                    raw_transform,
+                ):
+                    payload["position"], payload["rotation"] = raw_transform
                 frames.append(payload)
         return _deduplicate_frames(frames, ("bone_name", "frame_number"))
 

@@ -85,6 +85,30 @@ class TestVmdValidator(unittest.TestCase):
 
         self.assertIn("VMD_RAW_PROVENANCE_MISMATCH", [issue.code for issue in report.issues])
 
+    def test_mode_a_rejects_raw_position_or_rotation_payload_change(self):
+        data = VmdData()
+        data.bone_frames.append(_valid_bone_frame())
+        report = validate_vmd_data(
+            data,
+            VMD_MODE_A,
+            raw_provenance={
+                "raw_bone_interpolation_complete": True,
+                "raw_bone_transform_complete": True,
+                "raw_bone_key_count": 1,
+                "raw_bone_interpolation": [
+                    {
+                        "bone_name": "センター",
+                        "frame_number": 0,
+                        "position": [1.0, 2.0, 3.0],
+                        "rotation": [0.0, 0.0, 0.0, 1.0],
+                        "interpolation": [20] * 64,
+                    }
+                ],
+            },
+        )
+
+        self.assertIn("VMD_RAW_PROVENANCE_MISMATCH", [issue.code for issue in report.issues])
+
     def test_mode_a_scopes_raw_comparison_to_requested_frame_range(self):
         data = VmdData()
         frame = _valid_bone_frame()

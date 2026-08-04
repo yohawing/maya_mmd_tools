@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
 
@@ -35,19 +36,32 @@ def _frame_value(frame: Any, name: str, default: Any = None) -> Any:
     return getattr(frame, name, default)
 
 
+def _finite_tuple(value: Any, length: int) -> Optional[tuple[float, ...]]:
+    """Normalize one finite numeric vector for raw JSON provenance."""
+    try:
+        result = tuple(float(item) for item in value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if len(result) != length or not all(math.isfinite(item) for item in result):
+        return None
+    return result
+
+
 def build_raw_bone_interpolation_provenance(
     frames: Optional[Iterable[Any]],
 ) -> Dict[str, Any]:
-    """Serialize raw 64-byte bone interpolation authority for JSON storage.
+    """Serialize raw bone payload authority for JSON storage.
 
     The records remain keyed by the original VMD bone name and frame number.
-    Any malformed or duplicate key makes the complete flag false so callers
-    cannot accidentally treat a partial source as a Mode A round trip.
+    Interpolation and transform completeness are tracked independently so
+    older interpolation-only metadata remains readable while a partial raw
+    transform cannot pass a new Mode A payload gate.
     """
     if frames is None:
         return {
             "available": False,
             "complete": False,
+            "transform_complete": False,
             "key_count": 0,
             "records": [],
         }
@@ -55,6 +69,7 @@ def build_raw_bone_interpolation_provenance(
     records = []
     seen = set()
     complete = True
+    transform_complete = True
     key_count = 0
     for frame in frames:
         key_count += 1
@@ -72,18 +87,27 @@ def build_raw_bone_interpolation_provenance(
             complete = False
             continue
         seen.add(key)
-        records.append(
-            {
-                "bone_name": name,
-                "frame_number": frame_number,
-                "interpolation": list(raw),
-            }
-        )
+        record = {
+            "bone_name": name,
+            "frame_number": frame_number,
+            "interpolation": list(raw),
+        }
+        position = _finite_tuple(_frame_value(frame, "position"), 3)
+        rotation = _finite_tuple(_frame_value(frame, "rotation"), 4)
+        if position is None or rotation is None:
+            transform_complete = False
+        else:
+            record["position"] = list(position)
+            record["rotation"] = list(rotation)
+        records.append(record)
 
     records.sort(key=lambda item: (item["bone_name"], item["frame_number"]))
     return {
         "available": True,
         "complete": complete and len(records) == key_count,
+        "transform_complete": (
+            transform_complete and complete and len(records) == key_count
+        ),
         "key_count": key_count,
         "records": records,
     }
@@ -124,6 +148,7 @@ def build_runtime_registration_provenance(
             {
                 "raw_bone_interpolation": raw_provenance["records"],
                 "raw_bone_interpolation_complete": raw_provenance["complete"],
+                "raw_bone_transform_complete": raw_provenance["transform_complete"],
                 "raw_bone_key_count": raw_provenance["key_count"],
             }
         )

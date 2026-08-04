@@ -198,6 +198,7 @@ class TestVmdSceneCollector(MayaTestBase):
             cmds.getAttr(f"{root}.{ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON}")
         )
         self.assertTrue(provenance["raw_bone_interpolation_complete"])
+        self.assertTrue(provenance["raw_bone_transform_complete"])
         self.assertEqual(provenance["raw_bone_key_count"], len(source_data.bone_frames))
 
         output_path = self.get_temp_filename("imported_fixture_export.vmd")
@@ -222,10 +223,16 @@ class TestVmdSceneCollector(MayaTestBase):
             (frame.bone_name, frame.frame_number): frame.interpolation
             for frame in source_data.bone_frames
         }
+        source_transforms = {
+            (frame.bone_name, frame.frame_number): (frame.position, frame.rotation)
+            for frame in source_data.bone_frames
+        }
         for frame in parsed.bone_frames:
             key = (frame.bone_name, frame.frame_number)
             self.assertIn(key, source_interpolation)
             self.assertEqual(frame.interpolation, source_interpolation[key])
+            self.assertEqual(frame.position, source_transforms[key][0])
+            self.assertEqual(frame.rotation, source_transforms[key][1])
 
     def test_roundtrip_tagged_camera_and_light_to_vmd_frames(self):
         camera = self._make_keyed_camera()
