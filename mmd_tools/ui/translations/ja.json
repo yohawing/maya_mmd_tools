@@ -53,6 +53,7 @@
   "buttons": {
     "import": "インポート",
     "export": "エクスポート",
+    "validate": "検証",
     "apply": "適用",
     "cancel": "キャンセル",
     "browse": "参照...",
@@ -171,6 +172,7 @@
   "messages": {
     "import_success": "インポートが完了しました",
     "export_success": "エクスポートが完了しました",
+    "export_mmd_asset": "MMDアセットをエクスポート",
     "error_file_not_found": "ファイルが見つかりません",
     "error_invalid_file": "無効なファイル形式です",
     "error_no_selection": "オブジェクトが選択されていません",
@@ -386,6 +388,7 @@
     "vmd_rotation_time_curve": "VMD時間補間を時間カーブとして保持",
     "use_cpp_rig_nodes": "C++リグノードを使用（実験的）",
     "apply_scale": "スケールを適用",
+    "use_frame_range": "フレーム範囲を使用",
     "new_file": "新規ファイル",
     "enable_ik": "IKを有効にする",
     "invert_value": "値を反転",
@@ -412,6 +415,11 @@
     "motion_scale": "モーション倍率:",
     "reduce_quality": "削減品質:",
     "format": "フォーマット:",
+    "vmd_mode": "VMDモード",
+    "range": "範囲",
+    "start": "開始",
+    "end": "終了",
+    "options": "オプション",
     "vmd_file": "VMDファイル:",
     "target_model": "ターゲットモデル:",
     "current_model": "現在のモデル:",
@@ -660,5 +668,104 @@
     "source_not_file": "元がファイルではありません",
     "source_not_readable": "元ファイルを読み取れません",
     "cache_copy_failed": "テクスチャのキャッシュコピーに失敗しました"
+  },
+  "validation_console": {
+    "title": "エクスポート検証コンソール",
+    "no_report": "検証レポートはありません",
+    "all": "すべて",
+    "acknowledge_warnings": "警告を確認済みにする",
+    "revalidate": "再検証",
+    "copy": "コピー",
+    "save_report": "レポートを保存",
+    "save_dialog": "検証レポートを保存",
+    "status": "状態",
+    "format": "形式",
+    "mode": "モード",
+    "target": "対象",
+    "snapshot": "スナップショット",
+    "summary": "概要",
+    "fatal": "致命的エラー",
+    "warning": "警告",
+    "info": "情報",
+    "issue_occurrences": "問題の発生件数",
+    "issue_groups": "問題グループ",
+    "shown": "表示",
+    "omitted": "省略",
+    "total": "合計",
+    "no_issues": "検証上の問題はありません。",
+    "title_label": "タイトル",
+    "category": "カテゴリ",
+    "path": "パス",
+    "decision": "判定",
+    "block": "ブロック",
+    "allow": "許可",
+    "occurrences": "発生件数",
+    "path_pattern": "パスパターン",
+    "sample_paths": "サンプルパス",
+    "observed": "検出値",
+    "expected": "期待値",
+    "impact": "影響",
+    "remediation": "対処方法",
+    "evidence": "証跡"
+  },
+  "validation_categories": {
+    "bones": {
+      "label": "ボーン",
+      "impact": "エクスポートされるボーン階層またはスキン参照が不正になります。",
+      "remediation": "エクスポート前にボーンテーブルまたは参照を修正してください。"
+    },
+    "display": {
+      "label": "表示枠",
+      "impact": "表示枠セクションに不正または情報を失う参照が含まれます。",
+      "remediation": "表示枠の項目を修正するか、未対応データを削除してください。"
+    },
+    "geometry": {
+      "label": "ジオメトリ",
+      "impact": "エクスポートされるメッシュが壊れるか、利用できないジオメトリを参照します。",
+      "remediation": "エクスポート前に頂点、面、スキンのデータを修正してください。"
+    },
+    "materials": {
+      "label": "マテリアル",
+      "impact": "マテリアル割り当てまたはテクスチャ参照が不正になるか、黙って失われます。",
+      "remediation": "マテリアル／テクスチャテーブルを修正するか、対応形式を使用してください。"
+    },
+    "morphs": {
+      "label": "モーフ",
+      "impact": "エクスポートされるモーフセクションが不正になるか、作成済みデータを失います。",
+      "remediation": "対応するモーフ種別を使い、対象参照を修正してください。"
+    },
+    "model": {
+      "label": "モデル",
+      "impact": "このデータから信頼できるモデルファイルを作成できません。",
+      "remediation": "エクスポート前にモデルデータを修正してください。"
+    },
+    "output": {
+      "label": "出力",
+      "impact": "生成ファイルを信頼できるエクスポート成果物として受け入れられません。",
+      "remediation": "writerの出力を確認し、対象ファイルを置き換える前に出力経路を修正してください。"
+    },
+    "animation": {
+      "label": "アニメーション",
+      "impact": "エクスポートされるモーションが壊れる、曖昧になる、または元のアニメーション情報を失います。",
+      "remediation": "VMDフレームデータを修正するか、対応するMode A/Cのエクスポート経路を使用してください。"
+    },
+    "physics": {
+      "label": "物理",
+      "impact": "エクスポートされる物理セクションが不正になるか、作成済みデータを失います。",
+      "remediation": "物理参照／フィールドを修正するか、未対応の物理データを削除してください。"
+    },
+    "references": {
+      "label": "参照",
+      "impact": "信頼できるシーンから出力への境界を確立できません。",
+      "remediation": "有効なMMD対象を選択し、シーン所有権をベイクまたは復元して、エクスポート設定を修正してください。"
+    }
+  },
+  "validation": {
+    "vmd_mode_c_raw_loss": {
+      "title": "VMD Mode C の元アニメーション情報の損失",
+      "impact": "密なベイクにより、読み込んだボーンキーと補間バイト列が置き換えられます。",
+      "remediation": "未編集のモーションは Mode A を使うか、この損失を承認してから Mode C をエクスポートしてください。",
+      "action": "Mode C のアニメーション情報の損失を承認"
+    }
   }
 }

@@ -93,12 +93,18 @@ class UITranslator:
         """現在の言語コードを取得"""
         return self._current_language
 
-    def translate(self, key: str, category: Optional[str] = None) -> str:
+    def translate(
+        self,
+        key: str,
+        category: Optional[str] = None,
+        default: Optional[str] = None,
+    ) -> str:
         """キーから翻訳を取得
 
         Args:
             key: 翻訳キー
             category: カテゴリ（指定しない場合はドット記法で解釈）
+            default: 翻訳がない場合に返す値。未指定ならキーを返す。
 
         Returns:
             翻訳された文字列。見つからない場合は英語、それも見つからない場合はキーをそのまま返す
@@ -153,8 +159,9 @@ class UITranslator:
                     return data
 
         # 最終フォールバック: キーをそのまま返す
-        logger.warning(f"Translation not found: {key} (category: {category})")
-        return key
+        if default is None:
+            logger.warning(f"Translation not found: {key} (category: {category})")
+        return default if default is not None else key
 
     def get_supported_languages(self) -> Dict[str, str]:
         """サポートされている言語のリストを取得

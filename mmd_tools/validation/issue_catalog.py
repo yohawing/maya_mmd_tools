@@ -28,6 +28,16 @@ class IssueCatalogEntry:
     remediation: str
     loss_policy: str = "reject"
 
+    @property
+    def impact_key(self) -> str:
+        """Return the UI translation key for the impact wording."""
+        return f"{self.title_key.rsplit('.', 1)[0]}.impact"
+
+    @property
+    def remediation_key(self) -> str:
+        """Return the UI translation key for the remediation wording."""
+        return f"{self.title_key.rsplit('.', 1)[0]}.remediation"
+
 
 # Keep this list explicit.  The validator may add a code only after its
 # human-facing policy has been registered here as well.

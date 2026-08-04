@@ -140,6 +140,11 @@ class ValidationReportCatalogTests(unittest.TestCase):
         self.assertEqual(entry.loss_policy, "reject")
         self.assertEqual(entry.title_key, "validation.pmx_vertex_sdef_unsupported.title")
         self.assertEqual(entry.action_key, "validation.pmx_vertex_sdef_unsupported.action")
+        self.assertEqual(entry.impact_key, "validation.pmx_vertex_sdef_unsupported.impact")
+        self.assertEqual(
+            entry.remediation_key,
+            "validation.pmx_vertex_sdef_unsupported.remediation",
+        )
 
     def test_mode_c_raw_loss_is_cataloged_as_acknowledgeable_warning(self):
         entry = get_issue_catalog_entry("VMD_MODE_C_RAW_LOSS")

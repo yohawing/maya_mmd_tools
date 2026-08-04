@@ -20,6 +20,7 @@ from mmd_tools.validation.export_validator import (
     ExportValidationReport,
 )
 from mmd_tools.validation.issue_catalog import get_issue_catalog_entry
+from mmd_tools.ui.translations import UITranslator
 from mmd_tools.validation.vmd_validator import VMD_MODE_C, validate_vmd_data
 
 
@@ -94,6 +95,9 @@ class TestExportTabGUI(GuiTestBase):
 
     def test_validation_console_renders_catalog_backed_fatal_issue(self):
         """fatal issue の category と監査文言が Console に表示されることを確認する。"""
+        translator = UITranslator.instance()
+        previous_language = translator.get_language()
+        translator.set_language("en")
         tab = self._create_visible_tab()
         try:
             issue_code = "VMD_RAW_PROVENANCE_MISSING"
@@ -126,13 +130,23 @@ class TestExportTabGUI(GuiTestBase):
 
             category_index = console.filter_combo.findData(catalog_entry.category)
             self.assertGreaterEqual(category_index, 0)
-            self.assertEqual(console.filter_combo.itemText(category_index), catalog_entry.category)
+            self.assertEqual(
+                console.filter_combo.itemText(category_index),
+                translator.translate(
+                    f"validation_categories.{catalog_entry.category}.label",
+                    default=catalog_entry.category,
+                ),
+            )
             console.filter_combo.setCurrentIndex(category_index)
             QApplication.processEvents()
             self.assertEqual(console.issue_list.count(), 1)
 
             detail = console.detail_text.toPlainText()
-            self.assertIn(f"Category: {catalog_entry.category}", detail)
+            category_label = translator.translate(
+                f"validation_categories.{catalog_entry.category}.label",
+                default=catalog_entry.category,
+            )
+            self.assertIn(f"Category: {category_label}", detail)
             self.assertIn(f"Observed: {observed}", detail)
             self.assertIn(f"Expected: {catalog_entry.expected}", detail)
             self.assertIn(f"Impact: {catalog_entry.impact}", detail)
@@ -142,6 +156,47 @@ class TestExportTabGUI(GuiTestBase):
             self.assertIn("ExportTab GUI test", detail)
         finally:
             self._delete_tab(tab)
+            translator.set_language(previous_language)
+
+    def test_validation_labels_and_catalog_wording_follow_japanese_translation(self):
+        """Validation controls and issue wording follow the active UI language."""
+        translator = UITranslator.instance()
+        previous_language = translator.get_language()
+        translator.set_language("ja")
+        tab = self._create_visible_tab()
+        try:
+            self.assertEqual(tab.validate_button.text(), "検証")
+            self.assertEqual(tab.validation_console.revalidate_button.text(), "再検証")
+            self.assertEqual(tab.validation_console.acknowledge_check.text(), "警告を確認済みにする")
+            self.assertEqual(tab.validation_console.save_button.text(), "レポートを保存")
+
+            report = validate_vmd_data(
+                VmdData(),
+                VMD_MODE_C,
+                raw_provenance={
+                    "raw_bone_interpolation": [
+                        {
+                            "bone_name": "センター",
+                            "frame_number": 0,
+                            "interpolation": [20] * 64,
+                        }
+                    ]
+                },
+            )
+            tab.validation_console.set_report(report)
+            QApplication.processEvents()
+            detail = tab.validation_console.detail_text.toPlainText()
+            self.assertIn("タイトル: VMD Mode C の元アニメーション情報の損失", detail)
+            self.assertIn("影響: 密なベイクにより", detail)
+            self.assertIn("対処方法: 未編集のモーションは Mode A", detail)
+
+            translator.set_language("en")
+            tab.retranslateUi()
+            self.assertEqual(tab.validate_button.text(), "Validate")
+            self.assertEqual(tab.validation_console.revalidate_button.text(), "Revalidate")
+        finally:
+            self._delete_tab(tab)
+            translator.set_language(previous_language)
 
     def test_mode_c_warning_is_acknowledged_before_successful_export_route(self):
         """Real Maya widgets show the warning and route an explicit ack to export."""
