@@ -51,6 +51,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
     ATTR_MMD_MEMO,
+    ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_MODEL_NAME,
     ATTR_MMD_SHARED_TOON_FLAG,
     ATTR_MMD_SHININESS,
@@ -1056,6 +1057,21 @@ def _collect_mmd_material_dict(shader: str, is_pmd: bool = False) -> dict:
     material = {}
     semantic_missing = []
 
+    if not is_pmd:
+        material_index_present, material_index = _read_shader_attr(
+            shader,
+            ATTR_MMD_MATERIAL_INDEX,
+        )
+        if (
+            material_index_present
+            and isinstance(material_index, int)
+            and not isinstance(material_index, bool)
+            and material_index >= 0
+        ):
+            material["source_material_index"] = material_index
+        else:
+            semantic_missing.append("source_material_index")
+
     string_fields = [("name", ATTR_MMD_MATERIAL_NAME)]
     if not is_pmd:
         string_fields.append(("name_english", ATTR_MMD_MATERIAL_NAME_EN))
@@ -1232,8 +1248,10 @@ def _collect_materials_per_face(shape: str, fn, is_pmd: bool = False) -> tuple:
 
     Uses ``MFnMesh.getConnectedShaders`` to obtain the per-polygon shading-group
     assignment for instance 0.  Materials are ordered by first polygon
-    occurrence so the output is deterministic.  Each material dict has
-    ``face_count`` set to the fan-triangulated index count for its polygon group.
+    occurrence so the output is deterministic, except that a complete set of
+    PMX-tagged groups with distinct ``source_material_index`` values is ordered
+    by that source provenance.  Each material dict has ``face_count`` set to the
+    fan-triangulated index count for its polygon group.
 
     Limitation: vertex indices are not remapped; all materials reference the
     same global vertex array.  Vertex deduplication or per-material re-indexing
@@ -1284,8 +1302,7 @@ def _collect_materials_per_face(shape: str, fn, is_pmd: bool = False) -> tuple:
             mat_order.append(sg_key)
         poly_by_sg[sg_key].append(poly_id)
 
-    materials = []
-    faces = []
+    material_groups = []
     for sg_key in mat_order:
         poly_ids = poly_by_sg[sg_key]
         group_faces = [list(fn.getPolygonVertices(i)) for i in poly_ids]
@@ -1296,6 +1313,44 @@ def _collect_materials_per_face(shape: str, fn, is_pmd: bool = False) -> tuple:
         )
         group_faces = [list(reversed(face)) for face in group_faces]
         mat["face_count"] = sum(max(0, len(f) - 2) * 3 for f in group_faces)
+
+        material_groups.append((mat, group_faces))
+
+    source_indices = [
+        material.get("source_material_index")
+        for material, _group_faces in material_groups
+    ]
+    indices_are_valid = (
+        not is_pmd
+        and source_indices
+        and all(
+            isinstance(source_index, int)
+            and not isinstance(source_index, bool)
+            and source_index >= 0
+            and "source_material_index"
+            not in (material.get("semantic_missing") or [])
+            for (material, _group_faces), source_index in zip(material_groups, source_indices)
+        )
+    )
+    if indices_are_valid and len(set(source_indices)) == len(source_indices):
+        material_groups.sort(key=lambda group: group[0]["source_material_index"])
+    elif indices_are_valid:
+        duplicate_indices = {
+            source_index
+            for source_index in source_indices
+            if source_indices.count(source_index) > 1
+        }
+        for material, _group_faces in material_groups:
+            if material.get("source_material_index") not in duplicate_indices:
+                continue
+            semantic_missing = list(material.get("semantic_missing") or [])
+            if "source_material_index" not in semantic_missing:
+                semantic_missing.append("source_material_index")
+            material["semantic_missing"] = semantic_missing
+
+    materials = []
+    faces = []
+    for mat, group_faces in material_groups:
         materials.append(mat)
         faces.extend(group_faces)
 

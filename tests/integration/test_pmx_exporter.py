@@ -10,6 +10,7 @@ from typing import Optional
 from unittest.mock import patch
 
 from maya import cmds
+from maya.api import OpenMaya as om
 
 from mmd_tools.actions.export_model_action import ExportModelAction, ExportModelRequest
 from mmd_tools.converters import export_scene_collector
@@ -37,6 +38,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_IK_TARGET,
     ATTR_MMD_IK_TARGET_INDEX,
     ATTR_MMD_MATERIAL,
+    ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
     ATTR_MMD_MEMO,
@@ -109,15 +111,20 @@ class TestPmxExporter(MayaTestBase):
         cmds.sets(transform, edit=True, forceElement=sg)
         return shader
 
-    def _assign_tagged_shader_with_textures(self, transform: str) -> str:
-        """Assign a complete tagged PMX material with relative texture provenance."""
-        shader = self._assign_shader(transform, shader_name="TaggedTextureMaterial")
+    def _set_tagged_shader_with_textures(
+        self,
+        shader: str,
+        material_index: int,
+        material_name: str = "Tagged material",
+    ) -> None:
+        """Persist complete tagged PMX material semantics on an existing shader."""
         maya_attribute_utils.set_custom_attributes(
             shader,
             {
                 ATTR_MMD_MATERIAL: 1,
-                ATTR_MMD_MATERIAL_NAME: "Tagged material",
-                ATTR_MMD_MATERIAL_NAME_EN: "Tagged material",
+                ATTR_MMD_MATERIAL_INDEX: material_index,
+                ATTR_MMD_MATERIAL_NAME: material_name,
+                ATTR_MMD_MATERIAL_NAME_EN: material_name,
                 ATTR_MMD_DIFFUSE_COLOR: [0.8, 0.7, 0.6],
                 ATTR_MMD_DIFFUSE_ALPHA: 1.0,
                 ATTR_MMD_SPECULAR_COLOR: [0.2, 0.3, 0.4],
@@ -137,6 +144,17 @@ class TestPmxExporter(MayaTestBase):
                 ATTR_MMD_SPHERE_PATH: "textures/body.spa",
             },
         )
+
+    def _assign_tagged_shader_with_textures(
+        self,
+        transform: str,
+        material_index: int = 0,
+        shader_name: str = "TaggedTextureMaterial",
+        material_name: str = "Tagged material",
+    ) -> str:
+        """Assign a complete tagged PMX material with relative texture provenance."""
+        shader = self._assign_shader(transform, shader_name=shader_name)
+        self._set_tagged_shader_with_textures(shader, material_index, material_name)
         return shader
 
     def _assign_shader_to_component(self, component: str, shader_name: str) -> str:
@@ -156,6 +174,18 @@ class TestPmxExporter(MayaTestBase):
         )
         cmds.connectAttr(shader + ".outColor", sg + ".surfaceShader", force=True)
         cmds.sets(component, edit=True, forceElement=sg)
+        return shader
+
+    def _assign_tagged_shader_to_component_with_textures(
+        self,
+        component: str,
+        material_index: int,
+        shader_name: str,
+        material_name: str,
+    ) -> str:
+        """Assign a complete tagged PMX material to one polygon component."""
+        shader = self._assign_shader_to_component(component, shader_name)
+        self._set_tagged_shader_with_textures(shader, material_index, material_name)
         return shader
 
     def _make_two_mesh_model_root(self, root_name: str = "export_model_root"):
@@ -434,6 +464,54 @@ class TestPmxExporter(MayaTestBase):
         self.assertEqual(pmx.textures, ["textures/body.png", "textures/body.spa"])
         self.assertEqual(pmx.materials[0].texture_index, 0)
         self.assertEqual(pmx.materials[0].sphere_texture_index, 1)
+
+    def test_collect_single_mesh_orders_tagged_materials_and_faces_by_source_index(self):
+        """Reverse face/SG order is restored to the canonical PMX material order."""
+        result = cmds.polyPlane(w=2, h=1, sx=2, sy=1, ch=False)
+        transform = result[0]
+
+        self._assign_tagged_shader_to_component_with_textures(
+            f"{transform}.f[0]",
+            1,
+            "TaggedSourceOne",
+            "Material One",
+        )
+        self._assign_tagged_shader_to_component_with_textures(
+            f"{transform}.f[1]",
+            0,
+            "TaggedSourceZero",
+            "Material Zero",
+        )
+
+        maya_data = ExportSceneCollector().collect_from_mesh(transform)
+
+        self.assertEqual(
+            [material["source_material_index"] for material in maya_data["materials"]],
+            [0, 1],
+        )
+        self.assertEqual(
+            [material["name"] for material in maya_data["materials"]],
+            ["Material Zero", "Material One"],
+        )
+        self.assertEqual(
+            [material["face_count"] for material in maya_data["materials"]],
+            [6, 6],
+        )
+
+        shape = (cmds.listRelatives(transform, shapes=True, type="mesh", fullPath=True) or [])[0]
+        selection = om.MSelectionList()
+        selection.add(shape)
+        mesh_fn = om.MFnMesh(selection.getDagPath(0))
+        expected_faces = [
+            list(reversed(mesh_fn.getPolygonVertices(1))),
+            list(reversed(mesh_fn.getPolygonVertices(0))),
+        ]
+        self.assertEqual(maya_data["faces"], expected_faces)
+
+        output_path = self.get_temp_filename("tagged_material_source_order.pmx")
+        PmxExporter().export_pmx_model(output_path, maya_data)
+        pmx = _parse_pmx(output_path)
+        self.assertEqual([material.name for material in pmx.materials], ["Material Zero", "Material One"])
 
     def test_export_model_action_collects_target_mesh_and_writes_pmx(self):
         """ExportModelAction の default collector 経由で PMX を書き出せる。"""

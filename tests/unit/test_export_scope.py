@@ -34,6 +34,7 @@ from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_IK_TARGET,
     ATTR_MMD_IK_TARGET_INDEX,
     ATTR_MMD_MATERIAL,
+    ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
     ATTR_MMD_MEMO,
@@ -98,6 +99,63 @@ class TestExportScope(unittest.TestCase):
         self.assertEqual(faces, [[2, 1, 0]])
         self.assertEqual(materials[0]["face_count"], 3)
         return materials[0]
+
+    def _collect_two_material_groups(self, poly_shader_indices, shader_attrs):
+        """Collect two fake material groups with controllable face order."""
+        class FakeMesh:
+            numPolygons = 2
+
+            def getConnectedShaders(self, _instance):
+                return ["sg_a", "sg_b"], poly_shader_indices
+
+            def getPolygonVertices(self, polygon_id):
+                return [[0, 1, 2], [3, 4, 5]][polygon_id]
+
+        class FakeDependencyNode:
+            def setObject(self, obj):
+                self.obj = obj
+
+            def name(self):
+                return self.obj
+
+        def list_connections(path):
+            if path.endswith(".surfaceShader"):
+                return ["shader_a" if path.startswith("sg_a") else "shader_b"]
+            return []
+
+        def attribute_query(attr, node, exists):
+            return exists and attr in shader_attrs[node]
+
+        def get_attr(path):
+            node, attr = path.rsplit(".", 1)
+            return shader_attrs[node][attr]
+
+        with (
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "listConnections",
+                side_effect=list_connections,
+            ),
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "attributeQuery",
+                side_effect=attribute_query,
+            ),
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "getAttr",
+                side_effect=get_attr,
+            ),
+            mock.patch.object(
+                export_scene_collector_module.om,
+                "MFnDependencyNode",
+                return_value=FakeDependencyNode(),
+            ),
+        ):
+            return export_scene_collector_module._collect_materials_per_face(
+                "meshShape",
+                FakeMesh(),
+            )
 
     def test_collect_bones_resolves_ik_source_indices_and_authored_names(self):
         """IK refs use exported order, including name-based link references."""
@@ -211,6 +269,7 @@ class TestExportScope(unittest.TestCase):
         material = self._collect_single_material(
             {
                 ATTR_MMD_MATERIAL: 1,
+                ATTR_MMD_MATERIAL_INDEX: 3,
                 ATTR_MMD_MATERIAL_NAME: "日本語材質",
                 ATTR_MMD_MATERIAL_NAME_EN: "English Material",
                 ATTR_MMD_DIFFUSE_COLOR: (0.1, 0.2, 0.3),
@@ -234,6 +293,7 @@ class TestExportScope(unittest.TestCase):
         )
 
         self.assertEqual(material["name"], "日本語材質")
+        self.assertEqual(material["source_material_index"], 3)
         self.assertEqual(material["name_english"], "English Material")
         self.assertEqual(material["diffuse"], [0.1, 0.2, 0.3, 0.4])
         self.assertEqual(material["specular"], [0.5, 0.6, 0.7])
@@ -253,6 +313,117 @@ class TestExportScope(unittest.TestCase):
         self.assertEqual(material["texture_path"], "textures/body.png")
         self.assertEqual(material["sphere_texture_path"], "textures/body.spa")
         self.assertEqual(material["semantic_missing"], ["texture_table"])
+
+    def test_tagged_material_groups_keep_in_order_source_material_indices(self):
+        materials, faces = self._collect_two_material_groups(
+            [0, 1],
+            {
+                "shader_a": {
+                    ATTR_MMD_MATERIAL: 1,
+                    ATTR_MMD_MATERIAL_NAME: "Material A",
+                    ATTR_MMD_MATERIAL_INDEX: 0,
+                },
+                "shader_b": {
+                    ATTR_MMD_MATERIAL: 1,
+                    ATTR_MMD_MATERIAL_NAME: "Material B",
+                    ATTR_MMD_MATERIAL_INDEX: 1,
+                },
+            },
+        )
+
+        self.assertEqual([material["source_material_index"] for material in materials], [0, 1])
+        self.assertEqual([material["name"] for material in materials], ["Material A", "Material B"])
+        self.assertEqual(faces, [[2, 1, 0], [5, 4, 3]])
+
+    def test_tagged_material_groups_reorder_reversed_faces_with_source_material_indices(self):
+        materials, faces = self._collect_two_material_groups(
+            [1, 0],
+            {
+                "shader_a": {
+                    ATTR_MMD_MATERIAL: 1,
+                    ATTR_MMD_MATERIAL_NAME: "Material A",
+                    ATTR_MMD_MATERIAL_INDEX: 0,
+                },
+                "shader_b": {
+                    ATTR_MMD_MATERIAL: 1,
+                    ATTR_MMD_MATERIAL_NAME: "Material B",
+                    ATTR_MMD_MATERIAL_INDEX: 1,
+                },
+            },
+        )
+
+        self.assertEqual([material["source_material_index"] for material in materials], [0, 1])
+        self.assertEqual([material["name"] for material in materials], ["Material A", "Material B"])
+        self.assertEqual(faces, [[5, 4, 3], [2, 1, 0]])
+
+    def test_tagged_material_groups_do_not_reorder_missing_malformed_or_duplicate_index(self):
+        materials, faces = self._collect_two_material_groups(
+            [1, 0],
+            {
+                "shader_a": {
+                    ATTR_MMD_MATERIAL: 1,
+                    ATTR_MMD_MATERIAL_NAME: "Material A",
+                },
+                "shader_b": {
+                    ATTR_MMD_MATERIAL: 1,
+                    ATTR_MMD_MATERIAL_NAME: "Material B",
+                    ATTR_MMD_MATERIAL_INDEX: 1,
+                },
+            },
+        )
+
+        self.assertEqual([material["name"] for material in materials], ["Material B", "Material A"])
+        self.assertEqual(faces, [[2, 1, 0], [5, 4, 3]])
+        self.assertIn("source_material_index", materials[1]["semantic_missing"])
+
+        materials, faces = self._collect_two_material_groups(
+            [1, 0],
+            {
+                "shader_a": {
+                    ATTR_MMD_MATERIAL: 1,
+                    ATTR_MMD_MATERIAL_NAME: "Material A",
+                    ATTR_MMD_MATERIAL_INDEX: 0,
+                },
+                "shader_b": {
+                    ATTR_MMD_MATERIAL: 1,
+                    ATTR_MMD_MATERIAL_NAME: "Material B",
+                    ATTR_MMD_MATERIAL_INDEX: 0,
+                },
+            },
+        )
+
+        self.assertEqual([material["name"] for material in materials], ["Material B", "Material A"])
+        self.assertEqual(faces, [[2, 1, 0], [5, 4, 3]])
+        self.assertEqual(
+            [material["source_material_index"] for material in materials],
+            [0, 0],
+        )
+        self.assertTrue(
+            all(
+                "source_material_index" in (material.get("semantic_missing") or [])
+                for material in materials
+            )
+        )
+
+        materials, faces = self._collect_two_material_groups(
+            [1, 0],
+            {
+                "shader_a": {
+                    ATTR_MMD_MATERIAL: 1,
+                    ATTR_MMD_MATERIAL_NAME: "Material A",
+                    ATTR_MMD_MATERIAL_INDEX: 0.5,
+                },
+                "shader_b": {
+                    ATTR_MMD_MATERIAL: 1,
+                    ATTR_MMD_MATERIAL_NAME: "Material B",
+                    ATTR_MMD_MATERIAL_INDEX: 1,
+                },
+            },
+        )
+
+        self.assertEqual([material["name"] for material in materials], ["Material B", "Material A"])
+        self.assertEqual(faces, [[2, 1, 0], [5, 4, 3]])
+        self.assertIn("source_material_index", materials[1]["semantic_missing"])
 
     def test_mmd_shader_non_shared_toon_index_is_not_writer_facing_without_table(self):
         material = self._collect_single_material(
