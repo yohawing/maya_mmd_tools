@@ -17,10 +17,16 @@ from mmd_tools.converters.export_scene_collector import ExportSceneCollector
 from mmd_tools.converters.morph_converter import MorphConverter
 from mmd_tools.core.constants import (
     ATTR_MMD_BONE_INDEX,
+    ATTR_MMD_BONE_FLAGS,
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_BONE_PARENT_INDEX,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
+    ATTR_MMD_IK_LIMIT_ANGLE,
+    ATTR_MMD_IK_LINKS,
+    ATTR_MMD_IK_LOOP,
+    ATTR_MMD_IK_TARGET,
+    ATTR_MMD_IK_TARGET_INDEX,
     ATTR_MMD_MODEL_NAME,
 )
 from mmd_tools.core.model_registry import REGISTRY_CATEGORY_MORPH, list_model_registry_members
@@ -619,6 +625,92 @@ class TestPmxExporter(MayaTestBase):
         self.assertAlmostEqual(pmx.vertices[1].bone_weights[0], 0.75)
         self.assertEqual(pmx.vertices[2].weight_transform_type, 0)
         self.assertEqual(pmx.vertices[2].bone_indices, [1])
+
+    def test_export_model_action_roundtrips_supported_ik_metadata(self):
+        """Maya IK attributes reach parsed PMX target, loop, limit, and links."""
+        transform, joints, _skin_cluster = self._make_skinned_triangle("pmx_ik_tri")
+        ik_joint = joints[1]
+        cmds.addAttr(ik_joint, longName=ATTR_MMD_BONE_FLAGS, attributeType="long")
+        cmds.setAttr(f"{ik_joint}.{ATTR_MMD_BONE_FLAGS}", 0x003E)
+        cmds.addAttr(ik_joint, longName=ATTR_MMD_IK_TARGET, dataType="string")
+        cmds.setAttr(f"{ik_joint}.{ATTR_MMD_IK_TARGET}", "センター", type="string")
+        cmds.addAttr(ik_joint, longName=ATTR_MMD_IK_TARGET_INDEX, attributeType="long")
+        cmds.setAttr(f"{ik_joint}.{ATTR_MMD_IK_TARGET_INDEX}", 0)
+        cmds.addAttr(ik_joint, longName=ATTR_MMD_IK_LOOP, attributeType="long")
+        cmds.setAttr(f"{ik_joint}.{ATTR_MMD_IK_LOOP}", 8)
+        cmds.addAttr(ik_joint, longName=ATTR_MMD_IK_LIMIT_ANGLE, attributeType="double")
+        cmds.setAttr(f"{ik_joint}.{ATTR_MMD_IK_LIMIT_ANGLE}", 0.5)
+        cmds.addAttr(ik_joint, longName=ATTR_MMD_IK_LINKS, dataType="string")
+        cmds.setAttr(
+            f"{ik_joint}.{ATTR_MMD_IK_LINKS}",
+            json.dumps(
+                [
+                    {
+                        "bone": 0,
+                        "limit_enabled": True,
+                        "lower_limit": [-0.5, -0.25, -0.1],
+                        "upper_limit": [0.5, 0.25, 0.1],
+                    }
+                ]
+            ),
+            type="string",
+        )
+
+        output_path = self.get_temp_filename("ik_metadata.pmx")
+        result = ExportModelAction().execute(
+            ExportModelRequest(
+                file_path=output_path,
+                options={"export_format": "pmx", "target_mesh": transform},
+            )
+        )
+
+        self.assertTrue(result.succeeded)
+        pmx = _parse_pmx(output_path)
+        ik_bone = pmx.bones[1]
+        self.assertEqual(int(ik_bone.bone_flag) & 0x0020, 0x0020)
+        self.assertEqual(ik_bone.ik_target_bone_index, 0)
+        self.assertEqual(ik_bone.ik_loop_count, 8)
+        self.assertAlmostEqual(ik_bone.ik_limit_angle, 0.5)
+        self.assertEqual(len(ik_bone.ik_links), 1)
+        self.assertEqual(ik_bone.ik_links[0].ik_bone_index, 0)
+        self.assertEqual(ik_bone.ik_links[0].angle_limit, 1)
+        for actual, expected in zip(ik_bone.ik_links[0].limit_min, (-0.5, -0.25, -0.1)):
+            self.assertAlmostEqual(actual, expected)
+        for actual, expected in zip(ik_bone.ik_links[0].limit_max, (0.5, 0.25, 0.1)):
+            self.assertAlmostEqual(actual, expected)
+
+    def test_invalid_ik_metadata_is_rejected_before_writer(self):
+        """An unresolved Maya IK target must not enter the PMX writer."""
+        transform, joints, _skin_cluster = self._make_skinned_triangle("pmx_invalid_ik")
+        ik_joint = joints[1]
+        cmds.addAttr(ik_joint, longName=ATTR_MMD_BONE_FLAGS, attributeType="long")
+        cmds.setAttr(f"{ik_joint}.{ATTR_MMD_BONE_FLAGS}", 0x003E)
+        cmds.addAttr(ik_joint, longName=ATTR_MMD_IK_TARGET_INDEX, attributeType="long")
+        cmds.setAttr(f"{ik_joint}.{ATTR_MMD_IK_TARGET_INDEX}", 99)
+        cmds.addAttr(ik_joint, longName=ATTR_MMD_IK_LOOP, attributeType="long")
+        cmds.setAttr(f"{ik_joint}.{ATTR_MMD_IK_LOOP}", 8)
+        cmds.addAttr(ik_joint, longName=ATTR_MMD_IK_LIMIT_ANGLE, attributeType="double")
+        cmds.setAttr(f"{ik_joint}.{ATTR_MMD_IK_LIMIT_ANGLE}", 0.5)
+        cmds.addAttr(ik_joint, longName=ATTR_MMD_IK_LINKS, dataType="string")
+        cmds.setAttr(
+            f"{ik_joint}.{ATTR_MMD_IK_LINKS}",
+            json.dumps([{"bone": 0}]),
+            type="string",
+        )
+
+        output_path = self.get_temp_filename("invalid_ik_metadata.pmx")
+        with patch.object(PmxExporter, "export_pmx_model") as writer:
+            result = ExportModelAction().execute(
+                ExportModelRequest(
+                    file_path=output_path,
+                    options={"export_format": "pmx", "target_mesh": transform},
+                )
+            )
+
+        self.assertFalse(result.succeeded)
+        self.assertIsNotNone(result.validation_report)
+        self.assertTrue(result.validation_report.is_blocking)
+        writer.assert_not_called()
 
     def test_model_export_keeps_metadata_bone_without_skin_influence(self):
         """model exportは0-weight jointもSkeleton metadataからPMX boneへ戻す。"""

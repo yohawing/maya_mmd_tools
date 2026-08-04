@@ -31,6 +31,7 @@ from mmd_tools.converters.morph_converter import (
 from mmd_tools.core.constants import (
     ATTR_MMD_AMBIENT_COLOR,
     ATTR_MMD_BONE_INDEX,
+    ATTR_MMD_BONE_FLAGS,
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
@@ -41,6 +42,11 @@ from mmd_tools.core.constants import (
     ATTR_MMD_EDGE_FLAG,
     ATTR_MMD_EDGE_COLOR,
     ATTR_MMD_EDGE_SIZE,
+    ATTR_MMD_IK_LIMIT_ANGLE,
+    ATTR_MMD_IK_LINKS,
+    ATTR_MMD_IK_LOOP,
+    ATTR_MMD_IK_TARGET,
+    ATTR_MMD_IK_TARGET_INDEX,
     ATTR_MMD_MATERIAL,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
@@ -58,6 +64,7 @@ from mmd_tools.core.constants import (
 )
 from mmd_tools.core.coordinate_transform import maya_point_to_mmd
 from mmd_tools.core.display_frame_metadata import display_frames_from_json
+from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.core.morph_metadata_reader import (
     parse_blendshape_morph_entries,
 )
@@ -370,6 +377,180 @@ def _joint_identity(joint: str) -> str:
     return long_names[0] if long_names else joint
 
 
+_PMX_DEFAULT_BONE_FLAGS = int(
+    PmxBoneFlag.DISPLAY
+    | PmxBoneFlag.OPERATABLE
+    | PmxBoneFlag.ROTATABLE
+    | PmxBoneFlag.MOVABLE
+)
+_PMX_IK_FLAG = int(PmxBoneFlag.IK)
+
+
+def _register_bone_reference_alias(
+    aliases: dict[str, Optional[int]],
+    alias: object,
+    export_index: int,
+) -> None:
+    """Register one unambiguous authored bone-name alias."""
+    if not isinstance(alias, str) or not alias:
+        return
+    if alias in aliases and aliases[alias] != export_index:
+        aliases[alias] = None
+        return
+    aliases[alias] = export_index
+
+
+def _resolve_ik_bone_reference(
+    value: object,
+    source_to_export: dict[int, Optional[int]],
+    name_to_export: dict[str, Optional[int]],
+) -> object:
+    """Map an imported source index or authored name to export order.
+
+    Unresolved references become ``None`` so the payload validator can report
+    the failure before the writer is called; they are never guessed as an
+    already-exported index.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return source_to_export.get(value)
+    if isinstance(value, str):
+        return name_to_export.get(value)
+    return value
+
+
+def _resolve_ik_links(
+    value: object,
+    source_to_export: dict[int, Optional[int]],
+    name_to_export: dict[str, Optional[int]],
+) -> object:
+    """Resolve the ``bone`` member of each canonical IK-link dictionary."""
+    if not isinstance(value, (list, tuple)):
+        return value
+    resolved_links = []
+    for link in value:
+        if not isinstance(link, dict):
+            resolved_links.append(link)
+            continue
+        resolved_link = dict(link)
+        if "bone" in resolved_link:
+            resolved_link["bone"] = _resolve_ik_bone_reference(
+                resolved_link["bone"], source_to_export, name_to_export
+            )
+        resolved_links.append(resolved_link)
+    return resolved_links
+
+
+def _collect_ik_metadata(
+    joint: str,
+    source_to_export: dict[int, Optional[int]],
+    name_to_export: dict[str, Optional[int]],
+) -> dict:
+    """Collect the supported IK subset from one indexed Maya joint.
+
+    The helper deliberately retains malformed values for validation instead of
+    dropping them.  This keeps incomplete or stale authoring fail-closed.
+    """
+    ik_attrs = (
+        ATTR_MMD_BONE_FLAGS,
+        ATTR_MMD_IK_TARGET,
+        ATTR_MMD_IK_TARGET_INDEX,
+        ATTR_MMD_IK_LOOP,
+        ATTR_MMD_IK_LIMIT_ANGLE,
+        ATTR_MMD_IK_LINKS,
+    )
+    present = {attr: cmds.attributeQuery(attr, node=joint, exists=True) for attr in ik_attrs}
+    raw_flags = _get_attr(joint, ATTR_MMD_BONE_FLAGS) if present[ATTR_MMD_BONE_FLAGS] else None
+    has_ik_flag = (
+        isinstance(raw_flags, int)
+        and not isinstance(raw_flags, bool)
+        and bool(int(raw_flags) & _PMX_IK_FLAG)
+    )
+
+    # The bone presenter creates these attributes on ordinary bones so the UI
+    # can edit them later.  Attribute presence alone therefore cannot mean
+    # that IK was authored.  Treat the presenter defaults as empty, while
+    # retaining non-default or malformed values for fail-closed validation.
+    raw_target = _get_attr(joint, ATTR_MMD_IK_TARGET) if present[ATTR_MMD_IK_TARGET] else None
+    raw_target_index = (
+        _get_attr(joint, ATTR_MMD_IK_TARGET_INDEX)
+        if present[ATTR_MMD_IK_TARGET_INDEX]
+        else None
+    )
+    raw_loop_count = _get_attr(joint, ATTR_MMD_IK_LOOP) if present[ATTR_MMD_IK_LOOP] else None
+    raw_limit_angle = (
+        _get_attr(joint, ATTR_MMD_IK_LIMIT_ANGLE)
+        if present[ATTR_MMD_IK_LIMIT_ANGLE]
+        else None
+    )
+    raw_links = _get_attr(joint, ATTR_MMD_IK_LINKS) if present[ATTR_MMD_IK_LINKS] else None
+    if isinstance(raw_links, str):
+        try:
+            raw_links = json.loads(raw_links)
+        except (TypeError, ValueError):
+            pass
+
+    has_nonempty_links = not (
+        raw_links is None
+        or raw_links == ""
+        or (isinstance(raw_links, (list, tuple)) and not raw_links)
+    )
+    has_ik_payload = (
+        raw_target not in (None, "")
+        or raw_target_index not in (None, -1)
+        or raw_loop_count is not None and raw_loop_count != 10
+        or raw_limit_angle is not None and raw_limit_angle != 2.0
+        or has_nonempty_links
+    )
+    if not has_ik_flag and not has_ik_payload:
+        return {}
+
+    metadata = {}
+    if has_ik_flag:
+        # Keep the writer's existing default display/operation flags while
+        # adding only the supported IK bit; unrelated bone fields remain out
+        # of this collector slice.
+        metadata["bone_flag"] = _PMX_DEFAULT_BONE_FLAGS | _PMX_IK_FLAG
+    elif present[ATTR_MMD_BONE_FLAGS]:
+        # Preserve a malformed/missing IK flag for the validator to reject.
+        metadata["bone_flag"] = raw_flags
+
+    target_index = None
+    if present[ATTR_MMD_IK_TARGET_INDEX]:
+        target_index = _resolve_ik_bone_reference(
+            raw_target_index, source_to_export, name_to_export
+        )
+        if raw_target not in (None, ""):
+            name_index = _resolve_ik_bone_reference(
+                raw_target, source_to_export, name_to_export
+            )
+            if target_index is None or name_index is None or target_index != name_index:
+                target_index = None
+    elif present[ATTR_MMD_IK_TARGET]:
+        target_index = _resolve_ik_bone_reference(
+            raw_target, source_to_export, name_to_export
+        )
+    if present[ATTR_MMD_IK_TARGET_INDEX] or present[ATTR_MMD_IK_TARGET]:
+        metadata["ik_target_bone_index"] = target_index
+
+    for payload_key, attr in (
+        ("ik_loop_count", ATTR_MMD_IK_LOOP),
+        ("ik_limit_angle", ATTR_MMD_IK_LIMIT_ANGLE),
+    ):
+        if present[attr]:
+            metadata[payload_key] = {
+                ATTR_MMD_IK_LOOP: raw_loop_count,
+                ATTR_MMD_IK_LIMIT_ANGLE: raw_limit_angle,
+            }[attr]
+
+    if present[ATTR_MMD_IK_LINKS]:
+        metadata["ik_links"] = _resolve_ik_links(
+            raw_links, source_to_export, name_to_export
+        )
+    return metadata
+
+
 def _collect_bones_from_joints(joints: list[str]) -> tuple[list[dict], dict[str, int]]:
     """Collect exporter bones from MMD-tagged joints in metadata order."""
 
@@ -387,6 +568,24 @@ def _collect_bones_from_joints(joints: list[str]) -> tuple[list[dict], dict[str,
         if stored_index is not None:
             stored_to_export[int(stored_index)] = index
 
+    ik_source_to_export: dict[int, Optional[int]] = {}
+    ik_name_to_export: dict[str, Optional[int]] = {}
+    for joint, index in export_index_by_joint.items():
+        stored_index = _get_attr(joint, ATTR_MMD_BONE_INDEX)
+        if isinstance(stored_index, int) and not isinstance(stored_index, bool):
+            if stored_index in ik_source_to_export and ik_source_to_export[stored_index] != index:
+                ik_source_to_export[stored_index] = None
+            else:
+                ik_source_to_export[stored_index] = index
+        aliases = (
+            joint,
+            joint.rsplit("|", 1)[-1],
+            _get_attr(joint, ATTR_MMD_BONE_NAME),
+            _get_attr(joint, ATTR_MMD_BONE_NAME_EN),
+        )
+        for alias in aliases:
+            _register_bone_reference_alias(ik_name_to_export, alias, index)
+
     bones = []
     for joint in ordered:
         parent_index = -1
@@ -399,13 +598,21 @@ def _collect_bones_from_joints(joints: list[str]) -> tuple[list[dict], dict[str,
                 parent_index = export_index_by_joint[parent]
 
         position = cmds.xform(joint, query=True, worldSpace=True, translation=True)
-        bones.append({
+        bone = {
             "name": _get_attr(joint, ATTR_MMD_BONE_NAME, joint.rsplit("|", 1)[-1]),
             "name_english": _get_attr(joint, ATTR_MMD_BONE_NAME_EN, ""),
             "position": _maya_to_mmd_vector(position),
             "parent_index": parent_index,
             "source_joint": joint,
-        })
+        }
+        bone.update(
+            _collect_ik_metadata(
+                joint,
+                ik_source_to_export,
+                ik_name_to_export,
+            )
+        )
+        bones.append(bone)
     return bones, export_index_by_joint
 
 

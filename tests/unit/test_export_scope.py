@@ -1,5 +1,6 @@
 """Verify model-root ownership boundaries used by export collectors."""
 
+import json
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -17,11 +18,21 @@ from mmd_tools.converters.material_shader_parameters import (  # noqa: E402
 )
 from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_AMBIENT_COLOR,
+    ATTR_MMD_BONE_FLAGS,
+    ATTR_MMD_BONE_INDEX,
+    ATTR_MMD_BONE_NAME,
+    ATTR_MMD_BONE_NAME_EN,
+    ATTR_MMD_BONE_PARENT_INDEX,
     ATTR_MMD_DIFFUSE_COLOR,
     ATTR_MMD_DRAW_FLAGS,
     ATTR_MMD_EDGE_FLAG,
     ATTR_MMD_EDGE_COLOR,
     ATTR_MMD_EDGE_SIZE,
+    ATTR_MMD_IK_LIMIT_ANGLE,
+    ATTR_MMD_IK_LINKS,
+    ATTR_MMD_IK_LOOP,
+    ATTR_MMD_IK_TARGET,
+    ATTR_MMD_IK_TARGET_INDEX,
     ATTR_MMD_MATERIAL,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
@@ -87,6 +98,114 @@ class TestExportScope(unittest.TestCase):
         self.assertEqual(faces, [[2, 1, 0]])
         self.assertEqual(materials[0]["face_count"], 3)
         return materials[0]
+
+    def test_collect_bones_resolves_ik_source_indices_and_authored_names(self):
+        """IK refs use exported order, including name-based link references."""
+        joints = ["|model|link", "|model|solver", "|model|target"]
+        attrs = {
+            ("|model|link", ATTR_MMD_BONE_INDEX): 7,
+            ("|model|link", ATTR_MMD_BONE_PARENT_INDEX): -1,
+            ("|model|link", ATTR_MMD_BONE_NAME): "Link",
+            ("|model|link", ATTR_MMD_BONE_NAME_EN): "Link",
+            ("|model|solver", ATTR_MMD_BONE_INDEX): 42,
+            ("|model|solver", ATTR_MMD_BONE_PARENT_INDEX): 7,
+            ("|model|solver", ATTR_MMD_BONE_NAME): "Solver",
+            ("|model|solver", ATTR_MMD_BONE_NAME_EN): "Solver",
+            ("|model|solver", ATTR_MMD_BONE_FLAGS): 0x003E,
+            ("|model|solver", ATTR_MMD_IK_TARGET_INDEX): 100,
+            ("|model|solver", ATTR_MMD_IK_LOOP): 8,
+            ("|model|solver", ATTR_MMD_IK_LIMIT_ANGLE): 0.5,
+            ("|model|solver", ATTR_MMD_IK_LINKS): json.dumps(
+                [{"bone": "Link", "limit_enabled": False}]
+            ),
+            ("|model|target", ATTR_MMD_BONE_INDEX): 100,
+            ("|model|target", ATTR_MMD_BONE_PARENT_INDEX): 42,
+            ("|model|target", ATTR_MMD_BONE_NAME): "Target",
+            ("|model|target", ATTR_MMD_BONE_NAME_EN): "Target",
+        }
+
+        def attribute_query(attr, node, exists):
+            return exists and (node, attr) in attrs
+
+        def get_attr(path):
+            node, attr = path.rsplit(".", 1)
+            return attrs[(node, attr)]
+
+        with (
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "attributeQuery",
+                side_effect=attribute_query,
+            ),
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "getAttr",
+                side_effect=get_attr,
+            ),
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "xform",
+                return_value=[0.0, 0.0, 0.0],
+            ),
+        ):
+            bones, export_index_by_joint = export_scene_collector_module._collect_bones_from_joints(
+                joints
+            )
+
+        self.assertEqual(export_index_by_joint["|model|link"], 0)
+        solver = bones[1]
+        self.assertEqual(solver["bone_flag"] & 0x0020, 0x0020)
+        self.assertEqual(solver["ik_target_bone_index"], 2)
+        self.assertEqual(solver["ik_loop_count"], 8)
+        self.assertAlmostEqual(solver["ik_limit_angle"], 0.5)
+        self.assertEqual(solver["ik_links"][0]["bone"], 0)
+
+    def test_collect_bones_ignores_presenter_ik_defaults_on_non_ik_bone(self):
+        """UI-created empty IK fields do not change ordinary bone export."""
+        joint = "|model|plain"
+        attrs = {
+            (joint, ATTR_MMD_BONE_INDEX): 0,
+            (joint, ATTR_MMD_BONE_PARENT_INDEX): -1,
+            (joint, ATTR_MMD_BONE_NAME): "Plain",
+            (joint, ATTR_MMD_BONE_NAME_EN): "Plain",
+            (joint, ATTR_MMD_BONE_FLAGS): 0x000A,
+            (joint, ATTR_MMD_IK_TARGET): "",
+            (joint, ATTR_MMD_IK_LOOP): 10,
+            (joint, ATTR_MMD_IK_LIMIT_ANGLE): 2.0,
+            (joint, ATTR_MMD_IK_LINKS): "[]",
+        }
+
+        def attribute_query(attr, node, exists):
+            return exists and (node, attr) in attrs
+
+        def get_attr(path):
+            node, attr = path.rsplit(".", 1)
+            return attrs[(node, attr)]
+
+        with (
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "attributeQuery",
+                side_effect=attribute_query,
+            ),
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "getAttr",
+                side_effect=get_attr,
+            ),
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "xform",
+                return_value=[0.0, 0.0, 0.0],
+            ),
+        ):
+            bones, _ = export_scene_collector_module._collect_bones_from_joints([joint])
+
+        self.assertNotIn("bone_flag", bones[0])
+        self.assertNotIn("ik_target_bone_index", bones[0])
+        self.assertNotIn("ik_loop_count", bones[0])
+        self.assertNotIn("ik_limit_angle", bones[0])
+        self.assertNotIn("ik_links", bones[0])
 
     def test_mmd_shader_semantics_override_defaults_and_keep_provenance(self):
         material = self._collect_single_material(

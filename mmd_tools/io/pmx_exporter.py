@@ -14,6 +14,7 @@ from mmd_tools.core.pmx_data.bone import PmxBone, PmxBoneFlag
 from mmd_tools.core.pmx_data.display_frame import PmxDisplayFrame
 from mmd_tools.core.pmx_data.face import PmxFace
 from mmd_tools.core.pmx_data.header import PmxEncoding
+from mmd_tools.core.pmx_data.ik_link import PmxIKLink
 from mmd_tools.core.pmx_data.joint import PmxJoint
 from mmd_tools.core.pmx_data.material import PmxDrawFlag, PmxMaterial, PmxSharedToonFlag, PmxSphereMode
 from mmd_tools.core.pmx_data.morph import PmxMorph, PmxMorphType
@@ -322,6 +323,15 @@ class PmxExporter:
                 bone.ik_target_bone_index = b_raw.get("ik_target_bone_index", -1)
                 bone.ik_loop_count = b_raw.get("ik_loop_count", 0)
                 bone.ik_limit_angle = b_raw.get("ik_limit_angle", 0.0)
+                if bone.get_flag(PmxBoneFlag.IK):
+                    for link_raw in b_raw.get("ik_links", []):
+                        link = PmxIKLink(pmx.header.bone_index_size)
+                        link.ik_bone_index = link_raw["bone"]
+                        link.angle_limit = 1 if link_raw.get("limit_enabled", False) else 0
+                        if link.angle_limit:
+                            link.limit_min = tuple(link_raw["lower_limit"])
+                            link.limit_max = tuple(link_raw["upper_limit"])
+                        bone.ik_links.append(link)
                 pmx.bones.append(bone)
 
         # --- morphs ---
@@ -644,6 +654,10 @@ class PmxExporter:
         for morph in pmx.morphs:
             if self._native_morph_descriptor(morph) is None:
                 return f"unsupported_morph_type:{int(morph.morph_type)}"
+        if any(bone.get_flag(PmxBoneFlag.IK) for bone in pmx.bones):
+            # The native parts descriptor has no PMX IK target/loop/link
+            # fields; use the Python writer so valid metadata is serialized.
+            return "ik_metadata"
         return None
 
     def _try_native_parts_export(self, pmx: PmxData):

@@ -35,6 +35,7 @@ _BONE_REFERENCE_FIELDS = (
 _PMX_MORPH_TYPE_BY_ENUM = {0: "group", 1: "vertex", 2: "bone", 8: "material"}
 _PMX_MORPH_TYPES = frozenset(_PMX_MORPH_TYPE_BY_ENUM.values())
 _PMD_BONE_TYPE_VALUES = frozenset(range(10))
+_PMX_IK_FLAG = 0x0020
 
 
 @dataclass(frozen=True)
@@ -754,14 +755,24 @@ def _validate_bone_references(
 def _validate_bone_ik_links(
     bone: Mapping,
     bone_path: str,
+    bone_count: int,
     issues: List[ExportValidationIssue],
+    *,
+    required: bool = False,
 ) -> None:
-    """Reject PMX bone IK links that the model-data writer does not retain."""
+    """Validate the supported PMX IK-link payload."""
     if "ik_links" not in bone:
         return
     value = bone["ik_links"]
     field_path = _path_for_key(bone_path, "ik_links")
     if value is None:
+        if required:
+            _issue(
+                issues,
+                "PMX_BONE_IK_LINKS_NOT_SEQUENCE",
+                field_path,
+                "bone ik_links must be a sequence",
+            )
         return
     if not _is_sequence(value):
         _issue(
@@ -770,13 +781,113 @@ def _validate_bone_ik_links(
             field_path,
             "bone ik_links must be a sequence",
         )
-    elif value:
+        return
+
+    for link_index, link in enumerate(value):
+        link_path = _path_for_index(field_path, link_index)
+        if not isinstance(link, Mapping):
+            _issue(issues, "BONE_NOT_MAPPING", link_path, "IK link must be a mapping")
+            continue
+
+        bone_index_path = _path_for_key(link_path, "bone")
+        if "bone" not in link:
+            _issue(
+                issues,
+                "BONE_REFERENCE_TYPE",
+                bone_index_path,
+                "IK link requires a bone index",
+            )
+        elif not _is_integer(link["bone"]):
+            if not _is_non_finite_numeric(link["bone"]):
+                _issue(
+                    issues,
+                    "BONE_REFERENCE_TYPE",
+                    bone_index_path,
+                    "IK link bone reference must be an integer",
+                )
+        elif link["bone"] < 0 or link["bone"] >= bone_count:
+            _issue(
+                issues,
+                "BONE_REFERENCE_OUT_OF_RANGE",
+                bone_index_path,
+                f"IK link bone index {link['bone']} is outside effective bone count {bone_count}",
+            )
+
+        if "limit_enabled" in link and not isinstance(link["limit_enabled"], bool):
+            _issue(
+                issues,
+                "NUMERIC_VALUE_TYPE",
+                _path_for_key(link_path, "limit_enabled"),
+                "IK link limit_enabled must be a boolean",
+            )
+        limited = link.get("limit_enabled", False) is True
+        for limit_name in ("lower_limit", "upper_limit"):
+            _validate_vector_field(link, limit_name, 3, link_path, issues)
+            if limited and limit_name not in link:
+                _issue(
+                    issues,
+                    "PMX_IK_DATA_UNSUPPORTED",
+                    _path_for_key(link_path, limit_name),
+                    "limited IK links require both angle-limit vectors",
+                )
+
+
+def _validate_bone_ik_metadata(
+    bone: Mapping,
+    bone_path: str,
+    bone_count: int,
+    issues: List[ExportValidationIssue],
+) -> None:
+    """Reject incomplete IK authoring and validate IK scalar boundaries."""
+    metadata_fields = (
+        "ik_target_bone_index",
+        "ik_loop_count",
+        "ik_limit_angle",
+        "ik_links",
+    )
+    has_metadata = any(field in bone for field in metadata_fields)
+    raw_flag = bone.get("bone_flag")
+    has_ik_flag = _is_integer(raw_flag) and bool(int(raw_flag) & _PMX_IK_FLAG)
+    if not has_ik_flag:
+        if has_metadata and any(
+            bone.get(field) not in (None, [], ()) for field in metadata_fields
+        ):
+            _issue(
+                issues,
+                "PMX_IK_DATA_UNSUPPORTED",
+                bone_path,
+                "IK metadata requires the PMX IK bone flag",
+            )
+        return
+
+    for field_name in metadata_fields:
+        if field_name not in bone:
+            _issue(
+                issues,
+                "PMX_IK_DATA_UNSUPPORTED",
+                _path_for_key(bone_path, field_name),
+                f"IK bone requires {field_name}",
+            )
+
+    target = bone.get("ik_target_bone_index")
+    if _is_integer(target) and target == -1:
         _issue(
             issues,
-            "PMX_BONE_IK_LINKS_UNSUPPORTED",
-            field_path,
-            "PMX model-data export does not retain bone ik_links",
+            "BONE_REFERENCE_OUT_OF_RANGE",
+            _path_for_key(bone_path, "ik_target_bone_index"),
+            "IK target bone index must reference an exported bone",
         )
+
+    loop_count = bone.get("ik_loop_count")
+    if _is_integer(loop_count) and not 0 <= loop_count <= 0x7FFFFFFF:
+        _issue(
+            issues,
+            "PMX_IK_DATA_UNSUPPORTED",
+            _path_for_key(bone_path, "ik_loop_count"),
+            "IK loop count must fit a non-negative PMX int32",
+        )
+
+    _validate_bone_ik_links(bone, bone_path, bone_count, issues, required=True)
 
 
 def _is_pmd_bone_type(value: Any) -> bool:
@@ -827,7 +938,7 @@ def _validate_bones(
         if export_format == "pmd":
             _validate_pmd_bone_type(bone, bone_path, issues)
         if export_format != "pmd":
-            _validate_bone_ik_links(bone, bone_path, issues)
+            _validate_bone_ik_metadata(bone, bone_path, bone_count, issues)
         _validate_numeric_fields(
             bone,
             (

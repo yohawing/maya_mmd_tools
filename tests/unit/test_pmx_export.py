@@ -579,6 +579,11 @@ class TestPmxExporterFromDict(TestBase):
                 )
                 self.assertIsNone(exporter.to_native_parts(pmx))
 
+        pmx = _minimal_native_parts_pmx()
+        pmx.bones[0].bone_flag = PmxBoneFlag.IK
+        self.assertEqual(exporter.native_parts_export_blocker(pmx), "ik_metadata")
+        self.assertIsNone(exporter.to_native_parts(pmx))
+
     def test_export_display_frame_name_roundtrip_matches_header_encoding(self):
         """dict export でヘッダと同じ encoding_flag で表示枠名を保存できる"""
         data = {

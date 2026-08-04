@@ -696,27 +696,102 @@ class TestExportModelValidation(unittest.TestCase):
             [("BONE_REFERENCE_OUT_OF_RANGE", "bones[0].parent_index")],
         )
 
-    def test_pmx_bone_ik_links_are_rejected_only_when_present_and_non_empty(self):
+    def test_pmx_bone_ik_metadata_accepts_valid_links_and_fails_closed(self):
         for value in (None, [], ()):
             with self.subTest(value=value):
                 model_data = _valid_model_data()
                 model_data["bones"] = [{"ik_links": value}]
                 self.assertTrue(validate_model_data(model_data, "pmx").valid)
 
-        unsupported = _valid_model_data()
-        unsupported["bones"] = [{"ik_links": [{}]}]
-        report = validate_model_data(unsupported, "pmx")
+        valid = _valid_model_data()
+        valid["bones"] = [
+            {
+                "bone_flag": 0x003E,
+                "ik_target_bone_index": 0,
+                "ik_loop_count": 8,
+                "ik_limit_angle": 0.5,
+                "ik_links": [
+                    {
+                        "bone": 0,
+                        "limit_enabled": True,
+                        "lower_limit": [-0.5, -0.25, -0.1],
+                        "upper_limit": [0.5, 0.25, 0.1],
+                    }
+                ],
+            }
+        ]
+        self.assertTrue(validate_model_data(valid, "pmx").valid)
+
+        unresolved = _valid_model_data()
+        unresolved["bones"] = [
+            {
+                "bone_flag": 0x003E,
+                "ik_target_bone_index": None,
+                "ik_loop_count": 8,
+                "ik_limit_angle": 0.5,
+                "ik_links": [{"bone": 0}],
+            }
+        ]
+        report = validate_model_data(unresolved, "pmx")
         self.assertEqual(
             [(issue.code, issue.path) for issue in report.issues],
-            [("PMX_BONE_IK_LINKS_UNSUPPORTED", "bones[0].ik_links")],
+            [("BONE_REFERENCE_TYPE", "bones[0].ik_target_bone_index")],
+        )
+
+        out_of_range = _valid_model_data()
+        out_of_range["bones"] = [
+            {
+                "bone_flag": 0x003E,
+                "ik_target_bone_index": 0,
+                "ik_loop_count": 8,
+                "ik_limit_angle": 0.5,
+                "ik_links": [{"bone": 1}],
+            }
+        ]
+        report = validate_model_data(out_of_range, "pmx")
+        self.assertEqual(
+            [(issue.code, issue.path) for issue in report.issues],
+            [("BONE_REFERENCE_OUT_OF_RANGE", "bones[0].ik_links[0].bone")],
         )
 
         malformed = _valid_model_data()
-        malformed["bones"] = [{"ik_links": {}}]
+        malformed["bones"] = [
+            {
+                "bone_flag": 0x003E,
+                "ik_target_bone_index": 0,
+                "ik_loop_count": 8,
+                "ik_limit_angle": 0.5,
+                "ik_links": {},
+            }
+        ]
         report = validate_model_data(malformed, "pmx")
         self.assertEqual(
             [(issue.code, issue.path) for issue in report.issues],
             [("PMX_BONE_IK_LINKS_NOT_SEQUENCE", "bones[0].ik_links")],
+        )
+
+        missing_flag = _valid_model_data()
+        missing_flag["bones"] = [{"ik_links": [{"bone": 0}]}]
+        report = validate_model_data(missing_flag, "pmx")
+        self.assertEqual(
+            [(issue.code, issue.path) for issue in report.issues],
+            [("PMX_IK_DATA_UNSUPPORTED", "bones[0]")],
+        )
+
+        non_finite = _valid_model_data()
+        non_finite["bones"] = [
+            {
+                "bone_flag": 0x003E,
+                "ik_target_bone_index": 0,
+                "ik_loop_count": 8,
+                "ik_limit_angle": math.inf,
+                "ik_links": [{"bone": 0}],
+            }
+        ]
+        report = validate_model_data(non_finite, "pmx")
+        self.assertIn(
+            ("NON_FINITE_NUMBER", "bones[0].ik_limit_angle"),
+            [(issue.code, issue.path) for issue in report.issues],
         )
 
     def test_unretained_top_level_payloads_are_blocking_when_meaningful(self):
