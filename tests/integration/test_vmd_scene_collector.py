@@ -1,5 +1,6 @@
 """Integration tests for VMD export via VmdSceneCollector + VmdExporter."""
 
+import json
 import os
 
 from maya import cmds
@@ -13,6 +14,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_CAMERA,
     ATTR_MMD_LIGHT,
     ATTR_MMD_MODEL_NAME,
+    ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON,
 )
 from mmd_tools.core.namespace_utils import NamespaceUtils
 from mmd_tools.core.vmd_data import VmdData
@@ -115,6 +117,7 @@ class TestVmdSceneCollector(MayaTestBase):
     def test_roundtrip_imported_fixture_motion_exports_parseable_vmd(self):
         pmx_path = self.fixture_provider.get_pmx_file("mmt_test_model")
         vmd_path = self.fixture_provider.get_vmd_file("mmt_test_model_test_motion")
+        source_data = VmdData().parse_file(vmd_path)
 
         root = import_mmd_file(
             pmx_path,
@@ -126,6 +129,12 @@ class TestVmdSceneCollector(MayaTestBase):
             "VMD import failed",
         )
 
+        provenance = json.loads(
+            cmds.getAttr(f"{root}.{ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON}")
+        )
+        self.assertTrue(provenance["raw_bone_interpolation_complete"])
+        self.assertEqual(provenance["raw_bone_key_count"], len(source_data.bone_frames))
+
         maya_data = VmdSceneCollector().collect({"target_model": root})
         output_path = self.get_temp_filename("imported_fixture_export.vmd")
         VmdExporter().export_vmd_animation(output_path, maya_data)
@@ -134,6 +143,15 @@ class TestVmdSceneCollector(MayaTestBase):
         self.assertTrue(parsed.header.model_name)
         self.assertGreater(len(parsed.bone_frames), 0)
         self.assertTrue(any(frame.bone_name == "センター" for frame in parsed.bone_frames))
+
+        source_interpolation = {
+            (frame.bone_name, frame.frame_number): frame.interpolation
+            for frame in source_data.bone_frames
+        }
+        for frame in parsed.bone_frames:
+            key = (frame.bone_name, frame.frame_number)
+            self.assertIn(key, source_interpolation)
+            self.assertEqual(frame.interpolation, source_interpolation[key])
 
     def test_roundtrip_tagged_camera_and_light_to_vmd_frames(self):
         camera = self._make_keyed_camera()
