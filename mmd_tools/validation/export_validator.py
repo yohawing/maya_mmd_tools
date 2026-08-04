@@ -577,6 +577,7 @@ def _validate_vertices(
     issues: List[ExportValidationIssue],
 ) -> None:
     """Validate vertex shape, optional numeric fields, and bone references."""
+    expected_additional_uv_count = None
     for vertex_index, vertex in enumerate(vertices):
         vertex_path = _path_for_index("vertices", vertex_index)
         if not isinstance(vertex, Mapping):
@@ -584,6 +585,36 @@ def _validate_vertices(
             continue
 
         if export_format == "pmx":
+            if vertex.get("semantic_missing"):
+                missing = vertex["semantic_missing"]
+                if _is_sequence(missing):
+                    missing_fields = ", ".join(str(value) for value in missing)
+                else:
+                    missing_fields = str(missing)
+                _issue(
+                    issues,
+                    "PMX_VERTEX_SEMANTIC_MISSING",
+                    _path_for_key(vertex_path, "semantic_missing"),
+                    f"vertex semantic data is missing: {missing_fields}",
+                )
+            additional_uv_count = _validate_pmx_vertex_additional_uvs(
+                vertex,
+                vertex_path,
+                issues,
+            )
+            if additional_uv_count is not None:
+                if (
+                    expected_additional_uv_count is not None
+                    and additional_uv_count != expected_additional_uv_count
+                ):
+                    _issue(
+                        issues,
+                        "PMX_VERTEX_ADDITIONAL_UV_COUNT_MISMATCH",
+                        _path_for_key(vertex_path, "additional_uvs"),
+                        "all PMX vertices must use the same additional UV channel count",
+                    )
+                elif expected_additional_uv_count is None:
+                    expected_additional_uv_count = additional_uv_count
             _validate_pmx_vertex_unsupported_fields(vertex, vertex_path, issues)
         _validate_vector_field(vertex, "position", 3, vertex_path, issues)
         _validate_vector_field(vertex, "normal", 3, vertex_path, issues)
@@ -1300,14 +1331,14 @@ def _validate_pmx_vertex_unsupported_fields(
     issues: List[ExportValidationIssue],
 ) -> None:
     """Reject PMX vertex payloads that the model-data writer does not retain."""
-    for field_name in ("additional_uvs", "additional_uv"):
+    for field_name in ("additional_uv",):
         if field_name not in vertex or not _is_meaningful_payload(vertex[field_name]):
             continue
         _issue(
             issues,
             "PMX_VERTEX_ADDITIONAL_UV_UNSUPPORTED",
             _path_for_key(vertex_path, field_name),
-            "PMX model-data export does not retain vertex additional UVs",
+            "PMX model-data export does not retain the legacy additional_uv field",
         )
 
     for field_name in ("sdef_c", "sdef_r0", "sdef_r1"):
@@ -1331,6 +1362,50 @@ def _validate_pmx_vertex_unsupported_fields(
         _path_for_key(vertex_path, "weight_transform_type"),
         "PMX model-data export only retains BDEF weight transform type 0",
     )
+
+
+def _validate_pmx_vertex_additional_uvs(
+    vertex: Mapping,
+    vertex_path: str,
+    issues: List[ExportValidationIssue],
+) -> Optional[int]:
+    """Validate one PMX vertex additional-UV channel payload.
+
+    A missing or explicit empty field means zero channels.  The caller checks
+    that every vertex uses the same count before the writer derives the PMX
+    header value.
+    """
+    if "additional_uvs" not in vertex or vertex["additional_uvs"] is None:
+        return 0
+    value = vertex["additional_uvs"]
+    field_path = _path_for_key(vertex_path, "additional_uvs")
+    if not _is_sequence(value):
+        _issue(issues, "FIELD_NOT_SEQUENCE", field_path, "field must be a channel sequence")
+        return None
+    channel_count = len(value)
+    if channel_count > 4:
+        _issue(
+            issues,
+            "FIELD_LENGTH",
+            field_path,
+            "PMX supports at most four additional UV channels",
+        )
+    for channel_index, channel in enumerate(value[:4]):
+        channel_path = _path_for_index(field_path, channel_index)
+        if not _is_sequence(channel):
+            _issue(issues, "FIELD_NOT_SEQUENCE", channel_path, "channel must be a numeric sequence")
+            continue
+        if len(channel) != 4:
+            _issue(
+                issues,
+                "FIELD_LENGTH",
+                channel_path,
+                "additional UV channel must contain exactly four values",
+            )
+            continue
+        for value_index, item in enumerate(channel):
+            _validate_real(item, _path_for_index(channel_path, value_index), issues)
+    return channel_count
 
 
 def _validate_textures(

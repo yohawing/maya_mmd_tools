@@ -17,6 +17,7 @@ from mmd_tools.converters.material_shader_parameters import (  # noqa: E402
     ATTR_MMD_EDGE_ALPHA,
 )
 from mmd_tools.core.constants import (  # noqa: E402
+    ATTR_MMD_ADDITIONAL_UVS_JSON,
     ATTR_MMD_AMBIENT_COLOR,
     ATTR_MMD_BONE_FLAGS,
     ATTR_MMD_BONE_INDEX,
@@ -69,6 +70,55 @@ from mmd_tools.core import maya_material_utils  # noqa: E402
 
 class TestExportScope(unittest.TestCase):
     """Keep root-scoped network morph collection explicit and testable."""
+
+    def test_additional_uv_storage_readback_is_strict_and_vertex_ordered(self):
+        payload = {
+            "schema_version": 1,
+            "vertex_count": 2,
+            "source_vertex_count": 3,
+            "channel_count": 1,
+            "source_vertex_indices": [2, 0],
+            "additional_uvs": [
+                [[0.1, 0.2, 0.3, 0.4]],
+                [[1.1, 1.2, 1.3, 1.4]],
+            ],
+        }
+
+        with mock.patch.object(
+            export_scene_collector_module.cmds,
+            "attributeQuery",
+            side_effect=lambda attr, node, exists: attr == ATTR_MMD_ADDITIONAL_UVS_JSON
+            and node == "meshTransform",
+        ), mock.patch.object(
+            export_scene_collector_module,
+            "_get_attr",
+            return_value=json.dumps(payload),
+        ):
+            values, error = export_scene_collector_module._read_additional_uv_storage(
+                "meshTransform",
+                "meshShape",
+                2,
+                expected_channel_count=1,
+            )
+
+        self.assertIsNone(error)
+        self.assertEqual(values, payload["additional_uvs"])
+
+    def test_additional_uv_storage_missing_for_imported_channels_is_fail_closed(self):
+        with mock.patch.object(
+            export_scene_collector_module.cmds,
+            "attributeQuery",
+            return_value=False,
+        ):
+            values, error = export_scene_collector_module._read_additional_uv_storage(
+                "meshTransform",
+                "meshShape",
+                2,
+                expected_channel_count=1,
+            )
+
+        self.assertIsNone(values)
+        self.assertEqual(error, "additional_uvs_storage")
 
     def _collect_single_material(self, attrs, is_pmd=False):
         """Collect one fake shading-group material through the Maya stubs."""

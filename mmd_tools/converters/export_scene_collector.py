@@ -12,6 +12,7 @@ later collector pass.
 """
 
 import json
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -29,6 +30,7 @@ from mmd_tools.converters.morph_converter import (
     _order_morphs_by_index_if_grouped,
 )
 from mmd_tools.core.constants import (
+    ATTR_MMD_ADDITIONAL_UVS_JSON,
     ATTR_MMD_AMBIENT_COLOR,
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_BONE_FLAGS,
@@ -76,6 +78,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_TOON_PATH,
     ATTR_MMD_TOON_TEXTURE_INDEX,
     ATTR_MMD_PMX_REST_POSITION,
+    ATTR_MMD_PMX_ADDITIONAL_UV_COUNT,
     ATTR_MMD_AXIS_DIRECTION,
     ATTR_MMD_X_AXIS_DIRECTION,
     ATTR_MMD_Z_AXIS_DIRECTION,
@@ -136,6 +139,114 @@ def _get_attr(node: str, attr: str, default=None):
         if value is not None:
             return value
     return default
+
+
+def _read_additional_uv_storage(
+    transform: str,
+    shape: str,
+    vertex_count: int,
+    expected_channel_count: int | None = None,
+) -> tuple[list[list[list[float]]] | None, str | None]:
+    """Read the canonical imported PMX additional-UV payload.
+
+    The payload is stored on the mesh transform because the importer already
+    keeps MMD semantic attributes there.  A shape attribute is accepted as a
+    compatibility fallback for scenes authored by tools that target the mesh
+    shape directly.  Invalid or stale storage is reported to the caller so
+    export validation can fail closed instead of manufacturing zero values.
+    """
+    storage_node = None
+    recorded_channel_count = None
+    for node in (transform, shape):
+        if (
+            recorded_channel_count is None
+            and node
+            and cmds.attributeQuery(ATTR_MMD_PMX_ADDITIONAL_UV_COUNT, node=node, exists=True)
+        ):
+            recorded_channel_count = _get_attr(node, ATTR_MMD_PMX_ADDITIONAL_UV_COUNT, None)
+        if (
+            storage_node is None
+            and node
+            and cmds.attributeQuery(ATTR_MMD_ADDITIONAL_UVS_JSON, node=node, exists=True)
+        ):
+            storage_node = node
+
+    if expected_channel_count is None and recorded_channel_count is not None:
+        if (
+            isinstance(recorded_channel_count, bool)
+            or not isinstance(recorded_channel_count, int)
+            or not 0 <= recorded_channel_count <= 4
+        ):
+            return None, "additional_uvs_storage"
+        expected_channel_count = recorded_channel_count
+
+    if storage_node is None:
+        if expected_channel_count not in (None, 0):
+            return None, "additional_uvs_storage"
+        return None, None
+
+    raw_value = _get_attr(storage_node, ATTR_MMD_ADDITIONAL_UVS_JSON, None)
+    try:
+        payload = json.loads(raw_value) if isinstance(raw_value, str) else raw_value
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None, "additional_uvs_storage"
+
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        return None, "additional_uvs_storage"
+
+    channel_count = payload.get("channel_count")
+    stored_vertex_count = payload.get("vertex_count")
+    source_vertex_count = payload.get("source_vertex_count")
+    source_indices = payload.get("source_vertex_indices")
+    values = payload.get("additional_uvs")
+    if (
+        isinstance(channel_count, bool)
+        or not isinstance(channel_count, int)
+        or not 0 <= channel_count <= 4
+        or isinstance(stored_vertex_count, bool)
+        or not isinstance(stored_vertex_count, int)
+        or stored_vertex_count != vertex_count
+        or isinstance(source_vertex_count, bool)
+        or not isinstance(source_vertex_count, int)
+        or source_vertex_count < vertex_count
+        or not isinstance(source_indices, list)
+        or len(source_indices) != vertex_count
+        or not isinstance(values, list)
+        or len(values) != vertex_count
+    ):
+        return None, "additional_uvs_storage"
+    if expected_channel_count is not None and channel_count != expected_channel_count:
+        return None, "additional_uvs_storage"
+
+    normalized = []
+    for vertex_index, (source_index, channels) in enumerate(zip(source_indices, values)):
+        if (
+            isinstance(source_index, bool)
+            or not isinstance(source_index, int)
+            or source_index < 0
+            or source_index >= source_vertex_count
+            or not isinstance(channels, list)
+            or len(channels) != channel_count
+        ):
+            return None, "additional_uvs_storage"
+        normalized_channels = []
+        for channel in channels:
+            if not isinstance(channel, list) or len(channel) != 4:
+                return None, "additional_uvs_storage"
+            normalized_channel = []
+            for value in channel:
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    return None, "additional_uvs_storage"
+                try:
+                    value = float(value)
+                except (TypeError, ValueError):
+                    return None, "additional_uvs_storage"
+                if not math.isfinite(value):
+                    return None, "additional_uvs_storage"
+                normalized_channel.append(value)
+            normalized_channels.append(normalized_channel)
+        normalized.append(normalized_channels)
+    return normalized, None
 
 
 def _collect_display_frames(root: str) -> list[dict]:
@@ -1717,6 +1828,7 @@ class ExportSceneCollector:
         is_pmd: bool = False,
         *,
         _resolve_texture_table: bool = True,
+        expected_additional_uv_count: int | None = None,
     ) -> dict:
         """Collect scene data from a single polygon mesh transform or shape.
 
@@ -1735,6 +1847,9 @@ class ExportSceneCollector:
             _resolve_texture_table: Resolve complete PMX material texture
                 provenance for direct collection.  Model-root collection
                 disables this until all mesh materials have been merged.
+            expected_additional_uv_count: Optional PMX channel count recorded on
+                an imported model root.  A missing or mismatched mesh payload
+                is treated as semantic loss when this is non-zero.
 
         Returns:
             Dict with keys ``model_name``, ``vertices``, ``faces``,
@@ -1786,18 +1901,30 @@ class ExportSceneCollector:
                     except Exception:
                         pass
 
+        additional_uv_values, additional_uv_error = _read_additional_uv_storage(
+            transform,
+            shape,
+            vertex_count,
+            expected_additional_uv_count,
+        )
+
         vertices = []
         for i in range(vertex_count):
             p = points[i]
             n = vertex_normals[i]
             uv = vertex_uvs[i]
-            vertices.append({
+            vertex_data = {
                 "position": _maya_to_mmd_vector([p.x, p.y, p.z]),
                 "normal": _maya_to_mmd_vector([n.x, n.y, n.z]),
                 "uv": [uv[0], uv[1]],
                 "bone_indices": skin_weights[i]["bone_indices"] if skin_weights else [0],
                 "bone_weights": skin_weights[i]["bone_weights"] if skin_weights else [],
-            })
+            }
+            if additional_uv_values is not None:
+                vertex_data["additional_uvs"] = additional_uv_values[i]
+            if additional_uv_error:
+                vertex_data["semantic_missing"] = [additional_uv_error]
+            vertices.append(vertex_data)
 
         # Collect per-face material assignments and group faces contiguously.
         materials, faces = _collect_materials_per_face(shape, fn, is_pmd=is_pmd)
@@ -1841,12 +1968,24 @@ class ExportSceneCollector:
             if bone.get("source_joint")
         }
         vertex_offset = 0
+        expected_additional_uv_count = _get_attr(
+            root,
+            ATTR_MMD_PMX_ADDITIONAL_UV_COUNT,
+            None,
+        )
+        if isinstance(expected_additional_uv_count, bool) or not isinstance(
+            expected_additional_uv_count,
+            int,
+        ):
+            expected_additional_uv_count = None
         for shape in shapes:
-            mesh_data = self.collect_from_mesh(
-                shape,
-                is_pmd=is_pmd,
-                _resolve_texture_table=False,
-            )
+            collect_kwargs = {
+                "is_pmd": is_pmd,
+                "_resolve_texture_table": False,
+            }
+            if expected_additional_uv_count is not None:
+                collect_kwargs["expected_additional_uv_count"] = expected_additional_uv_count
+            mesh_data = self.collect_from_mesh(shape, **collect_kwargs)
             local_bones = mesh_data["bones"] or []
             bone_index_map = {}
             added_global_indices = set()

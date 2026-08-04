@@ -1,3 +1,4 @@
+import math
 import os
 import time
 
@@ -42,6 +43,8 @@ from mmd_tools.core.constants import (
     ATTR_MMD_EDGE_SIZE,
     ATTR_MMD_SHADER_OUTLINE_ENABLED,
     ATTR_MMD_MATERIAL_INDEX,
+    ATTR_MMD_ADDITIONAL_UVS_JSON,
+    ATTR_MMD_PMX_ADDITIONAL_UV_COUNT,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
 )
 from mmd_tools.converters.mesh_material_properties import (
@@ -1204,6 +1207,116 @@ class MeshConverter:
             return None
 
     @staticmethod
+    def _validate_pmx_additional_uvs(all_vertices, additional_uv_count: int) -> int:
+        """Validate the PMX base-vertex additional-UV payload before mesh creation.
+
+        Additional-UV morph offsets are intentionally outside this contract.  A
+        malformed base payload must stop import rather than being represented by
+        fabricated zero channels or silently discarded by Maya.
+        """
+        if isinstance(additional_uv_count, bool) or not isinstance(additional_uv_count, int):
+            raise ValueError("PMX additional UV count must be an integer")
+        if additional_uv_count < 0 or additional_uv_count > 4:
+            raise ValueError(
+                f"PMX additional UV count must be between 0 and 4, got {additional_uv_count}"
+            )
+
+        for vertex_index, vertex in enumerate(all_vertices):
+            raw_uvs = getattr(vertex, "additional_uvs", ())
+            if raw_uvs is None:
+                raw_uvs = ()
+            if not isinstance(raw_uvs, (list, tuple)):
+                raise ValueError(
+                    f"vertex {vertex_index} additional_uvs must be a sequence"
+                )
+            if len(raw_uvs) != additional_uv_count:
+                raise ValueError(
+                    f"vertex {vertex_index} additional_uvs count {len(raw_uvs)} "
+                    f"does not match PMX header count {additional_uv_count}"
+                )
+            for channel_index, channel in enumerate(raw_uvs):
+                if not isinstance(channel, (list, tuple)) or len(channel) != 4:
+                    raise ValueError(
+                        f"vertex {vertex_index} additional UV channel {channel_index} "
+                        "must contain exactly four values"
+                    )
+                for value_index, value in enumerate(channel):
+                    if isinstance(value, bool) or not isinstance(value, (int, float)):
+                        raise ValueError(
+                            f"vertex {vertex_index} additional UV channel "
+                            f"{channel_index}[{value_index}] must be a real number"
+                        )
+                    if not math.isfinite(float(value)):
+                        raise ValueError(
+                            f"vertex {vertex_index} additional UV channel "
+                            f"{channel_index}[{value_index}] must be finite"
+                        )
+        return additional_uv_count
+
+    @staticmethod
+    def _post_weld_source_indices(mesh_node: str, fallback_source_indices, native_welded_count) -> list[int]:
+        """Return the local-to-PMX mapping after an optional native weld."""
+        if native_welded_count is None:
+            return [int(index) for index in fallback_source_indices]
+        source_indices = maya_attribute_utils.get_int_array_attribute(
+            mesh_node,
+            ATTR_MMD_SOURCE_VERTEX_INDICES,
+        )
+        if source_indices is None:
+            raise ValueError(
+                "native UV weld did not provide mmd_source_vertex_indices"
+            )
+        return [int(index) for index in source_indices]
+
+    @staticmethod
+    def _persist_additional_uvs(
+        mesh_node: str,
+        all_vertices,
+        source_vertex_indices,
+        additional_uv_count: int,
+    ) -> None:
+        """Persist validated PMX additional UVs in deterministic local order."""
+        if additional_uv_count == 0:
+            return
+        local_uvs = []
+        for local_index, source_index in enumerate(source_vertex_indices):
+            if isinstance(source_index, bool) or not isinstance(source_index, int):
+                raise ValueError(
+                    f"local Maya vertex {local_index} has an invalid PMX source index"
+                )
+            if source_index < 0 or source_index >= len(all_vertices):
+                raise ValueError(
+                    f"local Maya vertex {local_index} maps outside PMX vertices: {source_index}"
+                )
+            local_uvs.append(
+                [
+                    [float(value) for value in channel]
+                    for channel in getattr(all_vertices[source_index], "additional_uvs", ())
+                ]
+            )
+        payload = {
+            "schema_version": 1,
+            "vertex_count": len(source_vertex_indices),
+            "source_vertex_count": len(all_vertices),
+            "channel_count": additional_uv_count,
+            "source_vertex_indices": [int(index) for index in source_vertex_indices],
+            "additional_uvs": local_uvs,
+        }
+        maya_attribute_utils.set_custom_attributes(
+            mesh_node,
+            {ATTR_MMD_PMX_ADDITIONAL_UV_COUNT: additional_uv_count},
+        )
+        if not maya_attribute_utils.write_json_attr(
+            mesh_node,
+            ATTR_MMD_ADDITIONAL_UVS_JSON,
+            payload,
+            separators=(",", ":"),
+        ):
+            raise ValueError(
+                f"failed to persist {ATTR_MMD_ADDITIONAL_UVS_JSON} on '{mesh_node}'"
+            )
+
+    @staticmethod
     def _vertex_deformation_key(vertex) -> tuple:
         """Return the PMX data that must remain per Maya vertex.
 
@@ -1506,6 +1619,17 @@ class MeshConverter:
         all_faces = pmx_data.faces
         all_materials = pmx_data.materials
         all_textures = pmx_data.textures
+        additional_uv_count = self._validate_pmx_additional_uvs(
+            all_vertices,
+            getattr(getattr(pmx_data, "header", None), "additional_uv", 0),
+        )
+        # Keep the source PMX channel count on the model root so the collector
+        # can distinguish a normal Maya mesh from an imported mesh whose
+        # canonical per-vertex payload was deleted or became stale.
+        maya_attribute_utils.set_custom_attributes(
+            root_group,
+            {ATTR_MMD_PMX_ADDITIONAL_UV_COUNT: additional_uv_count},
+        )
         self._use_cpp_uv_weld = self._cpp_uv_weld_command_available()
         if self._use_cpp_uv_weld:
             # Keep the source topology intact until the C++ command has read
@@ -1546,6 +1670,7 @@ class MeshConverter:
                 geo_group,
                 is_pmd=is_pmd,
                 weld_keys=weld_keys,
+                additional_uv_count=additional_uv_count,
             )
         else:
             created_mesh = self._create_unified_mesh(
@@ -1557,6 +1682,7 @@ class MeshConverter:
                 geo_group,
                 is_pmd=is_pmd,
                 weld_keys=weld_keys,
+                additional_uv_count=additional_uv_count,
             )
 
         maya_scene_utils.select_objects(geo_group)
@@ -1604,6 +1730,7 @@ class MeshConverter:
         model_group,
         is_pmd=False,
         weld_keys=None,
+        additional_uv_count=0,
     ):
         """
         全てのメッシュを統合した単一のメッシュを作成する。
@@ -1667,6 +1794,17 @@ class MeshConverter:
         native_welded_count = self._run_cpp_uv_weld(
             created_mesh,
             mesh_data["source_vertex_indices"],
+        )
+        post_weld_source_indices = self._post_weld_source_indices(
+            created_mesh,
+            mesh_data["source_vertex_indices"],
+            native_welded_count,
+        )
+        self._persist_additional_uvs(
+            created_mesh,
+            all_vertices,
+            post_weld_source_indices,
+            additional_uv_count,
         )
         self.profile["uv_welded_vertex_count"] += (
             native_welded_count
@@ -1750,6 +1888,7 @@ class MeshConverter:
         geo_group,
         is_pmd=False,
         weld_keys=None,
+        additional_uv_count=0,
     ):
         """
         マテリアルごとに分割したメッシュを作成する。
@@ -1828,6 +1967,17 @@ class MeshConverter:
             native_welded_count = self._run_cpp_uv_weld(
                 created_mesh,
                 mesh_data["source_vertex_indices"],
+            )
+            post_weld_source_indices = self._post_weld_source_indices(
+                created_mesh,
+                mesh_data["source_vertex_indices"],
+                native_welded_count,
+            )
+            self._persist_additional_uvs(
+                created_mesh,
+                all_vertices,
+                post_weld_source_indices,
+                additional_uv_count,
             )
             self.profile["uv_welded_vertex_count"] += (
                 native_welded_count

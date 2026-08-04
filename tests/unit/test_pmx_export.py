@@ -372,6 +372,53 @@ class TestPmxExporterFromDict(TestBase):
         # Verify face
         self.assertEqual(pmx.faces[0].indices, (0, 1, 2))
 
+    def test_export_additional_uv_roundtrip_uses_python_writer(self):
+        """PMX additional UV channels are serialized and bypass native parts."""
+        native_calls = []
+        exporter = PmxExporter(
+            native_parts_exporter=lambda *args, **kwargs: native_calls.append((args, kwargs)) or b"NATIVE-PMX"
+        )
+        channel_values = (
+            (0.1, 0.2, 0.3, 0.4),
+            (1.1, 1.2, 1.3, 1.4),
+            (2.1, 2.2, 2.3, 2.4),
+        )
+        data = {
+            "model_name": "AdditionalUvTest",
+            "vertices": [
+                {
+                    "position": [0.0, 0.0, 0.0],
+                    "normal": [0.0, 0.0, 1.0],
+                    "uv": [0.0, 0.0],
+                    "additional_uvs": [list(channel_values[0])],
+                },
+                {
+                    "position": [1.0, 0.0, 0.0],
+                    "normal": [0.0, 0.0, 1.0],
+                    "uv": [1.0, 0.0],
+                    "additional_uvs": [list(channel_values[1])],
+                },
+                {
+                    "position": [0.0, 1.0, 0.0],
+                    "normal": [0.0, 0.0, 1.0],
+                    "uv": [0.0, 1.0],
+                    "additional_uvs": [list(channel_values[2])],
+                },
+            ],
+            "faces": [[0, 1, 2]],
+        }
+        out_path = os.path.join(self.temp_dir, "additional_uv.pmx")
+
+        exporter.export_pmx_model(out_path, data)
+
+        pmx = _parse_pmx(out_path)
+        self.assertEqual(native_calls, [])
+        self.assertEqual(pmx.header.additional_uv, 1)
+        self.assertEqual(
+            [tuple(round(value, 6) for value in vertex.additional_uvs[0]) for vertex in pmx.vertices],
+            list(channel_values),
+        )
+
     def test_export_none_textures_writes_valid_pmx(self):
         """textures=None は空テーブルとしてPMXを書き出せる。"""
         data = {

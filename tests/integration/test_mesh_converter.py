@@ -1,3 +1,4 @@
+import json
 import re
 from types import SimpleNamespace
 
@@ -12,6 +13,8 @@ from mmd_tools.core import maya_attribute_utils, maya_material_utils, maya_mesh_
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.core.constants import (
+    ATTR_MMD_ADDITIONAL_UVS_JSON,
+    ATTR_MMD_PMX_ADDITIONAL_UV_COUNT,
     ATTR_MMD_TOON_TEXTURE_INDEX,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
@@ -112,6 +115,38 @@ class TestMeshConverter(MayaTestBase):
                 uv_sets = cmds.polyUVSet(child, query=True, allUVSets=True)
                 self.assertIsNotNone(uv_sets, f"{child} にUVセットがありません")
                 self.assertGreaterEqual(len(uv_sets), 1, f"{child} には少なくとも1つのUVセットが必要です")
+
+    def test_convert_pmx_mesh_persists_additional_uv_channels_in_local_order(self):
+        """Imported PMX additional UV channels survive Maya mesh creation."""
+        pmx_file_path = self.fixture_provider.get_pmx_file("mmt_test_model")
+        pmx_data = parse_pmx_file(pmx_file_path)
+        pmx_data.header.additional_uv = 1
+        expected_by_source = {}
+        for index, vertex in enumerate(pmx_data.vertices):
+            values = (float(index), float(index) + 0.1, float(index) + 0.2, float(index) + 0.3)
+            vertex.additional_uvs = [values]
+            expected_by_source[index] = [list(values)]
+
+        root_group = cmds.group(empty=True, name="test_additional_uv_root")
+        converter = MeshConverter("")
+        _mesh_group, mesh_name = converter.convert_pmx_mesh(pmx_data, root_group)
+
+        raw_payload = maya_attribute_utils.get_attribute(mesh_name, ATTR_MMD_ADDITIONAL_UVS_JSON)
+        payload = json.loads(raw_payload)
+        self.assertEqual(
+            maya_attribute_utils.get_attribute(root_group, ATTR_MMD_PMX_ADDITIONAL_UV_COUNT),
+            1,
+        )
+        self.assertEqual(
+            maya_attribute_utils.get_attribute(mesh_name, ATTR_MMD_PMX_ADDITIONAL_UV_COUNT),
+            1,
+        )
+        self.assertEqual(payload["channel_count"], 1)
+        self.assertEqual(payload["vertex_count"], cmds.polyEvaluate(mesh_name, vertex=True))
+        self.assertEqual(
+            [payload["additional_uvs"][index] for index in range(payload["vertex_count"])],
+            [expected_by_source[source_index] for source_index in payload["source_vertex_indices"]],
+        )
 
     def test_uv_seam_duplicates_are_welded_before_mesh_creation(self):
         """Merge safe UV-split source vertices while retaining corner UV IDs."""

@@ -279,7 +279,6 @@ class TestExportModelValidation(unittest.TestCase):
 
     def test_pmx_vertex_payloads_not_retained_by_writer_are_blocking(self):
         cases = (
-            ("additional_uvs", [[0.25, 0.5, 0.75, 1.0]], "PMX_VERTEX_ADDITIONAL_UV_UNSUPPORTED"),
             ("additional_uv", [[0.25, 0.5, 0.75, 1.0]], "PMX_VERTEX_ADDITIONAL_UV_UNSUPPORTED"),
             ("sdef_c", [0.0, 0.0, 0.0], "PMX_VERTEX_SDEF_UNSUPPORTED"),
             ("sdef_r0", [0.0, 0.0, 0.0], "PMX_VERTEX_SDEF_UNSUPPORTED"),
@@ -299,6 +298,54 @@ class TestExportModelValidation(unittest.TestCase):
                     [(issue.code, issue.path) for issue in report.issues],
                     [(expected_code, f"vertices[0].{field_name}")],
                 )
+
+    def test_pmx_vertex_additional_uvs_accept_uniform_four_component_channels(self):
+        model_data = _valid_model_data()
+        for vertex in model_data["vertices"]:
+            vertex["additional_uvs"] = [[0.25, 0.5, 0.75, 1.0]]
+
+        report = validate_model_data(model_data, "pmx")
+
+        self.assertTrue(report.valid)
+
+    def test_pmx_vertex_additional_uvs_reject_malformed_or_inconsistent_channels(self):
+        cases = (
+            ("vertices[0].additional_uvs[0]", [[0.25, 0.5, 0.75]], "FIELD_LENGTH"),
+            ("vertices[0].additional_uvs[0][2]", [[0.25, 0.5, float("nan"), 1.0]], "NON_FINITE_NUMBER"),
+            ("vertices[1].additional_uvs", [], "PMX_VERTEX_ADDITIONAL_UV_COUNT_MISMATCH"),
+            ("vertices[0].additional_uvs", [[0.0, 0.0, 0.0, 0.0]] * 5, "FIELD_LENGTH"),
+        )
+        for path, value, expected_code in cases:
+            with self.subTest(path=path, value=value):
+                model_data = _valid_model_data()
+                for vertex in model_data["vertices"]:
+                    vertex["additional_uvs"] = [[0.0, 0.0, 0.0, 0.0]]
+                if path.startswith("vertices[1]"):
+                    model_data["vertices"][1]["additional_uvs"] = value
+                else:
+                    model_data["vertices"][0]["additional_uvs"] = value
+
+                report = validate_model_data(model_data, "pmx")
+
+                self.assertTrue(
+                    any(issue.code == expected_code and issue.path == path for issue in report.issues),
+                    report.issues,
+                )
+
+    def test_pmx_vertex_additional_uv_storage_loss_is_blocking(self):
+        model_data = _valid_model_data()
+        model_data["vertices"][0]["semantic_missing"] = ["additional_uvs_storage"]
+
+        report = validate_model_data(model_data, "pmx")
+
+        self.assertEqual(
+            [(issue.code, issue.path) for issue in report.issues],
+            [("PMX_VERTEX_SEMANTIC_MISSING", "vertices[0].semantic_missing")],
+        )
+        self.assertEqual(
+            get_issue_catalog_entry("PMX_VERTEX_SEMANTIC_MISSING").code,
+            "PMX_VERTEX_SEMANTIC_MISSING",
+        )
 
     def test_pmx_vertex_unsupported_payload_does_not_call_writer(self):
         exporter = _FakeExporter()

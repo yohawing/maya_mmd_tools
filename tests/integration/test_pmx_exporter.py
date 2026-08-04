@@ -21,6 +21,7 @@ from mmd_tools.converters.material_shader_parameters import (
     ATTR_MMD_EDGE_ALPHA,
 )
 from mmd_tools.core.constants import (
+    ATTR_MMD_ADDITIONAL_UVS_JSON,
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_BONE_OFFSET,
     ATTR_MMD_BONE_FLAGS,
@@ -460,6 +461,47 @@ class TestPmxExporter(MayaTestBase):
 
         # Bones: exporter auto-creates one default root bone when bones=None
         self.assertEqual(len(pmx.bones), 1)
+
+    def test_roundtrip_imported_additional_uv_storage(self):
+        """Collector reads canonical imported additional UVs and writer preserves them."""
+        transform, _ = self._make_triangle(name="additional_uv_tri_mesh")
+        self._assign_shader(transform, shader_name="AdditionalUvMat")
+        maya_attribute_utils.write_json_attr(
+            transform,
+            ATTR_MMD_ADDITIONAL_UVS_JSON,
+            {
+                "schema_version": 1,
+                "vertex_count": 3,
+                "source_vertex_count": 3,
+                "channel_count": 1,
+                "source_vertex_indices": [0, 1, 2],
+                "additional_uvs": [
+                    [[0.1, 0.2, 0.3, 0.4]],
+                    [[1.1, 1.2, 1.3, 1.4]],
+                    [[2.1, 2.2, 2.3, 2.4]],
+                ],
+            },
+        )
+
+        maya_data = ExportSceneCollector().collect_from_mesh(transform)
+        self.assertEqual(
+            maya_data["vertices"][0]["additional_uvs"],
+            [[0.1, 0.2, 0.3, 0.4]],
+        )
+
+        output_path = self.get_temp_filename("additional_uv_triangle.pmx")
+        PmxExporter().export_pmx_model(output_path, maya_data)
+        pmx = _parse_pmx(output_path)
+
+        self.assertEqual(pmx.header.additional_uv, 1)
+        self.assertEqual(
+            [tuple(round(value, 6) for value in vertex.additional_uvs[0]) for vertex in pmx.vertices],
+            [
+                (0.1, 0.2, 0.3, 0.4),
+                (1.1, 1.2, 1.3, 1.4),
+                (2.1, 2.2, 2.3, 2.4),
+            ],
+        )
 
     def test_roundtrip_single_tagged_material_preserves_texture_table(self):
         """Direct collection resolves tagged material paths before PMX export."""

@@ -5,6 +5,7 @@ Mayaシーン直結ではなく、dictベースの geometry / material / bone /
 VertexMorph / physics データをPmxDataに変換して書き出す。
 """
 
+import math
 import os
 
 from mmd_tools.core.exceptions import MMDExportException
@@ -27,6 +28,57 @@ from mmd_tools.core.utils import (
     fan_triangulate as _fan_triangulate,
 )
 from mmd_tools.validation.export_validator import ensure_writer_safe_materials
+
+
+def _additional_uv_channel_count(vertices_raw) -> int:
+    """Validate and return the uniform PMX vertex additional-UV count."""
+    expected_count = None
+    for vertex_index, vertex in enumerate(vertices_raw):
+        if not isinstance(vertex, dict):
+            continue
+        if vertex.get("semantic_missing"):
+            raise ValueError(
+                f"vertex {vertex_index} has incomplete semantic data: "
+                f"{', '.join(str(value) for value in vertex['semantic_missing'])}"
+            )
+        legacy_value = vertex.get("additional_uv")
+        if legacy_value not in (None, [], ()):
+            raise ValueError(
+                f"vertex {vertex_index} uses unsupported legacy additional_uv payload"
+            )
+        raw_channels = vertex.get("additional_uvs")
+        if raw_channels is None:
+            raw_channels = ()
+        if not isinstance(raw_channels, (list, tuple)):
+            raise ValueError(f"vertex {vertex_index} additional_uvs must be a sequence")
+        channel_count = len(raw_channels)
+        if channel_count > 4:
+            raise ValueError(
+                f"vertex {vertex_index} has {channel_count} additional UV channels; PMX supports at most 4"
+            )
+        for channel_index, channel in enumerate(raw_channels):
+            if not isinstance(channel, (list, tuple)) or len(channel) != 4:
+                raise ValueError(
+                    f"vertex {vertex_index} additional UV channel {channel_index} must contain exactly four values"
+                )
+            for value_index, value in enumerate(channel):
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError(
+                        f"vertex {vertex_index} additional UV channel "
+                        f"{channel_index}[{value_index}] must be a real number"
+                    )
+                if not math.isfinite(float(value)):
+                    raise ValueError(
+                        f"vertex {vertex_index} additional UV channel "
+                        f"{channel_index}[{value_index}] must be finite"
+                    )
+        if expected_count is None:
+            expected_count = channel_count
+        elif channel_count != expected_count:
+            raise ValueError(
+                "all PMX vertices must use the same additional UV channel count"
+            )
+    return expected_count or 0
 
 
 class PmxExporter:
@@ -100,7 +152,8 @@ class PmxExporter:
         pmx.header.version = 2.0
         pmx.header.header_size = 8
         pmx.header.encoding = PmxEncoding.UTF16LE
-        pmx.header.additional_uv = 0
+        additional_uv_count = _additional_uv_channel_count(vertices_raw)
+        pmx.header.additional_uv = additional_uv_count
         pmx.header.vertex_index_size = vertex_index_size
         textures = maya_data.get("textures") or []
         materials_raw = maya_data.get("materials") or []
@@ -140,6 +193,10 @@ class PmxExporter:
             v.position = tuple(pos)
             v.normal = tuple(normal)
             v.uv = tuple(uv)
+            v.additional_uvs = [
+                tuple(float(value) for value in channel)
+                for channel in (v_raw.get("additional_uvs") or ())
+            ]
 
             # Determine weight transform type from bone_indices length.
             if len(bone_indices) == 1:
