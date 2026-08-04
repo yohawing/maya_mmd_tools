@@ -200,7 +200,6 @@ def _run_fail_fixture_matrix(out_dir: Path) -> dict[str, Any]:
     from mmd_tools.actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
     from mmd_tools.core.vmd_data import VmdData
     from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
-    from mmd_tools.validation.export_validator import ExportValidationIssue, ExportValidationReport
 
     fixtures: list[dict[str, Any]] = []
     report_paths: list[str] = []
@@ -301,25 +300,27 @@ def _run_fail_fixture_matrix(out_dir: Path) -> dict[str, Any]:
     warning_dir = out_dir / "warning-ack"
     warning_dir.mkdir(parents=True, exist_ok=True)
 
-    def warning_validator(_data: Any, _export_format: str) -> ExportValidationReport:
-        return ExportValidationReport(
-            _export_format,
-            (ExportValidationIssue("PMD_TEXTURES_UNSUPPORTED", "warning", False, "textures", "fixture warning"),),
-        )
-
-    warning_writer = _SpyModelExporter()
-    warning_target = warning_dir / "warning.pmx"
-    first = ExportModelAction(
-        pmx_exporter=warning_writer,
-        pmd_exporter=warning_writer,
+    raw_provenance = {
+        "raw_bone_interpolation_complete": True,
+        "raw_bone_interpolation": [
+            {
+                "bone_name": "root",
+                "frame_number": 0,
+                "interpolation": [20] * 64,
+            }
+        ],
+    }
+    warning_writer = _SpyVmdExporter()
+    warning_target = warning_dir / "warning.vmd"
+    first = ExportVmdAction(
+        exporter=warning_writer,
         output_verifier=None,
-        validator=warning_validator,
     ).execute(
-        ExportModelRequest(
+        ExportVmdRequest(
             str(warning_target),
             {
-                "export_format": "pmx",
-                "model_data": _valid_model_data(),
+                "vmd_mode": "C",
+                "raw_provenance": raw_provenance,
                 "validation_report_dir": str(warning_dir / "report-no-ack"),
                 "validation_report_evidence": {
                     "gate": "V070-EXPORT-RELEASE-GATE-1",
@@ -327,19 +328,18 @@ def _run_fail_fixture_matrix(out_dir: Path) -> dict[str, Any]:
                     "ack_expected": "required",
                 },
             },
+            animation_data=VmdData(),
         )
     )
-    second = ExportModelAction(
-        pmx_exporter=warning_writer,
-        pmd_exporter=warning_writer,
+    second = ExportVmdAction(
+        exporter=warning_writer,
         output_verifier=None,
-        validator=warning_validator,
     ).execute(
-        ExportModelRequest(
+        ExportVmdRequest(
             str(warning_target),
             {
-                "export_format": "pmx",
-                "model_data": _valid_model_data(),
+                "vmd_mode": "C",
+                "raw_provenance": raw_provenance,
                 "ack_warnings": True,
                 "validation_report_dir": str(warning_dir / "report-ack"),
                 "validation_report_evidence": {
@@ -348,12 +348,14 @@ def _run_fail_fixture_matrix(out_dir: Path) -> dict[str, Any]:
                     "ack_expected": "accepted",
                 },
             },
+            animation_data=VmdData(),
         )
     )
     warning_passed = (
         not first.succeeded
         and first.validation_report is not None
         and first.validation_report.requires_warning_ack
+        and first.validation_report.issues[0].code == "VMD_MODE_C_RAW_LOSS"
         and len(warning_writer.calls) == 1
         and second.succeeded
     )

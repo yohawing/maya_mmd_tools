@@ -56,6 +56,10 @@ class ExportReleaseGateTests(unittest.TestCase):
         )
         for fixture in result["fixtures"]:
             self.assertEqual(fixture["status"], "pass")
+        warning_fixture = next(
+            fixture for fixture in result["fixtures"] if fixture["name"] == "warning_ack_boundary"
+        )
+        self.assertEqual(warning_fixture["first_issue_codes"], ["VMD_MODE_C_RAW_LOSS"])
         self.assertEqual(len(result["report_paths"]), 5)
 
     def test_maya_probe_report_is_required_and_validated(self):

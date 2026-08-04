@@ -141,6 +141,29 @@ class ValidationReportCatalogTests(unittest.TestCase):
         self.assertEqual(entry.title_key, "validation.pmx_vertex_sdef_unsupported.title")
         self.assertEqual(entry.action_key, "validation.pmx_vertex_sdef_unsupported.action")
 
+    def test_mode_c_raw_loss_is_cataloged_as_acknowledgeable_warning(self):
+        entry = get_issue_catalog_entry("VMD_MODE_C_RAW_LOSS")
+        report = ExportValidationReport(
+            "vmd",
+            (
+                ExportValidationIssue(
+                    "VMD_MODE_C_RAW_LOSS",
+                    "warning",
+                    False,
+                    "mode",
+                    "dense bake drops imported raw keys",
+                ),
+            ),
+            mode="C",
+        )
+
+        payload = report.to_canonical_dict()
+
+        self.assertEqual(entry.category, "animation")
+        self.assertEqual(entry.loss_policy, "warn")
+        self.assertTrue(payload["requires_warning_ack"])
+        self.assertEqual(payload["issues"][0]["loss_policy"], "warn")
+
     def test_pmd_policy_reject_is_canonical(self):
         payload = pmd_export_policy_report().to_canonical_dict(target_identity="modelRoot")
         issue = payload["issues"][0]

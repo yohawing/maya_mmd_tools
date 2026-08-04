@@ -8,12 +8,48 @@ import unittest
 
 from tests.common.gui_test_base import GuiTestBase, requires_gui
 from mmd_tools.ui.qt_compat import QApplication
+from mmd_tools.ui.presenters.export_presenter import ExportPresenter
 from mmd_tools.ui.tabs.export_tab import ExportTab
+from mmd_tools.services.export_workflow_service import (
+    ExportWorkflowResult,
+    STATE_SUCCEEDED,
+)
+from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.validation.export_validator import (
     ExportValidationIssue,
     ExportValidationReport,
 )
 from mmd_tools.validation.issue_catalog import get_issue_catalog_entry
+from mmd_tools.validation.vmd_validator import VMD_MODE_C, validate_vmd_data
+
+
+class _WarningWorkflow:
+    """Capture the UI acknowledgement while returning a successful result."""
+
+    def __init__(self, report):
+        self.report = report
+        self.acknowledgements = []
+
+    def execute(self, _request, *, acknowledge_warnings=False):
+        self.acknowledgements.append(acknowledge_warnings)
+        return ExportWorkflowResult(
+            STATE_SUCCEEDED,
+            self.report,
+            {"output_path": "mode-c-warning.vmd"},
+        )
+
+
+class _GuiAppState:
+    """Minimal app-state surface needed by ExportPresenter in this test."""
+
+    available_models = []
+    current_model_root = None
+
+    def __init__(self):
+        self.statuses = []
+
+    def emit_status(self, message):
+        self.statuses.append(message)
 
 
 @requires_gui
@@ -104,6 +140,44 @@ class TestExportTabGUI(GuiTestBase):
             self.assertIn("Evidence:", detail)
             self.assertIn("gui_validation_console", detail)
             self.assertIn("ExportTab GUI test", detail)
+        finally:
+            self._delete_tab(tab)
+
+    def test_mode_c_warning_is_acknowledged_before_successful_export_route(self):
+        """Real Maya widgets show the warning and route an explicit ack to export."""
+        tab = self._create_visible_tab()
+        report = validate_vmd_data(
+            VmdData(),
+            VMD_MODE_C,
+            raw_provenance={
+                "raw_bone_interpolation_complete": True,
+                "raw_bone_interpolation": [
+                    {
+                        "bone_name": "センター",
+                        "frame_number": 0,
+                        "interpolation": [20] * 64,
+                    }
+                ],
+            },
+        )
+        workflow = _WarningWorkflow(report)
+        app_state = _GuiAppState()
+        ExportPresenter(tab, app_state, workflow_service=workflow)
+        try:
+            tab.validation_console.set_report(report, {"fixture": "mode-c-raw-loss"})
+            QApplication.processEvents()
+
+            console = tab.validation_console
+            self.assertTrue(report.requires_warning_ack)
+            self.assertTrue(console.acknowledge_check.isEnabled())
+            self.assertIn("[WARNING] VMD_MODE_C_RAW_LOSS", console.issue_list.item(0).text())
+            console.acknowledge_check.setChecked(True)
+            self.assertTrue(console.warnings_acknowledged)
+            tab.export_button.click()
+            QApplication.processEvents()
+
+            self.assertEqual(workflow.acknowledgements, [True])
+            self.assertEqual(tab.state_label.text(), STATE_SUCCEEDED)
         finally:
             self._delete_tab(tab)
 

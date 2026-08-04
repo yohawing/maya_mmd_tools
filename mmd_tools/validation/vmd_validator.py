@@ -17,6 +17,11 @@ def _issue(code: str, path: str, message: str) -> ExportValidationIssue:
     return ExportValidationIssue(code, "fatal", True, path, message)
 
 
+def _warning(code: str, path: str, message: str) -> ExportValidationIssue:
+    """Create a non-blocking VMD issue that requires explicit acknowledgement."""
+    return ExportValidationIssue(code, "warning", False, path, message)
+
+
 def _finite_values(values: Iterable[Any], path: str, issues: List[ExportValidationIssue]) -> None:
     """Append one issue for the first non-finite numeric value."""
     try:
@@ -274,6 +279,20 @@ def validate_vmd_data(
     if not isinstance(vmd_data, VmdData):
         issues.append(_issue("OUTPUT_PARSE_FAILED", "animation_data", "VMD animation data must be VmdData"))
         return ExportValidationReport("vmd", tuple(issues), mode=mode)
+
+    if (
+        mode == VMD_MODE_C
+        and isinstance(raw_provenance, Mapping)
+        and isinstance(raw_provenance.get("raw_bone_interpolation"), list)
+        and raw_provenance["raw_bone_interpolation"]
+    ):
+        issues.append(
+            _warning(
+                "VMD_MODE_C_RAW_LOSS",
+                "mode",
+                "VMD Mode C dense bake does not preserve imported raw bone keys or interpolation bytes; acknowledge to continue",
+            )
+        )
 
     start = end = None
     if frame_range is not None:

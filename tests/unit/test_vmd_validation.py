@@ -10,7 +10,11 @@ from mmd_tools.actions.export_vmd_action import ExportVmdAction, ExportVmdReques
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from mmd_tools.io.vmd_exporter import VmdExporter
-from mmd_tools.validation.export_validator import ExportValidationIssue, ExportValidationReport
+from mmd_tools.validation.export_validator import (
+    ExportValidationAcknowledgementRequired,
+    ExportValidationIssue,
+    ExportValidationReport,
+)
 from mmd_tools.validation.vmd_validator import (
     VMD_MODE_A,
     VMD_MODE_C,
@@ -36,6 +40,28 @@ class TestVmdValidator(unittest.TestCase):
         self.assertTrue(report.valid)
         self.assertEqual(report.mode, VMD_MODE_C)
         self.assertEqual(report.to_dict()["status"], "ready")
+
+    def test_mode_c_warns_before_dropping_imported_raw_bone_provenance(self):
+        report = validate_vmd_data(
+            VmdData(),
+            VMD_MODE_C,
+            raw_provenance={
+                "raw_bone_interpolation_complete": True,
+                "raw_bone_interpolation": [
+                    {
+                        "bone_name": "センター",
+                        "frame_number": 0,
+                        "interpolation": [20] * 64,
+                    }
+                ],
+            },
+        )
+
+        self.assertTrue(report.valid)
+        self.assertTrue(report.requires_warning_ack)
+        self.assertEqual(report.to_dict()["status"], "warning")
+        self.assertEqual(report.issues[0].code, "VMD_MODE_C_RAW_LOSS")
+        self.assertFalse(report.issues[0].blocking)
 
     def test_mode_a_requires_raw_provenance(self):
         report = validate_vmd_data(VmdData(), VMD_MODE_A)
@@ -298,6 +324,52 @@ class TestExportVmdValidationGate(unittest.TestCase):
             self.assertTrue(result.succeeded)
         self.assertEqual(result.validation_report.mode, VMD_MODE_A)
         self.assertIsNotNone(result.payload_fingerprint)
+
+    def test_mode_c_raw_loss_warning_requires_ack_before_writer(self):
+        exporter = _WritingVmdExporter()
+        raw_provenance = {
+            "raw_bone_interpolation_complete": True,
+            "raw_bone_interpolation": [
+                {
+                    "bone_name": "センター",
+                    "frame_number": 0,
+                    "interpolation": [20] * 64,
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "mode-c-warning.vmd"
+            first = ExportVmdAction(
+                exporter=exporter,
+                output_verifier=None,
+            ).execute(
+                ExportVmdRequest(
+                    str(target),
+                    {"vmd_mode": VMD_MODE_C, "raw_provenance": raw_provenance},
+                    animation_data=VmdData(),
+                )
+            )
+            second = ExportVmdAction(
+                exporter=exporter,
+                output_verifier=None,
+            ).execute(
+                ExportVmdRequest(
+                    str(target),
+                    {
+                        "vmd_mode": VMD_MODE_C,
+                        "raw_provenance": raw_provenance,
+                        "ack_warnings": True,
+                    },
+                    animation_data=VmdData(),
+                )
+            )
+
+        self.assertFalse(first.succeeded)
+        self.assertIsInstance(first.error, ExportValidationAcknowledgementRequired)
+        self.assertEqual(first.validation_report.issues[0].code, "VMD_MODE_C_RAW_LOSS")
+        self.assertTrue(second.succeeded, second.error)
+        self.assertEqual(len(exporter.calls), 1)
 
     def test_collector_raw_provenance_flows_into_mode_a_validation(self):
         def collector(_options):

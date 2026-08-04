@@ -189,6 +189,7 @@ _KNOWN_ISSUE_CODES = (
     "VMD_FRAME_RANGE",
     "VMD_IK_FLAG_RANGE",
     "VMD_MODE_UNSUPPORTED",
+    "VMD_MODE_C_RAW_LOSS",
     "VMD_NAME_EMPTY",
     "VMD_NON_FINITE_NUMBER",
     "VMD_PERSPECTIVE_RANGE",
@@ -252,6 +253,8 @@ _CATEGORY_TEXT = {
     },
 }
 
+_WARNING_LOSS_POLICIES = frozenset({"VMD_MODE_C_RAW_LOSS"})
+
 
 def _category_for_code(code: str) -> str:
     """Return the fixed report category for a registered issue code."""
@@ -312,6 +315,7 @@ def _build_catalog_entry(code: str) -> IssueCatalogEntry:
         expected=wording["expected"],
         impact=wording["impact"],
         remediation=wording["remediation"],
+        loss_policy="warn" if code in _WARNING_LOSS_POLICIES else "reject",
     )
 
 
