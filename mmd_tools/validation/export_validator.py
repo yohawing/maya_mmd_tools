@@ -6,11 +6,12 @@ objects so an action or a later report adapter can present the same findings.
 """
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from numbers import Integral, Number, Real
 import json
 import math
+import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 
@@ -58,6 +59,9 @@ _PMX_GRANT_FLAGS = 0x0300
 _PMX_AXIS_FIXED_FLAG = 0x0400
 _PMX_LOCAL_AXIS_FLAG = 0x0800
 _PMX_EXTERNAL_PARENT_FLAG = 0x2000
+DEFAULT_MAX_DISPLAY_ISSUES = 100
+_ISSUE_PATH_INDEX_PATTERN = re.compile(r"\[\d+\]")
+_MAX_ISSUE_SAMPLE_PATHS = 3
 
 
 @dataclass(frozen=True)
@@ -87,17 +91,182 @@ class ExportValidationIssue:
 
 
 @dataclass(frozen=True)
+class ExportValidationIssueGroup:
+    """One displayed issue representative and its folded occurrence count."""
+
+    representative: ExportValidationIssue
+    count: int
+    path_pattern: str
+    sample_paths: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ExportValidationIssueAggregation:
+    """Bounded issue-list metadata shared by JSON, Markdown, and the UI."""
+
+    max_display_issues: int
+    total_occurrences: int
+    shown_occurrences: int
+    omitted_occurrences: int
+    total_groups: int
+    shown_groups: int
+    omitted_groups: int
+    has_blocking: bool
+    requires_warning_ack: bool
+
+    def to_dict(self) -> Dict[str, int]:
+        """Return the stable machine-readable aggregation summary."""
+        return {
+            "max_display_issues": self.max_display_issues,
+            "total_occurrences": self.total_occurrences,
+            "shown_occurrences": self.shown_occurrences,
+            "omitted_occurrences": self.omitted_occurrences,
+            "total_groups": self.total_groups,
+            "shown_groups": self.shown_groups,
+            "omitted_groups": self.omitted_groups,
+            "has_blocking": self.has_blocking,
+            "requires_warning_ack": self.requires_warning_ack,
+        }
+
+
+def _issue_path_pattern(path: Any) -> str:
+    """Return a nearby-path family by folding numeric sequence indices."""
+    text = "" if path is None else str(path)
+    return _ISSUE_PATH_INDEX_PATTERN.sub("[*]", text)
+
+
+def _build_issue_groups(
+    issues: Tuple[ExportValidationIssue, ...],
+    max_display_issues: int,
+) -> Tuple[Tuple[ExportValidationIssueGroup, ...], int]:
+    """Collect only the first bounded groups while counting all group keys."""
+    builders: Dict[Tuple[str, str, bool, str], List[Any]] = {}
+    seen_keys: Set[Tuple[str, str, bool, str]] = set()
+    total_groups = 0
+    for issue in issues:
+        path_pattern = _issue_path_pattern(issue.path)
+        key = (issue.code, issue.severity, issue.blocking, path_pattern)
+        if key not in seen_keys:
+            seen_keys.add(key)
+            total_groups += 1
+        builder = builders.get(key)
+        if builder is None:
+            if len(builders) >= max_display_issues:
+                continue
+            builder = [issue, 0, path_pattern, []]
+            builders[key] = builder
+        builder[1] += 1
+        if issue.path not in builder[3] and len(builder[3]) < _MAX_ISSUE_SAMPLE_PATHS:
+            builder[3].append(issue.path)
+
+    groups = tuple(
+        ExportValidationIssueGroup(
+            representative=builder[0],
+            count=builder[1],
+            path_pattern=builder[2],
+            sample_paths=tuple(builder[3]),
+        )
+        for builder in builders.values()
+    )
+    return groups, total_groups
+
+
+@dataclass(frozen=True)
 class ExportValidationReport:
     """Structured result of PMX/PMD model-data preflight."""
 
     export_format: Optional[str]
     issues: Tuple[ExportValidationIssue, ...]
     mode: str = "model"
+    max_display_issues: int = DEFAULT_MAX_DISPLAY_ISSUES
+    issue_aggregation: Optional[ExportValidationIssueAggregation] = field(
+        init=False,
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    _display_issue_groups: Tuple[ExportValidationIssueGroup, ...] = field(
+        init=False,
+        default=(),
+        repr=False,
+        compare=False,
+    )
+    _summary_counts: Dict[str, int] = field(
+        init=False,
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
+    _has_blocking_issue: bool = field(init=False, default=False, repr=False, compare=False)
+    _requires_warning_ack: bool = field(init=False, default=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        """Bound oversized reports without changing small-report behavior."""
+        if (
+            isinstance(self.max_display_issues, bool)
+            or not isinstance(self.max_display_issues, int)
+            or self.max_display_issues <= 0
+        ):
+            raise ValueError("max_display_issues must be a positive integer")
+
+        source_issues = tuple(self.issues)
+        summary_counts = {
+            "fatal": sum(issue.severity == "fatal" for issue in source_issues),
+            "warning": sum(issue.severity == "warning" for issue in source_issues),
+            "info": sum(issue.severity == "info" for issue in source_issues),
+        }
+        object.__setattr__(self, "_summary_counts", summary_counts)
+        object.__setattr__(
+            self,
+            "_has_blocking_issue",
+            any(issue.blocking for issue in source_issues),
+        )
+        object.__setattr__(
+            self,
+            "_requires_warning_ack",
+            any(
+                issue.severity == "warning" and not issue.blocking
+                for issue in source_issues
+            ),
+        )
+
+        if len(source_issues) <= self.max_display_issues:
+            display_groups = tuple(
+                ExportValidationIssueGroup(
+                    representative=issue,
+                    count=1,
+                    path_pattern=_issue_path_pattern(issue.path),
+                    sample_paths=(issue.path,),
+                )
+                for issue in source_issues
+            )
+            object.__setattr__(self, "_display_issue_groups", display_groups)
+            return
+
+        display_groups, total_groups = _build_issue_groups(
+            source_issues,
+            self.max_display_issues,
+        )
+        shown_occurrences = sum(group.count for group in display_groups)
+        aggregation = ExportValidationIssueAggregation(
+            max_display_issues=self.max_display_issues,
+            total_occurrences=len(source_issues),
+            shown_occurrences=shown_occurrences,
+            omitted_occurrences=len(source_issues) - shown_occurrences,
+            total_groups=total_groups,
+            shown_groups=len(display_groups),
+            omitted_groups=total_groups - len(display_groups),
+            has_blocking=self._has_blocking_issue,
+            requires_warning_ack=self._requires_warning_ack,
+        )
+        object.__setattr__(self, "issues", tuple(group.representative for group in display_groups))
+        object.__setattr__(self, "_display_issue_groups", display_groups)
+        object.__setattr__(self, "issue_aggregation", aggregation)
 
     @property
     def is_blocking(self) -> bool:
         """Return whether any issue must prevent the writer from running."""
-        return any(issue.blocking for issue in self.issues)
+        return self._has_blocking_issue
 
     @property
     def valid(self) -> bool:
@@ -121,7 +290,7 @@ class ExportValidationReport:
     @property
     def requires_warning_ack(self) -> bool:
         """Return whether export must wait for a warning acknowledgement."""
-        return bool(self.warning_issues)
+        return self._requires_warning_ack
 
     def has_blocking_issues(self) -> bool:
         """Compatibility-friendly method form of :attr:`is_blocking`."""
@@ -132,15 +301,21 @@ class ExportValidationReport:
         """Return a stable human-readable summary of the report."""
         if not self.issues:
             return "model data passed export validation"
-        return "; ".join(str(issue) for issue in self.issues)
+        summary = "; ".join(str(issue) for issue in self.issues)
+        if self.issue_aggregation is not None:
+            summary += (
+                f"; {self.issue_aggregation.total_occurrences} total issue occurrences "
+                f"({self.issue_aggregation.omitted_occurrences} omitted from display)"
+            )
+        return summary
+
+    @property
+    def display_issue_groups(self) -> Tuple[ExportValidationIssueGroup, ...]:
+        """Return metadata aligned with the bounded :attr:`issues` list."""
+        return self._display_issue_groups
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a deterministic, JSON-serializable report representation."""
-        counts = {
-            "fatal": sum(issue.severity == "fatal" for issue in self.issues),
-            "warning": sum(issue.severity == "warning" for issue in self.issues),
-            "info": sum(issue.severity == "info" for issue in self.issues),
-        }
         has_non_blocking_warning = self.requires_warning_ack
         if self.is_blocking:
             status = "blocked"
@@ -148,15 +323,34 @@ class ExportValidationReport:
             status = "warning"
         else:
             status = "ready"
-        return {
+        payload = {
             "schema_version": 1,
             "status": status,
             "requires_warning_ack": has_non_blocking_warning,
             "format": self.export_format,
             "mode": self.mode,
-            "summary": counts,
-            "issues": [issue.to_dict() for issue in self.issues],
+            "summary": dict(self._summary_counts),
+            "issues": self._issue_dicts(),
         }
+        if self.issue_aggregation is not None:
+            payload["issue_aggregation"] = self.issue_aggregation.to_dict()
+        return payload
+
+    def _issue_dicts(self) -> List[Dict[str, Any]]:
+        """Render bounded issues, adding folding metadata only when needed."""
+        rendered = []
+        for issue, group in zip(self.issues, self._display_issue_groups):
+            payload = issue.to_dict()
+            if self.issue_aggregation is not None:
+                payload.update(
+                    {
+                        "occurrence_count": group.count,
+                        "path_pattern": group.path_pattern,
+                        "sample_paths": list(group.sample_paths),
+                    }
+                )
+            rendered.append(payload)
+        return rendered
 
     def to_canonical_dict(
         self,
@@ -176,7 +370,7 @@ class ExportValidationReport:
         from .issue_catalog import canonical_issue_dict
 
         evidence_payload = dict(evidence or {})
-        return {
+        payload = {
             "schema_version": 1,
             "status": self.to_dict()["status"],
             "requires_warning_ack": self.to_dict()["requires_warning_ack"],
@@ -192,10 +386,16 @@ class ExportValidationReport:
                     provenance=provenance,
                     snapshot_fingerprint=snapshot_fingerprint,
                     evidence=evidence_payload,
+                    occurrence_count=(group.count if self.issue_aggregation is not None else None),
+                    path_pattern=(group.path_pattern if self.issue_aggregation is not None else None),
+                    sample_paths=(group.sample_paths if self.issue_aggregation is not None else None),
                 )
-                for issue in self.issues
+                for issue, group in zip(self.issues, self._display_issue_groups)
             ],
         }
+        if self.issue_aggregation is not None:
+            payload["issue_aggregation"] = self.issue_aggregation.to_dict()
+        return payload
 
     def to_canonical_json(
         self,
@@ -2145,7 +2345,10 @@ __all__ = [
     "ExportValidationAcknowledgementRequired",
     "ExportValidationError",
     "ExportValidationIssue",
+    "ExportValidationIssueAggregation",
+    "ExportValidationIssueGroup",
     "ExportValidationReport",
+    "DEFAULT_MAX_DISPLAY_ISSUES",
     "ModelValidationIssue",
     "ModelValidationReport",
     "PMD_MAX_BONE_COUNT",

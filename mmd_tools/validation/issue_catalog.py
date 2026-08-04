@@ -342,13 +342,16 @@ def canonical_issue_dict(
     provenance: str = "PayloadValidator",
     snapshot_fingerprint: Optional[str] = None,
     evidence: Optional[Mapping[str, Any]] = None,
+    occurrence_count: Optional[int] = None,
+    path_pattern: Optional[str] = None,
+    sample_paths: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
     """Render one validator issue using fixed catalog wording."""
     entry = get_issue_catalog_entry(issue.code)
     issue_evidence = dict(evidence or {})
     if snapshot_fingerprint is not None:
         issue_evidence.setdefault("snapshot_fingerprint", snapshot_fingerprint)
-    return {
+    payload = {
         "code": issue.code,
         "severity": issue.severity,
         "blocking": issue.blocking,
@@ -366,6 +369,11 @@ def canonical_issue_dict(
         "provenance": provenance,
         "evidence": issue_evidence,
     }
+    if occurrence_count is not None:
+        payload["occurrence_count"] = occurrence_count
+        payload["path_pattern"] = path_pattern
+        payload["sample_paths"] = list(sample_paths or ())
+    return payload
 
 
 def render_validation_report_markdown(
@@ -399,14 +407,29 @@ def render_validation_report_markdown(
         f"- Warning: {summary['warning']}",
         f"- Info: {summary['info']}",
         f"- Warning acknowledgement required: `{str(payload['requires_warning_ack']).lower()}`",
-        "",
-        "## Evidence",
-        "",
-        f"- Report evidence: `{json.dumps(payload['evidence'], ensure_ascii=False, sort_keys=True)}`",
-        "",
-        "## Issues",
-        "",
     ]
+    aggregation = payload.get("issue_aggregation")
+    if aggregation is not None:
+        lines.extend(
+            [
+                f"- Issue display limit: {aggregation['max_display_issues']}",
+                f"- Issue occurrences shown: {aggregation['shown_occurrences']}",
+                f"- Issue occurrences omitted: {aggregation['omitted_occurrences']}",
+                f"- Issue groups shown: {aggregation['shown_groups']} / {aggregation['total_groups']}",
+                f"- Blocking issue present: `{str(aggregation['has_blocking']).lower()}`",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "## Evidence",
+            "",
+            f"- Report evidence: `{json.dumps(payload['evidence'], ensure_ascii=False, sort_keys=True)}`",
+            "",
+            "## Issues",
+            "",
+        ]
+    )
     if not payload["issues"]:
         lines.append("No validation issues.")
     else:
@@ -419,6 +442,18 @@ def render_validation_report_markdown(
                     f"- Category: `{issue['category']}`",
                     f"- Path: `{issue['path'] or 'model_data'}`",
                     f"- Decision: `{'BLOCK' if issue['blocking'] else 'ALLOW'}`",
+                ]
+            )
+            if "occurrence_count" in issue:
+                lines.extend(
+                    [
+                        f"- Occurrences: `{issue['occurrence_count']}`",
+                        f"- Path pattern: `{issue['path_pattern']}`",
+                        f"- Sample paths: `{json.dumps(issue['sample_paths'], ensure_ascii=False)}`",
+                    ]
+                )
+            lines.extend(
+                [
                     f"- Title: {entry.title}",
                     f"- Observed: {issue['observed']}",
                     f"- Expected: {issue['expected']}",

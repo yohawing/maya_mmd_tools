@@ -55,6 +55,23 @@ def render_validation_console_text(
         ),
         "",
     ]
+    aggregation = canonical.get("issue_aggregation")
+    if aggregation is not None:
+        lines.extend(
+            [
+                (
+                    "Issue occurrences: "
+                    f"shown={aggregation['shown_occurrences']} "
+                    f"omitted={aggregation['omitted_occurrences']}"
+                ),
+                (
+                    "Issue groups: "
+                    f"shown={aggregation['shown_groups']} / "
+                    f"total={aggregation['total_groups']}"
+                ),
+                "",
+            ]
+        )
     if not canonical["issues"]:
         lines.append("No validation issues.")
         return "\n".join(lines)
@@ -65,6 +82,18 @@ def render_validation_console_text(
                 f"   Category: {issue['category']}",
                 f"   Path: {issue['path'] or 'model_data'}",
                 f"   Decision: {'BLOCK' if issue['blocking'] else 'ALLOW'}",
+            ]
+        )
+        if "occurrence_count" in issue:
+            lines.extend(
+                [
+                    f"   Occurrences: {issue['occurrence_count']}",
+                    f"   Path pattern: {issue['path_pattern']}",
+                    f"   Sample paths: {json.dumps(issue['sample_paths'], ensure_ascii=False)}",
+                ]
+            )
+        lines.extend(
+            [
                 f"   Observed: {issue['observed']}",
                 f"   Expected: {issue['expected']}",
                 f"   Impact: {issue['impact']}",
@@ -196,7 +225,13 @@ class ValidationConsole(QWidget):
             category = get_issue_catalog_entry(issue.code).category
             if selected_category not in (None, "all", category):
                 continue
-            item = QListWidgetItem(f"[{issue.severity.upper()}] {issue.code} — {issue.path}")
+            group = self._report.display_issue_groups[index]
+            occurrence_suffix = (
+                f" ×{group.count}" if self._report.issue_aggregation is not None else ""
+            )
+            item = QListWidgetItem(
+                f"[{issue.severity.upper()}] {issue.code} — {issue.path}{occurrence_suffix}"
+            )
             item.setData(Qt.UserRole, index)
             self.issue_list.addItem(item)
             self._visible_issue_indices.append(index)
@@ -217,7 +252,16 @@ class ValidationConsole(QWidget):
             (issue,),
             mode=self._report.mode,
         )
-        self.detail_text.setPlainText(render_validation_console_text(detail_report, self._metadata))
+        detail = render_validation_console_text(detail_report, self._metadata)
+        if self._report.issue_aggregation is not None:
+            group = self._report.display_issue_groups[issue_index]
+            detail = (
+                f"Occurrences: {group.count}\n"
+                f"Path pattern: {group.path_pattern}\n"
+                f"Sample paths: {json.dumps(group.sample_paths, ensure_ascii=False)}\n\n"
+                + detail
+            )
+        self.detail_text.setPlainText(detail)
 
     def copy_report(self) -> None:
         """Copy the current canonical Console rendering to the clipboard."""

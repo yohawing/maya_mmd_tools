@@ -49,6 +49,27 @@ class TestValidationConsoleRendering(unittest.TestCase):
         self.assertIn("Remediation:", rendered)
         self.assertIn("mode_a_missing_raw", rendered)
 
+    def test_oversized_report_shows_folded_occurrence_counts(self):
+        report = ExportValidationReport(
+            "pmx",
+            tuple(
+                ExportValidationIssue(
+                    "FACE_TOO_SHORT",
+                    "fatal",
+                    True,
+                    f"faces[{index}]",
+                    "face has fewer than three indices",
+                )
+                for index in range(105)
+            ),
+        )
+
+        rendered = render_validation_console_text(report)
+
+        self.assertIn("Issue occurrences: shown=105 omitted=0", rendered)
+        self.assertIn("Occurrences: 105", rendered)
+        self.assertIn("Path pattern: faces[*]", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

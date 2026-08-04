@@ -34,6 +34,7 @@ _REPORT_FIELDS = (
     "summary",
     "requires_warning_ack",
     "evidence",
+    "issue_aggregation",
 )
 _ISSUE_FIELDS = (
     "code",
@@ -46,6 +47,8 @@ _ISSUE_FIELDS = (
     "evidence",
 )
 _ISSUE_COMPARE_FIELDS = _ISSUE_FIELDS + ("severity", "blocking", "provenance")
+_ISSUE_AGGREGATION_COMPARE_FIELDS = ("occurrence_count", "path_pattern", "sample_paths")
+_ISSUE_PROJECTION_FIELDS = _ISSUE_COMPARE_FIELDS + _ISSUE_AGGREGATION_COMPARE_FIELDS
 _AI_MARKER_PATTERN = re.compile(
     r"chatgpt|openai|ai[\s_-]*generated|generated[\s_-]*by[\s_-]*ai|"
     r"artificial[\s_-]*intelligence|llm[\s_-]*generated",
@@ -150,6 +153,13 @@ def _require_nonnegative_integer(value: Any, field: str) -> int:
     return value
 
 
+def _require_positive_integer(value: Any, field: str) -> int:
+    """Require a positive JSON integer for an aggregation bound/count."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        _fail(f"{field} must be a positive integer")
+    return value
+
+
 def _validate_json_payload(payload: Mapping[str, Any]) -> None:
     """Validate report structure, catalog wording, and report semantics."""
     required_fields = {
@@ -184,19 +194,49 @@ def _validate_json_payload(payload: Mapping[str, Any]) -> None:
     if not isinstance(issues, list):
         _fail("issues must be an array")
 
+    aggregation = payload.get("issue_aggregation")
+    if aggregation is not None:
+        _validate_json_aggregation(aggregation)
+
     counts = {"fatal": 0, "warning": 0, "info": 0}
     expected_warning_ack = False
     for index, issue in enumerate(issues, start=1):
         _validate_json_issue(issue, index)
         severity = issue["severity"]
-        counts[severity] += 1
+        counts[severity] += issue.get("occurrence_count", 1)
         if severity == "warning" and not issue["blocking"]:
             expected_warning_ack = True
+    if aggregation is not None:
+        shown_occurrences = sum(issue.get("occurrence_count", 1) for issue in issues)
+        if aggregation["shown_groups"] != len(issues):
+            _fail("issue_aggregation.shown_groups does not match issues")
+        if aggregation["shown_occurrences"] != shown_occurrences:
+            _fail("issue_aggregation.shown_occurrences does not match issues")
+        if aggregation["total_occurrences"] != sum(counts.values()):
+            _fail("issue_aggregation.total_occurrences does not match issue counts")
+        if aggregation["omitted_occurrences"] != (
+            aggregation["total_occurrences"] - aggregation["shown_occurrences"]
+        ):
+            _fail("issue_aggregation.omitted_occurrences is inconsistent")
+        if aggregation["omitted_groups"] != (
+            aggregation["total_groups"] - aggregation["shown_groups"]
+        ):
+            _fail("issue_aggregation.omitted_groups is inconsistent")
+        if not aggregation["has_blocking"] and any(
+            issue["blocking"] for issue in issues
+        ):
+            _fail("issue_aggregation.has_blocking is inconsistent")
+        expected_warning_ack = aggregation["requires_warning_ack"] or expected_warning_ack
     if dict(summary) != counts:
         _fail(f"summary counts do not match issues: expected {counts!r}")
     if requires_warning_ack != expected_warning_ack:
         _fail("requires_warning_ack does not match non-blocking warning issues")
-    expected_status = "blocked" if any(issue["blocking"] for issue in issues) else (
+    has_blocking = (
+        aggregation["has_blocking"]
+        if aggregation is not None
+        else any(issue["blocking"] for issue in issues)
+    )
+    expected_status = "blocked" if has_blocking else (
         "warning" if expected_warning_ack else "ready"
     )
     if status != expected_status:
@@ -252,6 +292,54 @@ def _validate_json_issue(issue: Any, index: int) -> None:
     if issue["path"] is not None and not isinstance(issue["path"], str):
         _fail(f"issue {index}.path must be a string or null")
     _require_mapping(issue["evidence"], f"issue {index}.evidence")
+    aggregation_fields = {"occurrence_count", "path_pattern", "sample_paths"}
+    present_aggregation_fields = aggregation_fields.intersection(issue)
+    if present_aggregation_fields and present_aggregation_fields != aggregation_fields:
+        _fail(f"issue {index} has incomplete aggregation metadata")
+    if present_aggregation_fields:
+        _require_positive_integer(issue["occurrence_count"], f"issue {index}.occurrence_count")
+        if not isinstance(issue["path_pattern"], str):
+            _fail(f"issue {index}.path_pattern must be a string")
+        sample_paths = issue["sample_paths"]
+        if not isinstance(sample_paths, list) or not sample_paths:
+            _fail(f"issue {index}.sample_paths must be a non-empty array")
+        if not all(isinstance(path, str) for path in sample_paths):
+            _fail(f"issue {index}.sample_paths must contain strings")
+
+
+def _validate_json_aggregation(aggregation: Any) -> None:
+    """Validate the bounded issue aggregation summary."""
+    if not isinstance(aggregation, Mapping):
+        _fail("issue_aggregation must be an object")
+    required_fields = {
+        "max_display_issues",
+        "total_occurrences",
+        "shown_occurrences",
+        "omitted_occurrences",
+        "total_groups",
+        "shown_groups",
+        "omitted_groups",
+        "has_blocking",
+        "requires_warning_ack",
+    }
+    missing = sorted(required_fields.difference(aggregation))
+    if missing:
+        _fail(f"issue_aggregation is missing required fields: {', '.join(missing)}")
+    _require_positive_integer(aggregation["max_display_issues"], "issue_aggregation.max_display_issues")
+    for field in (
+        "total_occurrences",
+        "shown_occurrences",
+        "omitted_occurrences",
+        "total_groups",
+        "shown_groups",
+        "omitted_groups",
+    ):
+        _require_nonnegative_integer(aggregation[field], f"issue_aggregation.{field}")
+    _require_bool(aggregation["has_blocking"], "issue_aggregation.has_blocking")
+    _require_bool(
+        aggregation["requires_warning_ack"],
+        "issue_aggregation.requires_warning_ack",
+    )
 
 
 def _parse_backtick_value(line: str, label: str) -> str:
@@ -260,6 +348,21 @@ def _parse_backtick_value(line: str, label: str) -> str:
     if not line.startswith(prefix) or not line.endswith("`"):
         _fail(f"Markdown field has invalid format: {label}")
     return line[len(prefix) : -1]
+
+
+def _parse_plain_integer(line: str, label: str) -> int:
+    """Parse a Markdown summary integer without inline-code decoration."""
+    prefix = f"- {label}: "
+    if not line.startswith(prefix):
+        _fail(f"Markdown field has invalid format: {label}")
+    value = line[len(prefix) :]
+    try:
+        parsed = int(value)
+    except ValueError:
+        _fail(f"Markdown field is not an integer: {label}")
+    if parsed < 0:
+        _fail(f"Markdown field is negative: {label}")
+    return parsed
 
 
 def _parse_json_code_value(line: str, label: str) -> Any:
@@ -308,8 +411,36 @@ def _parse_markdown_issue(lines: Sequence[str], heading: re.Match[str], section:
         "blocking": None,
     }
     field_index = 0
+    occurrence_count = None
+    path_pattern = None
+    sample_paths = None
     for line in section:
         if not line:
+            continue
+        if line.startswith("- Occurrences: "):
+            if field_index != 3 or occurrence_count is not None:
+                _fail(f"Markdown issue {heading.group(3)!r} has misplaced aggregation fields")
+            occurrence_count = _parse_backtick_value(line, "Occurrences")
+            try:
+                occurrence_count = int(occurrence_count)
+            except ValueError:
+                _fail(f"Markdown issue {heading.group(3)!r} occurrence count is invalid")
+            if occurrence_count <= 0:
+                _fail(f"Markdown issue {heading.group(3)!r} occurrence count is invalid")
+            continue
+        if line.startswith("- Path pattern: "):
+            if field_index != 3 or path_pattern is not None:
+                _fail(f"Markdown issue {heading.group(3)!r} has misplaced aggregation fields")
+            path_pattern = _parse_backtick_value(line, "Path pattern")
+            continue
+        if line.startswith("- Sample paths: "):
+            if field_index != 3 or sample_paths is not None:
+                _fail(f"Markdown issue {heading.group(3)!r} has misplaced aggregation fields")
+            sample_paths = _parse_json_code_value(line, "Sample paths")
+            if not isinstance(sample_paths, list) or not sample_paths:
+                _fail(f"Markdown issue {heading.group(3)!r} sample paths are invalid")
+            if not all(isinstance(path, str) for path in sample_paths):
+                _fail(f"Markdown issue {heading.group(3)!r} sample paths are invalid")
             continue
         if field_index >= len(fields):
             _fail(f"Markdown issue {heading.group(3)!r} has extra fields")
@@ -328,7 +459,7 @@ def _parse_markdown_issue(lines: Sequence[str], heading: re.Match[str], section:
     if values["decision"] not in {"BLOCK", "ALLOW"}:
         _fail(f"Markdown issue {heading.group(3)!r} has invalid decision")
     values["blocking"] = values["decision"] == "BLOCK"
-    return {
+    result = {
         "code": values["code"],
         "severity": values["severity"],
         "blocking": values["blocking"],
@@ -342,6 +473,17 @@ def _parse_markdown_issue(lines: Sequence[str], heading: re.Match[str], section:
         "evidence": values["evidence"],
         "title": values["title"],
     }
+    if occurrence_count is not None or path_pattern is not None or sample_paths is not None:
+        if occurrence_count is None or path_pattern is None or sample_paths is None:
+            _fail(f"Markdown issue {heading.group(3)!r} has incomplete aggregation metadata")
+        result.update(
+            {
+                "occurrence_count": occurrence_count,
+                "path_pattern": path_pattern,
+                "sample_paths": sample_paths,
+            }
+        )
+    return result
 
 
 def _parse_markdown_report(markdown: str) -> dict[str, Any]:
@@ -380,6 +522,55 @@ def _parse_markdown_report(markdown: str) -> dict[str, Any]:
     if warning_ack not in {"true", "false"}:
         _fail("Markdown warning acknowledgement must be true or false")
     cursor += 1
+    issue_aggregation = None
+    if cursor < len(lines) and lines[cursor].startswith("- Issue display limit: "):
+        issue_aggregation = {}
+        issue_aggregation["max_display_issues"] = _parse_plain_integer(
+            _line_at(lines, cursor, "Issue display limit"),
+            "Issue display limit",
+        )
+        cursor += 1
+        issue_aggregation["shown_occurrences"] = _parse_plain_integer(
+            _line_at(lines, cursor, "Issue occurrences shown"),
+            "Issue occurrences shown",
+        )
+        cursor += 1
+        issue_aggregation["omitted_occurrences"] = _parse_plain_integer(
+            _line_at(lines, cursor, "Issue occurrences omitted"),
+            "Issue occurrences omitted",
+        )
+        cursor += 1
+        groups_line = _line_at(lines, cursor, "Issue groups shown")
+        groups_prefix = "- Issue groups shown: "
+        if not groups_line.startswith(groups_prefix) or " / " not in groups_line:
+            _fail("Markdown issue groups summary has invalid format")
+        shown_groups_text, total_groups_text = groups_line[len(groups_prefix) :].split(
+            " / ", 1
+        )
+        try:
+            issue_aggregation["shown_groups"] = int(shown_groups_text)
+            issue_aggregation["total_groups"] = int(total_groups_text)
+        except ValueError:
+            _fail("Markdown issue groups summary is not an integer")
+        if issue_aggregation["shown_groups"] < 0 or issue_aggregation["total_groups"] < 0:
+            _fail("Markdown issue groups summary is negative")
+        cursor += 1
+        blocking = _parse_backtick_value(
+            _line_at(lines, cursor, "Blocking issue present"),
+            "Blocking issue present",
+        )
+        if blocking not in {"true", "false"}:
+            _fail("Markdown blocking issue flag must be true or false")
+        issue_aggregation["has_blocking"] = blocking == "true"
+        issue_aggregation["total_occurrences"] = (
+            issue_aggregation["shown_occurrences"]
+            + issue_aggregation["omitted_occurrences"]
+        )
+        issue_aggregation["omitted_groups"] = (
+            issue_aggregation["total_groups"] - issue_aggregation["shown_groups"]
+        )
+        issue_aggregation["requires_warning_ack"] = warning_ack == "true"
+        cursor += 1
     cursor = _consume_exact(lines, cursor, "")
     cursor = _consume_exact(lines, cursor, "## Evidence")
     cursor = _consume_exact(lines, cursor, "")
@@ -423,6 +614,7 @@ def _parse_markdown_report(markdown: str) -> dict[str, Any]:
         "mode": mode,
         "summary": summary,
         "requires_warning_ack": warning_ack == "true",
+        "issue_aggregation": issue_aggregation,
         "evidence": dict(evidence),
         "issues": issues,
     }
@@ -442,14 +634,20 @@ def _json_projection(payload: Mapping[str, Any]) -> dict[str, Any]:
         "summary": dict(payload["summary"]),
         "requires_warning_ack": payload["requires_warning_ack"],
         "evidence": dict(payload["evidence"]),
+        "issue_aggregation": payload.get("issue_aggregation"),
         "issues": [
             {
                 field: (
                     _normalise_path(issue[field])
                     if field == "path"
-                    else issue[field]
+                    else issue.get(
+                        field,
+                        1
+                        if field == "occurrence_count"
+                        else None,
+                    )
                 )
-                for field in _ISSUE_COMPARE_FIELDS
+                for field in _ISSUE_PROJECTION_FIELDS
             }
             for issue in payload["issues"]
         ],
@@ -465,14 +663,20 @@ def _markdown_projection(payload: Mapping[str, Any]) -> dict[str, Any]:
         "summary": dict(payload["summary"]),
         "requires_warning_ack": payload["requires_warning_ack"],
         "evidence": dict(payload["evidence"]),
+        "issue_aggregation": payload.get("issue_aggregation"),
         "issues": [
             {
                 field: (
                     _normalise_path(issue[field])
                     if field == "path"
-                    else issue[field]
+                    else issue.get(
+                        field,
+                        1
+                        if field == "occurrence_count"
+                        else None,
+                    )
                 )
-                for field in _ISSUE_COMPARE_FIELDS
+                for field in _ISSUE_PROJECTION_FIELDS
             }
             for issue in payload["issues"]
         ],
@@ -494,7 +698,7 @@ def _compare_projections(json_payload: Mapping[str, Any], markdown_payload: Mapp
         if json_issue != markdown_issue:
             differing_fields = [
                 field
-                for field in _ISSUE_COMPARE_FIELDS
+                for field in _ISSUE_PROJECTION_FIELDS
                 if json_issue[field] != markdown_issue[field]
             ]
             details = ", ".join(differing_fields) or "issue order"
