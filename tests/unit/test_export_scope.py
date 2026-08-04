@@ -306,6 +306,66 @@ class TestExportScope(unittest.TestCase):
         self.assertNotIn("source_sphere_texture_index", material)
         self.assertEqual(material["semantic_missing"], [])
 
+    def test_single_mesh_collection_attaches_provenance_texture_table(self):
+        """Direct PMX mesh collection resolves its complete local table."""
+        class FakePoint:
+            x = 0.0
+            y = 0.0
+            z = 0.0
+
+        class FakeMesh:
+            numVertices = 3
+            numPolygons = 1
+
+            def getPoints(self, _space):
+                return [FakePoint(), FakePoint(), FakePoint()]
+
+            def getVertexNormals(self, _angle_weighted, _space):
+                return [FakePoint(), FakePoint(), FakePoint()]
+
+            def numUVs(self):
+                return 0
+
+        selection = mock.Mock()
+        selection.getDagPath.return_value = object()
+        material = {
+            "name": "material",
+            "face_count": 3,
+            "texture_path": "textures/body.png",
+            "source_texture_index": 0,
+            "sphere_texture_path": "textures/body.spa",
+            "source_sphere_texture_index": 1,
+            "semantic_missing": ["texture_table"],
+        }
+
+        with (
+            mock.patch.object(export_scene_collector_module, "_get_mesh_shape", return_value="meshShape"),
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "listRelatives",
+                return_value=["|model|mesh"],
+            ),
+            mock.patch.object(export_scene_collector_module, "_get_model_name", return_value="Hero"),
+            mock.patch.object(export_scene_collector_module.om, "MSelectionList", return_value=selection),
+            mock.patch.object(export_scene_collector_module.om, "MFnMesh", return_value=FakeMesh()),
+            mock.patch.object(export_scene_collector_module, "_find_skin_cluster", return_value=None),
+            mock.patch.object(
+                export_scene_collector_module,
+                "_collect_materials_per_face",
+                return_value=([material], [[2, 1, 0]]),
+            ),
+            mock.patch.object(export_scene_collector_module, "_collect_vertex_morphs", return_value=[]),
+        ):
+            model_data = ExportSceneCollector().collect_from_mesh("mesh")
+
+        self.assertEqual(model_data["textures"], ["textures/body.png", "textures/body.spa"])
+        material = model_data["materials"][0]
+        self.assertEqual(material["texture_index"], 0)
+        self.assertEqual(material["sphere_texture_index"], 1)
+        self.assertNotIn("source_texture_index", material)
+        self.assertNotIn("source_sphere_texture_index", material)
+        self.assertEqual(material["semantic_missing"], [])
+
     def test_invalid_texture_table_keeps_source_index_fail_closed(self):
         model_data = {
             "materials": [
@@ -444,6 +504,79 @@ class TestExportScope(unittest.TestCase):
         self.assertEqual(payload["textures"], ["textures/body.png"])
         self.assertEqual(payload["materials"][0]["texture_index"], 0)
         self.assertEqual(payload["materials"][0]["semantic_missing"], [])
+
+    def test_model_root_merges_materials_before_resolving_one_global_texture_table(self):
+        """Root collection must not resolve each mesh against a local table."""
+        mesh_data_by_shape = {
+            "mesh_a": {
+                "vertices": [],
+                "faces": [],
+                "materials": [
+                    {
+                        "name": "material_a",
+                        "face_count": 0,
+                        "texture_path": "textures/a.png",
+                        "semantic_missing": ["texture_table"],
+                    }
+                ],
+                "bones": [],
+                "morphs": [],
+            },
+            "mesh_b": {
+                "vertices": [],
+                "faces": [],
+                "materials": [
+                    {
+                        "name": "material_b",
+                        "face_count": 0,
+                        "texture_path": "textures/b.png",
+                        "semantic_missing": ["texture_table"],
+                    }
+                ],
+                "bones": [],
+                "morphs": [],
+            },
+        }
+
+        class FakeMorphConverter:
+            def collect_morphs_from_scene_for_export(self, *, root_group=None, require_contiguous=True):
+                return []
+
+        with (
+            mock.patch.object(export_scene_collector_module, "MorphConverter", FakeMorphConverter),
+            mock.patch.object(
+                export_scene_collector_module,
+                "_list_export_mesh_shapes",
+                return_value=["mesh_a", "mesh_b"],
+            ),
+            mock.patch.object(export_scene_collector_module, "_collect_model_bones", return_value=[]),
+            mock.patch.object(export_scene_collector_module, "_get_model_name", return_value="Hero"),
+            mock.patch.object(export_scene_collector_module, "_collect_display_frames", return_value=[]),
+            mock.patch.object(
+                ExportSceneCollector,
+                "collect_from_mesh",
+                side_effect=lambda shape, **_kwargs: mesh_data_by_shape[shape],
+            ) as collect_from_mesh,
+            mock.patch.object(export_scene_collector_module, "_get_attr", return_value=None),
+            mock.patch(
+                "mmd_tools.converters.physics_export_collector.collect_physics_from_scene",
+                return_value=([], []),
+            ),
+        ):
+            payload = ExportSceneCollector().collect_from_model_root("|hero:model_ROOT")
+
+        self.assertEqual(payload["textures"], ["textures/a.png", "textures/b.png"])
+        self.assertEqual(
+            [material["texture_index"] for material in payload["materials"]],
+            [0, 1],
+        )
+        self.assertEqual(
+            collect_from_mesh.call_args_list,
+            [
+                mock.call("mesh_a", is_pmd=False, _resolve_texture_table=False),
+                mock.call("mesh_b", is_pmd=False, _resolve_texture_table=False),
+            ],
+        )
 
     def test_pmd_toon_index_stays_embedded_and_pmd_fields_are_collected(self):
         material = self._collect_single_material(
@@ -680,7 +813,11 @@ class TestExportScope(unittest.TestCase):
 
         self.assertEqual(calls, [("|hero:model_ROOT", False)])
         self.assertEqual(payload["model_name"], "Hero")
-        collect_from_mesh.assert_called_once_with("mesh", is_pmd=True)
+        collect_from_mesh.assert_called_once_with(
+            "mesh",
+            is_pmd=True,
+            _resolve_texture_table=False,
+        )
 
     def test_network_morph_collection_passes_selected_root(self):
         converter = object.__new__(MorphConverter)

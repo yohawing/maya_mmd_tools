@@ -15,20 +15,42 @@ from mmd_tools.actions.export_model_action import ExportModelAction, ExportModel
 from mmd_tools.converters import export_scene_collector
 from mmd_tools.converters.export_scene_collector import ExportSceneCollector
 from mmd_tools.converters.morph_converter import MorphConverter
+from mmd_tools.converters.material_shader_parameters import (
+    ATTR_MMD_DIFFUSE_ALPHA,
+    ATTR_MMD_EDGE_ALPHA,
+)
 from mmd_tools.core.constants import (
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_BONE_FLAGS,
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_BONE_PARENT_INDEX,
+    ATTR_MMD_AMBIENT_COLOR,
+    ATTR_MMD_DIFFUSE_COLOR,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
+    ATTR_MMD_DRAW_FLAGS,
+    ATTR_MMD_EDGE_COLOR,
+    ATTR_MMD_EDGE_SIZE,
     ATTR_MMD_IK_LIMIT_ANGLE,
     ATTR_MMD_IK_LINKS,
     ATTR_MMD_IK_LOOP,
     ATTR_MMD_IK_TARGET,
     ATTR_MMD_IK_TARGET_INDEX,
+    ATTR_MMD_MATERIAL,
+    ATTR_MMD_MATERIAL_NAME,
+    ATTR_MMD_MATERIAL_NAME_EN,
+    ATTR_MMD_MEMO,
     ATTR_MMD_MODEL_NAME,
+    ATTR_MMD_SHARED_TOON_FLAG,
+    ATTR_MMD_SHININESS,
+    ATTR_MMD_SPHERE_MODE,
+    ATTR_MMD_SPHERE_PATH,
+    ATTR_MMD_SPHERE_TEXTURE_INDEX,
+    ATTR_MMD_SPECULAR_COLOR,
+    ATTR_MMD_TEXTURE_INDEX,
+    ATTR_MMD_TOON_TEXTURE_INDEX,
 )
+from mmd_tools.core import maya_attribute_utils
 from mmd_tools.core.model_registry import REGISTRY_CATEGORY_MORPH, list_model_registry_members
 from mmd_tools.io.pmx_exporter import PmxExporter
 from mmd_tools.core.mmd_parser import parse_pmx_file
@@ -85,6 +107,36 @@ class TestPmxExporter(MayaTestBase):
         )
         cmds.connectAttr(shader + ".outColor", sg + ".surfaceShader", force=True)
         cmds.sets(transform, edit=True, forceElement=sg)
+        return shader
+
+    def _assign_tagged_shader_with_textures(self, transform: str) -> str:
+        """Assign a complete tagged PMX material with relative texture provenance."""
+        shader = self._assign_shader(transform, shader_name="TaggedTextureMaterial")
+        maya_attribute_utils.set_custom_attributes(
+            shader,
+            {
+                ATTR_MMD_MATERIAL: 1,
+                ATTR_MMD_MATERIAL_NAME: "Tagged material",
+                ATTR_MMD_MATERIAL_NAME_EN: "Tagged material",
+                ATTR_MMD_DIFFUSE_COLOR: [0.8, 0.7, 0.6],
+                ATTR_MMD_DIFFUSE_ALPHA: 1.0,
+                ATTR_MMD_SPECULAR_COLOR: [0.2, 0.3, 0.4],
+                ATTR_MMD_SHININESS: 5.0,
+                ATTR_MMD_AMBIENT_COLOR: [0.1, 0.1, 0.1],
+                ATTR_MMD_DRAW_FLAGS: 0x13,
+                ATTR_MMD_EDGE_COLOR: [0.0, 0.0, 0.0],
+                ATTR_MMD_EDGE_ALPHA: 1.0,
+                ATTR_MMD_EDGE_SIZE: 1.0,
+                ATTR_MMD_TEXTURE_INDEX: 0,
+                ATTR_MMD_SPHERE_TEXTURE_INDEX: 1,
+                ATTR_MMD_SPHERE_MODE: 0,
+                ATTR_MMD_SHARED_TOON_FLAG: 1,
+                ATTR_MMD_TOON_TEXTURE_INDEX: 0,
+                ATTR_MMD_MEMO: "",
+                "mmd_texture_path": "textures/body.png",
+                ATTR_MMD_SPHERE_PATH: "textures/body.spa",
+            },
+        )
         return shader
 
     def _assign_shader_to_component(self, component: str, shader_name: str) -> str:
@@ -361,6 +413,27 @@ class TestPmxExporter(MayaTestBase):
 
         # Bones: exporter auto-creates one default root bone when bones=None
         self.assertEqual(len(pmx.bones), 1)
+
+    def test_roundtrip_single_tagged_material_preserves_texture_table(self):
+        """Direct collection resolves tagged material paths before PMX export."""
+        transform, _ = self._make_triangle(name="tagged_texture_mesh")
+        self._assign_tagged_shader_with_textures(transform)
+
+        maya_data = ExportSceneCollector().collect_from_mesh(transform)
+
+        self.assertEqual(maya_data["textures"], ["textures/body.png", "textures/body.spa"])
+        material = maya_data["materials"][0]
+        self.assertEqual(material["texture_index"], 0)
+        self.assertEqual(material["sphere_texture_index"], 1)
+        self.assertEqual(material["semantic_missing"], [])
+
+        output_path = self.get_temp_filename("tagged_texture_triangle.pmx")
+        PmxExporter().export_pmx_model(output_path, maya_data)
+
+        pmx = _parse_pmx(output_path)
+        self.assertEqual(pmx.textures, ["textures/body.png", "textures/body.spa"])
+        self.assertEqual(pmx.materials[0].texture_index, 0)
+        self.assertEqual(pmx.materials[0].sphere_texture_index, 1)
 
     def test_export_model_action_collects_target_mesh_and_writes_pmx(self):
         """ExportModelAction の default collector 経由で PMX を書き出せる。"""

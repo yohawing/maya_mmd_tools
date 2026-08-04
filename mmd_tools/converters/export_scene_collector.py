@@ -1341,7 +1341,13 @@ class ExportSceneCollector:
             return _apply_pmd_export_policy(model_data, model_root)
         return model_data
 
-    def collect_from_mesh(self, transform_or_shape: str, is_pmd: bool = False) -> dict:
+    def collect_from_mesh(
+        self,
+        transform_or_shape: str,
+        is_pmd: bool = False,
+        *,
+        _resolve_texture_table: bool = True,
+    ) -> dict:
         """Collect scene data from a single polygon mesh transform or shape.
 
         Coordinate system: Maya world-space (Y-up, right-handed, units in cm).
@@ -1356,6 +1362,9 @@ class ExportSceneCollector:
 
         Args:
             transform_or_shape: Transform or mesh shape node name.
+            _resolve_texture_table: Resolve complete PMX material texture
+                provenance for direct collection.  Model-root collection
+                disables this until all mesh materials have been merged.
 
         Returns:
             Dict with keys ``model_name``, ``vertices``, ``faces``,
@@ -1423,7 +1432,7 @@ class ExportSceneCollector:
         # Collect per-face material assignments and group faces contiguously.
         materials, faces = _collect_materials_per_face(shape, fn, is_pmd=is_pmd)
 
-        return {
+        model_data = {
             "model_name": model_name,
             "vertices": vertices,
             "faces": faces,
@@ -1432,6 +1441,9 @@ class ExportSceneCollector:
             "bones": bones,
             "morphs": _collect_vertex_morphs(shape),
         }
+        if not is_pmd and _resolve_texture_table:
+            _apply_texture_table(model_data, None)
+        return model_data
 
     def collect_from_model_root(self, root: str, is_pmd: bool = False) -> dict:
         """Collect and merge all polygon meshes below an MMD model root.
@@ -1456,7 +1468,11 @@ class ExportSceneCollector:
         }
         vertex_offset = 0
         for shape in shapes:
-            mesh_data = self.collect_from_mesh(shape, is_pmd=is_pmd)
+            mesh_data = self.collect_from_mesh(
+                shape,
+                is_pmd=is_pmd,
+                _resolve_texture_table=False,
+            )
             local_bones = mesh_data["bones"] or []
             bone_index_map = {}
             added_global_indices = set()
