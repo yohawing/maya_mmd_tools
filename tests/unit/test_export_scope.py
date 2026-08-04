@@ -157,6 +157,47 @@ class TestExportScope(unittest.TestCase):
                 FakeMesh(),
             )
 
+    def _collect_mock_model_root(self, mesh_data_by_shape):
+        """Collect mocked child meshes through the real model-root merge path."""
+
+        class FakeMorphConverter:
+            def collect_morphs_from_scene_for_export(self, *, root_group=None, require_contiguous=True):
+                return []
+
+        with (
+            mock.patch.object(export_scene_collector_module, "MorphConverter", FakeMorphConverter),
+            mock.patch.object(
+                export_scene_collector_module,
+                "_list_export_mesh_shapes",
+                return_value=list(mesh_data_by_shape),
+            ),
+            mock.patch.object(export_scene_collector_module, "_collect_model_bones", return_value=[]),
+            mock.patch.object(export_scene_collector_module, "_get_model_name", return_value="Hero"),
+            mock.patch.object(export_scene_collector_module, "_collect_display_frames", return_value=[]),
+            mock.patch.object(
+                ExportSceneCollector,
+                "collect_from_mesh",
+                side_effect=lambda shape, **_kwargs: mesh_data_by_shape[shape],
+            ),
+            mock.patch.object(export_scene_collector_module, "_get_attr", return_value=None),
+            mock.patch(
+                "mmd_tools.converters.physics_export_collector.collect_physics_from_scene",
+                return_value=([], []),
+            ),
+        ):
+            return ExportSceneCollector().collect_from_model_root("|hero:model_ROOT")
+
+    @staticmethod
+    def _mock_root_mesh(material):
+        """Build one minimal triangle child payload for root merge tests."""
+        return {
+            "vertices": [{}, {}, {}],
+            "faces": [[0, 1, 2]],
+            "materials": [material],
+            "bones": [],
+            "morphs": [],
+        }
+
     def test_collect_bones_resolves_ik_source_indices_and_authored_names(self):
         """IK refs use exported order, including name-based link references."""
         joints = ["|model|link", "|model|solver", "|model|target"]
@@ -675,6 +716,109 @@ class TestExportScope(unittest.TestCase):
         self.assertEqual(payload["textures"], ["textures/body.png"])
         self.assertEqual(payload["materials"][0]["texture_index"], 0)
         self.assertEqual(payload["materials"][0]["semantic_missing"], [])
+
+    def test_model_root_orders_materials_and_adjusted_faces_by_source_index(self):
+        """Root merge keeps material groups paired while restoring source order."""
+        payload = self._collect_mock_model_root(
+            {
+                "mesh_a": self._mock_root_mesh(
+                    {
+                        "name": "Material One",
+                        "source_material_index": 1,
+                        "face_count": 3,
+                        "semantic_missing": [],
+                    }
+                ),
+                "mesh_b": self._mock_root_mesh(
+                    {
+                        "name": "Material Zero",
+                        "source_material_index": 0,
+                        "face_count": 3,
+                        "semantic_missing": [],
+                    }
+                ),
+            }
+        )
+
+        self.assertEqual(
+            [material["name"] for material in payload["materials"]],
+            ["Material Zero", "Material One"],
+        )
+        self.assertEqual(
+            [material["source_material_index"] for material in payload["materials"]],
+            [0, 1],
+        )
+        self.assertEqual(payload["faces"], [[3, 4, 5], [0, 1, 2]])
+
+    def test_model_root_source_index_order_is_fail_closed_for_duplicate_or_malformed(self):
+        """Root merge retains DAG order when source provenance is ambiguous."""
+        duplicate_payload = self._collect_mock_model_root(
+            {
+                "mesh_a": self._mock_root_mesh(
+                    {
+                        "name": "Material A",
+                        "source_material_index": 0,
+                        "face_count": 3,
+                        "semantic_missing": [],
+                    }
+                ),
+                "mesh_b": self._mock_root_mesh(
+                    {
+                        "name": "Material B",
+                        "source_material_index": 0,
+                        "face_count": 3,
+                        "semantic_missing": [],
+                    }
+                ),
+            }
+        )
+
+        self.assertEqual(
+            [material["name"] for material in duplicate_payload["materials"]],
+            ["Material A", "Material B"],
+        )
+        self.assertEqual(duplicate_payload["faces"], [[0, 1, 2], [3, 4, 5]])
+        self.assertTrue(
+            all(
+                "source_material_index" in material["semantic_missing"]
+                for material in duplicate_payload["materials"]
+            )
+        )
+
+        malformed_payload = self._collect_mock_model_root(
+            {
+                "mesh_a": self._mock_root_mesh(
+                    {
+                        "name": "Material Malformed",
+                        "source_material_index": "1",
+                        "face_count": 3,
+                        "semantic_missing": ["source_material_index"],
+                    }
+                ),
+                "mesh_b": self._mock_root_mesh(
+                    {
+                        "name": "Material Zero",
+                        "source_material_index": 0,
+                        "face_count": 3,
+                        "semantic_missing": [],
+                    }
+                ),
+            }
+        )
+
+        self.assertEqual(
+            [material["name"] for material in malformed_payload["materials"]],
+            ["Material Malformed", "Material Zero"],
+        )
+        self.assertEqual(malformed_payload["faces"], [[0, 1, 2], [3, 4, 5]])
+        self.assertEqual(
+            malformed_payload["materials"][0]["source_material_index"],
+            "1",
+        )
+        self.assertIn(
+            "source_material_index",
+            malformed_payload["materials"][0]["semantic_missing"],
+        )
 
     def test_model_root_merges_materials_before_resolving_one_global_texture_table(self):
         """Root collection must not resolve each mesh against a local table."""

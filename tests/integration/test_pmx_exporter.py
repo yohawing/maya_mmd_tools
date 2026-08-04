@@ -583,6 +583,34 @@ class TestPmxExporter(MayaTestBase):
         self.assertEqual([mat.face_count for mat in pmx.materials], [3, 3])
         self.assertEqual({mat.name for mat in pmx.materials}, set(shaders))
 
+    def test_target_model_orders_tagged_material_ranges_by_source_index(self):
+        """Reverse-DAG child meshes export PMX materials and face ranges by source order."""
+        root, (mesh_a, mesh_b), (shader_a, shader_b) = self._make_two_mesh_model_root(
+            "pmx_tagged_multi_root"
+        )
+        self._set_tagged_shader_with_textures(shader_a, 1, "Material One")
+        self._set_tagged_shader_with_textures(shader_b, 0, "Material Zero")
+        output_path = self.get_temp_filename("tagged_multi_mesh_model.pmx")
+
+        result = ExportModelAction().execute(
+            ExportModelRequest(
+                file_path=output_path,
+                options={"export_format": "pmx", "target_model": root},
+            )
+        )
+
+        self.assertTrue(result.succeeded)
+        pmx = _parse_pmx(output_path)
+        self.assertEqual(
+            [material.name for material in pmx.materials],
+            ["Material Zero", "Material One"],
+        )
+        self.assertEqual([material.face_count for material in pmx.materials], [3, 3])
+        self.assertEqual(
+            [tuple(face.indices) for face in pmx.faces],
+            [(5, 4, 3), (2, 1, 0)],
+        )
+
     def test_export_model_action_collects_scene_morph_metadata_to_pmx(self):
         """target_model export は scene の vertex/group/bone/material morph metadata を PMX に書き戻す。"""
         root, (mesh_a, _mesh_b), _shaders = self._make_two_mesh_model_root("pmx_morph_root")

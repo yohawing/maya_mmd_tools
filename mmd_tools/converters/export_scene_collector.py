@@ -1243,6 +1243,88 @@ def _resolve_shader_name(sg_node_name: str, shader: Optional[str] = None) -> str
     return shader
 
 
+def _order_material_groups_by_source_index(
+    material_groups: list[tuple[dict, list[list[int]]]],
+    is_pmd: bool = False,
+) -> list[tuple[dict, list[list[int]]]]:
+    """Order material/face groups by canonical PMX source material index.
+
+    The source index is authoritative only when every PMX material group has
+    a valid, distinct, non-negative integer index.  Otherwise the supplied
+    order is retained.  Duplicate valid indices are marked as missing so the
+    validator can reject the ambiguous provenance without silently remapping
+    either material or face group.
+    """
+    source_indices = [
+        material.get("source_material_index")
+        for material, _group_faces in material_groups
+    ]
+    indices_are_valid = (
+        not is_pmd
+        and source_indices
+        and all(
+            isinstance(source_index, int)
+            and not isinstance(source_index, bool)
+            and source_index >= 0
+            and "source_material_index"
+            not in (material.get("semantic_missing") or [])
+            for (material, _group_faces), source_index in zip(material_groups, source_indices)
+        )
+    )
+    if indices_are_valid and len(set(source_indices)) == len(source_indices):
+        return sorted(material_groups, key=lambda group: group[0]["source_material_index"])
+
+    if indices_are_valid:
+        duplicate_indices = {
+            source_index
+            for source_index in source_indices
+            if source_indices.count(source_index) > 1
+        }
+        for material, _group_faces in material_groups:
+            if material.get("source_material_index") not in duplicate_indices:
+                continue
+            semantic_missing = list(material.get("semantic_missing") or [])
+            if "source_material_index" not in semantic_missing:
+                semantic_missing.append("source_material_index")
+            material["semantic_missing"] = semantic_missing
+
+    return material_groups
+
+
+def _material_face_groups(
+    materials: list[dict],
+    faces: list[list[int]],
+) -> list[tuple[dict, list[list[int]]]] | None:
+    """Pair contiguous polygon faces with materials using their index counts.
+
+    ``collect_from_mesh`` stores each material's fan-triangulated index count,
+    while ``faces`` stores the original polygon vertex lists.  Return ``None``
+    for an inconsistent payload so a model-root merge can retain its existing
+    safe order rather than guessing a material/face correspondence.
+    """
+    groups = []
+    face_index = 0
+    for material in materials:
+        face_count = material.get("face_count")
+        if isinstance(face_count, bool) or not isinstance(face_count, int) or face_count < 0:
+            return None
+
+        group_faces = []
+        index_count = 0
+        while face_index < len(faces) and index_count < face_count:
+            face = faces[face_index]
+            group_faces.append(face)
+            index_count += max(0, len(face) - 2) * 3
+            face_index += 1
+        if index_count != face_count:
+            return None
+        groups.append((material, group_faces))
+
+    if face_index != len(faces):
+        return None
+    return groups
+
+
 def _collect_materials_per_face(shape: str, fn, is_pmd: bool = False) -> tuple:
     """Return ``(materials, faces)`` with polygons grouped by per-face material.
 
@@ -1316,37 +1398,7 @@ def _collect_materials_per_face(shape: str, fn, is_pmd: bool = False) -> tuple:
 
         material_groups.append((mat, group_faces))
 
-    source_indices = [
-        material.get("source_material_index")
-        for material, _group_faces in material_groups
-    ]
-    indices_are_valid = (
-        not is_pmd
-        and source_indices
-        and all(
-            isinstance(source_index, int)
-            and not isinstance(source_index, bool)
-            and source_index >= 0
-            and "source_material_index"
-            not in (material.get("semantic_missing") or [])
-            for (material, _group_faces), source_index in zip(material_groups, source_indices)
-        )
-    )
-    if indices_are_valid and len(set(source_indices)) == len(source_indices):
-        material_groups.sort(key=lambda group: group[0]["source_material_index"])
-    elif indices_are_valid:
-        duplicate_indices = {
-            source_index
-            for source_index in source_indices
-            if source_indices.count(source_index) > 1
-        }
-        for material, _group_faces in material_groups:
-            if material.get("source_material_index") not in duplicate_indices:
-                continue
-            semantic_missing = list(material.get("semantic_missing") or [])
-            if "source_material_index" not in semantic_missing:
-                semantic_missing.append("source_material_index")
-            material["semantic_missing"] = semantic_missing
+    material_groups = _order_material_groups_by_source_index(material_groups, is_pmd=is_pmd)
 
     materials = []
     faces = []
@@ -1505,7 +1557,9 @@ class ExportSceneCollector:
 
         This keeps the same minimum-slice limitations as ``collect_from_mesh``:
         world-space geometry is converted back to MMD basis, but scale
-        normalization is still out of scope.
+        normalization is still out of scope.  Material groups remain paired
+        with their global-index-adjusted faces; complete PMX source material
+        provenance restores their canonical order after the merge.
         """
         shapes = _list_export_mesh_shapes(root)
         if not shapes:
@@ -1514,6 +1568,8 @@ class ExportSceneCollector:
         merged_vertices = []
         merged_faces = []
         merged_materials = []
+        merged_material_groups = []
+        can_reorder_material_groups = True
         merged_bones = _collect_model_bones(root)
         vertex_morphs_by_name = {}
         global_bone_by_key = {
@@ -1559,9 +1615,18 @@ class ExportSceneCollector:
                 mesh_vertices.append(merged_vertex)
 
             merged_vertices.extend(mesh_vertices)
-            for face in mesh_data["faces"]:
-                merged_faces.append([index + vertex_offset for index in face])
-            merged_materials.extend(mesh_data["materials"])
+            mesh_faces = [
+                [index + vertex_offset for index in face]
+                for face in mesh_data["faces"]
+            ]
+            merged_faces.extend(mesh_faces)
+            mesh_materials = mesh_data["materials"]
+            merged_materials.extend(mesh_materials)
+            mesh_material_groups = _material_face_groups(mesh_materials, mesh_faces)
+            if mesh_material_groups is None:
+                can_reorder_material_groups = False
+            else:
+                merged_material_groups.extend(mesh_material_groups)
             for morph in mesh_data.get("morphs", []):
                 key = (morph.get("type"), morph.get("name"))
                 if key not in vertex_morphs_by_name:
@@ -1614,4 +1679,23 @@ class ExportSceneCollector:
         }
         if not is_pmd:
             _apply_texture_table(model_data, root)
+
+        if (
+            can_reorder_material_groups
+            and len(merged_material_groups) == len(merged_materials)
+            and sum(len(group_faces) for _material, group_faces in merged_material_groups)
+            == len(merged_faces)
+        ):
+            ordered_material_groups = _order_material_groups_by_source_index(
+                merged_material_groups,
+                is_pmd=is_pmd,
+            )
+            model_data["materials"] = [
+                material for material, _group_faces in ordered_material_groups
+            ]
+            model_data["faces"] = [
+                face
+                for _material, group_faces in ordered_material_groups
+                for face in group_faces
+            ]
         return model_data
