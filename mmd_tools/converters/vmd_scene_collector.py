@@ -20,6 +20,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_CAMERA,
     ATTR_MMD_LIGHT,
     ATTR_MMD_MODEL_NAME,
+    ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON,
 )
 from mmd_tools.core.mmd_control_rig_builder import (
     CONTROL_RIG_EDIT,
@@ -109,6 +110,60 @@ def _dag_path_is_under_root(node: str, root_path: str) -> bool:
     return node_path == root_path or node_path.startswith(f"{root_path}|")
 
 
+def _raw_vmd_rotation_interpolation(
+    provenance: Optional[Mapping[str, Any]],
+) -> dict[str, dict[int, bytes]]:
+    """Decode complete raw bone interpolation records into collector keys."""
+    if not isinstance(provenance, Mapping):
+        return {}
+    result: dict[str, dict[int, bytes]] = {}
+    for record in provenance.get("raw_bone_interpolation", ()) or ():
+        if not isinstance(record, Mapping):
+            continue
+        name = str(record.get("bone_name") or "")
+        try:
+            frame_number = int(record.get("frame_number"))
+            interpolation = bytes(record.get("interpolation", ()))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not name or frame_number < 0 or len(interpolation) != 64:
+            continue
+        result.setdefault(name, {})[frame_number] = interpolation
+    return result
+
+
+def _read_vmd_import_provenance(target_model: Optional[str]) -> Optional[dict[str, Any]]:
+    """Read complete raw VMD bone provenance from one model root."""
+    if not target_model:
+        return None
+    try:
+        if not cmds.attributeQuery(
+            ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON,
+            node=target_model,
+            exists=True,
+        ):
+            return None
+        raw = cmds.getAttr(f"{target_model}.{ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON}")
+        provenance = json.loads(raw or "")
+    except (TypeError, ValueError, RuntimeError):
+        return None
+    if not isinstance(provenance, dict) or not provenance.get("raw_bone_interpolation_complete"):
+        return None
+    records = provenance.get("raw_bone_interpolation")
+    if not isinstance(records, list):
+        return None
+    try:
+        expected_count = int(provenance.get("raw_bone_key_count", len(records)))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if expected_count != len(records):
+        return None
+    decoded = _raw_vmd_rotation_interpolation(provenance)
+    if sum(len(frames) for frames in decoded.values()) != len(records):
+        return None
+    return provenance
+
+
 class VmdSceneCollector:
     """Collect minimum VMD-compatible animation data from a Maya scene."""
 
@@ -144,10 +199,14 @@ class VmdSceneCollector:
         maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
         dense_control_rig_export = self._control_rig_dense_export(target_model)
         rotation_interpolation = self._rotation_time_curve_interpolation(target_model)
+        raw_provenance = _read_vmd_import_provenance(target_model)
+        for bone_name, values in _raw_vmd_rotation_interpolation(raw_provenance).items():
+            rotation_interpolation.setdefault(bone_name, {}).update(values)
         authored_routes = self._scene_authored_input_routes(joints, target_model)
 
         return {
             "model_name": str(options.get("model_name") or self._model_name(target_model)),
+            "raw_provenance": raw_provenance,
             "bone_frames": self.collect_bone_frames(
                 joints,
                 start_frame,

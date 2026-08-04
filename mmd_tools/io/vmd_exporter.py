@@ -59,6 +59,7 @@ class VmdExporter:
 
         vmd_data = VmdData()
         vmd_data.header.model_name = str(maya_data.get("model_name", ""))
+        vmd_data.raw_provenance = maya_data.get("raw_provenance")
         vmd_data.bone_frames = [
             self._coerce_bone_frame(frame) for frame in self._get_frames(maya_data, "bone_frames")
         ]

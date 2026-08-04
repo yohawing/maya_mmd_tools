@@ -7,6 +7,8 @@ import unittest
 from unittest.mock import patch
 
 from mmd_tools.converters.vmd_runtime_provenance import (
+    build_raw_bone_interpolation_provenance,
+    build_raw_vmd_source_provenance,
     build_runtime_registration_provenance,
     store_runtime_registration_provenance,
 )
@@ -56,6 +58,75 @@ class TestVmdRuntimeProvenance(unittest.TestCase):
         self.assertEqual(result["raw_vmd_path"], "")
         self.assertEqual(result["pmx_path"], "")
         self.assertEqual(result["runtime_library_sha256"], "")
+
+    def test_serializes_complete_raw_bone_interpolation_records(self):
+        result = build_raw_bone_interpolation_provenance(
+            [
+                {
+                    "bone_name": "腕",
+                    "frame_number": 10,
+                    "interpolation": [10] * 64,
+                },
+                {
+                    "bone_name": "腕",
+                    "frame_number": 0,
+                    "interpolation": bytes([20]) * 64,
+                },
+            ]
+        )
+
+        self.assertTrue(result["available"])
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["key_count"], 2)
+        self.assertEqual([record["frame_number"] for record in result["records"]], [0, 10])
+        self.assertEqual(result["records"][0]["interpolation"], [20] * 64)
+
+    def test_malformed_or_duplicate_raw_interpolation_is_incomplete(self):
+        result = build_raw_bone_interpolation_provenance(
+            [
+                {"bone_name": "腕", "frame_number": 0, "interpolation": [20] * 64},
+                {"bone_name": "腕", "frame_number": 0, "interpolation": [21] * 64},
+                {"bone_name": "足", "frame_number": 1, "interpolation": [20] * 63},
+            ]
+        )
+
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["key_count"], 3)
+        self.assertEqual(len(result["records"]), 1)
+
+    def test_runtime_profile_contains_raw_interpolation_authority(self):
+        result = build_runtime_registration_provenance(
+            vmd_bytes=b"vmd",
+            pmx_bytes=b"pmx",
+            vmd_source_path="motion.vmd",
+            pmx_source_path="model.pmx",
+            runtime_library_path=None,
+            runtime_abi_version=3,
+            runtime_feature_flags=1,
+            raw_bone_frames=[
+                {"bone_name": "センター", "frame_number": 0, "interpolation": [20] * 64}
+            ],
+        )
+
+        self.assertTrue(result["raw_bone_interpolation_complete"])
+        self.assertEqual(result["raw_bone_key_count"], 1)
+        self.assertEqual(result["raw_bone_interpolation"][0]["interpolation"], [20] * 64)
+
+    def test_legacy_profile_keeps_raw_source_authority_without_runtime_identity(self):
+        result = build_raw_vmd_source_provenance(
+            vmd_bytes=b"vmd",
+            pmx_bytes=None,
+            vmd_source_path="motion.vmd",
+            pmx_source_path="model.pmx",
+            raw_bone_frames=[
+                {"bone_name": "センター", "frame_number": 0, "interpolation": [20] * 64}
+            ],
+        )
+
+        self.assertEqual(result["registration_mode"], "raw_vmd_source")
+        self.assertEqual(result["fallback"], "legacy")
+        self.assertEqual(result["runtime_abi_version"], 0)
+        self.assertTrue(result["raw_bone_interpolation_complete"])
 
     @patch("mmd_tools.converters.vmd_runtime_provenance.maya_attribute_utils.set_attribute")
     @patch("mmd_tools.converters.vmd_runtime_provenance.cmds")

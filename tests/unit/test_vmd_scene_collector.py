@@ -18,6 +18,7 @@ from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_CAMERA,
     ATTR_MMD_LIGHT,
     ATTR_MMD_MODEL_NAME,
+    ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON,
 )
 
 
@@ -214,6 +215,51 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(result["bone_frames"][1]["position"], (2.0, 3.0, -4.0))
         self.assertAlmostEqual(result["bone_frames"][1]["rotation"][2], 0.7071067811865476)
         self.assertAlmostEqual(result["bone_frames"][1]["rotation"][3], 0.7071067811865476)
+
+    def test_uses_complete_raw_interpolation_provenance_from_model_root(self):
+        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs[("model_root", ATTR_MMD_MODEL_NAME)] = "TestModel"
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
+        self.cmds.attrs[("model_root", ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON)] = json.dumps(
+            {
+                "raw_bone_interpolation_complete": True,
+                "raw_bone_key_count": 1,
+                "raw_bone_interpolation": [
+                    {
+                        "bone_name": "センター",
+                        "frame_number": 0,
+                        "interpolation": [7] * 64,
+                    }
+                ],
+            }
+        )
+        for attribute in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
+            self.cmds.keys[("center_joint", attribute)] = {0.0: 0.0}
+
+        result = VmdSceneCollector().collect({"target_model": "model_root"})
+
+        self.assertIsNotNone(result["raw_provenance"])
+        self.assertEqual(result["bone_frames"][0]["interpolation"], bytes([7]) * 64)
+
+    def test_rejects_raw_provenance_with_inconsistent_key_count(self):
+        self.cmds.attrs[("model_root", ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON)] = json.dumps(
+            {
+                "raw_bone_interpolation_complete": True,
+                "raw_bone_key_count": 2,
+                "raw_bone_interpolation": [
+                    {
+                        "bone_name": "センター",
+                        "frame_number": 0,
+                        "interpolation": [7] * 64,
+                    }
+                ],
+            }
+        )
+
+        result = VmdSceneCollector().collect({"target_model": "model_root"})
+
+        self.assertIsNone(result["raw_provenance"])
 
     def test_auto_discovery_is_scoped_to_namespaced_model_root(self):
         root = "|hero:model_ROOT"
