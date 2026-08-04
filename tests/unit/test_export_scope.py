@@ -57,6 +57,7 @@ from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_SPECULAR_COLOR,
     ATTR_MMD_TEXTURE_INDEX,
     ATTR_MMD_TOON_TEXTURE_INDEX,
+    ATTR_MMD_TOON_PATH,
     ATTR_MMD_PMX_REST_POSITION,
     ATTR_MMD_AXIS_DIRECTION,
     ATTR_MMD_X_AXIS_DIRECTION,
@@ -623,12 +624,59 @@ class TestExportScope(unittest.TestCase):
                 ATTR_MMD_MATERIAL: 1,
                 ATTR_MMD_SHARED_TOON_FLAG: 0,
                 ATTR_MMD_TOON_TEXTURE_INDEX: 2,
+                ATTR_MMD_TOON_PATH: "textures/custom_toon.png",
             }
         )
 
         self.assertNotIn("toon_texture_index", material)
         self.assertEqual(material["source_toon_texture_index"], 2)
+        self.assertEqual(material["toon_texture_path"], "textures/custom_toon.png")
         self.assertIn("texture_table", material["semantic_missing"])
+
+    def test_mmd_shader_shared_toon_does_not_collect_custom_toon_path(self):
+        material = self._collect_single_material(
+            {
+                ATTR_MMD_MATERIAL: 1,
+                ATTR_MMD_SHARED_TOON_FLAG: 1,
+                ATTR_MMD_TOON_TEXTURE_INDEX: 2,
+                ATTR_MMD_TOON_PATH: "textures/should_not_be_used.png",
+            }
+        )
+
+        self.assertEqual(material["toon_texture_index"], 2)
+        self.assertNotIn("toon_texture_path", material)
+
+    def test_missing_root_texture_table_reconstructs_non_shared_toon_provenance(self):
+        model_data = {
+            "materials": [
+                {
+                    "texture_path": "textures/body.png",
+                    "source_texture_index": 0,
+                    "toon_texture_path": "textures/custom_toon.png",
+                    "source_toon_texture_index": 1,
+                    "shared_toon_flag": 0,
+                    "semantic_missing": ["texture_table"],
+                }
+            ]
+        }
+
+        with mock.patch.object(
+            export_scene_collector_module,
+            "_get_attr",
+            return_value=None,
+        ):
+            export_scene_collector_module._apply_texture_table(model_data, "|model_ROOT")
+
+        material = model_data["materials"][0]
+        self.assertEqual(
+            model_data["textures"],
+            ["textures/body.png", "textures/custom_toon.png"],
+        )
+        self.assertEqual(material["texture_index"], 0)
+        self.assertEqual(material["toon_texture_index"], 1)
+        self.assertNotIn("source_texture_index", material)
+        self.assertNotIn("source_toon_texture_index", material)
+        self.assertEqual(material["semantic_missing"], [])
 
     def test_mmd_shader_texture_path_without_index_is_fail_closed(self):
         material = self._collect_single_material(

@@ -23,6 +23,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_SPHERE_TEXTURE_INDEX,
     ATTR_MMD_SPHERE_MODE,
     ATTR_MMD_SHARED_TOON_FLAG,
+    ATTR_MMD_TOON_PATH,
     ATTR_MMD_MATERIAL_INDEX,
 )
 
@@ -228,6 +229,48 @@ class TestMeshConverter(MayaTestBase):
                     )
                 else:
                     self.fail(f"{material}に{maya_attr}アトリビュートが存在しません")
+
+    def test_custom_toon_path_is_persisted_only_for_non_shared_pmx_toon(self):
+        """Persist the original PMX-relative custom toon path on the shader."""
+        converter = MeshConverter(str(self.fixture_provider.get_pmx_file("mmt_test_model")))
+
+        def material(shared_toon_flag):
+            return SimpleNamespace(
+                material_index=0,
+                name="Custom Toon",
+                name_english="Custom Toon",
+                diffuse=(0.8, 0.7, 0.6, 1.0),
+                ambient=(0.1, 0.1, 0.1),
+                specular=(0.2, 0.2, 0.2),
+                specular_coefficient=0.5,
+                toon_texture_index=1,
+                sphere_mode=0,
+                sphere_texture_index=-1,
+                texture_index=-1,
+                draw_flag=0x13,
+                edge_color=(0.0, 0.0, 0.0, 1.0),
+                edge_size=1.0,
+                memo="",
+                shared_toon_flag=shared_toon_flag,
+            )
+
+        custom_shader = converter._create_material(
+            material(0),
+            all_textures=["textures/body.png", "textures/custom_toon.png"],
+            material_index=0,
+        )
+        self.assertTrue(cmds.attributeQuery(ATTR_MMD_TOON_PATH, node=custom_shader, exists=True))
+        self.assertEqual(
+            maya_attribute_utils.get_attribute(custom_shader, ATTR_MMD_TOON_PATH),
+            "textures/custom_toon.png",
+        )
+
+        shared_shader = converter._create_material(
+            material(1),
+            all_textures=["textures/body.png", "textures/custom_toon.png"],
+            material_index=1,
+        )
+        self.assertFalse(cmds.attributeQuery(ATTR_MMD_TOON_PATH, node=shared_shader, exists=True))
 
     def test_material_node_family_is_safe_unique_and_raw_names_are_preserved(self):
         """Each hazardous material name receives one deterministic node family."""

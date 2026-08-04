@@ -24,6 +24,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_TEXTURE_INDEX,
     ATTR_MMD_TEXTURE_CACHE_PATH,
     ATTR_MMD_TEXTURE_UNRESOLVED,
+    ATTR_MMD_TOON_PATH,
     ATTR_MMD_TOON_TEXTURE_INDEX,
     GEOMETRY_GROUP,
     ATTR_MMD_MATERIAL,
@@ -203,6 +204,7 @@ _MIGRATED_MMD_ATTRS = (
     ATTR_MMD_SHARED_TOON_FLAG,
     "mmd_texture_path",
     "mmd_sphere_path",
+    ATTR_MMD_TOON_PATH,
     "mmdTransparencyMode",
     _ATTR_MMD_DOUBLE_SIDED,
 )
@@ -2114,6 +2116,17 @@ class MeshConverter:
             custom_attrs[_ATTR_MMD_DOUBLE_SIDED] = _material_is_double_sided(material)
             custom_attrs[ATTR_MMD_MEMO] = material.memo
             custom_attrs[ATTR_MMD_SHARED_TOON_FLAG] = int(material.shared_toon_flag)
+            toon_texture_index = getattr(material, "toon_texture_index", -1)
+            if (
+                material.shared_toon_flag == 0
+                and isinstance(toon_texture_index, int)
+                and not isinstance(toon_texture_index, bool)
+                and toon_texture_index >= 0
+                and all_textures
+                and toon_texture_index < len(all_textures)
+                and isinstance(all_textures[toon_texture_index], str)
+            ):
+                custom_attrs[ATTR_MMD_TOON_PATH] = all_textures[toon_texture_index]
 
         maya_attribute_utils.set_custom_attributes(
             shader,

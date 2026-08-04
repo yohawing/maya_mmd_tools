@@ -73,6 +73,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_SPHERE_TEXTURE_INDEX,
     ATTR_MMD_TEXTURE_INDEX,
     ATTR_MMD_TEXTURE_TABLE_JSON,
+    ATTR_MMD_TOON_PATH,
     ATTR_MMD_TOON_TEXTURE_INDEX,
     ATTR_MMD_PMX_REST_POSITION,
     ATTR_MMD_AXIS_DIRECTION,
@@ -1403,10 +1404,16 @@ def _collect_mmd_material_dict(shader: str, is_pmd: bool = False) -> dict:
         resolve_file_node=True,
     )
     sphere_present, sphere_path, _ = _read_shader_texture_path(shader, ATTR_MMD_SPHERE_PATH)
+    toon_present = False
+    toon_path = None
+    if not is_pmd and material.get("shared_toon_flag") == 0:
+        toon_present, toon_path, _ = _read_shader_texture_path(shader, ATTR_MMD_TOON_PATH)
     if not texture_present and (texture_path or texture_connected):
         semantic_missing.append("texture_path")
     if not sphere_present and sphere_path:
         semantic_missing.append("sphere_texture_path")
+    if not toon_present and toon_path:
+        semantic_missing.append("toon_texture_path")
     if is_pmd:
         texture_index_present, texture_index = _read_shader_scalar(shader, ATTR_MMD_TEXTURE_INDEX, int)
         sphere_index_present, sphere_index = _read_shader_scalar(shader, ATTR_MMD_SPHERE_TEXTURE_INDEX, int)
@@ -1435,6 +1442,8 @@ def _collect_mmd_material_dict(shader: str, is_pmd: bool = False) -> dict:
             material["texture_path"] = texture_path
         if sphere_present:
             material["sphere_texture_path"] = sphere_path
+        if toon_present:
+            material["toon_texture_path"] = toon_path
         if texture_present and (
             not isinstance(material.get("texture_index"), int)
             or material["texture_index"] < 0
