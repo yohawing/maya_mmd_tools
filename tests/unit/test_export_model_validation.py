@@ -604,6 +604,35 @@ class TestExportModelValidation(unittest.TestCase):
             "MATERIAL_SEMANTIC_MISSING",
         )
 
+    def test_bone_semantic_missing_blocks_with_registered_issue(self):
+        model_data = _valid_model_data()
+        model_data["bones"] = [
+            {
+                "bone_flag": 0x0001,
+                "connect_bone_index": None,
+                "semantic_missing": ["connect_bone_index"],
+            }
+        ]
+
+        report = validate_model_data(model_data, "pmx")
+
+        self.assertFalse(report.valid)
+        self.assertEqual(
+            [(issue.code, issue.path, issue.message) for issue in report.issues],
+            [
+                (
+                    "PMX_BONE_SEMANTIC_MISSING",
+                    "bones[0].semantic_missing",
+                    "bone semantic data is missing: connect_bone_index",
+                ),
+                ("BONE_REFERENCE_TYPE", "bones[0].connect_bone_index", "bone reference must be an integer"),
+            ],
+        )
+        self.assertEqual(
+            get_issue_catalog_entry("PMX_BONE_SEMANTIC_MISSING").code,
+            "PMX_BONE_SEMANTIC_MISSING",
+        )
+
     def test_untagged_material_without_semantic_missing_remains_valid(self):
         model_data = _valid_model_data()
 

@@ -23,6 +23,10 @@ from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_BONE_PARENT_INDEX,
+    ATTR_MMD_CONNECTION_BONE,
+    ATTR_MMD_CONNECT_BONE_INDEX,
+    ATTR_MMD_CONNECT_INDEX,
+    ATTR_MMD_DEFORM_LAYER,
     ATTR_MMD_DIFFUSE_COLOR,
     ATTR_MMD_DRAW_FLAGS,
     ATTR_MMD_EDGE_FLAG,
@@ -33,6 +37,13 @@ from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_IK_LOOP,
     ATTR_MMD_IK_TARGET,
     ATTR_MMD_IK_TARGET_INDEX,
+    ATTR_MMD_EXTERNAL_PARENT_KEY,
+    ATTR_MMD_FIXED_AXIS,
+    ATTR_MMD_GRANT_PARENT,
+    ATTR_MMD_GRANT_PARENT_INDEX,
+    ATTR_MMD_GRANT_RATE,
+    ATTR_MMD_LOCAL_X_AXIS,
+    ATTR_MMD_LOCAL_Z_AXIS,
     ATTR_MMD_MATERIAL,
     ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_MATERIAL_NAME,
@@ -46,6 +57,10 @@ from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_SPECULAR_COLOR,
     ATTR_MMD_TEXTURE_INDEX,
     ATTR_MMD_TOON_TEXTURE_INDEX,
+    ATTR_MMD_PMX_REST_POSITION,
+    ATTR_MMD_AXIS_DIRECTION,
+    ATTR_MMD_X_AXIS_DIRECTION,
+    ATTR_MMD_Z_AXIS_DIRECTION,
 )
 from mmd_tools.converters.morph_converter import MorphConverter  # noqa: E402
 from mmd_tools.core import maya_material_utils  # noqa: E402
@@ -300,11 +315,147 @@ class TestExportScope(unittest.TestCase):
         ):
             bones, _ = export_scene_collector_module._collect_bones_from_joints([joint])
 
-        self.assertNotIn("bone_flag", bones[0])
+        self.assertEqual(bones[0]["bone_flag"], 0x000A)
         self.assertNotIn("ik_target_bone_index", bones[0])
         self.assertNotIn("ik_loop_count", bones[0])
         self.assertNotIn("ik_limit_angle", bones[0])
         self.assertNotIn("ik_links", bones[0])
+
+    def test_collect_bones_preserves_authored_non_ik_semantics(self):
+        """Canonical PMX fields reach the collector without writer defaults."""
+        root = "|model|root"
+        child = "|model|child"
+        authored_flags = (
+            0x0001  # CONNECT_BONE
+            | 0x0002 | 0x0004 | 0x0008 | 0x0010
+            | 0x0080  # LOCAL
+            | 0x0100 | 0x0200  # grant rotate/move
+            | 0x0400 | 0x0800  # fixed/local axis
+            | 0x1000 | 0x2000  # after physics/external parent
+        )
+        attrs = {
+            (root, ATTR_MMD_BONE_INDEX): 10,
+            (root, ATTR_MMD_BONE_PARENT_INDEX): -1,
+            (root, ATTR_MMD_BONE_NAME): "Root",
+            (root, ATTR_MMD_BONE_NAME_EN): "Root",
+            (child, ATTR_MMD_BONE_INDEX): 20,
+            (child, ATTR_MMD_BONE_PARENT_INDEX): 10,
+            (child, ATTR_MMD_BONE_NAME): "Child",
+            (child, ATTR_MMD_BONE_NAME_EN): "Child",
+            (child, ATTR_MMD_BONE_FLAGS): authored_flags,
+            (child, ATTR_MMD_DEFORM_LAYER): 7,
+            (child, ATTR_MMD_PMX_REST_POSITION): [7.0, 8.0, 9.0],
+            (child, ATTR_MMD_CONNECTION_BONE): "Root",
+            (child, ATTR_MMD_CONNECT_INDEX): 10,
+            (child, ATTR_MMD_CONNECT_BONE_INDEX): 10,
+            (child, ATTR_MMD_GRANT_PARENT): "Root",
+            (child, ATTR_MMD_GRANT_PARENT_INDEX): 10,
+            (child, ATTR_MMD_GRANT_RATE): 0.25,
+            (child, ATTR_MMD_FIXED_AXIS): [0.0, 1.0, 0.0],
+            (child, ATTR_MMD_AXIS_DIRECTION): [0.0, 1.0, 0.0],
+            (child, ATTR_MMD_LOCAL_X_AXIS): [1.0, 0.0, 0.0],
+            (child, ATTR_MMD_X_AXIS_DIRECTION): [1.0, 0.0, 0.0],
+            (child, ATTR_MMD_LOCAL_Z_AXIS): [0.0, 0.0, 1.0],
+            (child, ATTR_MMD_Z_AXIS_DIRECTION): [0.0, 0.0, 1.0],
+            (child, ATTR_MMD_EXTERNAL_PARENT_KEY): 42,
+        }
+
+        def attribute_query(attr, node, exists):
+            return exists and (node, attr) in attrs
+
+        def get_attr(path):
+            node, attr = path.rsplit(".", 1)
+            return attrs[(node, attr)]
+
+        with (
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "attributeQuery",
+                side_effect=attribute_query,
+            ),
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "getAttr",
+                side_effect=get_attr,
+            ),
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "xform",
+                return_value=[100.0, 200.0, 300.0],
+            ),
+        ):
+            bones, _ = export_scene_collector_module._collect_bones_from_joints([child, root])
+
+        exported = bones[1]
+        self.assertEqual(exported["bone_flag"], authored_flags)
+        self.assertEqual(exported["position"], [7.0, 8.0, 9.0])
+        self.assertEqual(exported["transform_layer"], 7)
+        self.assertEqual(exported["connect_bone_index"], 0)
+        self.assertNotIn("connect_position_offset", exported)
+        self.assertEqual(exported["grant_parent_bone_index"], 0)
+        self.assertEqual(exported["grant_rate"], 0.25)
+        self.assertEqual(exported["axis_direction"], [0.0, 1.0, 0.0])
+        self.assertEqual(exported["x_axis_direction"], [1.0, 0.0, 0.0])
+        self.assertEqual(exported["z_axis_direction"], [0.0, 0.0, 1.0])
+        self.assertEqual(exported["key_value"], 42)
+        self.assertNotIn("semantic_missing", exported)
+
+    def test_collect_bones_keeps_malformed_rest_and_unresolved_refs_visible(self):
+        """Malformed canonical data is retained for fail-closed validation."""
+        root = "|model|root"
+        child = "|model|child"
+        attrs = {
+            (root, ATTR_MMD_BONE_INDEX): 0,
+            (root, ATTR_MMD_BONE_PARENT_INDEX): -1,
+            (root, ATTR_MMD_BONE_NAME): "Root",
+            (root, ATTR_MMD_BONE_NAME_EN): "Root",
+            (child, ATTR_MMD_BONE_INDEX): 1,
+            (child, ATTR_MMD_BONE_PARENT_INDEX): 0,
+            (child, ATTR_MMD_BONE_NAME): "Child",
+            (child, ATTR_MMD_BONE_NAME_EN): "Child",
+            (child, ATTR_MMD_BONE_FLAGS): 0x0001 | 0x0100,
+            (child, ATTR_MMD_PMX_REST_POSITION): ["malformed"],
+            (child, ATTR_MMD_CONNECT_INDEX): 99,
+            (child, ATTR_MMD_CONNECTION_BONE): "missing",
+            (child, ATTR_MMD_GRANT_PARENT_INDEX): 0,
+            (child, ATTR_MMD_GRANT_PARENT): "missing",
+            (child, ATTR_MMD_GRANT_RATE): 0.5,
+        }
+
+        def attribute_query(attr, node, exists):
+            return exists and (node, attr) in attrs
+
+        def get_attr(path):
+            node, attr = path.rsplit(".", 1)
+            return attrs[(node, attr)]
+
+        with (
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "attributeQuery",
+                side_effect=attribute_query,
+            ),
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "getAttr",
+                side_effect=get_attr,
+            ),
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "xform",
+                return_value=[0.0, 0.0, 0.0],
+            ),
+        ):
+            bones, _ = export_scene_collector_module._collect_bones_from_joints([root, child])
+
+        exported = bones[1]
+        self.assertEqual(exported["position"], ["malformed"])
+        self.assertIsNone(exported["connect_bone_index"])
+        self.assertIsNone(exported["grant_parent_bone_index"])
+        self.assertEqual(
+            exported["semantic_missing"],
+            ["connect_bone_index", "grant_parent_bone_index"],
+        )
 
     def test_mmd_shader_semantics_override_defaults_and_keep_provenance(self):
         material = self._collect_single_material(

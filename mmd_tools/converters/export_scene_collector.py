@@ -34,8 +34,13 @@ from mmd_tools.core.constants import (
     ATTR_MMD_BONE_FLAGS,
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_NAME_EN,
+    ATTR_MMD_BONE_OFFSET,
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_BONE_PARENT_INDEX,
+    ATTR_MMD_CONNECTION_BONE,
+    ATTR_MMD_CONNECT_BONE_INDEX,
+    ATTR_MMD_CONNECT_INDEX,
+    ATTR_MMD_DEFORM_LAYER,
     ATTR_MMD_DIFFUSE_COLOR,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
     ATTR_MMD_DRAW_FLAGS,
@@ -47,6 +52,13 @@ from mmd_tools.core.constants import (
     ATTR_MMD_IK_LOOP,
     ATTR_MMD_IK_TARGET,
     ATTR_MMD_IK_TARGET_INDEX,
+    ATTR_MMD_EXTERNAL_PARENT_KEY,
+    ATTR_MMD_FIXED_AXIS,
+    ATTR_MMD_GRANT_PARENT,
+    ATTR_MMD_GRANT_PARENT_INDEX,
+    ATTR_MMD_GRANT_RATE,
+    ATTR_MMD_LOCAL_X_AXIS,
+    ATTR_MMD_LOCAL_Z_AXIS,
     ATTR_MMD_MATERIAL,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
@@ -62,6 +74,10 @@ from mmd_tools.core.constants import (
     ATTR_MMD_TEXTURE_INDEX,
     ATTR_MMD_TEXTURE_TABLE_JSON,
     ATTR_MMD_TOON_TEXTURE_INDEX,
+    ATTR_MMD_PMX_REST_POSITION,
+    ATTR_MMD_AXIS_DIRECTION,
+    ATTR_MMD_X_AXIS_DIRECTION,
+    ATTR_MMD_Z_AXIS_DIRECTION,
 )
 from mmd_tools.core.coordinate_transform import maya_point_to_mmd
 from mmd_tools.core.display_frame_metadata import display_frames_from_json
@@ -385,6 +401,42 @@ _PMX_DEFAULT_BONE_FLAGS = int(
     | PmxBoneFlag.MOVABLE
 )
 _PMX_IK_FLAG = int(PmxBoneFlag.IK)
+_PMX_CONNECT_BONE_FLAG = int(PmxBoneFlag.CONNECT_BONE)
+_PMX_GRANT_FLAGS = int(PmxBoneFlag.GRANT_PARENT_ROTATE | PmxBoneFlag.GRANT_PARENT_MOVE)
+_PMX_AXIS_FIXED_FLAG = int(PmxBoneFlag.AXIS_FIXED)
+_PMX_LOCAL_AXIS_FLAG = int(PmxBoneFlag.LOCAL_AXIS)
+_PMX_EXTERNAL_PARENT_FLAG = int(PmxBoneFlag.EXTERNAL_PARENT_DEFORM)
+
+
+def _normalize_maya_vector(value: object) -> object:
+    """Unwrap Maya's one-item compound-vector return without hiding bad data."""
+    if isinstance(value, (list, tuple)) and len(value) == 1:
+        nested = value[0]
+        if isinstance(nested, (list, tuple)):
+            return nested
+    return value
+
+
+def _present_attrs(joint: str, attrs: tuple[str, ...]) -> dict[str, bool]:
+    """Return custom-attribute presence for one joint."""
+    return {attr: cmds.attributeQuery(attr, node=joint, exists=True) for attr in attrs}
+
+
+def _same_authored_value(left: object, right: object) -> bool:
+    """Compare two Maya attribute values without coercing malformed values."""
+    left = _normalize_maya_vector(left)
+    right = _normalize_maya_vector(right)
+    try:
+        result = left == right
+        return result if isinstance(result, bool) else bool(result)
+    except (TypeError, ValueError):
+        return False
+
+
+def _append_semantic_missing(missing: list[str], field_name: str) -> None:
+    """Record one missing or ambiguous PMX field exactly once."""
+    if field_name not in missing:
+        missing.append(field_name)
 
 
 def _register_bone_reference_alias(
@@ -441,6 +493,198 @@ def _resolve_ik_links(
             )
         resolved_links.append(resolved_link)
     return resolved_links
+
+
+def _resolve_authored_reference(
+    values: list[object],
+    source_to_export: dict[int, Optional[int]],
+    name_to_export: dict[str, Optional[int]],
+) -> tuple[object, bool]:
+    """Resolve one or more authored references and detect conflicts."""
+    candidates = [
+        value
+        for value in values
+        if not (isinstance(value, str) and not value)
+    ]
+    if not candidates:
+        return None, True
+
+    resolved = [
+        _resolve_ik_bone_reference(value, source_to_export, name_to_export)
+        for value in candidates
+    ]
+    if any(value is None for value in resolved):
+        return None, True
+    if any(value != resolved[0] for value in resolved[1:]):
+        return None, True
+    return resolved[0], False
+
+
+def _collect_vector_alias(
+    joint: str,
+    present: dict[str, bool],
+    attrs: tuple[str, ...],
+    payload: dict,
+    payload_name: str,
+    semantic_missing: list[str],
+) -> bool:
+    """Collect one vector from equivalent canonical/legacy aliases."""
+    values = [
+        _normalize_maya_vector(_get_attr(joint, attr))
+        for attr in attrs
+        if present[attr]
+    ]
+    if not values:
+        return False
+    payload[payload_name] = values[0]
+    if len(values) > 1 and not all(_same_authored_value(values[0], value) for value in values[1:]):
+        payload[payload_name] = None
+        _append_semantic_missing(semantic_missing, payload_name)
+    return True
+
+
+def _collect_bone_semantic_metadata(
+    joint: str,
+    raw_flags: object,
+    source_to_export: dict[int, Optional[int]],
+    name_to_export: dict[str, Optional[int]],
+) -> dict:
+    """Collect non-IK PMX bone semantics from canonical Maya attributes.
+
+    Missing attributes on legacy joints intentionally retain writer defaults.
+    Once a conditional attribute is authored, however, malformed, conflicting,
+    or unresolved values are retained as explicit semantic-missing payload so
+    preflight can reject them instead of guessing.
+    """
+    present = _present_attrs(
+        joint,
+        (
+            ATTR_MMD_DEFORM_LAYER,
+            ATTR_MMD_PMX_REST_POSITION,
+            ATTR_MMD_BONE_OFFSET,
+            ATTR_MMD_CONNECTION_BONE,
+            ATTR_MMD_CONNECT_INDEX,
+            ATTR_MMD_CONNECT_BONE_INDEX,
+            ATTR_MMD_GRANT_PARENT,
+            ATTR_MMD_GRANT_PARENT_INDEX,
+            ATTR_MMD_GRANT_RATE,
+            ATTR_MMD_FIXED_AXIS,
+            ATTR_MMD_AXIS_DIRECTION,
+            ATTR_MMD_LOCAL_X_AXIS,
+            ATTR_MMD_X_AXIS_DIRECTION,
+            ATTR_MMD_LOCAL_Z_AXIS,
+            ATTR_MMD_Z_AXIS_DIRECTION,
+            ATTR_MMD_EXTERNAL_PARENT_KEY,
+        ),
+    )
+    metadata = {}
+    semantic_missing: list[str] = []
+
+    if present[ATTR_MMD_DEFORM_LAYER]:
+        metadata["transform_layer"] = _get_attr(joint, ATTR_MMD_DEFORM_LAYER)
+    if present[ATTR_MMD_PMX_REST_POSITION]:
+        # Do not fall back to the live transform when the canonical value is
+        # present but malformed; the validator must see the authored value.
+        metadata["position"] = _normalize_maya_vector(
+            _get_attr(joint, ATTR_MMD_PMX_REST_POSITION)
+        )
+
+    valid_flags = isinstance(raw_flags, int) and not isinstance(raw_flags, bool)
+    flags = int(raw_flags) if valid_flags else 0
+
+    if flags & _PMX_CONNECT_BONE_FLAG:
+        reference_attrs = (
+            ATTR_MMD_CONNECT_INDEX,
+            ATTR_MMD_CONNECT_BONE_INDEX,
+            ATTR_MMD_CONNECTION_BONE,
+        )
+        reference_present = [attr for attr in reference_attrs if present[attr]]
+        if reference_present:
+            value, invalid = _resolve_authored_reference(
+                [_get_attr(joint, attr) for attr in reference_present],
+                source_to_export,
+                name_to_export,
+            )
+            metadata["connect_bone_index"] = value
+            if invalid:
+                _append_semantic_missing(semantic_missing, "connect_bone_index")
+    elif present[ATTR_MMD_BONE_OFFSET]:
+        metadata["connect_position_offset"] = _normalize_maya_vector(
+            _get_attr(joint, ATTR_MMD_BONE_OFFSET)
+        )
+
+    if flags & _PMX_GRANT_FLAGS:
+        parent_attrs = (ATTR_MMD_GRANT_PARENT_INDEX, ATTR_MMD_GRANT_PARENT)
+        parent_present = [attr for attr in parent_attrs if present[attr]]
+        grant_related_present = bool(parent_present or present[ATTR_MMD_GRANT_RATE])
+        if grant_related_present:
+            if parent_present:
+                value, invalid = _resolve_authored_reference(
+                    [_get_attr(joint, attr) for attr in parent_present],
+                    source_to_export,
+                    name_to_export,
+                )
+            else:
+                value, invalid = None, True
+            metadata["grant_parent_bone_index"] = value
+            if invalid:
+                _append_semantic_missing(semantic_missing, "grant_parent_bone_index")
+            if present[ATTR_MMD_GRANT_RATE]:
+                metadata["grant_rate"] = _get_attr(joint, ATTR_MMD_GRANT_RATE)
+            else:
+                _append_semantic_missing(semantic_missing, "grant_rate")
+
+    if flags & _PMX_AXIS_FIXED_FLAG:
+        fixed_present = _collect_vector_alias(
+            joint,
+            present,
+            (ATTR_MMD_FIXED_AXIS, ATTR_MMD_AXIS_DIRECTION),
+            metadata,
+            "axis_direction",
+            semantic_missing,
+        )
+        if not fixed_present and any(
+            present[attr] for attr in (ATTR_MMD_FIXED_AXIS, ATTR_MMD_AXIS_DIRECTION)
+        ):
+            _append_semantic_missing(semantic_missing, "axis_direction")
+
+    if flags & _PMX_LOCAL_AXIS_FLAG:
+        x_present = _collect_vector_alias(
+            joint,
+            present,
+            (ATTR_MMD_LOCAL_X_AXIS, ATTR_MMD_X_AXIS_DIRECTION),
+            metadata,
+            "x_axis_direction",
+            semantic_missing,
+        )
+        z_present = _collect_vector_alias(
+            joint,
+            present,
+            (ATTR_MMD_LOCAL_Z_AXIS, ATTR_MMD_Z_AXIS_DIRECTION),
+            metadata,
+            "z_axis_direction",
+            semantic_missing,
+        )
+        local_axis_present = any(
+            present[attr]
+            for attr in (
+                ATTR_MMD_LOCAL_X_AXIS,
+                ATTR_MMD_X_AXIS_DIRECTION,
+                ATTR_MMD_LOCAL_Z_AXIS,
+                ATTR_MMD_Z_AXIS_DIRECTION,
+            )
+        )
+        if local_axis_present and not x_present:
+            _append_semantic_missing(semantic_missing, "x_axis_direction")
+        if local_axis_present and not z_present:
+            _append_semantic_missing(semantic_missing, "z_axis_direction")
+
+    if flags & _PMX_EXTERNAL_PARENT_FLAG and present[ATTR_MMD_EXTERNAL_PARENT_KEY]:
+        metadata["key_value"] = _get_attr(joint, ATTR_MMD_EXTERNAL_PARENT_KEY)
+
+    if semantic_missing:
+        metadata["semantic_missing"] = semantic_missing
+    return metadata
 
 
 def _collect_ik_metadata(
@@ -505,17 +749,17 @@ def _collect_ik_metadata(
         or has_nonempty_links
     )
     if not has_ik_flag and not has_ik_payload:
+        if present[ATTR_MMD_BONE_FLAGS]:
+            return {"bone_flag": raw_flags}
         return {}
 
     metadata = {}
-    if has_ik_flag:
-        # Keep the writer's existing default display/operation flags while
-        # adding only the supported IK bit; unrelated bone fields remain out
-        # of this collector slice.
-        metadata["bone_flag"] = _PMX_DEFAULT_BONE_FLAGS | _PMX_IK_FLAG
-    elif present[ATTR_MMD_BONE_FLAGS]:
-        # Preserve a malformed/missing IK flag for the validator to reject.
+    if present[ATTR_MMD_BONE_FLAGS]:
+        # Preserve the complete authored flag word.  The old IK-only slice
+        # replaced this with a writer default and silently lost non-IK bits.
         metadata["bone_flag"] = raw_flags
+    elif has_ik_flag:
+        metadata["bone_flag"] = _PMX_DEFAULT_BONE_FLAGS | _PMX_IK_FLAG
 
     target_index = None
     if present[ATTR_MMD_IK_TARGET_INDEX]:
@@ -599,6 +843,8 @@ def _collect_bones_from_joints(joints: list[str]) -> tuple[list[dict], dict[str,
                 parent_index = export_index_by_joint[parent]
 
         position = cmds.xform(joint, query=True, worldSpace=True, translation=True)
+        flags_present = cmds.attributeQuery(ATTR_MMD_BONE_FLAGS, node=joint, exists=True)
+        raw_flags = _get_attr(joint, ATTR_MMD_BONE_FLAGS) if flags_present else None
         bone = {
             "name": _get_attr(joint, ATTR_MMD_BONE_NAME, joint.rsplit("|", 1)[-1]),
             "name_english": _get_attr(joint, ATTR_MMD_BONE_NAME_EN, ""),
@@ -606,6 +852,14 @@ def _collect_bones_from_joints(joints: list[str]) -> tuple[list[dict], dict[str,
             "parent_index": parent_index,
             "source_joint": joint,
         }
+        bone.update(
+            _collect_bone_semantic_metadata(
+                joint,
+                raw_flags,
+                ik_source_to_export,
+                ik_name_to_export,
+            )
+        )
         bone.update(
             _collect_ik_metadata(
                 joint,

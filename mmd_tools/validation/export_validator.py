@@ -36,6 +36,11 @@ _PMX_MORPH_TYPE_BY_ENUM = {0: "group", 1: "vertex", 2: "bone", 8: "material"}
 _PMX_MORPH_TYPES = frozenset(_PMX_MORPH_TYPE_BY_ENUM.values())
 _PMD_BONE_TYPE_VALUES = frozenset(range(10))
 _PMX_IK_FLAG = 0x0020
+_PMX_CONNECT_BONE_FLAG = 0x0001
+_PMX_GRANT_FLAGS = 0x0300
+_PMX_AXIS_FIXED_FLAG = 0x0400
+_PMX_LOCAL_AXIS_FLAG = 0x0800
+_PMX_EXTERNAL_PARENT_FLAG = 0x2000
 
 
 @dataclass(frozen=True)
@@ -890,6 +895,58 @@ def _validate_bone_ik_metadata(
     _validate_bone_ik_links(bone, bone_path, bone_count, issues, required=True)
 
 
+def _validate_bone_semantic_missing(
+    bone: Mapping,
+    bone_path: str,
+    issues: List[ExportValidationIssue],
+) -> None:
+    """Block collector payloads that retained ambiguous authored bone data."""
+    if "semantic_missing" not in bone or not bone["semantic_missing"]:
+        return
+    missing = bone["semantic_missing"]
+    if _is_sequence(missing):
+        missing_fields = ", ".join(str(value) for value in missing)
+    else:
+        missing_fields = str(missing)
+    _issue(
+        issues,
+        "PMX_BONE_SEMANTIC_MISSING",
+        _path_for_key(bone_path, "semantic_missing"),
+        f"bone semantic data is missing: {missing_fields}",
+    )
+
+
+def _validate_bone_conditional_payload(
+    bone: Mapping,
+    bone_path: str,
+    issues: List[ExportValidationIssue],
+) -> None:
+    """Reject omitted PMX conditional payloads when their flag is authored."""
+    raw_flag = bone.get("bone_flag")
+    if not _is_integer(raw_flag):
+        return
+    flags = int(raw_flag)
+    required_fields = []
+    if flags & _PMX_CONNECT_BONE_FLAG:
+        required_fields.append("connect_bone_index")
+    if flags & _PMX_GRANT_FLAGS:
+        required_fields.extend(("grant_parent_bone_index", "grant_rate"))
+    if flags & _PMX_AXIS_FIXED_FLAG:
+        required_fields.append("axis_direction")
+    if flags & _PMX_LOCAL_AXIS_FLAG:
+        required_fields.extend(("x_axis_direction", "z_axis_direction"))
+    if flags & _PMX_EXTERNAL_PARENT_FLAG:
+        required_fields.append("key_value")
+    for field_name in required_fields:
+        if field_name not in bone:
+            _issue(
+                issues,
+                "PMX_BONE_SEMANTIC_MISSING",
+                _path_for_key(bone_path, field_name),
+                f"bone flag requires {field_name}",
+            )
+
+
 def _is_pmd_bone_type(value: Any) -> bool:
     """Return whether *value* is a PMD bone type accepted by the writer."""
     if _is_integer(value):
@@ -928,6 +985,9 @@ def _validate_bones(
         if not isinstance(bone, Mapping):
             _issue(issues, "BONE_NOT_MAPPING", bone_path, "bone must be a mapping")
             continue
+        if export_format != "pmd":
+            _validate_bone_semantic_missing(bone, bone_path, issues)
+            _validate_bone_conditional_payload(bone, bone_path, issues)
         _validate_text_fields(bone, ("name", "name_english"), bone_path, issues)
         _validate_vector_field(bone, "position", 3, bone_path, issues)
         _validate_vector_field(bone, "connect_position_offset", 3, bone_path, issues)

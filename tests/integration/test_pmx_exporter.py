@@ -22,10 +22,15 @@ from mmd_tools.converters.material_shader_parameters import (
 )
 from mmd_tools.core.constants import (
     ATTR_MMD_BONE_INDEX,
+    ATTR_MMD_BONE_OFFSET,
     ATTR_MMD_BONE_FLAGS,
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_BONE_PARENT_INDEX,
+    ATTR_MMD_CONNECTION_BONE,
+    ATTR_MMD_CONNECT_BONE_INDEX,
+    ATTR_MMD_CONNECT_INDEX,
+    ATTR_MMD_DEFORM_LAYER,
     ATTR_MMD_AMBIENT_COLOR,
     ATTR_MMD_DIFFUSE_COLOR,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
@@ -37,6 +42,13 @@ from mmd_tools.core.constants import (
     ATTR_MMD_IK_LOOP,
     ATTR_MMD_IK_TARGET,
     ATTR_MMD_IK_TARGET_INDEX,
+    ATTR_MMD_EXTERNAL_PARENT_KEY,
+    ATTR_MMD_FIXED_AXIS,
+    ATTR_MMD_GRANT_PARENT,
+    ATTR_MMD_GRANT_PARENT_INDEX,
+    ATTR_MMD_GRANT_RATE,
+    ATTR_MMD_LOCAL_X_AXIS,
+    ATTR_MMD_LOCAL_Z_AXIS,
     ATTR_MMD_MATERIAL,
     ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_MATERIAL_NAME,
@@ -51,12 +63,17 @@ from mmd_tools.core.constants import (
     ATTR_MMD_SPECULAR_COLOR,
     ATTR_MMD_TEXTURE_INDEX,
     ATTR_MMD_TOON_TEXTURE_INDEX,
+    ATTR_MMD_PMX_REST_POSITION,
+    ATTR_MMD_AXIS_DIRECTION,
+    ATTR_MMD_X_AXIS_DIRECTION,
+    ATTR_MMD_Z_AXIS_DIRECTION,
 )
 from mmd_tools.core import maya_attribute_utils
 from mmd_tools.core.model_registry import REGISTRY_CATEGORY_MORPH, list_model_registry_members
 from mmd_tools.io.pmx_exporter import PmxExporter
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.pmx_data.morph import PmxMorphType
+from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.core.logger import get_logger
 from mmd_tools.io.model_import_pipeline import ModelImportPipeline
 from tests.common.maya_test_base import MayaTestBase
@@ -804,6 +821,81 @@ class TestPmxExporter(MayaTestBase):
         self.assertAlmostEqual(pmx.vertices[1].bone_weights[0], 0.75)
         self.assertEqual(pmx.vertices[2].weight_transform_type, 0)
         self.assertEqual(pmx.vertices[2].bone_indices, [1])
+
+    def test_export_model_action_roundtrips_non_ik_bone_semantics(self):
+        """Canonical non-IK bone attrs survive Maya → PMX → parser round-trip."""
+        transform, joints, _skin_cluster = self._make_skinned_triangle("pmx_bone_semantics")
+        root_joint, child_joint = joints
+        authored_flags = int(
+            PmxBoneFlag.CONNECT_BONE
+            | PmxBoneFlag.ROTATABLE
+            | PmxBoneFlag.MOVABLE
+            | PmxBoneFlag.DISPLAY
+            | PmxBoneFlag.OPERATABLE
+            | PmxBoneFlag.LOCAL
+            | PmxBoneFlag.GRANT_PARENT_ROTATE
+            | PmxBoneFlag.GRANT_PARENT_MOVE
+            | PmxBoneFlag.AXIS_FIXED
+            | PmxBoneFlag.LOCAL_AXIS
+            | PmxBoneFlag.DEFORM_AFTER_PHYSICS
+            | PmxBoneFlag.EXTERNAL_PARENT_DEFORM
+        )
+        maya_attribute_utils.set_custom_attributes(
+            root_joint,
+            {
+                ATTR_MMD_BONE_FLAGS: int(
+                    PmxBoneFlag.ROTATABLE
+                    | PmxBoneFlag.MOVABLE
+                    | PmxBoneFlag.DISPLAY
+                    | PmxBoneFlag.OPERATABLE
+                ),
+                ATTR_MMD_BONE_OFFSET: [1.0, 2.0, 3.0],
+            },
+        )
+        maya_attribute_utils.set_custom_attributes(
+            child_joint,
+            {
+                ATTR_MMD_BONE_FLAGS: authored_flags,
+                ATTR_MMD_DEFORM_LAYER: 7,
+                ATTR_MMD_PMX_REST_POSITION: [7.0, 8.0, 9.0],
+                ATTR_MMD_CONNECTION_BONE: "センター",
+                ATTR_MMD_CONNECT_INDEX: 0,
+                ATTR_MMD_CONNECT_BONE_INDEX: 0,
+                ATTR_MMD_GRANT_PARENT: "センター",
+                ATTR_MMD_GRANT_PARENT_INDEX: 0,
+                ATTR_MMD_GRANT_RATE: 0.25,
+                ATTR_MMD_FIXED_AXIS: [0.0, 1.0, 0.0],
+                ATTR_MMD_AXIS_DIRECTION: [0.0, 1.0, 0.0],
+                ATTR_MMD_LOCAL_X_AXIS: [1.0, 0.0, 0.0],
+                ATTR_MMD_X_AXIS_DIRECTION: [1.0, 0.0, 0.0],
+                ATTR_MMD_LOCAL_Z_AXIS: [0.0, 0.0, 1.0],
+                ATTR_MMD_Z_AXIS_DIRECTION: [0.0, 0.0, 1.0],
+                ATTR_MMD_EXTERNAL_PARENT_KEY: 42,
+            },
+        )
+
+        output_path = self.get_temp_filename("bone_semantics.pmx")
+        result = ExportModelAction().execute(
+            ExportModelRequest(
+                file_path=output_path,
+                options={"export_format": "pmx", "target_mesh": transform},
+            )
+        )
+
+        self.assertTrue(result.succeeded)
+        pmx = _parse_pmx(output_path)
+        bone = pmx.bones[1]
+        self.assertEqual(pmx.bones[0].connect_position_offset, (1.0, 2.0, 3.0))
+        self.assertEqual(int(bone.bone_flag), authored_flags)
+        self.assertEqual(bone.position, (7.0, 8.0, 9.0))
+        self.assertEqual(bone.transform_layer, 7)
+        self.assertEqual(bone.connect_bone_index, 0)
+        self.assertEqual(bone.grant_parent_bone_index, 0)
+        self.assertAlmostEqual(bone.grant_rate, 0.25)
+        self.assertEqual(bone.axis_direction, (0.0, 1.0, 0.0))
+        self.assertEqual(bone.x_axis_direction, (1.0, 0.0, 0.0))
+        self.assertEqual(bone.z_axis_direction, (0.0, 0.0, 1.0))
+        self.assertEqual(bone.key_value, 42)
 
     def test_export_model_action_roundtrips_supported_ik_metadata(self):
         """Maya IK attributes reach parsed PMX target, loop, limit, and links."""
