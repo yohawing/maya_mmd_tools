@@ -32,7 +32,7 @@ _BONE_REFERENCE_FIELDS = (
     "grant_parent_bone_index",
     "ik_target_bone_index",
 )
-_PMX_MORPH_TYPE_BY_ENUM = {1: "vertex", 2: "bone", 8: "material"}
+_PMX_MORPH_TYPE_BY_ENUM = {0: "group", 1: "vertex", 2: "bone", 8: "material"}
 _PMX_MORPH_TYPES = frozenset(_PMX_MORPH_TYPE_BY_ENUM.values())
 _PMD_BONE_TYPE_VALUES = frozenset(range(10))
 
@@ -901,6 +901,7 @@ def _validate_pmx_morph_offsets(
     vertex_count: int,
     bone_count: int,
     material_count: int,
+    morph_count: int,
     issues: List[ExportValidationIssue],
 ) -> None:
     """Validate supported PMX morph offset mappings and writer fields."""
@@ -917,6 +918,9 @@ def _validate_pmx_morph_offsets(
             _validate_morph_offset_index(offset, "bone_index", offset_path, bone_count, issues)
             _validate_vector_field(offset, "translation", 3, offset_path, issues)
             _validate_vector_field(offset, "rotation", 4, offset_path, issues)
+        elif morph_type == "group":
+            _validate_morph_offset_index(offset, "morph_index", offset_path, morph_count, issues)
+            _validate_numeric_fields(offset, ("morph_rate",), offset_path, issues)
         else:
             _validate_morph_offset_index(
                 offset,
@@ -1026,6 +1030,7 @@ def _validate_morphs(
             vertex_count,
             bone_count,
             material_count,
+            len(morphs),
             issues,
         )
 

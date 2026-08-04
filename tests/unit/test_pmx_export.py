@@ -1214,6 +1214,94 @@ class TestPmxExporterFromDict(TestBase):
         self.assertAlmostEqual(morph.offsets[0]["position_offset"][2], 0.3)
         self.assertEqual(morph.offsets[1]["vertex_index"], 2)
 
+    def test_export_group_morph_roundtrip(self):
+        """GroupMorph dict の export -> parse_file 検証"""
+        data = {
+            "model_name": "GroupMorphTest",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "morphs": [
+                {
+                    "type": "vertex",
+                    "name": "base",
+                    "offsets": [],
+                },
+                {
+                    "type": PmxMorphType.GroupMorph,
+                    "name": "group_smile",
+                    "name_english": "group_smile_en",
+                    "panel": 4,
+                    "offsets": [{"morph_index": 0, "morph_rate": 0.5}],
+                }
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "group_morph.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = _parse_pmx(out_path)
+
+        self.assertEqual(len(pmx.morphs), 2)
+        morph = pmx.morphs[1]
+        self.assertEqual(morph.name, "group_smile")
+        self.assertEqual(morph.name_english, "group_smile_en")
+        self.assertEqual(morph.panel, 4)
+        self.assertEqual(int(morph.morph_type), int(PmxMorphType.GroupMorph))
+        self.assertEqual(morph.offsets, [{"morph_index": 0, "morph_rate": 0.5}])
+
+    def test_export_group_morph_index_out_of_range_raises(self):
+        """GroupMorph offset の morph_index が PMX morph 数外なら ValueError"""
+        data = {
+            "model_name": "BadGroupMorph",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "morphs": [
+                {
+                    "type": "group",
+                    "name": "bad",
+                    "offsets": [{"morph_index": 1, "morph_rate": 0.5}],
+                }
+            ],
+        }
+        with self.assertRaises(MMDExportException):
+            self.exporter.export_pmx_model(
+                os.path.join(self.temp_dir, "bad_group_morph.pmx"),
+                data,
+            )
+
+    def test_export_group_morph_index_rejects_bool_and_non_integer(self):
+        """GroupMorph offset の morph_index は bool/非整数を拒否する。"""
+        for invalid_index in (True, 0.0, "0"):
+            with self.subTest(invalid_index=invalid_index):
+                data = {
+                    "model_name": "InvalidGroupMorphIndex",
+                    "vertices": [
+                        {"position": [0.0, 0.0, 0.0]},
+                        {"position": [1.0, 0.0, 0.0]},
+                        {"position": [0.0, 1.0, 0.0]},
+                    ],
+                    "faces": [[0, 1, 2]],
+                    "morphs": [
+                        {
+                            "type": "group",
+                            "name": "bad",
+                            "offsets": [{"morph_index": invalid_index, "morph_rate": 0.5}],
+                        }
+                    ],
+                }
+                with self.assertRaises(MMDExportException):
+                    self.exporter.export_pmx_model(
+                        os.path.join(self.temp_dir, f"invalid_group_index_{invalid_index!s}.pmx"),
+                        data,
+                    )
+
     def test_export_bone_morph_roundtrip(self):
         """BoneMorph dict の export -> parse_file 検証"""
         data = {

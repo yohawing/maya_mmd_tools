@@ -28,6 +28,59 @@ from mmd_tools.converters.morph_scene_metadata import (
 _OPT_IMPORT_MORPHS = "import_morphs"
 
 
+def _is_group_morph_payload(morph: Dict[str, Any]) -> bool:
+    """Return whether an exporter morph payload represents a GroupMorph."""
+    morph_type = morph.get("type", morph.get("morph_type"))
+    if isinstance(morph_type, str):
+        return morph_type.lower() == "group"
+    return morph_type == PmxMorphType.GroupMorph or morph_type == int(PmxMorphType.GroupMorph)
+
+
+def _order_morphs_by_index_if_grouped(
+    morphs: List[Dict[str, Any]],
+    *,
+    strip_index: bool = False,
+    require_contiguous: bool = False,
+) -> List[Dict[str, Any]]:
+    """Restore PMX morph order when a GroupMorph makes indices observable.
+
+    ``index`` is an internal provenance field.  A GroupMorph offset references
+    the PMX morph table, so silently accepting an incomplete or duplicated
+    index mapping would produce a structurally valid but semantically wrong
+    export.  Network-only payloads may omit vertex morphs and therefore use
+    non-contiguous indices; the model-root merge can require a complete
+    zero-based map with ``require_contiguous``.
+    """
+    ordered = list(morphs)
+    if any(_is_group_morph_payload(morph) for morph in ordered):
+        indices = []
+        for position, morph in enumerate(ordered):
+            if "index" not in morph:
+                raise ValueError(f"Cannot restore PMX morph order: morph {position} is missing index")
+            index = morph["index"]
+            if isinstance(index, bool) or not isinstance(index, int):
+                raise ValueError(
+                    f"Cannot restore PMX morph order: morph {position} index must be a non-bool integer"
+                )
+            if index < 0:
+                raise ValueError(f"Cannot restore PMX morph order: morph {position} index must be non-negative")
+            indices.append(index)
+
+        if len(set(indices)) != len(indices):
+            raise ValueError(f"Cannot restore PMX morph order: duplicate morph indices {indices}")
+        if require_contiguous:
+            expected = set(range(len(ordered)))
+            if set(indices) != expected:
+                raise ValueError(
+                    f"Cannot restore PMX morph order: expected indices {sorted(expected)}, got {sorted(indices)}"
+                )
+        ordered.sort(key=lambda morph: morph["index"])
+
+    if strip_index:
+        return [{key: value for key, value in morph.items() if key != "index"} for morph in ordered]
+    return ordered
+
+
 def _scene_name_set() -> Set[str]:
     """Return conservative leaf-name reservations from the current scene."""
     try:
@@ -359,6 +412,8 @@ class MorphConverter:
     def collect_morphs_from_scene_for_export(
         self,
         root_group: Optional[str] = None,
+        *,
+        require_contiguous: bool = True,
     ) -> List[Dict[str, Any]]:
         """Collect exporter morph dicts from network nodes owned by a model root.
 
@@ -366,20 +421,29 @@ class MorphConverter:
             root_group: Optional model root used to scope the network query.
                 ``None`` preserves the legacy scene-wide query for callers that
                 do not have a model ownership boundary.
+            require_contiguous: Require a complete zero-based PMX morph index
+                table. Model-root collection sets this to ``False`` while
+                collecting the network subset before vertex morphs are merged.
         """
         morphs = []
+        offsets_attrs = {
+            "bone": "mmd_bone_morph_offsets_json",
+            "group": "mmd_group_morph_offsets_json",
+            "material": "mmd_material_morph_offsets_json",
+        }
 
         for metadata in iter_morph_network_metadata(
             root_group=root_group,
-            morph_types={"bone", "material"},
+            morph_types={"bone", "group", "material"},
         ):
             morph_node = metadata.node
             try:
-                offsets_attr = (
-                    "mmd_bone_morph_offsets_json"
-                    if metadata.morph_type == "bone"
-                    else "mmd_material_morph_offsets_json"
-                )
+                offsets_attr = offsets_attrs.get(metadata.morph_type)
+                if offsets_attr is None:
+                    self.logger.warning(
+                        f"skip morph node {morph_node}: unsupported morph type {metadata.morph_type!r}"
+                    )
+                    continue
                 if not cmds.attributeQuery(offsets_attr, node=morph_node, exists=True):
                     self.logger.warning(
                         f"skip morph node {morph_node}: missing {offsets_attr} attribute"
@@ -399,19 +463,23 @@ class MorphConverter:
                     )
                     continue
 
-                morphs.append(
-                    {
-                        "type": metadata.morph_type,
-                        "name": metadata.name,
-                        "name_english": metadata.name_english,
-                        "panel": metadata.panel,
-                        "offsets": offsets,
-                    }
-                )
+                morph_payload = {
+                    "type": metadata.morph_type,
+                    "name": metadata.name,
+                    "name_english": metadata.name_english,
+                    "panel": metadata.panel,
+                    "offsets": offsets,
+                }
+                if metadata.index is not None:
+                    morph_payload["index"] = metadata.index
+                morphs.append(morph_payload)
             except Exception as e:
                 self.logger.warning(f"skip morph node {morph_node}: {e}")
 
-        return morphs
+        return _order_morphs_by_index_if_grouped(
+            morphs,
+            require_contiguous=require_contiguous,
+        )
 
     @staticmethod
     def _raw_morph_name(morph) -> str:

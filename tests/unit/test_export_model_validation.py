@@ -743,7 +743,7 @@ class TestExportModelValidation(unittest.TestCase):
                 self.assertTrue(validate_model_data(model_data, "pmx").valid)
 
     def test_supported_pmx_morph_types_include_numeric_enum_values(self):
-        for morph_type in ("vertex", "bone", "material", 1, 2, 8):
+        for morph_type in ("group", "vertex", "bone", "material", 0, 1, 2, 8):
             with self.subTest(morph_type=morph_type):
                 model_data = _valid_model_data()
                 model_data["morphs"] = [{"type": morph_type, "offsets": []}]
@@ -752,8 +752,9 @@ class TestExportModelValidation(unittest.TestCase):
 
                 self.assertTrue(report.valid)
 
-    def test_pmx_morph_vertex_bone_and_material_references_are_range_checked(self):
+    def test_pmx_morph_group_vertex_bone_and_material_references_are_range_checked(self):
         cases = (
+            ("group", {"morph_index": 1}, "morphs[0].offsets[0].morph_index"),
             ("vertex", {"vertex_index": 3}, "morphs[0].offsets[0].vertex_index"),
             ("bone", {"bone_index": 1}, "morphs[0].offsets[0].bone_index"),
             ("material", {"material_index": 1}, "morphs[0].offsets[0].material_index"),
@@ -780,16 +781,17 @@ class TestExportModelValidation(unittest.TestCase):
 
         self.assertTrue(report.valid)
 
-    def test_unsupported_pmx_group_morph_is_blocking(self):
+    def test_pmx_group_morph_is_supported(self):
         model_data = _valid_model_data()
-        model_data["morphs"] = [{"type": 0, "offsets": []}]
+        model_data["morphs"] = [
+            {"type": "vertex", "offsets": []},
+            {"type": 0, "offsets": [{"morph_index": 0, "morph_rate": 0.5}]},
+        ]
 
         report = validate_model_data(model_data, "pmx")
 
-        self.assertEqual(
-            [(issue.code, issue.path, issue.severity, issue.blocking) for issue in report.issues],
-            [("MORPH_TYPE_UNSUPPORTED", "morphs[0].type", "fatal", True)],
-        )
+        self.assertTrue(report.valid)
+        self.assertFalse(report.issues)
 
     def test_non_empty_pmd_morphs_are_blocked_as_unsupported(self):
         model_data = _valid_model_data()
@@ -1025,7 +1027,7 @@ class TestExportModelValidation(unittest.TestCase):
     def test_action_does_not_call_writer_when_morph_preflight_fails(self):
         exporter = _FakeExporter()
         model_data = _valid_model_data()
-        model_data["morphs"] = [{"type": "group", "offsets": []}]
+        model_data["morphs"] = [{"type": "uv", "offsets": []}]
 
         result = ExportModelAction(pmx_exporter=exporter, collector=None).execute(
             ExportModelRequest(

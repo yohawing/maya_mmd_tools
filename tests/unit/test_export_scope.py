@@ -1,6 +1,7 @@
 """Verify model-root ownership boundaries used by export collectors."""
 
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from tests.common.maya_stub import install_maya_stub
@@ -384,11 +385,11 @@ class TestExportScope(unittest.TestCase):
         self.assertNotIn("semantic_missing", material)
 
     def test_model_collector_passes_root_to_morph_collection(self):
-        roots = []
+        calls = []
 
         class FakeMorphConverter:
-            def collect_morphs_from_scene_for_export(self, *, root_group=None):
-                roots.append(root_group)
+            def collect_morphs_from_scene_for_export(self, *, root_group=None, require_contiguous=True):
+                calls.append((root_group, require_contiguous))
                 return []
 
         mesh_data = {
@@ -442,28 +443,133 @@ class TestExportScope(unittest.TestCase):
                 {"target_model": "|hero:model_ROOT", "export_format": "pmd"}
             )
 
-        self.assertEqual(roots, ["|hero:model_ROOT"])
+        self.assertEqual(calls, [("|hero:model_ROOT", False)])
         self.assertEqual(payload["model_name"], "Hero")
         collect_from_mesh.assert_called_once_with("mesh", is_pmd=True)
 
     def test_network_morph_collection_passes_selected_root(self):
         converter = object.__new__(MorphConverter)
         converter.logger = mock.Mock()
+        group_metadata = mock.Mock(
+            node="group_morph",
+            morph_type="group",
+            name_english="group_smile",
+            panel=4,
+            index=0,
+        )
+        group_metadata.name = "グループ笑い"
+
+        def attribute_query(attribute, node, exists):
+            return exists and node == "group_morph" and attribute == "mmd_group_morph_offsets_json"
 
         with mock.patch.object(
             morph_converter_module,
             "iter_morph_network_metadata",
-            return_value=[],
-        ) as iterator:
+            return_value=[group_metadata],
+        ) as iterator, mock.patch.object(
+            morph_converter_module.cmds,
+            "attributeQuery",
+            side_effect=attribute_query,
+        ), mock.patch.object(
+            morph_converter_module.cmds,
+            "getAttr",
+            return_value='[{"morph_index": 0, "morph_rate": 0.5}]',
+        ):
             result = converter.collect_morphs_from_scene_for_export(
                 root_group="|hero:model_ROOT",
             )
 
-        self.assertEqual(result, [])
+        self.assertEqual(
+            result,
+            [
+                {
+                    "type": "group",
+                    "name": "グループ笑い",
+                    "name_english": "group_smile",
+                    "panel": 4,
+                    "offsets": [{"morph_index": 0, "morph_rate": 0.5}],
+                    "index": 0,
+                }
+            ],
+        )
         iterator.assert_called_once_with(
             root_group="|hero:model_ROOT",
-            morph_types={"bone", "material"},
+            morph_types={"bone", "group", "material"},
         )
+
+    def test_group_network_morph_collection_restores_index_order_and_fails_closed(self):
+        converter = object.__new__(MorphConverter)
+        converter.logger = mock.Mock()
+        metadata = [
+            SimpleNamespace(
+                node="material_morph",
+                morph_type="material",
+                name="material",
+                name_english="material",
+                panel=5,
+                index=2,
+            ),
+            SimpleNamespace(
+                node="group_morph",
+                morph_type="group",
+                name="group",
+                name_english="group",
+                panel=4,
+                index=0,
+            ),
+            SimpleNamespace(
+                node="bone_morph",
+                morph_type="bone",
+                name="bone",
+                name_english="bone",
+                panel=4,
+                index=1,
+            ),
+        ]
+        offsets_attrs = {
+            "group_morph": "mmd_group_morph_offsets_json",
+            "bone_morph": "mmd_bone_morph_offsets_json",
+            "material_morph": "mmd_material_morph_offsets_json",
+        }
+
+        def collect(network_metadata):
+            def attribute_query(attribute, node, exists):
+                return exists and attribute == offsets_attrs[node]
+
+            def get_attr(path):
+                if path.startswith("group_morph."):
+                    return '[{"morph_index": 1, "morph_rate": 0.5}]'
+                return "[]"
+
+            with mock.patch.object(
+                morph_converter_module,
+                "iter_morph_network_metadata",
+                return_value=network_metadata,
+            ), mock.patch.object(
+                morph_converter_module.cmds,
+                "attributeQuery",
+                side_effect=attribute_query,
+            ), mock.patch.object(
+                morph_converter_module.cmds,
+                "getAttr",
+                side_effect=get_attr,
+            ):
+                return converter.collect_morphs_from_scene_for_export(root_group="|hero:model_ROOT")
+
+        result = collect(metadata)
+        self.assertEqual([morph["name"] for morph in result], ["group", "bone", "material"])
+        self.assertEqual([morph["index"] for morph in result], [0, 1, 2])
+        self.assertEqual(result[0]["offsets"], [{"morph_index": 1, "morph_rate": 0.5}])
+
+        missing_index = list(metadata)
+        missing_index[0] = SimpleNamespace(**{**vars(metadata[0]), "index": None})
+        with self.assertRaisesRegex(ValueError, "missing index"):
+            collect(missing_index)
+
+        gap_index = list(metadata)
+        gap_index[0] = SimpleNamespace(**{**vars(metadata[0]), "index": 3})
+        with self.assertRaisesRegex(ValueError, "expected indices"):
+            collect(gap_index)
 
 
 if __name__ == "__main__":

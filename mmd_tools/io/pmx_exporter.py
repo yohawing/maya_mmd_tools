@@ -329,6 +329,8 @@ class PmxExporter:
             morph_type = m_raw.get("type", m_raw.get("morph_type", "vertex"))
             if isinstance(morph_type, str):
                 normalized_type = morph_type.lower()
+            elif morph_type == PmxMorphType.GroupMorph or morph_type == int(PmxMorphType.GroupMorph):
+                normalized_type = "group"
             elif morph_type == PmxMorphType.VertexMorph or morph_type == int(PmxMorphType.VertexMorph):
                 normalized_type = "vertex"
             elif morph_type == PmxMorphType.BoneMorph or morph_type == int(PmxMorphType.BoneMorph):
@@ -347,7 +349,31 @@ class PmxExporter:
                 encoding=pmx.header.encoding,
             )
 
-            if normalized_type == "vertex":
+            if normalized_type == "group":
+                morph.name = m_raw.get("name", "GroupMorph")
+                morph.name_english = m_raw.get("name_english", morph.name)
+                morph.panel = m_raw.get("panel", 4)
+                morph.morph_type = PmxMorphType.GroupMorph
+
+                for offset in m_raw.get("offsets", []):
+                    morph_index = offset["morph_index"]
+                    if isinstance(morph_index, bool) or not isinstance(morph_index, int):
+                        raise ValueError(
+                            f"morph group index must be a non-bool integer: {morph_index!r}"
+                        )
+                    if morph_index < 0 or morph_index >= len(morphs_raw):
+                        raise ValueError(
+                            f"morph group index out of range: {morph_index} "
+                            f"(morph_count={len(morphs_raw)})"
+                        )
+                    morph.offsets.append(
+                        {
+                            "morph_index": morph_index,
+                            "morph_rate": float(offset.get("morph_rate", 0.0)),
+                        }
+                    )
+
+            elif normalized_type == "vertex":
                 morph.name = m_raw.get("name", "VertexMorph")
                 morph.name_english = m_raw.get("name_english", morph.name)
                 morph.panel = m_raw.get("panel", 4)

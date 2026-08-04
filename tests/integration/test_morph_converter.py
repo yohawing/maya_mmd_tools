@@ -786,22 +786,43 @@ class TestMorphConverter(MayaTestBase):
             def get_name(self):
                 return self.name
 
+        class FakeGroupMorph:
+            name = "グループ笑い"
+            name_english = "group_smile"
+            panel = 4
+            morph_type = PmxMorphType.GroupMorph
+            offsets = [{"morph_index": 0, "morph_rate": 0.5}]
+
+            def get_name(self):
+                return self.name
+
         fake_data = type(
             "FakePmxData",
             (),
-            {"morphs": [FakeBoneMorph(), FakeMaterialMorph()]},
+            {"morphs": [FakeBoneMorph(), FakeGroupMorph(), FakeMaterialMorph()]},
         )()
 
         morph_converter = MorphConverter()
         result = morph_converter.convert_pmx_morphs(fake_data, mesh_name)
         self.assertTrue(result.get("success", False))
-        self.assertEqual(result.get("morphs_converted"), 2)
+        self.assertEqual(result.get("morphs_converted"), 3)
         self.assertEqual(len(result.get("bone_morph_nodes", [])), 1)
+        self.assertEqual(len(result.get("group_morph_nodes", [])), 1)
         self.assertEqual(len(result.get("material_morph_nodes", [])), 1)
 
         collected_morphs = morph_converter.collect_morphs_from_scene_for_export()
-        self.assertEqual(len(collected_morphs), 2)
+        self.assertEqual(len(collected_morphs), 3)
         self.assertTrue(any(m["type"] == "bone" and m["name"] == "ボーン笑い" for m in collected_morphs))
+        self.assertTrue(
+            any(
+                m["type"] == "group"
+                and m["name"] == "グループ笑い"
+                and m["name_english"] == "group_smile"
+                and m["panel"] == 4
+                and m["offsets"] == [{"morph_index": 0, "morph_rate": 0.5}]
+                for m in collected_morphs
+            )
+        )
         self.assertTrue(
             any(
                 m["type"] == "material"
@@ -834,13 +855,18 @@ class TestMorphConverter(MayaTestBase):
             use_native_pmx_parse=False,
             require_native_pmx_parse=False,
         )
-        self.assertEqual(len(pmx.morphs), 2)
+        self.assertEqual(len(pmx.morphs), 3)
         self.assertTrue(any(int(m.morph_type) == 2 for m in pmx.morphs))
+        group_morph = next(m for m in pmx.morphs if m.name == "グループ笑い")
+        self.assertEqual(int(group_morph.morph_type), int(PmxMorphType.GroupMorph))
+        self.assertEqual(group_morph.offsets[0]["morph_index"], 0)
+        self.assertAlmostEqual(group_morph.offsets[0]["morph_rate"], 0.5)
         self.assertTrue(any(int(m.morph_type) == 8 for m in pmx.morphs))
 
         cmds.delete(
             mesh_name,
             *(result.get("bone_morph_nodes", [])),
+            *(result.get("group_morph_nodes", [])),
             *(result.get("material_morph_nodes", [])),
         )
 

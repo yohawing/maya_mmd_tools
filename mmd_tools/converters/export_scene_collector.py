@@ -24,7 +24,10 @@ from mmd_tools.converters.material_shader_parameters import (
     ATTR_MMD_EDGE_ALPHA,
 )
 from mmd_tools.converters.mesh_material_properties import PMX_EDGE_DRAWING_DRAW_FLAG
-from mmd_tools.converters.morph_converter import MorphConverter
+from mmd_tools.converters.morph_converter import (
+    MorphConverter,
+    _order_morphs_by_index_if_grouped,
+)
 from mmd_tools.core.constants import (
     ATTR_MMD_AMBIENT_COLOR,
     ATTR_MMD_BONE_INDEX,
@@ -55,7 +58,9 @@ from mmd_tools.core.constants import (
 )
 from mmd_tools.core.coordinate_transform import maya_point_to_mmd
 from mmd_tools.core.display_frame_metadata import display_frames_from_json
-from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_names
+from mmd_tools.core.morph_metadata_reader import (
+    parse_blendshape_morph_entries,
+)
 
 
 _PMX_TEXTURE_REFERENCE_FIELDS = (
@@ -447,8 +452,8 @@ def _blendshape_aliases_by_index(blend_shape: str) -> dict[int, str]:
     return aliases
 
 
-def _blendshape_stored_names(blend_shape: str) -> dict[int, str]:
-    """Return target index -> raw PMX morph name stored by MorphConverter."""
+def _blendshape_stored_entries(blend_shape: str) -> dict[int, dict]:
+    """Return blendShape target metadata stored by MorphConverter."""
     if not cmds.attributeQuery(ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, node=blend_shape, exists=True):
         return {}
     try:
@@ -456,7 +461,28 @@ def _blendshape_stored_names(blend_shape: str) -> dict[int, str]:
         parsed = json.loads(raw)
     except (TypeError, ValueError):
         return {}
-    return parse_blendshape_morph_names(parsed)
+    entries = parse_blendshape_morph_entries(parsed)
+    if not isinstance(parsed, dict):
+        return entries
+
+    # Keep the original index value so grouped exports can reject bools and
+    # other non-integer provenance instead of accepting parser coercion.
+    for key, raw_entry in parsed.items():
+        try:
+            target_index = int(key)
+        except (TypeError, ValueError):
+            continue
+        if target_index in entries and isinstance(raw_entry, dict) and "index" in raw_entry:
+            entries[target_index]["index"] = raw_entry["index"]
+    return entries
+
+
+def _blendshape_stored_names(blend_shape: str) -> dict[int, str]:
+    """Return target index -> raw PMX morph name stored by MorphConverter."""
+    return {
+        index: str(entry["name"])
+        for index, entry in _blendshape_stored_entries(blend_shape).items()
+    }
 
 
 def _blendshape_target_indices(blend_shape: str) -> list[int]:
@@ -570,7 +596,11 @@ def _collect_vertex_morphs(shape: str, vertex_offset: int = 0) -> list[dict]:
             continue
 
         aliases = _blendshape_aliases_by_index(blend_shape)
-        stored_names = _blendshape_stored_names(blend_shape)
+        stored_entries = _blendshape_stored_entries(blend_shape)
+        stored_names = {
+            index: str(entry["name"])
+            for index, entry in stored_entries.items()
+        }
         geometry_index = _blendshape_geometry_index(blend_shape, shape)
         for target_index in target_indices:
             offsets = _stored_blendshape_target_offsets(
@@ -585,13 +615,17 @@ def _collect_vertex_morphs(shape: str, vertex_offset: int = 0) -> list[dict]:
                 continue
 
             morph_name = stored_names.get(target_index) or aliases.get(target_index) or f"VertexMorph{target_index}"
-            morphs.append({
+            morph_payload = {
                 "type": "vertex",
                 "name": morph_name,
                 "name_english": morph_name,
                 "panel": 4,
                 "offsets": offsets,
-            })
+            }
+            stored_entry = stored_entries.get(target_index, {})
+            if "index" in stored_entry:
+                morph_payload["index"] = stored_entry["index"]
+            morphs.append(morph_payload)
 
     return morphs
 
@@ -1170,7 +1204,15 @@ class ExportSceneCollector:
 
         morphs = list(vertex_morphs_by_name.values())
         morphs.extend(
-            MorphConverter().collect_morphs_from_scene_for_export(root_group=root)
+            MorphConverter().collect_morphs_from_scene_for_export(
+                root_group=root,
+                require_contiguous=False,
+            )
+        )
+        morphs = _order_morphs_by_index_if_grouped(
+            morphs,
+            strip_index=True,
+            require_contiguous=True,
         )
 
         bone_index_by_joint: dict[str, int] = {}

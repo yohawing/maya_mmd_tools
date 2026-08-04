@@ -6,6 +6,7 @@ collect → export → parse round-trip for a minimum geometry.
 
 import json
 import os
+from typing import Optional
 from unittest.mock import patch
 
 from maya import cmds
@@ -22,9 +23,12 @@ from mmd_tools.core.constants import (
     ATTR_MMD_DISPLAY_FRAMES_JSON,
     ATTR_MMD_MODEL_NAME,
 )
+from mmd_tools.core.model_registry import REGISTRY_CATEGORY_MORPH, list_model_registry_members
 from mmd_tools.io.pmx_exporter import PmxExporter
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.pmx_data.morph import PmxMorphType
+from mmd_tools.core.logger import get_logger
+from mmd_tools.io.model_import_pipeline import ModelImportPipeline
 from tests.common.maya_test_base import MayaTestBase
 
 
@@ -157,8 +161,8 @@ class TestPmxExporter(MayaTestBase):
         )
         return transform, (root_joint, child_joint), skin_cluster
 
-    def _create_scene_morph_metadata(self, mesh_name: str):
-        """Create vertex/bone/material morph metadata through MorphConverter."""
+    def _create_scene_morph_metadata(self, mesh_name: str, root_group: Optional[str] = None):
+        """Create morph metadata and optionally register network leaves to a model root."""
 
         class FakeVertexMorph:
             name = "頂点にこり"
@@ -169,6 +173,21 @@ class TestPmxExporter(MayaTestBase):
                 {
                     "vertex_index": 1,
                     "position_offset": (0.25, 0.0, 0.0),
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        class FakeGroupMorph:
+            name = "グループ笑い"
+            name_english = "group_smile"
+            panel = 4
+            morph_type = PmxMorphType.GroupMorph
+            offsets = [
+                {
+                    "morph_index": 1,
+                    "morph_rate": 0.5,
                 }
             ]
 
@@ -213,11 +232,42 @@ class TestPmxExporter(MayaTestBase):
             {
                 "faces": [],
                 "materials": [],
-                "morphs": [FakeVertexMorph(), FakeBoneMorph(), FakeMaterialMorph()],
+                "morphs": [
+                    FakeGroupMorph(),
+                    FakeVertexMorph(),
+                    FakeBoneMorph(),
+                    FakeMaterialMorph(),
+                ],
             },
         )()
         result = MorphConverter().convert_pmx_morphs(fake_data, mesh_name)
         self.assertTrue(result.get("success", False))
+        self.assertEqual(len(result["group_morph_nodes"]), 1)
+        if root_group is not None:
+            # Match PMX import ownership: vertex metadata stays on blendShape,
+            # while group/bone/material network leaves are registered to the model root.
+            pipeline = ModelImportPipeline(
+                logger=get_logger(__name__),
+                filepath="<test fixture>",
+                scale=1.0,
+                options={},
+            )
+            model_registry = pipeline.create_model_registry(root_group)
+            pipeline.connect_morph_nodes_to_root(
+                root_group,
+                result,
+                model_registry=model_registry,
+            )
+            registered_morph_nodes = list_model_registry_members(root_group, REGISTRY_CATEGORY_MORPH)
+            self.assertIsNotNone(registered_morph_nodes)
+            self.assertEqual(
+                set(registered_morph_nodes),
+                set(
+                    result["group_morph_nodes"]
+                    + result["bone_morph_nodes"]
+                    + result["material_morph_nodes"]
+                ),
+            )
         return result
 
     # ------------------------------------------------------------------
@@ -377,9 +427,9 @@ class TestPmxExporter(MayaTestBase):
         self.assertEqual({mat.name for mat in pmx.materials}, set(shaders))
 
     def test_export_model_action_collects_scene_morph_metadata_to_pmx(self):
-        """target_model export は scene の vertex/bone/material morph metadata を PMX に書き戻す。"""
+        """target_model export は scene の vertex/group/bone/material morph metadata を PMX に書き戻す。"""
         root, (mesh_a, _mesh_b), _shaders = self._make_two_mesh_model_root("pmx_morph_root")
-        self._create_scene_morph_metadata(mesh_a)
+        self._create_scene_morph_metadata(mesh_a, root_group=root)
         output_path = self.get_temp_filename("morph_metadata_model.pmx")
 
         with patch(
@@ -396,11 +446,19 @@ class TestPmxExporter(MayaTestBase):
         self.assertTrue(result.succeeded)
         pmx = _parse_pmx(output_path)
 
-        self.assertEqual(len(pmx.morphs), 3)
+        self.assertEqual(len(pmx.morphs), 4)
+        self.assertEqual(
+            [m.name for m in pmx.morphs],
+            ["グループ笑い", "頂点にこり", "ボーン笑い", "材質点滅"],
+        )
         vertex_morph = next(m for m in pmx.morphs if m.name == "頂点にこり")
         self.assertEqual(int(vertex_morph.morph_type), 1)
         self.assertEqual(vertex_morph.offsets[0]["vertex_index"], 1)
         self.assertAlmostEqual(vertex_morph.offsets[0]["position_offset"][0], 0.25)
+        group_morph = next(m for m in pmx.morphs if m.name == "グループ笑い")
+        self.assertEqual(int(group_morph.morph_type), int(PmxMorphType.GroupMorph))
+        self.assertEqual(group_morph.offsets[0]["morph_index"], 1)
+        self.assertAlmostEqual(group_morph.offsets[0]["morph_rate"], 0.5)
         self.assertTrue(any(m.name == "ボーン笑い" and int(m.morph_type) == 2 for m in pmx.morphs))
         self.assertTrue(any(m.name == "材質点滅" and int(m.morph_type) == 8 for m in pmx.morphs))
 
