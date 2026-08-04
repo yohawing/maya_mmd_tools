@@ -68,6 +68,11 @@ _PMX_TEXTURE_REFERENCE_FIELDS = (
     ("sphere_texture_index", "source_sphere_texture_index"),
     ("toon_texture_index", "source_toon_texture_index"),
 )
+_PMX_TEXTURE_PROVENANCE_FIELDS = (
+    ("texture_path", "texture_index", "source_texture_index"),
+    ("sphere_texture_path", "sphere_texture_index", "source_sphere_texture_index"),
+    ("toon_texture_path", "toon_texture_index", "source_toon_texture_index"),
+)
 
 
 def _get_mesh_shape(node: str) -> str:
@@ -171,11 +176,103 @@ def _resolve_material_texture_indices(materials: list[dict], texture_table: list
             material["semantic_missing"] = semantic_missing
 
 
+def _collect_texture_table_from_materials(materials: list[dict]) -> list[str] | None:
+    """Build a PMX texture table from complete relative-path provenance.
+
+    Explicit source indices are treated as authoritative.  A table with a
+    missing slot or conflicting paths cannot be reconstructed safely, so this
+    helper returns ``None`` and leaves the materials fail-closed.  Materials
+    with a path but no authored index may use a newly appended table entry;
+    that assignment does not replace an authored index.
+    """
+    indexed_paths: dict[int, str] = {}
+    unindexed_paths: list[tuple[dict, str, str]] = []
+
+    for material in materials:
+        shared_toon = material.get("shared_toon_flag") == 1
+        for path_key, payload_key, source_key in _PMX_TEXTURE_PROVENANCE_FIELDS:
+            if payload_key == "toon_texture_index" and shared_toon:
+                continue
+
+            path = material.get(path_key)
+            if source_key in material:
+                index = material[source_key]
+                if (
+                    isinstance(index, bool)
+                    or not isinstance(index, int)
+                    or index < 0
+                ):
+                    return None
+            elif payload_key in material:
+                index = material[payload_key]
+                if (
+                    isinstance(index, bool)
+                    or not isinstance(index, int)
+                    or index < 0
+                ):
+                    return None
+            else:
+                index = None
+            has_index = index is not None
+
+            if has_index and (not isinstance(path, str) or not path):
+                return None
+            if not isinstance(path, str) or not path:
+                continue
+
+            if has_index:
+                previous_path = indexed_paths.get(index)
+                if previous_path is not None and previous_path != path:
+                    return None
+                indexed_paths[index] = path
+            else:
+                unindexed_paths.append((material, payload_key, path))
+
+    if not indexed_paths and not unindexed_paths:
+        return None
+
+    if indexed_paths:
+        max_index = max(indexed_paths)
+        texture_table: list[str | None] = [None] * (max_index + 1)
+        for index, path in indexed_paths.items():
+            texture_table[index] = path
+        if any(path is None for path in texture_table):
+            return None
+        complete_table = [path for path in texture_table if path is not None]
+    else:
+        complete_table = []
+
+    path_to_index = {path: index for index, path in enumerate(complete_table)}
+    for material, payload_key, path in unindexed_paths:
+        index = path_to_index.get(path)
+        if index is None:
+            index = len(complete_table)
+            complete_table.append(path)
+            path_to_index[path] = index
+        material[payload_key] = index
+        semantic_missing = material.get("semantic_missing")
+        if isinstance(semantic_missing, list):
+            material["semantic_missing"] = [
+                field for field in semantic_missing if field != payload_key
+            ]
+
+    return complete_table
+
+
 def _apply_texture_table(model_data: dict, model_root: str | None) -> None:
-    """Attach the imported PMX table and resolve material source indices."""
+    """Attach the authoritative PMX table and resolve material indices.
+
+    Imported roots own an authoritative table.  Only a genuinely absent root
+    table may fall back to complete material path provenance; malformed root
+    metadata remains fail-closed rather than being silently reconstructed.
+    """
     texture_table = _read_texture_table(model_root)
     if texture_table is None:
-        return
+        if model_root and _get_attr(model_root, ATTR_MMD_TEXTURE_TABLE_JSON, None) not in (None, ""):
+            return
+        texture_table = _collect_texture_table_from_materials(model_data.get("materials", []))
+        if texture_table is None:
+            return
     _resolve_material_texture_indices(model_data.get("materials", []), texture_table)
     model_data["textures"] = texture_table
 
@@ -872,9 +969,8 @@ def _collect_mmd_material_dict(shader: str, is_pmd: bool = False) -> dict:
         ) and "texture_table" not in semantic_missing:
             semantic_missing.append("texture_table")
 
-    # The collector does not own a top-level PMX texture table yet.  Keep
-    # authored indices only as provenance until a later slice can resolve
-    # them; shared toon indices are built-in PMX values and remain usable.
+    # Root-level table resolution restores these authored indices later;
+    # shared toon indices are built-in PMX values and remain usable.
     texture_reference_fields = () if is_pmd else _PMX_TEXTURE_REFERENCE_FIELDS
     texture_table_missing = False
     for payload_key, source_key in texture_reference_fields:

@@ -210,6 +210,122 @@ class TestExportScope(unittest.TestCase):
         self.assertNotIn("texture_index", material)
         self.assertEqual(material["semantic_missing"], ["texture_table"])
 
+    def test_missing_root_texture_table_uses_relative_material_provenance(self):
+        model_data = {
+            "materials": [
+                {
+                    "texture_path": "textures/body.png",
+                    "sphere_texture_path": "textures/body.spa",
+                    "semantic_missing": [
+                        "texture_index",
+                        "sphere_texture_index",
+                        "texture_table",
+                    ],
+                }
+            ]
+        }
+
+        with mock.patch.object(
+            export_scene_collector_module,
+            "_get_attr",
+            return_value=None,
+        ):
+            export_scene_collector_module._apply_texture_table(model_data, "|model_ROOT")
+
+        material = model_data["materials"][0]
+        self.assertEqual(model_data["textures"], ["textures/body.png", "textures/body.spa"])
+        self.assertEqual(material["texture_index"], 0)
+        self.assertEqual(material["sphere_texture_index"], 1)
+        self.assertEqual(material["semantic_missing"], [])
+
+    def test_missing_root_texture_table_does_not_fill_sparse_authored_index(self):
+        model_data = {
+            "materials": [
+                {
+                    "texture_path": "textures/body.png",
+                    "source_texture_index": 2,
+                    "semantic_missing": ["texture_table"],
+                }
+            ]
+        }
+
+        with mock.patch.object(
+            export_scene_collector_module,
+            "_get_attr",
+            return_value=None,
+        ):
+            export_scene_collector_module._apply_texture_table(model_data, "|model_ROOT")
+
+        material = model_data["materials"][0]
+        self.assertNotIn("textures", model_data)
+        self.assertNotIn("texture_index", material)
+        self.assertEqual(material["source_texture_index"], 2)
+        self.assertEqual(material["semantic_missing"], ["texture_table"])
+
+    def test_missing_root_texture_table_rejects_explicit_no_texture_sentinel(self):
+        model_data = {
+            "materials": [
+                {
+                    "texture_path": "textures/stale.png",
+                    "texture_index": -1,
+                    "semantic_missing": ["texture_table"],
+                }
+            ]
+        }
+
+        with mock.patch.object(
+            export_scene_collector_module,
+            "_get_attr",
+            return_value=None,
+        ):
+            export_scene_collector_module._apply_texture_table(model_data, "|model_ROOT")
+
+        material = model_data["materials"][0]
+        self.assertNotIn("textures", model_data)
+        self.assertEqual(material["texture_index"], -1)
+        self.assertEqual(material["semantic_missing"], ["texture_table"])
+
+    def test_model_root_collector_attaches_provenance_texture_table(self):
+        mesh_data = {
+            "vertices": [],
+            "faces": [],
+            "materials": [
+                {
+                    "name": "material",
+                    "face_count": 0,
+                    "texture_path": "textures/body.png",
+                    "semantic_missing": ["texture_table"],
+                }
+            ],
+            "bones": [],
+            "morphs": [],
+        }
+
+        class FakeMorphConverter:
+            def collect_morphs_from_scene_for_export(self, *, root_group=None, require_contiguous=True):
+                return []
+
+        with (
+            mock.patch.object(export_scene_collector_module, "MorphConverter", FakeMorphConverter),
+            mock.patch.object(export_scene_collector_module, "_list_export_mesh_shapes", return_value=["mesh"]),
+            mock.patch.object(export_scene_collector_module, "_collect_model_bones", return_value=[]),
+            mock.patch.object(export_scene_collector_module, "_get_model_name", return_value="Hero"),
+            mock.patch.object(export_scene_collector_module, "_collect_display_frames", return_value=[]),
+            mock.patch.object(ExportSceneCollector, "collect_from_mesh", return_value=mesh_data),
+            mock.patch.object(export_scene_collector_module, "_get_attr", return_value=None),
+            mock.patch(
+                "mmd_tools.converters.physics_export_collector.collect_physics_from_scene",
+                return_value=([], []),
+            ),
+        ):
+            payload = ExportSceneCollector().collect(
+                {"target_model": "|hero:model_ROOT", "export_format": "pmx"}
+            )
+
+        self.assertEqual(payload["textures"], ["textures/body.png"])
+        self.assertEqual(payload["materials"][0]["texture_index"], 0)
+        self.assertEqual(payload["materials"][0]["semantic_missing"], [])
+
     def test_pmd_toon_index_stays_embedded_and_pmd_fields_are_collected(self):
         material = self._collect_single_material(
             {
