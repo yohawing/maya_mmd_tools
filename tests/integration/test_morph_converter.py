@@ -196,6 +196,56 @@ class TestMorphConverter(MayaTestBase):
 
         cmds.delete(mesh_name, morph_node)
 
+    def test_flip_morph_expands_target_weight_through_controller(self):
+        """PMX Flip は Group と同じ rate 展開で頂点 morph を実際に駆動する。"""
+        mesh_name = self._create_test_mesh()
+
+        class FakeVertexMorph:
+            name = "vertex_target"
+            name_english = "vertex_target"
+            panel = 4
+            morph_type = PmxMorphType.VertexMorph
+            offsets = [{"vertex_index": 0, "position_offset": (0.8, 0.0, 0.0)}]
+
+            def get_name(self):
+                return self.name
+
+        class FakeFlipMorph:
+            name = "flip_target"
+            name_english = "flip_target"
+            panel = 4
+            morph_type = PmxMorphType.FlipMorph
+            offsets = [{"morph_index": 0, "flip_rate": 0.25}]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {"morphs": [FakeVertexMorph(), FakeFlipMorph()]},
+        )()
+
+        converter = MorphConverter()
+        result = converter.convert_pmx_morphs(fake_data, mesh_name)
+        controller_root = cmds.group(empty=True, name="flip_controller_root")
+        controller = converter.build_morph_controller(fake_data, controller_root, result)
+
+        self.assertTrue(controller)
+        self.assertEqual(
+            json.loads(cmds.getAttr(f"{controller}.groupTopology")),
+            {"0": [[1, 0.25]]},
+        )
+
+        cmds.setAttr(f"{controller}.inputWeight[1]", 1.0)
+        self.assertAlmostEqual(cmds.getAttr(f"{controller}.outputWeight[0]"), 0.25, places=6)
+        blend_shape = result["blend_shape_nodes"][0]
+        self.assertAlmostEqual(cmds.getAttr(f"{blend_shape}.weight[0]"), 0.25, places=6)
+        shape = (cmds.listRelatives(mesh_name, shapes=True, fullPath=True) or [])[0]
+        self.assertAlmostEqual(cmds.pointPosition(f"{shape}.vtx[0]", local=True)[0], 0.2, places=6)
+
+        cmds.delete(mesh_name, controller_root, *result["flip_impulse_morph_nodes"], *result["blend_shape_nodes"])
+
     def test_convert_pmx_material_morph_metadata(self):
         """PMX MaterialMorph が network node として import されることをテストする。"""
         mesh_name = self._create_test_mesh()

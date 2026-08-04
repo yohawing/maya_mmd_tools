@@ -34,11 +34,21 @@ _OPT_IMPORT_MORPHS = "import_morphs"
 
 
 def _is_group_morph_payload(morph: Dict[str, Any]) -> bool:
-    """Return whether an exporter morph payload represents a GroupMorph."""
+    """Return whether a morph payload expands other morph weights.
+
+    PMX Flip morph offsets use the same morph-index/rate contract as Group
+    morph offsets.  Keeping both types in this predicate is important when a
+    model-root collection restores PMX table order from provenance indices.
+    """
     morph_type = morph.get("type", morph.get("morph_type"))
     if isinstance(morph_type, str):
-        return morph_type.lower() == "group"
-    return morph_type == PmxMorphType.GroupMorph or morph_type == int(PmxMorphType.GroupMorph)
+        return morph_type.lower() in {"group", "flip"}
+    return morph_type in {
+        PmxMorphType.GroupMorph,
+        int(PmxMorphType.GroupMorph),
+        PmxMorphType.FlipMorph,
+        int(PmxMorphType.FlipMorph),
+    }
 
 
 def _order_morphs_by_index_if_grouped(
@@ -47,14 +57,14 @@ def _order_morphs_by_index_if_grouped(
     strip_index: bool = False,
     require_contiguous: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Restore PMX morph order when a GroupMorph makes indices observable.
+    """Restore PMX morph order when Group/Flip references make indices observable.
 
-    ``index`` is an internal provenance field.  A GroupMorph offset references
-    the PMX morph table, so silently accepting an incomplete or duplicated
-    index mapping would produce a structurally valid but semantically wrong
-    export.  Network-only payloads may omit vertex morphs and therefore use
-    non-contiguous indices; the model-root merge can require a complete
-    zero-based map with ``require_contiguous``.
+    ``index`` is an internal provenance field.  Group and Flip offsets
+    reference the PMX morph table, so silently accepting an incomplete or
+    duplicated index mapping would produce a structurally valid but
+    semantically wrong export.  Network-only payloads may omit vertex morphs
+    and therefore use non-contiguous indices; the model-root merge can require
+    a complete zero-based map with ``require_contiguous``.
     """
     ordered = list(morphs)
     if any(_is_group_morph_payload(morph) for morph in ordered):
@@ -298,29 +308,30 @@ class MorphConverter:
             )
             cmds.aliasAttr(alias, input_plug)
 
-        groups = {
+        weight_expanding_morphs = {
             index: morph
             for index, morph in enumerate(pmx_data.morphs)
-            if morph.morph_type == PmxMorphType.GroupMorph
+            if morph.morph_type in (PmxMorphType.GroupMorph, PmxMorphType.FlipMorph)
         }
         group_rates: Dict[int, Dict[int, float]] = {}
 
         def expand(source: int, current: int, rate: float, path: Set[int]) -> None:
-            for offset in getattr(groups[current], "offsets", []):
+            for offset in getattr(weight_expanding_morphs[current], "offsets", []):
                 try:
                     target = int(offset["morph_index"])
-                    next_rate = rate * float(offset.get("morph_rate", 0.0))
+                    offset_rate = offset.get("morph_rate", offset.get("flip_rate", 0.0))
+                    next_rate = rate * float(offset_rate)
                 except (KeyError, TypeError, ValueError):
                     continue
                 if target in path:
                     continue
                 sources = group_rates.setdefault(target, {})
                 sources[source] = sources.get(source, 0.0) + next_rate
-                if target in groups:
+                if target in weight_expanding_morphs:
                     expand(source, target, next_rate, path | {target})
 
-        for group_index in groups:
-            expand(group_index, group_index, 1.0, {group_index})
+        for morph_index in weight_expanding_morphs:
+            expand(morph_index, morph_index, 1.0, {morph_index})
         topology = {
             str(target): [[source, rate] for source, rate in sorted(sources.items())]
             for target, sources in sorted(group_rates.items())
