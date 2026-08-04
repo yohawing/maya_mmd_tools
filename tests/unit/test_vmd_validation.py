@@ -211,6 +211,16 @@ class _WritingVmdExporter:
             VmdData().write_file(file_path)
 
 
+class _TransformingVmdExporter(_WritingVmdExporter):
+    """Return a distinct normalized snapshot so the writer input is observable."""
+
+    def to_vmd_data(self, animation_data):
+        transformed = VmdData()
+        transformed.header.model_name = f"validated:{animation_data['model_name']}"
+        self.transformed = transformed
+        return transformed
+
+
 class TestExportVmdValidationGate(unittest.TestCase):
     """The action protects the writer boundary and existing target file."""
 
@@ -233,6 +243,30 @@ class TestExportVmdValidationGate(unittest.TestCase):
             self.assertEqual(result.validation_report.issues[0].code, "VMD_QUATERNION_INVALID")
             self.assertEqual(exporter.calls, [])
             self.assertEqual(hashlib.sha256(target.read_bytes()).hexdigest(), before)
+
+    def test_writer_receives_the_validated_vmd_snapshot(self):
+        exporter = _TransformingVmdExporter()
+        validated = []
+
+        def validator(data, mode, **_kwargs):
+            validated.append(data)
+            return ExportValidationReport("vmd", (), mode=mode)
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "motion.vmd"
+            source = {"model_name": "source", "bone_frames": []}
+            result = ExportVmdAction(
+                exporter=exporter,
+                output_verifier=None,
+                validator=validator,
+            ).execute(ExportVmdRequest(str(target), {}, animation_data=source))
+
+        self.assertTrue(result.succeeded, result.error)
+        self.assertEqual(len(validated), 1)
+        self.assertIs(exporter.calls[0][1], validated[0])
+        self.assertIs(exporter.calls[0][1], exporter.transformed)
+        self.assertIsNot(exporter.calls[0][1], source)
+        self.assertEqual(exporter.calls[0][1].header.model_name, "validated:source")
 
     def test_output_verifier_failure_keeps_existing_target(self):
         exporter = _WritingVmdExporter(invalid=True)

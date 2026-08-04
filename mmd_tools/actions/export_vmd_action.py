@@ -255,7 +255,7 @@ class ExportVmdAction:
             )
             os.close(temporary_fd)
 
-            self._exporter.export_vmd_animation(temporary_path, animation_data)
+            self._exporter.export_vmd_animation(temporary_path, vmd_data)
 
             if self._output_verifier is not None:
                 expected_counts = {

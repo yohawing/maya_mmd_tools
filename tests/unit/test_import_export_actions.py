@@ -541,7 +541,8 @@ class TestExportVmdAction(unittest.TestCase):
             self.assertTrue(result.succeeded)
             self.assertEqual(result.exported_path, file_path)
             self.assertEqual(len(exporter.calls), 1)
-            self.assertEqual(exporter.calls[0][1], collected)
+            self.assertIsInstance(exporter.calls[0][1], VmdData)
+            self.assertEqual(exporter.calls[0][1].header.model_name, "CollectedModel")
             self.assertTrue(Path(file_path).is_file())
 
     def test_execute_reports_missing_collector_or_data(self):
