@@ -13,6 +13,8 @@ from mmd_tools.core import maya_attribute_utils, maya_mesh_utils
 from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON,
+    ATTR_MMD_FLIP_MORPH_OFFSETS_JSON,
+    ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
     ATTR_MMD_UV_MORPH_OFFSETS_JSON,
 )
@@ -338,6 +340,132 @@ class TestMorphConverter(MayaTestBase):
             self.assertAlmostEqual(actual, expected)
 
         cmds.delete(mesh_name, morph_node, root_group)
+
+    def test_convert_pmx21_flip_impulse_metadata_and_collect_for_export(self):
+        """PMX 2.1 morph metadata survives network storage and PMX export."""
+        mesh_name = self._create_test_mesh()
+        root_group = cmds.group(empty=True, name="pmx21_morph_root")
+
+        class FakeFlipMorph:
+            name = "Flip metadata"
+            name_english = "flip_metadata"
+            panel = 4
+            morph_type = PmxMorphType.FlipMorph
+            offsets = [{"morph_index": 1, "flip_rate": 0.25}]
+
+            def get_name(self):
+                return self.name
+
+        class FakeImpulseMorph:
+            name = "Impulse metadata"
+            name_english = "impulse_metadata"
+            panel = 4
+            morph_type = PmxMorphType.ImpulseMorph
+            offsets = [
+                {
+                    "rigid_body_index": 0,
+                    "impulse": (0.1, -0.2, 0.3),
+                    "torque": (-0.4, 0.5, -0.6),
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {"morphs": [FakeFlipMorph(), FakeImpulseMorph()]},
+        )()
+
+        result = MorphConverter().convert_pmx_morphs(fake_data, mesh_name)
+
+        self.assertTrue(result.get("success", False))
+        nodes = result.get("flip_impulse_morph_nodes", [])
+        self.assertEqual(len(nodes), 2)
+        flip_node, impulse_node = nodes
+        self.assertEqual(cmds.getAttr(f"{flip_node}.mmd_morph_type"), "flip")
+        self.assertEqual(cmds.getAttr(f"{flip_node}.mmd_flip_morph_offset_count"), 1)
+        self.assertEqual(
+            json.loads(cmds.getAttr(f"{flip_node}.{ATTR_MMD_FLIP_MORPH_OFFSETS_JSON}")),
+            [{"morph_index": 1, "flip_rate": 0.25}],
+        )
+        self.assertEqual(cmds.getAttr(f"{impulse_node}.mmd_morph_type"), "impulse")
+        self.assertEqual(cmds.getAttr(f"{impulse_node}.mmd_impulse_morph_offset_count"), 1)
+        self.assertEqual(
+            json.loads(cmds.getAttr(f"{impulse_node}.{ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON}")),
+            [
+                {
+                    "rigid_body_index": 0,
+                    "impulse": [0.1, -0.2, 0.3],
+                    "torque": [-0.4, 0.5, -0.6],
+                }
+            ],
+        )
+
+        pipeline = ModelImportPipeline(
+            logger=get_logger(__name__),
+            filepath="<test fixture>",
+            scale=1.0,
+            options={},
+        )
+        model_registry = pipeline.create_model_registry(root_group)
+        pipeline.connect_morph_nodes_to_root(root_group, result, model_registry=model_registry)
+        collected = MorphConverter().collect_morphs_from_scene_for_export(root_group=root_group)
+        self.assertEqual(
+            collected,
+            [
+                {
+                    "type": "flip",
+                    "name": "Flip metadata",
+                    "name_english": "flip_metadata",
+                    "panel": 4,
+                    "offsets": [{"morph_index": 1, "flip_rate": 0.25}],
+                    "index": 0,
+                },
+                {
+                    "type": "impulse",
+                    "name": "Impulse metadata",
+                    "name_english": "impulse_metadata",
+                    "panel": 4,
+                    "offsets": [
+                        {
+                            "rigid_body_index": 0,
+                            "impulse": [0.1, -0.2, 0.3],
+                            "torque": [-0.4, 0.5, -0.6],
+                        }
+                    ],
+                    "index": 1,
+                },
+            ],
+        )
+
+        out_pmx = self.get_temp_filename("pmx21_morph_roundtrip.pmx")
+        PmxExporter().export_pmx_model(
+            out_pmx,
+            {
+                "model_name": "Pmx21MorphRoundtrip",
+                "vertices": [
+                    {"position": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 0.0]},
+                    {"position": [1.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [1.0, 0.0]},
+                    {"position": [0.0, 1.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 1.0]},
+                ],
+                "faces": [[0, 1, 2]],
+                "rigid_bodies": [{"name": "ImpulseBody"}],
+                "morphs": collected,
+            },
+        )
+        roundtripped = parse_pmx_file(
+            out_pmx,
+            use_native_pmx_parse=False,
+            require_native_pmx_parse=False,
+        )
+        self.assertAlmostEqual(roundtripped.header.version, 2.1, places=6)
+        self.assertEqual([int(morph.morph_type) for morph in roundtripped.morphs], [9, 10])
+        self.assertEqual(roundtripped.morphs[0].offsets[0]["morph_index"], 1)
+        self.assertEqual(roundtripped.morphs[1].offsets[0]["rigid_body_index"], 0)
+
+        cmds.delete(mesh_name, root_group, *nodes)
 
     def test_hazardous_network_names_and_controller_aliases_are_safe_and_unique(self):
         """Material/morph names with namespaces and punctuation stay addressable."""

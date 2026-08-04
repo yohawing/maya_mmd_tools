@@ -460,6 +460,55 @@ class TestPmxExporterFromDict(TestBase):
         for actual, expected in zip(pmx.morphs[1].offsets[0]["uv_offset"], (-0.1, -0.2, -0.3, -0.4)):
             self.assertAlmostEqual(actual, expected)
 
+    def test_export_flip_and_impulse_morph_roundtrip_uses_python_writer(self):
+        """PMX 2.1 Flip/Impulse offsets are serialized without native fallback."""
+        native_calls = []
+        exporter = PmxExporter(
+            native_parts_exporter=lambda *args, **kwargs: native_calls.append((args, kwargs)) or b"NATIVE-PMX"
+        )
+        data = {
+            "model_name": "Pmx21MorphTest",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [1.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 1.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "rigid_bodies": [{"name": "ImpulseBody"}],
+            "morphs": [
+                {
+                    "type": "flip",
+                    "name": "Flip morph",
+                    "offsets": [{"morph_index": 1, "flip_rate": 0.25}],
+                },
+                {
+                    "type": "impulse",
+                    "name": "Impulse morph",
+                    "offsets": [
+                        {
+                            "rigid_body_index": 0,
+                            "impulse": [0.1, -0.2, 0.3],
+                            "torque": [-0.4, 0.5, -0.6],
+                        }
+                    ],
+                },
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "pmx21_morphs.pmx")
+
+        exporter.export_pmx_model(out_path, data)
+
+        pmx = _parse_pmx(out_path)
+        self.assertEqual(native_calls, [])
+        self.assertAlmostEqual(pmx.header.version, 2.1, places=6)
+        self.assertEqual([int(morph.morph_type) for morph in pmx.morphs], [9, 10])
+        self.assertEqual(pmx.morphs[0].offsets, [{"morph_index": 1, "flip_rate": 0.25}])
+        self.assertEqual(pmx.morphs[1].offsets[0]["rigid_body_index"], 0)
+        for actual, expected in zip(pmx.morphs[1].offsets[0]["impulse"], (0.1, -0.2, 0.3)):
+            self.assertAlmostEqual(actual, expected)
+        for actual, expected in zip(pmx.morphs[1].offsets[0]["torque"], (-0.4, 0.5, -0.6)):
+            self.assertAlmostEqual(actual, expected)
+
     def test_export_none_textures_writes_valid_pmx(self):
         """textures=None は空テーブルとしてPMXを書き出せる。"""
         data = {
@@ -1594,8 +1643,8 @@ class TestPmxExporterFromDict(TestBase):
                 data,
             )
 
-    def test_export_unsupported_morph_types_raise(self):
-        """Flip / Impulse モーフは文字列・enum・数値いずれの指定でも ValueError"""
+    def test_export_unknown_morph_types_raise(self):
+        """Unknown morph types remain rejected by the direct Python writer."""
         _base_data = {
             "model_name": "UnsupportedMorphTypes",
             "vertices": [
@@ -1606,17 +1655,7 @@ class TestPmxExporterFromDict(TestBase):
             "faces": [[0, 1, 2]],
         }
 
-        unsupported_types = [
-            # string aliases
-            "flip",
-            "impulse",
-            # PmxMorphType enum values
-            PmxMorphType.FlipMorph,
-            PmxMorphType.ImpulseMorph,
-            # numeric equivalents
-            int(PmxMorphType.FlipMorph),   # 9
-            int(PmxMorphType.ImpulseMorph),  # 10
-        ]
+        unsupported_types = ["unknown", 11]
 
         for morph_type in unsupported_types:
             with self.subTest(morph_type=morph_type):

@@ -42,11 +42,14 @@ _PMX_MORPH_TYPE_BY_ENUM = {
     6: "additional_uv3",
     7: "additional_uv4",
     8: "material",
+    9: "flip",
+    10: "impulse",
 }
 _PMX_MORPH_TYPES = frozenset(_PMX_MORPH_TYPE_BY_ENUM.values())
 _PMX_UV_MORPH_TYPES = frozenset(
     {"uv", "additional_uv1", "additional_uv2", "additional_uv3", "additional_uv4"}
 )
+_PMX_21_MORPH_TYPES = frozenset({"flip", "impulse"})
 _PMD_BONE_TYPE_VALUES = frozenset(range(10))
 _PMX_IK_FLAG = 0x0020
 _PMX_CONNECT_BONE_FLAG = 0x0001
@@ -1117,6 +1120,7 @@ def _validate_pmx_morph_offsets(
     bone_count: int,
     material_count: int,
     morph_count: int,
+    rigid_body_count: int,
     issues: List[ExportValidationIssue],
 ) -> None:
     """Validate supported PMX morph offset mappings and writer fields."""
@@ -1139,6 +1143,13 @@ def _validate_pmx_morph_offsets(
         elif morph_type in _PMX_UV_MORPH_TYPES:
             _validate_morph_offset_index(offset, "vertex_index", offset_path, vertex_count, issues)
             _validate_vector_field(offset, "uv_offset", 4, offset_path, issues)
+        elif morph_type == "flip":
+            _validate_morph_offset_index(offset, "morph_index", offset_path, morph_count, issues)
+            _validate_numeric_fields(offset, ("flip_rate",), offset_path, issues)
+        elif morph_type == "impulse":
+            _validate_morph_offset_index(offset, "rigid_body_index", offset_path, rigid_body_count, issues)
+            _validate_vector_field(offset, "impulse", 3, offset_path, issues)
+            _validate_vector_field(offset, "torque", 3, offset_path, issues)
         else:
             _validate_morph_offset_index(
                 offset,
@@ -1182,6 +1193,7 @@ def _validate_morphs(
     vertex_count: int,
     bone_count: int,
     material_count: int,
+    rigid_body_count: int,
     issues: List[ExportValidationIssue],
 ) -> None:
     """Validate PMX morph input or report PMD's unsupported/lossy path."""
@@ -1249,6 +1261,7 @@ def _validate_morphs(
             bone_count,
             material_count,
             len(morphs),
+            rigid_body_count,
             issues,
         )
 
@@ -1997,12 +2010,15 @@ def validate_model_data(
         issues,
         _expected_index_count(faces),
     )
+    raw_rigid_bodies = model_data.get("rigid_bodies")
+    morph_rigid_body_count = len(raw_rigid_bodies) if _is_sequence(raw_rigid_bodies) else 0
     _validate_morphs(
         model_data.get("morphs"),
         normalized_format,
         len(vertices) if vertices is not None else 0,
         bone_count,
         _effective_material_count(materials),
+        morph_rigid_body_count,
         issues,
     )
     _validate_unsupported_top_level_payloads(model_data, normalized_format, issues)

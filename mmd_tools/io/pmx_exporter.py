@@ -38,6 +38,11 @@ _PMX_UV_MORPH_TYPES = {
     "additional_uv4": PmxMorphType.AdditionalUVMorph4,
 }
 _PMX_UV_MORPH_TYPE_BY_ENUM = {int(value): name for name, value in _PMX_UV_MORPH_TYPES.items()}
+_PMX_21_MORPH_TYPES = {
+    "flip": PmxMorphType.FlipMorph,
+    "impulse": PmxMorphType.ImpulseMorph,
+}
+_PMX_21_MORPH_TYPE_BY_ENUM = {int(value): name for name, value in _PMX_21_MORPH_TYPES.items()}
 
 
 def _additional_uv_channel_count(vertices_raw) -> int:
@@ -419,6 +424,8 @@ class PmxExporter:
                 and int(PmxMorphType.UVMorph) <= morph_type <= int(PmxMorphType.AdditionalUVMorph4)
             ):
                 normalized_type = _PMX_UV_MORPH_TYPE_BY_ENUM[int(morph_type)]
+            elif isinstance(morph_type, int) and int(PmxMorphType.FlipMorph) <= morph_type <= int(PmxMorphType.ImpulseMorph):
+                normalized_type = _PMX_21_MORPH_TYPE_BY_ENUM[int(morph_type)]
             else:
                 normalized_type = morph_type
 
@@ -560,6 +567,80 @@ class PmxExporter:
                         {
                             "vertex_index": vertex_index,
                             "uv_offset": tuple(normalized_offset),
+                        }
+                    )
+
+            elif normalized_type == "flip":
+                pmx.header.version = 2.1
+                morph.name = m_raw.get("name", "FlipMorph")
+                morph.name_english = m_raw.get("name_english", morph.name)
+                morph.panel = m_raw.get("panel", 4)
+                morph.morph_type = _PMX_21_MORPH_TYPES[normalized_type]
+
+                for offset_index, offset in enumerate(m_raw.get("offsets", [])):
+                    morph_index = offset["morph_index"]
+                    if (
+                        isinstance(morph_index, bool)
+                        or not isinstance(morph_index, int)
+                        or morph_index < 0
+                        or morph_index >= len(morphs_raw)
+                    ):
+                        raise ValueError(
+                            f"morph Flip target index out of range at offset {offset_index}: {morph_index}"
+                        )
+                    flip_rate = offset["flip_rate"]
+                    if isinstance(flip_rate, bool) or not isinstance(flip_rate, (int, float)):
+                        raise ValueError("morph Flip rate must be a real number")
+                    flip_rate = float(flip_rate)
+                    if not math.isfinite(flip_rate):
+                        raise ValueError("morph Flip rate must be finite")
+                    morph.offsets.append(
+                        {
+                            "morph_index": morph_index,
+                            "flip_rate": flip_rate,
+                        }
+                    )
+
+            elif normalized_type == "impulse":
+                pmx.header.version = 2.1
+                morph.name = m_raw.get("name", "ImpulseMorph")
+                morph.name_english = m_raw.get("name_english", morph.name)
+                morph.panel = m_raw.get("panel", 4)
+                morph.morph_type = _PMX_21_MORPH_TYPES[normalized_type]
+
+                for offset_index, offset in enumerate(m_raw.get("offsets", [])):
+                    rigid_body_index = offset["rigid_body_index"]
+                    if (
+                        isinstance(rigid_body_index, bool)
+                        or not isinstance(rigid_body_index, int)
+                        or rigid_body_index < 0
+                        or rigid_body_index >= rigid_body_count
+                    ):
+                        raise ValueError(
+                            "morph Impulse rigid body index out of range at offset "
+                            f"{offset_index}: {rigid_body_index}"
+                        )
+                    normalized_vectors = {}
+                    for vector_name in ("impulse", "torque"):
+                        vector = offset[vector_name]
+                        if not isinstance(vector, (list, tuple)) or len(vector) != 3:
+                            raise ValueError(
+                                f"morph Impulse {vector_name} must contain three values at offset {offset_index}"
+                            )
+                        normalized_vector = []
+                        for component in vector:
+                            if isinstance(component, bool) or not isinstance(component, (int, float)):
+                                raise ValueError(f"morph Impulse {vector_name} values must be real numbers")
+                            component = float(component)
+                            if not math.isfinite(component):
+                                raise ValueError(f"morph Impulse {vector_name} values must be finite")
+                            normalized_vector.append(component)
+                        normalized_vectors[vector_name] = tuple(normalized_vector)
+                    morph.offsets.append(
+                        {
+                            "rigid_body_index": rigid_body_index,
+                            "impulse": normalized_vectors["impulse"],
+                            "torque": normalized_vectors["torque"],
                         }
                     )
 

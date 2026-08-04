@@ -904,6 +904,8 @@ class TestExportModelValidation(unittest.TestCase):
             "additional_uv3",
             "additional_uv4",
             "material",
+            "flip",
+            "impulse",
             0,
             1,
             2,
@@ -913,6 +915,8 @@ class TestExportModelValidation(unittest.TestCase):
             6,
             7,
             8,
+            9,
+            10,
         ):
             with self.subTest(morph_type=morph_type):
                 model_data = _valid_model_data()
@@ -952,6 +956,74 @@ class TestExportModelValidation(unittest.TestCase):
 
                 report = validate_model_data(model_data, "pmx")
 
+                self.assertTrue(any(issue.code == expected_code for issue in report.issues), report.issues)
+
+    def test_pmx21_flip_and_impulse_offsets_validate_references_and_vectors(self):
+        model_data = _valid_model_data()
+        model_data["rigid_bodies"] = [{}]
+        model_data["morphs"] = [
+            {
+                "type": "flip",
+                "offsets": [{"morph_index": 0, "flip_rate": 0.25}],
+            },
+            {
+                "type": "impulse",
+                "offsets": [
+                    {
+                        "rigid_body_index": 0,
+                        "impulse": [0.1, 0.2, 0.3],
+                        "torque": [0.4, 0.5, 0.6],
+                    }
+                ],
+            },
+        ]
+
+        report = validate_model_data(model_data, "pmx")
+
+        self.assertTrue(report.valid, report.issues)
+
+    def test_pmx21_flip_and_impulse_offsets_reject_invalid_payload(self):
+        cases = (
+            (
+                {"type": "flip", "offsets": [{"morph_index": 2, "flip_rate": 0.25}]},
+                "MORPH_OFFSET_INDEX_OUT_OF_RANGE",
+            ),
+            (
+                {
+                    "type": "impulse",
+                    "offsets": [
+                        {
+                            "rigid_body_index": 1,
+                            "impulse": [0.0, 0.0, 0.0],
+                            "torque": [0.0, 0.0, 0.0],
+                        }
+                    ],
+                },
+                "MORPH_OFFSET_INDEX_OUT_OF_RANGE",
+            ),
+            (
+                {
+                    "type": "impulse",
+                    "offsets": [
+                        {
+                            "rigid_body_index": 0,
+                            "impulse": [0.0, 0.0],
+                            "torque": [0.0, 0.0, 0.0],
+                        }
+                    ],
+                },
+                "FIELD_LENGTH",
+            ),
+            (
+                {"type": "flip", "offsets": [{"morph_index": 0, "flip_rate": float("nan")}]},
+                "NON_FINITE_NUMBER",
+            ),
+        )
+        for morph, expected_code in cases:
+            with self.subTest(morph=morph):
+                model_data = _valid_model_data()
+                model_data["morphs"] = [morph]
+                report = validate_model_data(model_data, "pmx")
                 self.assertTrue(any(issue.code == expected_code for issue in report.issues), report.issues)
 
     def test_pmx_morph_group_vertex_bone_and_material_references_are_range_checked(self):

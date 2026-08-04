@@ -1439,6 +1439,8 @@ class TestExportScope(unittest.TestCase):
                 "additional_uv2",
                 "additional_uv3",
                 "additional_uv4",
+                "flip",
+                "impulse",
             },
         )
 

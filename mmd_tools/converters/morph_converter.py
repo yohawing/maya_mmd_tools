@@ -17,6 +17,8 @@ from mmd_tools.core import maya_attribute_utils, maya_mesh_utils, maya_name_util
 from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON,
+    ATTR_MMD_FLIP_MORPH_OFFSETS_JSON,
+    ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON,
     ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
     ATTR_MMD_UV_MORPH_OFFSETS_JSON,
@@ -157,10 +159,12 @@ class MorphConverter:
         group_morph_nodes = []
         material_morph_nodes = []
         uv_morph_nodes = []
+        flip_impulse_morph_nodes = []
         converted_bone_morphs = set()
         converted_group_morphs = set()
         converted_material_morphs = set()
         converted_uv_morphs = set()
+        converted_flip_impulse_morphs = set()
         material_vertex_sets = self._build_pmx_material_vertex_sets(pmx_data)
         skipped_vertex_morphs_by_material = 0
 
@@ -234,6 +238,16 @@ class MorphConverter:
                                 results.append(result)
                                 uv_morph_nodes.append(result["morph_node"])
                                 self.logger.debug(f"Successfully imported UV morph metadata: {morph.name}")
+                        elif morph.morph_type in (PmxMorphType.FlipMorph, PmxMorphType.ImpulseMorph):
+                            if morph_index in converted_flip_impulse_morphs:
+                                continue
+                            self.logger.debug(f"Converting PMX 2.1 morph metadata: {morph.name}")
+                            result = self._convert_flip_impulse_morph_pmx(morph, morph_index)
+                            if result["success"]:
+                                converted_flip_impulse_morphs.add(morph_index)
+                                results.append(result)
+                                flip_impulse_morph_nodes.append(result["morph_node"])
+                                self.logger.debug(f"Successfully imported PMX 2.1 morph metadata: {morph.name}")
                     except Exception as e:
                         self.logger.warning(f"Failed to convert morph {morph.name}: {e}")
             finally:
@@ -249,6 +263,7 @@ class MorphConverter:
             "group_morph_nodes": group_morph_nodes,
             "material_morph_nodes": material_morph_nodes,
             "uv_morph_nodes": uv_morph_nodes,
+            "flip_impulse_morph_nodes": flip_impulse_morph_nodes,
             "vertex_morphs_skipped_by_material": skipped_vertex_morphs_by_material,
             "results": results,
         }
@@ -329,6 +344,7 @@ class MorphConverter:
             morph_result.get("bone_morph_nodes", [])
             + morph_result.get("material_morph_nodes", [])
             + morph_result.get("uv_morph_nodes", [])
+            + morph_result.get("flip_impulse_morph_nodes", [])
         ):
             index = int(cmds.getAttr(f"{morph_node}.mmd_morph_index"))
             destinations.setdefault(index, set()).add(f"{morph_node}.weight")
@@ -455,6 +471,8 @@ class MorphConverter:
             "additional_uv2": ATTR_MMD_UV_MORPH_OFFSETS_JSON,
             "additional_uv3": ATTR_MMD_UV_MORPH_OFFSETS_JSON,
             "additional_uv4": ATTR_MMD_UV_MORPH_OFFSETS_JSON,
+            "flip": ATTR_MMD_FLIP_MORPH_OFFSETS_JSON,
+            "impulse": ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON,
         }
 
         for metadata in iter_morph_network_metadata(
@@ -468,6 +486,8 @@ class MorphConverter:
                 "additional_uv2",
                 "additional_uv3",
                 "additional_uv4",
+                "flip",
+                "impulse",
             },
         ):
             morph_node = metadata.node
@@ -734,6 +754,93 @@ class MorphConverter:
                     ensure_ascii=False,
                     separators=(",", ":"),
                 ),
+            },
+        )
+        return {
+            "success": True,
+            "morph_name": morph_name,
+            "morph_node": morph_node,
+            "morph_type": morph_type,
+            "offset_count": len(offsets),
+        }
+
+    def _convert_flip_impulse_morph_pmx(self, morph, morph_index: int = 0) -> Dict[str, Any]:
+        """Import PMX 2.1 Flip/Impulse offsets as raw network metadata.
+
+        Maya does not evaluate these PMX 2.1 effects in this slice. Their
+        references and vectors remain in PMX space so the exporter can write
+        them back without silently converting them to an unrelated morph.
+        """
+        morph_type_value = int(morph.morph_type)
+        if morph_type_value == int(PmxMorphType.FlipMorph):
+            morph_type = "flip"
+            offsets_attr = ATTR_MMD_FLIP_MORPH_OFFSETS_JSON
+        elif morph_type_value == int(PmxMorphType.ImpulseMorph):
+            morph_type = "impulse"
+            offsets_attr = ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON
+        else:
+            raise ValueError(f"unsupported PMX 2.1 morph type: {morph_type_value}")
+
+        offsets = []
+        for offset_index, offset in enumerate(getattr(morph, "offsets", []) or []):
+            if not isinstance(offset, dict):
+                raise ValueError(f"{morph_type} morph offset {offset_index} must be a mapping")
+            if morph_type == "flip":
+                reference_key = "morph_index"
+                vector_keys = ()
+                scalar_key = "flip_rate"
+            else:
+                reference_key = "rigid_body_index"
+                vector_keys = ("impulse", "torque")
+                scalar_key = None
+
+            reference = offset.get(reference_key)
+            if isinstance(reference, bool) or not isinstance(reference, int) or reference < 0:
+                raise ValueError(
+                    f"{morph_type} morph offset {offset_index} {reference_key} must be a non-negative integer"
+                )
+            normalized = {reference_key: reference}
+            if scalar_key is not None:
+                scalar = offset.get(scalar_key)
+                if isinstance(scalar, bool) or not isinstance(scalar, (int, float)):
+                    raise ValueError(f"{morph_type} morph offset {offset_index} {scalar_key} must be a real number")
+                scalar = float(scalar)
+                if not math.isfinite(scalar):
+                    raise ValueError(f"{morph_type} morph offset {offset_index} {scalar_key} must be finite")
+                normalized[scalar_key] = scalar
+            for vector_key in vector_keys:
+                vector = offset.get(vector_key)
+                if not isinstance(vector, (list, tuple)) or len(vector) != 3:
+                    raise ValueError(
+                        f"{morph_type} morph offset {offset_index} {vector_key} must contain exactly three values"
+                    )
+                normalized_vector = []
+                for component in vector:
+                    if isinstance(component, bool) or not isinstance(component, (int, float)):
+                        raise ValueError(
+                            f"{morph_type} morph offset {offset_index} {vector_key} must contain real numbers"
+                        )
+                    component = float(component)
+                    if not math.isfinite(component):
+                        raise ValueError(
+                            f"{morph_type} morph offset {offset_index} {vector_key} must contain finite numbers"
+                        )
+                    normalized_vector.append(component)
+                normalized[vector_key] = normalized_vector
+            offsets.append(normalized)
+
+        morph_name = morph.get_name()
+        morph_node = self._create_or_get_morph_network_node(morph_name, morph_type)
+        maya_attribute_utils.set_custom_attributes(
+            morph_node,
+            {
+                "mmd_morph_name": str(morph_name),
+                "mmd_morph_name_en": str(getattr(morph, "name_english", "")),
+                "mmd_morph_type": morph_type,
+                "mmd_morph_index": int(morph_index),
+                "mmd_morph_panel": int(getattr(morph, "panel", 0)),
+                f"mmd_{morph_type}_morph_offset_count": len(offsets),
+                offsets_attr: json.dumps(offsets, ensure_ascii=False, separators=(",", ":")),
             },
         )
         return {
