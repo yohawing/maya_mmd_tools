@@ -1,7 +1,7 @@
 """Maya-independent structural validation for VMD Mode A/C export."""
 
 import math
-from typing import Any, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from ..core.vmd_data import VmdData
 from .export_validator import ExportValidationIssue, ExportValidationReport
@@ -75,6 +75,74 @@ def _interpolation(value: Any, expected: int, path: str, issues: List[ExportVali
         )
 
 
+def _raw_bone_provenance_records(
+    raw_provenance: Any,
+    frame_range: Optional[Tuple[int, int]] = None,
+) -> Tuple[bool, Optional[Dict[Tuple[str, int], bytes]]]:
+    """Normalize complete raw bone records, scoped to the requested range."""
+    if not isinstance(raw_provenance, Mapping) or "raw_bone_interpolation" not in raw_provenance:
+        return False, None
+    records = raw_provenance.get("raw_bone_interpolation")
+    if not isinstance(records, list) or not raw_provenance.get("raw_bone_interpolation_complete"):
+        return True, None
+    try:
+        expected_count = int(raw_provenance.get("raw_bone_key_count", len(records)))
+    except (TypeError, ValueError, OverflowError):
+        return True, None
+    if expected_count != len(records):
+        return True, None
+
+    normalized: Dict[Tuple[str, int], bytes] = {}
+    for record in records:
+        if not isinstance(record, Mapping):
+            return True, None
+        name = str(record.get("bone_name") or "")
+        try:
+            frame_number = int(record.get("frame_number"))
+            interpolation = bytes(record.get("interpolation", ()))
+        except (TypeError, ValueError, OverflowError):
+            return True, None
+        key = (name, frame_number)
+        if not name or frame_number < 0 or len(interpolation) != 64 or key in normalized:
+            return True, None
+        normalized[key] = interpolation
+    if frame_range is not None:
+        start, end = frame_range
+        normalized = {
+            key: interpolation
+            for key, interpolation in normalized.items()
+            if start <= key[1] <= end
+        }
+    return True, normalized
+
+
+def _raw_bone_payload_mismatch(
+    expected: Mapping[Tuple[str, int], bytes],
+    frames: Iterable[Any],
+) -> Tuple[int, int, int, int]:
+    """Return missing, extra, changed-payload, and duplicate raw key counts."""
+    actual: Dict[Tuple[str, int], bytes] = {}
+    duplicate_count = 0
+    invalid_count = 0
+    for frame in frames:
+        try:
+            key = (str(frame.bone_name), int(frame.frame_number))
+            interpolation = bytes(frame.interpolation)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            invalid_count += 1
+            continue
+        if key in actual:
+            duplicate_count += 1
+        actual[key] = interpolation
+    missing_count = len(set(expected).difference(actual))
+    extra_count = len(set(actual).difference(expected))
+    changed_count = sum(
+        expected[key] != actual[key]
+        for key in set(expected).intersection(actual)
+    )
+    return missing_count, extra_count, changed_count, duplicate_count + invalid_count
+
+
 def validate_vmd_data(
     vmd_data: VmdData,
     mode: str = VMD_MODE_C,
@@ -128,6 +196,36 @@ def validate_vmd_data(
             norm = 0.0
         if not math.isfinite(norm) or norm <= 1e-12:
             issues.append(_issue("VMD_QUATERNION_INVALID", f"{path}.rotation", "VMD quaternion must not be zero"))
+
+    if mode == VMD_MODE_A:
+        raw_frame_range = (start, end) if start is not None and end is not None else None
+        has_raw_records, expected_raw_records = _raw_bone_provenance_records(
+            raw_provenance,
+            frame_range=raw_frame_range,
+        )
+        if has_raw_records:
+            if expected_raw_records is None:
+                issues.append(
+                    _issue(
+                        "VMD_RAW_PROVENANCE_MISMATCH",
+                        "raw_provenance.raw_bone_interpolation",
+                        "VMD Mode A raw bone provenance is incomplete or malformed",
+                    )
+                )
+            else:
+                missing, extra, changed, duplicate = _raw_bone_payload_mismatch(
+                    expected_raw_records,
+                    vmd_data.bone_frames,
+                )
+                if missing or extra or changed or duplicate:
+                    issues.append(
+                        _issue(
+                            "VMD_RAW_PROVENANCE_MISMATCH",
+                            "raw_provenance.raw_bone_interpolation",
+                            "VMD Mode A raw bone key/interpolation mismatch: "
+                            f"missing={missing}, extra={extra}, changed={changed}, duplicate={duplicate}",
+                        )
+                    )
 
     for index, frame in enumerate(vmd_data.morph_frames):
         path = f"morph_frames[{index}]"

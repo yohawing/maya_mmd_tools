@@ -135,10 +135,19 @@ class TestVmdSceneCollector(MayaTestBase):
         self.assertTrue(provenance["raw_bone_interpolation_complete"])
         self.assertEqual(provenance["raw_bone_key_count"], len(source_data.bone_frames))
 
-        maya_data = VmdSceneCollector().collect({"target_model": root})
         output_path = self.get_temp_filename("imported_fixture_export.vmd")
-        VmdExporter().export_vmd_animation(output_path, maya_data)
+        result = ExportVmdAction().execute(
+            ExportVmdRequest(
+                file_path=output_path,
+                options={
+                    "target_model": root,
+                    "export_format": "vmd",
+                    "vmd_mode": "A",
+                },
+            )
+        )
 
+        self.assertTrue(result.succeeded, result.error)
         parsed = VmdData().parse_file(output_path)
         self.assertTrue(parsed.header.model_name)
         self.assertGreater(len(parsed.bone_frames), 0)

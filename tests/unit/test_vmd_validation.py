@@ -43,6 +43,77 @@ class TestVmdValidator(unittest.TestCase):
         self.assertTrue(report.is_blocking)
         self.assertEqual([issue.code for issue in report.issues], ["VMD_RAW_PROVENANCE_MISSING"])
 
+    def test_mode_a_rejects_raw_key_set_mismatch(self):
+        data = VmdData()
+        data.bone_frames.append(_valid_bone_frame())
+        report = validate_vmd_data(
+            data,
+            VMD_MODE_A,
+            raw_provenance={
+                "raw_bone_interpolation_complete": True,
+                "raw_bone_key_count": 1,
+                "raw_bone_interpolation": [
+                    {
+                        "bone_name": "センター",
+                        "frame_number": 10,
+                        "interpolation": [20] * 64,
+                    }
+                ],
+            },
+        )
+
+        self.assertIn("VMD_RAW_PROVENANCE_MISMATCH", [issue.code for issue in report.issues])
+
+    def test_mode_a_rejects_raw_interpolation_payload_change(self):
+        data = VmdData()
+        data.bone_frames.append(_valid_bone_frame())
+        report = validate_vmd_data(
+            data,
+            VMD_MODE_A,
+            raw_provenance={
+                "raw_bone_interpolation_complete": True,
+                "raw_bone_key_count": 1,
+                "raw_bone_interpolation": [
+                    {
+                        "bone_name": "センター",
+                        "frame_number": 0,
+                        "interpolation": [7] * 64,
+                    }
+                ],
+            },
+        )
+
+        self.assertIn("VMD_RAW_PROVENANCE_MISMATCH", [issue.code for issue in report.issues])
+
+    def test_mode_a_scopes_raw_comparison_to_requested_frame_range(self):
+        data = VmdData()
+        frame = _valid_bone_frame()
+        frame.frame_number = 10
+        data.bone_frames.append(frame)
+        report = validate_vmd_data(
+            data,
+            VMD_MODE_A,
+            frame_range=(10, 10),
+            raw_provenance={
+                "raw_bone_interpolation_complete": True,
+                "raw_bone_key_count": 2,
+                "raw_bone_interpolation": [
+                    {
+                        "bone_name": "センター",
+                        "frame_number": 0,
+                        "interpolation": [20] * 64,
+                    },
+                    {
+                        "bone_name": "センター",
+                        "frame_number": 10,
+                        "interpolation": [20] * 64,
+                    },
+                ],
+            },
+        )
+
+        self.assertTrue(report.valid)
+
     def test_invalid_bone_payload_reports_all_relevant_contracts(self):
         data = VmdData()
         frame = _valid_bone_frame()
