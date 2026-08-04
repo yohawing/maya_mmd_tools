@@ -80,6 +80,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_PMX_REST_POSITION,
     ATTR_MMD_PMX_ADDITIONAL_UV_COUNT,
     ATTR_MMD_PMX_SDEF_VERTEX_COUNT,
+    ATTR_MMD_PMX_SOFT_BODY_COUNT,
     ATTR_MMD_SDEF_VERTICES_JSON,
     ATTR_MMD_AXIS_DIRECTION,
     ATTR_MMD_X_AXIS_DIRECTION,
@@ -141,6 +142,19 @@ def _get_attr(node: str, attr: str, default=None):
         if value is not None:
             return value
     return default
+
+
+def _read_soft_body_payload(*nodes: str | None):
+    """Return an export-blocking sentinel for imported PMX soft bodies."""
+    for node in nodes:
+        if not node or not cmds.attributeQuery(ATTR_MMD_PMX_SOFT_BODY_COUNT, node=node, exists=True):
+            continue
+        count = _get_attr(node, ATTR_MMD_PMX_SOFT_BODY_COUNT, None)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            return {"count": count}
+        if count > 0:
+            return [{"count": count}]
+    return None
 
 
 def _read_additional_uv_storage(
@@ -2072,6 +2086,9 @@ class ExportSceneCollector:
             "bones": bones,
             "morphs": _collect_vertex_morphs(shape),
         }
+        soft_body_payload = _read_soft_body_payload(transform, shape)
+        if soft_body_payload is not None:
+            model_data["soft_bodies"] = soft_body_payload
         if not is_pmd and _resolve_texture_table:
             _apply_texture_table(model_data, None)
         return model_data
@@ -2213,6 +2230,9 @@ class ExportSceneCollector:
             "rigid_bodies": rigid_bodies,
             "joints": joints,
         }
+        soft_body_payload = _read_soft_body_payload(root)
+        if soft_body_payload is not None:
+            model_data["soft_bodies"] = soft_body_payload
         if not is_pmd:
             _apply_texture_table(model_data, root)
 

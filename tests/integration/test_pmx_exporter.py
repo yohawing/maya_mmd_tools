@@ -67,6 +67,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_TEXTURE_INDEX,
     ATTR_MMD_TOON_TEXTURE_INDEX,
     ATTR_MMD_PMX_REST_POSITION,
+    ATTR_MMD_PMX_SOFT_BODY_COUNT,
     ATTR_MMD_AXIS_DIRECTION,
     ATTR_MMD_X_AXIS_DIRECTION,
     ATTR_MMD_Z_AXIS_DIRECTION,
@@ -77,9 +78,11 @@ from mmd_tools.io.pmx_exporter import PmxExporter
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
+from mmd_tools.core.pmx_data.soft_body import PmxSoftBody
 from mmd_tools.core.logger import get_logger
 from mmd_tools.io.model_import_pipeline import ModelImportPipeline
 from mmd_tools.io.mmd_importer import import_mmd_file
+from tests.common.pmx_mock import PmxMock
 from tests.common.maya_test_base import MayaTestBase
 
 
@@ -643,6 +646,56 @@ class TestPmxExporter(MayaTestBase):
                 fresh["vertices"][0][field], collected["vertices"][0][field]
             ):
                 self.assertAlmostEqual(actual, expected, places=6, msg=field)
+
+    def test_imported_pmx_soft_body_provenance_blocks_export(self):
+        """Unsupported PMX 2.1 soft bodies survive import as a blocking export sentinel."""
+        source_path = self.get_temp_filename("soft_body_import.pmx")
+        with open(source_path, "wb") as stream:
+            stream.write(PmxMock.create_minimal_pmx(version=2.1))
+
+        pmx = _parse_pmx(source_path)
+        soft_body = PmxSoftBody(
+            material_index_size=pmx.header.material_index_size,
+            rigid_body_index_size=pmx.header.rigid_body_index_size,
+            vertex_index_size=pmx.header.vertex_index_size,
+            encoding_flag=0,
+        )
+        soft_body.name = "cloth"
+        soft_body.name_english = "cloth"
+        soft_body.material_index = 0
+        pmx.soft_bodies = [soft_body]
+        pmx.write_file(source_path)
+
+        cmds.file(new=True, force=True)
+        root = import_mmd_file(
+            source_path,
+            options={
+                "create_mmd_shaders": False,
+                "import_physics": False,
+                "setup_rig": False,
+                "use_native_pmx_parse": False,
+                "require_native_pmx_parse": False,
+            },
+        )
+        self.assertIsNotNone(root)
+        self.assertEqual(cmds.getAttr(f"{root}.{ATTR_MMD_PMX_SOFT_BODY_COUNT}"), 1)
+
+        model_data = ExportSceneCollector().collect_from_model_root(root)
+        self.assertEqual(model_data["soft_bodies"], [{"count": 1}])
+
+        output_path = self.get_temp_filename("soft_body_rejected.pmx")
+        result = ExportModelAction().execute(
+            ExportModelRequest(
+                file_path=output_path,
+                options={"export_format": "pmx", "target_model": root},
+            )
+        )
+        self.assertFalse(result.succeeded)
+        self.assertIn(
+            "PMX_SOFT_BODIES_UNSUPPORTED",
+            [issue.code for issue in result.validation_report.issues],
+        )
+        self.assertFalse(os.path.exists(output_path))
 
     def test_roundtrip_single_tagged_material_preserves_texture_table(self):
         """Direct collection resolves tagged material paths before PMX export."""

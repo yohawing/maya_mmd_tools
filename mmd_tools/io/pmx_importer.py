@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, Optional
 
 from maya import cmds
 
-from mmd_tools.core import maya_name_utils
+from mmd_tools.core import maya_attribute_utils, maya_name_utils
 from mmd_tools.core.exceptions import MMDImportException
 
 from ..converters import BoneConverter, MeshConverter, MorphConverter
@@ -24,6 +24,7 @@ from ..core.constants import (
     ATTR_MMD_MODEL_NAME,
     ATTR_MMD_MODEL_NAME_EN,
     ATTR_MMD_MORPH_DATA,
+    ATTR_MMD_PMX_SOFT_BODY_COUNT,
     ATTR_MMD_TEXTURE_TABLE_JSON,
 )
 from ..core.display_frame_metadata import display_frames_to_json
@@ -95,6 +96,20 @@ def _serialize_pmx_texture_table(textures: Any) -> str:
     )
 
 
+def _pmx_soft_body_count(pmx_data: Any) -> int:
+    """Resolve imported PMX soft-body count before scene conversion.
+
+    Soft bodies are not represented by Maya's current physics importer.  The
+    count is nevertheless retained as root/mesh provenance so model export
+    can reject the unsupported section instead of silently dropping it.
+    """
+    try:
+        return len(getattr(pmx_data, "soft_bodies", []) or [])
+    except Exception as exc:
+        logger.error("Failed to inspect PMX soft-body section", exc_info=True)
+        raise MMDImportException("Failed to inspect PMX soft-body section") from exc
+
+
 def import_pmx_file(
     parser: Any,
     filepath: str,
@@ -135,6 +150,12 @@ def import_pmx_file(
     logger.debug("Scale factor: %f", scale)
 
     model_name = maya_name_utils.sanitize_text(parser.header.get_name())
+    soft_body_count = _pmx_soft_body_count(parser)
+    if soft_body_count:
+        logger.warning(
+            "PMX import retained unsupported soft-body provenance: count=%d",
+            soft_body_count,
+        )
     namespace = pipeline.resolve_namespace(model_name, custom_namespace=options.get("custom_namespace"))
     bone_converter = BoneConverter()
     morph_converter = MorphConverter(scale=scale)
@@ -163,6 +184,7 @@ def import_pmx_file(
                     ATTR_MMD_MORPH_DATA: _serialize_pmx_morph_data(
                         getattr(parser, "morphs", [])
                     ),
+                    ATTR_MMD_PMX_SOFT_BODY_COUNT: soft_body_count,
                     ATTR_MMD_TEXTURE_TABLE_JSON: _serialize_pmx_texture_table(
                         getattr(parser, "textures", [])
                     ),
@@ -187,6 +209,13 @@ def import_pmx_file(
 
             # mesh_name が list かどうかで分岐
             mesh_names = mesh_name if isinstance(mesh_name, list) else [mesh_name]
+            if soft_body_count:
+                for mesh_node in mesh_names:
+                    if mesh_node and cmds.objExists(mesh_node):
+                        maya_attribute_utils.set_custom_attributes(
+                            mesh_node,
+                            {ATTR_MMD_PMX_SOFT_BODY_COUNT: soft_body_count},
+                        )
             logger.debug("Mesh conversion complete: group=%s, name=%s", mesh_group, mesh_name)
 
             logger.debug("Converting morphs...")

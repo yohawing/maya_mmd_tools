@@ -1018,6 +1018,30 @@ class TestFastMorphMetadata(unittest.TestCase):
         self.assertEqual(empty_writes["empty_root.mmd_comment"], "")
         self.assertEqual(empty_writes["empty_root.mmd_comment_en"], "")
 
+    def test_root_metadata_preserves_soft_body_count(self):
+        """Fast-import roots retain unsupported PMX 2.1 soft-body provenance."""
+        cmds = MagicMock()
+        cmds.attributeQuery.return_value = False
+        metadata = {
+            "metadata": {
+                "name": "Model",
+                "englishName": "Model",
+                "comment": "",
+                "englishComment": "",
+                "counts": {"softBodies": 2},
+            }
+        }
+
+        _apply_fast_root_metadata("model.pmx", "root", metadata, cmds)
+
+        soft_body_writes = [
+            call
+            for call in cmds.setAttr.call_args_list
+            if call[0] and call[0][0] == "root.mmd_pmx_soft_body_count"
+        ]
+        self.assertEqual(len(soft_body_writes), 1)
+        self.assertEqual(soft_body_writes[0][0][1], 2)
+
     @patch("mmd_tools.io.cpp_fast_importer.parse_pmx_native")
     def test_root_metadata_native_parser_fallback_is_called_once(self, mock_parse_native):
         mock_parse_native.return_value = SimpleNamespace(
