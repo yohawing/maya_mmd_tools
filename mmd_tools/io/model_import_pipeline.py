@@ -100,6 +100,7 @@ class ModelImportPipeline:
             morph_result.get("bone_morph_nodes", [])
             + morph_result.get("group_morph_nodes", [])
             + morph_result.get("material_morph_nodes", [])
+            + morph_result.get("uv_morph_nodes", [])
         )
         if model_registry:
             register_model_members(model_registry, REGISTRY_CATEGORY_MORPH, morph_nodes)

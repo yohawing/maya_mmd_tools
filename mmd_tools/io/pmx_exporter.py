@@ -30,6 +30,16 @@ from mmd_tools.core.utils import (
 from mmd_tools.validation.export_validator import ensure_writer_safe_materials
 
 
+_PMX_UV_MORPH_TYPES = {
+    "uv": PmxMorphType.UVMorph,
+    "additional_uv1": PmxMorphType.AdditionalUVMorph1,
+    "additional_uv2": PmxMorphType.AdditionalUVMorph2,
+    "additional_uv3": PmxMorphType.AdditionalUVMorph3,
+    "additional_uv4": PmxMorphType.AdditionalUVMorph4,
+}
+_PMX_UV_MORPH_TYPE_BY_ENUM = {int(value): name for name, value in _PMX_UV_MORPH_TYPES.items()}
+
+
 def _additional_uv_channel_count(vertices_raw) -> int:
     """Validate and return the uniform PMX vertex additional-UV count."""
     expected_count = None
@@ -404,6 +414,11 @@ class PmxExporter:
                 normalized_type = "bone"
             elif morph_type == PmxMorphType.MaterialMorph or morph_type == int(PmxMorphType.MaterialMorph):
                 normalized_type = "material"
+            elif (
+                isinstance(morph_type, int)
+                and int(PmxMorphType.UVMorph) <= morph_type <= int(PmxMorphType.AdditionalUVMorph4)
+            ):
+                normalized_type = _PMX_UV_MORPH_TYPE_BY_ENUM[int(morph_type)]
             else:
                 normalized_type = morph_type
 
@@ -508,6 +523,43 @@ class PmxExporter:
                             "texture_factor": tuple(offset.get("texture_factor", [0.0, 0.0, 0.0, 0.0])),
                             "sphere_texture_factor": tuple(offset.get("sphere_texture_factor", [0.0, 0.0, 0.0, 0.0])),
                             "toon_texture_factor": tuple(offset.get("toon_texture_factor", [0.0, 0.0, 0.0, 0.0])),
+                        }
+                    )
+
+            elif normalized_type in _PMX_UV_MORPH_TYPES:
+                morph.name = m_raw.get("name", "UVMorph")
+                morph.name_english = m_raw.get("name_english", morph.name)
+                morph.panel = m_raw.get("panel", 4)
+                morph.morph_type = _PMX_UV_MORPH_TYPES[normalized_type]
+
+                for offset_index, offset in enumerate(m_raw.get("offsets", [])):
+                    vertex_index = offset["vertex_index"]
+                    if (
+                        isinstance(vertex_index, bool)
+                        or not isinstance(vertex_index, int)
+                        or vertex_index < 0
+                        or vertex_index >= vertex_count
+                    ):
+                        raise ValueError(
+                            f"morph UV vertex index out of range at offset {offset_index}: {vertex_index}"
+                        )
+                    uv_offset = offset["uv_offset"]
+                    if not isinstance(uv_offset, (list, tuple)) or len(uv_offset) != 4:
+                        raise ValueError(
+                            f"morph UV offset must contain four values at offset {offset_index}"
+                        )
+                    normalized_offset = []
+                    for component in uv_offset:
+                        if isinstance(component, bool) or not isinstance(component, (int, float)):
+                            raise ValueError("morph UV offset values must be real numbers")
+                        component = float(component)
+                        if not math.isfinite(component):
+                            raise ValueError("morph UV offset values must be finite")
+                        normalized_offset.append(component)
+                    morph.offsets.append(
+                        {
+                            "vertex_index": vertex_index,
+                            "uv_offset": tuple(normalized_offset),
                         }
                     )
 

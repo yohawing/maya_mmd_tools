@@ -1430,7 +1430,16 @@ class TestExportScope(unittest.TestCase):
         )
         iterator.assert_called_once_with(
             root_group="|hero:model_ROOT",
-            morph_types={"bone", "group", "material"},
+            morph_types={
+                "bone",
+                "group",
+                "material",
+                "uv",
+                "additional_uv1",
+                "additional_uv2",
+                "additional_uv3",
+                "additional_uv4",
+            },
         )
 
     def test_group_network_morph_collection_restores_index_order_and_fails_closed(self):

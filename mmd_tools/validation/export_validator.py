@@ -32,8 +32,21 @@ _BONE_REFERENCE_FIELDS = (
     "grant_parent_bone_index",
     "ik_target_bone_index",
 )
-_PMX_MORPH_TYPE_BY_ENUM = {0: "group", 1: "vertex", 2: "bone", 8: "material"}
+_PMX_MORPH_TYPE_BY_ENUM = {
+    0: "group",
+    1: "vertex",
+    2: "bone",
+    3: "uv",
+    4: "additional_uv1",
+    5: "additional_uv2",
+    6: "additional_uv3",
+    7: "additional_uv4",
+    8: "material",
+}
 _PMX_MORPH_TYPES = frozenset(_PMX_MORPH_TYPE_BY_ENUM.values())
+_PMX_UV_MORPH_TYPES = frozenset(
+    {"uv", "additional_uv1", "additional_uv2", "additional_uv3", "additional_uv4"}
+)
 _PMD_BONE_TYPE_VALUES = frozenset(range(10))
 _PMX_IK_FLAG = 0x0020
 _PMX_CONNECT_BONE_FLAG = 0x0001
@@ -1123,6 +1136,9 @@ def _validate_pmx_morph_offsets(
         elif morph_type == "group":
             _validate_morph_offset_index(offset, "morph_index", offset_path, morph_count, issues)
             _validate_numeric_fields(offset, ("morph_rate",), offset_path, issues)
+        elif morph_type in _PMX_UV_MORPH_TYPES:
+            _validate_morph_offset_index(offset, "vertex_index", offset_path, vertex_count, issues)
+            _validate_vector_field(offset, "uv_offset", 4, offset_path, issues)
         else:
             _validate_morph_offset_index(
                 offset,

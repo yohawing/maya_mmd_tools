@@ -419,6 +419,47 @@ class TestPmxExporterFromDict(TestBase):
             list(channel_values),
         )
 
+    def test_export_uv_morph_roundtrip_uses_python_writer(self):
+        """PMX UV morph offsets are serialized for each supported UV morph type."""
+        native_calls = []
+        exporter = PmxExporter(
+            native_parts_exporter=lambda *args, **kwargs: native_calls.append((args, kwargs)) or b"NATIVE-PMX"
+        )
+        data = {
+            "model_name": "UvMorphTest",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [1.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 1.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "morphs": [
+                {
+                    "type": "uv",
+                    "name": "UV morph",
+                    "offsets": [{"vertex_index": 1, "uv_offset": [0.1, 0.2, 0.3, 0.4]}],
+                },
+                {
+                    "type": "additional_uv3",
+                    "name": "Additional UV3 morph",
+                    "offsets": [{"vertex_index": 2, "uv_offset": [-0.1, -0.2, -0.3, -0.4]}],
+                },
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "uv_morph.pmx")
+
+        exporter.export_pmx_model(out_path, data)
+
+        pmx = _parse_pmx(out_path)
+        self.assertEqual(native_calls, [])
+        self.assertEqual([int(morph.morph_type) for morph in pmx.morphs], [3, 6])
+        self.assertEqual(pmx.morphs[0].offsets[0]["vertex_index"], 1)
+        for actual, expected in zip(pmx.morphs[0].offsets[0]["uv_offset"], (0.1, 0.2, 0.3, 0.4)):
+            self.assertAlmostEqual(actual, expected)
+        self.assertEqual(pmx.morphs[1].offsets[0]["vertex_index"], 2)
+        for actual, expected in zip(pmx.morphs[1].offsets[0]["uv_offset"], (-0.1, -0.2, -0.3, -0.4)):
+            self.assertAlmostEqual(actual, expected)
+
     def test_export_none_textures_writes_valid_pmx(self):
         """textures=None は空テーブルとしてPMXを書き出せる。"""
         data = {
@@ -1554,7 +1595,7 @@ class TestPmxExporterFromDict(TestBase):
             )
 
     def test_export_unsupported_morph_types_raise(self):
-        """UV / Flip / Impulse モーフは文字列・enum・数値いずれの指定でも ValueError"""
+        """Flip / Impulse モーフは文字列・enum・数値いずれの指定でも ValueError"""
         _base_data = {
             "model_name": "UnsupportedMorphTypes",
             "vertices": [
@@ -1567,15 +1608,12 @@ class TestPmxExporterFromDict(TestBase):
 
         unsupported_types = [
             # string aliases
-            "uv",
             "flip",
             "impulse",
             # PmxMorphType enum values
-            PmxMorphType.UVMorph,
             PmxMorphType.FlipMorph,
             PmxMorphType.ImpulseMorph,
             # numeric equivalents
-            int(PmxMorphType.UVMorph),    # 3
             int(PmxMorphType.FlipMorph),   # 9
             int(PmxMorphType.ImpulseMorph),  # 10
         ]

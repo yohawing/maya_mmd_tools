@@ -6,6 +6,7 @@ Mayaのブレンドシェイプシステムに変換する機能を提供しま�
 """
 
 import json
+import math
 import time
 from typing import Any, Dict, List, Optional, Set, Union
 
@@ -18,7 +19,9 @@ from mmd_tools.core.constants import (
     ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON,
     ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
+    ATTR_MMD_UV_MORPH_OFFSETS_JSON,
 )
+from mmd_tools.core.morph_metadata_reader import PMX_MORPH_TYPE_NAMES
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.converters.morph_scene_metadata import (
     iter_morph_network_metadata,
@@ -153,9 +156,11 @@ class MorphConverter:
         bone_morph_nodes = []
         group_morph_nodes = []
         material_morph_nodes = []
+        uv_morph_nodes = []
         converted_bone_morphs = set()
         converted_group_morphs = set()
         converted_material_morphs = set()
+        converted_uv_morphs = set()
         material_vertex_sets = self._build_pmx_material_vertex_sets(pmx_data)
         skipped_vertex_morphs_by_material = 0
 
@@ -219,6 +224,16 @@ class MorphConverter:
                                 results.append(result)
                                 material_morph_nodes.append(result["morph_node"])
                                 self.logger.debug(f"Successfully imported material morph metadata: {morph.name}")
+                        elif PmxMorphType.UVMorph <= morph.morph_type <= PmxMorphType.AdditionalUVMorph4:
+                            if morph_index in converted_uv_morphs:
+                                continue
+                            self.logger.debug(f"Converting UV morph metadata: {morph.name}")
+                            result = self._convert_uv_morph_pmx(morph, morph_index)
+                            if result["success"]:
+                                converted_uv_morphs.add(morph_index)
+                                results.append(result)
+                                uv_morph_nodes.append(result["morph_node"])
+                                self.logger.debug(f"Successfully imported UV morph metadata: {morph.name}")
                     except Exception as e:
                         self.logger.warning(f"Failed to convert morph {morph.name}: {e}")
             finally:
@@ -233,6 +248,7 @@ class MorphConverter:
             "bone_morph_nodes": bone_morph_nodes,
             "group_morph_nodes": group_morph_nodes,
             "material_morph_nodes": material_morph_nodes,
+            "uv_morph_nodes": uv_morph_nodes,
             "vertex_morphs_skipped_by_material": skipped_vertex_morphs_by_material,
             "results": results,
         }
@@ -309,7 +325,11 @@ class MorphConverter:
                     destinations.setdefault(int(entry["index"]), set()).add(
                         f"{blend_shape}.weight[{int(weight_index)}]"
                     )
-        for morph_node in morph_result.get("bone_morph_nodes", []) + morph_result.get("material_morph_nodes", []):
+        for morph_node in (
+            morph_result.get("bone_morph_nodes", [])
+            + morph_result.get("material_morph_nodes", [])
+            + morph_result.get("uv_morph_nodes", [])
+        ):
             index = int(cmds.getAttr(f"{morph_node}.mmd_morph_index"))
             destinations.setdefault(index, set()).add(f"{morph_node}.weight")
         for leaf_index, leaf_destinations in sorted(destinations.items()):
@@ -430,11 +450,25 @@ class MorphConverter:
             "bone": "mmd_bone_morph_offsets_json",
             "group": "mmd_group_morph_offsets_json",
             "material": "mmd_material_morph_offsets_json",
+            "uv": ATTR_MMD_UV_MORPH_OFFSETS_JSON,
+            "additional_uv1": ATTR_MMD_UV_MORPH_OFFSETS_JSON,
+            "additional_uv2": ATTR_MMD_UV_MORPH_OFFSETS_JSON,
+            "additional_uv3": ATTR_MMD_UV_MORPH_OFFSETS_JSON,
+            "additional_uv4": ATTR_MMD_UV_MORPH_OFFSETS_JSON,
         }
 
         for metadata in iter_morph_network_metadata(
             root_group=root_group,
-            morph_types={"bone", "group", "material"},
+            morph_types={
+                "bone",
+                "group",
+                "material",
+                "uv",
+                "additional_uv1",
+                "additional_uv2",
+                "additional_uv3",
+                "additional_uv4",
+            },
         ):
             morph_node = metadata.node
             try:
@@ -643,6 +677,70 @@ class MorphConverter:
             "morph_name": morph_name,
             "morph_node": morph_node,
             "morph_type": "material",
+            "offset_count": len(offsets),
+        }
+
+    def _convert_uv_morph_pmx(self, morph, morph_index: int = 0) -> Dict[str, Any]:
+        """Import PMX UV morphs as raw semantic metadata on a network node.
+
+        Maya does not evaluate these offsets in this slice.  The source vertex
+        index and all four offset components are kept in PMX space so the
+        exporter can write them back without inventing a UV animation path.
+        """
+        morph_type_value = int(morph.morph_type)
+        morph_type = PMX_MORPH_TYPE_NAMES.get(morph_type_value)
+        if morph_type_value < int(PmxMorphType.UVMorph) or morph_type_value > int(PmxMorphType.AdditionalUVMorph4):
+            raise ValueError(f"unsupported UV morph type: {morph_type_value}")
+        if morph_type is None:
+            raise ValueError(f"unknown UV morph type: {morph_type_value}")
+
+        morph_name = morph.get_name()
+        offsets = []
+        for offset_index, offset in enumerate(getattr(morph, "offsets", []) or []):
+            if not isinstance(offset, dict):
+                raise ValueError(f"UV morph offset {offset_index} must be a mapping")
+            if "vertex_index" not in offset:
+                raise ValueError(f"UV morph offset {offset_index} is missing vertex_index")
+            if "uv_offset" not in offset:
+                raise ValueError(f"UV morph offset {offset_index} is missing uv_offset")
+            vertex_index = offset["vertex_index"]
+            if isinstance(vertex_index, bool) or not isinstance(vertex_index, int) or vertex_index < 0:
+                raise ValueError(f"UV morph offset {offset_index} vertex_index must be a non-negative integer")
+            uv_offset = offset["uv_offset"]
+            if not isinstance(uv_offset, (list, tuple)) or len(uv_offset) != 4:
+                raise ValueError(f"UV morph offset {offset_index} uv_offset must contain exactly four values")
+            normalized_offset = []
+            for component in uv_offset:
+                if isinstance(component, bool) or not isinstance(component, (int, float)):
+                    raise ValueError(f"UV morph offset {offset_index} uv_offset must contain real numbers")
+                component = float(component)
+                if not math.isfinite(component):
+                    raise ValueError(f"UV morph offset {offset_index} uv_offset must contain finite numbers")
+                normalized_offset.append(component)
+            offsets.append({"vertex_index": vertex_index, "uv_offset": normalized_offset})
+
+        morph_node = self._create_or_get_morph_network_node(morph_name, morph_type)
+        maya_attribute_utils.set_custom_attributes(
+            morph_node,
+            {
+                "mmd_morph_name": str(morph_name),
+                "mmd_morph_name_en": str(getattr(morph, "name_english", "")),
+                "mmd_morph_type": morph_type,
+                "mmd_morph_index": int(morph_index),
+                "mmd_morph_panel": int(getattr(morph, "panel", 0)),
+                "mmd_uv_morph_offset_count": len(offsets),
+                ATTR_MMD_UV_MORPH_OFFSETS_JSON: json.dumps(
+                    offsets,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            },
+        )
+        return {
+            "success": True,
+            "morph_name": morph_name,
+            "morph_node": morph_node,
+            "morph_type": morph_type,
             "offset_count": len(offsets),
         }
 

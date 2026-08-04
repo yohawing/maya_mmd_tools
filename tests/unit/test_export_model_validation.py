@@ -894,7 +894,26 @@ class TestExportModelValidation(unittest.TestCase):
                 self.assertTrue(validate_model_data(model_data, "pmx").valid)
 
     def test_supported_pmx_morph_types_include_numeric_enum_values(self):
-        for morph_type in ("group", "vertex", "bone", "material", 0, 1, 2, 8):
+        for morph_type in (
+            "group",
+            "vertex",
+            "bone",
+            "uv",
+            "additional_uv1",
+            "additional_uv2",
+            "additional_uv3",
+            "additional_uv4",
+            "material",
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+        ):
             with self.subTest(morph_type=morph_type):
                 model_data = _valid_model_data()
                 model_data["morphs"] = [{"type": morph_type, "offsets": []}]
@@ -902,6 +921,38 @@ class TestExportModelValidation(unittest.TestCase):
                 report = validate_model_data(model_data, "pmx")
 
                 self.assertTrue(report.valid)
+
+    def test_pmx_uv_morph_offsets_validate_vertex_and_four_component_payload(self):
+        for morph_type in ("uv", "additional_uv1", 3, 7):
+            with self.subTest(morph_type=morph_type):
+                model_data = _valid_model_data()
+                model_data["morphs"] = [
+                    {
+                        "type": morph_type,
+                        "offsets": [
+                            {"vertex_index": 1, "uv_offset": [0.1, 0.2, 0.3, 0.4]}
+                        ],
+                    }
+                ]
+
+                report = validate_model_data(model_data, "pmx")
+
+                self.assertTrue(report.valid, report.issues)
+
+    def test_pmx_uv_morph_offsets_reject_invalid_index_and_payload(self):
+        cases = (
+            ({"vertex_index": 3, "uv_offset": [0.0, 0.0, 0.0, 0.0]}, "MORPH_OFFSET_INDEX_OUT_OF_RANGE"),
+            ({"vertex_index": 0, "uv_offset": [0.0, 0.0, 0.0]}, "FIELD_LENGTH"),
+            ({"vertex_index": 0, "uv_offset": [0.0, 0.0, float("nan"), 0.0]}, "NON_FINITE_NUMBER"),
+        )
+        for offset, expected_code in cases:
+            with self.subTest(offset=offset):
+                model_data = _valid_model_data()
+                model_data["morphs"] = [{"type": "additional_uv2", "offsets": [offset]}]
+
+                report = validate_model_data(model_data, "pmx")
+
+                self.assertTrue(any(issue.code == expected_code for issue in report.issues), report.issues)
 
     def test_pmx_morph_group_vertex_bone_and_material_references_are_range_checked(self):
         cases = (
@@ -1178,7 +1229,9 @@ class TestExportModelValidation(unittest.TestCase):
     def test_action_does_not_call_writer_when_morph_preflight_fails(self):
         exporter = _FakeExporter()
         model_data = _valid_model_data()
-        model_data["morphs"] = [{"type": "uv", "offsets": []}]
+        model_data["morphs"] = [
+            {"type": "uv", "offsets": [{"vertex_index": 0, "uv_offset": [0.0, 0.0, 0.0]}]}
+        ]
 
         result = ExportModelAction(pmx_exporter=exporter, collector=None).execute(
             ExportModelRequest(

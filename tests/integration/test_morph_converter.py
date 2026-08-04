@@ -14,11 +14,14 @@ from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
+    ATTR_MMD_UV_MORPH_OFFSETS_JSON,
 )
+from mmd_tools.core.logger import get_logger
 from mmd_tools.core.settings import settings
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
+from mmd_tools.io.model_import_pipeline import ModelImportPipeline
 
 
 class TestMorphConverter(MayaTestBase):
@@ -241,6 +244,100 @@ class TestMorphConverter(MayaTestBase):
         self.assertEqual(offsets[0]["diffuse"], [0.1, 0.2, 0.3, 0.4])
 
         cmds.delete(mesh_name, morph_node)
+
+    def test_convert_pmx_uv_morph_metadata_and_collect_for_export(self):
+        """PMX UV morph offsets survive Maya metadata storage and root-scoped collection."""
+        mesh_name = self._create_test_mesh()
+        root_group = cmds.group(empty=True, name="uv_morph_root")
+
+        class FakeUVMorph:
+            name = "追加UV笑い"
+            name_english = "additional_uv_smile"
+            panel = 4
+            morph_type = PmxMorphType.AdditionalUVMorph2
+            offsets = [
+                {
+                    "vertex_index": 2,
+                    "uv_offset": (0.1, -0.2, 0.3, -0.4),
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type("FakePmxData", (), {"morphs": [FakeUVMorph()]})()
+
+        morph_converter = MorphConverter()
+        result = morph_converter.convert_pmx_morphs(fake_data, mesh_name)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 1)
+        uv_nodes = result.get("uv_morph_nodes", [])
+        self.assertEqual(len(uv_nodes), 1)
+        morph_node = uv_nodes[0]
+        self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_morph_type"), "additional_uv2")
+        self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_uv_morph_offset_count"), 1)
+        self.assertEqual(
+            json.loads(cmds.getAttr(f"{morph_node}.{ATTR_MMD_UV_MORPH_OFFSETS_JSON}")),
+            [{"vertex_index": 2, "uv_offset": [0.1, -0.2, 0.3, -0.4]}],
+        )
+
+        pipeline = ModelImportPipeline(
+            logger=get_logger(__name__),
+            filepath="<test fixture>",
+            scale=1.0,
+            options={},
+        )
+        model_registry = pipeline.create_model_registry(root_group)
+        pipeline.connect_morph_nodes_to_root(
+            root_group,
+            result,
+            model_registry=model_registry,
+        )
+        collected = MorphConverter().collect_morphs_from_scene_for_export(root_group=root_group)
+        self.assertEqual(
+            collected,
+            [
+                {
+                    "type": "additional_uv2",
+                    "name": "追加UV笑い",
+                    "name_english": "additional_uv_smile",
+                    "panel": 4,
+                    "offsets": [{"vertex_index": 2, "uv_offset": [0.1, -0.2, 0.3, -0.4]}],
+                    "index": 0,
+                }
+            ],
+        )
+
+        out_pmx = self.get_temp_filename("uv_morph_roundtrip.pmx")
+        PmxExporter().export_pmx_model(
+            out_pmx,
+            {
+                "model_name": "UvMorphRoundtrip",
+                "vertices": [
+                    {"position": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 0.0]},
+                    {"position": [1.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [1.0, 0.0]},
+                    {"position": [0.0, 1.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 1.0]},
+                ],
+                "faces": [[0, 1, 2]],
+                "morphs": collected,
+            },
+        )
+        roundtripped = parse_pmx_file(
+            out_pmx,
+            use_native_pmx_parse=False,
+            require_native_pmx_parse=False,
+        )
+        self.assertEqual(len(roundtripped.morphs), 1)
+        self.assertEqual(int(roundtripped.morphs[0].morph_type), int(PmxMorphType.AdditionalUVMorph2))
+        self.assertEqual(roundtripped.morphs[0].offsets[0]["vertex_index"], 2)
+        for actual, expected in zip(
+            roundtripped.morphs[0].offsets[0]["uv_offset"],
+            (0.1, -0.2, 0.3, -0.4),
+        ):
+            self.assertAlmostEqual(actual, expected)
+
+        cmds.delete(mesh_name, morph_node, root_group)
 
     def test_hazardous_network_names_and_controller_aliases_are_safe_and_unique(self):
         """Material/morph names with namespaces and punctuation stay addressable."""

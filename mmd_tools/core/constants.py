@@ -81,6 +81,7 @@ ATTR_MMD_SOURCE_MODEL_PATH = "mmd_source_model_path"
 # 参照する生のモーフ名 (PmxMorph.name) を権威キーとして保持し、正確なマッピングを保証する。
 ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON = "mmd_blendshape_morph_names_json"
 ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON = "mmd_bone_morph_offsets_raw_json"
+ATTR_MMD_UV_MORPH_OFFSETS_JSON = "mmd_uv_morph_offsets_json"
 
 # ボーンカスタムアトリビュート名（共通）
 ATTR_MMD_BONE_NAME = "mmd_bone_name"  # ボーン名（日本語）
