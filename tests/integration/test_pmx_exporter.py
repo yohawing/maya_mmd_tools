@@ -79,6 +79,7 @@ from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.core.logger import get_logger
 from mmd_tools.io.model_import_pipeline import ModelImportPipeline
+from mmd_tools.io.mmd_importer import import_mmd_file
 from tests.common.maya_test_base import MayaTestBase
 
 
@@ -554,6 +555,94 @@ class TestPmxExporter(MayaTestBase):
         ):
             for actual_component, expected_component in zip(actual, expected):
                 self.assertAlmostEqual(actual_component, expected_component, places=6)
+
+    def test_imported_uv_and_sdef_metadata_survive_pmx_fresh_import(self):
+        """Fresh PMX import restores canonical additional-UV and SDEF payloads."""
+        transform, _ = self._make_triangle(name="fresh_metadata_tri_mesh")
+        self._assign_shader(transform, shader_name="FreshMetadataMat")
+        maya_attribute_utils.write_json_attr(
+            transform,
+            ATTR_MMD_ADDITIONAL_UVS_JSON,
+            {
+                "schema_version": 1,
+                "vertex_count": 3,
+                "source_vertex_count": 3,
+                "channel_count": 1,
+                "source_vertex_indices": [0, 1, 2],
+                "additional_uvs": [
+                    [[0.1, 0.2, 0.3, 0.4]],
+                    [[1.1, 1.2, 1.3, 1.4]],
+                    [[2.1, 2.2, 2.3, 2.4]],
+                ],
+            },
+        )
+        maya_attribute_utils.set_custom_attributes(
+            transform,
+            {ATTR_MMD_PMX_SDEF_VERTEX_COUNT: 1},
+        )
+        maya_attribute_utils.write_json_attr(
+            transform,
+            ATTR_MMD_SDEF_VERTICES_JSON,
+            {
+                "schema_version": 1,
+                "vertex_count": 3,
+                "source_vertex_count": 3,
+                "source_vertex_indices": [0, 1, 2],
+                "sdef_vertices": [
+                    {
+                        "bone_indices": [0, 0],
+                        "bone_weights": [0.75],
+                        "sdef_c": [0.1, 0.2, 0.3],
+                        "sdef_r0": [0.0, 0.1, 0.0],
+                        "sdef_r1": [0.0, 0.0, 0.1],
+                    },
+                    None,
+                    None,
+                ],
+            },
+        )
+
+        collected = ExportSceneCollector().collect_from_mesh(transform)
+        output_path = self.get_temp_filename("fresh_import_metadata.pmx")
+        PmxExporter().export_pmx_model(output_path, collected)
+
+        cmds.file(new=True, force=True)
+        fresh_root = import_mmd_file(
+            output_path,
+            options={
+                "create_mmd_shaders": False,
+                "import_physics": False,
+                "setup_rig": False,
+                "use_native_pmx_parse": False,
+                "require_native_pmx_parse": False,
+            },
+        )
+        self.assertIsNotNone(fresh_root)
+        fresh = ExportSceneCollector().collect_from_model_root(fresh_root)
+
+        for actual_channels, expected_channels in zip(
+            fresh["vertices"][0]["additional_uvs"],
+            collected["vertices"][0]["additional_uvs"],
+        ):
+            for actual, expected in zip(actual_channels, expected_channels):
+                self.assertAlmostEqual(actual, expected, places=6)
+        self.assertEqual(
+            fresh["vertices"][0]["weight_transform_type"],
+            collected["vertices"][0]["weight_transform_type"],
+        )
+        self.assertEqual(
+            fresh["vertices"][0]["bone_indices"],
+            collected["vertices"][0]["bone_indices"],
+        )
+        self.assertEqual(
+            fresh["vertices"][0]["bone_weights"],
+            collected["vertices"][0]["bone_weights"],
+        )
+        for field in ("sdef_c", "sdef_r0", "sdef_r1"):
+            for actual, expected in zip(
+                fresh["vertices"][0][field], collected["vertices"][0][field]
+            ):
+                self.assertAlmostEqual(actual, expected, places=6, msg=field)
 
     def test_roundtrip_single_tagged_material_preserves_texture_table(self):
         """Direct collection resolves tagged material paths before PMX export."""

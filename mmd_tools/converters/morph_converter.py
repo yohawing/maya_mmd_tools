@@ -356,7 +356,7 @@ class MorphConverter:
 
     def _convert_group_morph_pmx(self, morph, morph_index: int = 0) -> Dict[str, Any]:
         """PMXグループモーフをMayaのnetwork nodeとしてインポートする。"""
-        morph_name = morph.get_name()
+        morph_name = self._raw_morph_name(morph)
         morph_node = self._create_or_get_morph_network_node(morph_name, "group")
 
         offsets = []
@@ -601,7 +601,7 @@ class MorphConverter:
         ここでは joint 変形へは接続せず、VMD morph frame がキー化できる
         `weight` と、後段評価用の offset metadata だけを作る。
         """
-        morph_name = morph.get_name()
+        morph_name = self._raw_morph_name(morph)
         morph_node = self._create_or_get_morph_network_node(morph_name, "bone")
 
         offsets = []
@@ -652,7 +652,7 @@ class MorphConverter:
         shader parameter へは接続せず、VMD morph frame がキー化できる
         `weight` と、後段評価用の offset metadata だけを作る。
         """
-        morph_name = morph.get_name()
+        morph_name = self._raw_morph_name(morph)
         morph_node = self._create_or_get_morph_network_node(morph_name, "material")
 
         offsets = []
@@ -714,7 +714,7 @@ class MorphConverter:
         if morph_type is None:
             raise ValueError(f"unknown UV morph type: {morph_type_value}")
 
-        morph_name = morph.get_name()
+        morph_name = self._raw_morph_name(morph)
         offsets = []
         for offset_index, offset in enumerate(getattr(morph, "offsets", []) or []):
             if not isinstance(offset, dict):
@@ -829,7 +829,7 @@ class MorphConverter:
                 normalized[vector_key] = normalized_vector
             offsets.append(normalized)
 
-        morph_name = morph.get_name()
+        morph_name = self._raw_morph_name(morph)
         morph_node = self._create_or_get_morph_network_node(morph_name, morph_type)
         maya_attribute_utils.set_custom_attributes(
             morph_node,

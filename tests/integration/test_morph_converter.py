@@ -8,6 +8,7 @@ from maya import cmds
 
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.io.pmx_exporter import PmxExporter
+from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.converters import MorphConverter, MeshConverter
 from mmd_tools.core import maya_attribute_utils, maya_mesh_utils
 from mmd_tools.core.constants import (
@@ -465,7 +466,42 @@ class TestMorphConverter(MayaTestBase):
         self.assertEqual(roundtripped.morphs[0].offsets[0]["morph_index"], 1)
         self.assertEqual(roundtripped.morphs[1].offsets[0]["rigid_body_index"], 0)
 
-        cmds.delete(mesh_name, root_group, *nodes)
+        cmds.file(new=True, force=True)
+        fresh_root = import_mmd_file(
+            str(out_pmx),
+            options={
+                "create_mmd_shaders": False,
+                "import_physics": False,
+                "setup_rig": False,
+                "use_native_pmx_parse": False,
+                "require_native_pmx_parse": False,
+            },
+        )
+        self.assertIsNotNone(fresh_root)
+        fresh_collected = MorphConverter().collect_morphs_from_scene_for_export(
+            root_group=fresh_root
+        )
+        self.assertEqual(len(fresh_collected), len(collected))
+        for actual, expected in zip(fresh_collected, collected):
+            self.assertEqual(
+                {key: actual[key] for key in ("type", "name", "name_english", "panel", "index")},
+                {key: expected[key] for key in ("type", "name", "name_english", "panel", "index")},
+            )
+            self.assertEqual(len(actual["offsets"]), len(expected["offsets"]))
+            for actual_offset, expected_offset in zip(actual["offsets"], expected["offsets"]):
+                self.assertEqual(
+                    {key: actual_offset[key] for key in actual_offset if key not in ("flip_rate", "impulse", "torque")},
+                    {key: expected_offset[key] for key in expected_offset if key not in ("flip_rate", "impulse", "torque")},
+                )
+                if "flip_rate" in expected_offset:
+                    self.assertAlmostEqual(actual_offset["flip_rate"], expected_offset["flip_rate"], places=6)
+                for vector_key in ("impulse", "torque"):
+                    if vector_key in expected_offset:
+                        for actual_component, expected_component in zip(
+                            actual_offset[vector_key], expected_offset[vector_key]
+                        ):
+                            self.assertAlmostEqual(actual_component, expected_component, places=6)
+
 
     def test_hazardous_network_names_and_controller_aliases_are_safe_and_unique(self):
         """Material/morph names with namespaces and punctuation stay addressable."""
