@@ -205,6 +205,9 @@ class ExportWorkflowService:
                     )
             elif export_format == "vmd":
                 payload = self._collect_vmd(request, self._target_options(options, metadata))
+                raw_provenance = getattr(payload, "raw_provenance", None)
+                if options.get("raw_provenance") is None and raw_provenance is not None:
+                    options["raw_provenance"] = raw_provenance
                 validator = getattr(self.vmd_action, "_validator", None)
                 if validator is None:
                     raise ValueError("VMD action does not expose a validator")
@@ -262,6 +265,9 @@ class ExportWorkflowService:
                     ExportModelRequest(request.file_path, options)
                 )
             else:
+                raw_provenance = getattr(validation.payload, "raw_provenance", None)
+                if options.get("raw_provenance") is None and raw_provenance is not None:
+                    options["raw_provenance"] = raw_provenance
                 action_result = self.vmd_action.execute(
                     ExportVmdRequest(
                         request.file_path,

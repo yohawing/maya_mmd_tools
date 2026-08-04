@@ -9,6 +9,7 @@ import unittest
 from mmd_tools.actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
+from mmd_tools.io.vmd_exporter import VmdExporter
 from mmd_tools.validation.export_validator import ExportValidationIssue, ExportValidationReport
 from mmd_tools.validation.vmd_validator import (
     VMD_MODE_A,
@@ -166,8 +167,55 @@ class TestExportVmdValidationGate(unittest.TestCase):
             )
 
             self.assertTrue(result.succeeded)
-            self.assertEqual(result.validation_report.mode, VMD_MODE_A)
-            self.assertIsNotNone(result.payload_fingerprint)
+        self.assertEqual(result.validation_report.mode, VMD_MODE_A)
+        self.assertIsNotNone(result.payload_fingerprint)
+
+    def test_collector_raw_provenance_flows_into_mode_a_validation(self):
+        def collector(_options):
+            return {
+                "model_name": "ImportedMotion",
+                "raw_provenance": {"source": "import", "raw_bone_key_count": 0},
+                "bone_frames": [],
+            }
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "motion.vmd"
+            result = ExportVmdAction(
+                exporter=VmdExporter(native_exporter=None),
+                collector=collector,
+            ).execute(ExportVmdRequest(str(target), {"vmd_mode": VMD_MODE_A}))
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(result.validation_report.mode, VMD_MODE_A)
+
+    def test_reusing_request_does_not_retain_collector_provenance(self):
+        payloads = iter(
+            (
+                {
+                    "model_name": "ImportedMotion",
+                    "raw_provenance": {"source": "first"},
+                    "bone_frames": [],
+                },
+                {"model_name": "EditedMotion", "bone_frames": []},
+            )
+        )
+        action = ExportVmdAction(
+            exporter=VmdExporter(native_exporter=None),
+            collector=lambda _options: next(payloads),
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            request = ExportVmdRequest(
+                str(Path(directory) / "motion.vmd"),
+                {"vmd_mode": VMD_MODE_A},
+            )
+            first = action.execute(request)
+            second = action.execute(request)
+
+        self.assertTrue(first.succeeded)
+        self.assertFalse(second.succeeded)
+        self.assertEqual(second.validation_report.issues[0].code, "VMD_RAW_PROVENANCE_MISSING")
+        self.assertNotIn("raw_provenance", request.options)
 
     def test_warning_requires_ack_before_writer_and_ack_allows_export(self):
         exporter = _WritingVmdExporter()

@@ -22,6 +22,8 @@ from mmd_tools.validation.export_validator import (  # noqa: E402
     validate_model_data,
 )
 from mmd_tools.validation.scene_preflight import ScenePreflight  # noqa: E402
+from mmd_tools.actions.export_vmd_action import ExportVmdAction  # noqa: E402
+from mmd_tools.io.vmd_exporter import VmdExporter  # noqa: E402
 
 
 def _valid_model_data():
@@ -202,6 +204,91 @@ class TestExportWorkflowService(unittest.TestCase):
             action.calls[0].options["validation_snapshot"].payload_fingerprint,
             result.snapshot.payload_fingerprint,
         )
+
+    def test_vmd_raw_provenance_survives_workflow_validate_and_execute(self):
+        raw_provenance = {
+            "raw_bone_interpolation_complete": True,
+            "raw_bone_key_count": 0,
+            "raw_bone_interpolation": [],
+        }
+
+        def collector(_options):
+            return {
+                "model_name": "ImportedMotion",
+                "raw_provenance": raw_provenance,
+                "bone_frames": [],
+            }
+
+        vmd_action = ExportVmdAction(
+            exporter=VmdExporter(native_exporter=None),
+            collector=collector,
+        )
+        service = ExportWorkflowService(
+            scene_preflight=ScenePreflight(
+                scene_service=_SceneService(),
+                ownership_checker=lambda _target: {},
+            ),
+            vmd_action=vmd_action,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            request = ExportWorkflowRequest(
+                str(Path(directory) / "motion.vmd"),
+                {
+                    "export_format": "vmd",
+                    "vmd_mode": "A",
+                    "target_model": "model_ROOT",
+                },
+            )
+
+            validation = service.validate(request)
+            result = service.execute(request)
+
+        self.assertEqual(validation.state, STATE_READY)
+        self.assertEqual(result.state, STATE_SUCCEEDED)
+        self.assertEqual(result.action_result.validation_report.mode, "A")
+
+    def test_vmd_workflow_preserves_explicit_raw_provenance(self):
+        explicit_provenance = {"source": "explicit"}
+        collected_provenance = {"source": "collector"}
+        observed = []
+
+        def collector(_options):
+            return {
+                "model_name": "ImportedMotion",
+                "raw_provenance": collected_provenance,
+                "bone_frames": [],
+            }
+
+        def validator(_payload, mode, raw_provenance=None, **_kwargs):
+            observed.append(raw_provenance)
+            return ExportValidationReport("vmd", (), mode=mode)
+
+        vmd_action = ExportVmdAction(
+            exporter=VmdExporter(native_exporter=None),
+            collector=collector,
+            validator=validator,
+        )
+        service = ExportWorkflowService(
+            scene_preflight=ScenePreflight(
+                scene_service=_SceneService(),
+                ownership_checker=lambda _target: {},
+            ),
+            vmd_action=vmd_action,
+        )
+        request = ExportWorkflowRequest(
+            "motion.vmd",
+            {
+                "export_format": "vmd",
+                "vmd_mode": "A",
+                "target_model": "model_ROOT",
+                "raw_provenance": explicit_provenance,
+            },
+        )
+
+        validation = service.validate(request)
+
+        self.assertEqual(validation.state, STATE_READY)
+        self.assertEqual(observed, [explicit_provenance])
 
     def test_scene_blocking_stops_before_collector(self):
         payload = _valid_model_data()
