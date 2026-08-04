@@ -322,6 +322,20 @@ class TestVmdSceneCollector(MayaTestBase):
         with open(output_path, "rb") as handle:
             self.assertEqual(handle.read(), original_output)
 
+    def test_mode_c_imported_fixture_fresh_import_matches_exported_bone_payload(self):
+        self._assert_mode_c_fresh_import_bone_payload(
+            "mmt_test_model",
+            "mmt_test_model_test_motion",
+            "mode_c_mmt_fixture_export.vmd",
+        )
+
+    def test_mode_c_one_bone_fixture_fresh_import_matches_exported_bone_payload(self):
+        self._assert_mode_c_fresh_import_bone_payload(
+            "test_1bone_cube",
+            "test_1bone_cube_motion",
+            "mode_c_one_bone_fixture_export.vmd",
+        )
+
     def test_roundtrip_tagged_camera_and_light_to_vmd_frames(self):
         camera = self._make_keyed_camera()
         light = self._make_keyed_light()
@@ -382,6 +396,102 @@ class TestVmdSceneCollector(MayaTestBase):
             )
             cmds.setKeyframe(blend_shape, attribute="weight[0]", time=5, value=0.5)
             return (cmds.ls(root, long=True) or [root])[0]
+
+    def _assert_mode_c_fresh_import_bone_payload(
+        self,
+        pmx_fixture_name,
+        vmd_fixture_name,
+        output_file_name,
+    ):
+        """Export one fixture densely, then compare a fresh import to parsed VMD data."""
+        frame_range = (0, 2)
+        expected_frame_numbers = list(range(frame_range[0], frame_range[1] + 1))
+        pmx_path = self.fixture_provider.get_pmx_file(pmx_fixture_name)
+        source_vmd_path = self.fixture_provider.get_vmd_file(vmd_fixture_name)
+
+        source_root = import_mmd_file(
+            pmx_path,
+            options={"setup_rig": True, "setup_bone_orientation": True},
+        )
+        self.assertIsNotNone(source_root, f"PMX import failed: {pmx_fixture_name}")
+        self.assertTrue(
+            import_mmd_file(
+                source_vmd_path,
+                options={"target_model": source_root, "pmx_path": pmx_path},
+            ),
+            f"VMD import failed: {vmd_fixture_name}",
+        )
+
+        output_path = self.get_temp_filename(output_file_name)
+        result = ExportVmdAction().execute(
+            ExportVmdRequest(
+                file_path=output_path,
+                options={
+                    "target_model": source_root,
+                    "export_format": "vmd",
+                    "vmd_mode": "C",
+                    "frame_range": frame_range,
+                },
+            )
+        )
+
+        self.assertTrue(result.succeeded, result.error)
+        exported = VmdData().parse_file(output_path)
+        self.assertGreater(len(exported.bone_frames), 0, "Mode C export has no bone frames")
+        self.assertEqual(
+            sorted({frame.frame_number for frame in exported.bone_frames}),
+            expected_frame_numbers,
+        )
+        exported_by_key = {
+            (frame.bone_name, frame.frame_number): (frame.position, frame.rotation)
+            for frame in exported.bone_frames
+        }
+        self.assertEqual(len(exported_by_key), len(exported.bone_frames))
+        self.assertEqual(
+            len(exported.bone_frames),
+            len({frame.bone_name for frame in exported.bone_frames}) * len(expected_frame_numbers),
+        )
+
+        cmds.file(new=True, force=True)
+        cmds.currentUnit(time="ntsc")
+        fresh_root = import_mmd_file(
+            pmx_path,
+            options={"setup_rig": True, "setup_bone_orientation": True},
+        )
+        self.assertIsNotNone(fresh_root, f"Fresh PMX import failed: {pmx_fixture_name}")
+        self.assertTrue(
+            import_mmd_file(
+                output_path,
+                options={"target_model": fresh_root, "pmx_path": pmx_path},
+            ),
+            "Fresh exported VMD import failed",
+        )
+
+        collected = VmdSceneCollector().collect(
+            {
+                "target_model": fresh_root,
+                "vmd_mode": "C",
+                "frame_range": frame_range,
+            }
+        )
+        collected_by_key = {
+            (frame["bone_name"], frame["frame_number"]): (
+                frame["position"],
+                frame["rotation"],
+            )
+            for frame in collected["bone_frames"]
+        }
+        self.assertEqual(set(collected_by_key), set(exported_by_key))
+        for key in sorted(exported_by_key):
+            expected_position, expected_rotation = exported_by_key[key]
+            actual_position, actual_rotation = collected_by_key[key]
+            self.assertListAlmostEqual(actual_position, expected_position, places=5)
+            self.assertAlmostEqual(
+                abs(sum(actual * expected for actual, expected in zip(actual_rotation, expected_rotation))),
+                1.0,
+                places=5,
+                msg=f"Quaternion mismatch for {key}",
+            )
 
     def _make_keyed_blendshape(self, root):
         base, _base_shape = cmds.polyCube(name="mode_c_base")
