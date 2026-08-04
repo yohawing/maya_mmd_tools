@@ -1221,6 +1221,50 @@ class TestPmxExporterFromDict(TestBase):
         self.assertAlmostEqual(v1.bone_weights[2], 0.0)
         self.assertAlmostEqual(v1.bone_weights[3], 0.0)
 
+    def test_export_sdef_roundtrip_preserves_raw_vertex_payload(self):
+        """SDEF vertices use the Python writer and retain C/R0/R1 vectors."""
+        native_calls = []
+        exporter = PmxExporter(
+            native_parts_exporter=lambda *args, **kwargs: native_calls.append((args, kwargs))
+            or b"NATIVE-PMX"
+        )
+        data = {
+            "model_name": "SDEFTest",
+            "vertices": [
+                {
+                    "position": [0.0, 0.0, 0.0],
+                    "normal": [0.0, 0.0, 1.0],
+                    "bone_indices": [0, 1],
+                    "bone_weights": [0.75],
+                    "weight_transform_type": 3,
+                    "sdef_c": [0.1, 0.2, 0.3],
+                    "sdef_r0": [0.0, 0.1, 0.0],
+                    "sdef_r1": [0.0, 0.0, 0.1],
+                },
+                {"position": [1.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0]},
+                {"position": [0.0, 1.0, 0.0], "normal": [0.0, 0.0, 1.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "bones": [{"name": "b0"}, {"name": "b1"}],
+        }
+        out_path = os.path.join(self.temp_dir, "sdef.pmx")
+        exporter.export_pmx_model(out_path, data)
+        self.assertEqual(native_calls, [])
+
+        pmx = _parse_pmx(out_path)
+
+        vertex = pmx.vertices[0]
+        self.assertEqual(vertex.weight_transform_type, 3)
+        self.assertEqual(vertex.bone_indices, [0, 1])
+        self.assertAlmostEqual(vertex.bone_weights[0], 0.75)
+        for field_name, expected in (
+            ("sdef_c", (0.1, 0.2, 0.3)),
+            ("sdef_r0", (0.0, 0.1, 0.0)),
+            ("sdef_r1", (0.0, 0.0, 0.1)),
+        ):
+            for actual, expected_value in zip(getattr(vertex, field_name), expected):
+                self.assertAlmostEqual(actual, expected_value)
+
     def test_vertex_unsupported_bone_indices_len_raises(self):
         """bone_indices 長さが 1/2/4 以外で ValueError"""
         for bad_len in (0, 3, 5):

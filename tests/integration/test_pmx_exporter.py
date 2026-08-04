@@ -22,6 +22,8 @@ from mmd_tools.converters.material_shader_parameters import (
 )
 from mmd_tools.core.constants import (
     ATTR_MMD_ADDITIONAL_UVS_JSON,
+    ATTR_MMD_PMX_SDEF_VERTEX_COUNT,
+    ATTR_MMD_SDEF_VERTICES_JSON,
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_BONE_OFFSET,
     ATTR_MMD_BONE_FLAGS,
@@ -502,6 +504,56 @@ class TestPmxExporter(MayaTestBase):
                 (2.1, 2.2, 2.3, 2.4),
             ],
         )
+
+    def test_roundtrip_imported_sdef_storage(self):
+        """Collector reads canonical SDEF storage and writer preserves raw vectors."""
+        transform, _ = self._make_triangle(name="sdef_tri_mesh")
+        self._assign_shader(transform, shader_name="SdefMat")
+        maya_attribute_utils.set_custom_attributes(
+            transform,
+            {ATTR_MMD_PMX_SDEF_VERTEX_COUNT: 1},
+        )
+        maya_attribute_utils.write_json_attr(
+            transform,
+            ATTR_MMD_SDEF_VERTICES_JSON,
+            {
+                "schema_version": 1,
+                "vertex_count": 3,
+                "source_vertex_count": 3,
+                "source_vertex_indices": [0, 1, 2],
+                "sdef_vertices": [
+                    {
+                        "bone_indices": [0, 0],
+                        "bone_weights": [0.75],
+                        "sdef_c": [0.1, 0.2, 0.3],
+                        "sdef_r0": [0.0, 0.1, 0.0],
+                        "sdef_r1": [0.0, 0.0, 0.1],
+                    },
+                    None,
+                    None,
+                ],
+            },
+        )
+
+        maya_data = ExportSceneCollector().collect_from_mesh(transform)
+        self.assertEqual(maya_data["vertices"][0]["weight_transform_type"], 3)
+        self.assertEqual(maya_data["vertices"][0]["bone_indices"], [0, 0])
+        self.assertEqual(maya_data["vertices"][0]["bone_weights"], [0.75])
+
+        output_path = self.get_temp_filename("sdef_triangle.pmx")
+        PmxExporter().export_pmx_model(output_path, maya_data)
+        pmx = _parse_pmx(output_path)
+
+        vertex = pmx.vertices[0]
+        self.assertEqual(vertex.weight_transform_type, 3)
+        self.assertEqual(vertex.bone_indices, [0, 0])
+        self.assertAlmostEqual(vertex.bone_weights[0], 0.75)
+        for actual, expected in zip(
+            (vertex.sdef_c, vertex.sdef_r0, vertex.sdef_r1),
+            ((0.1, 0.2, 0.3), (0.0, 0.1, 0.0), (0.0, 0.0, 0.1)),
+        ):
+            for actual_component, expected_component in zip(actual, expected):
+                self.assertAlmostEqual(actual_component, expected_component, places=6)
 
     def test_roundtrip_single_tagged_material_preserves_texture_table(self):
         """Direct collection resolves tagged material paths before PMX export."""

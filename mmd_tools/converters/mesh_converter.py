@@ -45,6 +45,8 @@ from mmd_tools.core.constants import (
     ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_ADDITIONAL_UVS_JSON,
     ATTR_MMD_PMX_ADDITIONAL_UV_COUNT,
+    ATTR_MMD_PMX_SDEF_VERTEX_COUNT,
+    ATTR_MMD_SDEF_VERTICES_JSON,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
 )
 from mmd_tools.converters.mesh_material_properties import (
@@ -1254,6 +1256,43 @@ class MeshConverter:
         return additional_uv_count
 
     @staticmethod
+    def _validate_pmx_sdef_vertices(all_vertices) -> int:
+        """Validate raw PMX SDEF payload before Maya normalizes the skin mode."""
+        sdef_count = 0
+        for vertex_index, vertex in enumerate(all_vertices):
+            if int(getattr(vertex, "weight_transform_type", 0)) != 3:
+                continue
+            sdef_count += 1
+            bone_indices = getattr(vertex, "bone_indices", ()) or ()
+            if not isinstance(bone_indices, (list, tuple)) or len(bone_indices) != 2:
+                raise ValueError(
+                    f"SDEF vertex {vertex_index} must contain exactly two bone indices"
+                )
+            for bone_index in bone_indices:
+                if isinstance(bone_index, bool) or not isinstance(bone_index, int) or bone_index < 0:
+                    raise ValueError(f"SDEF vertex {vertex_index} has an invalid bone index")
+            bone_weights = getattr(vertex, "bone_weights", ()) or ()
+            if not isinstance(bone_weights, (list, tuple)) or len(bone_weights) != 1:
+                raise ValueError(
+                    f"SDEF vertex {vertex_index} must contain exactly one bone weight"
+                )
+            weight = bone_weights[0]
+            if isinstance(weight, bool) or not isinstance(weight, (int, float)) or not math.isfinite(float(weight)):
+                raise ValueError(f"SDEF vertex {vertex_index} has an invalid bone weight")
+            for field_name in ("sdef_c", "sdef_r0", "sdef_r1"):
+                vector = getattr(vertex, field_name, None)
+                if not isinstance(vector, (list, tuple)) or len(vector) != 3:
+                    raise ValueError(f"SDEF vertex {vertex_index} {field_name} must contain three values")
+                for component in vector:
+                    if (
+                        isinstance(component, bool)
+                        or not isinstance(component, (int, float))
+                        or not math.isfinite(float(component))
+                    ):
+                        raise ValueError(f"SDEF vertex {vertex_index} {field_name} must contain finite numbers")
+        return sdef_count
+
+    @staticmethod
     def _post_weld_source_indices(mesh_node: str, fallback_source_indices, native_welded_count) -> list[int]:
         """Return the local-to-PMX mapping after an optional native weld."""
         if native_welded_count is None:
@@ -1315,6 +1354,53 @@ class MeshConverter:
             raise ValueError(
                 f"failed to persist {ATTR_MMD_ADDITIONAL_UVS_JSON} on '{mesh_node}'"
             )
+
+    @staticmethod
+    def _persist_sdef_vertices(mesh_node: str, all_vertices, source_vertex_indices) -> None:
+        """Persist raw PMX SDEF payload in deterministic local vertex order."""
+        local_sdef = []
+        sdef_count = 0
+        for local_index, source_index in enumerate(source_vertex_indices):
+            if isinstance(source_index, bool) or not isinstance(source_index, int):
+                raise ValueError(f"local Maya vertex {local_index} has an invalid PMX source index")
+            if source_index < 0 or source_index >= len(all_vertices):
+                raise ValueError(
+                    f"local Maya vertex {local_index} maps outside PMX vertices: {source_index}"
+                )
+            vertex = all_vertices[source_index]
+            if int(getattr(vertex, "weight_transform_type", 0)) != 3:
+                local_sdef.append(None)
+                continue
+            sdef_count += 1
+            local_sdef.append(
+                {
+                    "bone_indices": [int(index) for index in vertex.bone_indices],
+                    "bone_weights": [float(vertex.bone_weights[0])],
+                    "sdef_c": [float(value) for value in vertex.sdef_c],
+                    "sdef_r0": [float(value) for value in vertex.sdef_r0],
+                    "sdef_r1": [float(value) for value in vertex.sdef_r1],
+                }
+            )
+        maya_attribute_utils.set_custom_attributes(
+            mesh_node,
+            {ATTR_MMD_PMX_SDEF_VERTEX_COUNT: sdef_count},
+        )
+        if sdef_count == 0:
+            return
+        payload = {
+            "schema_version": 1,
+            "vertex_count": len(source_vertex_indices),
+            "source_vertex_count": len(all_vertices),
+            "source_vertex_indices": [int(index) for index in source_vertex_indices],
+            "sdef_vertices": local_sdef,
+        }
+        if not maya_attribute_utils.write_json_attr(
+            mesh_node,
+            ATTR_MMD_SDEF_VERTICES_JSON,
+            payload,
+            separators=(",", ":"),
+        ):
+            raise ValueError(f"failed to persist {ATTR_MMD_SDEF_VERTICES_JSON} on '{mesh_node}'")
 
     @staticmethod
     def _vertex_deformation_key(vertex) -> tuple:
@@ -1623,12 +1709,16 @@ class MeshConverter:
             all_vertices,
             getattr(getattr(pmx_data, "header", None), "additional_uv", 0),
         )
+        sdef_vertex_count = self._validate_pmx_sdef_vertices(all_vertices)
         # Keep the source PMX channel count on the model root so the collector
         # can distinguish a normal Maya mesh from an imported mesh whose
         # canonical per-vertex payload was deleted or became stale.
         maya_attribute_utils.set_custom_attributes(
             root_group,
-            {ATTR_MMD_PMX_ADDITIONAL_UV_COUNT: additional_uv_count},
+            {
+                ATTR_MMD_PMX_ADDITIONAL_UV_COUNT: additional_uv_count,
+                ATTR_MMD_PMX_SDEF_VERTEX_COUNT: sdef_vertex_count,
+            },
         )
         self._use_cpp_uv_weld = self._cpp_uv_weld_command_available()
         if self._use_cpp_uv_weld:
@@ -1806,6 +1896,11 @@ class MeshConverter:
             post_weld_source_indices,
             additional_uv_count,
         )
+        self._persist_sdef_vertices(
+            created_mesh,
+            all_vertices,
+            post_weld_source_indices,
+        )
         self.profile["uv_welded_vertex_count"] += (
             native_welded_count
             if native_welded_count is not None
@@ -1978,6 +2073,11 @@ class MeshConverter:
                 all_vertices,
                 post_weld_source_indices,
                 additional_uv_count,
+            )
+            self._persist_sdef_vertices(
+                created_mesh,
+                all_vertices,
+                post_weld_source_indices,
             )
             self.profile["uv_welded_vertex_count"] += (
                 native_welded_count

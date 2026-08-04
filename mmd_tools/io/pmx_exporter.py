@@ -213,8 +213,18 @@ class PmxExporter:
                 for channel in (v_raw.get("additional_uvs") or ())
             ]
 
-            # Determine weight transform type from bone_indices length.
-            if len(bone_indices) == 1:
+            # Preserve raw SDEF data when it was collected from an imported PMX.
+            if v_raw.get("weight_transform_type") == 3:
+                if len(bone_indices) != 2 or len(bone_weights) != 1:
+                    raise ValueError("SDEF vertices require two bone indices and one bone weight")
+                v.weight_transform_type = 3
+                v.bone_indices = list(bone_indices)
+                v.bone_weights = [float(bone_weights[0])]
+                v.sdef_c = tuple(v_raw["sdef_c"])
+                v.sdef_r0 = tuple(v_raw["sdef_r0"])
+                v.sdef_r1 = tuple(v_raw["sdef_r1"])
+            # Determine BDEF weight transform type from bone_indices length.
+            elif len(bone_indices) == 1:
                 v.weight_transform_type = 0  # BDEF1
                 v.bone_indices = [bone_indices[0]]
                 v.bone_weights = []

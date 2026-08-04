@@ -15,6 +15,8 @@ from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.core.constants import (
     ATTR_MMD_ADDITIONAL_UVS_JSON,
     ATTR_MMD_PMX_ADDITIONAL_UV_COUNT,
+    ATTR_MMD_PMX_SDEF_VERTEX_COUNT,
+    ATTR_MMD_SDEF_VERTICES_JSON,
     ATTR_MMD_TOON_TEXTURE_INDEX,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
@@ -146,6 +148,43 @@ class TestMeshConverter(MayaTestBase):
         self.assertEqual(
             [payload["additional_uvs"][index] for index in range(payload["vertex_count"])],
             [expected_by_source[source_index] for source_index in payload["source_vertex_indices"]],
+        )
+
+    def test_convert_pmx_mesh_persists_sdef_payload_in_local_order(self):
+        """Imported SDEF data remains available after Maya skin normalization."""
+        pmx_file_path = self.fixture_provider.get_pmx_file("mmt_test_model")
+        pmx_data = parse_pmx_file(pmx_file_path)
+        source_vertex = pmx_data.vertices[0]
+        source_vertex.weight_transform_type = 3
+        source_vertex.bone_indices = [0, 0]
+        source_vertex.bone_weights = [0.75]
+        source_vertex.sdef_c = (0.1, 0.2, 0.3)
+        source_vertex.sdef_r0 = (0.0, 0.1, 0.0)
+        source_vertex.sdef_r1 = (0.0, 0.0, 0.1)
+
+        root_group = cmds.group(empty=True, name="test_sdef_root")
+        _mesh_group, mesh_name = MeshConverter("").convert_pmx_mesh(pmx_data, root_group)
+
+        payload = json.loads(maya_attribute_utils.get_attribute(mesh_name, ATTR_MMD_SDEF_VERTICES_JSON))
+        source_index = payload["source_vertex_indices"].index(0)
+        self.assertEqual(
+            maya_attribute_utils.get_attribute(root_group, ATTR_MMD_PMX_SDEF_VERTEX_COUNT),
+            1,
+        )
+        self.assertEqual(
+            maya_attribute_utils.get_attribute(mesh_name, ATTR_MMD_PMX_SDEF_VERTEX_COUNT),
+            1,
+        )
+        self.assertEqual(payload["vertex_count"], cmds.polyEvaluate(mesh_name, vertex=True))
+        self.assertEqual(
+            payload["sdef_vertices"][source_index],
+            {
+                "bone_indices": [0, 0],
+                "bone_weights": [0.75],
+                "sdef_c": [0.1, 0.2, 0.3],
+                "sdef_r0": [0.0, 0.1, 0.0],
+                "sdef_r1": [0.0, 0.0, 0.1],
+            },
         )
 
     def test_uv_seam_duplicates_are_welded_before_mesh_creation(self):

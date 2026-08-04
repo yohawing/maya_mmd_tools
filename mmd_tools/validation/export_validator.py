@@ -700,6 +700,25 @@ def _validate_vertices(
                     "PMD bone_indices must contain 1 or 2 values",
                 )
 
+        if export_format == "pmx" and _is_integer(vertex.get("weight_transform_type")) and vertex.get(
+            "weight_transform_type"
+        ) == 3:
+            if len(bone_indices) != 2:
+                _issue(
+                    issues,
+                    "BONE_INDICES_LENGTH",
+                    _path_for_key(vertex_path, "bone_indices"),
+                    "PMX SDEF bone_indices must contain exactly 2 values",
+                )
+            bone_weights = vertex.get("bone_weights")
+            if not _is_sequence(bone_weights) or len(bone_weights) != 1:
+                _issue(
+                    issues,
+                    "BONE_WEIGHTS_LENGTH",
+                    _path_for_key(vertex_path, "bone_weights"),
+                    "PMX SDEF bone_weights must contain exactly 1 value",
+                )
+
         for index, bone_index in enumerate(bone_indices):
             index_path = _path_for_index(_path_for_key(vertex_path, "bone_indices"), index)
             if not _is_integer(bone_index):
@@ -1370,6 +1389,31 @@ def _validate_pmx_vertex_unsupported_fields(
             "PMX model-data export does not retain the legacy additional_uv field",
         )
 
+    if "weight_transform_type" not in vertex:
+        for field_name in ("sdef_c", "sdef_r0", "sdef_r1"):
+            if field_name not in vertex or not _is_meaningful_payload(vertex[field_name]):
+                continue
+            _issue(
+                issues,
+                "PMX_VERTEX_SDEF_UNSUPPORTED",
+                _path_for_key(vertex_path, field_name),
+                "SDEF payload requires weight_transform_type 3",
+            )
+        return
+    value = vertex["weight_transform_type"]
+    if _is_integer(value) and value == 3:
+        for field_name in ("sdef_c", "sdef_r0", "sdef_r1"):
+            if field_name not in vertex or vertex[field_name] is None:
+                _issue(
+                    issues,
+                    "PMX_VERTEX_SDEF_UNSUPPORTED",
+                    _path_for_key(vertex_path, field_name),
+                    "SDEF vertices require the raw SDEF vector payload",
+                )
+                continue
+            _validate_vector_field(vertex, field_name, 3, vertex_path, issues)
+        return
+
     for field_name in ("sdef_c", "sdef_r0", "sdef_r1"):
         if field_name not in vertex or vertex[field_name] is None:
             continue
@@ -1380,16 +1424,13 @@ def _validate_pmx_vertex_unsupported_fields(
             "PMX model-data export does not retain vertex SDEF payload",
         )
 
-    if "weight_transform_type" not in vertex:
-        return
-    value = vertex["weight_transform_type"]
     if _is_non_finite_numeric(value) or (isinstance(value, Number) and value == 0):
         return
     _issue(
         issues,
         "PMX_VERTEX_SKINNING_TYPE_UNSUPPORTED",
         _path_for_key(vertex_path, "weight_transform_type"),
-        "PMX model-data export only retains BDEF weight transform type 0",
+        "PMX model-data export only retains BDEF or fully-authored SDEF weight data",
     )
 
 

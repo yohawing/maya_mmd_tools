@@ -79,6 +79,8 @@ from mmd_tools.core.constants import (
     ATTR_MMD_TOON_TEXTURE_INDEX,
     ATTR_MMD_PMX_REST_POSITION,
     ATTR_MMD_PMX_ADDITIONAL_UV_COUNT,
+    ATTR_MMD_PMX_SDEF_VERTEX_COUNT,
+    ATTR_MMD_SDEF_VERTICES_JSON,
     ATTR_MMD_AXIS_DIRECTION,
     ATTR_MMD_X_AXIS_DIRECTION,
     ATTR_MMD_Z_AXIS_DIRECTION,
@@ -246,6 +248,129 @@ def _read_additional_uv_storage(
                 normalized_channel.append(value)
             normalized_channels.append(normalized_channel)
         normalized.append(normalized_channels)
+    return normalized, None
+
+
+def _read_sdef_storage(
+    transform: str,
+    shape: str,
+    vertex_count: int,
+) -> tuple[list[dict | None] | None, str | None]:
+    """Read canonical imported PMX SDEF data after Maya skin normalization."""
+    storage_node = None
+    recorded_count = None
+    for node in (transform, shape):
+        if (
+            recorded_count is None
+            and node
+            and cmds.attributeQuery(ATTR_MMD_PMX_SDEF_VERTEX_COUNT, node=node, exists=True)
+        ):
+            recorded_count = _get_attr(node, ATTR_MMD_PMX_SDEF_VERTEX_COUNT, None)
+        if (
+            storage_node is None
+            and node
+            and cmds.attributeQuery(ATTR_MMD_SDEF_VERTICES_JSON, node=node, exists=True)
+        ):
+            storage_node = node
+
+    if recorded_count is not None and (
+        isinstance(recorded_count, bool)
+        or not isinstance(recorded_count, int)
+        or recorded_count < 0
+    ):
+        return None, "sdef_storage"
+    if storage_node is None:
+        if recorded_count not in (None, 0):
+            return None, "sdef_storage"
+        return None, None
+
+    raw_value = _get_attr(storage_node, ATTR_MMD_SDEF_VERTICES_JSON, None)
+    try:
+        payload = json.loads(raw_value) if isinstance(raw_value, str) else raw_value
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None, "sdef_storage"
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        return None, "sdef_storage"
+
+    stored_vertex_count = payload.get("vertex_count")
+    source_vertex_count = payload.get("source_vertex_count")
+    source_indices = payload.get("source_vertex_indices")
+    values = payload.get("sdef_vertices")
+    if (
+        isinstance(stored_vertex_count, bool)
+        or not isinstance(stored_vertex_count, int)
+        or stored_vertex_count != vertex_count
+        or isinstance(source_vertex_count, bool)
+        or not isinstance(source_vertex_count, int)
+        or source_vertex_count < vertex_count
+        or not isinstance(source_indices, list)
+        or len(source_indices) != vertex_count
+        or not isinstance(values, list)
+        or len(values) != vertex_count
+    ):
+        return None, "sdef_storage"
+
+    normalized = []
+    actual_count = 0
+    for source_index, value in zip(source_indices, values):
+        if (
+            isinstance(source_index, bool)
+            or not isinstance(source_index, int)
+            or source_index < 0
+            or source_index >= source_vertex_count
+        ):
+            return None, "sdef_storage"
+        if value is None:
+            normalized.append(None)
+            continue
+        if not isinstance(value, dict):
+            return None, "sdef_storage"
+        bone_indices = value.get("bone_indices")
+        bone_weights = value.get("bone_weights")
+        if (
+            not isinstance(bone_indices, list)
+            or len(bone_indices) != 2
+            or not isinstance(bone_weights, list)
+            or len(bone_weights) != 1
+        ):
+            return None, "sdef_storage"
+        if any(
+            isinstance(index, bool) or not isinstance(index, int) or index < 0
+            for index in bone_indices
+        ):
+            return None, "sdef_storage"
+        normalized_weights = []
+        for weight in bone_weights:
+            if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+                return None, "sdef_storage"
+            weight = float(weight)
+            if not math.isfinite(weight):
+                return None, "sdef_storage"
+            normalized_weights.append(weight)
+        normalized_vectors = {}
+        for field_name in ("sdef_c", "sdef_r0", "sdef_r1"):
+            vector = value.get(field_name)
+            if not isinstance(vector, list) or len(vector) != 3:
+                return None, "sdef_storage"
+            normalized_vector = []
+            for component in vector:
+                if isinstance(component, bool) or not isinstance(component, (int, float)):
+                    return None, "sdef_storage"
+                component = float(component)
+                if not math.isfinite(component):
+                    return None, "sdef_storage"
+                normalized_vector.append(component)
+            normalized_vectors[field_name] = normalized_vector
+        actual_count += 1
+        normalized.append(
+            {
+                "bone_indices": [int(index) for index in bone_indices],
+                "bone_weights": normalized_weights,
+                **normalized_vectors,
+            }
+        )
+    if recorded_count is not None and actual_count != recorded_count:
+        return None, "sdef_storage"
     return normalized, None
 
 
@@ -1907,6 +2032,7 @@ class ExportSceneCollector:
             vertex_count,
             expected_additional_uv_count,
         )
+        sdef_values, sdef_error = _read_sdef_storage(transform, shape, vertex_count)
 
         vertices = []
         for i in range(vertex_count):
@@ -1920,10 +2046,18 @@ class ExportSceneCollector:
                 "bone_indices": skin_weights[i]["bone_indices"] if skin_weights else [0],
                 "bone_weights": skin_weights[i]["bone_weights"] if skin_weights else [],
             }
+            if sdef_values is not None and sdef_values[i] is not None:
+                vertex_data.update(
+                    {
+                        "weight_transform_type": 3,
+                        **sdef_values[i],
+                    }
+                )
             if additional_uv_values is not None:
                 vertex_data["additional_uvs"] = additional_uv_values[i]
-            if additional_uv_error:
-                vertex_data["semantic_missing"] = [additional_uv_error]
+            semantic_missing = [error for error in (additional_uv_error, sdef_error) if error]
+            if semantic_missing:
+                vertex_data["semantic_missing"] = semantic_missing
             vertices.append(vertex_data)
 
         # Collect per-face material assignments and group faces contiguously.

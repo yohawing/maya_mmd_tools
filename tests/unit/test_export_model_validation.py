@@ -277,13 +277,25 @@ class TestExportModelValidation(unittest.TestCase):
         pmx_edge_flag["vertices"][0]["edge_flag"] = 0x100
         self.assertTrue(validate_model_data(pmx_edge_flag, "pmx").valid)
 
+        sdef_model = _valid_model_data()
+        sdef_model["vertices"][0].update(
+            {
+                "weight_transform_type": 3,
+                "bone_indices": [0, 0],
+                "bone_weights": [0.75],
+                "sdef_c": [0.1, 0.2, 0.3],
+                "sdef_r0": [0.0, 0.1, 0.0],
+                "sdef_r1": [0.0, 0.0, 0.1],
+            }
+        )
+        self.assertTrue(validate_model_data(sdef_model, "pmx").valid)
+
     def test_pmx_vertex_payloads_not_retained_by_writer_are_blocking(self):
         cases = (
             ("additional_uv", [[0.25, 0.5, 0.75, 1.0]], "PMX_VERTEX_ADDITIONAL_UV_UNSUPPORTED"),
             ("sdef_c", [0.0, 0.0, 0.0], "PMX_VERTEX_SDEF_UNSUPPORTED"),
             ("sdef_r0", [0.0, 0.0, 0.0], "PMX_VERTEX_SDEF_UNSUPPORTED"),
             ("sdef_r1", [0.0, 0.0, 0.0], "PMX_VERTEX_SDEF_UNSUPPORTED"),
-            ("weight_transform_type", 3, "PMX_VERTEX_SKINNING_TYPE_UNSUPPORTED"),
             ("weight_transform_type", 4, "PMX_VERTEX_SKINNING_TYPE_UNSUPPORTED"),
             ("weight_transform_type", "0", "PMX_VERTEX_SKINNING_TYPE_UNSUPPORTED"),
         )
