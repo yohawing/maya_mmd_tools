@@ -144,10 +144,23 @@ def _get_attr(node: str, attr: str, default=None):
     return default
 
 
+def _has_attr(node: str | None, attr: str) -> bool:
+    """Return whether a Maya attribute can be queried on an existing node."""
+    if not node:
+        return False
+    try:
+        return bool(cmds.attributeQuery(attr, node=node, exists=True))
+    except (RuntimeError, TypeError):
+        # Collector unit tests and stale scene paths may hand us a DAG name
+        # that no longer exists.  Missing provenance is handled by the
+        # caller's fail-closed policy; probing it must not abort collection.
+        return False
+
+
 def _read_soft_body_payload(*nodes: str | None):
     """Return an export-blocking sentinel for imported PMX soft bodies."""
     for node in nodes:
-        if not node or not cmds.attributeQuery(ATTR_MMD_PMX_SOFT_BODY_COUNT, node=node, exists=True):
+        if not _has_attr(node, ATTR_MMD_PMX_SOFT_BODY_COUNT):
             continue
         count = _get_attr(node, ATTR_MMD_PMX_SOFT_BODY_COUNT, None)
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:
@@ -177,13 +190,13 @@ def _read_additional_uv_storage(
         if (
             recorded_channel_count is None
             and node
-            and cmds.attributeQuery(ATTR_MMD_PMX_ADDITIONAL_UV_COUNT, node=node, exists=True)
+            and _has_attr(node, ATTR_MMD_PMX_ADDITIONAL_UV_COUNT)
         ):
             recorded_channel_count = _get_attr(node, ATTR_MMD_PMX_ADDITIONAL_UV_COUNT, None)
         if (
             storage_node is None
             and node
-            and cmds.attributeQuery(ATTR_MMD_ADDITIONAL_UVS_JSON, node=node, exists=True)
+            and _has_attr(node, ATTR_MMD_ADDITIONAL_UVS_JSON)
         ):
             storage_node = node
 
@@ -276,14 +289,12 @@ def _read_sdef_storage(
     for node in (transform, shape):
         if (
             recorded_count is None
-            and node
-            and cmds.attributeQuery(ATTR_MMD_PMX_SDEF_VERTEX_COUNT, node=node, exists=True)
+            and _has_attr(node, ATTR_MMD_PMX_SDEF_VERTEX_COUNT)
         ):
             recorded_count = _get_attr(node, ATTR_MMD_PMX_SDEF_VERTEX_COUNT, None)
         if (
             storage_node is None
-            and node
-            and cmds.attributeQuery(ATTR_MMD_SDEF_VERTICES_JSON, node=node, exists=True)
+            and _has_attr(node, ATTR_MMD_SDEF_VERTICES_JSON)
         ):
             storage_node = node
 
