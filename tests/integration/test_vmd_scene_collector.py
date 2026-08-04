@@ -25,6 +25,23 @@ from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 
 
+class _RecordingVmdExporter:
+    """Delegate VMD writing while recording whether the writer was reached."""
+
+    def __init__(self):
+        self.calls = []
+        self._delegate = VmdExporter(native_exporter=None)
+
+    def to_vmd_data(self, animation_data):
+        """Keep the action's normal data normalization contract."""
+        return self._delegate.to_vmd_data(animation_data)
+
+    def export_vmd_animation(self, file_path, animation_data):
+        """Record writer entry before delegating to the real Python writer."""
+        self.calls.append((file_path, animation_data))
+        return self._delegate.export_vmd_animation(file_path, animation_data)
+
+
 class TestVmdSceneCollector(MayaTestBase):
     """Round-trip tests: Maya keyed scene -> collect -> export VMD -> parse."""
 
@@ -233,6 +250,77 @@ class TestVmdSceneCollector(MayaTestBase):
             self.assertEqual(frame.interpolation, source_interpolation[key])
             self.assertEqual(frame.position, source_transforms[key][0])
             self.assertEqual(frame.rotation, source_transforms[key][1])
+
+    def test_mode_a_blocks_imported_fixture_after_bone_transform_edit(self):
+        pmx_path = self.fixture_provider.get_pmx_file("mmt_test_model")
+        vmd_path = self.fixture_provider.get_vmd_file("mmt_test_model_test_motion")
+
+        root = import_mmd_file(
+            pmx_path,
+            options={"setup_rig": True, "setup_bone_orientation": True},
+        )
+        self.assertIsNotNone(root, "PMX import failed")
+        self.assertTrue(
+            import_mmd_file(vmd_path, options={"target_model": root, "pmx_path": pmx_path}),
+            "VMD import failed",
+        )
+
+        center_joint = next(
+            (
+                joint
+                for joint in (
+                    cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True)
+                    or []
+                )
+                if cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_NAME}") == "センター"
+            ),
+            None,
+        )
+        self.assertIsNotNone(center_joint, "Imported センター joint was not found")
+
+        cmds.currentTime(0, edit=True)
+        original_translate_x = float(cmds.getAttr(f"{center_joint}.translateX"))
+        cmds.keyframe(
+            center_joint,
+            attribute="translateX",
+            edit=True,
+            time=(0, 0),
+            valueChange=original_translate_x + 1.0,
+        )
+        self.assertNotAlmostEqual(
+            float(cmds.getAttr(f"{center_joint}.translateX")),
+            original_translate_x,
+        )
+
+        output_path = self.get_temp_filename("edited_fixture_mode_a.vmd")
+        original_output = b"pre-existing VMD output"
+        with open(output_path, "wb") as handle:
+            handle.write(original_output)
+
+        exporter = _RecordingVmdExporter()
+        result = ExportVmdAction(exporter=exporter).execute(
+            ExportVmdRequest(
+                file_path=output_path,
+                options={
+                    "target_model": root,
+                    "export_format": "vmd",
+                    "vmd_mode": "A",
+                },
+            )
+        )
+
+        self.assertFalse(
+            result.succeeded,
+            result.validation_report.to_dict() if result.validation_report else result.status_message,
+        )
+        self.assertIsNotNone(result.validation_report)
+        self.assertIn(
+            "VMD_RAW_PROVENANCE_MISMATCH",
+            [issue.code for issue in result.validation_report.issues],
+        )
+        self.assertEqual(exporter.calls, [])
+        with open(output_path, "rb") as handle:
+            self.assertEqual(handle.read(), original_output)
 
     def test_roundtrip_tagged_camera_and_light_to_vmd_frames(self):
         camera = self._make_keyed_camera()
