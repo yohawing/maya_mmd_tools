@@ -11,6 +11,7 @@ from tools.export_release_gate import (
     _not_run,
     _require_build_path,
     _run_fail_fixture_matrix,
+    _maya_path,
     _validate_maya_probe_report,
 )
 from tools.export_release_maya_probe import _compare_scene_oracles
@@ -18,6 +19,16 @@ from tools.export_release_maya_probe import _compare_scene_oracles
 
 class ExportReleaseGateTests(unittest.TestCase):
     """The release summary must expose omissions and fail-closed fixtures."""
+
+    def test_maya_path_uses_shared_mayapy_resolver(self):
+        """Release probes honor the shared environment-aware Maya resolver."""
+        with mock.patch.object(
+            RELEASE_GATE,
+            "resolve_mayapy",
+            return_value=Path("custom-maya/mayapy"),
+        ) as resolver:
+            self.assertEqual(_maya_path("2024"), Path("custom-maya/mayapy"))
+        resolver.assert_called_once_with("2024")
 
     def test_require_build_path_rejects_paths_outside_build(self):
         with self.assertRaises(ValueError):

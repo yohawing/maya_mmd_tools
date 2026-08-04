@@ -21,6 +21,8 @@ import sys
 import time
 from typing import Any, Iterable, Mapping
 
+from tests.common.maya_location import mayapy as resolve_mayapy
+
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD_ROOT = (ROOT / "build").resolve()
@@ -480,8 +482,8 @@ def _report_consistency_step(report_paths: Iterable[Path]) -> dict[str, Any]:
 
 
 def _maya_path(version: str) -> Path:
-    """Return the standard Autodesk mayapy path for one release version."""
-    return Path(f"C:/Program Files/Autodesk/Maya{version}/bin/mayapy.exe")
+    """Return the mayapy path resolved by the shared Maya-location helper."""
+    return Path(resolve_mayapy(version))
 
 
 def _mmd_anim_provenance(report_path: Path | None) -> dict[str, Any]:
