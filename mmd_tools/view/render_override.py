@@ -1915,6 +1915,7 @@ class R32FCasterShaderPass:
     def __init__(self):
         self._shader = None
         self._shader_manager = None
+        self._saved_render_item_shaders = []
         self._report = self._empty_report()
 
     @staticmethod
@@ -1936,6 +1937,12 @@ class R32FCasterShaderPass:
             "preDrawCallbackCount": 0,
             "renderItemCount": 0,
             "renderItemDiagnostics": [],
+            "renderItemShaderSetAttemptCount": 0,
+            "renderItemShaderSetCount": 0,
+            "renderItemShaderSetErrors": [],
+            "renderItemShaderRestoreAttemptCount": 0,
+            "renderItemShaderRestoreCount": 0,
+            "renderItemShaderRestoreErrors": [],
             "worldViewProjectionBindCount": 0,
             "matrixSamples": [],
             "parameterErrors": [],
@@ -2055,6 +2062,16 @@ class R32FCasterShaderPass:
 
     def release(self) -> dict:
         """Release the shader while its target pair is still owned."""
+        restore_report = self.restore_render_items()
+        if restore_report["restoreErrorCount"]:
+            self._report.update(
+                status="unsupported",
+                reason="render-item-shader-restore-failed",
+                releaseSucceeded=False,
+                releaseBeforeTarget=False,
+                lastError=restore_report["lastError"],
+            )
+            return self.report()
         shader = self._shader
         shader_manager = self._shader_manager
         if shader is None:
@@ -2087,6 +2104,81 @@ class R32FCasterShaderPass:
     def shader_instance(self):
         """Return the retained instance, or ``None`` until create succeeds."""
         return self._shader
+
+    def _set_render_item_shader(self, item, shader_instance) -> None:
+        """Assign the caster effect to one production VP2 render item.
+
+        ``MSceneRender.shaderOverride()`` supplies an operation-wide shader,
+        but Maya's built-in ``dx11Shader`` items keep their own material
+        assignment.  ``MRenderItem.setShader`` is the documented per-item
+        handoff for this case.  The original instance is retained so the
+        operation can restore the material before the next viewport pass.
+        """
+        if any(saved_item is item for saved_item, _original in self._saved_render_item_shaders):
+            return
+        self._report["renderItemShaderSetAttemptCount"] += 1
+        getter = getattr(item, "getShader", None)
+        setter = getattr(item, "setShader", None)
+        if not callable(getter) or not callable(setter):
+            self._report["renderItemShaderSetErrors"].append(
+                {"error": "render-item-shader-api-unavailable"}
+            )
+            return
+        try:
+            original_shader = getter()
+        except Exception as exc:
+            self._report["renderItemShaderSetErrors"].append(
+                {"error": f"get-shader-failed: {type(exc).__name__}: {exc!r}"}
+            )
+            return
+        if original_shader is None:
+            self._report["renderItemShaderSetErrors"].append(
+                {"error": "render-item-source-shader-unavailable"}
+            )
+            return
+        try:
+            result = setter(shader_instance)
+            if result is False:
+                raise RuntimeError("MRenderItem.setShader returned False")
+        except Exception as exc:
+            self._report["renderItemShaderSetErrors"].append(
+                {"error": f"set-shader-failed: {type(exc).__name__}: {exc!r}"}
+            )
+            return
+        self._saved_render_item_shaders.append((item, original_shader))
+        self._report["renderItemShaderSetCount"] += 1
+
+    def restore_render_items(self) -> dict:
+        """Restore source material shaders after the caster draw.
+
+        Failed restores remain retained so cleanup can retry before target or
+        shader ownership is released.  This keeps a failed diagnostic pass
+        from silently leaving production MMD materials overridden.
+        """
+        saved_items = self._saved_render_item_shaders
+        self._report["renderItemShaderRestoreAttemptCount"] += len(saved_items)
+        remaining = []
+        last_error = None
+        for item, original_shader in saved_items:
+            try:
+                result = item.setShader(original_shader)
+                if result is False:
+                    raise RuntimeError("MRenderItem.setShader returned False")
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc!r}"
+                self._report["renderItemShaderRestoreErrors"].append(
+                    {"error": f"restore-shader-failed: {last_error}"}
+                )
+                remaining.append((item, original_shader))
+            else:
+                self._report["renderItemShaderRestoreCount"] += 1
+        self._saved_render_item_shaders = remaining
+        return {
+            "restoreAttemptCount": len(saved_items),
+            "restoreCount": len(saved_items) - len(remaining),
+            "restoreErrorCount": len(remaining),
+            "lastError": last_error,
+        }
 
     def _pre_draw(self, context, _render_item_list, shader_instance):
         """Bind the active draw-context matrix for the caster effect."""
@@ -2156,6 +2248,8 @@ class R32FCasterShaderPass:
                 self._report["renderItemDiagnostics"].append(diagnostic)
         if context is None or shader_instance is None:
             return
+        for item in items:
+            self._set_render_item_shader(item, shader_instance)
         try:
             matrix = context.getMatrix(omr.MFrameContext.kWorldViewProjMtx)
             if len(self._report["matrixSamples"]) < 2:
@@ -3614,6 +3708,8 @@ class ShadowTargetClearRender(omr.MSceneRender):
 
     def set_targets(self, targets: Optional[Tuple]) -> None:
         """Attach or detach the R2 probe render targets for this operation."""
+        if self._caster_shader_pass is not None:
+            self._caster_shader_pass.restore_render_items()
         self._targets = targets
         if targets:
             self._selection = None
@@ -3799,9 +3895,15 @@ class ShadowTargetClearRender(omr.MSceneRender):
         elif not self._is_color_pass(context):
             return
         if self._post_render_captured:
+            if self._caster_shader_pass is not None:
+                self._caster_shader_pass.restore_render_items()
             return
-        self._resources.capture_target_occupancy(self.selection_report())
-        self._post_render_captured = True
+        try:
+            self._resources.capture_target_occupancy(self.selection_report())
+            self._post_render_captured = True
+        finally:
+            if self._caster_shader_pass is not None:
+                self._caster_shader_pass.restore_render_items()
 
     def manual_target_occupancy(self) -> dict:
         """Run the explicit test/E2E readback path without a draw context."""

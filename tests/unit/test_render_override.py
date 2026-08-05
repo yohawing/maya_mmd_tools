@@ -57,6 +57,10 @@ class _MPassContext:
     kColorPassSemantic = "colorPass"
 
 
+class _MFrameContext:
+    kWorldViewProjMtx = "worldViewProjection"
+
+
 class _MHUDRender(_Operation):
     operation_type = 5
 
@@ -211,6 +215,22 @@ class _BindingProbeShader:
         self.parameter_calls.append((name, value))
         if self._set_parameter_error is not None:
             raise self._set_parameter_error
+
+
+class _CasterRenderItem:
+    """Small MRenderItem double for the production shader handoff."""
+
+    def __init__(self, shader):
+        self.shader = shader
+        self.set_shader_calls = []
+
+    def getShader(self):
+        return self.shader
+
+    def setShader(self, shader, _custom_stream_name=None):
+        self.set_shader_calls.append(shader)
+        self.shader = shader
+        return True
 
 
 class _MShaderManager:
@@ -373,6 +393,14 @@ class _DrawContext:
         return self._pass_context
 
 
+class _CasterDrawContext(_DrawContext):
+    def __init__(self):
+        super().__init__([_MPassContext.kColorPassSemantic])
+
+    def getMatrix(self, _matrix_type):
+        return tuple(float(index) for index in range(16))
+
+
 class _MRenderer:
     kOpenGL = 1
     kDirectX11 = 2
@@ -472,6 +500,7 @@ def _import_with_stub():
     stub.MUserRenderOperation = _MUserRenderOperation
     stub.MQuadRender = _MQuadRender
     stub.MPassContext = _MPassContext
+    stub.MFrameContext = _MFrameContext
     stub.MHUDRender = _MHUDRender
     stub.MPresentTarget = _MPresentTarget
     stub.MRenderOverride = _MRenderOverride
@@ -999,6 +1028,35 @@ class RenderOverrideLifecycleTest(unittest.TestCase):
         self.assertEqual(report["reason"], "shader-created")
         self.assertTrue(report["createSucceeded"])
         self.assertIs(caster.shader_instance(), shader_manager.shader)
+
+    def test_r32f_caster_shader_pass_hands_off_and_restores_render_item_shader(self):
+        shader = _BindingProbeShader(parameters=[])
+        shader_manager = _MShaderManager(shader)
+        _MRenderer.getShaderManager.return_value = shader_manager
+        caster = render_override.R32FCasterShaderPass()
+        caster.create((object(), object()))
+        source_shader = object()
+        item = _CasterRenderItem(source_shader)
+
+        caster._pre_draw(_CasterDrawContext(), [item], shader)
+
+        report = caster.report()
+        self.assertIs(item.shader, shader)
+        self.assertEqual(report["renderItemShaderSetAttemptCount"], 1)
+        self.assertEqual(report["renderItemShaderSetCount"], 1)
+        self.assertEqual(report["worldViewProjectionBindCount"], 1)
+
+        # Repeated callbacks for the same item must not overwrite the saved
+        # source instance or grow the handoff list.
+        caster._pre_draw(_CasterDrawContext(), [item], shader)
+        self.assertEqual(caster.report()["renderItemShaderSetCount"], 1)
+
+        released = caster.release()
+
+        self.assertIs(item.shader, source_shader)
+        self.assertEqual(released["renderItemShaderRestoreCount"], 1)
+        self.assertTrue(released["releaseSucceeded"])
+        self.assertEqual(shader_manager.released, [shader])
 
     def test_r32f_caster_shader_pass_retain_on_release_failure(self):
         class FailingShaderManager(_MShaderManager):
