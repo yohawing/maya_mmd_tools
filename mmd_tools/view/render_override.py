@@ -81,7 +81,7 @@ R32F_BINDING_PROBE_SHADER_PATH = (
     / "shaders"
     / "MMDTargetBindingProbe.fx"
 )
-R32F_CASTER_PASS_PARAMETER = "WorldViewProjection"
+R32F_CASTER_PASS_PARAMETER = "CasterWorldViewProjection"
 R32F_CASTER_PASS_TECHNIQUE = "MmdToolsR32FCaster"
 R32F_CASTER_PASS_SHADER_PATH = (
     Path(__file__).resolve().parents[1] / "shaders" / "MMDTargetCaster.fx"
@@ -1712,6 +1712,9 @@ class R32FCasterShaderPass:
             "releaseAttemptCount": 0,
             "releaseSucceeded": False,
             "releaseBeforeTarget": False,
+            "preDrawCallbackCount": 0,
+            "worldViewProjectionBindCount": 0,
+            "parameterErrors": [],
             "drawsReceiver": False,
             "claimsSelfShadow": False,
             "receiverComposition": False,
@@ -1781,7 +1784,12 @@ class R32FCasterShaderPass:
         shader = None
         try:
             shader = shader_manager.getEffectsFileShader(
-                str(R32F_CASTER_PASS_SHADER_PATH), R32F_CASTER_PASS_TECHNIQUE
+                str(R32F_CASTER_PASS_SHADER_PATH),
+                R32F_CASTER_PASS_TECHNIQUE,
+                None,
+                True,
+                self._pre_draw,
+                None,
             )
             if shader is None:
                 report.update(status="unsupported", reason="shader-create-failed")
@@ -1855,6 +1863,20 @@ class R32FCasterShaderPass:
     def shader_instance(self):
         """Return the retained instance, or ``None`` until create succeeds."""
         return self._shader
+
+    def _pre_draw(self, context, _render_item_list, shader_instance):
+        """Bind the active draw-context matrix for semantic-only effects."""
+        self._report["preDrawCallbackCount"] += 1
+        if context is None or shader_instance is None:
+            return
+        try:
+            matrix = context.getMatrix(omr.MFrameContext.kWorldViewProjMtx)
+            shader_instance.setParameter(R32F_CASTER_PASS_PARAMETER, matrix)
+            self._report["worldViewProjectionBindCount"] += 1
+        except Exception as exc:
+            self._report["parameterErrors"].append(
+                {"parameter": R32F_CASTER_PASS_PARAMETER, "error": str(exc)}
+            )
 
     def has_owned_shader(self) -> bool:
         """Return whether cleanup must defer target release for a retry."""

@@ -5,7 +5,10 @@
 // color attachment and to SV_Depth.  It does not sample a shadow map, shade
 // a receiver, or claim MMD self-shadow parity.
 
-float4x4 WorldViewProjection : WorldViewProjection<string UIWidget = "None";>;
+// Maya does not expose the semantic-only WorldViewProjection parameter to a
+// Python MShaderInstance callback reliably on an offscreen target.  The
+// RenderOverride binds this plain matrix once per draw from MFrameContext.
+float4x4 CasterWorldViewProjection;
 
 struct CasterVertexInput
 {
@@ -20,7 +23,7 @@ struct CasterVertexOutput
 CasterVertexOutput CasterVS(CasterVertexInput input)
 {
     CasterVertexOutput output;
-    output.position = mul(float4(input.position, 1.0f), WorldViewProjection);
+    output.position = mul(float4(input.position, 1.0f), CasterWorldViewProjection);
     return output;
 }
 

@@ -385,7 +385,7 @@ class RenderOverrideE2eTest(unittest.TestCase):
             "targetNames": ["mmdToolsSelfShadowR32F", "mmdToolsSelfShadowD32"],
             "shaderPath": "MMDTargetCaster.fx",
             "technique": "MmdToolsR32FCaster",
-            "requiredParameter": "WorldViewProjection",
+            "requiredParameter": "CasterWorldViewProjection",
             "createAttemptCount": 1,
             "createSucceeded": True,
             "releaseAttemptCount": 1,
