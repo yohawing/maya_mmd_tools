@@ -2505,8 +2505,14 @@ class NativeShadowReceiverRender(omr.MSceneRender):
         ("Shininess", "Shininess"),
         ("AmbientColor", "AmbientColor"),
         ("Opacity", "Opacity"),
+        ("SphereMode", "SphereMode"),
         ("MMDLightDirection", "FixedLightDirection"),
         ("MMDLightColor", "FixedLightColor"),
+    )
+    _texture_parameter_map = (
+        ("MainTexture", "MainTexture", "HasMainTexture"),
+        ("SphereTexture", "SphereTexture", "HasSphereTexture"),
+        ("ToonTexture", "ToonTexture", "HasToonTexture"),
     )
 
     def __init__(self, selection_provider=None, render_module=None):
@@ -2519,6 +2525,8 @@ class NativeShadowReceiverRender(omr.MSceneRender):
         self._shader = None
         self._shader_manager = None
         self._source_material_cache = {}
+        self._source_texture_cache = {}
+        self._source_texture_manager = None
         self._report = self._empty_report()
 
     @staticmethod
@@ -2550,6 +2558,12 @@ class NativeShadowReceiverRender(omr.MSceneRender):
             "sourceItemDiagnostics": [],
             "sourceMaterialShaderNodes": [],
             "sourceMaterialLookupErrors": [],
+            "sourceMaterialTextureNodes": [],
+            "sourceMaterialTexturePaths": [],
+            "textureBindingCount": 0,
+            "textureAcquireErrors": [],
+            "textureReleaseAttemptCount": 0,
+            "textureReleaseSucceeded": True,
             "bindingAttemptCount": 0,
             "bindingSucceeded": False,
             "resourceHandle": None,
@@ -2699,6 +2713,21 @@ class NativeShadowReceiverRender(omr.MSceneRender):
                 return tuple(nested)
         return value
 
+    @classmethod
+    def _read_maya_value(cls, cmds, node: str, attribute: str):
+        """Read a scalar or recover a generated compound from its children."""
+        try:
+            return cls._flatten_maya_value(cmds.getAttr(f"{node}.{attribute}"))
+        except Exception:
+            children = cmds.attributeQuery(attribute, node=node, listChildren=True) or []
+            if not children:
+                raise
+            values = []
+            for child in children:
+                child_value = cls._flatten_maya_value(cmds.getAttr(f"{node}.{child}"))
+                values.append(child_value)
+            return tuple(values)
+
     @staticmethod
     def _component_token_parts(component_token):
         """Return a mesh shape and inclusive face indices from one Maya token."""
@@ -2775,11 +2804,69 @@ class NativeShadowReceiverRender(omr.MSceneRender):
                 continue
             if shader_node not in self._report["sourceMaterialShaderNodes"]:
                 self._report["sourceMaterialShaderNodes"].append(shader_node)
+            self._prime_source_texture_cache(shader_node)
             if indices:
                 for index in indices:
                     self._source_material_cache[(lookup_shape, index)] = shader_node
             else:
                 self._source_material_cache[(lookup_shape, None)] = shader_node
+
+    def _prime_source_texture_cache(self, shader_node: str) -> None:
+        """Acquire source MMD file textures before VP2 draw callbacks."""
+        try:
+            import maya.cmds as cmds
+
+            renderer = getattr(self._render_module, "MRenderer", None)
+            texture_manager_getter = getattr(renderer, "getTextureManager", None)
+            texture_manager = texture_manager_getter() if callable(texture_manager_getter) else None
+            if texture_manager is None:
+                raise RuntimeError("texture manager unavailable")
+            self._source_texture_manager = texture_manager
+            for source_name, _target_name, _has_name in self._texture_parameter_map:
+                cache_key = (shader_node, source_name)
+                if cache_key in self._source_texture_cache:
+                    continue
+                incoming = cmds.listConnections(
+                    f"{shader_node}.{source_name}",
+                    source=True,
+                    destination=False,
+                ) or []
+                file_node = next(
+                    (node for node in incoming if cmds.nodeType(node) == "file"),
+                    None,
+                )
+                if not file_node:
+                    continue
+                texture_path = cmds.getAttr(f"{file_node}.fileTextureName")
+                if not texture_path:
+                    continue
+                texture_record = {
+                    "shader": shader_node,
+                    "parameter": source_name,
+                    "fileNode": file_node,
+                    "path": str(texture_path),
+                }
+                if file_node not in self._report["sourceMaterialTextureNodes"]:
+                    self._report["sourceMaterialTextureNodes"].append(file_node)
+                if texture_record not in self._report["sourceMaterialTexturePaths"]:
+                    self._report["sourceMaterialTexturePaths"].append(texture_record)
+                try:
+                    texture = texture_manager.acquireTexture(str(texture_path))
+                except Exception as exc:
+                    self._report["textureAcquireErrors"].append(
+                        {**texture_record, "error": f"{type(exc).__name__}: {exc!r}"}
+                    )
+                    continue
+                if texture is None:
+                    self._report["textureAcquireErrors"].append(
+                        {**texture_record, "error": "acquireTexture returned None"}
+                    )
+                    continue
+                self._source_texture_cache[cache_key] = texture
+        except Exception as exc:
+            self._report["textureAcquireErrors"].append(
+                {"stage": "prime", "shader": shader_node, "error": f"{type(exc).__name__}: {exc!r}"}
+            )
 
     def _cached_source_material_shader(self, item):
         """Return a shader node primed for the item's shape/face component."""
@@ -2870,19 +2957,43 @@ class NativeShadowReceiverRender(omr.MSceneRender):
         bound_any = False
         try:
             import maya.cmds as cmds
-
-            for source_name, target_name in self._material_parameter_map:
-                if not cmds.attributeQuery(source_name, node=shader_node, exists=True):
-                    continue
-                value = self._flatten_maya_value(cmds.getAttr(f"{shader_node}.{source_name}"))
-                if value is None:
-                    continue
-                if self._set_parameter(shader_instance, target_name, value):
-                    bound_any = True
         except Exception as exc:
             self._report["sourceMaterialLookupErrors"].append(
                 {"stage": "read", "shader": shader_node, "error": f"{type(exc).__name__}: {exc!r}"}
             )
+            return False
+        for source_name, target_name in self._material_parameter_map:
+            try:
+                if not cmds.attributeQuery(source_name, node=shader_node, exists=True):
+                    continue
+                value = self._read_maya_value(cmds, shader_node, source_name)
+                if value is None:
+                    continue
+                if self._set_parameter(shader_instance, target_name, value):
+                    bound_any = True
+            except Exception as exc:
+                self._report["sourceMaterialLookupErrors"].append(
+                    {
+                        "stage": "read",
+                        "shader": shader_node,
+                        "attribute": source_name,
+                        "error": f"{type(exc).__name__}: {exc!r}",
+                    }
+                )
+        return bound_any
+
+    def _bind_maya_texture_parameters(self, shader_node, shader_instance) -> bool:
+        """Bind acquired MMD textures and enable only successful resources."""
+        bound_any = False
+        for source_name, target_name, has_name in self._texture_parameter_map:
+            texture = self._source_texture_cache.get((shader_node, source_name))
+            if texture is None:
+                self._set_parameter(shader_instance, has_name, False)
+                continue
+            if self._set_parameter(shader_instance, target_name, texture):
+                self._set_parameter(shader_instance, has_name, True)
+                self._report["textureBindingCount"] += 1
+                bound_any = True
         return bound_any
 
     def _bind_material_parameters(self, item, shader_instance) -> None:
@@ -2955,9 +3066,11 @@ class NativeShadowReceiverRender(omr.MSceneRender):
                 bound_any = True
         if self._bind_maya_material_parameters(item, shader_instance):
             bound_any = True
-        # The receiver effect is intentionally untextured until explicit source
-        # texture-resource handoff is validated.  It always uses the explicit
-        # fixed MMD light values above.
+        shader_node = self._source_material_shader(item)
+        if shader_node and self._bind_maya_texture_parameters(shader_node, shader_instance):
+            bound_any = True
+        # The receiver effect always uses the explicit fixed MMD light values
+        # above; source texture resources are held until shader release.
         self._set_parameter(shader_instance, NATIVE_SHADOW_RECEIVER_STRENGTH_PARAMETER, 1.0)
         self._set_parameter(shader_instance, NATIVE_SHADOW_RECEIVER_BIAS_PARAMETER, 0.01)
         # A source shader may not expose MMD uniforms (for example the compact
@@ -3012,6 +3125,19 @@ class NativeShadowReceiverRender(omr.MSceneRender):
             parameterErrors=[],
             context=self._empty_report()["context"],
         )
+        self._source_material_cache = {}
+        self._source_texture_cache = {}
+        self._source_texture_manager = None
+        for key in (
+            "sourceMaterialShaderNodes",
+            "sourceMaterialTextureNodes",
+            "sourceMaterialTexturePaths",
+            "textureAcquireErrors",
+        ):
+            self._report[key] = []
+        self._report["textureBindingCount"] = 0
+        self._report["textureReleaseAttemptCount"] = 0
+        self._report["textureReleaseSucceeded"] = True
         self._report["createAttemptCount"] += 1
         draw_api_getter = getattr(self._render_module.MRenderer, "drawAPI", None)
         if callable(draw_api_getter):
@@ -3086,6 +3212,7 @@ class NativeShadowReceiverRender(omr.MSceneRender):
         else:
             self._shader = None
             self._shader_manager = None
+            self._release_source_textures()
             self._report.update(
                 status="released",
                 reason="receiver-shader-released-before-target",
@@ -3094,6 +3221,34 @@ class NativeShadowReceiverRender(omr.MSceneRender):
                 lastError=None,
             )
         return self.report()
+
+    def _release_source_textures(self) -> None:
+        """Release textures acquired for the receiver after shader detachment."""
+        manager = self._source_texture_manager
+        textures = []
+        seen = set()
+        for texture in self._source_texture_cache.values():
+            identity = id(texture)
+            if identity not in seen:
+                seen.add(identity)
+                textures.append(texture)
+        self._report["textureReleaseAttemptCount"] += len(textures)
+        if manager is None:
+            self._report["textureReleaseSucceeded"] = not textures
+            self._source_texture_cache = {}
+            return
+        succeeded = True
+        for texture in textures:
+            try:
+                manager.releaseTexture(texture)
+            except Exception as exc:
+                succeeded = False
+                self._report["textureAcquireErrors"].append(
+                    {"stage": "release", "error": f"{type(exc).__name__}: {exc!r}"}
+                )
+        self._report["textureReleaseSucceeded"] = succeeded
+        self._source_texture_cache = {}
+        self._source_texture_manager = None
 
     def has_owned_shader(self) -> bool:
         """Return whether cleanup must retain the receiver shader for retry."""

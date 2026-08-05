@@ -33,6 +33,21 @@ float3 SrgbToLinear(float3 color)
     return lerp(high, low, step(color, 0.04045f));
 }
 
+float4 MainTextureMultiply = {1.0f, 1.0f, 1.0f, 1.0f};
+float4 MainTextureAdd = {0.0f, 0.0f, 0.0f, 0.0f};
+float4 SphereTextureMultiply = {1.0f, 1.0f, 1.0f, 1.0f};
+float4 SphereTextureAdd = {0.0f, 0.0f, 0.0f, 0.0f};
+float4 ToonTextureMultiply = {1.0f, 1.0f, 1.0f, 1.0f};
+float4 ToonTextureAdd = {0.0f, 0.0f, 0.0f, 0.0f};
+int SphereMode = 0;
+bool HasMainTexture = false;
+bool HasSphereTexture = false;
+bool HasToonTexture = false;
+
+Texture2D MainTexture;
+Texture2D SphereTexture;
+Texture2D ToonTexture;
+
 // These are bound explicitly by NativeShadowReceiverRender.  Do not add Maya
 // shadow semantics here: the native resource is already selected in Python.
 Texture2D Light0ShadowMap;
@@ -46,10 +61,25 @@ SamplerState ShadowSampler
     BorderColor = float4(1.0f, 1.0f, 1.0f, 1.0f);
 };
 
+SamplerState LinearSampler
+{
+    Filter = MIN_MAG_MIP_LINEAR;
+    AddressU = Wrap;
+    AddressV = Wrap;
+};
+
+SamplerState ToonSampler
+{
+    Filter = MIN_MAG_MIP_LINEAR;
+    AddressU = Clamp;
+    AddressV = Clamp;
+};
+
 struct VS_INPUT
 {
     float3 position : POSITION;
     float3 normal : NORMAL;
+    float2 texCoord0 : TEXCOORD0;
 };
 
 struct VS_OUTPUT
@@ -58,6 +88,7 @@ struct VS_OUTPUT
     float3 worldPosition : TEXCOORD0;
     float3 worldNormal : NORMAL;
     float4 shadowCoord : TEXCOORD1;
+    float2 texCoord0 : TEXCOORD2;
 };
 
 VS_OUTPUT MainVS(VS_INPUT input)
@@ -68,6 +99,7 @@ VS_OUTPUT MainVS(VS_INPUT input)
     output.worldPosition = worldPosition.xyz;
     output.worldNormal = normalize(mul(input.normal, (float3x3)WorldInverseTranspose));
     output.shadowCoord = mul(worldPosition, Light0Matrix);
+    output.texCoord0 = float2(input.texCoord0.x, 1.0f - input.texCoord0.y);
     return output;
 }
 
@@ -95,7 +127,34 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     float3 lightDirection = -normalize(FixedLightDirection);
     float3 lightColor = FixedLightColor;
     float shadow = ShadowFactor(input.shadowCoord);
-    float3 materialBase = saturate(DiffuseColorRGB * lightColor + AmbientColor);
+    float4 texColor = float4(1.0f, 1.0f, 1.0f, 1.0f);
+    if (HasMainTexture)
+    {
+        texColor = MainTexture.Sample(LinearSampler, input.texCoord0);
+        texColor = texColor * MainTextureMultiply + MainTextureAdd;
+    }
+    float toonV = saturate(0.5f - dot(normal, lightDirection) * 0.5f);
+    float3 toonColor = float3(1.0f, 1.0f, 1.0f);
+    if (HasToonTexture)
+    {
+        float4 toonSample = ToonTexture.Sample(ToonSampler, float2(0.5f, toonV));
+        toonColor = (toonSample * ToonTextureMultiply + ToonTextureAdd).rgb;
+    }
+    float3 materialBase = saturate(DiffuseColorRGB * lightColor + AmbientColor) * texColor.rgb;
+    if (HasToonTexture)
+        materialBase *= toonColor;
+    float3 sphereColor = float3(1.0f, 1.0f, 1.0f);
+    if (SphereMode > 0 && HasSphereTexture)
+    {
+        float3 sphereNormal = normalize(input.worldNormal);
+        float2 sphereUv = float2(sphereNormal.x * 0.5f + 0.5f, sphereNormal.y * -0.5f + 0.5f);
+        float4 sphereSample = SphereTexture.Sample(LinearSampler, sphereUv);
+        sphereColor = (sphereSample * SphereTextureMultiply + SphereTextureAdd).rgb;
+    }
+    if (SphereMode == 1 && HasSphereTexture)
+        materialBase *= sphereColor;
+    else if (SphereMode == 2 && HasSphereTexture)
+        materialBase += sphereColor;
     float3 diffuse = materialBase * shadow;
     float3 specular = float3(0.0f, 0.0f, 0.0f);
     if (Shininess > 0.0f)
@@ -105,7 +164,7 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
         specular = SpecularColor * specularFactor * lightColor * shadow;
     }
     float3 litColor = diffuse + specular;
-    float opacity = Opacity * DiffuseColorA;
+    float opacity = texColor.a * Opacity * DiffuseColorA;
     clip(opacity - 0.003f);
     return float4(SrgbToLinear(litColor), opacity);
 }
