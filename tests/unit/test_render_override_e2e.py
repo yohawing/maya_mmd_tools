@@ -88,6 +88,42 @@ class RenderOverrideE2eTest(unittest.TestCase):
             {"MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11"},
         )
 
+    def test_main_forwards_r32f_caster_pass_with_target_probe(self):
+        report = {"status": "fail", "captures": {}, "checks": {}, "errors": []}
+        with mock.patch.object(
+            render_override_e2e, "run_maya_e2e", return_value=report
+        ) as run_gate, mock.patch.object(
+            render_override_e2e.sys,
+            "argv",
+            ["render_override_e2e.py", "--target-probe", "--r32f-caster-pass"],
+        ):
+            self.assertEqual(render_override_e2e.main(), 1)
+        command = run_gate.call_args.kwargs["command"]
+        self.assertIn("False, True)", command)
+
+    def test_r32f_caster_pass_validation_rejects_receiver_claim(self):
+        valid = {
+            "enabled": True,
+            "status": "released",
+            "reason": "shader-released-before-target",
+            "targetNames": ["mmdToolsSelfShadowR32F", "mmdToolsSelfShadowD32"],
+            "shaderPath": "MMDTargetCaster.fx",
+            "technique": "MmdToolsR32FCaster",
+            "requiredParameter": "WorldViewProjection",
+            "createAttemptCount": 1,
+            "createSucceeded": True,
+            "releaseAttemptCount": 1,
+            "releaseSucceeded": True,
+            "releaseBeforeTarget": True,
+            "drawsReceiver": False,
+            "claimsSelfShadow": False,
+            "receiverComposition": False,
+        }
+        render_override_e2e._validate_r32f_caster_pass(valid)
+        invalid = dict(valid, receiverComposition=True)
+        with self.assertRaises(RuntimeError):
+            render_override_e2e._validate_r32f_caster_pass(invalid)
+
     def test_r32f_binding_probe_diagnostic_is_explicitly_non_rendering(self):
         render_override_e2e._validate_r32f_binding_probe(
             {
@@ -212,6 +248,19 @@ class RenderOverrideE2eTest(unittest.TestCase):
             render_override_e2e.sys,
             "argv",
             ["render_override_e2e.py", "--r32f-binding-probe"],
+        ):
+            with self.assertRaises(SystemExit) as raised:
+                render_override_e2e.main()
+        self.assertEqual(raised.exception.code, 2)
+        run_gate.assert_not_called()
+
+    def test_main_rejects_caster_pass_without_target_probe(self):
+        with mock.patch.object(
+            render_override_e2e, "run_maya_e2e"
+        ) as run_gate, mock.patch.object(
+            render_override_e2e.sys,
+            "argv",
+            ["render_override_e2e.py", "--r32f-caster-pass"],
         ):
             with self.assertRaises(SystemExit) as raised:
                 render_override_e2e.main()

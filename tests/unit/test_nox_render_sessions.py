@@ -113,6 +113,7 @@ class NoxRenderSessionsTest(unittest.TestCase):
                 "dx11",
                 "--target-probe",
                 "--r32f-binding-probe",
+                "--r32f-caster-pass",
                 "--model",
                 "F:/fixtures/self-shadow.pmx",
             ]
@@ -129,6 +130,7 @@ class NoxRenderSessionsTest(unittest.TestCase):
         self.assertEqual(args[args.index("--vp2-device") + 1], "dx11")
         self.assertIn("--target-probe", args)
         self.assertIn("--r32f-binding-probe", args)
+        self.assertIn("--r32f-caster-pass", args)
         self.assertIn("--model", args)
         self.assertEqual(args[args.index("--model") + 1], "F:/fixtures/self-shadow.pmx")
         self.assertTrue(kwargs["external"])
@@ -146,6 +148,17 @@ class NoxRenderSessionsTest(unittest.TestCase):
 
     def test_render_override_e2e_rejects_binding_probe_without_target_probe(self):
         session = _FakeSession(["--r32f-binding-probe"])
+        with self.assertRaises(AssertionError):
+            run_render_override_e2e(
+                session,
+                posargs=session.posargs,
+                option=_option,
+                default_maya_version="2026",
+                root=Path("F:/repo"),
+            )
+
+    def test_render_override_e2e_rejects_caster_pass_without_target_probe(self):
+        session = _FakeSession(["--r32f-caster-pass"])
         with self.assertRaises(AssertionError):
             run_render_override_e2e(
                 session,

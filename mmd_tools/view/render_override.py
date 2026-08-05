@@ -46,6 +46,11 @@ R32F_BINDING_PROBE_SHADER_PATH = (
     / "shaders"
     / "MMDTargetBindingProbe.fx"
 )
+R32F_CASTER_PASS_PARAMETER = "WorldViewProjection"
+R32F_CASTER_PASS_TECHNIQUE = "MmdToolsR32FCaster"
+R32F_CASTER_PASS_SHADER_PATH = (
+    Path(__file__).resolve().parents[1] / "shaders" / "MMDTargetCaster.fx"
+)
 
 
 def _enabled_environment_flag(name: str) -> bool:
@@ -718,6 +723,191 @@ class R32FTargetBindingProbe:
         return dict(self._report)
 
 
+class R32FCasterShaderPass:
+    """Own the opt-in HLSL shader used only by the R32F/D32 caster operation.
+
+    The shader instance is created after the target pair is acquired and is
+    released before those targets are detached or released.  A failed create
+    or release never falls back to Maya's ordinary material shading: the
+    operation reports an empty selection until the lifecycle can be retried.
+    This pass only writes caster depth; receiver composition and self-shadow
+    parity remain explicitly false in the diagnostic report.
+    """
+
+    def __init__(self):
+        self._shader = None
+        self._shader_manager = None
+        self._report = self._empty_report()
+
+    @staticmethod
+    def _empty_report() -> dict:
+        """Return stable lifecycle diagnostics for the caster shader."""
+        return {
+            "enabled": True,
+            "status": "not-run",
+            "reason": "not-setup",
+            "targetNames": [SHADOW_COLOR_TARGET_NAME, SHADOW_DEPTH_TARGET_NAME],
+            "shaderPath": str(R32F_CASTER_PASS_SHADER_PATH),
+            "technique": R32F_CASTER_PASS_TECHNIQUE,
+            "requiredParameter": R32F_CASTER_PASS_PARAMETER,
+            "createAttemptCount": 0,
+            "createSucceeded": False,
+            "releaseAttemptCount": 0,
+            "releaseSucceeded": False,
+            "releaseBeforeTarget": False,
+            "drawsReceiver": False,
+            "claimsSelfShadow": False,
+            "receiverComposition": False,
+            "lastError": None,
+        }
+
+    def create(self, targets: Optional[Tuple]) -> dict:
+        """Create and retain the caster shader for one acquired target pair."""
+        previous_release = self.release()
+        if self.has_owned_shader():
+            self._report.update(
+                status="unsupported",
+                reason="previous-shader-release-failed",
+                lastError=previous_release.get("lastError"),
+                createSucceeded=False,
+            )
+            return self.report()
+
+        report = self._report
+        report.update(
+            status="not-run",
+            reason="target-pair-unavailable",
+            createSucceeded=False,
+            releaseSucceeded=False,
+            releaseBeforeTarget=False,
+            lastError=None,
+        )
+        if not isinstance(targets, (tuple, list)) or len(targets) != 2 or any(
+            target is None for target in targets
+        ):
+            return self.report()
+
+        report["createAttemptCount"] += 1
+        draw_api_getter = getattr(omr.MRenderer, "drawAPI", None)
+        if callable(draw_api_getter):
+            try:
+                draw_api = draw_api_getter()
+            except Exception as exc:
+                report.update(
+                    status="unsupported", reason="draw-api-query-failed", lastError=str(exc)
+                )
+                return self.report()
+            if draw_api != getattr(omr.MRenderer, "kDirectX11", draw_api):
+                report.update(
+                    status="unsupported",
+                    reason="directx11-only-caster-pass",
+                    lastError=f"draw API {draw_api!r} is not DirectX11",
+                )
+                return self.report()
+
+        if not R32F_CASTER_PASS_SHADER_PATH.is_file():
+            report.update(status="unsupported", reason="shader-asset-missing")
+            return self.report()
+        try:
+            shader_manager = omr.MRenderer.getShaderManager()
+        except Exception as exc:
+            report.update(
+                status="unsupported",
+                reason="shader-manager-unavailable",
+                lastError=str(exc),
+            )
+            return self.report()
+        if shader_manager is None:
+            report.update(status="unsupported", reason="shader-manager-unavailable")
+            return self.report()
+
+        shader = None
+        try:
+            shader = shader_manager.getEffectsFileShader(
+                str(R32F_CASTER_PASS_SHADER_PATH), R32F_CASTER_PASS_TECHNIQUE
+            )
+            if shader is None:
+                report.update(status="unsupported", reason="shader-create-failed")
+                return self.report()
+            # ``WorldViewProjection`` is a Maya effect semantic.  Maya's
+            # shader manager binds it from the operation/camera context, but
+            # it does not expose every semantic in ``parameterList()`` (the
+            # live DX11 effect omits it).  Treat successful effect creation as
+            # the authoritative availability check rather than rejecting a
+            # valid semantic-only shader instance.
+        except Exception as exc:
+            if shader is not None:
+                self._shader = shader
+                self._shader_manager = shader_manager
+                release_report = self.release()
+                report.update(
+                    status="unsupported",
+                    reason=(
+                        "shader-create-failed"
+                        if release_report["releaseSucceeded"]
+                        else "shader-release-failed"
+                    ),
+                    lastError=(
+                        str(exc)
+                        if release_report["releaseSucceeded"]
+                        else f"{exc}; {release_report.get('lastError')}"
+                    ),
+                )
+            else:
+                report.update(
+                    status="unsupported", reason="shader-create-failed", lastError=str(exc)
+                )
+            return self.report()
+
+        self._shader = shader
+        self._shader_manager = shader_manager
+        report.update(status="created", reason="shader-created", createSucceeded=True)
+        return self.report()
+
+    def release(self) -> dict:
+        """Release the shader while its target pair is still owned."""
+        shader = self._shader
+        shader_manager = self._shader_manager
+        if shader is None:
+            return self.report()
+        self._report["releaseAttemptCount"] += 1
+        try:
+            if shader_manager is None:
+                raise RuntimeError("shader manager disappeared before shader release")
+            shader_manager.releaseShader(shader)
+        except Exception as exc:
+            self._report.update(
+                status="unsupported",
+                reason="shader-release-failed",
+                releaseSucceeded=False,
+                releaseBeforeTarget=False,
+                lastError=str(exc),
+            )
+        else:
+            self._shader = None
+            self._shader_manager = None
+            self._report.update(
+                status="released",
+                reason="shader-released-before-target",
+                releaseSucceeded=True,
+                releaseBeforeTarget=True,
+                lastError=None,
+            )
+        return self.report()
+
+    def shader_instance(self):
+        """Return the retained instance, or ``None`` until create succeeds."""
+        return self._shader
+
+    def has_owned_shader(self) -> bool:
+        """Return whether cleanup must defer target release for a retry."""
+        return self._shader is not None
+
+    def report(self) -> dict:
+        """Return JSON-safe lifecycle diagnostics without receiver claims."""
+        return dict(self._report)
+
+
 class ShadowTargetClearRender(omr.MSceneRender):
     """Render selected MMD casters into the diagnostic target pair."""
 
@@ -726,6 +916,7 @@ class ShadowTargetClearRender(omr.MSceneRender):
         resources: ShadowTargetResources,
         name: str = SHADOW_TARGET_OPERATION_NAME,
         selection_provider=None,
+        caster_shader_pass: Optional[R32FCasterShaderPass] = None,
     ):
         super().__init__(name)
         self._resources = resources
@@ -733,6 +924,7 @@ class ShadowTargetClearRender(omr.MSceneRender):
         self._selection_provider = (
             selection_provider or discover_self_shadow_caster_components
         )
+        self._caster_shader_pass = caster_shader_pass
         self._selection_report = self._empty_selection_report(
             status="not-run", reason="not-evaluated"
         )
@@ -753,6 +945,12 @@ class ShadowTargetClearRender(omr.MSceneRender):
     def targetOverrideList(self):
         """Route this operation to the offscreen target pair when enabled."""
         return list(self._targets) if self._targets else None
+
+    def shaderOverride(self):
+        """Use only the opt-in plugin-owned caster shader when ready."""
+        if self._caster_shader_pass is None or not self._targets:
+            return None
+        return self._caster_shader_pass.shader_instance()
 
     def renderFilterOverride(self):
         """Restrict this operation to shaded geometry from the caster set."""
@@ -791,6 +989,13 @@ class ShadowTargetClearRender(omr.MSceneRender):
                 status="error", reason="api-unavailable"
             )
             return []
+
+        if self._caster_shader_pass is not None and not self._caster_shader_pass.shader_instance():
+            self._selection_report = self._empty_selection_report(
+                status="error", reason="caster-shader-unavailable"
+            )
+            self._selection = om.MSelectionList()
+            return self._selection
 
         try:
             empty_selection = om.MSelectionList()
@@ -877,6 +1082,23 @@ class ShadowTargetClearRender(omr.MSceneRender):
         """Return the latest caster-routing diagnostic for target probes."""
         return dict(self._selection_report)
 
+    def release_shader(self) -> dict:
+        """Release the optional caster shader before detaching target handles."""
+        if self._caster_shader_pass is None:
+            return {
+                "status": "not-run",
+                "reason": "caster-pass-disabled",
+                "releaseSucceeded": True,
+                "releaseBeforeTarget": True,
+            }
+        return self._caster_shader_pass.release()
+
+    def caster_shader_report(self) -> Optional[dict]:
+        """Return optional caster shader lifecycle diagnostics."""
+        if self._caster_shader_pass is None:
+            return None
+        return self._caster_shader_pass.report()
+
     def postSceneRender(self, context) -> None:
         """Capture occupancy once after the color pass while targets are valid."""
         if context is None:
@@ -960,9 +1182,19 @@ class PassthroughRenderOverride(omr.MRenderOverride):
             if _enabled_environment_flag("MMD_TOOLS_ENABLE_RENDER_OVERRIDE_TARGET_PROBE")
             else None
         )
+        self._r32f_caster_shader_pass = (
+            R32FCasterShaderPass()
+            if self._target_probe is not None
+            and _enabled_environment_flag(
+                "MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_CASTER_PASS"
+            )
+            else None
+        )
         self._shadow_target_operation = (
             ShadowTargetClearRender(
-                self._target_probe, selection_provider=selection_provider
+                self._target_probe,
+                selection_provider=selection_provider,
+                caster_shader_pass=self._r32f_caster_shader_pass,
             )
             if self._target_probe is not None
             else None
@@ -1012,7 +1244,16 @@ class PassthroughRenderOverride(omr.MRenderOverride):
     def cleanup(self):
         """Reset iterator state while retaining reusable operation objects."""
         if self._shadow_target_operation is not None:
-            self._shadow_target_operation.set_targets(None)
+            self._shadow_target_operation.release_shader()
+            if self._r32f_caster_shader_pass is not None and self._r32f_caster_shader_pass.has_owned_shader():
+                # Keep the target pair attached while shader release is
+                # rejected; a later cleanup can retry in the same ownership
+                # order instead of releasing a referenced target.
+                self._current_operation = -1
+                self._cleanup_count += 1
+                raise RuntimeError(
+                    "R32F caster shader release failed; target release deferred"
+                )
         if self._r32f_binding_probe is not None:
             self._r32f_binding_probe.release()
             if self._r32f_binding_probe.has_owned_shader():
@@ -1023,6 +1264,8 @@ class PassthroughRenderOverride(omr.MRenderOverride):
                 raise RuntimeError(
                     "R32F binding probe shader release failed; target release deferred"
                 )
+        if self._shadow_target_operation is not None:
+            self._shadow_target_operation.set_targets(None)
         if self._target_probe is not None:
             self._target_probe.release()
         self._current_operation = -1
@@ -1033,6 +1276,10 @@ class PassthroughRenderOverride(omr.MRenderOverride):
         if self._target_probe is not None and self._shadow_target_operation is not None:
             targets = self._target_probe.acquire()
             self._shadow_target_operation.set_targets(targets)
+            if self._r32f_caster_shader_pass is not None:
+                # The caster shader is created only after both plugin-owned
+                # targets exist, and it is released before either target.
+                self._r32f_caster_shader_pass.create(targets)
             if self._r32f_binding_probe is not None:
                 # Bind only the plugin-owned R32F target.  This setup probe is
                 # intentionally disconnected from imported shaders and draw
@@ -1048,6 +1295,9 @@ class PassthroughRenderOverride(omr.MRenderOverride):
         report = self._target_probe.report()
         if self._shadow_target_operation is not None:
             report["casterSelection"] = self._shadow_target_operation.selection_report()
+            caster_report = self._shadow_target_operation.caster_shader_report()
+            if caster_report is not None:
+                report["r32fCasterPass"] = caster_report
         if self._r32f_binding_probe is not None:
             report["r32fBindingProbe"] = self._r32f_binding_probe.report()
         return report
@@ -1140,11 +1390,15 @@ __all__ = [
     "PRESENT_OPERATION_NAME",
     "PassthroughHUDRender",
     "PassthroughPresentTarget",
+    "R32FCasterShaderPass",
     "R32FTargetBindingProbe",
     "PassthroughRenderOverride",
     "PassthroughSceneRender",
     "RENDER_OVERRIDE_NAME",
     "RENDER_OVERRIDE_UI_NAME",
+    "R32F_CASTER_PASS_PARAMETER",
+    "R32F_CASTER_PASS_SHADER_PATH",
+    "R32F_CASTER_PASS_TECHNIQUE",
     "SCENE_OPERATION_NAME",
     "SHADOW_COLOR_TARGET_NAME",
     "SHADOW_DEPTH_TARGET_NAME",

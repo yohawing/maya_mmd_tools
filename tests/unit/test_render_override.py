@@ -558,6 +558,62 @@ class RenderOverrideLifecycleTest(unittest.TestCase):
         self.assertEqual(failed["releaseAttemptCount"], 1)
         self.assertEqual(shader_manager.released, [shader])
 
+    def test_r32f_caster_shader_pass_creates_dedicated_shader_and_releases_before_target(self):
+        shader = _BindingProbeShader(
+            parameters=[render_override.R32F_CASTER_PASS_PARAMETER]
+        )
+        shader_manager = _MShaderManager(shader)
+        _MRenderer.getShaderManager.return_value = shader_manager
+        caster = render_override.R32FCasterShaderPass()
+
+        created = caster.create((object(), object()))
+
+        self.assertEqual(created["status"], "created")
+        self.assertTrue(created["createSucceeded"])
+        self.assertFalse(created["drawsReceiver"])
+        self.assertFalse(created["claimsSelfShadow"])
+        self.assertIs(caster.shader_instance(), shader)
+        self.assertEqual(shader_manager.requests[0][1], render_override.R32F_CASTER_PASS_TECHNIQUE)
+
+        released = caster.release()
+
+        self.assertEqual(released["status"], "released")
+        self.assertTrue(released["releaseSucceeded"])
+        self.assertTrue(released["releaseBeforeTarget"])
+        self.assertEqual(shader_manager.released, [shader])
+
+    def test_r32f_caster_shader_pass_accepts_semantic_only_world_view_projection(self):
+        shader_manager = _MShaderManager(_BindingProbeShader(parameters=[]))
+        _MRenderer.getShaderManager.return_value = shader_manager
+        caster = render_override.R32FCasterShaderPass()
+
+        report = caster.create((object(), object()))
+
+        self.assertEqual(report["status"], "created")
+        self.assertEqual(report["reason"], "shader-created")
+        self.assertTrue(report["createSucceeded"])
+        self.assertIs(caster.shader_instance(), shader_manager.shader)
+
+    def test_r32f_caster_shader_pass_retain_on_release_failure(self):
+        class FailingShaderManager(_MShaderManager):
+            def releaseShader(self, shader):
+                super().releaseShader(shader)
+                raise RuntimeError("release rejected")
+
+        shader_manager = FailingShaderManager(
+            _BindingProbeShader(parameters=[render_override.R32F_CASTER_PASS_PARAMETER])
+        )
+        _MRenderer.getShaderManager.return_value = shader_manager
+        caster = render_override.R32FCasterShaderPass()
+        self.assertEqual(caster.create((object(), object()))["status"], "created")
+
+        failed = caster.release()
+
+        self.assertEqual(failed["status"], "unsupported")
+        self.assertEqual(failed["reason"], "shader-release-failed")
+        self.assertFalse(failed["releaseBeforeTarget"])
+        self.assertTrue(caster.has_owned_shader())
+
     def test_override_binding_probe_is_opt_in_and_releases_before_target_resources(self):
         events = []
         manager = _MRenderTargetManager(events=events)
@@ -585,6 +641,65 @@ class RenderOverrideLifecycleTest(unittest.TestCase):
         self.assertEqual(len(manager.released), 2)
         self.assertEqual([event[0] for event in events], ["shader", "target", "target"])
         self.assertIs(events[0][1], shader_manager.released[0])
+
+    def test_override_caster_pass_is_opt_in_and_releases_before_target_resources(self):
+        events = []
+        manager = _MRenderTargetManager(events=events)
+        shader = _BindingProbeShader(
+            parameters=[render_override.R32F_CASTER_PASS_PARAMETER]
+        )
+        shader_manager = _MShaderManager(shader, events=events)
+        _MRenderer.getRenderTargetManager.return_value = manager
+        _MRenderer.getShaderManager.return_value = shader_manager
+        with mock.patch.dict(
+            os.environ,
+            {
+                "MMD_TOOLS_ENABLE_RENDER_OVERRIDE_TARGET_PROBE": "1",
+                "MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_CASTER_PASS": "1",
+            },
+            clear=False,
+        ):
+            override = render_override.PassthroughRenderOverride()
+            with mock.patch.object(override._scene_operation, "configure_panel_background"):
+                override.setup("modelPanel4")
+            caster_report = override.target_probe_report()["r32fCasterPass"]
+            self.assertEqual(caster_report["status"], "created")
+            self.assertIs(override._shadow_target_operation.shaderOverride(), shader)
+            override.cleanup()
+
+        released = override.target_probe_report()["r32fCasterPass"]
+        self.assertEqual(released["status"], "released")
+        self.assertTrue(released["releaseBeforeTarget"])
+        self.assertEqual([event[0] for event in events], ["shader", "target", "target"])
+
+    def test_override_caster_cleanup_defers_target_release_when_shader_release_fails(self):
+        class FailingShaderManager(_MShaderManager):
+            def releaseShader(self, shader):
+                super().releaseShader(shader)
+                raise RuntimeError("release rejected")
+
+        manager = _MRenderTargetManager()
+        shader_manager = FailingShaderManager(
+            _BindingProbeShader(parameters=[render_override.R32F_CASTER_PASS_PARAMETER])
+        )
+        _MRenderer.getRenderTargetManager.return_value = manager
+        _MRenderer.getShaderManager.return_value = shader_manager
+        with mock.patch.dict(
+            os.environ,
+            {
+                "MMD_TOOLS_ENABLE_RENDER_OVERRIDE_TARGET_PROBE": "1",
+                "MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_CASTER_PASS": "1",
+            },
+            clear=False,
+        ):
+            override = render_override.PassthroughRenderOverride()
+            with mock.patch.object(override._scene_operation, "configure_panel_background"):
+                override.setup("modelPanel4")
+            with self.assertRaisesRegex(RuntimeError, "caster shader release failed"):
+                override.cleanup()
+
+        self.assertEqual(manager.released, [])
+        self.assertTrue(override._r32f_caster_shader_pass.has_owned_shader())
 
     def test_override_cleanup_defers_target_release_when_shader_release_fails(self):
         class FailingShaderManager(_MShaderManager):
@@ -835,6 +950,52 @@ class RenderOverrideLifecycleTest(unittest.TestCase):
             )
         finally:
             _MSelectionList.fail_on_add = None
+            if original_openmaya is None:
+                sys.modules.pop("maya.api.OpenMaya", None)
+            else:
+                sys.modules["maya.api.OpenMaya"] = original_openmaya
+            if original_attr is None:
+                try:
+                    delattr(api, "OpenMaya")
+                except AttributeError:
+                    pass
+            else:
+                api.OpenMaya = original_attr
+            if original_api is None:
+                sys.modules.pop("maya.api", None)
+            else:
+                sys.modules["maya.api"] = original_api
+
+    def test_target_operation_fails_closed_when_opt_in_caster_shader_is_unavailable(self):
+        openmaya = types.ModuleType("maya.api.OpenMaya")
+        openmaya.MSelectionList = _MSelectionList
+        original_api = sys.modules.get("maya.api")
+        api = original_api or types.ModuleType("maya.api")
+        original_openmaya = sys.modules.get("maya.api.OpenMaya")
+        original_attr = getattr(api, "OpenMaya", None)
+        api.OpenMaya = openmaya
+        sys.modules["maya.api"] = api
+        sys.modules["maya.api.OpenMaya"] = openmaya
+        try:
+            caster = render_override.R32FCasterShaderPass()
+            operation = render_override.ShadowTargetClearRender(
+                object(),
+                selection_provider=lambda: render_override.ShadowCasterSelection(
+                    components=("|Mmd_root|bodyShape.f[0:9]",),
+                    roots=("|Mmd_root",),
+                    flagged_materials=("matCast",),
+                    skipped_materials=(),
+                ),
+                caster_shader_pass=caster,
+            )
+
+            selected = operation.objectSetOverride()
+
+            self.assertEqual(selected.items, [])
+            self.assertEqual(
+                operation.selection_report()["reason"], "caster-shader-unavailable"
+            )
+        finally:
             if original_openmaya is None:
                 sys.modules.pop("maya.api.OpenMaya", None)
             else:

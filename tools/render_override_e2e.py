@@ -216,7 +216,49 @@ def _validate_r32f_binding_probe(binding_probe: object) -> None:
         )
 
 
-def _evaluate_target_probe_caster_selection(override) -> None:
+def _validate_r32f_caster_pass(caster_pass: object) -> None:
+    """Require a successful caster shader lifecycle without receiver claims."""
+    required = {
+        "enabled",
+        "status",
+        "reason",
+        "targetNames",
+        "shaderPath",
+        "technique",
+        "requiredParameter",
+        "createAttemptCount",
+        "createSucceeded",
+        "releaseAttemptCount",
+        "releaseSucceeded",
+        "releaseBeforeTarget",
+        "drawsReceiver",
+        "claimsSelfShadow",
+        "receiverComposition",
+    }
+    if not isinstance(caster_pass, dict) or not required.issubset(caster_pass):
+        raise RuntimeError(f"R32F caster-pass diagnostic is missing: {caster_pass!r}")
+    if caster_pass["status"] not in {"created", "released", "unsupported", "not-run"}:
+        raise RuntimeError(f"R32F caster-pass has an invalid state: {caster_pass!r}")
+    if any(caster_pass[key] is not False for key in ("drawsReceiver", "claimsSelfShadow", "receiverComposition")):
+        raise RuntimeError(
+            "R32F caster pass unexpectedly claimed receiver/self-shadow composition: "
+            f"{caster_pass!r}"
+        )
+    if (
+        caster_pass["createAttemptCount"] < 1
+        or caster_pass["createSucceeded"] is not True
+        or caster_pass["releaseAttemptCount"] < 1
+        or caster_pass["releaseSucceeded"] is not True
+        or caster_pass["releaseBeforeTarget"] is not True
+        or caster_pass["status"] != "released"
+    ):
+        raise RuntimeError(
+            "R32F caster pass did not complete a successful create/release-before-target lifecycle: "
+            f"{caster_pass!r}"
+        )
+
+
+def _evaluate_target_probe_caster_selection(override, *, manual_readback: bool = True) -> None:
     """Invoke routing and post-render readback callbacks once in live Maya.
 
     Maya normally evaluates ``objectSetOverride`` while rendering.  Calling
@@ -230,9 +272,10 @@ def _evaluate_target_probe_caster_selection(override) -> None:
         callback = getattr(operation, "objectSetOverride", None) if operation else None
         if callable(callback):
             callback()
-            manual_readback = getattr(operation, "manual_target_occupancy", None)
-            if callable(manual_readback):
-                manual_readback()
+            if manual_readback:
+                readback = getattr(operation, "manual_target_occupancy", None)
+                if callable(readback):
+                    readback()
             return
         if not override.nextRenderOperation():
             break
@@ -247,6 +290,7 @@ def run_probe(
     target_probe: bool = False,
     model_path: str | None = None,
     r32f_binding_probe: bool = False,
+    r32f_caster_pass: bool = False,
 ) -> None:
     """Execute the R1 lifecycle and optional R2 target probe in live Maya.
 
@@ -255,7 +299,9 @@ def run_probe(
     diagnostic.  Target occupancy is reported only as conservative D32/R32F
     readback evidence.  The optional R32F binding probe only records whether a
     plugin-owned ``MShaderInstance`` accepts the offscreen target; it performs
-    no receiver composition or self-shadow parity assertion.
+    no receiver composition or self-shadow parity assertion.  The explicit
+    ``r32f_caster_pass`` option adds a dedicated plugin-owned HLSL caster
+    shader, still without claiming receiver or self-shadow parity.
     """
     import os
 
@@ -285,6 +331,9 @@ def run_probe(
         )
         os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_BINDING_PROBE"] = (
             "1" if r32f_binding_probe else "0"
+        )
+        os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_CASTER_PASS"] = (
+            "1" if r32f_caster_pass else "0"
         )
         cmds.file(new=True, force=True)
         previous_renderer_by_panel = _renderer_by_panel(cmds)
@@ -399,11 +448,16 @@ def run_probe(
         )
         if not report["checks"]["overrideActivated"]:
             raise RuntimeError("R1 override could not become active in the GUI viewport")
+        if target_probe:
+            # Maya may invoke ``cleanup`` after a viewport refresh.  Evaluate
+            # the caster selection while the operation still owns its shader
+            # and targets; the actual render below remains the source of
+            # occupancy evidence.
+            _evaluate_target_probe_caster_selection(override, manual_readback=False)
         cmds.refresh(force=True)
         overridden = _capture_current_view(cmds, output / "override.png")
         report["captures"]["override"] = str(overridden)
         if target_probe:
-            _evaluate_target_probe_caster_selection(override)
             override.cleanup()
             target_report = override.target_probe_report()
             report["checks"]["targetProbe"] = target_report
@@ -420,6 +474,10 @@ def run_probe(
             if r32f_binding_probe:
                 _validate_r32f_binding_probe(
                     (target_report or {}).get("r32fBindingProbe")
+                )
+            if r32f_caster_pass:
+                _validate_r32f_caster_pass(
+                    (target_report or {}).get("r32fCasterPass")
                 )
 
         restored_by_panel = {}
@@ -564,6 +622,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--r32f-caster-pass",
+        action="store_true",
+        help=(
+            "Use the opt-in plugin-owned MMD caster HLSL for the R32F/D32 "
+            "target pair; does not draw a receiver or claim self-shadow parity."
+        ),
+    )
+    parser.add_argument(
         "--model",
         type=Path,
         default=None,
@@ -576,6 +642,8 @@ def main() -> int:
         parser.error("--model requires --target-probe")
     if args.r32f_binding_probe and not args.target_probe:
         parser.error("--r32f-binding-probe requires --target-probe")
+    if args.r32f_caster_pass and not args.target_probe:
+        parser.error("--r32f-caster-pass requires --target-probe")
 
     out_dir = args.out_dir.resolve()
     log_path = out_dir / f"render_override_maya{args.maya}.log"
@@ -597,7 +665,7 @@ def main() -> int:
     )
     command = (
         "from tools.render_override_e2e import run_probe\n"
-        f"run_probe(r'{log_path.as_posix()}', r'{report_path.as_posix()}', r'{out_dir.as_posix()}', {expected_draw_api_name!r}, {args.target_probe!r}, {model_literal}, {args.r32f_binding_probe!r})\n"
+        f"run_probe(r'{log_path.as_posix()}', r'{report_path.as_posix()}', r'{out_dir.as_posix()}', {expected_draw_api_name!r}, {args.target_probe!r}, {model_literal}, {args.r32f_binding_probe!r}, {args.r32f_caster_pass!r})\n"
     )
     report = run_maya_e2e(
         project_root=_ROOT,
