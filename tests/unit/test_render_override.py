@@ -1350,6 +1350,52 @@ class RenderOverrideLifecycleTest(unittest.TestCase):
             report["depthOccupancy"]["reason"], "all-clear-depth-after-caster-selection"
         )
 
+    def test_d24s8_readback_decodes_the_24_bit_depth_component(self):
+        resources = render_override.ShadowTargetResources()
+        resources._descriptions["depth"] = _MRenderTargetDescription(
+            render_override.SHADOW_DEPTH_TARGET_NAME,
+            2,
+            2,
+            1,
+            0,
+            0,
+            False,
+        )
+        resources._targets["depth"] = _PackedOccupancyRenderTarget(
+            [
+                0xFF,
+                0xFF,
+                0xFF,
+                0x00,
+                0x00,
+                0x00,
+                0x80,
+                0x00,
+                0xFF,
+                0xFF,
+                0xFF,
+                0x00,
+                0xFF,
+                0xFF,
+                0xFF,
+                0x00,
+            ],
+            2,
+            2,
+        )
+
+        with mock.patch.object(_MRenderer, "kD24S8", 0, create=True):
+            report = resources.capture_depth_occupancy(
+                {"status": "ok", "reason": "components-added", "count": 1}
+            )
+
+        self.assertEqual(report["status"], "occupied")
+        self.assertEqual(report["reason"], "depth-below-clear")
+        self.assertEqual(report["encoding"], "d24s8")
+        self.assertEqual(report["sampleCount"], 4)
+        self.assertEqual(report["nonClearSampleCount"], 1)
+        self.assertAlmostEqual(report["minSample"], 0.5, places=6)
+
     def test_caster_selection_uses_only_mmd_flagged_mesh_components(self):
         selection = render_override.discover_self_shadow_caster_components(_CasterCmds())
 

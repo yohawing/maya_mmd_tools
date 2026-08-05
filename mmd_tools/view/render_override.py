@@ -1182,8 +1182,8 @@ class ShadowTargetResources:
         """Classify selected caster draw evidence from the depth target.
 
         Depth is the conservative draw witness for this operation.  Maya's
-        D24S8 raw readback is intentionally not decoded here; the RGBA8 color
-        attachment is used as the authoritative write witness on that route.
+        D24S8 is decoded as its 24-bit UNORM depth component.  The RGBA8
+        attachment remains an independent color-side write witness.
         """
         selection_status = (
             caster_selection.get("status")
@@ -1210,14 +1210,6 @@ class ShadowTargetResources:
         if selection_status != "ok" or selected_count < 1:
             return self._set_depth_occupancy(
                 status="unsupported", reason="caster-selection-invalid", selected_count=selected_count
-            )
-
-        if self._uses_packed_depth_storage():
-            return self._set_depth_occupancy(
-                status="unsupported",
-                reason="d24s8-depth-readback-unsupported",
-                selected_count=selected_count,
-                encoding="d24s8",
             )
 
         try:
@@ -1282,7 +1274,7 @@ class ShadowTargetResources:
             raise RuntimeError("R2 depth target is unavailable for occupancy readback")
         description = self._descriptions["depth"]
         if self._uses_packed_depth_storage():
-            raise RuntimeError("D24S8 depth rawData decode is unsupported")
+            return self._read_packed_depth_samples()
         width = int(description.width())
         height = int(description.height())
         if width < 1 or height < 1:
@@ -1331,6 +1323,65 @@ class ShadowTargetResources:
                 "firstSample": first_sample,
                 "minSample": None if minimum == math.inf else minimum,
                 "maxSample": None if maximum == -math.inf else maximum,
+            }
+        finally:
+            omr.MRenderTarget.freeRawData(raw_data)
+
+    def _read_packed_depth_samples(self) -> dict:
+        """Read the low 24-bit UNORM depth component from D24S8 texels."""
+        target = self._targets["depth"]
+        if target is None:
+            raise RuntimeError("R2 depth target is unavailable for occupancy readback")
+        description = self._descriptions["depth"]
+        width = int(description.width())
+        height = int(description.height())
+        if width < 1 or height < 1:
+            raise RuntimeError("R2 depth target has invalid dimensions")
+        raw_data, row_pitch, slice_pitch = target.rawData()
+        if not raw_data:
+            raise RuntimeError("R2 depth target rawData returned no buffer")
+        try:
+            pointer = int(raw_data)
+            pitch = int(row_pitch)
+            total_pitch = int(slice_pitch)
+            minimum_pitch = width * ctypes.sizeof(ctypes.c_uint32)
+            if (
+                pointer <= 0
+                or pitch < minimum_pitch
+                or total_pitch < pitch * height
+            ):
+                raise RuntimeError("R2 depth target rawData has invalid address or pitch")
+            depth_max = float(0x00FFFFFF)
+            first_sample = (
+                ctypes.c_uint32.from_address(pointer).value & 0x00FFFFFF
+            ) / depth_max
+            sample_count = width * height
+            non_clear_count = 0
+            below_clear_count = 0
+            minimum = math.inf
+            maximum = -math.inf
+            for row in range(height):
+                row_address = pointer + row * pitch
+                for column in range(width):
+                    value = (
+                        ctypes.c_uint32.from_address(row_address + column * 4).value
+                        & 0x00FFFFFF
+                    ) / depth_max
+                    minimum = min(minimum, value)
+                    maximum = max(maximum, value)
+                    if not math.isclose(value, SHADOW_CLEAR_VALUE, abs_tol=1e-6):
+                        non_clear_count += 1
+                    if value < SHADOW_CLEAR_VALUE - SHADOW_DEPTH_CLEAR_EPSILON:
+                        below_clear_count += 1
+            return {
+                "sampleCount": sample_count,
+                "nonClearSampleCount": non_clear_count,
+                "belowClearSampleCount": below_clear_count,
+                "nonFiniteSampleCount": 0,
+                "firstSample": first_sample,
+                "minSample": None if minimum == math.inf else minimum,
+                "maxSample": None if maximum == -math.inf else maximum,
+                "encoding": "d24s8",
             }
         finally:
             omr.MRenderTarget.freeRawData(raw_data)
