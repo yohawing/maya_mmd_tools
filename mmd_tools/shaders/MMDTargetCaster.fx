@@ -9,11 +9,25 @@
 // Maya does not expose the semantic-only WorldViewProjection parameter to a
 // Python MShaderInstance callback reliably on an offscreen target.  The
 // RenderOverride binds this plain matrix once per draw from MFrameContext.
+float4x4 World : World<string UIWidget = "None";>;
+float4x4 WorldInverseTranspose : WorldInverseTranspose<string UIWidget = "None";>;
+float4x4 WorldViewProjection : WorldViewProjection<string UIWidget = "None";>;
+float3 ViewPosition : ViewPosition<string UIWidget = "None";>;
 float4x4 CasterWorldViewProjection;
 
 struct CasterVertexInput
 {
     float3 position : POSITION;
+    // Keep the same vertex requirements as the imported MMD material.  Maya's
+    // built-in dx11Shader render items reject a replacement instance whose
+    // input layout is narrower than their standard shaded layout.
+    float2 texCoord0 : TEXCOORD0;
+    float2 texCoord1 : TEXCOORD1;
+    float4 vertexColor0 : COLOR0;
+    float4 vertexColor1 : COLOR1;
+    float3 normal : NORMAL;
+    float3 tangent : TANGENT;
+    float3 binormal : BINORMAL;
 };
 
 struct CasterVertexOutput
@@ -25,6 +39,17 @@ CasterVertexOutput CasterVS(CasterVertexInput input)
 {
     CasterVertexOutput output;
     output.position = mul(float4(input.position, 1.0f), CasterWorldViewProjection);
+    return output;
+}
+
+// The stock dx11Shader node binds Maya effect semantics itself.  Keep this
+// second entry point separate from the callback-bound pass above so the
+// diagnostic can test that ownership boundary without changing the normal
+// operation-wide shader path.
+CasterVertexOutput CasterStockVS(CasterVertexInput input)
+{
+    CasterVertexOutput output;
+    output.position = mul(float4(input.position, 1.0f), WorldViewProjection);
     return output;
 }
 
@@ -52,6 +77,16 @@ technique11 MmdToolsR32FCaster
     pass CasterPass
     {
         SetVertexShader(CompileShader(vs_5_0, CasterVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, CasterPS()));
+    }
+}
+
+technique11 MmdToolsR32FCasterNodeSwap
+{
+    pass CasterPass
+    {
+        SetVertexShader(CompileShader(vs_5_0, CasterStockVS()));
         SetGeometryShader(NULL);
         SetPixelShader(CompileShader(ps_5_0, CasterPS()));
     }

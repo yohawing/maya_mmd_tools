@@ -97,6 +97,8 @@ R32F_BINDING_PROBE_SHADER_PATH = (
 )
 R32F_CASTER_PASS_PARAMETER = "CasterWorldViewProjection"
 R32F_CASTER_PASS_TECHNIQUE = "MmdToolsR32FCaster"
+R32F_CASTER_NODE_SWAP_ENV = "MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_CASTER_NODE_SWAP"
+R32F_CASTER_NODE_SWAP_TECHNIQUE = "MmdToolsR32FCasterNodeSwap"
 R32F_CASTER_PASS_SHADER_PATH = (
     Path(__file__).resolve().parents[1] / "shaders" / "MMDTargetCaster.fx"
 )
@@ -2136,13 +2138,35 @@ class R32FCasterShaderPass:
                 {"error": "render-item-source-shader-unavailable"}
             )
             return
-        try:
-            result = setter(shader_instance)
-            if result is False:
-                raise RuntimeError("MRenderItem.setShader returned False")
-        except Exception as exc:
+        attempts = []
+        for custom_stream_name in (None, "Position", "POSITION"):
+            try:
+                result = (
+                    setter(shader_instance)
+                    if custom_stream_name is None
+                    else setter(shader_instance, custom_stream_name)
+                )
+                attempts.append(
+                    {
+                        "customStreamName": custom_stream_name,
+                        "result": result,
+                    }
+                )
+                if result is not False:
+                    break
+            except Exception as exc:
+                attempts.append(
+                    {
+                        "customStreamName": custom_stream_name,
+                        "error": f"{type(exc).__name__}: {exc!r}",
+                    }
+                )
+        else:
             self._report["renderItemShaderSetErrors"].append(
-                {"error": f"set-shader-failed: {type(exc).__name__}: {exc!r}"}
+                {
+                    "error": "MRenderItem.setShader returned False",
+                    "attempts": attempts,
+                }
             )
             return
         self._saved_render_item_shaders.append((item, original_shader))
@@ -2274,6 +2298,155 @@ class R32FCasterShaderPass:
     def report(self) -> dict:
         """Return JSON-safe lifecycle diagnostics without receiver claims."""
         return dict(self._report)
+
+
+class R32FCasterMaterialSwap:
+    """Temporarily route selected ``dx11Shader`` nodes through the caster FX.
+
+    Maya's ``MRenderItem.setShader`` intentionally rejects built-in material
+    items.  This opt-in diagnostic therefore tests the other supported
+    ownership boundary: the imported ``dx11Shader`` node itself resolves a
+    caster technique and Maya binds its standard effect semantics.  Every
+    changed ``shader``/``technique`` attribute is restored before the next
+    operation or during cleanup; a failed restore remains visible and blocks
+    caster shader release.
+    """
+
+    def __init__(self):
+        self._originals = []
+        self._report = {
+            "enabled": True,
+            "status": "not-run",
+            "reason": "not-setup",
+            "technique": R32F_CASTER_NODE_SWAP_TECHNIQUE,
+            "swapAttemptCount": 0,
+            "swapCount": 0,
+            "restoreAttemptCount": 0,
+            "restoreCount": 0,
+            "errors": [],
+            "lastError": None,
+        }
+
+    def swap(self, material_nodes) -> dict:
+        """Swap the selected DX11 materials to the stock-semantic caster FX."""
+        self.restore()
+        values = tuple(material_nodes or ())
+        self._report.update(
+            status="not-run",
+            reason="no-material-nodes",
+            swapAttemptCount=len(values),
+            swapCount=0,
+            lastError=None,
+            errors=[],
+        )
+        if not values:
+            return self.report()
+        try:
+            import maya.cmds as cmds
+        except Exception as exc:
+            self._report.update(
+                status="unsupported",
+                reason="maya-cmds-unavailable",
+                lastError=f"{type(exc).__name__}: {exc!r}",
+            )
+            return self.report()
+        for node in values:
+            if not isinstance(node, str) or not node:
+                self._report["errors"].append({"node": repr(node), "error": "invalid-node"})
+                continue
+            try:
+                if cmds.nodeType(node) != "dx11Shader":
+                    continue
+                if not cmds.attributeQuery("shader", node=node, exists=True):
+                    continue
+                if not cmds.attributeQuery("technique", node=node, exists=True):
+                    continue
+                original_shader = cmds.getAttr(f"{node}.shader")
+                original_technique = cmds.getAttr(f"{node}.technique")
+                self._originals.append((node, original_shader, original_technique))
+                cmds.setAttr(
+                    f"{node}.shader",
+                    str(R32F_CASTER_PASS_SHADER_PATH),
+                    type="string",
+                )
+                cmds.setAttr(
+                    f"{node}.technique",
+                    R32F_CASTER_NODE_SWAP_TECHNIQUE,
+                    type="string",
+                )
+                self._report["swapCount"] += 1
+            except Exception as exc:
+                self._report["errors"].append(
+                    {"node": node, "error": f"{type(exc).__name__}: {exc!r}"}
+                )
+                break
+        if self._report["errors"]:
+            self.restore()
+            self._report.update(status="unsupported", reason="material-swap-failed")
+        elif self._report["swapCount"]:
+            self._report.update(status="swapped", reason="dx11shader-technique-selected")
+        else:
+            self._report.update(status="unsupported", reason="no-dx11shader-materials")
+        return self.report()
+
+    def restore(self) -> dict:
+        """Restore every changed material, retaining failures for retry."""
+        originals = self._originals
+        self._report["restoreAttemptCount"] += len(originals)
+        remaining = []
+        last_error = None
+        try:
+            import maya.cmds as cmds
+        except Exception as exc:
+            if originals:
+                last_error = f"{type(exc).__name__}: {exc!r}"
+                self._report["errors"].append({"error": last_error})
+            self._report["lastError"] = last_error
+            return self.report()
+        for node, shader_path, technique in originals:
+            try:
+                cmds.setAttr(f"{node}.shader", shader_path, type="string")
+                cmds.setAttr(f"{node}.technique", technique, type="string")
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc!r}"
+                self._report["errors"].append(
+                    {"node": node, "error": f"restore-failed: {last_error}"}
+                )
+                remaining.append((node, shader_path, technique))
+            else:
+                self._report["restoreCount"] += 1
+        self._originals = remaining
+        self._report["lastError"] = last_error
+        if not remaining and originals:
+            self._report.update(status="restored", reason="material-shaders-restored")
+        return self.report()
+
+    def has_pending_restore(self) -> bool:
+        """Return whether a material restore still needs a cleanup retry."""
+        return bool(self._originals)
+
+    def report(self) -> dict:
+        """Return JSON-safe material swap diagnostics."""
+        return dict(self._report)
+
+
+class R32FCasterMaterialRestoreRender(_MUserRenderOperationBase):
+    """Restore swapped material nodes between caster and scene operations."""
+
+    def __init__(self, material_swap: R32FCasterMaterialSwap):
+        super().__init__("mmdToolsShadowCasterMaterialRestore")
+        self._material_swap = material_swap
+        self._execute_count = 0
+
+    def execute(self, _context):
+        """Restore the imported ``dx11Shader`` before ordinary scene draw."""
+        self._execute_count += 1
+        self._material_swap.restore()
+
+    @property
+    def execute_count(self) -> int:
+        """Return how often Maya ran the restore operation."""
+        return self._execute_count
 
 
 _MQuadRenderBase = getattr(omr, "MQuadRender", omr.MSceneRender)
@@ -3690,6 +3863,7 @@ class ShadowTargetClearRender(omr.MSceneRender):
         selection_provider=None,
         caster_shader_pass: Optional[R32FCasterShaderPass] = None,
         camera_provider: Optional[LightSpaceCasterCamera] = None,
+        material_swap: Optional[R32FCasterMaterialSwap] = None,
     ):
         super().__init__(name)
         self._resources = resources
@@ -3699,6 +3873,7 @@ class ShadowTargetClearRender(omr.MSceneRender):
         )
         self._caster_shader_pass = caster_shader_pass
         self._camera_provider = camera_provider
+        self._material_swap = material_swap
         self._selection_report = self._empty_selection_report(
             status="not-run", reason="not-evaluated"
         )
@@ -3710,6 +3885,8 @@ class ShadowTargetClearRender(omr.MSceneRender):
         """Attach or detach the R2 probe render targets for this operation."""
         if self._caster_shader_pass is not None:
             self._caster_shader_pass.restore_render_items()
+        if self._material_swap is not None:
+            self._material_swap.restore()
         self._targets = targets
         if targets:
             self._selection = None
@@ -3724,6 +3901,8 @@ class ShadowTargetClearRender(omr.MSceneRender):
 
     def shaderOverride(self):
         """Use only the opt-in plugin-owned caster shader when ready."""
+        if self._material_swap is not None:
+            return None
         if self._caster_shader_pass is None or not self._targets:
             return None
         return self._caster_shader_pass.shader_instance()
@@ -3835,6 +4014,16 @@ class ShadowTargetClearRender(omr.MSceneRender):
         self._selection_report = self._selection_report_for(
             components=components, status="ok", reason="components-added"
         )
+        if self._material_swap is not None:
+            swap_report = self._material_swap.swap(discovered.flagged_materials)
+            if swap_report["status"] != "swapped":
+                self._selection_report = self._selection_report_for(
+                    components=components,
+                    status="error",
+                    reason="caster-material-swap-unavailable",
+                )
+                self._selection = empty_selection
+                return empty_selection
         self._selection = selection
         return selection
 
@@ -3866,6 +4055,16 @@ class ShadowTargetClearRender(omr.MSceneRender):
 
     def release_shader(self) -> dict:
         """Release the optional caster shader before detaching target handles."""
+        if self._material_swap is not None:
+            restore_report = self._material_swap.restore()
+            if self._material_swap.has_pending_restore():
+                return {
+                    "status": "unsupported",
+                    "reason": "caster-material-restore-failed",
+                    "releaseSucceeded": False,
+                    "releaseBeforeTarget": False,
+                    "lastError": restore_report.get("lastError"),
+                }
         if self._caster_shader_pass is None:
             return {
                 "status": "not-run",
@@ -3880,6 +4079,12 @@ class ShadowTargetClearRender(omr.MSceneRender):
         if self._caster_shader_pass is None:
             return None
         return self._caster_shader_pass.report()
+
+    def material_swap_report(self) -> Optional[dict]:
+        """Return optional stock ``dx11Shader`` caster handoff diagnostics."""
+        if self._material_swap is None:
+            return None
+        return self._material_swap.report()
 
     def camera_report(self) -> Optional[dict]:
         """Return optional light-space camera lifecycle diagnostics."""
@@ -3897,6 +4102,8 @@ class ShadowTargetClearRender(omr.MSceneRender):
         if self._post_render_captured:
             if self._caster_shader_pass is not None:
                 self._caster_shader_pass.restore_render_items()
+            if self._material_swap is not None:
+                self._material_swap.restore()
             return
         try:
             self._resources.capture_target_occupancy(self.selection_report())
@@ -3904,6 +4111,8 @@ class ShadowTargetClearRender(omr.MSceneRender):
         finally:
             if self._caster_shader_pass is not None:
                 self._caster_shader_pass.restore_render_items()
+            if self._material_swap is not None:
+                self._material_swap.restore()
 
     def manual_target_occupancy(self) -> dict:
         """Run the explicit test/E2E readback path without a draw context."""
@@ -4027,6 +4236,17 @@ class PassthroughRenderOverride(omr.MRenderOverride):
             )
             else None
         )
+        self._r32f_caster_material_swap = (
+            R32FCasterMaterialSwap()
+            if self._r32f_caster_shader_pass is not None
+            and _enabled_environment_flag(R32F_CASTER_NODE_SWAP_ENV)
+            else None
+        )
+        self._r32f_caster_material_restore_operation = (
+            R32FCasterMaterialRestoreRender(self._r32f_caster_material_swap)
+            if self._r32f_caster_material_swap is not None
+            else None
+        )
         self._light_space_camera = (
             LightSpaceCasterCamera()
             if self._r32f_caster_shader_pass is not None
@@ -4041,6 +4261,7 @@ class PassthroughRenderOverride(omr.MRenderOverride):
                 selection_provider=selection_provider,
                 caster_shader_pass=self._r32f_caster_shader_pass,
                 camera_provider=self._light_space_camera,
+                material_swap=self._r32f_caster_material_swap,
             )
             if self._target_probe is not None
             else None
@@ -4077,6 +4298,12 @@ class PassthroughRenderOverride(omr.MRenderOverride):
             operations = (self._receiver_probe, *operations)
         if self._shadow_target_operation is not None:
             operations = (self._shadow_target_operation, *operations)
+        if self._r32f_caster_material_restore_operation is not None:
+            operations = (
+                operations[0],
+                self._r32f_caster_material_restore_operation,
+                *operations[1:],
+            )
         if self._native_shadow_request_operation is not None:
             operations = (self._native_shadow_request_operation, *operations)
         self._operations = operations
@@ -4149,15 +4376,24 @@ class PassthroughRenderOverride(omr.MRenderOverride):
                 raise RuntimeError("native shadow receiver shader release failed")
         if self._shadow_target_operation is not None:
             self._shadow_target_operation.release_shader()
-            if self._r32f_caster_shader_pass is not None and self._r32f_caster_shader_pass.has_owned_shader():
+            material_restore_failed = (
+                self._r32f_caster_material_swap is not None
+                and self._r32f_caster_material_swap.has_pending_restore()
+            )
+            if (
+                self._r32f_caster_shader_pass is not None
+                and self._r32f_caster_shader_pass.has_owned_shader()
+            ) or material_restore_failed:
                 # Keep the target pair attached while shader release is
                 # rejected; a later cleanup can retry in the same ownership
                 # order instead of releasing a referenced target.
                 self._current_operation = -1
                 self._cleanup_count += 1
-                raise RuntimeError(
-                    "R32F caster shader release failed; target release deferred"
-                )
+                if material_restore_failed:
+                    message = "R32F caster shader release failed; material restore deferred"
+                else:
+                    message = "R32F caster shader release failed; target release deferred"
+                raise RuntimeError(message)
         if self._r32f_binding_probe is not None:
             self._r32f_binding_probe.release()
             if self._r32f_binding_probe.has_owned_shader():
@@ -4205,6 +4441,12 @@ class PassthroughRenderOverride(omr.MRenderOverride):
                     # The caster shader is created only after both plugin-owned
                     # targets exist, and it is released before either target.
                     self._r32f_caster_shader_pass.create(targets)
+                if self._r32f_caster_material_swap is not None:
+                    # Maya may skip objectSetOverride when a scene operation
+                    # deliberately returns no shader override.  Evaluate the
+                    # validated MMD selection here so the stock dx11Shader
+                    # handoff is prepared before VP2 starts the operation.
+                    self._shadow_target_operation.objectSetOverride()
                 if self._receiver_probe is not None and self._receiver_probe_resources is not None:
                     self._receiver_probe_resources.acquire()
                     self._receiver_probe.create(targets[0] if targets else None)
@@ -4283,6 +4525,9 @@ class PassthroughRenderOverride(omr.MRenderOverride):
             caster_report = self._shadow_target_operation.caster_shader_report()
             if caster_report is not None:
                 report["r32fCasterPass"] = caster_report
+            material_swap_report = self._shadow_target_operation.material_swap_report()
+            if material_swap_report is not None:
+                report["r32fCasterMaterialSwap"] = material_swap_report
             camera_report = self._shadow_target_operation.camera_report()
             if camera_report is not None:
                 report["lightSpaceCamera"] = camera_report

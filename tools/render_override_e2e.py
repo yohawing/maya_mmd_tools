@@ -827,6 +827,7 @@ def run_probe(
     native_shadow_request: bool = False,
     native_shadow_binding_probe: bool = False,
     native_shadow_receiver: bool = False,
+    r32f_caster_node_swap: bool = False,
     camera_config: dict | None = None,
     capture_width: int = 640,
     capture_height: int = 480,
@@ -895,6 +896,9 @@ def run_probe(
         os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_CASTER_PASS"] = (
             "1" if r32f_caster_pass else "0"
         )
+        os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_CASTER_NODE_SWAP"] = (
+            "1" if r32f_caster_node_swap else "0"
+        )
         os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_RECEIVER_PROBE"] = (
             "1" if r32f_receiver_probe else "0"
         )
@@ -956,7 +960,9 @@ def run_probe(
                 raise FileNotFoundError(f"PMX model not found: {model}")
             from mmd_tools.io.mmd_importer import import_mmd_file
 
-            production_receiver_import = bool(native_shadow_receiver)
+            production_receiver_import = bool(
+                native_shadow_receiver or r32f_caster_node_swap
+            )
             shader_setting_state = None
             shader_plugin_loaded = None
             if production_receiver_import:
@@ -1025,6 +1031,14 @@ def run_probe(
             )
         if target_probe:
             expected_types.append(omr.MSceneRender.kSceneRender)
+        if r32f_caster_node_swap:
+            expected_types.append(
+                getattr(
+                    getattr(omr, "MUserRenderOperation", None),
+                    "kUserDefined",
+                    3,
+                )
+            )
         if r32f_receiver_probe:
             expected_types.append(omr.MQuadRender.kQuadRender)
         expected_types.append(omr.MSceneRender.kSceneRender)
@@ -1492,6 +1506,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--r32f-caster-node-swap",
+        action="store_true",
+        help=(
+            "Temporarily route selected imported dx11Shader nodes through the "
+            "stock-semantic caster technique; restore the original materials "
+            "after the diagnostic pass."
+        ),
+    )
+    parser.add_argument(
         "--r32f-receiver-probe",
         action="store_true",
         help=(
@@ -1568,6 +1591,8 @@ def main() -> int:
         parser.error("--r32f-binding-probe requires --target-probe")
     if args.r32f_caster_pass and not args.target_probe:
         parser.error("--r32f-caster-pass requires --target-probe")
+    if args.r32f_caster_node_swap and not args.r32f_caster_pass:
+        parser.error("--r32f-caster-node-swap requires --r32f-caster-pass")
     if args.r32f_receiver_probe and not args.r32f_caster_pass:
         parser.error("--r32f-receiver-probe requires --r32f-caster-pass")
     if args.r32f_light_space_caster and not args.r32f_caster_pass:
@@ -1614,6 +1639,8 @@ def main() -> int:
         f"{args.native_shadow_request!r}, {args.native_shadow_binding_probe!r}, "
         f"{args.native_shadow_receiver!r}"
     )
+    if args.r32f_caster_node_swap:
+        probe_call += f", {args.r32f_caster_node_swap!r}"
     if camera_config is not None or args.width != 640 or args.height != 480:
         probe_call += (
             f", camera_config={camera_literal}, capture_width={args.width!r}, "

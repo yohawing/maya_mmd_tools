@@ -491,6 +491,30 @@ class _CasterCmds:
         return []
 
 
+class _CasterMaterialSwapCmds:
+    """Minimal cmds double for the opt-in dx11Shader technique swap."""
+
+    def __init__(self):
+        self.values = {
+            "Caster.shader": "F:/original/MMDShader.fx",
+            "Caster.technique": "Main",
+        }
+        self.set_calls = []
+
+    def nodeType(self, node):
+        return "dx11Shader" if node == "Caster" else "lambert"
+
+    def attributeQuery(self, attribute, node, exists):
+        return exists and node == "Caster" and attribute in {"shader", "technique"}
+
+    def getAttr(self, plug):
+        return self.values[plug]
+
+    def setAttr(self, plug, value, type=None):
+        self.set_calls.append((plug, value, type))
+        self.values[plug] = value
+
+
 def _import_with_stub():
     """Import render_override against subclassable local Maya API stubs."""
     original_omr = sys.modules.get("maya.api.OpenMayaRender")
@@ -1057,6 +1081,30 @@ class RenderOverrideLifecycleTest(unittest.TestCase):
         self.assertEqual(released["renderItemShaderRestoreCount"], 1)
         self.assertTrue(released["releaseSucceeded"])
         self.assertEqual(shader_manager.released, [shader])
+
+    def test_r32f_caster_material_swap_restores_dx11shader_attributes(self):
+        commands = _CasterMaterialSwapCmds()
+        maya_cmds = types.ModuleType("maya.cmds")
+        for name in ("nodeType", "attributeQuery", "getAttr", "setAttr"):
+            setattr(maya_cmds, name, getattr(commands, name))
+        maya_package = sys.modules.get("maya") or types.ModuleType("maya")
+        with mock.patch.object(maya_package, "cmds", maya_cmds, create=True), mock.patch.dict(
+            sys.modules, {"maya": maya_package, "maya.cmds": maya_cmds}
+        ):
+            swap = render_override.R32FCasterMaterialSwap()
+
+            swapped = swap.swap(("Caster", "notDx11"))
+
+            self.assertEqual(swapped["status"], "swapped")
+            self.assertEqual(swapped["swapCount"], 1)
+            self.assertEqual(commands.values["Caster.technique"], "MmdToolsR32FCasterNodeSwap")
+
+            restored = swap.restore()
+
+        self.assertEqual(restored["status"], "restored")
+        self.assertEqual(restored["restoreCount"], 1)
+        self.assertEqual(commands.values["Caster.shader"], "F:/original/MMDShader.fx")
+        self.assertEqual(commands.values["Caster.technique"], "Main")
 
     def test_r32f_caster_shader_pass_retain_on_release_failure(self):
         class FailingShaderManager(_MShaderManager):
