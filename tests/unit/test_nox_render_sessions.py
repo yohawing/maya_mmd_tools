@@ -115,6 +115,7 @@ class NoxRenderSessionsTest(unittest.TestCase):
                 "--r32f-binding-probe",
                 "--r32f-caster-pass",
                 "--r32f-receiver-probe",
+                "--r32f-light-space-caster",
                 "--model",
                 "F:/fixtures/self-shadow.pmx",
             ]
@@ -133,6 +134,7 @@ class NoxRenderSessionsTest(unittest.TestCase):
         self.assertIn("--r32f-binding-probe", args)
         self.assertIn("--r32f-caster-pass", args)
         self.assertIn("--r32f-receiver-probe", args)
+        self.assertIn("--r32f-light-space-caster", args)
         self.assertIn("--model", args)
         self.assertEqual(args[args.index("--model") + 1], "F:/fixtures/self-shadow.pmx")
         self.assertTrue(kwargs["external"])
@@ -172,6 +174,17 @@ class NoxRenderSessionsTest(unittest.TestCase):
 
     def test_render_override_e2e_rejects_receiver_probe_without_caster_pass(self):
         session = _FakeSession(["--r32f-receiver-probe"])
+        with self.assertRaises(AssertionError):
+            run_render_override_e2e(
+                session,
+                posargs=session.posargs,
+                option=_option,
+                default_maya_version="2026",
+                root=Path("F:/repo"),
+            )
+
+    def test_render_override_e2e_rejects_light_space_caster_without_caster_pass(self):
+        session = _FakeSession(["--r32f-light-space-caster"])
         with self.assertRaises(AssertionError):
             run_render_override_e2e(
                 session,

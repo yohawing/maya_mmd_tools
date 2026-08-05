@@ -258,6 +258,59 @@ def _validate_r32f_caster_pass(caster_pass: object) -> None:
         )
 
 
+def _validate_light_space_camera(camera: object) -> None:
+    """Require a real directional-light camera lifecycle without parity claims."""
+    required = {
+        "enabled",
+        "status",
+        "reason",
+        "source",
+        "directionalLight",
+        "cameraTransform",
+        "cameraShape",
+        "cameraPath",
+        "roots",
+        "boundsSource",
+        "bounds",
+        "center",
+        "forward",
+        "rotation",
+        "distance",
+        "orthographicWidth",
+        "nearClip",
+        "farClip",
+        "createAttemptCount",
+        "createSucceeded",
+        "releaseAttemptCount",
+        "releaseSucceeded",
+    }
+    if not isinstance(camera, dict) or not required.issubset(camera):
+        raise RuntimeError(f"light-space camera diagnostic is missing: {camera!r}")
+    if camera["source"] != "directional-light":
+        raise RuntimeError(f"light-space camera has an invalid source: {camera!r}")
+    bounds = camera["bounds"]
+    if (
+        camera["status"] != "released"
+        or camera["createAttemptCount"] < 1
+        or camera["createSucceeded"] is not True
+        or camera["releaseAttemptCount"] < 1
+        or camera["releaseSucceeded"] is not True
+        or not isinstance(camera["directionalLight"], str)
+        or not camera["directionalLight"]
+        or not isinstance(camera["cameraPath"], str)
+        or not camera["cameraPath"]
+        or not isinstance(bounds, dict)
+        or not isinstance(bounds.get("min"), list)
+        or not isinstance(bounds.get("max"), list)
+        or len(bounds["min"]) != 3
+        or len(bounds["max"]) != 3
+    ):
+        raise RuntimeError(
+            "light-space camera did not complete directional-light camera lifecycle: "
+            f"{camera!r}"
+        )
+
+
 def _validate_r32f_receiver_probe(receiver_probe: object) -> None:
     """Require a successful quad bind/draw/readback without self-shadow claims."""
     required = {
@@ -351,6 +404,7 @@ def run_probe(
     r32f_binding_probe: bool = False,
     r32f_caster_pass: bool = False,
     r32f_receiver_probe: bool = False,
+    r32f_light_space_caster: bool = False,
 ) -> None:
     """Execute the R1 lifecycle and optional R2 target probe in live Maya.
 
@@ -364,7 +418,9 @@ def run_probe(
     shader, still without claiming receiver or self-shadow parity.  The
     explicit ``r32f_receiver_probe`` option samples that target with a
     separate ``MQuadRender`` output; it is a readback diagnostic, not MMD
-    receiver composition.
+    receiver composition.  The explicit ``r32f_light_space_caster`` option
+    gives the caster operation a temporary orthographic camera aligned to the
+    first directional light; it does not claim a complete shadow projection.
     """
     import os
 
@@ -400,6 +456,9 @@ def run_probe(
         )
         os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_RECEIVER_PROBE"] = (
             "1" if r32f_receiver_probe else "0"
+        )
+        os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_LIGHT_SPACE"] = (
+            "1" if r32f_light_space_caster else "0"
         )
         cmds.file(new=True, force=True)
         previous_renderer_by_panel = _renderer_by_panel(cmds)
@@ -546,6 +605,10 @@ def run_probe(
             if r32f_caster_pass:
                 _validate_r32f_caster_pass(
                     (target_report or {}).get("r32fCasterPass")
+                )
+            if r32f_light_space_caster:
+                _validate_light_space_camera(
+                    (target_report or {}).get("lightSpaceCamera")
                 )
             if r32f_receiver_probe:
                 _validate_r32f_receiver_probe(
@@ -710,6 +773,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--r32f-light-space-caster",
+        action="store_true",
+        help=(
+            "Give the caster operation a temporary orthographic camera aligned "
+            "to a directional light; does not claim shadow parity."
+        ),
+    )
+    parser.add_argument(
         "--model",
         type=Path,
         default=None,
@@ -726,6 +797,8 @@ def main() -> int:
         parser.error("--r32f-caster-pass requires --target-probe")
     if args.r32f_receiver_probe and not args.r32f_caster_pass:
         parser.error("--r32f-receiver-probe requires --r32f-caster-pass")
+    if args.r32f_light_space_caster and not args.r32f_caster_pass:
+        parser.error("--r32f-light-space-caster requires --r32f-caster-pass")
 
     out_dir = args.out_dir.resolve()
     log_path = out_dir / f"render_override_maya{args.maya}.log"
@@ -747,7 +820,7 @@ def main() -> int:
     )
     command = (
         "from tools.render_override_e2e import run_probe\n"
-        f"run_probe(r'{log_path.as_posix()}', r'{report_path.as_posix()}', r'{out_dir.as_posix()}', {expected_draw_api_name!r}, {args.target_probe!r}, {model_literal}, {args.r32f_binding_probe!r}, {args.r32f_caster_pass!r}, {args.r32f_receiver_probe!r})\n"
+        f"run_probe(r'{log_path.as_posix()}', r'{report_path.as_posix()}', r'{out_dir.as_posix()}', {expected_draw_api_name!r}, {args.target_probe!r}, {model_literal}, {args.r32f_binding_probe!r}, {args.r32f_caster_pass!r}, {args.r32f_receiver_probe!r}, {args.r32f_light_space_caster!r})\n"
     )
     report = run_maya_e2e(
         project_root=_ROOT,

@@ -1009,6 +1009,7 @@ def run_render_override_e2e(
     r32f_binding_probe = "--r32f-binding-probe" in posargs
     r32f_caster_pass = "--r32f-caster-pass" in posargs
     r32f_receiver_probe = "--r32f-receiver-probe" in posargs
+    r32f_light_space_caster = "--r32f-light-space-caster" in posargs
     model = option(posargs, "--model", "")
     if vp2_device not in {"default", "dx11", "gl", "glcore"}:
         session.error(f"Unsupported --vp2-device: {vp2_device}")
@@ -1020,6 +1021,8 @@ def run_render_override_e2e(
         session.error("--r32f-caster-pass requires --target-probe")
     if r32f_receiver_probe and not r32f_caster_pass:
         session.error("--r32f-receiver-probe requires --r32f-caster-pass")
+    if r32f_light_space_caster and not r32f_caster_pass:
+        session.error("--r32f-light-space-caster requires --r32f-caster-pass")
     session.run(
         sys.executable,
         str(root / "tools" / "render_override_e2e.py"),
@@ -1036,6 +1039,7 @@ def run_render_override_e2e(
         *( ["--r32f-binding-probe"] if r32f_binding_probe else []),
         *( ["--r32f-caster-pass"] if r32f_caster_pass else []),
         *( ["--r32f-receiver-probe"] if r32f_receiver_probe else []),
+        *( ["--r32f-light-space-caster"] if r32f_light_space_caster else []),
         *(["--model", model] if model else []),
         *(["--target-probe"] if target_probe else []),
         external=True,

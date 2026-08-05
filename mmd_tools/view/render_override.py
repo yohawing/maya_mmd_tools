@@ -39,6 +39,7 @@ SHADOW_DEPTH_TARGET_NAME = "mmdToolsSelfShadowD32"
 RECEIVER_PROBE_TARGET_NAME = "mmdToolsSelfShadowReceiverProbeR32F"
 SHADOW_TARGET_SIZE = 2048
 RECEIVER_PROBE_TARGET_SIZE = 4
+LIGHT_SPACE_CAMERA_NAME = "mmdToolsR32FLightSpaceCamera"
 SELF_SHADOW_MAP_DRAW_FLAG = 0x04
 SHADOW_CLEAR_VALUE = 1.0
 SHADOW_DEPTH_CLEAR_EPSILON = 1e-6
@@ -172,6 +173,334 @@ def discover_self_shadow_caster_components(cmds_module=None) -> ShadowCasterSele
         flagged_materials=tuple(flagged_materials),
         skipped_materials=tuple(skipped_materials),
     )
+
+
+class LightSpaceCasterCamera:
+    """Own an opt-in orthographic camera aligned to a Maya directional light.
+
+    The camera is deliberately temporary and plugin-owned.  It is used only
+    by the diagnostic caster operation to remove the current model-panel
+    camera from the shadow-map experiment; it does not replace the user's
+    panel camera, create a persistent scene asset, or claim MMD self-shadow
+    parity.  MMD model-root bounds are used when available and a finite
+    origin-centred fallback keeps an empty scene deterministic.
+    """
+
+    def __init__(self, cmds_module=None, om_module=None, render_module=None):
+        self._cmds = cmds_module
+        self._om = om_module
+        self._render_module = render_module or omr
+        self._transform = None
+        self._shape = None
+        self._camera_override = None
+        self._report = self._empty_report()
+
+    @staticmethod
+    def _empty_report() -> dict:
+        """Return a stable, JSON-safe light-space camera report."""
+        return {
+            "enabled": True,
+            "status": "not-run",
+            "reason": "not-configured",
+            "source": "directional-light",
+            "directionalLight": None,
+            "cameraTransform": None,
+            "cameraShape": None,
+            "cameraPath": None,
+            "roots": [],
+            "boundsSource": None,
+            "bounds": None,
+            "center": None,
+            "forward": None,
+            "rotation": None,
+            "distance": None,
+            "orthographicWidth": None,
+            "nearClip": None,
+            "farClip": None,
+            "createAttemptCount": 0,
+            "createSucceeded": False,
+            "releaseAttemptCount": 0,
+            "releaseSucceeded": False,
+            "lastError": None,
+        }
+
+    def _modules(self):
+        """Resolve Maya command/API modules lazily for unit-test isolation."""
+        if self._cmds is None:
+            import maya.cmds as cmds
+
+            self._cmds = cmds
+        if self._om is None:
+            import maya.api.OpenMaya as om
+
+            self._om = om
+        return self._cmds, self._om
+
+    @staticmethod
+    def _as_finite_vector(values, *, fallback):
+        """Return a finite 3-vector or the supplied fallback tuple."""
+        try:
+            vector = tuple(float(value) for value in values)
+        except (TypeError, ValueError):
+            return tuple(fallback)
+        if len(vector) != 3 or not all(math.isfinite(value) for value in vector):
+            return tuple(fallback)
+        return vector
+
+    @classmethod
+    def _bounds(cls, cmds):
+        """Return finite MMD-root bounds for the temporary camera."""
+        roots = []
+        boxes = []
+        for node in cmds.ls(type="transform", long=True) or []:
+            leaf_name = node.rsplit("|", 1)[-1]
+            if not leaf_name.endswith(SCENE_ROOT_SUFFIX):
+                continue
+            try:
+                has_model_attribute = any(
+                    cmds.attributeQuery(attribute, node=node, exists=True)
+                    for attribute in (ATTR_MMD_MODEL_NAME, ATTR_MMD_MODEL_NAME_EN)
+                )
+            except Exception:
+                has_model_attribute = False
+            if not has_model_attribute:
+                continue
+            try:
+                box = tuple(float(value) for value in cmds.exactWorldBoundingBox(
+                    node, ignoreInvisible=True
+                ))
+            except (TypeError, ValueError, RuntimeError):
+                continue
+            if len(box) != 6 or not all(math.isfinite(value) for value in box):
+                continue
+            minimum = box[:3]
+            maximum = box[3:]
+            if any(low > high for low, high in zip(minimum, maximum)):
+                continue
+            roots.append(node)
+            boxes.append(box)
+
+        if boxes:
+            minimum = tuple(min(box[index] for box in boxes) for index in range(3))
+            maximum = tuple(max(box[index + 3] for box in boxes) for index in range(3))
+            return (
+                tuple(roots),
+                "mmd-root-bounds",
+                {"min": list(minimum), "max": list(maximum)},
+            )
+
+        return (
+            tuple(roots),
+            "fallback-origin",
+            {"min": [-5.0, -5.0, -5.0], "max": [5.0, 5.0, 5.0]},
+        )
+
+    @staticmethod
+    def _camera_path_name(camera_path) -> str:
+        """Return a stable path string from an MDagPath-like object."""
+        full_path_name = getattr(camera_path, "fullPathName", None)
+        if callable(full_path_name):
+            return str(full_path_name())
+        return str(camera_path)
+
+    def configure(self) -> dict:
+        """Create and configure the temporary light-space camera."""
+        previous_release = self.release()
+        if self.has_owned_camera():
+            self._report.update(
+                status="unsupported",
+                reason="previous-camera-release-failed",
+                createSucceeded=False,
+                lastError=previous_release.get("lastError"),
+            )
+            return self.report()
+
+        report = self._report
+        report.update(
+            status="not-run",
+            reason="not-configured",
+            createSucceeded=False,
+            releaseSucceeded=False,
+            lastError=None,
+        )
+        report["createAttemptCount"] += 1
+
+        try:
+            cmds, om = self._modules()
+            directional_shapes = cmds.ls(type="directionalLight", long=True) or []
+            light_transform = None
+            for candidate in directional_shapes:
+                parents = cmds.listRelatives(candidate, parent=True, fullPath=True) or []
+                if parents:
+                    light_transform = parents[0]
+                    break
+            if light_transform is None:
+                report.update(
+                    status="unsupported",
+                    reason="no-directional-light",
+                    lastError="No directionalLight shape with a parent transform was found",
+                )
+                return self.report()
+
+            roots, bounds_source, bounds = self._bounds(cmds)
+            minimum = tuple(bounds["min"])
+            maximum = tuple(bounds["max"])
+            center = tuple((low + high) * 0.5 for low, high in zip(minimum, maximum))
+            span = max(maximum[index] - minimum[index] for index in range(3))
+            if not math.isfinite(span) or span <= 0.0:
+                span = 10.0
+            distance = max(span * 4.0, 10.0)
+            orthographic_width = max(span * 2.4, 1.0)
+            near_clip = 0.01
+            far_clip = max(distance + span * 4.0, near_clip + 1.0)
+
+            world_matrix = tuple(
+                float(value)
+                for value in cmds.xform(
+                    light_transform, query=True, worldSpace=True, matrix=True
+                )
+            )
+            if len(world_matrix) != 16 or not all(
+                math.isfinite(value) for value in world_matrix
+            ):
+                raise RuntimeError("directional light world matrix is not finite")
+            forward = self._as_finite_vector(
+                (-world_matrix[8], -world_matrix[9], -world_matrix[10]),
+                fallback=(0.0, 0.0, -1.0),
+            )
+            forward_length = math.sqrt(sum(value * value for value in forward))
+            if not math.isfinite(forward_length) or forward_length <= 1e-8:
+                raise RuntimeError("directional light has a zero-length forward axis")
+            forward = tuple(value / forward_length for value in forward)
+            rotation = self._as_finite_vector(
+                cmds.xform(light_transform, query=True, worldSpace=True, rotation=True),
+                fallback=(0.0, 0.0, 0.0),
+            )
+            position = tuple(
+                center[index] - forward[index] * distance for index in range(3)
+            )
+
+            if cmds.ls(LIGHT_SPACE_CAMERA_NAME, long=True):
+                raise RuntimeError(
+                    f"plugin-owned camera name is already in use: {LIGHT_SPACE_CAMERA_NAME}"
+                )
+            camera = cmds.camera(
+                name=LIGHT_SPACE_CAMERA_NAME,
+                orthographic=True,
+                orthographicWidth=orthographic_width,
+                nearClipPlane=near_clip,
+                farClipPlane=far_clip,
+            )
+            if not isinstance(camera, (tuple, list)) or len(camera) < 2:
+                raise RuntimeError(f"Maya camera command returned an invalid value: {camera!r}")
+            self._transform, self._shape = str(camera[0]), str(camera[1])
+            cmds.xform(
+                self._transform, worldSpace=True, translation=position, rotation=rotation
+            )
+            try:
+                cmds.setAttr(f"{self._transform}.visibility", False)
+            except Exception:
+                # Visibility is cosmetic; a camera path remains usable when
+                # Maya rejects this optional attribute in a test double.
+                pass
+
+            selection = om.MSelectionList()
+            selection.add(self._shape)
+            camera_path = selection.getDagPath(0)
+            camera_override_type = getattr(self._render_module, "MCameraOverride", None)
+            if camera_override_type is None:
+                raise RuntimeError("Maya MCameraOverride API is unavailable")
+            camera_override = camera_override_type()
+            camera_override.mCameraPath = camera_path
+            camera_override.mUseNearClippingPlane = True
+            camera_override.mNearClippingPlane = near_clip
+            camera_override.mUseFarClippingPlane = True
+            camera_override.mFarClippingPlane = far_clip
+            self._camera_override = camera_override
+            report.update(
+                status="configured",
+                reason="light-space-camera-configured",
+                directionalLight=str(light_transform),
+                cameraTransform=self._transform,
+                cameraShape=self._shape,
+                cameraPath=self._camera_path_name(camera_path),
+                roots=list(roots),
+                boundsSource=bounds_source,
+                bounds=bounds,
+                center=list(center),
+                forward=list(forward),
+                rotation=list(rotation),
+                distance=distance,
+                orthographicWidth=orthographic_width,
+                nearClip=near_clip,
+                farClip=far_clip,
+                createSucceeded=True,
+            )
+        except Exception as exc:
+            self._delete_owned_camera()
+            report.update(
+                status="unsupported",
+                reason="camera-configuration-failed",
+                createSucceeded=False,
+                lastError=str(exc),
+            )
+        return self.report()
+
+    def _delete_owned_camera(self) -> None:
+        """Delete only the camera transform created by this instance."""
+        if self._transform is None:
+            self._shape = None
+            self._camera_override = None
+            return
+        try:
+            cmds, _ = self._modules()
+            if cmds.objExists(self._transform):
+                cmds.delete(self._transform)
+        except Exception:
+            return
+        self._transform = None
+        self._shape = None
+        self._camera_override = None
+
+    def release(self) -> dict:
+        """Delete the temporary camera while retaining it on failure."""
+        if self._transform is None:
+            return self.report()
+        self._report["releaseAttemptCount"] += 1
+        try:
+            cmds, _ = self._modules()
+            if cmds.objExists(self._transform):
+                cmds.delete(self._transform)
+        except Exception as exc:
+            self._report.update(
+                status="unsupported",
+                reason="camera-release-failed",
+                releaseSucceeded=False,
+                lastError=str(exc),
+            )
+            return self.report()
+        self._transform = None
+        self._shape = None
+        self._camera_override = None
+        self._report.update(
+            status="released",
+            reason="camera-released",
+            releaseSucceeded=True,
+            lastError=None,
+        )
+        return self.report()
+
+    def camera_override(self):
+        """Return the configured MCameraOverride, or ``None`` when unavailable."""
+        return self._camera_override
+
+    def has_owned_camera(self) -> bool:
+        """Return whether cleanup must retain the temporary camera for retry."""
+        return self._transform is not None
+
+    def report(self) -> dict:
+        """Return JSON-safe camera configuration/lifecycle diagnostics."""
+        return dict(self._report)
 
 
 class ShadowTargetResources:
@@ -1266,6 +1595,7 @@ class ShadowTargetClearRender(omr.MSceneRender):
         name: str = SHADOW_TARGET_OPERATION_NAME,
         selection_provider=None,
         caster_shader_pass: Optional[R32FCasterShaderPass] = None,
+        camera_provider: Optional[LightSpaceCasterCamera] = None,
     ):
         super().__init__(name)
         self._resources = resources
@@ -1274,6 +1604,7 @@ class ShadowTargetClearRender(omr.MSceneRender):
             selection_provider or discover_self_shadow_caster_components
         )
         self._caster_shader_pass = caster_shader_pass
+        self._camera_provider = camera_provider
         self._selection_report = self._empty_selection_report(
             status="not-run", reason="not-evaluated"
         )
@@ -1300,6 +1631,12 @@ class ShadowTargetClearRender(omr.MSceneRender):
         if self._caster_shader_pass is None or not self._targets:
             return None
         return self._caster_shader_pass.shader_instance()
+
+    def cameraOverride(self):
+        """Use the optional plugin-owned light-space camera for caster draws."""
+        if self._camera_provider is None:
+            return None
+        return self._camera_provider.camera_override()
 
     def renderFilterOverride(self):
         """Restrict this operation to shaded geometry from the caster set."""
@@ -1448,6 +1785,12 @@ class ShadowTargetClearRender(omr.MSceneRender):
             return None
         return self._caster_shader_pass.report()
 
+    def camera_report(self) -> Optional[dict]:
+        """Return optional light-space camera lifecycle diagnostics."""
+        if self._camera_provider is None:
+            return None
+        return self._camera_provider.report()
+
     def postSceneRender(self, context) -> None:
         """Capture occupancy once after the color pass while targets are valid."""
         if context is None:
@@ -1476,6 +1819,7 @@ class PassthroughSceneRender(omr.MSceneRender):
 
     def __init__(self, name: str = SCENE_OPERATION_NAME):
         super().__init__(name)
+        self._panel_camera_override = None
 
     def configure_panel_background(self, panel_name: str) -> None:
         """Mirror a model panel's VP2 background in this scene operation.
@@ -1487,6 +1831,14 @@ class PassthroughSceneRender(omr.MSceneRender):
         import maya.api.OpenMayaUI as omui
 
         view = omui.M3dView.getM3dViewFromModelPanel(panel_name)
+        try:
+            camera_override = omr.MCameraOverride()
+            camera_override.mCameraPath = view.getCamera()
+            self._panel_camera_override = camera_override
+        except Exception:
+            # Background mirroring remains useful on API variants without a
+            # camera-path override; Maya will use the panel camera normally.
+            self._panel_camera_override = None
         clear = self.clearOperation()
         if view.isBackgroundGradient():
             clear.setClearColor(view.backgroundColorTop())
@@ -1495,6 +1847,10 @@ class PassthroughSceneRender(omr.MSceneRender):
         else:
             clear.setClearColor(view.backgroundColor())
             clear.setClearGradient(False)
+
+    def cameraOverride(self):
+        """Restore the original model-panel camera after diagnostic passes."""
+        return self._panel_camera_override
 
 
 class PassthroughHUDRender(omr.MHUDRender):
@@ -1539,11 +1895,20 @@ class PassthroughRenderOverride(omr.MRenderOverride):
             )
             else None
         )
+        self._light_space_camera = (
+            LightSpaceCasterCamera()
+            if self._r32f_caster_shader_pass is not None
+            and _enabled_environment_flag(
+                "MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_LIGHT_SPACE"
+            )
+            else None
+        )
         self._shadow_target_operation = (
             ShadowTargetClearRender(
                 self._target_probe,
                 selection_provider=selection_provider,
                 caster_shader_pass=self._r32f_caster_shader_pass,
+                camera_provider=self._light_space_camera,
             )
             if self._target_probe is not None
             else None
@@ -1638,36 +2003,55 @@ class PassthroughRenderOverride(omr.MRenderOverride):
             self._shadow_target_operation.set_targets(None)
         if self._target_probe is not None:
             self._target_probe.release()
+        if self._light_space_camera is not None:
+            self._light_space_camera.release()
+            if self._light_space_camera.has_owned_camera():
+                self._current_operation = -1
+                self._cleanup_count += 1
+                raise RuntimeError("light-space camera release failed; camera retained")
         self._current_operation = -1
         self._cleanup_count += 1
 
     def setup(self, destination: str) -> None:
         """Prepare the scene operation for the viewport being rendered."""
         if self._target_probe is not None and self._shadow_target_operation is not None:
-            targets = self._target_probe.acquire()
-            self._shadow_target_operation.set_targets(targets)
-            if self._r32f_caster_shader_pass is not None:
-                # The caster shader is created only after both plugin-owned
-                # targets exist, and it is released before either target.
-                self._r32f_caster_shader_pass.create(targets)
-            if self._receiver_probe is not None and self._receiver_probe_resources is not None:
-                try:
+            targets = None
+            try:
+                targets = self._target_probe.acquire()
+                self._shadow_target_operation.set_targets(targets)
+                if self._light_space_camera is not None:
+                    camera_report = self._light_space_camera.configure()
+                    if camera_report.get("status") != "configured":
+                        raise RuntimeError(
+                            "light-space caster camera is unavailable: "
+                            f"{camera_report!r}"
+                        )
+                if self._r32f_caster_shader_pass is not None:
+                    # The caster shader is created only after both plugin-owned
+                    # targets exist, and it is released before either target.
+                    self._r32f_caster_shader_pass.create(targets)
+                if self._receiver_probe is not None and self._receiver_probe_resources is not None:
                     self._receiver_probe_resources.acquire()
                     self._receiver_probe.create(targets[0] if targets else None)
-                except Exception:
+                if self._r32f_binding_probe is not None:
+                    # Bind only the plugin-owned R32F target.  This setup probe is
+                    # intentionally disconnected from imported shaders and draw
+                    # operations, so it cannot alter ordinary viewport output.
+                    self._r32f_binding_probe.bind(targets[0] if targets else None)
+            except Exception:
+                if self._receiver_probe is not None and self._receiver_probe_resources is not None:
                     self._receiver_probe.release_shader()
                     self._receiver_probe_resources.release()
-                    if self._shadow_target_operation is not None:
-                        self._shadow_target_operation.release_shader()
-                        self._shadow_target_operation.set_targets(None)
-                    if self._target_probe is not None:
-                        self._target_probe.release()
-                    raise
-            if self._r32f_binding_probe is not None:
-                # Bind only the plugin-owned R32F target.  This setup probe is
-                # intentionally disconnected from imported shaders and draw
-                # operations, so it cannot alter ordinary viewport output.
-                self._r32f_binding_probe.bind(targets[0] if targets else None)
+                if self._shadow_target_operation is not None:
+                    self._shadow_target_operation.release_shader()
+                    self._shadow_target_operation.set_targets(None)
+                if self._r32f_binding_probe is not None:
+                    self._r32f_binding_probe.release()
+                if self._target_probe is not None:
+                    self._target_probe.release()
+                if self._light_space_camera is not None:
+                    self._light_space_camera.release()
+                raise
         self._scene_operation.configure_panel_background(destination)
         self._current_operation = -1
 
@@ -1681,6 +2065,9 @@ class PassthroughRenderOverride(omr.MRenderOverride):
             caster_report = self._shadow_target_operation.caster_shader_report()
             if caster_report is not None:
                 report["r32fCasterPass"] = caster_report
+            camera_report = self._shadow_target_operation.camera_report()
+            if camera_report is not None:
+                report["lightSpaceCamera"] = camera_report
         if self._receiver_probe is not None:
             report["r32fReceiverProbe"] = self._receiver_probe.report()
         if self._r32f_binding_probe is not None:
@@ -1778,6 +2165,7 @@ __all__ = [
     "R32FCasterShaderPass",
     "R32FReceiverProbe",
     "R32FTargetBindingProbe",
+    "LightSpaceCasterCamera",
     "PassthroughRenderOverride",
     "PassthroughSceneRender",
     "RENDER_OVERRIDE_NAME",
@@ -1791,6 +2179,7 @@ __all__ = [
     "RECEIVER_PROBE_OPERATION_NAME",
     "RECEIVER_PROBE_TARGET_NAME",
     "RECEIVER_PROBE_TARGET_SIZE",
+    "LIGHT_SPACE_CAMERA_NAME",
     "SCENE_OPERATION_NAME",
     "SHADOW_COLOR_TARGET_NAME",
     "SHADOW_DEPTH_TARGET_NAME",

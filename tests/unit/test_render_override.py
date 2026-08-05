@@ -222,6 +222,82 @@ class _MSelectionList:
         self.items.append(component)
 
 
+class _CameraDagPath:
+    def __init__(self, name):
+        self._name = name
+
+    def fullPathName(self):
+        return self._name
+
+
+class _CameraSelectionList(_MSelectionList):
+    def getDagPath(self, index):
+        return _CameraDagPath(self.items[index])
+
+
+class _CameraOverride:
+    def __init__(self):
+        self.mCameraPath = None
+        self.mUseNearClippingPlane = False
+        self.mNearClippingPlane = None
+        self.mUseFarClippingPlane = False
+        self.mFarClippingPlane = None
+
+
+class _CameraRenderModule:
+    MCameraOverride = _CameraOverride
+
+
+class _LightSpaceCmds:
+    def __init__(self, *, directional=True):
+        self.directional = directional
+        self.deleted = []
+        self.transforms = []
+
+    def ls(self, *names, **kwargs):
+        if names:
+            return []
+        if kwargs.get("type") == "directionalLight":
+            return ["|renderOverrideParityLight|renderOverrideParityLightShape"] if self.directional else []
+        if kwargs.get("type") == "transform":
+            return ["|Mmd_root"]
+        return []
+
+    def listRelatives(self, node, **kwargs):
+        if node.endswith("LightShape"):
+            return ["|renderOverrideParityLight"]
+        return []
+
+    def attributeQuery(self, attribute, *, node, exists):
+        return node == "|Mmd_root" and attribute == render_override.ATTR_MMD_MODEL_NAME
+
+    def exactWorldBoundingBox(self, _node, **kwargs):
+        return [-1.0, 0.0, -2.0, 3.0, 4.0, 2.0]
+
+    def xform(self, node, **kwargs):
+        if kwargs.get("matrix"):
+            return [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+        if kwargs.get("rotation") is True:
+            return [-45.0, -30.0, 0.0]
+        self.transforms.append((node, kwargs))
+        return None
+
+    def camera(self, **kwargs):
+        return (
+            "|mmdToolsR32FLightSpaceCamera",
+            "|mmdToolsR32FLightSpaceCamera|mmdToolsR32FLightSpaceCameraShape",
+        )
+
+    def setAttr(self, *_args):
+        return None
+
+    def objExists(self, node):
+        return node not in self.deleted
+
+    def delete(self, node):
+        self.deleted.append(node)
+
+
 class _MRenderOverride:
     def __init__(self, name):
         self._name = name
@@ -409,6 +485,48 @@ class RenderOverrideLifecycleTest(unittest.TestCase):
         self.assertIsNone(override.renderOperation())
         self.assertTrue(override.startOperationIterator())
         self.assertEqual(override.renderOperation().operationType(), 1)
+
+    def test_light_space_camera_aligns_to_directional_light_and_releases_owned_nodes(self):
+        cmds = _LightSpaceCmds()
+        api = types.SimpleNamespace(MSelectionList=_CameraSelectionList)
+        camera = render_override.LightSpaceCasterCamera(
+            cmds_module=cmds,
+            om_module=api,
+            render_module=_CameraRenderModule,
+        )
+
+        configured = camera.configure()
+
+        self.assertEqual(configured["status"], "configured")
+        self.assertTrue(configured["createSucceeded"])
+        self.assertEqual(configured["boundsSource"], "mmd-root-bounds")
+        self.assertEqual(configured["directionalLight"], "|renderOverrideParityLight")
+        self.assertEqual(
+            camera.camera_override().mCameraPath.fullPathName(),
+            "|mmdToolsR32FLightSpaceCamera|mmdToolsR32FLightSpaceCameraShape",
+        )
+        self.assertTrue(camera.camera_override().mUseNearClippingPlane)
+        self.assertTrue(camera.camera_override().mUseFarClippingPlane)
+
+        released = camera.release()
+
+        self.assertEqual(released["status"], "released")
+        self.assertTrue(released["releaseSucceeded"])
+        self.assertFalse(camera.has_owned_camera())
+        self.assertEqual(cmds.deleted, ["|mmdToolsR32FLightSpaceCamera"])
+
+    def test_light_space_camera_fails_closed_without_directional_light(self):
+        camera = render_override.LightSpaceCasterCamera(
+            cmds_module=_LightSpaceCmds(directional=False),
+            om_module=types.SimpleNamespace(MSelectionList=_CameraSelectionList),
+            render_module=_CameraRenderModule,
+        )
+
+        report = camera.configure()
+
+        self.assertEqual(report["status"], "unsupported")
+        self.assertEqual(report["reason"], "no-directional-light")
+        self.assertFalse(camera.has_owned_camera())
 
     def test_registration_is_idempotent_and_owned(self):
         first = render_override.initializePlugin(object())
