@@ -3,8 +3,9 @@
 // This effect intentionally declares the native shadow texture and matrix as
 // plain parameters.  Maya rejects a manual setParameter call on parameters
 // carrying SHADOWMAP/SHADOWMAPMATRIX semantics, while the render override has
-// already obtained those resources from the active-light API.  The pass is
-// untextured by design; texture/toon parity remains a separate Oracle slice.
+// already obtained those resources from the active-light API.  The pass mirrors
+// the production untextured MMD main path; texture/toon resource handoff remains
+// a separate Oracle slice.
 
 float4x4 World : World<string UIWidget = "None";>;
 float4x4 WorldInverseTranspose : WorldInverseTranspose<string UIWidget = "None";>;
@@ -23,6 +24,14 @@ float ShadowStrength = 1.0f;
 float ShadowBias = 0.01f;
 float3 FixedLightDirection = {0.5f, -1.0f, 0.5f};
 float3 FixedLightColor = {1.0f, 1.0f, 1.0f};
+
+float3 SrgbToLinear(float3 color)
+{
+    color = max(color, 0.0f);
+    float3 low = color / 12.92f;
+    float3 high = pow((color + 0.055f) / 1.055f, 2.4f);
+    return lerp(high, low, step(color, 0.04045f));
+}
 
 // These are bound explicitly by NativeShadowReceiverRender.  Do not add Maya
 // shadow semantics here: the native resource is already selected in Python.
@@ -82,18 +91,23 @@ float ShadowFactor(float4 shadowCoord)
 float4 MainPS(VS_OUTPUT input) : SV_TARGET
 {
     float3 normal = normalize(input.worldNormal);
+    float3 viewDirection = normalize(ViewPosition - input.worldPosition);
     float3 lightDirection = -normalize(FixedLightDirection);
     float3 lightColor = FixedLightColor;
     float shadow = ShadowFactor(input.shadowCoord);
-    float halfLambert = dot(normal, lightDirection) * 0.5f + 0.5f;
-    float3 baseColor = DiffuseColorRGB * DiffuseColorA;
-    float3 diffuse = lightColor * saturate(halfLambert) * shadow * baseColor;
-    float3 ambient = AmbientColor * baseColor;
-    float3 viewDirection = normalize(ViewPosition - input.worldPosition);
-    float3 halfVector = normalize(lightDirection + viewDirection);
-    float specularFactor = pow(saturate(dot(normal, halfVector)), max(Shininess, 1.0f));
-    float3 specular = SpecularColor * specularFactor * lightColor * shadow;
-    return float4(diffuse + ambient + specular, Opacity * DiffuseColorA);
+    float3 materialBase = saturate(DiffuseColorRGB * lightColor + AmbientColor);
+    float3 diffuse = materialBase * shadow;
+    float3 specular = float3(0.0f, 0.0f, 0.0f);
+    if (Shininess > 0.0f)
+    {
+        float3 halfVector = normalize(lightDirection + viewDirection);
+        float specularFactor = pow(saturate(dot(normal, halfVector)), Shininess);
+        specular = SpecularColor * specularFactor * lightColor * shadow;
+    }
+    float3 litColor = diffuse + specular;
+    float opacity = Opacity * DiffuseColorA;
+    clip(opacity - 0.003f);
+    return float4(SrgbToLinear(litColor), opacity);
 }
 
 RasterizerState CullNone
