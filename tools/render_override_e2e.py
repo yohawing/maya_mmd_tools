@@ -154,6 +154,122 @@ def _configure_camera(cmds, panels: list[str], camera_config: dict) -> dict[str,
     }
 
 
+_ORACLE_PANEL_FLAGS = (
+    "displayAppearance",
+    "displayTextures",
+    "wireframeOnShaded",
+    "useDefaultMaterial",
+    "selectionHiliteDisplay",
+    "grid",
+    "headsUpDisplay",
+    "cameras",
+    "lights",
+    "locators",
+    "joints",
+    "ikHandles",
+    "deformers",
+    "dynamics",
+    "nurbsCurves",
+)
+
+
+def _prepare_oracle_capture_environment(cmds, panels: list[str]) -> dict[str, object]:
+    """Match the production visual-regression viewport conditions and report them."""
+    previous_panels: dict[str, dict[str, object]] = {}
+    for panel in panels:
+        state: dict[str, object] = {}
+        for flag in _ORACLE_PANEL_FLAGS:
+            try:
+                state[flag] = cmds.modelEditor(panel, query=True, **{flag: True})
+            except Exception:
+                continue
+        previous_panels[panel] = state
+    panel_edits = {
+        "displayAppearance": "smoothShaded",
+        "displayTextures": True,
+        "wireframeOnShaded": False,
+        "useDefaultMaterial": False,
+        "selectionHiliteDisplay": False,
+        "grid": False,
+        "headsUpDisplay": False,
+        "cameras": False,
+        "lights": False,
+        "locators": False,
+        "joints": False,
+        "ikHandles": False,
+        "deformers": False,
+        "dynamics": False,
+        "nurbsCurves": False,
+    }
+    for panel in panels:
+        try:
+            cmds.modelEditor(panel, edit=True, **panel_edits)
+        except Exception:
+            # Keep the diagnostic gate alive on Maya versions that omit one of
+            # the optional panel flags; the report still records active values.
+            pass
+
+    previous_color_management: dict[str, object] = {}
+    color_management: dict[str, object] = {}
+    for query in ("cmEnabled", "viewTransformName", "displayName", "renderingSpaceName"):
+        try:
+            previous_color_management[query] = cmds.colorManagementPrefs(
+                query=True, **{query: True}
+            )
+        except Exception as exc:
+            previous_color_management[query] = f"ERR: {exc}"
+    for edit, value in (
+        ("cmEnabled", True),
+        ("renderingSpaceName", "scene-linear Rec.709-sRGB"),
+        ("viewTransformName", "Un-tone-mapped (sRGB)"),
+        ("displayName", "sRGB"),
+    ):
+        try:
+            cmds.colorManagementPrefs(edit=True, **{edit: value})
+        except Exception as exc:
+            color_management[f"{edit}Error"] = str(exc)
+    for query in ("cmEnabled", "viewTransformName", "displayName", "renderingSpaceName"):
+        try:
+            color_management[query] = cmds.colorManagementPrefs(query=True, **{query: True})
+        except Exception as exc:
+            color_management[query] = f"ERR: {exc}"
+
+    previous_background: dict[str, object] = {}
+    background: dict[str, object] = {}
+    for name in ("background", "backgroundTop", "backgroundBottom"):
+        try:
+            previous_background[name] = cmds.displayRGBColor(name, query=True)
+        except Exception as exc:
+            previous_background[name] = f"ERR: {exc}"
+        try:
+            cmds.displayRGBColor(name, 1.0, 1.0, 1.0)
+            background[name] = [1.0, 1.0, 1.0]
+        except Exception as exc:
+            background[name] = f"ERR: {exc}"
+    return {
+        "previousPanels": previous_panels,
+        "previousColorManagement": previous_color_management,
+        "previousBackground": previous_background,
+        "activeColorManagement": color_management,
+        "activeBackground": background,
+    }
+
+
+def _restore_oracle_capture_environment(cmds, state: dict[str, object]) -> None:
+    """Restore panel, color-management, and viewport-background state."""
+    existing_panels = set(cmds.getPanel(type="modelPanel") or [])
+    for panel, values in (state.get("previousPanels") or {}).items():
+        if panel in existing_panels and isinstance(values, dict) and values:
+            cmds.modelEditor(panel, edit=True, **values)
+    for name, value in (state.get("previousColorManagement") or {}).items():
+        if isinstance(value, str) and value.startswith("ERR: "):
+            continue
+        cmds.colorManagementPrefs(edit=True, **{name: value})
+    for name, value in (state.get("previousBackground") or {}).items():
+        if isinstance(value, (list, tuple)) and len(value) >= 3:
+            cmds.displayRGBColor(name, *value[:3])
+
+
 def _renderer_by_panel(cmds) -> dict[str, str]:
     """Return the renderer selection for every currently available model panel."""
     panels = cmds.getPanel(type="modelPanel") or []
@@ -761,6 +877,7 @@ def run_probe(
     previous_display_lights_by_panel = {}
     previous_shadows_by_panel = {}
     previous_camera_by_panel = {}
+    capture_environment_state = None
     plugin_name = None
     plugin_loaded = False
     try:
@@ -979,6 +1096,12 @@ def run_probe(
             raise ValueError(
                 f"capture dimensions must be positive, got {capture_width}x{capture_height}"
             )
+        capture_environment_state = _prepare_oracle_capture_environment(cmds, panels)
+        report["checks"]["captureEnvironment"] = {
+            key: value
+            for key, value in capture_environment_state.items()
+            if not key.startswith("previous")
+        }
         if camera_config is None:
             report["checks"]["camera"] = {"source": "viewFit", "camera": "persp"}
             cmds.viewFit("persp", all=True, fitFactor=0.8)
@@ -1088,6 +1211,13 @@ def run_probe(
         report["errors"].append(traceback.format_exc())
         log(f"EXCEPTION:\n{report['errors'][-1]}")
     finally:
+        try:
+            if capture_environment_state is not None:
+                _restore_oracle_capture_environment(cmds, capture_environment_state)
+                report["checks"]["captureEnvironmentRestored"] = True
+        except Exception as exc:
+            report["errors"].append(f"capture environment restore failed: {exc}")
+            report["status"] = "error"
         try:
             if previous_camera_by_panel:
                 existing_panels = set(cmds.getPanel(type="modelPanel") or [])
