@@ -5,6 +5,8 @@ imports selected GoldenOracle render-manifest fixtures with hardware shaders
 materials, captures Viewport 2.0 PNGs, and writes report-only diagnostics.
 It refuses to reuse an already-open commandPort unless ``--attach-existing``
 is explicit, and records selected shader plug-in lifecycle state around cases.
+The opt-in ``--enable-mmd-self-shadow`` mode records Maya's native shadow
+inputs and their post-VP2 values; it is a diagnostic gate, not a parity claim.
 
 The harness intentionally copies MMDShader.fx to a unique path per run before
 assigning it to dx11Shader nodes. Maya can cache effects by .fx path inside a
@@ -118,6 +120,14 @@ def _parse_args() -> argparse.Namespace:
         "--debug-outline-sentinel",
         action="store_true",
         help="Set a vivid edge color without changing DX11 technique or EdgeSize.",
+    )
+    parser.add_argument(
+        "--enable-mmd-self-shadow",
+        action="store_true",
+        help=(
+            "Opt in to Maya native shadow inputs for MMD receivers; maps "
+            "mmd_draw_flags bit 0x08 to UseShadows and enables viewport shadows."
+        ),
     )
     parser.add_argument(
         "--hide-orig-shapes",
@@ -310,6 +320,7 @@ def _build_maya_code(
     shader_backend: str,
     display_textures: bool = True,
     debug_outline_sentinel: bool = False,
+    enable_mmd_self_shadow: bool = False,
 ) -> str:
     camera_plans = _camera_plan(cases)
     payload = {
@@ -329,6 +340,7 @@ def _build_maya_code(
         "shader_node_type": BACKEND_CONFIG[shader_backend]["node_type"],
         "shader_plugin": BACKEND_CONFIG[shader_backend]["plugin"],
         "display_textures": bool(display_textures),
+        "enable_mmd_self_shadow": bool(enable_mmd_self_shadow),
         "completion_marker": COMPLETION_MARKER,
     }
     encoded = base64.b64encode(json.dumps(payload, ensure_ascii=False).encode("utf-8")).decode("ascii")
@@ -353,6 +365,7 @@ _debug_outline_sentinel = bool(_payload["debug_outline_sentinel"])
 _hide_orig_shapes = bool(_payload["hide_orig_shapes"])
 _shader_backend = _payload["shader_backend"]
 _display_textures = bool(_payload.get("display_textures", True))
+_enable_mmd_self_shadow = bool(_payload.get("enable_mmd_self_shadow", False))
 _shader_node_type = _payload["shader_node_type"]
 _shader_plugin_name = _payload["shader_plugin"]
 _completion_marker = _payload["completion_marker"]
@@ -582,8 +595,7 @@ def _setup_panel(camera, display_textures=True):
     else:
         panels = cmds.getPanel(type="modelPanel") or []
         panel = panels[0] if panels else cmds.modelPanel()
-    cmds.modelEditor(
-        panel,
+    editor_flags = dict(
         e=True,
         rendererName="vp2Renderer",
         displayAppearance="smoothShaded",
@@ -602,6 +614,9 @@ def _setup_panel(camera, display_textures=True):
         dynamics=False,
         nurbsCurves=False,
     )
+    if _enable_mmd_self_shadow:
+        editor_flags.update(displayLights="all", shadows=True, interactiveDisableShadows=False)
+    cmds.modelEditor(panel, **editor_flags)
     cmds.lookThru(panel, camera)
     try:
         cmds.setFocus(panel)
@@ -616,7 +631,11 @@ def _panel_diag(capture_panel=None):
     items = []
     for panel in panels:
         item = {{"panel": panel, "visible": panel in visible, "focused": panel == focused, "capturePanel": panel == capture_panel}}
-        for flag in ["rendererName", "displayAppearance", "displayTextures", "wireframeOnShaded", "useDefaultMaterial", "selectionHiliteDisplay"]:
+        for flag in [
+            "rendererName", "displayAppearance", "displayTextures", "wireframeOnShaded",
+            "useDefaultMaterial", "selectionHiliteDisplay", "displayLights", "shadows",
+            "interactiveDisableShadows",
+        ]:
             try:
                 item[flag] = cmds.modelEditor(panel, q=True, **{{flag: True}})
             except Exception as exc:
@@ -681,6 +700,7 @@ def _shader_diag():
             "MmdControllerLightVector", "MmdControllerLightRgb",
             "SphereMode", "EdgeColorRGB", "EdgeSize", "DevicePixelRatio",
             "HasMainTexture", "HasSphereTexture", "HasToonTexture",
+            "UseShadows", "ShadowStrength", "ShadowBias", "Light0ShadowMap", "Light0Matrix",
             "mmd_texture_path", "mmd_sphere_path", "mmd_draw_flags",
         ]:
             if cmds.attributeQuery(attr, node=shader, exists=True):
@@ -845,6 +865,49 @@ def _apply_unique_shader_path():
             cmds.setAttr(shader + ".technique", techniques.get(shader, "MMDTechnique"), type="string")
     return shaders
 
+def _configure_mmd_self_shadow_inputs(light_controller, phase):
+    # dx11Shader effect attributes are created lazily by Maya. Keep this probe
+    # explicit and fail-closed: a missing UseShadows input is evidence that the
+    # imported node is not a shadow consumer, not a reason to mutate the shader
+    # graph or claim self-shadow parity.
+    result = {{"phase": phase, "enabled": _enable_mmd_self_shadow, "shaders": [], "lightShapes": []}}
+    if not _enable_mmd_self_shadow:
+        return result
+    for shader in cmds.ls(type=_shader_node_type) or []:
+        item = {{"shader": shader, "drawFlags": None, "requestedUseShadows": None, "actualUseShadows": None}}
+        try:
+            if cmds.attributeQuery("mmd_draw_flags", node=shader, exists=True):
+                item["drawFlags"] = int(cmds.getAttr(shader + ".mmd_draw_flags"))
+            if not cmds.attributeQuery("UseShadows", node=shader, exists=True):
+                item["reason"] = "UseShadows attribute unavailable"
+            else:
+                requested = bool((item["drawFlags"] or 0) & 0x08)
+                item["requestedUseShadows"] = requested
+                cmds.setAttr(shader + ".UseShadows", requested)
+                item["actualUseShadows"] = bool(cmds.getAttr(shader + ".UseShadows"))
+        except Exception as exc:
+            item["reason"] = str(exc)
+        result["shaders"].append(item)
+    if light_controller and cmds.objExists(light_controller):
+        light_shapes = cmds.listRelatives(light_controller, shapes=True, type="directionalLight") or []
+    else:
+        light_shapes = []
+    result["lightShapes"] = light_shapes
+    for shape in light_shapes:
+        light_item = {{"shape": shape, "requested": {{}}, "actual": {{}}, "errors": {{}}}}
+        for attr in ("useDepthMapShadows", "useRayTraceShadows"):
+            if not cmds.attributeQuery(attr, node=shape, exists=True):
+                light_item["errors"][attr] = "attribute unavailable"
+                continue
+            try:
+                cmds.setAttr(shape + "." + attr, True)
+                light_item["requested"][attr] = True
+                light_item["actual"][attr] = bool(cmds.getAttr(shape + "." + attr))
+            except Exception as exc:
+                light_item["errors"][attr] = str(exc)
+        result.setdefault("lights", []).append(light_item)
+    return result
+
 def _apply_mmd_light(case):
     light = case.get("light") or {{}}
     source_direction = light.get("direction") or [0.5, -1.0, 0.5]
@@ -929,9 +992,15 @@ def _capture_case(case):
         raise RuntimeError("import_mmd_file returned None: " + case["model"])
     _apply_unique_shader_path()
     debug_actions = {{"mmdLight": _apply_mmd_light(case)}}
-    # This is data-only R2 evidence.  It records which real imported PMX
-    # components carry the self-shadow-map flag without changing the shader,
-    # target, or captured render path.
+    light_controller = debug_actions["mmdLight"].get("controller")
+    if _enable_mmd_self_shadow:
+        debug_actions["mmdSelfShadow"] = {{
+            "controller": light_controller,
+            "prePanel": _configure_mmd_self_shadow_inputs(light_controller, "pre-panel"),
+        }}
+    # This selection remains data-only R2 evidence.  The optional native-input
+    # probe above is the only path allowed to touch Maya shadow inputs; this
+    # selection never changes targets or claims receiver/self-shadow parity.
     from mmd_tools.view.render_override import discover_self_shadow_caster_components
 
     caster_selection = discover_self_shadow_caster_components()
@@ -965,6 +1034,10 @@ def _capture_case(case):
         raise RuntimeError("Unsupported camera plan source for " + str(case.get("name")))
     _setup_color_management()
     capture_panel = _setup_panel(camera, _display_textures)
+    if _enable_mmd_self_shadow:
+        debug_actions["mmdSelfShadow"]["postPanel"] = _configure_mmd_self_shadow_inputs(
+            light_controller, "post-panel"
+        )
     frame = int(case.get("frame", 0))
     cmds.currentTime(frame)
     cmds.select(clear=True)
@@ -1019,6 +1092,7 @@ def _capture_case(case):
         "shader_backend": _shader_backend,
         "shader_node_type": _shader_node_type,
         "display_textures": _display_textures,
+        "mmd_self_shadow_enabled": _enable_mmd_self_shadow,
         "shader_issues": shader_issues,
         "debug_actions": debug_actions,
         "effective_camera": effective_camera,
@@ -1040,6 +1114,7 @@ def _capture_case(case):
         "shader_issues": shader_issues,
         "effective_camera": effective_camera,
         "display_textures": _display_textures,
+        "mmd_self_shadow_enabled": _enable_mmd_self_shadow,
         "diff": diff,
     }}
 
@@ -1159,6 +1234,7 @@ def main() -> int:
             hide_orig_shapes=args.hide_orig_shapes,
             shader_backend=args.shader_backend,
             display_textures=args.display_textures == "on",
+            enable_mmd_self_shadow=args.enable_mmd_self_shadow,
         )
         maya_commandport.send_python(args.port, code, label="<maya-visual-regression>")
         _monitor_log(log_path, args.timeout)

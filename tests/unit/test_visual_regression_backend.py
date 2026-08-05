@@ -94,6 +94,30 @@ def test_maya_payload_carries_display_texture_state(tmp_path):
     assert 'capture_panel = _setup_panel(camera, _display_textures)' in source
 
 
+def test_maya_payload_opt_in_self_shadow_probe_is_explicit(tmp_path):
+    source = _build_maya_code(
+        project_root=tmp_path,
+        cases=[],
+        shader_fx=Path("shader.fx"),
+        output_dir=tmp_path,
+        log_path=tmp_path / "capture.log",
+        width=64,
+        height=64,
+        compare=False,
+        debug_lambert_control=False,
+        hide_orig_shapes=False,
+        shader_backend="dx11",
+        enable_mmd_self_shadow=True,
+    )
+
+    compile(source, "<maya-visual-regression>", "exec")
+    assert "_enable_mmd_self_shadow = bool(_payload.get(\"enable_mmd_self_shadow\", False))" in source
+    assert "_configure_mmd_self_shadow_inputs(" in source
+    assert 'light_controller, "post-panel"' in source
+    assert '"UseShadows", "ShadowStrength", "ShadowBias", "Light0ShadowMap", "Light0Matrix"' in source
+    assert '"displayLights", "shadows",' in source
+
+
 def test_manifest_camera_plan_preserves_existing_camera_parameters():
     manifest_camera = {"position": [9, 8, 7], "target": [0, 1, 0], "fov": 22}
     plan = _camera_plan_for_case({"name": "manifest-case", "camera": manifest_camera})
