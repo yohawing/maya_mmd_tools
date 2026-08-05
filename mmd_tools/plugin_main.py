@@ -659,7 +659,7 @@ def initializePlugin(mobject):
                 om.MGlobal.displayWarning(
                     f"Render override rollback during plugin initialization failed: {cleanup_error}"
                 )
-            finally:
+            else:
                 _render_override_registered = False
         _trace_initialize_step(f"initialize:error:{type(e).__name__}:{e}")
         om.MGlobal.displayError(f"Plugin initialization failed: {str(e)}")
@@ -687,10 +687,8 @@ def uninitializePlugin(mobject):
         global _shader_override_registered
         global _render_override_registered
         if _render_override_registered:
-            try:
-                _load_render_override_module().uninitializePlugin(mobject)
-            finally:
-                _render_override_registered = False
+            _load_render_override_module().uninitializePlugin(mobject)
+            _render_override_registered = False
         if _shader_override_registered:
             try:
                 mmd_shader.uninitializePlugin(mobject)

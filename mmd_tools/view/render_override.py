@@ -15,6 +15,7 @@ import ctypes
 import math
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 import maya.api.OpenMayaRender as omr
@@ -38,6 +39,13 @@ SHADOW_TARGET_SIZE = 2048
 SELF_SHADOW_MAP_DRAW_FLAG = 0x04
 SHADOW_CLEAR_VALUE = 1.0
 SHADOW_DEPTH_CLEAR_EPSILON = 1e-6
+R32F_BINDING_PROBE_PARAMETER = "MmdToolsR32FTarget"
+R32F_BINDING_PROBE_TECHNIQUE = "MmdToolsR32FTargetBindingProbe"
+R32F_BINDING_PROBE_SHADER_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "shaders"
+    / "MMDTargetBindingProbe.fx"
+)
 
 
 def _enabled_environment_flag(name: str) -> bool:
@@ -540,6 +548,176 @@ class ShadowTargetResources:
         }
 
 
+class R32FTargetBindingProbe:
+    """Own a diagnostic-only shader instance bound to the R32F target.
+
+    This deliberately never enters a render operation and never replaces an
+    imported ``dx11Shader``.  Its only purpose is to prove whether VP2 accepts
+    an ``MRenderTarget`` through ``MShaderInstance.setParameter`` while the
+    plugin owns both objects.  A later receiver pass must be separately
+    designed and validated; a successful binding is not self-shadow evidence.
+    """
+
+    def __init__(self):
+        self._shader = None
+        self._shader_manager = None
+        self._report = self._empty_report()
+
+    @staticmethod
+    def _empty_report() -> dict:
+        """Return the stable, explicitly non-rendering diagnostic shape."""
+        return {
+            "enabled": True,
+            "status": "not-run",
+            "reason": "not-setup",
+            "targetName": SHADOW_COLOR_TARGET_NAME,
+            "parameter": R32F_BINDING_PROBE_PARAMETER,
+            "shaderPath": str(R32F_BINDING_PROBE_SHADER_PATH),
+            "bindingAttemptCount": 0,
+            "bindingSucceeded": False,
+            "releaseAttemptCount": 0,
+            "releaseSucceeded": False,
+            "drawsReceiver": False,
+            "lastError": None,
+        }
+
+    def bind(self, target) -> dict:
+        """Create, bind, and retain a plugin-owned shader for one VP2 setup.
+
+        A missing target, manager, asset, shader, or named parameter all fail
+        closed and retain no shader instance.  The target is not sampled or
+        rendered by this probe.
+        """
+        previous_release = self.release()
+        report = self._report
+        if self.has_owned_shader():
+            report.update(
+                status="unsupported",
+                reason="previous-shader-release-failed",
+                lastError=previous_release.get("lastError"),
+                bindingSucceeded=False,
+            )
+            return self.report()
+        report["status"] = "not-run"
+        report["reason"] = "target-unavailable"
+        report["lastError"] = None
+        report["bindingSucceeded"] = False
+        report["releaseSucceeded"] = False
+        if target is None:
+            return self.report()
+        report["bindingAttemptCount"] += 1
+        draw_api_getter = getattr(omr.MRenderer, "drawAPI", None)
+        if callable(draw_api_getter):
+            try:
+                draw_api = draw_api_getter()
+            except Exception as exc:
+                report.update(
+                    status="unsupported",
+                    reason="draw-api-query-failed",
+                    lastError=str(exc),
+                )
+                return self.report()
+            if draw_api != getattr(omr.MRenderer, "kDirectX11", draw_api):
+                report.update(
+                    status="unsupported",
+                    reason="directx11-only-shader-probe",
+                    lastError=f"draw API {draw_api!r} is not DirectX11",
+                )
+                return self.report()
+        if not R32F_BINDING_PROBE_SHADER_PATH.is_file():
+            report.update(status="unsupported", reason="shader-asset-missing")
+            return self.report()
+        try:
+            shader_manager = omr.MRenderer.getShaderManager()
+        except Exception as exc:
+            report.update(
+                status="unsupported",
+                reason="shader-manager-unavailable",
+                lastError=str(exc),
+            )
+            return self.report()
+        if shader_manager is None:
+            report.update(status="unsupported", reason="shader-manager-unavailable")
+            return self.report()
+        shader = None
+        try:
+            shader = shader_manager.getEffectsFileShader(
+                str(R32F_BINDING_PROBE_SHADER_PATH), R32F_BINDING_PROBE_TECHNIQUE
+            )
+            if shader is None:
+                report.update(status="unsupported", reason="shader-create-failed")
+                return self.report()
+            parameter_list = tuple(shader.parameterList())
+            if R32F_BINDING_PROBE_PARAMETER not in parameter_list:
+                self._shader = shader
+                self._shader_manager = shader_manager
+                release_report = self.release()
+                if release_report["releaseSucceeded"]:
+                    report.update(
+                        status="unsupported", reason="target-parameter-unavailable"
+                    )
+                return self.report()
+            shader.setParameter(R32F_BINDING_PROBE_PARAMETER, target)
+        except Exception as exc:
+            if shader is not None:
+                self._shader = shader
+                self._shader_manager = shader_manager
+                release_report = self.release()
+                report.update(
+                    status="unsupported",
+                    reason=(
+                        "target-binding-failed"
+                        if release_report["releaseSucceeded"]
+                        else "shader-release-failed"
+                    ),
+                    lastError=(
+                        str(exc)
+                        if release_report["releaseSucceeded"]
+                        else f"{exc}; {release_report.get('lastError')}"
+                    ),
+                )
+            else:
+                report.update(
+                    status="unsupported", reason="target-binding-failed", lastError=str(exc)
+                )
+            return self.report()
+        self._shader = shader
+        self._shader_manager = shader_manager
+        report.update(status="bound", reason="target-set-parameter", bindingSucceeded=True)
+        return self.report()
+
+    def release(self) -> dict:
+        """Release the owned shader before the target itself is released."""
+        shader = self._shader
+        shader_manager = self._shader_manager
+        if shader is None:
+            return self.report()
+        self._report["releaseAttemptCount"] += 1
+        try:
+            if shader_manager is None:
+                raise RuntimeError("shader manager disappeared before shader release")
+            shader_manager.releaseShader(shader)
+        except Exception as exc:
+            self._report.update(
+                status="unsupported", reason="shader-release-failed", lastError=str(exc)
+            )
+        else:
+            self._shader = None
+            self._shader_manager = None
+            self._report.update(
+                status="released", reason="shader-released", releaseSucceeded=True
+            )
+        return self.report()
+
+    def has_owned_shader(self) -> bool:
+        """Return whether cleanup must retain the target for a release retry."""
+        return self._shader is not None
+
+    def report(self) -> dict:
+        """Return a JSON-safe binding lifecycle report without render claims."""
+        return dict(self._report)
+
+
 class ShadowTargetClearRender(omr.MSceneRender):
     """Render selected MMD casters into the diagnostic target pair."""
 
@@ -789,6 +967,12 @@ class PassthroughRenderOverride(omr.MRenderOverride):
             if self._target_probe is not None
             else None
         )
+        self._r32f_binding_probe = (
+            R32FTargetBindingProbe()
+            if self._target_probe is not None
+            and _enabled_environment_flag("MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_BINDING_PROBE")
+            else None
+        )
         operations = (
             self._scene_operation,
             PassthroughHUDRender(),
@@ -829,6 +1013,16 @@ class PassthroughRenderOverride(omr.MRenderOverride):
         """Reset iterator state while retaining reusable operation objects."""
         if self._shadow_target_operation is not None:
             self._shadow_target_operation.set_targets(None)
+        if self._r32f_binding_probe is not None:
+            self._r32f_binding_probe.release()
+            if self._r32f_binding_probe.has_owned_shader():
+                # Do not release a target still referenced by a shader whose
+                # manager rejected release.  A later cleanup can retry safely.
+                self._current_operation = -1
+                self._cleanup_count += 1
+                raise RuntimeError(
+                    "R32F binding probe shader release failed; target release deferred"
+                )
         if self._target_probe is not None:
             self._target_probe.release()
         self._current_operation = -1
@@ -837,7 +1031,13 @@ class PassthroughRenderOverride(omr.MRenderOverride):
     def setup(self, destination: str) -> None:
         """Prepare the scene operation for the viewport being rendered."""
         if self._target_probe is not None and self._shadow_target_operation is not None:
-            self._shadow_target_operation.set_targets(self._target_probe.acquire())
+            targets = self._target_probe.acquire()
+            self._shadow_target_operation.set_targets(targets)
+            if self._r32f_binding_probe is not None:
+                # Bind only the plugin-owned R32F target.  This setup probe is
+                # intentionally disconnected from imported shaders and draw
+                # operations, so it cannot alter ordinary viewport output.
+                self._r32f_binding_probe.bind(targets[0] if targets else None)
         self._scene_operation.configure_panel_background(destination)
         self._current_operation = -1
 
@@ -848,6 +1048,8 @@ class PassthroughRenderOverride(omr.MRenderOverride):
         report = self._target_probe.report()
         if self._shadow_target_operation is not None:
             report["casterSelection"] = self._shadow_target_operation.selection_report()
+        if self._r32f_binding_probe is not None:
+            report["r32fBindingProbe"] = self._r32f_binding_probe.report()
         return report
 
     @property
@@ -912,12 +1114,19 @@ def initializePlugin(_mobject=None):
 
 
 def uninitializePlugin(_mobject=None):
-    """Deregister only the override owned by this module, idempotently."""
+    """Release owned resources, then deregister this module's override."""
     global _registered_override
     override = _registered_override
     if override is None:
         return
 
+    try:
+        override.cleanup()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to clean up MMD Tools render override {RENDER_OVERRIDE_NAME}: "
+            f"{exc}"
+        ) from exc
     try:
         omr.MRenderer.deregisterOverride(override)
     except Exception as exc:
@@ -931,6 +1140,7 @@ __all__ = [
     "PRESENT_OPERATION_NAME",
     "PassthroughHUDRender",
     "PassthroughPresentTarget",
+    "R32FTargetBindingProbe",
     "PassthroughRenderOverride",
     "PassthroughSceneRender",
     "RENDER_OVERRIDE_NAME",
