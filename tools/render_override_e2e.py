@@ -180,6 +180,42 @@ def _validate_target_probe_occupancy(
         )
 
 
+def _validate_r32f_binding_probe(binding_probe: object) -> None:
+    """Require successful binding lifecycle without claiming receiver rendering."""
+    required = {
+        "enabled",
+        "status",
+        "reason",
+        "targetName",
+        "parameter",
+        "bindingAttemptCount",
+        "bindingSucceeded",
+        "releaseAttemptCount",
+        "releaseSucceeded",
+        "drawsReceiver",
+    }
+    if not isinstance(binding_probe, dict) or not required.issubset(binding_probe):
+        raise RuntimeError(f"R32F binding-probe diagnostic is missing: {binding_probe!r}")
+    if binding_probe["status"] not in {"not-run", "bound", "released", "unsupported"}:
+        raise RuntimeError(f"R32F binding-probe has an invalid state: {binding_probe!r}")
+    if binding_probe["drawsReceiver"] is not False:
+        raise RuntimeError(
+            "R32F binding probe unexpectedly claimed receiver drawing: "
+            f"{binding_probe!r}"
+        )
+    if (
+        binding_probe["bindingAttemptCount"] < 1
+        or binding_probe["bindingSucceeded"] is not True
+        or binding_probe["releaseAttemptCount"] < 1
+        or binding_probe["releaseSucceeded"] is not True
+        or binding_probe["status"] != "released"
+    ):
+        raise RuntimeError(
+            "R32F binding probe did not complete a successful bind/release lifecycle: "
+            f"{binding_probe!r}"
+        )
+
+
 def _evaluate_target_probe_caster_selection(override) -> None:
     """Invoke routing and post-render readback callbacks once in live Maya.
 
@@ -210,14 +246,16 @@ def run_probe(
     expected_draw_api_name: str | None = None,
     target_probe: bool = False,
     model_path: str | None = None,
+    r32f_binding_probe: bool = False,
 ) -> None:
     """Execute the R1 lifecycle and optional R2 target probe in live Maya.
 
     When ``model_path`` is supplied, import the real PMX through the
     production importer before evaluating the target caster-routing
     diagnostic.  Target occupancy is reported only as conservative D32/R32F
-    readback evidence; no receiver composition or self-shadow parity is
-    asserted here.
+    readback evidence.  The optional R32F binding probe only records whether a
+    plugin-owned ``MShaderInstance`` accepts the offscreen target; it performs
+    no receiver composition or self-shadow parity assertion.
     """
     import os
 
@@ -244,6 +282,9 @@ def run_probe(
         os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "1"
         os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_TARGET_PROBE"] = (
             "1" if target_probe else "0"
+        )
+        os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_BINDING_PROBE"] = (
+            "1" if r32f_binding_probe else "0"
         )
         cmds.file(new=True, force=True)
         previous_renderer_by_panel = _renderer_by_panel(cmds)
@@ -376,6 +417,10 @@ def run_probe(
             _validate_target_probe_occupancy(
                 target_report, require_components=model_path is not None
             )
+            if r32f_binding_probe:
+                _validate_r32f_binding_probe(
+                    (target_report or {}).get("r32fBindingProbe")
+                )
 
         restored_by_panel = {}
         for panel, override_name in previous_override_by_panel.items():
@@ -511,6 +556,14 @@ def main() -> int:
     parser.add_argument("--vp2-device", choices=("default", "dx11", "gl", "glcore"), default="default")
     parser.add_argument("--target-probe", action="store_true")
     parser.add_argument(
+        "--r32f-binding-probe",
+        action="store_true",
+        help=(
+            "Record only plugin-owned MShaderInstance R32F setParameter/release "
+            "lifecycle diagnostics; does not draw a receiver."
+        ),
+    )
+    parser.add_argument(
         "--model",
         type=Path,
         default=None,
@@ -521,6 +574,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.model is not None and not args.target_probe:
         parser.error("--model requires --target-probe")
+    if args.r32f_binding_probe and not args.target_probe:
+        parser.error("--r32f-binding-probe requires --target-probe")
 
     out_dir = args.out_dir.resolve()
     log_path = out_dir / f"render_override_maya{args.maya}.log"
@@ -542,7 +597,7 @@ def main() -> int:
     )
     command = (
         "from tools.render_override_e2e import run_probe\n"
-        f"run_probe(r'{log_path.as_posix()}', r'{report_path.as_posix()}', r'{out_dir.as_posix()}', {expected_draw_api_name!r}, {args.target_probe!r}, {model_literal})\n"
+        f"run_probe(r'{log_path.as_posix()}', r'{report_path.as_posix()}', r'{out_dir.as_posix()}', {expected_draw_api_name!r}, {args.target_probe!r}, {model_literal}, {args.r32f_binding_probe!r})\n"
     )
     report = run_maya_e2e(
         project_root=_ROOT,

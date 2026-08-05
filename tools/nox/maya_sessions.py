@@ -1006,11 +1006,14 @@ def run_render_override_e2e(
     timeout = option(posargs, "--timeout", "240")
     vp2_device = option(posargs, "--vp2-device", "default")
     target_probe = "--target-probe" in posargs
+    r32f_binding_probe = "--r32f-binding-probe" in posargs
     model = option(posargs, "--model", "")
     if vp2_device not in {"default", "dx11", "gl", "glcore"}:
         session.error(f"Unsupported --vp2-device: {vp2_device}")
     if model and not target_probe:
         session.error("--model requires --target-probe")
+    if r32f_binding_probe and not target_probe:
+        session.error("--r32f-binding-probe requires --target-probe")
     session.run(
         sys.executable,
         str(root / "tools" / "render_override_e2e.py"),
@@ -1024,6 +1027,7 @@ def run_render_override_e2e(
         timeout,
         "--vp2-device",
         vp2_device,
+        *( ["--r32f-binding-probe"] if r32f_binding_probe else []),
         *(["--model", model] if model else []),
         *(["--target-probe"] if target_probe else []),
         external=True,

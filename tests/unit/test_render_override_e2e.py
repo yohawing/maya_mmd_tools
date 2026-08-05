@@ -73,6 +73,7 @@ class RenderOverrideE2eTest(unittest.TestCase):
                 "--vp2-device",
                 "dx11",
                 "--target-probe",
+                "--r32f-binding-probe",
             ],
         ):
             self.assertEqual(render_override_e2e.main(), 1)
@@ -86,6 +87,41 @@ class RenderOverrideE2eTest(unittest.TestCase):
             run_gate.call_args.kwargs["env_overrides"],
             {"MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11"},
         )
+
+    def test_r32f_binding_probe_diagnostic_is_explicitly_non_rendering(self):
+        render_override_e2e._validate_r32f_binding_probe(
+            {
+                "enabled": True,
+                "status": "released",
+                "reason": "shader-released",
+                "targetName": "mmdToolsSelfShadowR32F",
+                "parameter": "MmdToolsR32FTarget",
+                "bindingAttemptCount": 1,
+                "bindingSucceeded": True,
+                "releaseAttemptCount": 1,
+                "releaseSucceeded": True,
+                "drawsReceiver": False,
+            }
+        )
+        with self.assertRaises(RuntimeError):
+            render_override_e2e._validate_r32f_binding_probe(
+                {"status": "bound", "drawsReceiver": True}
+            )
+        with self.assertRaises(RuntimeError):
+            render_override_e2e._validate_r32f_binding_probe(
+                {
+                    "enabled": True,
+                    "status": "unsupported",
+                    "reason": "target-binding-failed",
+                    "targetName": "mmdToolsSelfShadowR32F",
+                    "parameter": "MmdToolsR32FTarget",
+                    "bindingAttemptCount": 1,
+                    "bindingSucceeded": False,
+                    "releaseAttemptCount": 0,
+                    "releaseSucceeded": False,
+                    "drawsReceiver": False,
+                }
+            )
 
     def test_main_forwards_model_path_as_escaped_command_literal(self):
         model = Path("F:/fixtures/pmx/モデル'self-shadow.pmx")
@@ -163,6 +199,19 @@ class RenderOverrideE2eTest(unittest.TestCase):
             render_override_e2e.sys,
             "argv",
             ["render_override_e2e.py", "--model", "F:/fixtures/self-shadow.pmx"],
+        ):
+            with self.assertRaises(SystemExit) as raised:
+                render_override_e2e.main()
+        self.assertEqual(raised.exception.code, 2)
+        run_gate.assert_not_called()
+
+    def test_main_rejects_binding_probe_without_target_probe(self):
+        with mock.patch.object(
+            render_override_e2e, "run_maya_e2e"
+        ) as run_gate, mock.patch.object(
+            render_override_e2e.sys,
+            "argv",
+            ["render_override_e2e.py", "--r32f-binding-probe"],
         ):
             with self.assertRaises(SystemExit) as raised:
                 render_override_e2e.main()

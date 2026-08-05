@@ -12,6 +12,7 @@ import sys
 import types
 import unittest
 import ctypes
+from unittest import mock
 from unittest.mock import MagicMock
 
 
@@ -107,9 +108,10 @@ class _OccupancyRenderTarget:
 
 
 class _MRenderTargetManager:
-    def __init__(self):
+    def __init__(self, events=None):
         self.acquired = []
         self.released = []
+        self.events = events if events is not None else []
 
     def acquireRenderTarget(self, description):
         target = _MRenderTarget()
@@ -118,6 +120,7 @@ class _MRenderTargetManager:
 
     def releaseRenderTarget(self, target):
         self.released.append(target)
+        self.events.append(("target", target))
 
 
 class _OccupancyRenderTargetManager(_MRenderTargetManager):
@@ -140,6 +143,46 @@ class _MRenderTargetApi:
     @staticmethod
     def freeRawData(_raw_data):
         return None
+
+
+class _BindingProbeShader:
+    """MShaderInstance double exposing exactly one R32F target parameter."""
+
+    def __init__(self, parameters=None, set_parameter_error=None):
+        self._parameters = list(
+            parameters
+            if parameters is not None
+            else [render_override.R32F_BINDING_PROBE_PARAMETER]
+        )
+        self._set_parameter_error = set_parameter_error
+        self.parameter_calls = []
+
+    def parameterList(self):
+        return list(self._parameters)
+
+    def setParameter(self, name, value):
+        self.parameter_calls.append((name, value))
+        if self._set_parameter_error is not None:
+            raise self._set_parameter_error
+
+
+class _MShaderManager:
+    def __init__(self, shader=None, create_error=None, events=None):
+        self.shader = shader if shader is not None else _BindingProbeShader()
+        self.create_error = create_error
+        self.requests = []
+        self.released = []
+        self.events = events if events is not None else []
+
+    def getEffectsFileShader(self, path, technique):
+        self.requests.append((path, technique))
+        if self.create_error is not None:
+            raise self.create_error
+        return self.shader
+
+    def releaseShader(self, shader):
+        self.released.append(shader)
+        self.events.append(("shader", shader))
 
 
 class _MSelectionList:
@@ -189,6 +232,8 @@ class _MRenderer:
     registerOverride = MagicMock()
     deregisterOverride = MagicMock()
     getRenderTargetManager = MagicMock()
+    getShaderManager = MagicMock()
+    drawAPI = MagicMock(return_value=kDirectX11)
 
 
 class _CasterCmds:
@@ -306,6 +351,9 @@ class RenderOverrideLifecycleTest(unittest.TestCase):
         _MRenderer.registerOverride.reset_mock()
         _MRenderer.deregisterOverride.reset_mock()
         _MRenderer.getRenderTargetManager.reset_mock()
+        _MRenderer.getShaderManager.reset_mock()
+        _MRenderer.drawAPI.reset_mock()
+        _MRenderer.drawAPI.return_value = _MRenderer.kDirectX11
 
     def test_scene_hud_present_order_and_iterator_reset(self):
         override = render_override.PassthroughRenderOverride()
@@ -345,7 +393,9 @@ class RenderOverrideLifecycleTest(unittest.TestCase):
         _MRenderer.registerOverride.assert_called_once_with(first)
         self.assertTrue(render_override.is_registered())
 
-        render_override.uninitializePlugin(object())
+        with mock.patch.object(first, "cleanup", wraps=first.cleanup) as cleanup:
+            render_override.uninitializePlugin(object())
+        cleanup.assert_called_once()
         render_override.uninitializePlugin(object())
         _MRenderer.deregisterOverride.assert_called_once_with(first)
         self.assertFalse(render_override.is_registered())
@@ -359,6 +409,18 @@ class RenderOverrideLifecycleTest(unittest.TestCase):
         _MRenderer.deregisterOverride.assert_called_once()
         self.assertFalse(render_override.is_registered())
         _MRenderer.registerOverride.side_effect = None
+
+    def test_deregister_failure_retains_owned_override_for_retry(self):
+        first = render_override.initializePlugin(object())
+        _MRenderer.deregisterOverride.side_effect = RuntimeError("deregister rejected")
+
+        with self.assertRaisesRegex(RuntimeError, "Failed to deregister"):
+            render_override.uninitializePlugin(object())
+
+        self.assertIs(render_override.registered_override(), first)
+        _MRenderer.deregisterOverride.side_effect = None
+        render_override.uninitializePlugin(object())
+        self.assertFalse(render_override.is_registered())
 
     def test_target_resources_use_fixed_formats_and_release_all_owned_targets(self):
         manager = _MRenderTargetManager()
@@ -394,6 +456,161 @@ class RenderOverrideLifecycleTest(unittest.TestCase):
         _MRenderer.getRenderTargetManager.return_value = manager
         self.assertEqual(len(resources.acquire()), 2)
         self.assertEqual(len(manager.acquired), 4)
+
+    def test_r32f_binding_probe_sets_only_its_owned_shader_parameter_then_releases(self):
+        shader = _BindingProbeShader()
+        shader_manager = _MShaderManager(shader)
+        _MRenderer.getShaderManager.return_value = shader_manager
+        probe = render_override.R32FTargetBindingProbe()
+        target = object()
+
+        bound = probe.bind(target)
+
+        self.assertEqual(bound["status"], "bound")
+        self.assertTrue(bound["bindingSucceeded"])
+        self.assertFalse(bound["drawsReceiver"])
+        self.assertEqual(
+            shader.parameter_calls,
+            [(render_override.R32F_BINDING_PROBE_PARAMETER, target)],
+        )
+        self.assertEqual(len(shader_manager.requests), 1)
+        self.assertEqual(shader_manager.released, [])
+
+        released = probe.release()
+
+        self.assertEqual(released["status"], "released")
+        self.assertTrue(released["releaseSucceeded"])
+        self.assertEqual(shader_manager.released, [shader])
+
+    def test_r32f_binding_probe_fails_closed_without_target_parameter_or_manager(self):
+        missing_parameter_shader = _BindingProbeShader(parameters=[])
+        shader_manager = _MShaderManager(missing_parameter_shader)
+        _MRenderer.getShaderManager.return_value = shader_manager
+        probe = render_override.R32FTargetBindingProbe()
+
+        missing_parameter = probe.bind(object())
+
+        self.assertEqual(missing_parameter["status"], "unsupported")
+        self.assertEqual(missing_parameter["reason"], "target-parameter-unavailable")
+        self.assertEqual(shader_manager.released, [missing_parameter_shader])
+
+        _MRenderer.getShaderManager.return_value = None
+        unavailable = render_override.R32FTargetBindingProbe().bind(object())
+
+        self.assertEqual(unavailable["status"], "unsupported")
+        self.assertEqual(unavailable["reason"], "shader-manager-unavailable")
+
+        _MRenderer.getShaderManager.return_value = _MShaderManager()
+        _MRenderer.drawAPI.return_value = _MRenderer.kOpenGL
+        unsupported_api = render_override.R32FTargetBindingProbe().bind(object())
+        self.assertEqual(unsupported_api["status"], "unsupported")
+        self.assertEqual(unsupported_api["reason"], "directx11-only-shader-probe")
+
+    def test_r32f_binding_probe_clears_previous_success_before_failed_rebind(self):
+        first_shader_manager = _MShaderManager()
+        _MRenderer.getShaderManager.return_value = first_shader_manager
+        probe = render_override.R32FTargetBindingProbe()
+        self.assertEqual(probe.bind(object())["status"], "bound")
+
+        second_shader_manager = _MShaderManager(_BindingProbeShader(parameters=[]))
+        _MRenderer.getShaderManager.return_value = second_shader_manager
+        failed = probe.bind(object())
+
+        self.assertEqual(failed["status"], "unsupported")
+        self.assertFalse(failed["bindingSucceeded"])
+        self.assertEqual(failed["reason"], "target-parameter-unavailable")
+        self.assertEqual(len(second_shader_manager.released), 1)
+
+    def test_r32f_binding_probe_retains_shader_when_release_fails(self):
+        class FailingShaderManager(_MShaderManager):
+            def releaseShader(self, shader):
+                super().releaseShader(shader)
+                raise RuntimeError("release rejected")
+
+        shader_manager = FailingShaderManager()
+        _MRenderer.getShaderManager.return_value = shader_manager
+        probe = render_override.R32FTargetBindingProbe()
+        self.assertEqual(probe.bind(object())["status"], "bound")
+
+        failed = probe.release()
+
+        self.assertEqual(failed["status"], "unsupported")
+        self.assertEqual(failed["reason"], "shader-release-failed")
+        self.assertTrue(probe.has_owned_shader())
+        self.assertEqual(failed["releaseAttemptCount"], 1)
+
+        rebound = probe.bind(object())
+
+        self.assertEqual(rebound["reason"], "previous-shader-release-failed")
+        self.assertTrue(probe.has_owned_shader())
+
+    def test_r32f_binding_probe_records_release_on_set_parameter_failure(self):
+        shader = _BindingProbeShader(set_parameter_error=RuntimeError("bind rejected"))
+        shader_manager = _MShaderManager(shader)
+        _MRenderer.getShaderManager.return_value = shader_manager
+        probe = render_override.R32FTargetBindingProbe()
+
+        failed = probe.bind(object())
+
+        self.assertEqual(failed["status"], "unsupported")
+        self.assertEqual(failed["reason"], "target-binding-failed")
+        self.assertTrue(failed["releaseSucceeded"])
+        self.assertEqual(failed["releaseAttemptCount"], 1)
+        self.assertEqual(shader_manager.released, [shader])
+
+    def test_override_binding_probe_is_opt_in_and_releases_before_target_resources(self):
+        events = []
+        manager = _MRenderTargetManager(events=events)
+        shader_manager = _MShaderManager(events=events)
+        _MRenderer.getRenderTargetManager.return_value = manager
+        _MRenderer.getShaderManager.return_value = shader_manager
+        with mock.patch.dict(
+            os.environ,
+            {
+                "MMD_TOOLS_ENABLE_RENDER_OVERRIDE_TARGET_PROBE": "1",
+                "MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_BINDING_PROBE": "1",
+            },
+            clear=False,
+        ):
+            override = render_override.PassthroughRenderOverride()
+            with mock.patch.object(override._scene_operation, "configure_panel_background"):
+                override.setup("modelPanel4")
+            bound = override.target_probe_report()["r32fBindingProbe"]
+            self.assertEqual(bound["status"], "bound")
+            override.cleanup()
+
+        released = override.target_probe_report()["r32fBindingProbe"]
+        self.assertEqual(released["status"], "released")
+        self.assertEqual(len(shader_manager.released), 1)
+        self.assertEqual(len(manager.released), 2)
+        self.assertEqual([event[0] for event in events], ["shader", "target", "target"])
+        self.assertIs(events[0][1], shader_manager.released[0])
+
+    def test_override_cleanup_defers_target_release_when_shader_release_fails(self):
+        class FailingShaderManager(_MShaderManager):
+            def releaseShader(self, shader):
+                super().releaseShader(shader)
+                raise RuntimeError("release rejected")
+
+        manager = _MRenderTargetManager()
+        shader_manager = FailingShaderManager()
+        _MRenderer.getRenderTargetManager.return_value = manager
+        _MRenderer.getShaderManager.return_value = shader_manager
+        with mock.patch.dict(
+            os.environ,
+            {
+                "MMD_TOOLS_ENABLE_RENDER_OVERRIDE_TARGET_PROBE": "1",
+                "MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_BINDING_PROBE": "1",
+            },
+            clear=False,
+        ):
+            override = render_override.PassthroughRenderOverride()
+            with mock.patch.object(override._scene_operation, "configure_panel_background"):
+                override.setup("modelPanel4")
+            with self.assertRaisesRegex(RuntimeError, "target release deferred"):
+                override.cleanup()
+
+        self.assertEqual(manager.released, [])
 
     def test_target_occupancy_requires_non_clear_evidence_for_selected_caster(self):
         manager = _OccupancyRenderTargetManager([1.0, 1.0, 1.0, 1.0], 2, 2)
@@ -830,6 +1047,19 @@ class PluginRenderOverrideGateTest(unittest.TestCase):
 
         self.plugin_main.uninitializePlugin(object())
         self.fake_render.uninitializePlugin.assert_called_once()
+        self.assertFalse(self.plugin_main._render_override_registered)
+
+    def test_plugin_unload_retains_gate_when_override_cleanup_fails(self):
+        os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE"] = "1"
+        self.plugin_main.initializePlugin(object())
+        self.fake_render.uninitializePlugin.side_effect = RuntimeError("cleanup rejected")
+
+        with self.assertRaisesRegex(RuntimeError, "cleanup rejected"):
+            self.plugin_main.uninitializePlugin(object())
+
+        self.assertTrue(self.plugin_main._render_override_registered)
+        self.fake_render.uninitializePlugin.side_effect = None
+        self.plugin_main.uninitializePlugin(object())
         self.assertFalse(self.plugin_main._render_override_registered)
 
 
