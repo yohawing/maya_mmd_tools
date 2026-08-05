@@ -131,6 +131,19 @@ def test_camera_motion_case_selects_maya_vmd_provenance(tmp_path):
     }
 
 
+def test_checked_in_vmd_camera_render_smoke_uses_real_assets():
+    """The GUI smoke fixture must exercise a PMX and a production camera VMD."""
+    manifest_path = Path("tests/viewport/camera_vmd_render_smoke.json").resolve()
+
+    _, cases = _load_cases(manifest_path, [], [], 0)
+
+    assert len(cases) == 1
+    case = cases[0]
+    assert Path(case["model"]).is_file()
+    assert Path(case["camera_motion"]).is_file()
+    assert _camera_plan_for_case(case)["source"] == "maya-vmd-camera-import"
+
+
 def test_camera_motion_vmd_fails_closed_without_camera_frames(tmp_path):
     with pytest.raises(RuntimeError, match="no camera frames"):
         _validate_camera_motion_data(SimpleNamespace(camera_frames=[]), tmp_path / "invalid.vmd")
