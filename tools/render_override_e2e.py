@@ -657,7 +657,10 @@ def run_probe(
     plugin-owned quad and fails closed when no native resource is available.
     The explicit ``native_shadow_receiver`` option overlays receiver-selected
     MMD components with ``MMDNativeShadowReceiver.fx`` and keeps full parity
-    claims behind a separate fixture Oracle.
+    claims behind a separate fixture Oracle.  When a model is supplied for
+    that option, the import uses the production DX11 MMD shader route so the
+    receiver callback can inspect authored material values instead of the
+    deliberately minimal lambert fallback used by the routing probes.
     """
     import os
 
@@ -754,23 +757,46 @@ def run_probe(
                 raise FileNotFoundError(f"PMX model not found: {model}")
             from mmd_tools.io.mmd_importer import import_mmd_file
 
-            imported_root = import_mmd_file(
-                str(model),
-                options={
-                    "create_mmd_shaders": False,
-                    "import_physics": False,
-                    "setup_rig": False,
-                    "setup_bone_orientation": False,
-                    "use_cpp_fast_load": False,
-                    "use_native_pmx_parse": False,
-                    "require_native_pmx_parse": False,
-                },
-            )
+            production_receiver_import = bool(native_shadow_receiver)
+            shader_setting_state = None
+            if production_receiver_import:
+                from mmd_tools.core import settings, settings_keys
+
+                shader_setting_state = {
+                    settings_keys.IMPORT_MODEL_CREATE_MMD_SHADERS: settings.get(
+                        settings_keys.IMPORT_MODEL_CREATE_MMD_SHADERS
+                    ),
+                    settings_keys.IMPORT_MODEL_MMD_SHADER_BACKEND: settings.get(
+                        settings_keys.IMPORT_MODEL_MMD_SHADER_BACKEND
+                    ),
+                }
+                settings.set(settings_keys.IMPORT_MODEL_CREATE_MMD_SHADERS, True)
+                settings.set(settings_keys.IMPORT_MODEL_MMD_SHADER_BACKEND, "dx11")
+
+            try:
+                imported_root = import_mmd_file(
+                    str(model),
+                    options={
+                        "create_mmd_shaders": production_receiver_import,
+                        "import_physics": False,
+                        "setup_rig": False,
+                        "setup_bone_orientation": False,
+                        "use_cpp_fast_load": False,
+                        "use_native_pmx_parse": False,
+                        "require_native_pmx_parse": False,
+                    },
+                )
+            finally:
+                if shader_setting_state is not None:
+                    for key, value in shader_setting_state.items():
+                        settings.set(key, value)
             if not imported_root:
                 raise RuntimeError(f"PMX import returned no model root: {model}")
             report["checks"]["importedPmx"] = {
                 "path": str(model),
                 "root": str(imported_root),
+                "createMmdShaders": production_receiver_import,
+                "shaderBackend": "dx11" if production_receiver_import else None,
             }
             # Ensure Maya has evaluated the imported DAG before the target
             # operation's objectSetOverride callback is inspected below.
