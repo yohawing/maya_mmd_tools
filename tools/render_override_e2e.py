@@ -759,9 +759,11 @@ def run_probe(
 
             production_receiver_import = bool(native_shadow_receiver)
             shader_setting_state = None
+            shader_plugin_loaded = None
             if production_receiver_import:
                 from mmd_tools.core import settings, settings_keys
 
+                shader_plugin_loaded = cmds.loadPlugin("dx11Shader", quiet=True)
                 shader_setting_state = {
                     settings_keys.IMPORT_MODEL_CREATE_MMD_SHADERS: settings.get(
                         settings_keys.IMPORT_MODEL_CREATE_MMD_SHADERS
@@ -797,6 +799,7 @@ def run_probe(
                 "root": str(imported_root),
                 "createMmdShaders": production_receiver_import,
                 "shaderBackend": "dx11" if production_receiver_import else None,
+                "shaderPlugin": shader_plugin_loaded,
             }
             # Ensure Maya has evaluated the imported DAG before the target
             # operation's objectSetOverride callback is inspected below.

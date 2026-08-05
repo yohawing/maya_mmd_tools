@@ -2518,6 +2518,7 @@ class NativeShadowReceiverRender(omr.MSceneRender):
         self._selection = None
         self._shader = None
         self._shader_manager = None
+        self._source_material_cache = {}
         self._report = self._empty_report()
 
     @staticmethod
@@ -2544,6 +2545,11 @@ class NativeShadowReceiverRender(omr.MSceneRender):
             "sourceItemCount": 0,
             "materialBindingCount": 0,
             "materialParameterSetCount": 0,
+            "sourceShaderParameters": [],
+            "sourceShaderParameterErrors": [],
+            "sourceItemDiagnostics": [],
+            "sourceMaterialShaderNodes": [],
+            "sourceMaterialLookupErrors": [],
             "bindingAttemptCount": 0,
             "bindingSucceeded": False,
             "resourceHandle": None,
@@ -2644,6 +2650,7 @@ class NativeShadowReceiverRender(omr.MSceneRender):
             )
             self._selection = empty_selection
             return empty_selection
+        self._prime_source_material_cache(components)
         self._report["selection"] = self._selection_report(
             components, "ok", "components-added"
         )
@@ -2683,8 +2690,259 @@ class NativeShadowReceiverRender(omr.MSceneRender):
         self._report["materialParameterSetCount"] += 1
         return True
 
+    @staticmethod
+    def _flatten_maya_value(value):
+        """Normalize Maya's one-element compound return shape."""
+        if isinstance(value, (list, tuple)) and len(value) == 1:
+            nested = value[0]
+            if isinstance(nested, (list, tuple)):
+                return tuple(nested)
+        return value
+
+    @staticmethod
+    def _component_token_parts(component_token):
+        """Return a mesh shape and inclusive face indices from one Maya token."""
+        shape, separator, face_text = str(component_token).partition(".f[")
+        if not separator or not face_text.endswith("]"):
+            return str(component_token), None
+        indices = []
+        for part in face_text[:-1].split(","):
+            bounds = part.split(":", 1)
+            try:
+                start = int(bounds[0])
+                end = int(bounds[-1])
+            except (TypeError, ValueError):
+                return shape, None
+            step = 1 if end >= start else -1
+            indices.extend(range(start, end + step, step))
+        return shape, tuple(indices)
+
+    def _prime_source_material_cache(self, components) -> None:
+        """Resolve receiver assignments before VP2 enters draw callbacks."""
+        try:
+            import maya.cmds as cmds
+        except Exception as exc:
+            self._report["sourceMaterialLookupErrors"].append(
+                {"stage": "prime-import", "error": f"{type(exc).__name__}: {exc!r}"}
+            )
+            return
+        self._source_material_cache = {}
+        for component_token in components:
+            shape, indices = self._component_token_parts(component_token)
+            shape_candidates = cmds.listRelatives(
+                shape, shapes=True, fullPath=True, noIntermediate=True
+            ) or []
+            lookup_shape = shape_candidates[0] if shape_candidates else shape
+            shading_engines = cmds.listConnections(lookup_shape, type="shadingEngine") or []
+            selected_engine = None
+            for shading_engine in shading_engines:
+                try:
+                    if cmds.sets(component_token, isMember=shading_engine):
+                        selected_engine = shading_engine
+                        break
+                except Exception:
+                    continue
+            if selected_engine is None and shading_engines:
+                # Maya can reject isMember for a component range during an
+                # update callback; retain a deterministic connected candidate.
+                selected_engine = shading_engines[0]
+            if selected_engine is None:
+                self._report["sourceMaterialLookupErrors"].append(
+                    {"stage": "prime-shading-engine", "component": component_token}
+                )
+                continue
+            shader_nodes = cmds.listConnections(
+                f"{selected_engine}.surfaceShader",
+                source=True,
+                destination=False,
+            ) or []
+            shader_node = next(
+                (
+                    node
+                    for node in shader_nodes
+                    if cmds.nodeType(node) in {"dx11Shader", "GLSLShader"}
+                ),
+                None,
+            )
+            if shader_node is None:
+                self._report["sourceMaterialLookupErrors"].append(
+                    {
+                        "stage": "prime-shader-node",
+                        "component": component_token,
+                        "shadingEngine": selected_engine,
+                    }
+                )
+                continue
+            if shader_node not in self._report["sourceMaterialShaderNodes"]:
+                self._report["sourceMaterialShaderNodes"].append(shader_node)
+            if indices:
+                for index in indices:
+                    self._source_material_cache[(lookup_shape, index)] = shader_node
+            else:
+                self._source_material_cache[(lookup_shape, None)] = shader_node
+
+    def _cached_source_material_shader(self, item):
+        """Return a shader node primed for the item's shape/face component."""
+        try:
+            source_path = item.sourceDagPath()
+            full_path_name = getattr(source_path, "fullPathName", None)
+            shape = full_path_name() if callable(full_path_name) else str(source_path)
+            component = item.shadingComponent()
+            if component is None or component.isNull():
+                return self._source_material_cache.get((shape, None))
+            from maya.api import OpenMaya as om
+
+            component_fn = om.MFnSingleIndexedComponent(component)
+            for index in component_fn.getElements():
+                shader_node = self._source_material_cache.get((shape, int(index)))
+                if shader_node:
+                    return shader_node
+        except Exception:
+            return None
+        return None
+
+    def _source_material_shader(self, item):
+        """Resolve the authored shader node for one receiver face component."""
+        cached_shader = self._cached_source_material_shader(item)
+        if cached_shader:
+            return cached_shader
+        try:
+            import maya.api.OpenMaya as om
+            import maya.cmds as cmds
+
+            source_path = item.sourceDagPath()
+            full_path_name = getattr(source_path, "fullPathName", None)
+            shape = full_path_name() if callable(full_path_name) else str(source_path)
+            component = item.shadingComponent()
+            component_objects = []
+            if component is not None and not component.isNull():
+                component_fn = om.MFnSingleIndexedComponent(component)
+                component_objects = [
+                    f"{shape}.f[{int(index)}]"
+                    for index in component_fn.getElements()
+                ]
+            if not component_objects:
+                component_objects = [shape]
+
+            shading_engines = []
+            for component_object in component_objects:
+                shading_engines.extend(cmds.listSets(object=component_object) or [])
+                if shading_engines:
+                    break
+            if not shading_engines:
+                candidates = cmds.listConnections(
+                    shape,
+                    type="shadingEngine",
+                ) or []
+                if component_objects:
+                    for shading_engine in candidates:
+                        try:
+                            if cmds.sets(component_objects[0], isMember=shading_engine):
+                                shading_engines.append(shading_engine)
+                        except Exception:
+                            continue
+                if not shading_engines:
+                    shading_engines.extend(candidates)
+            for shading_engine in dict.fromkeys(shading_engines):
+                shader_nodes = cmds.listConnections(
+                    f"{shading_engine}.surfaceShader",
+                    source=True,
+                    destination=False,
+                ) or []
+                for shader_node in shader_nodes:
+                    if cmds.nodeType(shader_node) not in {"dx11Shader", "GLSLShader"}:
+                        continue
+                    if shader_node not in self._report["sourceMaterialShaderNodes"]:
+                        self._report["sourceMaterialShaderNodes"].append(shader_node)
+                    return shader_node
+            return None
+        except Exception as exc:
+            self._report["sourceMaterialLookupErrors"].append(
+                {"stage": "resolve", "error": f"{type(exc).__name__}: {exc!r}"}
+            )
+            return None
+
+    def _bind_maya_material_parameters(self, item, shader_instance) -> bool:
+        """Copy authored scalar values through Maya's shadingEngine assignment."""
+        shader_node = self._source_material_shader(item)
+        if not shader_node:
+            return False
+        bound_any = False
+        try:
+            import maya.cmds as cmds
+
+            for source_name, target_name in self._material_parameter_map:
+                if not cmds.attributeQuery(source_name, node=shader_node, exists=True):
+                    continue
+                value = self._flatten_maya_value(cmds.getAttr(f"{shader_node}.{source_name}"))
+                if value is None:
+                    continue
+                if self._set_parameter(shader_instance, target_name, value):
+                    bound_any = True
+        except Exception as exc:
+            self._report["sourceMaterialLookupErrors"].append(
+                {"stage": "read", "shader": shader_node, "error": f"{type(exc).__name__}: {exc!r}"}
+            )
+        return bound_any
+
     def _bind_material_parameters(self, item, shader_instance) -> None:
         """Copy safe scalar/color values from Maya's source render item."""
+        if len(self._report["sourceItemDiagnostics"]) < 16:
+            item_diagnostic = {}
+            try:
+                item_diagnostic["name"] = str(item.name())
+            except Exception as exc:
+                item_diagnostic["nameError"] = f"{type(exc).__name__}: {exc!r}"
+            try:
+                source_shader = item.getShader()
+                item_diagnostic["sourceShaderPresent"] = source_shader is not None
+                if source_shader is not None:
+                    parameter_list = source_shader.parameterList()
+                    item_diagnostic["sourceShaderParameters"] = [
+                        str(parameter) for parameter in parameter_list or ()
+                    ]
+                    item_diagnostic["sourceShaderResource"] = str(
+                        source_shader.resourceName("MainTexture")
+                    )
+            except Exception as exc:
+                item_diagnostic["sourceShaderError"] = (
+                    f"{type(exc).__name__}: {exc!r}"
+                )
+            for component_name in ("component", "shadingComponent"):
+                try:
+                    component = getattr(item, component_name)()
+                    component_info = {"null": bool(component.isNull())}
+                    if not component.isNull():
+                        component_info["apiType"] = int(component.apiType())
+                        try:
+                            from maya.api import OpenMaya as om
+
+                            component_fn = om.MFnSingleIndexedComponent(component)
+                            component_info["elements"] = [
+                                int(element) for element in component_fn.getElements()
+                            ]
+                        except Exception as exc:
+                            component_info["elementsError"] = (
+                                f"{type(exc).__name__}: {exc!r}"
+                            )
+                    item_diagnostic[component_name] = component_info
+                except Exception as exc:
+                    item_diagnostic[f"{component_name}Error"] = (
+                        f"{type(exc).__name__}: {exc!r}"
+                    )
+            self._report["sourceItemDiagnostics"].append(item_diagnostic)
+        try:
+            available_parameters = item.availableShaderParameters()
+        except Exception as exc:
+            available_parameters = ()
+            self._report["sourceShaderParameterErrors"].append(
+                {"stage": "available", "error": f"{type(exc).__name__}: {exc!r}"}
+            )
+        for parameter in available_parameters or ():
+            if not isinstance(parameter, str):
+                continue
+            if parameter not in self._report["sourceShaderParameters"]:
+                self._report["sourceShaderParameters"].append(parameter)
         bound_any = False
         for source_name, target_name in self._material_parameter_map:
             try:
@@ -2695,6 +2953,8 @@ class NativeShadowReceiverRender(omr.MSceneRender):
                 continue
             if self._set_parameter(shader_instance, target_name, value):
                 bound_any = True
+        if self._bind_maya_material_parameters(item, shader_instance):
+            bound_any = True
         # The receiver effect is intentionally untextured until explicit source
         # texture-resource handoff is validated.  It always uses the explicit
         # fixed MMD light values above.
