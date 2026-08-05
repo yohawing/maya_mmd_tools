@@ -37,20 +37,24 @@ ReceiverVertexOutput ReceiverVS(ReceiverVertexInput input)
 
 float ReceiverPS(ReceiverVertexOutput input) : SV_TARGET0
 {
-    // A single quad texel can land in the clear border of the current-camera
-    // caster map.  Probe a small neighborhood so the diagnostic has a stable
-    // dataflow witness, but keep the explicit one-minus transform so a drawn
-    // quad changes the separate output even when the sampled map is clear.
-    const float2 center = float2(0.5f, 0.5f);
-    float value = MmdToolsR32FTarget.SampleLevel(MmdToolsR32FSampler, center, 0);
-    value = min(value, MmdToolsR32FTarget.SampleLevel(
-        MmdToolsR32FSampler, center + float2(-0.2f, -0.2f), 0));
-    value = min(value, MmdToolsR32FTarget.SampleLevel(
-        MmdToolsR32FSampler, center + float2(0.2f, -0.2f), 0));
-    value = min(value, MmdToolsR32FTarget.SampleLevel(
-        MmdToolsR32FSampler, center + float2(-0.2f, 0.2f), 0));
-    value = min(value, MmdToolsR32FTarget.SampleLevel(
-        MmdToolsR32FSampler, center + float2(0.2f, 0.2f), 0));
+    // Scan a fixed low-resolution grid so a 4x4 output does not depend on
+    // the caster landing at the center texel.  The caster target is 2048x2048
+    // and this 16x16 diagnostic grid is sufficient to witness the real
+    // non-clear R32F data for the PMX fixture without a full-screen readback.
+    float value = 1.0f;
+    [unroll]
+    for (int y = 0; y < 16; ++y)
+    {
+        [unroll]
+        for (int x = 0; x < 16; ++x)
+        {
+            const float2 uv = (float2(x, y) + 0.5f) / 16.0f;
+            value = min(value, MmdToolsR32FTarget.SampleLevel(
+                MmdToolsR32FSampler, uv, 0));
+        }
+    }
+    // Keep the one-minus transform so the separate output remains visibly
+    // changed from its clear value even when the caster map is all clear.
     return 1.0f - value;
 }
 

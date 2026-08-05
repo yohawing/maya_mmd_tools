@@ -1415,7 +1415,7 @@ class R32FReceiverProbe(_MQuadRenderBase):
             "shaderPath": str(R32F_RECEIVER_PROBE_SHADER_PATH),
             "technique": R32F_RECEIVER_PROBE_TECHNIQUE,
             "parameter": R32F_RECEIVER_PROBE_PARAMETER,
-            "outputTransform": "one-minus-sampled-value",
+            "outputTransform": "one-minus-16x16-min-sampled-value",
             "createAttemptCount": 0,
             "createSucceeded": False,
             "bindAttemptCount": 0,

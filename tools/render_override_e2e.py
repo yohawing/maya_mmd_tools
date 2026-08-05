@@ -311,8 +311,10 @@ def _validate_light_space_camera(camera: object) -> None:
         )
 
 
-def _validate_r32f_receiver_probe(receiver_probe: object) -> None:
-    """Require a successful quad bind/draw/readback without self-shadow claims."""
+def _validate_r32f_receiver_probe(
+    receiver_probe: object, *, require_caster_value: bool = False
+) -> None:
+    """Require quad bind/draw/readback, optionally proving a non-clear caster value."""
     required = {
         "enabled",
         "status",
@@ -363,6 +365,13 @@ def _validate_r32f_receiver_probe(receiver_probe: object) -> None:
         or output.get("readbackCount", 0) < 1
         or output.get("changedFromClear") is not True
         or output.get("nonClearSampleCount", 0) < 1
+        or (
+            require_caster_value
+            and (
+                not isinstance(output.get("minSample"), (int, float))
+                or output.get("minSample") <= 1e-6
+            )
+        )
     ):
         raise RuntimeError(
             "R32F receiver probe did not complete shader bind/draw/readback/release: "
@@ -612,7 +621,8 @@ def run_probe(
                 )
             if r32f_receiver_probe:
                 _validate_r32f_receiver_probe(
-                    (target_report or {}).get("r32fReceiverProbe")
+                    (target_report or {}).get("r32fReceiverProbe"),
+                    require_caster_value=r32f_light_space_caster,
                 )
 
         restored_by_panel = {}

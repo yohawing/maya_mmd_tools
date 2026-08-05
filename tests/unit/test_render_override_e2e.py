@@ -147,7 +147,7 @@ class RenderOverrideE2eTest(unittest.TestCase):
             "shaderPath": "MMDTargetReceiverProbe.fx",
             "technique": "MmdToolsR32FReceiverProbe",
             "parameter": "MmdToolsR32FTarget",
-            "outputTransform": "one-minus-sampled-value",
+            "outputTransform": "one-minus-16x16-min-sampled-value",
             "createAttemptCount": 1,
             "createSucceeded": True,
             "bindAttemptCount": 1,
@@ -165,12 +165,21 @@ class RenderOverrideE2eTest(unittest.TestCase):
                 "readbackCount": 1,
                 "changedFromClear": True,
                 "nonClearSampleCount": 1,
+                "minSample": 0.5,
             },
         }
         render_override_e2e._validate_r32f_receiver_probe(valid)
+        render_override_e2e._validate_r32f_receiver_probe(
+            valid, require_caster_value=True
+        )
         with self.assertRaises(RuntimeError):
             render_override_e2e._validate_r32f_receiver_probe(
                 dict(valid, postDrawCallbackCount=0)
+            )
+        with self.assertRaises(RuntimeError):
+            render_override_e2e._validate_r32f_receiver_probe(
+                dict(valid, output=dict(valid["output"], minSample=0.0)),
+                require_caster_value=True,
             )
 
     def test_r32f_caster_pass_validation_rejects_receiver_claim(self):
