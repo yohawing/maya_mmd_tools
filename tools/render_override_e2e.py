@@ -311,6 +311,47 @@ def _validate_light_space_camera(camera: object) -> None:
         )
 
 
+def _validate_native_shadow_request(request: object) -> None:
+    """Require native light-request ownership without claiming shader composition."""
+    required = {
+        "enabled",
+        "status",
+        "reason",
+        "source",
+        "lights",
+        "lightCount",
+        "requestAttemptCount",
+        "requestSucceeded",
+        "releaseAttemptCount",
+        "releaseSucceeded",
+    }
+    if not isinstance(request, dict) or not required.issubset(request):
+        raise RuntimeError(f"native shadow-request diagnostic is missing: {request!r}")
+    lights = request["lights"]
+    if (
+        request["source"] != "maya-renderer-light-request"
+        or not isinstance(lights, list)
+        or request["lightCount"] != len(lights)
+        or request["status"] != "released"
+        or request["requestAttemptCount"] < 1
+        or request["requestSucceeded"] is not True
+        or request["releaseAttemptCount"] < 1
+        or request["releaseSucceeded"] is not True
+        or not lights
+        or any(
+            not isinstance(light, dict)
+            or not light.get("shape")
+            or light.get("requestSucceeded") is not True
+            or light.get("releaseSucceeded") is not True
+            for light in lights
+        )
+    ):
+        raise RuntimeError(
+            "native Maya shadow request did not complete directional-light lifecycle: "
+            f"{request!r}"
+        )
+
+
 def _validate_r32f_receiver_probe(
     receiver_probe: object, *, require_caster_value: bool = False
 ) -> None:
@@ -414,6 +455,7 @@ def run_probe(
     r32f_caster_pass: bool = False,
     r32f_receiver_probe: bool = False,
     r32f_light_space_caster: bool = False,
+    native_shadow_request: bool = False,
 ) -> None:
     """Execute the R1 lifecycle and optional R2 target probe in live Maya.
 
@@ -430,6 +472,9 @@ def run_probe(
     receiver composition.  The explicit ``r32f_light_space_caster`` option
     gives the caster operation a temporary orthographic camera aligned to the
     first directional light; it does not claim a complete shadow projection.
+    The explicit ``native_shadow_request`` option only exercises Maya's
+    renderer-owned light shadow request/release API; it does not bind or
+    compose an imported MMD shader.
     """
     import os
 
@@ -449,6 +494,8 @@ def run_probe(
 
     previous_renderer_by_panel = {}
     previous_override_by_panel = {}
+    previous_display_lights_by_panel = {}
+    previous_shadows_by_panel = {}
     plugin_name = None
     plugin_loaded = False
     try:
@@ -468,6 +515,9 @@ def run_probe(
         )
         os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_LIGHT_SPACE"] = (
             "1" if r32f_light_space_caster else "0"
+        )
+        os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_NATIVE_SHADOW_REQUEST"] = (
+            "1" if native_shadow_request else "0"
         )
         cmds.file(new=True, force=True)
         previous_renderer_by_panel = _renderer_by_panel(cmds)
@@ -556,6 +606,15 @@ def run_probe(
             expected_types.insert(0, omr.MSceneRender.kSceneRender)
         if r32f_receiver_probe:
             expected_types.insert(1, omr.MQuadRender.kQuadRender)
+        if native_shadow_request:
+            expected_types.insert(
+                0,
+                getattr(
+                    getattr(omr, "MUserRenderOperation", None),
+                    "kUserDefined",
+                    4,
+                ),
+            )
         report["checks"]["operationTypes"] = operation_types
         report["checks"]["operationOrder"] = operation_types == expected_types
         override.cleanup()
@@ -568,6 +627,48 @@ def run_probe(
         light_xform = cmds.listRelatives(light_shape, parent=True)[0]
         cmds.setAttr(f"{light_xform}.rotateX", -45.0)
         cmds.setAttr(f"{light_xform}.rotateY", -30.0)
+        if native_shadow_request:
+            # A Maya light can exist in the scene while its native depth-map
+            # shadow switch remains off.  Enable only this diagnostic light's
+            # own shadow-producing attribute; imported MMD materials are not
+            # modified.
+            shadow_attrs = {}
+            for shadow_attr in ("useDepthMapShadows", "useRayTraceShadows"):
+                if cmds.attributeQuery(shadow_attr, node=light_shape, exists=True):
+                    cmds.setAttr(f"{light_shape}.{shadow_attr}", True)
+                    shadow_attrs[shadow_attr] = bool(
+                        cmds.getAttr(f"{light_shape}.{shadow_attr}")
+                    )
+            if shadow_attrs:
+                report["checks"]["nativeShadowLight"] = {
+                    "shape": light_shape,
+                    **shadow_attrs,
+                }
+            # Maya's default viewport lighting mode is ``kLightDefault``;
+            # the native shadow-request contract is evaluated only for scene
+            # or selected lights.  Opt the diagnostic panels into all scene
+            # lights and restore their prior mode in the finally block.
+            previous_display_lights_by_panel = {
+                panel: cmds.modelEditor(panel, query=True, displayLights=True)
+                for panel in panels
+            }
+            previous_shadows_by_panel = {
+                panel: cmds.modelEditor(panel, query=True, shadows=True)
+                for panel in panels
+            }
+            for panel in panels:
+                cmds.modelEditor(panel, edit=True, displayLights="all", shadows=True)
+            report["checks"]["nativeShadowDisplayLights"] = {
+                "requested": "all",
+                "active": {
+                    panel: cmds.modelEditor(panel, query=True, displayLights=True)
+                    for panel in panels
+                },
+                "shadows": {
+                    panel: cmds.modelEditor(panel, query=True, shadows=True)
+                    for panel in panels
+                },
+            }
         cmds.viewFit("persp", all=True, fitFactor=0.8)
         cmds.refresh(force=True)
 
@@ -593,8 +694,9 @@ def run_probe(
         cmds.refresh(force=True)
         overridden = _capture_current_view(cmds, output / "override.png")
         report["captures"]["override"] = str(overridden)
-        if target_probe:
+        if target_probe or native_shadow_request:
             override.cleanup()
+        if target_probe:
             target_report = override.target_probe_report()
             report["checks"]["targetProbe"] = target_report
             caster_selection = (target_report or {}).get("casterSelection")
@@ -624,6 +726,10 @@ def run_probe(
                     (target_report or {}).get("r32fReceiverProbe"),
                     require_caster_value=r32f_light_space_caster,
                 )
+        if native_shadow_request:
+            native_report = override.native_shadow_request_report()
+            report["checks"]["nativeShadowRequest"] = native_report
+            _validate_native_shadow_request(native_report)
 
         restored_by_panel = {}
         for panel, override_name in previous_override_by_panel.items():
@@ -638,6 +744,26 @@ def run_probe(
         report["errors"].append(traceback.format_exc())
         log(f"EXCEPTION:\n{report['errors'][-1]}")
     finally:
+        try:
+            if previous_shadows_by_panel:
+                existing_panels = set(cmds.getPanel(type="modelPanel") or [])
+                for panel, shadows in previous_shadows_by_panel.items():
+                    if panel in existing_panels:
+                        cmds.modelEditor(panel, edit=True, shadows=shadows)
+                report["checks"]["nativeShadowShadowsRestored"] = True
+        except Exception as exc:
+            report["errors"].append(f"viewport shadows restore failed: {exc}")
+            report["status"] = "error"
+        try:
+            if previous_display_lights_by_panel:
+                existing_panels = set(cmds.getPanel(type="modelPanel") or [])
+                for panel, display_lights in previous_display_lights_by_panel.items():
+                    if panel in existing_panels:
+                        cmds.modelEditor(panel, edit=True, displayLights=display_lights)
+                report["checks"]["nativeShadowDisplayLightsRestored"] = True
+        except Exception as exc:
+            report["errors"].append(f"display lights restore failed: {exc}")
+            report["status"] = "error"
         try:
             if previous_renderer_by_panel:
                 restored = _restore_renderer_by_panel(cmds, previous_renderer_by_panel)
@@ -791,6 +917,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--native-shadow-request",
+        action="store_true",
+        help=(
+            "Request Maya-owned directional-light shadow maps for one override "
+            "lifecycle; does not bind imported shaders or claim self-shadow parity."
+        ),
+    )
+    parser.add_argument(
         "--model",
         type=Path,
         default=None,
@@ -830,7 +964,7 @@ def main() -> int:
     )
     command = (
         "from tools.render_override_e2e import run_probe\n"
-        f"run_probe(r'{log_path.as_posix()}', r'{report_path.as_posix()}', r'{out_dir.as_posix()}', {expected_draw_api_name!r}, {args.target_probe!r}, {model_literal}, {args.r32f_binding_probe!r}, {args.r32f_caster_pass!r}, {args.r32f_receiver_probe!r}, {args.r32f_light_space_caster!r})\n"
+        f"run_probe(r'{log_path.as_posix()}', r'{report_path.as_posix()}', r'{out_dir.as_posix()}', {expected_draw_api_name!r}, {args.target_probe!r}, {model_literal}, {args.r32f_binding_probe!r}, {args.r32f_caster_pass!r}, {args.r32f_receiver_probe!r}, {args.r32f_light_space_caster!r}, {args.native_shadow_request!r})\n"
     )
     report = run_maya_e2e(
         project_root=_ROOT,

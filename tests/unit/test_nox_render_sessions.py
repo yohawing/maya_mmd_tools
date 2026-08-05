@@ -116,6 +116,7 @@ class NoxRenderSessionsTest(unittest.TestCase):
                 "--r32f-caster-pass",
                 "--r32f-receiver-probe",
                 "--r32f-light-space-caster",
+                "--native-shadow-request",
                 "--model",
                 "F:/fixtures/self-shadow.pmx",
             ]
@@ -135,6 +136,7 @@ class NoxRenderSessionsTest(unittest.TestCase):
         self.assertIn("--r32f-caster-pass", args)
         self.assertIn("--r32f-receiver-probe", args)
         self.assertIn("--r32f-light-space-caster", args)
+        self.assertIn("--native-shadow-request", args)
         self.assertIn("--model", args)
         self.assertEqual(args[args.index("--model") + 1], "F:/fixtures/self-shadow.pmx")
         self.assertTrue(kwargs["external"])

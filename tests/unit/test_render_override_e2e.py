@@ -99,7 +99,7 @@ class RenderOverrideE2eTest(unittest.TestCase):
         ):
             self.assertEqual(render_override_e2e.main(), 1)
         command = run_gate.call_args.kwargs["command"]
-        self.assertIn("False, True, False, False)", command)
+        self.assertIn("False, True, False, False, False)", command)
 
     def test_main_forwards_r32f_receiver_probe_with_caster_pass(self):
         report = {"status": "fail", "captures": {}, "checks": {}, "errors": []}
@@ -117,7 +117,7 @@ class RenderOverrideE2eTest(unittest.TestCase):
         ):
             self.assertEqual(render_override_e2e.main(), 1)
         command = run_gate.call_args.kwargs["command"]
-        self.assertIn("False, True, True, False)", command)
+        self.assertIn("False, True, True, False, False)", command)
 
     def test_main_forwards_r32f_light_space_caster_with_caster_pass(self):
         report = {"status": "fail", "captures": {}, "checks": {}, "errors": []}
@@ -135,7 +135,45 @@ class RenderOverrideE2eTest(unittest.TestCase):
         ):
             self.assertEqual(render_override_e2e.main(), 1)
         command = run_gate.call_args.kwargs["command"]
-        self.assertIn("False, True, False, True)", command)
+        self.assertIn("False, True, False, True, False)", command)
+
+    def test_main_forwards_native_shadow_request(self):
+        report = {"status": "fail", "captures": {}, "checks": {}, "errors": []}
+        with mock.patch.object(
+            render_override_e2e, "run_maya_e2e", return_value=report
+        ) as run_gate, mock.patch.object(
+            render_override_e2e.sys,
+            "argv",
+            ["render_override_e2e.py", "--native-shadow-request"],
+        ):
+            self.assertEqual(render_override_e2e.main(), 1)
+        command = run_gate.call_args.kwargs["command"]
+        self.assertIn("False, False, False, False, True)", command)
+
+    def test_native_shadow_request_validation_requires_full_release_lifecycle(self):
+        valid = {
+            "enabled": True,
+            "status": "released",
+            "reason": "native-shadow-request-released",
+            "source": "maya-renderer-light-request",
+            "lights": [
+                {
+                    "shape": "|renderOverrideParityLight|renderOverrideParityLightShape",
+                    "requestSucceeded": True,
+                    "releaseSucceeded": True,
+                }
+            ],
+            "lightCount": 1,
+            "requestAttemptCount": 1,
+            "requestSucceeded": True,
+            "releaseAttemptCount": 1,
+            "releaseSucceeded": True,
+        }
+        render_override_e2e._validate_native_shadow_request(valid)
+        with self.assertRaises(RuntimeError):
+            render_override_e2e._validate_native_shadow_request(
+                dict(valid, releaseSucceeded=False)
+            )
 
     def test_r32f_receiver_probe_validation_requires_draw_and_readback(self):
         valid = {

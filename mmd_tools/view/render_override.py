@@ -40,6 +40,7 @@ RECEIVER_PROBE_TARGET_NAME = "mmdToolsSelfShadowReceiverProbeR32F"
 SHADOW_TARGET_SIZE = 2048
 RECEIVER_PROBE_TARGET_SIZE = 4
 LIGHT_SPACE_CAMERA_NAME = "mmdToolsR32FLightSpaceCamera"
+NATIVE_SHADOW_REQUEST_ENV = "MMD_TOOLS_ENABLE_RENDER_OVERRIDE_NATIVE_SHADOW_REQUEST"
 SELF_SHADOW_MAP_DRAW_FLAG = 0x04
 SHADOW_CLEAR_VALUE = 1.0
 SHADOW_DEPTH_CLEAR_EPSILON = 1e-6
@@ -501,6 +502,405 @@ class LightSpaceCasterCamera:
     def report(self) -> dict:
         """Return JSON-safe camera configuration/lifecycle diagnostics."""
         return dict(self._report)
+
+
+class NativeShadowRequest:
+    """Own Maya's native light-shadow request without touching imported shaders.
+
+    ``MRenderer.setLightRequiresShadows`` is the renderer-owned way for a
+    plug-in to keep a light's native shadow map alive.  This opt-in probe only
+    acquires and releases that request for directional lights; it does not
+    bind a resource to an imported ``dx11Shader`` or claim MMD self-shadow
+    composition/parity.
+    """
+
+    def __init__(self, cmds_module=None, om_module=None, render_module=None):
+        self._cmds = cmds_module
+        self._om = om_module
+        self._render_module = render_module or omr
+        self._requested_lights = []
+        self._report = self._empty_report()
+
+    @staticmethod
+    def _empty_report() -> dict:
+        """Return the stable, JSON-safe native shadow request report."""
+        return {
+            "enabled": True,
+            "status": "not-run",
+            "reason": "not-requested",
+            "source": "maya-renderer-light-request",
+            "lights": [],
+            "lightCount": 0,
+            "requestAttemptCount": 0,
+            "requestSucceeded": False,
+            "releaseAttemptCount": 0,
+            "releaseSucceeded": False,
+            "lastError": None,
+            "context": {
+                "status": "not-run",
+                "stage": None,
+                "lightingMode": None,
+                "lightFilter": None,
+                "lightCount": 0,
+                "lights": [],
+                "lastError": None,
+            },
+        }
+
+    def _modules(self):
+        """Resolve Maya modules lazily so lifecycle tests stay host-independent."""
+        if self._cmds is None:
+            import maya.cmds as cmds
+
+            self._cmds = cmds
+        if self._om is None:
+            import maya.api.OpenMaya as om
+
+            self._om = om
+        return self._cmds, self._om
+
+    @staticmethod
+    def _light_name(shape: object) -> str:
+        """Return a stable light-shape name for JSON diagnostics."""
+        return str(shape)
+
+    def _mobject_for_shape(self, shape, om_module):
+        """Resolve a directional-light shape to an MObject."""
+        selection = om_module.MSelectionList()
+        selection.add(shape)
+        return selection.getDependNode(0)
+
+    def _object_candidates(self, shape, cmds_module, om_module):
+        """Yield the shape and parent transform candidates accepted by Maya."""
+        yield "shape", shape, self._mobject_for_shape(shape, om_module)
+        parents = cmds_module.listRelatives(shape, parent=True, fullPath=True) or []
+        for parent in parents[:1]:
+            yield "transform", parent, self._mobject_for_shape(parent, om_module)
+
+    def _context_object_candidates(self, context):
+        """Yield active directional-light objects from the current draw context."""
+        context_report = self._report["context"]
+        context_report.update(
+            status="running",
+            stage="need-evaluate-all-lights",
+            lightingMode=None,
+            lightFilter=None,
+            lightCount=0,
+            lights=[],
+            lastError=None,
+        )
+        draw_context_type = getattr(self._render_module, "MDrawContext", None)
+        light_filter = getattr(draw_context_type, "kFilteredIgnoreLightLimit", None)
+        context_report["lightFilter"] = light_filter
+        renderer = getattr(self._render_module, "MRenderer", None)
+        need_evaluate_all_lights = getattr(renderer, "needEvaluateAllLights", None)
+        try:
+            if callable(need_evaluate_all_lights):
+                # Maya's native shadow prepass explicitly requests light
+                # evaluation before querying the active-light list. Without
+                # this call the Python draw context can report no lights (or
+                # raise while the renderer is still updating its light cache).
+                need_evaluate_all_lights()
+            lighting_mode_method = getattr(context, "getLightingMode", None)
+            if callable(lighting_mode_method):
+                lighting_mode = lighting_mode_method()
+                context_report["lightingMode"] = str(lighting_mode)
+                allowed_modes = {
+                    getattr(draw_context_type, "kSelectedLights", None),
+                    getattr(draw_context_type, "kSceneLights", None),
+                }
+                allowed_modes.discard(None)
+                if allowed_modes and lighting_mode not in allowed_modes:
+                    context_report.update(
+                        status="skipped",
+                        stage="lighting-mode",
+                        reason="lighting-mode-has-no-scene-lights",
+                    )
+                    return
+            context_report["stage"] = "number-of-active-lights"
+            if light_filter is None:
+                count = int(context.numberOfActiveLights())
+            else:
+                count = int(context.numberOfActiveLights(light_filter))
+            context_report["lightCount"] = count
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc!r}"
+            context_report.update(status="unsupported", lastError=error)
+            raise
+        context_report["status"] = "ready"
+        for index in range(max(count, 0)):
+            context_report["stage"] = f"light-information-{index}"
+            if light_filter is None:
+                info = context.getLightParameterInformation(index)
+            else:
+                info = context.getLightParameterInformation(index, light_filter)
+            if info is None:
+                continue
+            light_type = str(info.lightType()).lower()
+            context_light = {
+                "index": index,
+                "lightType": light_type,
+                "parameters": {},
+            }
+            parameter_list = getattr(info, "parameterList", None)
+            parameter_semantic = getattr(info, "parameterSemantic", None)
+            get_parameter = getattr(info, "getParameter", None)
+            if callable(parameter_list) and callable(parameter_semantic) and callable(get_parameter):
+                light_info_type = getattr(
+                    self._render_module, "MLightParameterInformation", None
+                )
+                interesting_semantics = {
+                    getattr(light_info_type, name, None)
+                    for name in (
+                        "kGlobalShadowOn",
+                        "kShadowOn",
+                        "kLightEnabled",
+                        "kEmitsDiffuse",
+                        "kEmitsSpecular",
+                    )
+                }
+                interesting_semantics.discard(None)
+                for parameter_name in parameter_list():
+                    semantic = parameter_semantic(parameter_name)
+                    if semantic not in interesting_semantics:
+                        continue
+                    try:
+                        context_light["parameters"][str(parameter_name)] = str(
+                            get_parameter(parameter_name)
+                        )
+                    except Exception as exc:
+                        context_light["parameters"][str(parameter_name)] = (
+                            f"{type(exc).__name__}: {exc!r}"
+                        )
+            context_report["lights"].append(context_light)
+            if "directional" not in light_type:
+                continue
+            path = info.lightPath()
+            full_path_name = getattr(path, "fullPathName", None)
+            node = getattr(path, "node", None)
+            if not callable(full_path_name) or not callable(node):
+                continue
+            light_name = full_path_name()
+            yield "draw-context", light_name, node()
+            transform = getattr(path, "transform", None)
+            if callable(transform):
+                transform_path = transform()
+                transform_full_path_name = getattr(transform_path, "fullPathName", None)
+                transform_node = getattr(transform_path, "node", None)
+                if callable(transform_full_path_name) and callable(transform_node):
+                    yield "draw-context-transform", light_name, transform_node()
+        context_report["stage"] = "complete"
+
+    def request(self, context=None) -> dict:
+        """Request native shadow maps for every directional light in the scene."""
+        if self.has_owned_requests():
+            return self.report()
+        previous_release = self.release()
+        if self.has_owned_requests():
+            self._report.update(
+                status="unsupported",
+                reason="previous-shadow-request-release-failed",
+                requestSucceeded=False,
+                lastError=previous_release.get("lastError"),
+            )
+            return self.report()
+
+        report = self._report
+        report.update(
+            status="not-run",
+            reason="no-directional-light",
+            lights=[],
+            lightCount=0,
+            requestSucceeded=False,
+            releaseSucceeded=False,
+            lastError=None,
+        )
+        report["requestAttemptCount"] += 1
+
+        try:
+            cmds, om = self._modules()
+            if context is not None:
+                context_candidates = tuple(self._context_object_candidates(context))
+                grouped_candidates = {}
+                for object_type, object_name, candidate in context_candidates:
+                    grouped_candidates.setdefault(object_name, []).append(
+                        (object_type, object_name, candidate)
+                    )
+                candidate_groups = list(grouped_candidates.items())
+            else:
+                candidate_groups = [
+                    (
+                        shape,
+                        tuple(self._object_candidates(shape, cmds, om)),
+                    )
+                    for shape in (cmds.ls(type="directionalLight", long=True) or [])
+                ]
+            if not candidate_groups:
+                return self.report()
+            renderer = getattr(self._render_module, "MRenderer", None)
+            request_method = getattr(renderer, "setLightRequiresShadows", None)
+            if not callable(request_method):
+                report.update(
+                    status="unsupported",
+                    reason="native-shadow-request-api-unavailable",
+                    lastError="MRenderer.setLightRequiresShadows is unavailable",
+                )
+                return self.report()
+
+            lights = []
+            requested = []
+            for shape, candidates in candidate_groups:
+                light_report = {
+                    "shape": self._light_name(shape),
+                    "objectType": None,
+                    "requestObject": None,
+                    "requestSucceeded": False,
+                    "releaseSucceeded": False,
+                    "lastError": None,
+                }
+                light_object = None
+                for object_type, object_name, candidate in candidates:
+                    try:
+                        result = request_method(candidate, True)
+                        if result is False:
+                            raise RuntimeError(
+                                "MRenderer.setLightRequiresShadows returned False"
+                            )
+                    except Exception as exc:
+                        light_report["lastError"] = f"{type(exc).__name__}: {exc!r}"
+                        continue
+                    light_object = candidate
+                    light_report["objectType"] = object_type
+                    light_report["requestObject"] = self._light_name(object_name)
+                    break
+                if light_object is None:
+                    lights.append(light_report)
+                    continue
+                light_report["requestSucceeded"] = True
+                lights.append(light_report)
+                requested.append((shape, light_object, light_report))
+
+            report["lights"] = lights
+            report["lightCount"] = len(lights)
+            if len(requested) != len(candidate_groups):
+                for _shape, light_object, light_report in requested:
+                    try:
+                        result = request_method(light_object, False)
+                        if result is False:
+                            raise RuntimeError(
+                                "MRenderer.setLightRequiresShadows release returned False"
+                            )
+                        light_report["requestSucceeded"] = False
+                        light_report["releaseSucceeded"] = True
+                    except Exception as exc:
+                        light_report["lastError"] = f"{type(exc).__name__}: {exc!r}"
+                        self._requested_lights.append((_shape, light_object, light_report))
+                report.update(
+                    status="unsupported",
+                    reason="native-shadow-request-failed",
+                    requestSucceeded=False,
+                    lastError="one or more directional-light requests failed",
+                )
+                return self.report()
+
+            self._requested_lights = requested
+            report.update(
+                status="requested",
+                reason="native-shadow-requested",
+                requestSucceeded=True,
+            )
+        except Exception as exc:
+            report.update(
+                status="unsupported",
+                reason="native-shadow-request-failed",
+                requestSucceeded=False,
+                lastError=f"{type(exc).__name__}: {exc!r}",
+            )
+        return self.report()
+
+    def release(self) -> dict:
+        """Release every native shadow request, retaining failed ownership for retry."""
+        if not self._requested_lights:
+            return self.report()
+        self._report["releaseAttemptCount"] += 1
+        renderer = getattr(self._render_module, "MRenderer", None)
+        release_method = getattr(renderer, "setLightRequiresShadows", None)
+        if not callable(release_method):
+            self._report.update(
+                status="unsupported",
+                reason="native-shadow-release-api-unavailable",
+                releaseSucceeded=False,
+                lastError="MRenderer.setLightRequiresShadows is unavailable",
+            )
+            return self.report()
+
+        remaining = []
+        for shape, light_object, light_report in self._requested_lights:
+            try:
+                result = release_method(light_object, False)
+                if result is False:
+                    raise RuntimeError(
+                        "MRenderer.setLightRequiresShadows release returned False"
+                    )
+            except Exception as exc:
+                light_report["lastError"] = f"{type(exc).__name__}: {exc!r}"
+                light_report["releaseSucceeded"] = False
+                remaining.append((shape, light_object, light_report))
+                continue
+            light_report["releaseSucceeded"] = True
+
+        self._requested_lights = remaining
+        if remaining:
+            self._report.update(
+                status="unsupported",
+                reason="native-shadow-release-failed",
+                releaseSucceeded=False,
+                lastError="one or more directional-light requests remained owned",
+            )
+        else:
+            self._report.update(
+                status="released",
+                reason="native-shadow-request-released",
+                releaseSucceeded=True,
+                lastError=None,
+            )
+        return self.report()
+
+    def has_owned_requests(self) -> bool:
+        """Return whether a failed release still owns native light requests."""
+        return bool(self._requested_lights)
+
+    def report(self) -> dict:
+        """Return a JSON-safe copy of native request lifecycle diagnostics."""
+        report = dict(self._report)
+        report["lights"] = [dict(light) for light in self._report["lights"]]
+        return report
+
+
+_MUserRenderOperationBase = getattr(omr, "MUserRenderOperation", omr.MSceneRender)
+
+
+class NativeShadowRequestRender(_MUserRenderOperationBase):
+    """Queue Maya native light shadows from a real VP2 draw context."""
+
+    def __init__(self, request: NativeShadowRequest):
+        super().__init__("mmdToolsNativeShadowRequest")
+        self._request = request
+        self._execute_count = 0
+
+    def requiresLightData(self):
+        """Ask VP2 to populate active-light information for ``execute``."""
+        return True
+
+    def execute(self, context):
+        """Request directional-light shadow maps before the scene operation."""
+        self._execute_count += 1
+        self._request.request(context)
+
+    @property
+    def execute_count(self) -> int:
+        """Return the number of native shadow prepass callbacks observed."""
+        return self._execute_count
 
 
 class ShadowTargetResources:
@@ -1881,6 +2281,16 @@ class PassthroughRenderOverride(omr.MRenderOverride):
 
     def __init__(self, name: str = RENDER_OVERRIDE_NAME, selection_provider=None):
         super().__init__(name)
+        self._native_shadow_request = (
+            NativeShadowRequest()
+            if _enabled_environment_flag(NATIVE_SHADOW_REQUEST_ENV)
+            else None
+        )
+        self._native_shadow_request_operation = (
+            NativeShadowRequestRender(self._native_shadow_request)
+            if self._native_shadow_request is not None
+            else None
+        )
         self._scene_operation = PassthroughSceneRender()
         self._target_probe = (
             ShadowTargetResources()
@@ -1935,6 +2345,8 @@ class PassthroughRenderOverride(omr.MRenderOverride):
             operations = (self._receiver_probe, *operations)
         if self._shadow_target_operation is not None:
             operations = (self._shadow_target_operation, *operations)
+        if self._native_shadow_request_operation is not None:
+            operations = (self._native_shadow_request_operation, *operations)
         self._operations = operations
         self._current_operation = -1
         self._cleanup_count = 0
@@ -2009,6 +2421,12 @@ class PassthroughRenderOverride(omr.MRenderOverride):
                 self._current_operation = -1
                 self._cleanup_count += 1
                 raise RuntimeError("light-space camera release failed; camera retained")
+        if self._native_shadow_request is not None:
+            self._native_shadow_request.release()
+            if self._native_shadow_request.has_owned_requests():
+                self._current_operation = -1
+                self._cleanup_count += 1
+                raise RuntimeError("native shadow request release failed; request retained")
         self._current_operation = -1
         self._cleanup_count += 1
 
@@ -2051,8 +2469,15 @@ class PassthroughRenderOverride(omr.MRenderOverride):
                     self._target_probe.release()
                 if self._light_space_camera is not None:
                     self._light_space_camera.release()
+                if self._native_shadow_request is not None:
+                    self._native_shadow_request.release()
                 raise
-        self._scene_operation.configure_panel_background(destination)
+        try:
+            self._scene_operation.configure_panel_background(destination)
+        except Exception:
+            if self._native_shadow_request is not None:
+                self._native_shadow_request.release()
+            raise
         self._current_operation = -1
 
     def target_probe_report(self) -> Optional[dict]:
@@ -2072,7 +2497,15 @@ class PassthroughRenderOverride(omr.MRenderOverride):
             report["r32fReceiverProbe"] = self._receiver_probe.report()
         if self._r32f_binding_probe is not None:
             report["r32fBindingProbe"] = self._r32f_binding_probe.report()
+        if self._native_shadow_request is not None:
+            report["nativeShadowRequest"] = self._native_shadow_request.report()
         return report
+
+    def native_shadow_request_report(self) -> Optional[dict]:
+        """Return native shadow-request diagnostics when the opt-in probe is enabled."""
+        if self._native_shadow_request is None:
+            return None
+        return self._native_shadow_request.report()
 
     @property
     def cleanup_count(self) -> int:
@@ -2166,6 +2599,9 @@ __all__ = [
     "R32FReceiverProbe",
     "R32FTargetBindingProbe",
     "LightSpaceCasterCamera",
+    "NativeShadowRequest",
+    "NativeShadowRequestRender",
+    "NATIVE_SHADOW_REQUEST_ENV",
     "PassthroughRenderOverride",
     "PassthroughSceneRender",
     "RENDER_OVERRIDE_NAME",

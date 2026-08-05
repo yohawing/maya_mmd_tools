@@ -37,6 +37,14 @@ class _MSceneRender(_Operation):
         super().__init__(name)
 
 
+class _MUserRenderOperation(_Operation):
+    operation_type = 3
+    kUserDefined = operation_type
+
+    def __init__(self, name):
+        super().__init__(name)
+
+
 class _MQuadRender(_Operation):
     operation_type = 2
     kQuadRender = operation_type
@@ -221,6 +229,9 @@ class _MSelectionList:
             raise RuntimeError("selection add failed")
         self.items.append(component)
 
+    def getDependNode(self, index):
+        return ("dependNode", self.items[index])
+
 
 class _CameraDagPath:
     def __init__(self, name):
@@ -246,6 +257,30 @@ class _CameraOverride:
 
 class _CameraRenderModule:
     MCameraOverride = _CameraOverride
+
+
+class _ContextLightPath:
+    def fullPathName(self):
+        return "|renderOverrideParityLight|renderOverrideParityLightShape"
+
+    def node(self):
+        return ("context-light", 0)
+
+
+class _ContextLightInfo:
+    def lightType(self):
+        return "directionalLight"
+
+    def lightPath(self):
+        return _ContextLightPath()
+
+
+class _NativeShadowDrawContext:
+    def numberOfActiveLights(self):
+        return 1
+
+    def getLightParameterInformation(self, _index):
+        return _ContextLightInfo()
 
 
 class _LightSpaceCmds:
@@ -333,6 +368,8 @@ class _MRenderer:
     getRenderTargetManager = MagicMock()
     getShaderManager = MagicMock()
     drawAPI = MagicMock(return_value=kDirectX11)
+    needEvaluateAllLights = MagicMock()
+    setLightRequiresShadows = MagicMock(return_value=True)
 
 
 class _CasterCmds:
@@ -416,6 +453,7 @@ def _import_with_stub():
     original_api = sys.modules.get("maya.api")
     stub = types.ModuleType("maya.api.OpenMayaRender")
     stub.MSceneRender = _MSceneRender
+    stub.MUserRenderOperation = _MUserRenderOperation
     stub.MQuadRender = _MQuadRender
     stub.MPassContext = _MPassContext
     stub.MHUDRender = _MHUDRender
@@ -454,6 +492,9 @@ class RenderOverrideLifecycleTest(unittest.TestCase):
         _MRenderer.getShaderManager.reset_mock()
         _MRenderer.drawAPI.reset_mock()
         _MRenderer.drawAPI.return_value = _MRenderer.kDirectX11
+        _MRenderer.needEvaluateAllLights.reset_mock()
+        _MRenderer.setLightRequiresShadows.reset_mock()
+        _MRenderer.setLightRequiresShadows.return_value = True
 
     def test_scene_hud_present_order_and_iterator_reset(self):
         override = render_override.PassthroughRenderOverride()
@@ -527,6 +568,67 @@ class RenderOverrideLifecycleTest(unittest.TestCase):
         self.assertEqual(report["status"], "unsupported")
         self.assertEqual(report["reason"], "no-directional-light")
         self.assertFalse(camera.has_owned_camera())
+
+    def test_native_shadow_request_owns_and_releases_directional_light_requests(self):
+        request = render_override.NativeShadowRequest(
+            cmds_module=_LightSpaceCmds(),
+            om_module=types.SimpleNamespace(MSelectionList=_MSelectionList),
+            render_module=types.SimpleNamespace(MRenderer=_MRenderer),
+        )
+
+        requested = request.request()
+
+        self.assertEqual(requested["status"], "requested")
+        self.assertTrue(requested["requestSucceeded"])
+        self.assertEqual(requested["lightCount"], 1)
+        self.assertTrue(request.has_owned_requests())
+        requested_object = _MRenderer.setLightRequiresShadows.call_args.args[0]
+        self.assertEqual(_MRenderer.setLightRequiresShadows.call_args.args[1], True)
+
+        released = request.release()
+
+        self.assertEqual(released["status"], "released")
+        self.assertTrue(released["releaseSucceeded"])
+        self.assertFalse(request.has_owned_requests())
+        self.assertEqual(
+            _MRenderer.setLightRequiresShadows.call_args_list,
+            [mock.call(requested_object, True), mock.call(requested_object, False)],
+        )
+
+    def test_native_shadow_request_retains_ownership_when_release_is_rejected(self):
+        request = render_override.NativeShadowRequest(
+            cmds_module=_LightSpaceCmds(),
+            om_module=types.SimpleNamespace(MSelectionList=_MSelectionList),
+            render_module=types.SimpleNamespace(MRenderer=_MRenderer),
+        )
+        _MRenderer.setLightRequiresShadows.side_effect = [True, False]
+
+        self.assertEqual(request.request()["status"], "requested")
+        released = request.release()
+
+        self.assertEqual(released["status"], "unsupported")
+        self.assertEqual(released["reason"], "native-shadow-release-failed")
+        self.assertFalse(released["releaseSucceeded"])
+        self.assertTrue(request.has_owned_requests())
+        _MRenderer.setLightRequiresShadows.side_effect = None
+
+    def test_native_shadow_request_uses_active_draw_context_light_object(self):
+        request = render_override.NativeShadowRequest(
+            cmds_module=_LightSpaceCmds(),
+            om_module=types.SimpleNamespace(MSelectionList=_MSelectionList),
+            render_module=types.SimpleNamespace(MRenderer=_MRenderer),
+        )
+
+        report = request.request(_NativeShadowDrawContext())
+
+        self.assertEqual(report["status"], "requested")
+        self.assertEqual(report["lights"][0]["objectType"], "draw-context")
+        self.assertEqual(
+            _MRenderer.setLightRequiresShadows.call_args.args[0],
+            ("context-light", 0),
+        )
+        _MRenderer.needEvaluateAllLights.assert_called_once_with()
+        request.release()
 
     def test_registration_is_idempotent_and_owned(self):
         first = render_override.initializePlugin(object())
