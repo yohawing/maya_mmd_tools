@@ -176,6 +176,7 @@ def test_all_mode_generates_one_image_first_gallery_for_every_case(tmp_path):
     document = (output / "index.html").read_text(encoding="utf-8")
     assert document.count('class="case-card') == 3
     assert 'class="gallery"' in document
+    assert "grid-template-columns:repeat(3,minmax(0,1fr))" in document
     assert "<table" not in document
 
 

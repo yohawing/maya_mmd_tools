@@ -731,7 +731,8 @@ def _write_html(summary: Dict[str, Any], output_dir: Path) -> Path:
 h1{font-size:1rem;margin:0 0 4px}.meta{font-size:.62rem;opacity:.75;margin:0 0 8px}
 .case-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:8px}.case-card{background:#1b1b1b;border:1px solid #3b3b3b;padding:5px;min-width:0}.case-card.status-fail{border-color:#b44}
 .case-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.case-head h2{font-size:.82rem;line-height:1.15;margin:0;overflow-wrap:anywhere}.status{font-size:.62rem;font-weight:700;white-space:nowrap}.status.fail{color:#f88}.status.unavailable,.status.unreviewed{color:#e9b85c}.status.pass{color:#7dce9b}
-.gallery{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:4px;margin-top:4px}.gallery figure{margin:0;background:#050505}.gallery img{display:block;width:100%%;height:min(58vh,640px);object-fit:contain;border:1px solid #333}.gallery figcaption{text-align:center;font-size:.58rem;color:#aaa;padding:2px}.gallery a{display:block}.no-images{font-size:.62rem;color:#e9b85c;margin:12px 4px}
+.gallery{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;margin-top:4px}.gallery figure{margin:0;background:#050505}.gallery img{display:block;width:100%%;height:min(58vh,640px);object-fit:contain;border:1px solid #333}.gallery figcaption{text-align:center;font-size:.58rem;color:#aaa;padding:2px}.gallery a{display:block}.no-images{font-size:.62rem;color:#e9b85c;margin:12px 4px}
+@media(max-width:560px){.gallery{grid-template-columns:1fr}}
 details{font-size:.58rem;color:#999;margin-top:4px}summary{cursor:pointer}.details{overflow-wrap:anywhere}.case-card.status-unavailable .gallery{min-height:24px}
 </style></head><body>
 <h1>RO-0 RenderOverride visual gate</h1>
