@@ -947,6 +947,89 @@ def run_shader_override_smoke(
     )
 
 
+def run_render_override_smoke(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    default_maya_version: str,
+    root: Path,
+    mayapy,
+    mayapy_env,
+    mayapy_arg_path,
+    mayapy_script,
+) -> None:
+    """Run the opt-in R1 passthrough render-override mayapy smoke."""
+    version = option(posargs, "--maya", default_maya_version)
+    out = option(posargs, "--out", str(root / "build/captures/render_override_smoke.png"))
+    frame = option(posargs, "--frame", "1")
+    width = option(posargs, "--width", "640")
+    height = option(posargs, "--height", "480")
+    mayapy_path = mayapy(version)
+    if not mayapy_path.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy_path}")
+    env = mayapy_env(
+        mayapy_path,
+        MAYA_VERSION=version,
+        MMD_TOOLS_ENABLE_RENDER_OVERRIDE="1",
+        MMD_TOOLS_ENABLE_RENDER_OVERRIDE_TARGET_PROBE="0",
+        MMD_TOOLS_SKIP_SHADER_OVERRIDE="1",
+    )
+    session.run(
+        str(mayapy_path),
+        mayapy_script(mayapy_path, "tests/viewport/smoke_render_override.py"),
+        "--out",
+        mayapy_arg_path(mayapy_path, out),
+        "--frame",
+        frame,
+        "--width",
+        width,
+        "--height",
+        height,
+        env=env,
+        external=True,
+    )
+
+
+def run_render_override_e2e(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    default_maya_version: str,
+    root: Path,
+) -> None:
+    """Run the GUI R1 gate and optional real-PMX target-routing probe."""
+    version = option(posargs, "--maya", default_maya_version)
+    out_dir = option(posargs, "--out-dir", str(root / "build" / "render-override-e2e"))
+    port = option(posargs, "--port", "7731")
+    timeout = option(posargs, "--timeout", "240")
+    vp2_device = option(posargs, "--vp2-device", "default")
+    target_probe = "--target-probe" in posargs
+    model = option(posargs, "--model", "")
+    if vp2_device not in {"default", "dx11", "gl", "glcore"}:
+        session.error(f"Unsupported --vp2-device: {vp2_device}")
+    if model and not target_probe:
+        session.error("--model requires --target-probe")
+    session.run(
+        sys.executable,
+        str(root / "tools" / "render_override_e2e.py"),
+        "--maya",
+        version,
+        "--out-dir",
+        out_dir,
+        "--port",
+        port,
+        "--timeout",
+        timeout,
+        "--vp2-device",
+        vp2_device,
+        *(["--model", model] if model else []),
+        *(["--target-probe"] if target_probe else []),
+        external=True,
+    )
+
+
 def run_static_render(
     session,
     *,

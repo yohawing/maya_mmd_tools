@@ -7,7 +7,12 @@ from pathlib import Path
 from unittest import mock
 
 from tools.nox.common import _has_flag, _option, _options
-from tools.nox.maya_sessions import run_static_render, run_visual_regression
+from tools.nox.maya_sessions import (
+    run_render_override_e2e,
+    run_render_override_smoke,
+    run_static_render,
+    run_visual_regression,
+)
 
 
 class _FakeSession:
@@ -76,6 +81,66 @@ class NoxRenderSessionsTest(unittest.TestCase):
         self.assertIn("0.12", compare_args)
         self.assertTrue(capture_kwargs["external"])
         self.assertTrue(compare_kwargs["external"])
+
+    def test_render_override_smoke_enables_only_opt_in_override(self):
+        session = _FakeSession(["--maya", "2024", "--out", "build/captures/r1.png"])
+        mayapy = mock.Mock()
+        mayapy.exists.return_value = True
+        env = {}
+        run_render_override_smoke(
+            session,
+            posargs=session.posargs,
+            option=_option,
+            default_maya_version="2026",
+            root=Path("F:/repo"),
+            mayapy=lambda _version: mayapy,
+            mayapy_env=lambda _mayapy, **values: env.update(values) or env,
+            mayapy_arg_path=lambda _mayapy, path: str(path),
+            mayapy_script=lambda _mayapy, script: script,
+        )
+        args, kwargs = session.runs[0]
+        self.assertIn("tests/viewport/smoke_render_override.py", args)
+        self.assertEqual(env["MMD_TOOLS_ENABLE_RENDER_OVERRIDE"], "1")
+        self.assertEqual(env["MMD_TOOLS_SKIP_SHADER_OVERRIDE"], "1")
+        self.assertTrue(kwargs["external"])
+
+    def test_render_override_e2e_forwards_requested_vp2_device(self):
+        session = _FakeSession(
+            [
+                "--maya",
+                "2026",
+                "--vp2-device",
+                "dx11",
+                "--target-probe",
+                "--model",
+                "F:/fixtures/self-shadow.pmx",
+            ]
+        )
+        run_render_override_e2e(
+            session,
+            posargs=session.posargs,
+            option=_option,
+            default_maya_version="2026",
+            root=Path("F:/repo"),
+        )
+        args, kwargs = session.runs[0]
+        self.assertIn("--vp2-device", args)
+        self.assertEqual(args[args.index("--vp2-device") + 1], "dx11")
+        self.assertIn("--target-probe", args)
+        self.assertIn("--model", args)
+        self.assertEqual(args[args.index("--model") + 1], "F:/fixtures/self-shadow.pmx")
+        self.assertTrue(kwargs["external"])
+
+    def test_render_override_e2e_rejects_model_without_target_probe(self):
+        session = _FakeSession(["--model", "F:/fixtures/self-shadow.pmx"])
+        with self.assertRaises(AssertionError):
+            run_render_override_e2e(
+                session,
+                posargs=session.posargs,
+                option=_option,
+                default_maya_version="2026",
+                root=Path("F:/repo"),
+            )
 
 
 if __name__ == "__main__":

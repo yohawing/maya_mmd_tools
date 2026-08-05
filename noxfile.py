@@ -127,6 +127,8 @@ from tools.nox.maya_sessions import (  # noqa: E402
     run_root_move_skin_parity_probe as _run_root_move_skin_parity_probe,
     run_anim_layer_graph_compare as _run_anim_layer_graph_compare,
     run_runtime_bake_bench as _run_runtime_bake_bench,
+    run_render_override_e2e as _run_render_override_e2e,
+    run_render_override_smoke as _run_render_override_smoke,
     run_shader_override_smoke as _run_shader_override_smoke,
     run_shader_visual_semantic_gate as _run_shader_visual_semantic_gate,
     run_static_render as _run_static_render,
@@ -1639,6 +1641,54 @@ def maya_shader_override_smoke(session: nox.Session) -> None:
         mayapy_env=_mayapy_env,
         mayapy_arg_path=_mayapy_arg_path,
         mayapy_script=_mayapy_script,
+    )
+
+
+@nox.session(venv_backend="none")
+def maya_render_override_smoke(session: nox.Session) -> None:
+    """Smoke the opt-in R1 passthrough scene/HUD/present override through mayapy.
+
+    Batch mayapy cannot select a panel override, so this verifies registration,
+    operation order, and plugin teardown only.  It does not replace the GUI
+    commandPort activation and capture-parity gate.
+
+    Examples:
+        uvx nox -s maya_render_override_smoke -- --maya 2024
+        uvx nox -s maya_render_override_smoke -- --maya 2024 --out build/captures/render_override_smoke.png
+    """
+    _run_render_override_smoke(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        root=ROOT,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_arg_path=_mayapy_arg_path,
+        mayapy_script=_mayapy_script,
+    )
+
+
+@nox.session(venv_backend="none")
+def maya_render_override_e2e(session: nox.Session) -> None:
+    """Run the R1 GUI commandPort lifecycle and paired-capture parity gate.
+
+    This starts an isolated Maya GUI profile through Explorer, verifies that
+    plugin load preserves the active override, captures baseline and override
+    ON frames, requires scene/HUD/present order, restores the prior override,
+    and applies a strict host-side RGB comparison.
+
+    Example:
+        uvx nox -s maya_render_override_e2e -- --maya 2024
+        uvx nox -s maya_render_override_e2e -- --maya 2026 --vp2-device dx11
+        uvx nox -s maya_render_override_e2e -- --maya 2026 --vp2-device dx11 --target-probe
+    """
+    _run_render_override_e2e(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        root=ROOT,
     )
 
 
