@@ -127,7 +127,12 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _load_cases(manifest_path: Path, names: list[str], tags: list[str], limit: int) -> tuple[dict, list[dict]]:
+def _load_cases(
+    manifest_path: Path,
+    names: list[str],
+    tags: list[str],
+    limit: int,
+) -> tuple[dict, list[dict]]:
     with open(manifest_path, encoding="utf-8") as f:
         manifest = json.load(f)
 
@@ -151,6 +156,21 @@ def _load_cases(manifest_path: Path, names: list[str], tags: list[str], limit: i
         image.update(case.get("image", {}))
         light = dict(defaults.get("light", {}))
         light.update(case.get("metadata", {}).get("light", {}))
+        frames = case.get("frames", [defaults.get("frame", 0)])
+        assets = case.get("assets") or {}
+        camera_motion_rel = (
+            assets.get("cameraMotion")
+            or assets.get("camera_motion")
+            or assets.get("cameraVmd")
+            or assets.get("camera_vmd")
+        )
+        if isinstance(camera_motion_rel, dict):
+            camera_motion_rel = (
+                camera_motion_rel.get("path")
+                or camera_motion_rel.get("file")
+                or camera_motion_rel.get("vmd")
+            )
+        camera_motion = (manifest_dir / camera_motion_rel).resolve() if camera_motion_rel else None
 
         model = (manifest_dir / case["assets"]["model"]).resolve()
         oracle_rel = case.get("oracle", {}).get("path")
@@ -160,9 +180,11 @@ def _load_cases(manifest_path: Path, names: list[str], tags: list[str], limit: i
         selected.append(
             {
                 "name": name,
+                "kind": case.get("kind"),
                 "model": str(model),
-                "frame": int(case.get("frames", [defaults.get("frame", 0)])[0]),
+                "frame": int(frames[0]),
                 "camera": camera,
+                "camera_motion": str(camera_motion) if camera_motion else None,
                 "image": image,
                 "light": light,
                 "oracle_png": str(oracle_png) if oracle_png else None,
@@ -174,6 +196,38 @@ def _load_cases(manifest_path: Path, names: list[str], tags: list[str], limit: i
         selected = selected[:limit]
 
     return manifest, selected
+
+
+def _validate_camera_motion_data(vmd_data: object, vmd_path: Path) -> int:
+    """Require at least one camera frame before importing a camera VMD."""
+    frames = getattr(vmd_data, "camera_frames", None)
+    if not frames:
+        raise RuntimeError(f"Camera Motion VMD has no camera frames: {vmd_path}")
+    try:
+        return len(frames)
+    except TypeError as exc:
+        raise RuntimeError(f"Camera Motion VMD camera frames are invalid: {vmd_path}") from exc
+
+
+def _camera_plan_for_case(case: dict) -> dict:
+    """Describe whether a case uses its manifest camera or a Maya VMD camera."""
+    case_name = case.get("name", "<unnamed>")
+    camera_motion = case.get("camera_motion")
+    if camera_motion:
+        return {
+            "source": "maya-vmd-camera-import",
+            "vmd": str(camera_motion),
+            "frame": int(case.get("frame", 0)),
+        }
+    camera = case.get("camera")
+    if not isinstance(camera, dict):
+        raise RuntimeError(f"Manifest camera is missing for case {case_name}")
+    return {"source": "manifest", "parameters": dict(camera)}
+
+
+def _camera_plan(cases: list[dict]) -> dict[str, dict]:
+    """Build immutable camera provenance for selected cases."""
+    return {case["name"]: _camera_plan_for_case(case) for case in cases}
 
 
 def _sha256_file(path: Path) -> str:
@@ -257,9 +311,11 @@ def _build_maya_code(
     display_textures: bool = True,
     debug_outline_sentinel: bool = False,
 ) -> str:
+    camera_plans = _camera_plan(cases)
     payload = {
         "project_root": str(project_root),
         "cases": cases,
+        "camera_plans": camera_plans,
         "shader_fx": str(shader_fx),
         "output_dir": str(output_dir),
         "log_path": str(log_path),
@@ -288,6 +344,7 @@ _output_dir = Path(_payload["output_dir"])
 _log_path = Path(_payload["log_path"])
 _shader_fx = Path(_payload["shader_fx"])
 _cases = _payload["cases"]
+_camera_plans = _payload["camera_plans"]
 _width = int(_payload["width"])
 _height = int(_payload["height"])
 _compare = bool(_payload["compare"])
@@ -470,14 +527,41 @@ def _png_diff(a_path, b_path):
         bbox = diff.getbbox()
         return {{"available": True, "mean": stat.mean, "extrema": extrema, "bbox": bbox}}
     except Exception as exc:
-        return {{"available": False, "reason": str(exc)}}
+        # Maya's bundled Python may not have Pillow.  Reuse the host gate's
+        # standard-library decoder so a missing optional package never turns
+        # a real Oracle comparison into an inconclusive capture report.
+        try:
+            from tests.viewport.visual_regression_compare import _image_metrics
+
+            return {{
+                "available": True,
+                "comparator": "stdlib",
+                "pillow_error": str(exc),
+                "metrics": _image_metrics(b_path, a_path),
+            }}
+        except Exception as fallback_exc:
+            return {{
+                "available": False,
+                "reason": f"Pillow: {{exc}}; stdlib fallback: {{fallback_exc}}",
+            }}
 
 def _make_camera(camera):
     cam, shape = cmds.camera(name="visualRegressionCam")
     cmds.xform(cam, ws=True, t=camera["position"])
     loc = cmds.spaceLocator(name="__visual_regression_target__")[0]
     cmds.xform(loc, ws=True, t=camera["target"])
-    con = cmds.aimConstraint(loc, cam, aimVector=(0, 0, -1), upVector=(0, 1, 0), worldUpType="scene")[0]
+    up = camera.get("up")
+    if up is None:
+        con = cmds.aimConstraint(loc, cam, aimVector=(0, 0, -1), upVector=(0, 1, 0), worldUpType="scene")[0]
+    else:
+        con = cmds.aimConstraint(
+            loc,
+            cam,
+            aimVector=(0, 0, -1),
+            upVector=(0, 1, 0),
+            worldUpType="vector",
+            worldUpVector=tuple(float(value) for value in up),
+        )[0]
     cmds.delete(con, loc)
     fov = float(camera.get("fov", 25))
     aperture = cmds.getAttr(shape + ".horizontalFilmAperture")
@@ -777,6 +861,42 @@ def _apply_mmd_light(case):
     ctrl = light_converter.set_mmd_light_direction(direction, color)
     return {{"sourceDirection": source_direction, "mayaDirection": direction, "color": color, "controller": ctrl}}
 
+def _import_vmd_camera(vmd_path):
+    # Import a camera-motion VMD through the production Maya converter.
+    from mmd_tools.converters.vmd_converter import VmdConverter
+    from mmd_tools.core.vmd_data import VmdData
+
+    path = Path(vmd_path)
+    if not path.is_file():
+        raise RuntimeError("Camera Motion VMD does not exist: " + str(path))
+    try:
+        vmd_data = VmdData().parse_file(str(path))
+        camera_frames = getattr(vmd_data, "camera_frames", None)
+        if not camera_frames:
+            raise RuntimeError("Camera Motion VMD has no camera frames: " + str(path))
+    except Exception as exc:
+        raise RuntimeError("Could not parse Camera Motion VMD " + str(path) + ": " + str(exc)) from exc
+
+    try:
+        converter = VmdConverter()
+        converter.use_animation_layers = False
+        converter.import_camera_animation = True
+        converter.import_light_animation = False
+        converted = converter.convert(
+            vmd_data,
+            bake_mode=False,
+            vmd_bytes=path.read_bytes(),
+            scene_animation_only=True,
+        )
+        if not converted:
+            raise RuntimeError("VmdConverter.convert returned false")
+        camera = converter._get_or_create_camera()
+    except Exception as exc:
+        raise RuntimeError("Could not import Camera Motion VMD " + str(path) + ": " + str(exc)) from exc
+    if not camera or not cmds.objExists(camera):
+        raise RuntimeError("Camera Motion VMD did not create a Maya camera: " + str(path))
+    return camera
+
 def _capture_case(case):
     import importlib
     import mmd_tools.converters as converters
@@ -809,6 +929,18 @@ def _capture_case(case):
         raise RuntimeError("import_mmd_file returned None: " + case["model"])
     _apply_unique_shader_path()
     debug_actions = {{"mmdLight": _apply_mmd_light(case)}}
+    # This is data-only R2 evidence.  It records which real imported PMX
+    # components carry the self-shadow-map flag without changing the shader,
+    # target, or captured render path.
+    from mmd_tools.view.render_override import discover_self_shadow_caster_components
+
+    caster_selection = discover_self_shadow_caster_components()
+    debug_actions["selfShadowCasterSelection"] = {{
+        "roots": list(caster_selection.roots),
+        "components": list(caster_selection.components),
+        "flaggedMaterials": list(caster_selection.flagged_materials),
+        "skippedMaterials": list(caster_selection.skipped_materials),
+    }}
     if _hide_orig_shapes:
         debug_actions["hideOrigShapes"] = _mark_orig_shapes_intermediate()
     if _debug_lambert_control:
@@ -816,7 +948,21 @@ def _capture_case(case):
     if _debug_outline_sentinel:
         debug_actions["outlineSentinel"] = _apply_outline_sentinel()
 
-    camera = _make_camera(case["camera"])
+    camera_plan = _camera_plans.get(case["name"])
+    if not isinstance(camera_plan, dict):
+        raise RuntimeError("Camera plan is missing for " + str(case.get("name")))
+    if camera_plan.get("source") == "maya-vmd-camera-import":
+        camera = _import_vmd_camera(camera_plan.get("vmd"))
+        effective_camera = dict(camera_plan)
+        effective_camera["camera"] = camera
+    elif camera_plan.get("source") == "manifest":
+        parameters = camera_plan.get("parameters")
+        if not isinstance(parameters, dict):
+            raise RuntimeError("Manifest camera parameters are missing for " + str(case.get("name")))
+        camera = _make_camera(parameters)
+        effective_camera = dict(camera_plan)
+    else:
+        raise RuntimeError("Unsupported camera plan source for " + str(case.get("name")))
     _setup_color_management()
     capture_panel = _setup_panel(camera, _display_textures)
     frame = int(case.get("frame", 0))
@@ -875,6 +1021,7 @@ def _capture_case(case):
         "display_textures": _display_textures,
         "shader_issues": shader_issues,
         "debug_actions": debug_actions,
+        "effective_camera": effective_camera,
         "scene": _scene_diag(capture_panel),
         "shaders": shader_diag,
     }}
@@ -891,6 +1038,7 @@ def _capture_case(case):
         "center_sample": center_sample,
         "shader_backend": _shader_backend,
         "shader_issues": shader_issues,
+        "effective_camera": effective_camera,
         "display_textures": _display_textures,
         "diff": diff,
     }}
@@ -962,9 +1110,15 @@ def main() -> int:
         output_dir = (project_root / output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    _, cases = _load_cases(manifest_path, args.case, args.tag, args.limit)
+    _, cases = _load_cases(
+        manifest_path,
+        args.case,
+        args.tag,
+        args.limit,
+    )
     if not cases:
         raise RuntimeError("No manifest cases selected.")
+    _camera_plan(cases)
     shader_fx = _prepare_shader(project_root, output_dir, args.shader_fx)
     log_path = output_dir / "maya_visual_regression.log"
     report_path = output_dir / "visual-regression-report.json"
