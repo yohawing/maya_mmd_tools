@@ -1,9 +1,10 @@
 // Opt-in MMD self-shadow caster pass for the Maya Viewport 2.0 RenderOverride.
 //
-// This effect is intentionally limited to the plugin-owned R32F/D32 target
-// pair.  It writes the rasterized DirectX viewport depth value to the R32F
-// color attachment and to SV_Depth.  It does not sample a shadow map, shade
-// a receiver, or claim MMD self-shadow parity.
+// This effect is intentionally limited to the plugin-owned RGBA8/D24S8
+// target pair.  Maya's production MMD render items accept a scalar color
+// output here, so the color attachment carries a normalized-depth diagnostic
+// in its R channel while D24S8 retains the full depth precision.  It does not
+// sample a shadow map, shade a receiver, or claim MMD self-shadow parity.
 
 // Maya does not expose the semantic-only WorldViewProjection parameter to a
 // Python MShaderInstance callback reliably on an offscreen target.  The

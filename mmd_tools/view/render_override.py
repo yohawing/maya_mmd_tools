@@ -47,6 +47,20 @@ RECEIVER_PROBE_TARGET_NAME = "mmdToolsSelfShadowReceiverProbeR32F"
 SHADOW_TARGET_SIZE = 2048
 RECEIVER_PROBE_TARGET_SIZE = 4
 LIGHT_SPACE_CAMERA_NAME = "mmdToolsR32FLightSpaceCamera"
+
+# Maya's DX11 scene render accepts the MMD dx11Shader render items with an
+# RGBA8/D24S8 attachment pair.  A scalar R32F/D32 pair can be acquired, but
+# the same production items remain all-clear when routed through that pair.
+# Keep the logical target names/API stable while selecting the proven storage
+# formats at runtime; the caster effect writes normalized depth to the RGBA8
+# red channel and full precision to D24S8.
+SHADOW_COLOR_RASTER_FORMAT = getattr(
+    omr.MRenderer, "kR8G8B8A8_UNORM", omr.MRenderer.kR32_FLOAT
+)
+SHADOW_DEPTH_RASTER_FORMAT = getattr(
+    omr.MRenderer, "kD24S8", omr.MRenderer.kD32_FLOAT
+)
+SHADOW_PACKED_COLOR_FORMAT = getattr(omr.MRenderer, "kR8G8B8A8_UNORM", None)
 NATIVE_SHADOW_REQUEST_ENV = "MMD_TOOLS_ENABLE_RENDER_OVERRIDE_NATIVE_SHADOW_REQUEST"
 NATIVE_SHADOW_BINDING_PROBE_ENV = "MMD_TOOLS_ENABLE_RENDER_OVERRIDE_NATIVE_SHADOW_BINDING_PROBE"
 NATIVE_SHADOW_BINDING_PROBE_OPERATION_NAME = "mmdToolsNativeShadowBindingProbe"
@@ -957,11 +971,12 @@ class NativeShadowRequestRender(_MUserRenderOperationBase):
 
 
 class ShadowTargetResources:
-    """Own fixed-size R32F/D32 VP2 targets for the R2 architecture probe.
+    """Own fixed-size VP2 caster targets for the R2 architecture probe.
 
     These resources are deliberately opt-in and do not implement MMD shadow
-    projection or composition.  They establish target ownership and expose a
-    conservative caster occupancy diagnostic from D32/R32F readback.
+    projection or composition.  Maya's production DX11 material route uses a
+    packed-depth RGBA8/D24S8 pair; the logical R32F/D32 names are retained for
+    the probe API while the report exposes the actual raster formats.
     """
 
     def __init__(self):
@@ -971,7 +986,7 @@ class ShadowTargetResources:
                 SHADOW_TARGET_SIZE,
                 SHADOW_TARGET_SIZE,
                 1,
-                omr.MRenderer.kR32_FLOAT,
+                SHADOW_COLOR_RASTER_FORMAT,
                 0,
                 False,
             ),
@@ -980,7 +995,7 @@ class ShadowTargetResources:
                 SHADOW_TARGET_SIZE,
                 SHADOW_TARGET_SIZE,
                 1,
-                omr.MRenderer.kD32_FLOAT,
+                SHADOW_DEPTH_RASTER_FORMAT,
                 0,
                 False,
             ),
@@ -1003,7 +1018,12 @@ class ShadowTargetResources:
         self._occupancy_captured = False
 
     def acquire(self) -> tuple:
-        """Acquire the R32F color and D32 depth targets for one viewport frame."""
+        """Acquire the logical shadow target pair for one viewport frame.
+
+        On Maya DX11 the production MMD material route is backed by an
+        RGBA8/D24S8 pair.  The public target names remain the historical
+        R32F/D32 names so existing probe consumers do not need to change.
+        """
         manager = omr.MRenderer.getRenderTargetManager()
         if manager is None:
             raise RuntimeError("Viewport 2.0 render target manager is unavailable")
@@ -1057,12 +1077,18 @@ class ShadowTargetResources:
                 self._targets[role] = None
 
     def capture_color_clear_sample(self) -> None:
-        """Read one R32F texel after the probe clear for a numeric contract check."""
+        """Read one color texel after the probe clear for a contract check."""
         self._color_clear_sample = self._read_color_clear_sample()
         self._readback_count += 1
 
     def capture_color_occupancy(self, caster_selection: Optional[dict]) -> dict:
-        """Report a cheap first-sample R32F check without scanning the texture."""
+        """Classify caster writes in the color attachment.
+
+        The real Maya DX11 path uses a normalized-depth diagnostic in RGBA8, so
+        the RGBA8 path scans the red byte.  Test doubles and older renderers that
+        only expose R32F retain the legacy first-sample, non-authoritative
+        diagnostic.
+        """
         selection_status = (
             caster_selection.get("status")
             if isinstance(caster_selection, dict)
@@ -1098,6 +1124,37 @@ class ShadowTargetResources:
                 selected_count=selected_count,
             )
 
+        if self._uses_packed_color_storage():
+            try:
+                samples = self._read_packed_color_samples()
+            except Exception as exc:
+                return self._set_color_occupancy(
+                    status="unsupported",
+                    reason="color-readback-unavailable",
+                    selected_count=selected_count,
+                    error=str(exc),
+                    encoding="normalized-depth-r8",
+                )
+            self._color_clear_sample = samples["firstSample"]
+            self._readback_count += 1
+            if samples["belowClearSampleCount"]:
+                return self._set_color_occupancy(
+                    status="occupied",
+                    reason="rgba8-color-below-clear",
+                    selected_count=selected_count,
+                    evidenceTarget=SHADOW_COLOR_TARGET_NAME,
+                    encoding="normalized-depth-r8",
+                    **samples,
+                )
+            return self._set_color_occupancy(
+                status="unsupported",
+                reason="all-clear-rgba8-color-after-caster-selection",
+                selected_count=selected_count,
+                evidenceTarget=SHADOW_COLOR_TARGET_NAME,
+                encoding="normalized-depth-r8",
+                **samples,
+            )
+
         try:
             first_sample = self._read_color_clear_sample()
         except Exception as exc:
@@ -1122,11 +1179,11 @@ class ShadowTargetResources:
         )
 
     def capture_depth_occupancy(self, caster_selection: Optional[dict]) -> dict:
-        """Classify selected caster draw evidence from the D32 target.
+        """Classify selected caster draw evidence from the depth target.
 
-        Depth is the conservative draw witness for this operation.  It proves
-        that VP2 submitted selected geometry into the target pair, while the
-        nested color report remains the only R32F-value claim.
+        Depth is the conservative draw witness for this operation.  Maya's
+        D24S8 raw readback is intentionally not decoded here; the RGBA8 color
+        attachment is used as the authoritative write witness on that route.
         """
         selection_status = (
             caster_selection.get("status")
@@ -1153,6 +1210,14 @@ class ShadowTargetResources:
         if selection_status != "ok" or selected_count < 1:
             return self._set_depth_occupancy(
                 status="unsupported", reason="caster-selection-invalid", selected_count=selected_count
+            )
+
+        if self._uses_packed_depth_storage():
+            return self._set_depth_occupancy(
+                status="unsupported",
+                reason="d24s8-depth-readback-unsupported",
+                selected_count=selected_count,
+                encoding="d24s8",
             )
 
         try:
@@ -1189,13 +1254,21 @@ class ShadowTargetResources:
         )
 
     def capture_target_occupancy(self, caster_selection: Optional[dict]) -> dict:
-        """Capture D32 draw evidence plus independent R32F value evidence."""
+        """Capture independent color/depth draw evidence for the target pair."""
         if self._occupancy_captured:
             return dict(self._occupancy)
         depth = self.capture_depth_occupancy(caster_selection)
         color = self.capture_color_occupancy(caster_selection)
-        report = dict(depth)
-        report["evidenceTarget"] = SHADOW_DEPTH_TARGET_NAME
+        if color.get("status") == "occupied":
+            report = dict(color)
+            report["evidenceTarget"] = color.get(
+                "evidenceTarget", SHADOW_COLOR_TARGET_NAME
+            )
+        else:
+            report = dict(depth)
+            report["evidenceTarget"] = depth.get(
+                "evidenceTarget", SHADOW_DEPTH_TARGET_NAME
+            )
         report["colorOccupancy"] = dict(color)
         report["depthOccupancy"] = dict(depth)
         self._occupancy = report
@@ -1203,11 +1276,13 @@ class ShadowTargetResources:
         return dict(report)
 
     def _read_depth_samples(self) -> dict:
-        """Read and summarize every D32 texel while the target is valid."""
+        """Read and summarize float32 depth texels while the target is valid."""
         target = self._targets["depth"]
         if target is None:
             raise RuntimeError("R2 depth target is unavailable for occupancy readback")
         description = self._descriptions["depth"]
+        if self._uses_packed_depth_storage():
+            raise RuntimeError("D24S8 depth rawData decode is unsupported")
         width = int(description.width())
         height = int(description.height())
         if width < 1 or height < 1:
@@ -1261,7 +1336,7 @@ class ShadowTargetResources:
             omr.MRenderTarget.freeRawData(raw_data)
 
     def _read_color_clear_sample(self) -> float:
-        """Read only the first R32F texel for the legacy clear contract."""
+        """Read only the first color texel for the clear contract."""
         target = self._targets["color"]
         if target is None:
             raise RuntimeError("R2 color target is unavailable for clear readback")
@@ -1272,9 +1347,89 @@ class ShadowTargetResources:
             pointer = int(raw_data)
             if pointer <= 0:
                 raise RuntimeError("R2 color target rawData returned an invalid address")
+            if self._uses_packed_color_storage():
+                return ctypes.c_ubyte.from_address(pointer).value / 255.0
             return ctypes.c_float.from_address(pointer).value
         finally:
             omr.MRenderTarget.freeRawData(raw_data)
+
+    def _read_packed_color_samples(self) -> dict:
+        """Read the red byte of every RGBA8 texel as depth evidence."""
+        target = self._targets["color"]
+        if target is None:
+            raise RuntimeError("R2 color target is unavailable for occupancy readback")
+        description = self._descriptions["color"]
+        width = int(description.width())
+        height = int(description.height())
+        if width < 1 or height < 1:
+            raise RuntimeError("R2 color target has invalid dimensions")
+        raw_data, row_pitch, slice_pitch = target.rawData()
+        if not raw_data:
+            raise RuntimeError("R2 color target rawData returned no buffer")
+        try:
+            pointer = int(raw_data)
+            pitch = int(row_pitch)
+            total_pitch = int(slice_pitch)
+            minimum_pitch = width * 4
+            if (
+                pointer <= 0
+                or pitch < minimum_pitch
+                or total_pitch < pitch * height
+            ):
+                raise RuntimeError("R2 color target rawData has invalid address or pitch")
+            first_sample = ctypes.c_ubyte.from_address(pointer).value / 255.0
+            sample_count = width * height
+            non_clear_count = 0
+            below_clear_count = 0
+            minimum = math.inf
+            maximum = -math.inf
+            for row in range(height):
+                row_address = pointer + row * pitch
+                for column in range(width):
+                    value = (
+                        ctypes.c_ubyte.from_address(row_address + column * 4).value
+                        / 255.0
+                    )
+                    minimum = min(minimum, value)
+                    maximum = max(maximum, value)
+                    if not math.isclose(value, SHADOW_CLEAR_VALUE, abs_tol=1e-6):
+                        non_clear_count += 1
+                    if value < SHADOW_CLEAR_VALUE - SHADOW_DEPTH_CLEAR_EPSILON:
+                        below_clear_count += 1
+            return {
+                "sampleCount": sample_count,
+                "nonClearSampleCount": non_clear_count,
+                "belowClearSampleCount": below_clear_count,
+                "nonFiniteSampleCount": 0,
+                "firstSample": first_sample,
+                "minSample": None if minimum == math.inf else minimum,
+                "maxSample": None if maximum == -math.inf else maximum,
+            }
+        finally:
+            omr.MRenderTarget.freeRawData(raw_data)
+
+    def _uses_packed_color_storage(self) -> bool:
+        """Return whether the color description is the Maya RGBA8 format."""
+        if SHADOW_PACKED_COLOR_FORMAT is None:
+            return False
+        try:
+            return int(self._descriptions["color"].rasterFormat()) == int(
+                SHADOW_PACKED_COLOR_FORMAT
+            )
+        except Exception:
+            return False
+
+    def _uses_packed_depth_storage(self) -> bool:
+        """Return whether the depth description is the Maya D24S8 format."""
+        packed_depth_format = getattr(omr.MRenderer, "kD24S8", None)
+        if packed_depth_format is None:
+            return False
+        try:
+            return int(self._descriptions["depth"].rasterFormat()) == int(
+                packed_depth_format
+            )
+        except Exception:
+            return False
 
     @staticmethod
     def _empty_occupancy(status: str, reason: str) -> dict:
@@ -1306,7 +1461,7 @@ class ShadowTargetResources:
     def _set_depth_occupancy(
         self, *, status: str, reason: str, selected_count: int, **values
     ) -> dict:
-        """Store and return one D32 depth occupancy result."""
+        """Store and return one depth occupancy result."""
         report = self._empty_occupancy(status=status, reason=reason)
         report["selectedCasterCount"] = selected_count
         report.update(values)
@@ -1320,6 +1475,7 @@ class ShadowTargetResources:
             "enabled": True,
             "color": self._description_report("color"),
             "depth": self._description_report("depth"),
+            "storage": self._storage_report(),
             "clearDepth": SHADOW_CLEAR_VALUE,
             "acquireCount": self._acquire_count,
             "releaseCount": self._release_count,
@@ -1340,6 +1496,19 @@ class ShadowTargetResources:
             "height": description.height(),
             "samples": description.multiSampleCount(),
             "rasterFormat": description.rasterFormat(),
+        }
+
+    def _storage_report(self) -> dict:
+        """Describe physical formats and their probe-side encodings."""
+        return {
+            "colorRasterFormat": self._descriptions["color"].rasterFormat(),
+            "depthRasterFormat": self._descriptions["depth"].rasterFormat(),
+            "colorEncoding": (
+                "normalized-depth-r8"
+                if self._uses_packed_color_storage()
+                else "scalar-float"
+            ),
+            "depthEncoding": "d24s8" if self._uses_packed_depth_storage() else "float32",
         }
 
 
@@ -1681,14 +1850,15 @@ class R32FTargetBindingProbe:
 
 
 class R32FCasterShaderPass:
-    """Own the opt-in HLSL shader used only by the R32F/D32 caster operation.
+    """Own the opt-in HLSL shader used only by the RGBA8/D24S8 caster pass.
 
     The shader instance is created after the target pair is acquired and is
     released before those targets are detached or released.  A failed create
     or release never falls back to Maya's ordinary material shading: the
     operation reports an empty selection until the lifecycle can be retried.
-    This pass only writes caster depth; receiver composition and self-shadow
-    parity remain explicitly false in the diagnostic report.
+    This pass writes a normalized-depth color diagnostic and D24S8 depth;
+    receiver composition and self-shadow parity remain explicitly false in the
+    diagnostic report.
     """
 
     def __init__(self):
@@ -1714,6 +1884,7 @@ class R32FCasterShaderPass:
             "releaseBeforeTarget": False,
             "preDrawCallbackCount": 0,
             "renderItemCount": 0,
+            "renderItemDiagnostics": [],
             "worldViewProjectionBindCount": 0,
             "matrixSamples": [],
             "parameterErrors": [],
@@ -1870,9 +2041,37 @@ class R32FCasterShaderPass:
         """Bind the active draw-context matrix for the caster effect."""
         self._report["preDrawCallbackCount"] += 1
         try:
-            self._report["renderItemCount"] += len(_render_item_list)
+            items = tuple(_render_item_list or ())
+        except Exception:
+            items = ()
+        try:
+            self._report["renderItemCount"] += len(items)
         except Exception:
             pass
+        if len(self._report["renderItemDiagnostics"]) < 4:
+            for item in items[: 4 - len(self._report["renderItemDiagnostics"])]:
+                diagnostic = {}
+                for attribute in (
+                    "name",
+                    "isEnabled",
+                    "drawMode",
+                    "primitive",
+                    "primitiveAndStride",
+                    "castsShadows",
+                    "receivesShadows",
+                ):
+                    try:
+                        value = getattr(item, attribute)
+                        value = value() if callable(value) else value
+                        if isinstance(value, (str, int, float, bool)) or value is None:
+                            diagnostic[attribute] = value
+                        else:
+                            diagnostic[attribute] = list(value)
+                    except Exception as exc:
+                        diagnostic[f"{attribute}Error"] = (
+                            f"{type(exc).__name__}: {exc!r}"
+                        )
+                self._report["renderItemDiagnostics"].append(diagnostic)
         if context is None or shader_instance is None:
             return
         try:

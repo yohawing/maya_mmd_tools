@@ -134,6 +134,22 @@ class _OccupancyRenderTarget:
         return [ctypes.addressof(self._samples), row_pitch, row_pitch * self._height]
 
 
+class _PackedOccupancyRenderTarget:
+    """Tiny RGBA8 target double with a valid row/slice pitch contract."""
+
+    def __init__(self, samples, width, height):
+        self._samples = (ctypes.c_ubyte * len(samples))(*samples)
+        self._width = width
+        self._height = height
+
+    def updateDescription(self, _description):
+        return None
+
+    def rawData(self):
+        row_pitch = self._width * 4
+        return [ctypes.addressof(self._samples), row_pitch, row_pitch * self._height]
+
+
 class _MRenderTargetManager:
     def __init__(self, events=None):
         self.acquired = []
@@ -1270,6 +1286,69 @@ class RenderOverrideLifecycleTest(unittest.TestCase):
         )
         self.assertEqual(again, report)
         self.assertEqual(resources.report()["readbackCount"], 2)
+
+    def test_packed_color_occupancy_is_authoritative_when_d24s8_is_not_decoded(self):
+        resources = render_override.ShadowTargetResources()
+        resources._descriptions["color"] = _MRenderTargetDescription(
+            render_override.SHADOW_COLOR_TARGET_NAME,
+            2,
+            2,
+            1,
+            49,
+            0,
+            False,
+        )
+        resources._descriptions["depth"] = _MRenderTargetDescription(
+            render_override.SHADOW_DEPTH_TARGET_NAME,
+            2,
+            2,
+            1,
+            _MRenderer.kD32_FLOAT,
+            0,
+            False,
+        )
+        resources._targets["color"] = _PackedOccupancyRenderTarget(
+            [
+                255,
+                0,
+                0,
+                255,
+                255,
+                0,
+                0,
+                255,
+                64,
+                0,
+                0,
+                255,
+                255,
+                0,
+                0,
+                255,
+            ],
+            2,
+            2,
+        )
+        resources._targets["depth"] = _OccupancyRenderTarget(
+            [1.0, 1.0, 1.0, 1.0], 2, 2
+        )
+
+        with mock.patch.object(render_override, "SHADOW_PACKED_COLOR_FORMAT", 49):
+            report = resources.capture_target_occupancy(
+                {"status": "ok", "reason": "components-added", "count": 1}
+            )
+
+        self.assertEqual(report["status"], "occupied")
+        self.assertEqual(report["evidenceTarget"], render_override.SHADOW_COLOR_TARGET_NAME)
+        self.assertEqual(report["reason"], "rgba8-color-below-clear")
+        self.assertEqual(report["colorOccupancy"]["sampleCount"], 4)
+        self.assertEqual(report["colorOccupancy"]["nonClearSampleCount"], 1)
+        self.assertEqual(
+            report["colorOccupancy"]["encoding"], "normalized-depth-r8"
+        )
+        self.assertEqual(
+            report["depthOccupancy"]["reason"], "all-clear-depth-after-caster-selection"
+        )
 
     def test_caster_selection_uses_only_mmd_flagged_mesh_components(self):
         selection = render_override.discover_self_shadow_caster_components(_CasterCmds())
