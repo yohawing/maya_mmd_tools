@@ -527,6 +527,50 @@ class RenderOverrideLifecycleTest(unittest.TestCase):
         self.assertTrue(override.startOperationIterator())
         self.assertEqual(override.renderOperation().operationType(), 1)
 
+    def test_native_shadow_receiver_is_opt_in_and_queued_after_scene(self):
+        with mock.patch.dict(
+            os.environ,
+            {render_override.NATIVE_SHADOW_RECEIVER_ENV: "1"},
+            clear=False,
+        ):
+            override = render_override.PassthroughRenderOverride()
+
+        self.assertEqual(
+            override.operation_names,
+            (
+                render_override.SCENE_OPERATION_NAME,
+                render_override.NATIVE_SHADOW_RECEIVER_OPERATION_NAME,
+                "standardHUD",
+                render_override.PRESENT_OPERATION_NAME,
+            ),
+        )
+        receiver = override.operations[1]
+        self.assertIsInstance(receiver, render_override.NativeShadowReceiverRender)
+        self.assertTrue(receiver.requiresLightData())
+        self.assertEqual(receiver.renderFilterOverride(), _MSceneRender.kRenderShadedItems)
+        self.assertIsNone(receiver.targetOverrideList())
+        self.assertFalse(receiver.report()["claimsSelfShadow"])
+        override.cleanup()
+
+    def test_native_shadow_receiver_discovery_uses_receive_bit(self):
+        class _ReceiverCmds(_CasterCmds):
+            def __init__(self):
+                super().__init__()
+                self.values["matCast.mmd_draw_flags"] = 0x0C
+
+        selection = render_override.discover_self_shadow_receiver_components(
+            _ReceiverCmds()
+        )
+
+        self.assertEqual(selection.flagged_materials, ("matCast", "matNoCast"))
+        self.assertEqual(
+            selection.components,
+            (
+                "|Mmd_root|bodyShape.f[0:9]",
+                "|Mmd_root|faceTransform.f[10:19]",
+            ),
+        )
+
     def test_light_space_camera_aligns_to_directional_light_and_releases_owned_nodes(self):
         cmds = _LightSpaceCmds()
         api = types.SimpleNamespace(MSelectionList=_CameraSelectionList)
