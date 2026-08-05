@@ -99,7 +99,7 @@ class RenderOverrideE2eTest(unittest.TestCase):
         ):
             self.assertEqual(render_override_e2e.main(), 1)
         command = run_gate.call_args.kwargs["command"]
-        self.assertIn("False, True, False, False, False, False)", command)
+        self.assertIn("False, True, False, False, False, False, False)", command)
 
     def test_main_forwards_r32f_receiver_probe_with_caster_pass(self):
         report = {"status": "fail", "captures": {}, "checks": {}, "errors": []}
@@ -117,7 +117,7 @@ class RenderOverrideE2eTest(unittest.TestCase):
         ):
             self.assertEqual(render_override_e2e.main(), 1)
         command = run_gate.call_args.kwargs["command"]
-        self.assertIn("False, True, True, False, False, False)", command)
+        self.assertIn("False, True, True, False, False, False, False)", command)
 
     def test_main_forwards_r32f_light_space_caster_with_caster_pass(self):
         report = {"status": "fail", "captures": {}, "checks": {}, "errors": []}
@@ -135,7 +135,7 @@ class RenderOverrideE2eTest(unittest.TestCase):
         ):
             self.assertEqual(render_override_e2e.main(), 1)
         command = run_gate.call_args.kwargs["command"]
-        self.assertIn("False, True, False, True, False, False)", command)
+        self.assertIn("False, True, False, True, False, False, False)", command)
 
     def test_main_forwards_native_shadow_request(self):
         report = {"status": "fail", "captures": {}, "checks": {}, "errors": []}
@@ -148,7 +148,7 @@ class RenderOverrideE2eTest(unittest.TestCase):
         ):
             self.assertEqual(render_override_e2e.main(), 1)
         command = run_gate.call_args.kwargs["command"]
-        self.assertIn("False, False, False, False, True, False)", command)
+        self.assertIn("False, False, False, False, True, False, False)", command)
 
     def test_main_forwards_native_shadow_binding_probe_with_request(self):
         report = {"status": "fail", "captures": {}, "checks": {}, "errors": []}
@@ -165,7 +165,63 @@ class RenderOverrideE2eTest(unittest.TestCase):
         ):
             self.assertEqual(render_override_e2e.main(), 1)
         command = run_gate.call_args.kwargs["command"]
-        self.assertIn("False, False, False, False, True, True)", command)
+        self.assertIn("False, False, False, False, True, True, False)", command)
+
+    def test_main_forwards_native_shadow_receiver(self):
+        report = {"status": "fail", "captures": {}, "checks": {}, "errors": []}
+        with mock.patch.object(
+            render_override_e2e, "run_maya_e2e", return_value=report
+        ) as run_gate, mock.patch.object(
+            render_override_e2e.sys,
+            "argv",
+            [
+                "render_override_e2e.py",
+                "--native-shadow-receiver",
+                "--model",
+                "F:/fixtures/self-shadow.pmx",
+            ],
+        ):
+            self.assertEqual(render_override_e2e.main(), 1)
+        command = run_gate.call_args.kwargs["command"]
+        self.assertIn("False, False, False, False, False, False, True)", command)
+
+    def test_native_shadow_receiver_validation_requires_draw_and_native_bind(self):
+        valid = {
+            "enabled": True,
+            "status": "released",
+            "reason": "receiver-shader-released-before-target",
+            "operationName": "mmdToolsNativeShadowReceiver",
+            "shaderPath": "MMDShader.viewport-parity.fx",
+            "technique": "MMDTechniqueNoEdge",
+            "mapParameter": "Light0ShadowMap",
+            "viewProjParameter": "Light0Matrix",
+            "selection": {
+                "status": "ok",
+                "reason": "components-added",
+                "components": ["|Mmd_root|Geometry|mesh.f[0:2]"],
+                "count": 1,
+            },
+            "createAttemptCount": 1,
+            "createSucceeded": True,
+            "preDrawCallbackCount": 1,
+            "sourceItemCount": 1,
+            "materialBindingCount": 1,
+            "bindingAttemptCount": 1,
+            "bindingSucceeded": True,
+            "resourceHandle": 17,
+            "releaseAttemptCount": 1,
+            "releaseSucceeded": True,
+            "releaseBeforeTarget": True,
+            "drawsReceiver": True,
+            "receiverComposition": True,
+            "claimsSelfShadow": False,
+            "context": {"status": "ready"},
+        }
+        render_override_e2e._validate_native_shadow_receiver(valid, require_components=True)
+        with self.assertRaises(RuntimeError):
+            render_override_e2e._validate_native_shadow_receiver(
+                dict(valid, resourceHandle=0), require_components=True
+            )
 
     def test_native_shadow_binding_validation_requires_positive_map_lifecycle(self):
         valid = {

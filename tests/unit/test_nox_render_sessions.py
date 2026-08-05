@@ -118,6 +118,7 @@ class NoxRenderSessionsTest(unittest.TestCase):
                 "--r32f-light-space-caster",
                 "--native-shadow-request",
                 "--native-shadow-binding-probe",
+                "--native-shadow-receiver",
                 "--model",
                 "F:/fixtures/self-shadow.pmx",
             ]
@@ -139,6 +140,7 @@ class NoxRenderSessionsTest(unittest.TestCase):
         self.assertIn("--r32f-light-space-caster", args)
         self.assertIn("--native-shadow-request", args)
         self.assertIn("--native-shadow-binding-probe", args)
+        self.assertIn("--native-shadow-receiver", args)
         self.assertIn("--model", args)
         self.assertEqual(args[args.index("--model") + 1], "F:/fixtures/self-shadow.pmx")
         self.assertTrue(kwargs["external"])
@@ -208,6 +210,20 @@ class NoxRenderSessionsTest(unittest.TestCase):
             root=Path("F:/repo"),
         )
         self.assertIn("--native-shadow-binding-probe", session.runs[0][0])
+
+    def test_render_override_e2e_accepts_model_with_native_shadow_receiver(self):
+        session = _FakeSession(
+            ["--native-shadow-receiver", "--model", "F:/fixtures/self-shadow.pmx"]
+        )
+        run_render_override_e2e(
+            session,
+            posargs=session.posargs,
+            option=_option,
+            default_maya_version="2026",
+            root=Path("F:/repo"),
+        )
+        self.assertIn("--native-shadow-receiver", session.runs[0][0])
+        self.assertIn("--model", session.runs[0][0])
 
 
 if __name__ == "__main__":

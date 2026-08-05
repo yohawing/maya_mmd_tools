@@ -1012,11 +1012,12 @@ def run_render_override_e2e(
     r32f_light_space_caster = "--r32f-light-space-caster" in posargs
     native_shadow_request = "--native-shadow-request" in posargs
     native_shadow_binding_probe = "--native-shadow-binding-probe" in posargs
+    native_shadow_receiver = "--native-shadow-receiver" in posargs
     model = option(posargs, "--model", "")
     if vp2_device not in {"default", "dx11", "gl", "glcore"}:
         session.error(f"Unsupported --vp2-device: {vp2_device}")
-    if model and not target_probe:
-        session.error("--model requires --target-probe")
+    if model and not target_probe and not native_shadow_receiver:
+        session.error("--model requires --target-probe or --native-shadow-receiver")
     if r32f_binding_probe and not target_probe:
         session.error("--r32f-binding-probe requires --target-probe")
     if r32f_caster_pass and not target_probe:
@@ -1044,6 +1045,7 @@ def run_render_override_e2e(
         *( ["--r32f-light-space-caster"] if r32f_light_space_caster else []),
         *( ["--native-shadow-request"] if native_shadow_request else []),
         *( ["--native-shadow-binding-probe"] if native_shadow_binding_probe else []),
+        *( ["--native-shadow-receiver"] if native_shadow_receiver else []),
         *(["--model", model] if model else []),
         *(["--target-probe"] if target_probe else []),
         external=True,

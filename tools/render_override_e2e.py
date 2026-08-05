@@ -6,6 +6,10 @@ two PNGs on the host.  The optional target probe adds conservative caster
 draw/readback evidence, while the native-shadow binding probe verifies Maya's
 light-resource handoff into a plugin-owned diagnostic shader; neither claims
 material or self-shadow parity.
+The opt-in native-shadow receiver pass deliberately overlays selected MMD
+receiver components with a plugin-owned effect.  Its capture is therefore not
+required to remain passthrough-identical; the receiver lifecycle and Oracle
+comparison remain separate gates.
 """
 
 from __future__ import annotations
@@ -423,6 +427,83 @@ def _validate_native_shadow_binding_probe(binding_probe: object) -> None:
         )
 
 
+def _validate_native_shadow_receiver(
+    receiver: object, *, require_components: bool = False
+) -> None:
+    """Require receiver selection, native bind, draw callback, and release.
+
+    This proves the experimental overlay executed with a real native shadow
+    resource.  It intentionally does not upgrade the operation to a full
+    self-shadow claim; fixture Oracle comparison remains authoritative.
+    """
+    required = {
+        "enabled",
+        "status",
+        "reason",
+        "operationName",
+        "shaderPath",
+        "technique",
+        "mapParameter",
+        "viewProjParameter",
+        "selection",
+        "createAttemptCount",
+        "createSucceeded",
+        "preDrawCallbackCount",
+        "sourceItemCount",
+        "materialBindingCount",
+        "bindingAttemptCount",
+        "bindingSucceeded",
+        "resourceHandle",
+        "releaseAttemptCount",
+        "releaseSucceeded",
+        "releaseBeforeTarget",
+        "drawsReceiver",
+        "receiverComposition",
+        "claimsSelfShadow",
+        "context",
+    }
+    if not isinstance(receiver, dict) or not required.issubset(receiver):
+        raise RuntimeError(f"native shadow receiver diagnostic is missing: {receiver!r}")
+    selection = receiver["selection"]
+    if (
+        not isinstance(selection, dict)
+        or not isinstance(selection.get("components"), list)
+        or selection.get("count") != len(selection.get("components", ()))
+    ):
+        raise RuntimeError(f"native shadow receiver selection is malformed: {receiver!r}")
+    if require_components and (
+        selection.get("status") != "ok" or selection.get("count", 0) < 1
+    ):
+        raise RuntimeError(
+            "real PMX native shadow receiver did not select receiver components: "
+            f"{receiver!r}"
+        )
+    if receiver["claimsSelfShadow"] is not False or receiver["drawsReceiver"] is not True:
+        raise RuntimeError(f"native shadow receiver made an invalid parity claim: {receiver!r}")
+    context = receiver["context"]
+    if (
+        receiver["status"] != "released"
+        or receiver["createAttemptCount"] < 1
+        or receiver["createSucceeded"] is not True
+        or receiver["preDrawCallbackCount"] < 1
+        or receiver["sourceItemCount"] < 1
+        or receiver["materialBindingCount"] < 1
+        or receiver["bindingAttemptCount"] < 1
+        or receiver["bindingSucceeded"] is not True
+        or not isinstance(receiver["resourceHandle"], int)
+        or receiver["resourceHandle"] <= 0
+        or receiver["releaseAttemptCount"] < 1
+        or receiver["releaseSucceeded"] is not True
+        or receiver["releaseBeforeTarget"] is not True
+        or not isinstance(context, dict)
+        or context.get("status") != "ready"
+    ):
+        raise RuntimeError(
+            "native shadow receiver did not complete selection/bind/draw/release: "
+            f"{receiver!r}"
+        )
+
+
 def _validate_r32f_receiver_probe(
     receiver_probe: object, *, require_caster_value: bool = False
 ) -> None:
@@ -515,6 +596,27 @@ def _evaluate_target_probe_caster_selection(override, *, manual_readback: bool =
     raise RuntimeError("target probe operation has no objectSetOverride callback")
 
 
+def _evaluate_native_shadow_receiver_selection(override) -> None:
+    """Evaluate the receiver operation's object selection once in live Maya."""
+    if not override.startOperationIterator():
+        raise RuntimeError("receiver operation iterator did not start")
+    while True:
+        operation = override.renderOperation()
+        if (
+            operation is not None
+            and getattr(operation, "name", lambda: None)()
+            == "mmdToolsNativeShadowReceiver"
+        ):
+            callback = getattr(operation, "objectSetOverride", None)
+            if not callable(callback):
+                raise RuntimeError("receiver operation has no objectSetOverride callback")
+            callback()
+            return
+        if not override.nextRenderOperation():
+            break
+    raise RuntimeError("native shadow receiver operation was not queued")
+
+
 def run_probe(
     log_path: str,
     report_path: str,
@@ -528,6 +630,7 @@ def run_probe(
     r32f_light_space_caster: bool = False,
     native_shadow_request: bool = False,
     native_shadow_binding_probe: bool = False,
+    native_shadow_receiver: bool = False,
 ) -> None:
     """Execute the R1 lifecycle and optional R2 target probe in live Maya.
 
@@ -550,6 +653,9 @@ def run_probe(
     The explicit ``native_shadow_binding_probe`` option follows Maya's
     ``kShadowMap``/``kShadowViewProj`` light-parameter path into a separate
     plugin-owned quad and fails closed when no native resource is available.
+    The explicit ``native_shadow_receiver`` option overlays receiver-selected
+    MMD components with ``MMDShader.viewport-parity.fx`` and keeps full parity
+    claims behind a separate fixture Oracle.
     """
     import os
 
@@ -596,6 +702,9 @@ def run_probe(
         )
         os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_NATIVE_SHADOW_BINDING_PROBE"] = (
             "1" if native_shadow_binding_probe else "0"
+        )
+        os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_NATIVE_SHADOW_RECEIVER"] = (
+            "1" if native_shadow_receiver else "0"
         )
         cmds.file(new=True, force=True)
         previous_renderer_by_panel = _renderer_by_panel(cmds)
@@ -697,6 +806,9 @@ def run_probe(
                     3,
                 )
             )
+        if native_shadow_receiver:
+            expected_types.append(omr.MSceneRender.kSceneRender)
+        if native_shadow_binding_probe:
             expected_types.append(omr.MQuadRender.kQuadRender)
         expected_types.extend([omr.MHUDRender.kHUDRender, omr.MPresentTarget.kPresentTarget])
         report["checks"]["operationTypes"] = operation_types
@@ -711,7 +823,7 @@ def run_probe(
         light_xform = cmds.listRelatives(light_shape, parent=True)[0]
         cmds.setAttr(f"{light_xform}.rotateX", -45.0)
         cmds.setAttr(f"{light_xform}.rotateY", -30.0)
-        if native_shadow_request or native_shadow_binding_probe:
+        if native_shadow_request or native_shadow_binding_probe or native_shadow_receiver:
             # A Maya light can exist in the scene while its native depth-map
             # shadow switch remains off.  Enable only this diagnostic light's
             # own shadow-producing attribute; imported MMD materials are not
@@ -775,10 +887,12 @@ def run_probe(
             # and targets; the actual render below remains the source of
             # occupancy evidence.
             _evaluate_target_probe_caster_selection(override, manual_readback=False)
+        if native_shadow_receiver and model_path is not None:
+            _evaluate_native_shadow_receiver_selection(override)
         cmds.refresh(force=True)
         overridden = _capture_current_view(cmds, output / "override.png")
         report["captures"]["override"] = str(overridden)
-        if target_probe or native_shadow_request or native_shadow_binding_probe:
+        if target_probe or native_shadow_request or native_shadow_binding_probe or native_shadow_receiver:
             override.cleanup()
         if target_probe:
             target_report = override.target_probe_report()
@@ -818,6 +932,12 @@ def run_probe(
             binding_report = override.native_shadow_binding_probe_report()
             report["checks"]["nativeShadowBindingProbe"] = binding_report
             _validate_native_shadow_binding_probe(binding_report)
+        if native_shadow_receiver:
+            receiver_report = override.native_shadow_receiver_report()
+            report["checks"]["nativeShadowReceiver"] = receiver_report
+            _validate_native_shadow_receiver(
+                receiver_report, require_components=model_path is not None
+            )
 
         restored_by_panel = {}
         for panel, override_name in previous_override_by_panel.items():
@@ -1021,6 +1141,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--native-shadow-receiver",
+        action="store_true",
+        help=(
+            "Overlay receiver-selected MMD components with a plugin-owned "
+            "native-shadow effect; full Oracle parity remains separate."
+        ),
+    )
+    parser.add_argument(
         "--model",
         type=Path,
         default=None,
@@ -1029,8 +1157,8 @@ def main() -> int:
     parser.add_argument("--out-dir", type=Path, default=_ROOT / "build" / "render-override-e2e")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     args = parser.parse_args()
-    if args.model is not None and not args.target_probe:
-        parser.error("--model requires --target-probe")
+    if args.model is not None and not args.target_probe and not args.native_shadow_receiver:
+        parser.error("--model requires --target-probe or --native-shadow-receiver")
     if args.r32f_binding_probe and not args.target_probe:
         parser.error("--r32f-binding-probe requires --target-probe")
     if args.r32f_caster_pass and not args.target_probe:
@@ -1060,7 +1188,7 @@ def main() -> int:
     )
     command = (
         "from tools.render_override_e2e import run_probe\n"
-        f"run_probe(r'{log_path.as_posix()}', r'{report_path.as_posix()}', r'{out_dir.as_posix()}', {expected_draw_api_name!r}, {args.target_probe!r}, {model_literal}, {args.r32f_binding_probe!r}, {args.r32f_caster_pass!r}, {args.r32f_receiver_probe!r}, {args.r32f_light_space_caster!r}, {args.native_shadow_request!r}, {args.native_shadow_binding_probe!r})\n"
+        f"run_probe(r'{log_path.as_posix()}', r'{report_path.as_posix()}', r'{out_dir.as_posix()}', {expected_draw_api_name!r}, {args.target_probe!r}, {model_literal}, {args.r32f_binding_probe!r}, {args.r32f_caster_pass!r}, {args.r32f_receiver_probe!r}, {args.r32f_light_space_caster!r}, {args.native_shadow_request!r}, {args.native_shadow_binding_probe!r}, {args.native_shadow_receiver!r})\n"
     )
     report = run_maya_e2e(
         project_root=_ROOT,
@@ -1087,9 +1215,11 @@ def main() -> int:
     if report.get("status") == "pass":
         comparison = _compare_captures(Path(report["captures"]["baseline"]), Path(report["captures"]["override"]))
         report["captureParity"] = comparison
-        if not comparison.get("pass"):
+        if not comparison.get("pass") and not args.native_shadow_receiver:
             report["status"] = "fail"
             report["errors"].append(f"R1 capture parity failed: {comparison}")
+        elif args.native_shadow_receiver:
+            report["checks"]["captureParityExpectedToDiffer"] = not comparison.get("pass")
         _write_report(report_path, report)
     LOGGER.info("R1 GUI gate status: %s", report.get("status"))
     return 0 if report.get("status") == "pass" else 1
