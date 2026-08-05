@@ -18,11 +18,13 @@
 
 #include "mmdFastLoad.h"
 #include "MmdRenderQueue.h"
+#include "MmdRenderShape.h"
 
 #include <maya/MArgDatabase.h>
 #include <maya/MDagModifier.h>
 #include <maya/MDagPath.h>
 #include <maya/MFloatArray.h>
+#include <maya/MFnDependencyNode.h>
 #include <maya/MFnDagNode.h>
 #include <maya/MFnMesh.h>
 #include <maya/MFnTransform.h>
@@ -87,6 +89,10 @@ MSyntax MmdFastLoad::newSyntax()
     // -split / -sp <bool> (optional, default false)
     syntax.addFlag("-sp", "-split", MSyntax::kBoolean);
 
+    // -vp2Ownership / -vo <bool> (optional, default false)
+    // Explicit opt-in to the custom DAG shape and VP2 geometry override.
+    syntax.addFlag("-vo", "-vp2Ownership", MSyntax::kBoolean);
+
     syntax.enableEdit(false);
 
     return syntax;
@@ -121,6 +127,10 @@ bool MmdFastLoad::parseArgs(const MArgList& args)
 
     if (argData.isFlagSet("-sp")) {
         enableSplit_ = argData.flagArgumentBool("-sp", 0);
+    }
+
+    if (argData.isFlagSet("-vo")) {
+        enableVp2Ownership_ = argData.flagArgumentBool("-vo", 0);
     }
 
     if (scale_ <= 0.0) {
@@ -593,6 +603,9 @@ MStatus MmdFastLoad::redoIt()
     const uint8_t* data = pmxBytes.data();
     const size_t   len  = pmxBytes.size();
 
+    if (enableVp2Ownership_) {
+        return loadVp2Ownership(safeName, data, len);
+    }
     return enableSplit_ ? loadSplit(safeName, data, len)
                         : loadSingle(safeName, data, len);
 }
@@ -814,6 +827,186 @@ MStatus MmdFastLoad::loadSplit(const std::string& safeName,
              ? MString(", ") + std::to_string(totalMorphs).c_str() + " morph targets"
              : MString("")) +
         ")");
+    return MS::kSuccess;
+}
+
+MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
+                                      const uint8_t* data,
+                                      size_t len)
+{
+    // This path intentionally uses the same material-split ABI and queue
+    // classification as -split, but hands ownership to one opt-in custom DAG
+    // shape.  The ordinary MFnMesh path is not changed by this flag.
+    mmd_runtime_pmx_material_split_t* split =
+        mmd_runtime_pmx_material_split_create(data, len, /*flags=*/0u);
+    if (!split) {
+        MGlobal::displayError(
+            "[mmdFastLoad] VP2 ownership split creation failed.");
+        return MS::kFailure;
+    }
+
+    const size_t meshCount = mmd_runtime_pmx_material_split_mesh_count(split);
+    if (meshCount == 0U) {
+        MGlobal::displayError(
+            "[mmdFastLoad] VP2 ownership split produced no meshes.");
+        mmd_runtime_pmx_material_split_free(split);
+        return MS::kFailure;
+    }
+
+    json manifest = parseJsonBufferAndFree(
+        mmd_runtime_pmx_material_split_manifest_json(split));
+    json nonGeo = parseJsonBufferAndFree(
+        mmd_runtime_parse_pmx_non_geometry_json(data, len));
+    const json* materials = (nonGeo.is_object() && nonGeo.contains("materials") &&
+                             nonGeo["materials"].is_array())
+                                ? &nonGeo["materials"]
+                                : nullptr;
+    const json* manifestMeshes =
+        (manifest.is_object() && manifest.contains("meshes") &&
+         manifest["meshes"].is_array())
+            ? &manifest["meshes"]
+            : nullptr;
+
+    std::vector<mmd::MmdRenderQueueInput> queueInputs;
+    queueInputs.reserve(meshCount);
+    for (size_t i = 0; i < meshCount; ++i) {
+        size_t originalMaterialIndex = i;
+        if (manifestMeshes && i < manifestMeshes->size()) {
+            originalMaterialIndex =
+                (*manifestMeshes)[i].value("originalMaterialIndex", i);
+        }
+
+        mmd::MmdRenderQueueInput input;
+        input.materialIndex = originalMaterialIndex;
+        input.submeshIndex = i;
+        if (materials && originalMaterialIndex < materials->size()) {
+            const json& material = (*materials)[originalMaterialIndex];
+            input.transparencyMode = materialTransparencyMode(material);
+            input.diffuseAlpha = materialDiffuseAlpha(material);
+        }
+        queueInputs.push_back(std::move(input));
+    }
+    const std::vector<mmd::MmdRenderQueueEntry> renderQueue =
+        mmd::buildMmdRenderQueue(queueInputs);
+
+    std::vector<std::vector<float>> submeshPositions(meshCount);
+    std::vector<std::vector<uint32_t>> submeshIndices(meshCount);
+    for (size_t i = 0; i < meshCount; ++i) {
+        submeshPositions[i] = bufferToFloatsAndFree(
+            mmd_runtime_pmx_material_split_positions_buffer(split, i));
+        submeshIndices[i] = bufferToU32AndFree(
+            mmd_runtime_pmx_material_split_indices_buffer(split, i));
+        if (submeshPositions[i].empty() || submeshIndices[i].empty()) {
+            MGlobal::displayError(
+                MString("[mmdFastLoad] VP2 ownership submesh has no geometry: ") +
+                std::to_string(i).c_str());
+            mmd_runtime_pmx_material_split_free(split);
+            return MS::kFailure;
+        }
+    }
+    mmd_runtime_pmx_material_split_free(split);
+
+    MStatus status;
+    MFnDagNode rootFn;
+    MObject parent = MObject::kNullObj;
+    const MString shapeName((safeName + "_vp2").c_str());
+    // With a null parent, MFnDagNode::create returns the automatically
+    // created transform for this surface shape.  Resolve the custom shape
+    // child explicitly instead of treating that transform as the user node.
+    MObject rootObject = rootFn.create(
+        MmdRenderShape::id, shapeName, parent, &status);
+    if (!status || rootObject.isNull()) {
+        MGlobal::displayError(
+            "[mmdFastLoad] Failed to create mmdRenderShape.");
+        return MS::kFailure;
+    }
+
+    MObject shapeObject = MObject::kNullObj;
+    const unsigned int childCount = rootFn.childCount(&status);
+    if (status) {
+        for (unsigned int childIndex = 0; childIndex < childCount;
+             ++childIndex) {
+            MStatus childStatus;
+            const MObject child = rootFn.child(childIndex, &childStatus);
+            if (!childStatus || child.isNull()) {
+                continue;
+            }
+            MFnDependencyNode childFn(child, &childStatus);
+            if (!childStatus) {
+                continue;
+            }
+            MTypeId childType = childFn.typeId(&childStatus);
+            if (childStatus && childType == MmdRenderShape::id) {
+                shapeObject = child;
+                break;
+            }
+        }
+    }
+    if (!status || shapeObject.isNull()) {
+        MGlobal::displayError(
+            "[mmdFastLoad] Created transform has no mmdRenderShape child.");
+        MDagModifier cleanup;
+        cleanup.deleteNode(rootObject);
+        cleanup.doIt();
+        return MS::kFailure;
+    }
+
+    MmdRenderShape* shape = MmdRenderShape::fromMObject(shapeObject, &status);
+    if (!status) {
+        MGlobal::displayError(
+            "[mmdFastLoad] mmdRenderShape user-node lookup failed.");
+        MDagModifier cleanup;
+        cleanup.deleteNode(rootObject);
+        cleanup.doIt();
+        return MS::kFailure;
+    }
+    if (!shape) {
+        MGlobal::displayError(
+            "[mmdFastLoad] mmdRenderShape user-node is null.");
+        MDagModifier cleanup;
+        cleanup.deleteNode(rootObject);
+        cleanup.doIt();
+        return MS::kFailure;
+    }
+    if (!shape->setMaterialSplitGeometry(
+            submeshPositions, submeshIndices, renderQueue, scale_)) {
+        MGlobal::displayError(
+            "[mmdFastLoad] VP2 ownership geometry rejected by mmdRenderShape.");
+        MDagModifier cleanup;
+        cleanup.deleteNode(rootObject);
+        cleanup.doIt();
+        return MS::kFailure;
+    }
+
+    MString rootName = rootFn.fullPathName(&status);
+    MFnDagNode shapeFn(shapeObject, &status);
+    if (!status) {
+        MDagModifier cleanup;
+        cleanup.deleteNode(rootObject);
+        cleanup.doIt();
+        return status;
+    }
+    const MString shapePath = shapeFn.fullPathName(&status);
+    if (!status) {
+        MDagModifier cleanup;
+        cleanup.deleteNode(rootObject);
+        cleanup.doIt();
+        return status;
+    }
+
+    transformName_ = rootName;
+    meshName_ = shapePath;
+    createdRoots_.append(rootName);
+
+    MStringArray result;
+    result.append(transformName_);
+    result.append(meshName_);
+    setResult(result);
+
+    MGlobal::displayInfo(
+        MString("[mmdFastLoad] Created opt-in VP2 ownership shape: ") +
+        meshName_ + " (queue entries=" +
+        std::to_string(renderQueue.size()).c_str() + ")");
     return MS::kSuccess;
 }
 

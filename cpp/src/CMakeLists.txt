@@ -66,6 +66,8 @@ set(SOURCES
     mmdRuntimeNode.cpp
     mmdFastLoad.cpp
     MmdRenderQueue.cpp
+    MmdRenderShape.cpp
+    MmdRenderGeometryOverride.cpp
     MmdWeldUvSeamVertices.cpp
     MmdAppendNode.cpp
     MmdCcdIkNode.cpp
@@ -77,6 +79,8 @@ set(HEADERS
     mmdRuntimeNode.h
     mmdFastLoad.h
     MmdRenderQueue.h
+    MmdRenderShape.h
+    MmdRenderGeometryOverride.h
     MmdWeldUvSeamVertices.h
     MmdAppendNode.h
     MmdCcdIkNode.h
@@ -152,6 +156,8 @@ if(WIN32)
     target_link_directories(mmd_tools_cpp PRIVATE ${MAYA_LIB_DIR})
     target_link_libraries(mmd_tools_cpp PRIVATE
         OpenMaya.lib
+        OpenMayaRender.lib
+        OpenMayaUI.lib
         Foundation.lib
     )
     if(MMD_ANIM_FFI_LIB)
@@ -178,6 +184,8 @@ if(APPLE)
     target_link_directories(mmd_tools_cpp PRIVATE ${MAYA_LIB_DIR})
     target_link_libraries(mmd_tools_cpp PRIVATE
         OpenMaya
+        OpenMayaRender
+        OpenMayaUI
         Foundation
     )
     if(MMD_ANIM_FFI_LIB)
