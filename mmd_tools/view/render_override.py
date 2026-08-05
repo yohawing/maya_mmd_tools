@@ -2122,6 +2122,37 @@ class R32FCasterShaderPass:
                         diagnostic[f"{attribute}Error"] = (
                             f"{type(exc).__name__}: {exc!r}"
                         )
+                try:
+                    source_shader = item.getShader()
+                    diagnostic["sourceShaderPresent"] = source_shader is not None
+                    if source_shader is not None:
+                        try:
+                            diagnostic["sourceShaderParameters"] = [
+                                str(parameter)
+                                for parameter in (source_shader.parameterList() or ())
+                            ]
+                        except Exception as exc:
+                            diagnostic["sourceShaderParametersError"] = (
+                                f"{type(exc).__name__}: {exc!r}"
+                            )
+                        try:
+                            diagnostic["sourceShaderResource"] = str(
+                                source_shader.resourceName("MainTexture")
+                            )
+                        except Exception as exc:
+                            diagnostic["sourceShaderResourceError"] = (
+                                f"{type(exc).__name__}: {exc!r}"
+                            )
+                except Exception as exc:
+                    diagnostic["sourceShaderError"] = f"{type(exc).__name__}: {exc!r}"
+                try:
+                    source_path = item.sourceDagPath()
+                    path_name = getattr(source_path, "fullPathName", None)
+                    diagnostic["sourceDagPath"] = str(
+                        path_name() if callable(path_name) else source_path
+                    )
+                except Exception as exc:
+                    diagnostic["sourceDagPathError"] = f"{type(exc).__name__}: {exc!r}"
                 self._report["renderItemDiagnostics"].append(diagnostic)
         if context is None or shader_instance is None:
             return
