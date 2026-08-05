@@ -17,6 +17,7 @@
  */
 
 #include "mmdFastLoad.h"
+#include "MmdRenderQueue.h"
 
 #include <maya/MArgDatabase.h>
 #include <maya/MDagModifier.h>
@@ -46,6 +47,7 @@
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 using nlohmann::json;
@@ -179,6 +181,28 @@ std::string uniqueName(const std::string& base, std::set<std::string>& used)
 std::string quoteMelName(const MString& name)
 {
     return "\"" + std::string(name.asChar()) + "\"";
+}
+
+std::string materialTransparencyMode(const json& material)
+{
+    for (const char* key : {"transparencyMode", "alphaMode", "transparency"}) {
+        if (!material.is_object() || !material.contains(key) ||
+            !material[key].is_string()) {
+            continue;
+        }
+        return material[key].get<std::string>();
+    }
+    return std::string();
+}
+
+float materialDiffuseAlpha(const json& material)
+{
+    if (!material.is_object() || !material.contains("diffuse") ||
+        !material["diffuse"].is_array() || material["diffuse"].size() < 4 ||
+        !material["diffuse"][3].is_number()) {
+        return 1.0f;
+    }
+    return material["diffuse"][3].get<float>();
 }
 
 std::string quoteMelName(const std::string& name)
@@ -666,6 +690,32 @@ MStatus MmdFastLoad::loadSplit(const std::string& safeName,
                                   manifest["meshes"].is_array())
                                      ? &manifest["meshes"] : nullptr;
 
+    // The material-split ABI exposes one submesh per material.  Build the
+    // native ordering contract before creating Maya nodes so the future VP2
+    // render-item owner can consume the same pass/material order.  Creation
+    // order alone is not claimed as a VP2 draw-order guarantee.
+    std::vector<mmd::MmdRenderQueueInput> queueInputs;
+    queueInputs.reserve(meshCount);
+    for (size_t i = 0; i < meshCount; ++i) {
+        size_t originalMaterialIndex = i;
+        if (manifestMeshes && i < manifestMeshes->size()) {
+            originalMaterialIndex =
+                (*manifestMeshes)[i].value("originalMaterialIndex", i);
+        }
+
+        mmd::MmdRenderQueueInput input;
+        input.materialIndex = originalMaterialIndex;
+        input.submeshIndex = i;
+        if (materials && originalMaterialIndex < materials->size()) {
+            const json& material = (*materials)[originalMaterialIndex];
+            input.transparencyMode = materialTransparencyMode(material);
+            input.diffuseAlpha = materialDiffuseAlpha(material);
+        }
+        queueInputs.push_back(std::move(input));
+    }
+    const std::vector<mmd::MmdRenderQueueEntry> renderQueue =
+        mmd::buildMmdRenderQueue(queueInputs);
+
     // ---- Root group transform ----
     MStringArray groupResult;
     MStatus status = MGlobal::executeCommand(
@@ -682,7 +732,8 @@ MStatus MmdFastLoad::loadSplit(const std::string& safeName,
     usedNames.insert(groupName.asChar());
     unsigned int totalMorphs = 0;
 
-    for (size_t i = 0; i < meshCount; ++i) {
+    for (const mmd::MmdRenderQueueEntry& queueEntry : renderQueue) {
+        const size_t i = queueEntry.submeshIndex;
         std::vector<float>    positions = bufferToFloatsAndFree(
             mmd_runtime_pmx_material_split_positions_buffer(split, i));
         std::vector<float>    normals = bufferToFloatsAndFree(
