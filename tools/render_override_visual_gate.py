@@ -775,6 +775,7 @@ def run_gate(
     timeout: int = 420,
     width: Optional[int] = None,
     height: Optional[int] = None,
+    roi_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Run RO-0 and return the exact JSON object written to ``summary.json``."""
 
@@ -784,6 +785,16 @@ def run_gate(
         raise ValueError("unsupported backend: %s" % backend)
     manifest, all_cases = load_manifest_cases(manifest_path)
     selected = select_cases(all_cases, feature, case_names)
+    if roi_overrides:
+        selected = [
+            {
+                **case,
+                "roi": dict(roi_overrides[case["name"]]),
+            }
+            if case["name"] in roi_overrides
+            else case
+            for case in selected
+        ]
     target_value = Path(output_dir) if output_dir is not None else root / OUTPUT_RELATIVE
     target = (root / target_value if not target_value.is_absolute() else target_value).resolve()
     clear_output_dir(target)
@@ -803,6 +814,7 @@ def run_gate(
         "manifestSchemaVersion": manifest.get("schemaVersion"),
         "pluginCommit": _git_commit(root),
         "thresholdContract": FLIP_THRESHOLD_CONTRACT,
+        "roiOverrides": roi_overrides or {},
         "cases": [],
         "capture": {"status": "not-run"},
     }
@@ -1096,6 +1108,13 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--manifest", default=manifest_default, required=not bool(manifest_default))
     parser.add_argument("--feature", choices=FEATURES, required=True)
     parser.add_argument("--case", action="append", default=[], help="Repeatable manifest case name.")
+    parser.add_argument(
+        "--roi-case",
+        action="append",
+        default=[],
+        metavar="CASE=X,Y,WIDTH,HEIGHT",
+        help="Attach a fixed pixel ROI to one case; repeatable and kept out of the source manifest.",
+    )
     parser.add_argument("--maya", default="2024")
     parser.add_argument("--backend", choices=BACKENDS, default="dx11")
     parser.add_argument("--flip", default="", help="Optional path to the NVIDIA FLIP executable.")
@@ -1110,15 +1129,40 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _parse_roi_case_specs(specs: Sequence[str]) -> Dict[str, Dict[str, int]]:
+    """Parse repeatable ``CASE=x,y,width,height`` CLI ROI overrides."""
+
+    overrides: Dict[str, Dict[str, int]] = {}
+    for spec in specs:
+        case_name, separator, coordinates = str(spec).partition("=")
+        if not separator or not case_name:
+            raise ValueError("--roi-case requires CASE=x,y,width,height: %s" % spec)
+        values = coordinates.split(",")
+        if len(values) != 4:
+            raise ValueError("--roi-case requires four integer coordinates: %s" % spec)
+        try:
+            x, y, width, height = (int(value.strip()) for value in values)
+        except ValueError as error:
+            raise ValueError("--roi-case coordinates must be integers: %s" % spec) from error
+        if x < 0 or y < 0 or width <= 0 or height <= 0:
+            raise ValueError("--roi-case coordinates must describe a positive ROI: %s" % spec)
+        if case_name in overrides:
+            raise ValueError("duplicate --roi-case for %s" % case_name)
+        overrides[case_name] = {"x": x, "y": y, "width": width, "height": height}
+    return overrides
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """CLI entry point returning the report's strict exit code."""
 
     args = _parse_args(argv)
     try:
+        roi_overrides = _parse_roi_case_specs(args.roi_case)
         summary = run_gate(
             manifest_path=Path(args.manifest),
             feature=args.feature,
             case_names=args.case,
+            roi_overrides=roi_overrides,
             maya=args.maya,
             backend=args.backend,
             output_dir=Path(args.out),

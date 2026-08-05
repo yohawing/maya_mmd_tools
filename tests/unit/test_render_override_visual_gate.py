@@ -16,6 +16,14 @@ Min: 0.000000
 Max: 0.100000
 """
 
+HIGH_FLIP_TEXT = """Mean: 0.500000
+Weighted median: 0.500000
+1st weighted quartile: 0.500000
+3rd weighted quartile: 0.500000
+Min: 0.000000
+Max: 1.000000
+"""
+
 
 def _write_manifest(tmp_path: Path, cases):
     manifest = {
@@ -282,6 +290,35 @@ def test_roi_is_compared_separately_and_recorded(tmp_path):
     assert (tmp_path / "latest/cases/transparency-roi/flip-roi.txt").is_file()
     assert (tmp_path / "latest/cases/transparency-roi/flip-error-roi.png").is_file()
     assert not (tmp_path / "latest/cases/transparency-roi/.roi").exists()
+
+
+def test_roi_override_is_recorded_and_negative_control_exceeds_contract(tmp_path):
+    path = _write_manifest(
+        tmp_path,
+        [{"name": "transparency-negative", "feature": "transparency"}],
+    )
+
+    def negative_flip(**kwargs):
+        result = _fake_flip()(**kwargs)
+        result["text"] = HIGH_FLIP_TEXT
+        result["metrics"] = gate.parse_flip_metrics(HIGH_FLIP_TEXT)
+        return result
+
+    summary = gate.run_gate(
+        path,
+        "transparency",
+        output_dir=tmp_path / "latest",
+        project_root=tmp_path,
+        roi_overrides={"transparency-negative": {"x": 0, "y": 0, "width": 1, "height": 1}},
+        capture_runner=_capture_factory(),
+        flip_runner=negative_flip,
+    )
+
+    result = summary["cases"][0]
+    assert summary["roiOverrides"]["transparency-negative"]["width"] == 1
+    assert result["roi"] == {"x": 0, "y": 0, "width": 1, "height": 1}
+    assert result["full"]["thresholdEvaluation"]["status"] == "fail"
+    assert result["roiComparison"]["thresholdEvaluation"]["status"] == "fail"
 
 
 def test_self_shadow_is_explicitly_not_gated_and_does_not_call_capture(tmp_path):
