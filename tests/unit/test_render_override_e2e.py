@@ -185,6 +185,41 @@ class RenderOverrideE2eTest(unittest.TestCase):
         command = run_gate.call_args.kwargs["command"]
         self.assertIn("False, False, False, False, False, False, True)", command)
 
+    def test_main_forwards_explicit_camera_and_capture_size(self):
+        report = {"status": "fail", "captures": {}, "checks": {}, "errors": []}
+        camera = '{"position":[0,24,13],"target":[0,1,0],"fov":40,"near":0.1,"far":100}'
+        with mock.patch.object(
+            render_override_e2e, "run_maya_e2e", return_value=report
+        ) as run_gate, mock.patch.object(
+            render_override_e2e.sys,
+            "argv",
+            [
+                "render_override_e2e.py",
+                "--native-shadow-receiver",
+                "--model",
+                "F:/fixtures/self-shadow.pmx",
+                "--camera",
+                camera,
+                "--width",
+                "1024",
+                "--height",
+                "1024",
+            ],
+        ):
+            self.assertEqual(render_override_e2e.main(), 1)
+        command = run_gate.call_args.kwargs["command"]
+        self.assertIn("camera_config=", command)
+        self.assertIn("capture_width=1024", command)
+        self.assertIn("capture_height=1024", command)
+
+    def test_camera_loader_accepts_json_object_only(self):
+        self.assertEqual(
+            render_override_e2e._load_camera_config('{"position":[0, 1, 2]}'),
+            {"position": [0, 1, 2]},
+        )
+        with self.assertRaises(ValueError):
+            render_override_e2e._load_camera_config("[1, 2, 3]")
+
     def test_native_shadow_receiver_validation_requires_draw_and_native_bind(self):
         valid = {
             "enabled": True,

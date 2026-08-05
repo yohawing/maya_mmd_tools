@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import struct
 import sys
 import traceback
@@ -43,8 +44,12 @@ def _write_report(path: Path, report: dict) -> None:
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _capture_current_view(cmds, destination: Path) -> Path:
+def _capture_current_view(
+    cmds, destination: Path, *, width: int = 640, height: int = 480
+) -> Path:
     """Capture the active GUI viewport and return Maya's actual PNG path."""
+    if width <= 0 or height <= 0:
+        raise ValueError(f"capture dimensions must be positive, got {width}x{height}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     result = cmds.playblast(
         filename=str(destination.with_suffix("")),
@@ -56,8 +61,8 @@ def _capture_current_view(cmds, destination: Path) -> Path:
         forceOverwrite=True,
         offScreen=False,
         percent=100,
-        width=640,
-        height=480,
+        width=width,
+        height=height,
     )
     candidates = [
         destination,
@@ -77,6 +82,76 @@ def _capture_current_view(cmds, destination: Path) -> Path:
     if generated:
         return generated[0]
     raise RuntimeError(f"playblast did not create a PNG for {destination}: {result!r}")
+
+
+def _camera_vector(value: object, name: str) -> tuple[float, float, float]:
+    """Validate and normalize a camera position/target/up vector."""
+    if isinstance(value, (str, bytes)):
+        raise ValueError(f"camera {name} must be a three-number sequence")
+    try:
+        values = tuple(float(component) for component in value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"camera {name} must be a three-number sequence") from exc
+    if len(values) != 3 or not all(math.isfinite(component) for component in values):
+        raise ValueError(f"camera {name} must be a finite three-number sequence")
+    return values
+
+
+def _configure_camera(cmds, panels: list[str], camera_config: dict) -> dict[str, object]:
+    """Create the explicit Oracle camera and assign it to every model panel."""
+    if not isinstance(camera_config, dict):
+        raise ValueError("camera configuration must be a JSON object")
+    position = _camera_vector(camera_config.get("position"), "position")
+    target = _camera_vector(camera_config.get("target"), "target")
+    up_value = camera_config.get("up")
+    up = _camera_vector(up_value, "up") if up_value is not None else None
+    fov = float(camera_config.get("fov", 25.0))
+    near = float(camera_config.get("near", 0.1))
+    far = float(camera_config.get("far", 1000.0))
+    if not math.isfinite(fov) or not 0.0 < fov < 180.0:
+        raise ValueError(f"camera fov must be finite and between 0 and 180, got {fov}")
+    if not math.isfinite(near) or not math.isfinite(far) or near <= 0.0 or far <= near:
+        raise ValueError(f"camera clip planes must satisfy 0 < near < far, got {near}, {far}")
+
+    camera, shape = cmds.camera(name="renderOverrideOracleCam")
+    cmds.xform(camera, worldSpace=True, translation=position)
+    target_locator = cmds.spaceLocator(name="__render_override_camera_target__")[0]
+    cmds.xform(target_locator, worldSpace=True, translation=target)
+    if up is None:
+        constraint = cmds.aimConstraint(
+            target_locator,
+            camera,
+            aimVector=(0, 0, -1),
+            upVector=(0, 1, 0),
+            worldUpType="scene",
+        )[0]
+    else:
+        constraint = cmds.aimConstraint(
+            target_locator,
+            camera,
+            aimVector=(0, 0, -1),
+            upVector=(0, 1, 0),
+            worldUpType="vector",
+            worldUpVector=up,
+        )[0]
+    cmds.delete(constraint, target_locator)
+    aperture = cmds.getAttr(f"{shape}.horizontalFilmAperture")
+    focal_length = (aperture * 25.4 * 0.5) / math.tan(math.radians(fov) * 0.5)
+    cmds.setAttr(f"{shape}.focalLength", focal_length)
+    cmds.setAttr(f"{shape}.nearClipPlane", near)
+    cmds.setAttr(f"{shape}.farClipPlane", far)
+    for panel in panels:
+        cmds.lookThru(panel, camera)
+    return {
+        "node": camera,
+        "shape": shape,
+        "position": list(position),
+        "target": list(target),
+        "up": list(up) if up is not None else None,
+        "fov": fov,
+        "near": near,
+        "far": far,
+    }
 
 
 def _renderer_by_panel(cmds) -> dict[str, str]:
@@ -633,6 +708,9 @@ def run_probe(
     native_shadow_request: bool = False,
     native_shadow_binding_probe: bool = False,
     native_shadow_receiver: bool = False,
+    camera_config: dict | None = None,
+    capture_width: int = 640,
+    capture_height: int = 480,
 ) -> None:
     """Execute the R1 lifecycle and optional R2 target probe in live Maya.
 
@@ -682,6 +760,7 @@ def run_probe(
     previous_override_by_panel = {}
     previous_display_lights_by_panel = {}
     previous_shadows_by_panel = {}
+    previous_camera_by_panel = {}
     plugin_name = None
     plugin_loaded = False
     try:
@@ -896,10 +975,31 @@ def run_probe(
                     for panel in panels
                 },
             }
-        cmds.viewFit("persp", all=True, fitFactor=0.8)
+        if capture_width <= 0 or capture_height <= 0:
+            raise ValueError(
+                f"capture dimensions must be positive, got {capture_width}x{capture_height}"
+            )
+        if camera_config is None:
+            report["checks"]["camera"] = {"source": "viewFit", "camera": "persp"}
+            cmds.viewFit("persp", all=True, fitFactor=0.8)
+        else:
+            previous_camera_by_panel = {
+                panel: cmds.modelPanel(panel, query=True, camera=True) for panel in panels
+            }
+            report["checks"]["camera"] = {
+                "source": "explicit",
+                "previousByPanel": previous_camera_by_panel,
+                **_configure_camera(cmds, panels, camera_config),
+            }
         cmds.refresh(force=True)
 
-        baseline = _capture_current_view(cmds, output / "baseline.png")
+        report["checks"]["captureSize"] = [capture_width, capture_height]
+        baseline = _capture_current_view(
+            cmds,
+            output / "baseline.png",
+            width=capture_width,
+            height=capture_height,
+        )
         report["captures"]["baseline"] = str(baseline)
 
         selected_by_panel = _set_override_by_panel(omui, render_override.RENDER_OVERRIDE_NAME, panels)
@@ -921,7 +1021,12 @@ def run_probe(
         if native_shadow_receiver and model_path is not None:
             _evaluate_native_shadow_receiver_selection(override)
         cmds.refresh(force=True)
-        overridden = _capture_current_view(cmds, output / "override.png")
+        overridden = _capture_current_view(
+            cmds,
+            output / "override.png",
+            width=capture_width,
+            height=capture_height,
+        )
         report["captures"]["override"] = str(overridden)
         if target_probe or native_shadow_request or native_shadow_binding_probe or native_shadow_receiver:
             override.cleanup()
@@ -983,6 +1088,29 @@ def run_probe(
         report["errors"].append(traceback.format_exc())
         log(f"EXCEPTION:\n{report['errors'][-1]}")
     finally:
+        try:
+            if previous_camera_by_panel:
+                existing_panels = set(cmds.getPanel(type="modelPanel") or [])
+                for panel, camera in previous_camera_by_panel.items():
+                    if panel in existing_panels:
+                        cmds.lookThru(panel, camera)
+                restored_cameras = {
+                    panel: cmds.modelPanel(panel, query=True, camera=True)
+                    for panel in previous_camera_by_panel
+                    if panel in existing_panels
+                }
+                report["checks"]["originalPanelCameraRestored"] = (
+                    restored_cameras == previous_camera_by_panel
+                )
+                if not report["checks"]["originalPanelCameraRestored"]:
+                    report["status"] = "error"
+                    report["errors"].append(
+                        "panel camera restore failed: "
+                        f"expected {previous_camera_by_panel!r}, got {restored_cameras!r}"
+                    )
+        except Exception as exc:
+            report["errors"].append(f"panel camera restore failed: {exc}")
+            report["status"] = "error"
         try:
             if previous_shadows_by_panel:
                 existing_panels = set(cmds.getPanel(type="modelPanel") or [])
@@ -1116,6 +1244,25 @@ def _compare_captures(reference: Path, candidate: Path) -> dict:
     }
 
 
+def _load_camera_config(value: str) -> dict:
+    """Load an explicit camera from a JSON object string or JSON file."""
+    try:
+        path = Path(value)
+        if path.is_file():
+            value = path.read_text(encoding="utf-8")
+    except OSError:
+        # A JSON object can be longer than a Windows path limit; let json.loads
+        # produce the useful syntax error below instead of treating it as a file.
+        pass
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError("--camera must be a JSON object string or a JSON file") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("--camera JSON must contain an object")
+    return payload
+
+
 def main() -> int:
     """Launch Maya GUI, run the probe, then apply the host-side pixel gate."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1180,6 +1327,19 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--camera",
+        default=None,
+        help="Explicit camera JSON object or path to a JSON file for Oracle capture.",
+    )
+    parser.add_argument("--width", type=int, default=640, help="Viewport capture width.")
+    parser.add_argument("--height", type=int, default=480, help="Viewport capture height.")
+    parser.add_argument(
+        "--oracle-png",
+        type=Path,
+        default=None,
+        help="Optional Oracle PNG to compare with the override capture.",
+    )
+    parser.add_argument(
         "--model",
         type=Path,
         default=None,
@@ -1198,6 +1358,20 @@ def main() -> int:
         parser.error("--r32f-receiver-probe requires --r32f-caster-pass")
     if args.r32f_light_space_caster and not args.r32f_caster_pass:
         parser.error("--r32f-light-space-caster requires --r32f-caster-pass")
+    if args.width <= 0 or args.height <= 0:
+        parser.error("--width and --height must be positive")
+    camera_config = None
+    if args.camera is not None:
+        try:
+            camera_config = _load_camera_config(args.camera)
+        except ValueError as exc:
+            parser.error(str(exc))
+    if args.oracle_png is not None:
+        args.oracle_png = args.oracle_png.resolve()
+        if not args.oracle_png.is_file():
+            parser.error(f"--oracle-png does not exist: {args.oracle_png}")
+        if camera_config is None:
+            parser.error("--oracle-png requires --camera for a deterministic view")
 
     out_dir = args.out_dir.resolve()
     log_path = out_dir / f"render_override_maya{args.maya}.log"
@@ -1217,9 +1391,24 @@ def main() -> int:
         if args.model is None
         else json.dumps(str(args.model.resolve()), ensure_ascii=True)
     )
+    camera_literal = "None" if camera_config is None else json.dumps(camera_config, ensure_ascii=True)
+    probe_call = (
+        f"run_probe(r'{log_path.as_posix()}', r'{report_path.as_posix()}', "
+        f"r'{out_dir.as_posix()}', {expected_draw_api_name!r}, {args.target_probe!r}, "
+        f"{model_literal}, {args.r32f_binding_probe!r}, {args.r32f_caster_pass!r}, "
+        f"{args.r32f_receiver_probe!r}, {args.r32f_light_space_caster!r}, "
+        f"{args.native_shadow_request!r}, {args.native_shadow_binding_probe!r}, "
+        f"{args.native_shadow_receiver!r}"
+    )
+    if camera_config is not None or args.width != 640 or args.height != 480:
+        probe_call += (
+            f", camera_config={camera_literal}, capture_width={args.width!r}, "
+            f"capture_height={args.height!r}"
+        )
+    probe_call += ")"
     command = (
         "from tools.render_override_e2e import run_probe\n"
-        f"run_probe(r'{log_path.as_posix()}', r'{report_path.as_posix()}', r'{out_dir.as_posix()}', {expected_draw_api_name!r}, {args.target_probe!r}, {model_literal}, {args.r32f_binding_probe!r}, {args.r32f_caster_pass!r}, {args.r32f_receiver_probe!r}, {args.r32f_light_space_caster!r}, {args.native_shadow_request!r}, {args.native_shadow_binding_probe!r}, {args.native_shadow_receiver!r})\n"
+        f"{probe_call}\n"
     )
     report = run_maya_e2e(
         project_root=_ROOT,
@@ -1244,13 +1433,26 @@ def main() -> int:
         ),
     )
     if report.get("status") == "pass":
-        comparison = _compare_captures(Path(report["captures"]["baseline"]), Path(report["captures"]["override"]))
+        comparison = _compare_captures(
+            Path(report["captures"]["baseline"]), Path(report["captures"]["override"])
+        )
         report["captureParity"] = comparison
         if not comparison.get("pass") and not args.native_shadow_receiver:
             report["status"] = "fail"
             report["errors"].append(f"R1 capture parity failed: {comparison}")
         elif args.native_shadow_receiver:
             report["checks"]["captureParityExpectedToDiffer"] = not comparison.get("pass")
+        if args.oracle_png is not None:
+            oracle_comparison = _compare_captures(
+                args.oracle_png, Path(report["captures"]["override"])
+            )
+            report["oracleComparison"] = oracle_comparison
+            if not oracle_comparison.get("pass"):
+                report["status"] = "fail"
+                report.setdefault("errors", []).append(
+                    "override capture did not match the requested Oracle PNG: "
+                    f"{oracle_comparison}"
+                )
         _write_report(report_path, report)
     LOGGER.info("R1 GUI gate status: %s", report.get("status"))
     return 0 if report.get("status") == "pass" else 1

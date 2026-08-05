@@ -1014,6 +1014,10 @@ def run_render_override_e2e(
     native_shadow_binding_probe = "--native-shadow-binding-probe" in posargs
     native_shadow_receiver = "--native-shadow-receiver" in posargs
     model = option(posargs, "--model", "")
+    camera = option(posargs, "--camera", "")
+    width = option(posargs, "--width", "")
+    height = option(posargs, "--height", "")
+    oracle_png = option(posargs, "--oracle-png", "")
     if vp2_device not in {"default", "dx11", "gl", "glcore"}:
         session.error(f"Unsupported --vp2-device: {vp2_device}")
     if model and not target_probe and not native_shadow_receiver:
@@ -1047,6 +1051,10 @@ def run_render_override_e2e(
         *( ["--native-shadow-binding-probe"] if native_shadow_binding_probe else []),
         *( ["--native-shadow-receiver"] if native_shadow_receiver else []),
         *(["--model", model] if model else []),
+        *(["--camera", camera] if camera else []),
+        *(["--width", width] if width else []),
+        *(["--height", height] if height else []),
+        *(["--oracle-png", oracle_png] if oracle_png else []),
         *(["--target-probe"] if target_probe else []),
         external=True,
     )

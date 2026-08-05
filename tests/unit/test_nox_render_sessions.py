@@ -121,6 +121,14 @@ class NoxRenderSessionsTest(unittest.TestCase):
                 "--native-shadow-receiver",
                 "--model",
                 "F:/fixtures/self-shadow.pmx",
+                "--camera",
+                '{"position":[0,24,13],"target":[0,1,0],"fov":40}',
+                "--width",
+                "1024",
+                "--height",
+                "1024",
+                "--oracle-png",
+                "F:/oracle/frame-0.png",
             ]
         )
         run_render_override_e2e(
@@ -143,6 +151,14 @@ class NoxRenderSessionsTest(unittest.TestCase):
         self.assertIn("--native-shadow-receiver", args)
         self.assertIn("--model", args)
         self.assertEqual(args[args.index("--model") + 1], "F:/fixtures/self-shadow.pmx")
+        self.assertIn("--camera", args)
+        self.assertEqual(
+            args[args.index("--camera") + 1],
+            '{"position":[0,24,13],"target":[0,1,0],"fov":40}',
+        )
+        self.assertEqual(args[args.index("--width") + 1], "1024")
+        self.assertEqual(args[args.index("--height") + 1], "1024")
+        self.assertEqual(args[args.index("--oracle-png") + 1], "F:/oracle/frame-0.png")
         self.assertTrue(kwargs["external"])
 
     def test_render_override_e2e_rejects_model_without_target_probe(self):
