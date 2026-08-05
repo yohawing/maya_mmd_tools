@@ -1713,7 +1713,9 @@ class R32FCasterShaderPass:
             "releaseSucceeded": False,
             "releaseBeforeTarget": False,
             "preDrawCallbackCount": 0,
+            "renderItemCount": 0,
             "worldViewProjectionBindCount": 0,
+            "matrixSamples": [],
             "parameterErrors": [],
             "drawsReceiver": False,
             "claimsSelfShadow": False,
@@ -1865,12 +1867,24 @@ class R32FCasterShaderPass:
         return self._shader
 
     def _pre_draw(self, context, _render_item_list, shader_instance):
-        """Bind the active draw-context matrix for semantic-only effects."""
+        """Bind the active draw-context matrix for the caster effect."""
         self._report["preDrawCallbackCount"] += 1
+        try:
+            self._report["renderItemCount"] += len(_render_item_list)
+        except Exception:
+            pass
         if context is None or shader_instance is None:
             return
         try:
             matrix = context.getMatrix(omr.MFrameContext.kWorldViewProjMtx)
+            if len(self._report["matrixSamples"]) < 2:
+                values = tuple(float(value) for value in matrix)
+                if len(values) == 16:
+                    self._report["matrixSamples"].append(
+                        [list(values[offset : offset + 4]) for offset in range(0, 16, 4)]
+                    )
+                else:
+                    self._report["matrixSamples"].append(list(values))
             shader_instance.setParameter(R32F_CASTER_PASS_PARAMETER, matrix)
             self._report["worldViewProjectionBindCount"] += 1
         except Exception as exc:
