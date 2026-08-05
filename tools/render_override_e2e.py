@@ -1054,6 +1054,31 @@ def run_probe(
         cmds.setAttr(f"{light_xform}.rotateX", -45.0)
         cmds.setAttr(f"{light_xform}.rotateY", -30.0)
         if native_shadow_request or native_shadow_binding_probe or native_shadow_receiver:
+            # The receiver shader consumes the native shadow map, but its MMD
+            # material uniforms are driven by the imported mmd_light
+            # controller.  Reuse that controller's world rotation for the
+            # diagnostic light so the shadow projection and MMD light basis
+            # describe the same direction.
+            source_mmd_light = None
+            source_mmd_light_rotation = None
+            try:
+                from mmd_tools.converters.light_converter import find_mmd_light
+
+                source_mmd_light = find_mmd_light()
+                if source_mmd_light and cmds.objExists(source_mmd_light):
+                    source_mmd_light_rotation = cmds.xform(
+                        source_mmd_light,
+                        query=True,
+                        worldSpace=True,
+                        rotation=True,
+                    )
+                    cmds.xform(
+                        light_xform,
+                        worldSpace=True,
+                        rotation=source_mmd_light_rotation,
+                    )
+            except Exception as exc:
+                report["checks"]["nativeShadowLightAlignmentError"] = str(exc)
             # A Maya light can exist in the scene while its native depth-map
             # shadow switch remains off.  Enable only this diagnostic light's
             # own shadow-producing attribute; imported MMD materials are not
@@ -1068,6 +1093,14 @@ def run_probe(
             if shadow_attrs:
                 report["checks"]["nativeShadowLight"] = {
                     "shape": light_shape,
+                    "sourceMmdLight": source_mmd_light,
+                    "sourceMmdLightRotation": source_mmd_light_rotation,
+                    "worldRotation": cmds.xform(
+                        light_xform,
+                        query=True,
+                        worldSpace=True,
+                        rotation=True,
+                    ),
                     **shadow_attrs,
                 }
             # Maya's default viewport lighting mode is ``kLightDefault``;
