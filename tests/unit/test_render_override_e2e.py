@@ -99,7 +99,61 @@ class RenderOverrideE2eTest(unittest.TestCase):
         ):
             self.assertEqual(render_override_e2e.main(), 1)
         command = run_gate.call_args.kwargs["command"]
-        self.assertIn("False, True)", command)
+        self.assertIn("False, True, False)", command)
+
+    def test_main_forwards_r32f_receiver_probe_with_caster_pass(self):
+        report = {"status": "fail", "captures": {}, "checks": {}, "errors": []}
+        with mock.patch.object(
+            render_override_e2e, "run_maya_e2e", return_value=report
+        ) as run_gate, mock.patch.object(
+            render_override_e2e.sys,
+            "argv",
+            [
+                "render_override_e2e.py",
+                "--target-probe",
+                "--r32f-caster-pass",
+                "--r32f-receiver-probe",
+            ],
+        ):
+            self.assertEqual(render_override_e2e.main(), 1)
+        command = run_gate.call_args.kwargs["command"]
+        self.assertIn("False, True, True)", command)
+
+    def test_r32f_receiver_probe_validation_requires_draw_and_readback(self):
+        valid = {
+            "enabled": True,
+            "status": "released",
+            "reason": "receiver-shader-released-before-target",
+            "inputTargetName": "mmdToolsSelfShadowR32F",
+            "outputTargetName": "mmdToolsSelfShadowReceiverProbeR32F",
+            "shaderPath": "MMDTargetReceiverProbe.fx",
+            "technique": "MmdToolsR32FReceiverProbe",
+            "parameter": "MmdToolsR32FTarget",
+            "outputTransform": "one-minus-sampled-value",
+            "createAttemptCount": 1,
+            "createSucceeded": True,
+            "bindAttemptCount": 1,
+            "bindSucceeded": True,
+            "postDrawCallbackCount": 1,
+            "manualReadbackCount": 0,
+            "releaseAttemptCount": 1,
+            "releaseSucceeded": True,
+            "releaseBeforeTarget": True,
+            "drawsReceiver": True,
+            "receiverComposition": False,
+            "claimsSelfShadow": False,
+            "output": {
+                "status": "sampled",
+                "readbackCount": 1,
+                "changedFromClear": True,
+                "nonClearSampleCount": 1,
+            },
+        }
+        render_override_e2e._validate_r32f_receiver_probe(valid)
+        with self.assertRaises(RuntimeError):
+            render_override_e2e._validate_r32f_receiver_probe(
+                dict(valid, postDrawCallbackCount=0)
+            )
 
     def test_r32f_caster_pass_validation_rejects_receiver_claim(self):
         valid = {
@@ -123,6 +177,15 @@ class RenderOverrideE2eTest(unittest.TestCase):
         invalid = dict(valid, receiverComposition=True)
         with self.assertRaises(RuntimeError):
             render_override_e2e._validate_r32f_caster_pass(invalid)
+
+    def test_main_rejects_receiver_probe_without_caster_pass(self):
+        with mock.patch.object(
+            render_override_e2e.sys,
+            "argv",
+            ["render_override_e2e.py", "--target-probe", "--r32f-receiver-probe"],
+        ):
+            with self.assertRaises(SystemExit):
+                render_override_e2e.main()
 
     def test_r32f_binding_probe_diagnostic_is_explicitly_non_rendering(self):
         render_override_e2e._validate_r32f_binding_probe(

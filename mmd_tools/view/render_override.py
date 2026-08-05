@@ -33,9 +33,12 @@ RENDER_OVERRIDE_UI_NAME = "MMD Tools Passthrough"
 SCENE_OPERATION_NAME = "mmdToolsPassthroughScene"
 PRESENT_OPERATION_NAME = "mmdToolsPassthroughPresent"
 SHADOW_TARGET_OPERATION_NAME = "mmdToolsShadowTargetClear"
+RECEIVER_PROBE_OPERATION_NAME = "mmdToolsShadowReceiverProbe"
 SHADOW_COLOR_TARGET_NAME = "mmdToolsSelfShadowR32F"
 SHADOW_DEPTH_TARGET_NAME = "mmdToolsSelfShadowD32"
+RECEIVER_PROBE_TARGET_NAME = "mmdToolsSelfShadowReceiverProbeR32F"
 SHADOW_TARGET_SIZE = 2048
+RECEIVER_PROBE_TARGET_SIZE = 4
 SELF_SHADOW_MAP_DRAW_FLAG = 0x04
 SHADOW_CLEAR_VALUE = 1.0
 SHADOW_DEPTH_CLEAR_EPSILON = 1e-6
@@ -50,6 +53,11 @@ R32F_CASTER_PASS_PARAMETER = "WorldViewProjection"
 R32F_CASTER_PASS_TECHNIQUE = "MmdToolsR32FCaster"
 R32F_CASTER_PASS_SHADER_PATH = (
     Path(__file__).resolve().parents[1] / "shaders" / "MMDTargetCaster.fx"
+)
+R32F_RECEIVER_PROBE_PARAMETER = R32F_BINDING_PROBE_PARAMETER
+R32F_RECEIVER_PROBE_TECHNIQUE = "MmdToolsR32FReceiverProbe"
+R32F_RECEIVER_PROBE_SHADER_PATH = (
+    Path(__file__).resolve().parents[1] / "shaders" / "MMDTargetReceiverProbe.fx"
 )
 
 
@@ -553,6 +561,150 @@ class ShadowTargetResources:
         }
 
 
+class ReceiverProbeResources:
+    """Own the separate R32F output used by the receiver binding probe."""
+
+    def __init__(self):
+        self._description = omr.MRenderTargetDescription(
+            RECEIVER_PROBE_TARGET_NAME,
+            RECEIVER_PROBE_TARGET_SIZE,
+            RECEIVER_PROBE_TARGET_SIZE,
+            1,
+            omr.MRenderer.kR32_FLOAT,
+            0,
+            False,
+        )
+        self._target = None
+        self._acquire_count = 0
+        self._release_count = 0
+        self._readback_count = 0
+        self._sample = None
+        self._sample_details = {}
+        self._last_error = None
+
+    def acquire(self):
+        """Acquire or refresh the output target for one receiver probe."""
+        manager = omr.MRenderer.getRenderTargetManager()
+        if manager is None:
+            raise RuntimeError("Viewport 2.0 render target manager is unavailable")
+        try:
+            if self._target is None:
+                self._target = manager.acquireRenderTarget(self._description)
+                if self._target is None:
+                    raise RuntimeError("failed to acquire receiver probe target")
+            else:
+                self._target.updateDescription(self._description)
+        except Exception as exc:
+            self._last_error = str(exc)
+            self.release()
+            raise
+        self._sample = None
+        self._sample_details = {}
+        self._last_error = None
+        self._acquire_count += 1
+        return self._target
+
+    @property
+    def target(self):
+        """Return the currently owned output target, if any."""
+        return self._target
+
+    def release(self) -> None:
+        """Release the output target after the receiver shader is detached."""
+        target = self._target
+        if target is None:
+            return
+        manager = omr.MRenderer.getRenderTargetManager()
+        if manager is None:
+            self._last_error = "Viewport 2.0 render target manager disappeared before release"
+            return
+        try:
+            manager.releaseRenderTarget(target)
+        except Exception as exc:
+            self._last_error = str(exc)
+            return
+        self._target = None
+        self._release_count += 1
+
+    def capture_sample(self) -> dict:
+        """Scan the small output target while it is still owned."""
+        if self._target is None:
+            if self._sample is not None:
+                return self.report()
+            self._last_error = "receiver-target-unavailable"
+            return self.report(status="unsupported", reason=self._last_error)
+        raw_data = None
+        try:
+            raw_data, row_pitch, slice_pitch = self._target.rawData()
+            if not raw_data:
+                raise RuntimeError("receiver probe target rawData returned no buffer")
+            pointer = int(raw_data)
+            width = int(self._description.width())
+            height = int(self._description.height())
+            pitch = int(row_pitch)
+            if pointer <= 0 or pitch < width * ctypes.sizeof(ctypes.c_float):
+                raise RuntimeError("receiver probe target rawData has invalid address or pitch")
+            values = [
+                ctypes.c_float.from_address(
+                    pointer + row * pitch + column * ctypes.sizeof(ctypes.c_float)
+                ).value
+                for row in range(height)
+                for column in range(width)
+            ]
+            finite = [value for value in values if math.isfinite(value)]
+            self._sample = float(values[0]) if values else None
+            non_clear = sum(
+                1
+                for value in finite
+                if not math.isclose(value, SHADOW_CLEAR_VALUE, abs_tol=1e-6)
+            )
+        except Exception as exc:
+            self._last_error = str(exc)
+            return self.report(status="unsupported", reason="receiver-readback-failed")
+        finally:
+            if raw_data:
+                omr.MRenderTarget.freeRawData(raw_data)
+        self._readback_count += 1
+        self._last_error = None
+        self._sample_details = {
+            "changedFromClear": non_clear > 0,
+            "sampleCount": len(values),
+            "nonClearSampleCount": non_clear,
+            "nonFiniteSampleCount": len(values) - len(finite),
+            "minSample": min(finite) if finite else None,
+            "maxSample": max(finite) if finite else None,
+        }
+        return self.report(
+            status="sampled",
+            reason="receiver-output-readback",
+            **self._sample_details,
+        )
+
+    def report(self, **values) -> dict:
+        """Return JSON-safe receiver target ownership and sample diagnostics."""
+        report = {
+            "enabled": True,
+            "target": {
+                "name": self._description.name(),
+                "width": self._description.width(),
+                "height": self._description.height(),
+                "samples": self._description.multiSampleCount(),
+                "rasterFormat": self._description.rasterFormat(),
+            },
+            "acquireCount": self._acquire_count,
+            "releaseCount": self._release_count,
+            "balanced": self._acquire_count == self._release_count,
+            "readbackCount": self._readback_count,
+            "sample": self._sample,
+            "status": "not-run" if self._sample is None else "sampled",
+            "reason": "not-rendered" if self._sample is None else "receiver-output-readback",
+            "lastError": self._last_error,
+        }
+        report.update(self._sample_details)
+        report.update(values)
+        return report
+
+
 class R32FTargetBindingProbe:
     """Own a diagnostic-only shader instance bound to the R32F target.
 
@@ -908,6 +1060,203 @@ class R32FCasterShaderPass:
         return dict(self._report)
 
 
+_MQuadRenderBase = getattr(omr, "MQuadRender", omr.MSceneRender)
+
+
+class R32FReceiverProbe(_MQuadRenderBase):
+    """Sample the caster target into a separate output with ``MQuadRender``.
+
+    This operation is deliberately diagnostic: it proves that a plugin-owned
+    R32F target can be bound as a quad input and read back from a distinct
+    output target.  It does not replace imported MMD materials or compose a
+    self-shadow term into the viewport.
+    """
+
+    def __init__(self, resources: ReceiverProbeResources):
+        super().__init__(RECEIVER_PROBE_OPERATION_NAME)
+        self._resources = resources
+        self._shader = None
+        self._shader_manager = None
+        self._report = {
+            "enabled": True,
+            "status": "not-run",
+            "reason": "not-setup",
+            "inputTargetName": SHADOW_COLOR_TARGET_NAME,
+            "outputTargetName": RECEIVER_PROBE_TARGET_NAME,
+            "shaderPath": str(R32F_RECEIVER_PROBE_SHADER_PATH),
+            "technique": R32F_RECEIVER_PROBE_TECHNIQUE,
+            "parameter": R32F_RECEIVER_PROBE_PARAMETER,
+            "outputTransform": "one-minus-sampled-value",
+            "createAttemptCount": 0,
+            "createSucceeded": False,
+            "bindAttemptCount": 0,
+            "bindSucceeded": False,
+            "postDrawCallbackCount": 0,
+            "manualReadbackCount": 0,
+            "releaseAttemptCount": 0,
+            "releaseSucceeded": False,
+            "releaseBeforeTarget": False,
+            "drawsReceiver": True,
+            "receiverComposition": False,
+            "claimsSelfShadow": False,
+            "lastError": None,
+        }
+
+    def targetOverrideList(self):
+        """Route the quad output to a target distinct from the caster input."""
+        target = self._resources.target
+        return [target] if target is not None else None
+
+    def clearOperation(self):
+        """Clear the diagnostic output to the one-minus probe's far value."""
+        clear = super().clearOperation()
+        clear.setClearColor((SHADOW_CLEAR_VALUE,) * 4)
+        clear.setClearGradient(False)
+        clear.setMask(omr.MClearOperation.kClearColor)
+        return clear
+
+    def shader(self):
+        """Return the plugin-owned receiver probe shader instance."""
+        return self._shader
+
+    def create(self, input_target) -> dict:
+        """Create the quad shader and bind the caster target as its input."""
+        previous_release = self.release_shader()
+        if self.has_owned_shader():
+            self._report.update(
+                status="unsupported",
+                reason="previous-shader-release-failed",
+                lastError=previous_release.get("lastError"),
+                createSucceeded=False,
+            )
+            return self.report()
+        report = self._report
+        report.update(
+            status="not-run",
+            reason="input-target-unavailable",
+            createSucceeded=False,
+            bindSucceeded=False,
+            releaseSucceeded=False,
+            releaseBeforeTarget=False,
+            lastError=None,
+        )
+        if input_target is None or self._resources.target is None:
+            return self.report()
+        report["createAttemptCount"] += 1
+        draw_api_getter = getattr(omr.MRenderer, "drawAPI", None)
+        if callable(draw_api_getter):
+            try:
+                draw_api = draw_api_getter()
+            except Exception as exc:
+                report.update(status="unsupported", reason="draw-api-query-failed", lastError=str(exc))
+                return self.report()
+            if draw_api != getattr(omr.MRenderer, "kDirectX11", draw_api):
+                report.update(
+                    status="unsupported",
+                    reason="directx11-only-receiver-probe",
+                    lastError=f"draw API {draw_api!r} is not DirectX11",
+                )
+                return self.report()
+        if not R32F_RECEIVER_PROBE_SHADER_PATH.is_file():
+            report.update(status="unsupported", reason="shader-asset-missing")
+            return self.report()
+        try:
+            shader_manager = omr.MRenderer.getShaderManager()
+            if shader_manager is None:
+                raise RuntimeError("shader manager unavailable")
+            shader = shader_manager.getEffectsFileShader(
+                str(R32F_RECEIVER_PROBE_SHADER_PATH),
+                R32F_RECEIVER_PROBE_TECHNIQUE,
+                None,
+                True,
+                None,
+                self._post_draw,
+            )
+            if shader is None:
+                report.update(status="unsupported", reason="shader-create-failed")
+                return self.report()
+            self._shader = shader
+            self._shader_manager = shader_manager
+            report["createSucceeded"] = True
+            report["bindAttemptCount"] += 1
+            shader.setParameter(R32F_RECEIVER_PROBE_PARAMETER, input_target)
+            report.update(
+                status="created",
+                reason="shader-created-and-target-bound",
+                bindSucceeded=True,
+            )
+        except Exception as exc:
+            release_report = self.release_shader()
+            report.update(
+                status="unsupported",
+                reason=(
+                    "shader-release-failed"
+                    if not release_report["releaseSucceeded"] and self.has_owned_shader()
+                    else "receiver-target-bind-failed"
+                ),
+                lastError=(
+                    str(exc)
+                    if release_report["releaseSucceeded"] or not self.has_owned_shader()
+                    else f"{exc}; {release_report.get('lastError')}"
+                ),
+            )
+        return self.report()
+
+    def _post_draw(self, _context, _render_item_list, _shader) -> None:
+        """Capture one output sample after VP2 finishes the quad draw."""
+        self._report["postDrawCallbackCount"] += 1
+        try:
+            self._resources.capture_sample()
+        except Exception as exc:
+            self._report.update(status="unsupported", reason="receiver-readback-failed", lastError=str(exc))
+
+    def capture_output(self) -> dict:
+        """Capture the output during cleanup when VP2 has not called postCb."""
+        self._report["manualReadbackCount"] += 1
+        return self._resources.capture_sample()
+
+    def release_shader(self) -> dict:
+        """Release the shader while both input/output targets remain owned."""
+        shader = self._shader
+        manager = self._shader_manager
+        if shader is None:
+            return self.report()
+        self._report["releaseAttemptCount"] += 1
+        try:
+            if manager is None:
+                raise RuntimeError("shader manager disappeared before receiver release")
+            manager.releaseShader(shader)
+        except Exception as exc:
+            self._report.update(
+                status="unsupported",
+                reason="receiver-shader-release-failed",
+                releaseSucceeded=False,
+                releaseBeforeTarget=False,
+                lastError=str(exc),
+            )
+        else:
+            self._shader = None
+            self._shader_manager = None
+            self._report.update(
+                status="released",
+                reason="receiver-shader-released-before-target",
+                releaseSucceeded=True,
+                releaseBeforeTarget=True,
+                lastError=None,
+            )
+        return self.report()
+
+    def has_owned_shader(self) -> bool:
+        """Return whether cleanup must defer target release for a retry."""
+        return self._shader is not None
+
+    def report(self) -> dict:
+        """Return JSON-safe receiver shader diagnostics."""
+        report = dict(self._report)
+        report["output"] = self._resources.report()
+        return report
+
+
 class ShadowTargetClearRender(omr.MSceneRender):
     """Render selected MMD casters into the diagnostic target pair."""
 
@@ -1205,11 +1554,20 @@ class PassthroughRenderOverride(omr.MRenderOverride):
             and _enabled_environment_flag("MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_BINDING_PROBE")
             else None
         )
-        operations = (
-            self._scene_operation,
-            PassthroughHUDRender(),
-            PassthroughPresentTarget(),
+        receiver_enabled = (
+            self._target_probe is not None
+            and self._r32f_caster_shader_pass is not None
+            and _enabled_environment_flag("MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_RECEIVER_PROBE")
         )
+        self._receiver_probe_resources = ReceiverProbeResources() if receiver_enabled else None
+        self._receiver_probe = (
+            R32FReceiverProbe(self._receiver_probe_resources)
+            if self._receiver_probe_resources is not None
+            else None
+        )
+        operations = (self._scene_operation, PassthroughHUDRender(), PassthroughPresentTarget())
+        if self._receiver_probe is not None:
+            operations = (self._receiver_probe, *operations)
         if self._shadow_target_operation is not None:
             operations = (self._shadow_target_operation, *operations)
         self._operations = operations
@@ -1243,6 +1601,18 @@ class PassthroughRenderOverride(omr.MRenderOverride):
 
     def cleanup(self):
         """Reset iterator state while retaining reusable operation objects."""
+        if self._receiver_probe is not None and self._receiver_probe_resources is not None:
+            self._receiver_probe.capture_output()
+            self._receiver_probe.release_shader()
+            if self._receiver_probe.has_owned_shader():
+                self._current_operation = -1
+                self._cleanup_count += 1
+                raise RuntimeError("R32F receiver shader release failed; target release deferred")
+            self._receiver_probe_resources.release()
+            if self._receiver_probe_resources.target is not None:
+                self._current_operation = -1
+                self._cleanup_count += 1
+                raise RuntimeError("R32F receiver target release failed; target release deferred")
         if self._shadow_target_operation is not None:
             self._shadow_target_operation.release_shader()
             if self._r32f_caster_shader_pass is not None and self._r32f_caster_shader_pass.has_owned_shader():
@@ -1280,6 +1650,19 @@ class PassthroughRenderOverride(omr.MRenderOverride):
                 # The caster shader is created only after both plugin-owned
                 # targets exist, and it is released before either target.
                 self._r32f_caster_shader_pass.create(targets)
+            if self._receiver_probe is not None and self._receiver_probe_resources is not None:
+                try:
+                    self._receiver_probe_resources.acquire()
+                    self._receiver_probe.create(targets[0] if targets else None)
+                except Exception:
+                    self._receiver_probe.release_shader()
+                    self._receiver_probe_resources.release()
+                    if self._shadow_target_operation is not None:
+                        self._shadow_target_operation.release_shader()
+                        self._shadow_target_operation.set_targets(None)
+                    if self._target_probe is not None:
+                        self._target_probe.release()
+                    raise
             if self._r32f_binding_probe is not None:
                 # Bind only the plugin-owned R32F target.  This setup probe is
                 # intentionally disconnected from imported shaders and draw
@@ -1298,6 +1681,8 @@ class PassthroughRenderOverride(omr.MRenderOverride):
             caster_report = self._shadow_target_operation.caster_shader_report()
             if caster_report is not None:
                 report["r32fCasterPass"] = caster_report
+        if self._receiver_probe is not None:
+            report["r32fReceiverProbe"] = self._receiver_probe.report()
         if self._r32f_binding_probe is not None:
             report["r32fBindingProbe"] = self._r32f_binding_probe.report()
         return report
@@ -1391,6 +1776,7 @@ __all__ = [
     "PassthroughHUDRender",
     "PassthroughPresentTarget",
     "R32FCasterShaderPass",
+    "R32FReceiverProbe",
     "R32FTargetBindingProbe",
     "PassthroughRenderOverride",
     "PassthroughSceneRender",
@@ -1399,6 +1785,12 @@ __all__ = [
     "R32F_CASTER_PASS_PARAMETER",
     "R32F_CASTER_PASS_SHADER_PATH",
     "R32F_CASTER_PASS_TECHNIQUE",
+    "R32F_RECEIVER_PROBE_PARAMETER",
+    "R32F_RECEIVER_PROBE_SHADER_PATH",
+    "R32F_RECEIVER_PROBE_TECHNIQUE",
+    "RECEIVER_PROBE_OPERATION_NAME",
+    "RECEIVER_PROBE_TARGET_NAME",
+    "RECEIVER_PROBE_TARGET_SIZE",
     "SCENE_OPERATION_NAME",
     "SHADOW_COLOR_TARGET_NAME",
     "SHADOW_DEPTH_TARGET_NAME",
@@ -1408,6 +1800,7 @@ __all__ = [
     "ShadowCasterSelection",
     "ShadowTargetClearRender",
     "ShadowTargetResources",
+    "ReceiverProbeResources",
     "discover_self_shadow_caster_components",
     "initializePlugin",
     "is_registered",

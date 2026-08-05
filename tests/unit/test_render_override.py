@@ -37,6 +37,14 @@ class _MSceneRender(_Operation):
         super().__init__(name)
 
 
+class _MQuadRender(_Operation):
+    operation_type = 2
+    kQuadRender = operation_type
+
+    def __init__(self, name):
+        super().__init__(name)
+
+
 class _MPassContext:
     kColorPassSemantic = "colorPass"
 
@@ -91,6 +99,17 @@ class _MRenderTarget:
         return [ctypes.addressof(self._clear_sample), 4, 4]
 
 
+class _ReceiverRenderTarget:
+    def __init__(self):
+        self._samples = (ctypes.c_float * 16)(*([1.0] * 16))
+
+    def updateDescription(self, _description):
+        return None
+
+    def rawData(self):
+        return [ctypes.addressof(self._samples), 16, 64]
+
+
 class _OccupancyRenderTarget:
     """Tiny R32F target double with a valid row/slice pitch contract."""
 
@@ -114,7 +133,11 @@ class _MRenderTargetManager:
         self.events = events if events is not None else []
 
     def acquireRenderTarget(self, description):
-        target = _MRenderTarget()
+        target = (
+            _ReceiverRenderTarget()
+            if description.name() == render_override.RECEIVER_PROBE_TARGET_NAME
+            else _MRenderTarget()
+        )
         self.acquired.append((description, target))
         return target
 
@@ -174,7 +197,7 @@ class _MShaderManager:
         self.released = []
         self.events = events if events is not None else []
 
-    def getEffectsFileShader(self, path, technique):
+    def getEffectsFileShader(self, path, technique, *args):
         self.requests.append((path, technique))
         if self.create_error is not None:
             raise self.create_error
@@ -317,6 +340,7 @@ def _import_with_stub():
     original_api = sys.modules.get("maya.api")
     stub = types.ModuleType("maya.api.OpenMayaRender")
     stub.MSceneRender = _MSceneRender
+    stub.MQuadRender = _MQuadRender
     stub.MPassContext = _MPassContext
     stub.MHUDRender = _MHUDRender
     stub.MPresentTarget = _MPresentTarget
@@ -613,6 +637,45 @@ class RenderOverrideLifecycleTest(unittest.TestCase):
         self.assertEqual(failed["reason"], "shader-release-failed")
         self.assertFalse(failed["releaseBeforeTarget"])
         self.assertTrue(caster.has_owned_shader())
+
+    def test_r32f_receiver_probe_binds_caster_target_and_reads_separate_output(self):
+        events = []
+        manager = _MRenderTargetManager(events=events)
+        shader_manager = _MShaderManager(events=events)
+        _MRenderer.getRenderTargetManager.return_value = manager
+        _MRenderer.getShaderManager.return_value = shader_manager
+        with mock.patch.dict(
+            os.environ,
+            {
+                "MMD_TOOLS_ENABLE_RENDER_OVERRIDE_TARGET_PROBE": "1",
+                "MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_CASTER_PASS": "1",
+                "MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_RECEIVER_PROBE": "1",
+            },
+            clear=False,
+        ):
+            override = render_override.PassthroughRenderOverride()
+            with mock.patch.object(override._scene_operation, "configure_panel_background"):
+                override.setup("modelPanel4")
+            receiver_report = override.target_probe_report()["r32fReceiverProbe"]
+            self.assertEqual(receiver_report["status"], "created")
+            self.assertTrue(receiver_report["bindSucceeded"])
+            self.assertEqual(override.operations[1].operationType(), 2)
+            self.assertEqual(
+                shader_manager.shader.parameter_calls[-1][0],
+                render_override.R32F_RECEIVER_PROBE_PARAMETER,
+            )
+            override._receiver_probe._post_draw(None, None, shader_manager.shader)
+            self.assertEqual(
+                override.target_probe_report()["r32fReceiverProbe"]["output"]["status"],
+                "sampled",
+            )
+            override.cleanup()
+
+        receiver_report = override.target_probe_report()["r32fReceiverProbe"]
+        self.assertEqual(receiver_report["status"], "released")
+        self.assertTrue(receiver_report["releaseBeforeTarget"])
+        self.assertTrue(receiver_report["output"]["balanced"])
+        self.assertEqual([event[0] for event in events], ["shader", "target", "shader", "target", "target"])
 
     def test_override_binding_probe_is_opt_in_and_releases_before_target_resources(self):
         events = []

@@ -258,6 +258,65 @@ def _validate_r32f_caster_pass(caster_pass: object) -> None:
         )
 
 
+def _validate_r32f_receiver_probe(receiver_probe: object) -> None:
+    """Require a successful quad bind/draw/readback without self-shadow claims."""
+    required = {
+        "enabled",
+        "status",
+        "reason",
+        "inputTargetName",
+        "outputTargetName",
+        "shaderPath",
+        "technique",
+        "parameter",
+        "outputTransform",
+        "createAttemptCount",
+        "createSucceeded",
+        "bindAttemptCount",
+        "bindSucceeded",
+        "postDrawCallbackCount",
+        "manualReadbackCount",
+        "releaseAttemptCount",
+        "releaseSucceeded",
+        "releaseBeforeTarget",
+        "drawsReceiver",
+        "receiverComposition",
+        "claimsSelfShadow",
+        "output",
+    }
+    if not isinstance(receiver_probe, dict) or not required.issubset(receiver_probe):
+        raise RuntimeError(f"R32F receiver-probe diagnostic is missing: {receiver_probe!r}")
+    if any(
+        receiver_probe[key] is not False
+        for key in ("receiverComposition", "claimsSelfShadow")
+    ) or receiver_probe["drawsReceiver"] is not True:
+        raise RuntimeError(
+            "R32F receiver probe unexpectedly changed self-shadow composition claims: "
+            f"{receiver_probe!r}"
+        )
+    output = receiver_probe["output"]
+    if (
+        receiver_probe["status"] != "released"
+        or receiver_probe["createAttemptCount"] < 1
+        or receiver_probe["createSucceeded"] is not True
+        or receiver_probe["bindAttemptCount"] < 1
+        or receiver_probe["bindSucceeded"] is not True
+        or receiver_probe["postDrawCallbackCount"] + receiver_probe["manualReadbackCount"] < 1
+        or receiver_probe["releaseAttemptCount"] < 1
+        or receiver_probe["releaseSucceeded"] is not True
+        or receiver_probe["releaseBeforeTarget"] is not True
+        or not isinstance(output, dict)
+        or output.get("status") != "sampled"
+        or output.get("readbackCount", 0) < 1
+        or output.get("changedFromClear") is not True
+        or output.get("nonClearSampleCount", 0) < 1
+    ):
+        raise RuntimeError(
+            "R32F receiver probe did not complete shader bind/draw/readback/release: "
+            f"{receiver_probe!r}"
+        )
+
+
 def _evaluate_target_probe_caster_selection(override, *, manual_readback: bool = True) -> None:
     """Invoke routing and post-render readback callbacks once in live Maya.
 
@@ -291,6 +350,7 @@ def run_probe(
     model_path: str | None = None,
     r32f_binding_probe: bool = False,
     r32f_caster_pass: bool = False,
+    r32f_receiver_probe: bool = False,
 ) -> None:
     """Execute the R1 lifecycle and optional R2 target probe in live Maya.
 
@@ -301,7 +361,10 @@ def run_probe(
     plugin-owned ``MShaderInstance`` accepts the offscreen target; it performs
     no receiver composition or self-shadow parity assertion.  The explicit
     ``r32f_caster_pass`` option adds a dedicated plugin-owned HLSL caster
-    shader, still without claiming receiver or self-shadow parity.
+    shader, still without claiming receiver or self-shadow parity.  The
+    explicit ``r32f_receiver_probe`` option samples that target with a
+    separate ``MQuadRender`` output; it is a readback diagnostic, not MMD
+    receiver composition.
     """
     import os
 
@@ -334,6 +397,9 @@ def run_probe(
         )
         os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_CASTER_PASS"] = (
             "1" if r32f_caster_pass else "0"
+        )
+        os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_RECEIVER_PROBE"] = (
+            "1" if r32f_receiver_probe else "0"
         )
         cmds.file(new=True, force=True)
         previous_renderer_by_panel = _renderer_by_panel(cmds)
@@ -420,6 +486,8 @@ def run_probe(
         ]
         if target_probe:
             expected_types.insert(0, omr.MSceneRender.kSceneRender)
+        if r32f_receiver_probe:
+            expected_types.insert(1, omr.MQuadRender.kQuadRender)
         report["checks"]["operationTypes"] = operation_types
         report["checks"]["operationOrder"] = operation_types == expected_types
         override.cleanup()
@@ -478,6 +546,10 @@ def run_probe(
             if r32f_caster_pass:
                 _validate_r32f_caster_pass(
                     (target_report or {}).get("r32fCasterPass")
+                )
+            if r32f_receiver_probe:
+                _validate_r32f_receiver_probe(
+                    (target_report or {}).get("r32fReceiverProbe")
                 )
 
         restored_by_panel = {}
@@ -630,6 +702,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--r32f-receiver-probe",
+        action="store_true",
+        help=(
+            "Sample the caster R32F target with a separate MQuadRender output; "
+            "does not compose MMD self-shadowing."
+        ),
+    )
+    parser.add_argument(
         "--model",
         type=Path,
         default=None,
@@ -644,6 +724,8 @@ def main() -> int:
         parser.error("--r32f-binding-probe requires --target-probe")
     if args.r32f_caster_pass and not args.target_probe:
         parser.error("--r32f-caster-pass requires --target-probe")
+    if args.r32f_receiver_probe and not args.r32f_caster_pass:
+        parser.error("--r32f-receiver-probe requires --r32f-caster-pass")
 
     out_dir = args.out_dir.resolve()
     log_path = out_dir / f"render_override_maya{args.maya}.log"
@@ -665,7 +747,7 @@ def main() -> int:
     )
     command = (
         "from tools.render_override_e2e import run_probe\n"
-        f"run_probe(r'{log_path.as_posix()}', r'{report_path.as_posix()}', r'{out_dir.as_posix()}', {expected_draw_api_name!r}, {args.target_probe!r}, {model_literal}, {args.r32f_binding_probe!r}, {args.r32f_caster_pass!r})\n"
+        f"run_probe(r'{log_path.as_posix()}', r'{report_path.as_posix()}', r'{out_dir.as_posix()}', {expected_draw_api_name!r}, {args.target_probe!r}, {model_literal}, {args.r32f_binding_probe!r}, {args.r32f_caster_pass!r}, {args.r32f_receiver_probe!r})\n"
     )
     report = run_maya_e2e(
         project_root=_ROOT,
