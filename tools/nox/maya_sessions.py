@@ -1018,6 +1018,7 @@ def run_render_override_e2e(
     width = option(posargs, "--width", "")
     height = option(posargs, "--height", "")
     oracle_png = option(posargs, "--oracle-png", "")
+    oracle_epsilon = option(posargs, "--oracle-epsilon", "")
     if vp2_device not in {"default", "dx11", "gl", "glcore"}:
         session.error(f"Unsupported --vp2-device: {vp2_device}")
     if model and not target_probe and not native_shadow_receiver:
@@ -1055,6 +1056,7 @@ def run_render_override_e2e(
         *(["--width", width] if width else []),
         *(["--height", height] if height else []),
         *(["--oracle-png", oracle_png] if oracle_png else []),
+        *(["--oracle-epsilon", oracle_epsilon] if oracle_epsilon else []),
         *(["--target-probe"] if target_probe else []),
         external=True,
     )

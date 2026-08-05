@@ -9,7 +9,9 @@ material or self-shadow parity.
 The opt-in native-shadow receiver pass deliberately overlays selected MMD
 receiver components with a plugin-owned effect.  Its capture is therefore not
 required to remain passthrough-identical; the receiver lifecycle and Oracle
-comparison remain separate gates.
+comparison remain separate gates.  The paired capture gate remains strict,
+while an explicitly supplied Oracle epsilon uses the repository's
+GoldenOracle-style normalized mean absolute error metric.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from tests.viewport.maya_e2e_harness import run_maya_e2e  # noqa: E402
 COMPLETION_MARKER = "//-- RENDER OVERRIDE E2E FINISHED --//"
 DEFAULT_PORT = 7731
 DEFAULT_TIMEOUT = 240.0
+DEFAULT_ORACLE_EPSILON = 0.003
 LOGGER = logging.getLogger(__name__)
 
 
@@ -1374,6 +1377,45 @@ def _compare_captures(reference: Path, candidate: Path) -> dict:
     }
 
 
+def _compare_oracle_capture(reference: Path, candidate: Path, epsilon: float) -> dict:
+    """Compare an Oracle PNG with GoldenOracle's normalized mean-error metric.
+
+    ``epsilon`` is the case-level ``compare.epsilon`` from the GoldenOracle
+    manifest.  Keep the strict same-scene comparison in the report as a
+    diagnostic, but do not use its max-channel threshold for a cross-runtime
+    Maya/Oracle image gate because rasterization can move a boundary by one
+    pixel.
+    """
+    if not math.isfinite(epsilon) or epsilon < 0.0:
+        raise ValueError(f"Oracle epsilon must be finite and non-negative, got {epsilon!r}")
+    strict = _compare_captures(reference, candidate)
+    if strict.get("reason") == "size-mismatch":
+        return {
+            "pass": False,
+            "metric": "normalized_mean_absolute_error",
+            "epsilon": epsilon,
+            "strictComparison": strict,
+        }
+    reference_width, reference_height, reference_rgb = _read_png_rgb(reference)
+    candidate_width, candidate_height, candidate_rgb = _read_png_rgb(candidate)
+    if (reference_width, reference_height) != (candidate_width, candidate_height):
+        raise AssertionError("strict comparison should have reported a size mismatch")
+    pixel_count = len(reference_rgb) // 3
+    normalized_mean_absolute_error = (
+        sum(abs(left - right) for left, right in zip(reference_rgb, candidate_rgb))
+        / (pixel_count * 3.0 * 255.0)
+        if pixel_count
+        else 0.0
+    )
+    return {
+        "pass": normalized_mean_absolute_error <= epsilon,
+        "metric": "normalized_mean_absolute_error",
+        "epsilon": epsilon,
+        "normalizedMeanAbsoluteError": normalized_mean_absolute_error,
+        "strictComparison": strict,
+    }
+
+
 def _load_camera_config(value: str) -> dict:
     """Load an explicit camera from a JSON object string or JSON file."""
     try:
@@ -1468,6 +1510,15 @@ def main() -> int:
         type=Path,
         default=None,
         help="Optional Oracle PNG to compare with the override capture.",
+    )
+    parser.add_argument(
+        "--oracle-epsilon",
+        type=float,
+        default=DEFAULT_ORACLE_EPSILON,
+        help=(
+            "GoldenOracle compare.epsilon for normalized mean absolute error "
+            f"(default: {DEFAULT_ORACLE_EPSILON})."
+        ),
     )
     parser.add_argument(
         "--model",
@@ -1573,8 +1624,10 @@ def main() -> int:
         elif args.native_shadow_receiver:
             report["checks"]["captureParityExpectedToDiffer"] = not comparison.get("pass")
         if args.oracle_png is not None:
-            oracle_comparison = _compare_captures(
-                args.oracle_png, Path(report["captures"]["override"])
+            oracle_comparison = _compare_oracle_capture(
+                args.oracle_png,
+                Path(report["captures"]["override"]),
+                args.oracle_epsilon,
             )
             report["oracleComparison"] = oracle_comparison
             if not oracle_comparison.get("pass"):

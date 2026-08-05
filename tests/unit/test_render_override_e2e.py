@@ -29,6 +29,22 @@ class RenderOverrideE2eTest(unittest.TestCase):
         self.assertTrue(render_override_e2e._compare_captures(reference, within_variance)["pass"])
         self.assertFalse(render_override_e2e._compare_captures(reference, divergent)["pass"])
 
+    def test_oracle_comparison_uses_normalized_mean_absolute_error(self):
+        root = Path(self.id().replace(".", "_"))
+        temp_dir = Path.cwd() / "build" / "unit" / root
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        reference = temp_dir / "reference.png"
+        candidate = temp_dir / "candidate.png"
+        self._write_rgb_png(reference, [(255, 255, 255)] * 4)
+        self._write_rgb_png(candidate, [(251, 255, 255)] + [(255, 255, 255)] * 3)
+
+        comparison = render_override_e2e._compare_oracle_capture(reference, candidate, 0.002)
+
+        self.assertTrue(comparison["pass"])
+        self.assertEqual(comparison["metric"], "normalized_mean_absolute_error")
+        self.assertAlmostEqual(comparison["normalizedMeanAbsoluteError"], 4 / (4 * 3 * 255))
+        self.assertFalse(comparison["strictComparison"]["pass"])
+
     @staticmethod
     def _write_rgb_png(path: Path, pixels: list[tuple[int, int, int]]) -> None:
         """Write one deterministic 2x2 RGB fixture with standard PNG filters."""

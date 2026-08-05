@@ -129,6 +129,8 @@ class NoxRenderSessionsTest(unittest.TestCase):
                 "1024",
                 "--oracle-png",
                 "F:/oracle/frame-0.png",
+                "--oracle-epsilon",
+                "0.003",
             ]
         )
         run_render_override_e2e(
@@ -159,6 +161,7 @@ class NoxRenderSessionsTest(unittest.TestCase):
         self.assertEqual(args[args.index("--width") + 1], "1024")
         self.assertEqual(args[args.index("--height") + 1], "1024")
         self.assertEqual(args[args.index("--oracle-png") + 1], "F:/oracle/frame-0.png")
+        self.assertEqual(args[args.index("--oracle-epsilon") + 1], "0.003")
         self.assertTrue(kwargs["external"])
 
     def test_render_override_e2e_rejects_model_without_target_probe(self):

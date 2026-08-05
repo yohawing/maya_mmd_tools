@@ -1676,7 +1676,9 @@ def maya_render_override_e2e(session: nox.Session) -> None:
     This starts an isolated Maya GUI profile through Explorer, verifies that
     plugin load preserves the active override, captures baseline and override
     ON frames, requires scene/HUD/present order, restores the prior override,
-    and applies a strict host-side RGB comparison.
+    and applies a strict host-side RGB comparison.  When --oracle-png is
+    provided, the optional --oracle-epsilon selects the GoldenOracle
+    normalized mean absolute error gate while preserving the strict diagnostic.
 
     Example:
         uvx nox -s maya_render_override_e2e -- --maya 2024
