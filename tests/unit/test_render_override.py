@@ -630,6 +630,108 @@ class RenderOverrideLifecycleTest(unittest.TestCase):
         _MRenderer.needEvaluateAllLights.assert_called_once_with()
         request.release()
 
+    def test_native_shadow_binding_probe_binds_active_directional_map(self):
+        class _LightSemantics:
+            kShadowMap = 1
+            kShadowViewProj = 2
+            kGlobalShadowOn = 3
+            kShadowOn = 4
+            kWorldDirection = 5
+
+        class _Texture:
+            def resourceHandle(self):
+                return 17
+
+        class _TextureManager:
+            def __init__(self):
+                self.released = []
+
+            def releaseTexture(self, texture):
+                self.released.append(texture)
+
+        texture = _Texture()
+        texture_manager = _TextureManager()
+        renderer = types.SimpleNamespace(
+            kDirectX11=_MRenderer.kDirectX11,
+            drawAPI=MagicMock(return_value=_MRenderer.kDirectX11),
+            getShaderManager=MagicMock(return_value=_MShaderManager()),
+            needEvaluateAllLights=MagicMock(),
+            getTextureManager=MagicMock(return_value=texture_manager),
+        )
+
+        class _Info:
+            def lightType(self):
+                return "directionalLight"
+
+            def lightPath(self):
+                return _ContextLightPath()
+
+            def parameterList(self):
+                return ["shadow", "viewProj", "global", "local", "direction"]
+
+            def parameterSemantic(self, name):
+                return {
+                    "shadow": 1,
+                    "viewProj": 2,
+                    "global": 3,
+                    "local": 4,
+                    "direction": 5,
+                }[name]
+
+            def getParameter(self, name):
+                return {
+                    "shadow": texture,
+                    "viewProj": "shadow-matrix",
+                    "global": [1],
+                    "local": [1],
+                    "direction": [0.0, -1.0, 0.0],
+                }[name]
+
+        class _Context:
+            def numberOfActiveLights(self, _light_filter=None):
+                return 1
+
+            def getLightParameterInformation(self, _index, _light_filter=None):
+                return _Info()
+
+            def getLightingMode(self):
+                return "scene-lights"
+
+        render_module = types.SimpleNamespace(
+            MRenderer=renderer,
+            MDrawContext=types.SimpleNamespace(kFilteredIgnoreLightLimit=9),
+            MLightParameterInformation=_LightSemantics,
+        )
+        manager = _MRenderTargetManager()
+        _MRenderer.getRenderTargetManager.return_value = manager
+        resources = render_override.NativeShadowBindingProbeResources()
+        resources.acquire()
+        probe = render_override.NativeShadowBindingProbe(resources, render_module=render_module)
+
+        self.assertEqual(probe.create()["status"], "created")
+        shader = renderer.getShaderManager.return_value.shader
+        probe._pre_draw(_Context(), None, shader)
+
+        report = probe.report()
+        self.assertEqual(report["status"], "bound")
+        self.assertTrue(report["bindingSucceeded"])
+        self.assertEqual(report["resourceHandle"], 17)
+        self.assertEqual(
+            [name for name, _value in shader.parameter_calls],
+            [
+                render_override.NATIVE_SHADOW_BINDING_PROBE_MAP_PARAMETER,
+                render_override.NATIVE_SHADOW_BINDING_PROBE_VIEWPROJ_PARAMETER,
+                render_override.NATIVE_SHADOW_BINDING_PROBE_ENABLED_PARAMETER,
+            ],
+        )
+        self.assertEqual(texture_manager.released, [texture])
+
+        probe.capture_output()
+        released = probe.release_shader()
+        self.assertTrue(released["releaseSucceeded"])
+        resources.release()
+        self.assertTrue(probe.report()["output"]["balanced"])
+
     def test_registration_is_idempotent_and_owned(self):
         first = render_override.initializePlugin(object())
         second = render_override.initializePlugin(object())

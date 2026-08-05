@@ -5,6 +5,9 @@ the ordinary Maya scene, HUD, and present operations without shader routing,
 scene filtering, or user preference changes.  The separate R2 resource probe
 is development-only and opt-in; it only reports conservative caster draw and
 target readback evidence, never receiver composition or self-shadow parity.
+The optional native-shadow binding probe follows Maya's active-light resource
+path into a plugin-owned diagnostic quad; it also never replaces imported
+materials or claims self-shadow parity.
 Registration is owned by this module so repeated plugin loads/unloads cannot
 deregister an override owned by another plugin.
 """
@@ -41,6 +44,17 @@ SHADOW_TARGET_SIZE = 2048
 RECEIVER_PROBE_TARGET_SIZE = 4
 LIGHT_SPACE_CAMERA_NAME = "mmdToolsR32FLightSpaceCamera"
 NATIVE_SHADOW_REQUEST_ENV = "MMD_TOOLS_ENABLE_RENDER_OVERRIDE_NATIVE_SHADOW_REQUEST"
+NATIVE_SHADOW_BINDING_PROBE_ENV = "MMD_TOOLS_ENABLE_RENDER_OVERRIDE_NATIVE_SHADOW_BINDING_PROBE"
+NATIVE_SHADOW_BINDING_PROBE_OPERATION_NAME = "mmdToolsNativeShadowBindingProbe"
+NATIVE_SHADOW_BINDING_PROBE_TARGET_NAME = "mmdToolsNativeShadowBindingProbeR32F"
+NATIVE_SHADOW_BINDING_PROBE_TARGET_SIZE = 4
+NATIVE_SHADOW_BINDING_PROBE_TECHNIQUE = "MmdToolsNativeShadowBindingProbe"
+NATIVE_SHADOW_BINDING_PROBE_SHADER_PATH = (
+    Path(__file__).resolve().parents[1] / "shaders" / "MMDNativeShadowBindingProbe.fx"
+)
+NATIVE_SHADOW_BINDING_PROBE_MAP_PARAMETER = "MayaShadowMap"
+NATIVE_SHADOW_BINDING_PROBE_VIEWPROJ_PARAMETER = "MayaShadowViewProj"
+NATIVE_SHADOW_BINDING_PROBE_ENABLED_PARAMETER = "MayaShadowEnabled"
 SELF_SHADOW_MAP_DRAW_FLAG = 0x04
 SHADOW_CLEAR_VALUE = 1.0
 SHADOW_DEPTH_CLEAR_EPSILON = 1e-6
@@ -1434,6 +1448,29 @@ class ReceiverProbeResources:
         return report
 
 
+class NativeShadowBindingProbeResources(ReceiverProbeResources):
+    """Own the separate R32F target used by the native shadow binding probe."""
+
+    def __init__(self):
+        super().__init__()
+        self._description = omr.MRenderTargetDescription(
+            NATIVE_SHADOW_BINDING_PROBE_TARGET_NAME,
+            NATIVE_SHADOW_BINDING_PROBE_TARGET_SIZE,
+            NATIVE_SHADOW_BINDING_PROBE_TARGET_SIZE,
+            1,
+            omr.MRenderer.kR32_FLOAT,
+            0,
+            False,
+        )
+
+    def report(self, **values) -> dict:
+        """Use native-shadow wording for the inherited readback contract."""
+        report = super().report(**values)
+        if report.get("reason") == "receiver-output-readback":
+            report["reason"] = "native-shadow-binding-output-readback"
+        return report
+
+
 class R32FTargetBindingProbe:
     """Own a diagnostic-only shader instance bound to the R32F target.
 
@@ -1986,6 +2023,393 @@ class R32FReceiverProbe(_MQuadRenderBase):
         return report
 
 
+class NativeShadowBindingProbe(_MQuadRenderBase):
+    """Bind Maya's native shadow resource to a plugin-owned diagnostic quad.
+
+    The pre-draw callback follows Autodesk's ``py2ViewRenderOverride`` sample:
+    it reads ``kShadowMap`` and ``kShadowViewProj`` from the active directional
+    light and binds them with ``MShaderInstance.setParameter``.  The operation
+    writes only a separate tiny R32F target; imported MMD shaders are never
+    mutated and receiver/self-shadow parity remains explicitly unclaimed.
+    """
+
+    def __init__(self, resources: NativeShadowBindingProbeResources, render_module=None):
+        super().__init__(NATIVE_SHADOW_BINDING_PROBE_OPERATION_NAME)
+        self._resources = resources
+        self._render_module = render_module or omr
+        self._shader = None
+        self._shader_manager = None
+        self._report = self._empty_report()
+
+    @staticmethod
+    def _empty_report() -> dict:
+        """Return stable lifecycle and native-light binding diagnostics."""
+        return {
+            "enabled": True,
+            "status": "not-run",
+            "reason": "not-setup",
+            "targetName": NATIVE_SHADOW_BINDING_PROBE_TARGET_NAME,
+            "shaderPath": str(NATIVE_SHADOW_BINDING_PROBE_SHADER_PATH),
+            "technique": NATIVE_SHADOW_BINDING_PROBE_TECHNIQUE,
+            "mapParameter": NATIVE_SHADOW_BINDING_PROBE_MAP_PARAMETER,
+            "viewProjParameter": NATIVE_SHADOW_BINDING_PROBE_VIEWPROJ_PARAMETER,
+            "createAttemptCount": 0,
+            "createSucceeded": False,
+            "preDrawCallbackCount": 0,
+            "contextExecuteCount": 0,
+            "manualReadbackCount": 0,
+            "bindingAttemptCount": 0,
+            "bindingSucceeded": False,
+            "resourceHandle": None,
+            "releaseAttemptCount": 0,
+            "releaseSucceeded": False,
+            "releaseBeforeTarget": False,
+            "drawsReceiver": False,
+            "receiverComposition": False,
+            "claimsSelfShadow": False,
+            "context": {
+                "status": "not-run",
+                "stage": None,
+                "lightingMode": None,
+                "lightFilter": None,
+                "lightCount": 0,
+                "lights": [],
+                "lastError": None,
+            },
+            "lastError": None,
+        }
+
+    def targetOverrideList(self):
+        """Route the diagnostic quad to its separate R32F output target."""
+        target = self._resources.target
+        return [target] if target is not None else None
+
+    def requiresLightData(self):
+        """Ask VP2 to populate active-light information for the callback."""
+        return True
+
+    def clearOperation(self):
+        """Clear the output to one so an unbound map is distinguishable."""
+        clear = super().clearOperation()
+        clear.setClearColor((SHADOW_CLEAR_VALUE,) * 4)
+        clear.setClearGradient(False)
+        clear.setMask(omr.MClearOperation.kClearColor)
+        return clear
+
+    def shader(self):
+        """Return the plugin-owned native-shadow probe shader instance."""
+        return self._shader
+
+    @staticmethod
+    def _semantic(render_module, name):
+        info_type = getattr(render_module, "MLightParameterInformation", None)
+        return getattr(info_type, name, None)
+
+    def _bind_active_shadow(self, context, shader_instance):
+        """Bind the first active directional native shadow map, if available."""
+        if self._report["bindingSucceeded"]:
+            return
+        context_report = self._report["context"]
+        context_report.update(
+            status="running",
+            stage="need-evaluate-all-lights",
+            lightingMode=None,
+            lightFilter=None,
+            lightCount=0,
+            lights=[],
+            lastError=None,
+        )
+        if context is None or shader_instance is None:
+            context_report.update(status="unsupported", reason="context-or-shader-unavailable")
+            return
+
+        draw_context_type = getattr(self._render_module, "MDrawContext", None)
+        light_filter = getattr(draw_context_type, "kFilteredIgnoreLightLimit", None)
+        context_report["lightFilter"] = light_filter
+        renderer = getattr(self._render_module, "MRenderer", None)
+        try:
+            need_evaluate = getattr(renderer, "needEvaluateAllLights", None)
+            if callable(need_evaluate):
+                need_evaluate()
+            lighting_mode_method = getattr(context, "getLightingMode", None)
+            if callable(lighting_mode_method):
+                context_report["lightingMode"] = str(lighting_mode_method())
+            if light_filter is None:
+                light_count = int(context.numberOfActiveLights())
+            else:
+                light_count = int(context.numberOfActiveLights(light_filter))
+            context_report["lightCount"] = light_count
+        except Exception as exc:
+            context_report.update(status="unsupported", stage="light-list", lastError=str(exc))
+            self._report.update(status="unsupported", reason="native-light-query-failed", lastError=str(exc))
+            return
+
+        shadow_map_semantic = self._semantic(self._render_module, "kShadowMap")
+        shadow_view_proj_semantic = self._semantic(self._render_module, "kShadowViewProj")
+        global_shadow_semantic = self._semantic(self._render_module, "kGlobalShadowOn")
+        local_shadow_semantic = self._semantic(self._render_module, "kShadowOn")
+        directional_semantic = self._semantic(self._render_module, "kWorldDirection")
+        for index in range(max(light_count, 0)):
+            context_report["stage"] = f"light-information-{index}"
+            try:
+                info = (
+                    context.getLightParameterInformation(index)
+                    if light_filter is None
+                    else context.getLightParameterInformation(index, light_filter)
+                )
+            except Exception as exc:
+                context_report["lights"].append({"index": index, "error": str(exc)})
+                continue
+            if info is None:
+                context_report["lights"].append({"index": index, "error": "no-light-info"})
+                continue
+            light_report = {
+                "index": index,
+                "lightType": str(info.lightType()),
+                "lightPath": None,
+                "parameters": {},
+                "shadowMap": False,
+                "shadowViewProj": False,
+                "globalShadowOn": None,
+                "shadowOn": None,
+            }
+            try:
+                path = info.lightPath()
+                full_path_name = getattr(path, "fullPathName", None)
+                if callable(full_path_name):
+                    light_report["lightPath"] = full_path_name()
+            except Exception as exc:
+                light_report["lightPathError"] = str(exc)
+            shadow_resource = None
+            shadow_view_proj = None
+            try:
+                parameter_list = info.parameterList()
+                for parameter_name in parameter_list:
+                    semantic = info.parameterSemantic(parameter_name)
+                    semantic_name = str(semantic)
+                    try:
+                        value = info.getParameter(parameter_name)
+                        light_report["parameters"][str(parameter_name)] = semantic_name
+                    except Exception as exc:
+                        light_report["parameters"][str(parameter_name)] = f"error: {exc}"
+                        continue
+                    if semantic == shadow_map_semantic:
+                        shadow_resource = value
+                        light_report["shadowMap"] = value is not None
+                    elif semantic == shadow_view_proj_semantic:
+                        shadow_view_proj = value
+                        light_report["shadowViewProj"] = value is not None
+                    elif semantic == global_shadow_semantic:
+                        light_report["globalShadowOn"] = bool(value[0]) if value else False
+                    elif semantic == local_shadow_semantic:
+                        light_report["shadowOn"] = bool(value[0]) if value else False
+                    elif semantic == directional_semantic:
+                        light_report["worldDirection"] = list(value)
+            except Exception as exc:
+                light_report["parameterError"] = str(exc)
+            context_report["lights"].append(light_report)
+            if "directional" not in light_report["lightType"].lower():
+                continue
+            if shadow_resource is None:
+                continue
+            self._report["bindingAttemptCount"] += 1
+            resource_handle = None
+            try:
+                resource_handle_method = getattr(shadow_resource, "resourceHandle", None)
+                resource_handle = resource_handle_method() if callable(resource_handle_method) else None
+                self._report["resourceHandle"] = int(resource_handle) if resource_handle is not None else None
+                if resource_handle is not None and int(resource_handle) <= 0:
+                    raise RuntimeError("native shadow resource handle is invalid")
+                shader_instance.setParameter(NATIVE_SHADOW_BINDING_PROBE_MAP_PARAMETER, shadow_resource)
+                if shadow_view_proj is not None:
+                    shader_instance.setParameter(
+                        NATIVE_SHADOW_BINDING_PROBE_VIEWPROJ_PARAMETER, shadow_view_proj
+                    )
+                shader_instance.setParameter(NATIVE_SHADOW_BINDING_PROBE_ENABLED_PARAMETER, True)
+                self._report.update(
+                    status="bound",
+                    reason="native-shadow-map-bound",
+                    bindingSucceeded=True,
+                    lastError=None,
+                )
+                context_report["status"] = "ready"
+                context_report["stage"] = "complete"
+            except Exception as exc:
+                self._report.update(
+                    status="unsupported",
+                    reason="native-shadow-map-bind-failed",
+                    bindingSucceeded=False,
+                    lastError=str(exc),
+                )
+            finally:
+                try:
+                    texture_manager = getattr(renderer, "getTextureManager", lambda: None)()
+                    release_texture = getattr(texture_manager, "releaseTexture", None)
+                    if callable(release_texture):
+                        release_texture(shadow_resource)
+                except Exception:
+                    pass
+            context_report["status"] = "ready"
+            context_report["stage"] = "complete"
+            return
+
+        self._report.update(
+            status="unsupported",
+            reason="native-shadow-map-unavailable",
+            bindingSucceeded=False,
+        )
+        context_report["stage"] = "complete"
+
+    def _pre_draw(self, context, _render_item_list, shader_instance):
+        """Bind active native light data immediately before the quad draw."""
+        self._report["preDrawCallbackCount"] += 1
+        self._bind_active_shadow(context, shader_instance)
+
+    def create(self) -> dict:
+        """Create the probe shader and retain it until target cleanup."""
+        previous_release = self.release_shader()
+        if self.has_owned_shader():
+            self._report.update(
+                status="unsupported",
+                reason="previous-shader-release-failed",
+                lastError=previous_release.get("lastError"),
+                createSucceeded=False,
+            )
+            return self.report()
+        report = self._report
+        report.update(
+            status="not-run",
+            reason="target-unavailable",
+            createSucceeded=False,
+            bindingSucceeded=False,
+            releaseSucceeded=False,
+            releaseBeforeTarget=False,
+            lastError=None,
+        )
+        if self._resources.target is None:
+            return self.report()
+        report["createAttemptCount"] += 1
+        draw_api_getter = getattr(self._render_module.MRenderer, "drawAPI", None)
+        if callable(draw_api_getter):
+            try:
+                draw_api = draw_api_getter()
+            except Exception as exc:
+                report.update(status="unsupported", reason="draw-api-query-failed", lastError=str(exc))
+                return self.report()
+            if draw_api != getattr(self._render_module.MRenderer, "kDirectX11", draw_api):
+                report.update(
+                    status="unsupported",
+                    reason="directx11-only-native-shadow-binding-probe",
+                    lastError=f"draw API {draw_api!r} is not DirectX11",
+                )
+                return self.report()
+        if not NATIVE_SHADOW_BINDING_PROBE_SHADER_PATH.is_file():
+            report.update(status="unsupported", reason="shader-asset-missing")
+            return self.report()
+        try:
+            shader_manager = self._render_module.MRenderer.getShaderManager()
+            if shader_manager is None:
+                raise RuntimeError("shader manager unavailable")
+            shader = shader_manager.getEffectsFileShader(
+                str(NATIVE_SHADOW_BINDING_PROBE_SHADER_PATH),
+                NATIVE_SHADOW_BINDING_PROBE_TECHNIQUE,
+                None,
+                True,
+                self._pre_draw,
+                None,
+            )
+            if shader is None:
+                report.update(status="unsupported", reason="shader-create-failed")
+                return self.report()
+            self._shader = shader
+            self._shader_manager = shader_manager
+            report.update(status="created", reason="shader-created", createSucceeded=True)
+        except Exception as exc:
+            release_report = self.release_shader()
+            report.update(
+                status="unsupported",
+                reason=(
+                    "shader-release-failed"
+                    if not release_report["releaseSucceeded"] and self.has_owned_shader()
+                    else "shader-create-failed"
+                ),
+                lastError=str(exc),
+            )
+        return self.report()
+
+    def capture_output(self) -> dict:
+        """Read the diagnostic target when Maya omits the post-draw callback."""
+        self._report["manualReadbackCount"] = self._report.get("manualReadbackCount", 0) + 1
+        return self._resources.capture_sample()
+
+    def release_shader(self) -> dict:
+        """Release the shader while its output target remains owned."""
+        shader = self._shader
+        manager = self._shader_manager
+        if shader is None:
+            return self.report()
+        self._report["releaseAttemptCount"] += 1
+        try:
+            if manager is None:
+                raise RuntimeError("shader manager disappeared before native shadow probe release")
+            manager.releaseShader(shader)
+        except Exception as exc:
+            self._report.update(
+                status="unsupported",
+                reason="shader-release-failed",
+                releaseSucceeded=False,
+                releaseBeforeTarget=False,
+                lastError=str(exc),
+            )
+        else:
+            self._shader = None
+            self._shader_manager = None
+            self._report.update(
+                status="released",
+                reason="shader-released-before-target",
+                releaseSucceeded=True,
+                releaseBeforeTarget=True,
+                lastError=None,
+            )
+        return self.report()
+
+    def has_owned_shader(self) -> bool:
+        """Return whether cleanup must retain the shader for a release retry."""
+        return self._shader is not None
+
+    def report(self) -> dict:
+        """Return lifecycle, context, and output diagnostics."""
+        report = dict(self._report)
+        report["context"] = dict(self._report["context"])
+        report["context"]["lights"] = [dict(light) for light in self._report["context"]["lights"]]
+        report["output"] = self._resources.report()
+        return report
+
+
+class NativeShadowBindingContextRender(_MUserRenderOperationBase):
+    """Fetch native light parameters after the ordinary scene render."""
+
+    def __init__(self, probe: NativeShadowBindingProbe):
+        super().__init__(NATIVE_SHADOW_BINDING_PROBE_OPERATION_NAME + "Context")
+        self._probe = probe
+        self._execute_count = 0
+
+    def requiresLightData(self):
+        """Ask VP2 to populate the active light list for ``execute``."""
+        return True
+
+    def execute(self, context):
+        """Bind the native shadow resource while the scene context is active."""
+        self._execute_count += 1
+        self._probe._report["contextExecuteCount"] += 1
+        self._probe._bind_active_shadow(context, self._probe.shader())
+
+    @property
+    def execute_count(self) -> int:
+        """Return the number of context callbacks observed by the probe."""
+        return self._execute_count
+
+
 class ShadowTargetClearRender(omr.MSceneRender):
     """Render selected MMD casters into the diagnostic target pair."""
 
@@ -2291,6 +2715,21 @@ class PassthroughRenderOverride(omr.MRenderOverride):
             if self._native_shadow_request is not None
             else None
         )
+        self._native_shadow_binding_probe_resources = (
+            NativeShadowBindingProbeResources()
+            if _enabled_environment_flag(NATIVE_SHADOW_BINDING_PROBE_ENV)
+            else None
+        )
+        self._native_shadow_binding_probe = (
+            NativeShadowBindingProbe(self._native_shadow_binding_probe_resources)
+            if self._native_shadow_binding_probe_resources is not None
+            else None
+        )
+        self._native_shadow_binding_context_operation = (
+            NativeShadowBindingContextRender(self._native_shadow_binding_probe)
+            if self._native_shadow_binding_probe is not None
+            else None
+        )
         self._scene_operation = PassthroughSceneRender()
         self._target_probe = (
             ShadowTargetResources()
@@ -2341,6 +2780,18 @@ class PassthroughRenderOverride(omr.MRenderOverride):
             else None
         )
         operations = (self._scene_operation, PassthroughHUDRender(), PassthroughPresentTarget())
+        if self._native_shadow_binding_probe is not None:
+            # Run after the ordinary scene so Maya has had a chance to build
+            # its native light shadow resource for this frame.
+            operations = (self._scene_operation, self._native_shadow_binding_probe, PassthroughHUDRender(), PassthroughPresentTarget())
+            if self._native_shadow_binding_context_operation is not None:
+                operations = (
+                    self._scene_operation,
+                    self._native_shadow_binding_context_operation,
+                    self._native_shadow_binding_probe,
+                    PassthroughHUDRender(),
+                    PassthroughPresentTarget(),
+                )
         if self._receiver_probe is not None:
             operations = (self._receiver_probe, *operations)
         if self._shadow_target_operation is not None:
@@ -2390,6 +2841,25 @@ class PassthroughRenderOverride(omr.MRenderOverride):
                 self._current_operation = -1
                 self._cleanup_count += 1
                 raise RuntimeError("R32F receiver target release failed; target release deferred")
+        if (
+            self._native_shadow_binding_probe is not None
+            and self._native_shadow_binding_probe_resources is not None
+        ):
+            self._native_shadow_binding_probe.capture_output()
+            self._native_shadow_binding_probe.release_shader()
+            if self._native_shadow_binding_probe.has_owned_shader():
+                self._current_operation = -1
+                self._cleanup_count += 1
+                raise RuntimeError(
+                    "native shadow binding probe shader release failed; target release deferred"
+                )
+            self._native_shadow_binding_probe_resources.release()
+            if self._native_shadow_binding_probe_resources.target is not None:
+                self._current_operation = -1
+                self._cleanup_count += 1
+                raise RuntimeError(
+                    "native shadow binding probe target release failed; target release deferred"
+                )
         if self._shadow_target_operation is not None:
             self._shadow_target_operation.release_shader()
             if self._r32f_caster_shader_pass is not None and self._r32f_caster_shader_pass.has_owned_shader():
@@ -2451,12 +2921,24 @@ class PassthroughRenderOverride(omr.MRenderOverride):
                 if self._receiver_probe is not None and self._receiver_probe_resources is not None:
                     self._receiver_probe_resources.acquire()
                     self._receiver_probe.create(targets[0] if targets else None)
+                if (
+                    self._native_shadow_binding_probe is not None
+                    and self._native_shadow_binding_probe_resources is not None
+                ):
+                    self._native_shadow_binding_probe_resources.acquire()
+                    self._native_shadow_binding_probe.create()
                 if self._r32f_binding_probe is not None:
                     # Bind only the plugin-owned R32F target.  This setup probe is
                     # intentionally disconnected from imported shaders and draw
                     # operations, so it cannot alter ordinary viewport output.
                     self._r32f_binding_probe.bind(targets[0] if targets else None)
             except Exception:
+                if (
+                    self._native_shadow_binding_probe is not None
+                    and self._native_shadow_binding_probe_resources is not None
+                ):
+                    self._native_shadow_binding_probe.release_shader()
+                    self._native_shadow_binding_probe_resources.release()
                 if self._receiver_probe is not None and self._receiver_probe_resources is not None:
                     self._receiver_probe.release_shader()
                     self._receiver_probe_resources.release()
@@ -2469,6 +2951,20 @@ class PassthroughRenderOverride(omr.MRenderOverride):
                     self._target_probe.release()
                 if self._light_space_camera is not None:
                     self._light_space_camera.release()
+                if self._native_shadow_request is not None:
+                    self._native_shadow_request.release()
+                raise
+        if (
+            self._native_shadow_binding_probe is not None
+            and self._native_shadow_binding_probe_resources is not None
+            and self._target_probe is None
+        ):
+            try:
+                self._native_shadow_binding_probe_resources.acquire()
+                self._native_shadow_binding_probe.create()
+            except Exception:
+                self._native_shadow_binding_probe.release_shader()
+                self._native_shadow_binding_probe_resources.release()
                 if self._native_shadow_request is not None:
                     self._native_shadow_request.release()
                 raise
@@ -2499,6 +2995,8 @@ class PassthroughRenderOverride(omr.MRenderOverride):
             report["r32fBindingProbe"] = self._r32f_binding_probe.report()
         if self._native_shadow_request is not None:
             report["nativeShadowRequest"] = self._native_shadow_request.report()
+        if self._native_shadow_binding_probe is not None:
+            report["nativeShadowBindingProbe"] = self._native_shadow_binding_probe.report()
         return report
 
     def native_shadow_request_report(self) -> Optional[dict]:
@@ -2506,6 +3004,12 @@ class PassthroughRenderOverride(omr.MRenderOverride):
         if self._native_shadow_request is None:
             return None
         return self._native_shadow_request.report()
+
+    def native_shadow_binding_probe_report(self) -> Optional[dict]:
+        """Return native shadow-resource binding diagnostics when enabled."""
+        if self._native_shadow_binding_probe is None:
+            return None
+        return self._native_shadow_binding_probe.report()
 
     @property
     def cleanup_count(self) -> int:
@@ -2601,7 +3105,11 @@ __all__ = [
     "LightSpaceCasterCamera",
     "NativeShadowRequest",
     "NativeShadowRequestRender",
+    "NativeShadowBindingProbe",
+    "NativeShadowBindingProbeResources",
+    "NativeShadowBindingContextRender",
     "NATIVE_SHADOW_REQUEST_ENV",
+    "NATIVE_SHADOW_BINDING_PROBE_ENV",
     "PassthroughRenderOverride",
     "PassthroughSceneRender",
     "RENDER_OVERRIDE_NAME",

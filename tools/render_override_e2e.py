@@ -3,7 +3,9 @@
 The runner launches an isolated Maya profile through commandPort, captures the
 same scene before and while the opt-in override is active, and compares the
 two PNGs on the host.  The optional target probe adds conservative caster
-draw/readback evidence; it does not claim material or self-shadow parity.
+draw/readback evidence, while the native-shadow binding probe verifies Maya's
+light-resource handoff into a plugin-owned diagnostic shader; neither claims
+material or self-shadow parity.
 """
 
 from __future__ import annotations
@@ -352,6 +354,75 @@ def _validate_native_shadow_request(request: object) -> None:
         )
 
 
+def _validate_native_shadow_binding_probe(binding_probe: object) -> None:
+    """Require a real native shadow-map bind/readback lifecycle.
+
+    This gate is intentionally stricter than the request probe: a successful
+    light request alone is not enough; the callback must observe a positive
+    native resource handle and bind it to the plugin-owned shader.
+    """
+    required = {
+        "enabled",
+        "status",
+        "reason",
+        "targetName",
+        "shaderPath",
+        "technique",
+        "mapParameter",
+        "viewProjParameter",
+        "createAttemptCount",
+        "createSucceeded",
+        "contextExecuteCount",
+        "preDrawCallbackCount",
+        "bindingAttemptCount",
+        "bindingSucceeded",
+        "resourceHandle",
+        "releaseAttemptCount",
+        "releaseSucceeded",
+        "releaseBeforeTarget",
+        "drawsReceiver",
+        "receiverComposition",
+        "claimsSelfShadow",
+        "context",
+        "output",
+    }
+    if not isinstance(binding_probe, dict) or not required.issubset(binding_probe):
+        raise RuntimeError(f"native shadow-binding diagnostic is missing: {binding_probe!r}")
+    if any(
+        binding_probe[key] is not False
+        for key in ("drawsReceiver", "receiverComposition", "claimsSelfShadow")
+    ):
+        raise RuntimeError(
+            "native shadow-binding probe unexpectedly claimed receiver/self-shadow composition: "
+            f"{binding_probe!r}"
+        )
+    output = binding_probe["output"]
+    context = binding_probe["context"]
+    if (
+        binding_probe["status"] != "released"
+        or binding_probe["createAttemptCount"] < 1
+        or binding_probe["createSucceeded"] is not True
+        or binding_probe["contextExecuteCount"] < 1
+        or binding_probe["contextExecuteCount"] + binding_probe["preDrawCallbackCount"] < 1
+        or binding_probe["bindingAttemptCount"] < 1
+        or binding_probe["bindingSucceeded"] is not True
+        or not isinstance(binding_probe["resourceHandle"], int)
+        or binding_probe["resourceHandle"] <= 0
+        or binding_probe["releaseAttemptCount"] < 1
+        or binding_probe["releaseSucceeded"] is not True
+        or binding_probe["releaseBeforeTarget"] is not True
+        or not isinstance(context, dict)
+        or not isinstance(context.get("lights"), list)
+        or not isinstance(output, dict)
+        or output.get("status") != "sampled"
+        or output.get("readbackCount", 0) < 1
+    ):
+        raise RuntimeError(
+            "native Maya shadow binding did not complete resource bind/readback/release: "
+            f"{binding_probe!r}"
+        )
+
+
 def _validate_r32f_receiver_probe(
     receiver_probe: object, *, require_caster_value: bool = False
 ) -> None:
@@ -456,6 +527,7 @@ def run_probe(
     r32f_receiver_probe: bool = False,
     r32f_light_space_caster: bool = False,
     native_shadow_request: bool = False,
+    native_shadow_binding_probe: bool = False,
 ) -> None:
     """Execute the R1 lifecycle and optional R2 target probe in live Maya.
 
@@ -475,6 +547,9 @@ def run_probe(
     The explicit ``native_shadow_request`` option only exercises Maya's
     renderer-owned light shadow request/release API; it does not bind or
     compose an imported MMD shader.
+    The explicit ``native_shadow_binding_probe`` option follows Maya's
+    ``kShadowMap``/``kShadowViewProj`` light-parameter path into a separate
+    plugin-owned quad and fails closed when no native resource is available.
     """
     import os
 
@@ -518,6 +593,9 @@ def run_probe(
         )
         os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_NATIVE_SHADOW_REQUEST"] = (
             "1" if native_shadow_request else "0"
+        )
+        os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_NATIVE_SHADOW_BINDING_PROBE"] = (
+            "1" if native_shadow_binding_probe else "0"
         )
         cmds.file(new=True, force=True)
         previous_renderer_by_panel = _renderer_by_panel(cmds)
@@ -597,24 +675,30 @@ def run_probe(
             operation_types.append(operation.operationType())
             if not override.nextRenderOperation():
                 break
-        expected_types = [
-            omr.MSceneRender.kSceneRender,
-            omr.MHUDRender.kHUDRender,
-            omr.MPresentTarget.kPresentTarget,
-        ]
-        if target_probe:
-            expected_types.insert(0, omr.MSceneRender.kSceneRender)
-        if r32f_receiver_probe:
-            expected_types.insert(1, omr.MQuadRender.kQuadRender)
+        expected_types = []
         if native_shadow_request:
-            expected_types.insert(
-                0,
+            expected_types.append(
                 getattr(
                     getattr(omr, "MUserRenderOperation", None),
                     "kUserDefined",
-                    4,
-                ),
+                    3,
+                )
             )
+        if target_probe:
+            expected_types.append(omr.MSceneRender.kSceneRender)
+        if r32f_receiver_probe:
+            expected_types.append(omr.MQuadRender.kQuadRender)
+        expected_types.append(omr.MSceneRender.kSceneRender)
+        if native_shadow_binding_probe:
+            expected_types.append(
+                getattr(
+                    getattr(omr, "MUserRenderOperation", None),
+                    "kUserDefined",
+                    3,
+                )
+            )
+            expected_types.append(omr.MQuadRender.kQuadRender)
+        expected_types.extend([omr.MHUDRender.kHUDRender, omr.MPresentTarget.kPresentTarget])
         report["checks"]["operationTypes"] = operation_types
         report["checks"]["operationOrder"] = operation_types == expected_types
         override.cleanup()
@@ -627,7 +711,7 @@ def run_probe(
         light_xform = cmds.listRelatives(light_shape, parent=True)[0]
         cmds.setAttr(f"{light_xform}.rotateX", -45.0)
         cmds.setAttr(f"{light_xform}.rotateY", -30.0)
-        if native_shadow_request:
+        if native_shadow_request or native_shadow_binding_probe:
             # A Maya light can exist in the scene while its native depth-map
             # shadow switch remains off.  Enable only this diagnostic light's
             # own shadow-producing attribute; imported MMD materials are not
@@ -694,7 +778,7 @@ def run_probe(
         cmds.refresh(force=True)
         overridden = _capture_current_view(cmds, output / "override.png")
         report["captures"]["override"] = str(overridden)
-        if target_probe or native_shadow_request:
+        if target_probe or native_shadow_request or native_shadow_binding_probe:
             override.cleanup()
         if target_probe:
             target_report = override.target_probe_report()
@@ -730,6 +814,10 @@ def run_probe(
             native_report = override.native_shadow_request_report()
             report["checks"]["nativeShadowRequest"] = native_report
             _validate_native_shadow_request(native_report)
+        if native_shadow_binding_probe:
+            binding_report = override.native_shadow_binding_probe_report()
+            report["checks"]["nativeShadowBindingProbe"] = binding_report
+            _validate_native_shadow_binding_probe(binding_report)
 
         restored_by_panel = {}
         for panel, override_name in previous_override_by_panel.items():
@@ -925,6 +1013,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--native-shadow-binding-probe",
+        action="store_true",
+        help=(
+            "Bind Maya's native kShadowMap/kShadowViewProj resource to a separate "
+            "plugin-owned quad; does not compose imported MMD self-shadowing."
+        ),
+    )
+    parser.add_argument(
         "--model",
         type=Path,
         default=None,
@@ -964,7 +1060,7 @@ def main() -> int:
     )
     command = (
         "from tools.render_override_e2e import run_probe\n"
-        f"run_probe(r'{log_path.as_posix()}', r'{report_path.as_posix()}', r'{out_dir.as_posix()}', {expected_draw_api_name!r}, {args.target_probe!r}, {model_literal}, {args.r32f_binding_probe!r}, {args.r32f_caster_pass!r}, {args.r32f_receiver_probe!r}, {args.r32f_light_space_caster!r}, {args.native_shadow_request!r})\n"
+        f"run_probe(r'{log_path.as_posix()}', r'{report_path.as_posix()}', r'{out_dir.as_posix()}', {expected_draw_api_name!r}, {args.target_probe!r}, {model_literal}, {args.r32f_binding_probe!r}, {args.r32f_caster_pass!r}, {args.r32f_receiver_probe!r}, {args.r32f_light_space_caster!r}, {args.native_shadow_request!r}, {args.native_shadow_binding_probe!r})\n"
     )
     report = run_maya_e2e(
         project_root=_ROOT,
