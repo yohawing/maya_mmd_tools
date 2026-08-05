@@ -461,6 +461,7 @@ def _validate_native_shadow_receiver(
         "receiverComposition",
         "claimsSelfShadow",
         "context",
+        "nativeParameterErrors",
     }
     if not isinstance(receiver, dict) or not required.issubset(receiver):
         raise RuntimeError(f"native shadow receiver diagnostic is missing: {receiver!r}")
@@ -497,6 +498,7 @@ def _validate_native_shadow_receiver(
         or receiver["releaseBeforeTarget"] is not True
         or not isinstance(context, dict)
         or context.get("status") != "ready"
+        or receiver["nativeParameterErrors"]
     ):
         raise RuntimeError(
             "native shadow receiver did not complete selection/bind/draw/release: "
@@ -654,7 +656,7 @@ def run_probe(
     ``kShadowMap``/``kShadowViewProj`` light-parameter path into a separate
     plugin-owned quad and fails closed when no native resource is available.
     The explicit ``native_shadow_receiver`` option overlays receiver-selected
-    MMD components with ``MMDShader.viewport-parity.fx`` and keeps full parity
+    MMD components with ``MMDNativeShadowReceiver.fx`` and keeps full parity
     claims behind a separate fixture Oracle.
     """
     import os

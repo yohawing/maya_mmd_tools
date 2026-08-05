@@ -191,8 +191,8 @@ class RenderOverrideE2eTest(unittest.TestCase):
             "status": "released",
             "reason": "receiver-shader-released-before-target",
             "operationName": "mmdToolsNativeShadowReceiver",
-            "shaderPath": "MMDShader.viewport-parity.fx",
-            "technique": "MMDTechniqueNoEdge",
+            "shaderPath": "MMDNativeShadowReceiver.fx",
+            "technique": "MMDNativeShadowReceiver",
             "mapParameter": "Light0ShadowMap",
             "viewProjParameter": "Light0Matrix",
             "selection": {
@@ -216,6 +216,7 @@ class RenderOverrideE2eTest(unittest.TestCase):
             "receiverComposition": True,
             "claimsSelfShadow": False,
             "context": {"status": "ready"},
+            "nativeParameterErrors": [],
         }
         render_override_e2e._validate_native_shadow_receiver(valid, require_components=True)
         with self.assertRaises(RuntimeError):

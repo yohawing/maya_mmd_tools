@@ -62,9 +62,9 @@ NATIVE_SHADOW_BINDING_PROBE_ENABLED_PARAMETER = "MayaShadowEnabled"
 NATIVE_SHADOW_RECEIVER_ENV = "MMD_TOOLS_ENABLE_RENDER_OVERRIDE_NATIVE_SHADOW_RECEIVER"
 NATIVE_SHADOW_RECEIVER_OPERATION_NAME = "mmdToolsNativeShadowReceiver"
 NATIVE_SHADOW_RECEIVER_SHADER_PATH = (
-    Path(__file__).resolve().parents[1] / "shaders" / "MMDShader.viewport-parity.fx"
+    Path(__file__).resolve().parents[1] / "shaders" / "MMDNativeShadowReceiver.fx"
 )
-NATIVE_SHADOW_RECEIVER_TECHNIQUE = "MMDTechniqueNoEdge"
+NATIVE_SHADOW_RECEIVER_TECHNIQUE = "MMDNativeShadowReceiver"
 NATIVE_SHADOW_RECEIVER_MAP_PARAMETER = "Light0ShadowMap"
 NATIVE_SHADOW_RECEIVER_VIEWPROJ_PARAMETER = "Light0Matrix"
 NATIVE_SHADOW_RECEIVER_ENABLED_PARAMETER = "UseShadows"
@@ -2217,6 +2217,14 @@ class NativeShadowBindingProbe(_MQuadRenderBase):
                 "shadowOn": None,
             }
             try:
+                parameter_list_method = getattr(shader_instance, "parameterList", None)
+                if callable(parameter_list_method):
+                    light_report["shaderParameters"] = [
+                        str(parameter) for parameter in parameter_list_method()
+                    ]
+            except Exception as exc:
+                light_report["shaderParameterListError"] = str(exc)
+            try:
                 path = info.lightPath()
                 full_path_name = getattr(path, "fullPathName", None)
                 if callable(full_path_name):
@@ -2257,22 +2265,30 @@ class NativeShadowBindingProbe(_MQuadRenderBase):
                 continue
             self._report["bindingAttemptCount"] += 1
             resource_handle = None
+            shader_set_results = {}
             try:
                 resource_handle_method = getattr(shadow_resource, "resourceHandle", None)
                 resource_handle = resource_handle_method() if callable(resource_handle_method) else None
                 self._report["resourceHandle"] = int(resource_handle) if resource_handle is not None else None
                 if resource_handle is not None and int(resource_handle) <= 0:
                     raise RuntimeError("native shadow resource handle is invalid")
-                shader_instance.setParameter(
+                shader_set_results[self._native_shadow_map_parameter] = repr(
+                    shader_instance.setParameter(
                     self._native_shadow_map_parameter, shadow_resource
+                    )
                 )
                 if shadow_view_proj is not None:
-                    shader_instance.setParameter(
-                        self._native_shadow_viewproj_parameter, shadow_view_proj
+                    shader_set_results[self._native_shadow_viewproj_parameter] = repr(
+                        shader_instance.setParameter(
+                            self._native_shadow_viewproj_parameter, shadow_view_proj
+                        )
                     )
-                shader_instance.setParameter(
-                    self._native_shadow_enabled_parameter, True
+                shader_set_results[self._native_shadow_enabled_parameter] = repr(
+                    shader_instance.setParameter(
+                        self._native_shadow_enabled_parameter, True
+                    )
                 )
+                light_report["shaderParameterSetResults"] = shader_set_results
                 self._report.update(
                     status="bound",
                     reason="native-shadow-map-bound",
@@ -2282,6 +2298,15 @@ class NativeShadowBindingProbe(_MQuadRenderBase):
                 context_report["status"] = "ready"
                 context_report["stage"] = "complete"
             except Exception as exc:
+                light_report["shaderParameterSetResults"] = dict(shader_set_results)
+                light_report["shaderParameterSetError"] = f"{type(exc).__name__}: {exc!r}"
+                if "nativeParameterErrors" in self._report:
+                    self._report["nativeParameterErrors"].append(
+                        {
+                            "lightIndex": index,
+                            "error": light_report["shaderParameterSetError"],
+                        }
+                    )
                 self._report.update(
                     status="unsupported",
                     reason="native-shadow-map-bind-failed",
@@ -2480,13 +2505,6 @@ class NativeShadowReceiverRender(omr.MSceneRender):
         ("Shininess", "Shininess"),
         ("AmbientColor", "AmbientColor"),
         ("Opacity", "Opacity"),
-        ("SphereMode", "SphereMode"),
-        ("HasMainTexture", "HasMainTexture"),
-        ("HasSphereTexture", "HasSphereTexture"),
-        ("HasToonTexture", "HasToonTexture"),
-        ("EdgeColorRGB", "EdgeColorRGB"),
-        ("EdgeColorA", "EdgeColorA"),
-        ("EdgeSize", "EdgeSize"),
         ("MMDLightDirection", "FixedLightDirection"),
         ("MMDLightColor", "FixedLightColor"),
     )
@@ -2544,6 +2562,7 @@ class NativeShadowReceiverRender(omr.MSceneRender):
                 "lights": [],
                 "lastError": None,
             },
+            "nativeParameterErrors": [],
             "parameterErrors": [],
             "lastError": None,
         }
@@ -2676,15 +2695,20 @@ class NativeShadowReceiverRender(omr.MSceneRender):
                 continue
             if self._set_parameter(shader_instance, target_name, value):
                 bound_any = True
-        # The receiver experiment intentionally disables texture sampling until
-        # explicit source texture-resource handoff is validated.
-        for name in ("HasMainTexture", "HasSphereTexture", "HasToonTexture"):
-            self._set_parameter(shader_instance, name, 0)
-        self._set_parameter(shader_instance, "UseFixedLight", 1)
+        # The receiver effect is intentionally untextured until explicit source
+        # texture-resource handoff is validated.  It always uses the explicit
+        # fixed MMD light values above.
         self._set_parameter(shader_instance, NATIVE_SHADOW_RECEIVER_STRENGTH_PARAMETER, 1.0)
         self._set_parameter(shader_instance, NATIVE_SHADOW_RECEIVER_BIAS_PARAMETER, 0.01)
-        if bound_any:
-            self._report["materialBindingCount"] += 1
+        # A source shader may not expose MMD uniforms (for example the compact
+        # PMX E2E importer uses lambert fallback materials).  The operation is
+        # still a valid receiver draw with effect defaults; record that fallback
+        # explicitly instead of treating it as a missing draw.
+        if not bound_any:
+            self._report["sourceMaterialFallbackCount"] = (
+                self._report.get("sourceMaterialFallbackCount", 0) + 1
+            )
+        self._report["materialBindingCount"] += 1
 
     def _pre_draw(self, context, render_item_list, shader_instance):
         """Bind native shadow data and source MMD material parameters per draw."""
@@ -2824,6 +2848,7 @@ class NativeShadowReceiverRender(omr.MSceneRender):
             dict(light) for light in self._report["context"].get("lights", [])
         ]
         report["parameterErrors"] = list(self._report["parameterErrors"])
+        report["nativeParameterErrors"] = list(self._report["nativeParameterErrors"])
         if "sourceDagPaths" in self._report:
             report["sourceDagPaths"] = list(self._report["sourceDagPaths"])
         return report
