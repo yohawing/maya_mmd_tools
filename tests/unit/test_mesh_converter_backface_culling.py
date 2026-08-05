@@ -88,22 +88,23 @@ class TestDx11TechniqueSelection(unittest.TestCase):
         cases = [
             (TRANSPARENCY_MODE_OPAQUE, True, False, "MMDTechnique"),
             (TRANSPARENCY_MODE_CUTOUT, True, False, "MMDTechnique"),
-            (TRANSPARENCY_MODE_BLEND, True, False, "MMDTechnique"),
+            (TRANSPARENCY_MODE_BLEND, True, False, "MMDTechniqueTranslucent"),
             (TRANSPARENCY_MODE_OPAQUE, False, False, "MMDTechnique"),
             (TRANSPARENCY_MODE_CUTOUT, False, False, "MMDTechnique"),
-            (TRANSPARENCY_MODE_BLEND, False, False, "MMDTechnique"),
+            (TRANSPARENCY_MODE_BLEND, False, False, "MMDTechniqueTranslucent"),
             (TRANSPARENCY_MODE_OPAQUE, True, True, "MMDTechniqueDoubleSided"),
             (TRANSPARENCY_MODE_CUTOUT, True, True, "MMDTechniqueDoubleSided"),
-            (TRANSPARENCY_MODE_BLEND, True, True, "MMDTechniqueDoubleSided"),
+            (TRANSPARENCY_MODE_BLEND, True, True, "MMDTechniqueTranslucentDoubleSided"),
             (TRANSPARENCY_MODE_OPAQUE, False, True, "MMDTechniqueDoubleSided"),
             (TRANSPARENCY_MODE_CUTOUT, False, True, "MMDTechniqueDoubleSided"),
-            (TRANSPARENCY_MODE_BLEND, False, True, "MMDTechniqueDoubleSided"),
+            (TRANSPARENCY_MODE_BLEND, False, True, "MMDTechniqueTranslucentDoubleSided"),
         ]
 
         for mode, edge_enabled, double_sided, expected in cases:
             with self.subTest(mode=mode, edge_enabled=edge_enabled, double_sided=double_sided):
                 self.assertEqual(_technique_for_transparency(mode, edge_enabled, double_sided), expected)
-                self.assertEqual(_dx11_rendering_from_technique(expected), (TRANSPARENCY_MODE_OPAQUE, True, double_sided))
+                expected_mode = TRANSPARENCY_MODE_BLEND if mode == TRANSPARENCY_MODE_BLEND else TRANSPARENCY_MODE_OPAQUE
+                self.assertEqual(_dx11_rendering_from_technique(expected), (expected_mode, True, double_sided))
 
     def test_get_transparency_mode_accepts_double_sided_suffix(self):
         cases = [

@@ -198,17 +198,20 @@ def test_surface_composition_matches_full_shader_sphere_toon_specular_order():
         assert "litColor *= sphereColor" not in source
 
 
-def test_dx11_effect_has_only_sidedness_techniques_with_optional_edge_output():
-    """Transparency and no-edge variants do not multiply effect techniques."""
+def test_dx11_effect_has_explicit_translucent_techniques_with_optional_edge_output():
+    """Blend materials have explicit alpha/depth state without no-edge variants."""
     source = (ROOT / "mmd_tools/shaders/MMDShader.fx").read_text(encoding="utf-8")
     assert re.findall(r"technique11\s+(\w+)", source) == [
         "MMDTechnique",
         "MMDTechniqueDoubleSided",
+        "MMDTechniqueTranslucent",
+        "MMDTechniqueTranslucentDoubleSided",
     ]
-    assert "BlendEnable[0] = TRUE" not in source
-    assert "int isTransparent = 1" not in source
+    assert "BlendEnable[0] = TRUE" in source
+    assert "int isTransparent = 1" in source
+    assert "DepthWriteMask = ZERO" in source
     assert "clip(EdgeSize - 1.0e-5);" in source
-    assert source.count("pass EdgePass") == 2
+    assert source.count("pass EdgePass") == 4
     assert "SetRasterizerState(CullFront)" in source
     assert "SetRasterizerState(CullNone)" in source
     assert 'float DevicePixelRatio< string UIWidget = "None"; > = 1.0f;' in source

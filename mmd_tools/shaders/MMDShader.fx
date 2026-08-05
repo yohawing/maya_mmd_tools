@@ -522,6 +522,18 @@ RasterizerState CullNone
 //--------------------------------------------------------------------------------------
 // Blend States
 //--------------------------------------------------------------------------------------
+BlendState AlphaBlend
+{
+    BlendEnable[0] = TRUE;
+    SrcBlend = SRC_ALPHA;
+    DestBlend = INV_SRC_ALPHA;
+    BlendOp = ADD;
+    SrcBlendAlpha = ONE;
+    DestBlendAlpha = INV_SRC_ALPHA;
+    BlendOpAlpha = ADD;
+    RenderTargetWriteMask[0] = 0x0F;
+};
+
 BlendState NoBlend
 {
     BlendEnable[0] = FALSE;
@@ -536,6 +548,15 @@ DepthStencilState EnableDepth
 {
     DepthEnable = TRUE;
     DepthWriteMask = ALL;
+    DepthFunc = LESS;
+};
+
+// Blended materials test opaque depth but do not write their own depth, so
+// overlapping translucent PMX material ranges can composite in queue order.
+DepthStencilState EnableDepthNoWrite
+{
+    DepthEnable = TRUE;
+    DepthWriteMask = ZERO;
     DepthFunc = LESS;
 };
 
@@ -598,5 +619,56 @@ technique11 MMDTechniqueDoubleSided<
         SetRasterizerState(CullNone);
         SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
         SetDepthStencilState(EnableDepth, 0);
+    }
+}
+
+// Blended materials use the same edge pass but an independent alpha-blended
+// main pass.  The native MMD queue owns material/submesh order; this shader
+// only supplies the correct blend and depth state for that pass.
+technique11 MMDTechniqueTranslucent<
+    int isTransparent = 1;
+>
+{
+    pass EdgePass
+    {
+        SetVertexShader(CompileShader(vs_5_0, EdgeVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
+        SetRasterizerState(CullFront);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EdgeDepthReadOnly, 0);
+    }
+    pass MainPass
+    {
+        SetVertexShader(CompileShader(vs_5_0, MainVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, MainPS()));
+        SetRasterizerState(CullFront);
+        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepthNoWrite, 0);
+    }
+}
+
+technique11 MMDTechniqueTranslucentDoubleSided<
+    int isTransparent = 1;
+>
+{
+    pass EdgePass
+    {
+        SetVertexShader(CompileShader(vs_5_0, EdgeVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
+        SetRasterizerState(CullFront);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EdgeDepthReadOnly, 0);
+    }
+    pass MainPass
+    {
+        SetVertexShader(CompileShader(vs_5_0, MainVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, MainPS()));
+        SetRasterizerState(CullNone);
+        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepthNoWrite, 0);
     }
 }

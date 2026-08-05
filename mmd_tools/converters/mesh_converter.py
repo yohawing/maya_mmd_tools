@@ -98,9 +98,13 @@ _MATERIAL_NODE_FAMILY_SUFFIXES = (
     "_toon_texture",
     "_materialMorphEval",
 )
-_DX11_TECHNIQUE_BY_SIDEDNESS = {
-    False: "MMDTechnique",
-    True: "MMDTechniqueDoubleSided",
+_DX11_TECHNIQUE_BY_RENDERING = {
+    (TRANSPARENCY_MODE_OPAQUE, False): "MMDTechnique",
+    (TRANSPARENCY_MODE_CUTOUT, False): "MMDTechnique",
+    (TRANSPARENCY_MODE_BLEND, False): "MMDTechniqueTranslucent",
+    (TRANSPARENCY_MODE_OPAQUE, True): "MMDTechniqueDoubleSided",
+    (TRANSPARENCY_MODE_CUTOUT, True): "MMDTechniqueDoubleSided",
+    (TRANSPARENCY_MODE_BLEND, True): "MMDTechniqueTranslucentDoubleSided",
 }
 
 
@@ -458,14 +462,15 @@ def _classify_material_transparency(material, texture_path=None) -> str:
 
 
 def _technique_for_transparency(mode: str, edge_enabled: bool, double_sided: bool = False) -> str:
-    """Select one of the two opaque DX11 techniques.
+    """Select the DX11 technique for alpha mode and sidedness.
 
-    ``mode`` and ``edge_enabled`` remain accepted for scene/UI compatibility,
-    but the renderer no longer creates transparent or no-edge variants. PMX
-    alpha metadata is preserved separately while every material uses the edge
-    pass and differs only by authored single/double-sided drawing.
+    ``edge_enabled`` remains accepted for scene/UI compatibility.  Opaque and
+    cutout materials share the depth-writing techniques; genuinely blended
+    materials use the explicit translucent technique so VP2 can composite them
+    instead of discarding their authored alpha through a no-blend state.
     """
-    return _DX11_TECHNIQUE_BY_SIDEDNESS[bool(double_sided)]
+    mode = mode if mode in TRANSPARENCY_MODES else TRANSPARENCY_MODE_OPAQUE
+    return _DX11_TECHNIQUE_BY_RENDERING[(mode, bool(double_sided))]
 
 
 def _dx11_rendering_from_technique(technique: str) -> Tuple[str, bool, bool]:
@@ -545,8 +550,8 @@ def get_transparency_mode(shader: str) -> str:
 def apply_transparency_mode(shader: str, mode: str) -> str:
     """Re-apply a transparency mode to an existing dx11Shader (UI entry point).
 
-    Transparency metadata is retained, but rendering remains opaque/cutout and
-    the selected technique changes only when sidedness changes.
+    Opaque/cutout modes retain depth-writing rendering, while blend selects the
+    explicit translucent technique and its alpha-blended, depth-read-only pass.
     """
     if mode not in TRANSPARENCY_MODES:
         raise ValueError(f"Unknown transparency mode: {mode!r}")
