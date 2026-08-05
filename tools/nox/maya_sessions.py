@@ -1007,9 +1007,7 @@ def run_render_override_e2e(
     vp2_device = option(posargs, "--vp2-device", "default")
     target_probe = "--target-probe" in posargs
     r32f_binding_probe = "--r32f-binding-probe" in posargs
-    r32f_caster_pass = "--r32f-caster-pass" in posargs
-    r32f_receiver_probe = "--r32f-receiver-probe" in posargs
-    r32f_light_space_caster = "--r32f-light-space-caster" in posargs
+
     native_shadow_request = "--native-shadow-request" in posargs
     native_shadow_binding_probe = "--native-shadow-binding-probe" in posargs
     native_shadow_receiver = "--native-shadow-receiver" in posargs
@@ -1025,12 +1023,7 @@ def run_render_override_e2e(
         session.error("--model requires --target-probe or --native-shadow-receiver")
     if r32f_binding_probe and not target_probe:
         session.error("--r32f-binding-probe requires --target-probe")
-    if r32f_caster_pass and not target_probe:
-        session.error("--r32f-caster-pass requires --target-probe")
-    if r32f_receiver_probe and not r32f_caster_pass:
-        session.error("--r32f-receiver-probe requires --r32f-caster-pass")
-    if r32f_light_space_caster and not r32f_caster_pass:
-        session.error("--r32f-light-space-caster requires --r32f-caster-pass")
+
     session.run(
         sys.executable,
         str(root / "tools" / "render_override_e2e.py"),
@@ -1045,9 +1038,7 @@ def run_render_override_e2e(
         "--vp2-device",
         vp2_device,
         *( ["--r32f-binding-probe"] if r32f_binding_probe else []),
-        *( ["--r32f-caster-pass"] if r32f_caster_pass else []),
-        *( ["--r32f-receiver-probe"] if r32f_receiver_probe else []),
-        *( ["--r32f-light-space-caster"] if r32f_light_space_caster else []),
+
         *( ["--native-shadow-request"] if native_shadow_request else []),
         *( ["--native-shadow-binding-probe"] if native_shadow_binding_probe else []),
         *( ["--native-shadow-receiver"] if native_shadow_receiver else []),

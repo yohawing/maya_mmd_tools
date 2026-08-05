@@ -104,54 +104,6 @@ class RenderOverrideE2eTest(unittest.TestCase):
             {"MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11"},
         )
 
-    def test_main_forwards_r32f_caster_pass_with_target_probe(self):
-        report = {"status": "fail", "captures": {}, "checks": {}, "errors": []}
-        with mock.patch.object(
-            render_override_e2e, "run_maya_e2e", return_value=report
-        ) as run_gate, mock.patch.object(
-            render_override_e2e.sys,
-            "argv",
-            ["render_override_e2e.py", "--target-probe", "--r32f-caster-pass"],
-        ):
-            self.assertEqual(render_override_e2e.main(), 1)
-        command = run_gate.call_args.kwargs["command"]
-        self.assertIn("False, True, False, False, False, False, False)", command)
-
-    def test_main_forwards_r32f_receiver_probe_with_caster_pass(self):
-        report = {"status": "fail", "captures": {}, "checks": {}, "errors": []}
-        with mock.patch.object(
-            render_override_e2e, "run_maya_e2e", return_value=report
-        ) as run_gate, mock.patch.object(
-            render_override_e2e.sys,
-            "argv",
-            [
-                "render_override_e2e.py",
-                "--target-probe",
-                "--r32f-caster-pass",
-                "--r32f-receiver-probe",
-            ],
-        ):
-            self.assertEqual(render_override_e2e.main(), 1)
-        command = run_gate.call_args.kwargs["command"]
-        self.assertIn("False, True, True, False, False, False, False)", command)
-
-    def test_main_forwards_r32f_light_space_caster_with_caster_pass(self):
-        report = {"status": "fail", "captures": {}, "checks": {}, "errors": []}
-        with mock.patch.object(
-            render_override_e2e, "run_maya_e2e", return_value=report
-        ) as run_gate, mock.patch.object(
-            render_override_e2e.sys,
-            "argv",
-            [
-                "render_override_e2e.py",
-                "--target-probe",
-                "--r32f-caster-pass",
-                "--r32f-light-space-caster",
-            ],
-        ):
-            self.assertEqual(render_override_e2e.main(), 1)
-        command = run_gate.call_args.kwargs["command"]
-        self.assertIn("False, True, False, True, False, False, False)", command)
 
     def test_main_forwards_native_shadow_request(self):
         report = {"status": "fail", "captures": {}, "checks": {}, "errors": []}
@@ -164,7 +116,7 @@ class RenderOverrideE2eTest(unittest.TestCase):
         ):
             self.assertEqual(render_override_e2e.main(), 1)
         command = run_gate.call_args.kwargs["command"]
-        self.assertIn("False, False, False, False, True, False, False)", command)
+        self.assertIn("None, False, True, False, False)", command)
 
     def test_main_forwards_native_shadow_binding_probe_with_request(self):
         report = {"status": "fail", "captures": {}, "checks": {}, "errors": []}
@@ -181,7 +133,7 @@ class RenderOverrideE2eTest(unittest.TestCase):
         ):
             self.assertEqual(render_override_e2e.main(), 1)
         command = run_gate.call_args.kwargs["command"]
-        self.assertIn("False, False, False, False, True, True, False)", command)
+        self.assertIn("None, False, True, True, False)", command)
 
     def test_main_forwards_native_shadow_receiver(self):
         report = {"status": "fail", "captures": {}, "checks": {}, "errors": []}
@@ -199,7 +151,7 @@ class RenderOverrideE2eTest(unittest.TestCase):
         ):
             self.assertEqual(render_override_e2e.main(), 1)
         command = run_gate.call_args.kwargs["command"]
-        self.assertIn("False, False, False, False, False, False, True)", command)
+        self.assertIn("False, False, False, True)", command)
 
     def test_main_forwards_explicit_camera_and_capture_size(self):
         report = {"status": "fail", "captures": {}, "checks": {}, "errors": []}
@@ -332,91 +284,7 @@ class RenderOverrideE2eTest(unittest.TestCase):
                 dict(valid, releaseSucceeded=False)
             )
 
-    def test_r32f_receiver_probe_validation_requires_draw_and_readback(self):
-        valid = {
-            "enabled": True,
-            "status": "released",
-            "reason": "receiver-shader-released-before-target",
-            "inputTargetName": "mmdToolsSelfShadowR32F",
-            "outputTargetName": "mmdToolsSelfShadowReceiverProbeR32F",
-            "shaderPath": "MMDTargetReceiverProbe.fx",
-            "technique": "MmdToolsR32FReceiverProbe",
-            "parameter": "MmdToolsR32FTarget",
-            "outputTransform": "one-minus-16x16-min-sampled-value",
-            "createAttemptCount": 1,
-            "createSucceeded": True,
-            "bindAttemptCount": 1,
-            "bindSucceeded": True,
-            "postDrawCallbackCount": 1,
-            "manualReadbackCount": 0,
-            "releaseAttemptCount": 1,
-            "releaseSucceeded": True,
-            "releaseBeforeTarget": True,
-            "drawsReceiver": True,
-            "receiverComposition": False,
-            "claimsSelfShadow": False,
-            "output": {
-                "status": "sampled",
-                "readbackCount": 1,
-                "changedFromClear": True,
-                "nonClearSampleCount": 1,
-                "minSample": 0.5,
-            },
-        }
-        render_override_e2e._validate_r32f_receiver_probe(valid)
-        render_override_e2e._validate_r32f_receiver_probe(
-            valid, require_caster_value=True
-        )
-        with self.assertRaises(RuntimeError):
-            render_override_e2e._validate_r32f_receiver_probe(
-                dict(valid, postDrawCallbackCount=0)
-            )
-        with self.assertRaises(RuntimeError):
-            render_override_e2e._validate_r32f_receiver_probe(
-                dict(valid, output=dict(valid["output"], minSample=0.0)),
-                require_caster_value=True,
-            )
 
-    def test_r32f_caster_pass_validation_rejects_receiver_claim(self):
-        valid = {
-            "enabled": True,
-            "status": "released",
-            "reason": "shader-released-before-target",
-            "targetNames": ["mmdToolsSelfShadowR32F", "mmdToolsSelfShadowD32"],
-            "shaderPath": "MMDTargetCaster.fx",
-            "technique": "MmdToolsR32FCaster",
-            "requiredParameter": "CasterWorldViewProjection",
-            "createAttemptCount": 1,
-            "createSucceeded": True,
-            "releaseAttemptCount": 1,
-            "releaseSucceeded": True,
-            "releaseBeforeTarget": True,
-            "drawsReceiver": False,
-            "claimsSelfShadow": False,
-            "receiverComposition": False,
-        }
-        render_override_e2e._validate_r32f_caster_pass(valid)
-        invalid = dict(valid, receiverComposition=True)
-        with self.assertRaises(RuntimeError):
-            render_override_e2e._validate_r32f_caster_pass(invalid)
-
-    def test_main_rejects_receiver_probe_without_caster_pass(self):
-        with mock.patch.object(
-            render_override_e2e.sys,
-            "argv",
-            ["render_override_e2e.py", "--target-probe", "--r32f-receiver-probe"],
-        ):
-            with self.assertRaises(SystemExit):
-                render_override_e2e.main()
-
-    def test_main_rejects_light_space_caster_without_caster_pass(self):
-        with mock.patch.object(
-            render_override_e2e.sys,
-            "argv",
-            ["render_override_e2e.py", "--target-probe", "--r32f-light-space-caster"],
-        ):
-            with self.assertRaises(SystemExit):
-                render_override_e2e.main()
 
     def test_main_accepts_native_shadow_binding_without_request(self):
         report = {"status": "fail", "captures": {}, "checks": {}, "errors": []}
@@ -429,36 +297,6 @@ class RenderOverrideE2eTest(unittest.TestCase):
         ):
             self.assertEqual(render_override_e2e.main(), 1)
 
-    def test_light_space_camera_validation_requires_directional_lifecycle(self):
-        valid = {
-            "enabled": True,
-            "status": "released",
-            "reason": "camera-released",
-            "source": "directional-light",
-            "directionalLight": "|renderOverrideParityLight",
-            "cameraTransform": "|mmdToolsR32FLightSpaceCamera",
-            "cameraShape": "|mmdToolsR32FLightSpaceCamera|mmdToolsR32FLightSpaceCameraShape",
-            "cameraPath": "|mmdToolsR32FLightSpaceCamera|mmdToolsR32FLightSpaceCameraShape",
-            "roots": ["|Mmd_root"],
-            "boundsSource": "mmd-root-bounds",
-            "bounds": {"min": [-1.0, 0.0, -2.0], "max": [3.0, 4.0, 2.0]},
-            "center": [1.0, 2.0, 0.0],
-            "forward": [0.0, 0.0, -1.0],
-            "rotation": [-45.0, -30.0, 0.0],
-            "distance": 16.0,
-            "orthographicWidth": 9.6,
-            "nearClip": 0.01,
-            "farClip": 32.0,
-            "createAttemptCount": 1,
-            "createSucceeded": True,
-            "releaseAttemptCount": 1,
-            "releaseSucceeded": True,
-        }
-        render_override_e2e._validate_light_space_camera(valid)
-        with self.assertRaises(RuntimeError):
-            render_override_e2e._validate_light_space_camera(
-                dict(valid, directionalLight=None)
-            )
 
     def test_r32f_binding_probe_diagnostic_is_explicitly_non_rendering(self):
         render_override_e2e._validate_r32f_binding_probe(
@@ -584,19 +422,6 @@ class RenderOverrideE2eTest(unittest.TestCase):
             render_override_e2e.sys,
             "argv",
             ["render_override_e2e.py", "--r32f-binding-probe"],
-        ):
-            with self.assertRaises(SystemExit) as raised:
-                render_override_e2e.main()
-        self.assertEqual(raised.exception.code, 2)
-        run_gate.assert_not_called()
-
-    def test_main_rejects_caster_pass_without_target_probe(self):
-        with mock.patch.object(
-            render_override_e2e, "run_maya_e2e"
-        ) as run_gate, mock.patch.object(
-            render_override_e2e.sys,
-            "argv",
-            ["render_override_e2e.py", "--r32f-caster-pass"],
         ):
             with self.assertRaises(SystemExit) as raised:
                 render_override_e2e.main()

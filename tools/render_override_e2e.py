@@ -416,99 +416,6 @@ def _validate_r32f_binding_probe(binding_probe: object) -> None:
         )
 
 
-def _validate_r32f_caster_pass(caster_pass: object) -> None:
-    """Require a successful caster shader lifecycle without receiver claims."""
-    required = {
-        "enabled",
-        "status",
-        "reason",
-        "targetNames",
-        "shaderPath",
-        "technique",
-        "requiredParameter",
-        "createAttemptCount",
-        "createSucceeded",
-        "releaseAttemptCount",
-        "releaseSucceeded",
-        "releaseBeforeTarget",
-        "drawsReceiver",
-        "claimsSelfShadow",
-        "receiverComposition",
-    }
-    if not isinstance(caster_pass, dict) or not required.issubset(caster_pass):
-        raise RuntimeError(f"R32F caster-pass diagnostic is missing: {caster_pass!r}")
-    if caster_pass["status"] not in {"created", "released", "unsupported", "not-run"}:
-        raise RuntimeError(f"R32F caster-pass has an invalid state: {caster_pass!r}")
-    if any(caster_pass[key] is not False for key in ("drawsReceiver", "claimsSelfShadow", "receiverComposition")):
-        raise RuntimeError(
-            "R32F caster pass unexpectedly claimed receiver/self-shadow composition: "
-            f"{caster_pass!r}"
-        )
-    if (
-        caster_pass["createAttemptCount"] < 1
-        or caster_pass["createSucceeded"] is not True
-        or caster_pass["releaseAttemptCount"] < 1
-        or caster_pass["releaseSucceeded"] is not True
-        or caster_pass["releaseBeforeTarget"] is not True
-        or caster_pass["status"] != "released"
-    ):
-        raise RuntimeError(
-            "R32F caster pass did not complete a successful create/release-before-target lifecycle: "
-            f"{caster_pass!r}"
-        )
-
-
-def _validate_light_space_camera(camera: object) -> None:
-    """Require a real directional-light camera lifecycle without parity claims."""
-    required = {
-        "enabled",
-        "status",
-        "reason",
-        "source",
-        "directionalLight",
-        "cameraTransform",
-        "cameraShape",
-        "cameraPath",
-        "roots",
-        "boundsSource",
-        "bounds",
-        "center",
-        "forward",
-        "rotation",
-        "distance",
-        "orthographicWidth",
-        "nearClip",
-        "farClip",
-        "createAttemptCount",
-        "createSucceeded",
-        "releaseAttemptCount",
-        "releaseSucceeded",
-    }
-    if not isinstance(camera, dict) or not required.issubset(camera):
-        raise RuntimeError(f"light-space camera diagnostic is missing: {camera!r}")
-    if camera["source"] != "directional-light":
-        raise RuntimeError(f"light-space camera has an invalid source: {camera!r}")
-    bounds = camera["bounds"]
-    if (
-        camera["status"] != "released"
-        or camera["createAttemptCount"] < 1
-        or camera["createSucceeded"] is not True
-        or camera["releaseAttemptCount"] < 1
-        or camera["releaseSucceeded"] is not True
-        or not isinstance(camera["directionalLight"], str)
-        or not camera["directionalLight"]
-        or not isinstance(camera["cameraPath"], str)
-        or not camera["cameraPath"]
-        or not isinstance(bounds, dict)
-        or not isinstance(bounds.get("min"), list)
-        or not isinstance(bounds.get("max"), list)
-        or len(bounds["min"]) != 3
-        or len(bounds["max"]) != 3
-    ):
-        raise RuntimeError(
-            "light-space camera did not complete directional-light camera lifecycle: "
-            f"{camera!r}"
-        )
 
 
 def _validate_native_shadow_request(request: object) -> None:
@@ -700,81 +607,9 @@ def _validate_native_shadow_receiver(
         )
 
 
-def _validate_r32f_receiver_probe(
-    receiver_probe: object, *, require_caster_value: bool = False
-) -> None:
-    """Require quad bind/draw/readback, optionally proving a non-clear caster value."""
-    required = {
-        "enabled",
-        "status",
-        "reason",
-        "inputTargetName",
-        "outputTargetName",
-        "shaderPath",
-        "technique",
-        "parameter",
-        "outputTransform",
-        "createAttemptCount",
-        "createSucceeded",
-        "bindAttemptCount",
-        "bindSucceeded",
-        "postDrawCallbackCount",
-        "manualReadbackCount",
-        "releaseAttemptCount",
-        "releaseSucceeded",
-        "releaseBeforeTarget",
-        "drawsReceiver",
-        "receiverComposition",
-        "claimsSelfShadow",
-        "output",
-    }
-    if not isinstance(receiver_probe, dict) or not required.issubset(receiver_probe):
-        raise RuntimeError(f"R32F receiver-probe diagnostic is missing: {receiver_probe!r}")
-    if any(
-        receiver_probe[key] is not False
-        for key in ("receiverComposition", "claimsSelfShadow")
-    ) or receiver_probe["drawsReceiver"] is not True:
-        raise RuntimeError(
-            "R32F receiver probe unexpectedly changed self-shadow composition claims: "
-            f"{receiver_probe!r}"
-        )
-    output = receiver_probe["output"]
-    if (
-        receiver_probe["status"] != "released"
-        or receiver_probe["createAttemptCount"] < 1
-        or receiver_probe["createSucceeded"] is not True
-        or receiver_probe["bindAttemptCount"] < 1
-        or receiver_probe["bindSucceeded"] is not True
-        or receiver_probe["postDrawCallbackCount"] + receiver_probe["manualReadbackCount"] < 1
-        or receiver_probe["releaseAttemptCount"] < 1
-        or receiver_probe["releaseSucceeded"] is not True
-        or receiver_probe["releaseBeforeTarget"] is not True
-        or not isinstance(output, dict)
-        or output.get("status") != "sampled"
-        or output.get("readbackCount", 0) < 1
-        or output.get("changedFromClear") is not True
-        or output.get("nonClearSampleCount", 0) < 1
-        or (
-            require_caster_value
-            and (
-                not isinstance(output.get("minSample"), (int, float))
-                or output.get("minSample") <= 1e-6
-            )
-        )
-    ):
-        raise RuntimeError(
-            "R32F receiver probe did not complete shader bind/draw/readback/release: "
-            f"{receiver_probe!r}"
-        )
-
 
 def _evaluate_target_probe_caster_selection(override, *, manual_readback: bool = True) -> None:
-    """Invoke routing and post-render readback callbacks once in live Maya.
-
-    Maya normally evaluates ``objectSetOverride`` while rendering.  Calling
-    the callbacks explicitly after a forced refresh makes this diagnostic
-    deterministic even when a GUI viewport is not repainting continuously.
-    """
+    """Invoke target selection and optional occupancy readback once in Maya."""
     if not override.startOperationIterator():
         raise RuntimeError("target probe operation iterator did not start")
     while True:
@@ -793,7 +628,7 @@ def _evaluate_target_probe_caster_selection(override, *, manual_readback: bool =
 
 
 def _evaluate_native_shadow_receiver_selection(override) -> None:
-    """Evaluate the receiver operation's object selection once in live Maya."""
+    """Evaluate the native receiver operation's object selection once."""
     if not override.startOperationIterator():
         raise RuntimeError("receiver operation iterator did not start")
     while True:
@@ -821,45 +656,21 @@ def run_probe(
     target_probe: bool = False,
     model_path: str | None = None,
     r32f_binding_probe: bool = False,
-    r32f_caster_pass: bool = False,
-    r32f_receiver_probe: bool = False,
-    r32f_light_space_caster: bool = False,
     native_shadow_request: bool = False,
     native_shadow_binding_probe: bool = False,
     native_shadow_receiver: bool = False,
-    r32f_caster_node_swap: bool = False,
     camera_config: dict | None = None,
     capture_width: int = 640,
     capture_height: int = 480,
 ) -> None:
-    """Execute the R1 lifecycle and optional R2 target probe in live Maya.
+    """Execute the R1 lifecycle and optional target/native diagnostics.
 
-    When ``model_path`` is supplied, import the real PMX through the
-    production importer before evaluating the target caster-routing
-    diagnostic.  Target occupancy is reported only as conservative D32/R32F
-    readback evidence.  The optional R32F binding probe only records whether a
-    plugin-owned ``MShaderInstance`` accepts the offscreen target; it performs
-    no receiver composition or self-shadow parity assertion.  The explicit
-    ``r32f_caster_pass`` option adds a dedicated plugin-owned HLSL caster
-    shader, still without claiming receiver or self-shadow parity.  The
-    explicit ``r32f_receiver_probe`` option samples that target with a
-    separate ``MQuadRender`` output; it is a readback diagnostic, not MMD
-    receiver composition.  The explicit ``r32f_light_space_caster`` option
-    gives the caster operation a temporary orthographic camera aligned to the
-    first directional light; it does not claim a complete shadow projection.
-    The explicit ``native_shadow_request`` option only exercises Maya's
-    renderer-owned light shadow request/release API; it does not bind or
-    compose an imported MMD shader.
-    The explicit ``native_shadow_binding_probe`` option follows Maya's
-    ``kShadowMap``/``kShadowViewProj`` light-parameter path into a separate
-    plugin-owned quad and fails closed when no native resource is available.
-    The explicit ``native_shadow_receiver`` option overlays receiver-selected
-    MMD components with ``MMDNativeShadowReceiver.fx`` and keeps full parity
-    claims behind a separate fixture Oracle.  When a model is supplied for
-    that option, the import uses the production DX11 MMD shader route so the
-    receiver callback can inspect authored material values instead of the
-    deliberately minimal lambert fallback used by the routing probes.
+    A supplied PMX is imported through Maya's production path before the
+    target-selection diagnostic is evaluated.  Target occupancy remains a
+    conservative resource/readback witness; native probes remain opt-in and
+    never claim MMD self-shadow parity.
     """
+
     import os
 
     import maya.api.OpenMayaRender as omr
@@ -893,18 +704,7 @@ def run_probe(
         os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_BINDING_PROBE"] = (
             "1" if r32f_binding_probe else "0"
         )
-        os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_CASTER_PASS"] = (
-            "1" if r32f_caster_pass else "0"
-        )
-        os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_CASTER_NODE_SWAP"] = (
-            "1" if r32f_caster_node_swap else "0"
-        )
-        os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_RECEIVER_PROBE"] = (
-            "1" if r32f_receiver_probe else "0"
-        )
-        os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_R32F_LIGHT_SPACE"] = (
-            "1" if r32f_light_space_caster else "0"
-        )
+
         os.environ["MMD_TOOLS_ENABLE_RENDER_OVERRIDE_NATIVE_SHADOW_REQUEST"] = (
             "1" if native_shadow_request else "0"
         )
@@ -960,9 +760,8 @@ def run_probe(
                 raise FileNotFoundError(f"PMX model not found: {model}")
             from mmd_tools.io.mmd_importer import import_mmd_file
 
-            production_receiver_import = bool(
-                native_shadow_receiver or r32f_caster_node_swap
-            )
+            production_receiver_import = native_shadow_receiver
+
             shader_setting_state = None
             shader_plugin_loaded = None
             if production_receiver_import:
@@ -1031,16 +830,7 @@ def run_probe(
             )
         if target_probe:
             expected_types.append(omr.MSceneRender.kSceneRender)
-        if r32f_caster_node_swap:
-            expected_types.append(
-                getattr(
-                    getattr(omr, "MUserRenderOperation", None),
-                    "kUserDefined",
-                    3,
-                )
-            )
-        if r32f_receiver_probe:
-            expected_types.append(omr.MQuadRender.kQuadRender)
+
         expected_types.append(omr.MSceneRender.kSceneRender)
         if native_shadow_binding_probe:
             expected_types.append(
@@ -1220,20 +1010,7 @@ def run_probe(
                 _validate_r32f_binding_probe(
                     (target_report or {}).get("r32fBindingProbe")
                 )
-            if r32f_caster_pass:
-                _validate_r32f_caster_pass(
-                    (target_report or {}).get("r32fCasterPass")
-                )
-            if r32f_light_space_caster:
-                _validate_light_space_camera(
-                    (target_report or {}).get("lightSpaceCamera")
-                )
-            if r32f_receiver_probe:
-                _validate_r32f_receiver_probe(
-                    (target_report or {}).get("r32fReceiverProbe"),
-                    require_caster_value=r32f_light_space_caster,
-                )
-        if native_shadow_request:
+
             native_report = override.native_shadow_request_report()
             report["checks"]["nativeShadowRequest"] = native_report
             _validate_native_shadow_request(native_report)
@@ -1497,39 +1274,7 @@ def main() -> int:
             "lifecycle diagnostics; does not draw a receiver."
         ),
     )
-    parser.add_argument(
-        "--r32f-caster-pass",
-        action="store_true",
-        help=(
-            "Use the opt-in plugin-owned MMD caster HLSL for the R32F/D32 "
-            "target pair; does not draw a receiver or claim self-shadow parity."
-        ),
-    )
-    parser.add_argument(
-        "--r32f-caster-node-swap",
-        action="store_true",
-        help=(
-            "Temporarily route selected imported dx11Shader nodes through the "
-            "stock-semantic caster technique; restore the original materials "
-            "after the diagnostic pass."
-        ),
-    )
-    parser.add_argument(
-        "--r32f-receiver-probe",
-        action="store_true",
-        help=(
-            "Sample the caster R32F target with a separate MQuadRender output; "
-            "does not compose MMD self-shadowing."
-        ),
-    )
-    parser.add_argument(
-        "--r32f-light-space-caster",
-        action="store_true",
-        help=(
-            "Give the caster operation a temporary orthographic camera aligned "
-            "to a directional light; does not claim shadow parity."
-        ),
-    )
+
     parser.add_argument(
         "--native-shadow-request",
         action="store_true",
@@ -1589,14 +1334,7 @@ def main() -> int:
         parser.error("--model requires --target-probe or --native-shadow-receiver")
     if args.r32f_binding_probe and not args.target_probe:
         parser.error("--r32f-binding-probe requires --target-probe")
-    if args.r32f_caster_pass and not args.target_probe:
-        parser.error("--r32f-caster-pass requires --target-probe")
-    if args.r32f_caster_node_swap and not args.r32f_caster_pass:
-        parser.error("--r32f-caster-node-swap requires --r32f-caster-pass")
-    if args.r32f_receiver_probe and not args.r32f_caster_pass:
-        parser.error("--r32f-receiver-probe requires --r32f-caster-pass")
-    if args.r32f_light_space_caster and not args.r32f_caster_pass:
-        parser.error("--r32f-light-space-caster requires --r32f-caster-pass")
+
     if args.width <= 0 or args.height <= 0:
         parser.error("--width and --height must be positive")
     camera_config = None
@@ -1634,13 +1372,11 @@ def main() -> int:
     probe_call = (
         f"run_probe(r'{log_path.as_posix()}', r'{report_path.as_posix()}', "
         f"r'{out_dir.as_posix()}', {expected_draw_api_name!r}, {args.target_probe!r}, "
-        f"{model_literal}, {args.r32f_binding_probe!r}, {args.r32f_caster_pass!r}, "
-        f"{args.r32f_receiver_probe!r}, {args.r32f_light_space_caster!r}, "
+        f"{model_literal}, {args.r32f_binding_probe!r}, "
         f"{args.native_shadow_request!r}, {args.native_shadow_binding_probe!r}, "
         f"{args.native_shadow_receiver!r}"
     )
-    if args.r32f_caster_node_swap:
-        probe_call += f", {args.r32f_caster_node_swap!r}"
+
     if camera_config is not None or args.width != 640 or args.height != 480:
         probe_call += (
             f", camera_config={camera_literal}, capture_width={args.width!r}, "

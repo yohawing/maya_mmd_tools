@@ -113,9 +113,7 @@ class NoxRenderSessionsTest(unittest.TestCase):
                 "dx11",
                 "--target-probe",
                 "--r32f-binding-probe",
-                "--r32f-caster-pass",
-                "--r32f-receiver-probe",
-                "--r32f-light-space-caster",
+
                 "--native-shadow-request",
                 "--native-shadow-binding-probe",
                 "--native-shadow-receiver",
@@ -145,9 +143,6 @@ class NoxRenderSessionsTest(unittest.TestCase):
         self.assertEqual(args[args.index("--vp2-device") + 1], "dx11")
         self.assertIn("--target-probe", args)
         self.assertIn("--r32f-binding-probe", args)
-        self.assertIn("--r32f-caster-pass", args)
-        self.assertIn("--r32f-receiver-probe", args)
-        self.assertIn("--r32f-light-space-caster", args)
         self.assertIn("--native-shadow-request", args)
         self.assertIn("--native-shadow-binding-probe", args)
         self.assertIn("--native-shadow-receiver", args)
@@ -186,38 +181,6 @@ class NoxRenderSessionsTest(unittest.TestCase):
                 root=Path("F:/repo"),
             )
 
-    def test_render_override_e2e_rejects_caster_pass_without_target_probe(self):
-        session = _FakeSession(["--r32f-caster-pass"])
-        with self.assertRaises(AssertionError):
-            run_render_override_e2e(
-                session,
-                posargs=session.posargs,
-                option=_option,
-                default_maya_version="2026",
-                root=Path("F:/repo"),
-            )
-
-    def test_render_override_e2e_rejects_receiver_probe_without_caster_pass(self):
-        session = _FakeSession(["--r32f-receiver-probe"])
-        with self.assertRaises(AssertionError):
-            run_render_override_e2e(
-                session,
-                posargs=session.posargs,
-                option=_option,
-                default_maya_version="2026",
-                root=Path("F:/repo"),
-            )
-
-    def test_render_override_e2e_rejects_light_space_caster_without_caster_pass(self):
-        session = _FakeSession(["--r32f-light-space-caster"])
-        with self.assertRaises(AssertionError):
-            run_render_override_e2e(
-                session,
-                posargs=session.posargs,
-                option=_option,
-                default_maya_version="2026",
-                root=Path("F:/repo"),
-            )
 
     def test_render_override_e2e_accepts_native_shadow_binding_without_request(self):
         session = _FakeSession(["--native-shadow-binding-probe"])
