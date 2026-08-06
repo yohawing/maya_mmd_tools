@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdlib>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -25,14 +26,15 @@ namespace {
 using namespace MHWRender;
 
 MString renderItemName(const MmdRenderShape::QueueGeometry& geometry,
-                       std::size_t queueIndex)
+                       std::size_t queueIndex,
+                       bool outline = false)
 {
     const std::string name =
         "mmdRenderQueue_" +
         std::string(mmd::mmdDrawPassName(geometry.entry.pass)) + "_m" +
         std::to_string(geometry.entry.materialIndex) + "_s" +
         std::to_string(geometry.entry.submeshIndex) + "_q" +
-        std::to_string(queueIndex);
+        std::to_string(queueIndex) + (outline ? "_edge" : "");
     return MString(name.c_str());
 }
 
@@ -69,6 +71,81 @@ void disableItems(const MRenderItemList& list)
             const_cast<MRenderItem*>(constItem)->enable(false);
         }
     }
+}
+
+const char* nativeShaderTechnique(mmd::MmdDrawPass pass, bool doubleSided)
+{
+    if (pass == mmd::MmdDrawPass::Transparent) {
+        return doubleSided ? "MMDNativeTranslucentDoubleSided"
+                           : "MMDNativeTranslucent";
+    }
+    return doubleSided ? "MMDNativeOpaqueDoubleSided" : "MMDNativeOpaque";
+}
+
+const char* nativeOutlineShaderTechnique(mmd::MmdDrawPass pass)
+{
+    return pass == mmd::MmdDrawPass::Transparent
+               ? "MMDNativeOutlineTranslucent"
+               : "MMDNativeOutline";
+}
+
+std::string nativeShaderPath()
+{
+    const char* configured = std::getenv("MMD_TOOLS_NATIVE_SHADER_PATH");
+    if (configured && *configured) {
+        return configured;
+    }
+    // The capture harness supplies an absolute path.  Keep a relative default
+    // for interactive Maya sessions launched from the repository root.
+    return "mmd_tools/shaders/MMDShader.fx";
+}
+
+std::string nativeShaderCacheKey(
+    const MmdRenderShape::QueueGeometry& geometry, bool outline)
+{
+    const char* technique = outline
+                                ? nativeOutlineShaderTechnique(geometry.entry.pass)
+                                : nativeShaderTechnique(geometry.entry.pass,
+                                                         geometry.material.doubleSided);
+    return std::string(technique) +
+           ":m" +
+           std::to_string(geometry.material.materialIndex) +
+           (outline ? ":edge" : ":body");
+}
+
+bool setNativeMaterialParameters(
+    MHWRender::MShaderInstance* shader,
+    const mmd::MmdRenderQueueInput& material)
+{
+    if (!shader) {
+        return false;
+    }
+
+    // This is intentionally the scalar/color subset of MMDShader.fx.  The
+    // native path does not claim texture, toon, shadow, or morph parity yet;
+    // binding the switches explicitly prevents stale effect-instance state
+    // from leaking between queue items.
+    const float lightDirection[3] = {-0.5F, -1.0F, -1.0F};
+    const float lightColor[3] = {0.6039216F, 0.6039216F, 0.6039216F};
+    return shader->setParameter("DiffuseColorRGB", material.diffuseColor.data()) &&
+           shader->setParameter("DiffuseColorA", material.diffuseAlpha) &&
+           shader->setParameter("Opacity", 1.0F) &&
+           shader->setParameter("SpecularColor", material.specularColor.data()) &&
+           shader->setParameter("Shininess", material.specularPower) &&
+           shader->setParameter("AmbientColor", material.ambientColor.data()) &&
+           shader->setParameter("EdgeColorRGB", material.edgeColor.data()) &&
+           shader->setParameter("EdgeColorA", material.edgeAlpha) &&
+           shader->setParameter("EdgeSize", material.edgeSize) &&
+           shader->setParameter("SphereMode", material.sphereMode) &&
+           shader->setParameter("HasMainTexture", 0) &&
+           shader->setParameter("HasSphereTexture", 0) &&
+           shader->setParameter("HasToonTexture", 0) &&
+           shader->setParameter("UseShadows", false) &&
+           shader->setParameter("ShadowStrength", 1.0F) &&
+           shader->setParameter("ToonCoordinateOffset", 0.55F) &&
+           shader->setParameter("NativeSrgbOutput", 1) &&
+           shader->setParameter("MMDLightDirection", lightDirection) &&
+           shader->setParameter("MMDLightColor", lightColor);
 }
 
 }  // namespace
@@ -159,69 +236,105 @@ void MmdRenderGeometryOverride::updateRenderItems(
         renderer ? renderer->getShaderManager() : nullptr;
     if (!shaderManager) {
         MGlobal::displayError(
-            "[mmdRenderOverride] Stock shader manager is unavailable.");
+            "[mmdRenderOverride] Maya shader manager is unavailable.");
         shape_->clearRenderItemWitness();
         return;
     }
 
     const MmdRenderShape::GeometryData& geometry = shape_->geometry();
-    for (std::size_t queueIndex = 0; queueIndex < geometry.queueGeometry.size();
-         ++queueIndex) {
-        const MmdRenderShape::QueueGeometry& queueGeometry =
-            geometry.queueGeometry[queueIndex];
+    auto configureItem = [&](const MmdRenderShape::QueueGeometry& queueGeometry,
+                             std::size_t queueIndex,
+                             bool outline) {
         const mmd::MmdDrawPass pass = queueGeometry.entry.pass;
+        const char* technique = outline
+                                    ? nativeOutlineShaderTechnique(pass)
+                                    : nativeShaderTechnique(
+                                          pass,
+                                          queueGeometry.material.doubleSided);
         MRenderItem* item = findOrCreateItem(
-            list, renderItemName(queueGeometry, queueIndex),
+            list, renderItemName(queueGeometry, queueIndex, outline),
             static_cast<MGeometry::DrawMode>(MGeometry::kShaded |
                                              MGeometry::kTextured));
         if (!item) {
-            return;
+            return false;
         }
         MHWRender::MShaderInstance* materialShader = nullptr;
-        const auto shaderIt = materialShaders_.find(
-            queueGeometry.material.materialIndex);
+        const std::string shaderKey = nativeShaderCacheKey(queueGeometry, outline);
+        const auto shaderIt = materialShaders_.find(shaderKey);
         if (shaderIt != materialShaders_.end()) {
             materialShader = shaderIt->second;
         } else {
-            materialShader =
-                shaderManager->getStockShader(MShaderManager::k3dSolidShader);
+            const std::string shaderPath = nativeShaderPath();
+            materialShader = shaderManager->getEffectsFileShader(
+                MString(shaderPath.c_str()),
+                MString(technique));
             if (materialShader) {
-                materialShaders_.emplace(queueGeometry.material.materialIndex,
-                                         materialShader);
+                materialShaders_.emplace(shaderKey, materialShader);
             }
         }
         if (!materialShader) {
             MGlobal::displayError(
-                "[mmdRenderOverride] Material stock shader is unavailable.");
+                MString("[mmdRenderOverride] Native MMD shader is unavailable: ") +
+                technique);
             disableItems(list);
             shape_->clearRenderItemWitness();
-            return;
+            return false;
         }
-        const float materialColor[4] = {
-            queueGeometry.material.diffuseColor[0],
-            queueGeometry.material.diffuseColor[1],
-            queueGeometry.material.diffuseColor[2],
-            queueGeometry.material.diffuseAlpha};
-        if (!materialShader->setParameter("solidColor", materialColor) ||
+        if (!setNativeMaterialParameters(materialShader,
+                                          queueGeometry.material) ||
             !item->setShader(materialShader)) {
             MGlobal::displayError(
                 MString("[mmdRenderOverride] Failed to bind material shader to ") +
                 item->name());
             disableItems(list);
             shape_->clearRenderItemWitness();
-            return;
+            return false;
         }
         if (pass == mmd::MmdDrawPass::Transparent) {
             item->setTreatAsTransparent(true);
             item->setSupportsAdvancedTransparency(true);
         }
-        // Keep the Maya item sequence and the explicit queue rank aligned.
+        // Opaque items draw the outline before the body; translucent items
+        // reverse that order so the edge depth test can hide the interior.
         // depthPriority is also useful as a diagnostic when a renderer groups
-        // items internally; it does not replace the transparent material
-        // shader's blend/depth state.
-        item->depthPriority(static_cast<unsigned int>(queueIndex));
-        item->castsShadows(pass != mmd::MmdDrawPass::Transparent);
-        item->receivesShadows(pass != mmd::MmdDrawPass::Transparent);
+        // items internally; it does not replace the shader's blend/depth state.
+        const bool outlineAfterBody = pass == mmd::MmdDrawPass::Transparent;
+        const std::size_t priority =
+            queueIndex * 2U +
+            (outline ? (outlineAfterBody ? 1U : 0U)
+                     : (outlineAfterBody ? 0U : 1U));
+        item->depthPriority(static_cast<unsigned int>(priority));
+        item->castsShadows(!outline && pass != mmd::MmdDrawPass::Transparent);
+        item->receivesShadows(!outline && pass != mmd::MmdDrawPass::Transparent);
+        return true;
+    };
+
+    for (std::size_t queueIndex = 0; queueIndex < geometry.queueGeometry.size();
+         ++queueIndex) {
+        const MmdRenderShape::QueueGeometry& queueGeometry =
+            geometry.queueGeometry[queueIndex];
+        const bool outline = queueGeometry.material.edgeDrawing &&
+                             queueGeometry.material.edgeSize > 0.0F &&
+                             queueGeometry.material.edgeAlpha > 0.0F;
+        if (queueGeometry.entry.pass == mmd::MmdDrawPass::Transparent) {
+            // The translucent body must establish the depth-tested surface
+            // before the inverted hull runs.  Otherwise the read-only edge
+            // pass writes its opaque edge color into the white background and
+            // the body blends against black across the whole interior.
+            if (!configureItem(queueGeometry, queueIndex, false)) {
+                return;
+            }
+            if (outline && !configureItem(queueGeometry, queueIndex, true)) {
+                return;
+            }
+        } else {
+            if (outline && !configureItem(queueGeometry, queueIndex, true)) {
+                return;
+            }
+            if (!configureItem(queueGeometry, queueIndex, false)) {
+                return;
+            }
+        }
     }
 }
 
@@ -307,19 +420,29 @@ void MmdRenderGeometryOverride::populateGeometry(
             break;
         case MHWRender::MGeometry::kNormal:
             for (unsigned int vertex = 0; vertex < vertexCount; ++vertex) {
+                const std::size_t source = static_cast<std::size_t>(vertex) * 3U;
                 const std::size_t target =
                     static_cast<std::size_t>(vertex) * dimension;
-                if (dimension > 1U) {
-                    destination[target + 1U] = 1.0F;
+                for (unsigned int component = 0;
+                     component < dimension && component < 3U; ++component) {
+                    destination[target + component] =
+                        geometry.normals.size() == vertexCount * 3U
+                            ? geometry.normals[source + component]
+                            : (component == 1U ? 1.0F : 0.0F);
                 }
             }
             break;
         case MHWRender::MGeometry::kTexture:
             for (unsigned int vertex = 0; vertex < vertexCount; ++vertex) {
+                const std::size_t source = static_cast<std::size_t>(vertex) * 2U;
                 const std::size_t target =
                     static_cast<std::size_t>(vertex) * dimension;
-                if (dimension > 1U) {
-                    destination[target + 1U] = 0.0F;
+                for (unsigned int component = 0;
+                     component < dimension && component < 2U; ++component) {
+                    if (geometry.uvs.size() == vertexCount * 2U) {
+                        destination[target + component] =
+                            geometry.uvs[source + component];
+                    }
                 }
             }
             break;
@@ -342,6 +465,12 @@ void MmdRenderGeometryOverride::populateGeometry(
         queueGeometryByName.emplace(
             std::string(renderItemName(candidate, queueIndex).asChar()),
             &candidate);
+        if (candidate.material.edgeDrawing && candidate.material.edgeSize > 0.0F &&
+            candidate.material.edgeAlpha > 0.0F) {
+            queueGeometryByName.emplace(
+                std::string(renderItemName(candidate, queueIndex, true).asChar()),
+                &candidate);
+        }
     }
     for (int i = 0; i < renderItems.length(); ++i) {
         const MRenderItem* item = renderItems.itemAt(i);

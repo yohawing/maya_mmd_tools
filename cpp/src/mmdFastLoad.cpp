@@ -238,6 +238,117 @@ std::array<float, 3> materialDiffuseColor(const json& material)
     return color;
 }
 
+std::array<float, 3> materialColorProperty(
+    const json& material,
+    const char* key,
+    const std::array<float, 3>& fallback)
+{
+    std::array<float, 3> color = fallback;
+    if (!material.is_object() || !material.contains(key) ||
+        !material[key].is_array() || material[key].size() < 3U) {
+        return color;
+    }
+    for (std::size_t component = 0; component < color.size(); ++component) {
+        const json& value = material[key][component];
+        if (!value.is_number()) {
+            return fallback;
+        }
+        const double numericValue = value.get<double>();
+        if (!std::isfinite(numericValue)) {
+            return fallback;
+        }
+        color[component] = static_cast<float>(numericValue);
+    }
+    return color;
+}
+
+float materialScalarProperty(const json& material,
+                             const char* key,
+                             float fallback)
+{
+    if (!material.is_object() || !material.contains(key) ||
+        !material[key].is_number()) {
+        return fallback;
+    }
+    const double numericValue = material[key].get<double>();
+    return std::isfinite(numericValue) ? static_cast<float>(numericValue)
+                                       : fallback;
+}
+
+float materialColorAlphaProperty(const json& material,
+                                 const char* key,
+                                 float fallback)
+{
+    if (!material.is_object() || !material.contains(key) ||
+        !material[key].is_array() || material[key].size() < 4U ||
+        !material[key][3].is_number()) {
+        return fallback;
+    }
+    const double numericValue = material[key][3].get<double>();
+    return std::isfinite(numericValue) ? static_cast<float>(numericValue)
+                                       : fallback;
+}
+
+int materialIntegerProperty(const json& material, const char* key, int fallback)
+{
+    if (!material.is_object() || !material.contains(key)) {
+        return fallback;
+    }
+    if (material[key].is_number_integer()) {
+        return material[key].get<int>();
+    }
+    if (material[key].is_string()) {
+        const std::string mode = material[key].get<std::string>();
+        if (mode == "multiply") {
+            return 1;
+        }
+        if (mode == "add") {
+            return 2;
+        }
+        if (mode == "subtexture") {
+            return 3;
+        }
+    }
+    return fallback;
+}
+
+bool materialDoubleSided(const json& material)
+{
+    if (!material.is_object() || !material.contains("flags") ||
+        !material["flags"].is_object()) {
+        return false;
+    }
+    return material["flags"].value("doubleSided", false);
+}
+
+bool materialEdgeDrawing(const json& material)
+{
+    if (!material.is_object() || !material.contains("flags") ||
+        !material["flags"].is_object()) {
+        return false;
+    }
+    return material["flags"].value("edge", false);
+}
+
+void populateNativeMaterial(const json& material,
+                            mmd::MmdRenderQueueInput& input)
+{
+    input.diffuseColor = materialDiffuseColor(material);
+    input.diffuseAlpha = materialDiffuseAlpha(material);
+    input.specularColor = materialColorProperty(
+        material, "specular", {0.0F, 0.0F, 0.0F});
+    input.specularPower = materialScalarProperty(material, "specularPower", 0.0F);
+    input.ambientColor = materialColorProperty(
+        material, "ambient", {0.3F, 0.3F, 0.3F});
+    input.edgeColor = materialColorProperty(
+        material, "edgeColor", {0.0F, 0.0F, 0.0F});
+    input.edgeAlpha = materialColorAlphaProperty(material, "edgeColor", 1.0F);
+    input.edgeSize = materialScalarProperty(material, "edgeSize", 0.0F);
+    input.edgeDrawing = materialEdgeDrawing(material);
+    input.sphereMode = materialIntegerProperty(material, "sphereMode", 0);
+    input.doubleSided = materialDoubleSided(material);
+}
+
 std::string quoteMelName(const std::string& name)
 {
     return "\"" + name + "\"";
@@ -905,16 +1016,21 @@ MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
         if (materials && originalMaterialIndex < materials->size()) {
             const json& material = (*materials)[originalMaterialIndex];
             input.transparencyMode = materialTransparencyMode(material);
-            input.diffuseAlpha = materialDiffuseAlpha(material);
-            input.diffuseColor = materialDiffuseColor(material);
+            populateNativeMaterial(material, input);
         }
         queueInputs.push_back(std::move(input));
     }
     std::vector<std::vector<float>> submeshPositions(meshCount);
+    std::vector<std::vector<float>> submeshNormals(meshCount);
+    std::vector<std::vector<float>> submeshUvs(meshCount);
     std::vector<std::vector<uint32_t>> submeshIndices(meshCount);
     for (size_t i = 0; i < meshCount; ++i) {
         submeshPositions[i] = bufferToFloatsAndFree(
             mmd_runtime_pmx_material_split_positions_buffer(split, i));
+        submeshNormals[i] = bufferToFloatsAndFree(
+            mmd_runtime_pmx_material_split_normals_buffer(split, i));
+        submeshUvs[i] = bufferToFloatsAndFree(
+            mmd_runtime_pmx_material_split_uvs_buffer(split, i));
         submeshIndices[i] = bufferToU32AndFree(
             mmd_runtime_pmx_material_split_indices_buffer(split, i));
         if (submeshPositions[i].empty() || submeshIndices[i].empty()) {
@@ -990,7 +1106,8 @@ MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
         return MS::kFailure;
     }
     if (!shape->setMaterialSplitGeometry(
-            submeshPositions, submeshIndices, queueInputs, scale_)) {
+            submeshPositions, submeshNormals, submeshUvs, submeshIndices,
+            queueInputs, scale_)) {
         MGlobal::displayError(
             "[mmdFastLoad] VP2 ownership geometry rejected by mmdRenderShape.");
         MDagModifier cleanup;

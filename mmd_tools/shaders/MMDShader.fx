@@ -247,6 +247,13 @@ int HasToonTexture<
     int UIOrder = 512;
 > = 0;
 
+// Native VP2 material items can opt into an sRGB framebuffer path so legacy
+// MMD alpha blending is performed in the authored color space.  Product
+// dx11Shader materials keep the default zero and use the shared CM-on path.
+int NativeSrgbOutput<
+    string UIWidget = "None";
+> = 0;
+
 // Shadow parameters
 bool UseShadows<
     string UIGroup = "Lighting";
@@ -477,9 +484,11 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     // depth and punch black holes / halos into whatever is behind them.
     clip(opacity - 0.003);
 
-    // Decode the gamma-space MMD result to linear; the view transform re-encodes
-    // it to sRGB for display, restoring the exact MMD look under CM-on.
-    return float4(SrgbToLinear(litColor), opacity);
+    // Product materials decode the gamma-space MMD result to linear; the view
+    // transform re-encodes it to sRGB under CM-on.  Native VP2 items can use a
+    // CM-off sRGB target so legacy MMD alpha blending remains in gamma space.
+    float3 outputColor = NativeSrgbOutput != 0 ? litColor : SrgbToLinear(litColor);
+    return float4(outputColor, opacity);
 }
 
 //--------------------------------------------------------------------------------------
@@ -500,11 +509,11 @@ VS_OUTPUT EdgeVS(VS_INPUT input)
 
     float2 safeScreenSize = max(ScreenSize, float2(1.0, 1.0));
     // ViewportPixelSize is physical; authored EdgeSize is in logical pixels.
-    // The 0.45 factor is the calibrated expansion for the 1024px fixture:
+    // The 0.40 factor is the calibrated expansion for the 1024px fixtures:
     // it restores the authored silhouette width without the interior bleed
-    // caused by the much larger historical 0.25/0.4 experiments.
+    // caused by the much larger historical 0.25 experiment.
     float logicalEdgeSize = EdgeSize * max(DevicePixelRatio, 1.0e-5);
-    clipPos.xy += screenNormal / (safeScreenSize * 0.45) * logicalEdgeSize * clipPos.w;
+    clipPos.xy += screenNormal / (safeScreenSize * 0.40) * logicalEdgeSize * clipPos.w;
 
     output.position = clipPos;
     output.worldPosition = worldPos.xyz;
@@ -530,9 +539,13 @@ float4 EdgePS(VS_OUTPUT input) : SV_TARGET
     // All techniques contain the edge pass. A material opts out in shader
     // space by setting EdgeSize to zero, avoiding separate NoEdge techniques.
     clip(EdgeSize - 1.0e-5);
-    // EdgeColorRGB is an authored gamma-space color; decode to linear so the
-    // view transform re-encode displays it as authored (no-op for pure black).
-    return float4(SrgbToLinear(EdgeColorRGB), EdgeColorA);
+    // EdgeColorRGB is an authored gamma-space color.  Product items decode to
+    // linear for Maya's CM-on view transform; native items render into the
+    // CM-off sRGB target and therefore keep the authored value directly.
+    float3 outputColor = NativeSrgbOutput != 0
+                             ? EdgeColorRGB
+                             : SrgbToLinear(EdgeColorRGB);
+    return float4(outputColor, EdgeColorA);
 }
 
 //--------------------------------------------------------------------------------------
@@ -689,6 +702,88 @@ technique11 MMDTechniqueTranslucentDoubleSided<
         SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
         SetDepthStencilState(EnableDepth, 0);
     }
+    pass EdgePass
+    {
+        SetVertexShader(CompileShader(vs_5_0, EdgeVSTranslucent()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
+        SetRasterizerState(CullFront);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EdgeDepthReadOnly, 0);
+    }
+}
+
+// Native VP2 render items use one effect instance per material/submesh.  Keep
+// these single-pass techniques separate from the product shader's explicit
+// edge+body pass sequence so MPxGeometryOverride can bind body and outline
+// states to independent VP2 render items.
+technique11 MMDNativeOpaque
+{
+    pass MainPass
+    {
+        SetVertexShader(CompileShader(vs_5_0, MainVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, MainPS()));
+        SetRasterizerState(CullFront);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepth, 0);
+    }
+}
+
+technique11 MMDNativeTranslucent
+{
+    pass MainPass
+    {
+        SetVertexShader(CompileShader(vs_5_0, MainVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, MainPS()));
+        SetRasterizerState(CullFront);
+        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepth, 0);
+    }
+}
+
+technique11 MMDNativeOpaqueDoubleSided
+{
+    pass MainPass
+    {
+        SetVertexShader(CompileShader(vs_5_0, MainVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, MainPS()));
+        SetRasterizerState(CullNone);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepth, 0);
+    }
+}
+
+technique11 MMDNativeTranslucentDoubleSided
+{
+    pass MainPass
+    {
+        SetVertexShader(CompileShader(vs_5_0, MainVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, MainPS()));
+        SetRasterizerState(CullNone);
+        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepth, 0);
+    }
+}
+
+technique11 MMDNativeOutline
+{
+    pass EdgePass
+    {
+        SetVertexShader(CompileShader(vs_5_0, EdgeVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
+        SetRasterizerState(CullFront);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EdgeDepthReadOnly, 0);
+    }
+}
+
+technique11 MMDNativeOutlineTranslucent
+{
     pass EdgePass
     {
         SetVertexShader(CompileShader(vs_5_0, EdgeVSTranslucent()));

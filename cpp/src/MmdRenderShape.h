@@ -55,6 +55,8 @@ public:
      */
     bool setMaterialSplitGeometry(
         const std::vector<std::vector<float>>& submeshPositions,
+        const std::vector<std::vector<float>>& submeshNormals,
+        const std::vector<std::vector<float>>& submeshUvs,
         const std::vector<std::vector<uint32_t>>& submeshIndices,
         const std::vector<mmd::MmdRenderQueueInput>& queueInputs,
         double scale);
@@ -74,6 +76,8 @@ public:
 
     struct GeometryData {
         std::vector<float> positions;
+        std::vector<float> normals;
+        std::vector<float> uvs;
         std::vector<mmd::MmdRenderQueueInput> queueInputs;
         std::vector<mmd::MmdRenderQueueEntry> renderQueue;
         std::vector<QueueGeometry> queueGeometry;

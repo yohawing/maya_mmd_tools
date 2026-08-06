@@ -1,11 +1,11 @@
 """Compare the native VP2 material witness with GoldenOracle and Python.
 
-This is a report-only diagnostic harness for the first C++ material slice.  It
-uses one GoldenOracle manifest case, captures the opt-in native shape with the
-same manifest camera and image size as the Python visual capture, then runs
-NVIDIA FLIP against both the Oracle image and the current Python baseline.
-It does not promote the stock Maya shader to product parity or change the
-normal Python importer path.
+This is a report-only diagnostic harness for the first C++ native MMD material
+slice.  It uses one GoldenOracle manifest case, captures the opt-in native
+shape with the same manifest camera and image size as the Python visual
+capture, then runs NVIDIA FLIP against both the Oracle image and the current
+Python baseline.  It does not claim full texture/toon/outline parity or change
+the normal Python importer path.
 """
 
 from __future__ import annotations
@@ -276,7 +276,7 @@ def run_parity(
         "captureStderr": capture_stderr,
         "nativeReport": str(report_path),
         "comparisons": {},
-        "claim": "report-only-native-stock-material",
+        "claim": "report-only-native-mmd-material-subset",
     }
     if completed is None or completed.returncode != 0 or not report_path.is_file():
         (output_dir / "capture.log").write_text(

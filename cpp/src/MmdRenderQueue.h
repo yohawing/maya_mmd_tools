@@ -31,10 +31,20 @@ struct MmdRenderQueueInput {
     std::size_t submeshIndex = 0;
     std::string transparencyMode;
     float diffuseAlpha = 1.0f;
-    // Minimal native material payload.  Texture, toon, outline, double-sided
-    // culling, and morph payloads remain outside this first C++ material
-    // slice.
+    // Material values used by the native VP2 MMD shader.  Texture and morph
+    // bindings remain outside this first parity slice, but keep the authored
+    // scalar/color values here so the shader does not fall back to a stock
+    // Maya solid material.
     std::array<float, 3> diffuseColor = {1.0f, 1.0f, 1.0f};
+    std::array<float, 3> specularColor = {0.0f, 0.0f, 0.0f};
+    float specularPower = 0.0f;
+    std::array<float, 3> ambientColor = {0.3f, 0.3f, 0.3f};
+    std::array<float, 3> edgeColor = {0.0f, 0.0f, 0.0f};
+    float edgeAlpha = 1.0f;
+    float edgeSize = 0.0f;
+    bool edgeDrawing = false;
+    int sphereMode = 0;
+    bool doubleSided = false;
 };
 
 /** Ordered queue record consumed by a native material-split loader. */

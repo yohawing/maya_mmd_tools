@@ -247,7 +247,12 @@ def run_probe(
         if parity_mode:
             from tools.render_override_e2e import _configure_oracle_color_environment
 
-            parity_view = _configure_oracle_color_environment(cmds)
+            native_srgb_blend = os.environ.get(
+                "MMD_TOOLS_NATIVE_SRGB_BLEND", ""
+            ).strip() == "1"
+            parity_view = _configure_oracle_color_environment(
+                cmds, cm_enabled=not native_srgb_blend
+            )
             report["parityView"] = parity_view
             if parity_view["errors"]:
                 raise RuntimeError(
@@ -740,6 +745,10 @@ def main() -> int:
         warn_detached=True,
         env_overrides={
             "MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11",
+            "MMD_TOOLS_NATIVE_SHADER_PATH": str(
+                _ROOT / "mmd_tools" / "shaders" / "MMDShader.fx"
+            ),
+            "MMD_TOOLS_NATIVE_SRGB_BLEND": "1",
             # Maya's GUI loader does not inherit the mayapy-side PATH used by
             # the standalone smoke.  Keep the native plug-in and mmd-anim DLL
             # directory ahead of the inherited search path.

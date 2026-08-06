@@ -31,11 +31,21 @@ std::size_t passIndex(mmd::MmdDrawPass pass)
     return static_cast<std::size_t>(pass);
 }
 
-bool hasFiniteDiffuse(const mmd::MmdRenderQueueInput& input)
+bool hasFiniteMaterial(const mmd::MmdRenderQueueInput& input)
 {
+    const auto finiteColor = [](const auto& color) {
+        return std::all_of(color.begin(), color.end(), [](float value) {
+            return std::isfinite(value);
+        });
+    };
     return std::isfinite(input.diffuseAlpha) &&
-           std::all_of(input.diffuseColor.begin(), input.diffuseColor.end(),
-                       [](float value) { return std::isfinite(value); });
+           std::isfinite(input.specularPower) &&
+           std::isfinite(input.edgeAlpha) &&
+           std::isfinite(input.edgeSize) &&
+           finiteColor(input.diffuseColor) &&
+           finiteColor(input.specularColor) &&
+           finiteColor(input.ambientColor) &&
+           finiteColor(input.edgeColor);
 }
 
 }  // namespace
@@ -120,6 +130,8 @@ MBoundingBox MmdRenderShape::boundingBox() const
 
 bool MmdRenderShape::setMaterialSplitGeometry(
     const std::vector<std::vector<float>>& submeshPositions,
+    const std::vector<std::vector<float>>& submeshNormals,
+    const std::vector<std::vector<float>>& submeshUvs,
     const std::vector<std::vector<uint32_t>>& submeshIndices,
     const std::vector<mmd::MmdRenderQueueInput>& queueInputs,
     double scale)
@@ -131,6 +143,8 @@ bool MmdRenderShape::setMaterialSplitGeometry(
     };
 
     if (!std::isfinite(scale) || scale <= 0.0 || queueInputs.empty() ||
+        submeshPositions.size() != submeshNormals.size() ||
+        submeshPositions.size() != submeshUvs.size() ||
         submeshPositions.size() != submeshIndices.size()) {
         return reject("invalid scale, empty queue, or mismatched submesh buffers");
     }
@@ -139,8 +153,8 @@ bool MmdRenderShape::setMaterialSplitGeometry(
         mmd::buildMmdRenderQueue(queueInputs);
 
     for (const mmd::MmdRenderQueueInput& input : queueInputs) {
-        if (!hasFiniteDiffuse(input)) {
-            return reject("material diffuse contains a non-finite value");
+        if (!hasFiniteMaterial(input)) {
+            return reject("material contains a non-finite value");
         }
     }
 
@@ -151,10 +165,16 @@ bool MmdRenderShape::setMaterialSplitGeometry(
                 static_cast<std::size_t>(mmd::MmdDrawPass::Transparent) ||
             entry.submeshIndex >= submeshPositions.size()) {
             return reject("queue entry " + std::to_string(queueIndex) +
-                          " references an invalid pass or submesh");
+                          " references an invalid pass or submesh (pass=" +
+                          std::to_string(passIndex(entry.pass)) + ", submesh=" +
+                          std::to_string(entry.submeshIndex) + ", positions=" +
+                          std::to_string(submeshPositions.size()) + ")");
         }
         const std::vector<float>& positions =
             submeshPositions[entry.submeshIndex];
+        const std::vector<float>& normals =
+            submeshNormals[entry.submeshIndex];
+        const std::vector<float>& uvs = submeshUvs[entry.submeshIndex];
         const std::vector<uint32_t>& indices =
             submeshIndices[entry.submeshIndex];
         if (positions.empty() || positions.size() % 3U != 0U ||
@@ -165,6 +185,10 @@ bool MmdRenderShape::setMaterialSplitGeometry(
                 " indices=" + std::to_string(indices.size()));
         }
         const std::size_t vertexCount = positions.size() / 3U;
+        if ((!normals.empty() && normals.size() != positions.size()) ||
+            (!uvs.empty() && uvs.size() != vertexCount * 2U)) {
+            return reject("queue entry has mismatched normal or UV data");
+        }
         for (std::size_t indexOffset = 0; indexOffset < indices.size();
              ++indexOffset) {
             const uint32_t index = indices[indexOffset];
@@ -188,6 +212,9 @@ bool MmdRenderShape::setMaterialSplitGeometry(
     for (const mmd::MmdRenderQueueEntry& entry : renderQueue) {
         const std::vector<float>& positions =
             submeshPositions[entry.submeshIndex];
+        const std::vector<float>& normals =
+            submeshNormals[entry.submeshIndex];
+        const std::vector<float>& uvs = submeshUvs[entry.submeshIndex];
         const std::vector<uint32_t>& indices =
             submeshIndices[entry.submeshIndex];
         QueueGeometry queueGeometry;
@@ -211,6 +238,40 @@ bool MmdRenderShape::setMaterialSplitGeometry(
             next.positions.push_back(static_cast<float>(x));
             next.positions.push_back(static_cast<float>(y));
             next.positions.push_back(static_cast<float>(z));
+
+            if (normals.empty()) {
+                next.normals.push_back(0.0F);
+                next.normals.push_back(1.0F);
+                next.normals.push_back(0.0F);
+            } else {
+                const double nx = static_cast<double>(normals[i]);
+                const double ny = static_cast<double>(normals[i + 1U]);
+                const double nz = static_cast<double>(normals[i + 2U]);
+                const double length = std::sqrt(nx * nx + ny * ny + nz * nz);
+                if (!std::isfinite(nx) || !std::isfinite(ny) ||
+                    !std::isfinite(nz) || !std::isfinite(length) ||
+                    length <= 0.0) {
+                    return reject("non-finite or zero-length normal");
+                }
+                next.normals.push_back(static_cast<float>(nx / length));
+                next.normals.push_back(static_cast<float>(ny / length));
+                next.normals.push_back(static_cast<float>(-nz / length));
+            }
+
+            if (uvs.empty()) {
+                next.uvs.push_back(0.0F);
+                next.uvs.push_back(0.0F);
+            } else {
+                const float u = uvs[(i / 3U) * 2U];
+                const float v = uvs[(i / 3U) * 2U + 1U];
+                if (!std::isfinite(u) || !std::isfinite(v)) {
+                    return reject("non-finite UV");
+                }
+                next.uvs.push_back(u);
+                // Keep Maya-space UVs in the same convention as buildMesh;
+                // MMDShader.fx flips V once in its vertex shader.
+                next.uvs.push_back(1.0F - v);
+            }
             const MPoint point(x, y, z);
             if (!hasBounds) {
                 nextBounds = MBoundingBox(point, point);

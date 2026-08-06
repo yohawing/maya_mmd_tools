@@ -8,6 +8,7 @@
 #include <maya/MPxGeometryOverride.h>
 
 #include <cstddef>
+#include <string>
 #include <unordered_map>
 
 class MmdRenderShape;
@@ -36,6 +37,6 @@ private:
     explicit MmdRenderGeometryOverride(const MObject& object);
 
     MmdRenderShape* shape_ = nullptr;
-    std::unordered_map<std::size_t, MHWRender::MShaderInstance*>
+    std::unordered_map<std::string, MHWRender::MShaderInstance*>
         materialShaders_;
 };

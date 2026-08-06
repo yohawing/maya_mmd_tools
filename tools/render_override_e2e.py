@@ -189,8 +189,17 @@ _ORACLE_BACKGROUND = {
 }
 
 
-def _configure_oracle_color_environment(cmds) -> dict[str, object]:
-    """Apply and report the shared Oracle color/background environment."""
+def _configure_oracle_color_environment(
+    cmds, *, cm_enabled: bool = True
+) -> dict[str, object]:
+    """Apply and report the shared Oracle color/background environment.
+
+    Native VP2 material probes may disable color management when their effect
+    deliberately emits authored sRGB values for legacy MMD alpha blending.
+    The default remains the product Python/Oracle CM-on environment.
+    """
+    requested_color_management = dict(_ORACLE_COLOR_MANAGEMENT)
+    requested_color_management["cmEnabled"] = bool(cm_enabled)
     previous_color_management: dict[str, object] = {}
     color_management: dict[str, object] = {}
     errors: list[str] = []
@@ -201,13 +210,13 @@ def _configure_oracle_color_environment(cmds) -> dict[str, object]:
             )
         except Exception as exc:
             previous_color_management[query] = f"ERR: {exc}"
-    for edit, value in _ORACLE_COLOR_MANAGEMENT.items():
+    for edit, value in requested_color_management.items():
         try:
             cmds.colorManagementPrefs(edit=True, **{edit: value})
         except Exception as exc:
             color_management[f"{edit}Error"] = str(exc)
             errors.append(f"{edit} edit: {exc}")
-    for query in _ORACLE_COLOR_MANAGEMENT:
+    for query in requested_color_management:
         try:
             color_management[query] = cmds.colorManagementPrefs(
                 query=True, **{query: True}
@@ -230,7 +239,7 @@ def _configure_oracle_color_environment(cmds) -> dict[str, object]:
             background[name] = f"ERR: {exc}"
             errors.append(f"{name} edit/query: {exc}")
     return {
-        "requestedColorManagement": dict(_ORACLE_COLOR_MANAGEMENT),
+        "requestedColorManagement": requested_color_management,
         "requestedBackground": {
             name: list(value) for name, value in _ORACLE_BACKGROUND.items()
         },
