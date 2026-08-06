@@ -46,6 +46,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <set>
 #include <string>
@@ -312,6 +313,40 @@ int materialIntegerProperty(const json& material, const char* key, int fallback)
     return fallback;
 }
 
+std::string materialTexturePath(const json& material,
+                                const char* key,
+                                const std::filesystem::path& modelDirectory)
+{
+    if (!material.is_object() || !material.contains(key) ||
+        !material[key].is_string()) {
+        return {};
+    }
+
+    const std::string raw = material[key].get<std::string>();
+    if (raw.empty()) {
+        return {};
+    }
+
+    try {
+        const std::filesystem::path path = std::filesystem::u8path(raw);
+        const std::filesystem::path resolved =
+            path.is_absolute() ? path : modelDirectory / path;
+        return resolved.lexically_normal().u8string();
+    } catch (const std::filesystem::filesystem_error&) {
+        return {};
+    }
+}
+
+int materialSharedToonIndex(const json& material)
+{
+    if (!material.is_object() || !material.contains("sharedToonIndex") ||
+        !material["sharedToonIndex"].is_number_integer()) {
+        return -1;
+    }
+    const int index = material["sharedToonIndex"].get<int>();
+    return index >= 0 && index <= 9 ? index : -1;
+}
+
 bool materialDoubleSided(const json& material)
 {
     if (!material.is_object() || !material.contains("flags") ||
@@ -331,6 +366,7 @@ bool materialEdgeDrawing(const json& material)
 }
 
 void populateNativeMaterial(const json& material,
+                            const std::filesystem::path& modelDirectory,
                             mmd::MmdRenderQueueInput& input)
 {
     input.diffuseColor = materialDiffuseColor(material);
@@ -346,7 +382,23 @@ void populateNativeMaterial(const json& material,
     input.edgeSize = materialScalarProperty(material, "edgeSize", 0.0F);
     input.edgeDrawing = materialEdgeDrawing(material);
     input.sphereMode = materialIntegerProperty(material, "sphereMode", 0);
+    input.mainTexturePath =
+        materialTexturePath(material, "texturePath", modelDirectory);
+    input.sphereTexturePath =
+        materialTexturePath(material, "sphereTexturePath", modelDirectory);
+    input.toonTexturePath =
+        materialTexturePath(material, "toonTexturePath", modelDirectory);
+    input.sharedToonIndex = materialSharedToonIndex(material);
     input.doubleSided = materialDoubleSided(material);
+}
+
+std::filesystem::path nativeModelDirectory(const std::string& modelPath)
+{
+    try {
+        return std::filesystem::u8path(modelPath).parent_path();
+    } catch (const std::filesystem::filesystem_error&) {
+        return {};
+    }
 }
 
 std::string quoteMelName(const std::string& name)
@@ -998,8 +1050,9 @@ MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
     const json* manifestMeshes =
         (manifest.is_object() && manifest.contains("meshes") &&
          manifest["meshes"].is_array())
-            ? &manifest["meshes"]
-            : nullptr;
+                                     ? &manifest["meshes"]
+                                     : nullptr;
+    const std::filesystem::path modelDirectory = nativeModelDirectory(filePath_);
 
     std::vector<mmd::MmdRenderQueueInput> queueInputs;
     queueInputs.reserve(meshCount);
@@ -1016,7 +1069,7 @@ MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
         if (materials && originalMaterialIndex < materials->size()) {
             const json& material = (*materials)[originalMaterialIndex];
             input.transparencyMode = materialTransparencyMode(material);
-            populateNativeMaterial(material, input);
+            populateNativeMaterial(material, modelDirectory, input);
         }
         queueInputs.push_back(std::move(input));
     }

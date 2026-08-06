@@ -6,10 +6,14 @@
 #pragma once
 
 #include <maya/MPxGeometryOverride.h>
+#include <maya/MShaderManager.h>
+#include <maya/MTextureManager.h>
 
 #include <cstddef>
 #include <string>
 #include <unordered_map>
+
+#include "MmdRenderQueue.h"
 
 class MmdRenderShape;
 
@@ -36,7 +40,16 @@ public:
 private:
     explicit MmdRenderGeometryOverride(const MObject& object);
 
+    MHWRender::MTexture* acquireNativeTexture(
+        const std::string& path,
+        MHWRender::MTextureManager* textureManager);
+    bool setNativeMaterialParameters(
+        MHWRender::MShaderInstance* shader,
+        const mmd::MmdRenderQueueInput& material,
+        MHWRender::MTextureManager* textureManager);
+
     MmdRenderShape* shape_ = nullptr;
     std::unordered_map<std::string, MHWRender::MShaderInstance*>
         materialShaders_;
+    std::unordered_map<std::string, MHWRender::MTexture*> materialTextures_;
 };

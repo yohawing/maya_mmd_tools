@@ -418,9 +418,9 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     // Calculate shadow
     float shadow = CalculateShadow(input.shadowCoord, Light0ShadowMap);
 
-    // The stored toon ramp is authored bright-to-dark from top to bottom.
-    // Maya's file texture V axis is top-origin, so the effective MMD mapping
-    // is the inverse of the Three upload's flipY=true coordinate.
+    // Three uploads toon maps with flipY=true. Maya's file texture sampling is
+    // top-origin, so convert the same signed coordinate back to the authored
+    // image row while retaining Three's positive-lighting direction.
     float NdotL = dot(normal, lightDir);
     float toonV = saturate(ToonCoordinateOffset - NdotL * 0.5);
     float3 toonColor = float3(1.0, 1.0, 1.0);
@@ -432,8 +432,8 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
         toonColor = factoredToon.rgb;
     }
     // MMD's material base is authored diffuse * light + ambient.  N.L selects
-    // a toon ramp when present; it must not become an extra Lambert multiplier
-    // on the no-toon path (that produces a spurious diffuse gradient).
+    // the toon ramp when present; it must not become an extra Lambert
+    // multiplier on the native material base.
     float3 materialBase = saturate(DiffuseColorRGB * lightColor + AmbientColor) * texColor.rgb;
 
     // Sphere mapping
@@ -443,7 +443,7 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
         float3 sphereNormal = normalize(mul(float4(normal, 0.0), View).xyz);
         float2 sphereUV;
         sphereUV.x = sphereNormal.x * 0.5 + 0.5;
-        sphereUV.y = sphereNormal.y * -0.5 + 0.5;
+        sphereUV.y = sphereNormal.y * 0.5 + 0.5;
         float4 sphereSample = SphereTexture.Sample(LinearSampler, sphereUV);
         float4 factoredSphere = sphereSample * SphereTextureMultiply + SphereTextureAdd;
         sphereColor = factoredSphere.rgb;

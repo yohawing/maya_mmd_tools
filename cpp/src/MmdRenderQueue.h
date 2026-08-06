@@ -31,10 +31,9 @@ struct MmdRenderQueueInput {
     std::size_t submeshIndex = 0;
     std::string transparencyMode;
     float diffuseAlpha = 1.0f;
-    // Material values used by the native VP2 MMD shader.  Texture and morph
-    // bindings remain outside this first parity slice, but keep the authored
-    // scalar/color values here so the shader does not fall back to a stock
-    // Maya solid material.
+    // Material values used by the native VP2 MMD shader.  Texture paths are
+    // resolved against the PMX directory before the shape receives them;
+    // the geometry override owns the Maya texture handles.
     std::array<float, 3> diffuseColor = {1.0f, 1.0f, 1.0f};
     std::array<float, 3> specularColor = {0.0f, 0.0f, 0.0f};
     float specularPower = 0.0f;
@@ -44,6 +43,10 @@ struct MmdRenderQueueInput {
     float edgeSize = 0.0f;
     bool edgeDrawing = false;
     int sphereMode = 0;
+    int sharedToonIndex = -1;
+    std::string mainTexturePath;
+    std::string sphereTexturePath;
+    std::string toonTexturePath;
     bool doubleSided = false;
 };
 

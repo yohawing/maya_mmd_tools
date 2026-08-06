@@ -10,11 +10,13 @@
 #include <maya/MHWGeometry.h>
 #include <maya/MGlobal.h>
 #include <maya/MShaderManager.h>
+#include <maya/MTextureManager.h>
 #include <maya/MViewport2Renderer.h>
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdlib>
+#include <filesystem>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -113,21 +115,83 @@ std::string nativeShaderCacheKey(
            (outline ? ":edge" : ":body");
 }
 
-bool setNativeMaterialParameters(
+std::string nativeSharedToonPath(int sharedToonIndex)
+{
+    if (sharedToonIndex < 0 || sharedToonIndex > 9) {
+        return {};
+    }
+
+    std::filesystem::path toonDirectory;
+    const char* configured = std::getenv("MMD_TOOLS_NATIVE_TOON_DIR");
+    if (configured && *configured) {
+        toonDirectory = std::filesystem::u8path(configured);
+    } else {
+        const std::filesystem::path shaderPath =
+            std::filesystem::u8path(nativeShaderPath());
+        toonDirectory = shaderPath.parent_path() / "toon_textures";
+    }
+    const std::string fileName =
+        std::string("toon") + (sharedToonIndex < 9 ? "0" : "") +
+        std::to_string(sharedToonIndex + 1) + ".bmp";
+    return (toonDirectory / fileName).lexically_normal().u8string();
+}
+
+}  // namespace
+
+MHWRender::MTexture* MmdRenderGeometryOverride::acquireNativeTexture(
+    const std::string& path,
+    MHWRender::MTextureManager* textureManager)
+{
+    if (path.empty() || !textureManager) {
+        return nullptr;
+    }
+
+    const auto cached = materialTextures_.find(path);
+    if (cached != materialTextures_.end()) {
+        return cached->second;
+    }
+
+    MString mayaPath;
+    mayaPath.setUTF8(path.c_str());
+    MHWRender::MTexture* texture =
+        textureManager->acquireTexture(mayaPath, 0, false);
+    materialTextures_.emplace(path, texture);
+    if (!texture) {
+        MGlobal::displayWarning(
+            MString("[mmdRenderOverride] Native texture unavailable: ") +
+            mayaPath);
+    }
+    return texture;
+}
+
+bool MmdRenderGeometryOverride::setNativeMaterialParameters(
     MHWRender::MShaderInstance* shader,
-    const mmd::MmdRenderQueueInput& material)
+    const mmd::MmdRenderQueueInput& material,
+    MHWRender::MTextureManager* textureManager)
 {
     if (!shader) {
         return false;
     }
 
-    // This is intentionally the scalar/color subset of MMDShader.fx.  The
-    // native path does not claim texture, toon, shadow, or morph parity yet;
-    // binding the switches explicitly prevents stale effect-instance state
-    // from leaking between queue items.
+    // Native items use the same raw gamma texture inputs as the authored MMD
+    // shader.  Exposure control is disabled when the Maya texture handle is
+    // acquired because NativeSrgbOutput writes directly to the CM-off sRGB
+    // capture target.
+    MHWRender::MTexture* mainTexture =
+        acquireNativeTexture(material.mainTexturePath, textureManager);
+    MHWRender::MTexture* sphereTexture =
+        acquireNativeTexture(material.sphereTexturePath, textureManager);
+    const std::string toonPath = material.toonTexturePath.empty()
+                                     ? nativeSharedToonPath(material.sharedToonIndex)
+                                     : material.toonTexturePath;
+    MHWRender::MTexture* toonTexture =
+        acquireNativeTexture(toonPath, textureManager);
+
+    // Bind the scalar/color subset and texture switches explicitly so an
+    // effect instance never inherits authored values from another item.
     const float lightDirection[3] = {-0.5F, -1.0F, -1.0F};
     const float lightColor[3] = {0.6039216F, 0.6039216F, 0.6039216F};
-    return shader->setParameter("DiffuseColorRGB", material.diffuseColor.data()) &&
+    if (!(shader->setParameter("DiffuseColorRGB", material.diffuseColor.data()) &&
            shader->setParameter("DiffuseColorA", material.diffuseAlpha) &&
            shader->setParameter("Opacity", 1.0F) &&
            shader->setParameter("SpecularColor", material.specularColor.data()) &&
@@ -145,10 +209,33 @@ bool setNativeMaterialParameters(
            shader->setParameter("ToonCoordinateOffset", 0.55F) &&
            shader->setParameter("NativeSrgbOutput", 1) &&
            shader->setParameter("MMDLightDirection", lightDirection) &&
-           shader->setParameter("MMDLightColor", lightColor);
-}
+           shader->setParameter("MMDLightColor", lightColor))) {
+        return false;
+    }
 
-}  // namespace
+    if (mainTexture) {
+        MHWRender::MTextureAssignment assignment{mainTexture};
+        if (!shader->setParameter("MainTexture", assignment)) {
+            return false;
+        }
+    }
+    if (sphereTexture) {
+        MHWRender::MTextureAssignment assignment{sphereTexture};
+        if (!shader->setParameter("SphereTexture", assignment)) {
+            return false;
+        }
+    }
+    if (toonTexture) {
+        MHWRender::MTextureAssignment assignment{toonTexture};
+        if (!shader->setParameter("ToonTexture", assignment)) {
+            return false;
+        }
+    }
+
+    return shader->setParameter("HasMainTexture", mainTexture ? 1 : 0) &&
+           shader->setParameter("HasSphereTexture", sphereTexture ? 1 : 0) &&
+           shader->setParameter("HasToonTexture", toonTexture ? 1 : 0);
+}
 
 MHWRender::MPxGeometryOverride* MmdRenderGeometryOverride::creator(
     const MObject& object)
@@ -179,6 +266,17 @@ MmdRenderGeometryOverride::~MmdRenderGeometryOverride()
         }
     }
     materialShaders_.clear();
+
+    MTextureManager* textureManager =
+        renderer ? renderer->getTextureManager() : nullptr;
+    if (textureManager) {
+        for (const auto& texture : materialTextures_) {
+            if (texture.second) {
+                textureManager->releaseTexture(texture.second);
+            }
+        }
+    }
+    materialTextures_.clear();
 }
 
 MHWRender::DrawAPI MmdRenderGeometryOverride::supportedDrawAPIs() const
@@ -234,6 +332,8 @@ void MmdRenderGeometryOverride::updateRenderItems(
     MRenderer* renderer = MRenderer::theRenderer();
     const MShaderManager* shaderManager =
         renderer ? renderer->getShaderManager() : nullptr;
+    MTextureManager* textureManager =
+        renderer ? renderer->getTextureManager() : nullptr;
     if (!shaderManager) {
         MGlobal::displayError(
             "[mmdRenderOverride] Maya shader manager is unavailable.");
@@ -281,7 +381,8 @@ void MmdRenderGeometryOverride::updateRenderItems(
             return false;
         }
         if (!setNativeMaterialParameters(materialShader,
-                                          queueGeometry.material) ||
+                                          queueGeometry.material,
+                                          textureManager) ||
             !item->setShader(materialShader)) {
             MGlobal::displayError(
                 MString("[mmdRenderOverride] Failed to bind material shader to ") +
