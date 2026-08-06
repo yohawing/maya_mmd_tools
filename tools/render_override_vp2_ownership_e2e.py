@@ -582,7 +582,13 @@ def main() -> int:
     """Launch Maya, run the native VP2 probe, and return its status."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--maya", default="2024", help="Maya major version.")
-    parser.add_argument("--model", type=Path, required=True, help="Alpha-overlap PMX fixture.")
+    model_group = parser.add_mutually_exclusive_group(required=True)
+    model_group.add_argument("--model", type=Path, help="Alpha-overlap PMX fixture.")
+    model_group.add_argument(
+        "--model-json",
+        type=Path,
+        help="UTF-8 JSON file containing {\"model\": \"...\"}; avoids non-ASCII argv paths.",
+    )
     parser.add_argument(
         "--plugin",
         type=Path,
@@ -608,8 +614,17 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if not args.model.is_file():
-        parser.error(f"model does not exist: {args.model}")
+    model_path = args.model
+    if args.model_json is not None:
+        try:
+            model_config = json.loads(args.model_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            parser.error(f"could not read --model-json: {exc}")
+        if not isinstance(model_config, dict) or not isinstance(model_config.get("model"), str):
+            parser.error('--model-json must contain a string "model" field')
+        model_path = Path(model_config["model"])
+    if model_path is None or not model_path.is_file():
+        parser.error(f"model does not exist: {model_path}")
     if args.width <= 0 or args.height <= 0:
         parser.error("--width and --height must be positive")
     if args.parity and args.camera_json is None:
@@ -637,7 +652,7 @@ def main() -> int:
     command = (
         "from tools.render_override_vp2_ownership_e2e import run_probe\n"
         f"run_probe({str(log_path)!r}, {str(report_path)!r}, {str(out_dir)!r}, "
-        f"{str(args.model.resolve())!r}, {str(plugin.resolve())!r}, "
+        f"{str(model_path.resolve())!r}, {str(plugin.resolve())!r}, "
         f"width={args.width}, height={args.height}, "
         f"camera_config={camera_config!r}, parity_mode={bool(args.parity)!r}, "
         f"frame={args.frame})\n"
