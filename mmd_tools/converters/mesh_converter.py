@@ -45,6 +45,7 @@ from mmd_tools.core.constants import (
 )
 from mmd_tools.converters.mesh_material_properties import (
     PMX_DOUBLE_SIDED_DRAW_FLAG as _PMX_DOUBLE_SIDED_DRAW_FLAG,
+    material_has_outline as _material_has_outline,
     material_is_double_sided as _material_is_double_sided,
 )
 from mmd_tools.converters.material_shader_parameters import (
@@ -2094,7 +2095,7 @@ class MeshConverter:
 
         if is_pmd:
             custom_attrs[ATTR_MMD_EDGE_FLAG] = int(material.edge_flag)
-            custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = False
+            custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = _material_has_outline(material, is_pmd=True)
         else:
             custom_attrs[ATTR_MMD_SPHERE_MODE] = int(material.sphere_mode)
             custom_attrs[ATTR_MMD_SPHERE_TEXTURE_INDEX] = material.sphere_texture_index
@@ -2105,7 +2106,7 @@ class MeshConverter:
                 float(material.edge_color[3]) if len(material.edge_color) > 3 else 1.0
             )
             custom_attrs[ATTR_MMD_EDGE_SIZE] = material.edge_size
-            custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = False
+            custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = _material_has_outline(material)
             custom_attrs[_ATTR_MMD_DOUBLE_SIDED] = _material_is_double_sided(material)
             custom_attrs[ATTR_MMD_MEMO] = material.memo
             custom_attrs[ATTR_MMD_SHARED_TOON_FLAG] = int(material.shared_toon_flag)
@@ -2542,7 +2543,10 @@ class MeshConverter:
         if not is_pmd:
             # エッジ色
             _set_dx11_color_uniform(shader, "EdgeColor", material.edge_color)
-        maya_attribute_utils.set_attribute(shader, "EdgeSize", 0.0, "float")
+        outline_enabled = _material_has_outline(material, is_pmd=is_pmd)
+        authored_edge_size = float(getattr(material, "edge_size", 1.0))
+        edge_size = authored_edge_size if outline_enabled else 0.0
+        maya_attribute_utils.set_attribute(shader, "EdgeSize", edge_size, "float")
 
         # スフィアモード設定
         sphere_mode = getattr(material, "sphere_mode", 0)
