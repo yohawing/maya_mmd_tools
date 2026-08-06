@@ -176,6 +176,72 @@ _ORACLE_PANEL_FLAGS = (
 )
 
 
+_ORACLE_COLOR_MANAGEMENT = {
+    "cmEnabled": True,
+    "renderingSpaceName": "scene-linear Rec.709-sRGB",
+    "viewTransformName": "Un-tone-mapped (sRGB)",
+    "displayName": "sRGB",
+}
+_ORACLE_BACKGROUND = {
+    "background": [1.0, 1.0, 1.0],
+    "backgroundTop": [1.0, 1.0, 1.0],
+    "backgroundBottom": [1.0, 1.0, 1.0],
+}
+
+
+def _configure_oracle_color_environment(cmds) -> dict[str, object]:
+    """Apply and report the shared Oracle color/background environment."""
+    previous_color_management: dict[str, object] = {}
+    color_management: dict[str, object] = {}
+    errors: list[str] = []
+    for query in _ORACLE_COLOR_MANAGEMENT:
+        try:
+            previous_color_management[query] = cmds.colorManagementPrefs(
+                query=True, **{query: True}
+            )
+        except Exception as exc:
+            previous_color_management[query] = f"ERR: {exc}"
+    for edit, value in _ORACLE_COLOR_MANAGEMENT.items():
+        try:
+            cmds.colorManagementPrefs(edit=True, **{edit: value})
+        except Exception as exc:
+            color_management[f"{edit}Error"] = str(exc)
+            errors.append(f"{edit} edit: {exc}")
+    for query in _ORACLE_COLOR_MANAGEMENT:
+        try:
+            color_management[query] = cmds.colorManagementPrefs(
+                query=True, **{query: True}
+            )
+        except Exception as exc:
+            color_management[query] = f"ERR: {exc}"
+            errors.append(f"{query} query: {exc}")
+
+    previous_background: dict[str, object] = {}
+    background: dict[str, object] = {}
+    for name, expected in _ORACLE_BACKGROUND.items():
+        try:
+            previous_background[name] = cmds.displayRGBColor(name, query=True)
+        except Exception as exc:
+            previous_background[name] = f"ERR: {exc}"
+        try:
+            cmds.displayRGBColor(name, *expected)
+            background[name] = list(cmds.displayRGBColor(name, query=True))
+        except Exception as exc:
+            background[name] = f"ERR: {exc}"
+            errors.append(f"{name} edit/query: {exc}")
+    return {
+        "requestedColorManagement": dict(_ORACLE_COLOR_MANAGEMENT),
+        "requestedBackground": {
+            name: list(value) for name, value in _ORACLE_BACKGROUND.items()
+        },
+        "previousColorManagement": previous_color_management,
+        "previousBackground": previous_background,
+        "activeColorManagement": color_management,
+        "activeBackground": background,
+        "errors": errors,
+    }
+
+
 def _prepare_oracle_capture_environment(cmds, panels: list[str]) -> dict[str, object]:
     """Match the production visual-regression viewport conditions and report them."""
     previous_panels: dict[str, dict[str, object]] = {}
@@ -212,49 +278,10 @@ def _prepare_oracle_capture_environment(cmds, panels: list[str]) -> dict[str, ob
             # the optional panel flags; the report still records active values.
             pass
 
-    previous_color_management: dict[str, object] = {}
-    color_management: dict[str, object] = {}
-    for query in ("cmEnabled", "viewTransformName", "displayName", "renderingSpaceName"):
-        try:
-            previous_color_management[query] = cmds.colorManagementPrefs(
-                query=True, **{query: True}
-            )
-        except Exception as exc:
-            previous_color_management[query] = f"ERR: {exc}"
-    for edit, value in (
-        ("cmEnabled", True),
-        ("renderingSpaceName", "scene-linear Rec.709-sRGB"),
-        ("viewTransformName", "Un-tone-mapped (sRGB)"),
-        ("displayName", "sRGB"),
-    ):
-        try:
-            cmds.colorManagementPrefs(edit=True, **{edit: value})
-        except Exception as exc:
-            color_management[f"{edit}Error"] = str(exc)
-    for query in ("cmEnabled", "viewTransformName", "displayName", "renderingSpaceName"):
-        try:
-            color_management[query] = cmds.colorManagementPrefs(query=True, **{query: True})
-        except Exception as exc:
-            color_management[query] = f"ERR: {exc}"
-
-    previous_background: dict[str, object] = {}
-    background: dict[str, object] = {}
-    for name in ("background", "backgroundTop", "backgroundBottom"):
-        try:
-            previous_background[name] = cmds.displayRGBColor(name, query=True)
-        except Exception as exc:
-            previous_background[name] = f"ERR: {exc}"
-        try:
-            cmds.displayRGBColor(name, 1.0, 1.0, 1.0)
-            background[name] = [1.0, 1.0, 1.0]
-        except Exception as exc:
-            background[name] = f"ERR: {exc}"
+    color_environment = _configure_oracle_color_environment(cmds)
     return {
         "previousPanels": previous_panels,
-        "previousColorManagement": previous_color_management,
-        "previousBackground": previous_background,
-        "activeColorManagement": color_management,
-        "activeBackground": background,
+        **color_environment,
     }
 
 

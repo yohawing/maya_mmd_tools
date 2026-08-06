@@ -27,7 +27,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, Optional
 
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -50,13 +50,22 @@ def _write_report(path: Path, report: dict[str, Any]) -> None:
 
 
 def _capture_view(
-    cmds: Any, destination: Path, panel: str, width: int, height: int
+    cmds: Any,
+    destination: Path,
+    panel: str,
+    width: int,
+    height: int,
+    frame: int = 1,
 ) -> Path:
     """Capture the active GUI viewport and return the generated PNG path."""
     destination.parent.mkdir(parents=True, exist_ok=True)
+    previous_files = {}
+    for path in destination.parent.glob(f"{destination.stem}*.png"):
+        stat = path.stat()
+        previous_files[path] = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
     result = cmds.playblast(
         filename=str(destination.with_suffix("")),
-        frame=1,
+        frame=frame,
         format="image",
         compression="png",
         viewer=False,
@@ -74,11 +83,23 @@ def _capture_view(
         destination.parent / f"{destination.stem}.0000.png",
         destination.parent / f"{destination.stem}.0001.png",
     )
+
+    def is_fresh(path: Path) -> bool:
+        if not path.is_file() or path.stat().st_size <= 0:
+            return False
+        stat = path.stat()
+        current = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+        return current != previous_files.get(path)
+
     for candidate in candidates:
-        if candidate.is_file() and candidate.stat().st_size > 0:
+        if is_fresh(candidate):
             return candidate
     generated = sorted(
-        destination.parent.glob(f"{destination.stem}*.png"),
+        (
+            path
+            for path in destination.parent.glob(f"{destination.stem}*.png")
+            if is_fresh(path)
+        ),
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )
@@ -100,6 +121,14 @@ def _wait_for_witness(cmds: Any, shape_name: str, log: Any) -> str:
     return witness
 
 
+def _make_parity_camera(cmds: Any, camera: Dict[str, Any]) -> str:
+    """Create the manifest camera used by the Python visual capture harness."""
+    from tools.render_override_e2e import _configure_camera
+
+    configured = _configure_camera(cmds, [], camera)
+    return str(configured["node"])
+
+
 def run_probe(
     log_path: str,
     report_path: str,
@@ -108,8 +137,17 @@ def run_probe(
     plugin_path: str,
     width: int = 640,
     height: int = 480,
+    camera_config: Optional[Dict[str, Any]] = None,
+    parity_mode: bool = False,
+    frame: int = 1,
 ) -> None:
-    """Run the Maya-side native ownership probe and always write its report."""
+    """Run the Maya-side native ownership probe and always write its report.
+
+    ``parity_mode`` is a report-only diagnostic path.  It uses a manifest
+    camera, white background, and the same color-management settings as the
+    Python visual capture, while omitting the ordinary control cube so the
+    resulting PNG can be compared with a GoldenOracle image.
+    """
     import maya.cmds as cmds
 
     log_file = Path(log_path)
@@ -124,6 +162,8 @@ def run_probe(
         "renderer": {},
         "claim": "vp2-draw-preparation-only",
         "visualParity": "not-run",
+        "parityMode": bool(parity_mode),
+        "frame": int(frame),
         "errors": [],
     }
 
@@ -157,30 +197,70 @@ def run_probe(
         report["shape"] = shape_name
         log(f"created root={root_name} shape={shape_name}")
 
+        if parity_mode:
+            if not isinstance(camera_config, dict):
+                raise RuntimeError("parity mode requires a manifest camera object")
+            active_camera = _make_parity_camera(cmds, camera_config)
+            report["cameraConfig"] = camera_config
+        else:
+            active_camera = "persp"
+
         # Keep an ordinary Maya mesh in the same scene.  The opt-in native
         # shape must not replace or duplicate the regular scene path; this
         # control is also included in the viewport framing so disappearance
         # is visible in the captured witness images.
-        control_result = cmds.polyCube(
-            name="render_override_ordinary_control",
-            constructionHistory=False,
-            width=0.18,
-            height=0.18,
-            depth=0.18,
-        )
-        if not control_result:
-            raise RuntimeError("could not create ordinary scene control cube")
-        control_transform = str(control_result[0])
-        cmds.xform(
-            control_transform,
-            worldSpace=True,
-            translation=(1.0, 0.35, 0.0),
-        )
+        control_transform = None
+        if not parity_mode:
+            control_result = cmds.polyCube(
+                name="render_override_ordinary_control",
+                constructionHistory=False,
+                width=0.18,
+                height=0.18,
+                depth=0.18,
+            )
+            if not control_result:
+                raise RuntimeError("could not create ordinary scene control cube")
+            control_transform = str(control_result[0])
+            cmds.xform(
+                control_transform,
+                worldSpace=True,
+                translation=(1.0, 0.35, 0.0),
+            )
         report["ordinaryControl"] = control_transform
 
         panels = [str(panel) for panel in (cmds.getPanel(type="modelPanel") or [])]
         if not panels:
             raise RuntimeError("Maya GUI has no modelPanel")
+        if parity_mode:
+            from tools.render_override_e2e import _configure_oracle_color_environment
+
+            parity_view = _configure_oracle_color_environment(cmds)
+            report["parityView"] = parity_view
+            if parity_view["errors"]:
+                raise RuntimeError(
+                    "parity color-management/background setup failed: "
+                    + "; ".join(parity_view["errors"])
+                )
+            mismatches = [
+                f"{name}={parity_view['activeColorManagement'].get(name)!r}"
+                for name, expected in parity_view["requestedColorManagement"].items()
+                if parity_view["activeColorManagement"].get(name) != expected
+            ]
+            if mismatches:
+                raise RuntimeError(
+                    "parity color-management values were not applied: "
+                    + ", ".join(mismatches)
+                )
+            background_mismatches = [
+                f"{name}={value!r}"
+                for name, value in parity_view["activeBackground"].items()
+                if value != parity_view["requestedBackground"].get(name)
+            ]
+            if background_mismatches:
+                raise RuntimeError(
+                    "parity background values were not applied: "
+                    + ", ".join(background_mismatches)
+                )
         panel = "modelPanel4" if "modelPanel4" in panels else panels[0]
         heads_up_display_before = {}
         for current in panels:
@@ -190,24 +270,28 @@ def run_probe(
                 )
             except Exception as exc:
                 log(f"HUD query warning for {current}: {exc}")
-            cmds.modelEditor(
-                current,
-                edit=True,
-                rendererName="vp2Renderer",
-                displayAppearance="smoothShaded",
-                displayTextures=False,
-                wireframeOnShaded=False,
-                grid=False,
-                cameras=False,
-                lights=False,
-                locators=False,
-                joints=False,
-                ikHandles=False,
-                deformers=False,
-                dynamics=False,
-                nurbsCurves=False,
-            )
-            cmds.lookThru(current, "persp")
+            panel_flags = {
+                "rendererName": "vp2Renderer",
+                "displayAppearance": "smoothShaded",
+                "displayTextures": parity_mode,
+                "wireframeOnShaded": False,
+                "grid": False,
+                "cameras": False,
+                "lights": False,
+                "locators": False,
+                "joints": False,
+                "ikHandles": False,
+                "deformers": False,
+                "dynamics": False,
+                "nurbsCurves": False,
+            }
+            if parity_mode:
+                panel_flags.update(
+                    useDefaultMaterial=False,
+                    selectionHiliteDisplay=False,
+                )
+            cmds.modelEditor(current, edit=True, **panel_flags)
+            cmds.lookThru(current, active_camera)
         report["panel"] = panel
         report["headsUpDisplay"] = {
             "before": heads_up_display_before,
@@ -222,17 +306,32 @@ def run_probe(
             current: cmds.modelEditor(current, query=True, rendererName=True)
             for current in panels
         }
+        if parity_mode:
+            report["panelSettings"] = {
+                current: {
+                    flag: cmds.modelEditor(current, query=True, **{flag: True})
+                    for flag in (
+                        "rendererName",
+                        "displayAppearance",
+                        "displayTextures",
+                        "useDefaultMaterial",
+                        "selectionHiliteDisplay",
+                    )
+                }
+                for current in panels
+            }
 
-        try:
-            # viewFit takes a camera/object target, not a modelPanel name.
-            # Include only the custom shape and the ordinary control; fitting
-            # all DAG nodes also includes Maya's default cameras/lights.
-            cmds.select([shape_name, control_transform], replace=True)
-            cmds.viewFit("persp", all=False, animate=False, fitFactor=0.8)
-        except Exception as exc:
-            log(f"viewFit warning: {exc}")
-        finally:
-            cmds.select(clear=True)
+        if not parity_mode:
+            try:
+                # viewFit takes a camera/object target, not a modelPanel name.
+                # Include only the custom shape and the ordinary control; fitting
+                # all DAG nodes also includes Maya's default cameras/lights.
+                cmds.select([shape_name, control_transform], replace=True)
+                cmds.viewFit(active_camera, all=False, animate=False, fitFactor=0.8)
+            except Exception as exc:
+                log(f"viewFit warning: {exc}")
+            finally:
+                cmds.select(clear=True)
         try:
             cmds.setFocus(panel)
         except Exception:
@@ -242,10 +341,10 @@ def run_probe(
             report["worldBounds"] = list(cmds.exactWorldBoundingBox(shape_name))
             report["camera"] = {
                 "translate": list(
-                    cmds.xform("persp", query=True, worldSpace=True, translation=True)
+                    cmds.xform(active_camera, query=True, worldSpace=True, translation=True)
                 ),
                 "rotate": list(
-                    cmds.xform("persp", query=True, worldSpace=True, rotation=True)
+                    cmds.xform(active_camera, query=True, worldSpace=True, rotation=True)
                 ),
             }
             log(f"world bounds: {report['worldBounds']} camera: {report['camera']}")
@@ -274,9 +373,13 @@ def run_probe(
             "ordinaryMeshCount": len(ordinary_meshes),
             "ordinaryMeshes": ordinary_meshes,
             "customShapeMeshDescendants": custom_meshes,
-            "ordinaryControlExists": bool(cmds.objExists(control_transform)),
+            "ordinaryControlExists": bool(
+                control_transform and cmds.objExists(control_transform)
+            ),
             "ordinaryControlVisible": bool(
-                cmds.getAttr(f"{control_transform}.visibility")
+                control_transform
+                and cmds.objExists(control_transform)
+                and cmds.getAttr(f"{control_transform}.visibility")
             ),
         }
 
@@ -284,15 +387,23 @@ def run_probe(
         # Keep the probe intentionally small: selecting the ordinary control
         # proves the normal scene interaction path remains available while the
         # custom render items are owned by the VP2 override.
-        cmds.select(control_transform, replace=True)
-        selected_control = [str(item) for item in (cmds.ls(selection=True, long=True) or [])]
-        cmds.select(clear=True)
+        if control_transform:
+            cmds.select(control_transform, replace=True)
+            selected_control = [
+                str(item) for item in (cmds.ls(selection=True, long=True) or [])
+            ]
+            cmds.select(clear=True)
+        else:
+            selected_control = []
         report["selection"] = {
             "selectedControl": selected_control,
-            "controlSelectable": control_transform in selected_control
+            "controlSelectable": None
+            if not control_transform
+            else control_transform in selected_control
             or f"|{control_transform}" in selected_control,
         }
 
+        cmds.currentTime(int(frame), edit=True)
         cmds.refresh(force=True)
         time.sleep(0.5)
 
@@ -302,6 +413,7 @@ def run_probe(
             panel,
             width,
             height,
+            frame,
         )
         report["captures"]["ownership"] = str(capture)
 
@@ -310,14 +422,14 @@ def run_probe(
         # data, so a ready witness after the refresh demonstrates that the
         # queue survives a normal VP2 camera invalidation.
         initial_camera_translate = list(
-            cmds.xform("persp", query=True, worldSpace=True, translation=True)
+            cmds.xform(active_camera, query=True, worldSpace=True, translation=True)
         )
         moved_camera_translate = [
             float(initial_camera_translate[0]) + 0.12,
             float(initial_camera_translate[1]) + 0.04,
             float(initial_camera_translate[2]),
         ]
-        cmds.xform("persp", worldSpace=True, translation=moved_camera_translate)
+        cmds.xform(active_camera, worldSpace=True, translation=moved_camera_translate)
         camera_motion_witness = _wait_for_witness(cmds, shape_name, log)
         camera_capture = _capture_view(
             cmds,
@@ -325,6 +437,7 @@ def run_probe(
             panel,
             width,
             height,
+            frame,
         )
         report["captures"]["cameraMotion"] = str(camera_capture)
 
@@ -345,6 +458,7 @@ def run_probe(
             panel,
             width,
             height,
+            frame,
         )
         restore_result = str(
             cmds.mmdRenderQueueUpdate(
@@ -360,6 +474,7 @@ def run_probe(
             panel,
             width,
             height,
+            frame,
         )
         report["captures"]["queueOpaque"] = str(opaque_capture)
         report["captures"]["queueRestored"] = str(restored_capture)
@@ -404,14 +519,18 @@ def run_probe(
             and opaque_capture.stat().st_size > 0,
             "queueRestoredCaptureCreated": restored_capture.is_file()
             and restored_capture.stat().st_size > 0,
-            "ordinarySceneControlVisible": report["sceneOwnership"][
-                "ordinaryControlExists"
-            ]
-            and report["sceneOwnership"]["ordinaryControlVisible"],
+            "ordinarySceneControlVisible": (
+                None
+                if parity_mode
+                else report["sceneOwnership"]["ordinaryControlExists"]
+                and report["sceneOwnership"]["ordinaryControlVisible"]
+            ),
             "noCustomMfnMeshDuplicate": not report["sceneOwnership"][
                 "customShapeMeshDescendants"
             ],
-            "selectionPreserved": report["selection"]["controlSelectable"],
+            "selectionPreserved": (
+                None if parity_mode else report["selection"]["controlSelectable"]
+            ),
             "hudPreserved": (
                 report["headsUpDisplay"]["before"]
                 == report["headsUpDisplay"]["afterSetup"]
@@ -429,18 +548,21 @@ def run_probe(
             raise RuntimeError(f"VP2 geometry buffers were not committed: {witness}")
         if not report["checks"]["captureCreated"]:
             raise RuntimeError(f"VP2 capture was empty: {capture}")
-        for check_name in (
+        required_checks = [
             "cameraMotionPreserved",
             "queueUpdateReordered",
             "queueUpdateRestored",
             "cameraCaptureCreated",
             "queueOpaqueCaptureCreated",
             "queueRestoredCaptureCreated",
-            "ordinarySceneControlVisible",
             "noCustomMfnMeshDuplicate",
-            "selectionPreserved",
             "hudPreserved",
-        ):
+        ]
+        if not parity_mode:
+            required_checks.extend(
+                ["ordinarySceneControlVisible", "selectionPreserved"]
+            )
+        for check_name in required_checks:
             if not report["checks"][check_name]:
                 raise RuntimeError(
                     f"native VP2 ownership check failed: {check_name}"
@@ -472,12 +594,36 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
+    parser.add_argument("--frame", type=int, default=1)
+    parser.add_argument(
+        "--camera-json",
+        type=Path,
+        default=None,
+        help="Manifest camera JSON for report-only GoldenOracle parity mode.",
+    )
+    parser.add_argument(
+        "--parity",
+        action="store_true",
+        help="Use the manifest camera/white sRGB view and omit the control cube.",
+    )
     args = parser.parse_args()
 
     if not args.model.is_file():
         parser.error(f"model does not exist: {args.model}")
     if args.width <= 0 or args.height <= 0:
         parser.error("--width and --height must be positive")
+    if args.parity and args.camera_json is None:
+        parser.error("--parity requires --camera-json")
+    if args.camera_json is not None and not args.parity:
+        parser.error("--camera-json requires --parity")
+    camera_config = None
+    if args.camera_json is not None:
+        try:
+            camera_config = json.loads(args.camera_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            parser.error(f"could not read --camera-json: {exc}")
+        if not isinstance(camera_config, dict):
+            parser.error("--camera-json must contain a JSON object")
 
     plugin = args.plugin or (
         _ROOT / "plug-ins" / str(args.maya) / "Debug" / "mmd_tools_cpp.mll"
@@ -492,7 +638,9 @@ def main() -> int:
         "from tools.render_override_vp2_ownership_e2e import run_probe\n"
         f"run_probe({str(log_path)!r}, {str(report_path)!r}, {str(out_dir)!r}, "
         f"{str(args.model.resolve())!r}, {str(plugin.resolve())!r}, "
-        f"width={args.width}, height={args.height})\n"
+        f"width={args.width}, height={args.height}, "
+        f"camera_config={camera_config!r}, parity_mode={bool(args.parity)!r}, "
+        f"frame={args.frame})\n"
     )
     report = run_maya_e2e(
         project_root=_ROOT,
