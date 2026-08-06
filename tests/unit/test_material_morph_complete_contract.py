@@ -141,9 +141,11 @@ def test_shader_outputs_decode_mmd_gamma_composite_and_use_mmd_light_defaults():
     assert "uniform vec3 MmdControllerLightVector = {-0.5, -1.0, -1.0};" in glsl
     assert "0.6039216f" in dx11
     assert "0.6039216" in glsl
-    assert "if (dot(n, viewDir) < 0.0)" in glsl
+    assert "if (dot(n, viewDir) < 0.0)" not in glsl
     assert "if (HasToonTexture != 0)" in glsl
-    assert "max(ndotl, 0.0) * DiffuseColorRGB * lightColor" in glsl
+    assert "max(ndotl, 0.0) * DiffuseColorRGB * lightColor" not in glsl
+    assert "ToonCoordinateOffset" in dx11
+    assert "ToonCoordinateOffset" in glsl
 
 
 def test_sphere_mapping_uses_half_range_view_normal_projection_in_both_backends():
@@ -185,16 +187,26 @@ def test_specular_power_gate_matches_mmd_contract_in_both_backends():
     assert "float UIMin = 0.0;" in sources["dx11"]
 
 
-def test_toon_coordinate_matches_full_shader_half_lambert_in_both_backends():
-    """Both backends express FullShader's V=0.5-0.5*N.L directly."""
+def test_toon_coordinate_matches_maya_ramp_contract_in_both_backends():
+    """Both backends use the calibrated top-origin MMD ramp coordinate."""
     dx11 = (ROOT / "mmd_tools/shaders/MMDShader.fx").read_text(encoding="utf-8")
     glsl = (ROOT / "mmd_tools/shaders/MMDShader.ogsfx").read_text(encoding="utf-8")
-    assert "float toonV = saturate(0.5 - NdotL * 0.5);" in dx11
-    assert "float2(0.5, toonV)" in dx11
-    assert "float toonV = clamp(0.5 - ndotl * 0.5, 0.0, 1.0);" in glsl
-    assert "vec2(0.5, toonV)" in glsl
+    assert "float ToonCoordinateOffset" in dx11
+    assert "= 0.55f;" in dx11
+    assert "float toonV = saturate(ToonCoordinateOffset - NdotL * 0.5);" in dx11
+    assert "float2(0.0, toonV)" in dx11
+    assert "uniform float ToonCoordinateOffset = 0.55;" in glsl
+    assert "float toonV = clamp(ToonCoordinateOffset - ndotl * 0.5, 0.0, 1.0);" in glsl
+    assert "vec2(0.0, toonV)" in glsl
+    assert "uniform sampler2D ToonSampler = sampler_state" in glsl
+    assert "TEXTURE_MIN_FILTER = LINEAR;" in glsl
+    assert "TEXTURE_MAG_FILTER = LINEAR;" in glsl
+    assert "TEXTURE_WRAP_S = CLAMP_TO_EDGE;" in glsl
+    assert "TEXTURE_WRAP_T = CLAMP_TO_EDGE;" in glsl
     for source in (dx11, glsl):
         assert "1.0 - rampCoord" not in source
+        assert "0.5 - NdotL * 0.5" not in source
+        assert "0.5 - ndotl * 0.5" not in source
 
 
 def test_surface_composition_matches_full_shader_sphere_toon_specular_order():

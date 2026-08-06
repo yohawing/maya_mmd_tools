@@ -158,6 +158,19 @@ float3 AmbientColor<
     int UIOrder = 204;
 > = {0.3f, 0.3f, 0.3f};
 
+// The generated MMD ramp is bright at V=0 and dark at V=1.  Maya's file
+// texture path samples the authored top-origin ramp with a small calibrated
+// offset; keep that calibration explicit instead of hiding it in N.L math.
+float ToonCoordinateOffset<
+    string UIGroup = "Lighting";
+    string UIName = "Toon Coordinate Offset";
+    string UIWidget = "Slider";
+    float UIMin = 0.0;
+    float UIMax = 1.0;
+    float UIStep = 0.001;
+    int UIOrder = 205;
+> = 0.55f;
+
 // Transparency
 float Opacity : OPACITY<
     string UIGroup = "Transparency";
@@ -376,12 +389,11 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     // Normalize inputs
     float3 normal = normalize(input.worldNormal);
     float3 viewDir = normalize(ViewPosition - input.worldPosition);
-    // Double-sided MMD materials use the facing normal for lighting. VP2's
-    // CullNone rasterizer does not apply the GLSL gl_FrontFacing correction
-    // automatically, so make the interpolated normal face the camera before
-    // evaluating the MMD light.
-    if (dot(normal, viewDir) < 0.0)
-        normal = -normal;
+    // The imported PMX normals already carry the Maya Z-mirror and the mesh
+    // winding is reversed during conversion. Keep those authored normals for
+    // the dot product; a view-facing flip would change corner normals on the
+    // visible edge bands and is not equivalent to Three's primitive-facing
+    // DoubleSide handling.
     // MMDLightDirection is the direction the light travels (light's world -Z);
     // negate to get the surface -> light vector used by the lighting model.
     float3 lightDir = -normalize(MMDLightDirection);
@@ -399,24 +411,23 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     // Calculate shadow
     float shadow = CalculateShadow(input.shadowCoord, Light0ShadowMap);
 
-    // FullShader samples its vertical toon ramp at 0.5 - 0.5 * N.L.
+    // The stored toon ramp is authored bright-to-dark from top to bottom.
+    // Maya's file texture V axis is top-origin, so the effective MMD mapping
+    // is the inverse of the Three upload's flipY=true coordinate.
     float NdotL = dot(normal, lightDir);
-    float toonV = saturate(0.5 - NdotL * 0.5);
+    float toonV = saturate(ToonCoordinateOffset - NdotL * 0.5);
     float3 toonColor = float3(1.0, 1.0, 1.0);
     if (HasToonTexture != 0)
     {
-        // U remains centered for Maya's vertical 1D texture representation.
-        float4 toonSample = ToonTexture.Sample(ToonSampler, float2(0.5, toonV));
+        // The MMD contract samples the first column of the vertical ramp.
+        float4 toonSample = ToonTexture.Sample(ToonSampler, float2(0.0, toonV));
         float4 factoredToon = toonSample * ToonTextureMultiply + ToonTextureAdd;
         toonColor = factoredToon.rgb;
     }
-    // MMD's no-toon path uses a gamma-space Lambert term. Toon materials keep
-    // the authored diffuse/ambient base and let the ramp provide the lighting.
-    float3 materialBase;
-    if (HasToonTexture != 0)
-        materialBase = saturate(DiffuseColorRGB * lightColor + AmbientColor) * texColor.rgb;
-    else
-        materialBase = saturate(AmbientColor + max(NdotL, 0.0) * DiffuseColorRGB * lightColor) * texColor.rgb;
+    // MMD's material base is authored diffuse * light + ambient.  N.L selects
+    // a toon ramp when present; it must not become an extra Lambert multiplier
+    // on the no-toon path (that produces a spurious diffuse gradient).
+    float3 materialBase = saturate(DiffuseColorRGB * lightColor + AmbientColor) * texColor.rgb;
 
     // Sphere mapping
     float3 sphereColor = float3(1.0, 1.0, 1.0);

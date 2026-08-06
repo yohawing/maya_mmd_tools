@@ -164,6 +164,7 @@ _MIGRATED_HARDWARE_ATTRS = (
     "SpecularColor",
     "Shininess",
     "AmbientColor",
+    "ToonCoordinateOffset",
     "EdgeSize",
     "Opacity",
     "SphereMode",
@@ -626,6 +627,8 @@ def _ensure_mmd_shader_uniform_attributes(shader_node, include_device_pixel_rati
         ("DiffuseColorA", om.MFnNumericData.kDouble, 1, False, 1.0),
         ("SpecularColor", om.MFnNumericData.kDouble, 3, True, (0.5, 0.5, 0.5)),
         ("AmbientColor", om.MFnNumericData.kDouble, 3, True, (0.3, 0.3, 0.3)),
+        # Explicit ramp calibration shared by the DX11 and OGSFX effects.
+        ("ToonCoordinateOffset", om.MFnNumericData.kDouble, 1, False, 0.55),
         ("EdgeColor", om.MFnNumericData.kDouble, 4, True, (0.0, 0.0, 0.0, 1.0)),
         ("EdgeColorRGB", om.MFnNumericData.kDouble, 3, True, (0.0, 0.0, 0.0)),
         ("EdgeColorA", om.MFnNumericData.kDouble, 1, False, 1.0),
