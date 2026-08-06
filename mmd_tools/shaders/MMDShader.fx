@@ -268,12 +268,12 @@ float ShadowBias : ShadowMapBias<
 float3 MMDLightDirection<
     string UIGroup = "Lighting";
     string UIName = "MMD Light Direction";
-> = {0.5f, -1.0f, 0.5f};
+> = {-0.5f, -1.0f, -1.0f};
 
 float3 MMDLightColor<
     string UIGroup = "Lighting";
     string UIName = "MMD Light Color";
-> = {1.0f, 1.0f, 1.0f};
+> = {0.6039216f, 0.6039216f, 0.6039216f};
 
 float4x4 Light0Matrix : SHADOWMAPMATRIX
 <
@@ -376,6 +376,12 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     // Normalize inputs
     float3 normal = normalize(input.worldNormal);
     float3 viewDir = normalize(ViewPosition - input.worldPosition);
+    // Double-sided MMD materials use the facing normal for lighting. VP2's
+    // CullNone rasterizer does not apply the GLSL gl_FrontFacing correction
+    // automatically, so make the interpolated normal face the camera before
+    // evaluating the MMD light.
+    if (dot(normal, viewDir) < 0.0)
+        normal = -normal;
     // MMDLightDirection is the direction the light travels (light's world -Z);
     // negate to get the surface -> light vector used by the lighting model.
     float3 lightDir = -normalize(MMDLightDirection);
@@ -404,9 +410,13 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
         float4 factoredToon = toonSample * ToonTextureMultiply + ToonTextureAdd;
         toonColor = factoredToon.rgb;
     }
-    // MMD's untextured-toon path is intentionally flat: N.L only selects a
-    // toon-ramp sample and must not become an implicit gray diffuse ramp.
-    float3 materialBase = saturate(DiffuseColorRGB * lightColor + AmbientColor) * texColor.rgb;
+    // MMD's no-toon path uses a gamma-space Lambert term. Toon materials keep
+    // the authored diffuse/ambient base and let the ramp provide the lighting.
+    float3 materialBase;
+    if (HasToonTexture != 0)
+        materialBase = saturate(DiffuseColorRGB * lightColor + AmbientColor) * texColor.rgb;
+    else
+        materialBase = saturate(AmbientColor + max(NdotL, 0.0) * DiffuseColorRGB * lightColor) * texColor.rgb;
 
     // Sphere mapping
     float3 sphereColor = float3(1.0, 1.0, 1.0);

@@ -639,10 +639,10 @@ def _ensure_mmd_shader_uniform_attributes(shader_node, include_device_pixel_rati
         # MMD ライト（コントローラ駆動の唯一の光源）。GUI では dx11Shader が .fx
         # から自動生成するが、standalone/テストでは生成されないため補完しておき、
         # 後段のコントローラ結線が失敗しないようにする。
-        ("MMDLightDirection", om.MFnNumericData.kDouble, 3, False, (0.5, -1.0, 0.5)),
-        ("MMDLightColor", om.MFnNumericData.kDouble, 3, True, (1.0, 1.0, 1.0)),
-        ("MmdControllerLightVector", om.MFnNumericData.kDouble, 3, False, (0.5, -1.0, 0.5)),
-        ("MmdControllerLightRgb", om.MFnNumericData.kDouble, 3, True, (1.0, 1.0, 1.0)),
+        ("MMDLightDirection", om.MFnNumericData.kDouble, 3, False, (-0.5, -1.0, -1.0)),
+        ("MMDLightColor", om.MFnNumericData.kDouble, 3, True, (154.0 / 255.0,) * 3),
+        ("MmdControllerLightVector", om.MFnNumericData.kDouble, 3, False, (-0.5, -1.0, -1.0)),
+        ("MmdControllerLightRgb", om.MFnNumericData.kDouble, 3, True, (154.0 / 255.0,) * 3),
     ]
     if include_device_pixel_ratio:
         uniforms.append(("DevicePixelRatio", om.MFnNumericData.kDouble, 1, False, 1.0))

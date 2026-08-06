@@ -22,8 +22,8 @@ float Opacity = 1.0f;
 bool UseShadows = false;
 float ShadowStrength = 1.0f;
 float ShadowBias = 0.01f;
-float3 FixedLightDirection = {0.5f, -1.0f, 0.5f};
-float3 FixedLightColor = {1.0f, 1.0f, 1.0f};
+float3 FixedLightDirection = {-0.5f, -1.0f, -1.0f};
+float3 FixedLightColor = {0.6039216f, 0.6039216f, 0.6039216f};
 
 float3 SrgbToLinear(float3 color)
 {

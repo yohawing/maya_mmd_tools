@@ -130,6 +130,22 @@ def test_both_shader_sources_apply_rgba_factors_before_final_opacity():
         assert _main_alpha_contract_holds(source)
 
 
+def test_shader_outputs_decode_mmd_gamma_composite_and_use_mmd_light_defaults():
+    """MMD gamma math is decoded once before Maya's sRGB view transform."""
+    dx11 = (ROOT / "mmd_tools/shaders/MMDShader.fx").read_text(encoding="utf-8")
+    glsl = (ROOT / "mmd_tools/shaders/MMDShader.ogsfx").read_text(encoding="utf-8")
+
+    assert "return float4(SrgbToLinear(litColor), opacity);" in dx11
+    assert "colorOut = vec4(srgbToLinear(lighting), opacity);" in glsl
+    assert "> = {-0.5f, -1.0f, -1.0f};" in dx11
+    assert "uniform vec3 MmdControllerLightVector = {-0.5, -1.0, -1.0};" in glsl
+    assert "0.6039216f" in dx11
+    assert "0.6039216" in glsl
+    assert "if (dot(n, viewDir) < 0.0)" in glsl
+    assert "if (HasToonTexture != 0)" in glsl
+    assert "max(ndotl, 0.0) * DiffuseColorRGB * lightColor" in glsl
+
+
 def test_sphere_mapping_uses_half_range_view_normal_projection_in_both_backends():
     """Sphere UVs use the normative x/y 0.5 projection coefficients."""
     sources = {
