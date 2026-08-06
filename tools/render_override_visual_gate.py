@@ -10,8 +10,9 @@ result requires explicit CLI opt-in before it can affect the gate status.
 
 The pure helpers are intentionally usable without Maya, GoldenOracle assets,
 or an installed FLIP executable. Tests can inject capture and FLIP runners
-through :func:`run_gate`. The HTML viewer is created once and keeps its
-image-first case layout while later runs replace only selected case outputs.
+through :func:`run_gate`. The HTML viewer is native-only: Python capture PNGs
+remain report artifacts for parity, while the gallery scans retained C++
+native outputs and refreshes its cache-busted image links.
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ MANIFEST_ENV = "GOLDEN_ORACLE_RENDER_MANIFEST"
 FEATURES = ("transparency", "outline", "self-shadow", "all")
 BACKENDS = ("dx11", "glsl")
 DEFAULT_MAYA_COMMAND_PORT = 7721
-HTML_GALLERY_MARKER = "<!-- RO-0 image-only gallery v2 -->"
+HTML_GALLERY_MARKER = "<!-- RO-0 image-only native gallery v3 -->"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -348,10 +349,13 @@ def clear_output_dir(output_dir: Path) -> Path:
 def _clear_case_output(case_dir: Path) -> None:
     """Replace one selected case's generated files without touching siblings."""
 
+    preserved_native = {"native.png", "flip-error-native.png"}
     case_dir.mkdir(parents=True, exist_ok=True)
     if case_dir.is_symlink():
         raise ValueError("RO-0 case directory must not be a symlink: %s" % case_dir)
     for child in list(case_dir.iterdir()):
+        if child.name in preserved_native:
+            continue
         if child.is_symlink() or child.is_file():
             child.unlink()
         elif child.is_dir():
@@ -746,10 +750,10 @@ def _write_html(summary: Dict[str, Any], output_dir: Path) -> Path:
     """Refresh the image-only viewer from the currently available PNGs.
 
     The viewer deliberately contains no numeric gate data. It stores only
-    case names whose Oracle and Maya PNGs both exist, then appends a runtime
-    query string to each image URL so a browser reload cannot reuse a cached
-    PNG. Scanning the retained case directories keeps sibling cards visible
-    when a later run refreshes only one selected case.
+    case names whose Oracle and native C++ PNGs both exist, then appends a
+    runtime query string to each image URL so a browser reload cannot reuse a
+    cached PNG. Scanning the retained case directories keeps sibling cards
+    visible when a later run refreshes only one selected case.
     """
 
     path = output_dir / "index.html"
@@ -767,9 +771,10 @@ def _write_html(summary: Dict[str, Any], output_dir: Path) -> Path:
             if case_dir.is_symlink() or not case_dir.is_dir():
                 continue
             # reference.png is copied only from a resolved GoldenOracle PNG;
-            # maya.png is the corresponding current capture. A case without
-            # either image is not useful in the image-first viewer.
-            if not (case_dir / "reference.png").is_file() or not (case_dir / "maya.png").is_file():
+            # native.png is the corresponding C++ VP2 capture. A case without
+            # either image is not useful in the image-first viewer. The Python
+            # maya.png is deliberately not an HTML input.
+            if not (case_dir / "reference.png").is_file() or not (case_dir / "native.png").is_file():
                 continue
             item = summary_by_dir.get(case_dir.name, {"name": case_dir.name})
             if item.get("oracleStatus") == "unavailable" or item.get("oracle-status") == "unavailable":
@@ -781,8 +786,8 @@ def _write_html(summary: Dict[str, Any], output_dir: Path) -> Path:
         image_tags = []
         for label, filename in (
             ("GoldenOracle", "reference.png"),
-            ("Maya", "maya.png"),
-            ("FLIP", "flip-error.png"),
+            ("C++ Native", "native.png"),
+            ("FLIP (Oracle↔C++)", "flip-error-native.png"),
         ):
             relative = "cases/%s/%s" % (case_dir, filename)
             escaped_relative = html.escape(relative, quote=True)
@@ -799,7 +804,7 @@ def _write_html(summary: Dict[str, Any], output_dir: Path) -> Path:
         )
 
     document = """<!doctype html>
-<!-- RO-0 image-only gallery v2 -->
+<!-- RO-0 image-only native gallery v3 -->
 <html lang="ja"><head><meta charset="utf-8">
 <title>RenderOverride image gallery</title>
 <style>
@@ -810,7 +815,7 @@ h1{font-size:.8rem;margin:0 0 4px}.meta{font-size:.52rem;opacity:.6;margin:0 0 6
 @media(max-width:900px){.case-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:560px){.case-grid{grid-template-columns:1fr}}
 </style></head><body>
 <h1>RenderOverride image gallery</h1>
-<p class="meta">PNGは再読み込み時に更新 · GoldenOracle / Maya / FLIP</p>
+<p class="meta">PNGは再読み込み時に更新 · GoldenOracle / C++ Native / FLIP</p>
 <main class="case-grid">
 """ + "\n".join(cards) + """
 </main>

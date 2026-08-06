@@ -35,6 +35,7 @@ from tools.render_override_visual_gate import (  # noqa: E402
     _default_flip_runner,
     _safe_case_dir_name,
     _threshold_evaluation,
+    _write_html,
     load_manifest_cases,
 )
 
@@ -118,6 +119,29 @@ def _run_flip(
     }
 
 
+def _publish_native_gallery(
+    gallery_output: Optional[Path],
+    case_name: str,
+    oracle: Path,
+    native_capture: Path,
+    oracle_comparison: Dict[str, Any],
+) -> None:
+    """Publish only native artifacts to the image-first HTML gallery."""
+
+    if gallery_output is None:
+        return
+    case_dir = Path(gallery_output).resolve() / "cases" / _safe_case_dir_name(case_name)
+    case_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(oracle, case_dir / "reference.png")
+    shutil.copy2(native_capture, case_dir / "native.png")
+    error_map = Path(str(oracle_comparison.get("errorMap", "")))
+    if error_map.is_file():
+        shutil.copy2(error_map, case_dir / "flip-error-native.png")
+    summary_path = Path(gallery_output).resolve() / "summary.json"
+    if summary_path.is_file():
+        _write_html(json.loads(summary_path.read_text(encoding="utf-8")), Path(gallery_output))
+
+
 def _resolve_mayapy(maya: str) -> Path:
     """Resolve the mayapy executable through the shared version-aware helper."""
     candidate = _mayapy_for_version(str(maya))
@@ -137,6 +161,7 @@ def run_parity(
     timeout: int = 180,
     port: int = 7745,
     enforce_thresholds: bool = False,
+    gallery_output: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Capture one native case and compare it against Oracle and Python."""
     if case_name != DEFAULT_CASE:
@@ -302,6 +327,13 @@ def run_parity(
         oracle_comparison["text"], encoding="utf-8"
     )
     result["comparisons"]["oracleVsNative"] = oracle_comparison
+    _publish_native_gallery(
+        gallery_output,
+        case_name,
+        oracle,
+        native_copy,
+        oracle_comparison,
+    )
     if python_baseline and python_baseline.is_file():
         if _png_size(python_baseline) != (width, height):
             result["error"] = "Python baseline dimensions differ from GoldenOracle"
@@ -347,6 +379,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--port", type=int, default=7745)
     parser.add_argument("--enforce-flip-threshold", action="store_true")
+    parser.add_argument(
+        "--gallery-out",
+        type=Path,
+        default=ROOT / "build" / "render-override" / "latest",
+        help="Publish native/reference/FLIP images for the native-only HTML gallery.",
+    )
     args = parser.parse_args(argv)
     manifest = args.manifest
     if manifest is None:
@@ -368,6 +406,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         timeout=args.timeout,
         port=args.port,
         enforce_thresholds=args.enforce_flip_threshold,
+        gallery_output=args.gallery_out,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return int(result.get("exitCode", 1))

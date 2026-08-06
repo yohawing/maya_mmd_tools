@@ -181,6 +181,10 @@ def test_all_mode_generates_static_image_gallery_for_every_case(tmp_path):
     ]
     assert len(flip_calls) == 2
 
+    for case in ("alpha-case", "generic-case"):
+        case_dir = output / "cases" / case
+        (case_dir / "native.png").write_bytes((case_dir / "maya.png").read_bytes())
+    gate._write_html(summary, output)
     document = (output / "index.html").read_text(encoding="utf-8")
     assert document.count('class="case-card"') == 2
     assert "shadow-case" not in document
@@ -189,7 +193,9 @@ def test_all_mode_generates_static_image_gallery_for_every_case(tmp_path):
     assert ".gallery figure{margin:0;background:#fff;min-width:0}" in document
     assert "data-src=" in document
     assert "Date.now()" in document
-    assert "<!-- RO-0 image-only gallery v2 -->" in document
+    assert "<!-- RO-0 image-only native gallery v3 -->" in document
+    assert "C++ Native" in document
+    assert "maya.png" not in document
     assert "<details" not in document
     assert "<table" not in document
 
@@ -262,13 +268,17 @@ def test_fixed_output_is_replaced_and_html_contains_artifacts(tmp_path):
     assert (output / "cases/outline-case/reference.png").is_file()
     assert (output / "cases/outline-case/maya.png").is_file()
     assert (output / "cases/outline-case/flip-error.png").is_file()
+    (output / "cases/outline-case/native.png").write_bytes(
+        (output / "cases/outline-case/maya.png").read_bytes()
+    )
+    gate._write_html(summary, output)
     assert "reference.png" in (output / "index.html").read_text(encoding="utf-8")
     assert not (output / "cases/outline-case/.flip-full").exists()
 
     document_before = (output / "index.html").read_text(encoding="utf-8")
     (output / "index.html").write_text(document_before + "\n<!-- keep-static-gallery -->\n", encoding="utf-8")
     (output / "stale.txt").write_text("stale", encoding="utf-8")
-    gate.run_gate(
+    summary = gate.run_gate(
         path,
         "outline",
         output_dir=output,
@@ -276,6 +286,10 @@ def test_fixed_output_is_replaced_and_html_contains_artifacts(tmp_path):
         capture_runner=_capture_factory(),
         flip_runner=_fake_flip(),
     )
+    (output / "cases/outline-case/native.png").write_bytes(
+        (output / "cases/outline-case/maya.png").read_bytes()
+    )
+    gate._write_html(summary, output)
     assert not (output / "stale.txt").exists()
     assert not (output / "cases/outline-case/.flip-full").exists()
     refreshed_document = (output / "index.html").read_text(encoding="utf-8")
@@ -292,7 +306,7 @@ def test_targeted_refresh_preserves_sibling_case_images_and_static_html(tmp_path
         ],
     )
     output = tmp_path / "latest"
-    gate.run_gate(
+    summary = gate.run_gate(
         path,
         "outline",
         output_dir=output,
@@ -300,10 +314,14 @@ def test_targeted_refresh_preserves_sibling_case_images_and_static_html(tmp_path
         capture_runner=_capture_factory(value=32),
         flip_runner=_fake_flip(),
     )
+    for case in ("alpha-case", "beta-case"):
+        case_dir = output / "cases" / case
+        (case_dir / "native.png").write_bytes((case_dir / "maya.png").read_bytes())
+    gate._write_html(summary, output)
     beta_image = output / "cases/beta-case/maya.png"
     assert beta_image.is_file()
 
-    gate.run_gate(
+    summary = gate.run_gate(
         path,
         "outline",
         case_names=["alpha-case"],
@@ -312,6 +330,7 @@ def test_targeted_refresh_preserves_sibling_case_images_and_static_html(tmp_path
         capture_runner=_capture_factory(value=96),
         flip_runner=_fake_flip(),
     )
+    gate._write_html(summary, output)
 
     assert beta_image.is_file()
     refreshed_document = (output / "index.html").read_text(encoding="utf-8")
