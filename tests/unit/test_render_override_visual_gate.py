@@ -182,7 +182,8 @@ def test_all_mode_generates_static_image_gallery_for_every_case(tmp_path):
     assert len(flip_calls) == 2
 
     document = (output / "index.html").read_text(encoding="utf-8")
-    assert document.count('class="case-card"') == 3
+    assert document.count('class="case-card"') == 2
+    assert "shadow-case" not in document
     assert 'class="gallery"' in document
     assert "grid-template-columns:repeat(3,minmax(0,1fr))" in document
     assert ".gallery figure{margin:0;background:#fff;min-width:0}" in document
@@ -277,7 +278,9 @@ def test_fixed_output_is_replaced_and_html_contains_artifacts(tmp_path):
     )
     assert not (output / "stale.txt").exists()
     assert not (output / "cases/outline-case/.flip-full").exists()
-    assert "keep-static-gallery" in (output / "index.html").read_text(encoding="utf-8")
+    refreshed_document = (output / "index.html").read_text(encoding="utf-8")
+    assert "keep-static-gallery" not in refreshed_document
+    assert refreshed_document.count('class="case-card"') == 1
 
 
 def test_targeted_refresh_preserves_sibling_case_images_and_static_html(tmp_path):
@@ -297,7 +300,6 @@ def test_targeted_refresh_preserves_sibling_case_images_and_static_html(tmp_path
         capture_runner=_capture_factory(value=32),
         flip_runner=_fake_flip(),
     )
-    document_before = (output / "index.html").read_text(encoding="utf-8")
     beta_image = output / "cases/beta-case/maya.png"
     assert beta_image.is_file()
 
@@ -311,8 +313,10 @@ def test_targeted_refresh_preserves_sibling_case_images_and_static_html(tmp_path
         flip_runner=_fake_flip(),
     )
 
-    assert (output / "index.html").read_text(encoding="utf-8") == document_before
     assert beta_image.is_file()
+    refreshed_document = (output / "index.html").read_text(encoding="utf-8")
+    assert refreshed_document.count('class="case-card"') == 2
+    assert "beta-case" in refreshed_document
 
 
 def test_roi_is_compared_separately_and_recorded(tmp_path):

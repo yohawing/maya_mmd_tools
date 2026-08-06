@@ -743,23 +743,41 @@ def _case_result_template(case: Dict[str, Any], feature: str, backend: str) -> D
 
 
 def _write_html(summary: Dict[str, Any], output_dir: Path) -> Path:
-    """Create the image-only viewer once; later runs refresh PNGs in place.
+    """Refresh the image-only viewer from the currently available PNGs.
 
     The viewer deliberately contains no numeric gate data. It stores only
-    deterministic case names and image paths, then appends a runtime query
-    string to each image URL so a browser reload cannot reuse a cached PNG.
+    case names whose Oracle and Maya PNGs both exist, then appends a runtime
+    query string to each image URL so a browser reload cannot reuse a cached
+    PNG. Scanning the retained case directories keeps sibling cards visible
+    when a later run refreshes only one selected case.
     """
 
     path = output_dir / "index.html"
-    if path.is_file():
-        existing = path.read_text(encoding="utf-8", errors="replace")
-        if HTML_GALLERY_MARKER in existing:
-            return path
+    summary_by_dir = {}
+    for item in summary.get("cases", []):
+        name = str(item.get("name", ""))
+        if not name:
+            continue
+        summary_by_dir[_safe_case_dir_name(name)] = item
 
-    rows = sorted(summary.get("cases", []), key=lambda item: str(item.get("name")))
+    rows = []
+    cases_dir = output_dir / "cases"
+    if cases_dir.is_dir() and not cases_dir.is_symlink():
+        for case_dir in sorted(cases_dir.iterdir(), key=lambda item: item.name):
+            if case_dir.is_symlink() or not case_dir.is_dir():
+                continue
+            # reference.png is copied only from a resolved GoldenOracle PNG;
+            # maya.png is the corresponding current capture. A case without
+            # either image is not useful in the image-first viewer.
+            if not (case_dir / "reference.png").is_file() or not (case_dir / "maya.png").is_file():
+                continue
+            item = summary_by_dir.get(case_dir.name, {"name": case_dir.name})
+            if item.get("oracleStatus") == "unavailable" or item.get("oracle-status") == "unavailable":
+                continue
+            rows.append((str(item.get("name", case_dir.name)), case_dir.name))
+    rows.sort(key=lambda value: value[0])
     cards = []
-    for item in rows:
-        case_dir = _safe_case_dir_name(str(item.get("name")))
+    for case_name, case_dir in rows:
         image_tags = []
         for label, filename in (
             ("GoldenOracle", "reference.png"),
@@ -777,7 +795,7 @@ def _write_html(summary: Dict[str, Any], output_dir: Path) -> Path:
         cards.append(
             '<article class="case-card"><h2>%s</h2><div class="gallery">%s'
             '<p class="no-images" hidden>画像なし</p></div></article>'
-            % (html.escape(str(item.get("name"))), "".join(image_tags))
+            % (html.escape(case_name), "".join(image_tags))
         )
 
     document = """<!doctype html>
