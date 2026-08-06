@@ -169,8 +169,6 @@ void MmdRenderGeometryOverride::updateRenderItems(
     }
 
     const MmdRenderShape::GeometryData& geometry = shape_->geometry();
-    std::vector<mmd::MmdRenderQueueEntry> witnessEntries;
-    witnessEntries.reserve(geometry.queueGeometry.size());
     for (std::size_t queueIndex = 0; queueIndex < geometry.queueGeometry.size();
          ++queueIndex) {
         const MmdRenderShape::QueueGeometry& queueGeometry =
@@ -210,13 +208,7 @@ void MmdRenderGeometryOverride::updateRenderItems(
         item->depthPriority(static_cast<unsigned int>(queueIndex));
         item->castsShadows(pass != mmd::MmdDrawPass::Transparent);
         item->receivesShadows(pass != mmd::MmdDrawPass::Transparent);
-        witnessEntries.push_back(queueGeometry.entry);
     }
-
-    // The commandPort diagnostic becomes ready only after every item in the
-    // pass-ordered list has been created.  This is draw-preparation evidence,
-    // not a visual parity or GoldenOracle claim.
-    shape_->recordRenderItemWitness(witnessEntries);
 }
 
 void MmdRenderGeometryOverride::populateGeometry(
@@ -386,6 +378,11 @@ void MmdRenderGeometryOverride::populateGeometry(
 
     shape_->recordGeometryWitness(
         vertexCount, associatedIndexCount, descriptorSummary.str());
+    // Do not report a ready witness until VP2 has accepted the vertex and
+    // index buffers for every current render item.  updateRenderItems() only
+    // prepares item metadata; recording here makes the commandPort evidence
+    // fail closed when geometry population is skipped or fails.
+    shape_->recordRenderItemWitness(geometry.renderQueue);
 }
 
 void MmdRenderGeometryOverride::cleanUp()

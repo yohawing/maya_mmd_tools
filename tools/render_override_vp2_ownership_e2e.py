@@ -426,7 +426,7 @@ def run_probe(
         if not report["checks"]["drawPreparationReady"]:
             raise RuntimeError(f"VP2 render-item witness stayed pending: {witness}")
         if not report["checks"]["geometryBuffersPrepared"]:
-            raise RuntimeError(f"VP2 geometry witness stayed pending: {witness}")
+            raise RuntimeError(f"VP2 geometry buffers were not committed: {witness}")
         if not report["checks"]["captureCreated"]:
             raise RuntimeError(f"VP2 capture was empty: {capture}")
         for check_name in (
