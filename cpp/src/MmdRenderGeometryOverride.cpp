@@ -13,26 +13,27 @@
 #include <maya/MViewport2Renderer.h>
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
-#include <cstring>
 #include <limits>
 #include <sstream>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
 
 using namespace MHWRender;
 
-constexpr std::array<const char*, 3> kRenderItemNames = {
-    "mmdRenderOpaque",
-    "mmdRenderCutout",
-    "mmdRenderTransparent",
-};
-
-MString renderItemName(mmd::MmdDrawPass pass)
+MString renderItemName(const MmdRenderShape::QueueGeometry& geometry,
+                       std::size_t queueIndex)
 {
-    return MString(kRenderItemNames[static_cast<std::size_t>(pass)]);
+    const std::string name =
+        "mmdRenderQueue_" +
+        std::string(mmd::mmdDrawPassName(geometry.entry.pass)) + "_m" +
+        std::to_string(geometry.entry.materialIndex) + "_s" +
+        std::to_string(geometry.entry.submeshIndex) + "_q" +
+        std::to_string(queueIndex);
+    return MString(name.c_str());
 }
 
 MRenderItem* findOrCreateItem(MRenderItemList& list,
@@ -167,16 +168,16 @@ void MmdRenderGeometryOverride::updateRenderItems(
         solidShader_->setParameter("solidColor", kWitnessColor);
     }
 
-    std::vector<mmd::MmdDrawPass> witnessPasses;
-    witnessPasses.reserve(3U);
-    for (std::size_t i = 0; i < kRenderItemNames.size(); ++i) {
-        const mmd::MmdDrawPass pass = static_cast<mmd::MmdDrawPass>(i);
-        if (!shape_->hasPassGeometry(pass)) {
-            continue;
-        }
-
+    const MmdRenderShape::GeometryData& geometry = shape_->geometry();
+    std::vector<mmd::MmdRenderQueueEntry> witnessEntries;
+    witnessEntries.reserve(geometry.queueGeometry.size());
+    for (std::size_t queueIndex = 0; queueIndex < geometry.queueGeometry.size();
+         ++queueIndex) {
+        const MmdRenderShape::QueueGeometry& queueGeometry =
+            geometry.queueGeometry[queueIndex];
+        const mmd::MmdDrawPass pass = queueGeometry.entry.pass;
         MRenderItem* item = findOrCreateItem(
-            list, renderItemName(pass),
+            list, renderItemName(queueGeometry, queueIndex),
             static_cast<MGeometry::DrawMode>(MGeometry::kShaded |
                                              MGeometry::kTextured));
         if (!item) {
@@ -202,15 +203,20 @@ void MmdRenderGeometryOverride::updateRenderItems(
             item->setTreatAsTransparent(true);
             item->setSupportsAdvancedTransparency(true);
         }
+        // Keep the Maya item sequence and the explicit queue rank aligned.
+        // depthPriority is also useful as a diagnostic when a renderer groups
+        // items internally; it does not replace the transparent material
+        // shader's blend/depth state.
+        item->depthPriority(static_cast<unsigned int>(queueIndex));
         item->castsShadows(pass != mmd::MmdDrawPass::Transparent);
         item->receivesShadows(pass != mmd::MmdDrawPass::Transparent);
-        witnessPasses.push_back(pass);
+        witnessEntries.push_back(queueGeometry.entry);
     }
 
     // The commandPort diagnostic becomes ready only after every item in the
     // pass-ordered list has been created.  This is draw-preparation evidence,
     // not a visual parity or GoldenOracle claim.
-    shape_->recordRenderItemWitness(witnessPasses);
+    shape_->recordRenderItemWitness(witnessEntries);
 }
 
 void MmdRenderGeometryOverride::populateGeometry(
@@ -320,28 +326,29 @@ void MmdRenderGeometryOverride::populateGeometry(
     }
 
     std::size_t associatedIndexCount = 0U;
+    std::unordered_map<std::string, const MmdRenderShape::QueueGeometry*>
+        queueGeometryByName;
+    queueGeometryByName.reserve(geometry.queueGeometry.size());
+    for (std::size_t queueIndex = 0;
+         queueIndex < geometry.queueGeometry.size(); ++queueIndex) {
+        const MmdRenderShape::QueueGeometry& candidate =
+            geometry.queueGeometry[queueIndex];
+        queueGeometryByName.emplace(
+            std::string(renderItemName(candidate, queueIndex).asChar()),
+            &candidate);
+    }
     for (int i = 0; i < renderItems.length(); ++i) {
         const MRenderItem* item = renderItems.itemAt(i);
         if (!item) {
             continue;
         }
         const MString itemName = item->name();
-        mmd::MmdDrawPass pass = mmd::MmdDrawPass::Opaque;
-        bool matched = false;
-        for (std::size_t passIndex = 0; passIndex < kRenderItemNames.size();
-             ++passIndex) {
-            if (itemName == kRenderItemNames[passIndex]) {
-                pass = static_cast<mmd::MmdDrawPass>(passIndex);
-                matched = true;
-                break;
-            }
-        }
-        if (!matched) {
+        const auto queueGeometry = queueGeometryByName.find(itemName.asChar());
+        if (queueGeometry == queueGeometryByName.end()) {
             continue;
         }
 
-        const std::vector<uint32_t>& indices =
-            geometry.indices[static_cast<std::size_t>(pass)];
+        const std::vector<uint32_t>& indices = queueGeometry->second->indices;
         if (indices.empty() ||
             indices.size() > std::numeric_limits<unsigned int>::max()) {
             failClosed("render item has no valid index data");
@@ -360,7 +367,10 @@ void MmdRenderGeometryOverride::populateGeometry(
             failClosed("could not acquire an index buffer");
             return;
         }
-        std::memcpy(destination, indices.data(), indices.size() * sizeof(uint32_t));
+        for (std::size_t index = 0; index < indices.size(); ++index) {
+            destination[index] =
+                queueGeometry->second->vertexOffset + indices[index];
+        }
         indexBuffer->commit(destination);
         if (!item->associateWithIndexBuffer(indexBuffer)) {
             failClosed("could not associate an index buffer");

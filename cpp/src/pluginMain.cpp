@@ -41,6 +41,7 @@ static bool sCppRegisteredPhysicsBoneDriver = false;
 static bool sCppRegisteredMmdRenderShape = false;
 static bool sCppRegisteredMmdRenderOverride = false;
 static bool sCppRegisteredMmdRenderWitnessCommand = false;
+static bool sCppRegisteredMmdRenderQueueUpdateCommand = false;
 
 static bool isNodeTypeRegistered(const MTypeId& expectedId)
 {
@@ -102,6 +103,14 @@ MStatus initializePlugin(MObject obj)
             }
             sCppRegisteredMmdRenderWitnessCommand = false;
         }
+        if (sCppRegisteredMmdRenderQueueUpdateCommand) {
+            cleanupStatus = plugin.deregisterCommand("mmdRenderQueueUpdate");
+            if (!cleanupStatus) {
+                MGlobal::displayWarning(
+                    "Failed to roll back mmdRenderQueueUpdate command.");
+            }
+            sCppRegisteredMmdRenderQueueUpdateCommand = false;
+        }
         if (sCppRegisteredMmdRenderOverride) {
             cleanupStatus = MHWRender::MDrawRegistry::deregisterGeometryOverrideCreator(
                 MmdRenderShape::drawDbClassification,
@@ -152,6 +161,15 @@ MStatus initializePlugin(MObject obj)
         return status;
     }
     sCppRegisteredMmdRenderWitnessCommand = true;
+
+    status = plugin.registerCommand("mmdRenderQueueUpdate",
+                                    MmdRenderQueueUpdateCommand::creator,
+                                    MmdRenderQueueUpdateCommand::newSyntax);
+    if (!status) {
+        cleanupMmdRenderWitness();
+        return status;
+    }
+    sCppRegisteredMmdRenderQueueUpdateCommand = true;
 
     // mmdAppend 登録 (Python 版と統一した typeName)
     // Python 版が同じ typeId で登録済みの場合はスキップ
@@ -224,6 +242,15 @@ MStatus uninitializePlugin(MObject obj)
                 "Failed to deregister mmdRenderWitness command.");
         }
         sCppRegisteredMmdRenderWitnessCommand = false;
+    }
+
+    if (sCppRegisteredMmdRenderQueueUpdateCommand) {
+        status = plugin.deregisterCommand("mmdRenderQueueUpdate");
+        if (!status) {
+            MGlobal::displayWarning(
+                "Failed to deregister mmdRenderQueueUpdate command.");
+        }
+        sCppRegisteredMmdRenderQueueUpdateCommand = false;
     }
 
     if (sCppRegisteredMmdRenderOverride) {

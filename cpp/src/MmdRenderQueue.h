@@ -3,10 +3,10 @@
  * @brief MMD material/submesh render-pass ordering contract.
  *
  * This module owns the deterministic ordering contract used by native MMD
- * geometry loading.  It does not register a Maya VP2 override or create
- * MRenderItem objects yet; those responsibilities stay in the future native
- * render-item integration slice.  Keeping the contract independent of Maya
- * makes its ordering rules testable without a DCC process.
+ * geometry loading.  The opt-in Maya VP2 shape consumes the resulting entries
+ * to create one render item per material/submesh, while keeping this contract
+ * independent of Maya so its ordering rules remain testable without a DCC
+ * process.
  */
 
 #pragma once

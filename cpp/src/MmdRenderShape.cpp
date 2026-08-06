@@ -11,10 +11,12 @@
 #include <maya/MPoint.h>
 #include <maya/MSelectionList.h>
 #include <maya/MSyntax.h>
+#include <maya/MViewport2Renderer.h>
 
 #include <algorithm>
 #include <cmath>
 #include <sstream>
+#include <utility>
 
 namespace {
 
@@ -112,7 +114,7 @@ MBoundingBox MmdRenderShape::boundingBox() const
 bool MmdRenderShape::setMaterialSplitGeometry(
     const std::vector<std::vector<float>>& submeshPositions,
     const std::vector<std::vector<uint32_t>>& submeshIndices,
-    const std::vector<mmd::MmdRenderQueueEntry>& renderQueue,
+    const std::vector<mmd::MmdRenderQueueInput>& queueInputs,
     double scale)
 {
     auto reject = [](const std::string& reason) {
@@ -121,15 +123,19 @@ bool MmdRenderShape::setMaterialSplitGeometry(
         return false;
     };
 
-    if (!std::isfinite(scale) || scale <= 0.0 || renderQueue.empty() ||
+    if (!std::isfinite(scale) || scale <= 0.0 || queueInputs.empty() ||
         submeshPositions.size() != submeshIndices.size()) {
         return reject("invalid scale, empty queue, or mismatched submesh buffers");
     }
 
+    const std::vector<mmd::MmdRenderQueueEntry> renderQueue =
+        mmd::buildMmdRenderQueue(queueInputs);
+
     for (std::size_t queueIndex = 0; queueIndex < renderQueue.size();
          ++queueIndex) {
         const mmd::MmdRenderQueueEntry& entry = renderQueue[queueIndex];
-        if (passIndex(entry.pass) >= geometry_.indices.size() ||
+        if (passIndex(entry.pass) >
+                static_cast<std::size_t>(mmd::MmdDrawPass::Transparent) ||
             entry.submeshIndex >= submeshPositions.size()) {
             return reject("queue entry " + std::to_string(queueIndex) +
                           " references an invalid pass or submesh");
@@ -160,7 +166,9 @@ bool MmdRenderShape::setMaterialSplitGeometry(
     }
 
     GeometryData next;
+    next.queueInputs = queueInputs;
     next.renderQueue = renderQueue;
+    next.queueGeometry.reserve(renderQueue.size());
     MBoundingBox nextBounds;
     bool hasBounds = false;
 
@@ -169,7 +177,9 @@ bool MmdRenderShape::setMaterialSplitGeometry(
             submeshPositions[entry.submeshIndex];
         const std::vector<uint32_t>& indices =
             submeshIndices[entry.submeshIndex];
-        const uint32_t vertexOffset =
+        QueueGeometry queueGeometry;
+        queueGeometry.entry = entry;
+        queueGeometry.vertexOffset =
             static_cast<uint32_t>(next.positions.size() / 3U);
 
         for (std::size_t i = 0; i < positions.size(); i += 3U) {
@@ -191,15 +201,15 @@ bool MmdRenderShape::setMaterialSplitGeometry(
             }
         }
 
-        std::vector<uint32_t>& passIndices = next.indices[passIndex(entry.pass)];
-        passIndices.reserve(passIndices.size() + indices.size());
+        queueGeometry.indices.reserve(indices.size());
         // PMX indices are supplied in the same winding convention as the
         // regular MFnMesh path, so preserve its explicit winding reversal.
         for (std::size_t i = 0; i < indices.size(); i += 3U) {
-            passIndices.push_back(vertexOffset + indices[i + 2U]);
-            passIndices.push_back(vertexOffset + indices[i + 1U]);
-            passIndices.push_back(vertexOffset + indices[i]);
+            queueGeometry.indices.push_back(indices[i + 2U]);
+            queueGeometry.indices.push_back(indices[i + 1U]);
+            queueGeometry.indices.push_back(indices[i]);
         }
+        next.queueGeometry.push_back(std::move(queueGeometry));
     }
 
     if (!hasBounds || next.positions.empty()) {
@@ -212,6 +222,70 @@ bool MmdRenderShape::setMaterialSplitGeometry(
     return true;
 }
 
+bool MmdRenderShape::updateMaterialAlpha(std::size_t materialIndex,
+                                         float diffuseAlpha)
+{
+    if (!std::isfinite(diffuseAlpha)) {
+        MGlobal::displayError(
+            "[mmdRenderShape] Queue alpha update rejected: non-finite alpha.");
+        return false;
+    }
+
+    const float clampedAlpha = std::max(0.0F, std::min(1.0F, diffuseAlpha));
+    std::vector<mmd::MmdRenderQueueInput> nextInputs = geometry_.queueInputs;
+    bool found = false;
+    for (mmd::MmdRenderQueueInput& input : nextInputs) {
+        if (input.materialIndex != materialIndex) {
+            continue;
+        }
+        input.diffuseAlpha = clampedAlpha;
+        const bool explicitlyCutout =
+            mmd::classifyMmdDrawPass(input.transparencyMode, 1.0F) ==
+            mmd::MmdDrawPass::Cutout;
+        if (!explicitlyCutout) {
+            input.transparencyMode = clampedAlpha < 0.999F ? "blend" : "opaque";
+        }
+        found = true;
+    }
+    if (!found) {
+        return false;
+    }
+
+    const std::vector<mmd::MmdRenderQueueEntry> nextQueue =
+        mmd::buildMmdRenderQueue(nextInputs);
+    std::vector<QueueGeometry> reordered;
+    reordered.reserve(nextQueue.size());
+    std::vector<bool> consumed(geometry_.queueGeometry.size(), false);
+    for (const mmd::MmdRenderQueueEntry& entry : nextQueue) {
+        std::size_t existingIndex = geometry_.queueGeometry.size();
+        for (std::size_t candidateIndex = 0;
+             candidateIndex < geometry_.queueGeometry.size(); ++candidateIndex) {
+            const QueueGeometry& candidate =
+                geometry_.queueGeometry[candidateIndex];
+            if (!consumed[candidateIndex] &&
+                candidate.entry.submeshIndex == entry.submeshIndex) {
+                existingIndex = candidateIndex;
+                break;
+            }
+        }
+        if (existingIndex == geometry_.queueGeometry.size()) {
+            MGlobal::displayError(
+                "[mmdRenderShape] Queue alpha update lost a submesh.");
+            return false;
+        }
+        consumed[existingIndex] = true;
+        QueueGeometry item = std::move(geometry_.queueGeometry[existingIndex]);
+        item.entry = entry;
+        reordered.push_back(std::move(item));
+    }
+
+    geometry_.queueInputs = std::move(nextInputs);
+    geometry_.renderQueue = nextQueue;
+    geometry_.queueGeometry = std::move(reordered);
+    clearRenderItemWitness();
+    return true;
+}
+
 const MmdRenderShape::GeometryData& MmdRenderShape::geometry() const
 {
     return geometry_;
@@ -219,13 +293,15 @@ const MmdRenderShape::GeometryData& MmdRenderShape::geometry() const
 
 bool MmdRenderShape::hasPassGeometry(mmd::MmdDrawPass pass) const
 {
-    return !geometry_.indices[passIndex(pass)].empty();
+    return std::any_of(
+        geometry_.queueGeometry.begin(), geometry_.queueGeometry.end(),
+        [pass](const QueueGeometry& item) { return item.entry.pass == pass; });
 }
 
 void MmdRenderShape::clearRenderItemWitness()
 {
     renderItemWitnessValid_ = false;
-    renderItemWitnessPasses_.clear();
+    renderItemWitnessEntries_.clear();
     geometryWitnessValid_ = false;
     geometryWitnessVertexCount_ = 0U;
     geometryWitnessIndexCount_ = 0U;
@@ -233,9 +309,9 @@ void MmdRenderShape::clearRenderItemWitness()
 }
 
 void MmdRenderShape::recordRenderItemWitness(
-    const std::vector<mmd::MmdDrawPass>& passes)
+    const std::vector<mmd::MmdRenderQueueEntry>& entries)
 {
-    renderItemWitnessPasses_ = passes;
+    renderItemWitnessEntries_ = entries;
     renderItemWitnessValid_ = true;
 }
 
@@ -256,12 +332,14 @@ std::string MmdRenderShape::renderItemWitness() const
     }
 
     std::ostringstream stream;
-    stream << "ready items=" << renderItemWitnessPasses_.size() << " order=";
-    for (std::size_t i = 0; i < renderItemWitnessPasses_.size(); ++i) {
+    stream << "ready items=" << renderItemWitnessEntries_.size() << " order=";
+    for (std::size_t i = 0; i < renderItemWitnessEntries_.size(); ++i) {
         if (i != 0U) {
             stream << ',';
         }
-        stream << mmd::mmdDrawPassName(renderItemWitnessPasses_[i]);
+        const mmd::MmdRenderQueueEntry& entry = renderItemWitnessEntries_[i];
+        stream << mmd::mmdDrawPassName(entry.pass) << "[m"
+               << entry.materialIndex << "/s" << entry.submeshIndex << "]";
     }
     if (geometryWitnessValid_) {
         stream << " geometry=vertices=" << geometryWitnessVertexCount_
@@ -323,6 +401,72 @@ MStatus MmdRenderWitnessCommand::doIt(const MArgList& args)
 }
 
 bool MmdRenderWitnessCommand::isUndoable() const
+{
+    return false;
+}
+
+void* MmdRenderQueueUpdateCommand::creator()
+{
+    return new MmdRenderQueueUpdateCommand();
+}
+
+MSyntax MmdRenderQueueUpdateCommand::newSyntax()
+{
+    MSyntax syntax;
+    syntax.addFlag("-n", "-node", MSyntax::kString);
+    syntax.addFlag("-m", "-materialIndex", MSyntax::kLong);
+    syntax.addFlag("-a", "-alpha", MSyntax::kDouble);
+    syntax.enableEdit(false);
+    return syntax;
+}
+
+MStatus MmdRenderQueueUpdateCommand::doIt(const MArgList& args)
+{
+    MArgDatabase argData(newSyntax(), args);
+    if (!argData.isFlagSet("-node") || !argData.isFlagSet("-materialIndex") ||
+        !argData.isFlagSet("-alpha")) {
+        MGlobal::displayError(
+            "[mmdRenderQueueUpdate] Required flags: -node, -materialIndex, -alpha");
+        return MS::kFailure;
+    }
+
+    MSelectionList selection;
+    const MString nodeName = argData.flagArgumentString("-node", 0);
+    MStatus status = selection.add(nodeName);
+    if (!status || selection.length() == 0U) {
+        MGlobal::displayError(MString("[mmdRenderQueueUpdate] Node not found: ") +
+                              nodeName);
+        return MS::kFailure;
+    }
+
+    MObject node;
+    status = selection.getDependNode(0U, node);
+    if (!status) {
+        return status;
+    }
+    MmdRenderShape* shape = MmdRenderShape::fromMObject(node, &status);
+    if (!status || !shape) {
+        MGlobal::displayError(
+            "[mmdRenderQueueUpdate] Node is not an mmdRenderShape.");
+        return MS::kFailure;
+    }
+
+    const int materialIndex = argData.flagArgumentInt("-materialIndex", 0);
+    const double alpha = argData.flagArgumentDouble("-alpha", 0);
+    if (materialIndex < 0 || !shape->updateMaterialAlpha(
+                                  static_cast<std::size_t>(materialIndex),
+                                  static_cast<float>(alpha))) {
+        MGlobal::displayError(
+            "[mmdRenderQueueUpdate] Material alpha update was rejected.");
+        return MS::kFailure;
+    }
+
+    MHWRender::MRenderer::setGeometryDrawDirty(node, true);
+    setResult(MString(shape->renderItemWitness().c_str()));
+    return MS::kSuccess;
+}
+
+bool MmdRenderQueueUpdateCommand::isUndoable() const
 {
     return false;
 }

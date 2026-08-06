@@ -4,10 +4,9 @@ The runner deliberately stays outside the Maya implementation.  It resolves
 cases from a GoldenOracle-compatible manifest, delegates the actual Maya image
 capture to ``tests/viewport/visual_regression_capture.py``, compares the
 images with NVIDIA FLIP, and writes one replaceable report at
-``build/render-override/latest``.  RO-0 is report-only: the dedicated FLIP
-threshold contract is recorded and evaluated, but a numeric result still
-requires human inspection of the HTML images before a later feature gate can
-claim parity.
+``build/render-override/latest``.  RO-0 is report-only by default: the
+dedicated FLIP threshold contract is recorded and evaluated, but a numeric
+result requires explicit CLI opt-in before it can affect the gate status.
 
 The pure helpers are intentionally usable without Maya, GoldenOracle assets,
 or an installed FLIP executable.  Tests can inject capture and FLIP runners
@@ -42,13 +41,47 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # This is deliberately separate from the GoldenOracle manifest's compare.epsilon.
-# RO-0 is report-only, so these values are evidence-collection thresholds rather
-# than a release claim.  A later gate may replace them only with documented
-# known-good/negative-control evidence.
+# RO-0 is report-only by default, so these values are evidence-collection
+# thresholds rather than a release claim.  The calibration inputs are recorded
+# explicitly below; missing distributions must not be filled with invented
+# known-good/known-bad samples.
 FLIP_THRESHOLD_CONTRACT: Dict[str, Any] = {
-    "version": 1,
+    "version": 2,
     "mode": "report-only",
     "source": "Plan 010 RO-0 dedicated FLIP contract; not GoldenOracle compare.epsilon",
+    "calibration": {
+        "status": "evidence-gap",
+        "method": "fixed-threshold-contract",
+        "expectedInput": "known-good/known-bad FLIP metric distributions",
+        "distributionInput": {
+            "knownGood": {
+                "status": "not-available",
+                "sampleCount": 0,
+                "distribution": None,
+                "source": None,
+            },
+            "knownBad": {
+                "status": "test-only",
+                "sampleCount": 0,
+                "distribution": None,
+                "source": (
+                    "tests/unit/test_render_override_visual_gate.py::"
+                    "test_roi_override_is_recorded_and_negative_control_exceeds_contract"
+                ),
+            },
+        },
+        "reportOnlyEvidence": {
+            "status": "observational-only",
+            "sampleCount": 0,
+            "distribution": None,
+            "source": "RO-0 report-only results (run-local)",
+        },
+        "policy": (
+            "Do not infer a calibration distribution from report-only output or "
+            "the synthetic negative-control test; record real samples before "
+            "changing fixed thresholds."
+        ),
+    },
     "features": {
         "transparency": {
             "full": {"mean": 0.05, "weighted_median": 0.05, "q3": 0.10, "max": 0.50},
@@ -489,6 +522,29 @@ def _threshold_evaluation(metrics: Dict[str, Optional[float]], threshold: Dict[s
     }
 
 
+def _threshold_gate_error(scope: str, comparison: Dict[str, Any]) -> Optional[str]:
+    """Return a fail-closed error when an available FLIP result misses its contract."""
+
+    if comparison.get("status") != "pass":
+        return None
+    evaluation = comparison.get("thresholdEvaluation")
+    if not isinstance(evaluation, dict):
+        return "FLIP %s threshold evaluation unavailable" % scope
+    status = evaluation.get("status")
+    if status == "unavailable":
+        missing = ", ".join(str(item) for item in evaluation.get("unavailable", []))
+        return "FLIP %s threshold metrics unavailable%s" % (scope, ": " + missing if missing else "")
+    if status == "fail":
+        metrics = ", ".join(
+            "%s=%s>%s" % (item.get("metric"), item.get("value"), item.get("threshold"))
+            for item in evaluation.get("violations", [])
+        )
+        return "FLIP %s threshold exceeded%s" % (scope, ": " + metrics if metrics else "")
+    if status != "pass":
+        return "FLIP %s threshold evaluation unavailable" % scope
+    return None
+
+
 def _default_flip_runner(
     reference: Path,
     actual: Path,
@@ -776,8 +832,14 @@ def run_gate(
     width: Optional[int] = None,
     height: Optional[int] = None,
     roi_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
+    enforce_thresholds: bool = False,
 ) -> Dict[str, Any]:
-    """Run RO-0 and return the exact JSON object written to ``summary.json``."""
+    """Run RO-0 and return the exact JSON object written to ``summary.json``.
+
+    Args:
+        enforce_thresholds: Apply the fixed FLIP contract to the case status and
+            exit code.  The default remains report-only for compatibility.
+    """
 
     root = Path(project_root or PROJECT_ROOT).resolve()
     manifest_path = Path(manifest_path).resolve()
@@ -806,7 +868,11 @@ def run_gate(
         "kind": "render-override-visual-gate",
         "status": "fail",
         "exitCode": 1,
-        "gateMode": "report-only",
+        "gateMode": "threshold" if enforce_thresholds else "report-only",
+        "thresholdGate": {
+            "enabled": bool(enforce_thresholds),
+            "failClosed": True,
+        },
         "feature": feature,
         "backend": backend,
         "maya": str(maya),
@@ -1038,10 +1104,19 @@ def run_gate(
                     }
                     result["errors"].append("ROI comparison failed: %s" % error)
 
+        if enforce_thresholds:
+            for scope, comparison in (
+                ("full-frame", result["full"]),
+                ("ROI", result["roiComparison"]),
+            ):
+                threshold_error = _threshold_gate_error(scope, comparison)
+                if threshold_error:
+                    result["errors"].append(threshold_error)
+
         if result["errors"]:
             result["status"] = "fail"
         else:
-            result["status"] = "unreviewed"
+            result["status"] = "pass" if enforce_thresholds else "unreviewed"
         if capture_item:
             capture_record = result["capture"]
             for field, local_name in (("actual_png", "maya.png"), ("oracle_png", "reference.png")):
@@ -1061,7 +1136,8 @@ def run_gate(
                 capture_record.pop("diagnostics", None)
             _write_json(case_dir / "capture.json", capture_record)
         result["passDiagnostics"] = {
-            "reportOnly": True,
+            "reportOnly": not enforce_thresholds,
+            "thresholdEnforced": bool(enforce_thresholds),
             "numericFullStatus": result["full"].get("thresholdEvaluation"),
             "numericRoiStatus": result["roiComparison"].get("thresholdEvaluation"),
             "fullMetrics": result["full"].get("metrics"),
@@ -1091,6 +1167,9 @@ def run_gate(
     elif statuses and all(status == "unavailable" for status in statuses):
         summary["status"] = "not-gated"
         summary["exitCode"] = 1
+    elif enforce_thresholds and any(status == "unavailable" for status in statuses):
+        summary["status"] = "not-gated"
+        summary["exitCode"] = 1
     elif any(status == "unreviewed" for status in statuses):
         summary["status"] = "unreviewed"
         summary["exitCode"] = 0
@@ -1118,6 +1197,13 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--maya", default="2024")
     parser.add_argument("--backend", choices=BACKENDS, default="dx11")
     parser.add_argument("--flip", default="", help="Optional path to the NVIDIA FLIP executable.")
+    parser.add_argument(
+        "--enforce-flip-threshold",
+        "--enforce-thresholds",
+        dest="enforce_thresholds",
+        action="store_true",
+        help="Opt in to the fixed FLIP threshold gate; default remains report-only.",
+    )
     parser.add_argument("--timeout", type=int, default=420)
     parser.add_argument("--width", type=int, default=None)
     parser.add_argument("--height", type=int, default=None)
@@ -1170,6 +1256,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             timeout=args.timeout,
             width=args.width,
             height=args.height,
+            enforce_thresholds=args.enforce_thresholds,
         )
     except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as error:
         print("RO-0 render override visual gate failed: %s" % error, file=sys.stderr)

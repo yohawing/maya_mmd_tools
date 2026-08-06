@@ -212,6 +212,12 @@ def test_partial_capture_only_fails_the_case_without_a_capture(tmp_path):
 
 def test_flip_threshold_contract_is_separate_from_manifest_epsilon():
     assert gate.FLIP_THRESHOLD_CONTRACT["mode"] == "report-only"
+    calibration = gate.FLIP_THRESHOLD_CONTRACT["calibration"]
+    assert calibration["status"] == "evidence-gap"
+    assert calibration["distributionInput"]["knownGood"]["sampleCount"] == 0
+    assert calibration["distributionInput"]["knownGood"]["distribution"] is None
+    assert calibration["distributionInput"]["knownBad"]["status"] == "test-only"
+    assert calibration["distributionInput"]["knownBad"]["distribution"] is None
     assert gate.FLIP_THRESHOLD_CONTRACT["features"]["outline"]["full"]["mean"] != 0.003
     assert gate.parse_flip_metrics(FLIP_TEXT) == {
         "mean": 0.01,
@@ -319,6 +325,124 @@ def test_roi_override_is_recorded_and_negative_control_exceeds_contract(tmp_path
     assert result["roi"] == {"x": 0, "y": 0, "width": 1, "height": 1}
     assert result["full"]["thresholdEvaluation"]["status"] == "fail"
     assert result["roiComparison"]["thresholdEvaluation"]["status"] == "fail"
+    assert summary["gateMode"] == "report-only"
+    assert summary["status"] == "unreviewed"
+    assert summary["exitCode"] == 0
+
+
+def test_threshold_gate_is_explicit_opt_in_and_fails_negative_control(tmp_path):
+    path = _write_manifest(
+        tmp_path,
+        [{"name": "transparency-negative", "feature": "transparency", "roi": {"x": 0, "y": 0, "width": 1, "height": 1}}],
+    )
+
+    def negative_flip(**kwargs):
+        result = _fake_flip()(**kwargs)
+        result["text"] = HIGH_FLIP_TEXT
+        result["metrics"] = gate.parse_flip_metrics(HIGH_FLIP_TEXT)
+        return result
+
+    summary = gate.run_gate(
+        path,
+        "transparency",
+        output_dir=tmp_path / "latest",
+        project_root=tmp_path,
+        capture_runner=_capture_factory(),
+        flip_runner=negative_flip,
+        enforce_thresholds=True,
+    )
+
+    assert summary["gateMode"] == "threshold"
+    assert summary["thresholdGate"] == {"enabled": True, "failClosed": True}
+    assert summary["status"] == "fail"
+    assert summary["exitCode"] == 1
+    assert summary["cases"][0]["status"] == "fail"
+    assert any("threshold exceeded" in error for error in summary["cases"][0]["errors"])
+
+
+def test_threshold_gate_reports_pass_only_after_complete_flip_evidence(tmp_path):
+    path = _write_manifest(tmp_path, [{"name": "outline-case", "feature": "outline"}])
+    summary = gate.run_gate(
+        path,
+        "outline",
+        output_dir=tmp_path / "latest",
+        project_root=tmp_path,
+        capture_runner=_capture_factory(),
+        flip_runner=_fake_flip(),
+        enforce_thresholds=True,
+    )
+
+    assert summary["status"] == "pass"
+    assert summary["exitCode"] == 0
+    assert summary["cases"][0]["status"] == "pass"
+    assert summary["cases"][0]["passDiagnostics"]["reportOnly"] is False
+    assert summary["cases"][0]["passDiagnostics"]["thresholdEnforced"] is True
+
+
+def test_threshold_gate_fails_closed_for_missing_capture_oracle_and_flip(tmp_path):
+    path = _write_manifest(
+        tmp_path,
+        [{"name": "outline-case", "feature": "outline", "oracle": {"path": "oracle/case.jsonl"}}],
+    )
+
+    def missing_capture(**kwargs):
+        return {"status": "fail", "reason": "capture missing", "report_path": None}
+
+    missing_capture_summary = gate.run_gate(
+        path,
+        "outline",
+        output_dir=tmp_path / "missing-capture" / "latest",
+        project_root=tmp_path,
+        capture_runner=missing_capture,
+        enforce_thresholds=True,
+    )
+    assert missing_capture_summary["status"] == "fail"
+    assert missing_capture_summary["capture"]["status"] == "fail"
+    assert "selected case is missing from Maya capture report" in missing_capture_summary["cases"][0]["errors"]
+
+    def missing_oracle(**kwargs):
+        result = _capture_factory()(**kwargs)
+        report_path = Path(result["report_path"])
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        oracle_path = Path(report["results"][0]["oracle_png"])
+        oracle_path.unlink()
+        report["results"][0].pop("oracle_png")
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return result
+
+    missing_oracle_summary = gate.run_gate(
+        path,
+        "outline",
+        output_dir=tmp_path / "missing-oracle" / "latest",
+        project_root=tmp_path,
+        capture_runner=missing_oracle,
+        flip_runner=_fake_flip(),
+        enforce_thresholds=True,
+    )
+    assert missing_oracle_summary["status"] == "fail"
+    assert any("missing GoldenOracle PNG" in error for error in missing_oracle_summary["cases"][0]["errors"])
+
+    def missing_flip(**kwargs):
+        return {"status": "fail", "reason": "FLIP missing", "metrics": gate.parse_flip_metrics("")}
+
+    missing_flip_summary = gate.run_gate(
+        path,
+        "outline",
+        output_dir=tmp_path / "missing-flip" / "latest",
+        project_root=tmp_path,
+        capture_runner=_capture_factory(),
+        flip_runner=missing_flip,
+        enforce_thresholds=True,
+    )
+    assert missing_flip_summary["status"] == "fail"
+    assert "FLIP missing" in missing_flip_summary["cases"][0]["errors"]
+
+
+def test_cli_threshold_gate_is_opt_in():
+    base = ["--manifest", "manifest.json", "--feature", "outline"]
+    assert gate._parse_args(base).enforce_thresholds is False
+    assert gate._parse_args(base + ["--enforce-flip-threshold"]).enforce_thresholds is True
+    assert gate._parse_args(base + ["--enforce-thresholds"]).enforce_thresholds is True
 
 
 def test_self_shadow_is_explicitly_not_gated_and_does_not_call_capture(tmp_path):

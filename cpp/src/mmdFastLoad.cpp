@@ -886,9 +886,6 @@ MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
         }
         queueInputs.push_back(std::move(input));
     }
-    const std::vector<mmd::MmdRenderQueueEntry> renderQueue =
-        mmd::buildMmdRenderQueue(queueInputs);
-
     std::vector<std::vector<float>> submeshPositions(meshCount);
     std::vector<std::vector<uint32_t>> submeshIndices(meshCount);
     for (size_t i = 0; i < meshCount; ++i) {
@@ -969,7 +966,7 @@ MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
         return MS::kFailure;
     }
     if (!shape->setMaterialSplitGeometry(
-            submeshPositions, submeshIndices, renderQueue, scale_)) {
+            submeshPositions, submeshIndices, queueInputs, scale_)) {
         MGlobal::displayError(
             "[mmdFastLoad] VP2 ownership geometry rejected by mmdRenderShape.");
         MDagModifier cleanup;
@@ -1006,7 +1003,7 @@ MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
     MGlobal::displayInfo(
         MString("[mmdFastLoad] Created opt-in VP2 ownership shape: ") +
         meshName_ + " (queue entries=" +
-        std::to_string(renderQueue.size()).c_str() + ")");
+        std::to_string(queueInputs.size()).c_str() + ")");
     return MS::kSuccess;
 }
 

@@ -5,7 +5,8 @@ from the ordinary ``MFnMesh`` importer.  Maya standalone can verify node
 creation, but only a GUI model panel drives ``MPxGeometryOverride`` render-item
 preparation.  This runner launches an isolated Maya profile through
 ``commandPort``, imports the small alpha-overlap PMX, waits for the custom
-override to prepare its pass items, and captures one viewport image.
+override to prepare one item per transparent material, moves the camera,
+updates one material alpha, and captures the resulting viewport images.
 
 The resulting ``witness`` is draw-preparation evidence.  It does not claim
 alpha-blend visual parity, GoldenOracle parity, or self-shadow composition.
@@ -86,6 +87,19 @@ def _capture_view(
     raise RuntimeError(f"playblast did not create a PNG: {result!r}")
 
 
+def _wait_for_witness(cmds: Any, shape_name: str, log: Any) -> str:
+    """Refresh VP2 until the native render-item witness is ready."""
+    witness = "pending"
+    for attempt in range(20):
+        cmds.refresh(force=True)
+        time.sleep(0.25)
+        witness = str(cmds.mmdRenderWitness(node=shape_name))
+        log(f"witness attempt {attempt + 1}: {witness}")
+        if witness.startswith("ready"):
+            break
+    return witness
+
+
 def run_probe(
     log_path: str,
     report_path: str,
@@ -143,11 +157,39 @@ def run_probe(
         report["shape"] = shape_name
         log(f"created root={root_name} shape={shape_name}")
 
+        # Keep an ordinary Maya mesh in the same scene.  The opt-in native
+        # shape must not replace or duplicate the regular scene path; this
+        # control is also included in the viewport framing so disappearance
+        # is visible in the captured witness images.
+        control_result = cmds.polyCube(
+            name="render_override_ordinary_control",
+            constructionHistory=False,
+            width=0.18,
+            height=0.18,
+            depth=0.18,
+        )
+        if not control_result:
+            raise RuntimeError("could not create ordinary scene control cube")
+        control_transform = str(control_result[0])
+        cmds.xform(
+            control_transform,
+            worldSpace=True,
+            translation=(1.0, 0.35, 0.0),
+        )
+        report["ordinaryControl"] = control_transform
+
         panels = [str(panel) for panel in (cmds.getPanel(type="modelPanel") or [])]
         if not panels:
             raise RuntimeError("Maya GUI has no modelPanel")
         panel = "modelPanel4" if "modelPanel4" in panels else panels[0]
+        heads_up_display_before = {}
         for current in panels:
+            try:
+                heads_up_display_before[current] = bool(
+                    cmds.modelEditor(current, query=True, headsUpDisplay=True)
+                )
+            except Exception as exc:
+                log(f"HUD query warning for {current}: {exc}")
             cmds.modelEditor(
                 current,
                 edit=True,
@@ -156,7 +198,6 @@ def run_probe(
                 displayTextures=False,
                 wireframeOnShaded=False,
                 grid=False,
-                headsUpDisplay=False,
                 cameras=False,
                 lights=False,
                 locators=False,
@@ -168,6 +209,15 @@ def run_probe(
             )
             cmds.lookThru(current, "persp")
         report["panel"] = panel
+        report["headsUpDisplay"] = {
+            "before": heads_up_display_before,
+            "afterSetup": {
+                current: bool(
+                    cmds.modelEditor(current, query=True, headsUpDisplay=True)
+                )
+                for current in panels
+            },
+        }
         report["renderer"] = {
             current: cmds.modelEditor(current, query=True, rendererName=True)
             for current in panels
@@ -175,11 +225,9 @@ def run_probe(
 
         try:
             # viewFit takes a camera/object target, not a modelPanel name.
-            # The panel already looks through persp above.  Select only the
-            # custom shape for the fit; fitting all DAG nodes also includes
-            # Maya's default cameras/lights and can produce a blank-looking
-            # capture even when render-item preparation is ready.
-            cmds.select(shape_name, replace=True)
+            # Include only the custom shape and the ordinary control; fitting
+            # all DAG nodes also includes Maya's default cameras/lights.
+            cmds.select([shape_name, control_transform], replace=True)
             cmds.viewFit("persp", all=False, animate=False, fitFactor=0.8)
         except Exception as exc:
             log(f"viewFit warning: {exc}")
@@ -204,15 +252,46 @@ def run_probe(
         except Exception as exc:
             log(f"camera/bounds query warning: {exc}")
 
-        witness = "pending"
-        for attempt in range(20):
-            cmds.refresh(force=True)
-            time.sleep(0.25)
-            witness = str(cmds.mmdRenderWitness(node=shape_name))
-            log(f"witness attempt {attempt + 1}: {witness}")
-            if witness.startswith("ready"):
-                break
+        witness = _wait_for_witness(cmds, shape_name, log)
         report["witness"] = witness
+
+        ordinary_meshes = [
+            str(item) for item in (cmds.ls(type="mesh", long=True) or [])
+        ]
+        custom_meshes = [
+            str(item)
+            for item in (
+                cmds.listRelatives(
+                    root_name,
+                    allDescendents=True,
+                    type="mesh",
+                    fullPath=True,
+                )
+                or []
+            )
+        ]
+        report["sceneOwnership"] = {
+            "ordinaryMeshCount": len(ordinary_meshes),
+            "ordinaryMeshes": ordinary_meshes,
+            "customShapeMeshDescendants": custom_meshes,
+            "ordinaryControlExists": bool(cmds.objExists(control_transform)),
+            "ordinaryControlVisible": bool(
+                cmds.getAttr(f"{control_transform}.visibility")
+            ),
+        }
+
+        # A custom shape must not consume or disable ordinary Maya selection.
+        # Keep the probe intentionally small: selecting the ordinary control
+        # proves the normal scene interaction path remains available while the
+        # custom render items are owned by the VP2 override.
+        cmds.select(control_transform, replace=True)
+        selected_control = [str(item) for item in (cmds.ls(selection=True, long=True) or [])]
+        cmds.select(clear=True)
+        report["selection"] = {
+            "selectedControl": selected_control,
+            "controlSelectable": control_transform in selected_control
+            or f"|{control_transform}" in selected_control,
+        }
 
         cmds.refresh(force=True)
         time.sleep(0.5)
@@ -225,22 +304,147 @@ def run_probe(
             height,
         )
         report["captures"]["ownership"] = str(capture)
+
+        # Camera motion must preserve the queue witness.  The slight move is
+        # intentionally applied without touching the shape or its material
+        # data, so a ready witness after the refresh demonstrates that the
+        # queue survives a normal VP2 camera invalidation.
+        initial_camera_translate = list(
+            cmds.xform("persp", query=True, worldSpace=True, translation=True)
+        )
+        moved_camera_translate = [
+            float(initial_camera_translate[0]) + 0.12,
+            float(initial_camera_translate[1]) + 0.04,
+            float(initial_camera_translate[2]),
+        ]
+        cmds.xform("persp", worldSpace=True, translation=moved_camera_translate)
+        camera_motion_witness = _wait_for_witness(cmds, shape_name, log)
+        camera_capture = _capture_view(
+            cmds,
+            output_dir / "native_vp2_ownership_camera_motion.png",
+            panel,
+            width,
+            height,
+        )
+        report["captures"]["cameraMotion"] = str(camera_capture)
+
+        # The alpha fixture has two transparent PMX materials.  Turning m0
+        # opaque must rebuild the queue as Opaque[m0/s0],Transparent[m1/s1],
+        # then restoring its authored alpha must return to the original order.
+        queue_update_result = str(
+            cmds.mmdRenderQueueUpdate(
+                node=shape_name,
+                materialIndex=0,
+                alpha=1.0,
+            )
+        )
+        queue_after_opaque = _wait_for_witness(cmds, shape_name, log)
+        opaque_capture = _capture_view(
+            cmds,
+            output_dir / "native_vp2_ownership_queue_opaque.png",
+            panel,
+            width,
+            height,
+        )
+        restore_result = str(
+            cmds.mmdRenderQueueUpdate(
+                node=shape_name,
+                materialIndex=0,
+                alpha=0.55,
+            )
+        )
+        queue_after_restore = _wait_for_witness(cmds, shape_name, log)
+        restored_capture = _capture_view(
+            cmds,
+            output_dir / "native_vp2_ownership_queue_restored.png",
+            panel,
+            width,
+            height,
+        )
+        report["captures"]["queueOpaque"] = str(opaque_capture)
+        report["captures"]["queueRestored"] = str(restored_capture)
+        report["cameraMotion"] = {
+            "translate": moved_camera_translate,
+            "witness": camera_motion_witness,
+        }
+        report["queueUpdate"] = {
+            "requestResult": queue_update_result,
+            "afterOpaque": queue_after_opaque,
+            "restoreResult": restore_result,
+            "afterRestore": queue_after_restore,
+        }
+        expected_transparent_order = "Transparent[m0/s0],Transparent[m1/s1]"
+        expected_opaque_order = "Opaque[m0/s0],Transparent[m1/s1]"
         report["checks"] = {
             "customShapeCreated": True,
-            "transparentPassPrepared": "Transparent" in witness,
+            "transparentMaterialItemsPrepared": (
+                witness.startswith("ready items=2")
+                and expected_transparent_order in witness
+            ),
+            "materialIndexOrderPrepared": expected_transparent_order in witness,
             "drawPreparationReady": witness.startswith("ready"),
             "geometryBuffersPrepared": "geometry=vertices=" in witness
             and ",indices=" in witness,
             "captureCreated": capture.is_file() and capture.stat().st_size > 0,
+            "cameraMotionPreserved": (
+                camera_motion_witness.startswith("ready")
+                and expected_transparent_order in camera_motion_witness
+            ),
+            "queueUpdateReordered": (
+                queue_after_opaque.startswith("ready")
+                and expected_opaque_order in queue_after_opaque
+            ),
+            "queueUpdateRestored": (
+                queue_after_restore.startswith("ready")
+                and expected_transparent_order in queue_after_restore
+            ),
+            "cameraCaptureCreated": camera_capture.is_file()
+            and camera_capture.stat().st_size > 0,
+            "queueOpaqueCaptureCreated": opaque_capture.is_file()
+            and opaque_capture.stat().st_size > 0,
+            "queueRestoredCaptureCreated": restored_capture.is_file()
+            and restored_capture.stat().st_size > 0,
+            "ordinarySceneControlVisible": report["sceneOwnership"][
+                "ordinaryControlExists"
+            ]
+            and report["sceneOwnership"]["ordinaryControlVisible"],
+            "noCustomMfnMeshDuplicate": not report["sceneOwnership"][
+                "customShapeMeshDescendants"
+            ],
+            "selectionPreserved": report["selection"]["controlSelectable"],
+            "hudPreserved": (
+                report["headsUpDisplay"]["before"]
+                == report["headsUpDisplay"]["afterSetup"]
+            ),
         }
-        if not report["checks"]["transparentPassPrepared"]:
-            raise RuntimeError(f"transparent pass was not prepared: {witness}")
+        if not report["checks"]["transparentMaterialItemsPrepared"]:
+            raise RuntimeError(
+                f"two transparent material items were not prepared: {witness}"
+            )
+        if not report["checks"]["materialIndexOrderPrepared"]:
+            raise RuntimeError(f"material order was not prepared: {witness}")
         if not report["checks"]["drawPreparationReady"]:
             raise RuntimeError(f"VP2 render-item witness stayed pending: {witness}")
         if not report["checks"]["geometryBuffersPrepared"]:
             raise RuntimeError(f"VP2 geometry witness stayed pending: {witness}")
         if not report["checks"]["captureCreated"]:
             raise RuntimeError(f"VP2 capture was empty: {capture}")
+        for check_name in (
+            "cameraMotionPreserved",
+            "queueUpdateReordered",
+            "queueUpdateRestored",
+            "cameraCaptureCreated",
+            "queueOpaqueCaptureCreated",
+            "queueRestoredCaptureCreated",
+            "ordinarySceneControlVisible",
+            "noCustomMfnMeshDuplicate",
+            "selectionPreserved",
+            "hudPreserved",
+        ):
+            if not report["checks"][check_name]:
+                raise RuntimeError(
+                    f"native VP2 ownership check failed: {check_name}"
+                )
         report["status"] = "pass"
     except Exception as exc:
         report["errors"].append(str(exc))
@@ -307,6 +511,15 @@ def main() -> int:
             out_dir / "native_vp2_ownership.png",
             out_dir / "native_vp2_ownership.0000.png",
             out_dir / "native_vp2_ownership.0001.png",
+            out_dir / "native_vp2_ownership_camera_motion.png",
+            out_dir / "native_vp2_ownership_camera_motion.0000.png",
+            out_dir / "native_vp2_ownership_camera_motion.0001.png",
+            out_dir / "native_vp2_ownership_queue_opaque.png",
+            out_dir / "native_vp2_ownership_queue_opaque.0000.png",
+            out_dir / "native_vp2_ownership_queue_opaque.0001.png",
+            out_dir / "native_vp2_ownership_queue_restored.png",
+            out_dir / "native_vp2_ownership_queue_restored.0000.png",
+            out_dir / "native_vp2_ownership_queue_restored.0001.png",
         ),
         port_error=f"commandPort :{args.port} is already open; choose another --port",
         report_error=f"VP2 ownership report missing: {report_path}",
