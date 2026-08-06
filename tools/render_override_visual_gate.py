@@ -9,8 +9,9 @@ dedicated FLIP threshold contract is recorded and evaluated, but a numeric
 result requires explicit CLI opt-in before it can affect the gate status.
 
 The pure helpers are intentionally usable without Maya, GoldenOracle assets,
-or an installed FLIP executable.  Tests can inject capture and FLIP runners
-through :func:`run_gate`.
+or an installed FLIP executable. Tests can inject capture and FLIP runners
+through :func:`run_gate`. The HTML viewer is created once and keeps its
+image-first case layout while later runs replace only selected case outputs.
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ MANIFEST_ENV = "GOLDEN_ORACLE_RENDER_MANIFEST"
 FEATURES = ("transparency", "outline", "self-shadow", "all")
 BACKENDS = ("dx11", "glsl")
 DEFAULT_MAYA_COMMAND_PORT = 7721
+HTML_GALLERY_MARKER = "<!-- RO-0 image-only gallery v2 -->"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -315,10 +317,13 @@ def _safe_case_dir_name(name: str) -> str:
 
 
 def clear_output_dir(output_dir: Path) -> Path:
-    """Replace only the contents of a directory named ``latest``.
+    """Clear generated report data while preserving the image gallery.
 
-    The directory itself is retained so a stale file cannot escape the fixed
-    artifact boundary.  The name check also prevents accidental use against a
+    ``index.html`` is a static image-only viewer and ``cases`` contains the
+    image history used by that viewer. Keep both so a targeted capture can
+    refresh one case without collapsing the gallery to one card. The
+    directory itself is retained so a stale file cannot escape the fixed
+    artifact boundary. The name check also prevents accidental use against a
     broad build or repository directory.
     """
 
@@ -329,11 +334,28 @@ def clear_output_dir(output_dir: Path) -> Path:
         raise ValueError("RO-0 output directory must not be a symlink: %s" % output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     for child in list(output_dir.iterdir()):
+        if child.name in {"index.html", "cases"}:
+            if child.name == "cases" and (child.is_symlink() or not child.is_dir()):
+                raise ValueError("RO-0 cases path must be a directory: %s" % child)
+            continue
         if child.is_symlink() or child.is_file():
             child.unlink()
         elif child.is_dir():
             _remove_tree(child)
     return output_dir
+
+
+def _clear_case_output(case_dir: Path) -> None:
+    """Replace one selected case's generated files without touching siblings."""
+
+    case_dir.mkdir(parents=True, exist_ok=True)
+    if case_dir.is_symlink():
+        raise ValueError("RO-0 case directory must not be a symlink: %s" % case_dir)
+    for child in list(case_dir.iterdir()):
+        if child.is_symlink() or child.is_file():
+            child.unlink()
+        elif child.is_dir():
+            _remove_tree(child)
 
 
 def _remove_tree(path: Path, retries: int = 20) -> None:
@@ -721,90 +743,86 @@ def _case_result_template(case: Dict[str, Any], feature: str, backend: str) -> D
 
 
 def _write_html(summary: Dict[str, Any], output_dir: Path) -> Path:
-    """Write a static, image-first report with deterministic ordering."""
+    """Create the image-only viewer once; later runs refresh PNGs in place.
 
-    def rank(item: Dict[str, Any]) -> Tuple[int, float, str]:
-        status = str(item.get("status"))
-        priority = {"fail": 0, "unavailable": 1, "unreviewed": 1, "pass": 2}.get(status, 0)
-        metric = item.get("roiComparison", {}).get("metrics", {}).get("mean")
-        return priority, -(float(metric) if metric is not None else -1.0), str(item.get("name"))
+    The viewer deliberately contains no numeric gate data. It stores only
+    deterministic case names and image paths, then appends a runtime query
+    string to each image URL so a browser reload cannot reuse a cached PNG.
+    """
 
-    rows = sorted(summary.get("cases", []), key=rank)
+    path = output_dir / "index.html"
+    if path.is_file():
+        existing = path.read_text(encoding="utf-8", errors="replace")
+        if HTML_GALLERY_MARKER in existing:
+            return path
+
+    rows = sorted(summary.get("cases", []), key=lambda item: str(item.get("name")))
     cards = []
     for item in rows:
-        artifacts = item.get("artifacts", {})
+        case_dir = _safe_case_dir_name(str(item.get("name")))
         image_tags = []
-        for label, key in (
-            ("GoldenOracle", "reference"),
-            ("Maya", "maya"),
-            ("FLIP", "flipError"),
-            ("FLIP ROI", "flipErrorRoi"),
+        for label, filename in (
+            ("GoldenOracle", "reference.png"),
+            ("Maya", "maya.png"),
+            ("FLIP", "flip-error.png"),
         ):
-            href = artifacts.get(key)
-            if href:
-                escaped_href = html.escape(str(href), quote=True)
-                escaped_label = html.escape(label)
-                image_tags.append(
-                    '<figure><a href="%s"><img loading="lazy" src="%s" alt="%s"></a>'
-                    '<figcaption>%s</figcaption></figure>'
-                    % (escaped_href, escaped_href, escaped_label, escaped_label)
-                )
-        if not image_tags:
-            image_tags.append('<p class="no-images">画像なし: oracle-status: unavailable</p>')
-        full = item.get("full", {})
-        roi = item.get("roiComparison", {})
-        threshold = summary.get("thresholdContract", {}).get("features", {}).get(item.get("feature"), {})
-        errors = item.get("errors", [])
-        error_text = "; ".join(str(error) for error in errors)
-        cards.append(
-            '<article class="case-card status-%s">'
-            '<header class="case-head"><h2>%s</h2><span class="status %s">%s</span></header>'
-            '<div class="gallery">%s</div>'
-            '<details><summary>%s · full %s · ROI %s</summary>'
-            '<div class="details">feature=%s · frame=%s · threshold=%s%s</div></details>'
-            '</article>'
-            % (
-                html.escape(str(item.get("status"))),
-                html.escape(str(item.get("name"))),
-                html.escape(str(item.get("status"))),
-                html.escape(str(item.get("status"))),
-                "".join(image_tags),
-                html.escape(str(item.get("backend"))),
-                html.escape(str(full.get("metrics", {}).get("mean"))),
-                html.escape(str(roi.get("metrics", {}).get("mean"))),
-                html.escape(str(item.get("feature"))),
-                html.escape(str(item.get("frame"))),
-                html.escape(json.dumps(threshold, ensure_ascii=False, sort_keys=True)),
-                (" · errors=" + html.escape(error_text)) if error_text else "",
+            relative = "cases/%s/%s" % (case_dir, filename)
+            escaped_relative = html.escape(relative, quote=True)
+            escaped_label = html.escape(label)
+            image_tags.append(
+                '<figure><a data-href="%s"><img loading="lazy" data-src="%s" alt="%s"></a>'
+                '<figcaption>%s</figcaption></figure>'
+                % (escaped_relative, escaped_relative, escaped_label, escaped_label)
             )
+        cards.append(
+            '<article class="case-card"><h2>%s</h2><div class="gallery">%s'
+            '<p class="no-images" hidden>画像なし</p></div></article>'
+            % (html.escape(str(item.get("name"))), "".join(image_tags))
         )
 
     document = """<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<title>RenderOverride visual gate</title>
+<!-- RO-0 image-only gallery v2 -->
+<html lang="ja"><head><meta charset="utf-8">
+<title>RenderOverride image gallery</title>
 <style>
 *{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:8px;background:#111;color:#ddd}
-h1{font-size:1rem;margin:0 0 4px}.meta{font-size:.62rem;opacity:.75;margin:0 0 8px}
-.case-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:8px}.case-card{background:#1b1b1b;border:1px solid #3b3b3b;padding:5px;min-width:0}.case-card.status-fail{border-color:#b44}
-.case-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.case-head h2{font-size:.82rem;line-height:1.15;margin:0;overflow-wrap:anywhere}.status{font-size:.62rem;font-weight:700;white-space:nowrap}.status.fail{color:#f88}.status.unavailable,.status.unreviewed{color:#e9b85c}.status.pass{color:#7dce9b}
-.gallery{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;margin-top:4px}.gallery figure{margin:0;background:#fff}.gallery img{display:block;width:100%%;height:min(58vh,640px);object-fit:contain;background:#fff;border:1px solid #333}.gallery figcaption{text-align:center;font-size:.58rem;color:#aaa;padding:2px}.gallery a{display:block}.no-images{font-size:.62rem;color:#e9b85c;margin:12px 4px}
-@media(max-width:560px){.gallery{grid-template-columns:1fr}}
-details{font-size:.58rem;color:#999;margin-top:4px}summary{cursor:pointer}.details{overflow-wrap:anywhere}.case-card.status-unavailable .gallery{min-height:24px}
+h1{font-size:.8rem;margin:0 0 4px}.meta{font-size:.52rem;opacity:.6;margin:0 0 6px}
+.case-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.case-card{background:#1b1b1b;border:1px solid #333;padding:4px;min-width:0}.case-card h2{font-size:.62rem;line-height:1.1;margin:0 0 3px;overflow-wrap:anywhere;color:#ccc}
+.gallery{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:3px}.gallery figure{margin:0;background:#fff;min-width:0}.gallery img{display:block;width:100%;height:min(24vh,260px);object-fit:contain;background:#fff;border:1px solid #333}.gallery figcaption{text-align:center;font-size:.48rem;color:#888;padding:1px}.gallery a{display:block}.no-images{grid-column:1/-1;font-size:.52rem;color:#999;margin:8px 2px;text-align:center}
+@media(max-width:900px){.case-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:560px){.case-grid{grid-template-columns:1fr}}
 </style></head><body>
-<h1>RenderOverride visual gate</h1>
-<p class="meta">status=%s · feature=%s · backend=%s · Maya=%s · mode=%s · cases=%d</p>
-<main class="case-grid">%s</main>
-</body></html>
-""" % (
-        html.escape(str(summary.get("status"))),
-        html.escape(str(summary.get("feature"))),
-        html.escape(str(summary.get("backend"))),
-        html.escape(str(summary.get("maya"))),
-        html.escape(str(summary.get("gateMode"))),
-        len(rows),
-        "\n".join(cards),
-    )
-    path = output_dir / "index.html"
+<h1>RenderOverride image gallery</h1>
+<p class="meta">PNGは再読み込み時に更新 · GoldenOracle / Maya / FLIP</p>
+<main class="case-grid">
+""" + "\n".join(cards) + """
+</main>
+<script>
+(() => {
+  const revision = String(Date.now());
+  const addRevision = (value) => `${value}${value.includes("?") ? "&" : "?"}v=${revision}`;
+  document.querySelectorAll(".gallery").forEach((gallery) => {
+    const figures = [...gallery.querySelectorAll("figure")];
+    let pending = figures.length;
+    const updateEmptyState = () => {
+      if (pending === 0 && figures.every((figure) => figure.hidden)) {
+        const empty = gallery.querySelector(".no-images");
+        if (empty) empty.hidden = false;
+      }
+    };
+    figures.forEach((figure) => {
+      const image = figure.querySelector("img[data-src]");
+      const link = figure.querySelector("a[data-href]");
+      if (!image) { figure.hidden = true; pending -= 1; return; }
+      image.addEventListener("load", () => { pending -= 1; updateEmptyState(); }, {once: true});
+      image.addEventListener("error", () => { figure.hidden = true; pending -= 1; updateEmptyState(); }, {once: true});
+      image.src = addRevision(image.dataset.src);
+      if (link) link.href = addRevision(link.dataset.href);
+    });
+    updateEmptyState();
+  });
+})();
+</script></body></html>
+"""
     path.write_text(document, encoding="utf-8")
     return path
 
@@ -938,7 +956,7 @@ def run_gate(
     for case in selected_cases:
         result = _case_result_template(case, feature, backend)
         case_dir = cases_dir / _safe_case_dir_name(str(case["name"]))
-        case_dir.mkdir(parents=True, exist_ok=True)
+        _clear_case_output(case_dir)
         if case.get("feature") == "self-shadow":
             result["status"] = "unavailable"
             result["oracleStatus"] = "unavailable"
