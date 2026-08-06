@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -30,6 +31,10 @@ struct MmdRenderQueueInput {
     std::size_t submeshIndex = 0;
     std::string transparencyMode;
     float diffuseAlpha = 1.0f;
+    // Minimal native material payload.  Texture, toon, outline, double-sided
+    // culling, and morph payloads remain outside this first C++ material
+    // slice.
+    std::array<float, 3> diffuseColor = {1.0f, 1.0f, 1.0f};
 };
 
 /** Ordered queue record consumed by a native material-split loader. */
@@ -37,6 +42,9 @@ struct MmdRenderQueueEntry {
     std::size_t materialIndex = 0;
     std::size_t submeshIndex = 0;
     MmdDrawPass pass = MmdDrawPass::Opaque;
+    // Index into the input vector.  The key fields are not unique for every
+    // loader, so the ordered entry must retain its exact source record.
+    std::size_t inputIndex = 0;
 };
 
 /**
@@ -62,5 +70,10 @@ const char* mmdDrawPassName(MmdDrawPass pass);
  */
 std::vector<MmdRenderQueueEntry> buildMmdRenderQueue(
     const std::vector<MmdRenderQueueInput>& inputs);
+
+/** Find the exact source material record represented by an ordered entry. */
+const MmdRenderQueueInput* findMmdRenderQueueInput(
+    const std::vector<MmdRenderQueueInput>& inputs,
+    const MmdRenderQueueEntry& entry);
 
 }  // namespace mmd

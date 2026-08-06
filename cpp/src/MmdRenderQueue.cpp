@@ -71,11 +71,14 @@ std::vector<MmdRenderQueueEntry> buildMmdRenderQueue(
 {
     std::vector<MmdRenderQueueEntry> queue;
     queue.reserve(inputs.size());
-    for (const MmdRenderQueueInput& input : inputs) {
+    for (std::size_t inputIndex = 0; inputIndex < inputs.size();
+         ++inputIndex) {
+        const MmdRenderQueueInput& input = inputs[inputIndex];
         queue.push_back({input.materialIndex,
                          input.submeshIndex,
                          classifyMmdDrawPass(input.transparencyMode,
-                                             input.diffuseAlpha)});
+                                             input.diffuseAlpha),
+                         inputIndex});
     }
 
     std::stable_sort(
@@ -92,6 +95,21 @@ std::vector<MmdRenderQueueEntry> buildMmdRenderQueue(
             return left.submeshIndex < right.submeshIndex;
         });
     return queue;
+}
+
+const MmdRenderQueueInput* findMmdRenderQueueInput(
+    const std::vector<MmdRenderQueueInput>& inputs,
+    const MmdRenderQueueEntry& entry)
+{
+    if (entry.inputIndex >= inputs.size()) {
+        return nullptr;
+    }
+    const MmdRenderQueueInput& input = inputs[entry.inputIndex];
+    if (input.materialIndex != entry.materialIndex ||
+        input.submeshIndex != entry.submeshIndex) {
+        return nullptr;
+    }
+    return &input;
 }
 
 }  // namespace mmd

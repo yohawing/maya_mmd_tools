@@ -64,6 +64,10 @@ public:
 
     struct QueueGeometry {
         mmd::MmdRenderQueueEntry entry;
+        // Keep the material input beside the ordered item so the VP2 override
+        // can bind per-item material values without looking up mutable shape
+        // state by index.
+        mmd::MmdRenderQueueInput material;
         uint32_t vertexOffset = 0U;
         std::vector<uint32_t> indices;
     };

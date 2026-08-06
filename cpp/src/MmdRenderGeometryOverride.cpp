@@ -91,15 +91,17 @@ MmdRenderGeometryOverride::MmdRenderGeometryOverride(const MObject& object)
 
 MmdRenderGeometryOverride::~MmdRenderGeometryOverride()
 {
-    if (solidShader_) {
-        MRenderer* renderer = MRenderer::theRenderer();
-        const MShaderManager* shaderManager =
-            renderer ? renderer->getShaderManager() : nullptr;
-        if (shaderManager) {
-            shaderManager->releaseShader(solidShader_);
+    MRenderer* renderer = MRenderer::theRenderer();
+    const MShaderManager* shaderManager =
+        renderer ? renderer->getShaderManager() : nullptr;
+    if (shaderManager) {
+        for (const auto& shader : materialShaders_) {
+            if (shader.second) {
+                shaderManager->releaseShader(shader.second);
+            }
         }
-        solidShader_ = nullptr;
     }
+    materialShaders_.clear();
 }
 
 MHWRender::DrawAPI MmdRenderGeometryOverride::supportedDrawAPIs() const
@@ -155,17 +157,11 @@ void MmdRenderGeometryOverride::updateRenderItems(
     MRenderer* renderer = MRenderer::theRenderer();
     const MShaderManager* shaderManager =
         renderer ? renderer->getShaderManager() : nullptr;
-    if (!solidShader_ && shaderManager) {
-        solidShader_ = shaderManager->getStockShader(MShaderManager::k3dSolidShader);
-    }
-    if (solidShader_) {
-        // The stock solid shader has no material-node input on this transient
-        // witness shape.  Set an opaque diagnostic color explicitly so a
-        // transparent-queue item does not disappear because its default
-        // alpha is zero.  This is only draw-preparation visibility; it is not
-        // the MMD material alpha implementation.
-        static const float kWitnessColor[4] = {1.0F, 1.0F, 1.0F, 1.0F};
-        solidShader_->setParameter("solidColor", kWitnessColor);
+    if (!shaderManager) {
+        MGlobal::displayError(
+            "[mmdRenderOverride] Stock shader manager is unavailable.");
+        shape_->clearRenderItemWitness();
+        return;
     }
 
     const MmdRenderShape::GeometryData& geometry = shape_->geometry();
@@ -181,18 +177,36 @@ void MmdRenderGeometryOverride::updateRenderItems(
         if (!item) {
             return;
         }
-        if (solidShader_) {
-            if (!item->setShader(solidShader_)) {
-                MGlobal::displayError(
-                    MString("[mmdRenderOverride] Failed to assign stock shader to ") +
-                    item->name());
-                disableItems(list);
-                shape_->clearRenderItemWitness();
-                return;
-            }
+        MHWRender::MShaderInstance* materialShader = nullptr;
+        const auto shaderIt = materialShaders_.find(
+            queueGeometry.material.materialIndex);
+        if (shaderIt != materialShaders_.end()) {
+            materialShader = shaderIt->second;
         } else {
+            materialShader =
+                shaderManager->getStockShader(MShaderManager::k3dSolidShader);
+            if (materialShader) {
+                materialShaders_.emplace(queueGeometry.material.materialIndex,
+                                         materialShader);
+            }
+        }
+        if (!materialShader) {
             MGlobal::displayError(
-                "[mmdRenderOverride] Stock solid shader is unavailable.");
+                "[mmdRenderOverride] Material stock shader is unavailable.");
+            disableItems(list);
+            shape_->clearRenderItemWitness();
+            return;
+        }
+        const float materialColor[4] = {
+            queueGeometry.material.diffuseColor[0],
+            queueGeometry.material.diffuseColor[1],
+            queueGeometry.material.diffuseColor[2],
+            queueGeometry.material.diffuseAlpha};
+        if (!materialShader->setParameter("solidColor", materialColor) ||
+            !item->setShader(materialShader)) {
+            MGlobal::displayError(
+                MString("[mmdRenderOverride] Failed to bind material shader to ") +
+                item->name());
             disableItems(list);
             shape_->clearRenderItemWitness();
             return;
@@ -387,6 +401,6 @@ void MmdRenderGeometryOverride::populateGeometry(
 
 void MmdRenderGeometryOverride::cleanUp()
 {
-    // MGeometry owns the transient buffers.  The override owns only the stock
-    // shader, released in its destructor while Maya's renderer is alive.
+    // MGeometry owns the transient buffers.  The override owns the per-material
+    // stock shaders, released in its destructor while Maya's renderer is alive.
 }

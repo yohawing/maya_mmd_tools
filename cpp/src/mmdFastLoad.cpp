@@ -42,6 +42,7 @@
 #include "third_party/json.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstring>
@@ -213,6 +214,28 @@ float materialDiffuseAlpha(const json& material)
         return 1.0f;
     }
     return material["diffuse"][3].get<float>();
+}
+
+std::array<float, 3> materialDiffuseColor(const json& material)
+{
+    std::array<float, 3> color = {1.0F, 1.0F, 1.0F};
+    if (!material.is_object() || !material.contains("diffuse") ||
+        !material["diffuse"].is_array() || material["diffuse"].size() < 3U) {
+        return color;
+    }
+
+    for (std::size_t component = 0; component < color.size(); ++component) {
+        const json& value = material["diffuse"][component];
+        if (!value.is_number()) {
+            return {1.0F, 1.0F, 1.0F};
+        }
+        const double numericValue = value.get<double>();
+        if (!std::isfinite(numericValue)) {
+            return {1.0F, 1.0F, 1.0F};
+        }
+        color[component] = static_cast<float>(numericValue);
+    }
+    return color;
 }
 
 std::string quoteMelName(const std::string& name)
@@ -883,6 +906,7 @@ MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
             const json& material = (*materials)[originalMaterialIndex];
             input.transparencyMode = materialTransparencyMode(material);
             input.diffuseAlpha = materialDiffuseAlpha(material);
+            input.diffuseColor = materialDiffuseColor(material);
         }
         queueInputs.push_back(std::move(input));
     }

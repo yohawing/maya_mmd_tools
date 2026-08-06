@@ -31,6 +31,13 @@ std::size_t passIndex(mmd::MmdDrawPass pass)
     return static_cast<std::size_t>(pass);
 }
 
+bool hasFiniteDiffuse(const mmd::MmdRenderQueueInput& input)
+{
+    return std::isfinite(input.diffuseAlpha) &&
+           std::all_of(input.diffuseColor.begin(), input.diffuseColor.end(),
+                       [](float value) { return std::isfinite(value); });
+}
+
 }  // namespace
 
 const MTypeId MmdRenderShape::id(kMmdRenderShapeId);
@@ -131,6 +138,12 @@ bool MmdRenderShape::setMaterialSplitGeometry(
     const std::vector<mmd::MmdRenderQueueEntry> renderQueue =
         mmd::buildMmdRenderQueue(queueInputs);
 
+    for (const mmd::MmdRenderQueueInput& input : queueInputs) {
+        if (!hasFiniteDiffuse(input)) {
+            return reject("material diffuse contains a non-finite value");
+        }
+    }
+
     for (std::size_t queueIndex = 0; queueIndex < renderQueue.size();
          ++queueIndex) {
         const mmd::MmdRenderQueueEntry& entry = renderQueue[queueIndex];
@@ -179,6 +192,12 @@ bool MmdRenderShape::setMaterialSplitGeometry(
             submeshIndices[entry.submeshIndex];
         QueueGeometry queueGeometry;
         queueGeometry.entry = entry;
+        const mmd::MmdRenderQueueInput* material =
+            mmd::findMmdRenderQueueInput(queueInputs, entry);
+        if (!material) {
+            return reject("queue entry has no material input");
+        }
+        queueGeometry.material = *material;
         queueGeometry.vertexOffset =
             static_cast<uint32_t>(next.positions.size() / 3U);
 
@@ -263,7 +282,7 @@ bool MmdRenderShape::updateMaterialAlpha(std::size_t materialIndex,
             const QueueGeometry& candidate =
                 geometry_.queueGeometry[candidateIndex];
             if (!consumed[candidateIndex] &&
-                candidate.entry.submeshIndex == entry.submeshIndex) {
+                candidate.entry.inputIndex == entry.inputIndex) {
                 existingIndex = candidateIndex;
                 break;
             }
@@ -276,6 +295,14 @@ bool MmdRenderShape::updateMaterialAlpha(std::size_t materialIndex,
         consumed[existingIndex] = true;
         QueueGeometry item = std::move(geometry_.queueGeometry[existingIndex]);
         item.entry = entry;
+        const mmd::MmdRenderQueueInput* material =
+            mmd::findMmdRenderQueueInput(nextInputs, entry);
+        if (!material) {
+            MGlobal::displayError(
+                "[mmdRenderShape] Queue alpha update lost material data.");
+            return false;
+        }
+        item.material = *material;
         reordered.push_back(std::move(item));
     }
 
