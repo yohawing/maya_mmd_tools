@@ -239,6 +239,45 @@ def test_pmm_assets_use_manifest_camera_and_light_without_mmd_anim(tmp_path):
     assert not any("mmd-anim" in value for value in cases[0].values() if isinstance(value, str))
 
 
+def test_generated_pmx_capture_uses_mmd_light_defaults_without_overriding_cases(tmp_path):
+    manifest_path = tmp_path / "fixture.render.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "defaults": {
+                    "light": {"direction": [0.5, -1, 0.5], "color": [1, 1, 1]},
+                },
+                "cases": [
+                    {
+                        "name": "generated-pmx",
+                        "assets": {"model": "../three-mmd-loader/test/fixtures/generated/visual/box.pmx"},
+                        "metadata": {"notes": "three-mmd-loader generated fixture: box.pmx"},
+                    },
+                    {
+                        "name": "explicit-light",
+                        "assets": {"model": "model.pmx"},
+                        "metadata": {"light": {"direction": [1, -1, 1], "color": [0.2, 0.3, 0.4]}},
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _, cases = _load_cases(manifest_path, [], [], 0)
+
+    assert cases[0]["light"] == {
+        "direction": [0.5, -1.0, 1.0],
+        "color": [154.0 / 255.0] * 3,
+        "source": "mmd-default",
+    }
+    assert cases[1]["light"] == {
+        "direction": [1, -1, 1],
+        "color": [0.2, 0.3, 0.4],
+        "source": "case-override",
+    }
+
+
 def test_nox_visual_regression_does_not_forward_removed_camera_options():
     session = mock.Mock()
     session.posargs = [
@@ -293,6 +332,35 @@ def test_maya_payload_carries_shader_plugin_lifecycle_diagnostics(tmp_path):
     assert 'report["shader_plugin"]["before"] = _shader_plugin_diag()' in source
     assert 'report["shader_plugin"]["after"] = _shader_plugin_diag()' in source
     assert source.count("cmds.loadPlugin(_shader_plugin_name, quiet=True)") == 1
+    assert 'mmd_tools_plugin.py' in source
+    assert "def _ensure_mmd_tools_plugin():" in source
+    assert 'mmdMorphController is already registered by a non-canonical MMD plugin path' in source
+    assert 'report["mmd_tools_plugin"] = _ensure_mmd_tools_plugin()' in source
+
+
+def test_generated_light_defaults_do_not_replace_vmd_light_cases(tmp_path):
+    manifest_path = tmp_path / "fixture.render.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "defaults": {
+                    "light": {"direction": [0.5, -1, 0.5], "color": [1, 1, 1]},
+                },
+                "cases": [
+                    {
+                        "name": "generated-vmd-light",
+                        "assets": {"model": "../three-mmd-loader/test/fixtures/generated/visual/box.pmx"},
+                        "metadata": {"tags": ["light-vmd"]},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _, cases = _load_cases(manifest_path, [], [], 0)
+
+    assert cases[0]["light"] == {"direction": [0.5, -1, 0.5], "color": [1, 1, 1]}
 
 
 def test_maya_payload_records_data_only_self_shadow_caster_selection(tmp_path):

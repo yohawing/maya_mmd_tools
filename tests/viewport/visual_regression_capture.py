@@ -39,6 +39,12 @@ DEFAULT_MAYA_VERSION = "2024"
 DEFAULT_PORT = 7721
 DEFAULT_TIMEOUT = 420
 COMPLETION_MARKER = "//-- MAYA VISUAL REGRESSION FINISHED --//"
+# Generated PMX GoldenOracle captures use the MMD material-light defaults, not
+# the generic host-light values retained in fixture.render.json.  Keep these
+# defaults in the Maya capture harness so a manifest without a case-specific
+# light does not silently render the same PMX under a different colour model.
+_MMD_DEFAULT_LIGHT_TRAVEL_DIRECTION = (0.5, -1.0, 1.0)
+_MMD_DEFAULT_LIGHT_COLOR = 154.0 / 255.0
 BACKEND_CONFIG = {
     "dx11": {"node_type": "dx11Shader", "plugin": "dx11Shader", "vp2_device": "VirtualDeviceDx11"},
     "glsl": {"node_type": "GLSLShader", "plugin": "glslShader", "vp2_device": "VirtualDeviceGLCore"},
@@ -152,6 +158,18 @@ def _load_cases(
     wanted_tags = set(tags)
     manifest_dir = manifest_path.parent
 
+    def uses_generated_mmd_light(case: dict) -> bool:
+        """Identify Three-generated PMX fixtures with baked MMD light defaults."""
+        assets = case.get("assets") or {}
+        metadata = case.get("metadata") or {}
+        model_ref = str(assets.get("model", "")).replace("\\", "/").lower()
+        notes = str(metadata.get("notes", "")).lower()
+        raw_tags = metadata.get("tags", [])
+        tags = {str(tag).lower() for tag in raw_tags} if isinstance(raw_tags, (list, tuple, set)) else set()
+        if "light-vmd" in tags:
+            return False
+        return "/generated/" in f"/{model_ref}" or "three-mmd-loader generated fixture" in notes
+
     for case in manifest.get("cases", []):
         name = case.get("name")
         if wanted and name not in wanted:
@@ -164,8 +182,22 @@ def _load_cases(
         camera.update(case.get("metadata", {}).get("camera", {}))
         image = dict(defaults.get("image", {}))
         image.update(case.get("image", {}))
+        case_light = case.get("light") if isinstance(case.get("light"), dict) else {}
+        metadata_light = case.get("metadata", {}).get("light", {})
+        if not isinstance(metadata_light, dict):
+            metadata_light = {}
         light = dict(defaults.get("light", {}))
-        light.update(case.get("metadata", {}).get("light", {}))
+        light.update(case_light)
+        light.update(metadata_light)
+        if not case_light and not metadata_light and uses_generated_mmd_light(case):
+            # The manifest's top-level light is a legacy host-scene default.
+            # Three's generated-PMX baseline keeps the MMD material light
+            # (154/255) and its canonical travel direction instead.
+            light["direction"] = list(_MMD_DEFAULT_LIGHT_TRAVEL_DIRECTION)
+            light["color"] = [_MMD_DEFAULT_LIGHT_COLOR] * 3
+            light["source"] = "mmd-default"
+        elif case_light or metadata_light:
+            light["source"] = "case-override"
         frames = case.get("frames", [defaults.get("frame", 0)])
         assets = case.get("assets") or {}
         camera_motion_rel = (
@@ -922,7 +954,13 @@ def _apply_mmd_light(case):
     # its world -Z feeds MMDLightDirection through the wired vectorProduct.
     from mmd_tools.converters import light_converter
     ctrl = light_converter.set_mmd_light_direction(direction, color)
-    return {{"sourceDirection": source_direction, "mayaDirection": direction, "color": color, "controller": ctrl}}
+    return {{
+        "source": light.get("source", "manifest"),
+        "sourceDirection": source_direction,
+        "mayaDirection": direction,
+        "color": color,
+        "controller": ctrl,
+    }}
 
 def _import_vmd_camera(vmd_path):
     # Import a camera-motion VMD through the production Maya converter.
@@ -1118,6 +1156,65 @@ def _capture_case(case):
         "diff": diff,
     }}
 
+def _mmd_plugin_name_for_path(plugin_path):
+    expected = plugin_path.resolve()
+    for name in cmds.pluginInfo(query=True, listPlugins=True) or []:
+        try:
+            if not cmds.pluginInfo(name, query=True, loaded=True):
+                continue
+            loaded_path = Path(cmds.pluginInfo(name, query=True, path=True)).resolve()
+        except Exception:
+            continue
+        if os.path.normcase(str(loaded_path)) == os.path.normcase(str(expected)):
+            return str(name)
+    return None
+
+def _ensure_mmd_tools_plugin():
+    candidates = [
+        _project_root / "plug-ins" / "mmd_tools_plugin.py",
+        _project_root / "mmd_tools" / "plugin_main.py",
+    ]
+    for plugin_path in candidates:
+        plugin_name = _mmd_plugin_name_for_path(plugin_path)
+        if plugin_name:
+            missing = sorted({{"mmdMorphController"}} - set(cmds.allNodeTypes() or []))
+            if missing:
+                raise RuntimeError(
+                    "canonical mmd_tools plugin is loaded but node registration is incomplete: "
+                    + ", ".join(missing)
+                )
+            return {{
+                "path": str(plugin_path),
+                "name": plugin_name,
+                "loaded": True,
+                "reused": True,
+                "morph_node_registered": True,
+            }}
+
+    if "mmdMorphController" in (cmds.allNodeTypes() or []):
+        raise RuntimeError(
+            "mmdMorphController is already registered by a non-canonical MMD plugin path"
+        )
+    target = next((path for path in candidates if path.is_file()), None)
+    if target is None:
+        raise RuntimeError("mmd_tools plugin entrypoint not found: " + str(candidates[0]))
+    cmds.loadPlugin(str(target), quiet=True)
+    plugin_name = _mmd_plugin_name_for_path(target)
+    if not plugin_name:
+        raise RuntimeError("mmd_tools plugin did not remain loaded: " + str(target))
+    missing = sorted({{"mmdMorphController"}} - set(cmds.allNodeTypes() or []))
+    if missing:
+        raise RuntimeError(
+            "mmd_tools plugin registration incomplete: " + ", ".join(missing)
+        )
+    return {{
+        "path": str(target),
+        "name": plugin_name,
+        "loaded": True,
+        "reused": False,
+        "morph_node_registered": True,
+    }}
+
 def _main():
     if str(_project_root) not in sys.path:
         sys.path.insert(0, str(_project_root))
@@ -1131,6 +1228,11 @@ def _main():
         "output_dir": str(_output_dir),
         "deviceInformation": None,
         "vp2_device_valid": False,
+        "mmd_tools_plugin": {{
+            "path": None,
+            "loaded": False,
+            "error": None,
+        }},
         "shader_plugin": {{"name": _shader_plugin_name, "before": None, "after": None}},
         "results": [],
         "errors": [],
@@ -1142,6 +1244,16 @@ def _main():
         report["vp2_device_valid"] = ("directx" in device_text or "dx11" in device_text) if _shader_backend == "dx11" else ("opengl" in device_text or "gl core" in device_text or "glcore" in device_text)
     except Exception as exc:
         report["deviceInformation"] = "ERR: " + str(exc)
+
+    # Load the production MMD plug-in before importing any PMX.  Morph-bearing
+    # fixtures require mmdMorphController; a shader-only preload is not enough
+    # and otherwise makes the all-cases report fail before rendering starts.
+    try:
+        report["mmd_tools_plugin"] = _ensure_mmd_tools_plugin()
+    except Exception as exc:
+        report["mmd_tools_plugin"]["error"] = str(exc)
+        _log("MMD plugin preload failed: " + str(exc))
+        raise
 
     # Load the selected hardware-shader plug-in once before the baseline
     # snapshot so the before/after report can prove it remained available for
