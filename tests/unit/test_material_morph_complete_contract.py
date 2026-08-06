@@ -226,8 +226,18 @@ def test_surface_composition_matches_full_shader_sphere_toon_specular_order():
         assert "litColor *= sphereColor" not in source
 
 
-def test_dx11_effect_has_explicit_translucent_techniques_with_optional_edge_output():
-    """Blend materials have explicit alpha/depth state without no-edge variants."""
+def _dx11_technique(source, name):
+    match = re.search(
+        rf"technique11\s+{re.escape(name)}\s*<.*?(?=\ntechnique11\s|\Z)",
+        source,
+        re.S,
+    )
+    assert match, f"missing DX11 technique: {name}"
+    return match.group(0)
+
+
+def test_dx11_effect_has_material_order_translucent_depth_contract():
+    """Translucent bodies write depth while inverted-hull edges stay read-only."""
     source = (ROOT / "mmd_tools/shaders/MMDShader.fx").read_text(encoding="utf-8")
     assert re.findall(r"technique11\s+(\w+)", source) == [
         "MMDTechnique",
@@ -237,11 +247,35 @@ def test_dx11_effect_has_explicit_translucent_techniques_with_optional_edge_outp
     ]
     assert "BlendEnable[0] = TRUE" in source
     assert "int isTransparent = 1" in source
-    assert "DepthWriteMask = ZERO" in source
+    depth_body = re.search(
+        r"DepthStencilState\s+EnableDepth\s*\{(?P<body>.*?)\};", source, re.S
+    ).group("body")
+    edge_depth = re.search(
+        r"DepthStencilState\s+EdgeDepthReadOnly\s*\{(?P<body>.*?)\};",
+        source,
+        re.S,
+    ).group("body")
+    assert "DepthEnable = TRUE" in depth_body
+    assert "DepthWriteMask = ALL" in depth_body
+    assert "DepthFunc = LESS" in depth_body
+    assert "DepthEnable = TRUE" in edge_depth
+    assert "DepthWriteMask = ZERO" in edge_depth
+    assert "DepthFunc = LESS" in edge_depth
     assert "clip(EdgeSize - 1.0e-5);" in source
     assert source.count("pass EdgePass") == 4
-    assert "SetRasterizerState(CullFront)" in source
-    assert "SetRasterizerState(CullNone)" in source
+    for technique_name, main_cull in (
+        ("MMDTechniqueTranslucent", "CullFront"),
+        ("MMDTechniqueTranslucentDoubleSided", "CullNone"),
+    ):
+        technique = _dx11_technique(source, technique_name)
+        main_pass, edge_pass = technique.split("pass EdgePass", 1)
+        assert f"SetRasterizerState({main_cull})" in main_pass
+        assert "SetBlendState(AlphaBlend" in main_pass
+        assert "SetDepthStencilState(EnableDepth, 0);" in main_pass
+        assert "EnableDepthNoWrite" not in main_pass
+        assert "SetRasterizerState(CullFront)" in edge_pass
+        assert "SetDepthStencilState(EdgeDepthReadOnly, 0);" in edge_pass
+        assert "CompileShader(vs_5_0, EdgeVSTranslucent())" in edge_pass
     assert 'float DevicePixelRatio< string UIWidget = "None"; > = 1.0f;' in source
     assert "logicalEdgeSize = EdgeSize * max(DevicePixelRatio, 1.0e-5)" in source
     assert "screenNormal / (safeScreenSize * 0.5) * logicalEdgeSize * clipPos.w" in source
