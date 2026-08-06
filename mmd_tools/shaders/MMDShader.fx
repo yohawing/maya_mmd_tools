@@ -500,8 +500,11 @@ VS_OUTPUT EdgeVS(VS_INPUT input)
 
     float2 safeScreenSize = max(ScreenSize, float2(1.0, 1.0));
     // ViewportPixelSize is physical; authored EdgeSize is in logical pixels.
+    // The 0.45 factor is the calibrated expansion for the 1024px fixture:
+    // it restores the authored silhouette width without the interior bleed
+    // caused by the much larger historical 0.25/0.4 experiments.
     float logicalEdgeSize = EdgeSize * max(DevicePixelRatio, 1.0e-5);
-    clipPos.xy += screenNormal / (safeScreenSize * 0.5) * logicalEdgeSize * clipPos.w;
+    clipPos.xy += screenNormal / (safeScreenSize * 0.45) * logicalEdgeSize * clipPos.w;
 
     output.position = clipPos;
     output.worldPosition = worldPos.xyz;
@@ -515,7 +518,7 @@ VS_OUTPUT EdgeVS(VS_INPUT input)
 VS_OUTPUT EdgeVSTranslucent(VS_INPUT input)
 {
     VS_OUTPUT output = EdgeVS(input);
-    output.position.z += 1.0e-4 * output.position.w;
+    output.position.z += 1.0e-2 * output.position.w;
     return output;
 }
 

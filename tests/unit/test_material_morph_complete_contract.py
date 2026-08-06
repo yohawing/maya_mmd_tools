@@ -278,7 +278,8 @@ def test_dx11_effect_has_material_order_translucent_depth_contract():
         assert "CompileShader(vs_5_0, EdgeVSTranslucent())" in edge_pass
     assert 'float DevicePixelRatio< string UIWidget = "None"; > = 1.0f;' in source
     assert "logicalEdgeSize = EdgeSize * max(DevicePixelRatio, 1.0e-5)" in source
-    assert "screenNormal / (safeScreenSize * 0.5) * logicalEdgeSize * clipPos.w" in source
+    assert "screenNormal / (safeScreenSize * 0.45) * logicalEdgeSize * clipPos.w" in source
+    assert "output.position.z += 1.0e-2 * output.position.w;" in source
     assert "EdgeSize * 4.0" not in source
 
 
