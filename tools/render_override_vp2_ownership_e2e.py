@@ -10,6 +10,9 @@ updates one material alpha, and captures the resulting viewport images.
 
 The resulting ``witness`` is draw-preparation evidence.  It does not claim
 alpha-blend visual parity, GoldenOracle parity, or self-shadow composition.
+With ``--capture-only`` the runner stops after the initial native capture so
+the same C++ path can provide an image for fixtures whose material queue is
+not the two-item alpha-overlap probe.
 
 Example::
 
@@ -140,6 +143,7 @@ def run_probe(
     camera_config: Optional[Dict[str, Any]] = None,
     parity_mode: bool = False,
     frame: int = 1,
+    capture_only: bool = False,
 ) -> None:
     """Run the Maya-side native ownership probe and always write its report.
 
@@ -147,6 +151,10 @@ def run_probe(
     camera, white background, and the same color-management settings as the
     Python visual capture, while omitting the ordinary control cube so the
     resulting PNG can be compared with a GoldenOracle image.
+
+    ``capture_only`` is a generic native-image path.  It validates the native
+    shape and geometry witness, captures the initial view, and skips the
+    alpha-overlap-specific camera/queue mutation checks below.
     """
     import maya.cmds as cmds
 
@@ -160,9 +168,14 @@ def run_probe(
         "witness": "not-run",
         "captures": {},
         "renderer": {},
-        "claim": "vp2-draw-preparation-only",
+        "claim": (
+            "vp2-native-visual-capture-only"
+            if capture_only
+            else "vp2-draw-preparation-only"
+        ),
         "visualParity": "not-run",
         "parityMode": bool(parity_mode),
+        "captureOnly": bool(capture_only),
         "frame": int(frame),
         "errors": [],
     }
@@ -417,6 +430,35 @@ def run_probe(
         )
         report["captures"]["ownership"] = str(capture)
 
+        if capture_only:
+            report["checks"] = {
+                "customShapeCreated": True,
+                "drawPreparationReady": witness.startswith("ready"),
+                "geometryBuffersPrepared": "geometry=vertices=" in witness
+                and ",indices=" in witness,
+                "captureCreated": capture.is_file() and capture.stat().st_size > 0,
+                "noCustomMfnMeshDuplicate": not report["sceneOwnership"][
+                    "customShapeMeshDescendants"
+                ],
+                "hudPreserved": (
+                    report["headsUpDisplay"]["before"]
+                    == report["headsUpDisplay"]["afterSetup"]
+                ),
+            }
+            for check_name in (
+                "drawPreparationReady",
+                "geometryBuffersPrepared",
+                "captureCreated",
+                "noCustomMfnMeshDuplicate",
+                "hudPreserved",
+            ):
+                if not report["checks"][check_name]:
+                    raise RuntimeError(
+                        f"native VP2 capture-only check failed: {check_name}"
+                    )
+            report["status"] = "pass"
+            return
+
         # Camera motion must preserve the queue witness.  The slight move is
         # intentionally applied without touching the shape or its material
         # data, so a ready witness after the refresh demonstrates that the
@@ -612,6 +654,14 @@ def main() -> int:
         action="store_true",
         help="Use the manifest camera/white sRGB view and omit the control cube.",
     )
+    parser.add_argument(
+        "--capture-only",
+        action="store_true",
+        help=(
+            "Capture the initial native VP2 view and skip the alpha-overlap-"
+            "specific camera/material queue checks."
+        ),
+    )
     args = parser.parse_args()
 
     model_path = args.model
@@ -655,7 +705,7 @@ def main() -> int:
         f"{str(model_path.resolve())!r}, {str(plugin.resolve())!r}, "
         f"width={args.width}, height={args.height}, "
         f"camera_config={camera_config!r}, parity_mode={bool(args.parity)!r}, "
-        f"frame={args.frame})\n"
+        f"frame={args.frame}, capture_only={bool(args.capture_only)!r})\n"
     )
     report = run_maya_e2e(
         project_root=_ROOT,
