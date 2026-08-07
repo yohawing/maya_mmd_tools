@@ -811,7 +811,7 @@ def _write_html(summary: Dict[str, Any], output_dir: Path) -> Path:
 *{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:8px;background:#111;color:#ddd}
 h1{font-size:.8rem;margin:0 0 4px}.meta{font-size:.52rem;opacity:.6;margin:0 0 6px}
 .case-grid{display:grid;grid-template-columns:1fr;gap:6px}.case-card{background:#1b1b1b;border:1px solid #333;padding:4px;min-width:0}.case-card h2{font-size:.62rem;line-height:1.1;margin:0 0 3px;overflow-wrap:anywhere;color:#ccc}
-.gallery{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:3px}.gallery figure{margin:0;background:#fff;min-width:0}.gallery img{display:block;width:100%;height:min(24vh,260px);object-fit:contain;background:#fff;border:1px solid #333}.gallery figcaption{text-align:center;font-size:.48rem;color:#888;padding:1px}.gallery a{display:block}.no-images{grid-column:1/-1;font-size:.52rem;color:#999;margin:8px 2px;text-align:center}
+.gallery{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:3px}.gallery figure{margin:0;background:#fff;min-width:0}.gallery img{display:block;width:100%;object-fit:contain;background:#fff;border:1px solid #333}.gallery figcaption{text-align:center;font-size:.48rem;color:#888;padding:1px}.gallery a{display:block}.no-images{grid-column:1/-1;font-size:.52rem;color:#999;margin:8px 2px;text-align:center}
 @media(max-width:560px){.gallery{grid-template-columns:1fr}}
 </style></head><body>
 <h1>RenderOverride image gallery</h1>

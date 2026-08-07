@@ -191,6 +191,8 @@ def test_all_mode_generates_static_image_gallery_for_every_case(tmp_path):
     assert 'class="gallery"' in document
     assert ".case-grid{display:grid;grid-template-columns:1fr;gap:6px}" in document
     assert ".gallery{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:3px}" in document
+    assert ".gallery img{display:block;width:100%;object-fit:contain" in document
+    assert "height:min(24vh,260px)" not in document
     assert ".gallery figure{margin:0;background:#fff;min-width:0}" in document
     assert "data-src=" in document
     assert "Date.now()" in document
