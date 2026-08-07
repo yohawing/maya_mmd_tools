@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import sys
 import time
@@ -44,6 +45,18 @@ COMPLETION_MARKER = "//-- RENDER OVERRIDE VP2 OWNERSHIP FINISHED --//"
 DEFAULT_PORT = 7734
 DEFAULT_TIMEOUT = 180.0
 LOGGER = logging.getLogger(__name__)
+
+_ORACLE_COLOR_MANAGEMENT = {
+    "cmEnabled": True,
+    "renderingSpaceName": "scene-linear Rec.709-sRGB",
+    "viewTransformName": "Un-tone-mapped (sRGB)",
+    "displayName": "sRGB",
+}
+_ORACLE_BACKGROUND = {
+    "background": [1.0, 1.0, 1.0],
+    "backgroundTop": [1.0, 1.0, 1.0],
+    "backgroundBottom": [1.0, 1.0, 1.0],
+}
 
 
 def _write_report(path: Path, report: dict[str, Any]) -> None:
@@ -124,10 +137,135 @@ def _wait_for_witness(cmds: Any, shape_name: str, log: Any) -> str:
     return witness
 
 
-def _make_parity_camera(cmds: Any, camera: Dict[str, Any]) -> str:
-    """Create the manifest camera used by the Python visual capture harness."""
-    from tools.render_override_e2e import _configure_camera
+def _camera_vector(value: object, name: str) -> tuple[float, float, float]:
+    """Validate and normalize a camera position/target/up vector."""
+    if isinstance(value, (str, bytes)):
+        raise ValueError(f"camera {name} must be a three-number sequence")
+    try:
+        values = tuple(float(component) for component in value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"camera {name} must be a three-number sequence") from exc
+    if len(values) != 3 or not all(math.isfinite(component) for component in values):
+        raise ValueError(f"camera {name} must be a finite three-number sequence")
+    return values
 
+
+def _configure_camera(cmds: Any, panels: list[str], camera_config: dict) -> dict[str, object]:
+    """Create the explicit Oracle camera and assign it to every model panel."""
+    if not isinstance(camera_config, dict):
+        raise ValueError("camera configuration must be a JSON object")
+    position = _camera_vector(camera_config.get("position"), "position")
+    target = _camera_vector(camera_config.get("target"), "target")
+    up_value = camera_config.get("up")
+    up = _camera_vector(up_value, "up") if up_value is not None else None
+    fov = float(camera_config.get("fov", 25.0))
+    near = float(camera_config.get("near", 0.1))
+    far = float(camera_config.get("far", 1000.0))
+    if not math.isfinite(fov) or not 0.0 < fov < 180.0:
+        raise ValueError(f"camera fov must be finite and between 0 and 180, got {fov}")
+    if not math.isfinite(near) or not math.isfinite(far) or near <= 0.0 or far <= near:
+        raise ValueError(f"camera clip planes must satisfy 0 < near < far, got {near}, {far}")
+
+    camera, shape = cmds.camera(name="renderOverrideOracleCam")
+    cmds.xform(camera, worldSpace=True, translation=position)
+    target_locator = cmds.spaceLocator(name="__render_override_camera_target__")[0]
+    cmds.xform(target_locator, worldSpace=True, translation=target)
+    if up is None:
+        constraint = cmds.aimConstraint(
+            target_locator,
+            camera,
+            aimVector=(0, 0, -1),
+            upVector=(0, 1, 0),
+            worldUpType="scene",
+        )[0]
+    else:
+        constraint = cmds.aimConstraint(
+            target_locator,
+            camera,
+            aimVector=(0, 0, -1),
+            upVector=(0, 1, 0),
+            worldUpType="vector",
+            worldUpVector=up,
+        )[0]
+    cmds.delete(constraint, target_locator)
+    aperture = cmds.getAttr(f"{shape}.horizontalFilmAperture")
+    focal_length = (aperture * 25.4 * 0.5) / math.tan(math.radians(fov) * 0.5)
+    cmds.setAttr(f"{shape}.focalLength", focal_length)
+    cmds.setAttr(f"{shape}.nearClipPlane", near)
+    cmds.setAttr(f"{shape}.farClipPlane", far)
+    for panel in panels:
+        cmds.lookThru(panel, camera)
+    return {
+        "node": camera,
+        "shape": shape,
+        "position": list(position),
+        "target": list(target),
+        "up": list(up) if up is not None else None,
+        "fov": fov,
+        "near": near,
+        "far": far,
+    }
+
+
+def _configure_oracle_color_environment(
+    cmds: Any, *, cm_enabled: bool = True
+) -> dict[str, object]:
+    """Apply and report the shared Oracle color-management/background setup."""
+    requested_color_management = dict(_ORACLE_COLOR_MANAGEMENT)
+    requested_color_management["cmEnabled"] = bool(cm_enabled)
+    previous_color_management: dict[str, object] = {}
+    color_management: dict[str, object] = {}
+    errors: list[str] = []
+    for query in _ORACLE_COLOR_MANAGEMENT:
+        try:
+            previous_color_management[query] = cmds.colorManagementPrefs(
+                query=True, **{query: True}
+            )
+        except Exception as exc:
+            previous_color_management[query] = f"ERR: {exc}"
+    for edit, value in requested_color_management.items():
+        try:
+            cmds.colorManagementPrefs(edit=True, **{edit: value})
+        except Exception as exc:
+            color_management[f"{edit}Error"] = str(exc)
+            errors.append(f"{edit} edit: {exc}")
+    for query in requested_color_management:
+        try:
+            color_management[query] = cmds.colorManagementPrefs(
+                query=True, **{query: True}
+            )
+        except Exception as exc:
+            color_management[query] = f"ERR: {exc}"
+            errors.append(f"{query} query: {exc}")
+
+    previous_background: dict[str, object] = {}
+    background: dict[str, object] = {}
+    for name, expected in _ORACLE_BACKGROUND.items():
+        try:
+            previous_background[name] = cmds.displayRGBColor(name, query=True)
+        except Exception as exc:
+            previous_background[name] = f"ERR: {exc}"
+        try:
+            cmds.displayRGBColor(name, *expected)
+            background[name] = list(cmds.displayRGBColor(name, query=True))
+        except Exception as exc:
+            background[name] = f"ERR: {exc}"
+            errors.append(f"{name} edit/query: {exc}")
+    return {
+        "requestedColorManagement": requested_color_management,
+        "requestedBackground": {
+            name: list(value) for name, value in _ORACLE_BACKGROUND.items()
+        },
+        "previousColorManagement": previous_color_management,
+        "previousBackground": previous_background,
+        "activeColorManagement": color_management,
+        "activeBackground": background,
+        "errors": errors,
+    }
+
+
+def _make_parity_camera(cmds: Any, camera: Dict[str, Any]) -> str:
+    """Create the manifest camera used by the visual capture harness."""
     configured = _configure_camera(cmds, [], camera)
     return str(configured["node"])
 
@@ -245,8 +383,6 @@ def run_probe(
         if not panels:
             raise RuntimeError("Maya GUI has no modelPanel")
         if parity_mode:
-            from tools.render_override_e2e import _configure_oracle_color_environment
-
             native_srgb_blend = os.environ.get(
                 "MMD_TOOLS_NATIVE_SRGB_BLEND", ""
             ).strip() == "1"

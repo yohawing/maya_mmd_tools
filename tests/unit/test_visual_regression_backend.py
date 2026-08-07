@@ -363,7 +363,7 @@ def test_generated_light_defaults_do_not_replace_vmd_light_cases(tmp_path):
     assert cases[0]["light"] == {"direction": [0.5, -1, 0.5], "color": [1, 1, 1]}
 
 
-def test_maya_payload_records_data_only_self_shadow_caster_selection(tmp_path):
+def test_maya_payload_records_unavailable_self_shadow_selection(tmp_path):
     source = _build_maya_code(
         project_root=tmp_path,
         cases=[],
@@ -380,5 +380,6 @@ def test_maya_payload_records_data_only_self_shadow_caster_selection(tmp_path):
     )
 
     compile(source, "<maya-visual-regression>", "exec")
-    assert "discover_self_shadow_caster_components" in source
+    assert "discover_self_shadow_caster_components" not in source
     assert 'debug_actions["selfShadowCasterSelection"]' in source
+    assert '"status": "unavailable"' in source

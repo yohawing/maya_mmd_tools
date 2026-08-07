@@ -31,8 +31,6 @@ _control_rig_manager_window = None
 _python_append_node_registered = False
 _python_ccd_ik_node_registered = False
 _shader_override_registered = False
-_render_override_registered = False
-_render_override_module = None
 _physics_nodes_registered = False
 _python_physics_solver_registered = False
 _python_physics_driver_registered = False
@@ -45,16 +43,6 @@ _MAIN_WINDOW_WORKSPACE_CONTROL_NAME = "MMDToolsWorkspaceControl"
 # ``__file__`` (mayapy / batch hosts). Resolving asset paths from the imported
 # package keeps ``initializePlugin`` from aborting before node registration.
 _PACKAGE_DIR = os.path.dirname(os.path.abspath(mmd_tools.__file__))
-
-
-def _load_render_override_module():
-    """Load the opt-in R1 render override only when explicitly requested."""
-    global _render_override_module
-    if _render_override_module is None:
-        from mmd_tools.view import render_override
-
-        _render_override_module = render_override
-    return _render_override_module
 
 
 def _trace_initialize_step(step):
@@ -596,11 +584,6 @@ def initializePlugin(mobject):
             mmd_shader.initializePlugin(mobject)
             _shader_override_registered = True
         _trace_initialize_step("shader-override:done")
-        global _render_override_registered
-        if os.environ.get("MMD_TOOLS_ENABLE_RENDER_OVERRIDE") == "1":
-            _load_render_override_module().initializePlugin(mobject)
-            _render_override_registered = True
-        _trace_initialize_step("render-override:done")
         mmd_bone_morph_accum_node.register(plugin_fn)
         _trace_initialize_step("bone-morph-register:done")
         _soft_check_bone_morph_accum_availability()
@@ -652,15 +635,6 @@ def initializePlugin(mobject):
         _register_humanik_control_rig_watch()
         _trace_initialize_step("initialize:done")
     except Exception as e:
-        if _render_override_registered:
-            try:
-                _load_render_override_module().uninitializePlugin(mobject)
-            except Exception as cleanup_error:
-                om.MGlobal.displayWarning(
-                    f"Render override rollback during plugin initialization failed: {cleanup_error}"
-                )
-            else:
-                _render_override_registered = False
         _trace_initialize_step(f"initialize:error:{type(e).__name__}:{e}")
         om.MGlobal.displayError(f"Plugin initialization failed: {str(e)}")
         raise
@@ -685,10 +659,6 @@ def uninitializePlugin(mobject):
         uninstall_mmd_menu()
         uninstall_drag_drop_importer()
         global _shader_override_registered
-        global _render_override_registered
-        if _render_override_registered:
-            _load_render_override_module().uninitializePlugin(mobject)
-            _render_override_registered = False
         if _shader_override_registered:
             try:
                 mmd_shader.uninitializePlugin(mobject)

@@ -1036,17 +1036,16 @@ def _capture_case(case):
             "controller": light_controller,
             "prePanel": _configure_mmd_self_shadow_inputs(light_controller, "pre-panel"),
         }}
-    # This selection remains data-only R2 evidence.  The optional native-input
-    # probe above is the only path allowed to touch Maya shadow inputs; this
-    # selection never changes targets or claims receiver/self-shadow parity.
-    from mmd_tools.view.render_override import discover_self_shadow_caster_components
-
-    caster_selection = discover_self_shadow_caster_components()
+    # The Python RenderOverride caster discovery was removed with the legacy
+    # override path.  Keep the report explicit until a native self-shadow
+    # Oracle and production caster pass exist; do not invent parity evidence.
     debug_actions["selfShadowCasterSelection"] = {{
-        "roots": list(caster_selection.roots),
-        "components": list(caster_selection.components),
-        "flaggedMaterials": list(caster_selection.flagged_materials),
-        "skippedMaterials": list(caster_selection.skipped_materials),
+        "status": "unavailable",
+        "reason": "native self-shadow Oracle and caster pass are not available",
+        "roots": [],
+        "components": [],
+        "flaggedMaterials": [],
+        "skippedMaterials": [],
     }}
     if _hide_orig_shapes:
         debug_actions["hideOrigShapes"] = _mark_orig_shapes_intermediate()
