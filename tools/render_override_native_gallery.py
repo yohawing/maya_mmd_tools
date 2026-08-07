@@ -3,9 +3,9 @@
 This is an image-production harness, not a parity gate.  It uses the native
 ``mmdFastLoad(..., vp2Ownership=True)`` path with the manifest camera and the
 same sRGB/white-background setup as the visual gate, then publishes only
-successful C++ captures and their GoldenOracle references to the image-first
-gallery.  Cases without a model or Oracle PNG are recorded as skipped and are
-not shown in the HTML viewer.
+successful C++ captures, their GoldenOracle references, and Oracle↔C++ FLIP
+error maps to the image-first gallery.  Cases without a model or Oracle PNG
+are recorded as skipped and are not shown in the HTML viewer.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -31,6 +32,7 @@ if str(ROOT) not in sys.path:
 
 from tests.common.maya_location import mayapy as _mayapy_for_version  # noqa: E402
 from tools.render_override_visual_gate import (  # noqa: E402
+    _default_flip_runner,
     _safe_case_dir_name,
     copy_png_as_rgb,
     _write_html,
@@ -92,20 +94,47 @@ def _clear_native_gallery(gallery_output: Path) -> int:
     return removed
 
 
+def _publish_flip_error(
+    case_dir: Path,
+    flip_executable: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Create the retained Oracle↔C++ FLIP error map for one gallery case."""
+    work_dir = case_dir / ".flip-native"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    for filename in ("native.png", "native.txt"):
+        stale = work_dir / filename
+        if stale.is_file() or stale.is_symlink():
+            stale.unlink()
+    comparison = _default_flip_runner(
+        reference=case_dir / "reference.png",
+        actual=case_dir / "native.png",
+        work_dir=work_dir,
+        basename="native",
+        flip_executable=flip_executable,
+    )
+    retained = case_dir / "flip-error-native.png"
+    error_map_value = comparison.get("error_map_path")
+    error_map = Path(str(error_map_value)) if error_map_value else None
+    if error_map is not None and error_map.is_file():
+        shutil.copy2(error_map, retained)
+    elif retained.is_file() or retained.is_symlink():
+        retained.unlink()
+    return comparison
+
+
 def _publish_case(
     gallery_output: Path,
     case_name: str,
     oracle: Path,
     native_capture: Path,
+    flip_executable: Optional[str] = None,
 ) -> Path:
     """Publish one Oracle/native pair to the current image gallery."""
     case_dir = gallery_output / "cases" / _safe_case_dir_name(case_name)
     case_dir.mkdir(parents=True, exist_ok=True)
     copy_png_as_rgb(oracle, case_dir / "reference.png")
     copy_png_as_rgb(native_capture, case_dir / "native.png")
-    stale_flip = case_dir / "flip-error-native.png"
-    if stale_flip.is_file() or stale_flip.is_symlink():
-        stale_flip.unlink()
+    _publish_flip_error(case_dir, flip_executable=flip_executable)
     return case_dir
 
 
@@ -119,6 +148,7 @@ def _run_native_case(
     gallery_output: Path,
     port: int,
     timeout: float,
+    flip_executable: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run one isolated native capture and publish it only when valid."""
     case_name = str(case["name"])
@@ -259,7 +289,13 @@ def _run_native_case(
             f"{native_dimensions} != {(width, height)}"
         )
         return result
-    gallery_case_dir = _publish_case(gallery_output, case_name, oracle, native_capture)
+    gallery_case_dir = _publish_case(
+        gallery_output,
+        case_name,
+        oracle,
+        native_capture,
+        flip_executable=flip_executable,
+    )
     result.update(
         status="pass",
         dimensions={"width": width, "height": height},
@@ -310,6 +346,7 @@ def run_gallery(
     timeout: float = 180,
     base_port: int = 7800,
     selected_names: Optional[List[str]] = None,
+    flip_executable: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Capture every selected manifest case through the C++ VP2 route."""
     manifest_path = manifest_path.resolve()
@@ -356,6 +393,7 @@ def run_gallery(
                 gallery_output=gallery_output,
                 port=base_port + attempt_index,
                 timeout=timeout,
+                flip_executable=flip_executable,
             )
             results.append(result)
             print(f"[{len(results)}/{len(selected_cases)}] {name}: {result['status']}")
@@ -371,6 +409,7 @@ def run_gallery(
             gallery_output=gallery_output,
             port=base_port + attempt_index - 1,
             timeout=timeout,
+            flip_executable=flip_executable,
         )
         results.append(result)
         print(f"[{len(results)}/{len(selected_cases)}] {name}: {result['status']}")
@@ -417,6 +456,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--out", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--gallery-out", type=Path, default=DEFAULT_GALLERY)
     parser.add_argument("--plugin", type=Path, default=None)
+    parser.add_argument(
+        "--flip",
+        default=None,
+        help="Optional NVIDIA FLIP executable path; defaults to PATH lookup.",
+    )
     parser.add_argument("--timeout", type=float, default=180)
     parser.add_argument("--base-port", type=int, default=7800)
     parser.add_argument(
@@ -443,6 +487,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
             base_port=args.base_port,
             selected_names=args.cases,
+            flip_executable=args.flip or None,
         )
     except (FileNotFoundError, ValueError) as exc:
         parser.error(str(exc))
