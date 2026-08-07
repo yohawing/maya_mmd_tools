@@ -254,6 +254,12 @@ int NativeSrgbOutput<
     string UIWidget = "None";
 > = 0;
 
+// Native caster capability spike.  The C++ MRenderOverride binds a fixed
+// light-view-projection matrix before the selected mmdRenderShape items draw.
+float4x4 CasterLightViewProjection<
+    string UIWidget = "None";
+>;
+
 // Shadow parameters
 bool UseShadows<
     string UIGroup = "Lighting";
@@ -386,6 +392,29 @@ VS_OUTPUT MainVS(VS_INPUT input)
     output.shadowCoord = mul(worldPos, Light0Matrix);
 
     return output;
+}
+
+// The caster deliberately keeps the same vertex input contract as the native
+// material shader so MSceneRender can reuse mmdRenderShape's geometry buffers.
+VS_OUTPUT CasterVS(VS_INPUT input)
+{
+    VS_OUTPUT output = (VS_OUTPUT)0;
+    float4 localPos = float4(input.position, 1.0);
+    float4 worldPos = mul(localPos, World);
+    output.position = mul(worldPos, CasterLightViewProjection);
+    output.worldPosition = worldPos.xyz;
+    output.worldNormal = input.normal;
+    output.texCoord0 = input.texCoord0;
+    output.texCoord1 = input.texCoord1;
+    output.vertexColor0 = input.vertexColor0;
+    output.vertexColor1 = input.vertexColor1;
+    return output;
+}
+
+float4 CasterPS(VS_OUTPUT input) : SV_TARGET
+{
+    // A constant non-clear value makes CPU-side R32F occupancy observable.
+    return float4(1.0, 1.0, 1.0, 1.0);
 }
 
 //--------------------------------------------------------------------------------------
@@ -830,5 +859,21 @@ technique11 MMDNativeOutlineTranslucentDoubleSided
         SetRasterizerState(CullBack);
         SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
         SetDepthStencilState(EdgeDepthReadOnly, 0);
+    }
+}
+
+// Opt-in native caster pass used only by MmdNativeCasterRenderOverride.  It
+// writes a constant occupancy witness to an R32F target and depth-tests the
+// selected mmdRenderShape geometry with the fixed caster matrix.
+technique11 MMDNativeCaster
+{
+    pass MainPass
+    {
+        SetVertexShader(CompileShader(vs_5_0, CasterVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, CasterPS()));
+        SetRasterizerState(CullNone);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepth, 0);
     }
 }

@@ -28,6 +28,7 @@
 #include "MmdCcdIkNode.h"
 #include "MmdPhysicsBoneDriverNode.h"
 #include "MmdRenderGeometryOverride.h"
+#include "MmdRenderOverride.h"
 #include "MmdRenderShape.h"
 
 // 将来のノード登録例 (コメントアウト)
@@ -42,6 +43,9 @@ static bool sCppRegisteredMmdRenderShape = false;
 static bool sCppRegisteredMmdRenderOverride = false;
 static bool sCppRegisteredMmdRenderWitnessCommand = false;
 static bool sCppRegisteredMmdRenderQueueUpdateCommand = false;
+static bool sCppRegisteredMmdNativeCasterOverride = false;
+static bool sCppRegisteredMmdNativeCasterWitnessCommand = false;
+static MmdNativeCasterRenderOverride* sMmdNativeCasterOverride = nullptr;
 
 static bool isNodeTypeRegistered(const MTypeId& expectedId)
 {
@@ -54,6 +58,7 @@ MStatus initializePlugin(MObject obj)
     MStatus status;
     MFnPlugin plugin(obj, "yohawing", "0.6.2", "Any");
     MmdRenderGeometryOverride::setPluginLoadPath(plugin.loadPath());
+    MmdNativeCasterRenderOverride::setPluginLoadPath(plugin.loadPath());
 
     const uint32_t runtimeAbi = mmd::RuntimeBridge::runtimeAbiVersion();
     if (runtimeAbi != MMD_RUNTIME_ABI_VERSION) {
@@ -228,6 +233,36 @@ MStatus initializePlugin(MObject obj)
         MGlobal::displayInfo("mmdPhysicsBoneDriver node registered (C++).");
     }
 
+    // Register the opt-in caster after the existing nodes and commands have
+    // initialized.  The E2E explicitly clears/rebinds modelEditor panels so
+    // Maya instantiates this late-added operation provider.
+    MHWRender::MRenderer* renderer = MHWRender::MRenderer::theRenderer(false);
+    if (renderer) {
+        status = plugin.registerCommand(
+            "mmdNativeCasterWitness", MmdNativeCasterWitnessCommand::creator,
+            MmdNativeCasterWitnessCommand::newSyntax);
+        if (!status) {
+            MGlobal::displayWarning(
+                "mmdNativeCasterWitness command registration failed; capability skipped.");
+        } else {
+            sCppRegisteredMmdNativeCasterWitnessCommand = true;
+            sMmdNativeCasterOverride = new MmdNativeCasterRenderOverride();
+            status = renderer->registerOverride(sMmdNativeCasterOverride);
+            if (!status) {
+                MGlobal::displayWarning(
+                    "mmdNativeCaster override registration failed; capability skipped.");
+                delete sMmdNativeCasterOverride;
+                sMmdNativeCasterOverride = nullptr;
+            } else {
+                sCppRegisteredMmdNativeCasterOverride = true;
+                MmdNativeCasterRenderOverride::markRegistered(true);
+            }
+        }
+    } else {
+        MGlobal::displayWarning(
+            "MHWRender::MRenderer unavailable; native caster override skipped.");
+    }
+
     return MS::kSuccess;
 }
 
@@ -252,6 +287,27 @@ MStatus uninitializePlugin(MObject obj)
                 "Failed to deregister mmdRenderQueueUpdate command.");
         }
         sCppRegisteredMmdRenderQueueUpdateCommand = false;
+    }
+
+    if (sCppRegisteredMmdNativeCasterWitnessCommand) {
+        status = plugin.deregisterCommand("mmdNativeCasterWitness");
+        CHECK_MSTATUS_AND_RETURN_IT(status);
+        sCppRegisteredMmdNativeCasterWitnessCommand = false;
+    }
+
+    if (sCppRegisteredMmdNativeCasterOverride) {
+        MHWRender::MRenderer* renderer = MHWRender::MRenderer::theRenderer();
+        status = renderer ? renderer->deregisterOverride(sMmdNativeCasterOverride)
+                          : MS::kFailure;
+        if (!status) {
+            MGlobal::displayError(
+                "Failed to deregister mmdNativeCaster override; plugin remains loaded.");
+            return status;
+        }
+        sCppRegisteredMmdNativeCasterOverride = false;
+        MmdNativeCasterRenderOverride::markRegistered(false);
+        delete sMmdNativeCasterOverride;
+        sMmdNativeCasterOverride = nullptr;
     }
 
     if (sCppRegisteredMmdRenderOverride) {
