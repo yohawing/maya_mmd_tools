@@ -421,7 +421,11 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     // Three uploads toon maps with flipY=true. Maya's file texture sampling is
     // top-origin, so convert the same signed coordinate back to the authored
     // image row while retaining Three's positive-lighting direction.
-    float NdotL = dot(normal, lightDir);
+    // Preserve the linearly interpolated world normal for the toon-ramp
+    // coordinate. Normalizing here per pixel changes the corner-normal
+    // interpolation that the reference MMD shader uses; the normalized
+    // `normal` above remains the specular/lighting normal.
+    float NdotL = dot(input.worldNormal, lightDir);
     float toonV = saturate(ToonCoordinateOffset - NdotL * 0.5);
     float3 toonColor = float3(1.0, 1.0, 1.0);
     if (HasToonTexture != 0)

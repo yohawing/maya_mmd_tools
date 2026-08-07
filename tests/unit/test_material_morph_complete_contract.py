@@ -209,6 +209,14 @@ def test_toon_coordinate_matches_maya_ramp_contract_in_both_backends():
         assert "0.5 - ndotl * 0.5" not in source
 
 
+def test_dx11_toon_coordinate_uses_interpolated_world_normal():
+    """DX11 toon lookup preserves the raw corner-normal interpolation."""
+    source = (ROOT / "mmd_tools/shaders/MMDShader.fx").read_text(encoding="utf-8")
+
+    assert "float NdotL = dot(input.worldNormal, lightDir);" in source
+    assert "float NdotL = dot(normal, lightDir);" not in source
+
+
 def test_surface_composition_matches_full_shader_sphere_toon_specular_order():
     """Sphere affects the surface before toon while specular remains untinted."""
     sources = {
