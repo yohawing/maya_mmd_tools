@@ -471,6 +471,25 @@ def write_png_rgb(path: Path, width: int, height: int, pixels: Sequence[Tuple[in
     Path(path).write_bytes(bytes(payload))
 
 
+def copy_png_as_rgb(source: Path, destination: Path) -> None:
+    """Copy a PNG while dropping viewport-only alpha from visual artifacts.
+
+    Maya's viewport playblast preserves the render-target alpha accumulated by
+    translucent blend states.  GoldenOracle images are opaque display images,
+    so retaining that alpha makes a browser composite the native RGB a second
+    time and makes FLIP measure the capture transport instead of appearance.
+    Decode and re-encode only the supported RGB/RGBA PNG subset; callers keep
+    the existing raw-copy behavior for non-PNG inputs.
+    """
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if source.suffix.lower() != ".png":
+        shutil.copy2(str(source), str(destination))
+        return
+    width, height, pixels = read_png_rgb(source)
+    write_png_rgb(destination, width, height, pixels)
+
+
 def normalize_roi(roi: Optional[Dict[str, Any]], width: int, height: int) -> Optional[Dict[str, int]]:
     """Normalize a pixel or explicitly normalized ROI and validate its bounds."""
 
@@ -1032,11 +1051,13 @@ def run_gate(
         actual = _resolve_report_path(capture_item.get("actual_png") if capture_item else None, capture_report_path)
         reference_copy = case_dir / "reference.png"
         actual_copy = case_dir / "maya.png"
-        if _copy_if_file(reference, reference_copy):
+        if reference is not None and reference.is_file():
+            copy_png_as_rgb(reference, reference_copy)
             result["artifacts"]["reference"] = "cases/%s/reference.png" % _safe_case_dir_name(str(case["name"]))
         else:
             result["errors"].append("missing GoldenOracle PNG: %s" % reference)
-        if _copy_if_file(actual, actual_copy):
+        if actual is not None and actual.is_file():
+            copy_png_as_rgb(actual, actual_copy)
             result["artifacts"]["maya"] = "cases/%s/maya.png" % _safe_case_dir_name(str(case["name"]))
         else:
             result["errors"].append("missing Maya capture PNG: %s" % actual)

@@ -14,7 +14,6 @@ import argparse
 import json
 import os
 import platform
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -33,6 +32,7 @@ if str(ROOT) not in sys.path:
 from tests.common.maya_location import mayapy as _mayapy_for_version  # noqa: E402
 from tools.render_override_visual_gate import (  # noqa: E402
     _safe_case_dir_name,
+    copy_png_as_rgb,
     _write_html,
     load_manifest_cases,
 )
@@ -101,8 +101,8 @@ def _publish_case(
     """Publish one Oracle/native pair to the current image gallery."""
     case_dir = gallery_output / "cases" / _safe_case_dir_name(case_name)
     case_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(oracle, case_dir / "reference.png")
-    shutil.copy2(native_capture, case_dir / "native.png")
+    copy_png_as_rgb(oracle, case_dir / "reference.png")
+    copy_png_as_rgb(native_capture, case_dir / "native.png")
     stale_flip = case_dir / "flip-error-native.png"
     if stale_flip.is_file() or stale_flip.is_symlink():
         stale_flip.unlink()

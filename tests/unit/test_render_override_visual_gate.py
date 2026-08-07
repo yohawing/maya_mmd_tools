@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import struct
+import zlib
 from pathlib import Path
 
 import tools.render_override_visual_gate as gate
@@ -42,6 +44,44 @@ def _write_manifest(tmp_path: Path, cases):
 
 def _rgb_png(path: Path, value=32):
     gate.write_png_rgb(path, 2, 2, [(value, value, value)] * 4)
+
+
+def _rgba_png(path: Path, pixels):
+    rows = bytearray()
+    for row in range(2):
+        rows.append(0)
+        for pixel in pixels[row * 2 : row * 2 + 2]:
+            rows.extend(pixel)
+    payload = bytearray(b"\x89PNG\r\n\x1a\n")
+    payload.extend(
+        gate._png_chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 6, 0, 0, 0))
+    )
+    payload.extend(gate._png_chunk(b"IDAT", zlib.compress(bytes(rows))))
+    payload.extend(gate._png_chunk(b"IEND", b""))
+    path.write_bytes(bytes(payload))
+
+
+def test_copy_png_as_rgb_drops_viewport_alpha(tmp_path):
+    source = tmp_path / "capture.png"
+    destination = tmp_path / "published.png"
+    _rgba_png(
+        source,
+        [
+            (10, 20, 30, 32),
+            (40, 50, 60, 64),
+            (70, 80, 90, 128),
+            (100, 110, 120, 192),
+        ],
+    )
+
+    gate.copy_png_as_rgb(source, destination)
+
+    assert gate.read_png_rgb(destination) == (
+        2,
+        2,
+        [(10, 20, 30), (40, 50, 60), (70, 80, 90), (100, 110, 120)],
+    )
+    assert destination.read_bytes()[25] == 2
 
 
 def _capture_factory(calls=None, value=32):
