@@ -782,6 +782,23 @@ technique11 MMDNativeOutline
     }
 }
 
+// Double-sided materials need the hull on both winding directions.  This is
+// especially important for a cutout plane: the body discards alpha==0 texels,
+// so the edge must still fill those holes instead of being culled with the
+// plane's camera-facing winding.
+technique11 MMDNativeOutlineDoubleSided
+{
+    pass EdgePass
+    {
+        SetVertexShader(CompileShader(vs_5_0, EdgeVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
+        SetRasterizerState(CullBack);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EdgeDepthReadOnly, 0);
+    }
+}
+
 technique11 MMDNativeOutlineTranslucent
 {
     pass EdgePass
@@ -790,6 +807,19 @@ technique11 MMDNativeOutlineTranslucent
         SetGeometryShader(NULL);
         SetPixelShader(CompileShader(ps_5_0, EdgePS()));
         SetRasterizerState(CullFront);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EdgeDepthReadOnly, 0);
+    }
+}
+
+technique11 MMDNativeOutlineTranslucentDoubleSided
+{
+    pass EdgePass
+    {
+        SetVertexShader(CompileShader(vs_5_0, EdgeVSTranslucent()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
+        SetRasterizerState(CullBack);
         SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
         SetDepthStencilState(EdgeDepthReadOnly, 0);
     }
