@@ -84,7 +84,7 @@ def _candidate_plugin_paths() -> list[Path]:
     if explicit:
         return [Path(explicit)]
 
-    version = os.environ.get("MAYA_VERSION", "2024")
+    version = _running_maya_major_version()
     config = os.environ.get("MMD_TOOLS_CPP_CONFIG", "Debug")
     configs = [config]
     if config != "Release":
@@ -97,6 +97,23 @@ def _candidate_plugin_paths() -> list[Path]:
         for suffix in _PLUGIN_EXTENSIONS:
             paths.append(ROOT / "plug-ins" / version / cfg / f"mmd_tools_cpp{suffix}")
     return paths
+
+
+def _running_maya_major_version() -> str:
+    """Return the active Maya major version without requiring an env var."""
+    try:
+        import maya.cmds as cmds
+
+        about = getattr(cmds, "about", None)
+        if about is not None:
+            version = str(about(version=True)).strip()
+            if version and version[0].isdigit():
+                return version.split()[0].split(".")[0]
+    except Exception:
+        pass
+
+    configured = os.environ.get("MAYA_VERSION", "2024").strip()
+    return configured.split()[0].split(".")[0] if configured else "2024"
 
 
 # ---------------------------------------------------------------------------

@@ -1,11 +1,13 @@
 """Capture the current C++ VP2 appearance for all available render cases.
 
-This is an image-production harness, not a parity gate.  It uses the native
-``mmdFastLoad(..., vp2Ownership=True)`` path with the manifest camera and the
-same sRGB/white-background setup as the visual gate, then publishes only
-successful C++ captures, their GoldenOracle references, and Oracle↔C++ FLIP
-error maps to the image-first gallery.  Cases without a model or Oracle PNG
-are recorded as skipped and are not shown in the HTML viewer.
+This is an image-production harness with report-only parity diagnostics.  By
+default it uses the settings-backed UI import route, which resolves to the
+native C++ ``mmdRenderShape`` path, with the manifest camera and the same
+sRGB/white-background setup as the visual gate.  It publishes successful C++
+captures, their GoldenOracle references, and Oracle-to-C++ FLIP error maps to the
+image-first gallery.  Cases without a model or Oracle PNG are recorded as
+skipped and are not shown in the HTML viewer.  ``--direct-fast-load`` remains
+available only for comparing the old direct command route.
 """
 
 from __future__ import annotations
@@ -32,7 +34,9 @@ if str(ROOT) not in sys.path:
 
 from tests.common.maya_location import mayapy as _mayapy_for_version  # noqa: E402
 from tools.render_override_visual_gate import (  # noqa: E402
+    FLIP_THRESHOLDS,
     _default_flip_runner,
+    _threshold_evaluation,
     _safe_case_dir_name,
     copy_png_as_rgb,
     _write_html,
@@ -98,7 +102,7 @@ def _publish_flip_error(
     case_dir: Path,
     flip_executable: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Create the retained Oracle↔C++ FLIP error map for one gallery case."""
+    """Create the retained Oracle-to-C++ FLIP error map for one gallery case."""
     work_dir = case_dir / ".flip-native"
     work_dir.mkdir(parents=True, exist_ok=True)
     for filename in ("native.png", "native.txt"):
@@ -128,14 +132,14 @@ def _publish_case(
     oracle: Path,
     native_capture: Path,
     flip_executable: Optional[str] = None,
-) -> Path:
-    """Publish one Oracle/native pair to the current image gallery."""
+) -> Tuple[Path, Dict[str, Any]]:
+    """Publish one Oracle/native pair and retain its FLIP comparison."""
     case_dir = gallery_output / "cases" / _safe_case_dir_name(case_name)
     case_dir.mkdir(parents=True, exist_ok=True)
     copy_png_as_rgb(oracle, case_dir / "reference.png")
     copy_png_as_rgb(native_capture, case_dir / "native.png")
-    _publish_flip_error(case_dir, flip_executable=flip_executable)
-    return case_dir
+    comparison = _publish_flip_error(case_dir, flip_executable=flip_executable)
+    return case_dir, comparison
 
 
 def _run_native_case(
@@ -149,6 +153,8 @@ def _run_native_case(
     port: int,
     timeout: float,
     flip_executable: Optional[str] = None,
+    ui_import: bool = True,
+    enforce_flip_thresholds: bool = False,
 ) -> Dict[str, Any]:
     """Run one isolated native capture and publish it only when valid."""
     case_name = str(case["name"])
@@ -159,11 +165,13 @@ def _run_native_case(
     oracle = Path(oracle_value).resolve() if oracle_value else None
     result: Dict[str, Any] = {
         "name": case_name,
+        "feature": str(case.get("feature") or "unclassified"),
         "status": "fail",
         "model": str(model) if model else None,
         "oracle": str(oracle) if oracle else None,
         "outputDir": str(case_dir),
         "port": port,
+        "importRoute": "mmd_tools_ui_settings" if ui_import else "mmdFastLoad",
     }
     if model is None:
         result.update(status="skipped", reason="manifest model asset is missing")
@@ -221,6 +229,8 @@ def _run_native_case(
         "--port",
         str(port),
     ]
+    if ui_import:
+        command.insert(command.index("--timeout"), "--ui-import")
     env = os.environ.copy()
     env["PATH"] = str(plugin.parent) + os.pathsep + env.get("PATH", "")
     child_timeout = (
@@ -263,6 +273,12 @@ def _run_native_case(
     result["nativeStatus"] = native_report.get("status")
     result["nativeParityMode"] = native_report.get("parityMode")
     result["nativeCaptureOnly"] = native_report.get("captureOnly")
+    result["importRoute"] = native_report.get("importRoute", result["importRoute"])
+    result["uiImportOptions"] = native_report.get("uiImportOptions")
+    result["uiCheckboxes"] = native_report.get("uiCheckboxes")
+    result["colorManagement"] = (
+        (native_report.get("parityView") or {}).get("activeColorManagement")
+    )
     if (
         native_report.get("status") != "pass"
         or native_report.get("parityMode") is not True
@@ -289,13 +305,34 @@ def _run_native_case(
             f"{native_dimensions} != {(width, height)}"
         )
         return result
-    gallery_case_dir = _publish_case(
+    gallery_case_dir, comparison = _publish_case(
         gallery_output,
         case_name,
         oracle,
         native_capture,
         flip_executable=flip_executable,
     )
+    feature = str(case.get("feature") or "unclassified")
+    thresholds = FLIP_THRESHOLDS.get(feature, FLIP_THRESHOLDS["unclassified"])["full"]
+    metrics = comparison.get("metrics") or {}
+    threshold_evaluation = _threshold_evaluation(metrics, thresholds)
+    comparison_status = str(comparison.get("status", "fail"))
+    if comparison_status != "pass":
+        parity_status = "fail"
+    elif enforce_flip_thresholds:
+        parity_status = "pass" if threshold_evaluation["status"] == "pass" else "fail"
+    else:
+        parity_status = "unreviewed"
+    result["parity"] = {
+        "status": parity_status,
+        "comparisonStatus": comparison_status,
+        "metrics": metrics,
+        "threshold": thresholds,
+        "thresholdEvaluation": threshold_evaluation,
+        "errorMap": str(gallery_case_dir / "flip-error-native.png")
+        if (gallery_case_dir / "flip-error-native.png").is_file()
+        else None,
+    }
     result.update(
         status="pass",
         dimensions={"width": width, "height": height},
@@ -347,8 +384,10 @@ def run_gallery(
     base_port: int = 7800,
     selected_names: Optional[List[str]] = None,
     flip_executable: Optional[str] = None,
+    ui_import: bool = True,
+    enforce_flip_thresholds: bool = False,
 ) -> Dict[str, Any]:
-    """Capture every selected manifest case through the C++ VP2 route."""
+    """Capture every selected case through the C++ route used by the UI."""
     manifest_path = manifest_path.resolve()
     output_root = output_root.resolve()
     gallery_output = gallery_output.resolve()
@@ -394,6 +433,8 @@ def run_gallery(
                 port=base_port + attempt_index,
                 timeout=timeout,
                 flip_executable=flip_executable,
+                ui_import=ui_import,
+                enforce_flip_thresholds=enforce_flip_thresholds,
             )
             results.append(result)
             print(f"[{len(results)}/{len(selected_cases)}] {name}: {result['status']}")
@@ -410,6 +451,8 @@ def run_gallery(
             port=base_port + attempt_index - 1,
             timeout=timeout,
             flip_executable=flip_executable,
+            ui_import=ui_import,
+            enforce_flip_thresholds=enforce_flip_thresholds,
         )
         results.append(result)
         print(f"[{len(results)}/{len(selected_cases)}] {name}: {result['status']}")
@@ -417,11 +460,39 @@ def run_gallery(
     passed = sum(result["status"] == "pass" for result in results)
     skipped = sum(result["status"] == "skipped" for result in results)
     failed = sum(result["status"] == "fail" for result in results)
+    parity_statuses = [
+        str((result.get("parity") or {}).get("status"))
+        for result in results
+        if result.get("parity")
+    ]
+    if any(status == "fail" for status in parity_statuses):
+        parity_status = "fail"
+    elif any(status == "unreviewed" for status in parity_statuses):
+        parity_status = "unreviewed"
+    elif parity_statuses and all(status == "pass" for status in parity_statuses):
+        parity_status = "pass"
+    else:
+        parity_status = "not-gated"
+    color_management_states = []
+    for result in results:
+        state = result.get("colorManagement")
+        if state and state not in color_management_states:
+            color_management_states.append(state)
     summary: Dict[str, Any] = {
         "schemaVersion": 1,
         "kind": "render-override-native-gallery",
         "status": "pass" if failed == 0 else "partial",
-        "claim": "current-cpp-native-appearance-only",
+        "claim": "current-cpp-native-ui-appearance-only"
+        if ui_import
+        else "current-cpp-native-appearance-only",
+        "importRoute": "mmd_tools_ui_settings" if ui_import else "mmdFastLoad",
+        "parityStatus": parity_status,
+        "parityThresholdsEnforced": bool(enforce_flip_thresholds),
+        "nativeColorManagement": color_management_states,
+        "exitCode": 1
+        if failed > 0
+        or (enforce_flip_thresholds and parity_status != "pass")
+        else 0,
         "manifest": str(manifest_path),
         "maya": str(maya),
         "plugin": str(plugin),
@@ -439,12 +510,27 @@ def run_gallery(
         json.dumps(summary, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    # The image gallery is the user-facing output.  Keep its summary aligned
+    # with the images even when durable capture details live in a separate
+    # output directory; otherwise latest/index.html would show C++ UI images
+    # beside the previous Python capture report.
+    gallery_summary_path = gallery_output / "summary.json"
+    if gallery_summary_path.resolve() != summary_path.resolve():
+        gallery_summary_path.write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
     html_path = _refresh_gallery_html(gallery_output, manifest_cases)
     summary["html"] = str(html_path)
     summary_path.write_text(
         json.dumps(summary, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    if gallery_summary_path.resolve() != summary_path.resolve():
+        gallery_summary_path.write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
     return summary
 
 
@@ -470,6 +556,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=None,
         help="Capture only this case; repeat the option for a focused subset.",
     )
+    parser.add_argument(
+        "--direct-fast-load",
+        action="store_true",
+        help="Use direct mmdFastLoad instead of the settings-backed UI import route.",
+    )
+    parser.add_argument(
+        "--enforce-flip-threshold",
+        action="store_true",
+        help="Fail the parity status when the fixed FLIP contract is exceeded.",
+    )
     args = parser.parse_args(argv)
     manifest = args.manifest
     if manifest is None:
@@ -488,11 +584,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             base_port=args.base_port,
             selected_names=args.cases,
             flip_executable=args.flip or None,
+            ui_import=not args.direct_fast_load,
+            enforce_flip_thresholds=args.enforce_flip_threshold,
         )
     except (FileNotFoundError, ValueError) as exc:
         parser.error(str(exc))
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    return 0 if summary["failedCaseCount"] == 0 else 1
+    return int(summary["exitCode"])
 
 
 if __name__ == "__main__":

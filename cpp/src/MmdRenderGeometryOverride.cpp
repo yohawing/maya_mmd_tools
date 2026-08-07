@@ -27,6 +27,38 @@ namespace {
 
 using namespace MHWRender;
 
+std::filesystem::path gBundledNativeShaderPath;
+
+std::filesystem::path findBundledNativeShaderPath(const MString& loadPath)
+{
+    if (loadPath.length() == 0) {
+        return {};
+    }
+
+    try {
+        const std::filesystem::path pluginPath =
+            std::filesystem::u8path(loadPath.asUTF8());
+        std::filesystem::path directory = pluginPath.parent_path();
+        while (!directory.empty()) {
+            const std::filesystem::path candidate =
+                directory / "mmd_tools" / "shaders" / "MMDShader.fx";
+            if (std::filesystem::is_regular_file(candidate)) {
+                return std::filesystem::absolute(candidate).lexically_normal();
+            }
+
+            const std::filesystem::path parent = directory.parent_path();
+            if (parent == directory) {
+                break;
+            }
+            directory = parent;
+        }
+    } catch (const std::filesystem::filesystem_error&) {
+        // Keep the legacy relative fallback.  The caller reports the shader
+        // lookup failure with the selected path.
+    }
+    return {};
+}
+
 MString renderItemName(const MmdRenderShape::QueueGeometry& geometry,
                        std::size_t queueIndex,
                        bool outline = false)
@@ -103,8 +135,13 @@ std::string nativeShaderPath()
     if (configured && *configured) {
         return configured;
     }
-    // The capture harness supplies an absolute path.  Keep a relative default
-    // for interactive Maya sessions launched from the repository root.
+
+    if (!gBundledNativeShaderPath.empty()) {
+        return gBundledNativeShaderPath.u8string();
+    }
+
+    // Keep the relative fallback for direct command-line/plugin consumers
+    // that do not initialize the plug-in entry point through Maya.
     return "mmd_tools/shaders/MMDShader.fx";
 }
 
@@ -149,6 +186,11 @@ std::string nativeSharedToonPath(int sharedToonIndex)
 }
 
 }  // namespace
+
+void MmdRenderGeometryOverride::setPluginLoadPath(const MString& loadPath)
+{
+    gBundledNativeShaderPath = findBundledNativeShaderPath(loadPath);
+}
 
 MHWRender::MTexture* MmdRenderGeometryOverride::acquireNativeTexture(
     const std::string& path,
@@ -384,11 +426,11 @@ void MmdRenderGeometryOverride::updateRenderItems(
         MHWRender::MShaderInstance* materialShader = nullptr;
         const std::string shaderKey = nativeShaderCacheKey(
             queueGeometry, outline, textureAlphaBlend);
+        const std::string shaderPath = nativeShaderPath();
         const auto shaderIt = materialShaders_.find(shaderKey);
         if (shaderIt != materialShaders_.end()) {
             materialShader = shaderIt->second;
         } else {
-            const std::string shaderPath = nativeShaderPath();
             materialShader = shaderManager->getEffectsFileShader(
                 MString(shaderPath.c_str()),
                 MString(technique));
@@ -399,7 +441,7 @@ void MmdRenderGeometryOverride::updateRenderItems(
         if (!materialShader) {
             MGlobal::displayError(
                 MString("[mmdRenderOverride] Native MMD shader is unavailable: ") +
-                technique);
+                technique + " path=" + shaderPath.c_str());
             disableItems(list);
             shape_->clearRenderItemWitness();
             return false;

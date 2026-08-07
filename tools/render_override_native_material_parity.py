@@ -1,4 +1,4 @@
-"""Compare the native VP2 material witness with GoldenOracle and Python.
+"""Compare the native UI VP2 material witness with GoldenOracle and Python.
 
 This is a report-only diagnostic harness for the first C++ native MMD material
 slice.  It uses one GoldenOracle manifest case, captures the opt-in native
@@ -162,6 +162,7 @@ def run_parity(
     port: int = 7745,
     enforce_thresholds: bool = False,
     gallery_output: Optional[Path] = None,
+    ui_import: bool = True,
 ) -> Dict[str, Any]:
     """Capture one native case and compare it against Oracle and Python."""
     if case_name != DEFAULT_CASE:
@@ -227,6 +228,8 @@ def run_parity(
         "--port",
         str(port),
     ]
+    if ui_import:
+        command.append("--ui-import")
     env = os.environ.copy()
     env["PATH"] = str(plugin.parent) + os.pathsep + env.get("PATH", "")
     child_timeout = (
@@ -277,6 +280,7 @@ def run_parity(
         "nativeReport": str(report_path),
         "comparisons": {},
         "claim": "report-only-native-mmd-material-subset",
+        "importRoute": "mmd_tools_ui_settings" if ui_import else "mmdFastLoad",
     }
     if completed is None or completed.returncode != 0 or not report_path.is_file():
         (output_dir / "capture.log").write_text(
@@ -287,6 +291,9 @@ def run_parity(
     native_report = json.loads(report_path.read_text(encoding="utf-8"))
     result["nativeStatus"] = native_report.get("status")
     result["nativeParityMode"] = native_report.get("parityMode")
+    result["importRoute"] = native_report.get("importRoute", result["importRoute"])
+    result["uiImportOptions"] = native_report.get("uiImportOptions")
+    result["uiCheckboxes"] = native_report.get("uiCheckboxes")
     if native_report.get("status") != "pass" or native_report.get("parityMode") is not True:
         result["error"] = "native probe did not pass in parity mode"
         (output_dir / "parity.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
@@ -380,6 +387,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--port", type=int, default=7745)
     parser.add_argument("--enforce-flip-threshold", action="store_true")
     parser.add_argument(
+        "--direct-fast-load",
+        action="store_true",
+        help="Use direct mmdFastLoad instead of the settings-backed UI import route.",
+    )
+    parser.add_argument(
         "--gallery-out",
         type=Path,
         default=ROOT / "build" / "render-override" / "latest",
@@ -407,6 +419,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         port=args.port,
         enforce_thresholds=args.enforce_flip_threshold,
         gallery_output=args.gallery_out,
+        ui_import=not args.direct_fast_load,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return int(result.get("exitCode", 1))

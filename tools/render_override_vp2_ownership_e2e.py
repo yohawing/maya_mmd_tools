@@ -282,6 +282,7 @@ def run_probe(
     parity_mode: bool = False,
     frame: int = 1,
     capture_only: bool = False,
+    ui_import: bool = False,
 ) -> None:
     """Run the Maya-side native ownership probe and always write its report.
 
@@ -293,6 +294,9 @@ def run_probe(
     ``capture_only`` is a generic native-image path.  It validates the native
     shape and geometry witness, captures the initial view, and skips the
     alpha-overlap-specific camera/queue mutation checks below.
+
+    ``ui_import`` exercises the settings-backed import call used by the MMD
+    Tools UI instead of calling ``mmdFastLoad`` directly.
     """
     import maya.cmds as cmds
 
@@ -307,7 +311,9 @@ def run_probe(
         "captures": {},
         "renderer": {},
         "claim": (
-            "vp2-native-visual-capture-only"
+            "vp2-native-ui-visual-capture-only"
+            if capture_only and ui_import
+            else "vp2-native-visual-capture-only"
             if capture_only
             else "vp2-draw-preparation-only"
         ),
@@ -331,19 +337,91 @@ def run_probe(
         log("=== native VP2 ownership probe begin ===")
         cmds.file(new=True, force=True)
         plugin = str(Path(plugin_path).resolve())
-        if not cmds.pluginInfo(plugin, query=True, loaded=True):
+        plugin_loaded = bool(cmds.pluginInfo(plugin, query=True, loaded=True))
+        if not plugin_loaded:
+            # userSetup.py may have already loaded the same binary by its
+            # registered name before this probe reaches the explicit path.
+            # Maya can deadlock when the same plug-in is loaded twice, so use
+            # the canonical name as a second idempotence check.
+            try:
+                plugin_loaded = bool(
+                    cmds.pluginInfo("mmd_tools_cpp", query=True, loaded=True)
+                )
+            except RuntimeError:
+                plugin_loaded = False
+        if not plugin_loaded:
             cmds.loadPlugin(plugin, quiet=False)
         log(f"plugin loaded: {cmds.pluginInfo(plugin, query=True, loaded=True)}")
         log(f"vp2 device: {cmds.ogs(deviceInformation=True)}")
 
-        result = cmds.mmdFastLoad(
-            file=str(Path(model_path).resolve()),
-            name="render_override_vp2_ownership",
-            vp2Ownership=True,
-        )
-        if not result or len(result) < 2:
-            raise RuntimeError(f"mmdFastLoad returned no shape: {result!r}")
-        root_name, shape_name = str(result[0]), str(result[-1])
+        if ui_import:
+            from mmd_tools.io.mmd_importer import import_mmd_file
+            from mmd_tools.services.settings_service import SettingsService
+
+            ui_options = SettingsService().build_pmx_import_options(
+                custom_namespace="render_override_vp2_ownership"
+            )
+            # Physics is unrelated to this visual witness and can make a
+            # full-character import fail before the VP2 path is reached.
+            ui_options["import_physics"] = False
+            report["importRoute"] = "mmd_tools_ui_settings"
+            report["uiImportOptions"] = {
+                key: ui_options.get(key)
+                for key in (
+                    "use_cpp_fast_load",
+                    "use_cpp_vp2_ownership",
+                    "cpp_fast_load_mesh_only",
+                    "import_morphs",
+                    "import_physics",
+                )
+            }
+            from mmd_tools.ui.tabs.import_export_tab import ImportExportTab
+
+            ui_tab = ImportExportTab()
+            report["uiCheckboxes"] = {
+                "use_cpp_fast_load": bool(
+                    ui_tab.use_cpp_fast_load_check.isChecked()
+                ),
+                "use_cpp_vp2_ownership": bool(
+                    ui_tab.use_cpp_vp2_ownership_check.isChecked()
+                ),
+                "otherGroupVisible": bool(ui_tab.other_group.isVisible()),
+            }
+            ui_tab.deleteLater()
+            log(f"UI import options: {report['uiImportOptions']}")
+            root_result = import_mmd_file(
+                str(Path(model_path).resolve()), options=ui_options
+            )
+            if not root_result:
+                raise RuntimeError("UI import returned no root")
+            root_name = str(root_result)
+            shape_candidates = [
+                str(candidate)
+                for candidate in (
+                    cmds.listRelatives(
+                        root_name,
+                        children=True,
+                        fullPath=True,
+                    )
+                    or []
+                )
+                if cmds.nodeType(candidate) == "mmdRenderShape"
+            ]
+            if not shape_candidates:
+                raise RuntimeError(
+                    f"UI import did not create mmdRenderShape: {root_name}"
+                )
+            shape_name = shape_candidates[0]
+        else:
+            result = cmds.mmdFastLoad(
+                file=str(Path(model_path).resolve()),
+                name="render_override_vp2_ownership",
+                vp2Ownership=True,
+            )
+            if not result or len(result) < 2:
+                raise RuntimeError(f"mmdFastLoad returned no shape: {result!r}")
+            root_name, shape_name = str(result[0]), str(result[-1])
+            report["importRoute"] = "mmdFastLoad"
         report["root"] = root_name
         report["shape"] = shape_name
         log(f"created root={root_name} shape={shape_name}")
@@ -383,9 +461,17 @@ def run_probe(
         if not panels:
             raise RuntimeError("Maya GUI has no modelPanel")
         if parity_mode:
-            native_srgb_blend = os.environ.get(
-                "MMD_TOOLS_NATIVE_SRGB_BLEND", ""
-            ).strip() == "1"
+            native_srgb_blend = (
+                os.environ.get("MMD_TOOLS_NATIVE_SRGB_BLEND", "").strip() == "1"
+                or (
+                    ui_import
+                    and bool(
+                        (report.get("uiImportOptions") or {}).get(
+                            "use_cpp_vp2_ownership", False
+                        )
+                    )
+                )
+            )
             parity_view = _configure_oracle_color_environment(
                 cmds, cm_enabled=not native_srgb_blend
             )
@@ -803,6 +889,11 @@ def main() -> int:
             "specific camera/material queue checks."
         ),
     )
+    parser.add_argument(
+        "--ui-import",
+        action="store_true",
+        help="Use the settings-backed import route exercised by the MMD Tools UI.",
+    )
     args = parser.parse_args()
 
     model_path = args.model
@@ -846,8 +937,22 @@ def main() -> int:
         f"{str(model_path.resolve())!r}, {str(plugin.resolve())!r}, "
         f"width={args.width}, height={args.height}, "
         f"camera_config={camera_config!r}, parity_mode={bool(args.parity)!r}, "
-        f"frame={args.frame}, capture_only={bool(args.capture_only)!r})\n"
+        f"frame={args.frame}, capture_only={bool(args.capture_only)!r}, "
+        f"ui_import={bool(args.ui_import)!r})\n"
     )
+    env_overrides = {
+        "MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11",
+        # Maya's GUI loader does not inherit the mayapy-side PATH used by
+        # the standalone smoke.  Keep the native plug-in and mmd-anim DLL
+        # directory ahead of the inherited search path.
+        "PATH": os.pathsep.join((str(plugin.parent), os.environ.get("PATH", ""))),
+    }
+    # Diagnostic only: NativeSrgbOutput=1 is intended for a CM-off sRGB target.
+    # Forward the opt-in switch into the Explorer-launched Maya process so the
+    # capture can compare that target without changing the default UI route.
+    if os.environ.get("MMD_TOOLS_NATIVE_SRGB_BLEND", "").strip() == "1":
+        env_overrides["MMD_TOOLS_NATIVE_SRGB_BLEND"] = "1"
+
     report = run_maya_e2e(
         project_root=_ROOT,
         version=str(args.maya),
@@ -879,17 +984,7 @@ def main() -> int:
         report_error=f"VP2 ownership report missing: {report_path}",
         log_ready=LOGGER,
         warn_detached=True,
-        env_overrides={
-            "MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11",
-            "MMD_TOOLS_NATIVE_SHADER_PATH": str(
-                _ROOT / "mmd_tools" / "shaders" / "MMDShader.fx"
-            ),
-            "MMD_TOOLS_NATIVE_SRGB_BLEND": "1",
-            # Maya's GUI loader does not inherit the mayapy-side PATH used by
-            # the standalone smoke.  Keep the native plug-in and mmd-anim DLL
-            # directory ahead of the inherited search path.
-            "PATH": os.pathsep.join((str(plugin.parent), os.environ.get("PATH", ""))),
-        },
+        env_overrides=env_overrides,
     )
     LOGGER.info("Native VP2 ownership E2E status: %s", report.get("status"))
     return 0 if report.get("status") == "pass" else 1

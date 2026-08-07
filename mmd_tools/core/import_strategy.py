@@ -42,7 +42,7 @@ def resolve_model_import_strategy(
     requested_fast_load = bool(
         options.get(
             "use_cpp_fast_load",
-            settings_get(settings_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, False),
+            settings_get(settings_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, True),
         )
     )
     if suffix != ".pmx":

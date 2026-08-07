@@ -272,9 +272,9 @@ class SettingsService:
         }
         if not is_dev:
             opts.update(_NORMAL_MODE_IMPORT_OVERRIDES)
-        opts["use_cpp_fast_load"] = self.get(setting_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, False)
+        opts["use_cpp_fast_load"] = self.get(setting_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, True)
         opts["cpp_fast_load_mesh_only"] = self.get(setting_keys.IMPORT_NATIVE_CPP_FAST_LOAD_MESH_ONLY, True)
-        opts["use_cpp_vp2_ownership"] = self.get(setting_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP, False)
+        opts["use_cpp_vp2_ownership"] = self.get(setting_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP, True)
         opts["use_cpp_rig_nodes"] = self.get(setting_keys.IMPORT_NATIVE_USE_CPP_RIG_NODES, False)
         return opts
 

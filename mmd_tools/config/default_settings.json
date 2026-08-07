@@ -53,9 +53,9 @@
     },
     "native": {
       "_comment": "Settings for the compiled C++ fast import path",
-      "use_cpp_fast_load": false,
+      "use_cpp_fast_load": true,
       "cpp_fast_load_mesh_only": true,
-      "use_cpp_vp2_ownership": false,
+      "use_cpp_vp2_ownership": true,
       "require_native_pmx_parse": true,
       "use_cpp_rig_nodes": false
     },

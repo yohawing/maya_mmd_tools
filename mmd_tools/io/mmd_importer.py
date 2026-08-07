@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from mmd_tools.core import settings, settings_keys
+from mmd_tools.core import maya_viewport_utils
 from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.import_strategy import resolve_model_import_strategy
 from mmd_tools.core.mmd_parser import parse_mmd_file
@@ -225,7 +226,7 @@ def import_mmd_file(
 
         import_scale = SettingsService().resolve_import_scale()
 
-    # --- C++ fast import path (opt-in, PMX only) -------------------------
+    # --- C++ fast import path (default UI route, PMX only) ---------------
     logger.info("Model import strategy: cpp_fast_load=%s (%s)", strategy.use_cpp_fast_load, strategy.cpp_fast_load_reason)
     if strategy.use_cpp_fast_load:
         _emit_progress(10)
@@ -249,14 +250,22 @@ def import_mmd_file(
             "mesh_only": mesh_only,
             "include_morphs": include_morphs,
         }
-        if options.get(
-            "use_cpp_vp2_ownership",
-            settings.get(settings_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP, False),
-        ):
+        # Direct callers that explicitly request C++ Fast Load retain the
+        # ordinary mesh path unless they also opt into VP2 ownership.  The UI
+        # supplies this setting explicitly, so its default remains the native
+        # RenderOverride route without changing the direct API contract.
+        if options.get("use_cpp_vp2_ownership", False):
             fast_kwargs["vp2_ownership"] = True
         fast_root = fast_import(filepath, **fast_kwargs)
         if fast_root is not None:
             _emit_progress(90)
+            if options.get("use_cpp_vp2_ownership", False) and settings.get(
+                settings_keys.IMPORT_VIEW_SETUP_COLOR_MANAGEMENT, True
+            ):
+                # Native MMD output is authored sRGB and must retain gamma-space
+                # alpha blending.  The Python dx11Shader path uses the separate
+                # CM-on/de-gamma contract in ModelImportPipeline.setup_view().
+                maya_viewport_utils.setup_mmd_native_color_management()
             logger.info("C++ fast import succeeded: %s", fast_root)
             return _post_model_import_control_rig(fast_root, options)
         logger.info("C++ fast import failed/excluded – falling back to Python parser")

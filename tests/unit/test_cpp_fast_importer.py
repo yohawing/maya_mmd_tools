@@ -178,6 +178,36 @@ class TestCppFastImportRouting(unittest.TestCase):
         self.assertEqual(result, "cpp_root")
         self.assertEqual(progress, [5, 10, 90])
 
+    @patch("mmd_tools.io.mmd_importer.maya_viewport_utils.setup_mmd_native_color_management")
+    @patch("mmd_tools.io.mmd_importer.fast_import")
+    def test_native_vp2_import_sets_native_color_management(
+        self,
+        mock_fast: MagicMock,
+        mock_setup_color_management: MagicMock,
+    ):
+        """The UI-owned native VP2 route selects its gamma-space output mode."""
+        mock_fast.return_value = "cpp_root"
+
+        result = import_mmd_file(
+            "model.pmx",
+            options={
+                "scale": 1.0,
+                "use_cpp_fast_load": True,
+                "use_cpp_vp2_ownership": True,
+            },
+        )
+
+        mock_fast.assert_called_once_with(
+            "model.pmx",
+            base_name="model",
+            scale=1.0,
+            mesh_only=True,
+            include_morphs=True,
+            vp2_ownership=True,
+        )
+        mock_setup_color_management.assert_called_once_with()
+        self.assertEqual(result, "cpp_root")
+
     # ------------------------------------------------------------------
     # Scenario 3: option enabled + fast import fails → fallback
     # ------------------------------------------------------------------

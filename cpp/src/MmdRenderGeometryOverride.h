@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <maya/MString.h>
 #include <maya/MPxGeometryOverride.h>
 #include <maya/MShaderManager.h>
 #include <maya/MTextureManager.h>
@@ -20,6 +21,10 @@ class MmdRenderShape;
 class MmdRenderGeometryOverride : public MHWRender::MPxGeometryOverride {
 public:
     static MHWRender::MPxGeometryOverride* creator(const MObject& object);
+
+    // Resolve bundled shaders relative to the loaded plug-in instead of
+    // depending on Maya's current working directory.
+    static void setPluginLoadPath(const MString& loadPath);
 
     ~MmdRenderGeometryOverride() override;
 

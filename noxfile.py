@@ -1727,6 +1727,18 @@ def render_override_visual_gate(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def render_override_native_ui_gallery(session: nox.Session) -> None:
+    """Capture Plan 010 cases through the settings-backed C++ UI route."""
+
+    session.run(
+        sys.executable,
+        "tools/render_override_native_gallery.py",
+        *session.posargs,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def shader_visual_semantic_gate(session: nox.Session) -> None:
     """Guard DX11 outline-color leakage and disappearing hair geometry."""
     _run_shader_visual_semantic_gate(
