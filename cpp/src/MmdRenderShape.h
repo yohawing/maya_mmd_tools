@@ -70,8 +70,52 @@ public:
         // can bind per-item material values without looking up mutable shape
         // state by index.
         mmd::MmdRenderQueueInput material;
+        // Preserve whether the source split actually supplied UVs.  The
+        // transient flattened buffer always has a fallback UV stream, so a
+        // diagnostic must not mistake that fallback for authored UV data.
+        bool uvStreamAvailable = false;
         uint32_t vertexOffset = 0U;
         std::vector<uint32_t> indices;
+    };
+
+    /**
+     * Per-render-item native material binding evidence.
+     *
+     * This is intentionally diagnostic-only state.  It records requested
+     * material paths separately from handles/parameter calls that succeeded;
+     * it does not participate in queue ordering or shader math.
+     */
+    struct MaterialBindingDiagnostic {
+        std::size_t queueIndex = 0U;
+        std::size_t materialIndex = 0U;
+        std::size_t submeshIndex = 0U;
+        std::string pass;
+        bool outline = false;
+        std::string technique;
+        bool uvStreamAvailable = false;
+        float diffuseAlpha = 1.0F;
+        bool textureAlphaBlend = false;
+        bool effectiveTransparent = false;
+        std::string mainTexturePath;
+        std::string sphereTexturePath;
+        std::string toonTexturePath;
+        std::string toonTextureSource;
+        bool mainTextureRequested = false;
+        bool sphereTextureRequested = false;
+        bool toonTextureRequested = false;
+        bool mainTextureAcquired = false;
+        bool sphereTextureAcquired = false;
+        bool toonTextureAcquired = false;
+        bool scalarParameterBindingSuccess = false;
+        bool mainTextureBindingSuccess = false;
+        bool sphereTextureBindingSuccess = false;
+        bool toonTextureBindingSuccess = false;
+        bool switchParameterBindingSuccess = false;
+        bool shaderAvailable = false;
+        bool parameterBindingSuccess = false;
+        bool shaderAssignmentSuccess = false;
+        bool bindingSuccess = false;
+        int sphereMode = 0;
     };
 
     struct GeometryData {
@@ -89,12 +133,16 @@ public:
     // The override records this after it has created the native render items.
     // This is intentionally transient diagnostic state, not a parity claim.
     void clearRenderItemWitness();
+    void clearMaterialBindingDiagnostics();
     void recordRenderItemWitness(
         const std::vector<mmd::MmdRenderQueueEntry>& entries);
+    void recordMaterialBindingDiagnostic(
+        const MaterialBindingDiagnostic& diagnostic);
     void recordGeometryWitness(std::size_t vertexCount,
                                std::size_t indexCount,
                                const std::string& descriptorSummary);
     std::string renderItemWitness() const;
+    std::string materialBindingDiagnosticsJson() const;
 
 private:
     GeometryData geometry_;
@@ -105,6 +153,7 @@ private:
     std::size_t geometryWitnessVertexCount_ = 0U;
     std::size_t geometryWitnessIndexCount_ = 0U;
     std::string geometryWitnessDescriptorSummary_;
+    std::vector<MaterialBindingDiagnostic> materialBindingDiagnostics_;
 };
 
 /**
@@ -112,6 +161,8 @@ private:
  *
  * ``mmdRenderWitness -node <shape>`` returns ``pending`` until the custom
  * geometry override has created its render items, then returns the pass order.
+ * Add ``-json true`` for deterministic structured per-item material-binding
+ * diagnostics while preserving the human-readable result by default.
  */
 class MmdRenderWitnessCommand : public MPxCommand {
 public:

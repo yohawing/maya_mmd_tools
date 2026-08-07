@@ -221,7 +221,8 @@ MHWRender::MTexture* MmdRenderGeometryOverride::acquireNativeTexture(
 bool MmdRenderGeometryOverride::setNativeMaterialParameters(
     MHWRender::MShaderInstance* shader,
     const mmd::MmdRenderQueueInput& material,
-    MHWRender::MTextureManager* textureManager)
+    MHWRender::MTextureManager* textureManager,
+    MmdRenderShape::MaterialBindingDiagnostic* diagnostic)
 {
     if (!shader) {
         return false;
@@ -241,54 +242,105 @@ bool MmdRenderGeometryOverride::setNativeMaterialParameters(
     MHWRender::MTexture* toonTexture =
         acquireNativeTexture(toonPath, textureManager);
 
+    if (diagnostic) {
+        diagnostic->mainTexturePath = material.mainTexturePath;
+        diagnostic->sphereTexturePath = material.sphereTexturePath;
+        diagnostic->toonTexturePath = toonPath;
+        diagnostic->toonTextureSource = material.toonTexturePath.empty()
+                                            ? (material.sharedToonIndex >= 0
+                                                   ? "shared"
+                                                   : "none")
+                                            : "explicit";
+        diagnostic->mainTextureRequested = !material.mainTexturePath.empty();
+        diagnostic->sphereTextureRequested = !material.sphereTexturePath.empty();
+        diagnostic->toonTextureRequested = !toonPath.empty();
+        diagnostic->mainTextureAcquired = mainTexture != nullptr;
+        diagnostic->sphereTextureAcquired = sphereTexture != nullptr;
+        diagnostic->toonTextureAcquired = toonTexture != nullptr;
+        diagnostic->sphereMode = material.sphereMode;
+    }
+
     // Bind the scalar/color subset and texture switches explicitly so an
     // effect instance never inherits authored values from another item.
     const float lightDirection[3] = {-0.5F, -1.0F, -1.0F};
     const float lightColor[3] = {0.6039216F, 0.6039216F, 0.6039216F};
-    if (!(shader->setParameter("DiffuseColorRGB", material.diffuseColor.data()) &&
-           shader->setParameter("DiffuseColorA", material.diffuseAlpha) &&
-           shader->setParameter("Opacity", 1.0F) &&
-           shader->setParameter("SpecularColor", material.specularColor.data()) &&
-           shader->setParameter("Shininess", material.specularPower) &&
-           shader->setParameter("AmbientColor", material.ambientColor.data()) &&
-           shader->setParameter("EdgeColorRGB", material.edgeColor.data()) &&
-           shader->setParameter("EdgeColorA", material.edgeAlpha) &&
-           shader->setParameter("EdgeSize", material.edgeSize) &&
-           shader->setParameter("SphereMode", material.sphereMode) &&
-           shader->setParameter("HasMainTexture", 0) &&
-           shader->setParameter("HasSphereTexture", 0) &&
-           shader->setParameter("HasToonTexture", 0) &&
-           shader->setParameter("UseShadows", false) &&
-           shader->setParameter("ShadowStrength", 1.0F) &&
-           shader->setParameter("ToonCoordinateOffset", 0.55F) &&
-           shader->setParameter("NativeSrgbOutput", 1) &&
-           shader->setParameter("MMDLightDirection", lightDirection) &&
-           shader->setParameter("MMDLightColor", lightColor))) {
+    const bool scalarBinding =
+        shader->setParameter("DiffuseColorRGB", material.diffuseColor.data()) &&
+        shader->setParameter("DiffuseColorA", material.diffuseAlpha) &&
+        shader->setParameter("Opacity", 1.0F) &&
+        shader->setParameter("SpecularColor", material.specularColor.data()) &&
+        shader->setParameter("Shininess", material.specularPower) &&
+        shader->setParameter("AmbientColor", material.ambientColor.data()) &&
+        shader->setParameter("EdgeColorRGB", material.edgeColor.data()) &&
+        shader->setParameter("EdgeColorA", material.edgeAlpha) &&
+        shader->setParameter("EdgeSize", material.edgeSize) &&
+        shader->setParameter("SphereMode", material.sphereMode) &&
+        shader->setParameter("HasMainTexture", 0) &&
+        shader->setParameter("HasSphereTexture", 0) &&
+        shader->setParameter("HasToonTexture", 0) &&
+        shader->setParameter("UseShadows", false) &&
+        shader->setParameter("ShadowStrength", 1.0F) &&
+        shader->setParameter("ToonCoordinateOffset", 0.55F) &&
+        shader->setParameter("NativeSrgbOutput", 1) &&
+        shader->setParameter("MMDLightDirection", lightDirection) &&
+        shader->setParameter("MMDLightColor", lightColor);
+    if (diagnostic) {
+        diagnostic->scalarParameterBindingSuccess = scalarBinding;
+    }
+    if (!scalarBinding) {
         return false;
     }
 
+    // A requested-but-unavailable texture is a visible diagnostic failure but
+    // remains non-fatal, matching the existing fallback that draws without
+    // that optional texture.  A failed assignment to an acquired handle is
+    // still fatal as before.
+    bool mainTextureBinding = material.mainTexturePath.empty() || mainTexture;
     if (mainTexture) {
         MHWRender::MTextureAssignment assignment{mainTexture};
-        if (!shader->setParameter("MainTexture", assignment)) {
-            return false;
-        }
+        mainTextureBinding = shader->setParameter("MainTexture", assignment);
     }
-    if (sphereTexture) {
-        MHWRender::MTextureAssignment assignment{sphereTexture};
-        if (!shader->setParameter("SphereTexture", assignment)) {
-            return false;
-        }
+    if (diagnostic) {
+        diagnostic->mainTextureBindingSuccess = mainTextureBinding;
     }
-    if (toonTexture) {
-        MHWRender::MTextureAssignment assignment{toonTexture};
-        if (!shader->setParameter("ToonTexture", assignment)) {
-            return false;
-        }
+    if (!mainTextureBinding && mainTexture) {
+        return false;
     }
 
-    return shader->setParameter("HasMainTexture", mainTexture ? 1 : 0) &&
-           shader->setParameter("HasSphereTexture", sphereTexture ? 1 : 0) &&
-           shader->setParameter("HasToonTexture", toonTexture ? 1 : 0);
+    bool sphereTextureBinding = material.sphereTexturePath.empty() || sphereTexture;
+    if (sphereTexture) {
+        MHWRender::MTextureAssignment assignment{sphereTexture};
+        sphereTextureBinding =
+            shader->setParameter("SphereTexture", assignment);
+    }
+    if (diagnostic) {
+        diagnostic->sphereTextureBindingSuccess = sphereTextureBinding;
+    }
+    if (!sphereTextureBinding && sphereTexture) {
+        return false;
+    }
+
+    bool toonTextureBinding = toonPath.empty() || toonTexture;
+    if (toonTexture) {
+        MHWRender::MTextureAssignment assignment{toonTexture};
+        toonTextureBinding = shader->setParameter("ToonTexture", assignment);
+    }
+    if (diagnostic) {
+        diagnostic->toonTextureBindingSuccess = toonTextureBinding;
+    }
+    if (!toonTextureBinding && toonTexture) {
+        return false;
+    }
+
+    const bool switchBinding =
+        shader->setParameter("HasMainTexture", mainTexture ? 1 : 0) &&
+        shader->setParameter("HasSphereTexture", sphereTexture ? 1 : 0) &&
+        shader->setParameter("HasToonTexture", toonTexture ? 1 : 0);
+    if (diagnostic) {
+        diagnostic->switchParameterBindingSuccess = switchBinding;
+        diagnostic->parameterBindingSuccess = switchBinding;
+    }
+    return switchBinding;
 }
 
 MHWRender::MPxGeometryOverride* MmdRenderGeometryOverride::creator(
@@ -381,6 +433,7 @@ void MmdRenderGeometryOverride::updateRenderItems(
     // by findOrCreateItem only after the current shape still owns geometry for
     // that pass; populateGeometry disables them again on any buffer failure.
     shape_->clearRenderItemWitness();
+    shape_->clearMaterialBindingDiagnostics();
     disableItems(list);
 
     MRenderer* renderer = MRenderer::theRenderer();
@@ -416,11 +469,41 @@ void MmdRenderGeometryOverride::updateRenderItems(
                                           pass,
                                           queueGeometry.material.doubleSided,
                                           textureAlphaBlend);
+        MmdRenderShape::MaterialBindingDiagnostic diagnostic;
+        diagnostic.queueIndex = queueIndex;
+        diagnostic.materialIndex = queueGeometry.entry.materialIndex;
+        diagnostic.submeshIndex = queueGeometry.entry.submeshIndex;
+        diagnostic.pass = mmd::mmdDrawPassName(pass);
+        diagnostic.outline = outline;
+        diagnostic.technique = technique;
+        diagnostic.uvStreamAvailable = queueGeometry.uvStreamAvailable;
+        diagnostic.diffuseAlpha = queueGeometry.material.diffuseAlpha;
+        diagnostic.textureAlphaBlend = textureAlphaBlend;
+        diagnostic.effectiveTransparent = effectiveTransparent;
+        diagnostic.mainTexturePath = queueGeometry.material.mainTexturePath;
+        diagnostic.sphereTexturePath = queueGeometry.material.sphereTexturePath;
+        diagnostic.toonTexturePath = queueGeometry.material.toonTexturePath.empty()
+                                         ? nativeSharedToonPath(
+                                               queueGeometry.material.sharedToonIndex)
+                                         : queueGeometry.material.toonTexturePath;
+        diagnostic.toonTextureSource =
+            queueGeometry.material.toonTexturePath.empty()
+                ? (queueGeometry.material.sharedToonIndex >= 0 ? "shared"
+                                                                 : "none")
+                : "explicit";
+        diagnostic.mainTextureRequested =
+            !queueGeometry.material.mainTexturePath.empty();
+        diagnostic.sphereTextureRequested =
+            !queueGeometry.material.sphereTexturePath.empty();
+        diagnostic.toonTextureRequested = !diagnostic.toonTexturePath.empty();
+        diagnostic.mainTextureAcquired = mainTexture != nullptr;
+        diagnostic.sphereMode = queueGeometry.material.sphereMode;
         MRenderItem* item = findOrCreateItem(
             list, renderItemName(queueGeometry, queueIndex, outline),
             static_cast<MGeometry::DrawMode>(MGeometry::kShaded |
                                              MGeometry::kTextured));
         if (!item) {
+            shape_->recordMaterialBindingDiagnostic(diagnostic);
             return false;
         }
         MHWRender::MShaderInstance* materialShader = nullptr;
@@ -439,6 +522,7 @@ void MmdRenderGeometryOverride::updateRenderItems(
             }
         }
         if (!materialShader) {
+            shape_->recordMaterialBindingDiagnostic(diagnostic);
             MGlobal::displayError(
                 MString("[mmdRenderOverride] Native MMD shader is unavailable: ") +
                 technique + " path=" + shaderPath.c_str());
@@ -446,10 +530,23 @@ void MmdRenderGeometryOverride::updateRenderItems(
             shape_->clearRenderItemWitness();
             return false;
         }
-        if (!setNativeMaterialParameters(materialShader,
-                                          queueGeometry.material,
-                                          textureManager) ||
-            !item->setShader(materialShader)) {
+        diagnostic.shaderAvailable = true;
+        const bool parameterBindingSuccess = setNativeMaterialParameters(
+            materialShader, queueGeometry.material, textureManager, &diagnostic);
+        diagnostic.parameterBindingSuccess = parameterBindingSuccess;
+        if (!parameterBindingSuccess) {
+            shape_->recordMaterialBindingDiagnostic(diagnostic);
+            MGlobal::displayError(
+                MString("[mmdRenderOverride] Failed to bind material parameters to ") +
+                item->name());
+            disableItems(list);
+            shape_->clearRenderItemWitness();
+            return false;
+        }
+        diagnostic.shaderAssignmentSuccess = item->setShader(materialShader);
+        diagnostic.bindingSuccess = diagnostic.shaderAssignmentSuccess;
+        shape_->recordMaterialBindingDiagnostic(diagnostic);
+        if (!diagnostic.shaderAssignmentSuccess) {
             MGlobal::displayError(
                 MString("[mmdRenderOverride] Failed to bind material shader to ") +
                 item->name());

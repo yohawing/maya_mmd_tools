@@ -14,9 +14,8 @@
 #include <string>
 #include <unordered_map>
 
+#include "MmdRenderShape.h"
 #include "MmdRenderQueue.h"
-
-class MmdRenderShape;
 
 class MmdRenderGeometryOverride : public MHWRender::MPxGeometryOverride {
 public:
@@ -51,7 +50,8 @@ private:
     bool setNativeMaterialParameters(
         MHWRender::MShaderInstance* shader,
         const mmd::MmdRenderQueueInput& material,
-        MHWRender::MTextureManager* textureManager);
+        MHWRender::MTextureManager* textureManager,
+        MmdRenderShape::MaterialBindingDiagnostic* diagnostic);
 
     MmdRenderShape* shape_ = nullptr;
     std::unordered_map<std::string, MHWRender::MShaderInstance*>

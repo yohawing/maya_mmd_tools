@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
 #include <sstream>
 #include <utility>
 
@@ -46,6 +47,108 @@ bool hasFiniteMaterial(const mmd::MmdRenderQueueInput& input)
            finiteColor(input.specularColor) &&
            finiteColor(input.ambientColor) &&
            finiteColor(input.edgeColor);
+}
+
+std::string jsonEscape(const std::string& value)
+{
+    std::ostringstream stream;
+    stream << '"';
+    for (const unsigned char character : value) {
+        switch (character) {
+        case '"':
+            stream << "\\\"";
+            break;
+        case '\\':
+            stream << "\\\\";
+            break;
+        case '\b':
+            stream << "\\b";
+            break;
+        case '\f':
+            stream << "\\f";
+            break;
+        case '\n':
+            stream << "\\n";
+            break;
+        case '\r':
+            stream << "\\r";
+            break;
+        case '\t':
+            stream << "\\t";
+            break;
+        default:
+            if (character < 0x20U) {
+                stream << "\\u" << std::hex << std::setw(4)
+                       << std::setfill('0') << static_cast<unsigned int>(character)
+                       << std::dec << std::setfill(' ');
+            } else {
+                stream << static_cast<char>(character);
+            }
+            break;
+        }
+    }
+    stream << '"';
+    return stream.str();
+}
+
+void appendJsonString(std::ostringstream& stream,
+                      const char* key,
+                      const std::string& value,
+                      bool& first)
+{
+    if (!first) {
+        stream << ',';
+    }
+    first = false;
+    stream << jsonEscape(key) << ':' << jsonEscape(value);
+}
+
+void appendJsonBool(std::ostringstream& stream,
+                    const char* key,
+                    bool value,
+                    bool& first)
+{
+    if (!first) {
+        stream << ',';
+    }
+    first = false;
+    stream << jsonEscape(key) << ':' << (value ? "true" : "false");
+}
+
+void appendJsonNumber(std::ostringstream& stream,
+                      const char* key,
+                      std::size_t value,
+                      bool& first)
+{
+    if (!first) {
+        stream << ',';
+    }
+    first = false;
+    stream << jsonEscape(key) << ':' << value;
+}
+
+void appendJsonFloat(std::ostringstream& stream,
+                     const char* key,
+                     float value,
+                     bool& first)
+{
+    if (!first) {
+        stream << ',';
+    }
+    first = false;
+    stream << jsonEscape(key) << ':' << std::setprecision(9) << value;
+}
+
+void appendJsonInt(std::ostringstream& stream,
+                   const char* key,
+                   int value,
+                   bool& first)
+{
+    if (!first) {
+        stream << ',';
+    }
+    first = false;
+    stream << jsonEscape(key) << ':' << value;
 }
 
 }  // namespace
@@ -219,6 +322,7 @@ bool MmdRenderShape::setMaterialSplitGeometry(
             submeshIndices[entry.submeshIndex];
         QueueGeometry queueGeometry;
         queueGeometry.entry = entry;
+        queueGeometry.uvStreamAvailable = !uvs.empty();
         const mmd::MmdRenderQueueInput* material =
             mmd::findMmdRenderQueueInput(queueInputs, entry);
         if (!material) {
@@ -299,6 +403,7 @@ bool MmdRenderShape::setMaterialSplitGeometry(
     geometry_ = std::move(next);
     boundingBox_ = nextBounds;
     clearRenderItemWitness();
+    clearMaterialBindingDiagnostics();
     return true;
 }
 
@@ -371,6 +476,7 @@ bool MmdRenderShape::updateMaterialAlpha(std::size_t materialIndex,
     geometry_.renderQueue = nextQueue;
     geometry_.queueGeometry = std::move(reordered);
     clearRenderItemWitness();
+    clearMaterialBindingDiagnostics();
     return true;
 }
 
@@ -396,11 +502,22 @@ void MmdRenderShape::clearRenderItemWitness()
     geometryWitnessDescriptorSummary_.clear();
 }
 
+void MmdRenderShape::clearMaterialBindingDiagnostics()
+{
+    materialBindingDiagnostics_.clear();
+}
+
 void MmdRenderShape::recordRenderItemWitness(
     const std::vector<mmd::MmdRenderQueueEntry>& entries)
 {
     renderItemWitnessEntries_ = entries;
     renderItemWitnessValid_ = true;
+}
+
+void MmdRenderShape::recordMaterialBindingDiagnostic(
+    const MaterialBindingDiagnostic& diagnostic)
+{
+    materialBindingDiagnostics_.push_back(diagnostic);
 }
 
 void MmdRenderShape::recordGeometryWitness(std::size_t vertexCount,
@@ -441,6 +558,81 @@ std::string MmdRenderShape::renderItemWitness() const
     return stream.str();
 }
 
+std::string MmdRenderShape::materialBindingDiagnosticsJson() const
+{
+    std::ostringstream stream;
+    stream << "{\"version\":1,\"status\":"
+           << jsonEscape(renderItemWitnessValid_ ? "ready" : "pending")
+           << ",\"items\":[";
+    for (std::size_t index = 0; index < materialBindingDiagnostics_.size();
+         ++index) {
+        if (index != 0U) {
+            stream << ',';
+        }
+        const MaterialBindingDiagnostic& diagnostic =
+            materialBindingDiagnostics_[index];
+        stream << '{';
+        bool first = true;
+        appendJsonNumber(stream, "queueIndex", diagnostic.queueIndex, first);
+        appendJsonNumber(stream, "materialIndex", diagnostic.materialIndex,
+                         first);
+        appendJsonNumber(stream, "submeshIndex", diagnostic.submeshIndex,
+                         first);
+        appendJsonString(stream, "pass", diagnostic.pass, first);
+        appendJsonBool(stream, "outline", diagnostic.outline, first);
+        appendJsonString(stream, "technique", diagnostic.technique, first);
+        appendJsonBool(stream, "uvStreamAvailable",
+                       diagnostic.uvStreamAvailable, first);
+        appendJsonFloat(stream, "diffuseAlpha", diagnostic.diffuseAlpha, first);
+        appendJsonBool(stream, "textureAlphaBlend",
+                       diagnostic.textureAlphaBlend, first);
+        appendJsonBool(stream, "effectiveTransparent",
+                       diagnostic.effectiveTransparent, first);
+        appendJsonString(stream, "mainTexturePath",
+                         diagnostic.mainTexturePath, first);
+        appendJsonString(stream, "sphereTexturePath",
+                         diagnostic.sphereTexturePath, first);
+        appendJsonString(stream, "toonTexturePath",
+                         diagnostic.toonTexturePath, first);
+        appendJsonString(stream, "toonTextureSource",
+                         diagnostic.toonTextureSource, first);
+        appendJsonBool(stream, "mainTextureRequested",
+                       diagnostic.mainTextureRequested, first);
+        appendJsonBool(stream, "sphereTextureRequested",
+                       diagnostic.sphereTextureRequested, first);
+        appendJsonBool(stream, "toonTextureRequested",
+                       diagnostic.toonTextureRequested, first);
+        appendJsonBool(stream, "mainTextureAcquired",
+                       diagnostic.mainTextureAcquired, first);
+        appendJsonBool(stream, "sphereTextureAcquired",
+                       diagnostic.sphereTextureAcquired, first);
+        appendJsonBool(stream, "toonTextureAcquired",
+                       diagnostic.toonTextureAcquired, first);
+        appendJsonBool(stream, "scalarParameterBindingSuccess",
+                       diagnostic.scalarParameterBindingSuccess, first);
+        appendJsonBool(stream, "mainTextureBindingSuccess",
+                       diagnostic.mainTextureBindingSuccess, first);
+        appendJsonBool(stream, "sphereTextureBindingSuccess",
+                       diagnostic.sphereTextureBindingSuccess, first);
+        appendJsonBool(stream, "toonTextureBindingSuccess",
+                       diagnostic.toonTextureBindingSuccess, first);
+        appendJsonBool(stream, "switchParameterBindingSuccess",
+                       diagnostic.switchParameterBindingSuccess, first);
+        appendJsonBool(stream, "shaderAvailable",
+                       diagnostic.shaderAvailable, first);
+        appendJsonBool(stream, "parameterBindingSuccess",
+                       diagnostic.parameterBindingSuccess, first);
+        appendJsonBool(stream, "shaderAssignmentSuccess",
+                       diagnostic.shaderAssignmentSuccess, first);
+        appendJsonBool(stream, "bindingSuccess", diagnostic.bindingSuccess,
+                       first);
+        appendJsonInt(stream, "sphereMode", diagnostic.sphereMode, first);
+        stream << '}';
+    }
+    stream << "]}";
+    return stream.str();
+}
+
 void* MmdRenderWitnessCommand::creator()
 {
     return new MmdRenderWitnessCommand();
@@ -450,6 +642,7 @@ MSyntax MmdRenderWitnessCommand::newSyntax()
 {
     MSyntax syntax;
     syntax.addFlag("-n", "-node", MSyntax::kString);
+    syntax.addFlag("-j", "-json", MSyntax::kBoolean);
     syntax.enableEdit(false);
     return syntax;
 }
@@ -484,7 +677,12 @@ MStatus MmdRenderWitnessCommand::doIt(const MArgList& args)
         return MS::kFailure;
     }
 
-    setResult(MString(shape->renderItemWitness().c_str()));
+    if (argData.isFlagSet("-json") &&
+        argData.flagArgumentBool("-json", 0)) {
+        setResult(MString(shape->materialBindingDiagnosticsJson().c_str()));
+    } else {
+        setResult(MString(shape->renderItemWitness().c_str()));
+    }
     return MS::kSuccess;
 }
 

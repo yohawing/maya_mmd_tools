@@ -137,6 +137,129 @@ def _wait_for_witness(cmds: Any, shape_name: str, log: Any) -> str:
     return witness
 
 
+def _require_requested_plugin(cmds: Any, plugin_path: str, log: Any) -> Path:
+    """Ensure Maya's canonical plug-in registration resolves to ``plugin_path``.
+
+    ``userSetup.py`` can load the native plug-in before the commandPort probe
+    runs.  A canonical-name-only loaded check would then accept a different
+    build with the same name, so query the registered plug-in path and fail
+    before exercising the witness when it is not the requested artifact.
+    """
+    requested = Path(plugin_path).resolve()
+    requested_text = str(requested)
+    loaded = bool(cmds.pluginInfo(requested_text, query=True, loaded=True))
+    if not loaded:
+        try:
+            loaded = bool(cmds.pluginInfo("mmd_tools_cpp", query=True, loaded=True))
+        except RuntimeError:
+            loaded = False
+    if not loaded:
+        cmds.loadPlugin(requested_text, quiet=False)
+
+    actual_raw = cmds.pluginInfo("mmd_tools_cpp", query=True, path=True)
+    if isinstance(actual_raw, (list, tuple)):
+        if len(actual_raw) != 1:
+            raise RuntimeError(
+                "could not determine a single loaded mmd_tools_cpp plug-in path: "
+                f"{actual_raw!r}"
+            )
+        actual_raw = actual_raw[0]
+    if not actual_raw:
+        raise RuntimeError("loaded mmd_tools_cpp plug-in did not report its path")
+    actual = Path(str(actual_raw)).resolve()
+    log(f"requested plugin: {requested}")
+    log(f"loaded canonical plugin: {actual}")
+    if os.path.normcase(str(actual)) != os.path.normcase(requested_text):
+        raise RuntimeError(
+            "loaded mmd_tools_cpp plug-in differs from requested --plugin: "
+            f"requested={requested}; loaded={actual}"
+        )
+    return actual
+
+
+def _read_material_binding_diagnostics(
+    cmds: Any,
+    shape_name: str,
+    log: Any,
+    *,
+    max_attempts: int = 8,
+    poll_seconds: float = 0.1,
+) -> dict[str, object]:
+    """Read the additive structured native material-binding witness.
+
+    The default ``mmdRenderWitness`` result remains the stable human-readable
+    queue witness.  VP2 can briefly return an empty/partial JSON result while
+    a queue update is being consumed, so bounded refresh/poll attempts wait for
+    a ready object with at least one item.  A legacy plugin still produces a
+    clear unavailable/timeout result instead of blocking indefinitely.
+    """
+    attempts = max(1, int(max_attempts))
+    last_pending: Optional[dict[str, object]] = None
+    last_invalid: Optional[dict[str, object]] = None
+    last_error: Optional[str] = None
+    for attempt in range(attempts):
+        try:
+            raw = cmds.mmdRenderWitness(node=shape_name, json=True)
+            if isinstance(raw, (list, tuple)) and len(raw) == 1:
+                raw = raw[0]
+            parsed = json.loads(str(raw))
+            if not isinstance(parsed, dict):
+                last_invalid = {
+                    "version": 1,
+                    "status": "invalid",
+                    "items": [],
+                    "raw": str(raw),
+                }
+                log(
+                    "material binding diagnostics returned a non-object result "
+                    f"(attempt {attempt + 1}/{attempts})"
+                )
+            else:
+                items = parsed.get("items")
+                if parsed.get("status") == "ready" and isinstance(items, list) and items:
+                    return parsed
+                last_pending = parsed
+                log(
+                    "material binding diagnostics not ready "
+                    f"(attempt {attempt + 1}/{attempts})"
+                )
+        except Exception as exc:
+            last_error = str(exc)
+            log(
+                "material binding diagnostics unavailable "
+                f"(attempt {attempt + 1}/{attempts}): {exc}"
+            )
+
+        if attempt + 1 >= attempts:
+            break
+        try:
+            cmds.refresh(force=True)
+        except Exception as exc:
+            log(f"material binding diagnostics refresh warning: {exc}")
+        if poll_seconds > 0.0:
+            time.sleep(poll_seconds)
+
+    if last_pending is not None:
+        pending_items = last_pending.get("items")
+        return {
+            "version": last_pending.get("version", 1),
+            "status": "timeout",
+            "items": pending_items if isinstance(pending_items, list) else [],
+            "lastStatus": last_pending.get("status"),
+            "attempts": attempts,
+        }
+    if last_invalid is not None:
+        last_invalid["attempts"] = attempts
+        return last_invalid
+    return {
+        "version": 1,
+        "status": "unavailable",
+        "items": [],
+        "attempts": attempts,
+        "error": last_error or "no diagnostic result",
+    }
+
+
 def _camera_vector(value: object, name: str) -> tuple[float, float, float]:
     """Validate and normalize a camera position/target/up vector."""
     if isinstance(value, (str, bytes)):
@@ -336,22 +459,8 @@ def run_probe(
     try:
         log("=== native VP2 ownership probe begin ===")
         cmds.file(new=True, force=True)
-        plugin = str(Path(plugin_path).resolve())
-        plugin_loaded = bool(cmds.pluginInfo(plugin, query=True, loaded=True))
-        if not plugin_loaded:
-            # userSetup.py may have already loaded the same binary by its
-            # registered name before this probe reaches the explicit path.
-            # Maya can deadlock when the same plug-in is loaded twice, so use
-            # the canonical name as a second idempotence check.
-            try:
-                plugin_loaded = bool(
-                    cmds.pluginInfo("mmd_tools_cpp", query=True, loaded=True)
-                )
-            except RuntimeError:
-                plugin_loaded = False
-        if not plugin_loaded:
-            cmds.loadPlugin(plugin, quiet=False)
-        log(f"plugin loaded: {cmds.pluginInfo(plugin, query=True, loaded=True)}")
+        loaded_plugin = _require_requested_plugin(cmds, plugin_path, log)
+        report["loadedPluginPath"] = str(loaded_plugin)
         log(f"vp2 device: {cmds.ogs(deviceInformation=True)}")
 
         if ui_import:
@@ -593,6 +702,9 @@ def run_probe(
 
         witness = _wait_for_witness(cmds, shape_name, log)
         report["witness"] = witness
+        report["materialBindingDiagnostics"] = _read_material_binding_diagnostics(
+            cmds, shape_name, log
+        )
 
         ordinary_meshes = [
             str(item) for item in (cmds.ls(type="mesh", long=True) or [])
@@ -700,6 +812,9 @@ def run_probe(
         ]
         cmds.xform(active_camera, worldSpace=True, translation=moved_camera_translate)
         camera_motion_witness = _wait_for_witness(cmds, shape_name, log)
+        camera_motion_diagnostics = _read_material_binding_diagnostics(
+            cmds, shape_name, log
+        )
         camera_capture = _capture_view(
             cmds,
             output_dir / "native_vp2_ownership_camera_motion.png",
@@ -721,6 +836,9 @@ def run_probe(
             )
         )
         queue_after_opaque = _wait_for_witness(cmds, shape_name, log)
+        queue_opaque_diagnostics = _read_material_binding_diagnostics(
+            cmds, shape_name, log
+        )
         opaque_capture = _capture_view(
             cmds,
             output_dir / "native_vp2_ownership_queue_opaque.png",
@@ -737,6 +855,9 @@ def run_probe(
             )
         )
         queue_after_restore = _wait_for_witness(cmds, shape_name, log)
+        queue_restored_diagnostics = _read_material_binding_diagnostics(
+            cmds, shape_name, log
+        )
         restored_capture = _capture_view(
             cmds,
             output_dir / "native_vp2_ownership_queue_restored.png",
@@ -750,12 +871,15 @@ def run_probe(
         report["cameraMotion"] = {
             "translate": moved_camera_translate,
             "witness": camera_motion_witness,
+            "materialBindingDiagnostics": camera_motion_diagnostics,
         }
         report["queueUpdate"] = {
             "requestResult": queue_update_result,
             "afterOpaque": queue_after_opaque,
             "restoreResult": restore_result,
             "afterRestore": queue_after_restore,
+            "opaqueMaterialBindingDiagnostics": queue_opaque_diagnostics,
+            "restoredMaterialBindingDiagnostics": queue_restored_diagnostics,
         }
         expected_transparent_order = "Transparent[m0/s0],Transparent[m1/s1]"
         expected_opaque_order = "Opaque[m0/s0],Transparent[m1/s1]"
@@ -942,6 +1066,9 @@ def main() -> int:
     )
     env_overrides = {
         "MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11",
+        # userSetup.py and cpp_fast_importer honor this explicit artifact
+        # selection before the commandPort probe runs.
+        "MMD_TOOLS_CPP_PLUGIN": str(plugin.resolve()),
         # Maya's GUI loader does not inherit the mayapy-side PATH used by
         # the standalone smoke.  Keep the native plug-in and mmd-anim DLL
         # directory ahead of the inherited search path.
