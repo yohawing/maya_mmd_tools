@@ -43,9 +43,18 @@ def test_native_caster_uses_fixed_targets_and_occupancy_witness() -> None:
     assert "kRenderShadedItems" in source
     assert "operationInsertedBeforeScene" in source
     assert "nonClearSamples" in source
+    assert "writtenSamples" in source
+    assert "writtenMean" in source
+    assert "writtenFootprintHash" in source
+    assert "matrixValidated" in source
+    assert "depthBiasBound" in source
+    assert 'addFlag("-db", "-depthBias"' in source
     assert "CasterLightViewProjection" in shader
+    assert "row_major float4x4 CasterLightViewProjection" in shader
     assert "technique11 MMDNativeCaster" in shader
     assert "mul(worldPos, CasterLightViewProjection)" in shader
+    assert "return input.position.z;" in shader
+    assert ": SV_Depth" not in shader
 
 
 def test_native_caster_e2e_records_negative_control() -> None:
@@ -61,3 +70,41 @@ def test_native_caster_e2e_records_negative_control() -> None:
     assert "pluginLoadedAfterUnload" in runner
     assert "standardPresentDiff" in runner
     assert "scenePixelSha256" in runner
+    assert "depthBias" in runner
+    assert "depthBiasAba" in runner
+    assert "writtenFootprintHash" in runner
+
+
+def test_depth_bias_aba_gate_checks_bias_and_footprint() -> None:
+    from tools.render_override_native_caster_e2e import _depth_bias_aba_passes
+
+    baseline = {
+        "depthBias": 0.35,
+        "writtenDepthFinite": True,
+        "writtenDepthInRange": True,
+        "writtenOutOfRangeSamples": 0,
+        "writtenSamples": 4,
+        "writtenFootprintHash": "0xsame",
+        "writtenMin": 0.20,
+        "writtenMax": 0.40,
+        "writtenMean": 0.30,
+    }
+    control = {
+        **baseline,
+        "depthBias": 0.55,
+        "writtenMin": 0.40,
+        "writtenMax": 0.60,
+        "writtenMean": 0.50,
+    }
+    restored = {**baseline}
+
+    assert _depth_bias_aba_passes(baseline, control, restored)
+    control["depthBias"] = 0.50
+    assert not _depth_bias_aba_passes(baseline, control, restored)
+    control.update(
+        depthBias=0.55,
+        writtenMin=0.36,
+        writtenMax=0.56,
+        writtenMean=0.46,
+    )
+    assert not _depth_bias_aba_passes(baseline, control, restored)

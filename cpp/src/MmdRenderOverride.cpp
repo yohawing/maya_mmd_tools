@@ -13,11 +13,13 @@
 #include <maya/MFnDependencyNode.h>
 #include <maya/MGlobal.h>
 #include <maya/MItDependencyNodes.h>
+#include <maya/MPoint.h>
 #include <maya/MRenderTargetManager.h>
 #include <maya/MStringArray.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <iomanip>
@@ -40,6 +42,21 @@ const MString& casterDepthTargetName()
 }
 
 std::filesystem::path gShaderPath;
+float gDepthBias = MmdNativeCasterRenderOverride::kDefaultDepthBias;
+
+constexpr float kClearDepth = 1.0F;
+constexpr float kDepthEpsilon = 1.0e-6F;
+constexpr float kMatrixEpsilon = 1.0e-6F;
+
+struct TargetDiagnostics {
+    unsigned int width = 0U;
+    unsigned int height = 0U;
+    unsigned int multiSampleCount = 0U;
+    unsigned int arraySliceCount = 0U;
+    int format = -1;
+    bool isCubeMap = false;
+    std::string name;
+};
 
 struct CasterDiagnostics {
     bool registered = false;
@@ -48,22 +65,30 @@ struct CasterDiagnostics {
     std::size_t selectedCount = 0U;
     bool colorTargetAcquired = false;
     bool depthTargetAcquired = false;
-    unsigned int colorWidth = 0U;
-    unsigned int colorHeight = 0U;
-    unsigned int depthWidth = 0U;
-    unsigned int depthHeight = 0U;
-    int colorFormat = -1;
-    int depthFormat = -1;
+    TargetDiagnostics colorTarget;
+    TargetDiagnostics depthTarget;
     bool shaderAvailable = false;
     bool matrixBound = false;
+    bool matrixValidated = false;
+    bool depthBiasBound = false;
+    float depthBias = MmdNativeCasterRenderOverride::kDefaultDepthBias;
     bool drawAttempted = false;
     bool frameComplete = false;
     bool operationInsertedBeforeScene = false;
     bool occupancySupported = false;
     bool occupied = false;
-    std::size_t nonClearSamples = 0U;
-    float nonClearMin = 0.0F;
-    float nonClearMax = 0.0F;
+    std::size_t clearSamples = 0U;
+    std::size_t writtenSamples = 0U;
+    std::size_t finiteSamples = 0U;
+    std::size_t nonFiniteSamples = 0U;
+    std::size_t outOfRangeSamples = 0U;
+    std::size_t writtenOutOfRangeSamples = 0U;
+    float writtenMin = 0.0F;
+    float writtenMax = 0.0F;
+    double writtenMean = 0.0;
+    std::uint64_t writtenFootprintHash = 1469598103934665603ULL;
+    bool writtenDepthFinite = false;
+    bool writtenDepthInRange = false;
     bool released = false;
     std::string error;
 };
@@ -109,19 +134,100 @@ std::string jsonBool(bool value)
     return value ? "true" : "false";
 }
 
+std::string jsonString(const std::string& value)
+{
+    std::ostringstream stream;
+    stream << '"';
+    for (const char character : value) {
+        if (character == '\\' || character == '"') {
+            stream << '\\';
+        }
+        stream << character;
+    }
+    stream << '"';
+    return stream.str();
+}
+
 MMatrix casterLightViewProjection()
 {
-    // Keep the spike deterministic and finite while covering the imported
-    // model's local world-space extent.  This is intentionally a fixed
-    // clip-space transform; a production caster will replace it with the
-    // scene light's view/projection owner once receiver composition exists.
+    // This is a row-vector, finite, non-reversed orthographic caster-space
+    // transform.  MPoint * MMatrix and HLSL mul(rowVector, row_major matrix)
+    // therefore use the same translation row and positive clip-Z direction.
+    // The scale leaves room for the deterministic +0.35/+0.55 depth bias
+    // control while covering the small imported fixtures used by this probe.
     const double values[4][4] = {
-        {0.5, 0.0, 0.0, 0.0},
-        {0.0, 0.5, 0.0, 0.0},
-        {0.0, 0.0, 0.5, 0.0},
-        {0.0, 0.0, 0.0, 1.0},
+        {0.25, 0.0, 0.0, 0.0},
+        {0.0, 0.25, 0.0, 0.0},
+        {0.0, 0.0, 0.04, 0.0},
+        {0.10, -0.10, 0.0, 1.0},
     };
     return MMatrix(values);
+}
+
+bool approximatelyEqual(double lhs, double rhs)
+{
+    return std::abs(lhs - rhs) <= kMatrixEpsilon;
+}
+
+bool validateCasterMatrix(const MMatrix& matrix)
+{
+    // Validate through Maya's row-vector point operator instead of only
+    // checking entries.  A transposed matrix or a translation in the wrong
+    // row consequently fails before any draw is attempted.
+    const MPoint origin = MPoint(0.0, 0.0, 0.0, 1.0) * matrix;
+    const MPoint xAxis = MPoint(1.0, 0.0, 0.0, 1.0) * matrix;
+    const MPoint yAxis = MPoint(0.0, 1.0, 0.0, 1.0) * matrix;
+    const MPoint zAxis = MPoint(0.0, 0.0, 1.0, 1.0) * matrix;
+    const MPoint points[] = {origin, xAxis, yAxis, zAxis};
+    for (const MPoint& point : points) {
+        if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
+            !std::isfinite(point.z) || !std::isfinite(point.w)) {
+            return false;
+        }
+    }
+    return approximatelyEqual(origin.x, 0.10) &&
+           approximatelyEqual(origin.y, -0.10) &&
+           approximatelyEqual(origin.z, 0.0) &&
+           approximatelyEqual(origin.w, 1.0) &&
+           approximatelyEqual(xAxis.x - origin.x, 0.25) &&
+           approximatelyEqual(xAxis.y - origin.y, 0.0) &&
+           approximatelyEqual(xAxis.z - origin.z, 0.0) &&
+           approximatelyEqual(yAxis.x - origin.x, 0.0) &&
+           approximatelyEqual(yAxis.y - origin.y, 0.25) &&
+           approximatelyEqual(yAxis.z - origin.z, 0.0) &&
+           approximatelyEqual(zAxis.x - origin.x, 0.0) &&
+           approximatelyEqual(zAxis.y - origin.y, 0.0) &&
+           approximatelyEqual(zAxis.z - origin.z, 0.04) &&
+           approximatelyEqual(zAxis.w - origin.w, 0.0);
+}
+
+void resetDepthDiagnostics()
+{
+    gDiagnostics.clearSamples = 0U;
+    gDiagnostics.writtenSamples = 0U;
+    gDiagnostics.finiteSamples = 0U;
+    gDiagnostics.nonFiniteSamples = 0U;
+    gDiagnostics.outOfRangeSamples = 0U;
+    gDiagnostics.writtenOutOfRangeSamples = 0U;
+    gDiagnostics.writtenMin = 0.0F;
+    gDiagnostics.writtenMax = 0.0F;
+    gDiagnostics.writtenMean = 0.0;
+    gDiagnostics.writtenFootprintHash = 1469598103934665603ULL;
+    gDiagnostics.writtenDepthFinite = false;
+    gDiagnostics.writtenDepthInRange = false;
+}
+
+void hashFootprint(std::uint64_t& hash, unsigned int x, unsigned int y)
+{
+    // FNV-1a over the integer pixel coordinate.  A/B depth bias must preserve
+    // this footprint because only clip-Z changes.
+    const std::uint32_t coordinate[] = {x, y};
+    for (const std::uint32_t component : coordinate) {
+        for (unsigned int byte = 0U; byte < sizeof(component); ++byte) {
+            hash ^= static_cast<std::uint8_t>(component >> (byte * 8U));
+            hash *= 1099511628211ULL;
+        }
+    }
 }
 
 }  // namespace
@@ -132,11 +238,15 @@ public:
     CasterSceneRender()
         : MHWRender::MSceneRender("mmdNativeCasterScene")
     {
-        float clearColor[4] = {0.0F, 0.0F, 0.0F, 0.0F};
+        // The R32F color target carries the rasterized clip depth.  Use the
+        // same 1.0 sentinel as D32 and strict LESS so clear and written
+        // samples remain distinguishable in CPU readback.
+        float clearColor[4] = {kClearDepth, kClearDepth, kClearDepth,
+                               kClearDepth};
         clearOperation().setOverridesColors(true);
         clearOperation().setMask(MHWRender::MClearOperation::kClearAll);
         clearOperation().setClearColor(clearColor);
-        clearOperation().setClearDepth(1.0F);
+        clearOperation().setClearDepth(kClearDepth);
     }
 
     void setSelection(const MSelectionList& selection)
@@ -211,11 +321,25 @@ public:
         if (!shader_) {
             return;
         }
+        const MMatrix matrix = casterLightViewProjection();
+        gDiagnostics.matrixValidated = validateCasterMatrix(matrix);
+        if (!gDiagnostics.matrixValidated) {
+            gDiagnostics.error =
+                "row-vector caster matrix validation failed";
+            return;
+        }
         const MStatus status = shader_->setParameter(
-            MString("CasterLightViewProjection"), casterLightViewProjection());
+            MString("CasterLightViewProjection"), matrix);
         gDiagnostics.matrixBound = status == MS::kSuccess;
         if (!gDiagnostics.matrixBound) {
             gDiagnostics.error = "CasterLightViewProjection binding failed";
+            return;
+        }
+        const MStatus biasStatus = shader_->setParameter(
+            MString("CasterDepthBias"), gDepthBias);
+        gDiagnostics.depthBiasBound = biasStatus == MS::kSuccess;
+        if (!gDiagnostics.depthBiasBound) {
+            gDiagnostics.error = "CasterDepthBias binding failed";
         }
     }
 
@@ -250,21 +374,47 @@ public:
                 bytes + static_cast<std::size_t>(y) * rowPitch);
             for (unsigned int x = 0U; x < width; ++x) {
                 const float value = row[x];
-                if (std::isfinite(value) && std::abs(value) > 1.0e-5F) {
-                    ++gDiagnostics.nonClearSamples;
-                    gDiagnostics.occupied = true;
-                    if (gDiagnostics.nonClearSamples == 1U) {
-                        gDiagnostics.nonClearMin = value;
-                        gDiagnostics.nonClearMax = value;
-                    } else {
-                        gDiagnostics.nonClearMin =
-                            std::min(gDiagnostics.nonClearMin, value);
-                        gDiagnostics.nonClearMax =
-                            std::max(gDiagnostics.nonClearMax, value);
-                    }
+                if (!std::isfinite(value)) {
+                    ++gDiagnostics.nonFiniteSamples;
+                    continue;
+                }
+                ++gDiagnostics.finiteSamples;
+                if (value < 0.0F || value > kClearDepth) {
+                    ++gDiagnostics.outOfRangeSamples;
+                }
+                if (std::abs(value - kClearDepth) <= kDepthEpsilon) {
+                    ++gDiagnostics.clearSamples;
+                    continue;
+                }
+                ++gDiagnostics.writtenSamples;
+                gDiagnostics.occupied = true;
+                hashFootprint(gDiagnostics.writtenFootprintHash, x, y);
+                if (gDiagnostics.writtenSamples == 1U) {
+                    gDiagnostics.writtenMin = value;
+                    gDiagnostics.writtenMax = value;
+                } else {
+                    gDiagnostics.writtenMin =
+                        std::min(gDiagnostics.writtenMin, value);
+                    gDiagnostics.writtenMax =
+                        std::max(gDiagnostics.writtenMax, value);
+                }
+                gDiagnostics.writtenMean += value;
+                if (value < 0.0F || value > kClearDepth) {
+                    ++gDiagnostics.writtenOutOfRangeSamples;
                 }
             }
         }
+        if (gDiagnostics.writtenSamples > 0U) {
+            gDiagnostics.writtenMean /=
+                static_cast<double>(gDiagnostics.writtenSamples);
+        }
+        gDiagnostics.writtenDepthFinite =
+            gDiagnostics.nonFiniteSamples == 0U;
+        gDiagnostics.writtenDepthInRange =
+            gDiagnostics.writtenSamples > 0U &&
+            gDiagnostics.writtenOutOfRangeSamples == 0U &&
+            gDiagnostics.writtenMin >= 0.0F &&
+            gDiagnostics.writtenMax <= kClearDepth;
         MHWRender::MRenderTarget::freeRawData(raw);
         gDiagnostics.frameComplete = true;
     }
@@ -277,9 +427,8 @@ private:
 
 MmdNativeCasterRenderOverride::MmdNativeCasterRenderOverride()
     // Use a constructor-local literal rather than a namespace-static MString:
-    // pluginMain owns a static override instance, so cross-TU initialization
-    // order could otherwise register an empty name before kOverrideName was
-    // initialized.
+    // pluginMain creates the override during initializePlugin, so cross-TU
+    // initialization order could otherwise register an empty name.
     : MHWRender::MRenderOverride(MString("mmdNativeCaster"))
 {
     // The UI label is provided by uiName() so modelEditor -rom can list this
@@ -341,18 +490,30 @@ bool MmdNativeCasterRenderOverride::acquireTargets()
     if (colorTarget_) {
         MHWRender::MRenderTargetDescription actualDescription;
         colorTarget_->targetDescription(actualDescription);
-        gDiagnostics.colorWidth = actualDescription.width();
-        gDiagnostics.colorHeight = actualDescription.height();
-        gDiagnostics.colorFormat =
+        gDiagnostics.colorTarget.width = actualDescription.width();
+        gDiagnostics.colorTarget.height = actualDescription.height();
+        gDiagnostics.colorTarget.multiSampleCount =
+            actualDescription.multiSampleCount();
+        gDiagnostics.colorTarget.arraySliceCount =
+            actualDescription.arraySliceCount();
+        gDiagnostics.colorTarget.format =
             static_cast<int>(actualDescription.rasterFormat());
+        gDiagnostics.colorTarget.isCubeMap = actualDescription.isCubeMap();
+        gDiagnostics.colorTarget.name = actualDescription.name().asUTF8();
     }
     if (depthTarget_) {
         MHWRender::MRenderTargetDescription actualDescription;
         depthTarget_->targetDescription(actualDescription);
-        gDiagnostics.depthWidth = actualDescription.width();
-        gDiagnostics.depthHeight = actualDescription.height();
-        gDiagnostics.depthFormat =
+        gDiagnostics.depthTarget.width = actualDescription.width();
+        gDiagnostics.depthTarget.height = actualDescription.height();
+        gDiagnostics.depthTarget.multiSampleCount =
+            actualDescription.multiSampleCount();
+        gDiagnostics.depthTarget.arraySliceCount =
+            actualDescription.arraySliceCount();
+        gDiagnostics.depthTarget.format =
             static_cast<int>(actualDescription.rasterFormat());
+        gDiagnostics.depthTarget.isCubeMap = actualDescription.isCubeMap();
+        gDiagnostics.depthTarget.name = actualDescription.name().asUTF8();
     }
     if (!colorTarget_ || !depthTarget_) {
         gDiagnostics.error = "caster render target acquisition failed";
@@ -395,16 +556,19 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
     gDiagnostics.error.clear();
     gDiagnostics.selectionBuilt = false;
     gDiagnostics.selectedCount = 0U;
+    gDiagnostics.colorTarget = TargetDiagnostics();
+    gDiagnostics.depthTarget = TargetDiagnostics();
     gDiagnostics.shaderAvailable = false;
     gDiagnostics.matrixBound = false;
+    gDiagnostics.matrixValidated = false;
+    gDiagnostics.depthBiasBound = false;
+    gDiagnostics.depthBias = gDepthBias;
     gDiagnostics.drawAttempted = false;
     gDiagnostics.frameComplete = false;
     gDiagnostics.operationInsertedBeforeScene = false;
     gDiagnostics.occupancySupported = false;
     gDiagnostics.occupied = false;
-    gDiagnostics.nonClearSamples = 0U;
-    gDiagnostics.nonClearMin = 0.0F;
-    gDiagnostics.nonClearMax = 0.0F;
+    resetDepthDiagnostics();
     mOperations.clear();
     releaseShader();
     releaseTargets();
@@ -488,7 +652,7 @@ const MString& MmdNativeCasterRenderOverride::overrideName()
 std::string MmdNativeCasterRenderOverride::diagnosticsJson()
 {
     std::ostringstream stream;
-    stream << '{'
+    stream << std::setprecision(9) << '{'
            << "\"version\":1"
            << ",\"registered\":" << jsonBool(gDiagnostics.registered)
            << ",\"setup\":" << jsonBool(gDiagnostics.setup)
@@ -498,15 +662,44 @@ std::string MmdNativeCasterRenderOverride::diagnosticsJson()
            << jsonBool(gDiagnostics.colorTargetAcquired)
            << ",\"depthTargetAcquired\":"
            << jsonBool(gDiagnostics.depthTargetAcquired)
-           << ",\"colorWidth\":" << gDiagnostics.colorWidth
-           << ",\"colorHeight\":" << gDiagnostics.colorHeight
-           << ",\"depthWidth\":" << gDiagnostics.depthWidth
-           << ",\"depthHeight\":" << gDiagnostics.depthHeight
-           << ",\"colorFormat\":" << gDiagnostics.colorFormat
-           << ",\"depthFormat\":" << gDiagnostics.depthFormat
+           << ",\"colorTarget\":{\"name\":"
+           << jsonString(gDiagnostics.colorTarget.name)
+           << ",\"width\":" << gDiagnostics.colorTarget.width
+           << ",\"height\":" << gDiagnostics.colorTarget.height
+           << ",\"multiSampleCount\":"
+           << gDiagnostics.colorTarget.multiSampleCount
+           << ",\"arraySliceCount\":"
+           << gDiagnostics.colorTarget.arraySliceCount
+           << ",\"format\":" << gDiagnostics.colorTarget.format
+           << ",\"isCubeMap\":"
+           << jsonBool(gDiagnostics.colorTarget.isCubeMap) << '}'
+           << ",\"depthTarget\":{\"name\":"
+           << jsonString(gDiagnostics.depthTarget.name)
+           << ",\"width\":" << gDiagnostics.depthTarget.width
+           << ",\"height\":" << gDiagnostics.depthTarget.height
+           << ",\"multiSampleCount\":"
+           << gDiagnostics.depthTarget.multiSampleCount
+           << ",\"arraySliceCount\":"
+           << gDiagnostics.depthTarget.arraySliceCount
+           << ",\"format\":" << gDiagnostics.depthTarget.format
+           << ",\"isCubeMap\":"
+           << jsonBool(gDiagnostics.depthTarget.isCubeMap) << '}'
+           // Keep the version-1 flat target fields for existing consumers;
+           // the nested descriptions above are the authoritative full shape.
+           << ",\"colorWidth\":" << gDiagnostics.colorTarget.width
+           << ",\"colorHeight\":" << gDiagnostics.colorTarget.height
+           << ",\"depthWidth\":" << gDiagnostics.depthTarget.width
+           << ",\"depthHeight\":" << gDiagnostics.depthTarget.height
+           << ",\"colorFormat\":" << gDiagnostics.colorTarget.format
+           << ",\"depthFormat\":" << gDiagnostics.depthTarget.format
            << ",\"shaderAvailable\":"
            << jsonBool(gDiagnostics.shaderAvailable)
            << ",\"matrixBound\":" << jsonBool(gDiagnostics.matrixBound)
+           << ",\"matrixValidated\":"
+           << jsonBool(gDiagnostics.matrixValidated)
+           << ",\"depthBiasBound\":"
+           << jsonBool(gDiagnostics.depthBiasBound)
+           << ",\"depthBias\":" << gDiagnostics.depthBias
            << ",\"drawAttempted\":" << jsonBool(gDiagnostics.drawAttempted)
            << ",\"frameComplete\":" << jsonBool(gDiagnostics.frameComplete)
            << ",\"operationInsertedBeforeScene\":"
@@ -514,18 +707,30 @@ std::string MmdNativeCasterRenderOverride::diagnosticsJson()
            << ",\"occupancySupported\":"
            << jsonBool(gDiagnostics.occupancySupported)
            << ",\"occupied\":" << jsonBool(gDiagnostics.occupied)
-           << ",\"nonClearSamples\":" << gDiagnostics.nonClearSamples
-           << ",\"nonClearMin\":" << gDiagnostics.nonClearMin
-           << ",\"nonClearMax\":" << gDiagnostics.nonClearMax
+           << ",\"clearValue\":" << kClearDepth
+           << ",\"clearSamples\":" << gDiagnostics.clearSamples
+           << ",\"writtenSamples\":" << gDiagnostics.writtenSamples
+           << ",\"writtenMin\":" << gDiagnostics.writtenMin
+           << ",\"writtenMax\":" << gDiagnostics.writtenMax
+           << ",\"writtenMean\":" << gDiagnostics.writtenMean
+           << ",\"finiteSamples\":" << gDiagnostics.finiteSamples
+           << ",\"nonFiniteSamples\":" << gDiagnostics.nonFiniteSamples
+           << ",\"outOfRangeSamples\":" << gDiagnostics.outOfRangeSamples
+           << ",\"writtenOutOfRangeSamples\":"
+           << gDiagnostics.writtenOutOfRangeSamples
+           << ",\"writtenFootprintHash\":\"0x" << std::hex
+           << gDiagnostics.writtenFootprintHash << std::dec << "\""
+           << ",\"writtenDepthFinite\":"
+           << jsonBool(gDiagnostics.writtenDepthFinite)
+           << ",\"writtenDepthInRange\":"
+           << jsonBool(gDiagnostics.writtenDepthInRange)
+           // Keep the old occupancy keys as compatibility aliases for local
+           // diagnostics that predate the real-depth witness.
+           << ",\"nonClearSamples\":" << gDiagnostics.writtenSamples
+           << ",\"nonClearMin\":" << gDiagnostics.writtenMin
+           << ",\"nonClearMax\":" << gDiagnostics.writtenMax
            << ",\"released\":" << jsonBool(gDiagnostics.released)
-           << ",\"error\":\"";
-    for (const char character : gDiagnostics.error) {
-        if (character == '\\' || character == '"') {
-            stream << '\\';
-        }
-        stream << character;
-    }
-    stream << "\"}";
+           << ",\"error\":" << jsonString(gDiagnostics.error) << '}';
     return stream.str();
 }
 
@@ -536,11 +741,29 @@ void* MmdNativeCasterWitnessCommand::creator()
 
 MSyntax MmdNativeCasterWitnessCommand::newSyntax()
 {
-    return MSyntax();
+    MSyntax syntax;
+    syntax.addFlag("-db", "-depthBias", MSyntax::kDouble);
+    return syntax;
 }
 
-MStatus MmdNativeCasterWitnessCommand::doIt(const MArgList&)
+MStatus MmdNativeCasterWitnessCommand::doIt(const MArgList& args)
 {
+    MStatus status;
+    MArgDatabase argumentData(newSyntax(), args, &status);
+    if (!status) {
+        return status;
+    }
+    if (argumentData.isFlagSet("-depthBias")) {
+        double requestedBias = 0.0;
+        status = argumentData.getFlagArgument("-depthBias", 0, requestedBias);
+        if (!status || !std::isfinite(requestedBias) || requestedBias < 0.0 ||
+            requestedBias > 1.0) {
+            MGlobal::displayError(
+                "mmdNativeCasterWitness depthBias must be finite in [0, 1]");
+            return MS::kFailure;
+        }
+        gDepthBias = static_cast<float>(requestedBias);
+    }
     setResult(MString(MmdNativeCasterRenderOverride::diagnosticsJson().c_str()));
     return MS::kSuccess;
 }

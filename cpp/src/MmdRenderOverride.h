@@ -27,6 +27,7 @@
 class MmdNativeCasterRenderOverride : public MHWRender::MRenderOverride {
 public:
     static constexpr unsigned int kTargetSize = 2048U;
+    static constexpr float kDefaultDepthBias = 0.35F;
 
     MmdNativeCasterRenderOverride();
     ~MmdNativeCasterRenderOverride() override;

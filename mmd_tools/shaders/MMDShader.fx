@@ -255,10 +255,17 @@ int NativeSrgbOutput<
 > = 0;
 
 // Native caster capability spike.  The C++ MRenderOverride binds a fixed
-// light-view-projection matrix before the selected mmdRenderShape items draw.
-float4x4 CasterLightViewProjection<
+// orthographic caster matrix before the selected mmdRenderShape items draw.
+// Explicit row-major storage matches Maya's MPoint * MMatrix convention and
+// the row-vector mul() calls below; this is not a production scene-light
+// projection or receiver-composition path.
+row_major float4x4 CasterLightViewProjection<
     string UIWidget = "None";
 >;
+
+float CasterDepthBias<
+    string UIWidget = "None";
+> = 0.35f;
 
 // Shadow parameters
 bool UseShadows<
@@ -402,6 +409,10 @@ VS_OUTPUT CasterVS(VS_INPUT input)
     float4 localPos = float4(input.position, 1.0);
     float4 worldPos = mul(localPos, World);
     output.position = mul(worldPos, CasterLightViewProjection);
+    // A/B/A validation changes only clip Z.  XY and therefore raster
+    // footprint remain invariant while the strict LESS D32 test continues
+    // to select the same front-most fragments.
+    output.position.z += CasterDepthBias * output.position.w;
     output.worldPosition = worldPos.xyz;
     output.worldNormal = input.normal;
     output.texCoord0 = input.texCoord0;
@@ -411,10 +422,12 @@ VS_OUTPUT CasterVS(VS_INPUT input)
     return output;
 }
 
-float4 CasterPS(VS_OUTPUT input) : SV_TARGET
+float CasterPS(VS_OUTPUT input) : SV_TARGET
 {
-    // A constant non-clear value makes CPU-side R32F occupancy observable.
-    return float4(1.0, 1.0, 1.0, 1.0);
+    // SV_POSITION.z is already post-divide [0, 1] depth for this finite
+    // orthographic matrix.  Return it directly to the R32F target; do not
+    // use SV_Depth, divide by w, saturate, or substitute an occupancy value.
+    return input.position.z;
 }
 
 //--------------------------------------------------------------------------------------
@@ -863,8 +876,8 @@ technique11 MMDNativeOutlineTranslucentDoubleSided
 }
 
 // Opt-in native caster pass used only by MmdNativeCasterRenderOverride.  It
-// writes a constant occupancy witness to an R32F target and depth-tests the
-// selected mmdRenderShape geometry with the fixed caster matrix.
+// writes rasterized clip depth to an R32F target and depth-tests the selected
+// mmdRenderShape geometry with the fixed row-vector caster matrix.
 technique11 MMDNativeCaster
 {
     pass MainPass

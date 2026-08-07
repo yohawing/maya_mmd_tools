@@ -4,8 +4,10 @@ This probe intentionally uses the settings-backed UI import route, then toggles
 ``mmdNativeCaster`` through ``MRenderer``.  It records the native witness while
 the override is active, captures the ordinary viewport before/after disabling
 it, and verifies that disabling/unloading releases the private targets.
-The R32F occupancy flag is evidence only; this is not a shadow-composition or
-GoldenOracle parity claim.
+The R32F target contains the rasterized caster clip depth.  The deterministic
+depth-bias A/B/A control checks that bias changes only depth statistics, not
+the pixel footprint.  This remains a caster capability witness, not a
+shadow-composition, alpha-cutout, receiver, or GoldenOracle parity claim.
 """
 
 from __future__ import annotations
@@ -39,6 +41,9 @@ COMPLETION_MARKER = "//-- RENDER OVERRIDE NATIVE CASTER FINISHED --//"
 DEFAULT_PORT = 7738
 DEFAULT_TIMEOUT = 240.0
 LOGGER = logging.getLogger(__name__)
+DEPTH_BIAS_BASELINE = 0.35
+DEPTH_BIAS_CONTROL = 0.55
+DEPTH_BIAS_TOLERANCE = 1.0e-5
 DEFAULT_CAMERA: Dict[str, Any] = {
     "position": [0.04, 0.58, 3.4],
     "target": [0.04, 0.58, 0.0],
@@ -63,6 +68,75 @@ def _query_witness(cmds: Any, log: Any) -> Dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError(f"native caster witness is not an object: {value!r}")
     return value
+
+
+def _set_depth_bias(cmds: Any, log: Any, value: float) -> Dict[str, Any]:
+    """Set the native caster clip-Z bias for the next setup/frame."""
+    raw = str(cmds.mmdNativeCasterWitness(depthBias=float(value)))
+    log(f"native caster depth bias={value}: {raw}")
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"depth-bias command returned non-JSON: {raw!r}") from exc
+    if not isinstance(result, dict):
+        raise RuntimeError(f"depth-bias command returned non-object: {result!r}")
+    return result
+
+
+def _depth_bias_aba_passes(
+    baseline: Dict[str, Any], control: Dict[str, Any], restored: Dict[str, Any]
+) -> bool:
+    """Validate finite [0,1] depth and an invariant A/B/A raster footprint."""
+    witnesses = (baseline, control, restored)
+    expected_biases = (
+        DEPTH_BIAS_BASELINE,
+        DEPTH_BIAS_CONTROL,
+        DEPTH_BIAS_BASELINE,
+    )
+    for witness, expected_bias in zip(witnesses, expected_biases):
+        try:
+            actual_bias = float(witness["depthBias"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        if abs(actual_bias - expected_bias) > DEPTH_BIAS_TOLERANCE:
+            return False
+    if any(
+        not witness.get("writtenDepthFinite")
+        or not witness.get("writtenDepthInRange")
+        or int(witness.get("writtenOutOfRangeSamples", 1)) != 0
+        or int(witness.get("writtenSamples", 0)) <= 0
+        for witness in witnesses
+    ):
+        return False
+    counts = [int(witness["writtenSamples"]) for witness in witnesses]
+    footprints = [str(witness["writtenFootprintHash"]) for witness in witnesses]
+    if counts[0] != counts[1] or counts[0] != counts[2]:
+        return False
+    if footprints[0] != footprints[1] or footprints[0] != footprints[2]:
+        return False
+    baseline_mean = float(baseline["writtenMean"])
+    control_mean = float(control["writtenMean"])
+    restored_mean = float(restored["writtenMean"])
+    control_shift = control_mean - baseline_mean
+    if abs(control_shift - (DEPTH_BIAS_CONTROL - DEPTH_BIAS_BASELINE)) > (
+        DEPTH_BIAS_TOLERANCE
+    ):
+        return False
+    if abs(restored_mean - baseline_mean) > DEPTH_BIAS_TOLERANCE:
+        return False
+    for key in ("writtenMin", "writtenMax"):
+        if (
+            abs(
+                float(control[key])
+                - float(baseline[key])
+                - (DEPTH_BIAS_CONTROL - DEPTH_BIAS_BASELINE)
+            )
+            > DEPTH_BIAS_TOLERANCE
+        ):
+            return False
+        if abs(float(restored[key]) - float(baseline[key])) > DEPTH_BIAS_TOLERANCE:
+            return False
+    return True
 
 
 def _wait_for_active_witness(cmds: Any, log: Any) -> Dict[str, Any]:
@@ -186,7 +260,7 @@ def run_probe(
     output_dir = Path(out_dir)
     report: dict[str, Any] = {
         "status": "fail",
-        "claim": "native-caster-capability-witness-only",
+        "claim": "native-caster-depth-witness-only",
         "model": str(model_path),
         "plugin": str(plugin_path),
         "captures": {},
@@ -201,6 +275,18 @@ def run_probe(
             print(message)
         except Exception:
             pass
+
+    def run_depth_bias_frame(value: float) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        """Render one visible caster frame, then release its private targets."""
+        _set_depth_bias(cmds, log, value)
+        for current in panels:
+            _set_panel_override(mel, current, "mmdNativeCaster")
+        active = _wait_for_active_witness(cmds, log)
+        for current in panels:
+            _set_panel_override(mel, current, "")
+        cmds.refresh(force=True)
+        time.sleep(0.5)
+        return active, _query_witness(cmds, log)
 
     try:
         log("=== native caster probe begin ===")
@@ -302,6 +388,7 @@ def run_probe(
         for current in panels:
             _set_panel_override(mel, current, "")
         cmds.refresh(force=True)
+        _set_depth_bias(cmds, log, DEPTH_BIAS_BASELINE)
         for current in panels:
             _set_panel_override(mel, current, "mmdNativeCaster")
         report["overrideEnableReturned"] = True
@@ -427,6 +514,24 @@ def run_probe(
         if not disabled_witness.get("released"):
             raise RuntimeError("disabled caster witness did not report released targets")
 
+        # Deterministic depth-only A/B/A: changing clip Z must shift the
+        # written depth statistics by approximately +0.20 while preserving
+        # the exact raster footprint.  The final A frame also proves the
+        # baseline can be restored after the control.
+        control_witness, control_disabled_witness = run_depth_bias_frame(
+            DEPTH_BIAS_CONTROL
+        )
+        restored_witness, restored_disabled_witness = run_depth_bias_frame(
+            DEPTH_BIAS_BASELINE
+        )
+        report["depthBiasAba"] = {
+            "baseline": active_witness,
+            "control": control_witness,
+            "restored": restored_witness,
+            "controlDisabled": control_disabled_witness,
+            "restoredDisabled": restored_disabled_witness,
+        }
+
         # Negative control: keep the override path enabled but hide every
         # caster shape.  The next setup resets per-frame occupancy, so a clear
         # target after this frame proves the sample did not come from stale
@@ -464,23 +569,52 @@ def run_probe(
         report["pluginLoadedAfterUnload"] = bool(
             cmds.pluginInfo("mmd_tools_cpp", query=True, loaded=True)
         )
+        depth_aba = report.get("depthBiasAba", {})
+        baseline_depth = depth_aba.get("baseline", active_witness)
+        control_depth = depth_aba.get("control", {})
+        restored_depth = depth_aba.get("restored", {})
+        hidden_clear_samples = int(hidden_disabled_witness.get("clearSamples", 0))
         checks = {
             "overrideRegistered": bool(active_witness.get("registered")),
             "casterSelectedMmdRenderShape": int(active_witness.get("selectedCount", 0)) > 0,
             "r32fTargetAcquired": bool(active_witness.get("colorTargetAcquired"))
-            and int(active_witness.get("colorWidth", 0)) == 2048
-            and int(active_witness.get("colorHeight", 0)) == 2048,
+            and int(active_witness.get("colorTarget", {}).get("width", 0)) == 2048
+            and int(active_witness.get("colorTarget", {}).get("height", 0)) == 2048
+            and int(active_witness.get("colorTarget", {}).get("format", -1)) == 41
+            and active_witness.get("colorTarget", {}).get("name")
+            == "__mmdNativeCasterColorTarget__",
             "d32TargetAcquired": bool(active_witness.get("depthTargetAcquired"))
-            and int(active_witness.get("depthWidth", 0)) == 2048
-            and int(active_witness.get("depthHeight", 0)) == 2048,
+            and int(active_witness.get("depthTarget", {}).get("width", 0)) == 2048
+            and int(active_witness.get("depthTarget", {}).get("height", 0)) == 2048
+            and int(active_witness.get("depthTarget", {}).get("format", -1)) == 2
+            and active_witness.get("depthTarget", {}).get("name")
+            == "__mmdNativeCasterDepthTarget__",
             "shaderBound": bool(active_witness.get("shaderAvailable")),
             "matrixBound": bool(active_witness.get("matrixBound")),
+            "matrixValidated": bool(active_witness.get("matrixValidated"))
+            and bool(control_depth.get("matrixValidated"))
+            and bool(restored_depth.get("matrixValidated")),
+            "depthBiasBound": bool(active_witness.get("depthBiasBound"))
+            and bool(control_depth.get("depthBiasBound"))
+            and bool(restored_depth.get("depthBiasBound")),
             "operationInsertedBeforeScene": bool(
                 active_witness.get("operationInsertedBeforeScene")
             ),
             "occupancySupported": bool(active_witness.get("occupancySupported")),
             "occupied": bool(active_witness.get("occupied"))
-            and int(active_witness.get("nonClearSamples", 0)) > 0,
+            and int(active_witness.get("writtenSamples", 0)) > 0,
+            "depthDistribution": bool(active_witness.get("writtenDepthFinite"))
+            and bool(active_witness.get("writtenDepthInRange"))
+            and int(active_witness.get("writtenOutOfRangeSamples", 1)) == 0
+                and float(active_witness.get("writtenMax", 0.0))
+                > float(active_witness.get("writtenMin", 0.0)) + 1.0e-4,
+            "depthBiasAba": _depth_bias_aba_passes(
+                baseline_depth, control_depth, restored_depth
+            ),
+            "depthBiasControlReleased": bool(
+                depth_aba.get("controlDisabled", {}).get("released")
+            )
+            and bool(depth_aba.get("restoredDisabled", {}).get("released")),
             "ordinarySceneAfterDisable": Path(report["captures"]["casterDisabled"]).is_file(),
             "activeViewportReadback": Path(
                 report["captures"].get("casterEnabledViewport", "")
@@ -516,10 +650,17 @@ def run_probe(
                 == report["captures"].get("casterDisabledViewportStats", {}).get(
                     "scenePixelSha256"
                 )
+                and report.get("activePanel", {}).get("rendererName")
+                == "vp2Renderer"
+                and bool(report.get("activePanel", {}).get("headsUpDisplay"))
             ),
             "disableReleased": bool(hidden_disabled_witness.get("released")),
             "hiddenNegativeClear": not bool(hidden_disabled_witness.get("occupied"))
-            and int(hidden_disabled_witness.get("nonClearSamples", 0)) == 0,
+            and int(hidden_disabled_witness.get("writtenSamples", 0)) == 0
+            and hidden_clear_samples == 2048 * 2048
+            and int(hidden_disabled_witness.get("finiteSamples", 0))
+            == hidden_clear_samples
+            and int(hidden_disabled_witness.get("nonFiniteSamples", 1)) == 0,
             "unloaded": not report["pluginLoadedAfterUnload"],
         }
         report["checks"] = checks
