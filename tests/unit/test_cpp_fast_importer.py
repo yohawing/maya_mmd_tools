@@ -313,6 +313,39 @@ class TestCppFastImportRouting(unittest.TestCase):
         mock_import_pmx.assert_not_called()
         self.assertEqual(result, "cpp_root")
 
+    @patch("mmd_tools.io.mmd_importer.fast_import")
+    @patch("mmd_tools.io.mmd_importer.parse_mmd_file")
+    @patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file")
+    def test_fast_import_vp2_ownership_passes_render_override_flag(
+        self,
+        mock_import_pmx: MagicMock,
+        mock_parse: MagicMock,
+        mock_fast: MagicMock,
+    ):
+        """The UI RenderOverride opt-in is forwarded to the native importer."""
+        mock_fast.return_value = "cpp_render_root"
+
+        result = import_mmd_file(
+            "model.pmx",
+            options={
+                "scale": 1.0,
+                "use_cpp_fast_load": True,
+                "use_cpp_vp2_ownership": True,
+            },
+        )
+
+        mock_fast.assert_called_once_with(
+            "model.pmx",
+            base_name="model",
+            scale=1.0,
+            mesh_only=True,
+            include_morphs=True,
+            vp2_ownership=True,
+        )
+        mock_parse.assert_not_called()
+        mock_import_pmx.assert_not_called()
+        self.assertEqual(result, "cpp_render_root")
+
     # ------------------------------------------------------------------
     # Scenario 6: .pmd files: fast import is never attempted
     # ------------------------------------------------------------------
@@ -958,6 +991,41 @@ class TestFastMorphMetadata(unittest.TestCase):
             fast_import("model.pmx", include_morphs=False)
 
         morph_metadata.assert_not_called()
+
+    @patch("mmd_tools.io.cpp_fast_importer._apply_fast_root_metadata")
+    @patch("mmd_tools.io.cpp_fast_importer._apply_basic_materials")
+    @patch("mmd_tools.io.cpp_fast_importer._candidate_plugin_paths")
+    @patch("mmd_tools.io.cpp_fast_importer._setup_plugin_directory")
+    def test_vp2_ownership_passes_only_when_explicitly_enabled(
+        self,
+        _setup,
+        candidates,
+        basic_materials,
+        root_metadata,
+    ):
+        import sys
+
+        plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
+        candidates.return_value = [plugin_path]
+        basic_materials.return_value = None
+        cmds_mod = sys.modules["maya.cmds"]
+        with patch.object(Path, "exists", return_value=True), patch.object(
+            cmds_mod, "loadPlugin", create=True
+        ) as load_plugin, patch.object(
+            cmds_mod, "mmdFastLoad", create=True, return_value=["root"]
+        ) as fast_load:
+            result = fast_import("model.pmx", vp2_ownership=True)
+
+        self.assertEqual(result, "root")
+        load_plugin.assert_called_once()
+        fast_load.assert_called_once_with(
+            f="model.pmx",
+            n="mmd_fast_model",
+            s=1.0,
+            mo=True,
+            vp2Ownership=True,
+        )
+        root_metadata.assert_called_once()
 
     def test_standard_material_preserves_raw_names(self):
         cmds = MagicMock()

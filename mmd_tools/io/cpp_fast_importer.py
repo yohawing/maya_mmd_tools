@@ -129,6 +129,7 @@ def fast_import(
     scale: float = 1.0,
     mesh_only: bool = True,
     include_morphs: bool = True,
+    vp2_ownership: bool = False,
 ) -> Optional[str]:
     """Attempt fast PMX import via the compiled C++ ``mmdFastLoad`` command.
 
@@ -148,6 +149,11 @@ def fast_import(
         If True, asks the C++ command to create PMX vertex morph
         blendShape targets. Non-vertex morph types are not created by the
         fast path.
+    vp2_ownership:
+        If True, asks the C++ command to create the opt-in ``mmdRenderShape``
+        and let the VP2 geometry override own the draw data. This is a
+        mesh-display path; it does not create a Maya mesh for skeleton or
+        blendShape post-processing.
 
     Returns
     -------
@@ -195,7 +201,18 @@ def fast_import(
 
     # --- run fast load ----------------------------------------------------
     try:
-        result = cmds.mmdFastLoad(f=filepath, n=base_name, s=scale, mo=include_morphs)
+        command_args = {
+            "f": filepath,
+            "n": base_name,
+            "s": scale,
+            "mo": include_morphs,
+        }
+        # Keep the flag absent for the normal fast-load path so an older
+        # plugin binary remains compatible.  The VP2 path is an explicit
+        # opt-in and therefore requires a plugin that supports the flag.
+        if vp2_ownership:
+            command_args["vp2Ownership"] = True
+        result = cmds.mmdFastLoad(**command_args)
     except RuntimeError as exc:
         logger.debug("mmdFastLoad failed: %s – falling back to Python importer.", exc)
         return None

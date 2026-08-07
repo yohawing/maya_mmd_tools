@@ -563,7 +563,25 @@ BuiltMesh buildMesh(const std::vector<float>&    positions,
     // ---- UVs (V-flip) ----
     if (uvs.size() >= vertCount * 2) {
         MString uvSetName("map1");
-        meshFn.createUVSet(uvSetName);
+        // MFnMesh::create() already creates an empty map1 on a fresh mesh.
+        // Recreating it makes Maya silently allocate map11, leaving the
+        // hardware shader sampling the empty current map1 instead.
+        MStringArray uvSetNames;
+        MStatus uvStatus = meshFn.getUVSetNames(uvSetNames);
+        if (!uvStatus) {
+            return result;
+        }
+        bool hasUvSet = false;
+        for (unsigned int i = 0; i < uvSetNames.length(); ++i) {
+            if (uvSetNames[i] == uvSetName) {
+                hasUvSet = true;
+                break;
+            }
+        }
+        if (!hasUvSet && !meshFn.createUVSet(uvSetName)) {
+            return result;
+        }
+        meshFn.setCurrentUVSetName(uvSetName);
 
         MFloatArray uArr(static_cast<unsigned int>(vertCount));
         MFloatArray vArr(static_cast<unsigned int>(vertCount));

@@ -36,6 +36,7 @@ class _FakeSettingsStore:
                 "native": {
                     "use_cpp_fast_load": True,
                     "cpp_fast_load_mesh_only": False,
+                    "use_cpp_vp2_ownership": True,
                     "use_cpp_rig_nodes": True,
                 },
                 "naming": {"translate_names": False},
@@ -250,6 +251,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertNotIn("setup_bone_orientation", options)
         self.assertTrue(options["use_cpp_fast_load"])
         self.assertFalse(options["cpp_fast_load_mesh_only"])
+        self.assertTrue(options["use_cpp_vp2_ownership"])
         self.assertTrue(options["use_cpp_rig_nodes"])
         # Policy forces scale 1.0 without mutating the stored value.
         self.assertEqual(self.service.get("import.general.scale_factor"), 2.0)

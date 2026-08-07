@@ -166,6 +166,8 @@
     "separate_meshes": "マテリアルごとにメッシュを分割します",
     "disable_backface_culling": "バックフェースカリングを無効にして両面描画にします",
     "import_physics": "PMXの物理データから剛体とジョイントを作成します",
+    "use_cpp_fast_load": "Pythonインポーターの代わりにコンパイル済みC++ PMXインポーターを使います（実験的）",
+    "use_cpp_vp2_ownership": "native mmdRenderShapeでVP2 RenderOverrideを使います。C++ Fast Loadが必要で、メッシュ表示専用です（実験的）",
     "use_cpp_rig_nodes": "IK/付与制約に実験的なC++リグノードを使います。利用できない場合はPythonノードにフォールバックします"
   },
   "messages": {
@@ -384,6 +386,8 @@
     "clear_existing_motion": "既存モーションをクリア",
     "create_mmd_control_rig": "MMDコントロールリグを作成",
     "vmd_rotation_time_curve": "VMD時間補間を時間カーブとして保持",
+    "use_cpp_fast_load": "C++ Fast Loadを使用（実験的）",
+    "use_cpp_vp2_ownership": "C++ VP2 RenderOverrideを使用（実験的）",
     "use_cpp_rig_nodes": "C++リグノードを使用（実験的）",
     "apply_scale": "スケールを適用",
     "new_file": "新規ファイル",

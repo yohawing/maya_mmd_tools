@@ -243,13 +243,18 @@ def import_mmd_file(
             "import_morphs",
             settings.get(settings_keys.IMPORT_MORPH_IMPORT_MORPHS, True),
         )
-        fast_root = fast_import(
-            filepath,
-            base_name=base_name,
-            scale=import_scale,
-            mesh_only=mesh_only,
-            include_morphs=include_morphs,
-        )
+        fast_kwargs = {
+            "base_name": base_name,
+            "scale": import_scale,
+            "mesh_only": mesh_only,
+            "include_morphs": include_morphs,
+        }
+        if options.get(
+            "use_cpp_vp2_ownership",
+            settings.get(settings_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP, False),
+        ):
+            fast_kwargs["vp2_ownership"] = True
+        fast_root = fast_import(filepath, **fast_kwargs)
         if fast_root is not None:
             _emit_progress(90)
             logger.info("C++ fast import succeeded: %s", fast_root)

@@ -166,6 +166,8 @@
     "separate_meshes": "Split mesh per material",
     "disable_backface_culling": "Disable backface culling for double-sided rendering",
     "import_physics": "Create rigid bodies and joints from PMX physics data",
+    "use_cpp_fast_load": "Use the compiled C++ PMX importer instead of the Python importer (Experimental)",
+    "use_cpp_vp2_ownership": "Create the native mmdRenderShape for the VP2 RenderOverride. Requires C++ Fast Load and is mesh-display only (Experimental)",
     "use_cpp_rig_nodes": "Use experimental C++ rig nodes for IK/append constraints. Falls back to Python nodes when unavailable"
   },
   "messages": {
@@ -384,6 +386,8 @@
     "clear_existing_motion": "Clear Existing Motion",
     "create_mmd_control_rig": "Create MMD Control Rig",
     "vmd_rotation_time_curve": "Preserve VMD Rotation Time Curves (Experimental)",
+    "use_cpp_fast_load": "Use C++ Fast Load (Experimental)",
+    "use_cpp_vp2_ownership": "Use C++ VP2 RenderOverride (Experimental)",
     "use_cpp_rig_nodes": "Use C++ Rig Nodes (Experimental)",
     "apply_scale": "Apply Scale",
     "new_file": "New File",
