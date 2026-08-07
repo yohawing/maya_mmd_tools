@@ -189,7 +189,8 @@ def test_all_mode_generates_static_image_gallery_for_every_case(tmp_path):
     assert document.count('class="case-card"') == 2
     assert "shadow-case" not in document
     assert 'class="gallery"' in document
-    assert "grid-template-columns:repeat(3,minmax(0,1fr))" in document
+    assert ".case-grid{display:grid;grid-template-columns:1fr;gap:6px}" in document
+    assert ".gallery{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:3px}" in document
     assert ".gallery figure{margin:0;background:#fff;min-width:0}" in document
     assert "data-src=" in document
     assert "Date.now()" in document
