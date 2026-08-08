@@ -41,6 +41,12 @@ PARTIAL_ALPHA_RATIO_THRESHOLD = 0.25
 _SCAN_RESOLUTION = 512
 # Stride for the whole-texture material fallback (spec §8.2 (B) step 5).
 _WHOLE_SCAN_STRIDE = 4
+# These limits are part of the cross-runtime classifier contract.  The C++
+# implementation mirrors them so malformed UVs cannot turn classification into
+# an unbounded raster job.
+_MAX_TILE_SPAN = 64
+_MAX_UV_MAGNITUDE = 1_000_000.0
+_MAX_RASTER_SAMPLES = _SCAN_RESOLUTION * _SCAN_RESOLUTION
 
 # Texture v axis: MMD/PMX uv origin is top-left; MImage rows are bottom-up, so the
 # v coordinate is flipped when indexing the alpha plane. Validated against YYB
@@ -60,6 +66,8 @@ class _AlphaStats:
 
 
 def _record(stats, alpha):
+    if stats.sample_count >= _MAX_RASTER_SAMPLES:
+        return
     stats.sample_count += 1
     if alpha < stats.min_alpha:
         stats.min_alpha = alpha
@@ -79,9 +87,16 @@ def _evaluate(stats, opaque_threshold=TEXTURE_OPAQUE_ALPHA_THRESHOLD) -> str:
     return MODE_CUTOUT if average_middle + TEXTURE_ALPHA_BLEND_THRESHOLD < stats.max_alpha else MODE_BLEND
 
 
+def _round_half_away_from_zero(value):
+    # C++ std::llround rounds half away from zero; Python round() uses bankers'
+    # rounding, which differs at texel boundaries (notably for wrapped UVs).
+    magnitude = math.floor(abs(value) + 0.5)
+    return -magnitude if value < 0.0 else magnitude
+
+
 def _sample_alpha(alpha, width, height, u, v):
-    x = int(round(u * width)) % width
-    y = int(round(v * height)) % height
+    x = _round_half_away_from_zero(u * width) % width
+    y = _round_half_away_from_zero(v * height) % height
     if x < 0:
         x += width
     if y < 0:
@@ -90,6 +105,8 @@ def _sample_alpha(alpha, width, height, u, v):
 
 
 def _record_triangle_tile(stats, alpha, width, height, ax, ay, bx, by, cx, cy, resolution):
+    if stats.sample_count >= _MAX_RASTER_SAMPLES:
+        return
     rax = ax * resolution
     ray = ay * resolution
     rbx = bx * resolution
@@ -125,21 +142,30 @@ def _record_triangle(stats, alpha, width, height, ax, ay, bx, by, cx, cy, resolu
     max_u = max(ax, bx, cx)
     min_v = min(ay, by, cy)
     max_v = max(ay, by, cy)
-    for shift_u in range(math.ceil(-max_u), math.floor(1 - min_u) + 1):
-        for shift_v in range(math.ceil(-max_v), math.floor(1 - min_v) + 1):
-            _record_triangle_tile(
-                stats,
-                alpha,
-                width,
-                height,
-                ax + shift_u,
-                ay + shift_v,
-                bx + shift_u,
-                by + shift_v,
-                cx + shift_u,
-                cy + shift_v,
-                resolution,
-            )
+    first_u = math.ceil(-max_u)
+    last_u = math.floor(1 - min_u)
+    first_v = math.ceil(-max_v)
+    last_v = math.floor(1 - min_v)
+    # Match the native bounded-runtime contract: very large wrap spans skip
+    # tiled rasterization and use the vertex fallback below.
+    if last_u - first_u <= _MAX_TILE_SPAN and last_v - first_v <= _MAX_TILE_SPAN:
+        for shift_u in range(first_u, last_u + 1):
+            for shift_v in range(first_v, last_v + 1):
+                _record_triangle_tile(
+                    stats,
+                    alpha,
+                    width,
+                    height,
+                    ax + shift_u,
+                    ay + shift_v,
+                    bx + shift_u,
+                    by + shift_v,
+                    cx + shift_u,
+                    cy + shift_v,
+                    resolution,
+                )
+                if stats.sample_count >= _MAX_RASTER_SAMPLES:
+                    return
     # Triangle fallback (spec §8.2 (B) step 4): a degenerate / sub-texel triangle
     # may cover no grid cell; sample its three vertices so it still contributes.
     if stats.sample_count == before:
@@ -180,6 +206,8 @@ def _scan_whole_texture(stats, alpha, stride=_WHOLE_SCAN_STRIDE):
     """
     for index in range(0, len(alpha), stride):
         _record(stats, alpha[index])
+        if stats.sample_count >= _MAX_RASTER_SAMPLES:
+            return
 
 
 def classify_uv_triangles(
@@ -189,15 +217,50 @@ def classify_uv_triangles(
     """Classify transparency from alpha sampled within the given UV triangles.
 
     ``uv_triangles`` is an iterable of ``(ax, ay, bx, by, cx, cy)`` tuples.
+
+    The native classifier shares this behavioral contract: malformed,
+    non-finite, or over-magnitude UV triangles are ignored; wrapped tiling is
+    limited to a 64-tile span and then falls back to the three vertices;
+    no-coverage falls back to every fourth texel; and raster work is capped at
+    ``512 * 512`` samples.  Invalid dimensions or alpha buffers classify as
+    opaque (fail closed).
     """
-    scan_resolution = min(resolution, max(width, height))
+    try:
+        requested_resolution = int(resolution)
+    except (TypeError, ValueError, OverflowError):
+        return MODE_OPAQUE
+    if (
+        alpha is None
+        or width <= 0
+        or height <= 0
+        or len(alpha) != width * height
+        or requested_resolution <= 0
+    ):
+        return MODE_OPAQUE
+    scan_resolution = min(requested_resolution, max(width, height), _SCAN_RESOLUTION)
     stats = _AlphaStats()
-    for ax, ay, bx, by, cx, cy in uv_triangles:
+    try:
+        triangles = iter(uv_triangles)
+    except TypeError:
+        triangles = iter(())
+    for triangle in triangles:
+        try:
+            ax, ay, bx, by, cx, cy = (float(value) for value in triangle)
+        except (TypeError, ValueError):
+            continue
         if _FLIP_V:
             ay = 1.0 - ay
             by = 1.0 - by
             cy = 1.0 - cy
+        if not all(
+            math.isfinite(value)
+            and abs(value) <= _MAX_UV_MAGNITUDE
+            for value in (ax, ay, bx, by, cx, cy)
+        ):
+            continue
         _record_triangle(stats, alpha, width, height, ax, ay, bx, by, cx, cy, scan_resolution)
+        if stats.sample_count >= _MAX_RASTER_SAMPLES:
+            break
     if stats.sample_count == 0:
         _scan_whole_texture(stats, alpha)
     return _evaluate(stats, opaque_threshold=opaque_threshold)
@@ -234,6 +297,8 @@ def classify_material(
         return MODE_OPAQUE
 
     alpha, width, height = loaded
+    if alpha is None or width <= 0 or height <= 0 or len(alpha) != width * height:
+        return MODE_OPAQUE
     # Fast path: a fully opaque texture (every texel >= threshold) is opaque
     # regardless of UV coverage.
     if min(alpha) >= opaque_threshold:

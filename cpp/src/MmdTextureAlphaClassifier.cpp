@@ -11,16 +11,8 @@
 
 namespace {
 
-constexpr double kPartialAlphaRatioThreshold = 0.25;
-constexpr double kAlphaBlendThreshold = 100.0;
-constexpr int kMaximumTileSpan = 64;
-constexpr double kMaximumUvMagnitude = 1000000.0;
-constexpr std::size_t kMaximumRasterResolution = 512U;
-constexpr std::size_t kMaximumRasterSamples =
-    kMaximumRasterResolution * kMaximumRasterResolution;
-
 struct AlphaStats {
-    std::uint8_t minAlpha = 255U;
+    std::uint8_t minAlpha = mmd::kMmdTextureAlphaOpaqueThreshold;
     std::uint8_t maxAlpha = 0U;
     std::uint64_t middleTotal = 0U;
     std::size_t middleCount = 0U;
@@ -29,10 +21,14 @@ struct AlphaStats {
 
 void recordAlpha(AlphaStats& stats, std::uint8_t alpha)
 {
+    if (stats.sampleCount >= mmd::kMmdTextureAlphaMaxRasterSamples) {
+        return;
+    }
     stats.minAlpha = std::min(stats.minAlpha, alpha);
     stats.maxAlpha = std::max(stats.maxAlpha, alpha);
     ++stats.sampleCount;
-    if (alpha > 0U && alpha < 255U) {
+    if (alpha > 0U &&
+        alpha < mmd::kMmdTextureAlphaOpaqueThreshold) {
         stats.middleTotal += alpha;
         ++stats.middleCount;
     }
@@ -67,7 +63,7 @@ void recordTriangleTile(AlphaStats& stats,
                         double cy,
                         std::size_t resolution)
 {
-    if (stats.sampleCount >= kMaximumRasterSamples) {
+    if (stats.sampleCount >= mmd::kMmdTextureAlphaMaxRasterSamples) {
         return;
     }
     const double scale = static_cast<double>(resolution);
@@ -97,7 +93,7 @@ void recordTriangleTile(AlphaStats& stats,
     for (int y = minY; y <= maxY; ++y) {
         const double py = static_cast<double>(y) + 0.5;
         for (int x = minX; x <= maxX; ++x) {
-            if (stats.sampleCount >= kMaximumRasterSamples) {
+            if (stats.sampleCount >= mmd::kMmdTextureAlphaMaxRasterSamples) {
                 return;
             }
             const double px = static_cast<double>(x) + 0.5;
@@ -130,6 +126,9 @@ void recordTriangle(AlphaStats& stats,
                     double cy,
                     std::size_t resolution)
 {
+    if (stats.sampleCount >= mmd::kMmdTextureAlphaMaxRasterSamples) {
+        return;
+    }
     const std::size_t before = stats.sampleCount;
     const double minU = std::min({ax, bx, cx});
     const double maxU = std::max({ax, bx, cx});
@@ -139,8 +138,10 @@ void recordTriangle(AlphaStats& stats,
     const int lastU = static_cast<int>(std::floor(1.0 - minU));
     const int firstV = static_cast<int>(std::ceil(-maxV));
     const int lastV = static_cast<int>(std::floor(1.0 - minV));
-    if (lastU - firstU <= kMaximumTileSpan &&
-        lastV - firstV <= kMaximumTileSpan) {
+    if (lastU - firstU <=
+            static_cast<int>(mmd::kMmdTextureAlphaMaxTileSpan) &&
+        lastV - firstV <=
+            static_cast<int>(mmd::kMmdTextureAlphaMaxTileSpan)) {
         for (int shiftU = firstU; shiftU <= lastU; ++shiftU) {
             for (int shiftV = firstV; shiftV <= lastV; ++shiftV) {
                 recordTriangleTile(stats, alpha, width, height,
@@ -151,7 +152,7 @@ void recordTriangle(AlphaStats& stats,
         }
     }
     if (stats.sampleCount == before &&
-        stats.sampleCount < kMaximumRasterSamples) {
+        stats.sampleCount < mmd::kMmdTextureAlphaMaxRasterSamples) {
         recordAlpha(stats, sampleAlpha(alpha, width, height, ax, ay));
         recordAlpha(stats, sampleAlpha(alpha, width, height, bx, by));
         recordAlpha(stats, sampleAlpha(alpha, width, height, cx, cy));
@@ -160,13 +161,14 @@ void recordTriangle(AlphaStats& stats,
 
 mmd::MmdTextureAlphaMode evaluate(const AlphaStats& stats)
 {
-    if (stats.sampleCount == 0U || stats.minAlpha == 255U) {
+    if (stats.sampleCount == 0U ||
+        stats.minAlpha >= mmd::kMmdTextureAlphaOpaqueThreshold) {
         return mmd::MmdTextureAlphaMode::Opaque;
     }
     const double partialRatio =
         static_cast<double>(stats.middleCount) /
         static_cast<double>(stats.sampleCount);
-    if (partialRatio >= kPartialAlphaRatioThreshold) {
+    if (partialRatio >= mmd::kMmdTextureAlphaPartialRatioThreshold) {
         return mmd::MmdTextureAlphaMode::Blend;
     }
     const double averageMiddle =
@@ -174,7 +176,7 @@ mmd::MmdTextureAlphaMode evaluate(const AlphaStats& stats)
             ? 0.0
             : static_cast<double>(stats.middleTotal) /
                   static_cast<double>(stats.middleCount);
-    return averageMiddle + kAlphaBlendThreshold < stats.maxAlpha
+    return averageMiddle + mmd::kMmdTextureAlphaBlendThreshold < stats.maxAlpha
                ? mmd::MmdTextureAlphaMode::Cutout
                : mmd::MmdTextureAlphaMode::Blend;
 }
@@ -201,14 +203,16 @@ MmdTextureAlphaMode classifyMmdTextureAlpha(
         return MmdTextureAlphaMode::Opaque;
     }
     if (std::all_of(alpha.begin(), alpha.end(),
-                    [](std::uint8_t value) { return value == 255U; })) {
+                    [](std::uint8_t value) {
+                        return value >= mmd::kMmdTextureAlphaOpaqueThreshold;
+                    })) {
         return MmdTextureAlphaMode::Opaque;
     }
 
     AlphaStats stats;
     const std::size_t scanResolution =
         std::min({resolution, std::max(width, height),
-                  kMaximumRasterResolution});
+                  mmd::kMmdTextureAlphaDefaultResolution});
     for (std::size_t offset = 0U; offset < indices.size(); offset += 3U) {
         const std::uint32_t ia = indices[offset];
         const std::uint32_t ib = indices[offset + 1U];
@@ -229,19 +233,25 @@ MmdTextureAlphaMode classifyMmdTextureAlpha(
             !std::isfinite(cx) || !std::isfinite(cy)) {
             continue;
         }
-        if (std::abs(ax) > kMaximumUvMagnitude ||
-            std::abs(ay) > kMaximumUvMagnitude ||
-            std::abs(bx) > kMaximumUvMagnitude ||
-            std::abs(by) > kMaximumUvMagnitude ||
-            std::abs(cx) > kMaximumUvMagnitude ||
-            std::abs(cy) > kMaximumUvMagnitude) {
+        if (std::abs(ax) > mmd::kMmdTextureAlphaMaxUvMagnitude ||
+            std::abs(ay) > mmd::kMmdTextureAlphaMaxUvMagnitude ||
+            std::abs(bx) > mmd::kMmdTextureAlphaMaxUvMagnitude ||
+            std::abs(by) > mmd::kMmdTextureAlphaMaxUvMagnitude ||
+            std::abs(cx) > mmd::kMmdTextureAlphaMaxUvMagnitude ||
+            std::abs(cy) > mmd::kMmdTextureAlphaMaxUvMagnitude) {
             continue;
         }
         recordTriangle(stats, alpha, width, height,
                        ax, ay, bx, by, cx, cy, scanResolution);
+        if (stats.sampleCount >= mmd::kMmdTextureAlphaMaxRasterSamples) {
+            break;
+        }
     }
     if (stats.sampleCount == 0U) {
-        for (std::size_t index = 0U; index < alpha.size(); ++index) {
+        for (std::size_t index = 0U;
+             index < alpha.size() &&
+             stats.sampleCount < mmd::kMmdTextureAlphaMaxRasterSamples;
+             index += mmd::kMmdTextureAlphaWholeScanStride) {
             recordAlpha(stats, alpha[index]);
         }
     }

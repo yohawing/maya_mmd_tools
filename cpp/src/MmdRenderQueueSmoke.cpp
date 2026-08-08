@@ -10,6 +10,7 @@
 #include "MmdTextureAlphaClassifier.h"
 
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -49,16 +50,65 @@ int main()
         0U, 0U, 0U, 0U,
         255U, 255U, 255U, 255U,
     };
+    // These named vectors mirror tests/unit/test_texture_alpha.py.  Keep the
+    // list as a behavioral conformance witness rather than coupling the
+    // Python implementation to a native ABI.
+    const std::vector<std::uint8_t> opaqueAlpha(16U, 255U);
+    const std::vector<std::uint8_t> blendAlpha(16U, 128U);
+    const std::vector<std::uint8_t> degenerateAlpha = {
+        64U, 255U, 255U, 255U,
+        255U, 255U, 255U, 255U,
+        255U, 255U, 255U, 255U,
+        255U, 255U, 255U, 255U,
+    };
+    const std::vector<std::uint8_t> wrappedAlpha = {
+        255U, 64U, 255U, 255U,
+        255U, 255U, 255U, 255U,
+        255U, 255U, 255U, 255U,
+        255U, 255U, 255U, 255U,
+    };
+    const std::vector<std::uint8_t> extremeFallbackAlpha = {
+        255U, 64U, 255U, 255U,
+        255U, 255U, 255U, 255U,
+        255U, 255U, 255U, 255U,
+        255U, 255U, 255U, 255U,
+    };
+    const std::vector<float> degenerateUvs = {
+        0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
+    const std::vector<float> wrappedUvs = {
+        1.0F, 0.0F, 1.25F, 0.0F, 1.0F, 1.0F};
+    const std::vector<float> extremeUvs = {
+        std::numeric_limits<float>::infinity(), 0.0F,
+        0.0F, 0.0F, 0.0F, 0.0F,
+        1000001.0F, 0.0F, 1000001.0F, 0.0F, 1000001.0F, 1.0F,
+        0.0F, 0.0F, 65.0F, 0.0F, 0.0F, 1.0F};
+    const std::vector<std::uint32_t> extremeIndices = {
+        0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U};
     const auto leftAlpha = mmd::classifyMmdTextureAlpha(
         atlasAlpha, 4U, 4U, leftUvs, triangle, 4U);
     const auto rightAlpha = mmd::classifyMmdTextureAlpha(
         atlasAlpha, 4U, 4U, rightUvs, triangle, 4U);
     const auto binaryMode = mmd::classifyMmdTextureAlpha(
         binaryAlpha, 4U, 4U, fullUvs, triangle, 4U);
+    const auto opaqueMode = mmd::classifyMmdTextureAlpha(
+        opaqueAlpha, 4U, 4U, fullUvs, triangle, 4U);
+    const auto blendMode = mmd::classifyMmdTextureAlpha(
+        blendAlpha, 4U, 4U, fullUvs, triangle, 4U);
+    const auto degenerateMode = mmd::classifyMmdTextureAlpha(
+        degenerateAlpha, 4U, 4U, degenerateUvs, triangle, 4U);
+    const auto wrappedMode = mmd::classifyMmdTextureAlpha(
+        wrappedAlpha, 4U, 4U, wrappedUvs, triangle, 4U);
+    const auto extremeMode = mmd::classifyMmdTextureAlpha(
+        extremeFallbackAlpha, 4U, 4U, extremeUvs, extremeIndices, 4U);
     const bool alphaContract =
         leftAlpha == mmd::MmdTextureAlphaMode::Opaque &&
         rightAlpha == mmd::MmdTextureAlphaMode::Blend &&
-        binaryMode == mmd::MmdTextureAlphaMode::Cutout;
+        binaryMode == mmd::MmdTextureAlphaMode::Cutout &&
+        opaqueMode == mmd::MmdTextureAlphaMode::Opaque &&
+        blendMode == mmd::MmdTextureAlphaMode::Blend &&
+        degenerateMode == mmd::MmdTextureAlphaMode::Blend &&
+        wrappedMode == mmd::MmdTextureAlphaMode::Blend &&
+        extremeMode == mmd::MmdTextureAlphaMode::Opaque;
 
     const std::vector<mmd::MmdRenderQueueInput> inputs = {
         {5, 0, "blend", 1.0f},
@@ -121,6 +171,12 @@ int main()
                   << " (alpha left=" << mmd::mmdTextureAlphaModeName(leftAlpha)
                   << ", right=" << mmd::mmdTextureAlphaModeName(rightAlpha)
                   << ", binary=" << mmd::mmdTextureAlphaModeName(binaryMode)
+                  << ", opaque=" << mmd::mmdTextureAlphaModeName(opaqueMode)
+                  << ", blend=" << mmd::mmdTextureAlphaModeName(blendMode)
+                  << ", degenerate="
+                  << mmd::mmdTextureAlphaModeName(degenerateMode)
+                  << ", wrap=" << mmd::mmdTextureAlphaModeName(wrappedMode)
+                  << ", extreme=" << mmd::mmdTextureAlphaModeName(extremeMode)
                   << ")\n";
         return 1;
     }
