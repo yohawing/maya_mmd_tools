@@ -99,6 +99,37 @@ class TestUserSetupCppAutoload(unittest.TestCase):
         prepare.assert_called_once_with(plugin)
         self.cmds.loadPlugin.assert_called_once_with(str(plugin), quiet=True)
 
+    def test_autoload_reuses_already_loaded_exact_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = Path(directory) / "mmd_tools_cpp.mll"
+            plugin.write_bytes(b"plugin")
+
+            def plugin_info(name=None, **kwargs):
+                if kwargs.get("listPlugins"):
+                    return ["mmd_tools_cpp"]
+                if kwargs.get("loaded"):
+                    return True
+                if kwargs.get("path"):
+                    return str(plugin)
+                return None
+
+            self.cmds.pluginInfo.side_effect = plugin_info
+            self.cmds.loadPlugin.reset_mock()
+            try:
+                with patch.dict(os.environ, {"MMD_TOOLS_CPP_AUTOLOAD": "1"}, clear=False):
+                    with patch.object(
+                        self.user_setup, "_mmd_tools_cpp_plugin_path", return_value=plugin
+                    ):
+                        with patch.object(
+                            self.user_setup, "_prepare_mmd_tools_cpp_plugin_directory"
+                        ) as prepare:
+                            self.user_setup._load_mmd_tools_cpp_plugin()
+            finally:
+                self.cmds.pluginInfo.side_effect = None
+
+        prepare.assert_not_called()
+        self.cmds.loadPlugin.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

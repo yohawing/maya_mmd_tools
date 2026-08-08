@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -1228,6 +1229,7 @@ class TestCppFastImporterDebugLogging(unittest.TestCase):
         self.assertIn(expected, debug_messages)
         self.assertNotIn(expected, info_messages)
 
+
     def test_success_completion_uses_debug_not_info(self):
         """Successful internal completion is DEBUG-only."""
         import sys
@@ -1291,6 +1293,36 @@ class TestCppFastImporterDebugLogging(unittest.TestCase):
         )
         self.assertIn(expected, debug_messages)
         self.assertNotIn(expected, info_messages)
+
+
+class TestCppPluginLocatorIntegration(unittest.TestCase):
+    """Version-specific native overrides use the shared locator contract."""
+
+    def test_version_specific_config_precedes_generic_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(cpp_fast_importer, "ROOT", root), patch.object(
+                cpp_fast_importer, "_running_maya_major_version", return_value="2026"
+            ), patch.dict(
+                "os.environ",
+                {
+                    "MMD_TOOLS_CPP_PLUGIN_2026": "",
+                    "MMD_TOOLS_CPP_PLUGIN": "",
+                    "MMD_TOOLS_CPP_CONFIG_2026": "Release",
+                    "MMD_TOOLS_CPP_CONFIG": "Debug",
+                },
+                clear=False,
+            ):
+                candidates = cpp_fast_importer._candidate_plugin_paths()
+
+        self.assertEqual(
+            candidates[:3],
+            [
+                root / "plug-ins" / "2026" / "Release" / "mmd_tools_cpp.mll",
+                root / "plug-ins" / "2026" / "Release" / "mmd_tools_cpp.bundle",
+                root / "plug-ins" / "2026" / "Release" / "mmd_tools_cpp.so",
+            ],
+        )
 
 
 if __name__ == "__main__":
