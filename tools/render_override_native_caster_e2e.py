@@ -19,6 +19,13 @@ fail-closed cases.  ``--expect-receiver-probe-static`` is an opt-in negative
 receiver-filter mode for fixtures whose visible body has ``selfShadow`` off:
 the receiver shader/target lifetime gates remain required while the body
 probe's A/B/A images must be byte-identical.
+
+The hard-shadow witness is a separate OFF/ON/OFF pass on the active override.
+It validates compare request/effective state, same-frame receiver target
+assignment, and a visible body-only change.  The ON image is also required to
+contain both flat lit (green-dominant) and occluded (blue-dominant) states
+when the fixture is expected to exercise a shadow receiver.  This remains a
+native capability witness, not a full MMD shadow-parity claim.
 """
 
 from __future__ import annotations
@@ -56,6 +63,8 @@ LOGGER = logging.getLogger(__name__)
 DEPTH_BIAS_BASELINE = 0.35
 DEPTH_BIAS_CONTROL = 0.55
 DEPTH_BIAS_TOLERANCE = 1.0e-5
+HARD_SHADOW_BIAS = 0.001
+HARD_SHADOW_BIAS_TOLERANCE = 1.0e-7
 DEFAULT_CAMERA: Dict[str, Any] = {
     "position": [0.04, 0.58, 3.4],
     "target": [0.04, 0.58, 0.0],
@@ -106,6 +115,101 @@ def _set_receiver_probe(cmds: Any, log: Any, enabled: bool) -> Dict[str, Any]:
     if not isinstance(result, dict):
         raise RuntimeError(f"receiver-probe command returned non-object: {result!r}")
     return result
+
+
+def _set_hard_shadow(
+    cmds: Any, log: Any, compare: bool, bias: float = HARD_SHADOW_BIAS
+) -> Dict[str, Any]:
+    """Set native hard-shadow compare state and receiver bias."""
+    raw = str(
+        cmds.mmdNativeCasterWitness(
+            hardShadowCompare=bool(compare), hardShadowBias=float(bias)
+        )
+    )
+    log(
+        "native caster hardShadowCompare=%s hardShadowBias=%s: %s"
+        % (bool(compare), float(bias), raw)
+    )
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"hard-shadow command returned non-JSON: {raw!r}") from exc
+    if not isinstance(result, dict):
+        raise RuntimeError(f"hard-shadow command returned non-object: {result!r}")
+    return result
+
+
+def _hard_shadow_witness_passes(
+    witness: Dict[str, Any],
+    expected_compare: bool,
+    expected_bias: float = HARD_SHADOW_BIAS,
+) -> bool:
+    """Validate hard-shadow state and same-frame receiver target ownership."""
+    try:
+        actual_bias = float(witness.get("hardShadowBias"))
+    except (TypeError, ValueError):
+        return False
+    registered = int(witness.get("receiverShaderRegistered", 0))
+    assignment_success = int(witness.get("receiverAssignmentSuccess", 0))
+    return (
+        bool(witness.get("frameComplete"))
+        and bool(witness.get("hardShadowRequested")) is bool(expected_compare)
+        and bool(witness.get("hardShadowFrameEffective")) is bool(expected_compare)
+        # MRenderOverride::cleanup runs before the command query and must
+        # disable the live shader flag while retaining frame evidence above.
+        and not bool(witness.get("hardShadowEffective"))
+        and abs(actual_bias - expected_bias) <= HARD_SHADOW_BIAS_TOLERANCE
+        and bool(witness.get("hardShadowBindSuccess"))
+        and bool(witness.get("matrixHash"))
+        and witness.get("matrixHash") == witness.get("casterMatrixHash")
+        and witness.get("matrixHash") == witness.get("receiverMatrixHash")
+        and registered > 0
+        and assignment_success >= registered
+        and int(witness.get("receiverAssignmentFailure", 1)) == 0
+        and bool(witness.get("receiverTargetResourceHandleNonNull"))
+        and bool(witness.get("receiverTargetSameFrame"))
+        and bool(witness.get("receiverTargetsRetained"))
+        and not bool(witness.get("released"))
+    )
+
+
+def _hard_shadow_body_states(
+    buffer: bytes,
+    width: int,
+    height: int,
+    body_mask: bytes,
+) -> Dict[str, Any]:
+    """Count lit/occluded hard-shadow states inside the visible body mask.
+
+    Classify the RGBA8 readback by dominant green (lit) versus blue (occluded)
+    channel and ignore antialiased edge pixels.
+    """
+    expected = width * height * 4
+    if len(buffer) < expected or len(body_mask) < width * height:
+        return {"pass": False, "reason": "hard-shadow state buffers are truncated"}
+
+    lit = 0
+    occluded = 0
+    body_pixels = 0
+    for index in range(width * height):
+        if not body_mask[index]:
+            continue
+        body_pixels += 1
+        offset = index * 4
+        red, green, blue, _ = buffer[offset : offset + 4]
+        if green > red and green >= blue:
+            lit += 1
+        elif blue > red and blue > green:
+            occluded += 1
+    minimum = max(8, int(body_pixels * 0.005))
+    return {
+        "pass": lit >= minimum and occluded >= minimum,
+        "source": "image",
+        "bodyPixels": body_pixels,
+        "minimumStatePixels": minimum,
+        "litPixels": lit,
+        "occludedPixels": occluded,
+    }
 
 
 def _viewport_probe_aba_passes(
@@ -478,6 +582,24 @@ def run_probe(
             log(f"native receiver probe pending (attempt {attempt + 1})")
         return witness
 
+    def wait_for_hard_shadow_witness(expected_compare: bool) -> Dict[str, Any]:
+        """Wait for a live frame publishing the requested hard-shadow state."""
+        witness: Dict[str, Any] = {}
+        for attempt in range(60):
+            cmds.refresh(force=True)
+            time.sleep(0.3)
+            witness = _query_witness(cmds, log)
+            if (
+                bool(witness.get("hardShadowRequested")) is bool(expected_compare)
+                and bool(witness.get("hardShadowFrameEffective"))
+                is bool(expected_compare)
+                and not bool(witness.get("hardShadowEffective"))
+                and witness.get("frameComplete")
+            ):
+                return witness
+            log(f"native hard-shadow state pending (attempt {attempt + 1})")
+        return witness
+
     def run_receiver_probe_frame(
         value: float, label: str
     ) -> tuple[Dict[str, Any], Dict[str, Any], bytes, Dict[str, Any]]:
@@ -500,6 +622,21 @@ def run_probe(
         time.sleep(0.5)
         disabled = _query_witness(cmds, log)
         return active, disabled, buffer, stats
+
+    def run_hard_shadow_frame(
+        compare: bool, label: str
+    ) -> tuple[Dict[str, Any], bytes, Dict[str, Any]]:
+        """Capture one hard-shadow state while the active override stays live."""
+        _set_hard_shadow(cmds, log, compare, HARD_SHADOW_BIAS)
+        active = wait_for_hard_shadow_witness(compare)
+        path, stats, buffer = _capture_active_viewport_buffer(
+            cmds,
+            output_dir / f"native_hard_shadow_{label}.png",
+            panel,
+        )
+        report["captures"][f"hardShadow{label.title()}"] = str(path)
+        report["captures"][f"hardShadow{label.title()}Stats"] = stats
+        return active, buffer, stats
 
     try:
         log("=== native caster probe begin ===")
@@ -897,6 +1034,84 @@ def run_probe(
                     "receiver probe frame did not retain its caster target"
                 )
 
+        # Hard-shadow compare A/B/A stays on one active override instance.
+        # This distinguishes a live receiver compare from a command-only
+        # diagnostic toggle and keeps the existing target/lifetime gates in
+        # force for every state.
+        _set_hard_shadow(cmds, log, False, HARD_SHADOW_BIAS)
+        for current in panels:
+            _set_panel_override(mel, current, "mmdNativeCaster")
+        hard_shadow_off, hard_shadow_off_buffer, hard_shadow_off_stats = (
+            run_hard_shadow_frame(False, "off")
+        )
+        hard_shadow_on, hard_shadow_on_buffer, hard_shadow_on_stats = (
+            run_hard_shadow_frame(True, "on")
+        )
+        hard_shadow_restored, hard_shadow_restored_buffer, hard_shadow_restored_stats = (
+            run_hard_shadow_frame(False, "restored")
+        )
+        for current in panels:
+            _set_panel_override(mel, current, "")
+        cmds.refresh(force=True)
+        time.sleep(0.5)
+        hard_shadow_disabled = _query_witness(cmds, log)
+        hard_width = int(hard_shadow_off_stats.get("width", 0))
+        hard_height = int(hard_shadow_off_stats.get("height", 0))
+        hard_shadow_pixels = _viewport_probe_aba_passes(
+            hard_shadow_off_buffer,
+            hard_shadow_on_buffer,
+            hard_shadow_restored_buffer,
+            hard_width,
+            hard_height,
+            shape_mask["mask"],
+            expect_static=expect_receiver_probe_static,
+        )
+        hard_shadow_states = (
+            {"pass": True, "source": "static-negative"}
+            if expect_receiver_probe_static
+            else _hard_shadow_body_states(
+                hard_shadow_on_buffer,
+                hard_width,
+                hard_height,
+                shape_mask["mask"],
+            )
+        )
+        report["hardShadowAba"] = {
+            "off": hard_shadow_off,
+            "on": hard_shadow_on,
+            "restored": hard_shadow_restored,
+            "disabled": hard_shadow_disabled,
+            "offStats": hard_shadow_off_stats,
+            "onStats": hard_shadow_on_stats,
+            "restoredStats": hard_shadow_restored_stats,
+            "pixels": hard_shadow_pixels,
+            "states": hard_shadow_states,
+        }
+        if not hard_shadow_pixels.get("pass"):
+            if expect_receiver_probe_static:
+                raise RuntimeError(
+                    "hard-shadow OFF/ON/OFF changed pixels despite static expectation"
+                )
+            raise RuntimeError(
+                "hard-shadow OFF/ON/OFF did not change and restore body pixels"
+            )
+        if not expect_receiver_probe_static and not hard_shadow_states.get("pass"):
+            raise RuntimeError(
+                "hard-shadow ON body capture lacks distinct lit/occluded states"
+            )
+        for compare, witness in (
+            (False, hard_shadow_off),
+            (True, hard_shadow_on),
+            (False, hard_shadow_restored),
+        ):
+            if not _hard_shadow_witness_passes(witness, compare):
+                raise RuntimeError(
+                    "hard-shadow witness did not prove compare state, target assignment, "
+                    f"or same-frame matrix (expected={compare})"
+                )
+        if hard_shadow_disabled.get("setup") or hard_shadow_disabled.get("released"):
+            raise RuntimeError("hard-shadow disable did not retain live caster targets")
+
         # The caster matrix is frame-local to the tagged MMD light and shape
         # bounds, not to the viewport camera.  Rotate the light B/A and force
         # a fresh override setup to prove the matrix hash follows the light,
@@ -1224,6 +1439,10 @@ def run_probe(
         receiver_baseline_witness = receiver_aba.get("baseline", {})
         receiver_control_witness = receiver_aba.get("control", {})
         receiver_restored_witness = receiver_aba.get("restored", {})
+        hard_shadow_aba = report.get("hardShadowAba", {})
+        hard_shadow_off_witness = hard_shadow_aba.get("off", {})
+        hard_shadow_on_witness = hard_shadow_aba.get("on", {})
+        hard_shadow_restored_witness = hard_shadow_aba.get("restored", {})
         hidden_clear_samples = int(hidden_disabled_witness.get("clearSamples", 0))
         render_items = [
             (shape, item)
@@ -1515,6 +1734,21 @@ def run_probe(
             and bool(receiver_baseline_witness.get("receiverProbeEnabled"))
             and bool(receiver_control_witness.get("receiverProbeEnabled"))
             and bool(receiver_restored_witness.get("receiverProbeEnabled")),
+            "hardShadowWitnessOff": _hard_shadow_witness_passes(
+                hard_shadow_off_witness, False
+            ),
+            "hardShadowWitnessOn": _hard_shadow_witness_passes(
+                hard_shadow_on_witness, True
+            ),
+            "hardShadowWitnessRestored": _hard_shadow_witness_passes(
+                hard_shadow_restored_witness, False
+            ),
+            "hardShadowAba": bool(hard_shadow_aba.get("pixels", {}).get("pass")),
+            "hardShadowStates": bool(hard_shadow_aba.get("states", {}).get("pass")),
+            "hardShadowDisabledRetained": bool(
+                hard_shadow_aba.get("disabled", {}).get("receiverTargetsRetained")
+            )
+            and not bool(hard_shadow_aba.get("disabled", {}).get("released")),
             "receiverTargetsRetained": bool(
                 receiver_baseline_witness.get("receiverTargetsRetained")
             )
@@ -1692,6 +1926,9 @@ def main() -> int:
             out_dir / "native_caster_enabled.png",
             out_dir / "native_caster_enabled_viewport.png",
             out_dir / "native_caster_disabled.png",
+            out_dir / "native_hard_shadow_off.png",
+            out_dir / "native_hard_shadow_on.png",
+            out_dir / "native_hard_shadow_restored.png",
         ),
         port_error=f"commandPort :{args.port} is already open; choose another --port",
         report_error=f"native caster report missing: {report_path}",
