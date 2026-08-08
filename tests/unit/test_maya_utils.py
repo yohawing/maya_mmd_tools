@@ -43,6 +43,15 @@ class TestMayaUtils(MayaTestBase):
         self.assertIsNotNone(uv_coords)
         self.assertEqual(len(uv_coords), 8)
 
+        selection = om.MSelectionList()
+        selection.add(shape)
+        mesh_fn = om.MFnMesh(selection.getDagPath(0))
+        self.assertEqual(tuple(mesh_fn.getUVSetNames()), ("map1",))
+        self.assertEqual(mesh_fn.currentUVSetName(), "map1")
+        self.assertEqual(mesh_fn.numUVs("map1"), len(uvs) // 2)
+        _, assigned_uv_ids = mesh_fn.getAssignedUVs("map1")
+        self.assertEqual(len(assigned_uv_ids), len(face_uv_connects))
+
     def test_create_mesh_with_authored_vertex_normals_locks_valid_entries(self):
         """有効な頂点法線は正規化して保持し、Mayaの再計算から保護する。"""
         vertices = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]

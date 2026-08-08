@@ -218,6 +218,21 @@ class ImportExportTab(BaseTab):
         self.other_group = QGroupBox(self.tr("other", "groups"))
         other_layout = QVBoxLayout()
 
+        self.use_cpp_fast_load_check = self._bind_checkbox(
+            "use_cpp_fast_load",
+            setting_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD,
+            True,
+            other_layout,
+            tooltip_key="use_cpp_fast_load",
+        )
+        self.use_cpp_vp2_ownership_check = self._bind_checkbox(
+            "use_cpp_vp2_ownership",
+            setting_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP,
+            True,
+            other_layout,
+            tooltip_key="use_cpp_vp2_ownership",
+        )
+
         self.use_cpp_rig_nodes_check = self._bind_checkbox(
             "use_cpp_rig_nodes",
             setting_keys.IMPORT_NATIVE_USE_CPP_RIG_NODES,
@@ -310,10 +325,12 @@ class ImportExportTab(BaseTab):
             self._sync_vmd_rotation_time_curve_enabled
         )
         self.reduce_bake_keys_check.toggled.connect(self._sync_reduce_bake_quality_enabled)
+        self.use_cpp_fast_load_check.toggled.connect(self._sync_cpp_vp2_ownership_enabled)
         self._sync_native_physics_bake_enabled(self.bake_mode_check.isChecked())
         self._sync_reduce_bake_keys_enabled(self.bake_mode_check.isChecked())
         self._sync_reduce_bake_quality_enabled()
         self._sync_vmd_rotation_time_curve_enabled()
+        self._sync_cpp_vp2_ownership_enabled(self.use_cpp_fast_load_check.isChecked())
 
         self.animation_settings_group.setLayout(anim_settings_layout)
         model_settings_layout.addWidget(self.animation_settings_group)
@@ -481,6 +498,8 @@ class ImportExportTab(BaseTab):
             self.uv_row,
             self.morph_group,
             self.other_group,
+            self.use_cpp_fast_load_check,
+            self.use_cpp_vp2_ownership_check,
             self.use_cpp_rig_nodes_check,
             self.motion_scale_row,
             self.vmd_rotation_time_curve_check,
@@ -500,6 +519,13 @@ class ImportExportTab(BaseTab):
     def _sync_native_physics_bake_enabled(self, bake_mode_enabled):
         """Native physics bake is a VMD bake-mode option, not a model import option."""
         self.native_physics_bake_check.setEnabled(bool(bake_mode_enabled))
+
+    def _sync_cpp_vp2_ownership_enabled(self, fast_load_enabled):
+        """VP2 ownership is available only when C++ Fast Load is enabled."""
+        enabled = bool(fast_load_enabled)
+        self.use_cpp_vp2_ownership_check.setEnabled(enabled)
+        if not enabled and self.use_cpp_vp2_ownership_check.isChecked():
+            self.use_cpp_vp2_ownership_check.setChecked(False)
 
     def _sync_reduce_bake_keys_enabled(self, bake_mode_enabled):
         """Reduce Bake Keys is an opt-in control available only for Bake Motion."""
@@ -701,6 +727,10 @@ class ImportExportTab(BaseTab):
                 self.tr("vmd_rotation_time_curve", "checkboxes")
             )
         self.use_cpp_rig_nodes_check.setText(self.tr("use_cpp_rig_nodes", "checkboxes"))
+        self.use_cpp_fast_load_check.setText(self.tr("use_cpp_fast_load", "checkboxes"))
+        self.use_cpp_vp2_ownership_check.setText(
+            self.tr("use_cpp_vp2_ownership", "checkboxes")
+        )
         self.apply_scale_check.setText(self.tr("apply_scale", "checkboxes"))
         self.new_file_check.setText(self.tr("new_file", "checkboxes"))
 
@@ -725,6 +755,10 @@ class ImportExportTab(BaseTab):
                 self.tr("vmd_rotation_time_curve", "tooltips")
             )
         self.use_cpp_rig_nodes_check.setToolTip(self.tr("use_cpp_rig_nodes", "tooltips"))
+        self.use_cpp_fast_load_check.setToolTip(self.tr("use_cpp_fast_load", "tooltips"))
+        self.use_cpp_vp2_ownership_check.setToolTip(
+            self.tr("use_cpp_vp2_ownership", "tooltips")
+        )
         if hasattr(self, "animation_start_frame"):
             self.animation_start_frame.setToolTip(self.tr("start_frame", "tooltips"))
         self.vmd_fps_combo.setToolTip(self.tr("vmd_fps", "tooltips"))

@@ -16,6 +16,7 @@
 #include <maya/MGlobal.h>
 #include <maya/MNodeClass.h>
 #include <maya/MStatus.h>
+#include <maya/MDrawRegistry.h>
 
 #include <string>
 
@@ -26,6 +27,9 @@
 #include "MmdAppendNode.h"
 #include "MmdCcdIkNode.h"
 #include "MmdPhysicsBoneDriverNode.h"
+#include "MmdRenderGeometryOverride.h"
+#include "MmdRenderOverride.h"
+#include "MmdRenderShape.h"
 
 // 将来のノード登録例 (コメントアウト)
 // #include "MmdAnimSkinDeformer.h"
@@ -35,6 +39,13 @@
 static bool sCppRegisteredAppend = false;
 static bool sCppRegisteredCcdIk = false;
 static bool sCppRegisteredPhysicsBoneDriver = false;
+static bool sCppRegisteredMmdRenderShape = false;
+static bool sCppRegisteredMmdRenderOverride = false;
+static bool sCppRegisteredMmdRenderWitnessCommand = false;
+static bool sCppRegisteredMmdRenderQueueUpdateCommand = false;
+static bool sCppRegisteredMmdNativeCasterOverride = false;
+static bool sCppRegisteredMmdNativeCasterWitnessCommand = false;
+static MmdNativeCasterRenderOverride* sMmdNativeCasterOverride = nullptr;
 
 static bool isNodeTypeRegistered(const MTypeId& expectedId)
 {
@@ -46,6 +57,8 @@ MStatus initializePlugin(MObject obj)
 {
     MStatus status;
     MFnPlugin plugin(obj, "yohawing", "0.6.2", "Any");
+    MmdRenderGeometryOverride::setPluginLoadPath(plugin.loadPath());
+    MmdNativeCasterRenderOverride::setPluginLoadPath(plugin.loadPath());
 
     const uint32_t runtimeAbi = mmd::RuntimeBridge::runtimeAbiVersion();
     if (runtimeAbi != MMD_RUNTIME_ABI_VERSION) {
@@ -86,6 +99,84 @@ MStatus initializePlugin(MObject obj)
                                     MmdWeldUvSeamVertices::newSyntax);
     CHECK_MSTATUS_AND_RETURN_IT(status);
 
+    auto cleanupMmdRenderWitness = [&plugin]() {
+        MStatus cleanupStatus;
+        if (sCppRegisteredMmdRenderWitnessCommand) {
+            cleanupStatus = plugin.deregisterCommand("mmdRenderWitness");
+            if (!cleanupStatus) {
+                MGlobal::displayWarning(
+                    "Failed to roll back mmdRenderWitness command.");
+            }
+            sCppRegisteredMmdRenderWitnessCommand = false;
+        }
+        if (sCppRegisteredMmdRenderQueueUpdateCommand) {
+            cleanupStatus = plugin.deregisterCommand("mmdRenderQueueUpdate");
+            if (!cleanupStatus) {
+                MGlobal::displayWarning(
+                    "Failed to roll back mmdRenderQueueUpdate command.");
+            }
+            sCppRegisteredMmdRenderQueueUpdateCommand = false;
+        }
+        if (sCppRegisteredMmdRenderOverride) {
+            cleanupStatus = MHWRender::MDrawRegistry::deregisterGeometryOverrideCreator(
+                MmdRenderShape::drawDbClassification,
+                MmdRenderShape::drawRegistrantId);
+            if (!cleanupStatus) {
+                MGlobal::displayWarning(
+                    "Failed to roll back mmdRenderShape geometry override.");
+            }
+            sCppRegisteredMmdRenderOverride = false;
+        }
+        if (sCppRegisteredMmdRenderShape) {
+            cleanupStatus = plugin.deregisterNode(MmdRenderShape::id);
+            if (!cleanupStatus) {
+                MGlobal::displayWarning(
+                    "Failed to roll back mmdRenderShape node.");
+            }
+            sCppRegisteredMmdRenderShape = false;
+        }
+    };
+
+    // Opt-in VP2 ownership witness.  This is a custom surface shape
+    // classification; it never registers against Maya's built-in
+    // drawdb/geometry/mesh path used by ordinary MFnMesh imports.
+    status = plugin.registerShape(
+        "mmdRenderShape",
+        MmdRenderShape::id,
+        MmdRenderShape::creator,
+        MmdRenderShape::initialize,
+        &MmdRenderShape::drawDbClassification);
+    CHECK_MSTATUS_AND_RETURN_IT(status);
+    sCppRegisteredMmdRenderShape = true;
+
+    status = MHWRender::MDrawRegistry::registerGeometryOverrideCreator(
+        MmdRenderShape::drawDbClassification,
+        MmdRenderShape::drawRegistrantId,
+        MmdRenderGeometryOverride::creator);
+    if (!status) {
+        cleanupMmdRenderWitness();
+        return status;
+    }
+    sCppRegisteredMmdRenderOverride = true;
+
+    status = plugin.registerCommand("mmdRenderWitness",
+                                    MmdRenderWitnessCommand::creator,
+                                    MmdRenderWitnessCommand::newSyntax);
+    if (!status) {
+        cleanupMmdRenderWitness();
+        return status;
+    }
+    sCppRegisteredMmdRenderWitnessCommand = true;
+
+    status = plugin.registerCommand("mmdRenderQueueUpdate",
+                                    MmdRenderQueueUpdateCommand::creator,
+                                    MmdRenderQueueUpdateCommand::newSyntax);
+    if (!status) {
+        cleanupMmdRenderWitness();
+        return status;
+    }
+    sCppRegisteredMmdRenderQueueUpdateCommand = true;
+
     // mmdAppend 登録 (Python 版と統一した typeName)
     // Python 版が同じ typeId で登録済みの場合はスキップ
     if (isNodeTypeRegistered(MmdAppendNode::id)) {
@@ -97,7 +188,10 @@ MStatus initializePlugin(MObject obj)
             MmdAppendNode::id,
             MmdAppendNode::creator,
             MmdAppendNode::initialize);
-        CHECK_MSTATUS_AND_RETURN_IT(status);
+        if (!status) {
+            cleanupMmdRenderWitness();
+            return status;
+        }
         sCppRegisteredAppend = true;
         MGlobal::displayInfo("mmdAppend node registered.");
     }
@@ -113,7 +207,10 @@ MStatus initializePlugin(MObject obj)
             MmdCcdIkNode::id,
             MmdCcdIkNode::creator,
             MmdCcdIkNode::initialize);
-        CHECK_MSTATUS_AND_RETURN_IT(status);
+        if (!status) {
+            cleanupMmdRenderWitness();
+            return status;
+        }
         sCppRegisteredCcdIk = true;
         MGlobal::displayInfo("mmdCcdIk node registered.");
     }
@@ -128,9 +225,42 @@ MStatus initializePlugin(MObject obj)
             MmdPhysicsBoneDriverNode::id,
             MmdPhysicsBoneDriverNode::creator,
             MmdPhysicsBoneDriverNode::initialize);
-        CHECK_MSTATUS_AND_RETURN_IT(status);
+        if (!status) {
+            cleanupMmdRenderWitness();
+            return status;
+        }
         sCppRegisteredPhysicsBoneDriver = true;
         MGlobal::displayInfo("mmdPhysicsBoneDriver node registered (C++).");
+    }
+
+    // Register the opt-in caster after the existing nodes and commands have
+    // initialized.  The E2E explicitly clears/rebinds modelEditor panels so
+    // Maya instantiates this late-added operation provider.
+    MHWRender::MRenderer* renderer = MHWRender::MRenderer::theRenderer(false);
+    if (renderer) {
+        status = plugin.registerCommand(
+            "mmdNativeCasterWitness", MmdNativeCasterWitnessCommand::creator,
+            MmdNativeCasterWitnessCommand::newSyntax);
+        if (!status) {
+            MGlobal::displayWarning(
+                "mmdNativeCasterWitness command registration failed; capability skipped.");
+        } else {
+            sCppRegisteredMmdNativeCasterWitnessCommand = true;
+            sMmdNativeCasterOverride = new MmdNativeCasterRenderOverride();
+            status = renderer->registerOverride(sMmdNativeCasterOverride);
+            if (!status) {
+                MGlobal::displayWarning(
+                    "mmdNativeCaster override registration failed; capability skipped.");
+                delete sMmdNativeCasterOverride;
+                sMmdNativeCasterOverride = nullptr;
+            } else {
+                sCppRegisteredMmdNativeCasterOverride = true;
+                MmdNativeCasterRenderOverride::markRegistered(true);
+            }
+        }
+    } else {
+        MGlobal::displayWarning(
+            "MHWRender::MRenderer unavailable; native caster override skipped.");
     }
 
     return MS::kSuccess;
@@ -140,6 +270,76 @@ MStatus uninitializePlugin(MObject obj)
 {
     MStatus status;
     MFnPlugin plugin(obj);
+
+    // Receiver body shaders keep a supported MRenderTargetAssignment to the
+    // caster target for their whole lifetime.  Refuse a partial plug-in
+    // teardown until every geometry override has released those shaders;
+    // deleting the native override first would invalidate a live assignment.
+    if (sCppRegisteredMmdNativeCasterOverride &&
+        !MmdNativeCasterRenderOverride::shutdownReady()) {
+        MGlobal::displayError(
+            "Cannot unload mmd_tools_cpp while native receiver shaders are active; "
+            "close or replace the scene first.");
+        return MS::kFailure;
+    }
+
+    if (sCppRegisteredMmdRenderWitnessCommand) {
+        status = plugin.deregisterCommand("mmdRenderWitness");
+        if (!status) {
+            MGlobal::displayWarning(
+                "Failed to deregister mmdRenderWitness command.");
+        }
+        sCppRegisteredMmdRenderWitnessCommand = false;
+    }
+
+    if (sCppRegisteredMmdRenderQueueUpdateCommand) {
+        status = plugin.deregisterCommand("mmdRenderQueueUpdate");
+        if (!status) {
+            MGlobal::displayWarning(
+                "Failed to deregister mmdRenderQueueUpdate command.");
+        }
+        sCppRegisteredMmdRenderQueueUpdateCommand = false;
+    }
+
+    if (sCppRegisteredMmdNativeCasterWitnessCommand) {
+        status = plugin.deregisterCommand("mmdNativeCasterWitness");
+        CHECK_MSTATUS_AND_RETURN_IT(status);
+        sCppRegisteredMmdNativeCasterWitnessCommand = false;
+    }
+
+    if (sCppRegisteredMmdNativeCasterOverride) {
+        MHWRender::MRenderer* renderer = MHWRender::MRenderer::theRenderer();
+        status = renderer ? renderer->deregisterOverride(sMmdNativeCasterOverride)
+                          : MS::kFailure;
+        if (!status) {
+            MGlobal::displayError(
+                "Failed to deregister mmdNativeCaster override; plugin remains loaded.");
+            return status;
+        }
+        sCppRegisteredMmdNativeCasterOverride = false;
+        MmdNativeCasterRenderOverride::markRegistered(false);
+        delete sMmdNativeCasterOverride;
+        sMmdNativeCasterOverride = nullptr;
+    }
+
+    if (sCppRegisteredMmdRenderOverride) {
+        status = MHWRender::MDrawRegistry::deregisterGeometryOverrideCreator(
+            MmdRenderShape::drawDbClassification,
+            MmdRenderShape::drawRegistrantId);
+        if (!status) {
+            MGlobal::displayWarning(
+                "Failed to deregister mmdRenderShape geometry override.");
+        }
+        sCppRegisteredMmdRenderOverride = false;
+    }
+
+    if (sCppRegisteredMmdRenderShape) {
+        status = plugin.deregisterNode(MmdRenderShape::id);
+        if (!status) {
+            MGlobal::displayWarning("Failed to deregister mmdRenderShape node.");
+        }
+        sCppRegisteredMmdRenderShape = false;
+    }
 
     // 登録ノード解除
     status = plugin.deregisterNode(MmdRuntimeNode::id);

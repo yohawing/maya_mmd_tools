@@ -34,6 +34,7 @@ class _FakeColorManagementCmds(_FakeCmds):
         super().__init__()
         self.rendering_space = "ACEScg"
         self.view_transform = "ACES 1.0 SDR-video"
+        self.cm_enabled = True
         self.color_management_calls = []
 
     def colorManagementPrefs(self, **kwargs):
@@ -51,6 +52,11 @@ class _FakeColorManagementCmds(_FakeCmds):
             return self.view_transform
         if kwargs.get("e") and "viewTransformName" in kwargs:
             self.view_transform = kwargs["viewTransformName"]
+            return None
+        if kwargs.get("q") and kwargs.get("cmEnabled"):
+            return self.cm_enabled
+        if kwargs.get("e") and "cmEnabled" in kwargs:
+            self.cm_enabled = bool(kwargs["cmEnabled"])
             return None
         return None
 
@@ -201,6 +207,14 @@ class TestMayaViewportUtils(unittest.TestCase):
 
         self.assertEqual(fake_cmds.rendering_space, "scene-linear Rec.709-sRGB")
         self.assertEqual(fake_cmds.view_transform, "Un-tone-mapped (sRGB)")
+
+    def test_setup_mmd_native_color_management_disables_color_management(self):
+        fake_cmds = _FakeColorManagementCmds()
+
+        with patch.object(maya_viewport_utils, "cmds", fake_cmds):
+            self.assertTrue(maya_viewport_utils.setup_mmd_native_color_management())
+
+        self.assertFalse(fake_cmds.cm_enabled)
 
     def test_setup_mmd_transparency_sets_depth_peeling(self):
         fake_cmds = _FakeTransparencyCmds(current=1)

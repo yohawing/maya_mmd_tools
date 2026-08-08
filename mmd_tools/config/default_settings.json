@@ -52,9 +52,10 @@
       "static_channel_epsilon_rotate_deg": 0.01
     },
     "native": {
-      "_comment": "Settings for the compiled C++ fast import path",
-      "use_cpp_fast_load": false,
+      "_comment": "Development Mode settings for native and compiled import paths",
+      "use_cpp_fast_load": true,
       "cpp_fast_load_mesh_only": true,
+      "use_cpp_vp2_ownership": true,
       "require_native_pmx_parse": true,
       "use_cpp_rig_nodes": false
     },

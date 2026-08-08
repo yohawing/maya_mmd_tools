@@ -36,6 +36,7 @@ class _FakeSettingsStore:
                 "native": {
                     "use_cpp_fast_load": True,
                     "cpp_fast_load_mesh_only": False,
+                    "use_cpp_vp2_ownership": True,
                     "use_cpp_rig_nodes": True,
                 },
                 "naming": {"translate_names": False},
@@ -248,9 +249,12 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertTrue(options["translate_names"])
         self.assertNotIn("setup_rig", options)
         self.assertNotIn("setup_bone_orientation", options)
-        self.assertTrue(options["use_cpp_fast_load"])
-        self.assertFalse(options["cpp_fast_load_mesh_only"])
-        self.assertTrue(options["use_cpp_rig_nodes"])
+        self.assertFalse(options["use_cpp_fast_load"])
+        self.assertTrue(options["cpp_fast_load_mesh_only"])
+        self.assertFalse(options["use_cpp_vp2_ownership"])
+        self.assertFalse(options["use_native_pmx_parse"])
+        self.assertFalse(options["require_native_pmx_parse"])
+        self.assertFalse(options["use_cpp_rig_nodes"])
         # Policy forces scale 1.0 without mutating the stored value.
         self.assertEqual(self.service.get("import.general.scale_factor"), 2.0)
 
@@ -274,6 +278,11 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertEqual(options["texture_search_path"], "/textures")
         self.assertTrue(options["add_semi_standard_bones"])
         self.assertFalse(options["translate_names"])
+        self.assertTrue(options["use_cpp_fast_load"])
+        self.assertFalse(options["cpp_fast_load_mesh_only"])
+        self.assertTrue(options["use_cpp_vp2_ownership"])
+        self.assertTrue(options["use_native_pmx_parse"])
+        self.assertTrue(options["use_cpp_rig_nodes"])
         self.assertNotIn("setup_rig", options)
         self.assertNotIn("setup_bone_orientation", options)
 

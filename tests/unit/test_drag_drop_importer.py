@@ -181,6 +181,68 @@ class TestDragDropImporter(unittest.TestCase):
         self.assertEqual(calls[0][0], ".pmd")
         self.assertEqual(calls[0][1]["scale"], 2.5)
 
+    @patch.object(drag_drop_importer, "_display_error")
+    @patch.object(drag_drop_importer, "_display_info")
+    def test_native_vp2_failure_is_reported_without_success(self, _display_info, display_error):
+        """A failed native VP2 drop must not be reported as an imported model."""
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "model.pmx"
+            model.write_text("", encoding="utf-8")
+
+            def importer(_file_path, options=None):
+                self.assertTrue(options["use_cpp_fast_load"])
+                self.assertTrue(options["use_cpp_vp2_ownership"])
+                raise RuntimeError("NATIVE_VP2_OWNERSHIP_UNAVAILABLE")
+
+            result = drag_drop_importer.import_dropped_files(
+                [str(model)],
+                importer=importer,
+                settings_service=_FakeSettingsService(
+                    pmx_options={
+                        "use_cpp_fast_load": True,
+                        "use_cpp_vp2_ownership": True,
+                    }
+                ),
+            )
+
+        self.assertFalse(result)
+        display_error.assert_called_once()
+        self.assertIn("NATIVE_VP2_OWNERSHIP_UNAVAILABLE", display_error.call_args.args[0])
+
+    @patch.object(drag_drop_importer, "_display_error")
+    @patch.object(drag_drop_importer, "_display_info")
+    def test_model_exception_aborts_followup_motion_for_same_drop(self, _display_info, display_error):
+        """A failed PMX must not send a companion VMD to another model."""
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "model.pmx"
+            motion = Path(tmp) / "motion.vmd"
+            model.write_text("", encoding="utf-8")
+            motion.write_text("", encoding="utf-8")
+
+            importer = MagicMock(side_effect=RuntimeError("NATIVE_VP2_OWNERSHIP_UNAVAILABLE"))
+            result = drag_drop_importer.import_dropped_files(
+                [str(model), str(motion)],
+                importer=importer,
+                settings_service=_FakeSettingsService(
+                    pmx_options={
+                        "use_cpp_fast_load": True,
+                        "use_cpp_vp2_ownership": True,
+                    }
+                ),
+            )
+
+        self.assertFalse(result)
+        importer.assert_called_once_with(
+            str(model),
+            options={
+                "use_cpp_fast_load": True,
+                "use_cpp_vp2_ownership": True,
+                "custom_namespace": None,
+                "profile": {},
+            },
+        )
+        display_error.assert_called_once()
+
     @patch.object(drag_drop_importer, "_display_warning")
     @patch.object(drag_drop_importer, "_display_info")
     def test_import_dropped_model_root_with_control_rig_warning_is_partial(

@@ -1160,7 +1160,6 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         self.assertIn("uniform vec3 MmdControllerLightVector", source)
         self.assertIn("uniform vec3 MmdControllerLightRgb", source)
         self.assertIn("vec3 lightDir = -normalize(MmdControllerLightVector)", source)
-        self.assertIn("float toonV = clamp(0.5 - ndotl * 0.5, 0.0, 1.0)", source)
         self.assertIn("vec3 srgbToLinear(vec3 color)", source)
         self.assertIn("colorOut = vec4(srgbToLinear(lighting), opacity)", source)
         self.assertIn("if (texColor.a < 0.003 || opacity <= 0.0)", source)

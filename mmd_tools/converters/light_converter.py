@@ -34,7 +34,7 @@ logger = get_logger("mmd_tools.converters.light_converter")
 
 # MMD 既定のライト進行方向（MMD/マニフェスト空間）。MMD(左手系)→Maya(右手系) は
 # (-x, y, -z)（ノート §13、GoldenOracle ゴールデン検証済みの harness と同一規約）。
-_MMD_DEFAULT_DIRECTION = (0.5, -1.0, 0.5)
+_MMD_DEFAULT_DIRECTION = (0.5, -1.0, 1.0)
 
 # MMD's default directional-light color is 154/255 on each RGB channel. Keep
 # this as the creation-time default only: get-or-create must preserve any

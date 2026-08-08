@@ -250,9 +250,15 @@ class SettingsService:
             "target_model": target_model,
         }
 
-    def build_pmx_import_options(self, custom_namespace=None):
-        """Build PMX/PMD import options from persisted settings."""
-        is_dev = self.is_development_mode()
+    def build_pmx_import_options(self, custom_namespace=None, *, development_mode=None):
+        """Build PMX/PMD import options from persisted settings.
+
+        Args:
+            custom_namespace: Optional namespace requested by the importer UI.
+            development_mode: Optional effective mode override for development
+                harnesses. Normal UI callers leave this unset.
+        """
+        is_dev = self.is_development_mode() if development_mode is None else bool(development_mode)
         opts = {
             "scale": self.resolve_import_scale(),
             "use_namespace": self.get(setting_keys.IMPORT_GENERAL_USE_NAMESPACE, False),
@@ -272,9 +278,39 @@ class SettingsService:
         }
         if not is_dev:
             opts.update(_NORMAL_MODE_IMPORT_OVERRIDES)
-        opts["use_cpp_fast_load"] = self.get(setting_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, False)
-        opts["cpp_fast_load_mesh_only"] = self.get(setting_keys.IMPORT_NATIVE_CPP_FAST_LOAD_MESH_ONLY, True)
-        opts["use_cpp_rig_nodes"] = self.get(setting_keys.IMPORT_NATIVE_USE_CPP_RIG_NODES, False)
+        if is_dev:
+            opts["use_cpp_fast_load"] = self.get(setting_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, True)
+            opts["cpp_fast_load_mesh_only"] = self.get(
+                setting_keys.IMPORT_NATIVE_CPP_FAST_LOAD_MESH_ONLY,
+                True,
+            )
+            opts["use_cpp_vp2_ownership"] = self.get(
+                setting_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP,
+                True,
+            )
+            opts["use_native_pmx_parse"] = True
+            opts["require_native_pmx_parse"] = self.get(
+                setting_keys.IMPORT_NATIVE_REQUIRE_NATIVE_PMX_PARSE,
+                False,
+            )
+            opts["use_cpp_rig_nodes"] = self.get(
+                setting_keys.IMPORT_NATIVE_USE_CPP_RIG_NODES,
+                False,
+            )
+        else:
+            # Native import is experimental. Hidden checkboxes are not a
+            # sufficient boundary because their persisted values can remain
+            # enabled after Development Mode is turned off.
+            opts.update(
+                {
+                    "use_cpp_fast_load": False,
+                    "cpp_fast_load_mesh_only": True,
+                    "use_cpp_vp2_ownership": False,
+                    "use_native_pmx_parse": False,
+                    "require_native_pmx_parse": False,
+                    "use_cpp_rig_nodes": False,
+                }
+            )
         return opts
 
     def should_show_texture_issue_dialog(self):

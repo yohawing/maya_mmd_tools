@@ -65,6 +65,11 @@ set(SOURCES
     mmdRuntimeBridge.cpp
     mmdRuntimeNode.cpp
     mmdFastLoad.cpp
+    MmdRenderQueue.cpp
+    MmdTextureAlphaClassifier.cpp
+    MmdRenderShape.cpp
+    MmdRenderGeometryOverride.cpp
+    MmdRenderOverride.cpp
     MmdWeldUvSeamVertices.cpp
     MmdAppendNode.cpp
     MmdCcdIkNode.cpp
@@ -75,6 +80,11 @@ set(HEADERS
     mmdRuntimeBridge.h
     mmdRuntimeNode.h
     mmdFastLoad.h
+    MmdRenderQueue.h
+    MmdTextureAlphaClassifier.h
+    MmdRenderShape.h
+    MmdRenderGeometryOverride.h
+    MmdRenderOverride.h
     MmdWeldUvSeamVertices.h
     MmdAppendNode.h
     MmdCcdIkNode.h
@@ -150,6 +160,8 @@ if(WIN32)
     target_link_directories(mmd_tools_cpp PRIVATE ${MAYA_LIB_DIR})
     target_link_libraries(mmd_tools_cpp PRIVATE
         OpenMaya.lib
+        OpenMayaRender.lib
+        OpenMayaUI.lib
         Foundation.lib
     )
     if(MMD_ANIM_FFI_LIB)
@@ -176,6 +188,8 @@ if(APPLE)
     target_link_directories(mmd_tools_cpp PRIVATE ${MAYA_LIB_DIR})
     target_link_libraries(mmd_tools_cpp PRIVATE
         OpenMaya
+        OpenMayaRender
+        OpenMayaUI
         Foundation
     )
     if(MMD_ANIM_FFI_LIB)
@@ -226,6 +240,33 @@ if(EXISTS "${MMD_ANIM_FFI_INCLUDE_DIR}/mmd_runtime.h")
     message(STATUS "mmd_runtime_smoke: using mmd-anim-ffi header at ${MMD_ANIM_FFI_INCLUDE_DIR}")
 else()
     message(FATAL_ERROR "mmd_runtime.h not found; required for mmd_runtime_smoke. Run ffi_build first.")
+endif()
+
+# Standalone native render-order contract smoke.  This target deliberately
+# has no Maya or FFI dependency so the ordering rule remains testable even
+# when a full plugin build is unavailable.
+add_executable(mmd_render_queue_smoke
+    MmdRenderQueueSmoke.cpp
+    MmdRenderQueue.cpp
+    MmdTextureAlphaClassifier.cpp
+)
+
+target_include_directories(mmd_render_queue_smoke PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_features(mmd_render_queue_smoke PRIVATE cxx_std_17)
+
+if(WIN32)
+    set_target_properties(mmd_render_queue_smoke PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${REPO_ROOT}/build/cpp/maya${MAYA_VERSION}/$<CONFIG>"
+    )
+endif()
+
+if(MSVC)
+    target_compile_options(mmd_render_queue_smoke PRIVATE /utf-8)
+    set_property(TARGET mmd_render_queue_smoke PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreadedDLL"
+    )
 endif()
 
 if(WIN32)

@@ -5,6 +5,8 @@ imports selected GoldenOracle render-manifest fixtures with hardware shaders
 materials, captures Viewport 2.0 PNGs, and writes report-only diagnostics.
 It refuses to reuse an already-open commandPort unless ``--attach-existing``
 is explicit, and records selected shader plug-in lifecycle state around cases.
+The opt-in ``--enable-mmd-self-shadow`` mode records Maya's native shadow
+inputs and their post-VP2 values; it is a diagnostic gate, not a parity claim.
 
 The harness intentionally copies MMDShader.fx to a unique path per run before
 assigning it to dx11Shader nodes. Maya can cache effects by .fx path inside a
@@ -37,6 +39,12 @@ DEFAULT_MAYA_VERSION = "2024"
 DEFAULT_PORT = 7721
 DEFAULT_TIMEOUT = 420
 COMPLETION_MARKER = "//-- MAYA VISUAL REGRESSION FINISHED --//"
+# Generated PMX GoldenOracle captures use the MMD material-light defaults, not
+# the generic host-light values retained in fixture.render.json.  Keep these
+# defaults in the Maya capture harness so a manifest without a case-specific
+# light does not silently render the same PMX under a different colour model.
+_MMD_DEFAULT_LIGHT_TRAVEL_DIRECTION = (0.5, -1.0, 1.0)
+_MMD_DEFAULT_LIGHT_COLOR = 154.0 / 255.0
 BACKEND_CONFIG = {
     "dx11": {"node_type": "dx11Shader", "plugin": "dx11Shader", "vp2_device": "VirtualDeviceDx11"},
     "glsl": {"node_type": "GLSLShader", "plugin": "glslShader", "vp2_device": "VirtualDeviceGLCore"},
@@ -120,6 +128,14 @@ def _parse_args() -> argparse.Namespace:
         help="Set a vivid edge color without changing DX11 technique or EdgeSize.",
     )
     parser.add_argument(
+        "--enable-mmd-self-shadow",
+        action="store_true",
+        help=(
+            "Opt in to Maya native shadow inputs for MMD receivers; maps "
+            "mmd_draw_flags bit 0x08 to UseShadows and enables viewport shadows."
+        ),
+    )
+    parser.add_argument(
         "--hide-orig-shapes",
         action="store_true",
         help="Temporarily mark *Orig mesh shapes as intermediate before capture.",
@@ -127,7 +143,12 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _load_cases(manifest_path: Path, names: list[str], tags: list[str], limit: int) -> tuple[dict, list[dict]]:
+def _load_cases(
+    manifest_path: Path,
+    names: list[str],
+    tags: list[str],
+    limit: int,
+) -> tuple[dict, list[dict]]:
     with open(manifest_path, encoding="utf-8") as f:
         manifest = json.load(f)
 
@@ -136,6 +157,18 @@ def _load_cases(manifest_path: Path, names: list[str], tags: list[str], limit: i
     wanted = set(names)
     wanted_tags = set(tags)
     manifest_dir = manifest_path.parent
+
+    def uses_generated_mmd_light(case: dict) -> bool:
+        """Identify Three-generated PMX fixtures with baked MMD light defaults."""
+        assets = case.get("assets") or {}
+        metadata = case.get("metadata") or {}
+        model_ref = str(assets.get("model", "")).replace("\\", "/").lower()
+        notes = str(metadata.get("notes", "")).lower()
+        raw_tags = metadata.get("tags", [])
+        tags = {str(tag).lower() for tag in raw_tags} if isinstance(raw_tags, (list, tuple, set)) else set()
+        if "light-vmd" in tags:
+            return False
+        return "/generated/" in f"/{model_ref}" or "three-mmd-loader generated fixture" in notes
 
     for case in manifest.get("cases", []):
         name = case.get("name")
@@ -149,8 +182,37 @@ def _load_cases(manifest_path: Path, names: list[str], tags: list[str], limit: i
         camera.update(case.get("metadata", {}).get("camera", {}))
         image = dict(defaults.get("image", {}))
         image.update(case.get("image", {}))
+        case_light = case.get("light") if isinstance(case.get("light"), dict) else {}
+        metadata_light = case.get("metadata", {}).get("light", {})
+        if not isinstance(metadata_light, dict):
+            metadata_light = {}
         light = dict(defaults.get("light", {}))
-        light.update(case.get("metadata", {}).get("light", {}))
+        light.update(case_light)
+        light.update(metadata_light)
+        if not case_light and not metadata_light and uses_generated_mmd_light(case):
+            # The manifest's top-level light is a legacy host-scene default.
+            # Three's generated-PMX baseline keeps the MMD material light
+            # (154/255) and its canonical travel direction instead.
+            light["direction"] = list(_MMD_DEFAULT_LIGHT_TRAVEL_DIRECTION)
+            light["color"] = [_MMD_DEFAULT_LIGHT_COLOR] * 3
+            light["source"] = "mmd-default"
+        elif case_light or metadata_light:
+            light["source"] = "case-override"
+        frames = case.get("frames", [defaults.get("frame", 0)])
+        assets = case.get("assets") or {}
+        camera_motion_rel = (
+            assets.get("cameraMotion")
+            or assets.get("camera_motion")
+            or assets.get("cameraVmd")
+            or assets.get("camera_vmd")
+        )
+        if isinstance(camera_motion_rel, dict):
+            camera_motion_rel = (
+                camera_motion_rel.get("path")
+                or camera_motion_rel.get("file")
+                or camera_motion_rel.get("vmd")
+            )
+        camera_motion = (manifest_dir / camera_motion_rel).resolve() if camera_motion_rel else None
 
         model = (manifest_dir / case["assets"]["model"]).resolve()
         oracle_rel = case.get("oracle", {}).get("path")
@@ -160,9 +222,11 @@ def _load_cases(manifest_path: Path, names: list[str], tags: list[str], limit: i
         selected.append(
             {
                 "name": name,
+                "kind": case.get("kind"),
                 "model": str(model),
-                "frame": int(case.get("frames", [defaults.get("frame", 0)])[0]),
+                "frame": int(frames[0]),
                 "camera": camera,
+                "camera_motion": str(camera_motion) if camera_motion else None,
                 "image": image,
                 "light": light,
                 "oracle_png": str(oracle_png) if oracle_png else None,
@@ -174,6 +238,38 @@ def _load_cases(manifest_path: Path, names: list[str], tags: list[str], limit: i
         selected = selected[:limit]
 
     return manifest, selected
+
+
+def _validate_camera_motion_data(vmd_data: object, vmd_path: Path) -> int:
+    """Require at least one camera frame before importing a camera VMD."""
+    frames = getattr(vmd_data, "camera_frames", None)
+    if not frames:
+        raise RuntimeError(f"Camera Motion VMD has no camera frames: {vmd_path}")
+    try:
+        return len(frames)
+    except TypeError as exc:
+        raise RuntimeError(f"Camera Motion VMD camera frames are invalid: {vmd_path}") from exc
+
+
+def _camera_plan_for_case(case: dict) -> dict:
+    """Describe whether a case uses its manifest camera or a Maya VMD camera."""
+    case_name = case.get("name", "<unnamed>")
+    camera_motion = case.get("camera_motion")
+    if camera_motion:
+        return {
+            "source": "maya-vmd-camera-import",
+            "vmd": str(camera_motion),
+            "frame": int(case.get("frame", 0)),
+        }
+    camera = case.get("camera")
+    if not isinstance(camera, dict):
+        raise RuntimeError(f"Manifest camera is missing for case {case_name}")
+    return {"source": "manifest", "parameters": dict(camera)}
+
+
+def _camera_plan(cases: list[dict]) -> dict[str, dict]:
+    """Build immutable camera provenance for selected cases."""
+    return {case["name"]: _camera_plan_for_case(case) for case in cases}
 
 
 def _sha256_file(path: Path) -> str:
@@ -256,10 +352,13 @@ def _build_maya_code(
     shader_backend: str,
     display_textures: bool = True,
     debug_outline_sentinel: bool = False,
+    enable_mmd_self_shadow: bool = False,
 ) -> str:
+    camera_plans = _camera_plan(cases)
     payload = {
         "project_root": str(project_root),
         "cases": cases,
+        "camera_plans": camera_plans,
         "shader_fx": str(shader_fx),
         "output_dir": str(output_dir),
         "log_path": str(log_path),
@@ -273,6 +372,7 @@ def _build_maya_code(
         "shader_node_type": BACKEND_CONFIG[shader_backend]["node_type"],
         "shader_plugin": BACKEND_CONFIG[shader_backend]["plugin"],
         "display_textures": bool(display_textures),
+        "enable_mmd_self_shadow": bool(enable_mmd_self_shadow),
         "completion_marker": COMPLETION_MARKER,
     }
     encoded = base64.b64encode(json.dumps(payload, ensure_ascii=False).encode("utf-8")).decode("ascii")
@@ -288,6 +388,7 @@ _output_dir = Path(_payload["output_dir"])
 _log_path = Path(_payload["log_path"])
 _shader_fx = Path(_payload["shader_fx"])
 _cases = _payload["cases"]
+_camera_plans = _payload["camera_plans"]
 _width = int(_payload["width"])
 _height = int(_payload["height"])
 _compare = bool(_payload["compare"])
@@ -296,6 +397,7 @@ _debug_outline_sentinel = bool(_payload["debug_outline_sentinel"])
 _hide_orig_shapes = bool(_payload["hide_orig_shapes"])
 _shader_backend = _payload["shader_backend"]
 _display_textures = bool(_payload.get("display_textures", True))
+_enable_mmd_self_shadow = bool(_payload.get("enable_mmd_self_shadow", False))
 _shader_node_type = _payload["shader_node_type"]
 _shader_plugin_name = _payload["shader_plugin"]
 _completion_marker = _payload["completion_marker"]
@@ -470,14 +572,41 @@ def _png_diff(a_path, b_path):
         bbox = diff.getbbox()
         return {{"available": True, "mean": stat.mean, "extrema": extrema, "bbox": bbox}}
     except Exception as exc:
-        return {{"available": False, "reason": str(exc)}}
+        # Maya's bundled Python may not have Pillow.  Reuse the host gate's
+        # standard-library decoder so a missing optional package never turns
+        # a real Oracle comparison into an inconclusive capture report.
+        try:
+            from tests.viewport.visual_regression_compare import _image_metrics
+
+            return {{
+                "available": True,
+                "comparator": "stdlib",
+                "pillow_error": str(exc),
+                "metrics": _image_metrics(b_path, a_path),
+            }}
+        except Exception as fallback_exc:
+            return {{
+                "available": False,
+                "reason": f"Pillow: {{exc}}; stdlib fallback: {{fallback_exc}}",
+            }}
 
 def _make_camera(camera):
     cam, shape = cmds.camera(name="visualRegressionCam")
     cmds.xform(cam, ws=True, t=camera["position"])
     loc = cmds.spaceLocator(name="__visual_regression_target__")[0]
     cmds.xform(loc, ws=True, t=camera["target"])
-    con = cmds.aimConstraint(loc, cam, aimVector=(0, 0, -1), upVector=(0, 1, 0), worldUpType="scene")[0]
+    up = camera.get("up")
+    if up is None:
+        con = cmds.aimConstraint(loc, cam, aimVector=(0, 0, -1), upVector=(0, 1, 0), worldUpType="scene")[0]
+    else:
+        con = cmds.aimConstraint(
+            loc,
+            cam,
+            aimVector=(0, 0, -1),
+            upVector=(0, 1, 0),
+            worldUpType="vector",
+            worldUpVector=tuple(float(value) for value in up),
+        )[0]
     cmds.delete(con, loc)
     fov = float(camera.get("fov", 25))
     aperture = cmds.getAttr(shape + ".horizontalFilmAperture")
@@ -498,8 +627,7 @@ def _setup_panel(camera, display_textures=True):
     else:
         panels = cmds.getPanel(type="modelPanel") or []
         panel = panels[0] if panels else cmds.modelPanel()
-    cmds.modelEditor(
-        panel,
+    editor_flags = dict(
         e=True,
         rendererName="vp2Renderer",
         displayAppearance="smoothShaded",
@@ -518,6 +646,9 @@ def _setup_panel(camera, display_textures=True):
         dynamics=False,
         nurbsCurves=False,
     )
+    if _enable_mmd_self_shadow:
+        editor_flags.update(displayLights="all", shadows=True, interactiveDisableShadows=False)
+    cmds.modelEditor(panel, **editor_flags)
     cmds.lookThru(panel, camera)
     try:
         cmds.setFocus(panel)
@@ -532,7 +663,11 @@ def _panel_diag(capture_panel=None):
     items = []
     for panel in panels:
         item = {{"panel": panel, "visible": panel in visible, "focused": panel == focused, "capturePanel": panel == capture_panel}}
-        for flag in ["rendererName", "displayAppearance", "displayTextures", "wireframeOnShaded", "useDefaultMaterial", "selectionHiliteDisplay"]:
+        for flag in [
+            "rendererName", "displayAppearance", "displayTextures", "wireframeOnShaded",
+            "useDefaultMaterial", "selectionHiliteDisplay", "displayLights", "shadows",
+            "interactiveDisableShadows",
+        ]:
             try:
                 item[flag] = cmds.modelEditor(panel, q=True, **{{flag: True}})
             except Exception as exc:
@@ -597,6 +732,7 @@ def _shader_diag():
             "MmdControllerLightVector", "MmdControllerLightRgb",
             "SphereMode", "EdgeColorRGB", "EdgeSize", "DevicePixelRatio",
             "HasMainTexture", "HasSphereTexture", "HasToonTexture",
+            "UseShadows", "ShadowStrength", "ShadowBias", "Light0ShadowMap", "Light0Matrix",
             "mmd_texture_path", "mmd_sphere_path", "mmd_draw_flags",
         ]:
             if cmds.attributeQuery(attr, node=shader, exists=True):
@@ -787,6 +923,50 @@ def _apply_case_morph_weights(root, case):
     cmds.refresh(force=True)
     return {{"controller": controller, "weights": applied}}
 
+
+def _configure_mmd_self_shadow_inputs(light_controller, phase):
+    # dx11Shader effect attributes are created lazily by Maya. Keep this probe
+    # explicit and fail-closed: a missing UseShadows input is evidence that the
+    # imported node is not a shadow consumer, not a reason to mutate the shader
+    # graph or claim self-shadow parity.
+    result = {{"phase": phase, "enabled": _enable_mmd_self_shadow, "shaders": [], "lightShapes": []}}
+    if not _enable_mmd_self_shadow:
+        return result
+    for shader in cmds.ls(type=_shader_node_type) or []:
+        item = {{"shader": shader, "drawFlags": None, "requestedUseShadows": None, "actualUseShadows": None}}
+        try:
+            if cmds.attributeQuery("mmd_draw_flags", node=shader, exists=True):
+                item["drawFlags"] = int(cmds.getAttr(shader + ".mmd_draw_flags"))
+            if not cmds.attributeQuery("UseShadows", node=shader, exists=True):
+                item["reason"] = "UseShadows attribute unavailable"
+            else:
+                requested = bool((item["drawFlags"] or 0) & 0x08)
+                item["requestedUseShadows"] = requested
+                cmds.setAttr(shader + ".UseShadows", requested)
+                item["actualUseShadows"] = bool(cmds.getAttr(shader + ".UseShadows"))
+        except Exception as exc:
+            item["reason"] = str(exc)
+        result["shaders"].append(item)
+    if light_controller and cmds.objExists(light_controller):
+        light_shapes = cmds.listRelatives(light_controller, shapes=True, type="directionalLight") or []
+    else:
+        light_shapes = []
+    result["lightShapes"] = light_shapes
+    for shape in light_shapes:
+        light_item = {{"shape": shape, "requested": {{}}, "actual": {{}}, "errors": {{}}}}
+        for attr in ("useDepthMapShadows", "useRayTraceShadows"):
+            if not cmds.attributeQuery(attr, node=shape, exists=True):
+                light_item["errors"][attr] = "attribute unavailable"
+                continue
+            try:
+                cmds.setAttr(shape + "." + attr, True)
+                light_item["requested"][attr] = True
+                light_item["actual"][attr] = bool(cmds.getAttr(shape + "." + attr))
+            except Exception as exc:
+                light_item["errors"][attr] = str(exc)
+        result.setdefault("lights", []).append(light_item)
+    return result
+
 def _apply_mmd_light(case):
     light = case.get("light") or {{}}
     source_direction = light.get("direction") or [0.5, -1.0, 0.5]
@@ -801,7 +981,49 @@ def _apply_mmd_light(case):
     # its world -Z feeds MMDLightDirection through the wired vectorProduct.
     from mmd_tools.converters import light_converter
     ctrl = light_converter.set_mmd_light_direction(direction, color)
-    return {{"sourceDirection": source_direction, "mayaDirection": direction, "color": color, "controller": ctrl}}
+    return {{
+        "source": light.get("source", "manifest"),
+        "sourceDirection": source_direction,
+        "mayaDirection": direction,
+        "color": color,
+        "controller": ctrl,
+    }}
+
+def _import_vmd_camera(vmd_path):
+    # Import a camera-motion VMD through the production Maya converter.
+    from mmd_tools.converters.vmd_converter import VmdConverter
+    from mmd_tools.core.vmd_data import VmdData
+
+    path = Path(vmd_path)
+    if not path.is_file():
+        raise RuntimeError("Camera Motion VMD does not exist: " + str(path))
+    try:
+        vmd_data = VmdData().parse_file(str(path))
+        camera_frames = getattr(vmd_data, "camera_frames", None)
+        if not camera_frames:
+            raise RuntimeError("Camera Motion VMD has no camera frames: " + str(path))
+    except Exception as exc:
+        raise RuntimeError("Could not parse Camera Motion VMD " + str(path) + ": " + str(exc)) from exc
+
+    try:
+        converter = VmdConverter()
+        converter.use_animation_layers = False
+        converter.import_camera_animation = True
+        converter.import_light_animation = False
+        converted = converter.convert(
+            vmd_data,
+            bake_mode=False,
+            vmd_bytes=path.read_bytes(),
+            scene_animation_only=True,
+        )
+        if not converted:
+            raise RuntimeError("VmdConverter.convert returned false")
+        camera = converter._get_or_create_camera()
+    except Exception as exc:
+        raise RuntimeError("Could not import Camera Motion VMD " + str(path) + ": " + str(exc)) from exc
+    if not camera or not cmds.objExists(camera):
+        raise RuntimeError("Camera Motion VMD did not create a Maya camera: " + str(path))
+    return camera
 
 def _capture_case(case):
     import importlib
@@ -840,6 +1062,23 @@ def _capture_case(case):
     morph_weights = _apply_case_morph_weights(root, case)
     if morph_weights is not None:
         debug_actions["morphWeights"] = morph_weights
+    light_controller = debug_actions["mmdLight"].get("controller")
+    if _enable_mmd_self_shadow:
+        debug_actions["mmdSelfShadow"] = {{
+            "controller": light_controller,
+            "prePanel": _configure_mmd_self_shadow_inputs(light_controller, "pre-panel"),
+        }}
+    # The Python RenderOverride caster discovery was removed with the legacy
+    # override path.  Keep the report explicit until a native self-shadow
+    # Oracle and production caster pass exist; do not invent parity evidence.
+    debug_actions["selfShadowCasterSelection"] = {{
+        "status": "unavailable",
+        "reason": "native self-shadow Oracle and caster pass are not available",
+        "roots": [],
+        "components": [],
+        "flaggedMaterials": [],
+        "skippedMaterials": [],
+    }}
     if _hide_orig_shapes:
         debug_actions["hideOrigShapes"] = _mark_orig_shapes_intermediate()
     if _debug_lambert_control:
@@ -847,9 +1086,27 @@ def _capture_case(case):
     if _debug_outline_sentinel:
         debug_actions["outlineSentinel"] = _apply_outline_sentinel()
 
-    camera = _make_camera(case["camera"])
+    camera_plan = _camera_plans.get(case["name"])
+    if not isinstance(camera_plan, dict):
+        raise RuntimeError("Camera plan is missing for " + str(case.get("name")))
+    if camera_plan.get("source") == "maya-vmd-camera-import":
+        camera = _import_vmd_camera(camera_plan.get("vmd"))
+        effective_camera = dict(camera_plan)
+        effective_camera["camera"] = camera
+    elif camera_plan.get("source") == "manifest":
+        parameters = camera_plan.get("parameters")
+        if not isinstance(parameters, dict):
+            raise RuntimeError("Manifest camera parameters are missing for " + str(case.get("name")))
+        camera = _make_camera(parameters)
+        effective_camera = dict(camera_plan)
+    else:
+        raise RuntimeError("Unsupported camera plan source for " + str(case.get("name")))
     _setup_color_management()
     capture_panel = _setup_panel(camera, _display_textures)
+    if _enable_mmd_self_shadow:
+        debug_actions["mmdSelfShadow"]["postPanel"] = _configure_mmd_self_shadow_inputs(
+            light_controller, "post-panel"
+        )
     frame = int(case.get("frame", 0))
     cmds.currentTime(frame)
     cmds.select(clear=True)
@@ -904,8 +1161,10 @@ def _capture_case(case):
         "shader_backend": _shader_backend,
         "shader_node_type": _shader_node_type,
         "display_textures": _display_textures,
+        "mmd_self_shadow_enabled": _enable_mmd_self_shadow,
         "shader_issues": shader_issues,
         "debug_actions": debug_actions,
+        "effective_camera": effective_camera,
         "scene": _scene_diag(capture_panel),
         "shaders": shader_diag,
     }}
@@ -922,8 +1181,69 @@ def _capture_case(case):
         "center_sample": center_sample,
         "shader_backend": _shader_backend,
         "shader_issues": shader_issues,
+        "effective_camera": effective_camera,
         "display_textures": _display_textures,
+        "mmd_self_shadow_enabled": _enable_mmd_self_shadow,
         "diff": diff,
+    }}
+
+def _mmd_plugin_name_for_path(plugin_path):
+    expected = plugin_path.resolve()
+    for name in cmds.pluginInfo(query=True, listPlugins=True) or []:
+        try:
+            if not cmds.pluginInfo(name, query=True, loaded=True):
+                continue
+            loaded_path = Path(cmds.pluginInfo(name, query=True, path=True)).resolve()
+        except Exception:
+            continue
+        if os.path.normcase(str(loaded_path)) == os.path.normcase(str(expected)):
+            return str(name)
+    return None
+
+def _ensure_mmd_tools_plugin():
+    candidates = [
+        _project_root / "plug-ins" / "mmd_tools_plugin.py",
+        _project_root / "mmd_tools" / "plugin_main.py",
+    ]
+    for plugin_path in candidates:
+        plugin_name = _mmd_plugin_name_for_path(plugin_path)
+        if plugin_name:
+            missing = sorted({{"mmdMorphController"}} - set(cmds.allNodeTypes() or []))
+            if missing:
+                raise RuntimeError(
+                    "canonical mmd_tools plugin is loaded but node registration is incomplete: "
+                    + ", ".join(missing)
+                )
+            return {{
+                "path": str(plugin_path),
+                "name": plugin_name,
+                "loaded": True,
+                "reused": True,
+                "morph_node_registered": True,
+            }}
+
+    if "mmdMorphController" in (cmds.allNodeTypes() or []):
+        raise RuntimeError(
+            "mmdMorphController is already registered by a non-canonical MMD plugin path"
+        )
+    target = next((path for path in candidates if path.is_file()), None)
+    if target is None:
+        raise RuntimeError("mmd_tools plugin entrypoint not found: " + str(candidates[0]))
+    cmds.loadPlugin(str(target), quiet=True)
+    plugin_name = _mmd_plugin_name_for_path(target)
+    if not plugin_name:
+        raise RuntimeError("mmd_tools plugin did not remain loaded: " + str(target))
+    missing = sorted({{"mmdMorphController"}} - set(cmds.allNodeTypes() or []))
+    if missing:
+        raise RuntimeError(
+            "mmd_tools plugin registration incomplete: " + ", ".join(missing)
+        )
+    return {{
+        "path": str(target),
+        "name": plugin_name,
+        "loaded": True,
+        "reused": False,
+        "morph_node_registered": True,
     }}
 
 def _main():
@@ -939,6 +1259,11 @@ def _main():
         "output_dir": str(_output_dir),
         "deviceInformation": None,
         "vp2_device_valid": False,
+        "mmd_tools_plugin": {{
+            "path": None,
+            "loaded": False,
+            "error": None,
+        }},
         "shader_plugin": {{"name": _shader_plugin_name, "before": None, "after": None}},
         "results": [],
         "errors": [],
@@ -950,6 +1275,16 @@ def _main():
         report["vp2_device_valid"] = ("directx" in device_text or "dx11" in device_text) if _shader_backend == "dx11" else ("opengl" in device_text or "gl core" in device_text or "glcore" in device_text)
     except Exception as exc:
         report["deviceInformation"] = "ERR: " + str(exc)
+
+    # Load the production MMD plug-in before importing any PMX.  Morph-bearing
+    # fixtures require mmdMorphController; a shader-only preload is not enough
+    # and otherwise makes the all-cases report fail before rendering starts.
+    try:
+        report["mmd_tools_plugin"] = _ensure_mmd_tools_plugin()
+    except Exception as exc:
+        report["mmd_tools_plugin"]["error"] = str(exc)
+        _log("MMD plugin preload failed: " + str(exc))
+        raise
 
     # Load the selected hardware-shader plug-in once before the baseline
     # snapshot so the before/after report can prove it remained available for
@@ -993,9 +1328,15 @@ def main() -> int:
         output_dir = (project_root / output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    _, cases = _load_cases(manifest_path, args.case, args.tag, args.limit)
+    _, cases = _load_cases(
+        manifest_path,
+        args.case,
+        args.tag,
+        args.limit,
+    )
     if not cases:
         raise RuntimeError("No manifest cases selected.")
+    _camera_plan(cases)
     shader_fx = _prepare_shader(project_root, output_dir, args.shader_fx)
     log_path = output_dir / "maya_visual_regression.log"
     report_path = output_dir / "visual-regression-report.json"
@@ -1036,6 +1377,7 @@ def main() -> int:
             hide_orig_shapes=args.hide_orig_shapes,
             shader_backend=args.shader_backend,
             display_textures=args.display_textures == "on",
+            enable_mmd_self_shadow=args.enable_mmd_self_shadow,
         )
         maya_commandport.send_python(args.port, code, label="<maya-visual-regression>")
         _monitor_log(log_path, args.timeout)

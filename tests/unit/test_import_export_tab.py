@@ -43,6 +43,18 @@ class _FakeWidget:
         self.enabled = enabled
 
 
+class _FakeCheck(_FakeWidget):
+    def __init__(self, checked=False):
+        super().__init__()
+        self.checked = checked
+
+    def isChecked(self):
+        return self.checked
+
+    def setChecked(self, checked):
+        self.checked = checked
+
+
 class _FakeLabel:
     def __init__(self):
         self.text = ""
@@ -198,6 +210,23 @@ class TestImportExportTabNativePhysicsBakeVisibility(unittest.TestCase):
 
         import_export_tab.ImportExportTab._sync_native_physics_bake_enabled(tab, True)
         self.assertTrue(tab.native_physics_bake_check.enabled)
+
+
+class TestImportExportTabCppFastLoadVisibility(unittest.TestCase):
+    def test_vp2_ownership_requires_cpp_fast_load(self):
+        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
+        tab.use_cpp_vp2_ownership_check = _FakeCheck(checked=True)
+
+        import_export_tab.ImportExportTab._sync_cpp_vp2_ownership_enabled(tab, False)
+
+        self.assertFalse(tab.use_cpp_vp2_ownership_check.enabled)
+        self.assertFalse(tab.use_cpp_vp2_ownership_check.checked)
+
+        tab.use_cpp_vp2_ownership_check.checked = True
+        import_export_tab.ImportExportTab._sync_cpp_vp2_ownership_enabled(tab, True)
+
+        self.assertTrue(tab.use_cpp_vp2_ownership_check.enabled)
+        self.assertTrue(tab.use_cpp_vp2_ownership_check.checked)
 
 
 class TestImportExportTabReducedBakeVisibility(unittest.TestCase):

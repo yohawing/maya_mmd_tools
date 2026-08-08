@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from mmd_tools.core import settings, settings_keys
+from mmd_tools.core import maya_viewport_utils
 from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.import_strategy import resolve_model_import_strategy
 from mmd_tools.core.mmd_parser import parse_mmd_file
@@ -22,6 +23,44 @@ from mmd_tools.core.logger import get_logger
 logger = get_logger("mmd_tools.io.mmd_importer")
 
 _OPTION_TO_SETTINGS_KEY = settings_keys.MODEL_OPTION_TO_SETTINGS_KEY
+
+# A VP2-owned import is an explicit UI route.  Falling through to the Python
+# importer after that route fails creates a valid-looking ordinary Maya mesh,
+# which is materially different from what the caller requested.  Keep the
+# code stable so presenters and tests can surface an actionable failure.
+_NATIVE_VP2_IMPORT_FAILURE_CODE = "NATIVE_VP2_OWNERSHIP_UNAVAILABLE"
+
+
+def _native_route_profile(options: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the optional structured native-import diagnostics bucket."""
+    profile = options.get("profile")
+    if not isinstance(profile, dict):
+        profile = {}
+        options["profile"] = profile
+    return profile.setdefault("native_import", {})
+
+
+def _raise_native_vp2_failure(options: Dict[str, Any], reason: str, error: Optional[Exception] = None) -> None:
+    """Fail closed when an explicitly requested VP2 route cannot be used."""
+    diagnostics = _native_route_profile(options)
+    diagnostics.update(
+        {
+            "requested": True,
+            "route": "cpp_fast_load_vp2",
+            "status": "failed",
+            "fallback": "blocked",
+            "code": _NATIVE_VP2_IMPORT_FAILURE_CODE,
+            "reason": str(reason),
+        }
+    )
+    message = (
+        "C++ Fast Load with VP2 ownership was requested, but mmdRenderShape "
+        f"could not be created ({reason}). Python mesh fallback is blocked. "
+        "Check the loaded mmd_tools_cpp plugin and reload it before importing again."
+    )
+    if error is None:
+        raise MMDImportException(message)
+    raise MMDImportException(message) from error
 
 
 def _resolve_vmd_content_route(parsed_data: Any, options: Dict[str, Any]) -> None:
@@ -225,8 +264,14 @@ def import_mmd_file(
 
         import_scale = SettingsService().resolve_import_scale()
 
-    # --- C++ fast import path (opt-in, PMX only) -------------------------
+    # --- C++ fast import path (Development Mode only in the UI, PMX only) --
     logger.info("Model import strategy: cpp_fast_load=%s (%s)", strategy.use_cpp_fast_load, strategy.cpp_fast_load_reason)
+    vp2_ownership_requested = bool(options.get("use_cpp_vp2_ownership", False))
+    if suffix == ".pmx" and vp2_ownership_requested and not strategy.use_cpp_fast_load:
+        # The UI can persist the two native checkboxes independently.  A stale
+        # VP2=true with Fast Load=false must not silently become a Python mesh.
+        _raise_native_vp2_failure(options, "C++ Fast Load is disabled")
+
     if strategy.use_cpp_fast_load:
         _emit_progress(10)
         mesh_only = options.get(
@@ -243,17 +288,47 @@ def import_mmd_file(
             "import_morphs",
             settings.get(settings_keys.IMPORT_MORPH_IMPORT_MORPHS, True),
         )
-        fast_root = fast_import(
-            filepath,
-            base_name=base_name,
-            scale=import_scale,
-            mesh_only=mesh_only,
-            include_morphs=include_morphs,
-        )
+        fast_kwargs = {
+            "base_name": base_name,
+            "scale": import_scale,
+            "mesh_only": mesh_only,
+            "include_morphs": include_morphs,
+        }
+        # Direct callers that explicitly request C++ Fast Load retain the
+        # ordinary mesh path unless they also opt into VP2 ownership.  The UI
+        # supplies this setting explicitly, so its default remains the native
+        # RenderOverride route without changing the direct API contract.
+        if options.get("use_cpp_vp2_ownership", False):
+            fast_kwargs["vp2_ownership"] = True
+        try:
+            fast_root = fast_import(filepath, **fast_kwargs)
+        except Exception as exc:
+            if vp2_ownership_requested:
+                _raise_native_vp2_failure(options, f"fast importer error: {exc}", exc)
+            raise
         if fast_root is not None:
             _emit_progress(90)
+            if vp2_ownership_requested:
+                diagnostics = _native_route_profile(options)
+                diagnostics.update(
+                    {
+                        "requested": True,
+                        "route": "cpp_fast_load_vp2",
+                        "status": "succeeded",
+                        "fallback": "not_used",
+                    }
+                )
+            if vp2_ownership_requested and settings.get(
+                settings_keys.IMPORT_VIEW_SETUP_COLOR_MANAGEMENT, True
+            ):
+                # Native MMD output is authored sRGB and must retain gamma-space
+                # alpha blending.  The Python dx11Shader path uses the separate
+                # CM-on/de-gamma contract in ModelImportPipeline.setup_view().
+                maya_viewport_utils.setup_mmd_native_color_management()
             logger.info("C++ fast import succeeded: %s", fast_root)
             return _post_model_import_control_rig(fast_root, options)
+        if vp2_ownership_requested:
+            _raise_native_vp2_failure(options, "fast importer returned no model root")
         logger.info("C++ fast import failed/excluded – falling back to Python parser")
 
     parse_completed = False
