@@ -116,6 +116,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                         "pmx_soft_body",
                         "pmx_sdef",
                         "pmx_impulse",
+                        "pmx_flip",
                         "pmd",
                         "vmd",
                     )
@@ -144,6 +145,46 @@ class ExportReleaseGateTests(unittest.TestCase):
                 },
                 {
                     "index": 2,
+                    "name": "uv",
+                    "name_en": "uv",
+                    "type": "uv",
+                    "panel": 0,
+                    "offsets": [{"vertex_index": 0, "uv_offset": [0.1, 0.2, 0.3, 0.4]}],
+                },
+                {
+                    "index": 3,
+                    "name": "additional_uv1",
+                    "name_en": "additional_uv1",
+                    "type": "additional_uv1",
+                    "panel": 0,
+                    "offsets": [{"vertex_index": 0, "uv_offset": [0.2, 0.3, 0.4, 0.5]}],
+                },
+                {
+                    "index": 4,
+                    "name": "additional_uv2",
+                    "name_en": "additional_uv2",
+                    "type": "additional_uv2",
+                    "panel": 0,
+                    "offsets": [{"vertex_index": 0, "uv_offset": [0.3, 0.4, 0.5, 0.6]}],
+                },
+                {
+                    "index": 5,
+                    "name": "additional_uv3",
+                    "name_en": "additional_uv3",
+                    "type": "additional_uv3",
+                    "panel": 0,
+                    "offsets": [{"vertex_index": 0, "uv_offset": [0.4, 0.5, 0.6, 0.7]}],
+                },
+                {
+                    "index": 6,
+                    "name": "additional_uv4",
+                    "name_en": "additional_uv4",
+                    "type": "additional_uv4",
+                    "panel": 0,
+                    "offsets": [{"vertex_index": 0, "uv_offset": [0.5, 0.6, 0.7, 0.8]}],
+                },
+                {
+                    "index": 7,
                     "name": "material",
                     "name_en": "material",
                     "type": "material",
@@ -151,7 +192,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                     "offsets": [{"material_index": 0}],
                 },
                 {
-                    "index": 3,
+                    "index": 8,
                     "name": "group",
                     "name_en": "group",
                     "type": "group",
@@ -160,11 +201,23 @@ class ExportReleaseGateTests(unittest.TestCase):
                 },
             ]
             controller_outputs = {
-                str(index): [1.0 if index == output else 0.0 for output in range(4)]
-                for index in range(4)
+                str(index): [1.0 if index == output else 0.0 for output in range(9)]
+                for index in range(9)
+            }
+            additional_uvs = {
+                "channel_count": 4,
+                "vertices": [
+                    [
+                        [0.1, 0.2, 0.3, 0.4],
+                        [0.2, 0.3, 0.4, 0.5],
+                        [0.3, 0.4, 0.5, 0.6],
+                        [0.4, 0.5, 0.6, 0.7],
+                    ]
+                ],
+                "source_indices": [0],
             }
             morph_case.update(
-                parsed_counts={"morphs": 4},
+                parsed_counts={"morphs": len(morph_entries)},
                 morph_coverage={
                     "verified_types": list(RELEASE_GATE.MORPH_ORACLE_TYPES),
                     "verified_fields": {
@@ -173,10 +226,21 @@ class ExportReleaseGateTests(unittest.TestCase):
                     "excluded_boundaries": list(RELEASE_GATE.MORPH_ORACLE_EXCLUSIONS),
                     "source_oracle": "PMX parser payload",
                     "scene_oracle": "direct Maya DAG/network attributes and controller outputs",
+                    "visual_parity_claimed": False,
                 },
                 morph_oracle={
                     "source": {
                         "morphs": morph_entries,
+                        "additional_uvs": additional_uvs,
+                        "vertex_offsets": {
+                            "0": [{"vertex_index": 0, "object_space_delta": [0.0, 1.0, 0.0]}]
+                        },
+                        "controller_outputs": controller_outputs,
+                        "unsupported_types": [],
+                    },
+                    "exported_file": {
+                        "morphs": morph_entries,
+                        "additional_uvs": additional_uvs,
                         "vertex_offsets": {
                             "0": [{"vertex_index": 0, "object_space_delta": [0.0, 1.0, 0.0]}]
                         },
@@ -185,6 +249,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                     },
                     "fresh_import": {
                         "morphs": morph_entries,
+                        "additional_uvs": additional_uvs,
                         "vertex_meshes": [{"vertex_count": 1, "source_vertex_indices": None}],
                         "vertex_runtime_deltas": {"0": [[0.0, 1.0, 0.0]]},
                         "controller_outputs": controller_outputs,
@@ -193,6 +258,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                     "comparison": {
                         "status": "pass",
                         "checked_types": list(RELEASE_GATE.MORPH_ORACLE_TYPES),
+                        "boundaries": list(RELEASE_GATE.MORPH_COMPARISON_BOUNDARIES),
                     },
                 },
             )
@@ -212,6 +278,7 @@ class ExportReleaseGateTests(unittest.TestCase):
             for export_format, policy_code, prefix in (
                 ("pmx_sdef", "PMX_VERTEX_SDEF_UNSUPPORTED", "sdef"),
                 ("pmx_impulse", "MORPH_TYPE_UNSUPPORTED", "impulse"),
+                ("pmx_flip", "MORPH_TYPE_UNSUPPORTED", "flip"),
             ):
                 policy_case = next(case for case in report["cases"] if case["format"] == export_format)
                 policy_case.update(
@@ -251,10 +318,27 @@ class ExportReleaseGateTests(unittest.TestCase):
                     "pmx_soft_body",
                     "pmx_sdef",
                     "pmx_impulse",
+                    "pmx_flip",
                     "pmd",
                     "vmd",
                 },
             )
+
+            exported_file = morph_case["morph_oracle"].pop("exported_file")
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            step = {"name": "maya_probe_2024", "status": "pass"}
+            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
+            self.assertEqual(step["status"], "fail")
+            self.assertIn("exported_file_missing", step["error"])
+            morph_case["morph_oracle"]["exported_file"] = exported_file
+
+            morph_case["morph_coverage"]["visual_parity_claimed"] = True
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            step = {"name": "maya_probe_2024", "status": "pass"}
+            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
+            self.assertEqual(step["status"], "fail")
+            self.assertIn("visual_parity_claimed must be false", step["error"])
+            morph_case["morph_coverage"]["visual_parity_claimed"] = False
 
             soft_body_case["collection"] = {
                 "source_fresh_import": False,

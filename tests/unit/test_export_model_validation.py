@@ -931,7 +931,6 @@ class TestExportModelValidation(unittest.TestCase):
             "additional_uv3",
             "additional_uv4",
             "material",
-            "flip",
             0,
             1,
             2,
@@ -941,7 +940,6 @@ class TestExportModelValidation(unittest.TestCase):
             6,
             7,
             8,
-            9,
         ):
             with self.subTest(morph_type=morph_type):
                 model_data = _valid_model_data()
@@ -983,7 +981,7 @@ class TestExportModelValidation(unittest.TestCase):
 
                 self.assertTrue(any(issue.code == expected_code for issue in report.issues), report.issues)
 
-    def test_pmx21_flip_offsets_validate_and_impulse_is_policy_rejected(self):
+    def test_pmx21_flip_and_impulse_are_policy_rejected(self):
         model_data = _valid_model_data()
         model_data["rigid_bodies"] = [{}]
         model_data["morphs"] = [
@@ -992,15 +990,20 @@ class TestExportModelValidation(unittest.TestCase):
 
         report = validate_model_data(model_data, "pmx")
 
-        self.assertTrue(report.valid, report.issues)
+        self.assertEqual(
+            [(issue.code, issue.path) for issue in report.issues],
+            [("MORPH_TYPE_UNSUPPORTED", "morphs[0].type")],
+        )
 
-        for morph_type in ("impulse", 10):
+        for morph_type in (9, "impulse", 10):
             with self.subTest(morph_type=morph_type):
                 model_data["morphs"] = [
                     {
                         "type": morph_type,
                         "offsets": [
-                            {
+                            {"morph_index": 0, "flip_rate": 0.25}
+                            if morph_type == 9
+                            else {
                                 "rigid_body_index": 0,
                                 "impulse": [0.1, 0.2, 0.3],
                                 "torque": [0.4, 0.5, 0.6],
@@ -1016,15 +1019,15 @@ class TestExportModelValidation(unittest.TestCase):
                     [("MORPH_TYPE_UNSUPPORTED", "morphs[0].type")],
                 )
 
-    def test_pmx21_flip_offsets_reject_invalid_payload(self):
+    def test_pmx21_flip_policy_rejects_before_payload_validation(self):
         cases = (
             (
                 {"type": "flip", "offsets": [{"morph_index": 2, "flip_rate": 0.25}]},
-                "MORPH_OFFSET_INDEX_OUT_OF_RANGE",
+                "MORPH_TYPE_UNSUPPORTED",
             ),
             (
                 {"type": "flip", "offsets": [{"morph_index": 0, "flip_rate": float("nan")}]},
-                "NON_FINITE_NUMBER",
+                "MORPH_TYPE_UNSUPPORTED",
             ),
         )
         for morph, expected_code in cases:
@@ -1032,10 +1035,11 @@ class TestExportModelValidation(unittest.TestCase):
                 model_data = _valid_model_data()
                 model_data["morphs"] = [morph]
                 report = validate_model_data(model_data, "pmx")
-                self.assertTrue(any(issue.code == expected_code for issue in report.issues), report.issues)
+                issue_pairs = [(issue.code, issue.path) for issue in report.issues]
+                self.assertIn((expected_code, "morphs[0].type"), issue_pairs)
 
-    def test_action_does_not_call_writer_when_impulse_morph_is_policy_rejected(self):
-        for morph_type in ("impulse", 10):
+    def test_action_does_not_call_writer_when_pmx21_morph_is_policy_rejected(self):
+        for morph_type in ("flip", 9, "impulse", 10):
             with self.subTest(morph_type=morph_type):
                 exporter = _FakeExporter()
                 model_data = _valid_model_data()

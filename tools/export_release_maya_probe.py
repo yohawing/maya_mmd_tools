@@ -4,8 +4,8 @@
 The probe deliberately starts a fresh Maya scene for each import boundary.  It
 exports a small PMX fixture, verifies a representative PMX morph roundtrip,
 verifies a representative rigid-body/joint PMX roundtrip, verifies PMX 2.1
-soft-body, SDEF, Impulse, and PMD public export policy rejections, and exports
-a VMD motion.
+soft-body, SDEF, Flip, Impulse, and PMD public export policy rejections, and
+exports a VMD motion.
 The JSON output is consumed by
 :mod:`tools.export_release_gate`.
 """
@@ -36,8 +36,29 @@ DEFAULT_MORPH_PMX = ROOT / "tests" / "data" / "for_unit_test" / "test_vmd_morph_
 DEFAULT_VMD = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube_motion.vmd"
 ORACLE_FRAMES = (0, 9, 19, 29, 39, 49)
 FLOAT_TOLERANCE = 1.0e-4
-SUPPORTED_MORPH_TYPES = ("vertex", "bone", "material", "group")
-MORPH_TYPE_NAMES = {0: "group", 1: "vertex", 2: "bone", 8: "material"}
+SUPPORTED_MORPH_TYPES = (
+    "vertex",
+    "bone",
+    "uv",
+    "additional_uv1",
+    "additional_uv2",
+    "additional_uv3",
+    "additional_uv4",
+    "material",
+    "group",
+)
+MORPH_TYPE_NAMES = {
+    0: "group",
+    1: "vertex",
+    2: "bone",
+    3: "uv",
+    4: "additional_uv1",
+    5: "additional_uv2",
+    6: "additional_uv3",
+    7: "additional_uv4",
+    8: "material",
+    9: "flip",
+}
 MORPH_OFFSET_ATTRIBUTES = {
     # Bone offsets must retain their original PMX-space values here.  The
     # regular attribute carries importer-scale-adjusted translations for the
@@ -45,12 +66,16 @@ MORPH_OFFSET_ATTRIBUTES = {
     "bone": "mmd_bone_morph_offsets_raw_json",
     "group": "mmd_group_morph_offsets_json",
     "material": "mmd_material_morph_offsets_json",
+    "uv": "mmd_uv_morph_offsets_json",
+    "additional_uv1": "mmd_uv_morph_offsets_json",
+    "additional_uv2": "mmd_uv_morph_offsets_json",
+    "additional_uv3": "mmd_uv_morph_offsets_json",
+    "additional_uv4": "mmd_uv_morph_offsets_json",
 }
 MORPH_ORACLE_EXCLUSIONS = (
     "sdef vertex deformation",
     "UV morph runtime evaluation",
     "Impulse morph physics effect",
-    "Flip/composite morph visual parity",
 )
 
 
@@ -209,6 +234,46 @@ def _write_impulse_probe_fixture(path: Path) -> Path:
         }
     ]
     pmx.morphs = [morph]
+    pmx.write_file(str(path))
+    return path
+
+
+def _write_flip_probe_fixture(path: Path) -> Path:
+    """Write a minimal PMX 2.1 fixture with one raw Flip morph."""
+    from mmd_tools.core.pmx_data import PmxData
+    from mmd_tools.core.pmx_data.morph import PmxMorph, PmxMorphType
+    from tests.common.pmx_mock import PmxMock
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(PmxMock.create_minimal_pmx(version=2.1))
+    pmx = PmxData().parse_file(str(path))
+    vertex_morph = PmxMorph(
+        vertex_index_size=pmx.header.vertex_index_size,
+        material_index_size=pmx.header.material_index_size,
+        bone_index_size=pmx.header.bone_index_size,
+        morph_index_size=pmx.header.morph_index_size,
+        rigid_body_index_size=pmx.header.rigid_body_index_size,
+        encoding=pmx.header.encoding,
+    )
+    vertex_morph.name = "probe_flip_target"
+    vertex_morph.name_english = "probe_flip_target"
+    vertex_morph.panel = 4
+    vertex_morph.morph_type = PmxMorphType.VertexMorph
+    vertex_morph.offsets = [{"vertex_index": 0, "position_offset": (0.1, 0.0, 0.0)}]
+    flip_morph = PmxMorph(
+        vertex_index_size=pmx.header.vertex_index_size,
+        material_index_size=pmx.header.material_index_size,
+        bone_index_size=pmx.header.bone_index_size,
+        morph_index_size=pmx.header.morph_index_size,
+        rigid_body_index_size=pmx.header.rigid_body_index_size,
+        encoding=pmx.header.encoding,
+    )
+    flip_morph.name = "probe_flip"
+    flip_morph.name_english = "probe_flip"
+    flip_morph.panel = 4
+    flip_morph.morph_type = PmxMorphType.FlipMorph
+    flip_morph.offsets = [{"morph_index": 0, "flip_rate": 0.25}]
+    pmx.morphs = [vertex_morph, flip_morph]
     pmx.write_file(str(path))
     return path
 
@@ -621,6 +686,31 @@ def _capture_impulse_import_provenance(root: str) -> dict[str, Any]:
     }
 
 
+def _capture_flip_import_provenance(root: str) -> dict[str, Any]:
+    """Require positive raw Flip metadata on the fresh-import model root."""
+    entries = []
+    for node in _owned_morph_network_nodes(root):
+        if _attribute_value(node, "mmd_morph_type") != "flip":
+            continue
+        entries.append(
+            {
+                "index": _required_morph_int(node, "mmd_morph_index"),
+                "name": _required_morph_string(node, "mmd_morph_name"),
+                "offsets": _morph_json_attribute(node, "mmd_flip_morph_offsets_json"),
+            }
+        )
+    if not entries:
+        raise RuntimeError("fresh Flip import did not retain raw morph provenance")
+    offset_count = sum(len(entry["offsets"]) for entry in entries)
+    if offset_count <= 0:
+        raise RuntimeError("fresh Flip import retained no raw offsets")
+    return {
+        "fresh_import_flip_morph_count": len(entries),
+        "provenance_offset_count": offset_count,
+        "provenance_morph_indices": [entry["index"] for entry in entries],
+    }
+
+
 def _owned_morph_network_nodes(root: str) -> list[str]:
     """Return the registry-owned morph networks without a scene-wide fallback."""
     from maya import cmds
@@ -715,6 +805,66 @@ def _required_morph_int(node: str, attribute: str) -> int:
     return integer
 
 
+def _capture_additional_uv_oracle(root: str) -> dict[str, Any]:
+    """Capture imported PMX additional-UV channel count and source values."""
+    from maya import cmds
+
+    from mmd_tools.core.constants import (
+        ATTR_MMD_ADDITIONAL_UVS_JSON,
+        ATTR_MMD_PMX_ADDITIONAL_UV_COUNT,
+    )
+
+    channel_count = 0
+    source_vertices: dict[int, list[list[float]]] = {}
+    for transform in _find_mesh_transforms(root):
+        shapes = cmds.listRelatives(transform, shapes=True, fullPath=True, type="mesh") or []
+        shape = str(shapes[0]) if shapes else transform
+        count = None
+        raw_payload = None
+        for node in (transform, shape):
+            if count is None:
+                count = _scalar_attribute_value(node, ATTR_MMD_PMX_ADDITIONAL_UV_COUNT, int)
+            if raw_payload is None:
+                raw_payload = _attribute_value(node, ATTR_MMD_ADDITIONAL_UVS_JSON)
+        if count is None and raw_payload is None:
+            continue
+        if count is None or count < 1 or count > 4 or not isinstance(raw_payload, str):
+            raise RuntimeError(f"additional UV storage on {transform} is malformed")
+        try:
+            payload = json.loads(raw_payload)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"additional UV storage on {transform} is malformed") from exc
+        if not isinstance(payload, dict) or payload.get("channel_count") != count:
+            raise RuntimeError(f"additional UV storage on {transform} has mismatched channel count")
+        source_indices = payload.get("source_vertex_indices")
+        values = payload.get("additional_uvs")
+        source_count = payload.get("source_vertex_count")
+        if (
+            not isinstance(source_indices, list)
+            or not isinstance(values, list)
+            or len(source_indices) != len(values)
+            or not isinstance(source_count, int)
+            or source_count < len(values)
+        ):
+            raise RuntimeError(f"additional UV storage on {transform} is malformed")
+        channel_count = max(channel_count, count)
+        for source_index, channels in zip(source_indices, values):
+            if not isinstance(source_index, int) or source_index < 0:
+                raise RuntimeError(f"additional UV storage on {transform} has invalid source index")
+            normalized = _normalize_morph_value(channels)
+            if not isinstance(normalized, list) or len(normalized) != count:
+                raise RuntimeError(f"additional UV storage on {transform} has invalid channel payload")
+            previous = source_vertices.get(source_index)
+            if previous is not None and previous != normalized:
+                raise RuntimeError(f"additional UV storage differs for source vertex {source_index}")
+            source_vertices[source_index] = normalized
+    return {
+        "channel_count": channel_count,
+        "vertices": [source_vertices[index] for index in sorted(source_vertices)],
+        "source_indices": sorted(source_vertices),
+    }
+
+
 def _capture_morph_oracle(root: str) -> dict[str, Any]:
     """Capture direct Maya morph payloads and one-weight controller results.
 
@@ -773,6 +923,7 @@ def _capture_morph_oracle(root: str) -> dict[str, Any]:
     if not controllers:
         return {
             "morphs": [],
+            "additional_uvs": _capture_additional_uv_oracle(root),
             "vertex_meshes": [],
             "vertex_runtime_deltas": {},
             "controller_outputs": {},
@@ -864,6 +1015,7 @@ def _capture_morph_oracle(root: str) -> dict[str, Any]:
 
     return {
         "morphs": [morphs_by_index[index] for index in sorted(morphs_by_index)],
+        "additional_uvs": _capture_additional_uv_oracle(root),
         "vertex_meshes": vertex_meshes,
         "vertex_runtime_deltas": runtime_deltas,
         "controller_outputs": controller_outputs,
@@ -945,7 +1097,9 @@ def _build_source_morph_oracle(source_model: Path) -> dict[str, Any]:
         for offset in group_offsets.get(current_index, []):
             try:
                 target_index = int(offset["morph_index"])
-                contribution = rate * float(offset["morph_rate"])
+                contribution = rate * float(
+                    offset["morph_rate"]
+                )
             except (KeyError, TypeError, ValueError) as exc:
                 raise RuntimeError(f"group morph {current_index} has malformed offset") from exc
             if target_index not in supported_indices or target_index in path:
@@ -958,8 +1112,20 @@ def _build_source_morph_oracle(source_model: Path) -> dict[str, Any]:
 
     for source_index in group_offsets:
         expand(source_index, source_index, 1.0, {source_index})
+    additional_uv_count = int(getattr(pmx.header, "additional_uv", 0) or 0)
+    additional_uv_vertices = [
+        _normalize_morph_value(
+            [list(channel) for channel in (getattr(vertex, "additional_uvs", ()) or ())]
+        )
+        for vertex in pmx.vertices
+    ]
     return {
         "morphs": entries,
+        "additional_uvs": {
+            "channel_count": additional_uv_count,
+            "vertices": additional_uv_vertices,
+            "source_indices": list(range(len(additional_uv_vertices))),
+        },
         "vertex_offsets": vertex_offsets,
         "controller_outputs": {
             key: _round_values(value) for key, value in controller_outputs.items()
@@ -1052,6 +1218,13 @@ def _compare_morph_oracles(expected: Mapping[str, Any], actual: Mapping[str, Any
                         f"morphs[{index}].{field}: expected {source.get(field)!r}, "
                         f"actual {result.get(field)!r}"
                     )
+    expected_additional_uvs = expected.get("additional_uvs")
+    actual_additional_uvs = actual.get("additional_uvs")
+    if _normalize_morph_value(expected_additional_uvs) != _normalize_morph_value(actual_additional_uvs):
+        failures.append(
+            "additional UV channel/value payload differs: "
+            f"expected {expected_additional_uvs!r}, actual {actual_additional_uvs!r}"
+        )
     expected_runtime = expected.get("vertex_offsets")
     actual_runtime = actual.get("vertex_runtime_deltas")
     actual_meshes = actual.get("vertex_meshes")
@@ -1106,6 +1279,29 @@ def _compare_morph_oracles(expected: Mapping[str, Any], actual: Mapping[str, Any
                 failures.append(
                     f"morph controller input {source_index} output max error {difference:g}"
                 )
+    return failures
+
+
+def _compare_morph_payload_fields(
+    expected: Mapping[str, Any], actual: Mapping[str, Any]
+) -> list[str]:
+    """Compare raw PMX morph and additional-UV fields across an export boundary."""
+    failures: list[str] = []
+    expected_morphs = expected.get("morphs")
+    actual_morphs = actual.get("morphs")
+    if not isinstance(expected_morphs, list) or not isinstance(actual_morphs, list):
+        return ["exported morph payload is missing or malformed"]
+    if len(expected_morphs) != len(actual_morphs):
+        failures.append(
+            f"exported morph count differs: expected {len(expected_morphs)}, actual {len(actual_morphs)}"
+        )
+    for index, (source, result) in enumerate(zip(expected_morphs, actual_morphs)):
+        if _normalize_morph_value(source) != _normalize_morph_value(result):
+            failures.append(f"exported morphs[{index}] payload differs")
+    if _normalize_morph_value(expected.get("additional_uvs")) != _normalize_morph_value(
+        actual.get("additional_uvs")
+    ):
+        failures.append("exported additional UV channel/value payload differs")
     return failures
 
 
@@ -1639,6 +1835,17 @@ def _run_model_case(
     if not result.succeeded:
         raise RuntimeError(f"{export_format} export failed: {result.error or result.report}")
     parsed = PmxData().parse_file(str(output))
+    exported_morph_oracle = None
+    if compare_morphs:
+        exported_morph_oracle = _build_source_morph_oracle(output)
+        exported_morph_failures = _compare_morph_payload_fields(
+            source_morph_oracle,
+            exported_morph_oracle,
+        )
+        if exported_morph_failures:
+            raise AssertionError(
+                "exported morph payload oracle failed: " + "; ".join(exported_morph_failures)
+            )
     result_root = _fresh_import(output)
     result_oracle = _capture_scene_oracle(result_root, (0,))
     failures = _compare_scene_oracles(
@@ -1676,10 +1883,12 @@ def _run_model_case(
         },
         "morph_oracle": {
             "source": source_morph_oracle,
+            "exported_file": exported_morph_oracle,
             "fresh_import": result_oracle["morphs"],
             "comparison": {
                 "status": "pass",
                 "checked_types": list(SUPPORTED_MORPH_TYPES),
+                "boundaries": ["source_import", "exported_pmx", "fresh_import"],
                 "fixture": source_model.name,
             },
         }
@@ -1688,14 +1897,26 @@ def _run_model_case(
         "morph_coverage": {
             "verified_types": list(SUPPORTED_MORPH_TYPES),
             "verified_fields": {
-                "vertex": ["index", "name", "weight_1_object_space_deltas"],
+                "vertex": [
+                    "index",
+                    "name",
+                    "weight_1_object_space_deltas",
+                    "additional_uv_channel_count",
+                    "additional_uv_per_vertex_values",
+                ],
                 "bone": ["index", "name", "name_en", "panel", "raw_offsets"],
+                "uv": ["index", "name", "name_en", "panel", "uv_offsets"],
+                "additional_uv1": ["index", "name", "name_en", "panel", "additional_uv_offsets"],
+                "additional_uv2": ["index", "name", "name_en", "panel", "additional_uv_offsets"],
+                "additional_uv3": ["index", "name", "name_en", "panel", "additional_uv_offsets"],
+                "additional_uv4": ["index", "name", "name_en", "panel", "additional_uv_offsets"],
                 "material": ["index", "name", "name_en", "panel", "offsets"],
                 "group": ["index", "name", "name_en", "panel", "offsets", "controller_outputs"],
             },
             "excluded_boundaries": list(MORPH_ORACLE_EXCLUSIONS),
             "source_oracle": "PMX parser payload",
             "scene_oracle": "direct Maya DAG/network attributes and controller outputs",
+            "visual_parity_claimed": False,
         }
         if compare_morphs
         else None,
@@ -1996,15 +2217,192 @@ def _run_impulse_policy_case(out_dir: Path) -> dict[str, Any]:
     }
 
 
+def _run_flip_policy_case(out_dir: Path) -> dict[str, Any]:
+    """Prove fresh-import PMX 2.1 Flip metadata reaches policy rejection."""
+    from mmd_tools.core.pmx_data import PmxData
+    from mmd_tools.core.pmx_data.morph import PmxMorphType
+    from mmd_tools.services.export_workflow_service import (
+        ExportWorkflowRequest,
+        ExportWorkflowService,
+    )
+
+    source_model = _write_flip_probe_fixture(
+        out_dir / "fixtures" / "flip_policy_input.pmx"
+    )
+    source_pmx = PmxData().parse_file(str(source_model))
+    source_flip_count = sum(
+        int(getattr(morph, "morph_type", -1)) == int(PmxMorphType.FlipMorph)
+        for morph in source_pmx.morphs
+    )
+    if source_flip_count <= 0:
+        raise RuntimeError("Flip probe fixture did not contain a Flip morph")
+
+    output = out_dir / "model.pmx"
+    report_dir = out_dir / "report"
+    source_root = _fresh_import(source_model)
+    import_oracles = {
+        "source_flip_morph_count": source_flip_count,
+        **_capture_flip_import_provenance(source_root),
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    sentinel = b"pre-existing-flip-policy-target"
+    output.write_bytes(sentinel)
+    before = output.read_bytes()
+    request = ExportWorkflowRequest(
+        str(output),
+        {
+            "export_format": "pmx",
+            "require_target": True,
+            "target_model": source_root,
+            "target_identity": source_root,
+            "validation_report_dir": str(report_dir),
+            "validation_report_evidence": {
+                "gate": "V070-EXPORT-RELEASE-GATE-1",
+                "fixture": source_model.name,
+                "fresh_import": True,
+                "oracles": ["flip_provenance", "policy_reject"],
+            },
+        },
+    )
+    validation = ExportWorkflowService().validate(request)
+    policy_codes = [issue.code for issue in validation.report.issues]
+    if validation.state != "Blocked" or "MORPH_TYPE_UNSUPPORTED" not in policy_codes:
+        raise AssertionError(
+            "PMX Flip policy probe expected a blocking rejection, "
+            f"got state={validation.state!r}, issues={policy_codes!r}"
+        )
+    payload = validation.payload
+    collected_flip_count = sum(
+        morph.get("type") == "flip"
+        for morph in payload.get("morphs", [])
+    ) if isinstance(payload, dict) else 0
+    if collected_flip_count <= 0:
+        raise AssertionError("Flip collector payload did not retain a positive morph count")
+    import_oracles["collected_flip_morph_count"] = collected_flip_count
+
+    report_dir.mkdir(parents=True, exist_ok=True)
+    evidence = request.options["validation_report_evidence"]
+    validation.report.write_canonical_json(
+        report_dir / "report.json",
+        target_identity=source_root,
+        provenance="ExportWorkflowService validation",
+        evidence=evidence,
+    )
+    validation.report.write_markdown(
+        report_dir / "report.md",
+        target_identity=source_root,
+        provenance="ExportWorkflowService validation",
+        evidence=evidence,
+    )
+    after = output.read_bytes() if output.exists() else None
+    output_safety = {
+        "target_existed_before": True,
+        "target_exists_after": output.exists(),
+        "created": False,
+        "overwritten": after != before,
+        "preserved": after == before,
+        "writer_called": False,
+    }
+    if not output_safety["target_exists_after"] or not output_safety["preserved"]:
+        raise AssertionError(f"Flip policy rejection changed output target: {output}")
+    return {
+        "status": "policy-reject",
+        "format": "pmx_flip",
+        "source": str(source_model),
+        "output": None,
+        "output_target": str(output),
+        "report_json": str(report_dir / "report.json"),
+        "report_md": str(report_dir / "report.md"),
+        "policy_code": "MORPH_TYPE_UNSUPPORTED",
+        "import_oracles": import_oracles,
+        "collection": {
+            "collector": "ExportWorkflowService validation -> Flip policy",
+            "target_model": source_root,
+            "source_fresh_import": True,
+            "export_writer_called": False,
+        },
+        "output_safety": output_safety,
+    }
+
+
+def _prepare_morph_probe_fixture(source_model: Path, out_dir: Path) -> Path:
+    """Extend the existing PMX 2.0 morph fixture with UV fields."""
+    from mmd_tools.core.pmx_data import PmxData
+    from mmd_tools.core.pmx_data.morph import PmxMorph, PmxMorphType
+
+    pmx = PmxData().parse_file(str(source_model))
+    pmx.header.version = 2.0
+    pmx.header.additional_uv = 4
+    for vertex_index, vertex in enumerate(pmx.vertices):
+        vertex.additional_uv_count = 4
+        vertex.additional_uvs = [
+            (
+                vertex_index + channel * 0.01 + 0.1,
+                vertex_index + channel * 0.01 + 0.2,
+                vertex_index + channel * 0.01 + 0.3,
+                vertex_index + channel * 0.01 + 0.4,
+            )
+            for channel in range(4)
+        ]
+
+    def append_morph(name: str, morph_type: PmxMorphType, offsets: list[dict[str, Any]]) -> int:
+        morph = PmxMorph(
+            pmx.header.vertex_index_size,
+            pmx.header.material_index_size,
+            pmx.header.bone_index_size,
+            pmx.header.morph_index_size,
+            pmx.header.rigid_body_index_size,
+            pmx.header.encoding,
+        )
+        morph.name = name
+        morph.name_english = name
+        morph.panel = 4
+        morph.morph_type = morph_type
+        morph.offsets = offsets
+        pmx.morphs.append(morph)
+        return len(pmx.morphs) - 1
+
+    uv_types = (
+        PmxMorphType.UVMorph,
+        PmxMorphType.AdditionalUVMorph1,
+        PmxMorphType.AdditionalUVMorph2,
+        PmxMorphType.AdditionalUVMorph3,
+        PmxMorphType.AdditionalUVMorph4,
+    )
+    for channel, morph_type in enumerate(uv_types):
+        append_morph(
+            f"probe_uv_{channel}",
+            morph_type,
+            [
+                {
+                    "vertex_index": channel % len(pmx.vertices),
+                    "uv_offset": (
+                        0.125 + channel,
+                        -0.25 - channel,
+                        0.375 + channel,
+                        -0.5 - channel,
+                    ),
+                }
+            ],
+        )
+    output = out_dir / "fixtures" / "morph_probe_input.pmx"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    pmx.write_file(str(output))
+    return output
+
+
 def _run_morph_case(source_model: Path, out_dir: Path) -> dict[str, Any]:
-    """Roundtrip the supported basic-morph fixture with a Maya runtime oracle."""
+    """Roundtrip the morph fixture with field-level Maya import/export evidence."""
+    probe_model = _prepare_morph_probe_fixture(source_model, out_dir)
     case = _run_model_case(
         "pmx",
-        source_model,
+        probe_model,
         out_dir,
         compare_morphs=True,
     )
     case["format"] = "pmx_morph"
+    case["source_fixture"] = str(source_model)
+    case["probe_fixture"] = str(probe_model)
     return case
 
 
@@ -2214,6 +2612,20 @@ def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
                 "traceback": traceback.format_exc(limit=12),
             }
         )
+    flip_case_dir = out_dir / "pmx-flip"
+    flip_fixture = flip_case_dir / "fixtures" / "flip_policy_input.pmx"
+    try:
+        cases.append(_run_flip_policy_case(flip_case_dir))
+    except Exception as exc:
+        cases.append(
+            {
+                "status": "fail",
+                "format": "pmx_flip",
+                "source": str(flip_fixture),
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc(limit=12),
+            }
+        )
     try:
         cases.append(_run_vmd_case(pmx_path, vmd_path, out_dir / "vmd"))
     except Exception as exc:
@@ -2239,6 +2651,7 @@ def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
             "pmx_soft_body": str(soft_body_fixture),
             "pmx_sdef": str(sdef_fixture),
             "pmx_impulse": str(impulse_fixture),
+            "pmx_flip": str(flip_fixture),
             "pmd": str(pmd_path),
             "vmd": str(vmd_path),
         },

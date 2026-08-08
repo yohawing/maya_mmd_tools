@@ -1493,12 +1493,12 @@ def _validate_morphs(
             )
             continue
 
-        if normalized_type == "impulse":
+        if normalized_type in _PMX_21_MORPH_TYPES:
             _issue(
                 issues,
                 "MORPH_TYPE_UNSUPPORTED",
                 _path_for_key(morph_path, type_field),
-                "PMX model-data export policy rejects impulse morphs",
+                f"PMX model-data export policy rejects {normalized_type} morphs",
             )
             continue
 
