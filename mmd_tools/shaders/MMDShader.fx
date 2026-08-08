@@ -923,7 +923,7 @@ technique11 MMDNativeOutline
         SetVertexShader(CompileShader(vs_5_0, EdgeVS()));
         SetGeometryShader(NULL);
         SetPixelShader(CompileShader(ps_5_0, EdgePS()));
-        SetRasterizerState(CullFront);
+        SetRasterizerState(CullBack);
         SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
         SetDepthStencilState(EdgeDepthReadOnly, 0);
     }
@@ -953,7 +953,7 @@ technique11 MMDNativeOutlineTranslucent
         SetVertexShader(CompileShader(vs_5_0, EdgeVSTranslucent()));
         SetGeometryShader(NULL);
         SetPixelShader(CompileShader(ps_5_0, EdgePS()));
-        SetRasterizerState(CullFront);
+        SetRasterizerState(CullBack);
         SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
         SetDepthStencilState(EdgeDepthReadOnly, 0);
     }
