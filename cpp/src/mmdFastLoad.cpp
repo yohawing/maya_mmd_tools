@@ -56,6 +56,17 @@
 
 using nlohmann::json;
 
+namespace {
+
+MString mStringFromUtf8(const std::string& value)
+{
+    MString result;
+    result.setUTF8(value.c_str());
+    return result;
+}
+
+} // namespace
+
 // -----------------------------------------------------------------------
 // Construction / destruction
 // -----------------------------------------------------------------------
@@ -113,10 +124,14 @@ bool MmdFastLoad::parseArgs(const MArgList& args)
         return false;
     }
 
-    filePath_ = argData.flagArgumentString("-f", 0).asChar();
+    // Maya's MString stores command arguments as Unicode.  Preserve the
+    // UTF-8 byte sequence here so Windows filesystem code can convert it to
+    // the native wide path instead of truncating non-ASCII characters through
+    // the current code page.
+    filePath_ = argData.flagArgumentString("-f", 0).asUTF8();
 
     if (argData.isFlagSet("-n")) {
-        baseName_ = argData.flagArgumentString("-n", 0).asChar();
+        baseName_ = argData.flagArgumentString("-n", 0).asUTF8();
     }
 
     if (argData.isFlagSet("-s")) {
@@ -435,7 +450,14 @@ std::string quoteMelName(const std::string& name)
  */
 std::vector<uint8_t> readBinaryFile(const std::string& path)
 {
-    std::ifstream ifs(path, std::ios::binary | std::ios::ate);
+    std::filesystem::path nativePath;
+    try {
+        nativePath = std::filesystem::u8path(path);
+    } catch (const std::filesystem::filesystem_error&) {
+        return {};
+    }
+
+    std::ifstream ifs(nativePath, std::ios::binary | std::ios::ate);
     if (!ifs) {
         return {};
     }
@@ -825,7 +847,8 @@ MStatus MmdFastLoad::redoIt()
     std::vector<uint8_t> pmxBytes = readBinaryFile(filePath_);
     if (pmxBytes.empty()) {
         MGlobal::displayError(
-            MString("[mmdFastLoad] Could not read file: ") + filePath_.c_str());
+            MString("[mmdFastLoad] Could not read file: ") +
+            mStringFromUtf8(filePath_));
         return MS::kFailure;
     }
     const uint8_t* data = pmxBytes.data();

@@ -27,6 +27,13 @@ constexpr char kMmdRenderShapeClassification[] =
     "drawdb/geometry/mmdRenderShape";
 constexpr char kMmdRenderShapeRegistrantId[] = "mayaMmdToolsMmdRenderShape";
 
+MString mStringFromUtf8(const std::string& value)
+{
+    MString result;
+    result.setUTF8(value.c_str());
+    return result;
+}
+
 std::size_t passIndex(mmd::MmdDrawPass pass)
 {
     return static_cast<std::size_t>(pass);
@@ -692,9 +699,9 @@ MStatus MmdRenderWitnessCommand::doIt(const MArgList& args)
 
     if (argData.isFlagSet("-json") &&
         argData.flagArgumentBool("-json", 0)) {
-        setResult(MString(shape->materialBindingDiagnosticsJson().c_str()));
+        setResult(mStringFromUtf8(shape->materialBindingDiagnosticsJson()));
     } else {
-        setResult(MString(shape->renderItemWitness().c_str()));
+        setResult(mStringFromUtf8(shape->renderItemWitness()));
     }
     return MS::kSuccess;
 }
@@ -761,7 +768,7 @@ MStatus MmdRenderQueueUpdateCommand::doIt(const MArgList& args)
     }
 
     MHWRender::MRenderer::setGeometryDrawDirty(node, true);
-    setResult(MString(shape->renderItemWitness().c_str()));
+    setResult(mStringFromUtf8(shape->renderItemWitness()));
     return MS::kSuccess;
 }
 
