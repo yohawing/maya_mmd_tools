@@ -1413,7 +1413,6 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
             receiverReady = updateReceiverShaderParameters(receiver);
         }
         receiverBindingsReady = receiverBindingsReady && receiverReady;
-        releaseReceiverPin(receiver);
     }
     // A hard-shadow mask is enabled only after every borrowed receiver has a
     // valid matrix/parameter update and target assignment.  Apply the final
@@ -1425,16 +1424,11 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
         gDiagnostics.hardShadowFrameEffective = true;
         bool hardShadowReady = true;
         for (MHWRender::MShaderInstance* receiver : shaders) {
-            {
-                std::lock_guard<std::mutex> lock(gReceiverMutex);
-                ++gReceiverPins[receiver];
-            }
             const MStatus status = receiver
                                        ? receiver->setParameter(
                                              MString("NativeCasterHardShadow"), 1)
                                        : MS::kFailure;
             hardShadowReady = status == MS::kSuccess && hardShadowReady;
-            releaseReceiverPin(receiver);
         }
         if (!hardShadowReady) {
             gDiagnostics.hardShadowFrameEffective = false;
@@ -1442,6 +1436,13 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
         }
     } else if (gHardShadowRequested && !receiverBindingsReady) {
         disableHardShadowForFailClosed();
+    }
+    // Keep the original snapshot pins held across both parameter-binding
+    // passes (and the fail-closed pass above), then release them together.
+    // This closes the lifetime gap where a raw shader pointer could otherwise
+    // retire between the first update and hard-shadow enable.
+    for (MHWRender::MShaderInstance* receiver : shaders) {
+        releaseReceiverPin(receiver);
     }
     return MS::kSuccess;
 }
