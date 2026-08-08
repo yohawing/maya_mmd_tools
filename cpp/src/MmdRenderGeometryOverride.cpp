@@ -6,6 +6,7 @@
 #include "MmdRenderGeometryOverride.h"
 
 #include "MmdRenderShape.h"
+#include "MmdRenderOverride.h"
 
 #include <maya/MHWGeometry.h>
 #include <maya/MGlobal.h>
@@ -367,7 +368,21 @@ MmdRenderGeometryOverride::~MmdRenderGeometryOverride()
     if (shaderManager) {
         for (const auto& shader : materialShaders_) {
             if (shader.second) {
+                const bool receiverShader =
+                    receiverShaders_.count(shader.second) != 0U;
+                if (receiverShader) {
+                    // Retire bookkeeping immediately around Maya's own
+                    // shader release.  No null target assignment is issued:
+                    // the persistent caster target remains valid until every
+                    // borrowed body shader has completed this boundary.
+                    MmdNativeCasterRenderOverride::beginReceiverShaderRetire(
+                        shader.second);
+                }
                 shaderManager->releaseShader(shader.second);
+                if (receiverShader) {
+                    MmdNativeCasterRenderOverride::finishReceiverShaderRetire(
+                        shader.second);
+                }
             }
         }
     }
@@ -553,6 +568,14 @@ void MmdRenderGeometryOverride::updateRenderItems(
             disableItems(list);
             shape_->clearRenderItemWitness();
             return false;
+        }
+        if (!outline) {
+            // Register only after all material parameters and the render-item
+            // shader assignment succeed.  This leaves no transient registry
+            // entry that could outlive a failed item setup.
+            MmdNativeCasterRenderOverride::registerReceiverShader(
+                materialShader);
+            receiverShaders_.insert(materialShader);
         }
         if (effectiveTransparent) {
             item->setTreatAsTransparent(true);

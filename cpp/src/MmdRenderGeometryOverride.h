@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "MmdRenderShape.h"
 #include "MmdRenderQueue.h"
@@ -57,4 +58,5 @@ private:
     std::unordered_map<std::string, MHWRender::MShaderInstance*>
         materialShaders_;
     std::unordered_map<std::string, MHWRender::MTexture*> materialTextures_;
+    std::unordered_set<MHWRender::MShaderInstance*> receiverShaders_;
 };

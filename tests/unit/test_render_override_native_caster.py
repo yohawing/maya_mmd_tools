@@ -18,10 +18,23 @@ def test_native_caster_sources_are_registered() -> None:
     assert "sMmdNativeCasterOverride = new MmdNativeCasterRenderOverride()" in plugin
     assert "registerOverride(sMmdNativeCasterOverride)" in plugin
     assert "delete sMmdNativeCasterOverride" in plugin
+    assert "!MmdNativeCasterRenderOverride::shutdownReady()" in plugin
     assert 'registerCommand(\n            "mmdNativeCasterWitness"' in plugin
     assert "MRenderOverride::setup" not in source
     assert "MMDNativeCaster" in source
     assert "MRenderTargetManager" in source
+    assert "registerReceiverShader" in source
+    assert "beginReceiverShaderRetire" in source
+    assert "finishReceiverShaderRetire" in source
+    assert "shutdownReady" in source
+    assert "gReceiverPins" in source
+    assert "gReceiverCv" in source
+    assert "gOverrideSetup" in source
+    assert "MRenderTargetAssignment" in source
+    assert "receiverAssignmentFailure" in source
+    assert "receiverLiveAssignmentOwners" in source
+    assert "receiverTargetsRetained" in source
+    assert "MRenderTargetAssignment assignment{nullptr}" not in source
 
 
 def test_native_caster_uses_fixed_targets_and_occupancy_witness() -> None:
@@ -55,6 +68,9 @@ def test_native_caster_uses_fixed_targets_and_occupancy_witness() -> None:
     assert "mul(worldPos, CasterLightViewProjection)" in shader
     assert "return input.position.z;" in shader
     assert ": SV_Depth" not in shader
+    assert "NativeCasterDepthTexture" in shader
+    assert "NativeCasterProbe" in shader
+    assert "if (NativeCasterProbe != 0)" in shader
 
 
 def test_native_caster_e2e_records_negative_control() -> None:
@@ -73,6 +89,12 @@ def test_native_caster_e2e_records_negative_control() -> None:
     assert "depthBias" in runner
     assert "depthBiasAba" in runner
     assert "writtenFootprintHash" in runner
+    assert "receiverProbe" in runner
+    assert "receiverProbeAba" in runner
+    assert "receiverTargetsRetained" in runner
+    assert "postResetWitness" in runner
+    assert "activeSceneUnloadRejected" in runner
+    assert 'report.get("pluginUnloadError") is None' in runner
 
 
 def test_depth_bias_aba_gate_checks_bias_and_footprint() -> None:
@@ -108,3 +130,14 @@ def test_depth_bias_aba_gate_checks_bias_and_footprint() -> None:
         writtenMean=0.46,
     )
     assert not _depth_bias_aba_passes(baseline, control, restored)
+
+
+def test_visible_shape_mask_rejects_identical_frames() -> None:
+    from tools.render_override_native_caster_e2e import _visible_shape_mask
+
+    frame = bytes([255, 255, 255, 255] * 4)
+    result = _visible_shape_mask(frame, frame, 2, 2)
+
+    assert not result["pass"]
+    assert result["rawPixels"] == 0
+    assert result["pixels"] == 0

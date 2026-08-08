@@ -90,6 +90,28 @@ Texture2D Light0ShadowMap : SHADOWMAP
     int UIOrder = 1000;
 >;
 
+// Same-frame native receiver probe.  The C++ render override assigns its
+// private R32F caster target to borrowed body MShaderInstances using
+// MRenderTargetAssignment.  It is intentionally opt-in and encodes the raw
+// sampled depth directly in BODY pixels; this is a binding/ordering witness,
+// not a shadow compare, PCF, bias, or production receiver-composition path.
+Texture2D NativeCasterDepthTexture<
+    string UIGroup = "Native Diagnostics";
+    string UIName = "Native Caster Depth Probe";
+    string UIWidget = "None";
+    string ResourceType = "2D";
+    int mipmaplevels = NumberOfMipMaps;
+>;
+
+int NativeCasterProbe<
+    string UIGroup = "Native Diagnostics";
+    string UIName = "Native Caster Depth Probe Enabled";
+    string UIWidget = "None";
+    float UIMin = 0;
+    float UIMax = 1;
+    float UIStep = 1;
+> = 0;
+
 //--------------------------------------------------------------------------------------
 // Constant Buffers
 //--------------------------------------------------------------------------------------
@@ -524,6 +546,20 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     }
 
     float3 litColor = diffuse + specular;
+
+    // Keep the normal product path byte-stable when the default-off probe is
+    // disabled.  When enabled, sample only the exact same-frame caster target
+    // and visibly encode its raw depth in body pixels for an A/B/A witness.
+    if (NativeCasterProbe != 0)
+    {
+        float4 casterClip = mul(float4(input.worldPosition, 1.0),
+                                CasterLightViewProjection);
+        float casterW = max(abs(casterClip.w), 1.0e-6);
+        float2 casterUV = casterClip.xy / casterW * 0.5 + 0.5;
+        float sampledDepth = NativeCasterDepthTexture.Sample(
+            ShadowSampler, saturate(casterUV)).r;
+        litColor = float3(sampledDepth, 1.0 - sampledDepth, 0.0);
+    }
 
     // Apply opacity
     float opacity = texColor.a * DiffuseColorA * Opacity;

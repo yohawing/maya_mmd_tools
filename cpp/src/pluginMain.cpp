@@ -271,6 +271,18 @@ MStatus uninitializePlugin(MObject obj)
     MStatus status;
     MFnPlugin plugin(obj);
 
+    // Receiver body shaders keep a supported MRenderTargetAssignment to the
+    // caster target for their whole lifetime.  Refuse a partial plug-in
+    // teardown until every geometry override has released those shaders;
+    // deleting the native override first would invalidate a live assignment.
+    if (sCppRegisteredMmdNativeCasterOverride &&
+        !MmdNativeCasterRenderOverride::shutdownReady()) {
+        MGlobal::displayError(
+            "Cannot unload mmd_tools_cpp while native receiver shaders are active; "
+            "close or replace the scene first.");
+        return MS::kFailure;
+    }
+
     if (sCppRegisteredMmdRenderWitnessCommand) {
         status = plugin.deregisterCommand("mmdRenderWitness");
         if (!status) {

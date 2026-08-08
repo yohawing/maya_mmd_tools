@@ -24,8 +24,13 @@
 #include <filesystem>
 #include <iomanip>
 #include <limits>
+#include <condition_variable>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace {
 
@@ -43,6 +48,15 @@ const MString& casterDepthTargetName()
 
 std::filesystem::path gShaderPath;
 float gDepthBias = MmdNativeCasterRenderOverride::kDefaultDepthBias;
+bool gReceiverProbe = false;
+std::mutex gReceiverMutex;
+std::condition_variable gReceiverCv;
+bool gOverrideSetup = false;
+std::unordered_set<MHWRender::MShaderInstance*> gReceiverShaders;
+std::unordered_map<MHWRender::MShaderInstance*, MHWRender::MRenderTarget*>
+    gReceiverBindings;
+std::unordered_set<MHWRender::MShaderInstance*> gRetiringReceiverShaders;
+std::unordered_map<MHWRender::MShaderInstance*, std::size_t> gReceiverPins;
 
 constexpr float kClearDepth = 1.0F;
 constexpr float kDepthEpsilon = 1.0e-6F;
@@ -89,11 +103,36 @@ struct CasterDiagnostics {
     std::uint64_t writtenFootprintHash = 1469598103934665603ULL;
     bool writtenDepthFinite = false;
     bool writtenDepthInRange = false;
+    std::size_t receiverShaderRegistered = 0U;
+    std::size_t receiverAssignmentSuccess = 0U;
+    std::size_t receiverAssignmentFailure = 0U;
+    std::size_t receiverLiveAssignmentOwners = 0U;
+    bool receiverProbeEnabled = false;
+    bool receiverTargetResourceHandleNonNull = false;
+    bool receiverTargetSameFrame = false;
+    bool receiverTargetsRetained = false;
     bool released = false;
     std::string error;
 };
 
 CasterDiagnostics gDiagnostics;
+
+void releaseReceiverPin(MHWRender::MShaderInstance* shader)
+{
+    if (!shader) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(gReceiverMutex);
+    const auto pin = gReceiverPins.find(shader);
+    if (pin != gReceiverPins.end()) {
+        if (pin->second > 1U) {
+            --pin->second;
+        } else {
+            gReceiverPins.erase(pin);
+        }
+    }
+    gReceiverCv.notify_all();
+}
 
 std::filesystem::path findShaderPath(const MString& loadPath)
 {
@@ -348,6 +387,23 @@ public:
         if (!targets_[0]) {
             return;
         }
+        // The resource handle is device-backed and may only become valid once
+        // the operation has rendered.  Check it at the same frame boundary as
+        // the raw depth readback instead of treating target acquisition alone
+        // as proof that the receiver got a usable input.
+        gDiagnostics.receiverTargetResourceHandleNonNull =
+            targets_[0]->resourceHandle() != nullptr;
+        {
+            std::lock_guard<std::mutex> lock(gReceiverMutex);
+            gDiagnostics.receiverLiveAssignmentOwners =
+                gReceiverBindings.size();
+            for (const auto& binding : gReceiverBindings) {
+                if (binding.second == targets_[0]) {
+                    gDiagnostics.receiverTargetSameFrame = true;
+                    break;
+                }
+            }
+        }
         int rowPitch = 0;
         std::size_t slicePitch = 0U;
         void* raw = targets_[0]->rawData(rowPitch, slicePitch);
@@ -437,9 +493,20 @@ MmdNativeCasterRenderOverride::MmdNativeCasterRenderOverride()
 
 MmdNativeCasterRenderOverride::~MmdNativeCasterRenderOverride()
 {
+    {
+        std::lock_guard<std::mutex> lock(gReceiverMutex);
+        gOverrideSetup = false;
+    }
     mOperations.clear();
+    // Body shaders are borrowed by the geometry overrides.  Their owners must
+    // retire first; release the caster shader and targets only after the
+    // registry is empty.  If a host keeps a geometry override alive, retain
+    // the targets instead of leaving a dangling assignment behind.
     releaseShader();
-    releaseTargets();
+    if (!releaseTargets()) {
+        gDiagnostics.error =
+            "receiver shaders still live; caster targets retained";
+    }
 }
 
 MHWRender::DrawAPI MmdNativeCasterRenderOverride::supportedDrawAPIs() const
@@ -467,13 +534,140 @@ bool MmdNativeCasterRenderOverride::buildCasterSelection(
     return count > 0U;
 }
 
+bool MmdNativeCasterRenderOverride::bindReceiverShader(
+    MHWRender::MShaderInstance* shader)
+{
+    if (!shader || !colorTarget_) {
+        return false;
+    }
+
+    if (!updateReceiverShaderParameters(shader)) {
+        return false;
+    }
+    MHWRender::MRenderTargetAssignment assignment{colorTarget_};
+    const MStatus assignmentStatus = shader->setParameter(
+        MString("NativeCasterDepthTexture"), assignment);
+    if (assignmentStatus == MS::kSuccess) {
+        ++gDiagnostics.receiverAssignmentSuccess;
+        std::lock_guard<std::mutex> lock(gReceiverMutex);
+        gReceiverBindings[shader] = colorTarget_;
+        gDiagnostics.receiverLiveAssignmentOwners = gReceiverBindings.size();
+    } else {
+        ++gDiagnostics.receiverAssignmentFailure;
+    }
+    if (assignmentStatus != MS::kSuccess) {
+        if (gDiagnostics.error.empty()) {
+            gDiagnostics.error = "receiver shader binding failed";
+        }
+        return false;
+    }
+    return true;
+}
+
+bool MmdNativeCasterRenderOverride::updateReceiverShaderParameters(
+    MHWRender::MShaderInstance* shader)
+{
+    if (!shader) {
+        return false;
+    }
+    const MMatrix matrix = casterLightViewProjection();
+    const MStatus matrixStatus =
+        shader->setParameter(MString("CasterLightViewProjection"), matrix);
+    const MStatus biasStatus =
+        shader->setParameter(MString("CasterDepthBias"), gDepthBias);
+    const MStatus probeStatus =
+        shader->setParameter(MString("NativeCasterProbe"),
+                             gReceiverProbe ? 1 : 0);
+    if (matrixStatus != MS::kSuccess || biasStatus != MS::kSuccess ||
+        probeStatus != MS::kSuccess) {
+        if (gDiagnostics.error.empty()) {
+            gDiagnostics.error = "receiver shader parameter binding failed";
+        }
+        return false;
+    }
+    return true;
+}
+
+void MmdNativeCasterRenderOverride::registerReceiverShader(
+    MHWRender::MShaderInstance* shader)
+{
+    if (!shader) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(gReceiverMutex);
+        const auto result = gReceiverShaders.insert(shader);
+        if (!result.second) {
+            return;
+        }
+        gDiagnostics.receiverShaderRegistered = gReceiverShaders.size();
+    }
+}
+
+bool MmdNativeCasterRenderOverride::beginReceiverShaderRetire(
+    MHWRender::MShaderInstance* shader)
+{
+    if (!shader) {
+        return false;
+    }
+    std::unique_lock<std::mutex> lock(gReceiverMutex);
+    const bool live = gReceiverShaders.erase(shader) > 0U;
+    const bool bound = gReceiverBindings.count(shader) != 0U;
+    const bool pinned = gReceiverPins.count(shader) != 0U;
+    if (live || bound || pinned) {
+        gRetiringReceiverShaders.insert(shader);
+    }
+    gDiagnostics.receiverShaderRegistered = gReceiverShaders.size();
+    gDiagnostics.receiverLiveAssignmentOwners = gReceiverBindings.size();
+    if (live || bound || pinned) {
+        gReceiverCv.wait(lock, [shader] {
+            const auto pin = gReceiverPins.find(shader);
+            return pin == gReceiverPins.end() || pin->second == 0U;
+        });
+    }
+    return live || bound || pinned;
+}
+
+void MmdNativeCasterRenderOverride::finishReceiverShaderRetire(
+    MHWRender::MShaderInstance* shader)
+{
+    if (!shader) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(gReceiverMutex);
+    // The shader has been released by its geometry owner.  Keep no stale
+    // pointer in either registry even if a host issued duplicate callbacks.
+    gReceiverShaders.erase(shader);
+    gReceiverBindings.erase(shader);
+    gRetiringReceiverShaders.erase(shader);
+    gReceiverPins.erase(shader);
+    gReceiverCv.notify_all();
+    gDiagnostics.receiverShaderRegistered = gReceiverShaders.size();
+    gDiagnostics.receiverLiveAssignmentOwners = gReceiverBindings.size();
+}
+
+bool MmdNativeCasterRenderOverride::shutdownReady()
+{
+    std::lock_guard<std::mutex> lock(gReceiverMutex);
+    return !gOverrideSetup && gReceiverShaders.empty() &&
+           gReceiverBindings.empty() && gRetiringReceiverShaders.empty() &&
+           gReceiverPins.empty();
+}
+
+void MmdNativeCasterRenderOverride::setReceiverProbe(bool enabled)
+{
+    gReceiverProbe = enabled;
+    gDiagnostics.receiverProbeEnabled = enabled;
+}
+
 bool MmdNativeCasterRenderOverride::acquireTargets()
 {
     MHWRender::MRenderer* renderer = MHWRender::MRenderer::theRenderer();
-    targetManager_ = renderer ? const_cast<MHWRender::MRenderTargetManager*>(
-                                  renderer->getRenderTargetManager())
-                              : nullptr;
-    if (!targetManager_) {
+    MHWRender::MRenderTargetManager* targetManager =
+        renderer ? const_cast<MHWRender::MRenderTargetManager*>(
+                       renderer->getRenderTargetManager())
+                 : nullptr;
+    if (!targetManager) {
         gDiagnostics.error = "render target manager unavailable";
         return false;
     }
@@ -483,10 +677,25 @@ bool MmdNativeCasterRenderOverride::acquireTargets()
     const MHWRender::MRenderTargetDescription depthDescription(
         casterDepthTargetName(), kTargetSize, kTargetSize,
         1U, MHWRender::kD32_FLOAT, 1U, false);
-    colorTarget_ = targetManager_->acquireRenderTarget(colorDescription);
-    depthTarget_ = targetManager_->acquireRenderTarget(depthDescription);
-    gDiagnostics.colorTargetAcquired = colorTarget_ != nullptr;
-    gDiagnostics.depthTargetAcquired = depthTarget_ != nullptr;
+    MHWRender::MRenderTarget* colorTarget =
+        targetManager->acquireRenderTarget(colorDescription);
+    MHWRender::MRenderTarget* depthTarget =
+        targetManager->acquireRenderTarget(depthDescription);
+    gDiagnostics.colorTargetAcquired = colorTarget != nullptr;
+    gDiagnostics.depthTargetAcquired = depthTarget != nullptr;
+    if (!colorTarget || !depthTarget) {
+        if (colorTarget) {
+            targetManager->releaseRenderTarget(colorTarget);
+        }
+        if (depthTarget) {
+            targetManager->releaseRenderTarget(depthTarget);
+        }
+        gDiagnostics.error = "caster render target acquisition failed";
+        return false;
+    }
+    targetManager_ = targetManager;
+    colorTarget_ = colorTarget;
+    depthTarget_ = depthTarget;
     if (colorTarget_) {
         MHWRender::MRenderTargetDescription actualDescription;
         colorTarget_->targetDescription(actualDescription);
@@ -515,16 +724,37 @@ bool MmdNativeCasterRenderOverride::acquireTargets()
         gDiagnostics.depthTarget.isCubeMap = actualDescription.isCubeMap();
         gDiagnostics.depthTarget.name = actualDescription.name().asUTF8();
     }
-    if (!colorTarget_ || !depthTarget_) {
-        gDiagnostics.error = "caster render target acquisition failed";
-        releaseTargets();
-        return false;
-    }
     return true;
 }
 
-void MmdNativeCasterRenderOverride::releaseTargets()
+bool MmdNativeCasterRenderOverride::releaseTargets()
 {
+    std::size_t registered = 0U;
+    std::size_t owners = 0U;
+    std::size_t retiring = 0U;
+    std::size_t pins = 0U;
+    {
+        std::lock_guard<std::mutex> lock(gReceiverMutex);
+        registered = gReceiverShaders.size();
+        owners = gReceiverBindings.size();
+        retiring = gRetiringReceiverShaders.size();
+        pins = gReceiverPins.size();
+    }
+    gDiagnostics.receiverShaderRegistered = registered;
+    gDiagnostics.receiverLiveAssignmentOwners = owners;
+    gDiagnostics.receiverTargetsRetained =
+        (colorTarget_ != nullptr || depthTarget_ != nullptr) &&
+        (registered != 0U || owners != 0U || retiring != 0U || pins != 0U);
+    // A body shader owns a borrowed target assignment.  Maya does not expose
+    // a documented null-target unbind operation, so retain the target until
+    // every exact shader owner has retired rather than leaving a dangling
+    // device pointer during scene reset or plug-in unload.
+    if (registered != 0U || owners != 0U || retiring != 0U || pins != 0U) {
+        gDiagnostics.error =
+            "receiver shaders still live; targets retained until retire";
+        gDiagnostics.released = false;
+        return false;
+    }
     if (targetManager_) {
         if (colorTarget_) {
             targetManager_->releaseRenderTarget(colorTarget_);
@@ -537,6 +767,8 @@ void MmdNativeCasterRenderOverride::releaseTargets()
     depthTarget_ = nullptr;
     targetManager_ = nullptr;
     gDiagnostics.released = true;
+    gDiagnostics.receiverTargetsRetained = false;
+    return true;
 }
 
 void MmdNativeCasterRenderOverride::releaseShader()
@@ -552,6 +784,10 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
 {
     (void)destination;
     gDiagnostics.setup = false;
+    {
+        std::lock_guard<std::mutex> lock(gReceiverMutex);
+        gOverrideSetup = false;
+    }
     gDiagnostics.released = false;
     gDiagnostics.error.clear();
     gDiagnostics.selectionBuilt = false;
@@ -568,11 +804,37 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
     gDiagnostics.operationInsertedBeforeScene = false;
     gDiagnostics.occupancySupported = false;
     gDiagnostics.occupied = false;
+    std::size_t existingReceiverBindings = 0U;
+    {
+        std::lock_guard<std::mutex> lock(gReceiverMutex);
+        gDiagnostics.receiverShaderRegistered = gReceiverShaders.size();
+        gDiagnostics.receiverLiveAssignmentOwners = gReceiverBindings.size();
+        for (const auto& binding : gReceiverBindings) {
+            if (gReceiverShaders.count(binding.first) != 0U) {
+                ++existingReceiverBindings;
+            }
+        }
+    }
+    // Reusing a persistent assignment is already a successful exact target
+    // binding for this frame; do not issue another setParameter call merely
+    // to inflate the diagnostic counter.
+    gDiagnostics.receiverAssignmentSuccess = existingReceiverBindings;
+    gDiagnostics.receiverAssignmentFailure = 0U;
+    gDiagnostics.receiverProbeEnabled = gReceiverProbe;
+    gDiagnostics.receiverTargetResourceHandleNonNull = false;
+    gDiagnostics.receiverTargetSameFrame = false;
+    gDiagnostics.receiverTargetsRetained =
+        colorTarget_ != nullptr || depthTarget_ != nullptr;
     resetDepthDiagnostics();
     mOperations.clear();
-    releaseShader();
-    releaseTargets();
-    gDiagnostics.released = false;
+    // Keep the private target and caster shader alive across cleanup/setup
+    // cycles.  Body shader assignments borrow the exact target and cannot be
+    // safely cleared with an undocumented null assignment.
+    if (!colorTarget_ || !depthTarget_) {
+        if (!acquireTargets()) {
+            return MS::kFailure;
+        }
+    }
 
     MSelectionList selection;
     gDiagnostics.selectionBuilt = buildCasterSelection(selection);
@@ -580,7 +842,27 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
     if (!gDiagnostics.selectionBuilt) {
         gDiagnostics.error = "no mmdRenderShape caster selected";
     }
-    if (!acquireTargets()) {
+    auto describeTarget = [](MHWRender::MRenderTarget* target,
+                             TargetDiagnostics& diagnostic) {
+        if (!target) {
+            return;
+        }
+        MHWRender::MRenderTargetDescription actualDescription;
+        target->targetDescription(actualDescription);
+        diagnostic.width = actualDescription.width();
+        diagnostic.height = actualDescription.height();
+        diagnostic.multiSampleCount = actualDescription.multiSampleCount();
+        diagnostic.arraySliceCount = actualDescription.arraySliceCount();
+        diagnostic.format = static_cast<int>(actualDescription.rasterFormat());
+        diagnostic.isCubeMap = actualDescription.isCubeMap();
+        diagnostic.name = actualDescription.name().asUTF8();
+    };
+    describeTarget(colorTarget_, gDiagnostics.colorTarget);
+    describeTarget(depthTarget_, gDiagnostics.depthTarget);
+    gDiagnostics.colorTargetAcquired = colorTarget_ != nullptr;
+    gDiagnostics.depthTargetAcquired = depthTarget_ != nullptr;
+    if (!colorTarget_ || !depthTarget_) {
+        gDiagnostics.error = "caster render target acquisition failed";
         return MS::kFailure;
     }
 
@@ -589,25 +871,27 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
         renderer ? renderer->getShaderManager() : nullptr;
     if (!shaderManager) {
         gDiagnostics.error = "shader manager unavailable";
-        releaseTargets();
         return MS::kFailure;
     }
-    MHWRender::MShaderInstance* shader =
-        shaderManager->getEffectsFileShader(
-            MString(shaderPath().c_str()), MString("MMDNativeCaster"));
-    gDiagnostics.shaderAvailable = shader != nullptr;
-    if (!shader) {
-        gDiagnostics.error = "MMDNativeCaster shader unavailable";
-        releaseTargets();
-        return MS::kFailure;
+    if (!shader_) {
+        MHWRender::MShaderInstance* shader =
+            shaderManager->getEffectsFileShader(
+                MString(shaderPath().c_str()), MString("MMDNativeCaster"));
+        gDiagnostics.shaderAvailable = shader != nullptr;
+        if (!shader) {
+            gDiagnostics.error = "MMDNativeCaster shader unavailable";
+            return MS::kFailure;
+        }
+        shaderManager_ = shaderManager;
+        shader_ = shader;
+    } else {
+        gDiagnostics.shaderAvailable = true;
     }
-    shaderManager_ = shaderManager;
-    shader_ = shader;
 
     casterOperation_ = new CasterSceneRender();
     casterOperation_->setSelection(selection);
     casterOperation_->setTargets(colorTarget_, depthTarget_);
-    casterOperation_->setShader(shader);
+    casterOperation_->setShader(shader_);
     renderer->getStandardViewportOperations(mOperations);
     gDiagnostics.operationInsertedBeforeScene = mOperations.insertBefore(
         MHWRender::MRenderOperation::kStandardSceneName, casterOperation_);
@@ -615,21 +899,48 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
         delete casterOperation_;
         casterOperation_ = nullptr;
         gDiagnostics.error = "failed to insert caster before standard scene";
-        releaseShader();
-        releaseTargets();
         return MS::kFailure;
     }
     gDiagnostics.setup = true;
+    // Body shaders may have been published before this setup call.  Bind all
+    // exact borrowed pointers now; registrations published during geometry
+    // update are picked up by the next setup boundary before the next caster
+    // operation executes.
+    std::vector<MHWRender::MShaderInstance*> shaders;
+    std::unordered_map<MHWRender::MShaderInstance*, MHWRender::MRenderTarget*>
+        bound;
+    {
+        std::lock_guard<std::mutex> lock(gReceiverMutex);
+        shaders.reserve(gReceiverShaders.size());
+        for (MHWRender::MShaderInstance* receiver : gReceiverShaders) {
+            shaders.push_back(receiver);
+            ++gReceiverPins[receiver];
+        }
+        bound = gReceiverBindings;
+        gOverrideSetup = true;
+    }
+    for (MHWRender::MShaderInstance* receiver : shaders) {
+        if (bound.count(receiver) == 0U) {
+            bindReceiverShader(receiver);
+        } else {
+            updateReceiverShaderParameters(receiver);
+        }
+        releaseReceiverPin(receiver);
+    }
     return MS::kSuccess;
 }
 
 MStatus MmdNativeCasterRenderOverride::cleanup()
 {
+    {
+        std::lock_guard<std::mutex> lock(gReceiverMutex);
+        gOverrideSetup = false;
+    }
     mOperations.clear();
     casterOperation_ = nullptr;
-    releaseShader();
-    releaseTargets();
     gDiagnostics.setup = false;
+    gDiagnostics.receiverTargetsRetained =
+        colorTarget_ != nullptr || depthTarget_ != nullptr;
     return MS::kSuccess;
 }
 
@@ -724,6 +1035,22 @@ std::string MmdNativeCasterRenderOverride::diagnosticsJson()
            << jsonBool(gDiagnostics.writtenDepthFinite)
            << ",\"writtenDepthInRange\":"
            << jsonBool(gDiagnostics.writtenDepthInRange)
+           << ",\"receiverShaderRegistered\":"
+           << gDiagnostics.receiverShaderRegistered
+           << ",\"receiverAssignmentSuccess\":"
+           << gDiagnostics.receiverAssignmentSuccess
+           << ",\"receiverAssignmentFailure\":"
+           << gDiagnostics.receiverAssignmentFailure
+           << ",\"receiverLiveAssignmentOwners\":"
+           << gDiagnostics.receiverLiveAssignmentOwners
+           << ",\"receiverProbeEnabled\":"
+           << jsonBool(gDiagnostics.receiverProbeEnabled)
+           << ",\"receiverTargetResourceHandleNonNull\":"
+           << jsonBool(gDiagnostics.receiverTargetResourceHandleNonNull)
+           << ",\"receiverTargetSameFrame\":"
+           << jsonBool(gDiagnostics.receiverTargetSameFrame)
+           << ",\"receiverTargetsRetained\":"
+           << jsonBool(gDiagnostics.receiverTargetsRetained)
            // Keep the old occupancy keys as compatibility aliases for local
            // diagnostics that predate the real-depth witness.
            << ",\"nonClearSamples\":" << gDiagnostics.writtenSamples
@@ -743,6 +1070,7 @@ MSyntax MmdNativeCasterWitnessCommand::newSyntax()
 {
     MSyntax syntax;
     syntax.addFlag("-db", "-depthBias", MSyntax::kDouble);
+    syntax.addFlag("-rp", "-receiverProbe", MSyntax::kBoolean);
     return syntax;
 }
 
@@ -763,6 +1091,20 @@ MStatus MmdNativeCasterWitnessCommand::doIt(const MArgList& args)
             return MS::kFailure;
         }
         gDepthBias = static_cast<float>(requestedBias);
+        // Keep already-published body shaders in sync when the command is
+        // issued while the override is live; setup will bind the same value
+        // for the next frame when the target is not active yet.
+        MmdNativeCasterRenderOverride::setReceiverProbe(gReceiverProbe);
+    }
+    if (argumentData.isFlagSet("-receiverProbe")) {
+        bool enabled = false;
+        status = argumentData.getFlagArgument("-receiverProbe", 0, enabled);
+        if (!status) {
+            MGlobal::displayError(
+                "mmdNativeCasterWitness receiverProbe must be boolean");
+            return MS::kFailure;
+        }
+        MmdNativeCasterRenderOverride::setReceiverProbe(enabled);
     }
     setResult(MString(MmdNativeCasterRenderOverride::diagnosticsJson().c_str()));
     return MS::kSuccess;
