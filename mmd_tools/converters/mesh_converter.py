@@ -2520,11 +2520,14 @@ class MeshConverter:
         # mayapy standalone では dx11Shader が .fx ファイルから uniform 属性を
         # 自動生成しないため、事前に動的アトリビュートとして作成しておく
         _ensure_dx11_uniform_attributes(shader)
-        # Prefer the accurate per-material UV-region classification computed up
-        # front; fall back to the simple diffuse-alpha rule if unavailable.
-        mode = self._transparency_modes.get(material_index)
-        if mode is None:
-            mode = _classify_material_transparency(material, texture_path)
+        # The regular import route deliberately starts every DX11 material in
+        # the opaque pass.  Maya's partially ordered transparent queue causes
+        # large MMD models to render bodies/outlines in an unstable order when
+        # only some materials are classified as blended.  Keep the authored
+        # alpha uniforms and texture alpha (the opaque technique still clips
+        # fully transparent texels), but require an explicit later edit before
+        # selecting a translucent technique.
+        mode = TRANSPARENCY_MODE_OPAQUE
         double_sided = _material_is_double_sided(material)
         technique = _technique_for_transparency(mode, True, double_sided)
         cmds.setAttr(f"{shader}.technique", technique, type="string")

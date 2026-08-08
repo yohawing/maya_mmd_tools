@@ -119,6 +119,49 @@ class TestMaterialIsDoubleSided(unittest.TestCase):
 
         set_attribute.assert_any_call("shader1", "EdgeSize", 2.5, "float")
 
+    def test_imported_dx11_material_starts_opaque_even_when_classified_blend(self):
+        """Automatic import must not mix a subset of materials into VP2 transparency."""
+        material = SimpleNamespace(
+            diffuse=(1.0, 1.0, 1.0, 0.5),
+            ambient=(0.0, 0.0, 0.0),
+            specular=(0.0, 0.0, 0.0),
+            specular_coefficient=0.0,
+            draw_flag=0x01,
+            edge_color=(0.0, 0.0, 0.0, 1.0),
+            edge_size=0.0,
+            sphere_mode=0,
+            sphere_texture_index=-1,
+            texture_index=-1,
+            toon_texture_index=-1,
+            shared_toon_flag=1,
+        )
+        converter = MeshConverter.__new__(MeshConverter)
+        converter._transparency_modes = {0: TRANSPARENCY_MODE_BLEND}
+        converter.texture_dir = ""
+
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter._ensure_dx11_uniform_attributes"
+        ), patch(
+            "mmd_tools.converters.mesh_converter._set_dx11_color_uniform"
+        ), patch.object(converter, "_connect_dx11_main_texture"), patch.object(
+            converter, "_apply_custom_attributes"
+        ), patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
+        ):
+            mock_cmds.attributeQuery.return_value = True
+            mock_cmds.listConnections.return_value = []
+            converter._setup_dx11_shader(
+                "shader1",
+                material,
+                texture_path=None,
+                all_textures=[],
+                is_pmd=False,
+                material_index=0,
+            )
+
+        mock_cmds.setAttr.assert_any_call("shader1.technique", "MMDTechniqueDoubleSided", type="string")
+        mock_cmds.setAttr.assert_any_call("shader1.mmdTransparencyMode", TRANSPARENCY_MODE_OPAQUE, type="string")
+
 
 class TestSetMeshDoubleSided(unittest.TestCase):
     def test_enabled_sets_shape_double_sided_to_one(self):

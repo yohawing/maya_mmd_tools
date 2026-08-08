@@ -120,7 +120,10 @@ def run_snapshot(
             # Physics import is irrelevant to look/shading and currently aborts
             # this model (angularDamping > 1 + a fatal logging error); skip it so
             # the snapshot reflects the same physics-off config the GUI defaults to.
-            root_node = import_mmd_file(str(model_path), options={"import_physics": False})
+            root_node = import_mmd_file(
+                str(model_path),
+                options={"import_physics": False, "import_morphs": False},
+            )
         _captured = _buf.getvalue()
         if _captured.strip():
             _log("IMPORT OUTPUT >>>\n" + _captured + "\n<<< IMPORT OUTPUT")
