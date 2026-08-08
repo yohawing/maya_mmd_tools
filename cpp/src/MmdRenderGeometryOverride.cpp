@@ -291,6 +291,11 @@ bool MmdRenderGeometryOverride::setNativeMaterialParameters(
         shader->setParameter("HasMainTexture", 0) &&
         shader->setParameter("HasSphereTexture", 0) &&
         shader->setParameter("HasToonTexture", 0) &&
+        shader->setParameter("NativeCasterProbe", 0) &&
+        shader->setParameter("NativeCasterHardShadow", 0) &&
+        shader->setParameter(
+            "NativeCasterShadowBias",
+            MmdNativeCasterRenderOverride::kDefaultHardShadowBias) &&
         shader->setParameter("UseShadows", false) &&
         shader->setParameter("ShadowStrength", 1.0F) &&
         shader->setParameter("ToonCoordinateOffset", 0.55F) &&

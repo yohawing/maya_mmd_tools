@@ -35,6 +35,14 @@ def test_native_caster_sources_are_registered() -> None:
     assert "receiverLiveAssignmentOwners" in source
     assert "receiverTargetsRetained" in source
     assert "MRenderTargetAssignment assignment{nullptr}" not in source
+    assert "NativeCasterHardShadow" in source
+    assert "NativeCasterShadowBias" in source
+    assert 'addFlag("-hc", "-hardShadowCompare"' in source
+    assert 'addFlag("-hb", "-hardShadowBias"' in source
+    assert "failClosedHardShadowDisableAttempted" in source
+    assert "disableHardShadowForFailClosed" in source
+    assert "mutually exclusive" in source
+    assert "requestedReceiverProbe && requestedHardShadow" in source
 
 
 def test_geometry_override_registers_only_enabled_body_receivers() -> None:
@@ -107,6 +115,27 @@ def test_native_caster_uses_fixed_targets_and_occupancy_witness() -> None:
     assert "NativeCasterDepthTexture" in shader
     assert "NativeCasterProbe" in shader
     assert "if (NativeCasterProbe != 0)" in shader
+    assert "NativeCasterHardShadow" in shader
+    assert "NativeCasterShadowBias" in shader
+    assert "EvaluateNativeCasterHardShadow" in shader
+    assert "casterClip.w <= 1.0e-6f" in shader
+    assert "receiverNdc.x < -1.0f" in shader
+    assert "receiverNdc.z < 0.0f" in shader
+    assert "SampleLevel(ShadowSampler, casterUV, 0)" in shader
+    assert "sampledDepth >= 1.0f - 1.0e-6f" in shader
+    assert "float casterRawDepth = sampledDepth - CasterDepthBias" in shader
+    assert "receiverNdc.z - NativeCasterShadowBias > casterRawDepth" in shader
+    assert "else if (NativeCasterHardShadow != 0)" in shader
+    assert "float3(0.08f, 0.22f, 1.0f)" in shader
+    assert "float3(0.10f, 1.0f, 0.10f)" in shader
+
+
+def test_native_material_initializes_diagnostic_flags_off() -> None:
+    source = (CPP / "MmdRenderGeometryOverride.cpp").read_text(encoding="utf-8")
+
+    assert 'shader->setParameter("NativeCasterProbe", 0)' in source
+    assert 'shader->setParameter("NativeCasterHardShadow", 0)' in source
+    assert '"NativeCasterShadowBias"' in source
 
 
 def test_native_caster_e2e_records_negative_control() -> None:

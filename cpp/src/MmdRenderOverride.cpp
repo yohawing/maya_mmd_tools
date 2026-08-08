@@ -55,7 +55,11 @@ const MString& casterDepthTargetName()
 
 std::filesystem::path gShaderPath;
 float gDepthBias = MmdNativeCasterRenderOverride::kDefaultDepthBias;
+float gHardShadowBias =
+    MmdNativeCasterRenderOverride::kDefaultHardShadowBias;
 bool gReceiverProbe = false;
+bool gHardShadowRequested = false;
+bool gHardShadowEffective = false;
 std::mutex gReceiverMutex;
 std::condition_variable gReceiverCv;
 bool gOverrideSetup = false;
@@ -149,6 +153,16 @@ struct CasterDiagnostics {
     bool receiverTargetResourceHandleNonNull = false;
     bool receiverTargetSameFrame = false;
     bool receiverTargetsRetained = false;
+    bool hardShadowRequested = false;
+    bool hardShadowEffective = false;
+    bool hardShadowFrameEffective = false;
+    float hardShadowBias =
+        MmdNativeCasterRenderOverride::kDefaultHardShadowBias;
+    bool hardShadowBound = false;
+    bool hardShadowBiasBound = false;
+    bool failClosedHardShadowDisableAttempted = false;
+    bool failClosedHardShadowDisableSuccess = false;
+    std::size_t failClosedHardShadowDisableFailureCount = 0U;
     bool failClosedProbeDisableAttempted = false;
     bool failClosedProbeDisableSuccess = false;
     std::size_t failClosedProbeDisableFailureCount = 0U;
@@ -197,9 +211,73 @@ void releaseReceiverPin(MHWRender::MShaderInstance* shader)
     gReceiverCv.notify_all();
 }
 
-void disableReceiverProbeForFailClosed()
+struct ReceiverParameterWriteResult {
+    bool attempted = false;
+    std::size_t failures = 0U;
+};
+
+ReceiverParameterWriteResult writeReceiverIntParameter(
+    const char* parameter,
+    int value)
 {
     std::vector<MHWRender::MShaderInstance*> shaders;
+    {
+        std::lock_guard<std::mutex> lock(gReceiverMutex);
+        shaders.reserve(gReceiverShaders.size());
+        for (MHWRender::MShaderInstance* shader : gReceiverShaders) {
+            shaders.push_back(shader);
+            ++gReceiverPins[shader];
+        }
+    }
+    ReceiverParameterWriteResult result;
+    result.attempted = !shaders.empty();
+    for (MHWRender::MShaderInstance* shader : shaders) {
+        const MStatus status = shader
+                                   ? shader->setParameter(MString(parameter), value)
+                                   : MS::kFailure;
+        if (status != MS::kSuccess) {
+            ++result.failures;
+        }
+        releaseReceiverPin(shader);
+    }
+    return result;
+}
+
+// Disable only the hard-shadow mask on every currently live receiver shader.
+// The registry is pinned while setParameter executes so a scene reset or
+// plug-in unload cannot release the borrowed shader between lookup and the
+// fail-closed write.  No null target assignment is attempted; the persistent
+// target remains owned by the override until the shader retires.
+void disableHardShadowForFailClosed()
+{
+    {
+        std::lock_guard<std::mutex> lock(gReceiverMutex);
+        gHardShadowEffective = false;
+        gDiagnostics.hardShadowEffective = false;
+        gDiagnostics.failClosedHardShadowDisableAttempted = false;
+        gDiagnostics.failClosedHardShadowDisableSuccess = false;
+        gDiagnostics.failClosedHardShadowDisableFailureCount = 0U;
+    }
+    const ReceiverParameterWriteResult result =
+        writeReceiverIntParameter("NativeCasterHardShadow", 0);
+    gDiagnostics.failClosedHardShadowDisableAttempted = result.attempted;
+    gDiagnostics.failClosedHardShadowDisableFailureCount = result.failures;
+    gDiagnostics.failClosedHardShadowDisableSuccess =
+        gDiagnostics.failClosedHardShadowDisableFailureCount == 0U;
+    if (!gDiagnostics.failClosedHardShadowDisableSuccess) {
+        if (!gDiagnostics.error.empty()) {
+            gDiagnostics.error += "; ";
+        }
+        gDiagnostics.error += "fail-closed hard shadow disable failed";
+    }
+}
+
+void disableReceiverProbeForFailClosed()
+{
+    // Missing-light, renderer-loss, and cleanup boundaries disable both
+    // diagnostic modes.  Hard-shadow state has a separate requested/effective
+    // pair, so turning it off here never discards the user's request.
+    disableHardShadowForFailClosed();
     {
         std::lock_guard<std::mutex> lock(gReceiverMutex);
         gReceiverProbe = false;
@@ -207,23 +285,11 @@ void disableReceiverProbeForFailClosed()
         gDiagnostics.failClosedProbeDisableAttempted = false;
         gDiagnostics.failClosedProbeDisableSuccess = false;
         gDiagnostics.failClosedProbeDisableFailureCount = 0U;
-        shaders.reserve(gReceiverShaders.size());
-        for (MHWRender::MShaderInstance* shader : gReceiverShaders) {
-            shaders.push_back(shader);
-            ++gReceiverPins[shader];
-        }
     }
-    gDiagnostics.failClosedProbeDisableAttempted = !shaders.empty();
-    for (MHWRender::MShaderInstance* shader : shaders) {
-        MStatus status = MS::kFailure;
-        if (shader) {
-            status = shader->setParameter(MString("NativeCasterProbe"), 0);
-        }
-        if (status != MS::kSuccess) {
-            ++gDiagnostics.failClosedProbeDisableFailureCount;
-        }
-        releaseReceiverPin(shader);
-    }
+    const ReceiverParameterWriteResult result =
+        writeReceiverIntParameter("NativeCasterProbe", 0);
+    gDiagnostics.failClosedProbeDisableAttempted = result.attempted;
+    gDiagnostics.failClosedProbeDisableFailureCount = result.failures;
     gDiagnostics.failClosedProbeDisableSuccess =
         gDiagnostics.failClosedProbeDisableFailureCount == 0U;
     if (!gDiagnostics.failClosedProbeDisableSuccess) {
@@ -606,6 +672,15 @@ void resetCasterFrameDiagnostics()
     gDiagnostics.receiverTargetSameFrame = false;
     gDiagnostics.receiverAssignmentSuccess = 0U;
     gDiagnostics.receiverAssignmentFailure = 0U;
+    gDiagnostics.hardShadowRequested = gHardShadowRequested;
+    gDiagnostics.hardShadowEffective = false;
+    gDiagnostics.hardShadowFrameEffective = false;
+    gDiagnostics.hardShadowBias = gHardShadowBias;
+    gDiagnostics.hardShadowBound = false;
+    gDiagnostics.hardShadowBiasBound = false;
+    gDiagnostics.failClosedHardShadowDisableAttempted = false;
+    gDiagnostics.failClosedHardShadowDisableSuccess = false;
+    gDiagnostics.failClosedHardShadowDisableFailureCount = 0U;
     gDiagnostics.failClosedProbeDisableAttempted = false;
     gDiagnostics.failClosedProbeDisableSuccess = false;
     gDiagnostics.failClosedProbeDisableFailureCount = 0U;
@@ -862,6 +937,7 @@ MmdNativeCasterRenderOverride::~MmdNativeCasterRenderOverride()
         gOverrideSetup = false;
     }
     mOperations.clear();
+    disableReceiverProbeForFailClosed();
     // Body shaders are borrowed by the geometry overrides.  Their owners must
     // retire first; release the caster shader and targets only after the
     // registry is empty.  If a host keeps a geometry override alive, retain
@@ -946,11 +1022,19 @@ bool MmdNativeCasterRenderOverride::updateReceiverShaderParameters(
         shader->setParameter(MString("CasterLightViewProjection"), matrix);
     const MStatus biasStatus =
         shader->setParameter(MString("CasterDepthBias"), gDepthBias);
+    const MStatus hardShadowBiasStatus = shader->setParameter(
+        MString("NativeCasterShadowBias"), gHardShadowBias);
     const MStatus probeStatus =
         shader->setParameter(MString("NativeCasterProbe"),
                              gReceiverProbe ? 1 : 0);
+    const MStatus hardShadowStatus = shader->setParameter(
+        MString("NativeCasterHardShadow"), gHardShadowEffective ? 1 : 0);
+    gDiagnostics.hardShadowBiasBound =
+        hardShadowBiasStatus == MS::kSuccess;
+    gDiagnostics.hardShadowBound = hardShadowStatus == MS::kSuccess;
     if (matrixStatus != MS::kSuccess || biasStatus != MS::kSuccess ||
-        probeStatus != MS::kSuccess) {
+        hardShadowBiasStatus != MS::kSuccess ||
+        probeStatus != MS::kSuccess || hardShadowStatus != MS::kSuccess) {
         if (gDiagnostics.error.empty()) {
             gDiagnostics.error = "receiver shader parameter binding failed";
         }
@@ -1029,6 +1113,28 @@ void MmdNativeCasterRenderOverride::setReceiverProbe(bool enabled)
 {
     gReceiverProbe = enabled;
     gDiagnostics.receiverProbeEnabled = enabled;
+}
+
+void MmdNativeCasterRenderOverride::setHardShadowCompare(bool enabled)
+{
+    gHardShadowRequested = enabled;
+    gDiagnostics.hardShadowRequested = enabled;
+    // The effective flag is granted only by setup after matrix, target, and
+    // receiver binding have all succeeded.  A disable request is applied
+    // immediately with the same pinned, checked fail-closed path used by
+    // cleanup and missing-light handling.
+    if (!enabled) {
+        disableHardShadowForFailClosed();
+    } else {
+        gHardShadowEffective = false;
+        gDiagnostics.hardShadowEffective = false;
+    }
+}
+
+void MmdNativeCasterRenderOverride::setHardShadowBias(float bias)
+{
+    gHardShadowBias = bias;
+    gDiagnostics.hardShadowBias = bias;
 }
 
 bool MmdNativeCasterRenderOverride::acquireTargets()
@@ -1158,6 +1264,10 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
         std::lock_guard<std::mutex> lock(gReceiverMutex);
         gOverrideSetup = false;
     }
+    // Effective hard-shadow state is per successful setup/frame.  Keep the
+    // request and normalized bias across retries, but never carry an enabled
+    // receiver mask into a setup that has not yet revalidated its inputs.
+    gHardShadowEffective = false;
     gDiagnostics.released = false;
     gDiagnostics.error.clear();
     resetCasterFrameDiagnostics();
@@ -1182,6 +1292,9 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
     gDiagnostics.receiverTargetSameFrame = false;
     gDiagnostics.receiverTargetsRetained =
         colorTarget_ != nullptr || depthTarget_ != nullptr;
+    gDiagnostics.hardShadowRequested = gHardShadowRequested;
+    gDiagnostics.hardShadowEffective = false;
+    gDiagnostics.hardShadowBias = gHardShadowBias;
     mOperations.clear();
     MHWRender::MRenderer* renderer = MHWRender::MRenderer::theRenderer();
     if (!renderer) {
@@ -1231,6 +1344,7 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
     gDiagnostics.depthTargetAcquired = depthTarget_ != nullptr;
     if (!colorTarget_ || !depthTarget_) {
         gDiagnostics.error = "caster render target acquisition failed";
+        disableHardShadowForFailClosed();
         return MS::kFailure;
     }
 
@@ -1238,6 +1352,7 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
         renderer ? renderer->getShaderManager() : nullptr;
     if (!shaderManager) {
         gDiagnostics.error = "shader manager unavailable";
+        disableHardShadowForFailClosed();
         return MS::kFailure;
     }
     if (!shader_) {
@@ -1248,6 +1363,7 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
         gDiagnostics.shaderAvailable = shader != nullptr;
         if (!shader) {
             gDiagnostics.error = "MMDNativeCaster shader unavailable";
+            disableHardShadowForFailClosed();
             return MS::kFailure;
         }
         shaderManager_ = shaderManager;
@@ -1267,6 +1383,7 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
         delete casterOperation_;
         casterOperation_ = nullptr;
         gDiagnostics.error = "failed to insert caster before standard scene";
+        disableHardShadowForFailClosed();
         return MS::kFailure;
     }
     gDiagnostics.setup = true;
@@ -1287,13 +1404,44 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
         bound = gReceiverBindings;
         gOverrideSetup = true;
     }
+    bool receiverBindingsReady = true;
     for (MHWRender::MShaderInstance* receiver : shaders) {
+        bool receiverReady = false;
         if (bound.count(receiver) == 0U) {
-            bindReceiverShader(receiver);
+            receiverReady = bindReceiverShader(receiver);
         } else {
-            updateReceiverShaderParameters(receiver);
+            receiverReady = updateReceiverShaderParameters(receiver);
         }
+        receiverBindingsReady = receiverBindingsReady && receiverReady;
         releaseReceiverPin(receiver);
+    }
+    // A hard-shadow mask is enabled only after every borrowed receiver has a
+    // valid matrix/parameter update and target assignment.  Apply the final
+    // effective flag in a second pinned pass so a partial binding can never
+    // leave one shader visibly masked while another failed closed.
+    if (gHardShadowRequested && receiverBindingsReady && !shaders.empty()) {
+        gHardShadowEffective = true;
+        gDiagnostics.hardShadowEffective = true;
+        gDiagnostics.hardShadowFrameEffective = true;
+        bool hardShadowReady = true;
+        for (MHWRender::MShaderInstance* receiver : shaders) {
+            {
+                std::lock_guard<std::mutex> lock(gReceiverMutex);
+                ++gReceiverPins[receiver];
+            }
+            const MStatus status = receiver
+                                       ? receiver->setParameter(
+                                             MString("NativeCasterHardShadow"), 1)
+                                       : MS::kFailure;
+            hardShadowReady = status == MS::kSuccess && hardShadowReady;
+            releaseReceiverPin(receiver);
+        }
+        if (!hardShadowReady) {
+            gDiagnostics.hardShadowFrameEffective = false;
+            disableHardShadowForFailClosed();
+        }
+    } else if (gHardShadowRequested && !receiverBindingsReady) {
+        disableHardShadowForFailClosed();
     }
     return MS::kSuccess;
 }
@@ -1304,6 +1452,11 @@ MStatus MmdNativeCasterRenderOverride::cleanup()
         std::lock_guard<std::mutex> lock(gReceiverMutex);
         gOverrideSetup = false;
     }
+    // Do not leave a receiver-side diagnostic mask enabled after the private
+    // caster operation is removed.  The pinned, checked writes retain the
+    // target lifetime until each borrowed shader retires; no null assignment
+    // is used.
+    disableHardShadowForFailClosed();
     mOperations.clear();
     casterOperation_ = nullptr;
     gDiagnostics.setup = false;
@@ -1480,6 +1633,33 @@ std::string MmdNativeCasterRenderOverride::diagnosticsJson()
            << jsonBool(gDiagnostics.receiverTargetSameFrame)
            << ",\"receiverTargetsRetained\":"
            << jsonBool(gDiagnostics.receiverTargetsRetained)
+           << ",\"hardShadowRequested\":"
+           << jsonBool(gDiagnostics.hardShadowRequested)
+           << ",\"hardShadowEffective\":"
+           << jsonBool(gDiagnostics.hardShadowEffective)
+           << ",\"hardShadowFrameEffective\":"
+           << jsonBool(gDiagnostics.hardShadowFrameEffective)
+           << ",\"hardShadowBias\":" << gDiagnostics.hardShadowBias
+           << ",\"hardShadowBound\":"
+           << jsonBool(gDiagnostics.hardShadowBound)
+           << ",\"hardShadowBiasBound\":"
+           << jsonBool(gDiagnostics.hardShadowBiasBound)
+           << ",\"hardShadowBindSuccess\":"
+           << jsonBool(gDiagnostics.hardShadowBound &&
+                       gDiagnostics.hardShadowBiasBound &&
+                       gDiagnostics.receiverAssignmentFailure == 0U)
+           // Keep compare-oriented aliases explicit for consumers that use
+           // the command name rather than the shader flag name.
+           << ",\"hardShadowCompareRequested\":"
+           << jsonBool(gDiagnostics.hardShadowRequested)
+           << ",\"hardShadowCompareEffective\":"
+           << jsonBool(gDiagnostics.hardShadowEffective)
+           << ",\"failClosedHardShadowDisableAttempted\":"
+           << jsonBool(gDiagnostics.failClosedHardShadowDisableAttempted)
+           << ",\"failClosedHardShadowDisableSuccess\":"
+           << jsonBool(gDiagnostics.failClosedHardShadowDisableSuccess)
+           << ",\"failClosedHardShadowDisableFailureCount\":"
+           << gDiagnostics.failClosedHardShadowDisableFailureCount
            << ",\"failClosedProbeDisableAttempted\":"
            << jsonBool(gDiagnostics.failClosedProbeDisableAttempted)
            << ",\"failClosedProbeDisableSuccess\":"
@@ -1506,6 +1686,8 @@ MSyntax MmdNativeCasterWitnessCommand::newSyntax()
     MSyntax syntax;
     syntax.addFlag("-db", "-depthBias", MSyntax::kDouble);
     syntax.addFlag("-rp", "-receiverProbe", MSyntax::kBoolean);
+    syntax.addFlag("-hc", "-hardShadowCompare", MSyntax::kBoolean);
+    syntax.addFlag("-hb", "-hardShadowBias", MSyntax::kDouble);
     return syntax;
 }
 
@@ -1515,6 +1697,31 @@ MStatus MmdNativeCasterWitnessCommand::doIt(const MArgList& args)
     MArgDatabase argumentData(newSyntax(), args, &status);
     if (!status) {
         return status;
+    }
+    bool requestedReceiverProbe = gReceiverProbe;
+    bool requestedHardShadow = gHardShadowRequested;
+    if (argumentData.isFlagSet("-receiverProbe")) {
+        status = argumentData.getFlagArgument("-receiverProbe", 0,
+                                              requestedReceiverProbe);
+        if (!status) {
+            MGlobal::displayError(
+                "mmdNativeCasterWitness receiverProbe must be boolean");
+            return MS::kFailure;
+        }
+    }
+    if (argumentData.isFlagSet("-hardShadowCompare")) {
+        status = argumentData.getFlagArgument("-hardShadowCompare", 0,
+                                              requestedHardShadow);
+        if (!status) {
+            MGlobal::displayError(
+                "mmdNativeCasterWitness hardShadowCompare must be boolean");
+            return MS::kFailure;
+        }
+    }
+    if (requestedReceiverProbe && requestedHardShadow) {
+        MGlobal::displayError(
+            "mmdNativeCasterWitness receiverProbe and hardShadowCompare are mutually exclusive");
+        return MS::kFailure;
     }
     if (argumentData.isFlagSet("-depthBias")) {
         double requestedBias = 0.0;
@@ -1530,6 +1737,29 @@ MStatus MmdNativeCasterWitnessCommand::doIt(const MArgList& args)
         // issued while the override is live; setup will bind the same value
         // for the next frame when the target is not active yet.
         MmdNativeCasterRenderOverride::setReceiverProbe(gReceiverProbe);
+    }
+    if (argumentData.isFlagSet("-hardShadowBias")) {
+        double requestedBias = 0.0;
+        status = argumentData.getFlagArgument("-hardShadowBias", 0,
+                                              requestedBias);
+        if (!status || !std::isfinite(requestedBias) || requestedBias < 0.0 ||
+            requestedBias > 0.01) {
+            MGlobal::displayError(
+                "mmdNativeCasterWitness hardShadowBias must be finite in [0, 0.01]");
+            return MS::kFailure;
+        }
+        MmdNativeCasterRenderOverride::setHardShadowBias(
+            static_cast<float>(requestedBias));
+    }
+    if (argumentData.isFlagSet("-hardShadowCompare")) {
+        bool enabled = false;
+        status = argumentData.getFlagArgument("-hardShadowCompare", 0, enabled);
+        if (!status) {
+            MGlobal::displayError(
+                "mmdNativeCasterWitness hardShadowCompare must be boolean");
+            return MS::kFailure;
+        }
+        MmdNativeCasterRenderOverride::setHardShadowCompare(enabled);
     }
     if (argumentData.isFlagSet("-receiverProbe")) {
         bool enabled = false;

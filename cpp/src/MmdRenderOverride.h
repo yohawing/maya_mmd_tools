@@ -30,6 +30,10 @@ class MmdNativeCasterRenderOverride : public MHWRender::MRenderOverride {
 public:
     static constexpr unsigned int kTargetSize = 2048U;
     static constexpr float kDefaultDepthBias = 0.35F;
+    // Receiver-side comparison bias is normalized to the R32F caster depth
+    // range.  It is deliberately separate from kDefaultDepthBias, which is
+    // the clip-Z offset used when rasterizing the caster target.
+    static constexpr float kDefaultHardShadowBias = 0.001F;
 
     MmdNativeCasterRenderOverride();
     ~MmdNativeCasterRenderOverride() override;
@@ -45,6 +49,8 @@ public:
     static bool beginReceiverShaderRetire(MHWRender::MShaderInstance* shader);
     static void finishReceiverShaderRetire(MHWRender::MShaderInstance* shader);
     static void setReceiverProbe(bool enabled);
+    static void setHardShadowCompare(bool enabled);
+    static void setHardShadowBias(float bias);
     static bool shutdownReady();
     static const MString& overrideName();
     static std::string diagnosticsJson();

@@ -112,6 +112,26 @@ int NativeCasterProbe<
     float UIStep = 1;
 > = 0;
 
+// Opt-in receiver-side hard-shadow comparison witness.  This is a flat
+// two-color mask only; it never feeds the product light/shadow composition.
+int NativeCasterHardShadow<
+    string UIGroup = "Native Diagnostics";
+    string UIName = "Native Caster Hard Shadow Mask Enabled";
+    string UIWidget = "None";
+    float UIMin = 0;
+    float UIMax = 1;
+    float UIStep = 1;
+> = 0;
+
+// Normalized [0, 1] receiver comparison bias.  CasterDepthBias remains the
+// clip-Z offset used while rasterizing the private caster target; the helper
+// subtracts that offset before comparing the receiver depth.
+float NativeCasterShadowBias<
+    string UIGroup = "Native Diagnostics";
+    string UIName = "Native Caster Shadow Bias";
+    string UIWidget = "None";
+> = 0.001f;
+
 //--------------------------------------------------------------------------------------
 // Constant Buffers
 //--------------------------------------------------------------------------------------
@@ -452,6 +472,35 @@ float CasterPS(VS_OUTPUT input) : SV_TARGET
     return input.position.z;
 }
 
+// Compare a receiver's row-major caster projection against the same-frame
+// R32F target.  UV conversion is explicit (including Maya's top-origin Y),
+// sampling is point mip 0, and clear pixels are conservatively lit.
+bool EvaluateNativeCasterHardShadow(float3 worldPosition, out bool occluded)
+{
+    occluded = false;
+    float4 casterClip = mul(float4(worldPosition, 1.0),
+                            CasterLightViewProjection);
+    if (casterClip.w <= 1.0e-6f)
+        return false;
+
+    float3 receiverNdc = casterClip.xyz / casterClip.w;
+    if (receiverNdc.x < -1.0f || receiverNdc.x > 1.0f ||
+        receiverNdc.y < -1.0f || receiverNdc.y > 1.0f ||
+        receiverNdc.z < 0.0f || receiverNdc.z > 1.0f)
+        return false;
+
+    float2 casterUV = float2(receiverNdc.x * 0.5f + 0.5f,
+                             0.5f - receiverNdc.y * 0.5f);
+    float sampledDepth =
+        NativeCasterDepthTexture.SampleLevel(ShadowSampler, casterUV, 0).r;
+    if (sampledDepth >= 1.0f - 1.0e-6f)
+        return true;
+
+    float casterRawDepth = sampledDepth - CasterDepthBias;
+    occluded = receiverNdc.z - NativeCasterShadowBias > casterRawDepth;
+    return true;
+}
+
 //--------------------------------------------------------------------------------------
 // Main Pass Pixel Shader
 //--------------------------------------------------------------------------------------
@@ -559,6 +608,18 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
         float sampledDepth = NativeCasterDepthTexture.Sample(
             ShadowSampler, saturate(casterUV)).r;
         litColor = float3(sampledDepth, 1.0 - sampledDepth, 0.0);
+    }
+    else if (NativeCasterHardShadow != 0)
+    {
+        // Diagnostic mask colors are intentionally flat and distinct: green
+        // means lit and blue means occluded.  They replace the output only
+        // while this opt-in flag is effective and do not compose into `shadow`.
+        bool hardShadowOccluded = false;
+        EvaluateNativeCasterHardShadow(input.worldPosition,
+                                       hardShadowOccluded);
+        litColor = hardShadowOccluded
+                       ? float3(0.08f, 0.22f, 1.0f)
+                       : float3(0.10f, 1.0f, 0.10f);
     }
 
     // Apply opacity
