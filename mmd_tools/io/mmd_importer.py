@@ -264,7 +264,7 @@ def import_mmd_file(
 
         import_scale = SettingsService().resolve_import_scale()
 
-    # --- C++ fast import path (default UI route, PMX only) ---------------
+    # --- C++ fast import path (Development Mode only in the UI, PMX only) --
     logger.info("Model import strategy: cpp_fast_load=%s (%s)", strategy.use_cpp_fast_load, strategy.cpp_fast_load_reason)
     vp2_ownership_requested = bool(options.get("use_cpp_vp2_ownership", False))
     if suffix == ".pmx" and vp2_ownership_requested and not strategy.use_cpp_fast_load:

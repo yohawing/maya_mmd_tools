@@ -644,16 +644,51 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertIn(100, app_state.progress)
         self.assertEqual(recorded_history, ["model.pmx"])
 
-    def test_import_file_preserves_native_route_flags_for_model_action(self):
-        """The normal Import button forwards both native flags unchanged."""
+    def test_import_file_blocks_native_route_flags_in_normal_mode(self):
+        """Persisted native flags cannot escape their hidden normal-mode UI."""
         keys = (
+            "ui.general.development_mode",
             "import.native.use_cpp_fast_load",
             "import.native.cpp_fast_load_mesh_only",
             "import.native.use_cpp_vp2_ownership",
         )
         saved = {key: settings.get(key) for key in keys}
         try:
-            for key, value in zip(keys, (True, True, True)):
+            for key, value in zip(keys, (False, True, False, True)):
+                settings.set(key, value)
+            action = _RecordingImportModelAction(
+                ImportModelResult(root_node="model_root", succeeded=True, outcome="success")
+            )
+            presenter = ImportExportPresenter(
+                _FakeView(),
+                _FakeAppState(),
+                import_model_action=action,
+                import_vmd_action=_FailingImportVmdAction(),
+            )
+
+            presenter.import_file()
+
+            options = action.requests[0].options
+            self.assertFalse(options["use_cpp_fast_load"])
+            self.assertTrue(options["cpp_fast_load_mesh_only"])
+            self.assertFalse(options["use_cpp_vp2_ownership"])
+            self.assertFalse(options["use_native_pmx_parse"])
+            self.assertFalse(options["require_native_pmx_parse"])
+        finally:
+            for key, value in saved.items():
+                settings.set(key, value)
+
+    def test_import_file_preserves_native_route_flags_in_development_mode(self):
+        """Development Mode forwards its explicitly persisted native route."""
+        keys = (
+            "ui.general.development_mode",
+            "import.native.use_cpp_fast_load",
+            "import.native.cpp_fast_load_mesh_only",
+            "import.native.use_cpp_vp2_ownership",
+        )
+        saved = {key: settings.get(key) for key in keys}
+        try:
+            for key, value in zip(keys, (True, True, True, True)):
                 settings.set(key, value)
             action = _RecordingImportModelAction(
                 ImportModelResult(root_node="model_root", succeeded=True, outcome="success")
@@ -671,6 +706,7 @@ class TestImportExportPresenter(unittest.TestCase):
             self.assertTrue(options["use_cpp_fast_load"])
             self.assertTrue(options["cpp_fast_load_mesh_only"])
             self.assertTrue(options["use_cpp_vp2_ownership"])
+            self.assertTrue(options["use_native_pmx_parse"])
         finally:
             for key, value in saved.items():
                 settings.set(key, value)

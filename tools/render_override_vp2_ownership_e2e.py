@@ -468,7 +468,8 @@ def run_probe(
             from mmd_tools.services.settings_service import SettingsService
 
             ui_options = SettingsService().build_pmx_import_options(
-                custom_namespace="render_override_vp2_ownership"
+                custom_namespace="render_override_vp2_ownership",
+                development_mode=True,
             )
             # Physics is unrelated to this visual witness and can make a
             # full-character import fail before the VP2 path is reached.
