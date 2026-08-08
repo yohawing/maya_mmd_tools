@@ -644,6 +644,37 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertIn(100, app_state.progress)
         self.assertEqual(recorded_history, ["model.pmx"])
 
+    def test_import_file_preserves_native_route_flags_for_model_action(self):
+        """The normal Import button forwards both native flags unchanged."""
+        keys = (
+            "import.native.use_cpp_fast_load",
+            "import.native.cpp_fast_load_mesh_only",
+            "import.native.use_cpp_vp2_ownership",
+        )
+        saved = {key: settings.get(key) for key in keys}
+        try:
+            for key, value in zip(keys, (True, True, True)):
+                settings.set(key, value)
+            action = _RecordingImportModelAction(
+                ImportModelResult(root_node="model_root", succeeded=True, outcome="success")
+            )
+            presenter = ImportExportPresenter(
+                _FakeView(),
+                _FakeAppState(),
+                import_model_action=action,
+                import_vmd_action=_FailingImportVmdAction(),
+            )
+
+            presenter.import_file()
+
+            options = action.requests[0].options
+            self.assertTrue(options["use_cpp_fast_load"])
+            self.assertTrue(options["cpp_fast_load_mesh_only"])
+            self.assertTrue(options["use_cpp_vp2_ownership"])
+        finally:
+            for key, value in saved.items():
+                settings.set(key, value)
+
     def test_import_file_success_shows_japanese_and_english_model_readme_once(self):
         view = _FakeView()
         app_state = _FakeAppState(

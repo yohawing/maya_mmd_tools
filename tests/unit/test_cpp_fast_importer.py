@@ -27,6 +27,7 @@ install_maya_stub()
 # Now safe to import the module under test
 from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.core.settings import settings
+from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.io import cpp_fast_importer
 from mmd_tools.io.cpp_fast_importer import (
     _apply_basic_materials,
@@ -207,6 +208,61 @@ class TestCppFastImportRouting(unittest.TestCase):
         )
         mock_setup_color_management.assert_called_once_with()
         self.assertEqual(result, "cpp_root")
+
+    @patch("mmd_tools.io.mmd_importer.fast_import", return_value=None)
+    @patch("mmd_tools.io.mmd_importer.parse_mmd_file")
+    @patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file")
+    def test_native_vp2_failure_blocks_python_mesh_fallback(
+        self,
+        mock_import_pmx: MagicMock,
+        mock_parse: MagicMock,
+        mock_fast: MagicMock,
+    ):
+        """An explicit VP2 request must not silently become an ordinary mesh."""
+        options = {
+            "scale": 1.0,
+            "use_cpp_fast_load": True,
+            "use_cpp_vp2_ownership": True,
+        }
+
+        with self.assertRaisesRegex(MMDImportException, "Python mesh fallback is blocked"):
+            import_mmd_file("model.pmx", options=options)
+
+        mock_fast.assert_called_once()
+        mock_parse.assert_not_called()
+        mock_import_pmx.assert_not_called()
+        self.assertEqual(
+            options["profile"]["native_import"],
+            {
+                "requested": True,
+                "route": "cpp_fast_load_vp2",
+                "status": "failed",
+                "fallback": "blocked",
+                "code": "NATIVE_VP2_OWNERSHIP_UNAVAILABLE",
+                "reason": "fast importer returned no model root",
+            },
+        )
+
+    @patch("mmd_tools.io.mmd_importer.parse_mmd_file")
+    @patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file")
+    def test_native_vp2_request_with_fast_load_disabled_is_fail_closed(
+        self,
+        mock_import_pmx: MagicMock,
+        mock_parse: MagicMock,
+    ):
+        """A lost Fast Load flag must not turn a VP2 request into Python import."""
+        options = {
+            "scale": 1.0,
+            "use_cpp_fast_load": False,
+            "use_cpp_vp2_ownership": True,
+        }
+
+        with self.assertRaisesRegex(MMDImportException, "C\\+\\+ Fast Load is disabled"):
+            import_mmd_file("model.pmx", options=options)
+
+        mock_parse.assert_not_called()
+        mock_import_pmx.assert_not_called()
+        self.assertEqual(options["profile"]["native_import"]["fallback"], "blocked")
 
     # ------------------------------------------------------------------
     # Scenario 3: option enabled + fast import fails → fallback

@@ -169,12 +169,23 @@ def import_dropped_files(
     last_model_root: Optional[str] = None
     last_model_path: Optional[str] = None
     imported_any = False
+    model_import_failed = False
 
     for model_path in model_files:
         options = settings_service.build_pmx_import_options(custom_namespace=None)
         profile = {}
         options["profile"] = profile
-        root = importer(model_path, options=options)
+        try:
+            root = importer(model_path, options=options)
+        except Exception as exc:
+            # Native VP2 ownership is an explicit display contract.  The
+            # importer fails closed when that route is unavailable; surface
+            # the reason here instead of letting a deferred Qt callback turn
+            # it into an opaque Maya script error or a Python-mesh success.
+            logger.error("Dropped model import failed for %s: %s", model_path, exc, exc_info=True)
+            _display_error(f"Maya MMD Tools: model import failed: {Path(model_path).name} ({exc})")
+            model_import_failed = True
+            break
         if root:
             last_model_root = str(root)
             last_model_path = model_path
@@ -196,6 +207,12 @@ def import_dropped_files(
                     logger.error("Failed to show model readme for dropped model: %s", exc, exc_info=True)
         else:
             _display_warning(f"Maya MMD Tools: model import failed: {model_path}")
+
+    # Never apply a motion or pose to a pre-existing selected model after a
+    # model in this drop batch failed.  Returning False also prevents a prior
+    # successful model in a multi-model drop from masking the failed batch.
+    if model_import_failed:
+        return False
 
     for motion_path in motion_files:
         target_model = last_model_root or _selected_model_root(scene_model_service)
