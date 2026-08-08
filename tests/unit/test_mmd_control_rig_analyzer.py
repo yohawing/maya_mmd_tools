@@ -140,12 +140,21 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
         self.assertEqual(_control_curve_template_role("right_arm"), "circle")
         self.assertEqual(_control_curve_template_role("right_elbow"), "left_elbow")
         self.assertEqual(_control_curve_template_role("right_wrist"), "left_wrist")
+        self.assertEqual(_control_curve_template_role("left_toe_ik"), "toe_ik")
+        self.assertEqual(_control_curve_template_role("right_toe_ik"), "toe_ik")
+        toe = templates["toe_ik"][0]
+        self.assertEqual(toe["degree"], 3)
+        self.assertTrue(toe["periodic"])
+        self.assertEqual(len(toe["points"]), 11)
+        self.assertEqual(
+            toe["points"][0],
+            [0.6095177982355884, 0.6095177982357424, 0.8417220462218817],
+        )
+        self.assertEqual(toe["points"][8:], toe["points"][:3])
         for role in (
             "waist",
             "left_foot_ik_parent",
             "right_foot_ik_parent",
-            "left_toe_ik",
-            "right_toe_ik",
         ):
             with self.subTest(role=role):
                 self.assertEqual(_control_curve_template_role(role), "circle")
