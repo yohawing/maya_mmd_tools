@@ -246,7 +246,7 @@ def import_pmx_file(
             # MMD ライトコントローラを各 dx11Shader に結線（uniform 生成後）。
             pipeline.wire_light_controller(mesh_converter, light_ctrl)
 
-            # Color Management を MMD 向けに整える（CM の enable は触らない）。
+            # Python MMD shader output requires the CM-on/de-gamma contract.
             pipeline.setup_view()
             if pipeline.profile is not None:
                 pipeline.profile["phase_timings"] = pipeline.phase_timings

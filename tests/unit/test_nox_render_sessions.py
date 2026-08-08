@@ -7,7 +7,10 @@ from pathlib import Path
 from unittest import mock
 
 from tools.nox.common import _has_flag, _option, _options
-from tools.nox.maya_sessions import run_static_render, run_visual_regression
+from tools.nox.maya_sessions import (
+    run_static_render,
+    run_visual_regression,
+)
 
 
 class _FakeSession:
@@ -76,7 +79,6 @@ class NoxRenderSessionsTest(unittest.TestCase):
         self.assertIn("0.12", compare_args)
         self.assertTrue(capture_kwargs["external"])
         self.assertTrue(compare_kwargs["external"])
-
 
 if __name__ == "__main__":
     unittest.main()

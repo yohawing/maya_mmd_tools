@@ -184,7 +184,14 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
 
     if uvs and face_uv_connects:
         uv_set_name = settings.get(setting_keys.IMPORT_MODEL_UV_SET_NAME).replace("#", "1")
-        mesh_fn.createUVSet(uv_set_name)
+        # MFnMesh.create() already provides an empty ``map1`` set.  Calling
+        # createUVSet("map1") again makes Maya silently create ``map11``;
+        # TEXCOORD0 still reads the current empty ``map1`` and DX11 textures
+        # therefore sample a constant texel.  Reuse the requested set when it
+        # exists and make the imported set current for hardware shaders.
+        if uv_set_name not in mesh_fn.getUVSetNames():
+            mesh_fn.createUVSet(uv_set_name)
+        mesh_fn.setCurrentUVSetName(uv_set_name)
 
         u_array = om.MFloatArray()
         v_array = om.MFloatArray()

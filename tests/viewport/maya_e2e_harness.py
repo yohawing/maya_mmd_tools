@@ -120,6 +120,7 @@ def run_maya_e2e(
     report_error: str | None = None,
     log_ready: Any = None,
     warn_detached: bool = False,
+    env_overrides: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Launch Maya with isolated preferences, run a probe, and close it."""
     maya_commandport.remove_stale_logs(stale_paths)
@@ -134,6 +135,8 @@ def run_maya_e2e(
         shutil.rmtree(maya_app_dir, ignore_errors=True)
         profile_owned = True
         _seed_isolated_maya_profile(maya_app_dir, version, project_root)
+        launch_env = dict(env_overrides or {})
+        launch_env["MAYA_APP_DIR"] = str(maya_app_dir)
         proc = maya_commandport.launch_maya(
             version=version,
             project_root=project_root,
@@ -142,7 +145,7 @@ def run_maya_e2e(
             launch_mode="explorer" if sys.platform == "win32" else "direct",
             # Never allow an automated Maya shutdown to rewrite the user's
             # pluginPrefs.mel or other Documents/maya preferences.
-            env_overrides={"MAYA_APP_DIR": str(maya_app_dir)},
+            env_overrides=launch_env,
         )
         maya_owned = True
         maya_commandport.wait_for_port(port, timeout=launch_timeout, process=proc)

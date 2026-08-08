@@ -17,11 +17,14 @@
  */
 
 #include "mmdFastLoad.h"
+#include "MmdRenderQueue.h"
+#include "MmdRenderShape.h"
 
 #include <maya/MArgDatabase.h>
 #include <maya/MDagModifier.h>
 #include <maya/MDagPath.h>
 #include <maya/MFloatArray.h>
+#include <maya/MFnDependencyNode.h>
 #include <maya/MFnDagNode.h>
 #include <maya/MFnMesh.h>
 #include <maya/MFnTransform.h>
@@ -39,16 +42,30 @@
 #include "third_party/json.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 using nlohmann::json;
+
+namespace {
+
+MString mStringFromUtf8(const std::string& value)
+{
+    MString result;
+    result.setUTF8(value.c_str());
+    return result;
+}
+
+} // namespace
 
 // -----------------------------------------------------------------------
 // Construction / destruction
@@ -85,6 +102,10 @@ MSyntax MmdFastLoad::newSyntax()
     // -split / -sp <bool> (optional, default false)
     syntax.addFlag("-sp", "-split", MSyntax::kBoolean);
 
+    // -vp2Ownership / -vo <bool> (optional, default false)
+    // Explicit opt-in to the custom DAG shape and VP2 geometry override.
+    syntax.addFlag("-vo", "-vp2Ownership", MSyntax::kBoolean);
+
     syntax.enableEdit(false);
 
     return syntax;
@@ -103,10 +124,14 @@ bool MmdFastLoad::parseArgs(const MArgList& args)
         return false;
     }
 
-    filePath_ = argData.flagArgumentString("-f", 0).asChar();
+    // Maya's MString stores command arguments as Unicode.  Preserve the
+    // UTF-8 byte sequence here so Windows filesystem code can convert it to
+    // the native wide path instead of truncating non-ASCII characters through
+    // the current code page.
+    filePath_ = argData.flagArgumentString("-f", 0).asUTF8();
 
     if (argData.isFlagSet("-n")) {
-        baseName_ = argData.flagArgumentString("-n", 0).asChar();
+        baseName_ = argData.flagArgumentString("-n", 0).asUTF8();
     }
 
     if (argData.isFlagSet("-s")) {
@@ -119,6 +144,10 @@ bool MmdFastLoad::parseArgs(const MArgList& args)
 
     if (argData.isFlagSet("-sp")) {
         enableSplit_ = argData.flagArgumentBool("-sp", 0);
+    }
+
+    if (argData.isFlagSet("-vo")) {
+        enableVp2Ownership_ = argData.flagArgumentBool("-vo", 0);
     }
 
     if (scale_ <= 0.0) {
@@ -181,6 +210,224 @@ std::string quoteMelName(const MString& name)
     return "\"" + std::string(name.asChar()) + "\"";
 }
 
+float materialDiffuseAlpha(const json& material)
+{
+    if (!material.is_object() || !material.contains("diffuse") ||
+        !material["diffuse"].is_array() || material["diffuse"].size() < 4 ||
+        !material["diffuse"][3].is_number()) {
+        return 1.0f;
+    }
+    return material["diffuse"][3].get<float>();
+}
+
+std::array<float, 3> materialDiffuseColor(const json& material)
+{
+    std::array<float, 3> color = {1.0F, 1.0F, 1.0F};
+    if (!material.is_object() || !material.contains("diffuse") ||
+        !material["diffuse"].is_array() || material["diffuse"].size() < 3U) {
+        return color;
+    }
+
+    for (std::size_t component = 0; component < color.size(); ++component) {
+        const json& value = material["diffuse"][component];
+        if (!value.is_number()) {
+            return {1.0F, 1.0F, 1.0F};
+        }
+        const double numericValue = value.get<double>();
+        if (!std::isfinite(numericValue)) {
+            return {1.0F, 1.0F, 1.0F};
+        }
+        color[component] = static_cast<float>(numericValue);
+    }
+    return color;
+}
+
+std::array<float, 3> materialColorProperty(
+    const json& material,
+    const char* key,
+    const std::array<float, 3>& fallback)
+{
+    std::array<float, 3> color = fallback;
+    if (!material.is_object() || !material.contains(key) ||
+        !material[key].is_array() || material[key].size() < 3U) {
+        return color;
+    }
+    for (std::size_t component = 0; component < color.size(); ++component) {
+        const json& value = material[key][component];
+        if (!value.is_number()) {
+            return fallback;
+        }
+        const double numericValue = value.get<double>();
+        if (!std::isfinite(numericValue)) {
+            return fallback;
+        }
+        color[component] = static_cast<float>(numericValue);
+    }
+    return color;
+}
+
+float materialScalarProperty(const json& material,
+                             const char* key,
+                             float fallback)
+{
+    if (!material.is_object() || !material.contains(key) ||
+        !material[key].is_number()) {
+        return fallback;
+    }
+    const double numericValue = material[key].get<double>();
+    return std::isfinite(numericValue) ? static_cast<float>(numericValue)
+                                       : fallback;
+}
+
+float materialColorAlphaProperty(const json& material,
+                                 const char* key,
+                                 float fallback)
+{
+    if (!material.is_object() || !material.contains(key) ||
+        !material[key].is_array() || material[key].size() < 4U ||
+        !material[key][3].is_number()) {
+        return fallback;
+    }
+    const double numericValue = material[key][3].get<double>();
+    return std::isfinite(numericValue) ? static_cast<float>(numericValue)
+                                       : fallback;
+}
+
+int materialIntegerProperty(const json& material, const char* key, int fallback)
+{
+    if (!material.is_object() || !material.contains(key)) {
+        return fallback;
+    }
+    if (material[key].is_number_integer()) {
+        return material[key].get<int>();
+    }
+    if (material[key].is_string()) {
+        const std::string mode = material[key].get<std::string>();
+        if (mode == "multiply") {
+            return 1;
+        }
+        if (mode == "add") {
+            return 2;
+        }
+        if (mode == "subtexture") {
+            return 3;
+        }
+    }
+    return fallback;
+}
+
+std::string materialTexturePath(const json& material,
+                                const char* key,
+                                const std::filesystem::path& modelDirectory)
+{
+    if (!material.is_object() || !material.contains(key) ||
+        !material[key].is_string()) {
+        return {};
+    }
+
+    const std::string raw = material[key].get<std::string>();
+    if (raw.empty()) {
+        return {};
+    }
+
+    try {
+        const std::filesystem::path path = std::filesystem::u8path(raw);
+        const std::filesystem::path resolved =
+            path.is_absolute() ? path : modelDirectory / path;
+        return resolved.lexically_normal().u8string();
+    } catch (const std::filesystem::filesystem_error&) {
+        return {};
+    }
+}
+
+int materialSharedToonIndex(const json& material)
+{
+    if (!material.is_object() || !material.contains("sharedToonIndex") ||
+        !material["sharedToonIndex"].is_number_integer()) {
+        return -1;
+    }
+    const int index = material["sharedToonIndex"].get<int>();
+    return index >= 0 && index <= 9 ? index : -1;
+}
+
+bool materialDoubleSided(const json& material)
+{
+    if (!material.is_object() || !material.contains("flags") ||
+        !material["flags"].is_object()) {
+        return false;
+    }
+    return material["flags"].value("doubleSided", false);
+}
+
+bool materialEdgeDrawing(const json& material)
+{
+    if (!material.is_object() || !material.contains("flags") ||
+        !material["flags"].is_object()) {
+        return false;
+    }
+    return material["flags"].value("edge", false);
+}
+
+bool materialSelfShadowMap(const json& material)
+{
+    if (!material.is_object() || !material.contains("flags") ||
+        !material["flags"].is_object()) {
+        return false;
+    }
+    // PMX keeps caster and receiver eligibility as separate flags.  The
+    // native caster handoff must consume selfShadowMap, never selfShadow.
+    return material["flags"].value("selfShadowMap", false);
+}
+
+bool materialSelfShadow(const json& material)
+{
+    if (!material.is_object() || !material.contains("flags") ||
+        !material["flags"].is_object()) {
+        return false;
+    }
+    // PMX keeps receiver and caster eligibility as separate flags.  The
+    // native receiver handoff must consume selfShadow, never selfShadowMap.
+    return material["flags"].value("selfShadow", false);
+}
+
+void populateNativeMaterial(const json& material,
+                            const std::filesystem::path& modelDirectory,
+                            mmd::MmdRenderQueueInput& input)
+{
+    input.diffuseColor = materialDiffuseColor(material);
+    input.diffuseAlpha = materialDiffuseAlpha(material);
+    input.specularColor = materialColorProperty(
+        material, "specular", {0.0F, 0.0F, 0.0F});
+    input.specularPower = materialScalarProperty(material, "specularPower", 0.0F);
+    input.ambientColor = materialColorProperty(
+        material, "ambient", {0.3F, 0.3F, 0.3F});
+    input.edgeColor = materialColorProperty(
+        material, "edgeColor", {0.0F, 0.0F, 0.0F});
+    input.edgeAlpha = materialColorAlphaProperty(material, "edgeColor", 1.0F);
+    input.edgeSize = materialScalarProperty(material, "edgeSize", 0.0F);
+    input.edgeDrawing = materialEdgeDrawing(material);
+    input.sphereMode = materialIntegerProperty(material, "sphereMode", 0);
+    input.mainTexturePath =
+        materialTexturePath(material, "texturePath", modelDirectory);
+    input.sphereTexturePath =
+        materialTexturePath(material, "sphereTexturePath", modelDirectory);
+    input.toonTexturePath =
+        materialTexturePath(material, "toonTexturePath", modelDirectory);
+    input.sharedToonIndex = materialSharedToonIndex(material);
+    input.doubleSided = materialDoubleSided(material);
+    input.selfShadowMap = materialSelfShadowMap(material);
+    input.selfShadow = materialSelfShadow(material);
+}
+
+std::filesystem::path nativeModelDirectory(const std::string& modelPath)
+{
+    try {
+        return std::filesystem::u8path(modelPath).parent_path();
+    } catch (const std::filesystem::filesystem_error&) {
+        return {};
+    }
+}
+
 std::string quoteMelName(const std::string& name)
 {
     return "\"" + name + "\"";
@@ -191,7 +438,14 @@ std::string quoteMelName(const std::string& name)
  */
 std::vector<uint8_t> readBinaryFile(const std::string& path)
 {
-    std::ifstream ifs(path, std::ios::binary | std::ios::ate);
+    std::filesystem::path nativePath;
+    try {
+        nativePath = std::filesystem::u8path(path);
+    } catch (const std::filesystem::filesystem_error&) {
+        return {};
+    }
+
+    std::ifstream ifs(nativePath, std::ios::binary | std::ios::ate);
     if (!ifs) {
         return {};
     }
@@ -343,7 +597,25 @@ BuiltMesh buildMesh(const std::vector<float>&    positions,
     // ---- UVs (V-flip) ----
     if (uvs.size() >= vertCount * 2) {
         MString uvSetName("map1");
-        meshFn.createUVSet(uvSetName);
+        // MFnMesh::create() already creates an empty map1 on a fresh mesh.
+        // Recreating it makes Maya silently allocate map11, leaving the
+        // hardware shader sampling the empty current map1 instead.
+        MStringArray uvSetNames;
+        MStatus uvStatus = meshFn.getUVSetNames(uvSetNames);
+        if (!uvStatus) {
+            return result;
+        }
+        bool hasUvSet = false;
+        for (unsigned int i = 0; i < uvSetNames.length(); ++i) {
+            if (uvSetNames[i] == uvSetName) {
+                hasUvSet = true;
+                break;
+            }
+        }
+        if (!hasUvSet && !meshFn.createUVSet(uvSetName)) {
+            return result;
+        }
+        meshFn.setCurrentUVSetName(uvSetName);
 
         MFloatArray uArr(static_cast<unsigned int>(vertCount));
         MFloatArray vArr(static_cast<unsigned int>(vertCount));
@@ -563,12 +835,16 @@ MStatus MmdFastLoad::redoIt()
     std::vector<uint8_t> pmxBytes = readBinaryFile(filePath_);
     if (pmxBytes.empty()) {
         MGlobal::displayError(
-            MString("[mmdFastLoad] Could not read file: ") + filePath_.c_str());
+            MString("[mmdFastLoad] Could not read file: ") +
+            mStringFromUtf8(filePath_));
         return MS::kFailure;
     }
     const uint8_t* data = pmxBytes.data();
     const size_t   len  = pmxBytes.size();
 
+    if (enableVp2Ownership_) {
+        return loadVp2Ownership(safeName, data, len);
+    }
     return enableSplit_ ? loadSplit(safeName, data, len)
                         : loadSingle(safeName, data, len);
 }
@@ -666,6 +942,34 @@ MStatus MmdFastLoad::loadSplit(const std::string& safeName,
                                   manifest["meshes"].is_array())
                                      ? &manifest["meshes"] : nullptr;
 
+    // The material-split ABI exposes one submesh per material.  Build the
+    // native ordering contract before creating Maya nodes so the future VP2
+    // render-item owner can consume the same pass/material order.  Creation
+    // order alone is not claimed as a VP2 draw-order guarantee.
+    std::vector<mmd::MmdRenderQueueInput> queueInputs;
+    queueInputs.reserve(meshCount);
+    for (size_t i = 0; i < meshCount; ++i) {
+        size_t originalMaterialIndex = i;
+        if (manifestMeshes && i < manifestMeshes->size()) {
+            originalMaterialIndex =
+                (*manifestMeshes)[i].value("originalMaterialIndex", i);
+        }
+
+        mmd::MmdRenderQueueInput input;
+        input.materialIndex = originalMaterialIndex;
+        input.submeshIndex = i;
+        if (materials && originalMaterialIndex < materials->size()) {
+            const json& material = (*materials)[originalMaterialIndex];
+            input.transparencyMode = "opaque";
+            input.diffuseAlpha = materialDiffuseAlpha(material);
+            input.selfShadowMap = materialSelfShadowMap(material);
+            input.selfShadow = materialSelfShadow(material);
+        }
+        queueInputs.push_back(std::move(input));
+    }
+    const std::vector<mmd::MmdRenderQueueEntry> renderQueue =
+        mmd::buildMmdRenderQueue(queueInputs);
+
     // ---- Root group transform ----
     MStringArray groupResult;
     MStatus status = MGlobal::executeCommand(
@@ -682,7 +986,8 @@ MStatus MmdFastLoad::loadSplit(const std::string& safeName,
     usedNames.insert(groupName.asChar());
     unsigned int totalMorphs = 0;
 
-    for (size_t i = 0; i < meshCount; ++i) {
+    for (const mmd::MmdRenderQueueEntry& queueEntry : renderQueue) {
+        const size_t i = queueEntry.submeshIndex;
         std::vector<float>    positions = bufferToFloatsAndFree(
             mmd_runtime_pmx_material_split_positions_buffer(split, i));
         std::vector<float>    normals = bufferToFloatsAndFree(
@@ -763,6 +1068,197 @@ MStatus MmdFastLoad::loadSplit(const std::string& safeName,
              ? MString(", ") + std::to_string(totalMorphs).c_str() + " morph targets"
              : MString("")) +
         ")");
+    return MS::kSuccess;
+}
+
+MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
+                                      const uint8_t* data,
+                                      size_t len)
+{
+    // This path intentionally uses the same material-split ABI and queue
+    // classification as -split, but hands ownership to one opt-in custom DAG
+    // shape.  The ordinary MFnMesh path is not changed by this flag.
+    mmd_runtime_pmx_material_split_t* split =
+        mmd_runtime_pmx_material_split_create(data, len, /*flags=*/0u);
+    if (!split) {
+        MGlobal::displayError(
+            "[mmdFastLoad] VP2 ownership split creation failed.");
+        return MS::kFailure;
+    }
+
+    const size_t meshCount = mmd_runtime_pmx_material_split_mesh_count(split);
+    if (meshCount == 0U) {
+        MGlobal::displayError(
+            "[mmdFastLoad] VP2 ownership split produced no meshes.");
+        mmd_runtime_pmx_material_split_free(split);
+        return MS::kFailure;
+    }
+
+    json manifest = parseJsonBufferAndFree(
+        mmd_runtime_pmx_material_split_manifest_json(split));
+    json nonGeo = parseJsonBufferAndFree(
+        mmd_runtime_parse_pmx_non_geometry_json(data, len));
+    const json* materials = (nonGeo.is_object() && nonGeo.contains("materials") &&
+                             nonGeo["materials"].is_array())
+                                ? &nonGeo["materials"]
+                                : nullptr;
+    const json* manifestMeshes =
+        (manifest.is_object() && manifest.contains("meshes") &&
+         manifest["meshes"].is_array())
+                                     ? &manifest["meshes"]
+                                     : nullptr;
+    const std::filesystem::path modelDirectory = nativeModelDirectory(filePath_);
+
+    std::vector<mmd::MmdRenderQueueInput> queueInputs;
+    queueInputs.reserve(meshCount);
+    for (size_t i = 0; i < meshCount; ++i) {
+        size_t originalMaterialIndex = i;
+        if (manifestMeshes && i < manifestMeshes->size()) {
+            originalMaterialIndex =
+                (*manifestMeshes)[i].value("originalMaterialIndex", i);
+        }
+
+        mmd::MmdRenderQueueInput input;
+        input.materialIndex = originalMaterialIndex;
+        input.submeshIndex = i;
+        if (materials && originalMaterialIndex < materials->size()) {
+            const json& material = (*materials)[originalMaterialIndex];
+            populateNativeMaterial(material, modelDirectory, input);
+            // The normal native viewport route intentionally keeps every
+            // material in the opaque pass.  Mixing only some PMX materials
+            // into Maya's transparent queue produces unstable body/outline
+            // ordering on real character models.  Authored alpha remains a
+            // shader input, so the opaque technique can still clip alpha-zero
+            // texels without enabling partial blending.
+            input.transparencyMode = "opaque";
+        }
+        queueInputs.push_back(std::move(input));
+    }
+    std::vector<std::vector<float>> submeshPositions(meshCount);
+    std::vector<std::vector<float>> submeshNormals(meshCount);
+    std::vector<std::vector<float>> submeshUvs(meshCount);
+    std::vector<std::vector<uint32_t>> submeshIndices(meshCount);
+    for (size_t i = 0; i < meshCount; ++i) {
+        submeshPositions[i] = bufferToFloatsAndFree(
+            mmd_runtime_pmx_material_split_positions_buffer(split, i));
+        submeshNormals[i] = bufferToFloatsAndFree(
+            mmd_runtime_pmx_material_split_normals_buffer(split, i));
+        submeshUvs[i] = bufferToFloatsAndFree(
+            mmd_runtime_pmx_material_split_uvs_buffer(split, i));
+        submeshIndices[i] = bufferToU32AndFree(
+            mmd_runtime_pmx_material_split_indices_buffer(split, i));
+        if (submeshPositions[i].empty() || submeshIndices[i].empty()) {
+            MGlobal::displayError(
+                MString("[mmdFastLoad] VP2 ownership submesh has no geometry: ") +
+                std::to_string(i).c_str());
+            mmd_runtime_pmx_material_split_free(split);
+            return MS::kFailure;
+        }
+    }
+    mmd_runtime_pmx_material_split_free(split);
+
+    MStatus status;
+    MFnDagNode rootFn;
+    MObject parent = MObject::kNullObj;
+    const MString shapeName((safeName + "_vp2").c_str());
+    // With a null parent, MFnDagNode::create returns the automatically
+    // created transform for this surface shape.  Resolve the custom shape
+    // child explicitly instead of treating that transform as the user node.
+    MObject rootObject = rootFn.create(
+        MmdRenderShape::id, shapeName, parent, &status);
+    if (!status || rootObject.isNull()) {
+        MGlobal::displayError(
+            "[mmdFastLoad] Failed to create mmdRenderShape.");
+        return MS::kFailure;
+    }
+
+    MObject shapeObject = MObject::kNullObj;
+    const unsigned int childCount = rootFn.childCount(&status);
+    if (status) {
+        for (unsigned int childIndex = 0; childIndex < childCount;
+             ++childIndex) {
+            MStatus childStatus;
+            const MObject child = rootFn.child(childIndex, &childStatus);
+            if (!childStatus || child.isNull()) {
+                continue;
+            }
+            MFnDependencyNode childFn(child, &childStatus);
+            if (!childStatus) {
+                continue;
+            }
+            MTypeId childType = childFn.typeId(&childStatus);
+            if (childStatus && childType == MmdRenderShape::id) {
+                shapeObject = child;
+                break;
+            }
+        }
+    }
+    if (!status || shapeObject.isNull()) {
+        MGlobal::displayError(
+            "[mmdFastLoad] Created transform has no mmdRenderShape child.");
+        MDagModifier cleanup;
+        cleanup.deleteNode(rootObject);
+        cleanup.doIt();
+        return MS::kFailure;
+    }
+
+    MmdRenderShape* shape = MmdRenderShape::fromMObject(shapeObject, &status);
+    if (!status) {
+        MGlobal::displayError(
+            "[mmdFastLoad] mmdRenderShape user-node lookup failed.");
+        MDagModifier cleanup;
+        cleanup.deleteNode(rootObject);
+        cleanup.doIt();
+        return MS::kFailure;
+    }
+    if (!shape) {
+        MGlobal::displayError(
+            "[mmdFastLoad] mmdRenderShape user-node is null.");
+        MDagModifier cleanup;
+        cleanup.deleteNode(rootObject);
+        cleanup.doIt();
+        return MS::kFailure;
+    }
+    if (!shape->setMaterialSplitGeometry(
+            submeshPositions, submeshNormals, submeshUvs, submeshIndices,
+            queueInputs, scale_)) {
+        MGlobal::displayError(
+            "[mmdFastLoad] VP2 ownership geometry rejected by mmdRenderShape.");
+        MDagModifier cleanup;
+        cleanup.deleteNode(rootObject);
+        cleanup.doIt();
+        return MS::kFailure;
+    }
+
+    MString rootName = rootFn.fullPathName(&status);
+    MFnDagNode shapeFn(shapeObject, &status);
+    if (!status) {
+        MDagModifier cleanup;
+        cleanup.deleteNode(rootObject);
+        cleanup.doIt();
+        return status;
+    }
+    const MString shapePath = shapeFn.fullPathName(&status);
+    if (!status) {
+        MDagModifier cleanup;
+        cleanup.deleteNode(rootObject);
+        cleanup.doIt();
+        return status;
+    }
+
+    transformName_ = rootName;
+    meshName_ = shapePath;
+    createdRoots_.append(rootName);
+
+    MStringArray result;
+    result.append(transformName_);
+    result.append(meshName_);
+    setResult(result);
+
+    MGlobal::displayInfo(
+        MString("[mmdFastLoad] Created opt-in VP2 ownership shape: ") +
+        meshName_ + " (queue entries=" +
+        std::to_string(queueInputs.size()).c_str() + ")");
     return MS::kSuccess;
 }
 

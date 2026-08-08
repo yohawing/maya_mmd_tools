@@ -15,6 +15,10 @@
  *   -split/-sp <bool>  Optional. Split into one mesh per material
  *                      (mmd_runtime_pmx_material_split_* ABI) grouped under a
  *                      single transform. Default: false (single merged mesh).
+ *   -vp2Ownership/-vo <bool> Optional. Use the opt-in custom mmdRenderShape
+ *                              and its MPxGeometryOverride instead of regular
+ *                              MFnMesh nodes. This is a native draw witness,
+ *                              not a visual parity claim.
  *
  * Geometry is read from typed byte buffers (positions/uvs/indices); vertex
  * morphs are read from the non-geometry JSON (morphs[].vertexOffsets[]).
@@ -58,6 +62,10 @@ private:
     MStatus loadSingle(const std::string& safeName, const uint8_t* data, size_t len);
     // Build one mesh per material, grouped under a single transform.
     MStatus loadSplit(const std::string& safeName, const uint8_t* data, size_t len);
+    // Build the opt-in custom DAG shape from material-split geometry.
+    MStatus loadVp2Ownership(const std::string& safeName,
+                             const uint8_t* data,
+                             size_t len);
 
     // Parsed from command flags
     std::string filePath_;
@@ -65,6 +73,8 @@ private:
     double scale_ = 1.0;
     bool enableMorphs_ = false;
     bool enableSplit_ = false;
+    // Explicit opt-in: custom DAG shape plus MPxGeometryOverride ownership.
+    bool enableVp2Ownership_ = false;
 
     // Created node names (for undo / result)
     MString transformName_;

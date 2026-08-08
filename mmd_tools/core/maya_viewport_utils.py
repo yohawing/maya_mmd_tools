@@ -170,7 +170,7 @@ def setup_mmd_color_management(
     rendering_space="scene-linear Rec.709-sRGB",
     view_transform="Un-tone-mapped (sRGB)",
 ):
-    """Color Management を MMD 向けに整える（CM の有効/無効は変更しない）。
+    """Color Management を Python MMD shader 向けに整える。
 
     MMD シェーダーは出口で de-gamma して view transform の sRGB encode を相殺し、
     MMD のガンマ空間ルックを CM ON のまま再現する。これが**厳密に**成立するには:
@@ -182,12 +182,21 @@ def setup_mmd_color_management(
     - **View transform = Un-tone-mapped (sRGB)**: 既定の ACES filmic はトーンマップで
       白く眠くなる。純 sRGB encode にする。
 
-    ACES で見たい人は後から戻せる。CM の enable 状態はユーザー設定を尊重。
+    ACES で見たい人は後から戻せる。Python shaderはlinear出力をMayaの
+    view transformへ渡すため、CMを有効化する。
 
     Returns:
         bool: いずれかを設定できたら True。
     """
     changed = False
+    try:
+        if not bool(cmds.colorManagementPrefs(q=True, cmEnabled=True)):
+            cmds.colorManagementPrefs(e=True, cmEnabled=True)
+            logger.info("Enabled color management for Python MMD shader output")
+        changed = True
+    except Exception:
+        logger.debug("Failed to enable color management", exc_info=True)
+
     try:
         spaces = cmds.colorManagementPrefs(q=True, renderingSpaceNames=True) or []
         if rendering_space in spaces:
@@ -215,6 +224,30 @@ def setup_mmd_color_management(
         logger.debug("Failed to set View Transform", exc_info=True)
 
     return changed
+
+
+def setup_mmd_native_color_management() -> bool:
+    """Disable Maya color management for the native gamma-space VP2 path.
+
+    The native C++ MMD shader writes authored sRGB values directly so VP2 can
+    perform MMD's legacy gamma-space alpha blend.  Maya's color-managed view
+    would reinterpret those values as linear and apply another output
+    transform.  This setting is intentionally separate from
+    :func:`setup_mmd_color_management`, which is used by the Python
+    ``dx11Shader`` path and keeps color management enabled.
+
+    Returns:
+        bool: Whether the color-management state was queried or changed.
+    """
+    try:
+        current = bool(cmds.colorManagementPrefs(q=True, cmEnabled=True))
+        if current:
+            cmds.colorManagementPrefs(e=True, cmEnabled=False)
+            logger.info("Disabled color management for native MMD VP2 output")
+        return True
+    except Exception:
+        logger.debug("Failed to disable color management for native MMD VP2 output", exc_info=True)
+        return False
 
 
 # Viewport 2.0 transparency algorithm enum (hardwareRenderingGlobals):

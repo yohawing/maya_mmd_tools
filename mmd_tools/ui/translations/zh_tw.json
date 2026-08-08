@@ -162,7 +162,9 @@
     "vmd_fps": "VMD 檔案的影格率。MMD 標準為 30 fps",
     "separate_meshes": "依材質分割網格",
     "import_physics": "從 PMX 物理資料建立剛體與關節",
-    "disable_backface_culling": "停用背面剔除以啟用雙面算圖"
+    "disable_backface_culling": "停用背面剔除以啟用雙面算圖",
+    "use_cpp_fast_load": "使用編譯後的 C++ PMX 匯入器取代 Python 匯入器（實驗性）",
+    "use_cpp_vp2_ownership": "使用原生 mmdRenderShape 的 VP2 RenderOverride。需要啟用 C++ Fast Load，僅用於網格顯示（實驗性）"
   },
   "messages": {
     "import_success": "匯入完成",
@@ -323,6 +325,8 @@
     "reduce_bake_keys": "減少烘焙關鍵影格",
     "create_mmd_control_rig": "建立 MMD Control Rig",
     "vmd_rotation_time_curve": "保留VMD旋轉時間曲線（實驗性）",
+    "use_cpp_fast_load": "使用 C++ Fast Load（實驗性）",
+    "use_cpp_vp2_ownership": "使用 C++ VP2 RenderOverride（實驗性）",
     "apply_scale": "套用縮放",
     "new_file": "新建檔案",
     "enable_ik": "啟用IK",

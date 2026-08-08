@@ -45,6 +45,7 @@ from mmd_tools.core.constants import (
 )
 from mmd_tools.converters.mesh_material_properties import (
     PMX_DOUBLE_SIDED_DRAW_FLAG as _PMX_DOUBLE_SIDED_DRAW_FLAG,
+    material_has_outline as _material_has_outline,
     material_is_double_sided as _material_is_double_sided,
 )
 from mmd_tools.converters.material_shader_parameters import (
@@ -98,9 +99,13 @@ _MATERIAL_NODE_FAMILY_SUFFIXES = (
     "_toon_texture",
     "_materialMorphEval",
 )
-_DX11_TECHNIQUE_BY_SIDEDNESS = {
-    False: "MMDTechnique",
-    True: "MMDTechniqueDoubleSided",
+_DX11_TECHNIQUE_BY_RENDERING = {
+    (TRANSPARENCY_MODE_OPAQUE, False): "MMDTechnique",
+    (TRANSPARENCY_MODE_CUTOUT, False): "MMDTechnique",
+    (TRANSPARENCY_MODE_BLEND, False): "MMDTechniqueTranslucent",
+    (TRANSPARENCY_MODE_OPAQUE, True): "MMDTechniqueDoubleSided",
+    (TRANSPARENCY_MODE_CUTOUT, True): "MMDTechniqueDoubleSided",
+    (TRANSPARENCY_MODE_BLEND, True): "MMDTechniqueTranslucentDoubleSided",
 }
 
 
@@ -160,6 +165,7 @@ _MIGRATED_HARDWARE_ATTRS = (
     "SpecularColor",
     "Shininess",
     "AmbientColor",
+    "ToonCoordinateOffset",
     "EdgeSize",
     "Opacity",
     "SphereMode",
@@ -458,14 +464,15 @@ def _classify_material_transparency(material, texture_path=None) -> str:
 
 
 def _technique_for_transparency(mode: str, edge_enabled: bool, double_sided: bool = False) -> str:
-    """Select one of the two opaque DX11 techniques.
+    """Select the DX11 technique for alpha mode and sidedness.
 
-    ``mode`` and ``edge_enabled`` remain accepted for scene/UI compatibility,
-    but the renderer no longer creates transparent or no-edge variants. PMX
-    alpha metadata is preserved separately while every material uses the edge
-    pass and differs only by authored single/double-sided drawing.
+    ``edge_enabled`` remains accepted for scene/UI compatibility.  Opaque and
+    cutout materials share the depth-writing techniques; genuinely blended
+    materials use the explicit translucent technique so VP2 can composite them
+    instead of discarding their authored alpha through a no-blend state.
     """
-    return _DX11_TECHNIQUE_BY_SIDEDNESS[bool(double_sided)]
+    mode = mode if mode in TRANSPARENCY_MODES else TRANSPARENCY_MODE_OPAQUE
+    return _DX11_TECHNIQUE_BY_RENDERING[(mode, bool(double_sided))]
 
 
 def _dx11_rendering_from_technique(technique: str) -> Tuple[str, bool, bool]:
@@ -545,8 +552,8 @@ def get_transparency_mode(shader: str) -> str:
 def apply_transparency_mode(shader: str, mode: str) -> str:
     """Re-apply a transparency mode to an existing dx11Shader (UI entry point).
 
-    Transparency metadata is retained, but rendering remains opaque/cutout and
-    the selected technique changes only when sidedness changes.
+    Opaque/cutout modes retain depth-writing rendering, while blend selects the
+    explicit translucent technique and its alpha-blended, depth-read-only pass.
     """
     if mode not in TRANSPARENCY_MODES:
         raise ValueError(f"Unknown transparency mode: {mode!r}")
@@ -621,6 +628,8 @@ def _ensure_mmd_shader_uniform_attributes(shader_node, include_device_pixel_rati
         ("DiffuseColorA", om.MFnNumericData.kDouble, 1, False, 1.0),
         ("SpecularColor", om.MFnNumericData.kDouble, 3, True, (0.5, 0.5, 0.5)),
         ("AmbientColor", om.MFnNumericData.kDouble, 3, True, (0.3, 0.3, 0.3)),
+        # Explicit ramp calibration shared by the DX11 and OGSFX effects.
+        ("ToonCoordinateOffset", om.MFnNumericData.kDouble, 1, False, 0.55),
         ("EdgeColor", om.MFnNumericData.kDouble, 4, True, (0.0, 0.0, 0.0, 1.0)),
         ("EdgeColorRGB", om.MFnNumericData.kDouble, 3, True, (0.0, 0.0, 0.0)),
         ("EdgeColorA", om.MFnNumericData.kDouble, 1, False, 1.0),
@@ -634,10 +643,10 @@ def _ensure_mmd_shader_uniform_attributes(shader_node, include_device_pixel_rati
         # MMD ライト（コントローラ駆動の唯一の光源）。GUI では dx11Shader が .fx
         # から自動生成するが、standalone/テストでは生成されないため補完しておき、
         # 後段のコントローラ結線が失敗しないようにする。
-        ("MMDLightDirection", om.MFnNumericData.kDouble, 3, False, (0.5, -1.0, 0.5)),
-        ("MMDLightColor", om.MFnNumericData.kDouble, 3, True, (1.0, 1.0, 1.0)),
-        ("MmdControllerLightVector", om.MFnNumericData.kDouble, 3, False, (0.5, -1.0, 0.5)),
-        ("MmdControllerLightRgb", om.MFnNumericData.kDouble, 3, True, (1.0, 1.0, 1.0)),
+        ("MMDLightDirection", om.MFnNumericData.kDouble, 3, False, (-0.5, -1.0, -1.0)),
+        ("MMDLightColor", om.MFnNumericData.kDouble, 3, True, (154.0 / 255.0,) * 3),
+        ("MmdControllerLightVector", om.MFnNumericData.kDouble, 3, False, (-0.5, -1.0, -1.0)),
+        ("MmdControllerLightRgb", om.MFnNumericData.kDouble, 3, True, (154.0 / 255.0,) * 3),
     ]
     if include_device_pixel_ratio:
         uniforms.append(("DevicePixelRatio", om.MFnNumericData.kDouble, 1, False, 1.0))
@@ -2086,7 +2095,7 @@ class MeshConverter:
 
         if is_pmd:
             custom_attrs[ATTR_MMD_EDGE_FLAG] = int(material.edge_flag)
-            custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = False
+            custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = _material_has_outline(material, is_pmd=True)
         else:
             custom_attrs[ATTR_MMD_SPHERE_MODE] = int(material.sphere_mode)
             custom_attrs[ATTR_MMD_SPHERE_TEXTURE_INDEX] = material.sphere_texture_index
@@ -2097,7 +2106,7 @@ class MeshConverter:
                 float(material.edge_color[3]) if len(material.edge_color) > 3 else 1.0
             )
             custom_attrs[ATTR_MMD_EDGE_SIZE] = material.edge_size
-            custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = False
+            custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = _material_has_outline(material)
             custom_attrs[_ATTR_MMD_DOUBLE_SIDED] = _material_is_double_sided(material)
             custom_attrs[ATTR_MMD_MEMO] = material.memo
             custom_attrs[ATTR_MMD_SHARED_TOON_FLAG] = int(material.shared_toon_flag)
@@ -2511,11 +2520,14 @@ class MeshConverter:
         # mayapy standalone では dx11Shader が .fx ファイルから uniform 属性を
         # 自動生成しないため、事前に動的アトリビュートとして作成しておく
         _ensure_dx11_uniform_attributes(shader)
-        # Prefer the accurate per-material UV-region classification computed up
-        # front; fall back to the simple diffuse-alpha rule if unavailable.
-        mode = self._transparency_modes.get(material_index)
-        if mode is None:
-            mode = _classify_material_transparency(material, texture_path)
+        # The regular import route deliberately starts every DX11 material in
+        # the opaque pass.  Maya's partially ordered transparent queue causes
+        # large MMD models to render bodies/outlines in an unstable order when
+        # only some materials are classified as blended.  Keep the authored
+        # alpha uniforms and texture alpha (the opaque technique still clips
+        # fully transparent texels), but require an explicit later edit before
+        # selecting a translucent technique.
+        mode = TRANSPARENCY_MODE_OPAQUE
         double_sided = _material_is_double_sided(material)
         technique = _technique_for_transparency(mode, True, double_sided)
         cmds.setAttr(f"{shader}.technique", technique, type="string")
@@ -2534,7 +2546,10 @@ class MeshConverter:
         if not is_pmd:
             # エッジ色
             _set_dx11_color_uniform(shader, "EdgeColor", material.edge_color)
-        maya_attribute_utils.set_attribute(shader, "EdgeSize", 0.0, "float")
+        outline_enabled = _material_has_outline(material, is_pmd=is_pmd)
+        authored_edge_size = float(getattr(material, "edge_size", 1.0))
+        edge_size = authored_edge_size if outline_enabled else 0.0
+        maya_attribute_utils.set_attribute(shader, "EdgeSize", edge_size, "float")
 
         # スフィアモード設定
         sphere_mode = getattr(material, "sphere_mode", 0)

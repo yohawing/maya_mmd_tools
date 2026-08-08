@@ -130,6 +130,24 @@ def test_both_shader_sources_apply_rgba_factors_before_final_opacity():
         assert _main_alpha_contract_holds(source)
 
 
+def test_shader_outputs_decode_mmd_gamma_composite_and_use_mmd_light_defaults():
+    """MMD gamma math is decoded once before Maya's sRGB view transform."""
+    dx11 = (ROOT / "mmd_tools/shaders/MMDShader.fx").read_text(encoding="utf-8")
+    glsl = (ROOT / "mmd_tools/shaders/MMDShader.ogsfx").read_text(encoding="utf-8")
+
+    assert "return float4(SrgbToLinear(litColor), opacity);" in dx11
+    assert "colorOut = vec4(srgbToLinear(lighting), opacity);" in glsl
+    assert "> = {-0.5f, -1.0f, -1.0f};" in dx11
+    assert "uniform vec3 MmdControllerLightVector = {-0.5, -1.0, -1.0};" in glsl
+    assert "0.6039216f" in dx11
+    assert "0.6039216" in glsl
+    assert "if (dot(n, viewDir) < 0.0)" not in glsl
+    assert "if (HasToonTexture != 0)" in glsl
+    assert "max(ndotl, 0.0) * DiffuseColorRGB * lightColor" not in glsl
+    assert "ToonCoordinateOffset" in dx11
+    assert "ToonCoordinateOffset" in glsl
+
+
 def test_sphere_mapping_uses_half_range_view_normal_projection_in_both_backends():
     """Sphere UVs use the normative x/y 0.5 projection coefficients."""
     sources = {
@@ -169,16 +187,34 @@ def test_specular_power_gate_matches_mmd_contract_in_both_backends():
     assert "float UIMin = 0.0;" in sources["dx11"]
 
 
-def test_toon_coordinate_matches_full_shader_half_lambert_in_both_backends():
-    """Both backends express FullShader's V=0.5-0.5*N.L directly."""
+def test_toon_coordinate_matches_maya_ramp_contract_in_both_backends():
+    """Both backends use the calibrated top-origin MMD ramp coordinate."""
     dx11 = (ROOT / "mmd_tools/shaders/MMDShader.fx").read_text(encoding="utf-8")
     glsl = (ROOT / "mmd_tools/shaders/MMDShader.ogsfx").read_text(encoding="utf-8")
-    assert "float toonV = saturate(0.5 - NdotL * 0.5);" in dx11
-    assert "float2(0.5, toonV)" in dx11
-    assert "float toonV = clamp(0.5 - ndotl * 0.5, 0.0, 1.0);" in glsl
-    assert "vec2(0.5, toonV)" in glsl
+    assert "float ToonCoordinateOffset" in dx11
+    assert "= 0.55f;" in dx11
+    assert "float toonV = saturate(ToonCoordinateOffset - NdotL * 0.5);" in dx11
+    assert "float2(0.0, toonV)" in dx11
+    assert "uniform float ToonCoordinateOffset = 0.55;" in glsl
+    assert "float toonV = clamp(ToonCoordinateOffset - ndotl * 0.5, 0.0, 1.0);" in glsl
+    assert "vec2(0.0, toonV)" in glsl
+    assert "uniform sampler2D ToonSampler = sampler_state" in glsl
+    assert "TEXTURE_MIN_FILTER = LINEAR;" in glsl
+    assert "TEXTURE_MAG_FILTER = LINEAR;" in glsl
+    assert "TEXTURE_WRAP_S = CLAMP_TO_EDGE;" in glsl
+    assert "TEXTURE_WRAP_T = CLAMP_TO_EDGE;" in glsl
     for source in (dx11, glsl):
         assert "1.0 - rampCoord" not in source
+        assert "0.5 - NdotL * 0.5" not in source
+        assert "0.5 - ndotl * 0.5" not in source
+
+
+def test_dx11_toon_coordinate_uses_interpolated_world_normal():
+    """DX11 toon lookup preserves the raw corner-normal interpolation."""
+    source = (ROOT / "mmd_tools/shaders/MMDShader.fx").read_text(encoding="utf-8")
+
+    assert "float NdotL = dot(input.worldNormal, lightDir);" in source
+    assert "float NdotL = dot(normal, lightDir);" not in source
 
 
 def test_surface_composition_matches_full_shader_sphere_toon_specular_order():
@@ -198,22 +234,60 @@ def test_surface_composition_matches_full_shader_sphere_toon_specular_order():
         assert "litColor *= sphereColor" not in source
 
 
-def test_dx11_effect_has_only_sidedness_techniques_with_optional_edge_output():
-    """Transparency and no-edge variants do not multiply effect techniques."""
+def _dx11_technique(source, name):
+    match = re.search(
+        rf"technique11\s+{re.escape(name)}\s*<.*?(?=\ntechnique11\s|\Z)",
+        source,
+        re.S,
+    )
+    assert match, f"missing DX11 technique: {name}"
+    return match.group(0)
+
+
+def test_dx11_effect_has_material_order_translucent_depth_contract():
+    """Translucent bodies write depth while inverted-hull edges stay read-only."""
     source = (ROOT / "mmd_tools/shaders/MMDShader.fx").read_text(encoding="utf-8")
     assert re.findall(r"technique11\s+(\w+)", source) == [
         "MMDTechnique",
         "MMDTechniqueDoubleSided",
+        "MMDTechniqueTranslucent",
+        "MMDTechniqueTranslucentDoubleSided",
     ]
-    assert "BlendEnable[0] = TRUE" not in source
-    assert "int isTransparent = 1" not in source
+    assert "BlendEnable[0] = TRUE" in source
+    assert "int isTransparent = 1" in source
+    depth_body = re.search(
+        r"DepthStencilState\s+EnableDepth\s*\{(?P<body>.*?)\};", source, re.S
+    ).group("body")
+    edge_depth = re.search(
+        r"DepthStencilState\s+EdgeDepthReadOnly\s*\{(?P<body>.*?)\};",
+        source,
+        re.S,
+    ).group("body")
+    assert "DepthEnable = TRUE" in depth_body
+    assert "DepthWriteMask = ALL" in depth_body
+    assert "DepthFunc = LESS" in depth_body
+    assert "DepthEnable = TRUE" in edge_depth
+    assert "DepthWriteMask = ZERO" in edge_depth
+    assert "DepthFunc = LESS" in edge_depth
     assert "clip(EdgeSize - 1.0e-5);" in source
-    assert source.count("pass EdgePass") == 2
-    assert "SetRasterizerState(CullFront)" in source
-    assert "SetRasterizerState(CullNone)" in source
+    assert source.count("pass EdgePass") == 4
+    for technique_name, main_cull in (
+        ("MMDTechniqueTranslucent", "CullFront"),
+        ("MMDTechniqueTranslucentDoubleSided", "CullNone"),
+    ):
+        technique = _dx11_technique(source, technique_name)
+        main_pass, edge_pass = technique.split("pass EdgePass", 1)
+        assert f"SetRasterizerState({main_cull})" in main_pass
+        assert "SetBlendState(AlphaBlend" in main_pass
+        assert "SetDepthStencilState(EnableDepth, 0);" in main_pass
+        assert "EnableDepthNoWrite" not in main_pass
+        assert "SetRasterizerState(CullFront)" in edge_pass
+        assert "SetDepthStencilState(EdgeDepthReadOnly, 0);" in edge_pass
+        assert "CompileShader(vs_5_0, EdgeVSTranslucent())" in edge_pass
     assert 'float DevicePixelRatio< string UIWidget = "None"; > = 1.0f;' in source
     assert "logicalEdgeSize = EdgeSize * max(DevicePixelRatio, 1.0e-5)" in source
-    assert "screenNormal / (safeScreenSize * 0.5) * logicalEdgeSize * clipPos.w" in source
+    assert "screenNormal / (safeScreenSize * 0.45) * logicalEdgeSize * clipPos.w" in source
+    assert "output.position.z += 1.0e-2 * output.position.w;" in source
     assert "EdgeSize * 4.0" not in source
 
 
