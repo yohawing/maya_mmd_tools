@@ -9,6 +9,21 @@ from mmd_tools.core.import_strategy import (
 
 
 class TestModelImportStrategy(unittest.TestCase):
+    def test_development_mode_does_not_enable_fast_load_by_default(self):
+        def fake_settings(key, default=None):
+            if key == "ui.general.development_mode":
+                return True
+            return default
+
+        strategy = resolve_model_import_strategy(
+            "model.pmx",
+            {},
+            settings_get=fake_settings,
+        )
+
+        self.assertFalse(strategy.use_cpp_fast_load)
+        self.assertEqual(strategy.cpp_fast_load_reason, "disabled by option/settings")
+
     def test_pmx_fast_load_enabled_by_option(self):
         strategy = resolve_model_import_strategy(
             "model.pmx",

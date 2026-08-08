@@ -41,7 +41,7 @@ def resolve_model_import_strategy(
     suffix = Path(filepath).suffix.lower()
     development_mode = bool(settings_get(settings_keys.UI_GENERAL_DEVELOPMENT_MODE, False))
     default_fast_load = (
-        settings_get(settings_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, True)
+        settings_get(settings_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, False)
         if development_mode
         else False
     )
