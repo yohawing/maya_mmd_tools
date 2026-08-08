@@ -19,6 +19,7 @@
 #include "mmdFastLoad.h"
 #include "MmdRenderQueue.h"
 #include "MmdRenderShape.h"
+#include "MmdTextureAlphaClassifier.h"
 
 #include <maya/MArgDatabase.h>
 #include <maya/MDagModifier.h>
@@ -30,6 +31,7 @@
 #include <maya/MFnTransform.h>
 #include <maya/MGlobal.h>
 #include <maya/MIntArray.h>
+#include <maya/MImage.h>
 #include <maya/MPointArray.h>
 #include <maya/MSelectionList.h>
 #include <maya/MStringArray.h>
@@ -48,6 +50,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -438,6 +441,48 @@ std::filesystem::path nativeModelDirectory(const std::string& modelPath)
     } catch (const std::filesystem::filesystem_error&) {
         return {};
     }
+}
+
+struct DecodedTextureAlpha {
+    std::size_t width = 0U;
+    std::size_t height = 0U;
+    std::vector<std::uint8_t> alpha;
+};
+
+const DecodedTextureAlpha* loadTextureAlpha(
+    const std::string& path,
+    std::unordered_map<std::string, DecodedTextureAlpha>& cache)
+{
+    const auto cached = cache.find(path);
+    if (cached != cache.end()) {
+        return cached->second.alpha.empty() ? nullptr : &cached->second;
+    }
+
+    DecodedTextureAlpha decoded;
+    MString mayaPath;
+    mayaPath.setUTF8(path.c_str());
+    MImage image;
+    unsigned int width = 0U;
+    unsigned int height = 0U;
+    if (image.readFromFile(mayaPath, MImage::kByte) &&
+        image.getSize(width, height) && width > 0U && height > 0U) {
+        const unsigned char* pixels = image.pixels();
+        const std::size_t pixelCount =
+            static_cast<std::size_t>(width) *
+            static_cast<std::size_t>(height);
+        if (pixels && pixelCount <=
+                          std::numeric_limits<std::size_t>::max() / 4U) {
+            decoded.width = width;
+            decoded.height = height;
+            decoded.alpha.resize(pixelCount);
+            for (std::size_t index = 0U; index < pixelCount; ++index) {
+                decoded.alpha[index] = pixels[index * 4U + 3U];
+            }
+        }
+    }
+    const auto inserted = cache.emplace(path, std::move(decoded));
+    return inserted.first->second.alpha.empty() ? nullptr
+                                                 : &inserted.first->second;
 }
 
 std::string quoteMelName(const std::string& name)
@@ -1162,6 +1207,27 @@ MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
         }
     }
     mmd_runtime_pmx_material_split_free(split);
+
+    // Classify texture alpha once during import, using only the texels covered
+    // by each material's UV triangles.  This keeps atlas regions independent
+    // and leaves VP2 draw updates free of synchronous image I/O.
+    std::unordered_map<std::string, DecodedTextureAlpha> alphaCache;
+    for (size_t i = 0; i < meshCount; ++i) {
+        mmd::MmdRenderQueueInput& input = queueInputs[i];
+        if (!input.transparencyMode.empty() || input.diffuseAlpha < 0.999F ||
+            input.mainTexturePath.empty()) {
+            continue;
+        }
+        const DecodedTextureAlpha* decoded =
+            loadTextureAlpha(input.mainTexturePath, alphaCache);
+        if (!decoded) {
+            continue;
+        }
+        input.transparencyMode = mmd::mmdTextureAlphaModeName(
+            mmd::classifyMmdTextureAlpha(
+                decoded->alpha, decoded->width, decoded->height,
+                submeshUvs[i], submeshIndices[i]));
+    }
 
     MStatus status;
     MFnDagNode rootFn;

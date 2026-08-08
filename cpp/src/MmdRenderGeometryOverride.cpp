@@ -121,10 +121,9 @@ void disableItems(const MRenderItemList& list)
 }
 
 const char* nativeShaderTechnique(mmd::MmdDrawPass pass,
-                                  bool doubleSided,
-                                  bool textureAlphaBlend)
+                                  bool doubleSided)
 {
-    if (pass == mmd::MmdDrawPass::Transparent || textureAlphaBlend) {
+    if (pass == mmd::MmdDrawPass::Transparent) {
         return doubleSided ? "MMDNativeTranslucentDoubleSided"
                            : "MMDNativeTranslucent";
     }
@@ -132,10 +131,9 @@ const char* nativeShaderTechnique(mmd::MmdDrawPass pass,
 }
 
 const char* nativeOutlineShaderTechnique(mmd::MmdDrawPass pass,
-                                          bool doubleSided,
-                                          bool textureAlphaBlend)
+                                          bool doubleSided)
 {
-    return pass == mmd::MmdDrawPass::Transparent || textureAlphaBlend
+    return pass == mmd::MmdDrawPass::Transparent
                ? (doubleSided ? "MMDNativeOutlineTranslucentDoubleSided"
                               : "MMDNativeOutlineTranslucent")
                : (doubleSided ? "MMDNativeOutlineDoubleSided"
@@ -160,17 +158,14 @@ std::string nativeShaderPath()
 
 std::string nativeShaderCacheKey(
     const MmdRenderShape::QueueGeometry& geometry,
-    bool outline,
-    bool textureAlphaBlend)
+    bool outline)
 {
     const char* technique = outline
                                 ? nativeOutlineShaderTechnique(
                                       geometry.entry.pass,
-                                      geometry.material.doubleSided,
-                                      textureAlphaBlend)
+                                      geometry.material.doubleSided)
                                 : nativeShaderTechnique(geometry.entry.pass,
-                                                         geometry.material.doubleSided,
-                                                         textureAlphaBlend);
+                                                         geometry.material.doubleSided);
     return std::string(technique) +
            ":m" +
            std::to_string(geometry.material.materialIndex) +
@@ -488,19 +483,15 @@ void MmdRenderGeometryOverride::updateRenderItems(
         MTexture* mainTexture =
             acquireNativeTexture(queueGeometry.material.mainTexturePath,
                                  textureManager);
-        const bool textureAlphaBlend =
-            mainTexture && mainTexture->hasTransparentAlpha();
         const bool effectiveTransparent =
-            pass == mmd::MmdDrawPass::Transparent || textureAlphaBlend;
+            pass == mmd::MmdDrawPass::Transparent;
         const char* technique = outline
                                     ? nativeOutlineShaderTechnique(
                                           pass,
-                                          queueGeometry.material.doubleSided,
-                                          textureAlphaBlend)
+                                          queueGeometry.material.doubleSided)
                                     : nativeShaderTechnique(
                                           pass,
-                                          queueGeometry.material.doubleSided,
-                                          textureAlphaBlend);
+                                          queueGeometry.material.doubleSided);
         MmdRenderShape::MaterialBindingDiagnostic diagnostic;
         diagnostic.queueIndex = queueIndex;
         diagnostic.materialIndex = queueGeometry.entry.materialIndex;
@@ -514,7 +505,7 @@ void MmdRenderGeometryOverride::updateRenderItems(
         diagnostic.diffuseAlpha = queueGeometry.material.diffuseAlpha;
         diagnostic.selfShadowMap = queueGeometry.material.selfShadowMap;
         diagnostic.selfShadow = queueGeometry.material.selfShadow;
-        diagnostic.textureAlphaBlend = textureAlphaBlend;
+        diagnostic.textureAlphaBlend = effectiveTransparent;
         diagnostic.effectiveTransparent = effectiveTransparent;
         diagnostic.mainTexturePath = queueGeometry.material.mainTexturePath;
         diagnostic.sphereTexturePath = queueGeometry.material.sphereTexturePath;
@@ -569,7 +560,7 @@ void MmdRenderGeometryOverride::updateRenderItems(
         }
         MHWRender::MShaderInstance* materialShader = nullptr;
         const std::string shaderKey = nativeShaderCacheKey(
-            queueGeometry, outline, textureAlphaBlend);
+            queueGeometry, outline);
         const std::string shaderPath = nativeShaderPath();
         const auto shaderIt = materialShaders_.find(shaderKey);
         if (shaderIt != materialShaders_.end()) {
@@ -650,14 +641,8 @@ void MmdRenderGeometryOverride::updateRenderItems(
          ++queueIndex) {
         const MmdRenderShape::QueueGeometry& queueGeometry =
             geometry.queueGeometry[queueIndex];
-        MTexture* mainTexture =
-            acquireNativeTexture(queueGeometry.material.mainTexturePath,
-                                 textureManager);
-        const bool textureAlphaBlend =
-            mainTexture && mainTexture->hasTransparentAlpha();
         const bool effectiveTransparent =
-            queueGeometry.entry.pass == mmd::MmdDrawPass::Transparent ||
-            textureAlphaBlend;
+            queueGeometry.entry.pass == mmd::MmdDrawPass::Transparent;
         const bool outline = queueGeometry.material.edgeDrawing &&
                              queueGeometry.material.edgeSize > 0.0F &&
                              queueGeometry.material.edgeAlpha > 0.0F;

@@ -66,6 +66,7 @@ set(SOURCES
     mmdRuntimeNode.cpp
     mmdFastLoad.cpp
     MmdRenderQueue.cpp
+    MmdTextureAlphaClassifier.cpp
     MmdRenderShape.cpp
     MmdRenderGeometryOverride.cpp
     MmdRenderOverride.cpp
@@ -80,6 +81,7 @@ set(HEADERS
     mmdRuntimeNode.h
     mmdFastLoad.h
     MmdRenderQueue.h
+    MmdTextureAlphaClassifier.h
     MmdRenderShape.h
     MmdRenderGeometryOverride.h
     MmdRenderOverride.h
@@ -246,6 +248,7 @@ endif()
 add_executable(mmd_render_queue_smoke
     MmdRenderQueueSmoke.cpp
     MmdRenderQueue.cpp
+    MmdTextureAlphaClassifier.cpp
 )
 
 target_include_directories(mmd_render_queue_smoke PRIVATE

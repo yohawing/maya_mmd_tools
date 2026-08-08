@@ -7,6 +7,7 @@
  */
 
 #include "MmdRenderQueue.h"
+#include "MmdTextureAlphaClassifier.h"
 
 #include <iostream>
 #include <string>
@@ -29,6 +30,36 @@ bool expectEntry(const mmd::MmdRenderQueueEntry& entry,
 
 int main()
 {
+    const std::vector<std::uint32_t> triangle = {0U, 1U, 2U};
+    const std::vector<float> leftUvs = {
+        0.0F, 0.0F, 0.49F, 0.0F, 0.0F, 1.0F};
+    const std::vector<float> rightUvs = {
+        0.63F, 0.0F, 0.87F, 0.0F, 0.87F, 1.0F};
+    const std::vector<float> fullUvs = {
+        0.0F, 0.0F, 0.99F, 0.0F, 0.0F, 0.99F};
+    const std::vector<std::uint8_t> atlasAlpha = {
+        255U, 255U, 255U, 64U,
+        255U, 255U, 255U, 64U,
+        255U, 255U, 255U, 64U,
+        255U, 255U, 255U, 64U,
+    };
+    const std::vector<std::uint8_t> binaryAlpha = {
+        0U, 0U, 0U, 0U,
+        255U, 255U, 255U, 255U,
+        0U, 0U, 0U, 0U,
+        255U, 255U, 255U, 255U,
+    };
+    const auto leftAlpha = mmd::classifyMmdTextureAlpha(
+        atlasAlpha, 4U, 4U, leftUvs, triangle, 4U);
+    const auto rightAlpha = mmd::classifyMmdTextureAlpha(
+        atlasAlpha, 4U, 4U, rightUvs, triangle, 4U);
+    const auto binaryMode = mmd::classifyMmdTextureAlpha(
+        binaryAlpha, 4U, 4U, fullUvs, triangle, 4U);
+    const bool alphaContract =
+        leftAlpha == mmd::MmdTextureAlphaMode::Opaque &&
+        rightAlpha == mmd::MmdTextureAlphaMode::Blend &&
+        binaryMode == mmd::MmdTextureAlphaMode::Cutout;
+
     const std::vector<mmd::MmdRenderQueueInput> inputs = {
         {5, 0, "blend", 1.0f},
         {2, 2, "cutout", 1.0f},
@@ -85,8 +116,12 @@ int main()
                          expectEntry(queue[2], mmd::MmdDrawPass::Cutout, 2, 2, 1) &&
                          expectEntry(queue[3], mmd::MmdDrawPass::Transparent, 1, 3, 3) &&
                          expectEntry(queue[4], mmd::MmdDrawPass::Transparent, 5, 0, 0);
-    if (!correct || !materialContract) {
-        std::cerr << "mmd render queue/material contract failed\n";
+    if (!correct || !materialContract || !alphaContract) {
+        std::cerr << "mmd render queue/material contract failed"
+                  << " (alpha left=" << mmd::mmdTextureAlphaModeName(leftAlpha)
+                  << ", right=" << mmd::mmdTextureAlphaModeName(rightAlpha)
+                  << ", binary=" << mmd::mmdTextureAlphaModeName(binaryMode)
+                  << ")\n";
         return 1;
     }
 
