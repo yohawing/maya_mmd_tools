@@ -278,6 +278,74 @@ def _write_flip_probe_fixture(path: Path) -> Path:
     return path
 
 
+def _write_bone_semantics_probe_fixture(path: Path, base_model: Path) -> Path:
+    """Write a PMX 2.0 fixture covering the advertised bone semantic subset."""
+    from mmd_tools.core.pmx_data import PmxData
+    from mmd_tools.core.pmx_data.bone import PmxBone, PmxBoneFlag
+    from mmd_tools.core.pmx_data.ik_link import PmxIKLink
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pmx = PmxData().parse_file(str(base_model))
+    size = pmx.header.bone_index_size
+    encoding = pmx.header.encoding
+
+    def bone(name: str, name_en: str, position: tuple[float, float, float], parent: int, flags: int) -> PmxBone:
+        value = PmxBone(bone_index_size=size, encoding=encoding)
+        value.name = name
+        value.name_english = name_en
+        value.position = position
+        value.parent_bone_index = parent
+        value.transform_layer = 0
+        value.bone_flag = flags
+        return value
+
+    common = int(PmxBoneFlag.ROTATABLE | PmxBoneFlag.DISPLAY | PmxBoneFlag.OPERATABLE)
+    root = bone("sem_root", "sem_root", (0.0, 0.0, 0.0), -1, common | int(PmxBoneFlag.MOVABLE))
+    root.transform_layer = 2
+    root.connect_position_offset = (0.0, 1.0, 0.0)
+
+    offset = bone("sem_offset", "sem_offset", (0.0, 1.0, 0.0), 0, common)
+    offset.connect_position_offset = (0.0, 2.0, 0.0)
+
+    connected_flags = common | int(PmxBoneFlag.MOVABLE | PmxBoneFlag.CONNECT_BONE)
+    connected_flags |= int(PmxBoneFlag.DEFORM_AFTER_PHYSICS | PmxBoneFlag.EXTERNAL_PARENT_DEFORM)
+    connected = bone("sem_connected", "sem_connected", (0.0, 2.0, 0.0), 0, connected_flags)
+    connected.connect_bone_index = 1
+    connected.key_value = 1234
+
+    grant_flags = common | int(PmxBoneFlag.LOCAL | PmxBoneFlag.GRANT_PARENT_ROTATE | PmxBoneFlag.GRANT_PARENT_MOVE)
+    grant = bone("sem_grant", "sem_grant", (0.0, 3.0, 0.0), 1, grant_flags)
+    grant.grant_parent_bone_index = 0
+    grant.grant_rate = 0.35
+    grant.connect_position_offset = (0.0, 1.0, 0.0)
+
+    axis_flags = common | int(PmxBoneFlag.AXIS_FIXED | PmxBoneFlag.LOCAL_AXIS)
+    axes = bone("sem_axes", "sem_axes", (0.0, 4.0, 0.0), 1, axis_flags)
+    axes.axis_direction = (0.0, 1.0, 0.25)
+    axes.x_axis_direction = (1.0, 0.1, 0.0)
+    axes.z_axis_direction = (0.0, 0.0, 1.0)
+    axes.connect_position_offset = (0.0, 1.0, 0.0)
+
+    ik_flags = common | int(PmxBoneFlag.IK)
+    ik = bone("sem_ik", "sem_ik", (0.0, 5.0, 0.0), 2, ik_flags)
+    ik.ik_target_bone_index = 2
+    ik.ik_loop_count = 8
+    ik.ik_limit_angle = 0.75
+    limited_link = PmxIKLink(size)
+    limited_link.ik_bone_index = 4
+    limited_link.angle_limit = 1
+    limited_link.limit_min = (-0.1, -0.2, -0.3)
+    limited_link.limit_max = (0.4, 0.5, 0.6)
+    free_link = PmxIKLink(size)
+    free_link.ik_bone_index = 3
+    free_link.angle_limit = 0
+    ik.ik_links = [limited_link, free_link]
+
+    pmx.bones = [root, offset, connected, grant, axes, ik]
+    pmx.write_file(str(path))
+    return path
+
+
 def _attribute_value(node: str, name: str) -> Any:
     """Read one optional Maya attribute without turning metadata into a blocker."""
     from maya import cmds
@@ -1328,6 +1396,181 @@ def _bone_indices_below(root: str) -> dict[str, int]:
     return result
 
 
+def _normalize_bone_vector(value: Any, field: str) -> list[float]:
+    """Normalize one three-component bone semantic vector."""
+    if isinstance(value, (list, tuple)) and len(value) == 1 and isinstance(value[0], (list, tuple)):
+        value = value[0]
+    normalized = _round_values(value)
+    if not isinstance(normalized, list) or len(normalized) != 3:
+        raise RuntimeError(f"bone semantic field {field} is malformed")
+    return [float(component) for component in normalized]
+
+
+def _bone_semantic_payload(index: int, bone: Any) -> dict[str, Any]:
+    """Return canonical source/export payload for one PMX bone."""
+    from mmd_tools.core.pmx_data.bone import PmxBoneFlag
+
+    flags = int(bone.bone_flag)
+    payload: dict[str, Any] = {
+        "index": index,
+        "name": str(bone.name),
+        "name_en": str(bone.name_english),
+        "position": _normalize_bone_vector(bone.position, "position"),
+        "parent_index": int(bone.parent_bone_index),
+        "transform_layer": int(bone.transform_layer),
+        "bone_flag": flags,
+        "connect_bone_index": None,
+        "connect_position_offset": None,
+        "grant_parent_bone_index": None,
+        "grant_rate": None,
+        "axis_direction": None,
+        "x_axis_direction": None,
+        "z_axis_direction": None,
+        "key_value": None,
+        "ik_target_bone_index": None,
+        "ik_loop_count": None,
+        "ik_limit_angle": None,
+        "ik_links": None,
+    }
+    if flags & int(PmxBoneFlag.CONNECT_BONE):
+        payload["connect_bone_index"] = int(bone.connect_bone_index)
+    else:
+        payload["connect_position_offset"] = _normalize_bone_vector(
+            bone.connect_position_offset, "connect_position_offset"
+        )
+    if flags & int(PmxBoneFlag.GRANT_PARENT_ROTATE | PmxBoneFlag.GRANT_PARENT_MOVE):
+        payload["grant_parent_bone_index"] = int(bone.grant_parent_bone_index)
+        payload["grant_rate"] = float(bone.grant_rate)
+    if flags & int(PmxBoneFlag.AXIS_FIXED):
+        payload["axis_direction"] = _normalize_bone_vector(bone.axis_direction, "axis_direction")
+    if flags & int(PmxBoneFlag.LOCAL_AXIS):
+        payload["x_axis_direction"] = _normalize_bone_vector(bone.x_axis_direction, "x_axis_direction")
+        payload["z_axis_direction"] = _normalize_bone_vector(bone.z_axis_direction, "z_axis_direction")
+    if flags & int(PmxBoneFlag.EXTERNAL_PARENT_DEFORM):
+        payload["key_value"] = int(bone.key_value)
+    if flags & int(PmxBoneFlag.IK):
+        payload["ik_target_bone_index"] = int(bone.ik_target_bone_index)
+        payload["ik_loop_count"] = int(bone.ik_loop_count)
+        payload["ik_limit_angle"] = float(bone.ik_limit_angle)
+        payload["ik_links"] = [
+            {
+                "bone": int(link.ik_bone_index),
+                "limit_enabled": bool(link.angle_limit),
+                "lower_limit": _normalize_bone_vector(link.limit_min, "lower_limit"),
+                "upper_limit": _normalize_bone_vector(link.limit_max, "upper_limit"),
+            }
+            for link in bone.ik_links
+        ]
+    return payload
+
+
+def _build_source_bone_semantics_oracle(source_model: Path) -> dict[str, Any]:
+    """Build exact PMX bone semantics directly from the parser payload."""
+    from mmd_tools.core.pmx_data import PmxData
+
+    pmx = PmxData().parse_file(str(source_model))
+    return {
+        "bones": [_bone_semantic_payload(index, bone) for index, bone in enumerate(pmx.bones)],
+        "source": str(source_model),
+    }
+
+
+def _required_bone_attribute(node: str, attribute: str) -> Any:
+    """Read one required imported bone metadata attribute."""
+    from maya import cmds
+
+    if not cmds.attributeQuery(attribute, node=node, exists=True):
+        raise RuntimeError(f"bone {node} is missing {attribute}")
+    value = _attribute_value(node, attribute)
+    if value is None:
+        raise RuntimeError(f"bone {node} has empty {attribute}")
+    return value
+
+
+def _required_bone_vector(node: str, attribute: str) -> list[float]:
+    """Read and validate one imported three-component vector attribute."""
+    return _normalize_bone_vector(_required_bone_attribute(node, attribute), attribute)
+
+
+def _capture_bone_semantics_oracle(root: str) -> dict[str, Any]:
+    """Capture canonical imported bone semantics from Maya metadata attributes."""
+    from maya import cmds
+    from mmd_tools.core.pmx_data.bone import PmxBoneFlag
+
+    joints_by_index: dict[int, str] = {}
+    for joint in cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or []:
+        value = _scalar_attribute_value(str(joint), "mmd_bone_index", int)
+        if value is None:
+            continue
+        if value in joints_by_index:
+            raise RuntimeError(f"duplicate Maya bone index {value}")
+        joints_by_index[value] = str(joint)
+    if not joints_by_index:
+        raise RuntimeError("fresh Maya import has no indexed bones")
+
+    bones = []
+    for index in sorted(joints_by_index):
+        joint = joints_by_index[index]
+        flags = int(_required_bone_attribute(joint, "mmd_bone_flags"))
+        payload: dict[str, Any] = {
+            "index": index,
+            "name": str(_required_bone_attribute(joint, "mmd_bone_name")),
+            "name_en": str(_required_bone_attribute(joint, "mmd_bone_name_en")),
+            "position": _required_bone_vector(joint, "mmd_pmx_rest_position"),
+            "parent_index": int(_required_bone_attribute(joint, "mmd_bone_parent_index")),
+            "transform_layer": int(_required_bone_attribute(joint, "mmd_deform_layer")),
+            "bone_flag": flags,
+            "connect_bone_index": None,
+            "connect_position_offset": None,
+            "grant_parent_bone_index": None,
+            "grant_rate": None,
+            "axis_direction": None,
+            "x_axis_direction": None,
+            "z_axis_direction": None,
+            "key_value": None,
+            "ik_target_bone_index": None,
+            "ik_loop_count": None,
+            "ik_limit_angle": None,
+            "ik_links": None,
+        }
+        if flags & int(PmxBoneFlag.CONNECT_BONE):
+            payload["connect_bone_index"] = int(
+                _required_bone_attribute(joint, "mmd_connect_bone_index")
+            )
+        else:
+            payload["connect_position_offset"] = _required_bone_vector(joint, "mmd_bone_offset")
+        if flags & int(PmxBoneFlag.GRANT_PARENT_ROTATE | PmxBoneFlag.GRANT_PARENT_MOVE):
+            payload["grant_parent_bone_index"] = int(
+                _required_bone_attribute(joint, "mmd_grant_parent_index")
+            )
+            payload["grant_rate"] = float(_required_bone_attribute(joint, "mmd_grant_rate"))
+        if flags & int(PmxBoneFlag.AXIS_FIXED):
+            payload["axis_direction"] = _required_bone_vector(joint, "mmd_axis_direction")
+        if flags & int(PmxBoneFlag.LOCAL_AXIS):
+            payload["x_axis_direction"] = _required_bone_vector(joint, "mmd_x_axis_direction")
+            payload["z_axis_direction"] = _required_bone_vector(joint, "mmd_z_axis_direction")
+        if flags & int(PmxBoneFlag.EXTERNAL_PARENT_DEFORM):
+            payload["key_value"] = int(_required_bone_attribute(joint, "mmd_external_parent_key"))
+        if flags & int(PmxBoneFlag.IK):
+            payload["ik_target_bone_index"] = int(
+                _required_bone_attribute(joint, "mmd_ik_target_index")
+            )
+            payload["ik_loop_count"] = int(_required_bone_attribute(joint, "mmd_ik_loop"))
+            payload["ik_limit_angle"] = float(_required_bone_attribute(joint, "mmd_ik_limit_angle"))
+            raw_links = _required_bone_attribute(joint, "mmd_ik_links")
+            if not isinstance(raw_links, str):
+                raise RuntimeError(f"bone {joint} has malformed mmd_ik_links")
+            try:
+                links = json.loads(raw_links)
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise RuntimeError(f"bone {joint} has malformed mmd_ik_links") from exc
+            if not isinstance(links, list):
+                raise RuntimeError(f"bone {joint} has malformed mmd_ik_links")
+            payload["ik_links"] = links
+        bones.append(payload)
+    return {"bones": bones, "root": root}
+
+
 def _capture_scene_oracle(root: str, frames: Iterable[int]) -> dict[str, Any]:
     """Capture mesh, pose, and model metadata from the current Maya scene."""
     from maya import cmds
@@ -1924,6 +2167,130 @@ def _run_model_case(
             "collector": "ExportWorkflowService -> ExportSceneCollector.collect",
             "target_model": source_root,
             "source_fresh_import": True,
+        },
+    }
+
+
+def _compare_bone_semantics(
+    expected: Mapping[str, Any], actual: Mapping[str, Any], boundary: str
+) -> list[str]:
+    """Compare canonical bone semantics and identify the first differing field."""
+    expected_bones = expected.get("bones")
+    actual_bones = actual.get("bones")
+    if not isinstance(expected_bones, list) or not isinstance(actual_bones, list):
+        return [f"{boundary}.bones missing or malformed"]
+    failures: list[str] = []
+    if len(expected_bones) != len(actual_bones):
+        failures.append(
+            f"{boundary}.bone count differs: expected {len(expected_bones)}, actual {len(actual_bones)}"
+        )
+    for index, (source, result) in enumerate(zip(expected_bones, actual_bones)):
+        if _normalize_morph_value(source) == _normalize_morph_value(result):
+            continue
+        if not isinstance(source, dict) or not isinstance(result, dict):
+            failures.append(f"{boundary}.bones[{index}] malformed")
+            continue
+        for field in source:
+            if _normalize_morph_value(source.get(field)) != _normalize_morph_value(result.get(field)):
+                failures.append(
+                    f"{boundary}.bones[{index}].{field} differs: "
+                    f"expected {source.get(field)!r}, actual {result.get(field)!r}"
+                )
+    return failures
+
+
+def _run_bone_semantics_case(source_model: Path, out_dir: Path) -> dict[str, Any]:
+    """Roundtrip the PMX bone semantic subset through Maya and the exporter."""
+    from mmd_tools.services.export_workflow_service import (
+        ExportWorkflowRequest,
+        ExportWorkflowService,
+    )
+
+    probe_model = _write_bone_semantics_probe_fixture(
+        out_dir / "fixtures" / "bone_semantics_input.pmx",
+        source_model,
+    )
+    source_parser = _build_source_bone_semantics_oracle(probe_model)
+    source_root = _fresh_import(probe_model)
+    source_import = _capture_bone_semantics_oracle(source_root)
+    failures = _compare_bone_semantics(source_parser, source_import, "source_import")
+    if failures:
+        raise AssertionError("source bone semantics oracle failed: " + "; ".join(failures))
+
+    output = out_dir / "model.pmx"
+    report_dir = out_dir / "report"
+    request = ExportWorkflowRequest(
+        str(output),
+        {
+            "export_format": "pmx",
+            "require_target": True,
+            "target_model": source_root,
+            "target_identity": source_root,
+            "validation_report_dir": str(report_dir),
+            "validation_report_evidence": {
+                "gate": "V070-EXPORT-RELEASE-GATE-1",
+                "fixture": probe_model.name,
+                "fresh_import": True,
+                "oracles": ["bone_semantics", "source_import", "exported_pmx", "fresh_import"],
+            },
+        },
+    )
+    result = ExportWorkflowService().execute(request)
+    if not result.succeeded:
+        raise RuntimeError(f"PMX bone semantics export failed: {result.error or result.report}")
+
+    exported_parser = _build_source_bone_semantics_oracle(output)
+    failures = _compare_bone_semantics(source_parser, exported_parser, "exported_pmx")
+    if failures:
+        raise AssertionError("exported bone semantics oracle failed: " + "; ".join(failures))
+    fresh_root = _fresh_import(output)
+    fresh_import = _capture_bone_semantics_oracle(fresh_root)
+    failures = _compare_bone_semantics(source_parser, fresh_import, "fresh_import")
+    if failures:
+        raise AssertionError("fresh bone semantics oracle failed: " + "; ".join(failures))
+
+    return {
+        "status": "pass",
+        "format": "pmx_bone_semantics",
+        "source": str(probe_model),
+        "output": str(output),
+        "report_json": str(report_dir / "report.json"),
+        "report_md": str(report_dir / "report.md"),
+        "parsed_counts": {"bones": len(exported_parser["bones"])},
+        "bone_semantics": {
+            "source": source_parser,
+            "source_import": source_import,
+            "exported_file": exported_parser,
+            "fresh_import": fresh_import,
+            "comparison": {
+                "status": "pass",
+                "boundaries": ["source_import", "exported_pmx", "fresh_import"],
+            },
+        },
+        "bone_semantics_coverage": {
+            "verified_fields": [
+                "index",
+                "name",
+                "name_en",
+                "position",
+                "parent_index",
+                "transform_layer",
+                "bone_flag",
+                "connect_bone_index",
+                "connect_position_offset",
+                "grant_parent_bone_index",
+                "grant_rate",
+                "axis_direction",
+                "x_axis_direction",
+                "z_axis_direction",
+                "key_value",
+                "ik_target_bone_index",
+                "ik_loop_count",
+                "ik_limit_angle",
+                "ik_links",
+            ],
+            "source_oracle": "PMX parser payload",
+            "maya_oracle": "direct Maya bone metadata attributes",
         },
     }
 
@@ -2558,6 +2925,20 @@ def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
                 "traceback": traceback.format_exc(limit=12),
             }
         )
+    bone_case_dir = out_dir / "pmx-bone-semantics"
+    bone_fixture = bone_case_dir / "fixtures" / "bone_semantics_input.pmx"
+    try:
+        cases.append(_run_bone_semantics_case(DEFAULT_PMX, bone_case_dir))
+    except Exception as exc:
+        cases.append(
+            {
+                "status": "fail",
+                "format": "pmx_bone_semantics",
+                "source": str(bone_fixture),
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc(limit=12),
+            }
+        )
     try:
         cases.append(_run_physics_case(DEFAULT_PHYSICS_PMX, out_dir / "pmx-physics"))
     except Exception as exc:
@@ -2647,6 +3028,7 @@ def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
         "fixture": {
             "pmx": str(pmx_path),
             "pmx_morph": str(DEFAULT_MORPH_PMX),
+            "pmx_bone_semantics": str(bone_fixture),
             "pmx_physics": str(DEFAULT_PHYSICS_PMX),
             "pmx_soft_body": str(soft_body_fixture),
             "pmx_sdef": str(sdef_fixture),

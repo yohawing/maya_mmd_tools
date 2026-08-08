@@ -112,6 +112,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                     for export_format in (
                         "pmx",
                         "pmx_morph",
+                        "pmx_bone_semantics",
                         "pmx_physics",
                         "pmx_soft_body",
                         "pmx_sdef",
@@ -131,6 +132,47 @@ class ExportReleaseGateTests(unittest.TestCase):
             physics_case.update(
                 parsed_counts={"rigid_bodies": 16, "joints": 19},
                 input_normalizations=[],
+            )
+            bone_case = next(case for case in report["cases"] if case["format"] == "pmx_bone_semantics")
+            bone_fields = {
+                "index": 0,
+                "name": "root",
+                "name_en": "root",
+                "position": [0.0, 0.0, 0.0],
+                "parent_index": -1,
+                "transform_layer": 2,
+                "bone_flag": 0x003E,
+                "connect_bone_index": None,
+                "connect_position_offset": [0.0, 1.0, 0.0],
+                "grant_parent_bone_index": None,
+                "grant_rate": None,
+                "axis_direction": None,
+                "x_axis_direction": None,
+                "z_axis_direction": None,
+                "key_value": None,
+                "ik_target_bone_index": None,
+                "ik_loop_count": None,
+                "ik_limit_angle": None,
+                "ik_links": None,
+            }
+            bone_payload = {"bones": [bone_fields]}
+            bone_case.update(
+                parsed_counts={"bones": 1},
+                bone_semantics_coverage={
+                    "verified_fields": list(RELEASE_GATE.BONE_SEMANTICS_FIELDS),
+                    "source_oracle": "PMX parser payload",
+                    "maya_oracle": "direct Maya bone metadata attributes",
+                },
+                bone_semantics={
+                    "source": bone_payload,
+                    "source_import": bone_payload,
+                    "exported_file": bone_payload,
+                    "fresh_import": bone_payload,
+                    "comparison": {
+                        "status": "pass",
+                        "boundaries": list(RELEASE_GATE.BONE_SEMANTICS_COMPARISON_BOUNDARIES),
+                    },
+                },
             )
             morph_case = next(case for case in report["cases"] if case["format"] == "pmx_morph")
             morph_entries = [
@@ -314,6 +356,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                 {
                     "pmx",
                     "pmx_morph",
+                    "pmx_bone_semantics",
                     "pmx_physics",
                     "pmx_soft_body",
                     "pmx_sdef",
@@ -323,6 +366,14 @@ class ExportReleaseGateTests(unittest.TestCase):
                     "vmd",
                 },
             )
+
+            missing_bone_import = bone_case["bone_semantics"].pop("fresh_import")
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            step = {"name": "maya_probe_2024", "status": "pass"}
+            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
+            self.assertEqual(step["status"], "fail")
+            self.assertIn("pmx_bone_semantics.bone_semantics.fresh_import_missing", step["error"])
+            bone_case["bone_semantics"]["fresh_import"] = missing_bone_import
 
             exported_file = morph_case["morph_oracle"].pop("exported_file")
             report_path.write_text(json.dumps(report), encoding="utf-8")

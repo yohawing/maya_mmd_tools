@@ -56,6 +56,42 @@ MORPH_ORACLE_FIELDS = {
 }
 MORPH_ORACLE_BOUNDARIES = ("source", "exported_file", "fresh_import")
 MORPH_COMPARISON_BOUNDARIES = ("source_import", "exported_pmx", "fresh_import")
+BONE_SEMANTICS_BOUNDARIES = ("source", "source_import", "exported_file", "fresh_import")
+BONE_SEMANTICS_COMPARISON_BOUNDARIES = ("source_import", "exported_pmx", "fresh_import")
+BONE_SEMANTICS_FIELDS = (
+    "index",
+    "name",
+    "name_en",
+    "position",
+    "parent_index",
+    "transform_layer",
+    "bone_flag",
+    "connect_bone_index",
+    "connect_position_offset",
+    "grant_parent_bone_index",
+    "grant_rate",
+    "axis_direction",
+    "x_axis_direction",
+    "z_axis_direction",
+    "key_value",
+    "ik_target_bone_index",
+    "ik_loop_count",
+    "ik_limit_angle",
+    "ik_links",
+)
+
+
+def _normalize_bone_semantics_value(value: Any) -> Any:
+    """Round nested numeric bone payloads to the probe's canonical precision."""
+    if isinstance(value, dict):
+        return {key: _normalize_bone_semantics_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_normalize_bone_semantics_value(item) for item in value]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return value
+    return round(float(value), 7)
+
+
 MORPH_ORACLE_EXCLUSIONS = (
     "sdef vertex deformation",
     "UV morph runtime evaluation",
@@ -676,6 +712,98 @@ def _validate_morph_oracle_case(case: Mapping[str, Any]) -> list[str]:
     return failures
 
 
+def _validate_bone_semantics_case(case: Mapping[str, Any]) -> list[str]:
+    """Require exact PMX->Maya->PMX bone semantic evidence."""
+    failures: list[str] = []
+    coverage = case.get("bone_semantics_coverage")
+    if not isinstance(coverage, dict):
+        failures.append("pmx_bone_semantics.bone_semantics_coverage_missing")
+    else:
+        if coverage.get("verified_fields") != list(BONE_SEMANTICS_FIELDS):
+            failures.append("pmx_bone_semantics.bone_semantics_coverage.verified_fields mismatch")
+        if coverage.get("source_oracle") != "PMX parser payload":
+            failures.append("pmx_bone_semantics.bone_semantics_coverage.source_oracle mismatch")
+        if coverage.get("maya_oracle") != "direct Maya bone metadata attributes":
+            failures.append("pmx_bone_semantics.bone_semantics_coverage.maya_oracle mismatch")
+
+    semantics = case.get("bone_semantics")
+    if not isinstance(semantics, dict):
+        return failures + ["pmx_bone_semantics.bone_semantics_missing"]
+    comparison = semantics.get("comparison")
+    if not isinstance(comparison, dict):
+        failures.append("pmx_bone_semantics.bone_semantics.comparison_missing")
+    else:
+        if comparison.get("status") != "pass":
+            failures.append("pmx_bone_semantics.bone_semantics.comparison.status must be pass")
+        if comparison.get("boundaries") != list(BONE_SEMANTICS_COMPARISON_BOUNDARIES):
+            failures.append("pmx_bone_semantics.bone_semantics.comparison.boundaries mismatch")
+
+    boundary_payloads: dict[str, Mapping[str, Any]] = {}
+    source_bones: list[Any] | None = None
+    for label in BONE_SEMANTICS_BOUNDARIES:
+        payload = semantics.get(label)
+        if not isinstance(payload, dict):
+            failures.append(f"pmx_bone_semantics.bone_semantics.{label}_missing")
+            continue
+        boundary_payloads[label] = payload
+        bones = payload.get("bones")
+        if not isinstance(bones, list) or not bones:
+            failures.append(f"pmx_bone_semantics.bone_semantics.{label}.bones_missing")
+            continue
+        seen_indices: set[str] = set()
+        for bone_index, bone in enumerate(bones):
+            if not isinstance(bone, dict):
+                failures.append(f"pmx_bone_semantics.bone_semantics.{label}.bones[{bone_index}] malformed")
+                continue
+            missing = [field for field in BONE_SEMANTICS_FIELDS if field not in bone]
+            if missing:
+                failures.append(
+                    f"pmx_bone_semantics.bone_semantics.{label}.bones[{bone_index}] missing {missing}"
+                )
+                continue
+            index = bone.get("index")
+            if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+                failures.append(
+                    f"pmx_bone_semantics.bone_semantics.{label}.bones[{bone_index}].index malformed"
+                )
+            else:
+                key = str(index)
+                if key in seen_indices:
+                    failures.append(f"pmx_bone_semantics.bone_semantics.{label} duplicate bone index {index}")
+                seen_indices.add(key)
+            for field in ("name", "name_en"):
+                if not isinstance(bone.get(field), str):
+                    failures.append(
+                        f"pmx_bone_semantics.bone_semantics.{label}.bones[{bone_index}].{field} malformed"
+                    )
+            if isinstance(bone.get("ik_links"), list):
+                for link_index, link in enumerate(bone["ik_links"]):
+                    if not isinstance(link, dict):
+                        failures.append(
+                            f"pmx_bone_semantics.bone_semantics.{label}.bones[{bone_index}]"
+                            f".ik_links[{link_index}] malformed"
+                        )
+                        continue
+                    for field in ("bone", "limit_enabled", "lower_limit", "upper_limit"):
+                        if field not in link:
+                            failures.append(
+                                f"pmx_bone_semantics.bone_semantics.{label}.bones[{bone_index}]"
+                                f".ik_links[{link_index}] missing {field}"
+                            )
+            elif bone.get("ik_links") is not None:
+                failures.append(
+                    f"pmx_bone_semantics.bone_semantics.{label}.bones[{bone_index}].ik_links malformed"
+                )
+        if label == "source":
+            source_bones = bones
+        elif source_bones is not None and _normalize_bone_semantics_value(bones) != _normalize_bone_semantics_value(source_bones):
+            failures.append(f"pmx_bone_semantics.bone_semantics.source/{label}.bones mismatch")
+
+    if source_bones is None:
+        return failures
+    return failures
+
+
 def _validate_policy_reject_case(
     case: Mapping[str, Any], export_format: str, policy_code: str, count_fields: tuple[str, ...]
 ) -> list[str]:
@@ -750,6 +878,7 @@ def _validate_maya_probe_report(
     required_formats = {
         "pmx",
         "pmx_morph",
+        "pmx_bone_semantics",
         "pmx_physics",
         "pmx_soft_body",
         "pmx_sdef",
@@ -850,6 +979,11 @@ def _validate_maya_probe_report(
             if not isinstance(parsed_counts, dict) or int(parsed_counts.get("morphs", 0) or 0) <= 0:
                 failures.append("pmx_morph.parsed_counts.morphs must be positive")
             failures.extend(_validate_morph_oracle_case(case))
+        if export_format == "pmx_bone_semantics":
+            parsed_counts = case.get("parsed_counts")
+            if not isinstance(parsed_counts, dict) or int(parsed_counts.get("bones", 0) or 0) <= 0:
+                failures.append("pmx_bone_semantics.parsed_counts.bones must be positive")
+            failures.extend(_validate_bone_semantics_case(case))
         if not case.get("report_json") or not case.get("report_md"):
             failures.append(f"{export_format}.report_pair_missing")
 
@@ -1082,6 +1216,7 @@ def build_release_summary(
                 "PMX/VMD parseable output and PMD import/policy-reject",
                 "Maya fresh-import mesh/pose/metadata and rigid-body/joint physics oracle",
                 "Maya fresh-import supported vertex/bone/UV/additional-UV/material/group morph oracle",
+                "PMX IK and non-IK bone semantic fields across Maya import/export boundaries",
                 "PMX 2.1 soft-body provenance and public policy-reject",
                 "PMX 2.0 SDEF and PMX 2.1 Flip/Impulse provenance and public policy-reject",
                 "fatal fail-closed and warning acknowledgement boundaries",
