@@ -8,18 +8,24 @@
 #include "MmdRenderShape.h"
 
 #include <maya/MArgDatabase.h>
+#include <maya/MBoundingBox.h>
 #include <maya/MDagPath.h>
 #include <maya/MFn.h>
+#include <maya/MFnDagNode.h>
 #include <maya/MFnDependencyNode.h>
 #include <maya/MGlobal.h>
 #include <maya/MHWGeometry.h>
 #include <maya/MItDependencyNodes.h>
 #include <maya/MPoint.h>
+#include <maya/MPlug.h>
 #include <maya/MRenderTargetManager.h>
 #include <maya/MStringArray.h>
+#include <maya/MVector.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstring>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -62,6 +68,23 @@ std::unordered_map<MHWRender::MShaderInstance*, std::size_t> gReceiverPins;
 constexpr float kClearDepth = 1.0F;
 constexpr float kDepthEpsilon = 1.0e-6F;
 constexpr float kMatrixEpsilon = 1.0e-6F;
+constexpr double kClipGuard = 0.02;
+constexpr double kDepthBiasReserve = 0.60;
+constexpr double kBoundsMargin = 0.05;
+
+MMatrix identityMatrix()
+{
+    const double values[4][4] = {
+        {1.0, 0.0, 0.0, 0.0},
+        {0.0, 1.0, 0.0, 0.0},
+        {0.0, 0.0, 1.0, 0.0},
+        {0.0, 0.0, 0.0, 1.0},
+    };
+    return MMatrix(values);
+}
+
+MMatrix gCasterMatrix = identityMatrix();
+bool gCasterMatrixValid = false;
 
 struct TargetDiagnostics {
     unsigned int width = 0U;
@@ -85,6 +108,15 @@ struct CasterDiagnostics {
     bool shaderAvailable = false;
     bool matrixBound = false;
     bool matrixValidated = false;
+    std::string matrixSource;
+    std::string lightPath;
+    std::array<double, 3> lightDirection = {0.0, 0.0, 0.0};
+    std::array<double, 6> worldBounds = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    std::array<double, 6> lightBounds = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    std::string matrixHash;
+    std::string casterMatrixHash;
+    std::string receiverMatrixHash;
+    bool cornersInClip = false;
     bool depthBiasBound = false;
     float depthBias = MmdNativeCasterRenderOverride::kDefaultDepthBias;
     bool drawAttempted = false;
@@ -117,6 +149,9 @@ struct CasterDiagnostics {
     bool receiverTargetResourceHandleNonNull = false;
     bool receiverTargetSameFrame = false;
     bool receiverTargetsRetained = false;
+    bool failClosedProbeDisableAttempted = false;
+    bool failClosedProbeDisableSuccess = false;
+    std::size_t failClosedProbeDisableFailureCount = 0U;
     bool released = false;
     std::string error;
 };
@@ -160,6 +195,43 @@ void releaseReceiverPin(MHWRender::MShaderInstance* shader)
         }
     }
     gReceiverCv.notify_all();
+}
+
+void disableReceiverProbeForFailClosed()
+{
+    std::vector<MHWRender::MShaderInstance*> shaders;
+    {
+        std::lock_guard<std::mutex> lock(gReceiverMutex);
+        gReceiverProbe = false;
+        gDiagnostics.receiverProbeEnabled = false;
+        gDiagnostics.failClosedProbeDisableAttempted = false;
+        gDiagnostics.failClosedProbeDisableSuccess = false;
+        gDiagnostics.failClosedProbeDisableFailureCount = 0U;
+        shaders.reserve(gReceiverShaders.size());
+        for (MHWRender::MShaderInstance* shader : gReceiverShaders) {
+            shaders.push_back(shader);
+            ++gReceiverPins[shader];
+        }
+    }
+    gDiagnostics.failClosedProbeDisableAttempted = !shaders.empty();
+    for (MHWRender::MShaderInstance* shader : shaders) {
+        MStatus status = MS::kFailure;
+        if (shader) {
+            status = shader->setParameter(MString("NativeCasterProbe"), 0);
+        }
+        if (status != MS::kSuccess) {
+            ++gDiagnostics.failClosedProbeDisableFailureCount;
+        }
+        releaseReceiverPin(shader);
+    }
+    gDiagnostics.failClosedProbeDisableSuccess =
+        gDiagnostics.failClosedProbeDisableFailureCount == 0U;
+    if (!gDiagnostics.failClosedProbeDisableSuccess) {
+        if (!gDiagnostics.error.empty()) {
+            gDiagnostics.error += "; ";
+        }
+        gDiagnostics.error += "fail-closed receiver probe disable failed";
+    }
 }
 
 std::filesystem::path findShaderPath(const MString& loadPath)
@@ -215,57 +287,279 @@ std::string jsonString(const std::string& value)
     return stream.str();
 }
 
-MMatrix casterLightViewProjection()
+MVector crossProduct(const MVector& lhs, const MVector& rhs)
 {
-    // This is a row-vector, finite, non-reversed orthographic caster-space
-    // transform.  MPoint * MMatrix and HLSL mul(rowVector, row_major matrix)
-    // therefore use the same translation row and positive clip-Z direction.
-    // The scale leaves room for the deterministic +0.35/+0.55 depth bias
-    // control while covering the small imported fixtures used by this probe.
-    const double values[4][4] = {
-        {0.25, 0.0, 0.0, 0.0},
-        {0.0, 0.25, 0.0, 0.0},
-        {0.0, 0.0, 0.04, 0.0},
-        {0.10, -0.10, 0.0, 1.0},
-    };
-    return MMatrix(values);
+    return MVector(lhs.y * rhs.z - lhs.z * rhs.y,
+                   lhs.z * rhs.x - lhs.x * rhs.z,
+                   lhs.x * rhs.y - lhs.y * rhs.x);
 }
 
-bool approximatelyEqual(double lhs, double rhs)
+bool normalizeVector(MVector& value)
 {
-    return std::abs(lhs - rhs) <= kMatrixEpsilon;
+    const double length = value.length();
+    if (!std::isfinite(length) || length <= kMatrixEpsilon) {
+        return false;
+    }
+    value /= length;
+    return std::isfinite(value.x) && std::isfinite(value.y) &&
+           std::isfinite(value.z);
 }
 
-bool validateCasterMatrix(const MMatrix& matrix)
+bool finitePoint(const MPoint& point)
 {
-    // Validate through Maya's row-vector point operator instead of only
-    // checking entries.  A transposed matrix or a translation in the wrong
-    // row consequently fails before any draw is attempted.
-    const MPoint origin = MPoint(0.0, 0.0, 0.0, 1.0) * matrix;
-    const MPoint xAxis = MPoint(1.0, 0.0, 0.0, 1.0) * matrix;
-    const MPoint yAxis = MPoint(0.0, 1.0, 0.0, 1.0) * matrix;
-    const MPoint zAxis = MPoint(0.0, 0.0, 1.0, 1.0) * matrix;
-    const MPoint points[] = {origin, xAxis, yAxis, zAxis};
-    for (const MPoint& point : points) {
-        if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
-            !std::isfinite(point.z) || !std::isfinite(point.w)) {
+    return std::isfinite(point.x) && std::isfinite(point.y) &&
+           std::isfinite(point.z) && std::isfinite(point.w);
+}
+
+std::string hashMatrix(const MMatrix& matrix)
+{
+    std::uint64_t hash = 1469598103934665603ULL;
+    for (unsigned int row = 0U; row < 4U; ++row) {
+        for (unsigned int column = 0U; column < 4U; ++column) {
+            const double value = matrix[row][column];
+            const auto* bytes = reinterpret_cast<const std::uint8_t*>(&value);
+            for (unsigned int index = 0U; index < sizeof(value); ++index) {
+                hash ^= bytes[index];
+                hash *= 1099511628211ULL;
+            }
+        }
+    }
+    std::ostringstream stream;
+    stream << "0x" << std::hex << hash;
+    return stream.str();
+}
+
+void resetCasterMatrixDiagnostics()
+{
+    gCasterMatrixValid = false;
+    gCasterMatrix = identityMatrix();
+    gDiagnostics.matrixSource.clear();
+    gDiagnostics.lightPath.clear();
+    gDiagnostics.lightDirection = {0.0, 0.0, 0.0};
+    gDiagnostics.worldBounds = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    gDiagnostics.lightBounds = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    gDiagnostics.matrixHash.clear();
+    gDiagnostics.casterMatrixHash.clear();
+    gDiagnostics.receiverMatrixHash.clear();
+    gDiagnostics.cornersInClip = false;
+}
+
+bool buildCasterLightMatrix(const MSelectionList& selection)
+{
+    MDagPath lightPath;
+    unsigned int lightCount = 0U;
+    MItDependencyNodes iterator(MFn::kTransform);
+    for (; !iterator.isDone(); iterator.next()) {
+        const MObject object = iterator.item();
+        MFnDependencyNode node(object);
+        MStatus status;
+        MPlug marker = node.findPlug(MString("mmd_light"), true, &status);
+        if (!status || marker.isNull()) {
+            continue;
+        }
+        MStatus valueStatus;
+        if (!marker.asBool(&valueStatus) || !valueStatus) {
+            continue;
+        }
+        ++lightCount;
+        if (MDagPath::getAPathTo(object, lightPath) != MS::kSuccess) {
+            gDiagnostics.error = "tagged mmd_light has no DAG path";
             return false;
         }
     }
-    return approximatelyEqual(origin.x, 0.10) &&
-           approximatelyEqual(origin.y, -0.10) &&
-           approximatelyEqual(origin.z, 0.0) &&
-           approximatelyEqual(origin.w, 1.0) &&
-           approximatelyEqual(xAxis.x - origin.x, 0.25) &&
-           approximatelyEqual(xAxis.y - origin.y, 0.0) &&
-           approximatelyEqual(xAxis.z - origin.z, 0.0) &&
-           approximatelyEqual(yAxis.x - origin.x, 0.0) &&
-           approximatelyEqual(yAxis.y - origin.y, 0.25) &&
-           approximatelyEqual(yAxis.z - origin.z, 0.0) &&
-           approximatelyEqual(zAxis.x - origin.x, 0.0) &&
-           approximatelyEqual(zAxis.y - origin.y, 0.0) &&
-           approximatelyEqual(zAxis.z - origin.z, 0.04) &&
-           approximatelyEqual(zAxis.w - origin.w, 0.0);
+    if (lightCount != 1U) {
+        gDiagnostics.error = lightCount == 0U
+                                 ? "exactly one tagged mmd_light is required"
+                                 : "ambiguous tagged mmd_light authority";
+        return false;
+    }
+    MStatus lightPathStatus;
+    if (lightPath.isInstanced(&lightPathStatus) || !lightPathStatus) {
+        gDiagnostics.error = "tagged mmd_light must be a unique non-instanced DAG path";
+        return false;
+    }
+    gDiagnostics.matrixSource = "tagged_mmd_light_minus_z";
+    gDiagnostics.lightPath = lightPath.fullPathName().asUTF8();
+
+    const MMatrix lightWorld = lightPath.inclusiveMatrix();
+    const MPoint lightOrigin = MPoint(0.0, 0.0, 0.0, 1.0) * lightWorld;
+    const MPoint lightTip = MPoint(0.0, 0.0, -1.0, 1.0) * lightWorld;
+    if (!finitePoint(lightOrigin) || !finitePoint(lightTip)) {
+        gDiagnostics.error = "mmd_light world matrix is nonfinite";
+        return false;
+    }
+    MVector lightDirection(lightTip.x - lightOrigin.x,
+                           lightTip.y - lightOrigin.y,
+                           lightTip.z - lightOrigin.z);
+    if (!normalizeVector(lightDirection)) {
+        gDiagnostics.error = "mmd_light direction is invalid";
+        return false;
+    }
+    gDiagnostics.lightDirection = {lightDirection.x, lightDirection.y,
+                                   lightDirection.z};
+
+    MVector up = std::abs(lightDirection.y) > 0.95 ? MVector(1.0, 0.0, 0.0)
+                                                   : MVector(0.0, 1.0, 0.0);
+    MVector right = crossProduct(up, lightDirection);
+    if (!normalizeVector(right)) {
+        gDiagnostics.error = "mmd_light basis is invalid";
+        return false;
+    }
+    up = crossProduct(lightDirection, right);
+    if (!normalizeVector(up)) {
+        gDiagnostics.error = "mmd_light up basis is invalid";
+        return false;
+    }
+
+    std::array<double, 6> worldBounds = {
+        std::numeric_limits<double>::infinity(),
+        std::numeric_limits<double>::infinity(),
+        std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity(),
+    };
+    std::vector<MPoint> corners;
+    for (unsigned int index = 0U; index < selection.length(); ++index) {
+        MDagPath path;
+        if (selection.getDagPath(index, path) != MS::kSuccess) {
+            gDiagnostics.error = "selected caster DAG path unavailable";
+            return false;
+        }
+        MmdRenderShape* shape = MmdRenderShape::fromMObject(path.node());
+        if (!shape) {
+            gDiagnostics.error = "selected caster is not mmdRenderShape";
+            return false;
+        }
+        const MBoundingBox localBounds = shape->boundingBox();
+        const MPoint minimum = localBounds.min();
+        const MPoint maximum = localBounds.max();
+        if (!finitePoint(minimum) || !finitePoint(maximum) ||
+            minimum.x > maximum.x || minimum.y > maximum.y ||
+            minimum.z > maximum.z) {
+            gDiagnostics.error = "selected caster bounds are invalid";
+            return false;
+        }
+        const MMatrix world = path.inclusiveMatrix();
+        const double xs[] = {minimum.x, maximum.x};
+        const double ys[] = {minimum.y, maximum.y};
+        const double zs[] = {minimum.z, maximum.z};
+        for (const double x : xs) {
+            for (const double y : ys) {
+                for (const double z : zs) {
+                    const MPoint point = MPoint(x, y, z, 1.0) * world;
+                    if (!finitePoint(point)) {
+                        gDiagnostics.error = "selected caster world bounds are nonfinite";
+                        return false;
+                    }
+                    corners.push_back(point);
+                    worldBounds[0] = std::min(worldBounds[0], point.x);
+                    worldBounds[1] = std::min(worldBounds[1], point.y);
+                    worldBounds[2] = std::min(worldBounds[2], point.z);
+                    worldBounds[3] = std::max(worldBounds[3], point.x);
+                    worldBounds[4] = std::max(worldBounds[4], point.y);
+                    worldBounds[5] = std::max(worldBounds[5], point.z);
+                }
+            }
+        }
+    }
+    if (corners.empty()) {
+        gDiagnostics.error = "selected caster bounds are empty";
+        return false;
+    }
+    gDiagnostics.worldBounds = worldBounds;
+
+    std::array<double, 6> lightBounds = {
+        std::numeric_limits<double>::infinity(),
+        std::numeric_limits<double>::infinity(),
+        std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity(),
+    };
+    for (const MPoint& point : corners) {
+        const double x = point.x * right.x + point.y * right.y + point.z * right.z;
+        const double y = point.x * up.x + point.y * up.y + point.z * up.z;
+        const double z = point.x * lightDirection.x + point.y * lightDirection.y +
+                         point.z * lightDirection.z;
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+            gDiagnostics.error = "selected caster light bounds are nonfinite";
+            return false;
+        }
+        lightBounds[0] = std::min(lightBounds[0], x);
+        lightBounds[1] = std::min(lightBounds[1], y);
+        lightBounds[2] = std::min(lightBounds[2], z);
+        lightBounds[3] = std::max(lightBounds[3], x);
+        lightBounds[4] = std::max(lightBounds[4], y);
+        lightBounds[5] = std::max(lightBounds[5], z);
+    }
+    const auto expandRange = [](double& minimum, double& maximum) {
+        double range = maximum - minimum;
+        if (!std::isfinite(range) || range <= kMatrixEpsilon) {
+            range = 1.0;
+        }
+        const double margin = std::max(range * kBoundsMargin, 1.0e-3);
+        minimum -= margin;
+        maximum += margin;
+    };
+    expandRange(lightBounds[0], lightBounds[3]);
+    expandRange(lightBounds[1], lightBounds[4]);
+    expandRange(lightBounds[2], lightBounds[5]);
+    gDiagnostics.lightBounds = lightBounds;
+    const double xRange = lightBounds[3] - lightBounds[0];
+    const double yRange = lightBounds[4] - lightBounds[1];
+    const double zRange = lightBounds[5] - lightBounds[2];
+    const double zAvailable = 1.0 - kClipGuard - kDepthBiasReserve;
+    if (!std::isfinite(xRange) || !std::isfinite(yRange) ||
+        !std::isfinite(zRange) || xRange <= kMatrixEpsilon ||
+        yRange <= kMatrixEpsilon || zRange <= kMatrixEpsilon ||
+        zAvailable <= kMatrixEpsilon) {
+        gDiagnostics.error = "caster light bounds cannot form a projection";
+        return false;
+    }
+    const double extent = std::max(xRange, yRange);
+    if (!std::isfinite(extent) || extent <= kMatrixEpsilon) {
+        gDiagnostics.error = "caster light bounds have no square extent";
+        return false;
+    }
+    // A square shadow target uses one common XY scale.  Center each axis in
+    // that square so a non-square model gets conservative letterboxing rather
+    // than a view-dependent shear/stretch.
+    const double sx = 2.0 / extent;
+    const double sy = sx;
+    const double sz = zAvailable / zRange;
+    const double tx = -(lightBounds[3] + lightBounds[0]) / extent;
+    const double ty = -(lightBounds[4] + lightBounds[1]) / extent;
+    const double tz = kClipGuard - lightBounds[2] * sz;
+    const double values[4][4] = {
+        {right.x * sx, up.x * sy, lightDirection.x * sz, 0.0},
+        {right.y * sx, up.y * sy, lightDirection.y * sz, 0.0},
+        {right.z * sx, up.z * sy, lightDirection.z * sz, 0.0},
+        {tx, ty, tz, 1.0},
+    };
+    const MMatrix matrix(values);
+    const double validationBiases[] = {0.0, 0.35, 0.55, kDepthBiasReserve};
+    for (const MPoint& point : corners) {
+        const MPoint clip = point * matrix;
+        if (!finitePoint(clip) || std::abs(clip.w) <= kMatrixEpsilon ||
+            clip.x < -1.0 - kMatrixEpsilon || clip.x > 1.0 + kMatrixEpsilon ||
+            clip.y < -1.0 - kMatrixEpsilon || clip.y > 1.0 + kMatrixEpsilon ||
+            clip.z < -kMatrixEpsilon) {
+            gDiagnostics.error = "caster bounds fall outside clip space";
+            return false;
+        }
+        for (const double bias : validationBiases) {
+            if (clip.z + bias > 1.0 + kMatrixEpsilon) {
+                gDiagnostics.error = "caster depth bias clips selected bounds";
+                return false;
+            }
+        }
+    }
+    gCasterMatrix = matrix;
+    gCasterMatrixValid = true;
+    gDiagnostics.matrixHash = hashMatrix(matrix);
+    gDiagnostics.cornersInClip = true;
+    return true;
 }
 
 void resetDepthDiagnostics()
@@ -282,6 +576,41 @@ void resetDepthDiagnostics()
     gDiagnostics.writtenFootprintHash = 1469598103934665603ULL;
     gDiagnostics.writtenDepthFinite = false;
     gDiagnostics.writtenDepthInRange = false;
+}
+
+void resetCasterFrameDiagnostics()
+{
+    gDiagnostics.setup = false;
+    gDiagnostics.selectionBuilt = false;
+    gDiagnostics.selectedCount = 0U;
+    gDiagnostics.colorTargetAcquired = false;
+    gDiagnostics.depthTargetAcquired = false;
+    gDiagnostics.colorTarget = TargetDiagnostics();
+    gDiagnostics.depthTarget = TargetDiagnostics();
+    gDiagnostics.shaderAvailable = false;
+    gDiagnostics.matrixBound = false;
+    gDiagnostics.matrixValidated = false;
+    gDiagnostics.depthBiasBound = false;
+    gDiagnostics.depthBias = gDepthBias;
+    gDiagnostics.drawAttempted = false;
+    gDiagnostics.drawCallbackCount = 0U;
+    gDiagnostics.drawnRenderItems.clear();
+    gDiagnostics.drawnRenderItemDagPaths.clear();
+    gDiagnostics.drawnRenderItemTypes.clear();
+    gDiagnostics.drawnRenderItemCastsShadows.clear();
+    gDiagnostics.frameComplete = false;
+    gDiagnostics.operationInsertedBeforeScene = false;
+    gDiagnostics.occupancySupported = false;
+    gDiagnostics.occupied = false;
+    gDiagnostics.receiverTargetResourceHandleNonNull = false;
+    gDiagnostics.receiverTargetSameFrame = false;
+    gDiagnostics.receiverAssignmentSuccess = 0U;
+    gDiagnostics.receiverAssignmentFailure = 0U;
+    gDiagnostics.failClosedProbeDisableAttempted = false;
+    gDiagnostics.failClosedProbeDisableSuccess = false;
+    gDiagnostics.failClosedProbeDisableFailureCount = 0U;
+    resetCasterMatrixDiagnostics();
+    resetDepthDiagnostics();
 }
 
 void hashFootprint(std::uint64_t& hash, unsigned int x, unsigned int y)
@@ -395,13 +724,13 @@ public:
         if (!shader_) {
             return;
         }
-        const MMatrix matrix = casterLightViewProjection();
-        gDiagnostics.matrixValidated = validateCasterMatrix(matrix);
-        if (!gDiagnostics.matrixValidated) {
-            gDiagnostics.error =
-                "row-vector caster matrix validation failed";
+        if (!gCasterMatrixValid) {
+            gDiagnostics.matrixValidated = false;
             return;
         }
+        const MMatrix matrix = gCasterMatrix;
+        gDiagnostics.matrixValidated = true;
+        gDiagnostics.casterMatrixHash = hashMatrix(matrix);
         const MStatus status = shader_->setParameter(
             MString("CasterLightViewProjection"), matrix);
         gDiagnostics.matrixBound = status == MS::kSuccess;
@@ -605,7 +934,14 @@ bool MmdNativeCasterRenderOverride::updateReceiverShaderParameters(
     if (!shader) {
         return false;
     }
-    const MMatrix matrix = casterLightViewProjection();
+    if (!gCasterMatrixValid) {
+        if (gDiagnostics.error.empty()) {
+            gDiagnostics.error = "caster matrix authority unavailable";
+        }
+        return false;
+    }
+    const MMatrix matrix = gCasterMatrix;
+    gDiagnostics.receiverMatrixHash = hashMatrix(matrix);
     const MStatus matrixStatus =
         shader->setParameter(MString("CasterLightViewProjection"), matrix);
     const MStatus biasStatus =
@@ -818,27 +1154,13 @@ void MmdNativeCasterRenderOverride::releaseShader()
 MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
 {
     (void)destination;
-    gDiagnostics.setup = false;
     {
         std::lock_guard<std::mutex> lock(gReceiverMutex);
         gOverrideSetup = false;
     }
     gDiagnostics.released = false;
     gDiagnostics.error.clear();
-    gDiagnostics.selectionBuilt = false;
-    gDiagnostics.selectedCount = 0U;
-    gDiagnostics.colorTarget = TargetDiagnostics();
-    gDiagnostics.depthTarget = TargetDiagnostics();
-    gDiagnostics.shaderAvailable = false;
-    gDiagnostics.matrixBound = false;
-    gDiagnostics.matrixValidated = false;
-    gDiagnostics.depthBiasBound = false;
-    gDiagnostics.depthBias = gDepthBias;
-    gDiagnostics.drawAttempted = false;
-    gDiagnostics.frameComplete = false;
-    gDiagnostics.operationInsertedBeforeScene = false;
-    gDiagnostics.occupancySupported = false;
-    gDiagnostics.occupied = false;
+    resetCasterFrameDiagnostics();
     std::size_t existingReceiverBindings = 0U;
     {
         std::lock_guard<std::mutex> lock(gReceiverMutex);
@@ -860,8 +1182,25 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
     gDiagnostics.receiverTargetSameFrame = false;
     gDiagnostics.receiverTargetsRetained =
         colorTarget_ != nullptr || depthTarget_ != nullptr;
-    resetDepthDiagnostics();
     mOperations.clear();
+    MHWRender::MRenderer* renderer = MHWRender::MRenderer::theRenderer();
+    if (!renderer) {
+        gDiagnostics.error = "renderer unavailable";
+        disableReceiverProbeForFailClosed();
+        return MS::kSuccess;
+    }
+    MSelectionList selection;
+    gDiagnostics.selectionBuilt = buildCasterSelection(selection);
+    gDiagnostics.selectedCount = static_cast<std::size_t>(selection.length());
+    if (!gDiagnostics.selectionBuilt || !buildCasterLightMatrix(selection)) {
+        // Fail closed: leave Maya's standard scene operations intact and do
+        // not insert a caster operation without a unique scene light and
+        // finite selection bounds.
+        disableReceiverProbeForFailClosed();
+        renderer->getStandardViewportOperations(mOperations);
+        gDiagnostics.setup = false;
+        return MS::kSuccess;
+    }
     // Keep the private target and caster shader alive across cleanup/setup
     // cycles.  Body shader assignments borrow the exact target and cannot be
     // safely cleared with an undocumented null assignment.
@@ -871,12 +1210,6 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
         }
     }
 
-    MSelectionList selection;
-    gDiagnostics.selectionBuilt = buildCasterSelection(selection);
-    gDiagnostics.selectedCount = static_cast<std::size_t>(selection.length());
-    if (!gDiagnostics.selectionBuilt) {
-        gDiagnostics.error = "no mmdRenderShape caster selected";
-    }
     auto describeTarget = [](MHWRender::MRenderTarget* target,
                              TargetDiagnostics& diagnostic) {
         if (!target) {
@@ -901,7 +1234,6 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
         return MS::kFailure;
     }
 
-    MHWRender::MRenderer* renderer = MHWRender::MRenderer::theRenderer();
     const MHWRender::MShaderManager* shaderManager =
         renderer ? renderer->getShaderManager() : nullptr;
     if (!shaderManager) {
@@ -1044,6 +1376,33 @@ std::string MmdNativeCasterRenderOverride::diagnosticsJson()
            << ",\"matrixBound\":" << jsonBool(gDiagnostics.matrixBound)
            << ",\"matrixValidated\":"
            << jsonBool(gDiagnostics.matrixValidated)
+           << ",\"matrixSource\":" << jsonString(gDiagnostics.matrixSource)
+           << ",\"lightPath\":" << jsonString(gDiagnostics.lightPath)
+           << ",\"lightDirection\":["
+           << gDiagnostics.lightDirection[0] << ','
+           << gDiagnostics.lightDirection[1] << ','
+           << gDiagnostics.lightDirection[2] << ']'
+           << ",\"worldBounds\":["
+           << gDiagnostics.worldBounds[0] << ','
+           << gDiagnostics.worldBounds[1] << ','
+           << gDiagnostics.worldBounds[2] << ','
+           << gDiagnostics.worldBounds[3] << ','
+           << gDiagnostics.worldBounds[4] << ','
+           << gDiagnostics.worldBounds[5] << ']'
+           << ",\"lightBounds\":["
+           << gDiagnostics.lightBounds[0] << ','
+           << gDiagnostics.lightBounds[1] << ','
+           << gDiagnostics.lightBounds[2] << ','
+           << gDiagnostics.lightBounds[3] << ','
+           << gDiagnostics.lightBounds[4] << ','
+           << gDiagnostics.lightBounds[5] << ']'
+           << ",\"matrixHash\":" << jsonString(gDiagnostics.matrixHash)
+           << ",\"casterMatrixHash\":"
+           << jsonString(gDiagnostics.casterMatrixHash)
+           << ",\"receiverMatrixHash\":"
+           << jsonString(gDiagnostics.receiverMatrixHash)
+           << ",\"cornersInClip\":"
+           << jsonBool(gDiagnostics.cornersInClip)
            << ",\"depthBiasBound\":"
            << jsonBool(gDiagnostics.depthBiasBound)
            << ",\"depthBias\":" << gDiagnostics.depthBias
@@ -1121,6 +1480,12 @@ std::string MmdNativeCasterRenderOverride::diagnosticsJson()
            << jsonBool(gDiagnostics.receiverTargetSameFrame)
            << ",\"receiverTargetsRetained\":"
            << jsonBool(gDiagnostics.receiverTargetsRetained)
+           << ",\"failClosedProbeDisableAttempted\":"
+           << jsonBool(gDiagnostics.failClosedProbeDisableAttempted)
+           << ",\"failClosedProbeDisableSuccess\":"
+           << jsonBool(gDiagnostics.failClosedProbeDisableSuccess)
+           << ",\"failClosedProbeDisableFailureCount\":"
+           << gDiagnostics.failClosedProbeDisableFailureCount
            // Keep the old occupancy keys as compatibility aliases for local
            // diagnostics that predate the real-depth witness.
            << ",\"nonClearSamples\":" << gDiagnostics.writtenSamples
@@ -1155,9 +1520,9 @@ MStatus MmdNativeCasterWitnessCommand::doIt(const MArgList& args)
         double requestedBias = 0.0;
         status = argumentData.getFlagArgument("-depthBias", 0, requestedBias);
         if (!status || !std::isfinite(requestedBias) || requestedBias < 0.0 ||
-            requestedBias > 1.0) {
+            requestedBias > kDepthBiasReserve) {
             MGlobal::displayError(
-                "mmdNativeCasterWitness depthBias must be finite in [0, 1]");
+                "mmdNativeCasterWitness depthBias must be finite in [0, 0.6]");
             return MS::kFailure;
         }
         gDepthBias = static_cast<float>(requestedBias);

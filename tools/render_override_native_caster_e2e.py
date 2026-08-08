@@ -12,8 +12,10 @@ the pixel footprint.  When ``--control-model`` is supplied, structured render
 item diagnostics are matched exactly against the caster shader's real draw
 callback batch; the fixture must include caster-on, caster-off, transparent,
 and outline items.  This remains a caster capability witness, not a shadow-
-composition, alpha-cutout sampling, scene-light matrix, or GoldenOracle parity
-claim.
+composition, alpha-cutout sampling, or GoldenOracle parity claim.  The
+frame-local matrix authority (one tagged ``mmd_light`` plus selected shape
+bounds) is exercised directly, including light rotation and missing-authority
+fail-closed cases.
 """
 
 from __future__ import annotations
@@ -480,6 +482,10 @@ def run_probe(
         except Exception as exc:
             report["rendererFindOverride"] = f"ERR: {exc}"
 
+        from mmd_tools.converters.light_converter import (
+            create_mmd_light_controller,
+            set_mmd_light_direction,
+        )
         from mmd_tools.io.mmd_importer import import_mmd_file
         from mmd_tools.services.settings_service import SettingsService
 
@@ -515,6 +521,7 @@ def run_probe(
             model_path, "native_caster_e2e"
         )
         control_root = None
+        control_shapes: list[str] = []
         if control_model_path:
             control_root, control_shapes = import_native_fixture(
                 control_model_path, "native_caster_controls_e2e"
@@ -522,9 +529,16 @@ def run_probe(
             shapes.extend(control_shapes)
         if not shapes:
             raise RuntimeError(f"UI import did not create mmdRenderShape: {root_name}")
+        light_controller = create_mmd_light_controller()
+        if not light_controller:
+            raise RuntimeError("failed to create tagged mmd_light authority")
+        light_direction_a = (-0.5, -1.0, -1.0)
+        light_direction_b = (0.65, -0.7, -1.0)
+        set_mmd_light_direction(light_direction_a)
         report["root"] = root_name
         report["controlRoot"] = control_root
         report["shapes"] = shapes
+        report["lightController"] = str(light_controller)
         log(f"UI import root={root_name} mmdRenderShape count={len(shapes)}")
 
         panels = [str(panel) for panel in (cmds.getPanel(type="modelPanel") or [])]
@@ -847,6 +861,249 @@ def run_probe(
                     "receiver probe frame did not retain its caster target"
                 )
 
+        # The caster matrix is frame-local to the tagged MMD light and shape
+        # bounds, not to the viewport camera.  Rotate the light B/A and force
+        # a fresh override setup to prove the matrix hash follows the light,
+        # then returns exactly to the original authority.
+        def run_light_frame(direction: tuple[float, float, float]) -> Dict[str, Any]:
+            set_mmd_light_direction(direction)
+            for current in panels:
+                _set_panel_override(mel, current, "mmdNativeCaster")
+            active = _wait_for_active_witness(cmds, log)
+            for current in panels:
+                _set_panel_override(mel, current, "")
+            cmds.refresh(force=True)
+            time.sleep(0.5)
+            return active
+
+        light_a_witness = _query_witness(cmds, log)
+        light_b_witness = run_light_frame(light_direction_b)
+        light_restored_witness = run_light_frame(light_direction_a)
+        report["lightRotationAba"] = {
+            "baseline": light_a_witness,
+            "control": light_b_witness,
+            "restored": light_restored_witness,
+        }
+        if (
+            not light_a_witness.get("matrixHash")
+            or light_a_witness.get("matrixHash")
+            == light_b_witness.get("matrixHash")
+            or light_a_witness.get("matrixHash")
+            != light_restored_witness.get("matrixHash")
+            or any(
+                witness.get("matrixHash")
+                != witness.get("casterMatrixHash")
+                or witness.get("matrixHash")
+                != witness.get("receiverMatrixHash")
+                for witness in (
+                    light_a_witness,
+                    light_b_witness,
+                    light_restored_witness,
+                )
+            )
+            or not light_b_witness.get("occupied")
+            or not light_b_witness.get("writtenDepthFinite")
+            or not light_b_witness.get("writtenDepthInRange")
+            or (
+                light_a_witness.get("writtenFootprintHash")
+                == light_b_witness.get("writtenFootprintHash")
+                and light_a_witness.get("writtenMin")
+                == light_b_witness.get("writtenMin")
+                and light_a_witness.get("writtenMax")
+                == light_b_witness.get("writtenMax")
+                and light_a_witness.get("writtenMean")
+                == light_b_witness.get("writtenMean")
+            )
+            or any(
+                light_a_witness.get(key) != light_restored_witness.get(key)
+                for key in (
+                    "writtenFootprintHash",
+                    "writtenSamples",
+                    "writtenMin",
+                    "writtenMax",
+                    "writtenMean",
+                )
+            )
+        ):
+            raise RuntimeError("light rotation did not produce an A/B/A matrix witness")
+
+        def depth_snapshot(witness: Dict[str, Any]) -> Dict[str, Any]:
+            return {
+                key: witness.get(key)
+                for key in (
+                    "matrixHash",
+                    "writtenFootprintHash",
+                    "writtenSamples",
+                    "writtenMin",
+                    "writtenMax",
+                    "writtenMean",
+                    "cornersInClip",
+                    "occupied",
+                )
+            }
+
+        # A camera-only move must not perturb a light-space caster matrix or
+        # its private target rasterization.  Save and restore the transform so
+        # subsequent DAG and teardown gates use the original camera.
+        camera_node = str(camera.get("node", ""))
+        camera_translation = cmds.xform(camera_node, query=True, worldSpace=True, translation=True)
+        camera_baseline = light_restored_witness
+        cmds.xform(
+            camera_node,
+            worldSpace=True,
+            translation=(float(camera_translation[0]) + 0.35,
+                         float(camera_translation[1]),
+                         float(camera_translation[2])),
+        )
+        camera_moved_witness = run_light_frame(light_direction_a)
+        cmds.xform(camera_node, worldSpace=True, translation=camera_translation)
+        camera_restored_witness = run_light_frame(light_direction_a)
+        report["cameraInvariant"] = {
+            "baseline": depth_snapshot(camera_baseline),
+            "moved": depth_snapshot(camera_moved_witness),
+            "restored": depth_snapshot(camera_restored_witness),
+        }
+        if (
+            depth_snapshot(camera_baseline) != depth_snapshot(camera_moved_witness)
+            or depth_snapshot(camera_baseline) != depth_snapshot(camera_restored_witness)
+        ):
+            raise RuntimeError("camera-only move changed the caster matrix or target")
+
+        # A DAG transform is part of the selected-bounds authority.  Translate
+        # and non-uniformly scale the primary shape's parent, then restore it;
+        # the fitted matrix must change while remaining finite/occupied and
+        # return to the exact A hash/footprint afterwards.
+        shape_parent = str(
+            (cmds.listRelatives(shapes[0], parent=True, fullPath=True) or [""])[0]
+        )
+        if not shape_parent:
+            raise RuntimeError("native caster shape has no transform parent")
+        parent_translation = cmds.xform(
+            shape_parent, query=True, worldSpace=True, translation=True
+        )
+        parent_scale = cmds.getAttr(f"{shape_parent}.scale")
+        cmds.xform(
+            shape_parent,
+            worldSpace=True,
+            translation=(float(parent_translation[0]) + 0.08,
+                         float(parent_translation[1]),
+                         float(parent_translation[2])),
+        )
+        cmds.setAttr(f"{shape_parent}.scale", 1.12, 0.87, 1.0, type="double3")
+        dag_moved_witness = run_light_frame(light_direction_a)
+        cmds.xform(shape_parent, worldSpace=True, translation=parent_translation)
+        original_scale = (
+            parent_scale[0]
+            if isinstance(parent_scale, (tuple, list))
+            and len(parent_scale) == 1
+            and isinstance(parent_scale[0], (tuple, list))
+            else parent_scale
+        )
+        cmds.setAttr(
+            f"{shape_parent}.scale",
+            float(original_scale[0]),
+            float(original_scale[1]),
+            float(original_scale[2]),
+            type="double3",
+        )
+        dag_restored_witness = run_light_frame(light_direction_a)
+        report["dagTransformAba"] = {
+            "baseline": depth_snapshot(camera_restored_witness),
+            "moved": depth_snapshot(dag_moved_witness),
+            "restored": depth_snapshot(dag_restored_witness),
+        }
+        if (
+            dag_moved_witness.get("matrixHash")
+            == camera_restored_witness.get("matrixHash")
+            or not dag_moved_witness.get("cornersInClip")
+            or not dag_moved_witness.get("occupied")
+            or dag_restored_witness.get("matrixHash")
+            != camera_restored_witness.get("matrixHash")
+            or dag_restored_witness.get("writtenFootprintHash")
+            != camera_restored_witness.get("writtenFootprintHash")
+            or dag_restored_witness.get("writtenSamples")
+            != camera_restored_witness.get("writtenSamples")
+        ):
+            raise RuntimeError("DAG transform did not produce a reversible matrix witness")
+
+        # Missing-light authority must fail closed while the body shaders are
+        # still alive: no caster operation, no stale receiver probe, and the
+        # ordinary scene remains available.  Recreate the authority before
+        # continuing with the hidden-shape and teardown gates.
+        _set_receiver_probe(cmds, log, False)
+        missing_before_path, missing_before_stats, _ = _capture_active_viewport_buffer(
+            cmds,
+            output_dir / "native_missing_light_before.png",
+            panel,
+            require_nonuniform=False,
+        )
+        _set_receiver_probe(cmds, log, True)
+        for current in panels:
+            _set_panel_override(mel, current, "mmdNativeCaster")
+        missing_probe_witness = wait_for_receiver_probe_witness()
+        if not missing_probe_witness.get("receiverProbeEnabled"):
+            raise RuntimeError("missing-light precondition did not enable receiver probe")
+        for current in panels:
+            _set_panel_override(mel, current, "")
+        cmds.delete(light_controller)
+        for current in panels:
+            _set_panel_override(mel, current, "mmdNativeCaster")
+        cmds.refresh(force=True)
+        time.sleep(0.5)
+        missing_light_witness = _query_witness(cmds, log)
+        for current in panels:
+            _set_panel_override(mel, current, "")
+        missing_after_path, missing_after_stats, _ = _capture_active_viewport_buffer(
+            cmds,
+            output_dir / "native_missing_light_after.png",
+            panel,
+            require_nonuniform=False,
+        )
+        report["missingLightWitness"] = missing_light_witness
+        report["missingLightProbeBefore"] = missing_probe_witness
+        report["missingLightScene"] = {
+            "before": str(missing_before_path),
+            "beforeStats": missing_before_stats,
+            "after": str(missing_after_path),
+            "afterStats": missing_after_stats,
+        }
+        if missing_light_witness.get("setup") or missing_light_witness.get(
+            "operationInsertedBeforeScene"
+        ) or missing_light_witness.get("receiverProbeEnabled"):
+            raise RuntimeError("missing-light caster did not fail closed")
+        if (
+            int(missing_light_witness.get("drawCallbackCount", 0)) != 0
+            or any(
+                missing_light_witness.get(key)
+                for key in (
+                    "drawnRenderItems",
+                    "drawnRenderItemDagPaths",
+                    "drawnRenderItemTypes",
+                    "drawnRenderItemCastsShadows",
+                )
+            )
+            or missing_light_witness.get("frameComplete")
+            or missing_light_witness.get("colorTargetAcquired")
+            or missing_light_witness.get("depthTargetAcquired")
+            or missing_light_witness.get("colorTarget", {}).get("width", 0)
+            or missing_light_witness.get("colorTarget", {}).get("height", 0)
+            or missing_light_witness.get("colorTarget", {}).get("name")
+            or missing_light_witness.get("colorTarget", {}).get("format", -1) != -1
+            or missing_light_witness.get("depthTarget", {}).get("width", 0)
+            or missing_light_witness.get("depthTarget", {}).get("height", 0)
+            or missing_light_witness.get("depthTarget", {}).get("name")
+            or missing_light_witness.get("depthTarget", {}).get("format", -1) != -1
+            or missing_light_witness.get("matrixHash")
+            or missing_light_witness.get("casterMatrixHash")
+            or missing_light_witness.get("receiverMatrixHash")
+            or not missing_light_witness.get("failClosedProbeDisableAttempted")
+            or not missing_light_witness.get("failClosedProbeDisableSuccess")
+            or int(missing_light_witness.get("failClosedProbeDisableFailureCount", 1)) != 0
+        ):
+            raise RuntimeError("missing-light fail-closed diagnostics retained stale caster state")
+        light_controller = create_mmd_light_controller()
+        set_mmd_light_direction(light_direction_a)
+
         # Negative control: keep the override path enabled but hide every
         # caster shape.  The next setup resets per-frame occupancy, so a clear
         # target after this frame proves the sample did not come from stale
@@ -979,6 +1236,136 @@ def run_probe(
             "matrixValidated": bool(active_witness.get("matrixValidated"))
             and bool(control_depth.get("matrixValidated"))
             and bool(restored_depth.get("matrixValidated")),
+            "matrixAuthority": active_witness.get("matrixSource")
+            == "tagged_mmd_light_minus_z"
+            and bool(active_witness.get("lightPath"))
+            and bool(active_witness.get("cornersInClip"))
+            and active_witness.get("matrixHash")
+            == active_witness.get("casterMatrixHash")
+            == active_witness.get("receiverMatrixHash"),
+            "matrixAba": bool(
+                report.get("lightRotationAba", {}).get("baseline", {}).get("matrixHash")
+            )
+            and report.get("lightRotationAba", {}).get("baseline", {}).get("matrixHash")
+            != report.get("lightRotationAba", {}).get("control", {}).get("matrixHash")
+            and report.get("lightRotationAba", {}).get("baseline", {}).get("matrixHash")
+            == report.get("lightRotationAba", {}).get("restored", {}).get("matrixHash")
+            and all(
+                witness.get("matrixHash")
+                == witness.get("casterMatrixHash")
+                == witness.get("receiverMatrixHash")
+                for witness in (
+                    report.get("lightRotationAba", {}).get("baseline", {}),
+                    report.get("lightRotationAba", {}).get("control", {}),
+                    report.get("lightRotationAba", {}).get("restored", {}),
+                )
+            )
+            and bool(
+                report.get("lightRotationAba", {}).get("control", {}).get("occupied")
+            )
+            and report.get("lightRotationAba", {}).get("baseline", {}).get(
+                "writtenFootprintHash"
+            )
+            != report.get("lightRotationAba", {}).get("control", {}).get(
+                "writtenFootprintHash"
+            )
+            and report.get("lightRotationAba", {}).get("baseline", {}).get(
+                "writtenFootprintHash"
+            )
+            == report.get("lightRotationAba", {}).get("restored", {}).get(
+                "writtenFootprintHash"
+            ),
+            "cameraInvariant": bool(
+                report.get("cameraInvariant", {}).get("baseline")
+                == report.get("cameraInvariant", {}).get("moved")
+                == report.get("cameraInvariant", {}).get("restored")
+            ),
+            "dagTransformAba": bool(
+                report.get("dagTransformAba", {}).get("moved", {}).get("cornersInClip")
+            )
+            and bool(report.get("dagTransformAba", {}).get("moved", {}).get("occupied"))
+            and report.get("dagTransformAba", {}).get("baseline", {}).get("matrixHash")
+            != report.get("dagTransformAba", {}).get("moved", {}).get("matrixHash")
+            and report.get("dagTransformAba", {}).get("baseline", {}).get("matrixHash")
+            == report.get("dagTransformAba", {}).get("restored", {}).get("matrixHash")
+            and report.get("dagTransformAba", {}).get("baseline", {}).get(
+                "writtenFootprintHash"
+            )
+            == report.get("dagTransformAba", {}).get("restored", {}).get(
+                "writtenFootprintHash"
+            ),
+            "missingLightFailClosed": not bool(
+                report.get("missingLightWitness", {}).get("setup")
+            )
+            and not bool(
+                report.get("missingLightWitness", {}).get(
+                    "operationInsertedBeforeScene"
+                )
+            )
+            and not bool(
+                report.get("missingLightWitness", {}).get("receiverProbeEnabled")
+            ),
+            "missingLightDiagnosticsReset": int(
+                report.get("missingLightWitness", {}).get("drawCallbackCount", 0)
+            )
+            == 0
+            and not any(
+                report.get("missingLightWitness", {}).get(key)
+                for key in (
+                    "drawnRenderItems",
+                    "drawnRenderItemDagPaths",
+                    "drawnRenderItemTypes",
+                    "drawnRenderItemCastsShadows",
+                )
+            )
+            and not bool(report.get("missingLightWitness", {}).get("frameComplete"))
+            and not bool(
+                report.get("missingLightWitness", {}).get("colorTargetAcquired")
+            )
+            and not bool(
+                report.get("missingLightWitness", {}).get("depthTargetAcquired")
+            )
+            and not bool(report.get("missingLightWitness", {}).get("matrixHash"))
+            and bool(
+                report.get("missingLightWitness", {}).get(
+                    "failClosedProbeDisableAttempted"
+                )
+            )
+            and bool(
+                report.get("missingLightWitness", {}).get(
+                    "failClosedProbeDisableSuccess"
+                )
+            )
+            and int(
+                report.get("missingLightWitness", {}).get(
+                    "failClosedProbeDisableFailureCount", 1
+                )
+            )
+            == 0,
+            "missingLightProbeTransition": bool(
+                report.get("missingLightProbeBefore", {}).get("receiverProbeEnabled")
+            )
+            and bool(
+                report.get("missingLightWitness", {}).get(
+                    "failClosedProbeDisableAttempted"
+                )
+            )
+            and bool(
+                report.get("missingLightWitness", {}).get(
+                    "failClosedProbeDisableSuccess"
+                )
+            ),
+            "missingLightScenePreserved": bool(
+                report.get("missingLightScene", {}).get("beforeStats", {}).get(
+                    "scenePixelSha256"
+                )
+            )
+            and report.get("missingLightScene", {}).get("beforeStats", {}).get(
+                "scenePixelSha256"
+            )
+            == report.get("missingLightScene", {}).get("afterStats", {}).get(
+                "scenePixelSha256"
+            ),
             "depthBiasBound": bool(active_witness.get("depthBiasBound"))
             and bool(control_depth.get("depthBiasBound"))
             and bool(restored_depth.get("depthBiasBound")),

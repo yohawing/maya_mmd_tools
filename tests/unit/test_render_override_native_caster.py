@@ -65,6 +65,13 @@ def test_native_caster_uses_fixed_targets_and_occupancy_witness() -> None:
     assert "writtenMean" in source
     assert "writtenFootprintHash" in source
     assert "matrixValidated" in source
+    assert "matrixSource" in source
+    assert "lightDirection" in source
+    assert "worldBounds" in source
+    assert "lightBounds" in source
+    assert "cornersInClip" in source
+    assert "casterMatrixHash" in source
+    assert "receiverMatrixHash" in source
     assert "depthBiasBound" in source
     assert 'addFlag("-db", "-depthBias"' in source
     assert "CasterLightViewProjection" in shader
@@ -96,6 +103,10 @@ def test_native_caster_e2e_records_negative_control() -> None:
     assert "writtenFootprintHash" in runner
     assert "receiverProbe" in runner
     assert "receiverProbeAba" in runner
+    assert "lightRotationAba" in runner
+    assert "cameraInvariant" in runner
+    assert "dagTransformAba" in runner
+    assert "missingLightFailClosed" in runner
     assert "receiverTargetsRetained" in runner
     assert "postResetWitness" in runner
     assert "activeSceneUnloadRejected" in runner
