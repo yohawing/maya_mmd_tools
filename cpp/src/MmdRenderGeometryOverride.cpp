@@ -474,7 +474,7 @@ void MmdRenderGeometryOverride::updateRenderItems(
     MTextureManager* textureManager =
         renderer ? renderer->getTextureManager() : nullptr;
     if (!shaderManager) {
-        MGlobal::displayError(
+        MGlobal::displayWarning(
             "[mmdRenderOverride] Maya shader manager is unavailable.");
         shape_->clearRenderItemWitness();
         return;
@@ -584,7 +584,7 @@ void MmdRenderGeometryOverride::updateRenderItems(
         }
         if (!materialShader) {
             shape_->recordMaterialBindingDiagnostic(diagnostic);
-            MGlobal::displayError(
+            MGlobal::displayWarning(
                 MString("[mmdRenderOverride] Native MMD shader is unavailable: ") +
                 technique + " path=" + shaderPath.c_str());
             disableItems(list);
@@ -597,7 +597,7 @@ void MmdRenderGeometryOverride::updateRenderItems(
         diagnostic.parameterBindingSuccess = parameterBindingSuccess;
         if (!parameterBindingSuccess) {
             shape_->recordMaterialBindingDiagnostic(diagnostic);
-            MGlobal::displayError(
+            MGlobal::displayWarning(
                 MString("[mmdRenderOverride] Failed to bind material parameters to ") +
                 item->name());
             disableItems(list);
@@ -608,7 +608,7 @@ void MmdRenderGeometryOverride::updateRenderItems(
         diagnostic.bindingSuccess = diagnostic.shaderAssignmentSuccess;
         shape_->recordMaterialBindingDiagnostic(diagnostic);
         if (!diagnostic.shaderAssignmentSuccess) {
-            MGlobal::displayError(
+            MGlobal::displayWarning(
                 MString("[mmdRenderOverride] Failed to bind material shader to ") +
                 item->name());
             disableItems(list);
