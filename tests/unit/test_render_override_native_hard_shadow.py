@@ -60,10 +60,13 @@ def test_hard_shadow_witness_requires_same_frame_assignment_and_retention() -> N
 def test_hard_shadow_body_states_accepts_dominant_green_and_blue_pixels() -> None:
     # Eight green-dominant lit pixels and eight blue-dominant occluded pixels
     # exceed the anti-aliasing-safe minimum for this 16-pixel body.
+    baseline = bytes([20, 20, 20, 255] * 16)
     buffer = bytes(
         [channel for color in ([(0, 240, 16, 255)] * 8 + [(8, 16, 240, 255)] * 8) for channel in color]
     )
-    result = _hard_shadow_body_states(buffer, 16, 1, bytes([1] * 16))
+    result = _hard_shadow_body_states(
+        buffer, 16, 1, bytes([1] * 16), baseline=baseline
+    )
 
     assert result["pass"]
     assert result["source"] == "image"
@@ -72,12 +75,49 @@ def test_hard_shadow_body_states_accepts_dominant_green_and_blue_pixels() -> Non
 
 
 def test_hard_shadow_body_states_rejects_single_color_capture() -> None:
+    baseline = bytes([20, 20, 20, 255] * 16)
     buffer = bytes([0, 240, 16, 255] * 16)
-    result = _hard_shadow_body_states(buffer, 16, 1, bytes([1] * 16))
+    result = _hard_shadow_body_states(
+        buffer, 16, 1, bytes([1] * 16), baseline=baseline
+    )
 
     assert not result["pass"]
     assert result["litPixels"] == 16
     assert result["occludedPixels"] == 0
+
+
+def test_hard_shadow_body_states_ignores_unchanged_caster_colors() -> None:
+    # The first eight pixels are an unchanged green caster material. Only the
+    # last eight changed to blue; the full body histogram must not count the
+    # unchanged green as proof of a lit hard-shadow state.
+    baseline = bytes(
+        [
+            channel
+            for color in (
+                [(0, 240, 16, 255)] * 8
+                + [(20, 20, 20, 255)] * 8
+            )
+            for channel in color
+        ]
+    )
+    control = bytes(
+        [
+            channel
+            for color in (
+                [(0, 240, 16, 255)] * 8
+                + [(8, 16, 240, 255)] * 8
+            )
+            for channel in color
+        ]
+    )
+    result = _hard_shadow_body_states(
+        control, 16, 1, bytes([1] * 16), baseline=baseline
+    )
+
+    assert not result["pass"]
+    assert result["changedBodyPixels"] == 8
+    assert result["litPixels"] == 0
+    assert result["occludedPixels"] == 8
 
 
 def test_hard_shadow_aba_default_changes_body_and_restores_exactly() -> None:

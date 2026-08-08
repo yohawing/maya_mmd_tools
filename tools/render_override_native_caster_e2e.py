@@ -178,34 +178,49 @@ def _hard_shadow_body_states(
     width: int,
     height: int,
     body_mask: bytes,
+    *,
+    baseline: Optional[bytes] = None,
 ) -> Dict[str, Any]:
-    """Count lit/occluded hard-shadow states inside the visible body mask.
+    """Count lit/occluded states only on body pixels changed by OFF -> ON.
 
-    Classify the RGBA8 readback by dominant green (lit) versus blue (occluded)
-    channel and ignore antialiased edge pixels.
+    Restricting classification to pixels whose RGBA8 values actually changed
+    prevents an unrelated green/blue caster material elsewhere in the body
+    mask from satisfying the positive witness. Colors are classified by
+    dominant green (lit) versus blue (occluded); antialiased edge pixels are
+    ignored by requiring a strict channel winner.
     """
     expected = width * height * 4
-    if len(buffer) < expected or len(body_mask) < width * height:
+    if (
+        baseline is None
+        or len(baseline) < expected
+        or len(buffer) < expected
+        or len(body_mask) < width * height
+    ):
         return {"pass": False, "reason": "hard-shadow state buffers are truncated"}
 
     lit = 0
     occluded = 0
     body_pixels = 0
+    changed_body_pixels = 0
     for index in range(width * height):
         if not body_mask[index]:
             continue
         body_pixels += 1
         offset = index * 4
+        if baseline[offset : offset + 4] == buffer[offset : offset + 4]:
+            continue
+        changed_body_pixels += 1
         red, green, blue, _ = buffer[offset : offset + 4]
-        if green > red and green >= blue:
+        if green > red and green > blue:
             lit += 1
         elif blue > red and blue > green:
             occluded += 1
-    minimum = max(8, int(body_pixels * 0.005))
+    minimum = max(8, int(changed_body_pixels * 0.005))
     return {
-        "pass": lit >= minimum and occluded >= minimum,
+        "pass": changed_body_pixels > 0 and lit >= minimum and occluded >= minimum,
         "source": "image",
         "bodyPixels": body_pixels,
+        "changedBodyPixels": changed_body_pixels,
         "minimumStatePixels": minimum,
         "litPixels": lit,
         "occludedPixels": occluded,
@@ -1074,6 +1089,7 @@ def run_probe(
                 hard_width,
                 hard_height,
                 shape_mask["mask"],
+                baseline=hard_shadow_off_buffer,
             )
         )
         report["hardShadowAba"] = {
