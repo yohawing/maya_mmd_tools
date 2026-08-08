@@ -52,6 +52,10 @@ struct MmdRenderQueueInput {
     // the model self-shadow map.  This is intentionally distinct from the
     // receiver-side flags.selfShadow value and is diagnostic-only for now.
     bool selfShadowMap = false;
+    // PMX flags.selfShadow controls whether this material may receive the
+    // model self-shadow map.  Keep this separate from selfShadowMap so a
+    // future receiver path cannot accidentally use the caster eligibility.
+    bool selfShadow = false;
 };
 
 /** Ordered queue record consumed by a native material-split loader. */

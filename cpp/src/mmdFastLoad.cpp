@@ -376,6 +376,17 @@ bool materialSelfShadowMap(const json& material)
     return material["flags"].value("selfShadowMap", false);
 }
 
+bool materialSelfShadow(const json& material)
+{
+    if (!material.is_object() || !material.contains("flags") ||
+        !material["flags"].is_object()) {
+        return false;
+    }
+    // PMX keeps receiver and caster eligibility as separate flags.  The
+    // native receiver handoff must consume selfShadow, never selfShadowMap.
+    return material["flags"].value("selfShadow", false);
+}
+
 void populateNativeMaterial(const json& material,
                             const std::filesystem::path& modelDirectory,
                             mmd::MmdRenderQueueInput& input)
@@ -402,6 +413,7 @@ void populateNativeMaterial(const json& material,
     input.sharedToonIndex = materialSharedToonIndex(material);
     input.doubleSided = materialDoubleSided(material);
     input.selfShadowMap = materialSelfShadowMap(material);
+    input.selfShadow = materialSelfShadow(material);
 }
 
 std::filesystem::path nativeModelDirectory(const std::string& modelPath)
@@ -939,6 +951,8 @@ MStatus MmdFastLoad::loadSplit(const std::string& safeName,
             const json& material = (*materials)[originalMaterialIndex];
             input.transparencyMode = materialTransparencyMode(material);
             input.diffuseAlpha = materialDiffuseAlpha(material);
+            input.selfShadowMap = materialSelfShadowMap(material);
+            input.selfShadow = materialSelfShadow(material);
         }
         queueInputs.push_back(std::move(input));
     }

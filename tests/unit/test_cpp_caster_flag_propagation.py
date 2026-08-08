@@ -17,6 +17,19 @@ def test_fast_load_reads_only_self_shadow_map_for_caster_eligibility() -> None:
     assert "input.selfShadowMap = materialSelfShadowMap(material);" in source
 
 
+def test_fast_load_preserves_receiver_and_caster_flags_separately() -> None:
+    source = (CPP / "mmdFastLoad.cpp").read_text(encoding="utf-8")
+    queue_header = (CPP / "MmdRenderQueue.h").read_text(encoding="utf-8")
+
+    helper = source[source.index("bool materialSelfShadow(") :]
+    helper = helper[: helper.index("\n}\n")]
+    assert 'value("selfShadow", false)' in helper
+    assert 'value("selfShadowMap", false)' not in helper
+    assert "input.selfShadow = materialSelfShadow(material);" in source
+    assert "bool selfShadowMap = false;" in queue_header
+    assert "bool selfShadow = false;" in queue_header
+
+
 def test_queue_and_structured_diagnostics_preserve_caster_eligibility() -> None:
     queue_header = (CPP / "MmdRenderQueue.h").read_text(encoding="utf-8")
     shape_header = (CPP / "MmdRenderShape.h").read_text(encoding="utf-8")
@@ -34,9 +47,16 @@ def test_queue_and_structured_diagnostics_preserve_caster_eligibility() -> None:
     )
     assert 'appendJsonBool(stream, "selfShadowMap", diagnostic.selfShadowMap' in shape_source
     assert "materialInput.selfShadowMap = true;" in smoke
+    assert "materialInput.selfShadow = false;" in smoke
     assert "secondMaterialInput.selfShadowMap = false;" in smoke
+    assert "secondMaterialInput.selfShadow = true;" in smoke
     assert "firstMaterial->selfShadowMap" in smoke
     assert "!secondMaterial->selfShadowMap" in smoke
+    assert "!firstMaterial->selfShadow" in smoke
+    assert "secondMaterial->selfShadow" in smoke
+    assert "bool selfShadow = false;" in shape_header
+    assert "diagnostic.selfShadow = queueGeometry.material.selfShadow;" in override_source
+    assert 'appendJsonBool(stream, "selfShadow", diagnostic.selfShadow' in shape_source
 
 
 def test_geometry_override_filters_only_native_caster_scene_items() -> None:

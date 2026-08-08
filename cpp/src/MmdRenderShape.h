@@ -98,6 +98,7 @@ public:
         bool textureAlphaBlend = false;
         bool effectiveTransparent = false;
         bool selfShadowMap = false;
+        bool selfShadow = false;
         bool casterEligible = false;
         bool casterRenderFilterParticipation = false;
         std::string renderItemType;

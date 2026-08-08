@@ -592,6 +592,7 @@ std::string MmdRenderShape::materialBindingDiagnosticsJson() const
                        diagnostic.effectiveTransparent, first);
         appendJsonBool(stream, "selfShadowMap", diagnostic.selfShadowMap,
                        first);
+        appendJsonBool(stream, "selfShadow", diagnostic.selfShadow, first);
         appendJsonBool(stream, "casterEligible", diagnostic.casterEligible,
                        first);
         appendJsonBool(stream, "casterRenderFilterParticipation",
