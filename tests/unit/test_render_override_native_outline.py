@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SHADER = ROOT / "mmd_tools" / "shaders" / "MMDShader.fx"
+SHADER = ROOT / "mmd_tools" / "shaders" / "MMDNativeShader.fx"
 
 
 def _technique(source: str, name: str) -> str:

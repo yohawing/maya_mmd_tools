@@ -42,7 +42,7 @@ std::filesystem::path findBundledNativeShaderPath(const MString& loadPath)
         std::filesystem::path directory = pluginPath.parent_path();
         while (!directory.empty()) {
             const std::filesystem::path candidate =
-                directory / "mmd_tools" / "shaders" / "MMDShader.fx";
+                directory / "mmd_tools" / "shaders" / "MMDNativeShader.fx";
             if (std::filesystem::is_regular_file(candidate)) {
                 return std::filesystem::absolute(candidate).lexically_normal();
             }
@@ -153,7 +153,7 @@ std::string nativeShaderPath()
 
     // Keep the relative fallback for direct command-line/plugin consumers
     // that do not initialize the plug-in entry point through Maya.
-    return "mmd_tools/shaders/MMDShader.fx";
+    return "mmd_tools/shaders/MMDNativeShader.fx";
 }
 
 std::string nativeShaderCacheKey(

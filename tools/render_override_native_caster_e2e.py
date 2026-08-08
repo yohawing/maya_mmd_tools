@@ -47,12 +47,15 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from tests.viewport.maya_e2e_harness import run_maya_e2e  # noqa: E402
+from tools.render_override.common import (  # noqa: E402
+    capture_view as _capture_view,
+    require_requested_plugin as _require_requested_plugin,
+    write_report as _write_report,
+)
 from tools.render_override_vp2_ownership_e2e import (  # noqa: E402
-    _capture_view,
     _configure_camera,
     _configure_oracle_color_environment,
     _read_material_binding_diagnostics,
-    _require_requested_plugin,
 )
 
 
@@ -72,11 +75,6 @@ DEFAULT_CAMERA: Dict[str, Any] = {
     "near": 0.1,
     "far": 20.0,
 }
-
-
-def _write_report(path: Path, report: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _query_witness(cmds: Any, log: Any) -> Dict[str, Any]:
@@ -407,6 +405,47 @@ def _depth_bias_aba_passes(
         if abs(float(restored[key]) - float(baseline[key])) > DEPTH_BIAS_TOLERANCE:
             return False
     return True
+
+
+def _caster_target_witness_passes(
+    witness: Dict[str, Any], target_kind: str, expected_size: int = 2048
+) -> bool:
+    """Validate one native caster target descriptor from a structured witness."""
+
+    if target_kind not in {"color", "depth"}:
+        raise ValueError(f"unsupported caster target kind: {target_kind}")
+    target = witness.get(f"{target_kind}Target")
+    if not isinstance(target, dict):
+        return False
+    expected_format = 41 if target_kind == "color" else 2
+    expected_name = (
+        "__mmdNativeCasterColorTarget__"
+        if target_kind == "color"
+        else "__mmdNativeCasterDepthTarget__"
+    )
+    return (
+        bool(witness.get(f"{target_kind}TargetAcquired"))
+        and int(target.get("width", 0)) == expected_size
+        and int(target.get("height", 0)) == expected_size
+        and int(target.get("format", -1)) == expected_format
+        and target.get("name") == expected_name
+    )
+
+
+def _caster_depth_distribution_passes(witness: Dict[str, Any]) -> bool:
+    """Validate that the raster witness contains finite, varying clip depth."""
+
+    try:
+        minimum = float(witness.get("writtenMin", 0.0))
+        maximum = float(witness.get("writtenMax", 0.0))
+    except (TypeError, ValueError):
+        return False
+    return (
+        bool(witness.get("writtenDepthFinite"))
+        and bool(witness.get("writtenDepthInRange"))
+        and int(witness.get("writtenOutOfRangeSamples", 1)) == 0
+        and maximum > minimum + 1.0e-4
+    )
 
 
 def _wait_for_active_witness(cmds: Any, log: Any) -> Dict[str, Any]:
@@ -1501,18 +1540,12 @@ def run_probe(
         checks = {
             "overrideRegistered": bool(active_witness.get("registered")),
             "casterSelectedMmdRenderShape": int(active_witness.get("selectedCount", 0)) > 0,
-            "r32fTargetAcquired": bool(active_witness.get("colorTargetAcquired"))
-            and int(active_witness.get("colorTarget", {}).get("width", 0)) == 2048
-            and int(active_witness.get("colorTarget", {}).get("height", 0)) == 2048
-            and int(active_witness.get("colorTarget", {}).get("format", -1)) == 41
-            and active_witness.get("colorTarget", {}).get("name")
-            == "__mmdNativeCasterColorTarget__",
-            "d32TargetAcquired": bool(active_witness.get("depthTargetAcquired"))
-            and int(active_witness.get("depthTarget", {}).get("width", 0)) == 2048
-            and int(active_witness.get("depthTarget", {}).get("height", 0)) == 2048
-            and int(active_witness.get("depthTarget", {}).get("format", -1)) == 2
-            and active_witness.get("depthTarget", {}).get("name")
-            == "__mmdNativeCasterDepthTarget__",
+            "r32fTargetAcquired": _caster_target_witness_passes(
+                active_witness, "color"
+            ),
+            "d32TargetAcquired": _caster_target_witness_passes(
+                active_witness, "depth"
+            ),
             "shaderBound": bool(active_witness.get("shaderAvailable")),
             "matrixBound": bool(active_witness.get("matrixBound")),
             "matrixValidated": bool(active_witness.get("matrixValidated"))
@@ -1684,11 +1717,7 @@ def run_probe(
                 for _, item in render_items
                 if not item.get("casterEligible")
             ),
-            "depthDistribution": bool(active_witness.get("writtenDepthFinite"))
-            and bool(active_witness.get("writtenDepthInRange"))
-            and int(active_witness.get("writtenOutOfRangeSamples", 1)) == 0
-                and float(active_witness.get("writtenMax", 0.0))
-                > float(active_witness.get("writtenMin", 0.0)) + 1.0e-4,
+            "depthDistribution": _caster_depth_distribution_passes(active_witness),
             "depthBiasAba": _depth_bias_aba_passes(
                 baseline_depth, control_depth, restored_depth
             ),

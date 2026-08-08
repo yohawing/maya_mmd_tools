@@ -90,48 +90,6 @@ Texture2D Light0ShadowMap : SHADOWMAP
     int UIOrder = 1000;
 >;
 
-// Same-frame native receiver probe.  The C++ render override assigns its
-// private R32F caster target to borrowed body MShaderInstances using
-// MRenderTargetAssignment.  It is intentionally opt-in and encodes the raw
-// sampled depth directly in BODY pixels; this is a binding/ordering witness,
-// not a shadow compare, PCF, bias, or production receiver-composition path.
-Texture2D NativeCasterDepthTexture<
-    string UIGroup = "Native Diagnostics";
-    string UIName = "Native Caster Depth Probe";
-    string UIWidget = "None";
-    string ResourceType = "2D";
-    int mipmaplevels = NumberOfMipMaps;
->;
-
-int NativeCasterProbe<
-    string UIGroup = "Native Diagnostics";
-    string UIName = "Native Caster Depth Probe Enabled";
-    string UIWidget = "None";
-    float UIMin = 0;
-    float UIMax = 1;
-    float UIStep = 1;
-> = 0;
-
-// Opt-in receiver-side hard-shadow comparison witness.  This is a flat
-// two-color mask only; it never feeds the product light/shadow composition.
-int NativeCasterHardShadow<
-    string UIGroup = "Native Diagnostics";
-    string UIName = "Native Caster Hard Shadow Mask Enabled";
-    string UIWidget = "None";
-    float UIMin = 0;
-    float UIMax = 1;
-    float UIStep = 1;
-> = 0;
-
-// Normalized [0, 1] receiver comparison bias.  CasterDepthBias remains the
-// clip-Z offset used while rasterizing the private caster target; the helper
-// subtracts that offset before comparing the receiver depth.
-float NativeCasterShadowBias<
-    string UIGroup = "Native Diagnostics";
-    string UIName = "Native Caster Shadow Bias";
-    string UIWidget = "None";
-> = 0.001f;
-
 //--------------------------------------------------------------------------------------
 // Constant Buffers
 //--------------------------------------------------------------------------------------
@@ -289,26 +247,6 @@ int HasToonTexture<
     int UIOrder = 512;
 > = 0;
 
-// Native VP2 material items can opt into an sRGB framebuffer path so legacy
-// MMD alpha blending is performed in the authored color space.  Product
-// dx11Shader materials keep the default zero and use the shared CM-on path.
-int NativeSrgbOutput<
-    string UIWidget = "None";
-> = 0;
-
-// Native caster capability spike.  The C++ MRenderOverride binds a fixed
-// orthographic caster matrix before the selected mmdRenderShape items draw.
-// Explicit row-major storage matches Maya's MPoint * MMatrix convention and
-// the row-vector mul() calls below; this is not a production scene-light
-// projection or receiver-composition path.
-row_major float4x4 CasterLightViewProjection<
-    string UIWidget = "None";
->;
-
-float CasterDepthBias<
-    string UIWidget = "None";
-> = 0.35f;
-
 // Shadow parameters
 bool UseShadows<
     string UIGroup = "Lighting";
@@ -443,68 +381,10 @@ VS_OUTPUT MainVS(VS_INPUT input)
     return output;
 }
 
-// The caster deliberately keeps the same vertex input contract as the native
-// material shader so MSceneRender can reuse mmdRenderShape's geometry buffers.
-VS_OUTPUT CasterVS(VS_INPUT input)
-{
-    VS_OUTPUT output = (VS_OUTPUT)0;
-    float4 localPos = float4(input.position, 1.0);
-    float4 worldPos = mul(localPos, World);
-    output.position = mul(worldPos, CasterLightViewProjection);
-    // A/B/A validation changes only clip Z.  XY and therefore raster
-    // footprint remain invariant while the strict LESS D32 test continues
-    // to select the same front-most fragments.
-    output.position.z += CasterDepthBias * output.position.w;
-    output.worldPosition = worldPos.xyz;
-    output.worldNormal = input.normal;
-    output.texCoord0 = input.texCoord0;
-    output.texCoord1 = input.texCoord1;
-    output.vertexColor0 = input.vertexColor0;
-    output.vertexColor1 = input.vertexColor1;
-    return output;
-}
-
-float CasterPS(VS_OUTPUT input) : SV_TARGET
-{
-    // SV_POSITION.z is already post-divide [0, 1] depth for this finite
-    // orthographic matrix.  Return it directly to the R32F target; do not
-    // use SV_Depth, divide by w, saturate, or substitute an occupancy value.
-    return input.position.z;
-}
-
-// Compare a receiver's row-major caster projection against the same-frame
-// R32F target.  UV conversion is explicit (including Maya's top-origin Y),
-// sampling is point mip 0, and clear pixels are conservatively lit.
-bool EvaluateNativeCasterHardShadow(float3 worldPosition, out bool occluded)
-{
-    occluded = false;
-    float4 casterClip = mul(float4(worldPosition, 1.0),
-                            CasterLightViewProjection);
-    if (casterClip.w <= 1.0e-6f)
-        return false;
-
-    float3 receiverNdc = casterClip.xyz / casterClip.w;
-    if (receiverNdc.x < -1.0f || receiverNdc.x > 1.0f ||
-        receiverNdc.y < -1.0f || receiverNdc.y > 1.0f ||
-        receiverNdc.z < 0.0f || receiverNdc.z > 1.0f)
-        return false;
-
-    float2 casterUV = float2(receiverNdc.x * 0.5f + 0.5f,
-                             0.5f - receiverNdc.y * 0.5f);
-    float sampledDepth =
-        NativeCasterDepthTexture.SampleLevel(ShadowSampler, casterUV, 0).r;
-    if (sampledDepth >= 1.0f - 1.0e-6f)
-        return true;
-
-    float casterRawDepth = sampledDepth - CasterDepthBias;
-    occluded = receiverNdc.z - NativeCasterShadowBias > casterRawDepth;
-    return true;
-}
-
 //--------------------------------------------------------------------------------------
 // Main Pass Pixel Shader
 //--------------------------------------------------------------------------------------
-float4 MainPS(VS_OUTPUT input) : SV_TARGET
+float3 ComputeMmdLitColor(VS_OUTPUT input, out float opacity)
 {
     // Normalize inputs
     float3 normal = normalize(input.worldNormal);
@@ -550,7 +430,7 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     }
     // MMD's material base is authored diffuse * light + ambient.  N.L selects
     // the toon ramp when present; it must not become an extra Lambert
-    // multiplier on the native material base.
+    // multiplier on the authored material base.
     float3 materialBase = saturate(DiffuseColorRGB * lightColor + AmbientColor) * texColor.rgb;
 
     // Sphere mapping
@@ -596,34 +476,8 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
 
     float3 litColor = diffuse + specular;
 
-    // Keep the normal product path byte-stable when the default-off probe is
-    // disabled.  When enabled, sample only the exact same-frame caster target
-    // and visibly encode its raw depth in body pixels for an A/B/A witness.
-    if (NativeCasterProbe != 0)
-    {
-        float4 casterClip = mul(float4(input.worldPosition, 1.0),
-                                CasterLightViewProjection);
-        float casterW = max(abs(casterClip.w), 1.0e-6);
-        float2 casterUV = casterClip.xy / casterW * 0.5 + 0.5;
-        float sampledDepth = NativeCasterDepthTexture.Sample(
-            ShadowSampler, saturate(casterUV)).r;
-        litColor = float3(sampledDepth, 1.0 - sampledDepth, 0.0);
-    }
-    else if (NativeCasterHardShadow != 0)
-    {
-        // Diagnostic mask colors are intentionally flat and distinct: green
-        // means lit and blue means occluded.  They replace the output only
-        // while this opt-in flag is effective and do not compose into `shadow`.
-        bool hardShadowOccluded = false;
-        EvaluateNativeCasterHardShadow(input.worldPosition,
-                                       hardShadowOccluded);
-        litColor = hardShadowOccluded
-                       ? float3(0.08f, 0.22f, 1.0f)
-                       : float3(0.10f, 1.0f, 0.10f);
-    }
-
     // Apply opacity
-    float opacity = texColor.a * DiffuseColorA * Opacity;
+    opacity = texColor.a * DiffuseColorA * Opacity;
 
     // MMD parity (mmd-shading-notes §8): discard fully transparent fragments.
     // This is essential now that transparent materials write depth -- without
@@ -631,11 +485,17 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     // depth and punch black holes / halos into whatever is behind them.
     clip(opacity - 0.003);
 
+    return litColor;
+}
+
+float4 MainPS(VS_OUTPUT input) : SV_TARGET
+{
+    float opacity = 0.0f;
+    float3 litColor = ComputeMmdLitColor(input, opacity);
+
     // Product materials decode the gamma-space MMD result to linear; the view
-    // transform re-encodes it to sRGB under CM-on.  Native VP2 items can use a
-    // CM-off sRGB target so legacy MMD alpha blending remains in gamma space.
-    float3 outputColor = NativeSrgbOutput != 0 ? litColor : SrgbToLinear(litColor);
-    return float4(outputColor, opacity);
+    // transform re-encodes it to sRGB under CM-on.
+    return float4(SrgbToLinear(litColor), opacity);
 }
 
 //--------------------------------------------------------------------------------------
@@ -687,12 +547,8 @@ float4 EdgePS(VS_OUTPUT input) : SV_TARGET
     // space by setting EdgeSize to zero, avoiding separate NoEdge techniques.
     clip(EdgeSize - 1.0e-5);
     // EdgeColorRGB is an authored gamma-space color.  Product items decode to
-    // linear for Maya's CM-on view transform; native items render into the
-    // CM-off sRGB target and therefore keep the authored value directly.
-    float3 outputColor = NativeSrgbOutput != 0
-                             ? EdgeColorRGB
-                             : SrgbToLinear(EdgeColorRGB);
-    return float4(outputColor, EdgeColorA);
+    // linear for Maya's CM-on view transform.
+    return float4(SrgbToLinear(EdgeColorRGB), EdgeColorA);
 }
 
 //--------------------------------------------------------------------------------------
@@ -809,7 +665,7 @@ technique11 MMDTechniqueDoubleSided<
 }
 
 // Blended materials use the same read-only edge pass and an independent
-// alpha-blended main pass. The native MMD queue owns material/submesh order;
+// alpha-blended main pass. The MMD queue owns material/submesh order;
 // the body still writes depth so that strict-less testing preserves that
 // order's natural translucent layer selection.
 technique11 MMDTechniqueTranslucent<
@@ -857,133 +713,5 @@ technique11 MMDTechniqueTranslucentDoubleSided<
         SetRasterizerState(CullFront);
         SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
         SetDepthStencilState(EdgeDepthReadOnly, 0);
-    }
-}
-
-// Native VP2 render items use one effect instance per material/submesh.  Keep
-// these single-pass techniques separate from the product shader's explicit
-// edge+body pass sequence so MPxGeometryOverride can bind body and outline
-// states to independent VP2 render items.
-technique11 MMDNativeOpaque
-{
-    pass MainPass
-    {
-        SetVertexShader(CompileShader(vs_5_0, MainVS()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, MainPS()));
-        SetRasterizerState(CullFront);
-        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepth, 0);
-    }
-}
-
-technique11 MMDNativeTranslucent
-{
-    pass MainPass
-    {
-        SetVertexShader(CompileShader(vs_5_0, MainVS()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, MainPS()));
-        SetRasterizerState(CullFront);
-        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepth, 0);
-    }
-}
-
-technique11 MMDNativeOpaqueDoubleSided
-{
-    pass MainPass
-    {
-        SetVertexShader(CompileShader(vs_5_0, MainVS()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, MainPS()));
-        SetRasterizerState(CullNone);
-        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepth, 0);
-    }
-}
-
-technique11 MMDNativeTranslucentDoubleSided
-{
-    pass MainPass
-    {
-        SetVertexShader(CompileShader(vs_5_0, MainVS()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, MainPS()));
-        SetRasterizerState(CullNone);
-        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepth, 0);
-    }
-}
-
-technique11 MMDNativeOutline
-{
-    pass EdgePass
-    {
-        SetVertexShader(CompileShader(vs_5_0, EdgeVS()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
-        SetRasterizerState(CullBack);
-        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EdgeDepthReadOnly, 0);
-    }
-}
-
-// Double-sided materials need the hull on both winding directions.  This is
-// especially important for a cutout plane: the body discards alpha==0 texels,
-// so the edge must still fill those holes instead of being culled with the
-// plane's camera-facing winding.
-technique11 MMDNativeOutlineDoubleSided
-{
-    pass EdgePass
-    {
-        SetVertexShader(CompileShader(vs_5_0, EdgeVS()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
-        SetRasterizerState(CullBack);
-        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EdgeDepthReadOnly, 0);
-    }
-}
-
-technique11 MMDNativeOutlineTranslucent
-{
-    pass EdgePass
-    {
-        SetVertexShader(CompileShader(vs_5_0, EdgeVSTranslucent()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
-        SetRasterizerState(CullBack);
-        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EdgeDepthReadOnly, 0);
-    }
-}
-
-technique11 MMDNativeOutlineTranslucentDoubleSided
-{
-    pass EdgePass
-    {
-        SetVertexShader(CompileShader(vs_5_0, EdgeVSTranslucent()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
-        SetRasterizerState(CullBack);
-        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EdgeDepthReadOnly, 0);
-    }
-}
-
-// Opt-in native caster pass used only by MmdNativeCasterRenderOverride.  It
-// writes rasterized clip depth to an R32F target and depth-tests the selected
-// mmdRenderShape geometry with the fixed row-vector caster matrix.
-technique11 MMDNativeCaster
-{
-    pass MainPass
-    {
-        SetVertexShader(CompileShader(vs_5_0, CasterVS()));
-        SetGeometryShader(NULL);
-        SetPixelShader(CompileShader(ps_5_0, CasterPS()));
-        SetRasterizerState(CullNone);
-        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepth, 0);
     }
 }

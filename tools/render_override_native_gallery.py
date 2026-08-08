@@ -32,7 +32,10 @@ MAYA_CLEANUP_GRACE_SECONDS = 120
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tests.common.maya_location import mayapy as _mayapy_for_version  # noqa: E402
+from tools.render_override.common import (  # noqa: E402
+    png_size as _png_size,
+    resolve_mayapy as _resolve_mayapy,
+)
 from tools.render_override_visual_gate import (  # noqa: E402
     FLIP_THRESHOLDS,
     _default_flip_runner,
@@ -44,18 +47,6 @@ from tools.render_override_visual_gate import (  # noqa: E402
 )
 
 
-def _png_size(path: Path) -> Tuple[int, int]:
-    """Read PNG dimensions without requiring Pillow."""
-    data = path.read_bytes()
-    if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
-        raise ValueError(f"not a PNG: {path}")
-    width = int.from_bytes(data[16:20], "big")
-    height = int.from_bytes(data[20:24], "big")
-    if width <= 0 or height <= 0:
-        raise ValueError(f"invalid PNG dimensions: {path}")
-    return width, height
-
-
 def _resolve_model(manifest_path: Path, case: Dict[str, Any]) -> Optional[Path]:
     """Resolve one normalized manifest case's PMX model asset."""
     raw = case.get("raw") if isinstance(case.get("raw"), dict) else {}
@@ -64,14 +55,6 @@ def _resolve_model(manifest_path: Path, case: Dict[str, Any]) -> Optional[Path]:
     if not isinstance(model_value, str) or not model_value:
         return None
     return (manifest_path.parent / model_value).resolve()
-
-
-def _resolve_mayapy(maya: str) -> Path:
-    """Resolve the target Maya version through the shared project helper."""
-    candidate = _mayapy_for_version(str(maya))
-    if candidate.is_file():
-        return candidate.resolve()
-    raise FileNotFoundError(f"could not resolve mayapy for Maya {maya}: {candidate}")
 
 
 def _text(value: Any) -> str:

@@ -29,7 +29,10 @@ MAYA_LAUNCH_GRACE_SECONDS, MAYA_REPORT_GRACE_SECONDS, MAYA_CLEANUP_GRACE_SECONDS
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tests.common.maya_location import mayapy as _mayapy_for_version  # noqa: E402
+from tools.render_override.common import (  # noqa: E402
+    png_size as _png_size,
+    resolve_mayapy as _resolve_mayapy,
+)
 from tools.render_override_visual_gate import (  # noqa: E402
     FLIP_THRESHOLDS,
     _default_flip_runner,
@@ -61,17 +64,6 @@ def _load_case(
     if not oracle.is_file():
         raise FileNotFoundError(oracle)
     return manifest_path, {"name": case_name, "camera": camera}, model, oracle, int(selected["frame"])
-
-def _png_size(path: Path) -> Tuple[int, int]:
-    """Read PNG dimensions without requiring Pillow."""
-    data = path.read_bytes()
-    if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
-        raise ValueError(f"not a PNG: {path}")
-    width = int.from_bytes(data[16:20], "big")
-    height = int.from_bytes(data[20:24], "big")
-    if width <= 0 or height <= 0:
-        raise ValueError(f"invalid PNG dimensions: {path}")
-    return width, height
 
 def _run_flip(
     reference: Path,
@@ -140,14 +132,6 @@ def _publish_native_gallery(
     summary_path = Path(gallery_output).resolve() / "summary.json"
     if summary_path.is_file():
         _write_html(json.loads(summary_path.read_text(encoding="utf-8")), Path(gallery_output))
-
-
-def _resolve_mayapy(maya: str) -> Path:
-    """Resolve the mayapy executable through the shared version-aware helper."""
-    candidate = _mayapy_for_version(str(maya))
-    if candidate.is_file():
-        return candidate.resolve()
-    raise FileNotFoundError(f"could not resolve mayapy for Maya {maya}: {candidate}")
 
 
 def run_parity(

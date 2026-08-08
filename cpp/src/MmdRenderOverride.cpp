@@ -307,7 +307,7 @@ std::filesystem::path findShaderPath(const MString& loadPath)
             std::filesystem::u8path(loadPath.asUTF8()).parent_path();
         while (!directory.empty()) {
             const std::filesystem::path candidate =
-                directory / "mmd_tools" / "shaders" / "MMDShader.fx";
+                directory / "mmd_tools" / "shaders" / "MMDNativeShader.fx";
             if (std::filesystem::is_regular_file(candidate)) {
                 return std::filesystem::absolute(candidate).lexically_normal();
             }
@@ -331,7 +331,7 @@ std::string shaderPath()
     if (!gShaderPath.empty()) {
         return gShaderPath.u8string();
     }
-    return "mmd_tools/shaders/MMDShader.fx";
+    return "mmd_tools/shaders/MMDNativeShader.fx";
 }
 
 std::string jsonBool(bool value)

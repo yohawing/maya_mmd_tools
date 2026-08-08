@@ -70,64 +70,55 @@ def test_geometry_override_registers_only_enabled_body_receivers() -> None:
 
 
 def test_native_caster_uses_fixed_targets_and_occupancy_witness() -> None:
-    source = (CPP / "MmdRenderOverride.cpp").read_text(encoding="utf-8")
-    shader = (ROOT / "mmd_tools" / "shaders" / "MMDShader.fx").read_text(
+    """Validate target/depth contracts from the structured probe report."""
+    from tools.render_override_native_caster_e2e import (
+        _caster_depth_distribution_passes,
+        _caster_target_witness_passes,
+    )
+
+    witness = {
+        "colorTargetAcquired": True,
+        "colorTarget": {
+            "width": 2048,
+            "height": 2048,
+            "format": 41,
+            "name": "__mmdNativeCasterColorTarget__",
+        },
+        "depthTargetAcquired": True,
+        "depthTarget": {
+            "width": 2048,
+            "height": 2048,
+            "format": 2,
+            "name": "__mmdNativeCasterDepthTarget__",
+        },
+        "writtenDepthFinite": True,
+        "writtenDepthInRange": True,
+        "writtenOutOfRangeSamples": 0,
+        "writtenMin": 0.2,
+        "writtenMax": 0.8,
+    }
+
+    assert _caster_target_witness_passes(witness, "color")
+    assert _caster_target_witness_passes(witness, "depth")
+    assert _caster_depth_distribution_passes(witness)
+
+    witness["depthTarget"]["format"] = 41
+    witness["writtenDepthInRange"] = False
+    assert not _caster_target_witness_passes(witness, "depth")
+    assert not _caster_depth_distribution_passes(witness)
+
+
+def test_native_caster_shader_stays_out_of_product_shader() -> None:
+    native_shader = (ROOT / "mmd_tools" / "shaders" / "MMDNativeShader.fx").read_text(
+        encoding="utf-8"
+    )
+    product_shader = (ROOT / "mmd_tools" / "shaders" / "MMDShader.fx").read_text(
         encoding="utf-8"
     )
 
-    assert "kTargetSize = 2048U" in (CPP / "MmdRenderOverride.h").read_text(
-        encoding="utf-8"
-    )
-    assert "kR32_FLOAT" in source
-    assert "kD32_FLOAT" in source
-    assert "targetDescription(actualDescription)" in source
-    assert "rawData(rowPitch, slicePitch)" in source
-    assert "__mmdNativeCasterColorTarget__" in source
-    assert "__mmdNativeCasterDepthTarget__" in source
-    assert "kDirectX11" in source
-    assert "kRenderOpaqueShadedItems" in source
-    assert "casterDrawCallback" in source
-    assert "drawCallbackCount" in source
-    assert "drawnRenderItemTypes" in source
-    assert "drawnRenderItemDagPaths" in source
-    assert "drawnRenderItemCastsShadows" in source
-    assert "operationInsertedBeforeScene" in source
-    assert "nonClearSamples" in source
-    assert "writtenSamples" in source
-    assert "writtenMean" in source
-    assert "writtenFootprintHash" in source
-    assert "matrixValidated" in source
-    assert "matrixSource" in source
-    assert "lightDirection" in source
-    assert "worldBounds" in source
-    assert "lightBounds" in source
-    assert "cornersInClip" in source
-    assert "casterMatrixHash" in source
-    assert "receiverMatrixHash" in source
-    assert "depthBiasBound" in source
-    assert 'addFlag("-db", "-depthBias"' in source
-    assert "CasterLightViewProjection" in shader
-    assert "row_major float4x4 CasterLightViewProjection" in shader
-    assert "technique11 MMDNativeCaster" in shader
-    assert "mul(worldPos, CasterLightViewProjection)" in shader
-    assert "return input.position.z;" in shader
-    assert ": SV_Depth" not in shader
-    assert "NativeCasterDepthTexture" in shader
-    assert "NativeCasterProbe" in shader
-    assert "if (NativeCasterProbe != 0)" in shader
-    assert "NativeCasterHardShadow" in shader
-    assert "NativeCasterShadowBias" in shader
-    assert "EvaluateNativeCasterHardShadow" in shader
-    assert "casterClip.w <= 1.0e-6f" in shader
-    assert "receiverNdc.x < -1.0f" in shader
-    assert "receiverNdc.z < 0.0f" in shader
-    assert "SampleLevel(ShadowSampler, casterUV, 0)" in shader
-    assert "sampledDepth >= 1.0f - 1.0e-6f" in shader
-    assert "float casterRawDepth = sampledDepth - CasterDepthBias" in shader
-    assert "receiverNdc.z - NativeCasterShadowBias > casterRawDepth" in shader
-    assert "else if (NativeCasterHardShadow != 0)" in shader
-    assert "float3(0.08f, 0.22f, 1.0f)" in shader
-    assert "float3(0.10f, 1.0f, 0.10f)" in shader
+    assert "technique11 MMDNativeCaster" in native_shader
+    assert "NativeCasterDepthTexture" in native_shader
+    assert "NativeCasterDepthTexture" not in product_shader
 
 
 def test_native_material_initializes_diagnostic_flags_off() -> None:

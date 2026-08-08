@@ -39,6 +39,11 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from tests.viewport.maya_e2e_harness import run_maya_e2e  # noqa: E402
+from tools.render_override.common import (  # noqa: E402
+    capture_view as _capture_view,
+    require_requested_plugin as _require_requested_plugin,
+    write_report as _write_report,
+)
 
 
 COMPLETION_MARKER = "//-- RENDER OVERRIDE VP2 OWNERSHIP FINISHED --//"
@@ -59,71 +64,6 @@ _ORACLE_BACKGROUND = {
 }
 
 
-def _write_report(path: Path, report: dict[str, Any]) -> None:
-    """Persist a UTF-8 report for the host-side commandPort harness."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def _capture_view(
-    cmds: Any,
-    destination: Path,
-    panel: str,
-    width: int,
-    height: int,
-    frame: int = 1,
-) -> Path:
-    """Capture the active GUI viewport and return the generated PNG path."""
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    previous_files = {}
-    for path in destination.parent.glob(f"{destination.stem}*.png"):
-        stat = path.stat()
-        previous_files[path] = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
-    result = cmds.playblast(
-        filename=str(destination.with_suffix("")),
-        frame=frame,
-        format="image",
-        compression="png",
-        viewer=False,
-        showOrnaments=False,
-        forceOverwrite=True,
-        offScreen=False,
-        percent=100,
-        width=width,
-        height=height,
-        editorPanelName=panel,
-    )
-    candidates = (
-        destination,
-        destination.with_suffix(".png"),
-        destination.parent / f"{destination.stem}.0000.png",
-        destination.parent / f"{destination.stem}.0001.png",
-    )
-
-    def is_fresh(path: Path) -> bool:
-        if not path.is_file() or path.stat().st_size <= 0:
-            return False
-        stat = path.stat()
-        current = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
-        return current != previous_files.get(path)
-
-    for candidate in candidates:
-        if is_fresh(candidate):
-            return candidate
-    generated = sorted(
-        (
-            path
-            for path in destination.parent.glob(f"{destination.stem}*.png")
-            if is_fresh(path)
-        ),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    if generated:
-        return generated[0]
-    raise RuntimeError(f"playblast did not create a PNG: {result!r}")
-
-
 def _wait_for_witness(cmds: Any, shape_name: str, log: Any) -> str:
     """Refresh VP2 until the native render-item witness is ready."""
     witness = "pending"
@@ -135,46 +75,6 @@ def _wait_for_witness(cmds: Any, shape_name: str, log: Any) -> str:
         if witness.startswith("ready"):
             break
     return witness
-
-
-def _require_requested_plugin(cmds: Any, plugin_path: str, log: Any) -> Path:
-    """Ensure Maya's canonical plug-in registration resolves to ``plugin_path``.
-
-    ``userSetup.py`` can load the native plug-in before the commandPort probe
-    runs.  A canonical-name-only loaded check would then accept a different
-    build with the same name, so query the registered plug-in path and fail
-    before exercising the witness when it is not the requested artifact.
-    """
-    requested = Path(plugin_path).resolve()
-    requested_text = str(requested)
-    loaded = bool(cmds.pluginInfo(requested_text, query=True, loaded=True))
-    if not loaded:
-        try:
-            loaded = bool(cmds.pluginInfo("mmd_tools_cpp", query=True, loaded=True))
-        except RuntimeError:
-            loaded = False
-    if not loaded:
-        cmds.loadPlugin(requested_text, quiet=False)
-
-    actual_raw = cmds.pluginInfo("mmd_tools_cpp", query=True, path=True)
-    if isinstance(actual_raw, (list, tuple)):
-        if len(actual_raw) != 1:
-            raise RuntimeError(
-                "could not determine a single loaded mmd_tools_cpp plug-in path: "
-                f"{actual_raw!r}"
-            )
-        actual_raw = actual_raw[0]
-    if not actual_raw:
-        raise RuntimeError("loaded mmd_tools_cpp plug-in did not report its path")
-    actual = Path(str(actual_raw)).resolve()
-    log(f"requested plugin: {requested}")
-    log(f"loaded canonical plugin: {actual}")
-    if os.path.normcase(str(actual)) != os.path.normcase(requested_text):
-        raise RuntimeError(
-            "loaded mmd_tools_cpp plug-in differs from requested --plugin: "
-            f"requested={requested}; loaded={actual}"
-        )
-    return actual
 
 
 def _read_material_binding_diagnostics(
