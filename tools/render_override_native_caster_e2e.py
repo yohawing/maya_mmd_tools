@@ -15,7 +15,10 @@ and outline items.  This remains a caster capability witness, not a shadow-
 composition, alpha-cutout sampling, or GoldenOracle parity claim.  The
 frame-local matrix authority (one tagged ``mmd_light`` plus selected shape
 bounds) is exercised directly, including light rotation and missing-authority
-fail-closed cases.
+fail-closed cases.  ``--expect-receiver-probe-static`` is an opt-in negative
+receiver-filter mode for fixtures whose visible body has ``selfShadow`` off:
+the receiver shader/target lifetime gates remain required while the body
+probe's A/B/A images must be byte-identical.
 """
 
 from __future__ import annotations
@@ -112,11 +115,16 @@ def _viewport_probe_aba_passes(
     width: int,
     height: int,
     body_mask: bytes,
+    *,
+    expect_static: bool = False,
 ) -> Dict[str, Any]:
     """Compare probe A/B/A pixels and keep changes inside visible body data.
 
     ``body_mask`` comes from a same-camera visible-vs-hidden shape capture, so
     a non-black viewport background or HUD cannot be mistaken for body pixels.
+    In the optional static mode, the fixture is expected to have no visible
+    receiver-enabled body; both A/B and A/restored must therefore be exact
+    pixel matches rather than a waived A/B gate.
     """
     expected = width * height * 4
     if any(len(buffer) < expected for buffer in (baseline, control, restored)):
@@ -154,19 +162,42 @@ def _viewport_probe_aba_passes(
 
     a_to_b = compare(baseline, control)
     a_to_a = compare(baseline, restored)
-    return {
-        "pass": (
+    if expect_static:
+        passed = (
+            a_to_b["differingPixels"] == 0
+            and a_to_a["differingPixels"] == 0
+        )
+    else:
+        passed = (
             a_to_b["differingPixels"] > 0
             and a_to_b["bodyDifferingPixels"] > 0
             and a_to_b["outsideBodyDifferingPixels"] == 0
             and a_to_a["differingPixels"] == 0
-        ),
+        )
+    return {
+        "pass": passed,
+        "expectStatic": bool(expect_static),
         "width": width,
         "height": height,
         "bodyMaskPixels": sum(body_mask),
         "aToB": a_to_b,
         "aToRestored": a_to_a,
     }
+
+
+def _receiver_eligible_non_outline_count(
+    render_item_witnesses: Dict[str, Any],
+) -> int:
+    """Count structured non-outline body items with the receiver flag set."""
+    return sum(
+        1
+        for witness in render_item_witnesses.values()
+        if isinstance(witness, dict)
+        for item in witness.get("items", [])
+        if isinstance(item, dict)
+        and bool(item.get("selfShadow"))
+        and not bool(item.get("outline"))
+    )
 
 
 def _visible_shape_mask(
@@ -383,6 +414,7 @@ def run_probe(
     height: int = 480,
     camera_config: Optional[Dict[str, Any]] = None,
     frame: int = 0,
+    expect_receiver_probe_static: bool = False,
 ) -> None:
     """Run the Maya-side caster probe and always write a structured report."""
     import maya.cmds as cmds
@@ -397,6 +429,7 @@ def run_probe(
         "claim": "native-caster-depth-witness-only",
         "model": str(model_path),
         "controlModel": str(control_model_path or ""),
+        "expectReceiverProbeStatic": bool(expect_receiver_probe_static),
         "plugin": str(plugin_path),
         "captures": {},
         "errors": [],
@@ -832,6 +865,7 @@ def run_probe(
             probe_width,
             probe_height,
             shape_mask["mask"],
+            expect_static=expect_receiver_probe_static,
         )
         report["receiverProbeAba"] = {
             "baseline": receiver_baseline,
@@ -846,9 +880,11 @@ def run_probe(
             "pixels": receiver_probe_pixels,
         }
         if not receiver_probe_pixels.get("pass"):
-            raise RuntimeError(
-                "receiver probe A/B/A did not change and restore body pixels"
-            )
+            if expect_receiver_probe_static:
+                raise RuntimeError(
+                    "receiver probe A/B/A changed pixels despite static expectation"
+                )
+            raise RuntimeError("receiver probe A/B/A did not change and restore body pixels")
         for witness in (
             receiver_baseline_disabled,
             receiver_control_disabled,
@@ -1216,6 +1252,17 @@ def run_probe(
             str(item.get("casterExclusionReason", ""))
             for _, item in render_items
         }
+        expected_receiver_eligible_count = _receiver_eligible_non_outline_count(
+            report.get("renderItemWitnesses", {})
+        )
+        receiver_registered_count = int(
+            receiver_baseline_witness.get("receiverShaderRegistered", 0)
+        )
+        report["receiverFilterDiagnostics"] = {
+            "expectedReceiverEligibleNonOutlineBodyCount": expected_receiver_eligible_count,
+            "receiverShaderRegistered": receiver_registered_count,
+            "matches": expected_receiver_eligible_count == receiver_registered_count,
+        }
         checks = {
             "overrideRegistered": bool(active_witness.get("registered")),
             "casterSelectedMmdRenderShape": int(active_witness.get("selectedCount", 0)) > 0,
@@ -1424,6 +1471,13 @@ def run_probe(
                 receiver_baseline_witness.get("receiverShaderRegistered", 0)
             )
             > 0,
+            "receiverFilterDiagnosticsMatch": (
+                not expect_receiver_probe_static
+                or (
+                    expected_receiver_eligible_count > 0
+                    and expected_receiver_eligible_count == receiver_registered_count
+                )
+            ),
             "receiverAssignmentSucceeded": int(
                 receiver_baseline_witness.get("receiverAssignmentSuccess", 0)
             )
@@ -1573,6 +1627,14 @@ def main() -> int:
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--frame", type=int, default=0)
     parser.add_argument("--camera-json", type=Path, default=None)
+    parser.add_argument(
+        "--expect-receiver-probe-static",
+        action="store_true",
+        help=(
+            "Expect the receiver probe A/B/A body pixels to remain static; "
+            "use for fixtures with no visible self-shadow receivers."
+        ),
+    )
     args = parser.parse_args()
 
     if not args.model.is_file():
@@ -1605,7 +1667,8 @@ def main() -> int:
         f"{str(args.model.resolve())!r}, {str(plugin.resolve())!r}, "
         f"control_model_path={control_model!r}, "
         f"width={args.width}, height={args.height}, camera_config={camera_config!r}, "
-        f"frame={args.frame})\n"
+        f"frame={args.frame}, "
+        f"expect_receiver_probe_static={args.expect_receiver_probe_static!r})\n"
     )
     env_overrides = {
         "MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11",

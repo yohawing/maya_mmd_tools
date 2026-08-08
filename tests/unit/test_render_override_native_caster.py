@@ -37,6 +37,30 @@ def test_native_caster_sources_are_registered() -> None:
     assert "MRenderTargetAssignment assignment{nullptr}" not in source
 
 
+def test_geometry_override_registers_only_enabled_body_receivers() -> None:
+    source = (CPP / "MmdRenderGeometryOverride.cpp").read_text(encoding="utf-8")
+
+    receiver_start = source.index("const bool receiverEligible =")
+    receiver_end = source.index("item->setTreatAsTransparent", receiver_start)
+    receiver_block = source[receiver_start:receiver_end]
+    assert "!outline && queueGeometry.material.selfShadow" in receiver_block
+    assert "if (receiverEligible)" in receiver_block
+    assert "registerReceiverShader" in receiver_block
+    assert "if (!outline)" not in receiver_block
+
+    cache_start = source.index("std::string nativeShaderCacheKey(")
+    cache_end = source.index("std::string nativeSharedToonPath", cache_start)
+    cache_block = source[cache_start:cache_end]
+    assert "geometry.material.materialIndex" in cache_block
+
+    destructor_start = source.index("MmdRenderGeometryOverride::~")
+    destructor_end = source.index("MHWRender::DrawAPI", destructor_start)
+    destructor = source[destructor_start:destructor_end]
+    release_index = destructor.index("shaderManager->releaseShader")
+    assert destructor.index("beginReceiverShaderRetire") < release_index
+    assert destructor.index("finishReceiverShaderRetire") > release_index
+
+
 def test_native_caster_uses_fixed_targets_and_occupancy_witness() -> None:
     source = (CPP / "MmdRenderOverride.cpp").read_text(encoding="utf-8")
     shader = (ROOT / "mmd_tools" / "shaders" / "MMDShader.fx").read_text(

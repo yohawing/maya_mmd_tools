@@ -610,10 +610,15 @@ void MmdRenderGeometryOverride::updateRenderItems(
             shape_->clearRenderItemWitness();
             return false;
         }
-        if (!outline) {
-            // Register only after all material parameters and the render-item
-            // shader assignment succeed.  This leaves no transient registry
-            // entry that could outlive a failed item setup.
+        const bool receiverEligible =
+            !outline && queueGeometry.material.selfShadow;
+        if (receiverEligible) {
+            // Register only the non-outline body shader when the PMX receiver
+            // flag is enabled, and only after all material parameters and the
+            // render-item shader assignment succeed.  This leaves no
+            // transient registry entry that could outlive a failed item
+            // setup.  Dynamic flag changes are intentionally outside this
+            // update path.
             MmdNativeCasterRenderOverride::registerReceiverShader(
                 materialShader);
             receiverShaders_.insert(materialShader);
