@@ -12,6 +12,7 @@
 #include <maya/MFn.h>
 #include <maya/MFnDependencyNode.h>
 #include <maya/MGlobal.h>
+#include <maya/MHWGeometry.h>
 #include <maya/MItDependencyNodes.h>
 #include <maya/MPoint.h>
 #include <maya/MRenderTargetManager.h>
@@ -87,6 +88,11 @@ struct CasterDiagnostics {
     bool depthBiasBound = false;
     float depthBias = MmdNativeCasterRenderOverride::kDefaultDepthBias;
     bool drawAttempted = false;
+    std::size_t drawCallbackCount = 0U;
+    std::vector<std::string> drawnRenderItems;
+    std::vector<std::string> drawnRenderItemDagPaths;
+    std::vector<std::string> drawnRenderItemTypes;
+    std::vector<bool> drawnRenderItemCastsShadows;
     bool frameComplete = false;
     bool operationInsertedBeforeScene = false;
     bool occupancySupported = false;
@@ -116,6 +122,28 @@ struct CasterDiagnostics {
 };
 
 CasterDiagnostics gDiagnostics;
+
+void casterDrawCallback(MHWRender::MDrawContext&,
+                        const MHWRender::MRenderItemList& renderItems,
+                        MHWRender::MShaderInstance*)
+{
+    ++gDiagnostics.drawCallbackCount;
+    for (int index = 0; index < renderItems.length(); ++index) {
+        const MHWRender::MRenderItem* item = renderItems.itemAt(index);
+        if (!item) {
+            continue;
+        }
+        gDiagnostics.drawnRenderItems.emplace_back(item->name().asChar());
+        gDiagnostics.drawnRenderItemDagPaths.emplace_back(
+            item->sourceDagPath().fullPathName().asChar());
+        gDiagnostics.drawnRenderItemTypes.emplace_back(
+            item->type() == MHWRender::MRenderItem::MaterialSceneItem
+                ? "MaterialSceneItem"
+                : "NonMaterialSceneItem");
+        gDiagnostics.drawnRenderItemCastsShadows.push_back(
+            item->castsShadows());
+    }
+}
 
 void releaseReceiverPin(MHWRender::MShaderInstance* shader)
 {
@@ -317,7 +345,9 @@ public:
 
     MHWRender::MSceneRender::MSceneFilterOption renderFilterOverride() override
     {
-        return MHWRender::MSceneRender::kRenderShadedItems;
+        // Transparent MaterialSceneItems stay eligible for Maya's ordinary
+        // viewport transparent pass, but must never enter this caster pass.
+        return MHWRender::MSceneRender::kRenderOpaqueShadedItems;
     }
 
     MHWRender::MRenderTarget* const* targetOverrideList(
@@ -357,6 +387,11 @@ public:
     void preSceneRender(const MHWRender::MDrawContext&) override
     {
         gDiagnostics.drawAttempted = true;
+        gDiagnostics.drawCallbackCount = 0U;
+        gDiagnostics.drawnRenderItems.clear();
+        gDiagnostics.drawnRenderItemDagPaths.clear();
+        gDiagnostics.drawnRenderItemTypes.clear();
+        gDiagnostics.drawnRenderItemCastsShadows.clear();
         if (!shader_) {
             return;
         }
@@ -876,7 +911,8 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
     if (!shader_) {
         MHWRender::MShaderInstance* shader =
             shaderManager->getEffectsFileShader(
-                MString(shaderPath().c_str()), MString("MMDNativeCaster"));
+                MString(shaderPath().c_str()), MString("MMDNativeCaster"),
+                nullptr, 0U, true, casterDrawCallback, nullptr);
         gDiagnostics.shaderAvailable = shader != nullptr;
         if (!shader) {
             gDiagnostics.error = "MMDNativeCaster shader unavailable";
@@ -1012,6 +1048,40 @@ std::string MmdNativeCasterRenderOverride::diagnosticsJson()
            << jsonBool(gDiagnostics.depthBiasBound)
            << ",\"depthBias\":" << gDiagnostics.depthBias
            << ",\"drawAttempted\":" << jsonBool(gDiagnostics.drawAttempted)
+           << ",\"drawCallbackCount\":" << gDiagnostics.drawCallbackCount
+           << ",\"drawnRenderItems\":[";
+    for (std::size_t index = 0U;
+         index < gDiagnostics.drawnRenderItems.size(); ++index) {
+        if (index != 0U) {
+            stream << ',';
+        }
+        stream << jsonString(gDiagnostics.drawnRenderItems[index]);
+    }
+    stream << "],\"drawnRenderItemDagPaths\":[";
+    for (std::size_t index = 0U;
+         index < gDiagnostics.drawnRenderItemDagPaths.size(); ++index) {
+        if (index != 0U) {
+            stream << ',';
+        }
+        stream << jsonString(gDiagnostics.drawnRenderItemDagPaths[index]);
+    }
+    stream << "],\"drawnRenderItemTypes\":[";
+    for (std::size_t index = 0U;
+         index < gDiagnostics.drawnRenderItemTypes.size(); ++index) {
+        if (index != 0U) {
+            stream << ',';
+        }
+        stream << jsonString(gDiagnostics.drawnRenderItemTypes[index]);
+    }
+    stream << "],\"drawnRenderItemCastsShadows\":[";
+    for (std::size_t index = 0U;
+         index < gDiagnostics.drawnRenderItemCastsShadows.size(); ++index) {
+        if (index != 0U) {
+            stream << ',';
+        }
+        stream << jsonBool(gDiagnostics.drawnRenderItemCastsShadows[index]);
+    }
+    stream << ']'
            << ",\"frameComplete\":" << jsonBool(gDiagnostics.frameComplete)
            << ",\"operationInsertedBeforeScene\":"
            << jsonBool(gDiagnostics.operationInsertedBeforeScene)

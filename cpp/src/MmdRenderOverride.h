@@ -4,8 +4,10 @@
  *
  * The override inserts one MSceneRender operation before Maya's standard
  * viewport operations.  It targets only mmdRenderShape nodes and writes a
- * fixed caster depth/color witness to private 2048x2048 targets; the normal
- * scene, HUD, and present operations remain owned by Maya.
+ * fixed caster depth/color witness to private 2048x2048 targets.  Its opaque
+ * scene filter consumes only caster-eligible material render items published
+ * by MmdRenderGeometryOverride; excluded items remain owned by Maya's normal
+ * scene, HUD, and present operations.
  */
 
 #pragma once

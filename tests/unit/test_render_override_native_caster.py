@@ -53,7 +53,12 @@ def test_native_caster_uses_fixed_targets_and_occupancy_witness() -> None:
     assert "__mmdNativeCasterColorTarget__" in source
     assert "__mmdNativeCasterDepthTarget__" in source
     assert "kDirectX11" in source
-    assert "kRenderShadedItems" in source
+    assert "kRenderOpaqueShadedItems" in source
+    assert "casterDrawCallback" in source
+    assert "drawCallbackCount" in source
+    assert "drawnRenderItemTypes" in source
+    assert "drawnRenderItemDagPaths" in source
+    assert "drawnRenderItemCastsShadows" in source
     assert "operationInsertedBeforeScene" in source
     assert "nonClearSamples" in source
     assert "writtenSamples" in source
@@ -94,6 +99,10 @@ def test_native_caster_e2e_records_negative_control() -> None:
     assert "receiverTargetsRetained" in runner
     assert "postResetWitness" in runner
     assert "activeSceneUnloadRejected" in runner
+    assert "renderItemWitnesses" in runner
+    assert "actualCasterItemsExact" in runner
+    assert "casterItemCategoriesPresent" in runner
+    assert "--control-model" in runner
     assert 'report.get("pluginUnloadError") is None' in runner
 
 

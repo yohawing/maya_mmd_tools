@@ -75,13 +75,25 @@ MString renderItemName(const MmdRenderShape::QueueGeometry& geometry,
 
 MRenderItem* findOrCreateItem(MRenderItemList& list,
                               const MString& name,
-                              MGeometry::DrawMode drawMode)
+                              MGeometry::DrawMode drawMode,
+                              MRenderItem::RenderItemType itemType)
 {
     int index = list.indexOf(name);
+    if (index >= 0) {
+        const MRenderItem* existing = list.itemAt(index);
+        if (existing && existing->type() != itemType) {
+            // RenderItemType is immutable.  Alpha/material updates can move an
+            // item across the caster boundary, so replace it instead of
+            // silently retaining stale MSceneRender participation.
+            if (!list.removeAt(index)) {
+                return nullptr;
+            }
+            index = -1;
+        }
+    }
     MRenderItem* item = nullptr;
     if (index < 0) {
-        item = MRenderItem::Create(name, MRenderItem::MaterialSceneItem,
-                                   MGeometry::kTriangles);
+        item = MRenderItem::Create(name, itemType, MGeometry::kTriangles);
         if (!item || !list.append(item)) {
             if (item) {
                 MRenderItem::Destroy(item);
@@ -488,6 +500,8 @@ void MmdRenderGeometryOverride::updateRenderItems(
         diagnostic.queueIndex = queueIndex;
         diagnostic.materialIndex = queueGeometry.entry.materialIndex;
         diagnostic.submeshIndex = queueGeometry.entry.submeshIndex;
+        diagnostic.renderItemName =
+            renderItemName(queueGeometry, queueIndex, outline).asChar();
         diagnostic.pass = mmd::mmdDrawPassName(pass);
         diagnostic.outline = outline;
         diagnostic.technique = technique;
@@ -514,10 +528,35 @@ void MmdRenderGeometryOverride::updateRenderItems(
         diagnostic.toonTextureRequested = !diagnostic.toonTexturePath.empty();
         diagnostic.mainTextureAcquired = mainTexture != nullptr;
         diagnostic.sphereMode = queueGeometry.material.sphereMode;
+        // kRenderOpaqueShadedItems draws MaterialSceneItem entries only.
+        // Opaque caster-off body/outline items can therefore remain normally
+        // viewport-visible as NonMaterialSceneItem without entering the
+        // caster scene.  Transparent items must remain MaterialSceneItem for
+        // Maya's transparent pass, and are excluded by the opaque scene
+        // filter instead.
+        const bool casterEligible = !outline &&
+                                    queueGeometry.material.selfShadowMap &&
+                                    !effectiveTransparent;
+        const MRenderItem::RenderItemType itemType =
+            (casterEligible || effectiveTransparent)
+                ? MRenderItem::MaterialSceneItem
+                : MRenderItem::NonMaterialSceneItem;
+        diagnostic.casterEligible = casterEligible;
+        diagnostic.casterRenderFilterParticipation = casterEligible;
+        diagnostic.renderItemType =
+            itemType == MRenderItem::MaterialSceneItem
+                ? "MaterialSceneItem"
+                : "NonMaterialSceneItem";
+        diagnostic.casterExclusionReason =
+            casterEligible ? ""
+            : outline ? "outline"
+            : effectiveTransparent ? "transparent"
+                                   : "selfShadowMapDisabled";
         MRenderItem* item = findOrCreateItem(
-            list, renderItemName(queueGeometry, queueIndex, outline),
+            list, MString(diagnostic.renderItemName.c_str()),
             static_cast<MGeometry::DrawMode>(MGeometry::kShaded |
-                                             MGeometry::kTextured));
+                                             MGeometry::kTextured),
+            itemType);
         if (!item) {
             shape_->recordMaterialBindingDiagnostic(diagnostic);
             return false;
@@ -578,10 +617,8 @@ void MmdRenderGeometryOverride::updateRenderItems(
                 materialShader);
             receiverShaders_.insert(materialShader);
         }
-        if (effectiveTransparent) {
-            item->setTreatAsTransparent(true);
-            item->setSupportsAdvancedTransparency(true);
-        }
+        item->setTreatAsTransparent(effectiveTransparent);
+        item->setSupportsAdvancedTransparency(effectiveTransparent);
         // Opaque items draw the outline before the body; alpha-blended items
         // (including opaque-PMX materials with soft texture alpha) reverse
         // that order so the edge depth test can hide only discarded texels.

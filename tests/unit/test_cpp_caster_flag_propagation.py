@@ -39,11 +39,16 @@ def test_queue_and_structured_diagnostics_preserve_caster_eligibility() -> None:
     assert "!secondMaterial->selfShadowMap" in smoke
 
 
-def test_caster_flag_slice_does_not_filter_render_items() -> None:
-    sources = "\n".join(
-        (CPP / name).read_text(encoding="utf-8")
-        for name in ("MmdRenderQueue.cpp", "MmdRenderShape.cpp")
-    )
+def test_geometry_override_filters_only_native_caster_scene_items() -> None:
+    geometry = (CPP / "MmdRenderGeometryOverride.cpp").read_text(encoding="utf-8")
+    scene = (CPP / "MmdRenderOverride.cpp").read_text(encoding="utf-8")
 
-    assert "if (input.selfShadowMap" not in sources
-    assert "if (!input.selfShadowMap" not in sources
+    assert "queueGeometry.material.selfShadowMap &&" in geometry
+    assert "!effectiveTransparent" in geometry
+    assert "MRenderItem::NonMaterialSceneItem" in geometry
+    assert 'diagnostic.casterExclusionReason' in geometry
+    assert "kRenderOpaqueShadedItems" in scene
+    assert "casterDrawCallback" in scene
+    assert "drawnRenderItems" in scene
+    assert "drawnRenderItemDagPaths" in scene
+    assert "drawnRenderItemCastsShadows" in scene

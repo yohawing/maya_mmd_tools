@@ -8,8 +8,12 @@ shaders are alive.  Scene reset retires those owners before unload, allowing
 the override destructor to release the targets safely.
 The R32F target contains the rasterized caster clip depth.  The deterministic
 depth-bias A/B/A control checks that bias changes only depth statistics, not
-the pixel footprint.  This remains a caster capability witness, not a
-shadow-composition, alpha-cutout, receiver, or GoldenOracle parity claim.
+the pixel footprint.  When ``--control-model`` is supplied, structured render
+item diagnostics are matched exactly against the caster shader's real draw
+callback batch; the fixture must include caster-on, caster-off, transparent,
+and outline items.  This remains a caster capability witness, not a shadow-
+composition, alpha-cutout sampling, scene-light matrix, or GoldenOracle parity
+claim.
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ from tools.render_override_vp2_ownership_e2e import (  # noqa: E402
     _capture_view,
     _configure_camera,
     _configure_oracle_color_environment,
+    _read_material_binding_diagnostics,
     _require_requested_plugin,
 )
 
@@ -371,6 +376,7 @@ def run_probe(
     out_dir: str,
     model_path: str,
     plugin_path: str,
+    control_model_path: Optional[str] = None,
     width: int = 640,
     height: int = 480,
     camera_config: Optional[Dict[str, Any]] = None,
@@ -388,6 +394,7 @@ def run_probe(
         "status": "fail",
         "claim": "native-caster-depth-witness-only",
         "model": str(model_path),
+        "controlModel": str(control_model_path or ""),
         "plugin": str(plugin_path),
         "captures": {},
         "errors": [],
@@ -476,29 +483,47 @@ def run_probe(
         from mmd_tools.io.mmd_importer import import_mmd_file
         from mmd_tools.services.settings_service import SettingsService
 
-        ui_options = SettingsService().build_pmx_import_options(
-            custom_namespace="native_caster_e2e"
-        )
-        ui_options.update(
-            import_physics=False,
-            use_cpp_fast_load=True,
-            use_cpp_vp2_ownership=True,
-            cpp_fast_load_mesh_only=True,
-        )
-        root_result = import_mmd_file(str(Path(model_path).resolve()), options=ui_options)
-        if not root_result:
-            raise RuntimeError("UI import returned no root")
-        root_name = str(root_result)
-        shapes = [
-            str(item)
-            for item in (
-                cmds.listRelatives(root_name, allDescendents=True, fullPath=True) or []
+        def import_native_fixture(path: str, namespace: str) -> tuple[str, list[str]]:
+            ui_options = SettingsService().build_pmx_import_options(
+                custom_namespace=namespace
             )
-            if cmds.nodeType(item) == "mmdRenderShape"
-        ]
+            ui_options.update(
+                import_physics=False,
+                use_cpp_fast_load=True,
+                use_cpp_vp2_ownership=True,
+                cpp_fast_load_mesh_only=True,
+            )
+            root_result = import_mmd_file(
+                str(Path(path).resolve()), options=ui_options
+            )
+            if not root_result:
+                raise RuntimeError(f"UI import returned no root: {path}")
+            root = str(root_result)
+            native_shapes = [
+                str(item)
+                for item in (
+                    cmds.listRelatives(
+                        root, allDescendents=True, fullPath=True
+                    )
+                    or []
+                )
+                if cmds.nodeType(item) == "mmdRenderShape"
+            ]
+            return root, native_shapes
+
+        root_name, shapes = import_native_fixture(
+            model_path, "native_caster_e2e"
+        )
+        control_root = None
+        if control_model_path:
+            control_root, control_shapes = import_native_fixture(
+                control_model_path, "native_caster_controls_e2e"
+            )
+            shapes.extend(control_shapes)
         if not shapes:
             raise RuntimeError(f"UI import did not create mmdRenderShape: {root_name}")
         report["root"] = root_name
+        report["controlRoot"] = control_root
         report["shapes"] = shapes
         log(f"UI import root={root_name} mmdRenderShape count={len(shapes)}")
 
@@ -570,6 +595,14 @@ def run_probe(
             raise RuntimeError("native caster setup did not become active")
         if not active_witness.get("selectedCount"):
             raise RuntimeError("native caster selected no mmdRenderShape nodes")
+        # The caster callback proves VP2 has already materialized every render
+        # item, avoiding a startup race where an early command result can be
+        # empty before the first scene operation.
+        render_item_witnesses = {
+            shape: _read_material_binding_diagnostics(cmds, shape, log)
+            for shape in shapes
+        }
+        report["renderItemWitnesses"] = render_item_witnesses
         active_viewport_buffer: Optional[bytes] = None
         active_viewport_stats: Dict[str, Any] = {}
         try:
@@ -899,6 +932,33 @@ def run_probe(
         receiver_control_witness = receiver_aba.get("control", {})
         receiver_restored_witness = receiver_aba.get("restored", {})
         hidden_clear_samples = int(hidden_disabled_witness.get("clearSamples", 0))
+        render_items = [
+            (shape, item)
+            for shape, witness in report.get("renderItemWitnesses", {}).items()
+            for item in witness.get("items", [])
+            if isinstance(item, dict)
+        ]
+        eligible_item_identities = sorted(
+            (str(shape), str(item.get("renderItemName", "")))
+            for shape, item in render_items
+            if item.get("casterEligible")
+        )
+        excluded_item_identities = {
+            (str(shape), str(item.get("renderItemName", "")))
+            for shape, item in render_items
+            if not item.get("casterEligible")
+        }
+        drawn_item_identities = sorted(
+            (str(path), str(name))
+            for path, name in zip(
+                active_witness.get("drawnRenderItemDagPaths", []),
+                active_witness.get("drawnRenderItems", []),
+            )
+        )
+        exclusion_reasons = {
+            str(item.get("casterExclusionReason", ""))
+            for _, item in render_items
+        }
         checks = {
             "overrideRegistered": bool(active_witness.get("registered")),
             "casterSelectedMmdRenderShape": int(active_witness.get("selectedCount", 0)) > 0,
@@ -928,6 +988,33 @@ def run_probe(
             "occupancySupported": bool(active_witness.get("occupancySupported")),
             "occupied": bool(active_witness.get("occupied"))
             and int(active_witness.get("writtenSamples", 0)) > 0,
+            "casterItemCategoriesPresent": bool(eligible_item_identities)
+            and "selfShadowMapDisabled" in exclusion_reasons
+            and (
+                not control_model_path
+                or {"outline", "transparent"}.issubset(exclusion_reasons)
+            ),
+            "actualCasterItemsExact": drawn_item_identities
+            == eligible_item_identities
+            and not excluded_item_identities.intersection(
+                drawn_item_identities
+            )
+            and int(active_witness.get("drawCallbackCount", 0)) > 0,
+            "actualCasterItemsMaterial": bool(drawn_item_identities)
+            and all(
+                item_type == "MaterialSceneItem"
+                for item_type in active_witness.get("drawnRenderItemTypes", [])
+            )
+            and all(active_witness.get("drawnRenderItemCastsShadows", [])),
+            "excludedItemTypesPreserveViewport": all(
+                (
+                    item.get("renderItemType") == "MaterialSceneItem"
+                    if item.get("effectiveTransparent")
+                    else item.get("renderItemType") == "NonMaterialSceneItem"
+                )
+                for _, item in render_items
+                if not item.get("casterEligible")
+            ),
             "depthDistribution": bool(active_witness.get("writtenDepthFinite"))
             and bool(active_witness.get("writtenDepthInRange"))
             and int(active_witness.get("writtenOutOfRangeSamples", 1)) == 0
@@ -1083,6 +1170,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--maya", default="2024", help="Maya major version.")
     parser.add_argument("--model", type=Path, required=True, help="UI-import PMX fixture.")
+    parser.add_argument(
+        "--control-model",
+        type=Path,
+        default=None,
+        help="Optional caster-off transparent/outline PMX control fixture.",
+    )
     parser.add_argument("--plugin", type=Path, default=None)
     parser.add_argument(
         "--out-dir", type=Path, default=_ROOT / "build" / "render-override-native-caster"
@@ -1097,6 +1190,8 @@ def main() -> int:
 
     if not args.model.is_file():
         parser.error(f"model does not exist: {args.model}")
+    if args.control_model is not None and not args.control_model.is_file():
+        parser.error(f"control model does not exist: {args.control_model}")
     plugin = args.plugin or (
         _ROOT / "plug-ins" / str(args.maya) / "Debug" / "mmd_tools_cpp.mll"
     )
@@ -1114,10 +1209,14 @@ def main() -> int:
     out_dir = args.out_dir.resolve()
     log_path = out_dir / f"native_caster_maya{args.maya}.log"
     report_path = out_dir / f"native_caster_maya{args.maya}.json"
+    control_model = (
+        str(args.control_model.resolve()) if args.control_model is not None else None
+    )
     command = (
         "from tools.render_override_native_caster_e2e import run_probe\n"
         f"run_probe({str(log_path)!r}, {str(report_path)!r}, {str(out_dir)!r}, "
         f"{str(args.model.resolve())!r}, {str(plugin.resolve())!r}, "
+        f"control_model_path={control_model!r}, "
         f"width={args.width}, height={args.height}, camera_config={camera_config!r}, "
         f"frame={args.frame})\n"
     )

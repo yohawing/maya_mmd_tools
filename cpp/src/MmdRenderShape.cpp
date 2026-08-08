@@ -578,6 +578,8 @@ std::string MmdRenderShape::materialBindingDiagnosticsJson() const
                          first);
         appendJsonNumber(stream, "submeshIndex", diagnostic.submeshIndex,
                          first);
+        appendJsonString(stream, "renderItemName", diagnostic.renderItemName,
+                         first);
         appendJsonString(stream, "pass", diagnostic.pass, first);
         appendJsonBool(stream, "outline", diagnostic.outline, first);
         appendJsonString(stream, "technique", diagnostic.technique, first);
@@ -590,6 +592,14 @@ std::string MmdRenderShape::materialBindingDiagnosticsJson() const
                        diagnostic.effectiveTransparent, first);
         appendJsonBool(stream, "selfShadowMap", diagnostic.selfShadowMap,
                        first);
+        appendJsonBool(stream, "casterEligible", diagnostic.casterEligible,
+                       first);
+        appendJsonBool(stream, "casterRenderFilterParticipation",
+                       diagnostic.casterRenderFilterParticipation, first);
+        appendJsonString(stream, "renderItemType",
+                         diagnostic.renderItemType, first);
+        appendJsonString(stream, "casterExclusionReason",
+                         diagnostic.casterExclusionReason, first);
         appendJsonString(stream, "mainTexturePath",
                          diagnostic.mainTexturePath, first);
         appendJsonString(stream, "sphereTexturePath",

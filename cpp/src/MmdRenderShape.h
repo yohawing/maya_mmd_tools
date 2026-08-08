@@ -89,6 +89,7 @@ public:
         std::size_t queueIndex = 0U;
         std::size_t materialIndex = 0U;
         std::size_t submeshIndex = 0U;
+        std::string renderItemName;
         std::string pass;
         bool outline = false;
         std::string technique;
@@ -97,6 +98,10 @@ public:
         bool textureAlphaBlend = false;
         bool effectiveTransparent = false;
         bool selfShadowMap = false;
+        bool casterEligible = false;
+        bool casterRenderFilterParticipation = false;
+        std::string renderItemType;
+        std::string casterExclusionReason;
         std::string mainTexturePath;
         std::string sphereTexturePath;
         std::string toonTexturePath;
