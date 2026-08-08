@@ -48,6 +48,10 @@ struct MmdRenderQueueInput {
     std::string sphereTexturePath;
     std::string toonTexturePath;
     bool doubleSided = false;
+    // PMX flags.selfShadowMap controls whether this material may cast into
+    // the model self-shadow map.  This is intentionally distinct from the
+    // receiver-side flags.selfShadow value and is diagnostic-only for now.
+    bool selfShadowMap = false;
 };
 
 /** Ordered queue record consumed by a native material-split loader. */

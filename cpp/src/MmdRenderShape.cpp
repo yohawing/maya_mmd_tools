@@ -588,6 +588,8 @@ std::string MmdRenderShape::materialBindingDiagnosticsJson() const
                        diagnostic.textureAlphaBlend, first);
         appendJsonBool(stream, "effectiveTransparent",
                        diagnostic.effectiveTransparent, first);
+        appendJsonBool(stream, "selfShadowMap", diagnostic.selfShadowMap,
+                       first);
         appendJsonString(stream, "mainTexturePath",
                          diagnostic.mainTexturePath, first);
         appendJsonString(stream, "sphereTexturePath",

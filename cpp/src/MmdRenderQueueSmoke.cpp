@@ -45,9 +45,11 @@ int main()
     materialInput.transparencyMode = "blend";
     materialInput.diffuseAlpha = 0.35f;
     materialInput.diffuseColor = {0.8f, 0.2f, 0.1f};
+    materialInput.selfShadowMap = true;
     mmd::MmdRenderQueueInput secondMaterialInput = materialInput;
     secondMaterialInput.diffuseAlpha = 0.65f;
     secondMaterialInput.diffuseColor = {0.1f, 0.3f, 0.9f};
+    secondMaterialInput.selfShadowMap = false;
     const std::vector<mmd::MmdRenderQueueInput> materialInputs = {
         materialInput, secondMaterialInput};
     const std::vector<mmd::MmdRenderQueueEntry> materialQueue =
@@ -65,9 +67,11 @@ int main()
         materialQueue[0].inputIndex == 0 && materialQueue[1].inputIndex == 1 &&
         firstMaterial->diffuseColor == std::array<float, 3>{0.8f, 0.2f, 0.1f} &&
         firstMaterial->diffuseAlpha == 0.35f &&
+        firstMaterial->selfShadowMap &&
         secondMaterial->diffuseColor ==
             std::array<float, 3>{0.1f, 0.3f, 0.9f} &&
         secondMaterial->diffuseAlpha == 0.65f &&
+        !secondMaterial->selfShadowMap &&
         materialQueue[0].pass == mmd::MmdDrawPass::Transparent &&
         materialQueue[1].pass == mmd::MmdDrawPass::Transparent;
 

@@ -96,6 +96,7 @@ public:
         float diffuseAlpha = 1.0F;
         bool textureAlphaBlend = false;
         bool effectiveTransparent = false;
+        bool selfShadowMap = false;
         std::string mainTexturePath;
         std::string sphereTexturePath;
         std::string toonTexturePath;

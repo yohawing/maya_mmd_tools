@@ -365,6 +365,17 @@ bool materialEdgeDrawing(const json& material)
     return material["flags"].value("edge", false);
 }
 
+bool materialSelfShadowMap(const json& material)
+{
+    if (!material.is_object() || !material.contains("flags") ||
+        !material["flags"].is_object()) {
+        return false;
+    }
+    // PMX keeps caster and receiver eligibility as separate flags.  The
+    // native caster handoff must consume selfShadowMap, never selfShadow.
+    return material["flags"].value("selfShadowMap", false);
+}
+
 void populateNativeMaterial(const json& material,
                             const std::filesystem::path& modelDirectory,
                             mmd::MmdRenderQueueInput& input)
@@ -390,6 +401,7 @@ void populateNativeMaterial(const json& material,
         materialTexturePath(material, "toonTexturePath", modelDirectory);
     input.sharedToonIndex = materialSharedToonIndex(material);
     input.doubleSided = materialDoubleSided(material);
+    input.selfShadowMap = materialSelfShadowMap(material);
 }
 
 std::filesystem::path nativeModelDirectory(const std::string& modelPath)

@@ -493,6 +493,7 @@ void MmdRenderGeometryOverride::updateRenderItems(
         diagnostic.technique = technique;
         diagnostic.uvStreamAvailable = queueGeometry.uvStreamAvailable;
         diagnostic.diffuseAlpha = queueGeometry.material.diffuseAlpha;
+        diagnostic.selfShadowMap = queueGeometry.material.selfShadowMap;
         diagnostic.textureAlphaBlend = textureAlphaBlend;
         diagnostic.effectiveTransparent = effectiveTransparent;
         diagnostic.mainTexturePath = queueGeometry.material.mainTexturePath;
