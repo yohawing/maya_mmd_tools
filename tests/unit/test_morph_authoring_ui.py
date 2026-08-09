@@ -137,6 +137,7 @@ def _presenter(kind="bone", offsets=()):
     view = _view()
     app_state = _FakeAppState("|Model")
     adapter = _FakeMayaAdapter()
+    adapter.existing.add("|Model")
     coordinator = _Coordinator(_spec(kind, offsets))
     presenter = MorphPresenter(
         view,
