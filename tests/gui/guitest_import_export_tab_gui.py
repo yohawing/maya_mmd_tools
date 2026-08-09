@@ -171,7 +171,25 @@ class TestImportExportTabGUI(GuiTestBase):
             self.assertFalse(hasattr(tab, "create_model_template_combo"))
             self.assertTrue(hasattr(tab, "new_model_button"))
             self.assertEqual(tab.import_button.parentWidget(), tab.new_model_button.parentWidget())
-            button_layout = tab.import_button.parentWidget().layout()
+            # The buttons live in a QHBoxLayout nested inside the group's
+            # QFormLayout, so the parent widget's top-level layout does not
+            # contain them directly.
+            def find_layout_containing(layout, widget):
+                for index in range(layout.count()):
+                    item = layout.itemAt(index)
+                    if item is None:
+                        continue
+                    if item.widget() is widget:
+                        return layout
+                    child_layout = item.layout()
+                    if child_layout is not None:
+                        found = find_layout_containing(child_layout, widget)
+                        if found is not None:
+                            return found
+                return None
+
+            button_layout = find_layout_containing(tab.model_import_group.layout(), tab.import_button)
+            self.assertIsNotNone(button_layout)
             self.assertEqual(button_layout.indexOf(tab.import_button) + 1, button_layout.indexOf(tab.new_model_button))
         finally:
             tab.deleteLater()
