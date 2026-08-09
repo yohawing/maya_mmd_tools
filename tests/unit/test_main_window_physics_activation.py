@@ -15,6 +15,20 @@ sys.modules["maya.OpenMayaUI"] = open_maya_ui
 from mmd_tools.ui.main_window import MainWindow  # noqa: E402
 
 
+def test_close_event_is_ignored_when_bind_pose_return_fails():
+    event = Mock()
+    presenter = Mock()
+    presenter.disconnect_signals.return_value = False
+    window = MainWindow.__new__(MainWindow)
+    window.bone_presenter = presenter
+    window.save_settings = Mock()
+
+    MainWindow.closeEvent(window, event)
+
+    event.ignore.assert_called_once_with()
+    window.save_settings.assert_not_called()
+
+
 class _Tabs:
     def __init__(self, widgets):
         self.widgets = widgets

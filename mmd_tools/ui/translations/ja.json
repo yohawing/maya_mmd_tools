@@ -60,6 +60,7 @@
     "refresh": "更新",
     "reset": "リセット",
     "go_to_bind_pose": "バインドポーズへ移動",
+    "return_to_motion": "モーションへ戻す",
     "add": "追加",
     "remove": "削除",
     "create": "作成",

@@ -583,7 +583,8 @@ class BoneTab(BaseTab):
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""
         apply_translation_registry(self, self._TRANSLATION_REGISTRY)
-        self.bind_pose_btn.setText(self.tr("go_to_bind_pose", "buttons"))
+        key = "return_to_motion" if self.bind_pose_btn.property("mmdBindPoseActive") else "go_to_bind_pose"
+        self.bind_pose_btn.setText(self.tr(key, "buttons"))
 
         # ComboBox items - Connection type
         self.connection_type_combo.clear()

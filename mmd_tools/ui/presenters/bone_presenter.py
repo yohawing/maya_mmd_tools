@@ -58,6 +58,7 @@ class BonePresenter:
         self.all_bones = []  # All bones list
         self.is_updating = False  # Prevent feedback loops
         self.bind_pose_action = bind_pose_action or GoToBindPoseAction()
+        self._pending_model_root = None
 
         self.connect_signals()
 
@@ -103,22 +104,67 @@ class BonePresenter:
 
     def disconnect_signals(self):
         """Release presenter-owned resources when the owning window closes."""
+        if not self._return_to_motion():
+            return False
+        return True
 
     def on_current_model_changed(self, model_root):
         """現在のモデルが変更されたときの処理"""
+        if getattr(self.bind_pose_action, "active", False):
+            self._pending_model_root = model_root
+            self._return_to_motion()
+            return
+        self._reload_for_model(model_root)
+
+    def _reload_for_model(self, model_root):
+        """Reset selection state and reload one successfully activated model."""
         self.current_bone = None
         reload_for_current_model_change(logger, "BonePresenter", model_root, self.load_bones)
 
     def go_to_bind_pose(self):
-        """Run the Bone Editor's one-shot model-wide bind-pose restore."""
+        """Toggle the Bone Editor's reversible model-wide Bind Pose session."""
+        if getattr(self.bind_pose_action, "active", False):
+            self._return_to_motion()
+            return
         result = self.bind_pose_action.execute(self.app_state.current_model_root or "")
         if result.succeeded:
+            self._sync_bind_pose_button()
             self.app_state.emit_status(
                 f"Go to Bind Pose: {result.model_root or self.app_state.current_model_root} "
                 f"({result.joint_count} joints)"
             )
         else:
             self.app_state.emit_status(f"Go to Bind Pose failed: {result.error}")
+
+    def _return_to_motion(self, *, silent=False):
+        """Restore an active Bind Pose session without discarding failures."""
+        if not getattr(self.bind_pose_action, "active", False):
+            return True
+        result = self.bind_pose_action.return_to_motion()
+        if result.succeeded:
+            self._sync_bind_pose_button()
+            if not silent:
+                self.app_state.emit_status(
+                    f"Return to Motion: {result.model_root} ({result.joint_count} joints)"
+                )
+            pending_model_root = self._pending_model_root
+            self._pending_model_root = None
+            if pending_model_root is not None:
+                self._reload_for_model(pending_model_root)
+            return True
+        self.app_state.emit_status(f"Return to Motion failed: {result.error}")
+        return False
+
+    def _sync_bind_pose_button(self):
+        """Reflect session ownership in the Bone-tab action label."""
+        button = getattr(self.view, "bind_pose_btn", None)
+        if button is None or not hasattr(button, "setText"):
+            return
+        active = bool(getattr(self.bind_pose_action, "active", False))
+        key = "return_to_motion" if active else "go_to_bind_pose"
+        if hasattr(button, "setProperty"):
+            button.setProperty("mmdBindPoseActive", active)
+        button.setText(self.view.tr(key, "buttons"))
 
     def load_bones(self):
         """ボーンリストをロード"""

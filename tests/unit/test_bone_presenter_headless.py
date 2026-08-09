@@ -311,6 +311,36 @@ class _FakeBindPoseAction:
         return _FakeBindPoseResult(model_root=model_root, joint_count=3)
 
 
+class _FakeToggleBindPoseAction(_FakeBindPoseAction):
+    def __init__(self):
+        super().__init__()
+        self.active = False
+        self.return_calls = 0
+
+    def execute(self, model_root):
+        result = super().execute(model_root)
+        self.active = True
+        return result
+
+    def return_to_motion(self):
+        self.return_calls += 1
+        self.active = False
+        return _FakeBindPoseResult(model_root=TEST_MODEL, joint_count=3)
+
+
+class _FailOnceReturnAction(_FakeToggleBindPoseAction):
+    def __init__(self):
+        super().__init__()
+        self.fail_return = True
+
+    def return_to_motion(self):
+        self.return_calls += 1
+        if self.fail_return:
+            return _FakeBindPoseResult(succeeded=False, error="restore injection")
+        self.active = False
+        return _FakeBindPoseResult(model_root=TEST_MODEL, joint_count=3)
+
+
 def _make_presenter(adapter=None):
     view = _FakeView()
     app_state = _FakeAppState()
@@ -327,7 +357,7 @@ def _attr_getter(values):
 
 
 class TestBonePresenterHeadless(unittest.TestCase):
-    def test_bind_pose_button_runs_one_shot_action_without_locking_editor(self):
+    def test_bind_pose_button_enters_session_without_locking_editor(self):
         view = _FakeView()
         app_state = _FakeAppState()
         action = _FakeBindPoseAction()
@@ -344,6 +374,57 @@ class TestBonePresenterHeadless(unittest.TestCase):
         self.assertEqual(action.models, [TEST_MODEL])
         self.assertIn("Go to Bind Pose", app_state.status_messages[-1])
         self.assertIsNone(view.details_enabled)
+
+    def test_bind_pose_button_toggles_active_session_back_to_motion(self):
+        view = _FakeView()
+        app_state = _FakeAppState(TEST_MODEL)
+        action = _FakeToggleBindPoseAction()
+        presenter = BonePresenter(
+            view,
+            app_state,
+            maya_adapter=_FakeMayaAdapter(),
+            bind_pose_action=action,
+        )
+
+        presenter.go_to_bind_pose()
+        presenter.go_to_bind_pose()
+
+        self.assertEqual(action.models, [TEST_MODEL])
+        self.assertEqual(action.return_calls, 1)
+        self.assertIn("Return to Motion", app_state.status_messages[-1])
+
+    def test_failed_model_change_is_reloaded_after_return_succeeds(self):
+        view = _FakeView()
+        app_state = _FakeAppState(TEST_MODEL)
+        action = _FailOnceReturnAction()
+        presenter = BonePresenter(
+            view,
+            app_state,
+            maya_adapter=_FakeMayaAdapter(),
+            bind_pose_action=action,
+        )
+        presenter.go_to_bind_pose()
+
+        with patch.object(presenter, "_reload_for_model") as reload_model:
+            presenter.on_current_model_changed("new_model")
+            reload_model.assert_not_called()
+            action.fail_return = False
+            self.assertTrue(presenter._return_to_motion())
+
+        reload_model.assert_called_once_with("new_model")
+
+    def test_disconnect_signals_vetoes_close_when_return_fails(self):
+        action = _FailOnceReturnAction()
+        action.active = True
+        presenter = BonePresenter(
+            _FakeView(),
+            _FakeAppState(TEST_MODEL),
+            maya_adapter=_FakeMayaAdapter(),
+            bind_pose_action=action,
+        )
+
+        self.assertFalse(presenter.disconnect_signals())
+        self.assertTrue(action.active)
 
     def test_load_bones_clears_and_returns_when_no_model(self):
         presenter, view, _, adapter = _make_presenter()
