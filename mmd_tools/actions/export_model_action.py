@@ -1,15 +1,15 @@
 """Action boundary for PMX/PMD model export execution."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from collections.abc import Mapping
 import os
 from pathlib import Path
 import tempfile
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from ..core.logger import get_logger
-from ..io.pmd_exporter import PmdExporter
-from ..io.pmx_exporter import PmxExporter
 from ..validation.export_validator import (
     ExportValidationAcknowledgementRequired,
     ExportValidationError,
@@ -26,6 +26,10 @@ from ..validation.report_artifacts import (
     write_validation_report_artifacts,
 )
 from ..validation.snapshot import ExportValidationSnapshot
+
+if TYPE_CHECKING:
+    from ..io.pmd_exporter import PmdExporter
+    from ..io.pmx_exporter import PmxExporter
 
 logger = get_logger(__name__)
 
@@ -228,8 +232,8 @@ class ExportModelAction:
         output_verifier: Any = _DEFAULT_OUTPUT_VERIFIER,
         validator: Any = _DEFAULT_VALIDATOR,
     ):
-        self._pmx_exporter = pmx_exporter or PmxExporter()
-        self._pmd_exporter = pmd_exporter or PmdExporter()
+        self._pmx_exporter = pmx_exporter
+        self._pmd_exporter = pmd_exporter
         if collector is _DEFAULT_COLLECTOR:
             self._collector = _default_collect_model_data
         else:
@@ -455,8 +459,18 @@ class ExportModelAction:
             os.close(temporary_fd)
 
             if export_format == "pmx":
+                if self._pmx_exporter is None:
+                    # Import the Maya-aware writer only after validation has
+                    # succeeded and a PMX dispatch is genuinely required.
+                    from ..io.pmx_exporter import PmxExporter
+
+                    self._pmx_exporter = PmxExporter()
                 self._pmx_exporter.export_pmx_model(temporary_path, writer_model_data)
             else:
+                if self._pmd_exporter is None:
+                    from ..io.pmd_exporter import PmdExporter
+
+                    self._pmd_exporter = PmdExporter()
                 self._pmd_exporter.export_pmd_model(temporary_path, writer_model_data)
 
             if self._output_verifier is not None:

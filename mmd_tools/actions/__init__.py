@@ -1,67 +1,61 @@
-"""User action boundaries for UI presenter workflows."""
+"""User action boundaries for UI presenter workflows.
 
-from .export_model_action import (
-    ExportModelAction,
-    ExportModelRequest,
-    ExportModelResult,
-)
-from .export_vmd_action import ExportVmdAction, ExportVmdRequest, ExportVmdResult
-from .import_model_action import ImportModelAction, ImportModelRequest, ImportModelResult
-from .import_vmd_action import ImportVmdAction, ImportVmdRequest, ImportVmdResult
-from .material_shader_action import apply_sphere_map
-from .pose_actions import (
-    BakeAnimationAction,
-    BakeAnimationRequest,
-    BakeAnimationResult,
-    CleanCurvesAction,
-    CleanCurvesRequest,
-    CleanCurvesResult,
-    CopyPoseAction,
-    CopyPoseRequest,
-    CopyPoseResult,
-    MirrorPoseAction,
-    MirrorPoseRequest,
-    MirrorPoseResult,
-    PastePoseAction,
-    PastePoseRequest,
-    PastePoseResult,
-    PoseTransform,
-    ResetPoseAction,
-    ResetPoseRequest,
-    ResetPoseResult,
-)
+The package exports action classes lazily so host-only validation code can use
+pure action modules without importing Maya-dependent VMD and pose workflows.
+"""
 
-__all__ = [
-    "ExportModelAction",
-    "ExportModelRequest",
-    "ExportModelResult",
-    "ExportVmdAction",
-    "ExportVmdRequest",
-    "ExportVmdResult",
-    "ImportModelAction",
-    "ImportModelRequest",
-    "ImportModelResult",
-    "ImportVmdAction",
-    "ImportVmdRequest",
-    "ImportVmdResult",
-    "apply_sphere_map",
-    "BakeAnimationAction",
-    "BakeAnimationRequest",
-    "BakeAnimationResult",
-    "CleanCurvesAction",
-    "CleanCurvesRequest",
-    "CleanCurvesResult",
-    "CopyPoseAction",
-    "CopyPoseRequest",
-    "CopyPoseResult",
-    "MirrorPoseAction",
-    "MirrorPoseRequest",
-    "MirrorPoseResult",
-    "PastePoseAction",
-    "PastePoseRequest",
-    "PastePoseResult",
-    "PoseTransform",
-    "ResetPoseAction",
-    "ResetPoseRequest",
-    "ResetPoseResult",
-]
+from importlib import import_module
+from typing import Any
+
+
+_EXPORT_MODULES = {
+    "ExportModelAction": ".export_model_action",
+    "ExportModelRequest": ".export_model_action",
+    "ExportModelResult": ".export_model_action",
+    "ExportVmdAction": ".export_vmd_action",
+    "ExportVmdRequest": ".export_vmd_action",
+    "ExportVmdResult": ".export_vmd_action",
+    "ImportModelAction": ".import_model_action",
+    "ImportModelRequest": ".import_model_action",
+    "ImportModelResult": ".import_model_action",
+    "ImportVmdAction": ".import_vmd_action",
+    "ImportVmdRequest": ".import_vmd_action",
+    "ImportVmdResult": ".import_vmd_action",
+    "apply_sphere_map": ".material_shader_action",
+    "BakeAnimationAction": ".pose_actions",
+    "BakeAnimationRequest": ".pose_actions",
+    "BakeAnimationResult": ".pose_actions",
+    "CleanCurvesAction": ".pose_actions",
+    "CleanCurvesRequest": ".pose_actions",
+    "CleanCurvesResult": ".pose_actions",
+    "CopyPoseAction": ".pose_actions",
+    "CopyPoseRequest": ".pose_actions",
+    "CopyPoseResult": ".pose_actions",
+    "MirrorPoseAction": ".pose_actions",
+    "MirrorPoseRequest": ".pose_actions",
+    "MirrorPoseResult": ".pose_actions",
+    "PastePoseAction": ".pose_actions",
+    "PastePoseRequest": ".pose_actions",
+    "PastePoseResult": ".pose_actions",
+    "PoseTransform": ".pose_actions",
+    "ResetPoseAction": ".pose_actions",
+    "ResetPoseRequest": ".pose_actions",
+    "ResetPoseResult": ".pose_actions",
+}
+
+__all__ = list(_EXPORT_MODULES)
+
+
+def __getattr__(name: str) -> Any:
+    """Load one public action symbol only when a caller requests it."""
+    module_name = _EXPORT_MODULES.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(module_name, __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    """Expose lazy public symbols to introspection tools."""
+    return sorted(set(globals()) | set(__all__))

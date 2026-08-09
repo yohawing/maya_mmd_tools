@@ -56,4 +56,3 @@ def test_completed_worker_result_rejects_missing_morph_detail(detail: str) -> No
         del result["operations"][9][detail]
     with pytest.raises(ModelAuthoringGateError):
         _require_completed_worker_result(result)
-

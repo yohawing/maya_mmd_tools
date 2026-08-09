@@ -379,6 +379,37 @@ class TestExportModelAction(unittest.TestCase):
             self.assertNotEqual(writer_path, output_path)
             self.assertFalse(writer_path.exists())
 
+    def test_blocking_model_data_skips_injected_writer_without_maya_defaults(self):
+        """Injected plain-Python writers remain usable on a blocking payload."""
+        model_data = {
+            "vertices": [{"position": [0.0, 0.0, 0.0], "bone_indices": [0]}],
+            "faces": [[0, 0, 0]],
+            "materials": [{"name": "mat", "face_count": 3}],
+            "bones": None,
+            "morphs": [{"type": "flip", "offsets": []}],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "blocked.pmx"
+            exporter = _FakePmxExporter()
+            action = ExportModelAction(
+                pmx_exporter=exporter,
+                collector=None,
+                output_verifier=None,
+            )
+
+            result = action.execute(
+                ExportModelRequest(
+                    file_path=str(output_path),
+                    options={"export_format": "pmx", "model_data": model_data},
+                )
+            )
+
+            self.assertFalse(result.succeeded)
+            self.assertIsInstance(result.error, ExportValidationError)
+            self.assertTrue(result.validation_report.is_blocking)
+            self.assertEqual(exporter.calls, [])
+            self.assertFalse(output_path.exists())
+
     def test_execute_rejects_pmd_before_collecting_or_writing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = Path(temp_dir) / "out.pmd"
