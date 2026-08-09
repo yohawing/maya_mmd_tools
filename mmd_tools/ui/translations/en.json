@@ -60,6 +60,7 @@
     "refresh": "Refresh",
     "reset": "Reset",
     "go_to_bind_pose": "Go to Bind Pose",
+    "reset_pose": "Reset Pose",
     "add": "Add",
     "remove": "Remove",
     "create": "Create",

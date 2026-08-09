@@ -58,6 +58,7 @@
     "refresh": "重新整理",
     "reset": "重設",
     "go_to_bind_pose": "前往綁定姿勢",
+    "reset_pose": "重設姿勢",
     "add": "新增",
     "remove": "移除",
     "create": "建立",

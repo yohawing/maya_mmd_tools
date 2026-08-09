@@ -20,6 +20,9 @@ _CHANNELS = (
     "rotateY",
     "rotateZ",
 )
+_DIRECT_ANIM_CURVE_TYPES = frozenset(
+    {"animCurveTA", "animCurveTL", "animCurveTT", "animCurveTU"}
+)
 
 
 class ResetPoseTransactionError(RuntimeError):
@@ -79,7 +82,7 @@ class ResetPoseTransaction:
             for snapshot in self._snapshots:
                 if not snapshot.writable:
                     continue
-                value = self._rest_value(snapshot.plug)
+                value = self._rest_value(snapshot)
                 self._applied.append(snapshot)
                 if snapshot.writer:
                     curve = snapshot.writer.rsplit(".", 1)[0]
@@ -160,7 +163,7 @@ class ResetPoseTransaction:
     def _is_direct_anim_curve(cmds, writer: str) -> bool:
         try:
             node = writer.rsplit(".", 1)[0]
-            return str(cmds.nodeType(node)).startswith("animCurve")
+            return str(cmds.nodeType(node)) in _DIRECT_ANIM_CURVE_TYPES
         except Exception:
             return False
 
@@ -189,7 +192,8 @@ class ResetPoseTransaction:
                 )
             self._set_static(cmds, snapshot, snapshot.value)
 
-    def _rest_value(self, plug: str) -> float:
+    def _rest_value(self, snapshot: _ChannelSnapshot) -> float:
+        plug = snapshot.plug
         attribute = plug.rsplit(".", 1)[-1]
         if attribute.startswith("translate"):
             node = plug.rsplit(".", 1)[0]
@@ -198,6 +202,7 @@ class ResetPoseTransaction:
                 translation = self.bind_translations.get(node.rsplit("|", 1)[-1])
             if translation is not None:
                 return float(translation["XYZ".index(attribute[-1])])
+            return float(snapshot.value)
         return 0.0
 
     def _assert_model_uuid(self, cmds) -> None:

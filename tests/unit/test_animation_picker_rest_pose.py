@@ -40,6 +40,7 @@ class _FakeCmds:
                 self.values[f"{node}.{channel}"] = value
                 self.locks[f"{node}.{channel}"] = False
         self.incoming = {"|model|joint.rotateX": ["animCurve.output"]}
+        self.curve_type = "animCurveTA"
         self.keyframes = []
         self.frame = 24.0
         self.fail_plug = None
@@ -76,9 +77,8 @@ class _FakeCmds:
             return list(self.incoming.get(plug, ()))
         return []
 
-    @staticmethod
-    def nodeType(node):
-        return "animCurveTA" if node == "animCurve" else "pairBlend"
+    def nodeType(self, node):
+        return self.curve_type if node == "animCurve" else "pairBlend"
 
     def currentTime(self, query=False):
         return self.frame if query else None
@@ -180,6 +180,18 @@ class TestResetPoseTransaction(unittest.TestCase):
 
         self.assertEqual(cmds.incoming[plug], ["pairBlend.output"])
         self.assertEqual(cmds.values[plug], before)
+
+    def test_driven_key_curve_types_are_not_written(self):
+        cmds, transaction = self._make()
+        plug = "|model|joint.rotateX"
+        cmds.curve_type = "animCurveUA"
+        before = cmds.values[plug]
+
+        self.assertEqual(transaction.apply(), 1)
+
+        self.assertEqual(cmds.values[plug], before)
+        self.assertEqual(cmds.incoming[plug], ["animCurve.output"])
+        self.assertEqual(cmds.keyframes, [])
 
     def test_animated_channels_require_undo_support(self):
         cmds, transaction = self._make(undo_available=False)
