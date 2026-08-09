@@ -75,6 +75,7 @@ class FakeCmds:
         self.blendshape_weights = {}
         self.aliases = {}
         self.current_unit = "ntsc"
+        self.relative_calls = []
 
     def ls(self, pattern=None, type=None, objectsOnly=False, long=False, uuid=False):  # noqa: A002,N803
         if pattern and not type and not objectsOnly:
@@ -94,6 +95,14 @@ class FakeCmds:
         fullPath=False,
         shapes=False,
     ):
+        self.relative_calls.append(
+            {
+                "node": node,
+                "type": type,
+                "fullPath": fullPath,
+                "shapes": shapes,
+            }
+        )
         result = []
         for child in self.children.get(node, []):
             if type is None or self.node_types.get(child) == type:
@@ -327,6 +336,53 @@ class TestVmdSceneCollector(unittest.TestCase):
             collector._find_tagged_nodes(ATTR_MMD_LIGHT, root),
             [owned_light],
         )
+
+    def test_targetless_auto_discovery_fails_closed_on_tagged_camera_decoy(self):
+        self.cmds.node_types.update({"camera_a": "transform", "camera_b": "transform"})
+        self.cmds.attrs.update(
+            {
+                ("camera_a", ATTR_MMD_CAMERA): True,
+                ("camera_b", ATTR_MMD_CAMERA): True,
+            }
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "multiple tagged nodes"):
+            VmdSceneCollector().collect()
+
+    def test_target_scoped_auto_discovery_fails_closed_on_tagged_camera_decoy(self):
+        root = "|hero:model_ROOT"
+        camera_a = "|hero:model_ROOT|hero:camera_a"
+        camera_b = "|hero:model_ROOT|hero:camera_b"
+        self.cmds.node_types.update(
+            {root: "transform", camera_a: "transform", camera_b: "transform"}
+        )
+        self.cmds.attrs.update(
+            {
+                (camera_a, ATTR_MMD_CAMERA): True,
+                (camera_b, ATTR_MMD_CAMERA): True,
+            }
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "multiple tagged nodes"):
+            VmdSceneCollector().collect({"target_model": root})
+
+    def test_explicit_multiple_camera_nodes_fail_closed(self):
+        with self.assertRaisesRegex(RuntimeError, "multiple tagged nodes"):
+            VmdSceneCollector().collect({"cameras": ["camera_a", "camera_b"]})
+
+    def test_explicit_empty_camera_and_light_lists_skip_auto_discovery(self):
+        self.cmds.node_types.update({"camera_auto": "transform", "light_auto": "transform"})
+        self.cmds.attrs.update(
+            {
+                ("camera_auto", ATTR_MMD_CAMERA): True,
+                ("light_auto", ATTR_MMD_LIGHT): True,
+            }
+        )
+
+        result = VmdSceneCollector().collect({"cameras": [], "lights": []})
+
+        self.assertEqual(result["camera_frames"], [])
+        self.assertEqual(result["light_frames"], [])
 
     def test_collects_bone_morph_base_channels_from_control_rig_metadata(self):
         self.cmds.node_types.update(
@@ -721,6 +777,61 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertAlmostEqual(frame["rotation"][2], 0.5235987755982988)
         self.assertEqual(frame["viewing_angle"], 42)
         self.assertEqual(frame["perspective"], 1)
+
+    def test_collects_imported_light_color_from_directional_shape(self):
+        """Legacy VMD light imports keep color on the child shape."""
+        self.cmds.node_types.update(
+            {
+                "mmd_light": "transform",
+                "mmd_lightShape": "directionalLight",
+            }
+        )
+        self.cmds.children["mmd_light"] = ["mmd_lightShape"]
+        self.cmds.attrs[("mmd_light", ATTR_MMD_LIGHT)] = True
+        self.cmds.attrs.update(
+            {
+                ("mmd_lightShape", "colorR"): 0.2,
+                ("mmd_lightShape", "colorG"): 0.3,
+                ("mmd_lightShape", "colorB"): 0.4,
+            }
+        )
+        self.cmds.keys.update(
+            {
+                ("mmd_light", "rotateX"): {12.0: -30.0},
+                ("mmd_light", "rotateY"): {12.0: 20.0},
+                ("mmd_lightShape", "colorR"): {12.0: 0.2},
+                ("mmd_lightShape", "colorG"): {12.0: 0.3},
+                ("mmd_lightShape", "colorB"): {12.0: 0.4},
+            }
+        )
+
+        result = VmdSceneCollector().collect({"lights": ["mmd_light"]})
+
+        self.assertEqual(result["light_frames"], [
+            {
+                "frame_number": 12,
+                "color": (0.2, 0.3, 0.4),
+                "position": collector_module._maya_light_rotation_to_vmd_direction(-30.0, 20.0),
+            }
+        ])
+        self.assertTrue(any(call["fullPath"] for call in self.cmds.relative_calls))
+
+    def test_imported_light_shape_resolution_uses_full_path_for_same_name_shapes(self):
+        light = "|hero:mmd_light"
+        shape = "|hero:mmd_light|hero:mmd_lightShape"
+        self.cmds.node_types.update({light: "transform", shape: "directionalLight"})
+        self.cmds.children[light] = [shape]
+        self.cmds.attrs[(light, ATTR_MMD_LIGHT)] = True
+        for attr, value in {"colorR": 0.2, "colorG": 0.3, "colorB": 0.4}.items():
+            self.cmds.attrs[(shape, attr)] = value
+            self.cmds.keys[(shape, attr)] = {12.0: value}
+        self.cmds.keys[(light, "rotateX")] = {12.0: -30.0}
+
+        result = VmdSceneCollector().collect({"lights": [light]})
+
+        self.assertEqual(result["light_frames"][0]["color"], (0.2, 0.3, 0.4))
+        self.assertEqual(self.cmds.relative_calls[-1]["node"], light)
+        self.assertTrue(self.cmds.relative_calls[-1]["fullPath"])
 
     def test_collects_camera_position_from_target_attrs_when_present(self):
         self.cmds.node_types["mmd_camera"] = "transform"

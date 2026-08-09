@@ -1,6 +1,7 @@
 """Focused contracts for the v0.7 export release-gate orchestrator."""
 
 import ast
+import copy
 import inspect
 import json
 from pathlib import Path
@@ -121,6 +122,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                         "pmd",
                         "vmd",
                         "vmd_model_tracks",
+                        "vmd_camera_light",
                     )
                 ],
             }
@@ -311,6 +313,9 @@ class ExportReleaseGateTests(unittest.TestCase):
             vmd_model_tracks_case = next(
                 case for case in report["cases"] if case["format"] == "vmd_model_tracks"
             )
+            vmd_camera_light_case = next(
+                case for case in report["cases"] if case["format"] == "vmd_camera_light"
+            )
             vmd_model_tracks_case.update(
                 parsed_counts={
                     "bone_frames": 2,
@@ -379,6 +384,90 @@ class ExportReleaseGateTests(unittest.TestCase):
                     },
                 },
             )
+            camera_payload = {
+                "camera": {
+                    "0": {"distance": -45.0, "position": [0.0, 10.0, 0.0], "rotation": [0.0, 0.0, 0.0], "viewing_angle": 30, "perspective": 0, "interpolation": [20] * 24},
+                    "30": {"distance": -60.0, "position": [5.0, 15.0, -3.0], "rotation": [0.2, 0.5, 0.0], "viewing_angle": 27, "perspective": 0, "interpolation": [20] * 24},
+                    "60": {"distance": -45.0, "position": [0.0, 10.0, 0.0], "rotation": [0.0, 0.0, 0.0], "viewing_angle": 30, "perspective": 0, "interpolation": [20] * 24},
+                },
+                "light": {
+                    "0": {"color": [0.6, 0.6, 0.6], "position": [-0.5, -1.0, 0.5]},
+                    "30": {"color": [1.0, 0.8, 0.6], "position": [-0.3, -0.8, 0.7]},
+                    "60": {"color": [0.6, 0.6, 0.6], "position": [-0.5, -1.0, 0.5]},
+                },
+            }
+            for payload in camera_payload["light"].values():
+                payload["direction"] = list(payload["position"])
+            camera_scene_payload = {
+                "camera": {
+                    frame: {key: value for key, value in payload.items() if key != "interpolation"}
+                    for frame, payload in camera_payload["camera"].items()
+                },
+                "light": camera_payload["light"],
+            }
+            dense_camera_payload = {
+                str(frame): dict(camera_payload["camera"][str(frame if frame in (0, 30, 60) else 0)])
+                for frame in (0, 15, 30, 45, 60)
+            }
+            dense_light_payload = {
+                str(frame): dict(camera_payload["light"][str(frame if frame in (0, 30, 60) else 0)])
+                for frame in (0, 15, 30, 45, 60)
+            }
+            dense_payload = {"camera": dense_camera_payload, "light": dense_light_payload}
+            vmd_camera_light_case.update(
+                parsed_counts={
+                    "camera_frames": 3,
+                    "light_frames": 3,
+                    "bone_frames": 0,
+                    "morph_frames": 0,
+                    "ik_show_hide_frames": 0,
+                    "shadow_frames": 0,
+                },
+                normalization={"excluded_shadow_frames": 1, "shadow_support_claimed": False},
+                mode_c_warning_acknowledged=True,
+                track_coverage={
+                    "checked_frames": [0, 15, 30, 45, 60],
+                    "tracks": list(RELEASE_GATE.VMD_CAMERA_LIGHT_TRACKS),
+                    "source_counts": {"camera_frames": 3, "light_frames": 3},
+                    "exported_counts": {"camera_frames": 61, "light_frames": 61},
+                    "bone_frames": 0,
+                    "morph_frames": 0,
+                    "ik_show_hide_frames": 0,
+                    "shadow_frames": 0,
+                    "visual_parity_claimed": False,
+                },
+                camera_light={
+                    "source": camera_payload,
+                    "source_import": camera_scene_payload,
+                    "exported_file": camera_payload,
+                    "fresh_import": camera_scene_payload,
+                    "interpolation": {
+                        "source": {frame: payload["interpolation"] for frame, payload in camera_payload["camera"].items()},
+                        "exported_file": {frame: [20] * 24 for frame in camera_payload["camera"]},
+                        "raw_preserved": False,
+                        "mode_c_normalized": True,
+                        "canonical_expected": [20] * 24,
+                        "canonical_length": 24,
+                        "canonical_exported": True,
+                    },
+                    "comparison": {
+                        "status": "pass",
+                        "boundaries": list(RELEASE_GATE.VMD_CAMERA_LIGHT_COMPARISON_BOUNDARIES),
+                        "checked_frames": [0, 30, 60],
+                        "dense_checked_frames": [0, 15, 30, 45, 60],
+                        "dense_status": "pass",
+                    },
+                    "dense": {
+                        "checked_frames": [0, 15, 30, 45, 60],
+                        "native_expected": copy.deepcopy(dense_payload),
+                        "native_comparison_tracks": ["camera"],
+                        "light_comparison": "source_import/fresh_import",
+                        "source_import": copy.deepcopy(dense_payload),
+                        "exported_file": copy.deepcopy(dense_payload),
+                        "fresh_import": copy.deepcopy(dense_payload),
+                    },
+                },
+            )
             soft_body_case.update(
                 status="policy-reject",
                 policy_code="PMX_SOFT_BODIES_UNSUPPORTED",
@@ -437,6 +526,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                     "pmd",
                     "vmd",
                     "vmd_model_tracks",
+                    "vmd_camera_light",
                 },
             )
 
@@ -489,6 +579,7 @@ class ExportReleaseGateTests(unittest.TestCase):
             self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
             self.assertEqual(step["status"], "fail")
             self.assertIn("controller_outputs", step["error"])
+            morph_case["morph_oracle"]["fresh_import"]["controller_outputs"] = controller_outputs
 
             vmd_model_tracks_case["model_tracks"]["fresh_import"]["morph_values"] = {}
             report_path.write_text(json.dumps(report), encoding="utf-8")
@@ -509,6 +600,46 @@ class ExportReleaseGateTests(unittest.TestCase):
                 "0": {"ik": 1},
                 "6": {"ik": 0},
             }
+
+            vmd_camera_light_case["parsed_counts"]["camera_frames"] = 0
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            step = {"name": "maya_probe_2024", "status": "pass"}
+            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
+            self.assertEqual(step["status"], "fail")
+            self.assertIn("vmd_camera_light.parsed_counts.camera_frames must be positive", step["error"])
+            vmd_camera_light_case["parsed_counts"]["camera_frames"] = 61
+
+            vmd_camera_light_case["normalization"]["excluded_shadow_frames"] = 0
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            step = {"name": "maya_probe_2024", "status": "pass"}
+            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
+            self.assertEqual(step["status"], "fail")
+            self.assertIn("excluded_shadow_frames must be positive", step["error"])
+            vmd_camera_light_case["normalization"]["excluded_shadow_frames"] = 1
+
+            vmd_camera_light_case["camera_light"]["interpolation"]["exported_file"]["0"] = [20] * 23
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            step = {"name": "maya_probe_2024", "status": "pass"}
+            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
+            self.assertEqual(step["status"], "fail")
+            self.assertIn("must contain 24 bytes", step["error"])
+            vmd_camera_light_case["camera_light"]["interpolation"]["exported_file"]["0"] = [20] * 24
+
+            vmd_camera_light_case["camera_light"]["dense"]["source_import"]["camera"]["15"]["distance"] += 0.01
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            step = {"name": "maya_probe_2024", "status": "pass"}
+            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
+            self.assertEqual(step["status"], "fail")
+            self.assertIn("native_expected_vs_source_import.camera[15].distance mismatch", step["error"])
+            vmd_camera_light_case["camera_light"]["dense"]["source_import"]["camera"]["15"]["distance"] -= 0.01
+
+            missing_direction = vmd_camera_light_case["camera_light"]["dense"]["fresh_import"]["light"]["15"].pop("direction")
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            step = {"name": "maya_probe_2024", "status": "pass"}
+            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
+            self.assertEqual(step["status"], "fail")
+            self.assertIn("fresh_import.light[15].direction missing", step["error"])
+            vmd_camera_light_case["camera_light"]["dense"]["fresh_import"]["light"]["15"]["direction"] = missing_direction
 
             report["cases"][-1]["status"] = "fail"
             report_path.write_text(json.dumps(report), encoding="utf-8")

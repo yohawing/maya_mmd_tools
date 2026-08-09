@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -36,9 +37,14 @@ DEFAULT_MORPH_PMX = ROOT / "tests" / "data" / "for_unit_test" / "test_vmd_morph_
 DEFAULT_VMD = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube_motion.vmd"
 VMD_MODEL_TRACK_PMX = ROOT / "tests" / "data" / "yw_test_model_control_rig_bone_morph.pmx"
 VMD_MODEL_TRACK_VMD = ROOT / "tests" / "data" / "yw_test_model_control_rig_bone_morph.vmd"
+VMD_CAMERA_LIGHT_VMD = ROOT / "tests" / "data" / "test_camera_light.vmd"
 ORACLE_FRAMES = (0, 9, 19, 29, 39, 49)
 VMD_MODEL_TRACK_FRAMES = (0, 6, 10, 12, 20)
+VMD_CAMERA_LIGHT_KEY_FRAMES = (0, 30, 60)
+VMD_CAMERA_LIGHT_FRAMES = (0, 15, 30, 45, 60)
+VMD_CAMERA_LIGHT_CANONICAL_INTERPOLATION = tuple([20] * 24)
 FLOAT_TOLERANCE = 1.0e-4
+NATIVE_CAMERA_TOLERANCE = 1.0e-3
 SUPPORTED_MORPH_TYPES = (
     "vertex",
     "bone",
@@ -3199,6 +3205,389 @@ def _run_vmd_model_tracks_case(out_dir: Path) -> dict[str, Any]:
     }
 
 
+def _prepare_camera_light_probe_fixture(source: Path, out_dir: Path) -> tuple[Path, dict[str, Any]]:
+    """Copy the camera/light fixture while intentionally excluding self-shadow."""
+    from mmd_tools.core.vmd_data import VmdData
+
+    data = VmdData().parse_file(str(source))
+    if not data.camera_frames or not data.light_frames:
+        raise RuntimeError("camera/light fixture has no camera or light frames")
+    excluded_shadow_frames = len(data.shadow_frames)
+    if excluded_shadow_frames <= 0:
+        raise RuntimeError("camera/light fixture must contain shadow frames to exclude")
+    data.shadow_frames = []
+    output = out_dir / "fixtures" / "camera_light_no_shadow.vmd"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    data.write_file(str(output))
+    return output, {
+        "excluded_shadow_frames": excluded_shadow_frames,
+        "shadow_support_claimed": False,
+    }
+
+
+def _camera_light_payload(data: Any, frames: Iterable[int]) -> dict[str, Any]:
+    """Normalize parser camera/light payloads at representative frames."""
+    checked = {int(frame) for frame in frames}
+
+    def _direction(value: Any) -> list[float]:
+        values = [float(item) for item in value]
+        length = math.sqrt(sum(item * item for item in values))
+        if length <= 1.0e-12:
+            return [0.0, 0.0, 0.0]
+        return _round_values(item / length for item in values)
+    cameras = {
+        str(int(frame.frame_number)): {
+            "distance": round(float(frame.distance), 7),
+            "position": _round_values(frame.position),
+            "rotation": _round_values(frame.rotation),
+            "viewing_angle": int(frame.viewing_angle),
+            "perspective": int(frame.perspective),
+            "interpolation": list(bytes(frame.interpolation)),
+        }
+        for frame in data.camera_frames
+        if int(frame.frame_number) in checked
+    }
+    for frame, payload in cameras.items():
+        if len(payload["interpolation"]) != len(VMD_CAMERA_LIGHT_CANONICAL_INTERPOLATION):
+            raise AssertionError(
+                f"camera frame {frame} interpolation must contain exactly 24 bytes"
+            )
+    lights = {
+        str(int(frame.frame_number)): {
+            "color": _round_values(frame.color),
+            "position": _round_values(frame.position),
+            "direction": _direction(frame.position),
+        }
+        for frame in data.light_frames
+        if int(frame.frame_number) in checked
+    }
+    return {"camera": cameras, "light": lights}
+
+
+def _native_camera_light_payload(source_fixture: Path, frames: Iterable[int]) -> dict[str, Any]:
+    """Sample camera/light semantics independently through mmd-anim FFI."""
+    from mmd_tools.core.native.mmd_anim_runtime_sampling import (
+        sample_vmd_camera_frames,
+        sample_vmd_light_frames,
+    )
+
+    checked = tuple(sorted({int(frame) for frame in frames}))
+    if not checked:
+        raise ValueError("native camera/light oracle requires checked frames")
+    count = checked[-1] - checked[0] + 1
+    raw = source_fixture.read_bytes()
+    camera_samples = sample_vmd_camera_frames(raw, float(checked[0]), 1.0, count)
+    light_samples = sample_vmd_light_frames(raw, float(checked[0]), 1.0, count)
+    if not camera_samples or not light_samples:
+        raise RuntimeError("mmd-anim native camera/light sampler is unavailable")
+    camera_by_frame = {int(round(float(item["frame"]))): item for item in camera_samples}
+    light_by_frame = {int(round(float(item["frame"]))): item for item in light_samples}
+    if set(camera_by_frame) != set(range(checked[0], checked[-1] + 1)):
+        raise RuntimeError("native camera sampler missed a dense frame")
+    if set(light_by_frame) != set(range(checked[0], checked[-1] + 1)):
+        raise RuntimeError("native light sampler missed a dense frame")
+
+    def _direction(value: Any) -> list[float]:
+        values = [float(item) for item in value]
+        length = math.sqrt(sum(item * item for item in values))
+        if length <= 1.0e-12:
+            return [0.0, 0.0, 0.0]
+        return _round_values(item / length for item in values)
+
+    camera = {}
+    light = {}
+    for frame in checked:
+        camera_item = camera_by_frame[frame]
+        light_item = light_by_frame[frame]
+        camera[str(frame)] = {
+            "distance": float(camera_item["distance"]),
+            "position": _round_values(camera_item["position"]),
+            "rotation": _round_values(camera_item["rotation"]),
+            "viewing_angle": int(round(float(camera_item["fov"]))),
+            "perspective": 0 if bool(camera_item["perspective"]) else 1,
+        }
+        light_position = _round_values(light_item["position"])
+        light[str(frame)] = {
+            "color": _round_values(light_item["color"]),
+            "position": light_position,
+            "direction": _direction(light_position),
+        }
+    return {"camera": camera, "light": light}
+
+
+def _camera_light_frame_subset(payload: Mapping[str, Any], frames: Iterable[int]) -> dict[str, Any]:
+    """Return only requested frames from a normalized camera/light payload."""
+    checked = {str(int(frame)) for frame in frames}
+    return {
+        track: {
+            frame: value
+            for frame, value in payload.get(track, {}).items()
+            if str(frame) in checked
+        }
+        for track in ("camera", "light")
+    }
+
+
+def _capture_camera_light_scene_oracle(root: str, frames: Iterable[int]) -> dict[str, Any]:
+    """Capture normalized Maya camera/light values at explicit dense times."""
+    from maya import cmds
+    from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
+
+    checked = {int(frame) for frame in frames}
+    cameras = cmds.ls("*.mmd_camera", objectsOnly=True, long=True) or []
+    lights = cmds.ls("*.mmd_light", objectsOnly=True, long=True) or []
+    if len(cameras) != 1 or len(lights) != 1:
+        raise RuntimeError(f"camera/light import expected one controller each: {cameras!r}, {lights!r}")
+    collector = VmdSceneCollector()
+    camera_frames = collector.collect_camera_frames(
+        cameras,
+        min(checked),
+        max(checked),
+        dense_sample=True,
+        dense_frame_samples=sorted(checked),
+    )
+    light_frames = collector.collect_light_frames(
+        lights,
+        min(checked),
+        max(checked),
+        dense_sample=True,
+        dense_frame_samples=sorted(checked),
+    )
+    camera = {
+        str(int(frame["frame_number"])): {
+            key: frame[key]
+            for key in ("distance", "position", "rotation", "viewing_angle", "perspective")
+        }
+        for frame in camera_frames
+        if int(frame["frame_number"]) in checked
+    }
+    light = {
+        str(int(frame["frame_number"])): {
+            key: frame[key] for key in ("color", "position")
+        }
+        for frame in light_frames
+        if int(frame["frame_number"]) in checked
+    }
+    if set(camera) != {str(frame) for frame in checked} or set(light) != {str(frame) for frame in checked}:
+        raise RuntimeError("camera/light Maya scene oracle missed a checked frame")
+    for payload in light.values():
+        payload["direction"] = list(payload["position"])
+    return {"camera": camera, "light": light, "root": root}
+
+
+def _compare_camera_light_semantics(
+    expected: Mapping[str, Any],
+    actual: Mapping[str, Any],
+    label: str,
+    *,
+    tracks: tuple[str, ...] = ("camera", "light"),
+    tolerance: float = FLOAT_TOLERANCE,
+) -> list[str]:
+    """Compare camera/light fields while allowing Mode C interpolation normalization."""
+    failures = []
+    for track, fields in (
+        ("camera", ("distance", "position", "rotation", "viewing_angle", "perspective")),
+        ("light", ("color", "direction")),
+    ):
+        if track not in tracks:
+            continue
+        expected_frames = expected.get(track, {})
+        actual_frames = actual.get(track, {})
+        if set(expected_frames) != set(actual_frames):
+            failures.append(f"{label}.{track}.frames mismatch")
+            continue
+        for frame in expected_frames:
+            for field in fields:
+                expected_value = expected_frames[frame].get(field)
+                actual_value = actual_frames[frame].get(field)
+                if isinstance(expected_value, (list, tuple)):
+                    if _compare_float_lists(expected_value, actual_value or []) > tolerance:
+                        failures.append(f"{label}.{track}[{frame}].{field} mismatch")
+                elif isinstance(expected_value, (int, float)) and isinstance(actual_value, (int, float)):
+                    if abs(float(expected_value) - float(actual_value)) > tolerance:
+                        failures.append(f"{label}.{track}[{frame}].{field} mismatch")
+                elif expected_value != actual_value:
+                    failures.append(f"{label}.{track}[{frame}].{field} mismatch")
+    return failures
+
+
+def _run_vmd_camera_light_case(out_dir: Path) -> dict[str, Any]:
+    """Roundtrip standalone camera/light tracks through Mode C and fresh import."""
+    from mmd_tools.core.vmd_data import VmdData
+    from mmd_tools.services.export_workflow_service import ExportWorkflowRequest, ExportWorkflowService
+
+    source_fixture, normalization = _prepare_camera_light_probe_fixture(VMD_CAMERA_LIGHT_VMD, out_dir)
+    source_data = VmdData().parse_file(str(source_fixture))
+    source_payload = _camera_light_payload(source_data, VMD_CAMERA_LIGHT_KEY_FRAMES)
+    native_dense = _native_camera_light_payload(source_fixture, VMD_CAMERA_LIGHT_FRAMES)
+    source_root = _fresh_import(source_fixture)
+    source_scene = _capture_camera_light_scene_oracle(source_root, VMD_CAMERA_LIGHT_FRAMES)
+    output = out_dir / "camera_light.vmd"
+    report_dir = out_dir / "report"
+    result = ExportWorkflowService().execute(
+        ExportWorkflowRequest(
+            str(output),
+            {
+                "vmd_mode": "C",
+                "export_format": "vmd",
+                "require_target": False,
+                "start_frame": min(VMD_CAMERA_LIGHT_FRAMES),
+                "end_frame": max(VMD_CAMERA_LIGHT_FRAMES),
+                "model_name": source_data.header.model_name,
+                "validation_report_dir": str(report_dir),
+                "validation_report_evidence": {
+                    "gate": "V070-EXPORT-RELEASE-GATE-1",
+                    "fixture": source_fixture.name,
+                    "fresh_import": True,
+                    "oracles": ["camera_tracks", "light_tracks"],
+                    "shadow_excluded": True,
+                },
+            },
+        ),
+        acknowledge_warnings=True,
+    )
+    if not result.succeeded:
+        raise RuntimeError(f"camera/light Mode C export failed: {result.error or result.report}")
+    exported_data = VmdData().parse_file(str(output))
+    if (
+        not exported_data.camera_frames
+        or not exported_data.light_frames
+        or exported_data.bone_frames
+        or exported_data.morph_frames
+        or exported_data.ik_show_hide_frames
+        or exported_data.shadow_frames
+    ):
+        raise AssertionError("camera/light output has missing or out-of-scope track types")
+    exported_payload = _camera_light_payload(exported_data, VMD_CAMERA_LIGHT_KEY_FRAMES)
+    exported_dense_payload = _camera_light_payload(exported_data, VMD_CAMERA_LIGHT_FRAMES)
+    canonical_interpolation = list(VMD_CAMERA_LIGHT_CANONICAL_INTERPOLATION)
+    if any(
+        payload.get("interpolation") != canonical_interpolation
+        for payload in exported_dense_payload["camera"].values()
+    ):
+        raise AssertionError("Mode C exported camera interpolation is not canonical 24-byte [20] data")
+    parser_failures = _compare_camera_light_semantics(source_payload, exported_payload, "source/exported_file")
+    if parser_failures:
+        raise AssertionError("camera/light parser mismatch: " + "; ".join(parser_failures))
+    fresh_root = _fresh_import(output)
+    fresh_scene = _capture_camera_light_scene_oracle(fresh_root, VMD_CAMERA_LIGHT_FRAMES)
+    source_scene_key = _camera_light_frame_subset(source_scene, VMD_CAMERA_LIGHT_KEY_FRAMES)
+    fresh_scene_key = _camera_light_frame_subset(fresh_scene, VMD_CAMERA_LIGHT_KEY_FRAMES)
+    scene_failures = _compare_camera_light_semantics(source_scene, fresh_scene, "source_import/fresh_import")
+    scene_failures.extend(
+        _compare_camera_light_semantics(
+            native_dense,
+            source_scene,
+            "native/source_import",
+            tracks=("camera",),
+            tolerance=NATIVE_CAMERA_TOLERANCE,
+        )
+    )
+    scene_failures.extend(
+        _compare_camera_light_semantics(
+            native_dense,
+            exported_dense_payload,
+            "native/exported_file",
+            tracks=("camera",),
+            tolerance=NATIVE_CAMERA_TOLERANCE,
+        )
+    )
+    scene_failures.extend(
+        _compare_camera_light_semantics(
+            native_dense,
+            fresh_scene,
+            "native/fresh_import",
+            tracks=("camera",),
+            tolerance=NATIVE_CAMERA_TOLERANCE,
+        )
+    )
+    scene_failures.extend(_compare_camera_light_semantics(source_payload, source_scene_key, "source/source_import"))
+    scene_failures.extend(_compare_camera_light_semantics(exported_payload, fresh_scene_key, "exported_file/fresh_import"))
+    if scene_failures:
+        raise AssertionError("camera/light scene mismatch: " + "; ".join(scene_failures))
+    source_interpolation = {
+        frame: payload.get("interpolation")
+        for frame, payload in source_payload["camera"].items()
+    }
+    exported_interpolation = {
+        frame: payload.get("interpolation")
+        for frame, payload in exported_payload["camera"].items()
+    }
+    return {
+        "status": "pass",
+        "format": "vmd_camera_light",
+        "source": str(source_fixture),
+        "output": str(output),
+        "report_json": str(report_dir / "report.json"),
+        "report_md": str(report_dir / "report.md"),
+        "normalization": normalization,
+        "mode_c_warning_acknowledged": True,
+        "track_coverage": {
+            "checked_frames": list(VMD_CAMERA_LIGHT_FRAMES),
+            "tracks": ["camera", "light"],
+            "source_counts": {
+                "camera_frames": len(source_data.camera_frames),
+                "light_frames": len(source_data.light_frames),
+            },
+            "exported_counts": {
+                "camera_frames": len(exported_data.camera_frames),
+                "light_frames": len(exported_data.light_frames),
+            },
+            "bone_frames": 0,
+            "morph_frames": 0,
+            "ik_show_hide_frames": 0,
+            "shadow_frames": 0,
+            "visual_parity_claimed": False,
+        },
+        "camera_light": {
+            "source": source_payload,
+            "source_import": source_scene_key,
+            "exported_file": exported_payload,
+            "fresh_import": fresh_scene_key,
+            "interpolation": {
+            "source": source_interpolation,
+            "exported_file": exported_interpolation,
+            "raw_preserved": source_interpolation == exported_interpolation,
+            "mode_c_normalized": source_interpolation != exported_interpolation,
+            "canonical_expected": canonical_interpolation,
+            "canonical_length": len(canonical_interpolation),
+            "canonical_exported": True,
+        },
+        "comparison": {
+            "status": "pass",
+            "boundaries": ["source", "source_import", "exported_file", "fresh_import"],
+            "checked_frames": list(VMD_CAMERA_LIGHT_KEY_FRAMES),
+            "dense_checked_frames": list(VMD_CAMERA_LIGHT_FRAMES),
+            "dense_status": "pass",
+            "raw_interpolation_preserved": source_interpolation == exported_interpolation,
+        },
+        "dense": {
+            "checked_frames": list(VMD_CAMERA_LIGHT_FRAMES),
+            "native_expected": native_dense,
+            "native_comparison_tracks": ["camera"],
+            "light_comparison": "source_import/fresh_import",
+            "source_import": source_scene,
+            "exported_file": exported_dense_payload,
+            "fresh_import": fresh_scene,
+        },
+        },
+        "parsed_counts": {
+            "camera_frames": len(exported_data.camera_frames),
+            "light_frames": len(exported_data.light_frames),
+            "bone_frames": len(exported_data.bone_frames),
+            "morph_frames": len(exported_data.morph_frames),
+            "ik_show_hide_frames": len(exported_data.ik_show_hide_frames),
+            "shadow_frames": len(exported_data.shadow_frames),
+        },
+        "collection": {
+            "collector": "ExportWorkflowService -> VmdSceneCollector.collect",
+            "standalone_scene": True,
+            "source_fresh_import": True,
+            "result_fresh_import": True,
+        },
+    }
+
+
 def _import_vmd_into_current_scene(
     root: str,
     pmx_path: Path,
@@ -3378,6 +3767,18 @@ def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
                 "traceback": traceback.format_exc(limit=12),
             }
         )
+    try:
+        cases.append(_run_vmd_camera_light_case(out_dir / "vmd-camera-light"))
+    except Exception as exc:
+        cases.append(
+            {
+                "status": "fail",
+                "format": "vmd_camera_light",
+                "source": str(VMD_CAMERA_LIGHT_VMD),
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc(limit=12),
+            }
+        )
     accepted_case_statuses = {"pass", "policy-reject"}
     report = {
         "schema_version": 1,
@@ -3396,6 +3797,7 @@ def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
             "pmd": str(pmd_path),
             "vmd": str(vmd_path),
             "vmd_model_tracks": str(VMD_MODEL_TRACK_VMD),
+            "vmd_camera_light": str(VMD_CAMERA_LIGHT_VMD),
         },
         "cases": cases,
     }

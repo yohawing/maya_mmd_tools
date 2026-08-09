@@ -60,6 +60,13 @@ BONE_SEMANTICS_BOUNDARIES = ("source", "source_import", "exported_file", "fresh_
 BONE_SEMANTICS_COMPARISON_BOUNDARIES = ("source_import", "exported_pmx", "fresh_import")
 VMD_MODEL_TRACKS = ("bone", "morph", "ik_show_hide")
 VMD_MODEL_TRACK_COMPARISON_BOUNDARIES = ("source_import", "exported_file", "fresh_import")
+VMD_CAMERA_LIGHT_TRACKS = ("camera", "light")
+VMD_CAMERA_LIGHT_COMPARISON_BOUNDARIES = ("source", "source_import", "exported_file", "fresh_import")
+VMD_CAMERA_LIGHT_KEY_FRAMES = (0, 30, 60)
+VMD_CAMERA_LIGHT_DENSE_FRAMES = (0, 15, 30, 45, 60)
+VMD_CAMERA_LIGHT_CANONICAL_INTERPOLATION = tuple([20] * 24)
+VMD_CAMERA_LIGHT_CAMERA_TOLERANCE = 1.0e-3
+VMD_CAMERA_LIGHT_NUMERIC_TOLERANCE = 1.0e-4
 BONE_SEMANTICS_FIELDS = (
     "index",
     "name",
@@ -884,6 +891,255 @@ def _validate_vmd_model_tracks_case(case: Mapping[str, Any]) -> list[str]:
     return failures
 
 
+def _validate_vmd_camera_light_case(case: Mapping[str, Any]) -> list[str]:
+    """Require standalone camera/light Mode C field-level evidence."""
+    failures: list[str] = []
+    coverage = case.get("track_coverage")
+    if not isinstance(coverage, dict):
+        return ["vmd_camera_light.track_coverage_missing"]
+    if coverage.get("tracks") != list(VMD_CAMERA_LIGHT_TRACKS):
+        failures.append("vmd_camera_light.track_coverage.tracks mismatch")
+    if coverage.get("checked_frames") != list(VMD_CAMERA_LIGHT_DENSE_FRAMES):
+        failures.append("vmd_camera_light.track_coverage.checked_frames mismatch")
+    if coverage.get("visual_parity_claimed") is not False:
+        failures.append("vmd_camera_light.visual_parity_claimed must be false")
+    for field in ("bone_frames", "morph_frames", "ik_show_hide_frames", "shadow_frames"):
+        if coverage.get(field) != 0:
+            failures.append(f"vmd_camera_light.track_coverage.{field} must be zero")
+    for boundary in ("source_counts", "exported_counts"):
+        counts = coverage.get(boundary)
+        if not isinstance(counts, dict):
+            failures.append(f"vmd_camera_light.track_coverage.{boundary}_missing")
+            continue
+        for field in ("camera_frames", "light_frames"):
+            value = counts.get(field)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                failures.append(f"vmd_camera_light.track_coverage.{boundary}.{field} must be positive")
+
+    normalization = case.get("normalization")
+    if not isinstance(normalization, dict):
+        failures.append("vmd_camera_light.normalization_missing")
+    else:
+        excluded_shadow_frames = normalization.get("excluded_shadow_frames")
+        if (
+            isinstance(excluded_shadow_frames, bool)
+            or not isinstance(excluded_shadow_frames, int)
+            or excluded_shadow_frames <= 0
+        ):
+            failures.append("vmd_camera_light.normalization.excluded_shadow_frames must be positive")
+        if normalization.get("shadow_support_claimed") is not False:
+            failures.append("vmd_camera_light.normalization.shadow_support_claimed must be false")
+    if case.get("mode_c_warning_acknowledged") is not True:
+        failures.append("vmd_camera_light.mode_c_warning_acknowledged must be true")
+
+    tracks = case.get("camera_light")
+    if not isinstance(tracks, dict):
+        return failures + ["vmd_camera_light.camera_light_missing"]
+    comparison = tracks.get("comparison")
+    if not isinstance(comparison, dict):
+        failures.append("vmd_camera_light.camera_light.comparison_missing")
+    else:
+        if comparison.get("status") != "pass":
+            failures.append("vmd_camera_light.camera_light.comparison.status must be pass")
+        if comparison.get("boundaries") != list(VMD_CAMERA_LIGHT_COMPARISON_BOUNDARIES):
+            failures.append("vmd_camera_light.camera_light.comparison.boundaries mismatch")
+        if comparison.get("checked_frames") != list(VMD_CAMERA_LIGHT_KEY_FRAMES):
+            failures.append("vmd_camera_light.camera_light.comparison.checked_frames mismatch")
+        if comparison.get("dense_checked_frames") != list(VMD_CAMERA_LIGHT_DENSE_FRAMES):
+            failures.append("vmd_camera_light.camera_light.comparison.dense_checked_frames mismatch")
+        if comparison.get("dense_status") != "pass":
+            failures.append("vmd_camera_light.camera_light.comparison.dense_status must be pass")
+    interpolation = tracks.get("interpolation")
+    if not isinstance(interpolation, dict):
+        failures.append("vmd_camera_light.camera_light.interpolation_missing")
+    else:
+        if not isinstance(interpolation.get("source"), dict) or not interpolation["source"]:
+            failures.append("vmd_camera_light.camera_light.interpolation.source_missing")
+        if not isinstance(interpolation.get("exported_file"), dict) or not interpolation["exported_file"]:
+            failures.append("vmd_camera_light.camera_light.interpolation.exported_file_missing")
+        if interpolation.get("raw_preserved") is not False:
+            failures.append("vmd_camera_light.camera_light.interpolation.raw_preserved must be false")
+        if interpolation.get("mode_c_normalized") is not True:
+            failures.append("vmd_camera_light.camera_light.interpolation.mode_c_normalized must be true")
+        if interpolation.get("canonical_expected") != list(VMD_CAMERA_LIGHT_CANONICAL_INTERPOLATION):
+            failures.append("vmd_camera_light.camera_light.interpolation.canonical_expected mismatch")
+        if interpolation.get("canonical_length") != len(VMD_CAMERA_LIGHT_CANONICAL_INTERPOLATION):
+            failures.append("vmd_camera_light.camera_light.interpolation.canonical_length must be 24")
+        if interpolation.get("canonical_exported") is not True:
+            failures.append("vmd_camera_light.camera_light.interpolation.canonical_exported must be true")
+        for boundary in ("source", "exported_file"):
+            values = interpolation.get(boundary)
+            if not isinstance(values, dict) or not values:
+                continue
+            if set(values) != {str(frame) for frame in VMD_CAMERA_LIGHT_KEY_FRAMES}:
+                failures.append(
+                    f"vmd_camera_light.camera_light.interpolation.{boundary}_frames mismatch"
+                )
+            for frame, raw in values.items():
+                if (
+                    not isinstance(raw, list)
+                    or len(raw) != len(VMD_CAMERA_LIGHT_CANONICAL_INTERPOLATION)
+                    or any(
+                        isinstance(byte, bool)
+                        or not isinstance(byte, int)
+                        or byte < 0
+                        or byte > 255
+                        for byte in raw
+                    )
+                ):
+                    failures.append(
+                        f"vmd_camera_light.camera_light.interpolation.{boundary}.{frame} must contain 24 bytes"
+                    )
+                if boundary == "exported_file" and raw != list(VMD_CAMERA_LIGHT_CANONICAL_INTERPOLATION):
+                    failures.append(
+                        f"vmd_camera_light.camera_light.interpolation.exported_file.{frame} must be canonical"
+                    )
+
+    for boundary in VMD_CAMERA_LIGHT_COMPARISON_BOUNDARIES:
+        payload = tracks.get(boundary)
+        if not isinstance(payload, dict):
+            failures.append(f"vmd_camera_light.camera_light.{boundary}_missing")
+            continue
+        for track in VMD_CAMERA_LIGHT_TRACKS:
+            values = payload.get(track)
+            if not isinstance(values, dict) or set(values) != {"0", "30", "60"}:
+                failures.append(f"vmd_camera_light.camera_light.{boundary}.{track}_missing")
+    dense = tracks.get("dense")
+    if not isinstance(dense, dict):
+        failures.append("vmd_camera_light.camera_light.dense_missing")
+    else:
+        if dense.get("checked_frames") != list(VMD_CAMERA_LIGHT_DENSE_FRAMES):
+            failures.append("vmd_camera_light.camera_light.dense.checked_frames mismatch")
+        if dense.get("native_comparison_tracks") != ["camera"]:
+            failures.append("vmd_camera_light.camera_light.dense.native_comparison_tracks mismatch")
+        if dense.get("light_comparison") != "source_import/fresh_import":
+            failures.append("vmd_camera_light.camera_light.dense.light_comparison mismatch")
+        dense_frames = {str(frame) for frame in VMD_CAMERA_LIGHT_DENSE_FRAMES}
+        camera_fields = ("distance", "position", "rotation", "viewing_angle", "perspective")
+        light_fields = ("color", "direction")
+
+        def _finite_scalar(value: Any) -> bool:
+            return (
+                not isinstance(value, bool)
+                and isinstance(value, (int, float))
+                and math.isfinite(float(value))
+            )
+
+        def _finite_vector(value: Any, length: int) -> bool:
+            return (
+                isinstance(value, (list, tuple))
+                and len(value) == length
+                and all(_finite_scalar(item) for item in value)
+            )
+
+        def _validate_dense_values(payload: Any, boundary: str) -> dict[str, dict[str, Any]]:
+            normalized: dict[str, dict[str, Any]] = {"camera": {}, "light": {}}
+            if not isinstance(payload, dict):
+                failures.append(f"vmd_camera_light.camera_light.dense.{boundary}_malformed")
+                return normalized
+            for track, fields in (("camera", camera_fields), ("light", light_fields)):
+                values = payload.get(track)
+                if not isinstance(values, dict) or set(values) != dense_frames:
+                    failures.append(f"vmd_camera_light.camera_light.dense.{boundary}.{track}_missing")
+                    continue
+                for frame in sorted(dense_frames):
+                    entry = values.get(frame)
+                    if not isinstance(entry, dict):
+                        failures.append(
+                            f"vmd_camera_light.camera_light.dense.{boundary}.{track}[{frame}] malformed"
+                        )
+                        continue
+                    normalized[track][frame] = entry
+                    for field in fields:
+                        if field not in entry:
+                            failures.append(
+                                f"vmd_camera_light.camera_light.dense.{boundary}.{track}[{frame}].{field} missing"
+                            )
+                            continue
+                        value = entry[field]
+                        valid = (
+                            _finite_vector(value, 3)
+                            if field in ("position", "rotation", "color", "direction")
+                            else _finite_scalar(value)
+                        )
+                        if field == "perspective":
+                            valid = isinstance(value, int) and not isinstance(value, bool) and value in (0, 1)
+                        if not valid:
+                            failures.append(
+                                f"vmd_camera_light.camera_light.dense.{boundary}.{track}[{frame}].{field} malformed"
+                            )
+            return normalized
+
+        for boundary in ("native_expected", "source_import", "exported_file", "fresh_import"):
+            payload = dense.get(boundary)
+            if not isinstance(payload, dict):
+                failures.append(f"vmd_camera_light.camera_light.dense.{boundary}_missing")
+                continue
+            for track in VMD_CAMERA_LIGHT_TRACKS:
+                values = payload.get(track)
+                if not isinstance(values, dict) or set(values) != dense_frames:
+                    failures.append(f"vmd_camera_light.camera_light.dense.{boundary}.{track}_missing")
+        dense_values = {
+            boundary: _validate_dense_values(dense.get(boundary), boundary)
+            for boundary in ("native_expected", "source_import", "exported_file", "fresh_import")
+        }
+
+        def _compare_dense_track(
+            expected_boundary: str,
+            actual_boundary: str,
+            track: str,
+            fields: tuple[str, ...],
+            tolerance: float,
+        ) -> None:
+            expected_tracks = dense_values[expected_boundary].get(track, {})
+            actual_tracks = dense_values[actual_boundary].get(track, {})
+            for frame in sorted(dense_frames):
+                expected = expected_tracks.get(frame)
+                actual = actual_tracks.get(frame)
+                if not expected or not actual:
+                    continue
+                for field in fields:
+                    expected_value = expected.get(field)
+                    actual_value = actual.get(field)
+                    if isinstance(expected_value, (list, tuple)) and isinstance(actual_value, (list, tuple)):
+                        mismatch = (
+                            len(expected_value) != len(actual_value)
+                            or not all(_finite_scalar(item) for item in expected_value)
+                            or not all(_finite_scalar(item) for item in actual_value)
+                            or any(
+                                abs(float(left) - float(right)) > tolerance
+                                for left, right in zip(expected_value, actual_value)
+                            )
+                        )
+                    elif _finite_scalar(expected_value) and _finite_scalar(actual_value):
+                        mismatch = abs(float(expected_value) - float(actual_value)) > tolerance
+                    else:
+                        mismatch = expected_value != actual_value
+                    if mismatch:
+                        failures.append(
+                            f"vmd_camera_light.camera_light.dense.{expected_boundary}_vs_{actual_boundary}"
+                            f".{track}[{frame}].{field} mismatch"
+                        )
+
+        for boundary in ("source_import", "exported_file", "fresh_import"):
+            _compare_dense_track(
+                "native_expected",
+                boundary,
+                "camera",
+                camera_fields,
+                VMD_CAMERA_LIGHT_CAMERA_TOLERANCE,
+            )
+        for boundary in ("exported_file", "fresh_import"):
+            _compare_dense_track(
+                "source_import",
+                boundary,
+                "light",
+                light_fields,
+                VMD_CAMERA_LIGHT_NUMERIC_TOLERANCE,
+            )
+    return failures
+
+
 def _validate_policy_reject_case(
     case: Mapping[str, Any], export_format: str, policy_code: str, count_fields: tuple[str, ...]
 ) -> list[str]:
@@ -967,6 +1223,7 @@ def _validate_maya_probe_report(
         "pmd",
         "vmd",
         "vmd_model_tracks",
+        "vmd_camera_light",
     }
     failures = []
     if report.get("gate") != "V070-EXPORT-RELEASE-GATE-1":
@@ -1080,6 +1337,19 @@ def _validate_maya_probe_report(
             if case.get("mode_c_warning_acknowledged") is not True:
                 failures.append("vmd_model_tracks.mode_c_warning_acknowledged must be true")
             failures.extend(_validate_vmd_model_tracks_case(case))
+        if export_format == "vmd_camera_light":
+            parsed_counts = case.get("parsed_counts")
+            if not isinstance(parsed_counts, dict):
+                failures.append("vmd_camera_light.parsed_counts_missing")
+            else:
+                for field in ("camera_frames", "light_frames"):
+                    value = parsed_counts.get(field)
+                    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                        failures.append(f"vmd_camera_light.parsed_counts.{field} must be positive")
+                for field in ("bone_frames", "morph_frames", "ik_show_hide_frames", "shadow_frames"):
+                    if parsed_counts.get(field) != 0:
+                        failures.append(f"vmd_camera_light.parsed_counts.{field} must be zero")
+            failures.extend(_validate_vmd_camera_light_case(case))
         if not case.get("report_json") or not case.get("report_md"):
             failures.append(f"{export_format}.report_pair_missing")
 

@@ -78,6 +78,7 @@ _CAMERA_EXPORT_ATTRS = (
 )
 _LIGHT_ROTATE_ATTRS = ("rotateX", "rotateY", "rotateZ")
 _LIGHT_COLOR_ATTRS = ("mmd_light_colorR", "mmd_light_colorG", "mmd_light_colorB")
+_LIGHT_SHAPE_COLOR_ATTRS = ("colorR", "colorG", "colorB")
 _ATTR_MMD_CAMERA_RIG_TYPE = "mmd_camera_rig_type"
 _MMD_CAMERA_AIM_ROLL_RIG_TYPE = "mmd_aim_roll"
 _TRANSFORM_EXPORT_ATTRS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
@@ -259,14 +260,8 @@ class VmdSceneCollector:
         blend_shapes = list(
             options.get("blend_shapes") or self._find_blend_shapes(target_model)
         )
-        cameras = list(
-            options.get("cameras")
-            or self._find_tagged_nodes(ATTR_MMD_CAMERA, target_model)
-        )
-        lights = list(
-            options.get("lights")
-            or self._find_tagged_nodes(ATTR_MMD_LIGHT, target_model)
-        )
+        cameras = self._resolve_tagged_track(options, "cameras", ATTR_MMD_CAMERA, target_model)
+        lights = self._resolve_tagged_track(options, "lights", ATTR_MMD_LIGHT, target_model)
         start_frame, end_frame = _resolve_collection_frame_range(options)
         motion_scale = float(options.get("motion_scale", 1.0) or 1.0)
         bone_bind_poses = options.get("bone_bind_poses") or {}
@@ -903,7 +898,10 @@ class VmdSceneCollector:
         time_converter = time_converter or _scene_maya_time_to_vmd_frame()
         frames = []
         for light in lights:
-            source_frames = _key_times(light, _LIGHT_COLOR_ATTRS + _LIGHT_ROTATE_ATTRS)
+            color_node, color_attrs = _light_color_source(light)
+            source_frames = set(_key_times(light, _LIGHT_ROTATE_ATTRS)) | set(
+                _key_times(color_node, color_attrs)
+            )
             keyed_frames = (
                 list(dense_frame_samples)
                 if dense_sample
@@ -919,7 +917,10 @@ class VmdSceneCollector:
                 frames.append(
                     {
                         "frame_number": _vmd_frame_number(frame_number, time_converter),
-                        "color": tuple(_plug_float(light, attr, frame_number) for attr in _LIGHT_COLOR_ATTRS),
+                        "color": tuple(
+                            _plug_float(color_node, attr, frame_number)
+                            for attr in color_attrs
+                        ),
                         "position": _maya_light_rotation_to_vmd_direction(
                             _plug_float(light, "rotateX", frame_number),
                             _plug_float(light, "rotateY", frame_number),
@@ -1002,16 +1003,44 @@ class VmdSceneCollector:
         """Find tagged DAG nodes, restricting automatic discovery to a root."""
         nodes = cmds.ls(f"*.{attr}", objectsOnly=True, long=True) or []
         if not target_model:
-            return nodes
+            return self._require_single_tagged_track(nodes, attr, "targetless automatic")
 
         root_path = _canonical_dag_path(target_model)
         if not root_path:
             return []
-        return [
+        scoped = [
             node
             for node in nodes
             if _dag_path_is_under_root(node, root_path)
         ]
+        return self._require_single_tagged_track(scoped, attr, "target-scoped automatic")
+
+    def _resolve_tagged_track(
+        self,
+        options: Mapping[str, Any],
+        key: str,
+        attr: str,
+        target_model: Optional[str],
+    ) -> list[str]:
+        """Resolve one VMD camera/light track while preserving explicit empties."""
+        if key in options:
+            return self._require_single_tagged_track(
+                list(options.get(key) or []),
+                attr,
+                "explicit",
+            )
+        return self._find_tagged_nodes(attr, target_model)
+
+    @staticmethod
+    def _require_single_tagged_track(nodes: Sequence[str], attr: str, source: str) -> list[str]:
+        """Enforce VMD's single camera/light track contract."""
+        resolved = list(nodes)
+        if len(resolved) > 1:
+            raise RuntimeError(
+                f"{source} {attr} discovery found multiple tagged nodes; "
+                "VMD export requires one camera/light track"
+            )
+        return resolved
 
     def _model_name(self, target_model: Optional[str]) -> str:
         if target_model and _has_attr(target_model, ATTR_MMD_MODEL_NAME):
@@ -1552,6 +1581,31 @@ def _uses_raw_mmd_camera_attrs(camera: str) -> bool:
         return cmds.getAttr(f"{camera}.{_ATTR_MMD_CAMERA_RIG_TYPE}") == "mmd"
     except Exception:
         return False
+
+
+def _light_color_source(light: str) -> tuple[str, tuple[str, str, str]]:
+    """Resolve the canonical MMD light color source for one tagged transform.
+
+    Authoring controllers expose ``mmd_light_color*`` on the transform.  VMD
+    imports that predate the controller use the directional-light shape's
+    native ``color*`` channels instead, while rotation remains on the tagged
+    transform.  Keep the transform as the ownership boundary and read color
+    from the child shape only when the controller channels are absent.
+    """
+    if all(_has_attr(light, attr) for attr in _LIGHT_COLOR_ATTRS) or any(
+        _key_times(light, (attr,)) for attr in _LIGHT_COLOR_ATTRS
+    ):
+        return light, _LIGHT_COLOR_ATTRS
+    shapes = cmds.listRelatives(
+        light,
+        shapes=True,
+        type="directionalLight",
+        fullPath=True,
+    ) or []
+    for shape in shapes:
+        if all(_has_attr(shape, attr) for attr in _LIGHT_SHAPE_COLOR_ATTRS):
+            return str(shape), _LIGHT_SHAPE_COLOR_ATTRS
+    raise RuntimeError(f"MMD light {light} has no supported color channels")
 
 
 def _uses_aim_roll_camera(camera: str) -> bool:
