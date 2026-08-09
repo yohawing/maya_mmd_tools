@@ -4,9 +4,9 @@
 This gate is deliberately separate from the public export-release gate.  The
 host process validates a UTF-8 manifest, performs the host-independent
 negative checks, and launches one ASCII-path mayapy worker per requested Maya
-version.  The worker currently requires the future composition hook
-``run_authoring_e2e``; a missing hook is reported as ``blocked`` rather than
-being treated as a successful no-op.
+version.  The worker composes the production authoring graph with the
+standalone E2E driver; an unavailable Maya/runtime dependency is reported as
+``blocked`` rather than being treated as a successful no-op.
 """
 
 from __future__ import annotations
@@ -341,6 +341,7 @@ def _run_maya_worker(manifest: Mapping[str, Any], version: int, report_path: Pat
 
         load_mmd_tools_plugin(ROOT, cmds_module=cmds)
         from mmd_tools.adapters.maya_authoring_factory import build_maya_authoring_composition
+        from mmd_tools.adapters.maya_authoring_e2e import run_authoring_e2e
         from mmd_tools.adapters.maya_model_template_initializer import MayaModelTemplateInitializer
 
         composition = build_maya_authoring_composition(cmds_module=cmds)
@@ -348,21 +349,16 @@ def _run_maya_worker(manifest: Mapping[str, Any], version: int, report_path: Pat
             composition.cmds_adapter,
             metadata_backend_factory=lambda adapter: composition.metadata_backend,
         )
-        hook = getattr(composition, "run_authoring_e2e", None)
-        if not callable(hook):
-            report["reason"] = (
-                "authoring composition does not expose run_authoring_e2e; "
-                "initializer/operation composition is not complete"
-            )
-            report["negative_cases"] = _negative_cases()
-            _write_json(report_path, report)
-            return 2
-        result = hook(
+        result = run_authoring_e2e(
             initializer=initializer,
             template_id=manifest["template_id"],
             model_name=manifest["model_name"],
             model_name_english=manifest["model_name_english"],
             asset_paths=manifest["asset_paths"],
+            coordinator=composition.coordinator,
+            metadata_adapter=composition.metadata_adapter,
+            cmds_adapter=composition.cmds_adapter,
+            material_authoring=composition.material_authoring,
         )
         operations, matrix, negative_cases = _require_completed_worker_result(result)
         report["operations"] = operations

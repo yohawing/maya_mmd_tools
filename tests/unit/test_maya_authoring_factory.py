@@ -83,6 +83,7 @@ def test_factory_shares_one_graph_and_injects_runtime_rebuilders(monkeypatch) ->
     monkeypatch.setattr(factory, "apply_morph_spec_change", apply)
     composition = factory.build_maya_authoring_composition(module, registry_api=registry)
 
+    assert not hasattr(composition, "run_authoring_e2e")
     assert composition.metadata_backend.adapter is composition.cmds_adapter
     assert composition.metadata_adapter.backend is composition.metadata_backend
     assert composition.material_authoring.adapter is composition.cmds_adapter

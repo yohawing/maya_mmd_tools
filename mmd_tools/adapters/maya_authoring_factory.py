@@ -37,7 +37,6 @@ class MayaAuthoringComposition:
     model_initializer: MayaModelTemplateInitializer
     create_model_action: CreateModelAction
     material_morph_work: MayaMaterialMorphWork
-    run_authoring_e2e: Callable[..., dict[str, Any]]
 
 
 def build_maya_authoring_composition(
@@ -96,18 +95,6 @@ def build_maya_authoring_composition(
         registry_api=registry_api,
     )
 
-    def run_authoring_e2e(**kwargs: Any) -> dict[str, Any]:
-        """Execute the Maya authoring round-trip with this shared composition."""
-        from mmd_tools.adapters.maya_authoring_e2e import run_authoring_e2e as run_e2e
-
-        return run_e2e(
-            coordinator=coordinator,
-            metadata_adapter=metadata_adapter,
-            cmds_adapter=cmds_adapter,
-            material_authoring=material_authoring,
-            **kwargs,
-        )
-
     return MayaAuthoringComposition(
         cmds_adapter=cmds_adapter,
         metadata_backend=metadata_backend,
@@ -118,7 +105,6 @@ def build_maya_authoring_composition(
         model_initializer=model_initializer,
         create_model_action=CreateModelAction(model_initializer),
         material_morph_work=material_morph_work,
-        run_authoring_e2e=run_authoring_e2e,
     )
 
 
