@@ -35,6 +35,12 @@ class TestBonePresenter(MayaTestBase):
             [
                 "bone_list",
                 "refresh_btn",
+                "register_joint_btn",
+                "capture_rest_btn",
+                "reindex_up_btn",
+                "reindex_down_btn",
+                "apply_reindex_btn",
+                "unregister_btn",
                 "search_edit",
                 "bone_name_jp_edit",
                 "bone_name_en_edit",
@@ -107,6 +113,12 @@ class TestBonePresenter(MayaTestBase):
             "select_grant_parent_btn",
             "apply_btn",
             "reset_btn",
+            "register_joint_btn",
+            "capture_rest_btn",
+            "reindex_up_btn",
+            "reindex_down_btn",
+            "apply_reindex_btn",
+            "unregister_btn",
         ]
         for attr in button_attrs:
             if hasattr(self.mock_view, attr):

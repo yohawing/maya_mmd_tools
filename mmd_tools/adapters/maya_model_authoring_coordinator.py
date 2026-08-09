@@ -19,6 +19,7 @@ from mmd_tools.core.bone_authoring import (
     capture_rest,
     register_bone,
     reindex_bones,
+    replace_bone as replace_bone_spec,
     unregister_bone,
 )
 from mmd_tools.core.material_authoring import (
@@ -84,7 +85,7 @@ class MayaModelAuthoringCoordinator:
         )
         self._require_methods(
             cmds_adapter,
-            ("object_exists", "ls", "list_relatives"),
+            ("object_exists", "ls", "list_relatives", "xform"),
             "cmds_adapter",
         )
         self._require_methods(
@@ -340,6 +341,59 @@ class MayaModelAuthoringCoordinator:
             ) from exc
         target = self._pure("capture_rest", lambda: capture_rest(current, index, position))
         return self._execute(model_root, "capture_rest", target, lambda: target)
+
+    def replace_bone(
+        self,
+        model_root: str,
+        bone: MmdBoneSpec,
+        world_position: Sequence[float],
+    ) -> MmdModelAuthoringSpec:
+        """Replace one bone and its Maya position in one undo transaction."""
+        current = self._read_current(model_root, "replace_bone")
+        if type(bone) is not MmdBoneSpec:
+            raise MayaModelAuthoringCoordinatorError("replace_bone requires an MmdBoneSpec")
+        previous = self._bone(current, bone.index)
+        if bone.binding_identity is None:
+            bone = replace(bone, binding_identity=previous.binding_identity)
+        if bone.binding_identity != previous.binding_identity:
+            raise MayaModelAuthoringCoordinatorError(
+                f"bone {bone.index} binding identity cannot change"
+            )
+        if (
+            isinstance(world_position, (str, bytes, bytearray))
+            or not isinstance(world_position, Sequence)
+            or len(world_position) != 3
+        ):
+            raise MayaModelAuthoringCoordinatorError(
+                "world_position must contain exactly three finite numbers"
+            )
+        values: list[float] = []
+        for value in world_position:
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+            ):
+                raise MayaModelAuthoringCoordinatorError(
+                    "world_position must contain exactly three finite numbers"
+                )
+            values.append(float(value))
+        scale = self._resolve_model_scale(model_root)
+        bone = replace(
+            bone,
+            rest_position=(values[0] / scale, values[1] / scale, -values[2] / scale),
+        )
+        target = self._pure("replace_bone", lambda: replace_bone_spec(current, bone))
+
+        def bind() -> MmdModelAuthoringSpec:
+            self._cmds.xform(
+                bone.binding_identity,
+                translation=values,
+                worldSpace=True,
+            )
+            return target
+
+        return self._execute(model_root, "replace_bone", target, bind)
 
     def _resolve_model_scale(self, model_root: str) -> float:
         if not callable(self._model_scale_resolver):

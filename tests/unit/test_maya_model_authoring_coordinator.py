@@ -207,6 +207,7 @@ class FakeCmds:
             "|root|newJoint",
             "newJoint",
         }
+        self.positions: dict[str, tuple[float, float, float]] = {}
 
     def object_exists(self, node: str) -> bool:
         return node in self.nodes
@@ -220,6 +221,9 @@ class FakeCmds:
         if node in {"|root|spare", "|root|newJoint"}:
             return ["|root|root"]
         return []
+
+    def xform(self, node: str, **kwargs: Any) -> None:
+        self.positions[node] = tuple(kwargs["translation"])
 
 
 class FakeMorphAuthoring:
@@ -380,6 +384,23 @@ def test_capture_rest_is_preflighted_before_begin_and_then_fully_applied() -> No
     assert bones.events == ["capture"]
     assert result.bones[1].rest_position == (2.0, 3.0, 4.0)
     assert backend.events[0] == "begin"
+    _assert_one_successful_transaction(backend)
+
+
+def test_replace_bone_updates_semantics_and_world_position_in_one_transaction() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    replacement = replace(
+        backend.scene.bones[1],
+        name="edited",
+        flags=0,
+        tail_offset=(0.0, 2.0, 0.0),
+    )
+
+    result = coordinator.replace_bone("|root", replacement, (2.0, 4.0, -6.0))
+
+    assert result.bones[1].name == "edited"
+    assert result.bones[1].rest_position == (1.0, 2.0, 3.0)
+    assert coordinator._cmds.positions["|root|spare"] == (2.0, 4.0, -6.0)
     _assert_one_successful_transaction(backend)
 
 

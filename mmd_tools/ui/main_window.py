@@ -57,6 +57,7 @@ class MainWindow(QMainWindow):
         # アプリケーション状態管理
         self.app_state = ApplicationState()
         self.settings_service = SettingsService()
+        self.authoring_composition = self._create_authoring_composition()
 
         # 中央ウィジェットの設定
         central_widget = QWidget()
@@ -215,6 +216,35 @@ class MainWindow(QMainWindow):
         install_maya_script_editor_handler()
         get_logger(__name__).info("MMD Tools UI initialized.")
 
+    @staticmethod
+    def _create_authoring_composition():
+        """Build authoring services without making UI startup depend on them."""
+        try:
+            from ..adapters.maya_authoring_factory import build_maya_authoring_composition
+
+            return build_maya_authoring_composition(cmds)
+        except Exception:
+            logger.error(
+                "Maya model authoring services are unavailable; authoring controls are disabled.",
+                exc_info=True,
+            )
+            return None
+
+    def _authoring_presenter_kwargs(self):
+        """Return shared authoring dependencies for Material/Bone/Morph tabs."""
+        composition = getattr(self, "authoring_composition", None)
+        if composition is None:
+            return {"authoring_coordinator": None}
+        return {
+            "maya_adapter": composition.cmds_adapter,
+            "authoring_coordinator": composition.coordinator,
+        }
+
+    def _create_model_action(self):
+        """Return only the Create Model action from the optional composition."""
+        composition = getattr(self, "authoring_composition", None)
+        return composition.create_model_action if composition is not None else None
+
     def setup_tabs(self):
         # UITranslatorを取得
         from .translations import UITranslator
@@ -228,7 +258,11 @@ class MainWindow(QMainWindow):
         # File I/O Tab
         import_export_tab = ImportExportTab()
         self.import_export_tab = import_export_tab
-        self.import_export_presenter = ImportExportPresenter(import_export_tab, self.app_state)
+        self.import_export_presenter = ImportExportPresenter(
+            import_export_tab,
+            self.app_state,
+            create_model_action=self._create_model_action(),
+        )
         self.tab_widget.addTab(import_export_tab, translator.translate("file_io", "tabs"))
 
         # Export workflow tab: import settings remain in File I/O while all
@@ -249,17 +283,36 @@ class MainWindow(QMainWindow):
 
         # Material Tab
         material_tab = MaterialTab()
-        self.material_presenter = MaterialPresenter(material_tab, self.app_state)
+        authoring_kwargs = self._authoring_presenter_kwargs()
+        self.material_presenter = MaterialPresenter(
+            material_tab,
+            self.app_state,
+            **authoring_kwargs,
+        )
         self.tab_widget.addTab(material_tab, translator.translate("material", "tabs"))
 
         # Bone Tab
         bone_tab = BoneTab()
-        self.bone_presenter = BonePresenter(bone_tab, self.app_state)
+        self.bone_presenter = BonePresenter(
+            bone_tab,
+            self.app_state,
+            **authoring_kwargs,
+        )
         self.tab_widget.addTab(bone_tab, translator.translate("bone", "tabs"))
 
         # Morph Tab
         morph_tab = MorphTab()
-        self.morph_presenter = MorphPresenter(morph_tab, self.app_state)
+        composition = getattr(self, "authoring_composition", None)
+        self.morph_presenter = MorphPresenter(
+            morph_tab,
+            self.app_state,
+            material_morph_work=(
+                getattr(composition, "material_morph_work", None)
+                if composition is not None
+                else None
+            ),
+            **authoring_kwargs,
+        )
         self.tab_widget.addTab(morph_tab, translator.translate("morph", "tabs"))
         self.morph_tab = morph_tab
 

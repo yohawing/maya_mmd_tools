@@ -79,6 +79,14 @@ class FakeCmds:
         else:
             self.attrs[(node, attr)] = values[0]
 
+    def add_attr(self, node: str, **kwargs: Any) -> None:
+        attr = kwargs["longName"]
+        self.attrs[(node, attr)] = "" if kwargs.get("dataType") == "string" else 0
+
+    def delete_attr(self, path: str) -> None:
+        node, attr = path.rsplit(".", 1)
+        self.attrs.pop((node, attr), None)
+
     def undo_info(self, **kwargs: Any) -> Any:
         if kwargs.get("query") and kwargs.get("state"):
             return self.undo_enabled
@@ -845,6 +853,57 @@ def test_transactional_write_updates_existing_bindings_and_verifies_fingerprint(
     assert cmds.attrs[("|root|joint", "mmd_bone_name")] == "更新ボーン"
     assert cmds.attrs[("mat", "mmd_memo")] == "updated"
     assert cmds.attrs[("morph", "mmd_morph_name")] == "更新モーフ"
+
+
+def test_bone_optional_payloads_clear_and_can_be_reenabled_transactionally() -> None:
+    cmds, _, adapter = _writable_scene()
+    optional_flags = int(
+        PmxBoneFlag.CONNECT_BONE
+        | PmxBoneFlag.GRANT_PARENT_ROTATE
+        | PmxBoneFlag.AXIS_FIXED
+        | PmxBoneFlag.LOCAL_AXIS
+        | PmxBoneFlag.EXTERNAL_PARENT_DEFORM
+        | PmxBoneFlag.IK
+    )
+    _bone(cmds, "|root|optional", 1, optional_flags)
+    original = adapter.read_spec("|root")
+    cleared_bone = replace(
+        original.bones[1],
+        flags=0,
+        connect_bone_index=None,
+        tail_offset=(0.0, 1.0, 0.0),
+        grant_parent_index=None,
+        grant_ratio=0.0,
+        fixed_axis=None,
+        local_axis_x=None,
+        local_axis_z=None,
+        external_parent_key=None,
+        ik_target_index=None,
+        ik_loop_count=0,
+        ik_limit_radian=None,
+        ik_links=(),
+    )
+    cleared = replace(original, bones=(original.bones[0], cleared_bone))
+
+    adapter.write_spec("|root", cleared)
+
+    assert adapter.read_spec("|root").fingerprint() == cleared.fingerprint()
+    for attr in (
+        "mmd_connect_index",
+        "mmd_connect_bone_index",
+        "mmd_connection_bone",
+        "mmd_grant_parent_index",
+        "mmd_axis_direction",
+        "mmd_x_axis_direction",
+        "mmd_z_axis_direction",
+        "mmd_ik_target_index",
+    ):
+        assert ("|root|optional", attr) not in cmds.attrs
+
+    reenabled = replace(original, bones=(original.bones[0], original.bones[1]))
+    adapter.write_spec("|root", reenabled)
+
+    assert adapter.read_spec("|root").fingerprint() == reenabled.fingerprint()
 
 
 @pytest.mark.parametrize("section", ["model", "bone", "material", "morph"])

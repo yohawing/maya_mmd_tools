@@ -275,8 +275,10 @@ class MayaSceneMetadataBackend:
                 ATTR_MMD_CONNECTION_BONE,
                 target_by_index,
             )
-            if item["tail_offset"] is not None:
-                self._set_existing_vector(node, ATTR_MMD_BONE_OFFSET, item["tail_offset"])
+            if item["connect_bone_index"] is not None:
+                self._set_optional_vector(node, ATTR_MMD_BONE_OFFSET, (0.0, -1.0, 0.0))
+            elif item["tail_offset"] is not None:
+                self._set_optional_vector(node, ATTR_MMD_BONE_OFFSET, item["tail_offset"])
             self._write_optional_bone_reference(
                 node,
                 item["grant_parent_index"],
@@ -286,6 +288,10 @@ class MayaSceneMetadataBackend:
             )
             if item["grant_parent_index"] is not None:
                 self._set_existing_scalar(node, ATTR_MMD_GRANT_RATE, item["grant_ratio"])
+            else:
+                self._delete_existing_attr(node, ATTR_MMD_GRANT_PARENT_INDEX)
+                self._set_existing_string(node, ATTR_MMD_GRANT_PARENT, "")
+                self._set_existing_scalar(node, ATTR_MMD_GRANT_RATE, 1.0)
             for attr, value in (
                 (ATTR_MMD_FIXED_AXIS, item["fixed_axis"]),
                 (ATTR_MMD_AXIS_DIRECTION, item["fixed_axis"]),
@@ -295,9 +301,19 @@ class MayaSceneMetadataBackend:
                 (ATTR_MMD_Z_AXIS_DIRECTION, item["local_axis_z"]),
             ):
                 if value is not None:
-                    self._set_existing_vector(node, attr, value)
+                    self._set_optional_vector(node, attr, value)
+            if item["fixed_axis"] is None:
+                self._set_optional_vector(node, ATTR_MMD_FIXED_AXIS, (0.0, 0.0, 1.0))
+                self._delete_existing_attr(node, ATTR_MMD_AXIS_DIRECTION)
+            if item["local_axis_x"] is None and item["local_axis_z"] is None:
+                self._set_optional_vector(node, ATTR_MMD_LOCAL_X_AXIS, (1.0, 0.0, 0.0))
+                self._set_optional_vector(node, ATTR_MMD_LOCAL_Z_AXIS, (0.0, 0.0, 1.0))
+                self._delete_existing_attr(node, ATTR_MMD_X_AXIS_DIRECTION)
+                self._delete_existing_attr(node, ATTR_MMD_Z_AXIS_DIRECTION)
             if item["external_parent_key"] is not None:
                 self._set_existing_scalar(node, ATTR_MMD_EXTERNAL_PARENT_KEY, item["external_parent_key"])
+            else:
+                self._set_existing_scalar(node, ATTR_MMD_EXTERNAL_PARENT_KEY, -1)
             self._write_optional_bone_reference(
                 node,
                 item["ik_target_index"],
@@ -315,6 +331,12 @@ class MayaSceneMetadataBackend:
                     ATTR_MMD_IK_LINKS,
                     json.dumps(item["ik_links"], ensure_ascii=False, separators=(",", ":")),
                 )
+            else:
+                self._delete_existing_attr(node, ATTR_MMD_IK_TARGET_INDEX)
+                self._set_existing_string(node, ATTR_MMD_IK_TARGET, "")
+                self._set_existing_scalar(node, ATTR_MMD_IK_LOOP, 10)
+                self._set_existing_scalar(node, ATTR_MMD_IK_LIMIT_ANGLE, 2.0)
+                self._set_existing_string(node, ATTR_MMD_IK_LINKS, "[]")
         transaction["target"]["bones"] = items
 
     def apply_material_metadata(self, model_root: str, metadata: Iterable[Mapping[str, Any]]) -> None:
@@ -795,6 +817,23 @@ class MayaSceneMetadataBackend:
         if self._has_attr(node, attr):
             self._call_adapter("set_attr", f"{node}.{attr}", *value, type="double3")
 
+    def _set_optional_vector(self, node: str, attr: str, value: Sequence[Any]) -> None:
+        if not self._has_attr(node, attr):
+            self._call_adapter("add_attr", node, longName=attr, attributeType="double3")
+            for suffix in ("X", "Y", "Z"):
+                self._call_adapter(
+                    "add_attr",
+                    node,
+                    longName=f"{attr}{suffix}",
+                    attributeType="double",
+                    parent=attr,
+                )
+        self._call_adapter("set_attr", f"{node}.{attr}", *value, type="double3")
+
+    def _delete_existing_attr(self, node: str, attr: str) -> None:
+        if self._has_attr(node, attr):
+            self._call_adapter("delete_attr", f"{node}.{attr}")
+
     def _write_optional_bone_reference(
         self,
         node: str,
@@ -804,12 +843,19 @@ class MayaSceneMetadataBackend:
         target_by_index: Mapping[int, Mapping[str, Any]],
     ) -> None:
         if index is None:
+            for attr in numeric_attrs:
+                self._delete_existing_attr(node, attr)
+            self._delete_existing_attr(node, name_attr)
             return
         target = target_by_index.get(index)
         if target is None:
             raise MayaSceneMetadataError(f"{node}: bone reference points to unknown index {index}")
         for attr in numeric_attrs:
+            if not self._has_attr(node, attr):
+                self._call_adapter("add_attr", node, longName=attr, attributeType="long")
             self._set_existing_scalar(node, attr, index)
+        if not self._has_attr(node, name_attr):
+            self._call_adapter("add_attr", node, longName=name_attr, dataType="string")
         self._set_existing_string(node, name_attr, target["name"])
 
     def _required_vector_with_alpha(self, node: str, color_attr: str, alpha_attr: str) -> tuple[float, ...]:
