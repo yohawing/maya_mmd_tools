@@ -43,13 +43,4 @@ class CreateModelAction:
         except Exception as exc:
             raise CreateModelActionError(f"Create Model failed: {exc}") from exc
 
-
-def execute_create_model(
-    initializer: Any | None,
-    request: CreateModelRequest,
-) -> Any:
-    """Function form used by thin UI composition code and tests."""
-    return CreateModelAction(initializer).execute(request)
-
-
-__all__ = ["CreateModelAction", "CreateModelActionError", "CreateModelRequest", "execute_create_model"]
+__all__ = ["CreateModelAction", "CreateModelActionError", "CreateModelRequest"]
