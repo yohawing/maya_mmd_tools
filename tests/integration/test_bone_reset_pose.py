@@ -16,7 +16,7 @@ class TestBoneResetPoseMaya(unittest.TestCase):
     def tearDown(self):
         cmds.file(new=True, force=True)
 
-    def test_reset_pose_keys_direct_curve_and_undo_restores_previous_value(self):
+    def test_reset_pose_does_not_key_or_change_animated_channel(self):
         root = cmds.createNode("transform", name="model")
         cmds.select(clear=True)
         joint = cmds.joint(name="joint", position=(1.0, 2.0, 3.0))
@@ -43,22 +43,6 @@ class TestBoneResetPoseMaya(unittest.TestCase):
         )
 
         self.assertEqual(transaction.apply(), 1)
-        cmds.dgdirty(a=True)
-        self.assertEqual(cmds.getAttr(f"{joint}.rotateX"), 0.0)
-        self.assertEqual(
-            cmds.listConnections(
-                f"{joint}.rotateX", source=True, destination=False, plugs=True
-            ),
-            curve_plug,
-        )
-        self.assertIn(24.0, cmds.keyframe(curve, query=True, timeChange=True) or [])
-        self.assertEqual(
-            cmds.keyframe(curve, query=True, time=(24.0, 24.0), valueChange=True),
-            [0.0],
-        )
-
-        cmds.undo()
-
         cmds.dgdirty(a=True)
         self.assertEqual(cmds.getAttr(f"{joint}.rotateX"), 25.0)
         self.assertEqual(

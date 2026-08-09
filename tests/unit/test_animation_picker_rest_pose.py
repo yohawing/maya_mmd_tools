@@ -40,7 +40,6 @@ class _FakeCmds:
                 self.values[f"{node}.{channel}"] = value
                 self.locks[f"{node}.{channel}"] = False
         self.incoming = {"|model|joint.rotateX": ["animCurve.output"]}
-        self.curve_type = "animCurveTA"
         self.keyframes = []
         self.frame = 24.0
         self.fail_plug = None
@@ -77,8 +76,9 @@ class _FakeCmds:
             return list(self.incoming.get(plug, ()))
         return []
 
-    def nodeType(self, node):
-        return self.curve_type if node == "animCurve" else "pairBlend"
+    @staticmethod
+    def nodeType(node):
+        return "animCurveTA" if node == "animCurve" else "pairBlend"
 
     def currentTime(self, query=False):
         return self.frame if query else None
@@ -125,7 +125,7 @@ class TestResetPoseTransaction(unittest.TestCase):
         )
         return cmds, transaction
 
-    def test_apply_writes_rest_values_and_current_frame_curve_key(self):
+    def test_apply_writes_static_rest_values_without_curve_keys(self):
         cmds, transaction = self._make()
         cmds.locks["|model|joint.rotateZ"] = True
 
@@ -134,11 +134,11 @@ class TestResetPoseTransaction(unittest.TestCase):
         self.assertEqual(cmds.values["|model|joint.translateX"], 1.0)
         self.assertEqual(cmds.values["|model|joint.translateY"], 2.0)
         self.assertEqual(cmds.values["|model|joint.translateZ"], 3.0)
-        self.assertEqual(cmds.values["|model|joint.rotateX"], 0.0)
+        self.assertEqual(cmds.values["|model|joint.rotateX"], 20.0)
         self.assertEqual(cmds.values["|model|joint.rotateY"], 0.0)
         self.assertEqual(cmds.values["|model|joint.rotateZ"], 0.0)
         self.assertEqual(cmds.incoming["|model|joint.rotateX"], ["animCurve.output"])
-        self.assertEqual(cmds.keyframes, [("animCurve", (24.0, 24.0), 0.0)])
+        self.assertEqual(cmds.keyframes, [])
         self.assertEqual(cmds.frame, 24.0)
         self.assertTrue(cmds.locks["|model|joint.rotateZ"])
         self.assertFalse(hasattr(transaction, "restore"))
@@ -181,26 +181,14 @@ class TestResetPoseTransaction(unittest.TestCase):
         self.assertEqual(cmds.incoming[plug], ["pairBlend.output"])
         self.assertEqual(cmds.values[plug], before)
 
-    def test_driven_key_curve_types_are_not_written(self):
-        cmds, transaction = self._make()
+    def test_animated_channels_are_skipped_without_adding_keys(self):
+        cmds, transaction = self._make(undo_available=False)
         plug = "|model|joint.rotateX"
-        cmds.curve_type = "animCurveUA"
-        before = cmds.values[plug]
+        original = cmds.values[plug]
 
         self.assertEqual(transaction.apply(), 1)
 
-        self.assertEqual(cmds.values[plug], before)
-        self.assertEqual(cmds.incoming[plug], ["animCurve.output"])
-        self.assertEqual(cmds.keyframes, [])
-
-    def test_animated_channels_require_undo_support(self):
-        cmds, transaction = self._make(undo_available=False)
-        original = dict(cmds.values)
-
-        with self.assertRaisesRegex(ResetPoseTransactionError, "requires Maya Undo"):
-            transaction.apply()
-
-        self.assertEqual(cmds.values, original)
+        self.assertEqual(cmds.values[plug], original)
         self.assertEqual(cmds.keyframes, [])
 
 
