@@ -120,6 +120,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                         "pmx_flip",
                         "pmd",
                         "vmd",
+                        "vmd_model_tracks",
                     )
                 ],
             }
@@ -307,6 +308,77 @@ class ExportReleaseGateTests(unittest.TestCase):
             soft_body_case = next(
                 case for case in report["cases"] if case["format"] == "pmx_soft_body"
             )
+            vmd_model_tracks_case = next(
+                case for case in report["cases"] if case["format"] == "vmd_model_tracks"
+            )
+            vmd_model_tracks_case.update(
+                parsed_counts={
+                    "bone_frames": 2,
+                    "morph_frames": 2,
+                    "ik_show_hide_frames": 2,
+                    "camera_frames": 0,
+                    "light_frames": 0,
+                    "shadow_frames": 0,
+                },
+                mode_c_warning_acknowledged=True,
+                track_coverage={
+                    "checked_frames": [0, 6, 10, 12, 20],
+                    "tracks": list(RELEASE_GATE.VMD_MODEL_TRACKS),
+                    "source_counts": {
+                        "bone_frames": 1,
+                        "morph_frames": 1,
+                        "ik_show_hide_frames": 1,
+                    },
+                    "exported_counts": {
+                        "bone_frames": 2,
+                        "morph_frames": 2,
+                        "ik_show_hide_frames": 2,
+                    },
+                    "bone_track_names": ["bone"],
+                    "morph_track_names": ["morph"],
+                    "ik_track_names": ["ik"],
+                    "camera_light_shadow_claimed": False,
+                    "visual_parity_claimed": False,
+                },
+                model_tracks={
+                    "source": {
+                        "bone_track_names": ["bone"],
+                        "morph_track_names": ["morph"],
+                        "bone_frame_count": 1,
+                        "morph_frame_count": 1,
+                        "ik_show_hide_frame_count": 1,
+                        "bone_values": {"bone": {"0": {"position": [0.0, 0.0, 0.0]}}},
+                        "morph_values": {"morph": {"0": 1.0}},
+                        "ik_values": {"0": {"ik": 1}},
+                    },
+                    "source_import": {
+                        "bone_values": {"bone": {"0": [0.0, 0.0, 0.0]}},
+                        "morph_values": {"morph": {"0": 1.0, "6": 0.0}},
+                        "ik_values": {"0": {"ik": 1}, "6": {"ik": 0}},
+                    },
+                    "exported_file": {
+                        "bone_track_names": ["bone"],
+                        "morph_track_names": ["morph"],
+                        "bone_frame_count": 2,
+                        "morph_frame_count": 2,
+                        "ik_show_hide_frame_count": 2,
+                        "bone_values": {"bone": {"0": {"position": [0.0, 0.0, 0.0]}}},
+                        "morph_values": {"morph": {"0": 1.0}},
+                        "ik_values": {"0": {"ik": 1}},
+                    },
+                    "fresh_import": {
+                        "bone_values": {"bone": {"0": [0.0, 0.0, 0.0]}},
+                        "morph_values": {"morph": {"0": 1.0, "6": 0.0}},
+                        "ik_values": {"0": {"ik": 1}, "6": {"ik": 0}},
+                    },
+                    "comparison": {
+                        "status": "pass",
+                        "boundaries": list(RELEASE_GATE.VMD_MODEL_TRACK_COMPARISON_BOUNDARIES),
+                        "checked_frames": [0, 6, 10, 12, 20],
+                        "raw_key_interpolation_preserved": False,
+                    },
+                },
+            )
             soft_body_case.update(
                 status="policy-reject",
                 policy_code="PMX_SOFT_BODIES_UNSUPPORTED",
@@ -364,6 +436,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                     "pmx_flip",
                     "pmd",
                     "vmd",
+                    "vmd_model_tracks",
                 },
             )
 
@@ -416,6 +489,26 @@ class ExportReleaseGateTests(unittest.TestCase):
             self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
             self.assertEqual(step["status"], "fail")
             self.assertIn("controller_outputs", step["error"])
+
+            vmd_model_tracks_case["model_tracks"]["fresh_import"]["morph_values"] = {}
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            step = {"name": "maya_probe_2024", "status": "pass"}
+            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
+            self.assertEqual(step["status"], "fail")
+            self.assertIn("vmd_model_tracks.model_tracks.fresh_import.morph_values_missing", step["error"])
+            vmd_model_tracks_case["model_tracks"]["fresh_import"]["morph_values"] = {
+                "morph": {"0": 1.0, "6": 0.0}
+            }
+            vmd_model_tracks_case["model_tracks"]["fresh_import"]["ik_values"] = {}
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            step = {"name": "maya_probe_2024", "status": "pass"}
+            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
+            self.assertEqual(step["status"], "fail")
+            self.assertIn("vmd_model_tracks.model_tracks.fresh_import.ik_values_missing", step["error"])
+            vmd_model_tracks_case["model_tracks"]["fresh_import"]["ik_values"] = {
+                "0": {"ik": 1},
+                "6": {"ik": 0},
+            }
 
             report["cases"][-1]["status"] = "fail"
             report_path.write_text(json.dumps(report), encoding="utf-8")

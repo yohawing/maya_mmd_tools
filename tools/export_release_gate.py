@@ -58,6 +58,8 @@ MORPH_ORACLE_BOUNDARIES = ("source", "exported_file", "fresh_import")
 MORPH_COMPARISON_BOUNDARIES = ("source_import", "exported_pmx", "fresh_import")
 BONE_SEMANTICS_BOUNDARIES = ("source", "source_import", "exported_file", "fresh_import")
 BONE_SEMANTICS_COMPARISON_BOUNDARIES = ("source_import", "exported_pmx", "fresh_import")
+VMD_MODEL_TRACKS = ("bone", "morph", "ik_show_hide")
+VMD_MODEL_TRACK_COMPARISON_BOUNDARIES = ("source_import", "exported_file", "fresh_import")
 BONE_SEMANTICS_FIELDS = (
     "index",
     "name",
@@ -804,6 +806,84 @@ def _validate_bone_semantics_case(case: Mapping[str, Any]) -> list[str]:
     return failures
 
 
+def _validate_vmd_model_tracks_case(case: Mapping[str, Any]) -> list[str]:
+    """Require field-level Mode C bone/morph/IK model-track evidence."""
+    failures: list[str] = []
+    coverage = case.get("track_coverage")
+    if not isinstance(coverage, dict):
+        return ["vmd_model_tracks.track_coverage_missing"]
+    if coverage.get("tracks") != list(VMD_MODEL_TRACKS):
+        failures.append("vmd_model_tracks.track_coverage.tracks mismatch")
+    if coverage.get("checked_frames") != [0, 6, 10, 12, 20]:
+        failures.append("vmd_model_tracks.track_coverage.checked_frames mismatch")
+    if coverage.get("camera_light_shadow_claimed") is not False:
+        failures.append("vmd_model_tracks.camera_light_shadow_claimed must be false")
+    if coverage.get("visual_parity_claimed") is not False:
+        failures.append("vmd_model_tracks.visual_parity_claimed must be false")
+    for boundary in ("source_counts", "exported_counts"):
+        counts = coverage.get(boundary)
+        if not isinstance(counts, dict):
+            failures.append(f"vmd_model_tracks.track_coverage.{boundary}_missing")
+            continue
+        for field in ("bone_frames", "morph_frames", "ik_show_hide_frames"):
+            value = counts.get(field)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                failures.append(f"vmd_model_tracks.track_coverage.{boundary}.{field} must be positive")
+    for field in ("bone_track_names", "morph_track_names", "ik_track_names"):
+        values = coverage.get(field)
+        if not isinstance(values, list) or not values or not all(isinstance(value, str) for value in values):
+            failures.append(f"vmd_model_tracks.track_coverage.{field} missing")
+
+    tracks = case.get("model_tracks")
+    if not isinstance(tracks, dict):
+        return failures + ["vmd_model_tracks.model_tracks_missing"]
+    comparison = tracks.get("comparison")
+    if not isinstance(comparison, dict):
+        failures.append("vmd_model_tracks.model_tracks.comparison_missing")
+    else:
+        if comparison.get("status") != "pass":
+            failures.append("vmd_model_tracks.model_tracks.comparison.status must be pass")
+        if comparison.get("boundaries") != list(VMD_MODEL_TRACK_COMPARISON_BOUNDARIES):
+            failures.append("vmd_model_tracks.model_tracks.comparison.boundaries mismatch")
+        if comparison.get("checked_frames") != [0, 6, 10, 12, 20]:
+            failures.append("vmd_model_tracks.model_tracks.comparison.checked_frames mismatch")
+        if comparison.get("raw_key_interpolation_preserved") is not False:
+            failures.append("vmd_model_tracks raw key preservation must be false")
+
+    for boundary in ("source", "source_import", "exported_file", "fresh_import"):
+        payload = tracks.get(boundary)
+        if not isinstance(payload, dict):
+            failures.append(f"vmd_model_tracks.model_tracks.{boundary}_missing")
+            continue
+        if boundary in ("source", "exported_file"):
+            for field in ("bone_track_names", "morph_track_names", "bone_frame_count", "morph_frame_count", "ik_show_hide_frame_count"):
+                if field not in payload:
+                    failures.append(f"vmd_model_tracks.model_tracks.{boundary}.{field}_missing")
+            for field in ("bone_values", "morph_values", "ik_values"):
+                if not isinstance(payload.get(field), dict) or not payload[field]:
+                    failures.append(f"vmd_model_tracks.model_tracks.{boundary}.{field}_missing")
+        else:
+            if not isinstance(payload.get("bone_values"), dict) or not payload["bone_values"]:
+                failures.append(f"vmd_model_tracks.model_tracks.{boundary}.bone_values_missing")
+            if not isinstance(payload.get("morph_values"), dict) or not payload["morph_values"]:
+                failures.append(f"vmd_model_tracks.model_tracks.{boundary}.morph_values_missing")
+            if not isinstance(payload.get("ik_values"), dict) or not payload["ik_values"]:
+                failures.append(f"vmd_model_tracks.model_tracks.{boundary}.ik_values_missing")
+    for boundary in ("source_import", "fresh_import"):
+        payload = tracks.get(boundary)
+        if not isinstance(payload, dict):
+            continue
+        morph_values = payload.get("morph_values", {})
+        flattened_morph = [float(value) for values in morph_values.values() for value in values.values()]
+        if not any(abs(value) > 1.0e-6 for value in flattened_morph):
+            failures.append(f"vmd_model_tracks.model_tracks.{boundary}.morph_values must include nonzero weight")
+        ik_values = payload.get("ik_values", {})
+        state_tuples = {tuple(sorted(states.items())) for states in ik_values.values() if isinstance(states, dict)}
+        if len(state_tuples) < 2:
+            failures.append(f"vmd_model_tracks.model_tracks.{boundary}.ik_values must include a state change")
+    return failures
+
+
 def _validate_policy_reject_case(
     case: Mapping[str, Any], export_format: str, policy_code: str, count_fields: tuple[str, ...]
 ) -> list[str]:
@@ -886,6 +966,7 @@ def _validate_maya_probe_report(
         "pmx_flip",
         "pmd",
         "vmd",
+        "vmd_model_tracks",
     }
     failures = []
     if report.get("gate") != "V070-EXPORT-RELEASE-GATE-1":
@@ -984,6 +1065,21 @@ def _validate_maya_probe_report(
             if not isinstance(parsed_counts, dict) or int(parsed_counts.get("bones", 0) or 0) <= 0:
                 failures.append("pmx_bone_semantics.parsed_counts.bones must be positive")
             failures.extend(_validate_bone_semantics_case(case))
+        if export_format == "vmd_model_tracks":
+            parsed_counts = case.get("parsed_counts")
+            if not isinstance(parsed_counts, dict):
+                failures.append("vmd_model_tracks.parsed_counts_missing")
+            else:
+                for field in ("bone_frames", "morph_frames", "ik_show_hide_frames"):
+                    value = parsed_counts.get(field)
+                    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                        failures.append(f"vmd_model_tracks.parsed_counts.{field} must be positive")
+                for field in ("camera_frames", "light_frames", "shadow_frames"):
+                    if parsed_counts.get(field) != 0:
+                        failures.append(f"vmd_model_tracks.parsed_counts.{field} must be zero")
+            if case.get("mode_c_warning_acknowledged") is not True:
+                failures.append("vmd_model_tracks.mode_c_warning_acknowledged must be true")
+            failures.extend(_validate_vmd_model_tracks_case(case))
         if not case.get("report_json") or not case.get("report_md"):
             failures.append(f"{export_format}.report_pair_missing")
 

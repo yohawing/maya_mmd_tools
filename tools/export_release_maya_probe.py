@@ -34,7 +34,10 @@ DEFAULT_PMX = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube.pmx"
 DEFAULT_PHYSICS_PMX = ROOT / "tests" / "data" / "physics" / "test_hair_physics.pmx"
 DEFAULT_MORPH_PMX = ROOT / "tests" / "data" / "for_unit_test" / "test_vmd_morph_real_gate.pmx"
 DEFAULT_VMD = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube_motion.vmd"
+VMD_MODEL_TRACK_PMX = ROOT / "tests" / "data" / "yw_test_model_control_rig_bone_morph.pmx"
+VMD_MODEL_TRACK_VMD = ROOT / "tests" / "data" / "yw_test_model_control_rig_bone_morph.vmd"
 ORACLE_FRAMES = (0, 9, 19, 29, 39, 49)
+VMD_MODEL_TRACK_FRAMES = (0, 6, 10, 12, 20)
 FLOAT_TOLERANCE = 1.0e-4
 SUPPORTED_MORPH_TYPES = (
     "vertex",
@@ -1958,13 +1961,21 @@ def _import_options() -> dict[str, Any]:
     }
 
 
-def _fresh_import(path: Path, *, target_model: str | None = None, pmx_path: Path | None = None) -> str:
+def _fresh_import(
+    path: Path,
+    *,
+    target_model: str | None = None,
+    pmx_path: Path | None = None,
+    import_options: Mapping[str, Any] | None = None,
+) -> str:
     """Create a new scene and import one model or VMD fixture."""
     from maya import cmds
     from mmd_tools.io.mmd_importer import import_mmd_file
 
     cmds.file(new=True, force=True)
     options = _import_options()
+    if import_options:
+        options.update(dict(import_options))
     if target_model is not None:
         options["target_model"] = target_model
     if pmx_path is not None:
@@ -2788,6 +2799,199 @@ def _run_physics_case(source_model: Path, out_dir: Path) -> dict[str, Any]:
     return case
 
 
+def _vmd_track_payload(data: Any, frames: Iterable[int]) -> dict[str, Any]:
+    """Normalize VMD model-track metadata at the checked representative frames."""
+    checked = {int(frame) for frame in frames}
+
+    def _vector(value: Any) -> list[float]:
+        return _round_values(value or [])
+
+    bone_names = sorted({str(frame.bone_name) for frame in data.bone_frames})
+    bone_values = {
+        name: {
+            str(int(frame.frame_number)): {
+                "position": _vector(frame.position),
+                "rotation": _vector(frame.rotation),
+            }
+            for frame in data.bone_frames
+            if str(frame.bone_name) == name and int(frame.frame_number) in checked
+        }
+        for name in bone_names
+    }
+    morph_names = sorted({str(frame.morph_name) for frame in data.morph_frames})
+    morph_values = {
+        name: {
+            str(int(frame.frame_number)): round(float(frame.value), 7)
+            for frame in data.morph_frames
+            if str(frame.morph_name) == name and int(frame.frame_number) in checked
+        }
+        for name in morph_names
+    }
+    ik_values = {
+        str(int(frame.frame_number)): {
+            "visible": int(frame.visible),
+            "states": {
+                str(name): int(state) for name, state in frame.ik_states
+            },
+        }
+        for frame in data.ik_show_hide_frames
+        if int(frame.frame_number) in checked
+    }
+    return {
+        "bone_track_names": bone_names,
+        "bone_frame_count": len(data.bone_frames),
+        "bone_values": bone_values,
+        "morph_track_names": morph_names,
+        "morph_frame_count": len(data.morph_frames),
+        "morph_values": morph_values,
+        "ik_show_hide_frame_count": len(data.ik_show_hide_frames),
+        "ik_values": ik_values,
+        "camera_frame_count": len(data.camera_frames),
+        "light_frame_count": len(data.light_frames),
+        "shadow_frame_count": len(data.shadow_frames),
+    }
+
+
+def _capture_vmd_model_track_oracle(
+    root: str,
+    frames: Iterable[int],
+    expected_bone_names: Iterable[str],
+) -> dict[str, Any]:
+    """Capture setup-rig bone, morph-controller, and native IK state tracks."""
+    from maya import cmds
+
+    checked_frames = tuple(int(frame) for frame in frames)
+    scene = _capture_scene_oracle(root, checked_frames)
+    expected_names = {str(name) for name in expected_bone_names}
+    pose_frames = scene["pose"]["frames"]
+    bone_values: dict[str, dict[str, list[float]]] = {}
+    for name in sorted(expected_names):
+        values = {}
+        for frame in checked_frames:
+            entries = [entry for entry in pose_frames[str(frame)] if entry["name"] == name]
+            if not entries:
+                raise RuntimeError(f"VMD bone track {name!r} is missing from Maya pose oracle")
+            values[str(frame)] = list(entries[0]["translation"])
+        bone_values[name] = values
+    if not bone_values:
+        raise RuntimeError("VMD import produced no expected bone tracks")
+
+    controllers = cmds.listConnections(
+        f"{root}.mmd_morph_controller",
+        source=True,
+        destination=False,
+        type="mmdMorphController",
+    ) if cmds.attributeQuery("mmd_morph_controller", node=root, exists=True) else []
+    if not controllers or len(controllers) != 1:
+        raise RuntimeError("VMD model-track oracle expected one morph controller")
+    controller = str(controllers[0])
+    input_indices = sorted(
+        int(index) for index in (cmds.getAttr(f"{controller}.inputWeight", multiIndices=True) or [])
+    )
+    raw_morph_data = _attribute_value(root, "mmdMorphData")
+    try:
+        morph_data = json.loads(raw_morph_data or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("VMD model-track oracle has malformed mmdMorphData") from exc
+    if not isinstance(morph_data, list):
+        raise RuntimeError("VMD model-track oracle has non-list mmdMorphData")
+    names_by_index = {
+        int(entry.get("index", index)): str(entry.get("name_jp", entry.get("name_en", "")))
+        for index, entry in enumerate(morph_data)
+        if isinstance(entry, dict) and entry.get("name_jp", entry.get("name_en")) is not None
+    }
+    if any(index not in names_by_index for index in input_indices):
+        raise RuntimeError("VMD morph controller has no names for all input weights")
+    morph_values: dict[str, dict[str, float]] = {}
+    for index in input_indices:
+        name = names_by_index[index]
+        morph_values[name] = {}
+        for frame in checked_frames:
+            cmds.currentTime(frame, edit=True)
+            value = cmds.getAttr(f"{controller}.inputWeight[{index}]")
+            if isinstance(value, (list, tuple)):
+                value = value[0]
+            morph_values[name][str(frame)] = round(float(value), 7)
+    if not morph_values:
+        raise RuntimeError("VMD import produced no morph controller tracks")
+
+    ik_nodes = cmds.ls(type="mmdCcdIk") or []
+    ik_by_name = {}
+    for node in ik_nodes:
+        if not cmds.attributeQuery("mmd_ik_bone_name", node=node, exists=True):
+            continue
+        name = str(cmds.getAttr(f"{node}.mmd_ik_bone_name"))
+        if name in ik_by_name:
+            raise RuntimeError(f"duplicate native IK node for {name!r}")
+        if not cmds.attributeQuery("enabled", node=node, exists=True):
+            raise RuntimeError(f"native IK node {node} has no enabled attribute")
+        ik_by_name[name] = str(node)
+    if not ik_by_name:
+        raise RuntimeError("VMD import produced no native IK nodes")
+    ik_values = {}
+    for frame in checked_frames:
+        cmds.currentTime(frame, edit=True)
+        ik_values[str(frame)] = {
+            name: int(bool(cmds.getAttr(f"{node}.enabled")))
+            for name, node in sorted(ik_by_name.items())
+        }
+    if len({tuple(values.items()) for values in ik_values.values()}) < 2:
+        raise RuntimeError("VMD import IK enabled state did not change across checked frames")
+
+    return {
+        "scene": scene,
+        "bone_values": bone_values,
+        "morph_track_names": sorted(morph_values),
+        "morph_values": morph_values,
+        "ik_track_names": sorted(ik_by_name),
+        "ik_values": ik_values,
+    }
+
+
+def _compare_vmd_model_track_oracles(
+    expected: Mapping[str, Any], actual: Mapping[str, Any]
+) -> list[str]:
+    """Compare source-import and fresh-import model-track semantics."""
+    failures = _compare_scene_oracles(
+        expected["scene"],
+        actual["scene"],
+        pose=True,
+        mesh=False,
+        materials=False,
+    )
+    expected_bones = expected.get("bone_values", {})
+    actual_bones = actual.get("bone_values", {})
+    if set(expected_bones) != set(actual_bones):
+        failures.append("bone_values track names mismatch")
+    else:
+        for name in expected_bones:
+            if set(expected_bones[name]) != set(actual_bones[name]) or any(
+                _compare_float_lists(expected_bones[name][frame], actual_bones[name][frame])
+                > FLOAT_TOLERANCE
+                for frame in expected_bones[name]
+            ):
+                failures.append(f"bone_values[{name}] mismatch")
+    expected_morphs = expected.get("morph_values", {})
+    actual_morphs = actual.get("morph_values", {})
+    if set(expected_morphs) != set(actual_morphs):
+        failures.append("morph_values track names mismatch")
+    else:
+        for name in expected_morphs:
+            if any(
+                abs(float(expected_morphs[name][frame]) - float(actual_morphs[name][frame]))
+                > FLOAT_TOLERANCE
+                for frame in expected_morphs[name]
+            ):
+                failures.append(f"morph_values[{name}] mismatch")
+    if expected.get("ik_values") != actual.get("ik_values"):
+        failures.append("ik_values mismatch")
+    if expected.get("morph_track_names") != actual.get("morph_track_names"):
+        failures.append("morph_track_names mismatch")
+    if expected.get("ik_track_names") != actual.get("ik_track_names"):
+        failures.append("ik_track_names mismatch")
+    return failures
+
+
 def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str, Any]:
     """Roundtrip a VMD through a Maya scene and compare fresh-import poses."""
     from mmd_tools.core.vmd_data import VmdData
@@ -2862,14 +3066,156 @@ def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str
     }
 
 
-def _import_vmd_into_current_scene(root: str, pmx_path: Path, vmd_path: Path) -> str:
+def _run_vmd_model_tracks_case(out_dir: Path) -> dict[str, Any]:
+    """Roundtrip real Mode C bone, morph, and IK show/hide model tracks."""
+    from mmd_tools.core.vmd_data import VmdData
+    from mmd_tools.services.export_workflow_service import (
+        ExportWorkflowRequest,
+        ExportWorkflowService,
+    )
+
+    source_data = VmdData().parse_file(str(VMD_MODEL_TRACK_VMD))
+    if not source_data.bone_frames or not source_data.morph_frames or not source_data.ik_show_hide_frames:
+        raise RuntimeError("model-track fixture lacks bone, morph, or IK show/hide frames")
+    source_payload = _vmd_track_payload(source_data, VMD_MODEL_TRACK_FRAMES)
+    track_options = {**_import_options(), "setup_rig": True}
+    source_root = _fresh_import(VMD_MODEL_TRACK_PMX, import_options=track_options)
+    source_root = _import_vmd_into_current_scene(
+        source_root,
+        VMD_MODEL_TRACK_PMX,
+        VMD_MODEL_TRACK_VMD,
+        import_options=track_options,
+    )
+    source_oracle = _capture_vmd_model_track_oracle(
+        source_root,
+        VMD_MODEL_TRACK_FRAMES,
+        source_payload["bone_track_names"],
+    )
+    output = out_dir / "motion.vmd"
+    report_dir = out_dir / "report"
+    result = ExportWorkflowService().execute(
+        ExportWorkflowRequest(
+            str(output),
+            {
+                "vmd_mode": "C",
+                "export_format": "vmd",
+                "require_target": True,
+                "target_model": source_root,
+                "start_frame": min(VMD_MODEL_TRACK_FRAMES),
+                "end_frame": max(VMD_MODEL_TRACK_FRAMES),
+                "model_name": source_data.header.model_name,
+                "target_identity": source_root,
+                "validation_report_dir": str(report_dir),
+                "validation_report_evidence": {
+                    "gate": "V070-EXPORT-RELEASE-GATE-1",
+                    "fixture": VMD_MODEL_TRACK_VMD.name,
+                    "fresh_import": True,
+                    "oracles": ["bone_tracks", "morph_tracks", "ik_show_hide_tracks"],
+                    "mode_c_raw_loss_warning": True,
+                },
+            },
+        ),
+        acknowledge_warnings=True,
+    )
+    if not result.succeeded:
+        raise RuntimeError(f"VMD model-track export failed: {result.error or result.report}")
+    exported_data = VmdData().parse_file(str(output))
+    if not exported_data.bone_frames or not exported_data.morph_frames or not exported_data.ik_show_hide_frames:
+        raise AssertionError("Mode C output lost one or more required model-track types")
+    exported_payload = _vmd_track_payload(exported_data, VMD_MODEL_TRACK_FRAMES)
+    fresh_root = _fresh_import(VMD_MODEL_TRACK_PMX, import_options=track_options)
+    fresh_root = _import_vmd_into_current_scene(
+        fresh_root,
+        VMD_MODEL_TRACK_PMX,
+        output,
+        import_options=track_options,
+    )
+    fresh_oracle = _capture_vmd_model_track_oracle(
+        fresh_root,
+        VMD_MODEL_TRACK_FRAMES,
+        source_payload["bone_track_names"],
+    )
+    failures = _compare_vmd_model_track_oracles(source_oracle, fresh_oracle)
+    if failures:
+        raise AssertionError("VMD model-track semantic mismatch: " + "; ".join(failures))
+    return {
+        "status": "pass",
+        "format": "vmd_model_tracks",
+        "source": str(VMD_MODEL_TRACK_VMD),
+        "source_model": str(VMD_MODEL_TRACK_PMX),
+        "output": str(output),
+        "report_json": str(report_dir / "report.json"),
+        "report_md": str(report_dir / "report.md"),
+        "mode_c_warning_acknowledged": True,
+        "track_coverage": {
+            "checked_frames": list(VMD_MODEL_TRACK_FRAMES),
+            "tracks": ["bone", "morph", "ik_show_hide"],
+            "source_counts": {
+                "bone_frames": len(source_data.bone_frames),
+                "morph_frames": len(source_data.morph_frames),
+                "ik_show_hide_frames": len(source_data.ik_show_hide_frames),
+            },
+            "exported_counts": {
+                "bone_frames": len(exported_data.bone_frames),
+                "morph_frames": len(exported_data.morph_frames),
+                "ik_show_hide_frames": len(exported_data.ik_show_hide_frames),
+            },
+            "bone_track_names": source_payload["bone_track_names"],
+            "morph_track_names": source_payload["morph_track_names"],
+            "ik_track_names": source_oracle["ik_track_names"],
+            "camera_light_shadow_claimed": False,
+            "visual_parity_claimed": False,
+        },
+        "model_tracks": {
+            "source": source_payload,
+            "source_import": source_oracle,
+            "exported_file": exported_payload,
+            "fresh_import": fresh_oracle,
+            "comparison": {
+                "status": "pass",
+                "boundaries": ["source_import", "exported_file", "fresh_import"],
+                "checked_frames": list(VMD_MODEL_TRACK_FRAMES),
+                "raw_key_interpolation_preserved": False,
+            },
+        },
+        "parsed_counts": {
+            "bone_frames": len(exported_data.bone_frames),
+            "morph_frames": len(exported_data.morph_frames),
+            "ik_show_hide_frames": len(exported_data.ik_show_hide_frames),
+            "camera_frames": len(exported_data.camera_frames),
+            "light_frames": len(exported_data.light_frames),
+            "shadow_frames": len(exported_data.shadow_frames),
+        },
+        "oracles": {
+            "source_import": source_oracle,
+            "fresh_import": fresh_oracle,
+        },
+        "collection": {
+            "collector": "ExportWorkflowService -> VmdSceneCollector.collect",
+            "target_model": source_root,
+            "source_fresh_import": True,
+            "result_fresh_import": True,
+        },
+    }
+
+
+def _import_vmd_into_current_scene(
+    root: str,
+    pmx_path: Path,
+    vmd_path: Path,
+    *,
+    import_options: Mapping[str, Any] | None = None,
+) -> str:
     """Apply a model-owned VMD to the current model and require success."""
     from mmd_tools.io.mmd_importer import import_mmd_file
 
+    options = _import_options()
+    if import_options:
+        options.update(dict(import_options))
     result = import_mmd_file(
         str(vmd_path),
         options={
-            **_import_options(),
+            **options,
             "target_model": root,
             "pmx_path": str(pmx_path),
             "bake_mode": False,
@@ -3019,6 +3365,19 @@ def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
                 "traceback": traceback.format_exc(limit=12),
             }
         )
+    try:
+        cases.append(_run_vmd_model_tracks_case(out_dir / "vmd-model-tracks"))
+    except Exception as exc:
+        cases.append(
+            {
+                "status": "fail",
+                "format": "vmd_model_tracks",
+                "source": str(VMD_MODEL_TRACK_VMD),
+                "source_model": str(VMD_MODEL_TRACK_PMX),
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc(limit=12),
+            }
+        )
     accepted_case_statuses = {"pass", "policy-reject"}
     report = {
         "schema_version": 1,
@@ -3036,6 +3395,7 @@ def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
             "pmx_flip": str(flip_fixture),
             "pmd": str(pmd_path),
             "vmd": str(vmd_path),
+            "vmd_model_tracks": str(VMD_MODEL_TRACK_VMD),
         },
         "cases": cases,
     }
