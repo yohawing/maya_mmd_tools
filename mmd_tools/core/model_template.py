@@ -18,7 +18,10 @@ from typing import Any
 from .model_authoring_spec import MmdModelAuthoringSpec
 
 
-TEMPLATE_SCHEMA_VERSION = 1
+# Version 2 intentionally makes provenance and license metadata mandatory.
+# Version 1 was only an internal packaged-resource format, so accepting it with
+# synthesized legal metadata would be misleading; the strict parser rejects it.
+TEMPLATE_SCHEMA_VERSION = 2
 _TEMPLATE_RESOURCE_PATHS = {
     "pmx20-semistandard-v1": "config/model_templates/pmx20_semistandard_v1.json",
     "pmx20-basic-v1": "config/model_templates/pmx20_basic_v1.json",
@@ -26,6 +29,8 @@ _TEMPLATE_RESOURCE_PATHS = {
 _FRAME_KEYS = {"name", "name_english", "special", "elements"}
 _ELEMENT_KEYS = {"type", "index"}
 _ELEMENT_TYPES = {"bone", "morph"}
+_PROVENANCE_KEYS = {"source", "source_revision", "derivation"}
+_LICENSE_KEYS = {"identifier", "evidence", "redistribution"}
 
 
 class ModelTemplateError(ValueError):
@@ -76,6 +81,26 @@ def _string(value: Any, *, path: str) -> str:
     if not isinstance(value, str):
         raise ModelTemplateError(f"{path} must be a string")
     return value
+
+
+def _nonempty_string(value: Any, *, path: str) -> str:
+    value = _string(value, path=path)
+    if not value.strip():
+        raise ModelTemplateError(f"{path} must be nonempty")
+    return value
+
+
+def _normalize_metadata(
+    value: Any,
+    expected_keys: set[str],
+    *,
+    path: str,
+) -> Mapping[str, str]:
+    """Validate and freeze one exact string-only metadata object."""
+    mapping = _require_mapping(value, path=path)
+    _require_exact_keys(mapping, expected_keys, path=path)
+    normalized = {key: _nonempty_string(mapping[key], path=f"{path}.{key}") for key in sorted(expected_keys)}
+    return _freeze_json(normalized, path=path)
 
 
 def _integer(value: Any, *, path: str, minimum: int = 0) -> int:
@@ -143,17 +168,26 @@ class MmdModelTemplate:
 
     template_id: str
     label: str
+    revision: str
+    provenance: Mapping[str, str]
+    license: Mapping[str, str]
     spec: MmdModelAuthoringSpec
     display_frames: tuple[Mapping[str, Any], ...]
 
     def __post_init__(self) -> None:
         template_id = _string(self.template_id, path="template_id")
-        label = _string(self.label, path="label")
+        label = _nonempty_string(self.label, path="label")
+        revision = _nonempty_string(self.revision, path="revision")
+        provenance = _normalize_metadata(self.provenance, _PROVENANCE_KEYS, path="provenance")
+        license_metadata = _normalize_metadata(self.license, _LICENSE_KEYS, path="license")
         if not isinstance(self.spec, MmdModelAuthoringSpec):
             raise ModelTemplateError("spec must be an MmdModelAuthoringSpec")
         frames = _normalize_display_frames(self.display_frames, self.spec)
         object.__setattr__(self, "template_id", template_id)
         object.__setattr__(self, "label", label)
+        object.__setattr__(self, "revision", revision)
+        object.__setattr__(self, "provenance", provenance)
+        object.__setattr__(self, "license", license_metadata)
         object.__setattr__(self, "display_frames", frames)
 
     def to_mapping(self) -> dict[str, Any]:
@@ -162,6 +196,9 @@ class MmdModelTemplate:
             "template_schema_version": TEMPLATE_SCHEMA_VERSION,
             "template_id": self.template_id,
             "label": self.label,
+            "revision": self.revision,
+            "provenance": dict(self.provenance),
+            "license": dict(self.license),
             "authoring_spec": self.spec.to_mapping(),
             "display_frames": [
                 {
@@ -196,7 +233,16 @@ def _parse_model_template_mapping(value: Mapping[str, Any]) -> MmdModelTemplate:
     mapping = _require_mapping(value, path="model template")
     _require_exact_keys(
         mapping,
-        {"template_schema_version", "template_id", "label", "authoring_spec", "display_frames"},
+        {
+            "template_schema_version",
+            "template_id",
+            "label",
+            "revision",
+            "provenance",
+            "license",
+            "authoring_spec",
+            "display_frames",
+        },
         path="model template",
     )
     schema_version = _integer(mapping["template_schema_version"], path="template_schema_version")
@@ -214,6 +260,9 @@ def _parse_model_template_mapping(value: Mapping[str, Any]) -> MmdModelTemplate:
     return MmdModelTemplate(
         template_id=template_id,
         label=label,
+        revision=mapping["revision"],
+        provenance=mapping["provenance"],
+        license=mapping["license"],
         spec=spec,
         display_frames=mapping["display_frames"],
     )
@@ -253,23 +302,9 @@ def instantiate_model_template(
     spec = replace(template.spec, model=model)
     # Reparse a fresh mapping so callers never share mutable payloads from a
     # previous load or instance, even though the public result is immutable.
-    return _parse_model_template_mapping(
-        {
-            "template_schema_version": TEMPLATE_SCHEMA_VERSION,
-            "template_id": template.template_id,
-            "label": template.label,
-            "authoring_spec": spec.to_mapping(),
-            "display_frames": [
-                {
-                    "name": frame["name"],
-                    "name_english": frame["name_english"],
-                    "special": frame["special"],
-                    "elements": [dict(element) for element in frame["elements"]],
-                }
-                for frame in template.display_frames
-            ],
-        }
-    )
+    payload = template.to_mapping()
+    payload["authoring_spec"] = spec.to_mapping()
+    return _parse_model_template_mapping(payload)
 
 
 __all__ = [

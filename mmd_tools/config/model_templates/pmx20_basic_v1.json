@@ -1,7 +1,18 @@
 {
-  "template_schema_version": 1,
+  "template_schema_version": 2,
   "template_id": "pmx20-basic-v1",
   "label": "1ボーン1Cube",
+  "revision": "1",
+  "provenance": {
+    "source": "maya_mmd_tools project-authored product template",
+    "source_revision": "pmx20-basic-v1",
+    "derivation": "Authored in this repository as the minimal one-bone, one-cube model template."
+  },
+  "license": {
+    "identifier": "MIT",
+    "evidence": "Repository LICENSE",
+    "redistribution": "Permitted under the repository MIT License; retain the required copyright and permission notice."
+  },
   "authoring_spec": {
     "schema_version": 1,
     "model": {

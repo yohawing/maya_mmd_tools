@@ -240,11 +240,12 @@ def test_create_semistandard_model_registers_full_rig_and_cube_intent() -> None:
     result = initializer.create("pmx20-semistandard-v1", "準標準モデル", "Semi Model")
 
     assert result.root.endswith("_root")
-    assert len(result.spec.bones) == 100
-    assert result.spec.bones[53].ik_target_index == 52
-    assert result.spec.bones[53].ik_links[0]["bone"] == 51
+    assert len(result.spec.bones) == 56
+    bones_by_name = {bone.name: bone for bone in result.spec.bones}
+    assert bones_by_name["左足ＩＫ"].ik_target_index == bones_by_name["左足首"].index
+    assert bones_by_name["左つま先ＩＫ"].ik_links[0]["bone"] == bones_by_name["左足首"].index
     assert result.spec.materials[0].name == "Default Material"
-    assert len(adapter.list_relatives(result.root, allDescendents=True, type="joint")) == 100
+    assert len(adapter.list_relatives(result.root, allDescendents=True, type="joint")) == len(result.spec.bones)
     assert adapter.mesh_calls == [(result.root, result.spec.bones[0].binding_identity, "mmdMaterial_0", "mmdMaterial_0_SG")]
     assert adapter.undo_open_count == adapter.undo_close_count == 1
 
