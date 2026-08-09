@@ -68,6 +68,8 @@ class BoneAuthoringCoordinator(Protocol):
         world_position: Sequence[float],
     ) -> object: ...
 
+    def replace_bone_semantic(self, model_root: str, bone: MmdBoneSpec) -> object: ...
+
     def reindex_bones(self, model_root: str, ordered_indices: Sequence[int]) -> object: ...
 
     def unregister_bone(self, model_root: str, bone_index: int) -> object: ...
@@ -137,8 +139,6 @@ class BonePresenter:
         self.view.fixed_axis_check.toggled.connect(self.on_axis_toggled)
         self.view.local_axis_check.toggled.connect(self.on_axis_toggled)
         self.view.external_parent_check.toggled.connect(self.on_external_parent_toggled)
-        self.view.connection_type_combo.currentIndexChanged.connect(self.on_connection_type_changed)
-
         # IKリンクテーブル
         self.view.add_ik_link_btn.clicked.connect(self.add_ik_link)
         self.view.remove_ik_link_btn.clicked.connect(self.remove_ik_link)
@@ -335,7 +335,7 @@ class BonePresenter:
             return False
         if not all(
             callable(getattr(self.authoring_coordinator, method, None))
-            for method in ("read_spec", "replace_bone")
+            for method in ("read_spec", "replace_bone_semantic")
         ):
             return False
         return all(
@@ -522,12 +522,6 @@ class BonePresenter:
             parent = self.maya_adapter.list_relatives(self.current_bone, parent=True, type="joint")
             self.view.parent_bone_edit.setText(parent[0] if parent else "")
 
-            # 位置
-            pos = self.maya_adapter.xform(self.current_bone, query=True, translation=True, worldSpace=True)
-            self.view.pos_x_spin.setValue(pos[0])
-            self.view.pos_y_spin.setValue(pos[1])
-            self.view.pos_z_spin.setValue(pos[2])
-
             # 変形階層
             self.view.deform_layer_spin.setValue(get_attribute(self.current_bone, ATTR_MMD_DEFORM_LAYER))
 
@@ -543,29 +537,6 @@ class BonePresenter:
             # 特殊フラグ
             self.view.after_physics_check.setChecked(bool(flags & PmxBoneFlag.DEFORM_AFTER_PHYSICS))
             self.view.external_parent_check.setChecked(bool(flags & PmxBoneFlag.EXTERNAL_PARENT_DEFORM))
-
-            # 接続先
-            connection_type = 0 if (flags & PmxBoneFlag.CONNECT_BONE) == 0 else 1
-            self.view.connection_type_combo.setCurrentIndex(connection_type)
-
-            if connection_type == 0:
-                # 座標オフセット
-                offset = get_attribute(self.current_bone, ATTR_MMD_BONE_OFFSET)
-                if isinstance(offset, (list, tuple)) and len(offset) >= 3:
-                    self.view.offset_x_spin.setValue(float(offset[0]))
-                    self.view.offset_y_spin.setValue(float(offset[1]))
-                    self.view.offset_z_spin.setValue(float(offset[2]))
-                else:
-                    self.view.offset_x_spin.setValue(0.0)
-                    self.view.offset_y_spin.setValue(-1.0)
-                    self.view.offset_z_spin.setValue(0.0)
-                self.view.connection_bone_edit.clear()
-            else:
-                # ボーン接続
-                connection_bone = get_attribute(self.current_bone, ATTR_MMD_CONNECTION_BONE)
-                # 接続先ボーンの表示名を作成
-                display_name = self._get_bone_display_name(connection_bone)
-                self.view.connection_bone_edit.setText(display_name)
 
             # IK設定
             self.view.ik_enabled_check.setChecked(bool(flags & PmxBoneFlag.IK))
@@ -590,7 +561,6 @@ class BonePresenter:
             self.on_grant_toggled()
             self.on_axis_toggled()
             self.on_external_parent_toggled(self.view.external_parent_check.isChecked())
-            self.on_connection_type_changed(self.view.connection_type_combo.currentIndex())
 
             # データを保存（リセット用）
             self._store_bone_data()
@@ -766,13 +736,8 @@ class BonePresenter:
         self.bone_data = {
             "name_jp": self.view.bone_name_jp_edit.text(),
             "name_en": self.view.bone_name_en_edit.text(),
-            "position": [
-                self.view.pos_x_spin.value(),
-                self.view.pos_y_spin.value(),
-                self.view.pos_z_spin.value(),
-            ],
             "deform_layer": self.view.deform_layer_spin.value(),
-            "flags": self._calculate_bone_flags(),
+            "flags": int(self._get_bone_flags(self.current_bone)),
             "all_settings": self._gather_all_settings(),
         }
 
@@ -819,19 +784,6 @@ class BonePresenter:
         """外部親変形トグル時の処理"""
         self.view.external_parent_key_label.setVisible(checked)
         self.view.external_parent_key_spin.setVisible(checked)
-
-    def on_connection_type_changed(self, index):
-        """接続タイプ変更時の処理"""
-        if index == 0:  # 座標オフセット
-            self.view.offset_x_spin.setEnabled(True)
-            self.view.offset_y_spin.setEnabled(True)
-            self.view.offset_z_spin.setEnabled(True)
-            self.view.connection_bone_edit.setEnabled(False)
-        else:  # ボーン
-            self.view.offset_x_spin.setEnabled(False)
-            self.view.offset_y_spin.setEnabled(False)
-            self.view.offset_z_spin.setEnabled(False)
-            self.view.connection_bone_edit.setEnabled(True)
 
     def add_ik_link(self):
         """IKリンクを追加"""
@@ -903,21 +855,10 @@ class BonePresenter:
             if existing is None or existing.binding_identity != self.current_bone:
                 raise ValueError("selected bone is not the current registered binding")
 
-            flags = self._calculate_bone_flags()
-            connect_index = None
-            tail_offset = None
-            if flags & PmxBoneFlag.CONNECT_BONE:
-                connect_index = self._resolve_bone_reference(
-                    spec,
-                    self.view.connection_bone_edit.text(),
-                    "connection bone",
-                )
-            else:
-                tail_offset = (
-                    self.view.offset_x_spin.value(),
-                    self.view.offset_y_spin.value(),
-                    self.view.offset_z_spin.value(),
-                )
+            # Position, connect target, and tail offset are derived/restored by
+            # Reset and persisted authoring metadata.  Normal Apply only edits
+            # the explicitly semantic UI fields and carries those values over.
+            flags = self._calculate_bone_flags(existing.flags)
 
             grant_enabled = bool(
                 flags & (PmxBoneFlag.GRANT_PARENT_ROTATE | PmxBoneFlag.GRANT_PARENT_MOVE)
@@ -976,8 +917,8 @@ class BonePresenter:
                 name_english=self.view.bone_name_en_edit.text(),
                 transform_layer=self.view.deform_layer_spin.value(),
                 flags=int(flags),
-                connect_bone_index=connect_index,
-                tail_offset=tail_offset,
+                connect_bone_index=existing.connect_bone_index,
+                tail_offset=existing.tail_offset,
                 grant_parent_index=grant_parent_index,
                 grant_ratio=self.view.grant_rate_spin.value() if grant_enabled else 0.0,
                 grant_local=bool(flags & PmxBoneFlag.LOCAL),
@@ -1018,12 +959,7 @@ class BonePresenter:
                 ik_limit_radian=ik_limit_radian,
                 ik_links=ik_links,
             )
-            world_position = (
-                self.view.pos_x_spin.value(),
-                self.view.pos_y_spin.value(),
-                self.view.pos_z_spin.value(),
-            )
-            self.authoring_coordinator.replace_bone(root, replacement, world_position)
+            self.authoring_coordinator.replace_bone_semantic(root, replacement)
             self.load_bones()
 
             logger.info(f"Applied changes to bone '{self.current_bone}'")
@@ -1053,13 +989,12 @@ class BonePresenter:
             self.load_bone_properties()
             self.app_state.emit_status(tr_message("changes_reset"))
 
-    def _calculate_bone_flags(self):
+    def _calculate_bone_flags(self, existing_flags=0):
         """UIの状態からボーンフラグを計算"""
-        flags = 0
-
-        # 接続先
-        if self.view.connection_type_combo.currentIndex() == 1:
-            flags |= PmxBoneFlag.CONNECT_BONE
+        # CONNECT_BONE is persisted PMX tail semantics, not a normal-form
+        # toggle. Preserve it from the loaded spec while rebuilding the
+        # remaining editable flags from visible controls.
+        flags = int(existing_flags) & int(PmxBoneFlag.CONNECT_BONE)
 
         # 基本フラグ
         if self.view.rotatable_check.isChecked():

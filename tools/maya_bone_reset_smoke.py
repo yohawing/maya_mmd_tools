@@ -58,6 +58,8 @@ def run(output: Path | None = None) -> dict[str, Any]:
             raise AssertionError(f"reset preflight blocked unexpectedly: {plan.blockers}")
         if not any("animation" in warning.lower() for warning in plan.warnings):
             raise AssertionError(f"animation warning missing from plan: {plan.warnings}")
+        if not any("zero direct children" in warning for warning in plan.warnings):
+            raise AssertionError(f"new leaf derivation warning missing from plan: {plan.warnings}")
         if child not in plan.added_bindings:
             raise AssertionError(f"child was not discovered as an addition: {plan.added_bindings}")
 
@@ -74,7 +76,11 @@ def run(output: Path | None = None) -> dict[str, Any]:
             raise AssertionError("added child metadata is missing after reset")
         if not _close(child_bone.rest_position, (1.0, 2.0, -3.0)):
             raise AssertionError(f"child rest position did not apply Z conversion: {child_bone.rest_position}")
+        if child_bone.connect_bone_index is not None or not _close(child_bone.tail_offset, (0.0, -1.0, 0.0)):
+            raise AssertionError(f"new leaf tail derivation mismatch: {child_bone}")
         root_bone = observed.bones[0]
+        if root_bone.tail_offset != original.bones[0].tail_offset or root_bone.connect_bone_index != original.bones[0].connect_bone_index:
+            raise AssertionError("existing root tail semantics changed during reset")
         if not _close(root_bone.rest_position, (0.25, 0.0, 0.0)):
             raise AssertionError(f"animated current-frame root rest mismatch: {root_bone.rest_position}")
 
@@ -120,4 +126,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

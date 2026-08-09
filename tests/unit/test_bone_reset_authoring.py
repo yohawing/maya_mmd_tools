@@ -16,6 +16,7 @@ from mmd_tools.core.model_authoring_spec import (
     MmdModelSpec,
 )
 from mmd_tools.adapters.maya_bone_authoring import plan_bone_reset
+from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
 
 def _spec() -> MmdModelAuthoringSpec:
@@ -180,6 +181,50 @@ class _Bones:
     unregister_existing_joint = staticmethod(lambda *_args, **_kwargs: None)
 
 
+class _DerivedSceneAdapter(_SceneAdapter):
+    """Small hierarchy adapter for new-bone tail derivation contracts."""
+
+    def __init__(self, hierarchy):
+        super().__init__()
+        self.hierarchy = hierarchy
+        self.parents = {
+            child: parent
+            for parent, children in hierarchy.items()
+            for child in children
+        }
+        self.descendants = ["|root|joint", *[child for children in hierarchy.values() for child in children]]
+
+    def ls(self, *nodes, **kwargs):
+        return list(nodes)
+
+    def list_relatives(self, node, **kwargs):
+        if kwargs.get("allDescendents"):
+            return list(self.descendants)
+        if kwargs.get("children"):
+            return list(self.hierarchy.get(node, ()))
+        if kwargs.get("parent"):
+            parent = self.parents.get(node)
+            return [parent] if parent else []
+        return []
+
+    def xform(self, *_args, **_kwargs):
+        return [0.0, 0.0, 0.0]
+
+
+class _BrokenHierarchyAdapter(_DerivedSceneAdapter):
+    def list_relatives(self, node, **kwargs):
+        if kwargs.get("children"):
+            raise RuntimeError("hierarchy query unavailable")
+        return super().list_relatives(node, **kwargs)
+
+
+class _BrokenIdentityAdapter(_DerivedSceneAdapter):
+    def ls(self, *nodes, **kwargs):
+        if nodes and str(nodes[0]).endswith("new_child"):
+            return []
+        return super().ls(*nodes, **kwargs)
+
+
 def _coordinator(backend, bones):
     return MayaModelAuthoringCoordinator(
         _Metadata(backend), backend, _Materials(), _Cmds(),
@@ -270,3 +315,57 @@ def test_owned_control_rig_metadata_is_a_non_blocking_animation_warning():
     plan = plan_bone_reset("|root", _spec(), 1.0, _SceneAdapter(control_rig=True))
     assert plan.is_valid
     assert any("Control Rig" in warning and "current frame 24" in warning for warning in plan.warnings)
+
+
+def test_reset_derives_connect_to_the_unique_direct_child_for_new_bones():
+    hierarchy = {
+        "|root|joint": ["|root|joint|new_parent"],
+        "|root|joint|new_parent": ["|root|joint|new_parent|new_child"],
+    }
+    current = _spec()
+    plan = plan_bone_reset("|root", current, 1.0, _DerivedSceneAdapter(hierarchy))
+
+    assert plan.is_valid
+    parent = next(item for item in plan.target_spec.bones if item.name == "new_parent")
+    child = next(item for item in plan.target_spec.bones if item.name == "new_child")
+    assert parent.flags & PmxBoneFlag.CONNECT_BONE
+    assert parent.connect_bone_index == child.index
+    assert parent.tail_offset is None
+
+
+def test_reset_uses_deterministic_offset_and_warning_for_ambiguous_or_leaf_new_bones():
+    hierarchy = {
+        "|root|joint": ["|root|joint|new_parent"],
+        "|root|joint|new_parent": [
+            "|root|joint|new_parent|child_a",
+            "|root|joint|new_parent|child_b",
+        ],
+    }
+    current = _spec()
+    plan = plan_bone_reset("|root", current, 1.0, _DerivedSceneAdapter(hierarchy))
+
+    assert plan.is_valid
+    parent = next(item for item in plan.target_spec.bones if item.name == "new_parent")
+    assert not parent.flags & PmxBoneFlag.CONNECT_BONE
+    assert parent.connect_bone_index is None
+    assert parent.tail_offset == (0.0, -1.0, 0.0)
+    assert any("multiple direct children" in warning for warning in plan.warnings)
+    assert sum("zero direct children" in warning for warning in plan.warnings) == 2
+
+
+def test_reset_blocks_when_hierarchy_query_fails_instead_of_deriving_zero_children():
+    hierarchy = {"|root|joint": ["|root|joint|new_child"]}
+    plan = plan_bone_reset("|root", _spec(), 1.0, _BrokenHierarchyAdapter(hierarchy))
+
+    assert not plan.is_valid
+    assert plan.target_spec is None
+    assert any("list_relatives" in blocker for blocker in plan.blockers)
+
+
+def test_reset_blocks_when_joint_identity_cannot_be_canonicalized():
+    hierarchy = {"|root|joint": ["|root|joint|new_child"]}
+    plan = plan_bone_reset("|root", _spec(), 1.0, _BrokenIdentityAdapter(hierarchy))
+
+    assert not plan.is_valid
+    assert plan.target_spec is None
+    assert any("not uniquely resolvable" in blocker for blocker in plan.blockers)

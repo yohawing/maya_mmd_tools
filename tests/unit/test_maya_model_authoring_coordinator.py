@@ -18,6 +18,7 @@ from mmd_tools.core.model_authoring_spec import (
     MmdModelSpec,
     MmdMorphSpec,
 )
+from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
 
 def _spec() -> MmdModelAuthoringSpec:
@@ -401,6 +402,37 @@ def test_replace_bone_updates_semantics_and_world_position_in_one_transaction() 
     assert result.bones[1].name == "edited"
     assert result.bones[1].rest_position == (1.0, 2.0, 3.0)
     assert coordinator._cmds.positions["|root|spare"] == (2.0, 4.0, -6.0)
+    _assert_one_successful_transaction(backend)
+
+
+def test_replace_bone_semantic_preserves_rest_tail_and_does_not_xform() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    original = replace(
+        backend.scene.bones[1],
+        flags=int(PmxBoneFlag.CONNECT_BONE),
+        connect_bone_index=0,
+        tail_offset=(0.0, 3.0, 0.0),
+        rest_position=(4.0, 5.0, 6.0),
+    )
+    backend.scene = replace(backend.scene, bones=(backend.scene.bones[0], original))
+    replacement = replace(
+        original,
+        name="edited",
+        flags=0,
+        connect_bone_index=None,
+        tail_offset=(8.0, 9.0, 10.0),
+        rest_position=(100.0, 100.0, 100.0),
+    )
+
+    result = coordinator.replace_bone_semantic("|root", replacement)
+
+    edited = result.bones[1]
+    assert edited.name == "edited"
+    assert edited.rest_position == (4.0, 5.0, 6.0)
+    assert edited.tail_offset == (0.0, 3.0, 0.0)
+    assert edited.connect_bone_index == 0
+    assert edited.flags & PmxBoneFlag.CONNECT_BONE
+    assert coordinator._cmds.positions == {}
     _assert_one_successful_transaction(backend)
 
 

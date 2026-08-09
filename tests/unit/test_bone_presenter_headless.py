@@ -226,11 +226,9 @@ class _FakeView:
         self.bone_name_jp_edit = _FakeLineEdit("センター")
         self.bone_name_en_edit = _FakeLineEdit("Center")
         self.parent_bone_edit = _FakeLineEdit()
-        self.connection_bone_edit = _FakeLineEdit()
         self.ik_target_edit = _FakeLineEdit()
         self.grant_parent_edit = _FakeLineEdit("parent_jnt:親")
 
-        self.connection_type_combo = _FakeComboBox(0)
         self.rotatable_check = _FakeCheckBox(True)
         self.movable_check = _FakeCheckBox(False)
         self.visible_check = _FakeCheckBox(True)
@@ -244,13 +242,7 @@ class _FakeView:
         self.fixed_axis_check = _FakeCheckBox(False)
         self.local_axis_check = _FakeCheckBox(False)
 
-        self.pos_x_spin = _FakeSpinBox(1.0)
-        self.pos_y_spin = _FakeSpinBox(2.0)
-        self.pos_z_spin = _FakeSpinBox(3.0)
         self.deform_layer_spin = _FakeSpinBox(4)
-        self.offset_x_spin = _FakeSpinBox(0.25)
-        self.offset_y_spin = _FakeSpinBox(-1.5)
-        self.offset_z_spin = _FakeSpinBox(0.75)
         self.ik_loop_spin = _FakeSpinBox(10)
         self.ik_limit_angle_spin = _FakeSpinBox(57.0)
         self.grant_rate_spin = _FakeSpinBox(0.5)
@@ -639,12 +631,6 @@ class TestBonePresenterHeadless(unittest.TestCase):
         self.assertTrue(view.external_parent_key_label.visible)
         self.assertTrue(view.external_parent_key_spin.visible)
 
-        presenter.on_connection_type_changed(1)
-        self.assertFalse(view.offset_x_spin.enabled)
-        self.assertFalse(view.offset_y_spin.enabled)
-        self.assertFalse(view.offset_z_spin.enabled)
-        self.assertTrue(view.connection_bone_edit.enabled)
-
     def test_load_bone_properties_treats_missing_flags_as_unflagged(self):
         presenter, view, _, adapter = _make_presenter()
         presenter.current_bone = TEST_BONE
@@ -673,7 +659,6 @@ class TestBonePresenterHeadless(unittest.TestCase):
 
     def test_calculate_bone_flags_combines_enabled_ui_state(self):
         presenter, view, _, _ = _make_presenter()
-        view.connection_type_combo.setCurrentIndex(1)
         view.movable_check.setChecked(True)
         view.ik_enabled_check.setChecked(True)
         view.local_grant_check.setChecked(True)
@@ -683,7 +668,7 @@ class TestBonePresenterHeadless(unittest.TestCase):
         view.after_physics_check.setChecked(True)
         view.external_parent_check.setChecked(True)
 
-        flags = presenter._calculate_bone_flags()
+        flags = presenter._calculate_bone_flags(PmxBoneFlag.CONNECT_BONE)
 
         expected = (
             PmxBoneFlag.CONNECT_BONE
@@ -718,7 +703,15 @@ class TestBonePresenterHeadless(unittest.TestCase):
         coordinator = Mock()
         coordinator.read_spec.return_value = MmdModelAuthoringSpec(
             model=MmdModelSpec("Model"),
-            bones=(MmdBoneSpec("center", index=3, binding_identity=TEST_BONE),),
+            bones=(MmdBoneSpec(
+                "center",
+                index=3,
+                flags=int(PmxBoneFlag.CONNECT_BONE),
+                connect_bone_index=4,
+                tail_offset=(0.0, 2.0, 0.0),
+                rest_position=(9.0, 8.0, 7.0),
+                binding_identity=TEST_BONE,
+            ), MmdBoneSpec("tail", index=4, binding_identity="tail_jnt")),
         )
         presenter, view, app_state, adapter = _make_presenter(adapter=adapter, coordinator=coordinator)
         app_state.current_model_root = TEST_MODEL
@@ -730,16 +723,17 @@ class TestBonePresenterHeadless(unittest.TestCase):
             presenter.apply_changes()
 
         coordinator.read_spec.assert_called_once_with(TEST_MODEL)
-        root, replacement, position = coordinator.replace_bone.call_args.args
+        root, replacement = coordinator.replace_bone_semantic.call_args.args
         self.assertEqual(root, TEST_MODEL)
         self.assertEqual(replacement.name, "センター")
         self.assertEqual(replacement.name_english, "Center")
         self.assertEqual(replacement.transform_layer, 4)
-        self.assertEqual(replacement.tail_offset, (0.25, -1.5, 0.75))
-        self.assertIsNone(replacement.connect_bone_index)
+        self.assertEqual(replacement.tail_offset, (0.0, 2.0, 0.0))
+        self.assertEqual(replacement.connect_bone_index, 4)
+        self.assertTrue(replacement.flags & PmxBoneFlag.CONNECT_BONE)
+        self.assertEqual(replacement.rest_position, (9.0, 8.0, 7.0))
         self.assertIsNone(replacement.grant_parent_index)
         self.assertIsNone(replacement.ik_target_index)
-        self.assertEqual(position, (1.0, 2.0, 3.0))
         self.assertEqual(
             adapter.calls,
             [("object_exists", TEST_BONE), ("object_exists", TEST_MODEL)],

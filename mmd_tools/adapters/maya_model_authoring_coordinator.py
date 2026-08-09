@@ -21,6 +21,7 @@ from mmd_tools.core.bone_authoring import (
     register_bone,
     reindex_bones,
     replace_bone as replace_bone_spec,
+    replace_bone_semantic as replace_bone_semantic_spec,
     unregister_bone,
 )
 from mmd_tools.core.material_authoring import (
@@ -395,6 +396,35 @@ class MayaModelAuthoringCoordinator:
             return target
 
         return self._execute(model_root, "replace_bone", target, bind)
+
+    def replace_bone_semantic(
+        self,
+        model_root: str,
+        bone: MmdBoneSpec,
+    ) -> MmdModelAuthoringSpec:
+        """Apply editable bone metadata without touching Maya transforms.
+
+        Rest position and PMX tail semantics are preserved by the pure
+        semantic helper; only the metadata backend participates in this
+        transaction.  Reset is the sole operation that captures transforms.
+        """
+        current = self._read_current(model_root, "replace_bone_semantic")
+        if type(bone) is not MmdBoneSpec:
+            raise MayaModelAuthoringCoordinatorError(
+                "replace_bone_semantic requires an MmdBoneSpec"
+            )
+        previous = self._bone(current, bone.index)
+        if bone.binding_identity is None:
+            bone = replace(bone, binding_identity=previous.binding_identity)
+        if bone.binding_identity != previous.binding_identity:
+            raise MayaModelAuthoringCoordinatorError(
+                f"bone {bone.index} binding identity cannot change"
+            )
+        target = self._pure(
+            "replace_bone_semantic",
+            lambda: replace_bone_semantic_spec(current, bone),
+        )
+        return self._execute(model_root, "replace_bone_semantic", target, lambda: target)
 
     def _resolve_model_scale(self, model_root: str) -> float:
         if not callable(self._model_scale_resolver):

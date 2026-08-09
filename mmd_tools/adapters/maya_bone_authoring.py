@@ -165,6 +165,26 @@ def _descendant_joints(adapter: Any, root: str) -> list[str]:
     return [str(joint) for joint in joints]
 
 
+def _direct_joint_children(adapter: Any, joint: str, descendants: set[str]) -> tuple[str, ...]:
+    """Return canonical direct joint children discovered below ``root``."""
+    children = _call(
+        adapter,
+        "list_relatives",
+        joint,
+        children=True,
+        fullPath=True,
+        type="joint",
+    ) or []
+    if isinstance(children, (str, bytes, bytearray)):
+        _fail(f"direct joint children for {joint!r} must be a sequence")
+    result: list[str] = []
+    for child in children:
+        canonical = _canonical_identity(adapter, child)
+        if canonical in descendants and canonical not in result:
+            result.append(canonical)
+    return tuple(result)
+
+
 def _require_root_joint(adapter: Any, root: str, joint: str) -> None:
     _require_string(root, field="root")
     _require_string(joint, field="joint")
@@ -1131,6 +1151,11 @@ def plan_bone_reset(
         blockers.extend(_validate_scene_binding_payload(root, current_spec, adapter))
         blockers.extend(_validate_removed_scene_references(root, removed, adapter))
         descriptors: list[MmdBoneSpec] = []
+        descendant_set = set(descendants)
+        direct_children = {
+            joint: _direct_joint_children(adapter, joint, descendant_set)
+            for joint in descendants
+        }
         provisional_new_indices = {
             joint: max((bone.index for bone in current_spec.bones), default=-1) + offset
             for offset, joint in enumerate(
@@ -1145,27 +1170,65 @@ def plan_bone_reset(
                 descriptors.append(replace(existing, rest_position=position, binding_identity=joint))
             else:
                 leaf = joint.rsplit("|", 1)[-1].rsplit(":", 1)[-1]
-                try:
-                    parents = _call(adapter, "list_relatives", joint, parent=True, fullPath=True, type="joint") or []
-                    parent_binding = _canonical_identity(adapter, parents[0]) if len(parents) == 1 else None
-                except Exception:
-                    parent_binding = None
+                parents = _call(
+                    adapter,
+                    "list_relatives",
+                    joint,
+                    parent=True,
+                    fullPath=True,
+                    type="joint",
+                ) or []
+                if isinstance(parents, (str, bytes, bytearray)):
+                    _fail(f"parent joints for {joint!r} must be a sequence")
+                if len(parents) > 1:
+                    _fail(f"joint {joint!r} has multiple direct joint parents")
+                parent_binding = _canonical_identity(adapter, parents[0]) if parents else None
                 parent_index = (
                     by_binding[parent_binding].index
                     if parent_binding in by_binding
                     else provisional_new_indices.get(parent_binding, -1)
                 )
+                children = direct_children.get(joint, ())
+                if len(children) == 1:
+                    child_binding = children[0]
+                    child_index = (
+                        by_binding[child_binding].index
+                        if child_binding in by_binding
+                        else provisional_new_indices[child_binding]
+                    )
+                    flags = int(PmxBoneFlag.CONNECT_BONE)
+                    connect_bone_index = child_index
+                    tail_offset = None
+                else:
+                    flags = 0
+                    connect_bone_index = None
+                    tail_offset = (0.0, -1.0, 0.0)
                 descriptors.append(
                     MmdBoneSpec(
                         name=leaf,
                         name_english=leaf,
                         parent_index=parent_index,
                         rest_position=position,
-                        tail_offset=(0.0, 0.0, 0.0),
+                        flags=flags,
+                        connect_bone_index=connect_bone_index,
+                        tail_offset=tail_offset,
                         binding_identity=joint,
                     )
                 )
         warning = _animation_warning(root, descendants, adapter)
+        derivation_warnings: list[str] = []
+        for joint in descendants:
+            if joint in by_binding:
+                continue
+            children = direct_children.get(joint, ())
+            if len(children) == 0:
+                derivation_warnings.append(
+                    f"new bone {joint!r} has zero direct children; derived tail offset (0.0, -1.0, 0.0)"
+                )
+            elif len(children) > 1:
+                derivation_warnings.append(
+                    f"new bone {joint!r} has multiple direct children; derived tail offset (0.0, -1.0, 0.0)"
+                )
         effective_order = requested_order
         if effective_order is None:
             # Maya's allDescendents order is not a semantic ordering (it is
@@ -1181,7 +1244,7 @@ def plan_bone_reset(
             descriptors,
             requested_order=effective_order,
             blockers=blockers,
-            warnings=(() if warning is None else (warning,)),
+            warnings=tuple(derivation_warnings) + (() if warning is None else (warning,)),
         )
         return plan
     except Exception as exc:

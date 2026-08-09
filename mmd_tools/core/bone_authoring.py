@@ -20,6 +20,7 @@ from mmd_tools.core.model_authoring_spec import (
     MmdModelAuthoringSpec,
     MmdMorphSpec,
 )
+from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
 
 class BoneAuthoringError(ValueError):
@@ -343,6 +344,36 @@ def replace_bone(spec: MmdModelAuthoringSpec, bone: MmdBoneSpec) -> MmdModelAuth
         raise BoneAuthoringError(str(exc)) from None
 
 
+def replace_bone_semantic(spec: MmdModelAuthoringSpec, bone: MmdBoneSpec) -> MmdModelAuthoringSpec:
+    """Replace editable bone semantics while preserving PMX-derived fields.
+
+    Rest position and tail representation are scene/import semantics owned by
+    Reset and persisted metadata.  Keeping them from the current spec makes a
+    normal Apply fail closed against accidental UI/default values and leaves
+    the ``CONNECT_BONE`` flag paired with its saved connect index.
+    """
+    try:
+        spec = _require_spec(spec)
+        bone = _require_bone(bone)
+        existing = next((item for item in spec.bones if item.index == bone.index), None)
+        if existing is None:
+            _fail(f"unknown bone index {bone.index}")
+        derived_flags = int(bone.flags) & ~int(PmxBoneFlag.CONNECT_BONE)
+        preserved_flags = int(existing.flags) & int(PmxBoneFlag.CONNECT_BONE)
+        preserved = replace(
+            bone,
+            rest_position=existing.rest_position,
+            flags=derived_flags | preserved_flags,
+            connect_bone_index=existing.connect_bone_index,
+            tail_offset=existing.tail_offset,
+        )
+        return replace_bone(spec, preserved)
+    except BoneAuthoringError:
+        raise
+    except Exception as exc:
+        raise BoneAuthoringError(str(exc)) from None
+
+
 def capture_rest(
     spec: MmdModelAuthoringSpec,
     index: int,
@@ -551,6 +582,7 @@ __all__ = [
     "BoneAuthoringError",
     "register_bone",
     "replace_bone",
+    "replace_bone_semantic",
     "capture_rest",
     "reindex_bones",
     "unregister_bone",

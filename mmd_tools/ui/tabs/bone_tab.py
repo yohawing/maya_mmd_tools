@@ -10,7 +10,6 @@ from ..qt_compat import (
     QCheckBox,
     QSpinBox,
     QDoubleSpinBox,
-    QComboBox,
     QGridLayout,
     QSplitter,
     Qt,
@@ -50,10 +49,7 @@ class BoneTab(BaseTab):
         ("bone_name_jp_label", "setText", "bone_name_jp", "fields"),
         ("bone_name_en_label", "setText", "bone_name_en", "fields"),
         ("parent_bone_label", "setText", "parent_bone", "fields"),
-        ("position_label", "setText", "position", "fields"),
         ("deform_layer_label", "setText", "deform_layer", "fields"),
-        ("connection_label", "setText", "connection", "fields"),
-        ("offset_label", "setText", "offset", "fields"),
         ("external_parent_key_label", "setText", "external_parent_key", "fields"),
         ("ik_target_label", "setText", "ik_target", "fields"),
         ("ik_loop_label", "setText", "ik_loop_count", "fields"),
@@ -237,63 +233,11 @@ class BoneTab(BaseTab):
         self.parent_bone_label = QLabel(self.tr("parent_bone", "fields"))
         layout.addRow(self.parent_bone_label, self.parent_bone_edit)
 
-        # 位置
-        position_layout = QGridLayout()
-        self.pos_x_spin = QDoubleSpinBox()
-        self.pos_y_spin = QDoubleSpinBox()
-        self.pos_z_spin = QDoubleSpinBox()
-        for spin in [self.pos_x_spin, self.pos_y_spin, self.pos_z_spin]:
-            spin.setRange(-9999.0, 9999.0)
-            spin.setDecimals(4)
-            spin.setSingleStep(0.1)
-
-        position_layout.addWidget(QLabel("X:"), 0, 0)
-        position_layout.addWidget(self.pos_x_spin, 0, 1)
-        position_layout.addWidget(QLabel("Y:"), 0, 2)
-        position_layout.addWidget(self.pos_y_spin, 0, 3)
-        position_layout.addWidget(QLabel("Z:"), 0, 4)
-        position_layout.addWidget(self.pos_z_spin, 0, 5)
-        self.position_label = QLabel(self.tr("position", "fields"))
-        layout.addRow(self.position_label, position_layout)
-
         # 変形階層
         self.deform_layer_spin = QSpinBox()
         self.deform_layer_spin.setRange(0, 9999)
         self.deform_layer_label = QLabel(self.tr("deform_layer", "fields"))
         layout.addRow(self.deform_layer_label, self.deform_layer_spin)
-
-        # 接続先
-        connection_layout = QHBoxLayout()
-        self.connection_type_combo = QComboBox()
-        self.connection_type_combo.addItems(
-            [self.tr("coordinate_offset", "bone_connection_types"), self.tr("bone", "bone_connection_types")]
-        )
-        self.connection_bone_edit = QLineEdit()
-        self.connection_bone_edit.setReadOnly(True)
-
-        connection_layout.addWidget(self.connection_type_combo)
-        connection_layout.addWidget(self.connection_bone_edit)
-        self.connection_label = QLabel(self.tr("connection", "fields"))
-        layout.addRow(self.connection_label, connection_layout)
-
-        # 接続先オフセット
-        offset_layout = QGridLayout()
-        self.offset_x_spin = QDoubleSpinBox()
-        self.offset_y_spin = QDoubleSpinBox()
-        self.offset_z_spin = QDoubleSpinBox()
-        for spin in [self.offset_x_spin, self.offset_y_spin, self.offset_z_spin]:
-            spin.setRange(-9999.0, 9999.0)
-            spin.setDecimals(4)
-            spin.setSingleStep(0.1)
-
-        offset_layout.addWidget(QLabel("X:"), 0, 0)
-        offset_layout.addWidget(self.offset_x_spin, 0, 1)
-        offset_layout.addWidget(QLabel("Y:"), 0, 2)
-        offset_layout.addWidget(self.offset_y_spin, 0, 3)
-        offset_layout.addWidget(QLabel("Z:"), 0, 4)
-        offset_layout.addWidget(self.offset_z_spin, 0, 5)
-        self.offset_label = QLabel(self.tr("offset", "fields"))
-        layout.addRow(self.offset_label, offset_layout)
 
         return layout
 
@@ -604,12 +548,6 @@ class BoneTab(BaseTab):
         apply_translation_registry(self, self._TRANSLATION_REGISTRY)
         self.animation_warning_label.setText("")
         self.reset_authoring_btn.setText(self.tr("reset_authoring", "buttons"))
-
-        # ComboBox items - Connection type
-        self.connection_type_combo.clear()
-        self.connection_type_combo.addItems(
-            [self.tr("coordinate_offset", "bone_connection_types"), self.tr("bone", "bone_connection_types")]
-        )
 
         # Table headers - IK Links
         self.ik_links_table.setHorizontalHeaderLabels(

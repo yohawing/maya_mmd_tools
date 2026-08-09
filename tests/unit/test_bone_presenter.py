@@ -9,6 +9,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_DEFORM_LAYER,
 )
+from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from tests.common.mock_ui import attach_mocks
 from tests.common.maya_test_base import MayaTestBase
 from mmd_tools.ui.presenters.bone_presenter import BonePresenter
@@ -45,15 +46,7 @@ class TestBonePresenter(MayaTestBase):
                 "bone_name_jp_edit",
                 "bone_name_en_edit",
                 "parent_bone_edit",
-                "pos_x_spin",
-                "pos_y_spin",
-                "pos_z_spin",
                 "deform_layer_spin",
-                "connection_type_combo",
-                "connection_bone_edit",
-                "offset_x_spin",
-                "offset_y_spin",
-                "offset_z_spin",
                 "rotatable_check",
                 "movable_check",
                 "visible_check",
@@ -134,7 +127,6 @@ class TestBonePresenter(MayaTestBase):
         self.mock_view.fixed_axis_check.toggled = MagicMock()
         self.mock_view.local_axis_check.toggled = MagicMock()
         self.mock_view.external_parent_check.toggled = MagicMock()
-        self.mock_view.connection_type_combo.currentIndexChanged = MagicMock()
 
         # IKリンクテーブルのモック設定
         self.mock_view.ik_links_table.rowCount.return_value = 0
@@ -149,7 +141,6 @@ class TestBonePresenter(MayaTestBase):
         self.mock_view.ik_links_table.setCurrentCell = MagicMock()
 
         # デフォルト値を設定
-        self.mock_view.connection_type_combo.currentIndex.return_value = 0
         self.mock_view.ik_enabled_check.isChecked.return_value = False
         self.mock_view.rotation_grant_check.isChecked.return_value = False
         self.mock_view.move_grant_check.isChecked.return_value = False
@@ -159,13 +150,7 @@ class TestBonePresenter(MayaTestBase):
 
         # スピンボックスのvalue関数
         spin_attrs = [
-            "pos_x_spin",
-            "pos_y_spin",
-            "pos_z_spin",
             "deform_layer_spin",
-            "offset_x_spin",
-            "offset_y_spin",
-            "offset_z_spin",
             "grant_rate_spin",
             "external_parent_key_spin",
             "fixed_axis_x_spin",
@@ -191,7 +176,6 @@ class TestBonePresenter(MayaTestBase):
             "bone_name_jp_edit",
             "bone_name_en_edit",
             "parent_bone_edit",
-            "connection_bone_edit",
             "ik_target_edit",
             "rotation_grant_parent_edit",
             "move_grant_parent_edit",
@@ -298,7 +282,6 @@ class TestBonePresenter(MayaTestBase):
     def test_bone_flag_calculation(self):
         """ボーンフラグ計算のテスト"""
         # 各フラグを設定
-        self.mock_view.connection_type_combo.currentIndex.return_value = 1  # ボーン接続
         self.mock_view.rotatable_check.isChecked.return_value = True
         self.mock_view.movable_check.isChecked.return_value = True
         self.mock_view.visible_check.isChecked.return_value = True
@@ -307,12 +290,9 @@ class TestBonePresenter(MayaTestBase):
         self.mock_view.after_physics_check.isChecked.return_value = True
 
         # フラグを計算
-        flags = self.presenter._calculate_bone_flags()
+        flags = self.presenter._calculate_bone_flags(PmxBoneFlag.CONNECT_BONE)
 
         # 期待値を確認
-        # PmxBoneFlagの値を使用
-        from mmd_tools.core.pmx_data.bone import PmxBoneFlag
-
         expected_flags = (
             PmxBoneFlag.CONNECT_BONE
             | PmxBoneFlag.ROTATABLE
@@ -380,9 +360,6 @@ class TestBonePresenter(MayaTestBase):
         self.mock_view.bone_name_jp_edit.text.return_value = "新しい名前"
         self.mock_view.bone_name_en_edit.text.return_value = "new_name"
         self.mock_view.deform_layer_spin.value.return_value = 2
-        self.mock_view.pos_x_spin.value.return_value = 1.0
-        self.mock_view.pos_y_spin.value.return_value = 2.0
-        self.mock_view.pos_z_spin.value.return_value = 3.0
 
         # 変更を適用
         self.presenter.apply_changes()
@@ -392,11 +369,6 @@ class TestBonePresenter(MayaTestBase):
         self.assertEqual(cmds.getAttr(f"{self.test_bone1}.{ATTR_MMD_BONE_NAME_EN}"), "new_name")
         self.assertEqual(cmds.getAttr(f"{self.test_bone1}.{ATTR_MMD_DEFORM_LAYER}"), 2)
 
-        # 位置が更新されたことを確認
-        pos = cmds.xform(self.test_bone1, query=True, translation=True, worldSpace=True)
-        self.assertAlmostEqual(pos[0], 1.0, places=3)
-        self.assertAlmostEqual(pos[1], 2.0, places=3)
-        self.assertAlmostEqual(pos[2], 3.0, places=3)
 
     def test_grant_settings_toggle(self):
         """付与設定のトグルテスト"""
@@ -410,18 +382,6 @@ class TestBonePresenter(MayaTestBase):
         self.mock_view.move_grant_check.isChecked.return_value = False
         self.presenter.on_grant_toggled()
         self.mock_view.grant_settings_group.setVisible.assert_called_with(False)
-
-    def test_connection_type_change(self):
-        """接続タイプ変更のテスト"""
-        # 座標オフセットモード
-        self.presenter.on_connection_type_changed(0)
-        self.mock_view.offset_x_spin.setEnabled.assert_called_with(True)
-        self.mock_view.connection_bone_edit.setEnabled.assert_called_with(False)
-
-        # ボーン接続モード
-        self.presenter.on_connection_type_changed(1)
-        self.mock_view.offset_x_spin.setEnabled.assert_called_with(False)
-        self.mock_view.connection_bone_edit.setEnabled.assert_called_with(True)
 
     def test_filter_bones(self):
         """ボーン検索フィルタのテスト"""
