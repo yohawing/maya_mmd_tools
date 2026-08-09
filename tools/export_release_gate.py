@@ -15,12 +15,16 @@ import importlib.util
 import json
 import math
 import os
+from datetime import datetime, timezone
 from pathlib import Path
+import platform
+import re
 import shutil
 import subprocess
 import sys
 import time
 from typing import Any, Iterable, Mapping
+from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD_ROOT = (ROOT / "build").resolve()
@@ -136,6 +140,260 @@ def _bounded(text: str | None) -> str:
 def _sha256(path: Path) -> str:
     """Hash one report/artifact file for the release summary."""
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _capture_release_provenance() -> dict[str, Any]:
+    """Capture the source/worktree identity before the gate writes artifacts."""
+    started_at = datetime.now(timezone.utc)
+    provenance: dict[str, Any] = {
+        "run_id": f"{started_at.strftime('%Y%m%dT%H%M%S%fZ')}-{uuid4().hex[:8]}",
+        "timestamp": started_at.isoformat(),
+        "branch": "",
+        "head_sha": "",
+        "dirty": None,
+        "git_capture": {
+            "branch": False,
+            "head_sha": False,
+            "status": False,
+        },
+    }
+
+    def _git(*arguments: str) -> tuple[str, bool, int | None, str]:
+        try:
+            completed = subprocess.run(
+                ["git", *arguments],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+        except OSError as exc:
+            return "", False, None, f"{type(exc).__name__}: {exc}"
+        output = (completed.stdout or "").strip()
+        detail = (completed.stderr or "").strip()
+        return output, completed.returncode == 0, completed.returncode, detail
+
+    branch, branch_ok, branch_code, branch_error = _git(
+        "symbolic-ref", "--quiet", "--short", "HEAD"
+    )
+    if not branch_ok and branch_code == 1:
+        branch = "DETACHED"
+        branch_ok = True
+    head_sha, head_ok, _, head_error = _git("rev-parse", "HEAD")
+    status, status_ok, _, status_error = _git("status", "--porcelain=v1", "--untracked-files=all")
+    provenance["branch"] = branch
+    provenance["head_sha"] = head_sha
+    provenance["git_capture"] = {
+        "branch": branch_ok,
+        "head_sha": head_ok,
+        "status": status_ok,
+    }
+    if status_ok:
+        provenance["dirty"] = bool(status)
+    errors = []
+    if not branch_ok:
+        errors.append(f"git branch capture failed: {branch_error or branch_code}")
+    if not head_ok:
+        errors.append(f"git HEAD capture failed: {head_error or 'unknown'}")
+    if not status_ok:
+        errors.append(f"git status capture failed: {status_error or 'unknown'}")
+    if errors:
+        provenance["error"] = "; ".join(errors)
+    return provenance
+
+
+def _validate_release_provenance(value: Any) -> list[str]:
+    """Validate the mandatory run/source identity stored in a release summary."""
+    failures: list[str] = []
+    if not isinstance(value, dict):
+        return ["provenance must be an object"]
+    if not isinstance(value.get("run_id"), str) or not value["run_id"].strip():
+        failures.append("provenance.run_id missing")
+    timestamp = value.get("timestamp")
+    if not isinstance(timestamp, str) or not timestamp:
+        failures.append("provenance.timestamp missing")
+    else:
+        try:
+            parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        except ValueError:
+            parsed = None
+        if parsed is None or parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(None):
+            failures.append("provenance.timestamp must be UTC RFC3339")
+    if not isinstance(value.get("branch"), str) or not value["branch"].strip():
+        failures.append("provenance.branch missing")
+    head_sha = value.get("head_sha")
+    if not isinstance(head_sha, str) or re.fullmatch(r"[0-9a-f]{40}", head_sha) is None:
+        failures.append("provenance.head_sha must be a full SHA-1")
+    if not isinstance(value.get("dirty"), bool):
+        failures.append("provenance.dirty must be boolean")
+    capture = value.get("git_capture")
+    if not isinstance(capture, dict):
+        failures.append("provenance.git_capture missing")
+    else:
+        for field in ("branch", "head_sha", "status"):
+            if capture.get(field) is not True:
+                failures.append(f"provenance.git_capture.{field} must be true")
+    return failures
+
+
+def _validate_binding_gate_artifact(
+    step: dict[str, Any],
+    report_path: Path,
+    *,
+    runtime_path: Path | None,
+    runtime_sha256: str | None,
+) -> None:
+    """Require a fresh passing binding-gate artifact for a passing command."""
+    step["artifact"] = str(report_path)
+    if step.get("status") != "pass":
+        return
+    if not report_path.is_file():
+        step["status"] = "fail"
+        step["error"] = f"binding gate did not write {report_path}"
+        return
+    try:
+        report = _load_json(report_path)
+    except (OSError, ValueError, TypeError) as exc:
+        step["status"] = "fail"
+        step["error"] = f"invalid binding gate report: {type(exc).__name__}: {exc}"
+        return
+    if not isinstance(report, dict):
+        step["status"] = "fail"
+        step["error"] = "binding gate report must be an object"
+        return
+    if report.get("schema_version") != 1:
+        step["status"] = "fail"
+        step["error"] = "binding gate report schema_version must be 1"
+        return
+    if report.get("status") != "pass":
+        step["status"] = "fail"
+        step["error"] = f"binding gate report status={report.get('status')!r}"
+        return
+    nested = report.get("report")
+    if (
+        not isinstance(nested, dict)
+        or nested.get("schema_version") != 1
+        or nested.get("status") != "ready"
+        or not isinstance(nested.get("issues"), list)
+        or nested["issues"]
+    ):
+        step["status"] = "fail"
+        step["error"] = "binding gate report.valid/status must be ready with no issues"
+        return
+    expected_binding_root = (ROOT / "external" / "mmd-anim" / "bindings" / "python").resolve()
+    reported_binding_root = report.get("binding_root")
+    if (
+        not isinstance(reported_binding_root, str)
+        or not Path(reported_binding_root).is_dir()
+        or Path(reported_binding_root).resolve() != expected_binding_root
+    ):
+        step["status"] = "fail"
+        step["error"] = "binding gate report.binding_root mismatch"
+        return
+    frame = report.get("frame")
+    if isinstance(frame, bool) or not isinstance(frame, (int, float)) or not math.isfinite(frame):
+        step["status"] = "fail"
+        step["error"] = "binding gate report.frame must be finite"
+        return
+    if not math.isclose(float(frame), 0.0, rel_tol=0.0, abs_tol=1.0e-6):
+        step["status"] = "fail"
+        step["error"] = "binding gate report.frame must be 0.0"
+        return
+    expected_model = (ROOT / "tests" / "data" / "mmt_test_model.pmx").resolve()
+    expected_motion = (ROOT / "tests" / "data" / "mmt_test_model_test_motion.vmd").resolve()
+    for field, expected in (("model", expected_model), ("motion", expected_motion)):
+        value = report.get(field)
+        if not isinstance(value, str) or not Path(value).is_file() or Path(value).resolve() != expected:
+            step["status"] = "fail"
+            step["error"] = f"binding gate report.{field} does not match expected fixture"
+            return
+    reported_runtime = report.get("runtime_library")
+    if runtime_path is None or runtime_sha256 is None:
+        step["status"] = "fail"
+        step["error"] = "binding gate runtime identity is unavailable"
+        return
+    if (
+        not isinstance(reported_runtime, str)
+        or not Path(reported_runtime).is_file()
+        or Path(reported_runtime).resolve() != runtime_path.resolve()
+    ):
+        step["status"] = "fail"
+        step["error"] = "binding gate report.runtime_library mismatch"
+        return
+    actual_runtime_sha = _sha256(Path(reported_runtime))
+    if actual_runtime_sha != runtime_sha256:
+        step["status"] = "fail"
+        step["error"] = "binding gate runtime SHA mismatch"
+        return
+    step["runtime_path"] = str(runtime_path)
+    step["runtime_sha256"] = actual_runtime_sha
+    step["artifact_sha256"] = _sha256(report_path)
+
+
+def _mmd_anim_runtime_candidates() -> tuple[Path, ...]:
+    """Return release FFI artifact candidates for supported host platforms."""
+    runtime_dir = ROOT / "external" / "mmd-anim" / "target" / "release"
+    suffixes = {
+        "Windows": ("mmd_runtime_ffi.dll",),
+        "Linux": ("libmmd_runtime_ffi.so",),
+        "Darwin": ("libmmd_runtime_ffi.dylib",),
+    }
+    return tuple(runtime_dir / name for name in suffixes.get(platform.system(), ()))
+
+
+def _mmd_anim_runtime_path() -> Path | None:
+    """Resolve the release FFI artifact emitted by the existing ffi_build step."""
+    return next((path for path in _mmd_anim_runtime_candidates() if path.is_file()), None)
+
+
+def _mmd_anim_source_revision() -> str | None:
+    """Read the checked-out mmd-anim source revision without changing it."""
+    submodule = ROOT / "external" / "mmd-anim"
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(submodule), "rev-parse", "HEAD"],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError:
+        return None
+    if completed.returncode != 0:
+        return None
+    revision = completed.stdout.strip()
+    return revision if re.fullmatch(r"[0-9a-f]{40}", revision) else None
+
+
+def _validate_ffi_build_step(step: dict[str, Any]) -> tuple[Path | None, str | None, str | None]:
+    """Require the ffi_build Nox step and a current runtime artifact identity."""
+    runtime_path = _mmd_anim_runtime_path()
+    source_revision = _mmd_anim_source_revision()
+    runtime_sha = _sha256(runtime_path) if runtime_path is not None else None
+    step["runtime_path"] = str(runtime_path) if runtime_path is not None else None
+    step["runtime_sha256"] = runtime_sha
+    step["source_revision"] = source_revision
+    if step.get("status") != "pass":
+        return runtime_path, runtime_sha, source_revision
+    if runtime_path is None:
+        step["status"] = "fail"
+        step["error"] = "ffi_build did not produce mmd_runtime_ffi release artifact"
+        return None, None, source_revision
+    if runtime_sha is None:
+        step["status"] = "fail"
+        step["error"] = "ffi_build runtime artifact SHA could not be computed"
+        return None, None, source_revision
+    if source_revision is None:
+        step["status"] = "fail"
+        step["error"] = "mmd-anim source revision is missing or malformed"
+        return None, None, None
+    step["artifact"] = str(runtime_path)
+    step["artifact_sha256"] = runtime_sha
+    return runtime_path, runtime_sha, source_revision
 
 
 def _run_command(
@@ -1781,6 +2039,8 @@ def build_release_summary(
     skip_focused_tests: bool,
 ) -> dict[str, Any]:
     """Run all V070 steps and write one release summary."""
+    start_provenance = _capture_release_provenance()
+    maya_versions = tuple(maya_versions)
     out_dir.mkdir(parents=True, exist_ok=True)
     steps: list[dict[str, Any]] = []
     if skip_focused_tests:
@@ -1888,6 +2148,48 @@ def build_release_summary(
     else:
         steps.append(_not_run("mmd_anim_validation", "no --mmd-anim-cli was supplied"))
 
+    uvx = shutil.which("uvx") or "uvx"
+    ffi_build_step = _run_command(
+        "mmd_anim_ffi_build",
+        [uvx, "nox", "-s", "ffi_build", "--", "--release"],
+        timeout=1800.0,
+    )
+    runtime_path, runtime_sha256, source_revision = _validate_ffi_build_step(ffi_build_step)
+    steps.append(ffi_build_step)
+
+    binding_report = out_dir / "mmd-anim-binding-gate.json"
+    if binding_report.exists():
+        binding_report.unlink()
+    runtime_args = ["--runtime-library", str(runtime_path)] if runtime_path else []
+    steps.append(
+        _run_command(
+            "mmd_anim_python_bindings",
+            [uvx, "nox", "-s", "mmd_anim_python_tests", "--", *runtime_args],
+            timeout=900.0,
+        )
+    )
+    binding_gate_step = _run_command(
+        "mmd_anim_binding_gate",
+        [
+            uvx,
+            "nox",
+            "-s",
+            "mmd_anim_binding_gate",
+            "--",
+            *runtime_args,
+            "--out",
+            str(binding_report),
+        ],
+        timeout=900.0,
+    )
+    _validate_binding_gate_artifact(
+        binding_gate_step,
+        binding_report,
+        runtime_path=runtime_path,
+        runtime_sha256=runtime_sha256,
+    )
+    steps.append(binding_gate_step)
+
     steps.append(_report_consistency_step(report_paths))
     unexecuted = [step["name"] for step in steps if step["status"] == "not_run"]
     blockers = [
@@ -1898,30 +2200,95 @@ def build_release_summary(
         for step in steps
         if step["status"] == "fail"
     ]
+    if not maya_versions:
+        blockers.append({"name": "maya_versions", "reason": "at least one Maya version is required"})
+    start_failures = _validate_release_provenance(start_provenance)
+    if start_provenance.get("dirty") is True:
+        start_failures.append("worktree was dirty at gate start")
+    end_provenance = _capture_release_provenance()
+    end_failures = _validate_release_provenance(end_provenance)
+    if start_provenance.get("head_sha") != end_provenance.get("head_sha"):
+        end_failures.append("HEAD changed during gate")
+    if start_provenance.get("dirty") != end_provenance.get("dirty"):
+        end_failures.append("dirty state changed during gate")
+    provenance_failures = start_failures + [f"end: {failure}" for failure in end_failures]
+    if provenance_failures:
+        blockers.append(
+            {
+                "name": "release_provenance",
+                "reason": "; ".join(provenance_failures),
+            }
+        )
     mmd_anim_provenance = _mmd_anim_provenance(mmd_report)
+    mmd_anim_provenance["ffi_build"] = {
+        "step_status": ffi_build_step["status"],
+        "source_revision": source_revision,
+        "runtime_path": str(runtime_path) if runtime_path else None,
+        "runtime_sha256": runtime_sha256,
+        "artifact": ffi_build_step.get("artifact"),
+        "artifact_sha256": ffi_build_step.get("artifact_sha256"),
+    }
+    mmd_anim_provenance["binding"] = {
+        "python_tests_status": next(
+            step["status"] for step in steps if step["name"] == "mmd_anim_python_bindings"
+        ),
+        "gate_status": binding_gate_step["status"],
+        "gate_artifact": str(binding_report),
+        "runtime_path": str(runtime_path) if runtime_path else None,
+        "runtime_sha256": runtime_sha256,
+        "source_revision": source_revision,
+    }
+    gui_steps = [
+        step
+        for step in steps
+        if step["name"].startswith("gui_export_workflow_") or step["name"].startswith("gui_tests_")
+    ]
+    gui_scope = "not_run" if skip_gui else "full" if full_gui else "targeted"
+    gui_executed = any(step["status"] != "not_run" for step in gui_steps)
+    gui_passed = bool(gui_steps) and len(gui_steps) == len(maya_versions) and all(
+        step["status"] == "pass" for step in gui_steps
+    )
+    coverage_proven = [
+        "13-case PMX/PMD/VMD probe with fresh-import or policy-reject output-safety evidence",
+        "PMX 2.0 additional UV channels 1-4 and UV/additional-UV morph field oracle",
+        "PMX IK and non-IK bone semantic fields across Maya import/export boundaries",
+        "PMX 2.1 soft-body, SDEF, Flip, and Impulse provenance with stable policy-reject",
+        "VMD Mode C bone/morph/IK state tracks and standalone camera/light dense field oracle",
+        "VMD Mode A raw provenance, interpolation, pose, SHA, and edited fail-closed oracle",
+        "MMD-Anim CLI validation plus Python binding tests and binding export gate",
+        "fatal fail-closed, warning acknowledgement, and output-preservation boundaries",
+        "canonical JSON/Markdown validation-report consistency",
+    ]
+    coverage_outside = [
+        "full PMX/PMD material/morph field parity beyond representative oracle fields",
+        "visual/runtime parity claims for UV morphs and VMD camera/light tracks",
+        "VMD self-shadow support (explicitly excluded by the camera/light case)",
+    ]
+    if gui_passed:
+        coverage_proven.append(f"{gui_scope} ExportTab GUI workflow for each requested Maya version")
+    else:
+        coverage_outside.append(
+            f"{gui_scope} GUI workflow was not fully executed and passing for every requested Maya version"
+        )
     summary = {
         "schema_version": 1,
         "gate": "V070-EXPORT-RELEASE-GATE-1",
         "status": "pass" if not blockers and not unexecuted else "fail",
+        "provenance": {
+            "start": start_provenance,
+            "end": end_provenance,
+        },
         "maya_versions": list(maya_versions),
+        "gui_scope": gui_scope,
+        "gui_requested": not skip_gui,
+        "gui_executed": gui_executed,
+        "gui_passed": gui_passed,
+        "gui_steps": [
+            {"name": step["name"], "status": step["status"]} for step in gui_steps
+        ],
         "coverage": {
-            "proven": [
-                "PMX/VMD parseable output and PMD import/policy-reject",
-                "Maya fresh-import mesh/pose/metadata and rigid-body/joint physics oracle",
-                "Maya fresh-import supported vertex/bone/UV/additional-UV/material/group morph oracle",
-                "PMX IK and non-IK bone semantic fields across Maya import/export boundaries",
-                "PMX 2.1 soft-body provenance and public policy-reject",
-                "PMX 2.0 SDEF and PMX 2.1 Flip/Impulse provenance and public policy-reject",
-                "fatal fail-closed and warning acknowledgement boundaries",
-                "focused ExportTab format/mode UI, button routing, and Validation Console catalog rendering",
-                "canonical JSON/Markdown validation-report consistency",
-            ],
-            "outside_this_gate": [
-                "full PMX/PMD material/morph field parity beyond the representative physics/morph oracles",
-                "UV morph viewport/runtime evaluation",
-                "VMD camera/light/morph and raw interpolation provenance parity",
-                "full legacy GUI regression suite",
-            ],
+            "proven": coverage_proven,
+            "outside_this_gate": coverage_outside,
         },
         "mmd_anim_provenance": mmd_anim_provenance,
         "steps": steps,
@@ -1937,6 +2304,14 @@ def build_release_summary(
         f"- Status: `{summary['status'].upper()}`",
         f"- Gate: `{summary['gate']}`",
         f"- Maya versions: `{', '.join(summary['maya_versions'])}`",
+        f"- GUI scope: `{summary['gui_scope']}`",
+        f"- Run ID: `{summary['provenance']['start']['run_id']}`",
+        f"- Timestamp (UTC): `{summary['provenance']['start']['timestamp']}`",
+        f"- Branch: `{summary['provenance']['start']['branch'] or 'unavailable'}`",
+        f"- HEAD at start: `{summary['provenance']['start']['head_sha'] or 'unavailable'}`",
+        f"- HEAD at end: `{summary['provenance']['end']['head_sha'] or 'unavailable'}`",
+        f"- Dirty at start: `{str(summary['provenance']['start']['dirty']).lower()}`",
+        f"- Dirty at end: `{str(summary['provenance']['end']['dirty']).lower()}`",
         "",
         "## MMD-Anim Provenance",
         "",
@@ -1948,6 +2323,12 @@ def build_release_summary(
         f"- Expected CLI version: `{mmd_anim_provenance['expected_cli_version'] or 'not configured'}`",
         f"- CLI version match: `{str(mmd_anim_provenance['version_match']).lower()}`",
         f"- Checked-out submodule revision: `{mmd_anim_provenance['submodule_revision'] or 'unavailable'}`",
+        f"- FFI build status: `{mmd_anim_provenance['ffi_build']['step_status']}`",
+        f"- FFI runtime: `{mmd_anim_provenance['ffi_build']['runtime_path'] or 'unavailable'}`",
+        f"- FFI runtime SHA-256: `{mmd_anim_provenance['ffi_build']['runtime_sha256'] or 'unavailable'}`",
+        f"- Binding tests status: `{mmd_anim_provenance['binding']['python_tests_status']}`",
+        f"- Binding gate status: `{mmd_anim_provenance['binding']['gate_status']}`",
+        f"- Binding gate artifact: `{mmd_anim_provenance['binding']['gate_artifact']}`",
         "- Relationship: CLI version is compared only with expected CLI version; "
         "the checked-out submodule revision is separate source provenance and is not directly compared.",
         "",

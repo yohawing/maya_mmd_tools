@@ -16,6 +16,10 @@ from tools.export_release_gate import (
     _require_build_path,
     _run_fail_fixture_matrix,
     _maya_path,
+    _capture_release_provenance,
+    _validate_binding_gate_artifact,
+    _validate_ffi_build_step,
+    _validate_release_provenance,
     _validate_maya_probe_report,
 )
 from tools.export_release_maya_probe import _compare_scene_oracles, _run_vmd_case
@@ -73,6 +77,121 @@ class ExportReleaseGateTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "not_run")
         self.assertEqual(result["reason"], "focused gate does not include full GUI")
+
+    def test_release_provenance_is_required_and_utc(self):
+        valid = {
+            "run_id": "20260809T000000000000Z-deadbeef",
+            "timestamp": "2026-08-09T00:00:00+00:00",
+            "branch": "Feature/v070-export",
+            "head_sha": "a" * 40,
+            "dirty": False,
+            "git_capture": {"branch": True, "head_sha": True, "status": True},
+        }
+        self.assertEqual(_validate_release_provenance(valid), [])
+        invalid = {**valid, "head_sha": "short", "dirty": "false"}
+        failures = _validate_release_provenance(invalid)
+        self.assertIn("provenance.head_sha must be a full SHA-1", failures)
+        self.assertIn("provenance.dirty must be boolean", failures)
+
+    def test_release_provenance_handles_detached_branch_and_independent_status(self):
+        def git_result(command, **_kwargs):
+            if "symbolic-ref" in command:
+                return mock.Mock(returncode=1, stdout="", stderr="")
+            if "rev-parse" in command:
+                return mock.Mock(returncode=1, stdout="", stderr="head failed")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(RELEASE_GATE.subprocess, "run", side_effect=git_result):
+            provenance = _capture_release_provenance()
+
+        self.assertEqual(provenance["branch"], "DETACHED")
+        self.assertFalse(provenance["dirty"])
+        self.assertTrue(provenance["git_capture"]["branch"])
+        self.assertFalse(provenance["git_capture"]["head_sha"])
+        self.assertTrue(provenance["git_capture"]["status"])
+
+    def test_binding_artifact_rejects_malformed_schema(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report_path = Path(directory) / "binding.json"
+            runtime_path = RELEASE_GATE._mmd_anim_runtime_path()
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "status": "pass",
+                        "model": str(RELEASE_GATE.ROOT / "tests/data/mmt_test_model.pmx"),
+                        "motion": str(RELEASE_GATE.ROOT / "tests/data/mmt_test_model_test_motion.vmd"),
+                        "runtime_library": str(runtime_path),
+                                "report": {"schema_version": 1, "status": "blocked", "issues": [{}]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            step = {"name": "mmd_anim_binding_gate", "status": "pass"}
+            _validate_binding_gate_artifact(
+                step,
+                report_path,
+                runtime_path=runtime_path,
+                runtime_sha256=RELEASE_GATE._sha256(runtime_path),
+            )
+
+        self.assertEqual(step["status"], "fail")
+        self.assertIn("report.valid/status", step["error"])
+
+    def test_binding_artifact_rejects_binding_root_or_frame_mismatch(self):
+        runtime_path = RELEASE_GATE._mmd_anim_runtime_path()
+        self.assertIsNotNone(runtime_path)
+        base_report = {
+            "schema_version": 1,
+            "status": "pass",
+            "binding_root": str(RELEASE_GATE.ROOT / "external/mmd-anim/bindings/python"),
+            "frame": 0.0,
+            "model": str(RELEASE_GATE.ROOT / "tests/data/mmt_test_model.pmx"),
+            "motion": str(RELEASE_GATE.ROOT / "tests/data/mmt_test_model_test_motion.vmd"),
+            "runtime_library": str(runtime_path),
+            "report": {"schema_version": 1, "status": "ready", "issues": []},
+        }
+        for field, value, expected_error in (
+            ("binding_root", str(RELEASE_GATE.ROOT / "external/mmd-anim"), "binding_root mismatch"),
+            ("frame", 1.0, "frame must be 0.0"),
+        ):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                report_path = Path(directory) / "binding.json"
+                report = {**base_report, field: value}
+                report_path.write_text(json.dumps(report), encoding="utf-8")
+                step = {"name": "mmd_anim_binding_gate", "status": "pass"}
+                _validate_binding_gate_artifact(
+                    step,
+                    report_path,
+                    runtime_path=runtime_path,
+                    runtime_sha256=RELEASE_GATE._sha256(runtime_path),
+                )
+                self.assertEqual(step["status"], "fail")
+                self.assertIn(expected_error, step["error"])
+
+    def test_ffi_build_evidence_rejects_missing_runtime(self):
+        step = {"name": "mmd_anim_ffi_build", "status": "pass"}
+        with mock.patch.object(RELEASE_GATE, "_mmd_anim_runtime_path", return_value=None):
+            runtime_path, runtime_sha, source_revision = _validate_ffi_build_step(step)
+        self.assertIsNone(runtime_path)
+        self.assertIsNone(runtime_sha)
+        self.assertEqual(step["status"], "fail")
+        self.assertIn("did not produce", step["error"])
+
+    def test_ffi_runtime_candidates_ignore_foreign_host_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            release_dir = root / "external" / "mmd-anim" / "target" / "release"
+            release_dir.mkdir(parents=True)
+            native = release_dir / "mmd_runtime_ffi.dll"
+            foreign = release_dir / "libmmd_runtime_ffi.so"
+            native.write_bytes(b"windows-runtime")
+            foreign.write_bytes(b"foreign-runtime")
+            with mock.patch.object(RELEASE_GATE, "ROOT", root), mock.patch.object(
+                RELEASE_GATE.platform, "system", return_value="Windows"
+            ):
+                self.assertEqual(RELEASE_GATE._mmd_anim_runtime_candidates(), (native,))
+                self.assertEqual(RELEASE_GATE._mmd_anim_runtime_path(), native)
 
     def test_fail_fixture_matrix_is_green_only_when_boundaries_hold(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -885,6 +1004,24 @@ class ExportReleaseGateTests(unittest.TestCase):
                         ),
                         encoding="utf-8",
                     )
+                if name == "mmd_anim_binding_gate":
+                    report_path = Path(command[-1])
+                    runtime_path = RELEASE_GATE._mmd_anim_runtime_path()
+                    report_path.write_text(
+                        json.dumps(
+                            {
+                                "schema_version": 1,
+                                "status": "pass",
+                                "binding_root": str(RELEASE_GATE.ROOT / "external/mmd-anim/bindings/python"),
+                                "frame": 0.0,
+                                "model": str(RELEASE_GATE.ROOT / "tests/data/mmt_test_model.pmx"),
+                                "motion": str(RELEASE_GATE.ROOT / "tests/data/mmt_test_model_test_motion.vmd"),
+                                "runtime_library": str(runtime_path),
+                                "report": {"schema_version": 1, "status": "ready", "issues": []},
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
                 return {"name": name, "status": "pass", "returncode": 0}
 
             with mock.patch.object(
@@ -912,6 +1049,12 @@ class ExportReleaseGateTests(unittest.TestCase):
             provenance = summary["mmd_anim_provenance"]
             self.assertEqual(summary["status"], "fail")
             self.assertIn("focused_tests", summary["unexecuted"])
+            self.assertEqual(summary["gui_scope"], "not_run")
+            self.assertIsInstance(summary["provenance"]["start"]["dirty"], bool)
+            self.assertIn("end", summary["provenance"])
+            self.assertEqual(summary["mmd_anim_provenance"]["binding"]["gate_status"], "pass")
+            self.assertTrue(any(step["name"] == "mmd_anim_python_bindings" for step in summary["steps"]))
+            self.assertTrue(any(step["name"] == "mmd_anim_binding_gate" for step in summary["steps"]))
             self.assertEqual(provenance["cli_version"], "mmd-anim 0.2.0")
             self.assertEqual(provenance["expected_cli_version"], "mmd-anim 0.2.0")
             self.assertTrue(provenance["version_match"])
@@ -924,6 +1067,171 @@ class ExportReleaseGateTests(unittest.TestCase):
             self.assertIn("## MMD-Anim Provenance", markdown)
             self.assertIn("Observed CLI version: `mmd-anim 0.2.0`", markdown)
             self.assertIn("Checked-out submodule revision: `v0.3.3`", markdown)
+
+    def test_release_summary_marks_targeted_gui_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out_dir = Path(directory) / "release"
+
+            def run_command(name, command, **_kwargs):
+                if name == "mmd_anim_binding_gate":
+                    runtime_path = RELEASE_GATE._mmd_anim_runtime_path()
+                    Path(command[-1]).write_text(
+                        json.dumps(
+                            {
+                                "schema_version": 1,
+                                "status": "pass",
+                                "binding_root": str(RELEASE_GATE.ROOT / "external/mmd-anim/bindings/python"),
+                                "frame": 0.0,
+                                "model": str(RELEASE_GATE.ROOT / "tests/data/mmt_test_model.pmx"),
+                                "motion": str(RELEASE_GATE.ROOT / "tests/data/mmt_test_model_test_motion.vmd"),
+                                "runtime_library": str(runtime_path),
+                                "report": {"schema_version": 1, "status": "ready", "issues": []},
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                return {"name": name, "status": "pass", "returncode": 0}
+
+            with mock.patch.object(
+                RELEASE_GATE,
+                "_run_fail_fixture_matrix",
+                return_value={"status": "pass", "fixtures": [], "report_paths": []},
+            ), mock.patch.object(
+                RELEASE_GATE,
+                "_run_command",
+                side_effect=run_command,
+            ), mock.patch.object(
+                RELEASE_GATE,
+                "_report_consistency_step",
+                return_value={"name": "report_consistency", "status": "pass", "checked": [], "failures": []},
+            ):
+                summary = RELEASE_GATE.build_release_summary(
+                    out_dir=out_dir,
+                    maya_versions=(),
+                    mmd_anim_cli=None,
+                    skip_gui=False,
+                    full_gui=False,
+                    skip_focused_tests=True,
+                )
+
+            self.assertEqual(summary["gui_scope"], "targeted")
+            self.assertIn("mmd_anim_validation", summary["unexecuted"])
+            self.assertEqual(summary["mmd_anim_provenance"]["binding"]["gate_status"], "pass")
+
+    def test_release_summary_fails_when_dirty_at_start(self):
+        base = {
+            "run_id": "run",
+            "timestamp": "2026-08-09T00:00:00+00:00",
+            "branch": "Feature/v070-export",
+            "head_sha": "a" * 40,
+            "git_capture": {"branch": True, "head_sha": True, "status": True},
+        }
+        start = {**base, "dirty": True}
+        end = {**base, "dirty": False}
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(
+                RELEASE_GATE,
+                "_capture_release_provenance",
+                side_effect=[start, end],
+            ), mock.patch.object(RELEASE_GATE, "_maya_path", return_value=Path("missing-mayapy")), mock.patch.object(
+                RELEASE_GATE,
+                "_run_fail_fixture_matrix",
+                return_value={"status": "pass", "fixtures": [], "report_paths": []},
+            ), mock.patch.object(
+                RELEASE_GATE,
+                "_run_command",
+                side_effect=lambda name, _command, **_kwargs: {
+                    "name": name,
+                    "status": "pass",
+                    "returncode": 0,
+                },
+            ), mock.patch.object(
+                RELEASE_GATE,
+                "_report_consistency_step",
+                return_value={"name": "report_consistency", "status": "pass", "checked": [], "failures": []},
+            ):
+                summary = RELEASE_GATE.build_release_summary(
+                    out_dir=Path(directory) / "release",
+                    maya_versions=("2024",),
+                    mmd_anim_cli=None,
+                    skip_gui=True,
+                    full_gui=False,
+                    skip_focused_tests=True,
+                )
+        self.assertEqual(summary["status"], "fail")
+        self.assertTrue(any(item["name"] == "release_provenance" for item in summary["blockers"]))
+
+    def test_release_summary_fails_when_head_or_dirty_changes_mid_run(self):
+        base = {
+            "run_id": "run",
+            "timestamp": "2026-08-09T00:00:00+00:00",
+            "branch": "Feature/v070-export",
+            "git_capture": {"branch": True, "head_sha": True, "status": True},
+        }
+        start = {**base, "head_sha": "a" * 40, "dirty": False}
+        end = {**base, "head_sha": "b" * 40, "dirty": True}
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(
+                RELEASE_GATE,
+                "_capture_release_provenance",
+                side_effect=[start, end],
+            ), mock.patch.object(RELEASE_GATE, "_maya_path", return_value=Path("missing-mayapy")), mock.patch.object(
+                RELEASE_GATE,
+                "_run_fail_fixture_matrix",
+                return_value={"status": "pass", "fixtures": [], "report_paths": []},
+            ), mock.patch.object(
+                RELEASE_GATE,
+                "_run_command",
+                side_effect=lambda name, _command, **_kwargs: {
+                    "name": name,
+                    "status": "pass",
+                    "returncode": 0,
+                },
+            ), mock.patch.object(
+                RELEASE_GATE,
+                "_report_consistency_step",
+                return_value={"name": "report_consistency", "status": "pass", "checked": [], "failures": []},
+            ):
+                summary = RELEASE_GATE.build_release_summary(
+                    out_dir=Path(directory) / "release",
+                    maya_versions=("2024",),
+                    mmd_anim_cli=None,
+                    skip_gui=True,
+                    full_gui=False,
+                    skip_focused_tests=True,
+                )
+        self.assertEqual(summary["status"], "fail")
+        self.assertTrue(any(item["name"] == "release_provenance" for item in summary["blockers"]))
+
+    def test_release_summary_rejects_empty_maya_version_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(
+                RELEASE_GATE,
+                "_run_fail_fixture_matrix",
+                return_value={"status": "pass", "fixtures": [], "report_paths": []},
+            ), mock.patch.object(
+                RELEASE_GATE,
+                "_run_command",
+                side_effect=lambda name, _command, **_kwargs: {
+                    "name": name,
+                    "status": "pass",
+                    "returncode": 0,
+                },
+            ), mock.patch.object(
+                RELEASE_GATE,
+                "_report_consistency_step",
+                return_value={"name": "report_consistency", "status": "pass", "checked": [], "failures": []},
+            ):
+                summary = RELEASE_GATE.build_release_summary(
+                    out_dir=Path(directory) / "release",
+                    maya_versions=(),
+                    mmd_anim_cli=None,
+                    skip_gui=True,
+                    full_gui=False,
+                    skip_focused_tests=True,
+                )
+        self.assertEqual(summary["status"], "fail")
+        self.assertTrue(any(item["name"] == "maya_versions" for item in summary["blockers"]))
 
     def test_release_summary_does_not_reuse_stale_mmd_anim_report(self):
         with tempfile.TemporaryDirectory() as directory:
