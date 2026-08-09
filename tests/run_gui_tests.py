@@ -26,7 +26,9 @@ DEFAULT_MAYA_VERSION = "2024"
 COMMAND_PORT = 7720
 LOG_FILE_NAME = "ui_test_results.log"
 MAYA_START_TIMEOUT = 120  # seconds
-TEST_EXECUTION_TIMEOUT = 600  # seconds
+# Maya 2026 can spend more than ten minutes on first-run Flow plugin
+# initialization even when the focused GUI suite ultimately passes.
+TEST_EXECUTION_TIMEOUT = 900  # seconds
 LOG_POLL_INTERVAL = 1  # second
 MAYA_PYTHON_READY_TIMEOUT = 120  # seconds
 MAYA_PYTHON_READY_POLL_INTERVAL = 0.25  # second
