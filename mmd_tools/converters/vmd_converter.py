@@ -96,6 +96,7 @@ from .vmd_runtime_rig_helper import (
 )
 from .vmd_registered_sparse import registered_sparse_bone_frames
 from .vmd_runtime_provenance import (
+    build_raw_vmd_source_provenance,
     build_runtime_registration_provenance,
     store_runtime_registration_provenance,
 )
@@ -589,6 +590,7 @@ class VmdConverter:
         self._enforce_humanik_import_gate(target_model)
         registered_sparse_frames = None
         registered_sparse_provenance = None
+        raw_source_provenance = None
         runtime_bake_requested = False
         if not bake_mode and getattr(vmd_data, "bone_frames", None):
             # Resolve the imported PMX index table before any Control Rig or
@@ -798,6 +800,14 @@ class VmdConverter:
                 import_context.pmx_path,
                 import_context.target_namespace,
             )
+            raw_source_provenance = build_raw_vmd_source_provenance(
+                vmd_bytes=vmd_bytes,
+                pmx_bytes=pmx_bytes,
+                vmd_source_path=getattr(import_context.vmd_data, "source_file", None),
+                pmx_source_path=pmx_path,
+                raw_bone_frames=getattr(import_context.vmd_data, "bone_frames", None),
+            )
+            raw_source_provenance["target_model"] = str(import_context.target_model or "")
             _emit_progress(55)
 
             runtime_success = False
@@ -1009,6 +1019,14 @@ class VmdConverter:
                     store_runtime_registration_provenance(
                         import_context.target_model,
                         registered_sparse_provenance,
+                    )
+                )
+            elif not runtime_success and raw_source_provenance is not None:
+                raw_source_provenance["status"] = "success"
+                raw_source_provenance["scene_metadata_stored"] = (
+                    store_runtime_registration_provenance(
+                        import_context.target_model,
+                        raw_source_provenance,
                     )
                 )
             self.logger.info("VMD animation conversion completed")
@@ -2633,6 +2651,7 @@ class VmdConverter:
                     else 0
                 ),
                 runtime_feature_flags=int(get_runtime_feature_flags()),
+                raw_bone_frames=source_bone_frames,
             )
             registration_profile.update(
                 {
@@ -2802,6 +2821,7 @@ class VmdConverter:
             runtime_library_path=get_runtime_library_path() if HAS_MMD_RUNTIME else None,
             runtime_abi_version=runtime_abi_version,
             runtime_feature_flags=int(get_runtime_feature_flags()) if HAS_MMD_RUNTIME else 0,
+            raw_bone_frames=getattr(vmd_data, "bone_frames", None),
         )
         registration_profile["target_model"] = str(target_model or "")
         if isinstance(profile, dict):

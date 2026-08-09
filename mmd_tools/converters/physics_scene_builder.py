@@ -454,6 +454,7 @@ def build_physics_live_graph(
     bones,
     maya_joints,
     root_group: str,
+    model_registry: str | None = None,
     logger=None,
 ) -> dict:
     """Create the Maya DG graph that drives dynamic PMX bones from physics.
@@ -478,7 +479,14 @@ def build_physics_live_graph(
         solver = cmds.createNode("mmdPhysicsSolver", name=f"{root_token}_mmdPhysicsSolver")
         cmds.setAttr(f"{solver}.enable", True)
         cmds.setAttr(f"{solver}.inputMode", 1)
-        cmds.connectAttr(f"{root_group}.message", f"{solver}.modelRoot", force=True)
+        if model_registry:
+            cmds.connectAttr(
+                f"{model_registry}.message",
+                f"{solver}.modelRegistry",
+                force=True,
+            )
+        else:
+            cmds.connectAttr(f"{root_group}.message", f"{solver}.modelRoot", force=True)
 
         time_nodes = cmds.ls(type="time") or []
         if time_nodes:
@@ -768,12 +776,24 @@ def _find_solver_for_model(model_root: str):
     if "mmdPhysicsSolver" not in available:
         return None
     solvers = cmds.ls(type="mmdPhysicsSolver") or []
+    try:
+        from ..core.model_registry import get_model_registry
+
+        model_registry = get_model_registry(model_root)
+    except Exception:
+        model_registry = None
     candidates = []
     for solver in solvers:
         conns = cmds.listConnections(
             f"{solver}.modelRoot", source=True, destination=False
         ) or []
-        if model_root in conns:
+        try:
+            registry_conns = cmds.listConnections(
+                f"{solver}.modelRegistry", source=True, destination=False
+            ) or []
+        except Exception:
+            registry_conns = []
+        if model_root in conns or (model_registry and model_registry in registry_conns):
             candidates.append(solver)
     if not candidates:
         return None

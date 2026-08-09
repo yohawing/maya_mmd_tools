@@ -897,6 +897,33 @@ def _apply_unique_shader_path():
             cmds.setAttr(shader + ".technique", techniques.get(shader, "MMDTechnique"), type="string")
     return shaders
 
+def _apply_case_morph_weights(root, case):
+    # Apply optional model-scoped morph input weights requested by a visual case.
+    requests = (case.get("metadata") or {{}}).get("morph_weights") or []
+    if not requests:
+        return None
+    controllers = cmds.listConnections(
+        root + ".mmd_morph_controller", source=True, destination=False
+    ) or []
+    if len(controllers) != 1:
+        raise RuntimeError(
+            "visual morph case requires exactly one model-scoped morph controller: "
+            + str(controllers)
+        )
+    controller = controllers[0]
+    applied = []
+    for request in requests:
+        index = int(request["index"])
+        weight = float(request["weight"])
+        if index < 0:
+            raise ValueError("visual morph weight index must be non-negative")
+        plug = controller + ".inputWeight[" + str(index) + "]"
+        cmds.setAttr(plug, weight)
+        applied.append({{"index": index, "weight": weight, "plug": plug}})
+    cmds.refresh(force=True)
+    return {{"controller": controller, "weights": applied}}
+
+
 def _configure_mmd_self_shadow_inputs(light_controller, phase):
     # dx11Shader effect attributes are created lazily by Maya. Keep this probe
     # explicit and fail-closed: a missing UseShadows input is evidence that the
@@ -1009,6 +1036,7 @@ def _capture_case(case):
     import mmd_tools.io.mmd_importer as mmd_importer
     import mmd_tools.io.pmx_importer as pmx_importer
     import mmd_tools.io.vmd_importer as vmd_importer
+    from tests.common.maya_plugin_setup import load_mmd_tools_plugin
     from mmd_tools.core.settings import settings
 
     pmx_vertex = importlib.reload(pmx_vertex)
@@ -1022,6 +1050,7 @@ def _capture_case(case):
     mmd_importer = importlib.reload(mmd_importer)
 
     cmds.file(new=True, force=True)
+    load_mmd_tools_plugin(_project_root)
     settings.set("import.model.create_mmd_shaders", True)
     settings.set("import.model.mmd_shader_backend", _shader_backend)
 
@@ -1030,6 +1059,9 @@ def _capture_case(case):
         raise RuntimeError("import_mmd_file returned None: " + case["model"])
     _apply_unique_shader_path()
     debug_actions = {{"mmdLight": _apply_mmd_light(case)}}
+    morph_weights = _apply_case_morph_weights(root, case)
+    if morph_weights is not None:
+        debug_actions["morphWeights"] = morph_weights
     light_controller = debug_actions["mmdLight"].get("controller")
     if _enable_mmd_self_shadow:
         debug_actions["mmdSelfShadow"] = {{

@@ -39,6 +39,7 @@ class TestSolverNodeStructure(unittest.TestCase):
         self.assertIn("aEnable", self.source)
         self.assertIn("aInTime", self.source)
         self.assertIn("aModelRoot", self.source)
+        self.assertIn("aModelRegistry", self.source)
         self.assertIn("aInWorldSettings", self.source)
         self.assertIn("aInDescriptorVersion", self.source)
 

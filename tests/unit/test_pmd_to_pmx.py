@@ -5,6 +5,7 @@ from mmd_tools.core import mmd_parser
 from mmd_tools.core.pmd_data import PmdData
 from mmd_tools.core.pmd_to_pmx import convert_pmd_to_pmx_data
 from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.pmx_data.material import PmxDrawFlag
 from tests.common.pmd_mock import PmdMock
 from tests.common.test_base import TestBase
 
@@ -31,6 +32,10 @@ class TestPmdToPmx(TestBase):
         self.assertEqual(len(pmx.morphs), 2)
         self.assertEqual(len(pmx.rigid_bodies), len(pmd.rigid_bodies))
         self.assertEqual(len(pmx.joints), len(pmd.joints))
+        self.assertEqual(
+            [int(bool(material.draw_flag & PmxDrawFlag.EDGE_DRAWING)) for material in pmx.materials],
+            [int(material.edge_flag) for material in pmd.materials],
+        )
         self.assertTrue(any(bone.ik_links for bone in pmx.bones))
         self.assertGreater(len(pmx.display_frames), 0)
 

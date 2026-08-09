@@ -221,14 +221,14 @@ class ImportExportTab(BaseTab):
         self.use_cpp_fast_load_check = self._bind_checkbox(
             "use_cpp_fast_load",
             setting_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD,
-            True,
+            False,
             other_layout,
             tooltip_key="use_cpp_fast_load",
         )
         self.use_cpp_vp2_ownership_check = self._bind_checkbox(
             "use_cpp_vp2_ownership",
             setting_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP,
-            True,
+            False,
             other_layout,
             tooltip_key="use_cpp_vp2_ownership",
         )

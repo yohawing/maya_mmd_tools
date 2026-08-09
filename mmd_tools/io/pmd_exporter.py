@@ -16,6 +16,7 @@ from mmd_tools.core.pmd_data.face import PmdFace
 from mmd_tools.core.pmd_data.material import PmdMaterial
 from mmd_tools.core.pmd_data.vertex import PmdVertex
 from mmd_tools.core.utils import fan_triangulate as _fan_triangulate
+from mmd_tools.validation.export_validator import ensure_writer_safe_materials
 
 # PMDの頂点インデックスは符号なし16bit。
 PMD_MAX_VERTEX_INDEX = 0xFFFF
@@ -82,6 +83,7 @@ class PmdExporter:
             raise ValueError("vertices must not be empty")
         if not faces_raw:
             raise ValueError("faces must not be empty")
+        ensure_writer_safe_materials(maya_data, "pmd")
 
         vertex_count = len(vertices_raw)
         max_vertex_count = PMD_MAX_VERTEX_INDEX + 1

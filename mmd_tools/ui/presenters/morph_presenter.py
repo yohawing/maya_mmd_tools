@@ -13,6 +13,10 @@ from ...core.morph_metadata_reader import (
     morph_info_from_presenter_entry,
     parse_blendshape_morph_entries,
 )
+from ...core.model_registry import (
+    REGISTRY_CATEGORY_MORPH,
+    list_model_registry_members_from_adapter,
+)
 from ...converters.morph_runtime_common import parse_morph_offsets_json
 from ..qt_compat import Qt, QTimer, QListWidgetItem
 from .list_presenter_helpers import (
@@ -299,13 +303,20 @@ class MorphPresenter:
 
     def _load_network_morphs(self, model_root=None, allow_metadata_entries=True):
         """bone/material/group morph の network node metadata を一覧用に読む。"""
-        network_nodes = self.maya_adapter.ls(type="network") or []
+        registry_members = self._registry_morph_members(model_root)
+        network_nodes = (
+            registry_members
+            if registry_members is not None
+            else self.maya_adapter.ls(type="network") or []
+        )
         for morph_node in network_nodes:
             if not self.maya_adapter.attribute_exists("mmd_morph_type", morph_node):
                 continue
 
             # model root が指定され、ノードに mmd_model_root 接続がある場合はスコープチェック
-            if model_root and self.maya_adapter.attribute_exists("mmd_model_root", morph_node):
+            if model_root and registry_members is None and self.maya_adapter.attribute_exists(
+                "mmd_model_root", morph_node
+            ):
                 connected_roots = self.maya_adapter.list_connections(
                     f"{morph_node}.mmd_model_root"
                 ) or []
@@ -347,6 +358,14 @@ class MorphPresenter:
             data["mmd_morph_type"] = morph_type
             if morph_type == "group":
                 data["group_morph_offsets"] = self._read_group_morph_offsets(morph_node)
+
+    def _registry_morph_members(self, model_root):
+        """Return registry morph members, or None for an old scene fallback."""
+        return list_model_registry_members_from_adapter(
+            self.maya_adapter,
+            model_root,
+            REGISTRY_CATEGORY_MORPH,
+        )
 
     def _read_group_morph_offsets(self, morph_node):
         """Read group references fail-closed for capability decisions."""

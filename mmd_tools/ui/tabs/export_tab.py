@@ -57,6 +57,7 @@ class ExportTab(BaseTab):
         settings_layout = QVBoxLayout(settings_widget)
         self.settings_group = QGroupBox(self.tr("export", "settings"))
         settings_form = QFormLayout()
+        self._settings_form = settings_form
 
         self.target_combo = QComboBox()
         self.target_combo.addItem(self.tr("current_model", "fields").rstrip(":"), "")
@@ -67,7 +68,7 @@ class ExportTab(BaseTab):
         self.format_combo.currentTextChanged.connect(self._sync_mode_visibility)
         settings_form.addRow(self.tr("format", "fields"), self.format_combo)
 
-        self.mode_label = QLabel("VMD mode")
+        self.mode_label = QLabel(self.tr("vmd_mode", "fields"))
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["C", "A"])
         mode_row = QWidget(self)
@@ -77,20 +78,20 @@ class ExportTab(BaseTab):
         mode_layout.addStretch()
         settings_form.addRow(self.mode_label, mode_row)
 
-        self.frame_range_check = QCheckBox("Use frame range")
+        self.frame_range_check = QCheckBox(self.tr("use_frame_range", "checkboxes"))
         self.frame_start_spin = QSpinBox()
         self.frame_start_spin.setRange(0, 1000000)
         self.frame_start_spin.setValue(0)
         self.frame_end_spin = QSpinBox()
         self.frame_end_spin.setRange(0, 1000000)
         self.frame_end_spin.setValue(120)
-        settings_form.addRow("Range", self.frame_range_check)
-        settings_form.addRow("Start", self.frame_start_spin)
-        settings_form.addRow("End", self.frame_end_spin)
+        settings_form.addRow(self.tr("range", "fields"), self.frame_range_check)
+        settings_form.addRow(self.tr("start", "fields"), self.frame_start_spin)
+        settings_form.addRow(self.tr("end", "fields"), self.frame_end_spin)
 
         self.apply_scale_check = QCheckBox(self.tr("apply_scale", "checkboxes"))
         self.apply_scale_check.setChecked(True)
-        settings_form.addRow("Options", self.apply_scale_check)
+        settings_form.addRow(self.tr("options", "fields"), self.apply_scale_check)
 
         self.settings_group.setLayout(settings_form)
         settings_layout.addWidget(self.settings_group)
@@ -107,6 +108,7 @@ class ExportTab(BaseTab):
 
         self.export_group = QGroupBox(self.tr("export", "groups"))
         export_form = QFormLayout()
+        self._export_form = export_form
 
         self.output_path_edit = QLineEdit()
         self.output_browse_button = QPushButton(self.tr("browse", "buttons"))
@@ -118,10 +120,10 @@ class ExportTab(BaseTab):
         export_form.addRow(self.tr("file_path", "labels"), output_row)
 
         buttons = QHBoxLayout()
-        self.validate_button = QPushButton("Validate")
+        self.validate_button = QPushButton(self.tr("validate", "buttons"))
         self.validate_button.clicked.connect(self.validate_requested.emit)
         buttons.addWidget(self.validate_button)
-        self.export_button = QPushButton("Export")
+        self.export_button = QPushButton(self.tr("export", "buttons"))
         self.export_button.clicked.connect(self.export_requested.emit)
         buttons.addWidget(self.export_button)
         self.state_label = QLabel(STATE_EDITING)
@@ -163,7 +165,7 @@ class ExportTab(BaseTab):
         extension = self.format_combo.currentText()
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Export MMD asset",
+            self.tr("export_mmd_asset", "messages"),
             self.output_path_edit.text(),
             f"{extension.upper()} Files (*.{extension});;All Files (*)",
         )
@@ -242,8 +244,60 @@ class ExportTab(BaseTab):
         self.state_label.setText(state)
 
     def retranslateUi(self) -> None:
-        """Keep the tab API compatible with the main-window language switch."""
-        return None
+        """Refresh Export workflow labels after a language change."""
+        self.settings_group.setTitle(self.tr("export", "settings"))
+        self.export_group.setTitle(self.tr("export", "groups"))
+        self.mode_label.setText(self.tr("vmd_mode", "fields"))
+        self.frame_range_check.setText(self.tr("use_frame_range", "checkboxes"))
+        self.apply_scale_check.setText(self.tr("apply_scale", "checkboxes"))
+        self.output_browse_button.setText(self.tr("browse", "buttons"))
+        self.validate_button.setText(self.tr("validate", "buttons"))
+        self.export_button.setText(self.tr("export", "buttons"))
+        self.target_combo.setItemText(0, self.tr("current_model", "fields").rstrip(":"))
+        self._set_form_label(
+            self._settings_form,
+            self.target_combo,
+            self.tr("target_model", "fields"),
+        )
+        self._set_form_label(
+            self._settings_form,
+            self.format_combo,
+            self.tr("format", "fields"),
+        )
+        self._set_form_label(
+            self._settings_form,
+            self.frame_range_check,
+            self.tr("range", "fields"),
+        )
+        self._set_form_label(
+            self._settings_form,
+            self.frame_start_spin,
+            self.tr("start", "fields"),
+        )
+        self._set_form_label(
+            self._settings_form,
+            self.frame_end_spin,
+            self.tr("end", "fields"),
+        )
+        self._set_form_label(
+            self._settings_form,
+            self.apply_scale_check,
+            self.tr("options", "fields"),
+        )
+        self._set_form_label(
+            self._export_form,
+            self.output_path_edit,
+            self.tr("file_path", "labels"),
+        )
+        self.validation_console.retranslateUi()
+
+    @staticmethod
+    def _set_form_label(form, field, text: str) -> None:
+        """Set a QFormLayout label when the Qt binding exposes it."""
+        label_for_field = getattr(form, "labelForField", None)
+        label = label_for_field(field) if label_for_field is not None else None
+        if label is not None:
+            label.setText(text)
 
 
 __all__ = ["ExportTab"]

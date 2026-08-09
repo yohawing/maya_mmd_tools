@@ -9,6 +9,7 @@ from ..actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
 from ..validation.export_validator import (
     ExportValidationIssue,
     ExportValidationReport,
+    pmd_export_policy_report,
 )
 from ..validation.scene_preflight import ScenePreflight
 from ..validation.snapshot import ExportValidationSnapshot
@@ -78,18 +79,26 @@ def _collect_failure_report(
     mode: str,
     error: Exception,
 ) -> ExportValidationReport:
-    """Normalize collector failures into the canonical issue catalog."""
+    """Normalize collector failures without hiding a lower-level report."""
+    wrapper_issue = ExportValidationIssue(
+        "SCENE_COLLECT_FAILED",
+        "fatal",
+        True,
+        "collector",
+        f"scene collector failed: {type(error).__name__}: {error}",
+    )
+    lower_report = getattr(error, "report", None)
+    if isinstance(lower_report, ExportValidationReport):
+        lower_issues = tuple(lower_report.issues)
+        if any(issue.code == wrapper_issue.code for issue in lower_issues):
+            issues = lower_issues
+        else:
+            issues = (wrapper_issue,) + lower_issues
+    else:
+        issues = (wrapper_issue,)
     return ExportValidationReport(
         export_format,
-        (
-            ExportValidationIssue(
-                "SCENE_COLLECT_FAILED",
-                "fatal",
-                True,
-                "collector",
-                f"scene collector failed: {type(error).__name__}",
-            ),
-        ),
+        issues,
         mode=mode,
     )
 
@@ -144,7 +153,12 @@ class ExportWorkflowService:
             raise ValueError("model export requires model_data or a collector")
         return collector(dict(options))
 
-    def _collect_vmd(self, request: ExportWorkflowRequest, options: Mapping[str, Any]) -> Any:
+    def _collect_vmd(
+        self,
+        request: ExportWorkflowRequest,
+        options: Mapping[str, Any],
+        mode: str = "C",
+    ) -> Any:
         """Collect and normalize VMD payload through the configured action."""
         animation_data = request.animation_data
         if animation_data is None:
@@ -153,7 +167,9 @@ class ExportWorkflowService:
             collector = getattr(self.vmd_action, "_collector", None)
             if collector is None:
                 raise ValueError("VMD export requires animation_data or a collector")
-            animation_data = collector(dict(options))
+            collector_options = dict(options)
+            collector_options.setdefault("vmd_mode", mode)
+            animation_data = collector(collector_options)
         converter = getattr(self.vmd_action, "_to_vmd_data", None)
         if callable(converter):
             return converter(animation_data)
@@ -169,9 +185,18 @@ class ExportWorkflowService:
         mode = metadata.get("mode") or "model"
         if report.is_blocking:
             return ExportWorkflowResult(STATE_BLOCKED, report, metadata)
+        if export_format == "pmd":
+            policy_report = pmd_export_policy_report()
+            report = _combine_reports(
+                report,
+                policy_report,
+                export_format=export_format,
+                mode=mode,
+            )
+            return ExportWorkflowResult(STATE_BLOCKED, report, metadata)
 
         try:
-            if export_format in {"pmx", "pmd"}:
+            if export_format == "pmx":
                 payload = self._collect_model(request, self._target_options(options, metadata))
                 validator = getattr(self.model_action, "_validator", None)
                 if validator is None:
@@ -186,7 +211,14 @@ class ExportWorkflowService:
                         target_identity=metadata.get("target_identity"),
                     )
             elif export_format == "vmd":
-                payload = self._collect_vmd(request, self._target_options(options, metadata))
+                payload = self._collect_vmd(
+                    request,
+                    self._target_options(options, metadata),
+                    mode=mode,
+                )
+                raw_provenance = getattr(payload, "raw_provenance", None)
+                if options.get("raw_provenance") is None and raw_provenance is not None:
+                    options["raw_provenance"] = raw_provenance
                 validator = getattr(self.vmd_action, "_validator", None)
                 if validator is None:
                     raise ValueError("VMD action does not expose a validator")
@@ -244,6 +276,9 @@ class ExportWorkflowService:
                     ExportModelRequest(request.file_path, options)
                 )
             else:
+                raw_provenance = getattr(validation.payload, "raw_provenance", None)
+                if options.get("raw_provenance") is None and raw_provenance is not None:
+                    options["raw_provenance"] = raw_provenance
                 action_result = self.vmd_action.execute(
                     ExportVmdRequest(
                         request.file_path,

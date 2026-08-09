@@ -1,3 +1,4 @@
+import math
 import os
 import time
 
@@ -24,6 +25,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_TEXTURE_INDEX,
     ATTR_MMD_TEXTURE_CACHE_PATH,
     ATTR_MMD_TEXTURE_UNRESOLVED,
+    ATTR_MMD_TOON_PATH,
     ATTR_MMD_TOON_TEXTURE_INDEX,
     GEOMETRY_GROUP,
     ATTR_MMD_MATERIAL,
@@ -41,10 +43,15 @@ from mmd_tools.core.constants import (
     ATTR_MMD_EDGE_SIZE,
     ATTR_MMD_SHADER_OUTLINE_ENABLED,
     ATTR_MMD_MATERIAL_INDEX,
+    ATTR_MMD_ADDITIONAL_UVS_JSON,
+    ATTR_MMD_PMX_ADDITIONAL_UV_COUNT,
+    ATTR_MMD_PMX_SDEF_VERTEX_COUNT,
+    ATTR_MMD_SDEF_VERTICES_JSON,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
 )
 from mmd_tools.converters.mesh_material_properties import (
     PMX_DOUBLE_SIDED_DRAW_FLAG as _PMX_DOUBLE_SIDED_DRAW_FLAG,
+    PMX_EDGE_DRAWING_DRAW_FLAG as _PMX_EDGE_DRAWING_DRAW_FLAG,
     material_has_outline as _material_has_outline,
     material_is_double_sided as _material_is_double_sided,
 )
@@ -208,6 +215,7 @@ _MIGRATED_MMD_ATTRS = (
     ATTR_MMD_SHARED_TOON_FLAG,
     "mmd_texture_path",
     "mmd_sphere_path",
+    ATTR_MMD_TOON_PATH,
     "mmdTransparencyMode",
     _ATTR_MMD_DOUBLE_SIDED,
 )
@@ -1210,6 +1218,200 @@ class MeshConverter:
             return None
 
     @staticmethod
+    def _validate_pmx_additional_uvs(all_vertices, additional_uv_count: int) -> int:
+        """Validate the PMX base-vertex additional-UV payload before mesh creation.
+
+        Additional-UV morph offsets are intentionally outside this contract.  A
+        malformed base payload must stop import rather than being represented by
+        fabricated zero channels or silently discarded by Maya.
+        """
+        if isinstance(additional_uv_count, bool) or not isinstance(additional_uv_count, int):
+            raise ValueError("PMX additional UV count must be an integer")
+        if additional_uv_count < 0 or additional_uv_count > 4:
+            raise ValueError(
+                f"PMX additional UV count must be between 0 and 4, got {additional_uv_count}"
+            )
+
+        for vertex_index, vertex in enumerate(all_vertices):
+            raw_uvs = getattr(vertex, "additional_uvs", ())
+            if raw_uvs is None:
+                raw_uvs = ()
+            if not isinstance(raw_uvs, (list, tuple)):
+                raise ValueError(
+                    f"vertex {vertex_index} additional_uvs must be a sequence"
+                )
+            if len(raw_uvs) != additional_uv_count:
+                raise ValueError(
+                    f"vertex {vertex_index} additional_uvs count {len(raw_uvs)} "
+                    f"does not match PMX header count {additional_uv_count}"
+                )
+            for channel_index, channel in enumerate(raw_uvs):
+                if not isinstance(channel, (list, tuple)) or len(channel) != 4:
+                    raise ValueError(
+                        f"vertex {vertex_index} additional UV channel {channel_index} "
+                        "must contain exactly four values"
+                    )
+                for value_index, value in enumerate(channel):
+                    if isinstance(value, bool) or not isinstance(value, (int, float)):
+                        raise ValueError(
+                            f"vertex {vertex_index} additional UV channel "
+                            f"{channel_index}[{value_index}] must be a real number"
+                        )
+                    if not math.isfinite(float(value)):
+                        raise ValueError(
+                            f"vertex {vertex_index} additional UV channel "
+                            f"{channel_index}[{value_index}] must be finite"
+                        )
+        return additional_uv_count
+
+    @staticmethod
+    def _validate_pmx_sdef_vertices(all_vertices) -> int:
+        """Validate raw PMX SDEF payload before Maya normalizes the skin mode."""
+        sdef_count = 0
+        for vertex_index, vertex in enumerate(all_vertices):
+            if int(getattr(vertex, "weight_transform_type", 0)) != 3:
+                continue
+            sdef_count += 1
+            bone_indices = getattr(vertex, "bone_indices", ()) or ()
+            if not isinstance(bone_indices, (list, tuple)) or len(bone_indices) != 2:
+                raise ValueError(
+                    f"SDEF vertex {vertex_index} must contain exactly two bone indices"
+                )
+            for bone_index in bone_indices:
+                if isinstance(bone_index, bool) or not isinstance(bone_index, int) or bone_index < 0:
+                    raise ValueError(f"SDEF vertex {vertex_index} has an invalid bone index")
+            bone_weights = getattr(vertex, "bone_weights", ()) or ()
+            if not isinstance(bone_weights, (list, tuple)) or len(bone_weights) != 1:
+                raise ValueError(
+                    f"SDEF vertex {vertex_index} must contain exactly one bone weight"
+                )
+            weight = bone_weights[0]
+            if isinstance(weight, bool) or not isinstance(weight, (int, float)) or not math.isfinite(float(weight)):
+                raise ValueError(f"SDEF vertex {vertex_index} has an invalid bone weight")
+            for field_name in ("sdef_c", "sdef_r0", "sdef_r1"):
+                vector = getattr(vertex, field_name, None)
+                if not isinstance(vector, (list, tuple)) or len(vector) != 3:
+                    raise ValueError(f"SDEF vertex {vertex_index} {field_name} must contain three values")
+                for component in vector:
+                    if (
+                        isinstance(component, bool)
+                        or not isinstance(component, (int, float))
+                        or not math.isfinite(float(component))
+                    ):
+                        raise ValueError(f"SDEF vertex {vertex_index} {field_name} must contain finite numbers")
+        return sdef_count
+
+    @staticmethod
+    def _post_weld_source_indices(mesh_node: str, fallback_source_indices, native_welded_count) -> list[int]:
+        """Return the local-to-PMX mapping after an optional native weld."""
+        if native_welded_count is None:
+            return [int(index) for index in fallback_source_indices]
+        source_indices = maya_attribute_utils.get_int_array_attribute(
+            mesh_node,
+            ATTR_MMD_SOURCE_VERTEX_INDICES,
+        )
+        if source_indices is None:
+            raise ValueError(
+                "native UV weld did not provide mmd_source_vertex_indices"
+            )
+        return [int(index) for index in source_indices]
+
+    @staticmethod
+    def _persist_additional_uvs(
+        mesh_node: str,
+        all_vertices,
+        source_vertex_indices,
+        additional_uv_count: int,
+    ) -> None:
+        """Persist validated PMX additional UVs in deterministic local order."""
+        if additional_uv_count == 0:
+            return
+        local_uvs = []
+        for local_index, source_index in enumerate(source_vertex_indices):
+            if isinstance(source_index, bool) or not isinstance(source_index, int):
+                raise ValueError(
+                    f"local Maya vertex {local_index} has an invalid PMX source index"
+                )
+            if source_index < 0 or source_index >= len(all_vertices):
+                raise ValueError(
+                    f"local Maya vertex {local_index} maps outside PMX vertices: {source_index}"
+                )
+            local_uvs.append(
+                [
+                    [float(value) for value in channel]
+                    for channel in getattr(all_vertices[source_index], "additional_uvs", ())
+                ]
+            )
+        payload = {
+            "schema_version": 1,
+            "vertex_count": len(source_vertex_indices),
+            "source_vertex_count": len(all_vertices),
+            "channel_count": additional_uv_count,
+            "source_vertex_indices": [int(index) for index in source_vertex_indices],
+            "additional_uvs": local_uvs,
+        }
+        maya_attribute_utils.set_custom_attributes(
+            mesh_node,
+            {ATTR_MMD_PMX_ADDITIONAL_UV_COUNT: additional_uv_count},
+        )
+        if not maya_attribute_utils.write_json_attr(
+            mesh_node,
+            ATTR_MMD_ADDITIONAL_UVS_JSON,
+            payload,
+            separators=(",", ":"),
+        ):
+            raise ValueError(
+                f"failed to persist {ATTR_MMD_ADDITIONAL_UVS_JSON} on '{mesh_node}'"
+            )
+
+    @staticmethod
+    def _persist_sdef_vertices(mesh_node: str, all_vertices, source_vertex_indices) -> None:
+        """Persist raw PMX SDEF payload in deterministic local vertex order."""
+        local_sdef = []
+        sdef_count = 0
+        for local_index, source_index in enumerate(source_vertex_indices):
+            if isinstance(source_index, bool) or not isinstance(source_index, int):
+                raise ValueError(f"local Maya vertex {local_index} has an invalid PMX source index")
+            if source_index < 0 or source_index >= len(all_vertices):
+                raise ValueError(
+                    f"local Maya vertex {local_index} maps outside PMX vertices: {source_index}"
+                )
+            vertex = all_vertices[source_index]
+            if int(getattr(vertex, "weight_transform_type", 0)) != 3:
+                local_sdef.append(None)
+                continue
+            sdef_count += 1
+            local_sdef.append(
+                {
+                    "bone_indices": [int(index) for index in vertex.bone_indices],
+                    "bone_weights": [float(vertex.bone_weights[0])],
+                    "sdef_c": [float(value) for value in vertex.sdef_c],
+                    "sdef_r0": [float(value) for value in vertex.sdef_r0],
+                    "sdef_r1": [float(value) for value in vertex.sdef_r1],
+                }
+            )
+        maya_attribute_utils.set_custom_attributes(
+            mesh_node,
+            {ATTR_MMD_PMX_SDEF_VERTEX_COUNT: sdef_count},
+        )
+        if sdef_count == 0:
+            return
+        payload = {
+            "schema_version": 1,
+            "vertex_count": len(source_vertex_indices),
+            "source_vertex_count": len(all_vertices),
+            "source_vertex_indices": [int(index) for index in source_vertex_indices],
+            "sdef_vertices": local_sdef,
+        }
+        if not maya_attribute_utils.write_json_attr(
+            mesh_node,
+            ATTR_MMD_SDEF_VERTICES_JSON,
+            payload,
+            separators=(",", ":"),
+        ):
+            raise ValueError(f"failed to persist {ATTR_MMD_SDEF_VERTICES_JSON} on '{mesh_node}'")
+
+    @staticmethod
     def _vertex_deformation_key(vertex) -> tuple:
         """Return the PMX data that must remain per Maya vertex.
 
@@ -1489,13 +1691,19 @@ class MeshConverter:
 
         self._add_profile_time("transparency_classify_sec", classify_start)
 
-    def convert_pmx_mesh(self, pmx_data: PmxData, root_group: str) -> Tuple[str, Union[str, List[str]]]:
+    def convert_pmx_mesh(
+        self,
+        pmx_data: PmxData,
+        root_group: str,
+        is_pmd: bool = False,
+    ) -> Tuple[str, Union[str, List[str]]]:
         """
         PMXのメッシュデータをMayaのメッシュノードに変換する。
 
         Args:
             pmx_data (pmx_parser.PmxParser): 解析されたPMXデータオブジェクト。
             root_group (str): ルートグループの名前。
+            is_pmd (bool): PMD由来のデータとしてPMD専用属性を作成するかどうか。
 
         Returns:
             str: 作成されたMayaメッシュをまとめるグループノードの名前。
@@ -1506,6 +1714,21 @@ class MeshConverter:
         all_faces = pmx_data.faces
         all_materials = pmx_data.materials
         all_textures = pmx_data.textures
+        additional_uv_count = self._validate_pmx_additional_uvs(
+            all_vertices,
+            getattr(getattr(pmx_data, "header", None), "additional_uv", 0),
+        )
+        sdef_vertex_count = self._validate_pmx_sdef_vertices(all_vertices)
+        # Keep the source PMX channel count on the model root so the collector
+        # can distinguish a normal Maya mesh from an imported mesh whose
+        # canonical per-vertex payload was deleted or became stale.
+        maya_attribute_utils.set_custom_attributes(
+            root_group,
+            {
+                ATTR_MMD_PMX_ADDITIONAL_UV_COUNT: additional_uv_count,
+                ATTR_MMD_PMX_SDEF_VERTEX_COUNT: sdef_vertex_count,
+            },
+        )
         self._use_cpp_uv_weld = self._cpp_uv_weld_command_available()
         if self._use_cpp_uv_weld:
             # Keep the source topology intact until the C++ command has read
@@ -1544,8 +1767,9 @@ class MeshConverter:
                 all_materials,
                 all_textures,
                 geo_group,
-                is_pmd=False,
+                is_pmd=is_pmd,
                 weld_keys=weld_keys,
+                additional_uv_count=additional_uv_count,
             )
         else:
             created_mesh = self._create_unified_mesh(
@@ -1555,7 +1779,9 @@ class MeshConverter:
                 all_materials,
                 all_textures,
                 geo_group,
+                is_pmd=is_pmd,
                 weld_keys=weld_keys,
+                additional_uv_count=additional_uv_count,
             )
 
         maya_scene_utils.select_objects(geo_group)
@@ -1603,6 +1829,7 @@ class MeshConverter:
         model_group,
         is_pmd=False,
         weld_keys=None,
+        additional_uv_count=0,
     ):
         """
         全てのメッシュを統合した単一のメッシュを作成する。
@@ -1666,6 +1893,22 @@ class MeshConverter:
         native_welded_count = self._run_cpp_uv_weld(
             created_mesh,
             mesh_data["source_vertex_indices"],
+        )
+        post_weld_source_indices = self._post_weld_source_indices(
+            created_mesh,
+            mesh_data["source_vertex_indices"],
+            native_welded_count,
+        )
+        self._persist_additional_uvs(
+            created_mesh,
+            all_vertices,
+            post_weld_source_indices,
+            additional_uv_count,
+        )
+        self._persist_sdef_vertices(
+            created_mesh,
+            all_vertices,
+            post_weld_source_indices,
         )
         self.profile["uv_welded_vertex_count"] += (
             native_welded_count
@@ -1749,6 +1992,7 @@ class MeshConverter:
         geo_group,
         is_pmd=False,
         weld_keys=None,
+        additional_uv_count=0,
     ):
         """
         マテリアルごとに分割したメッシュを作成する。
@@ -1827,6 +2071,22 @@ class MeshConverter:
             native_welded_count = self._run_cpp_uv_weld(
                 created_mesh,
                 mesh_data["source_vertex_indices"],
+            )
+            post_weld_source_indices = self._post_weld_source_indices(
+                created_mesh,
+                mesh_data["source_vertex_indices"],
+                native_welded_count,
+            )
+            self._persist_additional_uvs(
+                created_mesh,
+                all_vertices,
+                post_weld_source_indices,
+                additional_uv_count,
+            )
+            self._persist_sdef_vertices(
+                created_mesh,
+                all_vertices,
+                post_weld_source_indices,
             )
             self.profile["uv_welded_vertex_count"] += (
                 native_welded_count
@@ -2094,8 +2354,12 @@ class MeshConverter:
             custom_attrs[ATTR_MMD_MATERIAL_NAME_EN] = ""
 
         if is_pmd:
-            custom_attrs[ATTR_MMD_EDGE_FLAG] = int(material.edge_flag)
-            custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = _material_has_outline(material, is_pmd=True)
+            # PMD is converted to a temporary PMX and parsed again before
+            # this stage, so recover the PMD semantic from the serialized PMX
+            # EDGE_DRAWING flag rather than relying on a transient attribute.
+            edge_enabled = bool(int(material.draw_flag) & _PMX_EDGE_DRAWING_DRAW_FLAG)
+            custom_attrs[ATTR_MMD_EDGE_FLAG] = int(edge_enabled)
+            custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = edge_enabled
         else:
             custom_attrs[ATTR_MMD_SPHERE_MODE] = int(material.sphere_mode)
             custom_attrs[ATTR_MMD_SPHERE_TEXTURE_INDEX] = material.sphere_texture_index
@@ -2110,6 +2374,17 @@ class MeshConverter:
             custom_attrs[_ATTR_MMD_DOUBLE_SIDED] = _material_is_double_sided(material)
             custom_attrs[ATTR_MMD_MEMO] = material.memo
             custom_attrs[ATTR_MMD_SHARED_TOON_FLAG] = int(material.shared_toon_flag)
+            toon_texture_index = getattr(material, "toon_texture_index", -1)
+            if (
+                material.shared_toon_flag == 0
+                and isinstance(toon_texture_index, int)
+                and not isinstance(toon_texture_index, bool)
+                and toon_texture_index >= 0
+                and all_textures
+                and toon_texture_index < len(all_textures)
+                and isinstance(all_textures[toon_texture_index], str)
+            ):
+                custom_attrs[ATTR_MMD_TOON_PATH] = all_textures[toon_texture_index]
 
         maya_attribute_utils.set_custom_attributes(
             shader,
@@ -2339,11 +2614,11 @@ class MeshConverter:
 
         # OGSFX exposes the same texture-slot contract as the DX11 effect.  The
         # previous GLSL setup stopped after scalar uniforms, leaving every
-        # material untextured even when the PMX texture paths were valid.
+        # material untextured even when the PMX/PMD texture paths were valid.
         self._connect_dx11_main_texture(shader, material, texture_path, original_texture_path)
 
         sphere_texture_path = None
-        if not is_pmd and getattr(material, "sphere_texture_index", -1) >= 0:
+        if getattr(material, "sphere_texture_index", -1) >= 0:
             sphere_index = int(material.sphere_texture_index)
             if all_textures and sphere_index < len(all_textures):
                 sphere_texture_path = all_textures[sphere_index]
@@ -2359,33 +2634,32 @@ class MeshConverter:
                     "Sphere",
                 )
 
-        if not is_pmd:
-            full_toon_path = _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)
-            if full_toon_path and os.path.exists(full_toon_path):
-                toon_original_path = ""
-                toon_source_kind = "shared_toon"
-                toon_shared_id = ""
-                if (
-                    getattr(material, "shared_toon_flag", 1) == 0
-                    and all_textures
-                    and 0 <= int(getattr(material, "toon_texture_index", -1)) < len(all_textures)
-                ):
-                    toon_original_path = all_textures[int(material.toon_texture_index)]
-                    toon_source_kind = "pmx_texture"
-                elif hasattr(material, "toon_texture_index"):
-                    toon_shared_id = f"shared_toon:{int(material.toon_texture_index) + 1}"
-                self._connect_dx11_secondary_texture(
-                    shader,
-                    material,
-                    toon_original_path,
-                    full_toon_path,
-                    "ToonTexture",
-                    "HasToonTexture",
-                    "_toon_texture",
-                    "Toon",
-                    source_kind=toon_source_kind,
-                    shared_toon_id=toon_shared_id,
-                )
+        full_toon_path = _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)
+        if full_toon_path and os.path.exists(full_toon_path):
+            toon_original_path = ""
+            toon_source_kind = "shared_toon"
+            toon_shared_id = ""
+            if (
+                getattr(material, "shared_toon_flag", 1) == 0
+                and all_textures
+                and 0 <= int(getattr(material, "toon_texture_index", -1)) < len(all_textures)
+            ):
+                toon_original_path = all_textures[int(material.toon_texture_index)]
+                toon_source_kind = "pmx_texture"
+            elif hasattr(material, "toon_texture_index"):
+                toon_shared_id = f"shared_toon:{int(material.toon_texture_index) + 1}"
+            self._connect_dx11_secondary_texture(
+                shader,
+                material,
+                toon_original_path,
+                full_toon_path,
+                "ToonTexture",
+                "HasToonTexture",
+                "_toon_texture",
+                "Toon",
+                source_kind=toon_source_kind,
+                shared_toon_id=toon_shared_id,
+            )
 
         self._apply_custom_attributes(
             shader,
@@ -2562,9 +2836,9 @@ class MeshConverter:
         # テクスチャ設定
         self._connect_dx11_main_texture(shader, material, texture_path, original_texture_path)
 
-        # スフィアテクスチャ設定（PMXのみ）
+        # PMD-to-PMX conversion preserves sphere texture metadata as well.
         sphere_texture_path = None
-        if not is_pmd and hasattr(material, "sphere_texture_index") and material.sphere_texture_index >= 0:
+        if hasattr(material, "sphere_texture_index") and material.sphere_texture_index >= 0:
             if all_textures and material.sphere_texture_index < len(all_textures):
                 sphere_texture_path = all_textures[material.sphere_texture_index]
                 full_sphere_path = _resolve_texture_path(self.texture_dir, sphere_texture_path)
@@ -2585,39 +2859,38 @@ class MeshConverter:
                         "Sphere",
                     )
 
-        # Toon texture setting. PMX custom toon uses the regular texture table;
+        # Toon texture setting. Custom toon uses the regular texture table;
         # shared toon uses bundled toon01.bmp..toon10.bmp assets.
-        if not is_pmd:
-            full_toon_path = _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)
-            if full_toon_path and os.path.exists(full_toon_path) and cmds.attributeQuery("ToonTexture", node=shader, exists=True):
-                toon_original_path = ""
-                toon_source_kind = "shared_toon"
-                toon_shared_id = ""
-                if (
-                    hasattr(material, "shared_toon_flag")
-                    and hasattr(material, "toon_texture_index")
-                    and int(material.shared_toon_flag) == 0
-                    and all_textures
-                    and 0 <= int(material.toon_texture_index) < len(all_textures)
-                ):
-                    toon_original_path = all_textures[int(material.toon_texture_index)]
-                    toon_source_kind = "pmx_texture"
-                elif hasattr(material, "toon_texture_index"):
-                    toon_shared_id = f"shared_toon:{int(material.toon_texture_index) + 1}"
-                self._connect_dx11_secondary_texture(
-                    shader,
-                    material,
-                    toon_original_path,
-                    full_toon_path,
-                    "ToonTexture",
-                    "HasToonTexture",
-                    "_toon_texture",
-                    "Toon",
-                    source_kind=toon_source_kind,
-                    shared_toon_id=toon_shared_id,
-                )
-            elif full_toon_path:
-                cmds.warning(f"Toon texture file not found: {full_toon_path}")
+        full_toon_path = _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)
+        if full_toon_path and os.path.exists(full_toon_path) and cmds.attributeQuery("ToonTexture", node=shader, exists=True):
+            toon_original_path = ""
+            toon_source_kind = "shared_toon"
+            toon_shared_id = ""
+            if (
+                hasattr(material, "shared_toon_flag")
+                and hasattr(material, "toon_texture_index")
+                and int(material.shared_toon_flag) == 0
+                and all_textures
+                and 0 <= int(material.toon_texture_index) < len(all_textures)
+            ):
+                toon_original_path = all_textures[int(material.toon_texture_index)]
+                toon_source_kind = "pmx_texture"
+            elif hasattr(material, "toon_texture_index"):
+                toon_shared_id = f"shared_toon:{int(material.toon_texture_index) + 1}"
+            self._connect_dx11_secondary_texture(
+                shader,
+                material,
+                toon_original_path,
+                full_toon_path,
+                "ToonTexture",
+                "HasToonTexture",
+                "_toon_texture",
+                "Toon",
+                source_kind=toon_source_kind,
+                shared_toon_id=toon_shared_id,
+            )
+        elif full_toon_path:
+            cmds.warning(f"Toon texture file not found: {full_toon_path}")
 
         # カスタムアトリビュートを適用
         self._apply_custom_attributes(

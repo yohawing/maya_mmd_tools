@@ -29,6 +29,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_COMMENT,
     ATTR_MMD_COMMENT_EN,
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
+    ATTR_MMD_PMX_SOFT_BODY_COUNT,
 )
 from mmd_tools.core import cpp_plugin_locator, maya_mesh_utils, maya_name_utils
 from mmd_tools.core.logger import get_logger
@@ -211,6 +212,12 @@ def fast_import(
 
     metadata = _apply_basic_materials(filepath, mesh_node, cmds) if mesh_node else None
     _apply_fast_root_metadata(filepath, transform_node, metadata, cmds)
+    try:
+        from mmd_tools.core.model_registry import ensure_model_registry
+
+        ensure_model_registry(transform_node)
+    except Exception as exc:
+        logger.warning("Fast import ownership registry unavailable for %s: %s", transform_node, exc)
     if include_morphs and mesh_node:
         _apply_fast_morph_metadata(filepath, mesh_node, cmds)
 
@@ -564,12 +571,15 @@ def _apply_fast_root_metadata(
     metadata: Optional[dict],
     cmds_module,
 ) -> None:
-    """Preserve PMX header names/comments on a successful fast-import root."""
+    """Preserve PMX header and unsupported-section metadata on fast roots."""
     header = metadata.get("metadata") if isinstance(metadata, dict) else None
+    soft_body_count = _fast_soft_body_count(metadata)
     if not isinstance(header, dict):
         try:
             pmx = parse_pmx_native(filepath)
             header = getattr(pmx, "header", None)
+            if soft_body_count is None and pmx is not None:
+                soft_body_count = len(getattr(pmx, "soft_bodies", []) or [])
         except Exception as exc:
             logger.debug("Fast root metadata parse skipped: %s", exc)
             return
@@ -590,6 +600,26 @@ def _apply_fast_root_metadata(
         (ATTR_MMD_COMMENT_EN, "englishComment"),
     ):
         _set_fast_string_attr(cmds_module, root_node, attr, values.get(key, "") or "")
+    if soft_body_count is not None:
+        _set_fast_long_attr(cmds_module, root_node, ATTR_MMD_PMX_SOFT_BODY_COUNT, soft_body_count)
+
+
+def _fast_soft_body_count(metadata: Optional[dict]) -> Optional[int]:
+    """Read PMX soft-body count from native parsed-model metadata."""
+    if not isinstance(metadata, dict):
+        return None
+    candidates = [metadata, metadata.get("metadata")]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        counts = candidate.get("counts")
+        if not isinstance(counts, dict) or "softBodies" not in counts:
+            continue
+        value = counts["softBodies"]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+        return value
+    return None
 
 
 def _create_standard_material(
@@ -937,3 +967,13 @@ def _set_fast_string_attr(cmds_module, node: str, attr: str, value: str) -> None
         cmds_module.setAttr(f"{node}.{attr}", str(value), type="string")
     except Exception as exc:
         logger.debug("Failed to preserve fast-path metadata %s.%s: %s", node, attr, exc)
+
+
+def _set_fast_long_attr(cmds_module, node: str, attr: str, value: int) -> None:
+    """Best-effort integer metadata write for fast-import roots."""
+    try:
+        if not cmds_module.attributeQuery(attr, node=node, exists=True):
+            cmds_module.addAttr(node, longName=attr, attributeType="long")
+        cmds_module.setAttr(f"{node}.{attr}", int(value))
+    except Exception as exc:
+        logger.debug("Failed to preserve fast-path integer metadata %s.%s: %s", node, attr, exc)

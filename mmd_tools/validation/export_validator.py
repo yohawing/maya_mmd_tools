@@ -6,11 +6,12 @@ objects so an action or a later report adapter can present the same findings.
 """
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from numbers import Integral, Number, Real
 import json
 import math
+import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 
@@ -20,9 +21,11 @@ PMD_MAX_VERTEX_COUNT = 0xFFFF + 1
 PMD_MAX_BONE_COUNT = 0xFFFF
 PMD_MAX_BONE_WEIGHT = 100
 PMD_MAX_EDGE_FLAG = 0xFF
+PMD_MAX_TEXTURE_FILE_NAME_BYTES = 19
 UINT32_MAX = 0xFFFFFFFF
 
 _SEQUENCE_TYPES = (str, bytes, bytearray)
+_PathComponent = Tuple[str, Any]
 _BONE_REFERENCE_FIELDS = (
     "parent_index",
     "tail_pos_bone_index",
@@ -31,9 +34,34 @@ _BONE_REFERENCE_FIELDS = (
     "grant_parent_bone_index",
     "ik_target_bone_index",
 )
-_PMX_MORPH_TYPE_BY_ENUM = {1: "vertex", 2: "bone", 8: "material"}
+_PMX_MORPH_TYPE_BY_ENUM = {
+    0: "group",
+    1: "vertex",
+    2: "bone",
+    3: "uv",
+    4: "additional_uv1",
+    5: "additional_uv2",
+    6: "additional_uv3",
+    7: "additional_uv4",
+    8: "material",
+    9: "flip",
+    10: "impulse",
+}
 _PMX_MORPH_TYPES = frozenset(_PMX_MORPH_TYPE_BY_ENUM.values())
+_PMX_UV_MORPH_TYPES = frozenset(
+    {"uv", "additional_uv1", "additional_uv2", "additional_uv3", "additional_uv4"}
+)
+_PMX_21_MORPH_TYPES = frozenset({"flip", "impulse"})
 _PMD_BONE_TYPE_VALUES = frozenset(range(10))
+_PMX_IK_FLAG = 0x0020
+_PMX_CONNECT_BONE_FLAG = 0x0001
+_PMX_GRANT_FLAGS = 0x0300
+_PMX_AXIS_FIXED_FLAG = 0x0400
+_PMX_LOCAL_AXIS_FLAG = 0x0800
+_PMX_EXTERNAL_PARENT_FLAG = 0x2000
+DEFAULT_MAX_DISPLAY_ISSUES = 100
+_ISSUE_PATH_INDEX_PATTERN = re.compile(r"\[\d+\]")
+_MAX_ISSUE_SAMPLE_PATHS = 3
 
 
 @dataclass(frozen=True)
@@ -63,17 +91,182 @@ class ExportValidationIssue:
 
 
 @dataclass(frozen=True)
+class ExportValidationIssueGroup:
+    """One displayed issue representative and its folded occurrence count."""
+
+    representative: ExportValidationIssue
+    count: int
+    path_pattern: str
+    sample_paths: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ExportValidationIssueAggregation:
+    """Bounded issue-list metadata shared by JSON, Markdown, and the UI."""
+
+    max_display_issues: int
+    total_occurrences: int
+    shown_occurrences: int
+    omitted_occurrences: int
+    total_groups: int
+    shown_groups: int
+    omitted_groups: int
+    has_blocking: bool
+    requires_warning_ack: bool
+
+    def to_dict(self) -> Dict[str, int]:
+        """Return the stable machine-readable aggregation summary."""
+        return {
+            "max_display_issues": self.max_display_issues,
+            "total_occurrences": self.total_occurrences,
+            "shown_occurrences": self.shown_occurrences,
+            "omitted_occurrences": self.omitted_occurrences,
+            "total_groups": self.total_groups,
+            "shown_groups": self.shown_groups,
+            "omitted_groups": self.omitted_groups,
+            "has_blocking": self.has_blocking,
+            "requires_warning_ack": self.requires_warning_ack,
+        }
+
+
+def _issue_path_pattern(path: Any) -> str:
+    """Return a nearby-path family by folding numeric sequence indices."""
+    text = "" if path is None else str(path)
+    return _ISSUE_PATH_INDEX_PATTERN.sub("[*]", text)
+
+
+def _build_issue_groups(
+    issues: Tuple[ExportValidationIssue, ...],
+    max_display_issues: int,
+) -> Tuple[Tuple[ExportValidationIssueGroup, ...], int]:
+    """Collect only the first bounded groups while counting all group keys."""
+    builders: Dict[Tuple[str, str, bool, str], List[Any]] = {}
+    seen_keys: Set[Tuple[str, str, bool, str]] = set()
+    total_groups = 0
+    for issue in issues:
+        path_pattern = _issue_path_pattern(issue.path)
+        key = (issue.code, issue.severity, issue.blocking, path_pattern)
+        if key not in seen_keys:
+            seen_keys.add(key)
+            total_groups += 1
+        builder = builders.get(key)
+        if builder is None:
+            if len(builders) >= max_display_issues:
+                continue
+            builder = [issue, 0, path_pattern, []]
+            builders[key] = builder
+        builder[1] += 1
+        if issue.path not in builder[3] and len(builder[3]) < _MAX_ISSUE_SAMPLE_PATHS:
+            builder[3].append(issue.path)
+
+    groups = tuple(
+        ExportValidationIssueGroup(
+            representative=builder[0],
+            count=builder[1],
+            path_pattern=builder[2],
+            sample_paths=tuple(builder[3]),
+        )
+        for builder in builders.values()
+    )
+    return groups, total_groups
+
+
+@dataclass(frozen=True)
 class ExportValidationReport:
     """Structured result of PMX/PMD model-data preflight."""
 
     export_format: Optional[str]
     issues: Tuple[ExportValidationIssue, ...]
     mode: str = "model"
+    max_display_issues: int = DEFAULT_MAX_DISPLAY_ISSUES
+    issue_aggregation: Optional[ExportValidationIssueAggregation] = field(
+        init=False,
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    _display_issue_groups: Tuple[ExportValidationIssueGroup, ...] = field(
+        init=False,
+        default=(),
+        repr=False,
+        compare=False,
+    )
+    _summary_counts: Dict[str, int] = field(
+        init=False,
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
+    _has_blocking_issue: bool = field(init=False, default=False, repr=False, compare=False)
+    _requires_warning_ack: bool = field(init=False, default=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        """Bound oversized reports without changing small-report behavior."""
+        if (
+            isinstance(self.max_display_issues, bool)
+            or not isinstance(self.max_display_issues, int)
+            or self.max_display_issues <= 0
+        ):
+            raise ValueError("max_display_issues must be a positive integer")
+
+        source_issues = tuple(self.issues)
+        summary_counts = {
+            "fatal": sum(issue.severity == "fatal" for issue in source_issues),
+            "warning": sum(issue.severity == "warning" for issue in source_issues),
+            "info": sum(issue.severity == "info" for issue in source_issues),
+        }
+        object.__setattr__(self, "_summary_counts", summary_counts)
+        object.__setattr__(
+            self,
+            "_has_blocking_issue",
+            any(issue.blocking for issue in source_issues),
+        )
+        object.__setattr__(
+            self,
+            "_requires_warning_ack",
+            any(
+                issue.severity == "warning" and not issue.blocking
+                for issue in source_issues
+            ),
+        )
+
+        if len(source_issues) <= self.max_display_issues:
+            display_groups = tuple(
+                ExportValidationIssueGroup(
+                    representative=issue,
+                    count=1,
+                    path_pattern=_issue_path_pattern(issue.path),
+                    sample_paths=(issue.path,),
+                )
+                for issue in source_issues
+            )
+            object.__setattr__(self, "_display_issue_groups", display_groups)
+            return
+
+        display_groups, total_groups = _build_issue_groups(
+            source_issues,
+            self.max_display_issues,
+        )
+        shown_occurrences = sum(group.count for group in display_groups)
+        aggregation = ExportValidationIssueAggregation(
+            max_display_issues=self.max_display_issues,
+            total_occurrences=len(source_issues),
+            shown_occurrences=shown_occurrences,
+            omitted_occurrences=len(source_issues) - shown_occurrences,
+            total_groups=total_groups,
+            shown_groups=len(display_groups),
+            omitted_groups=total_groups - len(display_groups),
+            has_blocking=self._has_blocking_issue,
+            requires_warning_ack=self._requires_warning_ack,
+        )
+        object.__setattr__(self, "issues", tuple(group.representative for group in display_groups))
+        object.__setattr__(self, "_display_issue_groups", display_groups)
+        object.__setattr__(self, "issue_aggregation", aggregation)
 
     @property
     def is_blocking(self) -> bool:
         """Return whether any issue must prevent the writer from running."""
-        return any(issue.blocking for issue in self.issues)
+        return self._has_blocking_issue
 
     @property
     def valid(self) -> bool:
@@ -97,7 +290,7 @@ class ExportValidationReport:
     @property
     def requires_warning_ack(self) -> bool:
         """Return whether export must wait for a warning acknowledgement."""
-        return bool(self.warning_issues)
+        return self._requires_warning_ack
 
     def has_blocking_issues(self) -> bool:
         """Compatibility-friendly method form of :attr:`is_blocking`."""
@@ -108,15 +301,21 @@ class ExportValidationReport:
         """Return a stable human-readable summary of the report."""
         if not self.issues:
             return "model data passed export validation"
-        return "; ".join(str(issue) for issue in self.issues)
+        summary = "; ".join(str(issue) for issue in self.issues)
+        if self.issue_aggregation is not None:
+            summary += (
+                f"; {self.issue_aggregation.total_occurrences} total issue occurrences "
+                f"({self.issue_aggregation.omitted_occurrences} omitted from display)"
+            )
+        return summary
+
+    @property
+    def display_issue_groups(self) -> Tuple[ExportValidationIssueGroup, ...]:
+        """Return metadata aligned with the bounded :attr:`issues` list."""
+        return self._display_issue_groups
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a deterministic, JSON-serializable report representation."""
-        counts = {
-            "fatal": sum(issue.severity == "fatal" for issue in self.issues),
-            "warning": sum(issue.severity == "warning" for issue in self.issues),
-            "info": sum(issue.severity == "info" for issue in self.issues),
-        }
         has_non_blocking_warning = self.requires_warning_ack
         if self.is_blocking:
             status = "blocked"
@@ -124,15 +323,34 @@ class ExportValidationReport:
             status = "warning"
         else:
             status = "ready"
-        return {
+        payload = {
             "schema_version": 1,
             "status": status,
             "requires_warning_ack": has_non_blocking_warning,
             "format": self.export_format,
             "mode": self.mode,
-            "summary": counts,
-            "issues": [issue.to_dict() for issue in self.issues],
+            "summary": dict(self._summary_counts),
+            "issues": self._issue_dicts(),
         }
+        if self.issue_aggregation is not None:
+            payload["issue_aggregation"] = self.issue_aggregation.to_dict()
+        return payload
+
+    def _issue_dicts(self) -> List[Dict[str, Any]]:
+        """Render bounded issues, adding folding metadata only when needed."""
+        rendered = []
+        for issue, group in zip(self.issues, self._display_issue_groups):
+            payload = issue.to_dict()
+            if self.issue_aggregation is not None:
+                payload.update(
+                    {
+                        "occurrence_count": group.count,
+                        "path_pattern": group.path_pattern,
+                        "sample_paths": list(group.sample_paths),
+                    }
+                )
+            rendered.append(payload)
+        return rendered
 
     def to_canonical_dict(
         self,
@@ -152,7 +370,7 @@ class ExportValidationReport:
         from .issue_catalog import canonical_issue_dict
 
         evidence_payload = dict(evidence or {})
-        return {
+        payload = {
             "schema_version": 1,
             "status": self.to_dict()["status"],
             "requires_warning_ack": self.to_dict()["requires_warning_ack"],
@@ -168,10 +386,16 @@ class ExportValidationReport:
                     provenance=provenance,
                     snapshot_fingerprint=snapshot_fingerprint,
                     evidence=evidence_payload,
+                    occurrence_count=(group.count if self.issue_aggregation is not None else None),
+                    path_pattern=(group.path_pattern if self.issue_aggregation is not None else None),
+                    sample_paths=(group.sample_paths if self.issue_aggregation is not None else None),
                 )
-                for issue in self.issues
+                for issue, group in zip(self.issues, self._display_issue_groups)
             ],
         }
+        if self.issue_aggregation is not None:
+            payload["issue_aggregation"] = self.issue_aggregation.to_dict()
+        return payload
 
     def to_canonical_json(
         self,
@@ -327,6 +551,16 @@ def _path_for_index(path: str, index: int) -> str:
     return f"{path}[{index}]" if path else f"[{index}]"
 
 
+def _render_path_components(path: str, components: Sequence[_PathComponent]) -> str:
+    """Render deferred mapping and sequence path components."""
+    for component_type, component in components:
+        if component_type == "key":
+            path = _path_for_key(path, component)
+        else:
+            path = _path_for_index(path, component)
+    return path
+
+
 def _issue(
     issues: List[ExportValidationIssue],
     code: str,
@@ -351,6 +585,17 @@ def _scan_non_finite_numbers(
     issues: List[ExportValidationIssue],
     active: Set[int],
 ) -> None:
+    """Find non-finite numbers while deferring path construction."""
+    _scan_non_finite_numbers_impl(value, path, issues, active, [])
+
+
+def _scan_non_finite_numbers_impl(
+    value: Any,
+    path: str,
+    issues: List[ExportValidationIssue],
+    active: Set[int],
+    components: List[_PathComponent],
+) -> None:
     """Find non-finite numeric payloads without assuming a full schema.
 
     Only mappings and sequences are traversed.  This keeps the validator
@@ -362,13 +607,21 @@ def _scan_non_finite_numbers(
         return
 
     if isinstance(value, Number):
+        issue_path = None
         try:
             finite = math.isfinite(value)
         except (TypeError, ValueError):
-            _issue(issues, "NUMERIC_VALUE_TYPE", path, "numeric payload must be a real number")
+            issue_path = _render_path_components(path, components)
+            _issue(
+                issues,
+                "NUMERIC_VALUE_TYPE",
+                issue_path,
+                "numeric payload must be a real number",
+            )
         else:
             if not finite:
-                _issue(issues, "NON_FINITE_NUMBER", path, "numeric payload must be finite")
+                issue_path = _render_path_components(path, components)
+                _issue(issues, "NON_FINITE_NUMBER", issue_path, "numeric payload must be finite")
         return
 
     if not isinstance(value, (Mapping, Sequence)):
@@ -381,10 +634,18 @@ def _scan_non_finite_numbers(
     try:
         if isinstance(value, Mapping):
             for key, child in value.items():
-                _scan_non_finite_numbers(child, _path_for_key(path, key), issues, active)
+                components.append(("key", key))
+                try:
+                    _scan_non_finite_numbers_impl(child, path, issues, active, components)
+                finally:
+                    components.pop()
         else:
             for index, child in enumerate(value):
-                _scan_non_finite_numbers(child, _path_for_index(path, index), issues, active)
+                components.append(("index", index))
+                try:
+                    _scan_non_finite_numbers_impl(child, path, issues, active, components)
+                finally:
+                    components.pop()
     finally:
         active.remove(value_id)
 
@@ -412,6 +673,58 @@ def _validate_text_fields(
                 _path_for_key(path, field_name),
                 "field must be a string",
             )
+
+
+def _validate_pmd_texture_file_name(
+    mapping: Mapping,
+    path: str,
+    issues: List[ExportValidationIssue],
+) -> None:
+    """Reject PMD texture names that the fixed CP932 field would truncate."""
+    field_name = "texture_file_name"
+    if field_name not in mapping or not isinstance(mapping[field_name], str):
+        return
+    field_path = _path_for_key(path, field_name)
+    error = _pmd_texture_file_name_error(mapping[field_name])
+    if error:
+        _issue(
+            issues,
+            "FIELD_LENGTH",
+            field_path,
+            error,
+        )
+
+
+def _pmd_texture_file_name_error(value: str) -> Optional[str]:
+    """Return a fixed-field error for one PMD texture filename, if any."""
+    try:
+        encoded = value.encode("cp932")
+    except UnicodeEncodeError:
+        return "PMD texture_file_name must be encodable in CP932"
+    if len(encoded) > PMD_MAX_TEXTURE_FILE_NAME_BYTES:
+        return f"PMD texture_file_name must fit within {PMD_MAX_TEXTURE_FILE_NAME_BYTES} CP932 bytes"
+    return None
+
+
+def ensure_writer_safe_materials(model_data: Mapping, export_format: str) -> None:
+    """Reject collector semantics that low-level writers would otherwise default or truncate."""
+    for material_index, material in enumerate(model_data.get("materials") or ()):
+        if not isinstance(material, Mapping):
+            continue
+        missing = material.get("semantic_missing")
+        if missing:
+            raise ValueError(
+                f"material {material_index} has incomplete semantic data: "
+                f"{', '.join(str(value) for value in missing)}"
+            )
+        if export_format != "pmd":
+            continue
+        texture_name = material.get("texture_file_name")
+        if not isinstance(texture_name, str):
+            continue
+        error = _pmd_texture_file_name_error(texture_name)
+        if error:
+            raise ValueError(f"material {material_index}: {error}")
 
 
 def _validate_vector_field(
@@ -518,6 +831,7 @@ def _validate_vertices(
     issues: List[ExportValidationIssue],
 ) -> None:
     """Validate vertex shape, optional numeric fields, and bone references."""
+    expected_additional_uv_count = None
     for vertex_index, vertex in enumerate(vertices):
         vertex_path = _path_for_index("vertices", vertex_index)
         if not isinstance(vertex, Mapping):
@@ -525,6 +839,36 @@ def _validate_vertices(
             continue
 
         if export_format == "pmx":
+            if vertex.get("semantic_missing"):
+                missing = vertex["semantic_missing"]
+                if _is_sequence(missing):
+                    missing_fields = ", ".join(str(value) for value in missing)
+                else:
+                    missing_fields = str(missing)
+                _issue(
+                    issues,
+                    "PMX_VERTEX_SEMANTIC_MISSING",
+                    _path_for_key(vertex_path, "semantic_missing"),
+                    f"vertex semantic data is missing: {missing_fields}",
+                )
+            additional_uv_count = _validate_pmx_vertex_additional_uvs(
+                vertex,
+                vertex_path,
+                issues,
+            )
+            if additional_uv_count is not None:
+                if (
+                    expected_additional_uv_count is not None
+                    and additional_uv_count != expected_additional_uv_count
+                ):
+                    _issue(
+                        issues,
+                        "PMX_VERTEX_ADDITIONAL_UV_COUNT_MISMATCH",
+                        _path_for_key(vertex_path, "additional_uvs"),
+                        "all PMX vertices must use the same additional UV channel count",
+                    )
+                elif expected_additional_uv_count is None:
+                    expected_additional_uv_count = additional_uv_count
             _validate_pmx_vertex_unsupported_fields(vertex, vertex_path, issues)
         _validate_vector_field(vertex, "position", 3, vertex_path, issues)
         _validate_vector_field(vertex, "normal", 3, vertex_path, issues)
@@ -592,6 +936,25 @@ def _validate_vertices(
                     "BONE_INDICES_LENGTH",
                     field_path,
                     "PMD bone_indices must contain 1 or 2 values",
+                )
+
+        if export_format == "pmx" and _is_integer(vertex.get("weight_transform_type")) and vertex.get(
+            "weight_transform_type"
+        ) == 3:
+            if len(bone_indices) != 2:
+                _issue(
+                    issues,
+                    "BONE_INDICES_LENGTH",
+                    _path_for_key(vertex_path, "bone_indices"),
+                    "PMX SDEF bone_indices must contain exactly 2 values",
+                )
+            bone_weights = vertex.get("bone_weights")
+            if not _is_sequence(bone_weights) or len(bone_weights) != 1:
+                _issue(
+                    issues,
+                    "BONE_WEIGHTS_LENGTH",
+                    _path_for_key(vertex_path, "bone_weights"),
+                    "PMX SDEF bone_weights must contain exactly 1 value",
                 )
 
         for index, bone_index in enumerate(bone_indices):
@@ -701,14 +1064,24 @@ def _validate_bone_references(
 def _validate_bone_ik_links(
     bone: Mapping,
     bone_path: str,
+    bone_count: int,
     issues: List[ExportValidationIssue],
+    *,
+    required: bool = False,
 ) -> None:
-    """Reject PMX bone IK links that the model-data writer does not retain."""
+    """Validate the supported PMX IK-link payload."""
     if "ik_links" not in bone:
         return
     value = bone["ik_links"]
     field_path = _path_for_key(bone_path, "ik_links")
     if value is None:
+        if required:
+            _issue(
+                issues,
+                "PMX_BONE_IK_LINKS_NOT_SEQUENCE",
+                field_path,
+                "bone ik_links must be a sequence",
+            )
         return
     if not _is_sequence(value):
         _issue(
@@ -717,13 +1090,165 @@ def _validate_bone_ik_links(
             field_path,
             "bone ik_links must be a sequence",
         )
-    elif value:
+        return
+
+    for link_index, link in enumerate(value):
+        link_path = _path_for_index(field_path, link_index)
+        if not isinstance(link, Mapping):
+            _issue(issues, "BONE_NOT_MAPPING", link_path, "IK link must be a mapping")
+            continue
+
+        bone_index_path = _path_for_key(link_path, "bone")
+        if "bone" not in link:
+            _issue(
+                issues,
+                "BONE_REFERENCE_TYPE",
+                bone_index_path,
+                "IK link requires a bone index",
+            )
+        elif not _is_integer(link["bone"]):
+            if not _is_non_finite_numeric(link["bone"]):
+                _issue(
+                    issues,
+                    "BONE_REFERENCE_TYPE",
+                    bone_index_path,
+                    "IK link bone reference must be an integer",
+                )
+        elif link["bone"] < 0 or link["bone"] >= bone_count:
+            _issue(
+                issues,
+                "BONE_REFERENCE_OUT_OF_RANGE",
+                bone_index_path,
+                f"IK link bone index {link['bone']} is outside effective bone count {bone_count}",
+            )
+
+        if "limit_enabled" in link and not isinstance(link["limit_enabled"], bool):
+            _issue(
+                issues,
+                "NUMERIC_VALUE_TYPE",
+                _path_for_key(link_path, "limit_enabled"),
+                "IK link limit_enabled must be a boolean",
+            )
+        limited = link.get("limit_enabled", False) is True
+        for limit_name in ("lower_limit", "upper_limit"):
+            _validate_vector_field(link, limit_name, 3, link_path, issues)
+            if limited and limit_name not in link:
+                _issue(
+                    issues,
+                    "PMX_IK_DATA_UNSUPPORTED",
+                    _path_for_key(link_path, limit_name),
+                    "limited IK links require both angle-limit vectors",
+                )
+
+
+def _validate_bone_ik_metadata(
+    bone: Mapping,
+    bone_path: str,
+    bone_count: int,
+    issues: List[ExportValidationIssue],
+) -> None:
+    """Reject incomplete IK authoring and validate IK scalar boundaries."""
+    metadata_fields = (
+        "ik_target_bone_index",
+        "ik_loop_count",
+        "ik_limit_angle",
+        "ik_links",
+    )
+    has_metadata = any(field in bone for field in metadata_fields)
+    raw_flag = bone.get("bone_flag")
+    has_ik_flag = _is_integer(raw_flag) and bool(int(raw_flag) & _PMX_IK_FLAG)
+    if not has_ik_flag:
+        if has_metadata and any(
+            bone.get(field) not in (None, [], ()) for field in metadata_fields
+        ):
+            _issue(
+                issues,
+                "PMX_IK_DATA_UNSUPPORTED",
+                bone_path,
+                "IK metadata requires the PMX IK bone flag",
+            )
+        return
+
+    for field_name in metadata_fields:
+        if field_name not in bone:
+            _issue(
+                issues,
+                "PMX_IK_DATA_UNSUPPORTED",
+                _path_for_key(bone_path, field_name),
+                f"IK bone requires {field_name}",
+            )
+
+    target = bone.get("ik_target_bone_index")
+    if _is_integer(target) and target == -1:
         _issue(
             issues,
-            "PMX_BONE_IK_LINKS_UNSUPPORTED",
-            field_path,
-            "PMX model-data export does not retain bone ik_links",
+            "BONE_REFERENCE_OUT_OF_RANGE",
+            _path_for_key(bone_path, "ik_target_bone_index"),
+            "IK target bone index must reference an exported bone",
         )
+
+    loop_count = bone.get("ik_loop_count")
+    if _is_integer(loop_count) and not 0 <= loop_count <= 0x7FFFFFFF:
+        _issue(
+            issues,
+            "PMX_IK_DATA_UNSUPPORTED",
+            _path_for_key(bone_path, "ik_loop_count"),
+            "IK loop count must fit a non-negative PMX int32",
+        )
+
+    _validate_bone_ik_links(bone, bone_path, bone_count, issues, required=True)
+
+
+def _validate_bone_semantic_missing(
+    bone: Mapping,
+    bone_path: str,
+    issues: List[ExportValidationIssue],
+) -> None:
+    """Block collector payloads that retained ambiguous authored bone data."""
+    if "semantic_missing" not in bone or not bone["semantic_missing"]:
+        return
+    missing = bone["semantic_missing"]
+    if _is_sequence(missing):
+        missing_fields = ", ".join(str(value) for value in missing)
+    else:
+        missing_fields = str(missing)
+    _issue(
+        issues,
+        "PMX_BONE_SEMANTIC_MISSING",
+        _path_for_key(bone_path, "semantic_missing"),
+        f"bone semantic data is missing: {missing_fields}",
+    )
+
+
+def _validate_bone_conditional_payload(
+    bone: Mapping,
+    bone_path: str,
+    issues: List[ExportValidationIssue],
+) -> None:
+    """Reject omitted PMX conditional payloads when their flag is authored."""
+    raw_flag = bone.get("bone_flag")
+    if not _is_integer(raw_flag):
+        return
+    flags = int(raw_flag)
+    required_fields = []
+    if flags & _PMX_CONNECT_BONE_FLAG:
+        required_fields.append("connect_bone_index")
+    if flags & _PMX_GRANT_FLAGS:
+        required_fields.extend(("grant_parent_bone_index", "grant_rate"))
+    if flags & _PMX_AXIS_FIXED_FLAG:
+        required_fields.append("axis_direction")
+    if flags & _PMX_LOCAL_AXIS_FLAG:
+        required_fields.extend(("x_axis_direction", "z_axis_direction"))
+    if flags & _PMX_EXTERNAL_PARENT_FLAG:
+        required_fields.append("key_value")
+    for field_name in required_fields:
+        if field_name not in bone:
+            _issue(
+                issues,
+                "PMX_BONE_SEMANTIC_MISSING",
+                _path_for_key(bone_path, field_name),
+                f"bone flag requires {field_name}",
+            )
 
 
 def _is_pmd_bone_type(value: Any) -> bool:
@@ -764,6 +1289,9 @@ def _validate_bones(
         if not isinstance(bone, Mapping):
             _issue(issues, "BONE_NOT_MAPPING", bone_path, "bone must be a mapping")
             continue
+        if export_format != "pmd":
+            _validate_bone_semantic_missing(bone, bone_path, issues)
+            _validate_bone_conditional_payload(bone, bone_path, issues)
         _validate_text_fields(bone, ("name", "name_english"), bone_path, issues)
         _validate_vector_field(bone, "position", 3, bone_path, issues)
         _validate_vector_field(bone, "connect_position_offset", 3, bone_path, issues)
@@ -774,7 +1302,7 @@ def _validate_bones(
         if export_format == "pmd":
             _validate_pmd_bone_type(bone, bone_path, issues)
         if export_format != "pmd":
-            _validate_bone_ik_links(bone, bone_path, issues)
+            _validate_bone_ik_metadata(bone, bone_path, bone_count, issues)
         _validate_numeric_fields(
             bone,
             (
@@ -848,6 +1376,8 @@ def _validate_pmx_morph_offsets(
     vertex_count: int,
     bone_count: int,
     material_count: int,
+    morph_count: int,
+    rigid_body_count: int,
     issues: List[ExportValidationIssue],
 ) -> None:
     """Validate supported PMX morph offset mappings and writer fields."""
@@ -864,6 +1394,19 @@ def _validate_pmx_morph_offsets(
             _validate_morph_offset_index(offset, "bone_index", offset_path, bone_count, issues)
             _validate_vector_field(offset, "translation", 3, offset_path, issues)
             _validate_vector_field(offset, "rotation", 4, offset_path, issues)
+        elif morph_type == "group":
+            _validate_morph_offset_index(offset, "morph_index", offset_path, morph_count, issues)
+            _validate_numeric_fields(offset, ("morph_rate",), offset_path, issues)
+        elif morph_type in _PMX_UV_MORPH_TYPES:
+            _validate_morph_offset_index(offset, "vertex_index", offset_path, vertex_count, issues)
+            _validate_vector_field(offset, "uv_offset", 4, offset_path, issues)
+        elif morph_type == "flip":
+            _validate_morph_offset_index(offset, "morph_index", offset_path, morph_count, issues)
+            _validate_numeric_fields(offset, ("flip_rate",), offset_path, issues)
+        elif morph_type == "impulse":
+            _validate_morph_offset_index(offset, "rigid_body_index", offset_path, rigid_body_count, issues)
+            _validate_vector_field(offset, "impulse", 3, offset_path, issues)
+            _validate_vector_field(offset, "torque", 3, offset_path, issues)
         else:
             _validate_morph_offset_index(
                 offset,
@@ -907,6 +1450,7 @@ def _validate_morphs(
     vertex_count: int,
     bone_count: int,
     material_count: int,
+    rigid_body_count: int,
     issues: List[ExportValidationIssue],
 ) -> None:
     """Validate PMX morph input or report PMD's unsupported/lossy path."""
@@ -949,6 +1493,15 @@ def _validate_morphs(
             )
             continue
 
+        if normalized_type in _PMX_21_MORPH_TYPES:
+            _issue(
+                issues,
+                "MORPH_TYPE_UNSUPPORTED",
+                _path_for_key(morph_path, type_field),
+                f"PMX model-data export policy rejects {normalized_type} morphs",
+            )
+            continue
+
         _validate_text_fields(morph, ("name", "name_english"), morph_path, issues)
         _validate_integer_range_field(
             morph,
@@ -973,6 +1526,8 @@ def _validate_morphs(
             vertex_count,
             bone_count,
             material_count,
+            len(morphs),
+            rigid_body_count,
             issues,
         )
 
@@ -1071,15 +1626,46 @@ def _validate_pmx_vertex_unsupported_fields(
     issues: List[ExportValidationIssue],
 ) -> None:
     """Reject PMX vertex payloads that the model-data writer does not retain."""
-    for field_name in ("additional_uvs", "additional_uv"):
+    for field_name in ("additional_uv",):
         if field_name not in vertex or not _is_meaningful_payload(vertex[field_name]):
             continue
         _issue(
             issues,
             "PMX_VERTEX_ADDITIONAL_UV_UNSUPPORTED",
             _path_for_key(vertex_path, field_name),
-            "PMX model-data export does not retain vertex additional UVs",
+            "PMX model-data export does not retain the legacy additional_uv field",
         )
+
+    if "weight_transform_type" not in vertex:
+        for field_name in ("sdef_c", "sdef_r0", "sdef_r1"):
+            if field_name not in vertex or not _is_meaningful_payload(vertex[field_name]):
+                continue
+            _issue(
+                issues,
+                "PMX_VERTEX_SDEF_UNSUPPORTED",
+                _path_for_key(vertex_path, field_name),
+                "SDEF payload requires weight_transform_type 3",
+            )
+        return
+    value = vertex["weight_transform_type"]
+    if _is_integer(value) and value == 3:
+        for field_name in ("sdef_c", "sdef_r0", "sdef_r1"):
+            if field_name not in vertex or vertex[field_name] is None:
+                _issue(
+                    issues,
+                    "PMX_VERTEX_SDEF_UNSUPPORTED",
+                    _path_for_key(vertex_path, field_name),
+                    "SDEF vertices require the raw SDEF vector payload",
+                )
+                continue
+            _validate_vector_field(vertex, field_name, 3, vertex_path, issues)
+        _issue(
+            issues,
+            "PMX_VERTEX_SDEF_UNSUPPORTED",
+            _path_for_key(vertex_path, "weight_transform_type"),
+            "PMX model-data export policy rejects SDEF vertices",
+        )
+        return
 
     for field_name in ("sdef_c", "sdef_r0", "sdef_r1"):
         if field_name not in vertex or vertex[field_name] is None:
@@ -1091,17 +1677,58 @@ def _validate_pmx_vertex_unsupported_fields(
             "PMX model-data export does not retain vertex SDEF payload",
         )
 
-    if "weight_transform_type" not in vertex:
-        return
-    value = vertex["weight_transform_type"]
     if _is_non_finite_numeric(value) or (isinstance(value, Number) and value == 0):
         return
     _issue(
         issues,
         "PMX_VERTEX_SKINNING_TYPE_UNSUPPORTED",
         _path_for_key(vertex_path, "weight_transform_type"),
-        "PMX model-data export only retains BDEF weight transform type 0",
+        "PMX model-data export only retains BDEF weight data; SDEF and QDEF are unsupported",
     )
+
+
+def _validate_pmx_vertex_additional_uvs(
+    vertex: Mapping,
+    vertex_path: str,
+    issues: List[ExportValidationIssue],
+) -> Optional[int]:
+    """Validate one PMX vertex additional-UV channel payload.
+
+    A missing or explicit empty field means zero channels.  The caller checks
+    that every vertex uses the same count before the writer derives the PMX
+    header value.
+    """
+    if "additional_uvs" not in vertex or vertex["additional_uvs"] is None:
+        return 0
+    value = vertex["additional_uvs"]
+    field_path = _path_for_key(vertex_path, "additional_uvs")
+    if not _is_sequence(value):
+        _issue(issues, "FIELD_NOT_SEQUENCE", field_path, "field must be a channel sequence")
+        return None
+    channel_count = len(value)
+    if channel_count > 4:
+        _issue(
+            issues,
+            "FIELD_LENGTH",
+            field_path,
+            "PMX supports at most four additional UV channels",
+        )
+    for channel_index, channel in enumerate(value[:4]):
+        channel_path = _path_for_index(field_path, channel_index)
+        if not _is_sequence(channel):
+            _issue(issues, "FIELD_NOT_SEQUENCE", channel_path, "channel must be a numeric sequence")
+            continue
+        if len(channel) != 4:
+            _issue(
+                issues,
+                "FIELD_LENGTH",
+                channel_path,
+                "additional UV channel must contain exactly four values",
+            )
+            continue
+        for value_index, item in enumerate(channel):
+            _validate_real(item, _path_for_index(channel_path, value_index), issues)
+    return channel_count
 
 
 def _validate_textures(
@@ -1364,8 +1991,21 @@ def _validate_materials(
             _issue(issues, "MATERIAL_NOT_MAPPING", material_path, "material must be a mapping")
             all_face_counts_specified = False
             continue
+        semantic_missing = material.get("semantic_missing")
+        if semantic_missing:
+            if _is_sequence(semantic_missing):
+                missing_fields = ", ".join(str(value) for value in semantic_missing)
+            else:
+                missing_fields = str(semantic_missing)
+            _issue(
+                issues,
+                "MATERIAL_SEMANTIC_MISSING",
+                _path_for_key(material_path, "semantic_missing"),
+                f"material semantic data is missing: {missing_fields}",
+            )
         if export_format == "pmd":
             _validate_text_fields(material, ("texture_file_name",), material_path, issues)
+            _validate_pmd_texture_file_name(material, material_path, issues)
         else:
             _validate_text_fields(material, ("name", "name_english", "memo"), material_path, issues)
         _validate_vector_field(material, "diffuse", 4, material_path, issues)
@@ -1561,6 +2201,22 @@ def _effective_material_count(materials: Any) -> int:
     return 1
 
 
+def pmd_export_policy_report() -> ExportValidationReport:
+    """Return the explicit policy rejection for the unpublished PMD route."""
+    return ExportValidationReport(
+        "pmd",
+        (
+            ExportValidationIssue(
+                "PMD_EXPORT_POLICY_REJECT",
+                "fatal",
+                True,
+                "export_format",
+                "PMD export is not part of the published v0.7.0 export surface",
+            ),
+        ),
+    )
+
+
 def validate_model_data(
     model_data: Any,
     export_format: Optional[str] = None,
@@ -1648,12 +2304,15 @@ def validate_model_data(
         issues,
         _expected_index_count(faces),
     )
+    raw_rigid_bodies = model_data.get("rigid_bodies")
+    morph_rigid_body_count = len(raw_rigid_bodies) if _is_sequence(raw_rigid_bodies) else 0
     _validate_morphs(
         model_data.get("morphs"),
         normalized_format,
         len(vertices) if vertices is not None else 0,
         bone_count,
         _effective_material_count(materials),
+        morph_rigid_body_count,
         issues,
     )
     _validate_unsupported_top_level_payloads(model_data, normalized_format, issues)
@@ -1701,13 +2360,19 @@ __all__ = [
     "ExportValidationAcknowledgementRequired",
     "ExportValidationError",
     "ExportValidationIssue",
+    "ExportValidationIssueAggregation",
+    "ExportValidationIssueGroup",
     "ExportValidationReport",
+    "DEFAULT_MAX_DISPLAY_ISSUES",
     "ModelValidationIssue",
     "ModelValidationReport",
     "PMD_MAX_BONE_COUNT",
     "PMD_MAX_BONE_WEIGHT",
     "PMD_MAX_EDGE_FLAG",
+    "PMD_MAX_TEXTURE_FILE_NAME_BYTES",
     "PMD_MAX_VERTEX_COUNT",
+    "ensure_writer_safe_materials",
+    "pmd_export_policy_report",
     "validate_export_model",
     "validate_model_data",
 ]

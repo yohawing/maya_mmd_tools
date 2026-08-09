@@ -9,6 +9,7 @@ from ..qt_compat import (
     QCheckBox,
     QLabel,
     QDoubleSpinBox,
+    QSpinBox,
     QComboBox,
     QGridLayout,
     QScrollArea,
@@ -205,17 +206,33 @@ class MaterialTab(BaseTab):
         texture_layout.addWidget(self.sphere_mode_combo, 2, 1, 1, 2)
 
         # Toon Texture
+        self.toon_sharing_check = QCheckBox(self.tr("toon_sharing", "fields"))
+        self.toon_sharing_check.setChecked(True)
+        texture_layout.addWidget(self.toon_sharing_check, 3, 0, 1, 3)
+
         self.toon_texture_label = QLabel(self.tr("toon_texture", "fields"))
-        texture_layout.addWidget(self.toon_texture_label, 3, 0)
+        texture_layout.addWidget(self.toon_texture_label, 4, 0)
         self.toon_texture_combo = QComboBox()
         self.toon_texture_combo.addItems([f"toon{i:02d}.bmp" for i in range(1, 11)])
-        texture_layout.addWidget(self.toon_texture_combo, 3, 1, 1, 2)
+        texture_layout.addWidget(self.toon_texture_combo, 4, 1, 1, 2)
+
+        self.toon_texture_path_label = QLabel(self.tr("toon_texture_path", "fields"))
+        texture_layout.addWidget(self.toon_texture_path_label, 5, 0)
+        self.toon_texture_path_edit = QLineEdit()
+        texture_layout.addWidget(self.toon_texture_path_edit, 5, 1, 1, 2)
+
+        self.toon_texture_index_label = QLabel(self.tr("toon_texture_index", "fields"))
+        texture_layout.addWidget(self.toon_texture_index_label, 6, 0)
+        self.toon_texture_index_spin = QSpinBox()
+        self.toon_texture_index_spin.setRange(-1, 2147483647)
+        self.toon_texture_index_spin.setValue(-1)
+        texture_layout.addWidget(self.toon_texture_index_spin, 6, 1, 1, 2)
 
         self.original_pmx_path_label = QLabel(self.tr("original_texture_path", "fields"))
-        texture_layout.addWidget(self.original_pmx_path_label, 4, 0)
+        texture_layout.addWidget(self.original_pmx_path_label, 7, 0)
         self.original_pmx_path_edit = QLineEdit()
         self.original_pmx_path_edit.setReadOnly(True)
-        texture_layout.addWidget(self.original_pmx_path_edit, 4, 1, 1, 2)
+        texture_layout.addWidget(self.original_pmx_path_edit, 7, 1, 1, 2)
 
         self.texture_group.setLayout(texture_layout)
         layout.addWidget(self.texture_group)
@@ -311,7 +328,10 @@ class MaterialTab(BaseTab):
             self.sphere_map_path_edit,
             self.sphere_map_browse_btn,
             self.sphere_mode_combo,
+            self.toon_sharing_check,
             self.toon_texture_combo,
+            self.toon_texture_path_edit,
+            self.toon_texture_index_spin,
             self.original_pmx_path_edit,
             self.both_face_check,
             self.ground_shadow_check,
@@ -387,6 +407,12 @@ class MaterialTab(BaseTab):
             self.sphere_mode_label.setText(self.tr("sphere_mode", "fields"))
         if hasattr(self, "toon_texture_label"):
             self.toon_texture_label.setText(self.tr("toon_texture", "fields"))
+        if hasattr(self, "toon_sharing_check"):
+            self.toon_sharing_check.setText(self.tr("toon_sharing", "fields"))
+        if hasattr(self, "toon_texture_path_label"):
+            self.toon_texture_path_label.setText(self.tr("toon_texture_path", "fields"))
+        if hasattr(self, "toon_texture_index_label"):
+            self.toon_texture_index_label.setText(self.tr("toon_texture_index", "fields"))
         if hasattr(self, "original_pmx_path_label"):
             self.original_pmx_path_label.setText(self.tr("original_texture_path", "fields"))
         if hasattr(self, "edge_color_label"):

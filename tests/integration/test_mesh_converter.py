@@ -1,3 +1,4 @@
+import json
 import re
 from types import SimpleNamespace
 
@@ -12,6 +13,10 @@ from mmd_tools.core import maya_attribute_utils, maya_material_utils, maya_mesh_
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.core.constants import (
+    ATTR_MMD_ADDITIONAL_UVS_JSON,
+    ATTR_MMD_PMX_ADDITIONAL_UV_COUNT,
+    ATTR_MMD_PMX_SDEF_VERTEX_COUNT,
+    ATTR_MMD_SDEF_VERTICES_JSON,
     ATTR_MMD_TOON_TEXTURE_INDEX,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
@@ -23,6 +28,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_SPHERE_TEXTURE_INDEX,
     ATTR_MMD_SPHERE_MODE,
     ATTR_MMD_SHARED_TOON_FLAG,
+    ATTR_MMD_TOON_PATH,
     ATTR_MMD_MATERIAL_INDEX,
 )
 
@@ -111,6 +117,75 @@ class TestMeshConverter(MayaTestBase):
                 uv_sets = cmds.polyUVSet(child, query=True, allUVSets=True)
                 self.assertIsNotNone(uv_sets, f"{child} にUVセットがありません")
                 self.assertGreaterEqual(len(uv_sets), 1, f"{child} には少なくとも1つのUVセットが必要です")
+
+    def test_convert_pmx_mesh_persists_additional_uv_channels_in_local_order(self):
+        """Imported PMX additional UV channels survive Maya mesh creation."""
+        pmx_file_path = self.fixture_provider.get_pmx_file("mmt_test_model")
+        pmx_data = parse_pmx_file(pmx_file_path)
+        pmx_data.header.additional_uv = 1
+        expected_by_source = {}
+        for index, vertex in enumerate(pmx_data.vertices):
+            values = (float(index), float(index) + 0.1, float(index) + 0.2, float(index) + 0.3)
+            vertex.additional_uvs = [values]
+            expected_by_source[index] = [list(values)]
+
+        root_group = cmds.group(empty=True, name="test_additional_uv_root")
+        converter = MeshConverter("")
+        _mesh_group, mesh_name = converter.convert_pmx_mesh(pmx_data, root_group)
+
+        raw_payload = maya_attribute_utils.get_attribute(mesh_name, ATTR_MMD_ADDITIONAL_UVS_JSON)
+        payload = json.loads(raw_payload)
+        self.assertEqual(
+            maya_attribute_utils.get_attribute(root_group, ATTR_MMD_PMX_ADDITIONAL_UV_COUNT),
+            1,
+        )
+        self.assertEqual(
+            maya_attribute_utils.get_attribute(mesh_name, ATTR_MMD_PMX_ADDITIONAL_UV_COUNT),
+            1,
+        )
+        self.assertEqual(payload["channel_count"], 1)
+        self.assertEqual(payload["vertex_count"], cmds.polyEvaluate(mesh_name, vertex=True))
+        self.assertEqual(
+            [payload["additional_uvs"][index] for index in range(payload["vertex_count"])],
+            [expected_by_source[source_index] for source_index in payload["source_vertex_indices"]],
+        )
+
+    def test_convert_pmx_mesh_persists_sdef_payload_in_local_order(self):
+        """Imported SDEF data remains available after Maya skin normalization."""
+        pmx_file_path = self.fixture_provider.get_pmx_file("mmt_test_model")
+        pmx_data = parse_pmx_file(pmx_file_path)
+        source_vertex = pmx_data.vertices[0]
+        source_vertex.weight_transform_type = 3
+        source_vertex.bone_indices = [0, 0]
+        source_vertex.bone_weights = [0.75]
+        source_vertex.sdef_c = (0.1, 0.2, 0.3)
+        source_vertex.sdef_r0 = (0.0, 0.1, 0.0)
+        source_vertex.sdef_r1 = (0.0, 0.0, 0.1)
+
+        root_group = cmds.group(empty=True, name="test_sdef_root")
+        _mesh_group, mesh_name = MeshConverter("").convert_pmx_mesh(pmx_data, root_group)
+
+        payload = json.loads(maya_attribute_utils.get_attribute(mesh_name, ATTR_MMD_SDEF_VERTICES_JSON))
+        source_index = payload["source_vertex_indices"].index(0)
+        self.assertEqual(
+            maya_attribute_utils.get_attribute(root_group, ATTR_MMD_PMX_SDEF_VERTEX_COUNT),
+            1,
+        )
+        self.assertEqual(
+            maya_attribute_utils.get_attribute(mesh_name, ATTR_MMD_PMX_SDEF_VERTEX_COUNT),
+            1,
+        )
+        self.assertEqual(payload["vertex_count"], cmds.polyEvaluate(mesh_name, vertex=True))
+        self.assertEqual(
+            payload["sdef_vertices"][source_index],
+            {
+                "bone_indices": [0, 0],
+                "bone_weights": [0.75],
+                "sdef_c": [0.1, 0.2, 0.3],
+                "sdef_r0": [0.0, 0.1, 0.0],
+                "sdef_r1": [0.0, 0.0, 0.1],
+            },
+        )
 
     def test_uv_seam_duplicates_are_welded_before_mesh_creation(self):
         """Merge safe UV-split source vertices while retaining corner UV IDs."""
@@ -228,6 +303,48 @@ class TestMeshConverter(MayaTestBase):
                     )
                 else:
                     self.fail(f"{material}に{maya_attr}アトリビュートが存在しません")
+
+    def test_custom_toon_path_is_persisted_only_for_non_shared_pmx_toon(self):
+        """Persist the original PMX-relative custom toon path on the shader."""
+        converter = MeshConverter(str(self.fixture_provider.get_pmx_file("mmt_test_model")))
+
+        def material(shared_toon_flag):
+            return SimpleNamespace(
+                material_index=0,
+                name="Custom Toon",
+                name_english="Custom Toon",
+                diffuse=(0.8, 0.7, 0.6, 1.0),
+                ambient=(0.1, 0.1, 0.1),
+                specular=(0.2, 0.2, 0.2),
+                specular_coefficient=0.5,
+                toon_texture_index=1,
+                sphere_mode=0,
+                sphere_texture_index=-1,
+                texture_index=-1,
+                draw_flag=0x13,
+                edge_color=(0.0, 0.0, 0.0, 1.0),
+                edge_size=1.0,
+                memo="",
+                shared_toon_flag=shared_toon_flag,
+            )
+
+        custom_shader = converter._create_material(
+            material(0),
+            all_textures=["textures/body.png", "textures/custom_toon.png"],
+            material_index=0,
+        )
+        self.assertTrue(cmds.attributeQuery(ATTR_MMD_TOON_PATH, node=custom_shader, exists=True))
+        self.assertEqual(
+            maya_attribute_utils.get_attribute(custom_shader, ATTR_MMD_TOON_PATH),
+            "textures/custom_toon.png",
+        )
+
+        shared_shader = converter._create_material(
+            material(1),
+            all_textures=["textures/body.png", "textures/custom_toon.png"],
+            material_index=1,
+        )
+        self.assertFalse(cmds.attributeQuery(ATTR_MMD_TOON_PATH, node=shared_shader, exists=True))
 
     def test_material_node_family_is_safe_unique_and_raw_names_are_preserved(self):
         """Each hazardous material name receives one deterministic node family."""

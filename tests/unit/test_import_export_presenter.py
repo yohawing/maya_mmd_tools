@@ -505,6 +505,38 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertEqual(result, {"resolved": 1, "unresolved": 2})
         self.assertTrue(any("1" in status for status in app_state.statuses))
 
+    @patch("mmd_tools.ui.presenters.import_export_presenter.list_model_registry_members_from_adapter")
+    def test_current_model_texture_nodes_use_registry_members_for_new_scene(self, mock_registry_members):
+        view = _FakeView()
+        app_state = _FakeAppState()
+        app_state.current_model_root = "root"
+        maya_adapter = _FakeMayaAdapter(
+            existing={"root"},
+            relatives={"root": ["shape"]},
+            connections={
+                "shape": ["sg"],
+                "sg": ["mat"],
+                "mat": ["material_file"],
+                "root.message": ["legacy_file"],
+            },
+            existing_attrs={
+                "material_file": {ATTR_MMD_ORIGINAL_TEXTURE_PATH},
+                "registry_file": {ATTR_MMD_ORIGINAL_TEXTURE_PATH},
+                "legacy_file": {ATTR_MMD_ORIGINAL_TEXTURE_PATH},
+            },
+        )
+        mock_registry_members.return_value = ["registry_file"]
+        presenter = ImportExportPresenter(view, app_state, maya_adapter=maya_adapter)
+
+        self.assertEqual(
+            presenter._current_model_texture_file_nodes(),
+            ["material_file", "registry_file"],
+        )
+        self.assertNotIn(
+            ("root.message", {"source": False, "destination": True, "type": "file"}),
+            maya_adapter.list_connections_calls,
+        )
+
     def test_fix_texture_paths_no_current_model_prompts_for_selection(self):
         view = _FakeView()
         app_state = _FakeAppState()

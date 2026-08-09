@@ -18,6 +18,10 @@ from mmd_tools.core.collider_authoring import (
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BODIES_GROUP
 from ...core.logger import get_logger
+from ...core.model_registry import (
+    REGISTRY_CATEGORY_PHYSICS,
+    list_model_registry_members,
+)
 from ...core.visibility_state import get_visibility_category, set_visibility_category, sync_visibility_connections
 from ..qt_compat import Qt
 from ..translations import UITranslator
@@ -239,12 +243,7 @@ class PhysicsPresenter:
         if not root or not cmds.objExists(root):
             return None
         try:
-            solvers = cmds.listConnections(
-                f"{root}.message",
-                source=False,
-                destination=True,
-                type="mmdPhysicsSolver",
-            ) or []
+            solvers = self._model_physics_solvers(root)
             for solver in dict.fromkeys(solvers):
                 world_nodes = cmds.listConnections(
                     f"{solver}.inWorldSettings",
@@ -267,6 +266,35 @@ class PhysicsPresenter:
         except Exception:
             return None
 
+    def _model_physics_solvers(self, model_root=None):
+        """Return only physics solvers owned by the selected model.
+
+        New scenes keep non-DAG ownership on the model registry.  A missing
+        registry means this is an older scene, so retain the explicit
+        ``root.message`` fallback.  A malformed registry is fail-closed and
+        must not broaden the search to unrelated scene solvers.
+        """
+        root = model_root or getattr(self.app_state, "current_model_root", None)
+        if not root or not cmds.objExists(root):
+            return []
+        try:
+            registry_members = list_model_registry_members(root, REGISTRY_CATEGORY_PHYSICS)
+        except Exception:
+            logger.debug("Could not validate model physics registry: %s", root, exc_info=True)
+            return []
+        if registry_members is None:
+            return cmds.listConnections(
+                f"{root}.message",
+                source=False,
+                destination=True,
+                type="mmdPhysicsSolver",
+            ) or []
+        return [
+            solver
+            for solver in dict.fromkeys(registry_members)
+            if cmds.objExists(solver) and cmds.nodeType(solver) == "mmdPhysicsSolver"
+        ]
+
     def _world_solvers(self, world):
         if not world:
             return []
@@ -280,12 +308,7 @@ class PhysicsPresenter:
             root = getattr(self.app_state, "current_model_root", None)
             if not root or not cmds.objExists(root):
                 return []
-            selected = set(cmds.listConnections(
-                f"{root}.message",
-                source=False,
-                destination=True,
-                type="mmdPhysicsSolver",
-            ) or [])
+            selected = set(self._model_physics_solvers(root))
             return [solver for solver in connected if solver in selected]
         except Exception:
             return []
@@ -403,12 +426,7 @@ class PhysicsPresenter:
         root = getattr(self.app_state, "current_model_root", None)
         if not root or not cmds.objExists(root):
             return
-        solvers = cmds.listConnections(
-            f"{root}.message",
-            source=False,
-            destination=True,
-            type="mmdPhysicsSolver",
-        ) or []
+        solvers = self._model_physics_solvers(root)
         for solver in dict.fromkeys(solvers):
             if cmds.attributeQuery("inDescriptorVersion", node=solver, exists=True):
                 version = int(cmds.getAttr(f"{solver}.inDescriptorVersion"))

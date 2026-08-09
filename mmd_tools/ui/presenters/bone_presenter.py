@@ -1,6 +1,7 @@
+import json
 import math
+
 from mmd_tools.adapters import MayaCmdsAdapter
-from mmd_tools.actions.go_to_bind_pose_action import GoToBindPoseAction
 from ...core.logger import get_logger
 from ...core.maya_attribute_utils import (
     set_custom_attributes,
@@ -48,7 +49,7 @@ logger = get_logger(__name__)
 
 
 class BonePresenter:
-    def __init__(self, view, app_state, maya_adapter=None, bind_pose_action=None):
+    def __init__(self, view, app_state, maya_adapter=None):
         self.view = view
         self.app_state = app_state
         self.maya_adapter = maya_adapter or MayaCmdsAdapter()
@@ -57,8 +58,6 @@ class BonePresenter:
         self.bone_list_items = {}  # Map bone name to list item
         self.all_bones = []  # All bones list
         self.is_updating = False  # Prevent feedback loops
-        self.bind_pose_action = bind_pose_action or GoToBindPoseAction()
-
         self.connect_signals()
 
         # 既に選択されているモデルがある場合はロード
@@ -75,7 +74,7 @@ class BonePresenter:
         self.view.bone_list.itemSelectionChanged.connect(self.on_selection_changed_maya)
         self.view.refresh_btn.clicked.connect(self.load_bones)
         if hasattr(self.view, "bind_pose_btn"):
-            self.view.bind_pose_btn.clicked.connect(self.go_to_bind_pose)
+            self.view.bind_pose_btn.clicked.connect(self.reset_pose)
         self.view.search_edit.textChanged.connect(self.filter_bones)
 
         # ボーン選択ボタン
@@ -109,16 +108,69 @@ class BonePresenter:
         self.current_bone = None
         reload_for_current_model_change(logger, "BonePresenter", model_root, self.load_bones)
 
-    def go_to_bind_pose(self):
-        """Run the Bone Editor's one-shot model-wide bind-pose restore."""
-        result = self.bind_pose_action.execute(self.app_state.current_model_root or "")
-        if result.succeeded:
-            self.app_state.emit_status(
-                f"Go to Bind Pose: {result.model_root or self.app_state.current_model_root} "
-                f"({result.joint_count} joints)"
+    def reset_pose(self):
+        """Apply Animator Toolset-style Reset Pose to Bone tab joints."""
+        cmds = getattr(self.maya_adapter, "_cmds", None)
+        root = self.app_state.current_model_root
+        try:
+            if cmds is None or not root:
+                raise RuntimeError("MMD model UUID is unavailable")
+            model_joints = cmds.ls(self.all_bones, long=True) or []
+            raw_selection = cmds.ls(selection=True, long=True) or []
+            selected_joints = cmds.ls(selection=True, type="joint", long=True) or []
+            targets = (
+                [joint for joint in selected_joints if joint in set(model_joints)]
+                if raw_selection
+                else model_joints
             )
-        else:
-            self.app_state.emit_status(f"Go to Bind Pose failed: {result.error}")
+            if not targets:
+                self.app_state.emit_status("No joints selected")
+                return
+
+            roots = cmds.ls(root, uuid=True) or []
+            if len(roots) != 1:
+                raise RuntimeError("MMD model UUID is unavailable")
+
+            from ..rest_pose_transaction import ResetPoseTransaction
+
+            transaction = ResetPoseTransaction(
+                self.maya_adapter,
+                model_root=root,
+                model_uuid=str(roots[0]),
+                targets=targets,
+                bind_translations=self._bind_translations(targets),
+            )
+            count = transaction.apply()
+            self.app_state.emit_status(f"Reset Pose ({count} joints)")
+        except Exception as exc:
+            self.app_state.emit_status(f"Reset Pose failed: {exc}")
+
+    def _bind_translations(self, joints):
+        """Read persisted import-time local translations for ``joints``."""
+
+        values = {}
+        for joint in joints:
+            try:
+                if not self.maya_adapter.attribute_exists(
+                    "mmd_vmd_bind_translate", joint
+                ):
+                    continue
+                raw_value = self.maya_adapter.get_attr(
+                    f"{joint}.mmd_vmd_bind_translate"
+                )
+                parsed = json.loads(raw_value)
+                if not isinstance(parsed, (list, tuple)) or len(parsed) != 3:
+                    continue
+                values[joint] = tuple(float(value) for value in parsed)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                logger.debug("Invalid bind translate metadata on %s", joint)
+            except Exception:
+                logger.debug(
+                    "Failed to read bind translate metadata on %s",
+                    joint,
+                    exc_info=True,
+                )
+        return values
 
     def load_bones(self):
         """ボーンリストをロード"""

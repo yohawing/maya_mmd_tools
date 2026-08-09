@@ -53,12 +53,14 @@
   "buttons": {
     "import": "Import",
     "export": "Export",
+    "validate": "Validate",
     "apply": "Apply",
     "cancel": "Cancel",
     "browse": "Browse...",
     "refresh": "Refresh",
     "reset": "Reset",
     "go_to_bind_pose": "Go to Bind Pose",
+    "reset_pose": "Reset Pose",
     "add": "Add",
     "remove": "Remove",
     "create": "Create",
@@ -173,6 +175,7 @@
   "messages": {
     "import_success": "Import completed successfully",
     "export_success": "Export completed successfully",
+    "export_mmd_asset": "Export MMD asset",
     "error_file_not_found": "File not found",
     "error_invalid_file": "Invalid file format",
     "error_no_selection": "No objects selected",
@@ -390,6 +393,7 @@
     "use_cpp_vp2_ownership": "Use C++ VP2 RenderOverride (Experimental)",
     "use_cpp_rig_nodes": "Use C++ Rig Nodes (Experimental)",
     "apply_scale": "Apply Scale",
+    "use_frame_range": "Use frame range",
     "new_file": "New File",
     "enable_ik": "Enable IK",
     "invert_value": "Invert Value",
@@ -416,6 +420,11 @@
     "motion_scale": "Motion Scale:",
     "reduce_quality": "Reduce Quality:",
     "format": "Format:",
+    "vmd_mode": "VMD mode",
+    "range": "Range",
+    "start": "Start",
+    "end": "End",
+    "options": "Options",
     "vmd_file": "VMD File:",
     "target_model": "Target Model:",
     "current_model": "Current Model:",
@@ -436,6 +445,8 @@
     "sphere_mode": "Sphere Mode:",
     "toon_texture": "Toon Texture:",
     "toon_sharing": "Toon Sharing:",
+    "toon_texture_path": "Custom Toon Texture Path:",
+    "toon_texture_index": "Custom Toon Texture Index:",
     "memo": "Memo:",
     "face_count": "Face Count:",
     "edge_color": "Edge Color:",
@@ -664,5 +675,104 @@
     "source_not_file": "Source is not a file",
     "source_not_readable": "Source file is not readable",
     "cache_copy_failed": "Failed to copy texture to cache"
+  },
+  "validation_console": {
+    "title": "Export Validation Console",
+    "no_report": "No validation report",
+    "all": "All",
+    "acknowledge_warnings": "Acknowledge warnings",
+    "revalidate": "Revalidate",
+    "copy": "Copy",
+    "save_report": "Save report",
+    "save_dialog": "Save validation report",
+    "status": "Status",
+    "format": "Format",
+    "mode": "Mode",
+    "target": "Target",
+    "snapshot": "Snapshot",
+    "summary": "Summary",
+    "fatal": "fatal",
+    "warning": "warning",
+    "info": "info",
+    "issue_occurrences": "Issue occurrences",
+    "issue_groups": "Issue groups",
+    "shown": "shown",
+    "omitted": "omitted",
+    "total": "total",
+    "no_issues": "No validation issues.",
+    "title_label": "Title",
+    "category": "Category",
+    "path": "Path",
+    "decision": "Decision",
+    "block": "BLOCK",
+    "allow": "ALLOW",
+    "occurrences": "Occurrences",
+    "path_pattern": "Path pattern",
+    "sample_paths": "Sample paths",
+    "observed": "Observed",
+    "expected": "Expected",
+    "impact": "Impact",
+    "remediation": "Remediation",
+    "evidence": "Evidence"
+  },
+  "validation_categories": {
+    "bones": {
+      "label": "Bones",
+      "impact": "The exported bone hierarchy or skin references would be invalid.",
+      "remediation": "Repair the bone table or its references before exporting."
+    },
+    "display": {
+      "label": "Display",
+      "impact": "The display-frame section would contain an invalid or lossy reference.",
+      "remediation": "Repair the display-frame entry or remove unsupported data."
+    },
+    "geometry": {
+      "label": "Geometry",
+      "impact": "The exported mesh would be malformed or would reference unavailable geometry.",
+      "remediation": "Repair the vertex, face, or skin payload before exporting."
+    },
+    "materials": {
+      "label": "Materials",
+      "impact": "Material assignment or texture references would be invalid or silently lost.",
+      "remediation": "Repair the material/texture table or use a supported export format."
+    },
+    "morphs": {
+      "label": "Morphs",
+      "impact": "The exported morph section would be invalid or lose authored data.",
+      "remediation": "Use a supported morph type and repair its target references."
+    },
+    "model": {
+      "label": "Model",
+      "impact": "The exporter cannot produce a trustworthy model file from this payload.",
+      "remediation": "Repair the model payload before exporting."
+    },
+    "output": {
+      "label": "Output",
+      "impact": "The generated file cannot be accepted as a trustworthy export artifact.",
+      "remediation": "Inspect the writer output and fix the export path before replacing the target file."
+    },
+    "animation": {
+      "label": "Animation",
+      "impact": "The exported motion would be malformed, ambiguous, or lose raw animation provenance.",
+      "remediation": "Repair the VMD frame payload or use the supported Mode A/C export route."
+    },
+    "physics": {
+      "label": "Physics",
+      "impact": "The exported physics section would be invalid or would lose authored data.",
+      "remediation": "Repair the physics references/fields or remove unsupported physics data."
+    },
+    "references": {
+      "label": "References",
+      "impact": "The exporter cannot establish a trustworthy scene-to-output boundary.",
+      "remediation": "Select a live MMD target, bake or restore scene ownership, and repair the export options."
+    }
+  },
+  "validation": {
+    "vmd_mode_c_raw_loss": {
+      "title": "VMD Mode C raw animation loss",
+      "impact": "Dense baking will replace imported raw bone keys and interpolation bytes.",
+      "remediation": "Use Mode A for an unedited imported motion, or acknowledge this loss before exporting Mode C.",
+      "action": "Acknowledge Mode C animation loss"
+    }
   }
 }

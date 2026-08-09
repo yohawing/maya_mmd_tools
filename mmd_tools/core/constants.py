@@ -26,9 +26,20 @@ ATTR_MMD_MODEL_NAME_EN = "mmd_model_name_en"
 ATTR_MMD_COMMENT = "mmd_comment"
 ATTR_MMD_COMMENT_EN = "mmd_comment_en"
 ATTR_MMD_DISPLAY_FRAMES_JSON = "mmd_display_frames_json"
+ATTR_MMD_TEXTURE_TABLE_JSON = "mmd_texture_table_json"
 ATTR_MMD_CONTROL_RIG_JSON = "mmd_control_rig_json"
 ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON = "mmd_vmd_import_provenance_json"
 ATTR_MMD_MORPH_DATA = "mmdMorphData"
+# Legacy reverse ownership link used by imported non-DAG nodes.  New scene
+# ownership registration will migrate away from root.message fan-out, but the
+# name remains part of the compatibility/audit contract for existing scenes.
+ATTR_MMD_MODEL_ROOT = "mmd_model_root"
+ATTR_MMD_MODEL_REGISTRY = "mmd_model_registry"
+ATTR_MMD_REGISTRY_SCHEMA = "mmd_model_registry_schema"
+ATTR_MMD_REGISTRY_ROOT = "modelRoot"
+ATTR_MMD_REGISTRY_MORPH_MEMBERS = "morphMembers"
+ATTR_MMD_REGISTRY_TEXTURE_MEMBERS = "textureMembers"
+ATTR_MMD_REGISTRY_PHYSICS_MEMBERS = "physicsMembers"
 
 # Animator Toolset viewport visibility state on the imported model root.
 ATTR_MMD_SHOW_MESH = "mmd_show_mesh"
@@ -56,8 +67,14 @@ ATTR_MMD_SPHERE_TEXTURE_INDEX = "mmd_sphtex_index"
 ATTR_MMD_SPHERE_MODE = "mmd_sphere_mode"
 ATTR_MMD_SHARED_TOON_FLAG = "mmd_shared_toon_flag"
 ATTR_MMD_TOON_TEXTURE_INDEX = "mmd_toon_texture_index"
+ATTR_MMD_TOON_PATH = "mmd_toon_path"
 ATTR_MMD_MATERIAL_INDEX = "mmd_material_index"
 ATTR_MMD_SOURCE_VERTEX_INDICES = "mmd_source_vertex_indices"
+ATTR_MMD_ADDITIONAL_UVS_JSON = "mmd_additional_uvs_json"
+ATTR_MMD_PMX_ADDITIONAL_UV_COUNT = "mmd_pmx_additional_uv_count"
+ATTR_MMD_SDEF_VERTICES_JSON = "mmd_sdef_vertices_json"
+ATTR_MMD_PMX_SDEF_VERTEX_COUNT = "mmd_pmx_sdef_vertex_count"
+ATTR_MMD_PMX_SOFT_BODY_COUNT = "mmd_pmx_soft_body_count"
 ATTR_MMD_ORIGINAL_TEXTURE_PATH = "mmd_original_texture_path"
 ATTR_MMD_TEXTURE_UNRESOLVED = "mmd_texture_unresolved"
 ATTR_MMD_TEXTURE_CACHE_PATH = "mmd_texture_cache_path"
@@ -67,6 +84,9 @@ ATTR_MMD_SOURCE_MODEL_PATH = "mmd_source_model_path"
 # 参照する生のモーフ名 (PmxMorph.name) を権威キーとして保持し、正確なマッピングを保証する。
 ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON = "mmd_blendshape_morph_names_json"
 ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON = "mmd_bone_morph_offsets_raw_json"
+ATTR_MMD_UV_MORPH_OFFSETS_JSON = "mmd_uv_morph_offsets_json"
+ATTR_MMD_FLIP_MORPH_OFFSETS_JSON = "mmd_flip_morph_offsets_json"
+ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON = "mmd_impulse_morph_offsets_json"
 
 # ボーンカスタムアトリビュート名（共通）
 ATTR_MMD_BONE_NAME = "mmd_bone_name"  # ボーン名（日本語）

@@ -12,6 +12,10 @@ from ...core.constants import (
     ATTR_MMD_TEXTURE_CACHE_PATH,
 )
 from ...core.logger import get_logger
+from ...core.model_registry import (
+    REGISTRY_CATEGORY_TEXTURE,
+    list_model_registry_members_from_adapter,
+)
 from ...services.settings_service import SettingsService
 from ..model_readme_dialog import ModelReadmeDialogAdapter, read_model_readme
 from .list_presenter_helpers import tr_message, tr_message_format
@@ -246,19 +250,27 @@ class ImportExportPresenter(QObject):
                 self.maya_adapter.list_connections(material, source=True, destination=False, type="file") or []
             )
 
-        # Imported file nodes carry a message owner so failed/disconnected
-        # shader binds remain instance-scoped even when the same PMX is loaded
-        # more than once. Legacy disconnected nodes without ownership are
-        # intentionally excluded because source-path provenance is ambiguous.
-        file_nodes.extend(
-            self.maya_adapter.list_connections(
-                f"{model_root}.message",
-                source=False,
-                destination=True,
-                type="file",
-            )
-            or []
+        registry_file_nodes = list_model_registry_members_from_adapter(
+            self.maya_adapter,
+            model_root,
+            REGISTRY_CATEGORY_TEXTURE,
         )
+        if registry_file_nodes is None:
+            # Old scenes use an explicit root message owner so failed/
+            # disconnected shader binds remain instance-scoped.  Do not use
+            # this broad destination scan when a registry exists: new scenes
+            # keep those links off the DAG root for selection performance.
+            file_nodes.extend(
+                self.maya_adapter.list_connections(
+                    f"{model_root}.message",
+                    source=False,
+                    destination=True,
+                    type="file",
+                )
+                or []
+            )
+        else:
+            file_nodes.extend(registry_file_nodes)
         return sorted(
             {
                 node

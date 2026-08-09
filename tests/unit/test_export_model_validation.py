@@ -5,11 +5,13 @@ import math
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
 
 install_headless_ui_stubs()
 
+import mmd_tools.validation.export_validator as export_validator  # noqa: E402
 from mmd_tools.actions.export_model_action import (  # noqa: E402
     ExportModelAction,
     ExportModelRequest,
@@ -23,6 +25,7 @@ from mmd_tools.validation.export_validator import (  # noqa: E402
     PMD_MAX_BONE_COUNT,
     validate_model_data,
 )
+from mmd_tools.validation.issue_catalog import get_issue_catalog_entry  # noqa: E402
 from mmd_tools.validation.snapshot import ExportValidationSnapshot, fingerprint_payload  # noqa: E402
 
 
@@ -276,14 +279,29 @@ class TestExportModelValidation(unittest.TestCase):
         pmx_edge_flag["vertices"][0]["edge_flag"] = 0x100
         self.assertTrue(validate_model_data(pmx_edge_flag, "pmx").valid)
 
+        sdef_model = _valid_model_data()
+        sdef_model["vertices"][0].update(
+            {
+                "weight_transform_type": 3,
+                "bone_indices": [0, 0],
+                "bone_weights": [0.75],
+                "sdef_c": [0.1, 0.2, 0.3],
+                "sdef_r0": [0.0, 0.1, 0.0],
+                "sdef_r1": [0.0, 0.0, 0.1],
+            }
+        )
+        report = validate_model_data(sdef_model, "pmx")
+        self.assertEqual(
+            [(issue.code, issue.path) for issue in report.issues],
+            [("PMX_VERTEX_SDEF_UNSUPPORTED", "vertices[0].weight_transform_type")],
+        )
+
     def test_pmx_vertex_payloads_not_retained_by_writer_are_blocking(self):
         cases = (
-            ("additional_uvs", [[0.25, 0.5, 0.75, 1.0]], "PMX_VERTEX_ADDITIONAL_UV_UNSUPPORTED"),
             ("additional_uv", [[0.25, 0.5, 0.75, 1.0]], "PMX_VERTEX_ADDITIONAL_UV_UNSUPPORTED"),
             ("sdef_c", [0.0, 0.0, 0.0], "PMX_VERTEX_SDEF_UNSUPPORTED"),
             ("sdef_r0", [0.0, 0.0, 0.0], "PMX_VERTEX_SDEF_UNSUPPORTED"),
             ("sdef_r1", [0.0, 0.0, 0.0], "PMX_VERTEX_SDEF_UNSUPPORTED"),
-            ("weight_transform_type", 3, "PMX_VERTEX_SKINNING_TYPE_UNSUPPORTED"),
             ("weight_transform_type", 4, "PMX_VERTEX_SKINNING_TYPE_UNSUPPORTED"),
             ("weight_transform_type", "0", "PMX_VERTEX_SKINNING_TYPE_UNSUPPORTED"),
         )
@@ -299,10 +317,67 @@ class TestExportModelValidation(unittest.TestCase):
                     [(expected_code, f"vertices[0].{field_name}")],
                 )
 
+    def test_pmx_vertex_additional_uvs_accept_uniform_four_component_channels(self):
+        model_data = _valid_model_data()
+        for vertex in model_data["vertices"]:
+            vertex["additional_uvs"] = [[0.25, 0.5, 0.75, 1.0]]
+
+        report = validate_model_data(model_data, "pmx")
+
+        self.assertTrue(report.valid)
+
+    def test_pmx_vertex_additional_uvs_reject_malformed_or_inconsistent_channels(self):
+        cases = (
+            ("vertices[0].additional_uvs[0]", [[0.25, 0.5, 0.75]], "FIELD_LENGTH"),
+            ("vertices[0].additional_uvs[0][2]", [[0.25, 0.5, float("nan"), 1.0]], "NON_FINITE_NUMBER"),
+            ("vertices[1].additional_uvs", [], "PMX_VERTEX_ADDITIONAL_UV_COUNT_MISMATCH"),
+            ("vertices[0].additional_uvs", [[0.0, 0.0, 0.0, 0.0]] * 5, "FIELD_LENGTH"),
+        )
+        for path, value, expected_code in cases:
+            with self.subTest(path=path, value=value):
+                model_data = _valid_model_data()
+                for vertex in model_data["vertices"]:
+                    vertex["additional_uvs"] = [[0.0, 0.0, 0.0, 0.0]]
+                if path.startswith("vertices[1]"):
+                    model_data["vertices"][1]["additional_uvs"] = value
+                else:
+                    model_data["vertices"][0]["additional_uvs"] = value
+
+                report = validate_model_data(model_data, "pmx")
+
+                self.assertTrue(
+                    any(issue.code == expected_code and issue.path == path for issue in report.issues),
+                    report.issues,
+                )
+
+    def test_pmx_vertex_additional_uv_storage_loss_is_blocking(self):
+        model_data = _valid_model_data()
+        model_data["vertices"][0]["semantic_missing"] = ["additional_uvs_storage"]
+
+        report = validate_model_data(model_data, "pmx")
+
+        self.assertEqual(
+            [(issue.code, issue.path) for issue in report.issues],
+            [("PMX_VERTEX_SEMANTIC_MISSING", "vertices[0].semantic_missing")],
+        )
+        self.assertEqual(
+            get_issue_catalog_entry("PMX_VERTEX_SEMANTIC_MISSING").code,
+            "PMX_VERTEX_SEMANTIC_MISSING",
+        )
+
     def test_pmx_vertex_unsupported_payload_does_not_call_writer(self):
         exporter = _FakeExporter()
         model_data = _valid_model_data()
-        model_data["vertices"][0]["sdef_c"] = [0.0, 0.0, 0.0]
+        model_data["vertices"][0].update(
+            {
+                "weight_transform_type": 3,
+                "bone_indices": [0, 0],
+                "bone_weights": [0.75],
+                "sdef_c": [0.0, 0.0, 0.0],
+                "sdef_r0": [0.0, 0.0, 0.0],
+                "sdef_r1": [0.0, 0.0, 0.0],
+            }
+        )
 
         result = ExportModelAction(pmx_exporter=exporter, collector=None).execute(
             ExportModelRequest(
@@ -461,8 +536,8 @@ class TestExportModelValidation(unittest.TestCase):
 
         self.assertTrue(report.valid)
 
-    def test_material_face_count_total_mismatch_blocks_both_writers(self):
-        for export_format in ("pmx", "pmd"):
+    def test_material_face_count_total_mismatch_blocks_pmx_writer(self):
+        for export_format in ("pmx",):
             with self.subTest(export_format=export_format):
                 exporter = _FakeExporter()
                 model_data = _valid_model_data()
@@ -581,6 +656,76 @@ class TestExportModelValidation(unittest.TestCase):
         report = validate_model_data(missing_shared_toon_index, "pmx")
         self.assertEqual(report.issues[0].code, "MATERIAL_TOON_TEXTURE_INDEX_MISSING")
 
+    def test_material_semantic_missing_blocks_with_registered_issue(self):
+        model_data = _valid_model_data()
+        model_data["materials"][0]["semantic_missing"] = ["texture_table"]
+
+        report = validate_model_data(model_data, "pmx")
+
+        self.assertFalse(report.valid)
+        self.assertEqual(
+            [(issue.code, issue.path, issue.message) for issue in report.issues],
+            [
+                (
+                    "MATERIAL_SEMANTIC_MISSING",
+                    "materials[0].semantic_missing",
+                    "material semantic data is missing: texture_table",
+                )
+            ],
+        )
+        self.assertEqual(
+            get_issue_catalog_entry("MATERIAL_SEMANTIC_MISSING").code,
+            "MATERIAL_SEMANTIC_MISSING",
+        )
+
+    def test_bone_semantic_missing_blocks_with_registered_issue(self):
+        model_data = _valid_model_data()
+        model_data["bones"] = [
+            {
+                "bone_flag": 0x0001,
+                "connect_bone_index": None,
+                "semantic_missing": ["connect_bone_index"],
+            }
+        ]
+
+        report = validate_model_data(model_data, "pmx")
+
+        self.assertFalse(report.valid)
+        self.assertEqual(
+            [(issue.code, issue.path, issue.message) for issue in report.issues],
+            [
+                (
+                    "PMX_BONE_SEMANTIC_MISSING",
+                    "bones[0].semantic_missing",
+                    "bone semantic data is missing: connect_bone_index",
+                ),
+                ("BONE_REFERENCE_TYPE", "bones[0].connect_bone_index", "bone reference must be an integer"),
+            ],
+        )
+        self.assertEqual(
+            get_issue_catalog_entry("PMX_BONE_SEMANTIC_MISSING").code,
+            "PMX_BONE_SEMANTIC_MISSING",
+        )
+
+    def test_untagged_material_without_semantic_missing_remains_valid(self):
+        model_data = _valid_model_data()
+
+        report = validate_model_data(model_data, "pmx")
+
+        self.assertTrue(report.valid)
+        self.assertFalse(report.issues)
+
+    def test_pmd_texture_file_name_overflow_is_blocking(self):
+        model_data = _valid_model_data()
+        model_data["materials"][0]["texture_file_name"] = "a" * 20
+
+        report = validate_model_data(model_data, "pmd")
+
+        self.assertEqual(
+            [(issue.code, issue.path) for issue in report.issues],
+            [("FIELD_LENGTH", "materials[0].texture_file_name")],
+        )
+
     def test_texture_table_shape_and_pmd_loss_are_blocking(self):
         for value in (None, [], ()):
             with self.subTest(value=value):
@@ -654,27 +799,102 @@ class TestExportModelValidation(unittest.TestCase):
             [("BONE_REFERENCE_OUT_OF_RANGE", "bones[0].parent_index")],
         )
 
-    def test_pmx_bone_ik_links_are_rejected_only_when_present_and_non_empty(self):
+    def test_pmx_bone_ik_metadata_accepts_valid_links_and_fails_closed(self):
         for value in (None, [], ()):
             with self.subTest(value=value):
                 model_data = _valid_model_data()
                 model_data["bones"] = [{"ik_links": value}]
                 self.assertTrue(validate_model_data(model_data, "pmx").valid)
 
-        unsupported = _valid_model_data()
-        unsupported["bones"] = [{"ik_links": [{}]}]
-        report = validate_model_data(unsupported, "pmx")
+        valid = _valid_model_data()
+        valid["bones"] = [
+            {
+                "bone_flag": 0x003E,
+                "ik_target_bone_index": 0,
+                "ik_loop_count": 8,
+                "ik_limit_angle": 0.5,
+                "ik_links": [
+                    {
+                        "bone": 0,
+                        "limit_enabled": True,
+                        "lower_limit": [-0.5, -0.25, -0.1],
+                        "upper_limit": [0.5, 0.25, 0.1],
+                    }
+                ],
+            }
+        ]
+        self.assertTrue(validate_model_data(valid, "pmx").valid)
+
+        unresolved = _valid_model_data()
+        unresolved["bones"] = [
+            {
+                "bone_flag": 0x003E,
+                "ik_target_bone_index": None,
+                "ik_loop_count": 8,
+                "ik_limit_angle": 0.5,
+                "ik_links": [{"bone": 0}],
+            }
+        ]
+        report = validate_model_data(unresolved, "pmx")
         self.assertEqual(
             [(issue.code, issue.path) for issue in report.issues],
-            [("PMX_BONE_IK_LINKS_UNSUPPORTED", "bones[0].ik_links")],
+            [("BONE_REFERENCE_TYPE", "bones[0].ik_target_bone_index")],
+        )
+
+        out_of_range = _valid_model_data()
+        out_of_range["bones"] = [
+            {
+                "bone_flag": 0x003E,
+                "ik_target_bone_index": 0,
+                "ik_loop_count": 8,
+                "ik_limit_angle": 0.5,
+                "ik_links": [{"bone": 1}],
+            }
+        ]
+        report = validate_model_data(out_of_range, "pmx")
+        self.assertEqual(
+            [(issue.code, issue.path) for issue in report.issues],
+            [("BONE_REFERENCE_OUT_OF_RANGE", "bones[0].ik_links[0].bone")],
         )
 
         malformed = _valid_model_data()
-        malformed["bones"] = [{"ik_links": {}}]
+        malformed["bones"] = [
+            {
+                "bone_flag": 0x003E,
+                "ik_target_bone_index": 0,
+                "ik_loop_count": 8,
+                "ik_limit_angle": 0.5,
+                "ik_links": {},
+            }
+        ]
         report = validate_model_data(malformed, "pmx")
         self.assertEqual(
             [(issue.code, issue.path) for issue in report.issues],
             [("PMX_BONE_IK_LINKS_NOT_SEQUENCE", "bones[0].ik_links")],
+        )
+
+        missing_flag = _valid_model_data()
+        missing_flag["bones"] = [{"ik_links": [{"bone": 0}]}]
+        report = validate_model_data(missing_flag, "pmx")
+        self.assertEqual(
+            [(issue.code, issue.path) for issue in report.issues],
+            [("PMX_IK_DATA_UNSUPPORTED", "bones[0]")],
+        )
+
+        non_finite = _valid_model_data()
+        non_finite["bones"] = [
+            {
+                "bone_flag": 0x003E,
+                "ik_target_bone_index": 0,
+                "ik_loop_count": 8,
+                "ik_limit_angle": math.inf,
+                "ik_links": [{"bone": 0}],
+            }
+        ]
+        report = validate_model_data(non_finite, "pmx")
+        self.assertIn(
+            ("NON_FINITE_NUMBER", "bones[0].ik_limit_angle"),
+            [(issue.code, issue.path) for issue in report.issues],
         )
 
     def test_unretained_top_level_payloads_are_blocking_when_meaningful(self):
@@ -701,7 +921,26 @@ class TestExportModelValidation(unittest.TestCase):
                 self.assertTrue(validate_model_data(model_data, "pmx").valid)
 
     def test_supported_pmx_morph_types_include_numeric_enum_values(self):
-        for morph_type in ("vertex", "bone", "material", 1, 2, 8):
+        for morph_type in (
+            "group",
+            "vertex",
+            "bone",
+            "uv",
+            "additional_uv1",
+            "additional_uv2",
+            "additional_uv3",
+            "additional_uv4",
+            "material",
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+        ):
             with self.subTest(morph_type=morph_type):
                 model_data = _valid_model_data()
                 model_data["morphs"] = [{"type": morph_type, "offsets": []}]
@@ -710,8 +949,120 @@ class TestExportModelValidation(unittest.TestCase):
 
                 self.assertTrue(report.valid)
 
-    def test_pmx_morph_vertex_bone_and_material_references_are_range_checked(self):
+    def test_pmx_uv_morph_offsets_validate_vertex_and_four_component_payload(self):
+        for morph_type in ("uv", "additional_uv1", 3, 7):
+            with self.subTest(morph_type=morph_type):
+                model_data = _valid_model_data()
+                model_data["morphs"] = [
+                    {
+                        "type": morph_type,
+                        "offsets": [
+                            {"vertex_index": 1, "uv_offset": [0.1, 0.2, 0.3, 0.4]}
+                        ],
+                    }
+                ]
+
+                report = validate_model_data(model_data, "pmx")
+
+                self.assertTrue(report.valid, report.issues)
+
+    def test_pmx_uv_morph_offsets_reject_invalid_index_and_payload(self):
         cases = (
+            ({"vertex_index": 3, "uv_offset": [0.0, 0.0, 0.0, 0.0]}, "MORPH_OFFSET_INDEX_OUT_OF_RANGE"),
+            ({"vertex_index": 0, "uv_offset": [0.0, 0.0, 0.0]}, "FIELD_LENGTH"),
+            ({"vertex_index": 0, "uv_offset": [0.0, 0.0, float("nan"), 0.0]}, "NON_FINITE_NUMBER"),
+        )
+        for offset, expected_code in cases:
+            with self.subTest(offset=offset):
+                model_data = _valid_model_data()
+                model_data["morphs"] = [{"type": "additional_uv2", "offsets": [offset]}]
+
+                report = validate_model_data(model_data, "pmx")
+
+                self.assertTrue(any(issue.code == expected_code for issue in report.issues), report.issues)
+
+    def test_pmx21_flip_and_impulse_are_policy_rejected(self):
+        model_data = _valid_model_data()
+        model_data["rigid_bodies"] = [{}]
+        model_data["morphs"] = [
+            {"type": "flip", "offsets": [{"morph_index": 0, "flip_rate": 0.25}]}
+        ]
+
+        report = validate_model_data(model_data, "pmx")
+
+        self.assertEqual(
+            [(issue.code, issue.path) for issue in report.issues],
+            [("MORPH_TYPE_UNSUPPORTED", "morphs[0].type")],
+        )
+
+        for morph_type in (9, "impulse", 10):
+            with self.subTest(morph_type=morph_type):
+                model_data["morphs"] = [
+                    {
+                        "type": morph_type,
+                        "offsets": [
+                            {"morph_index": 0, "flip_rate": 0.25}
+                            if morph_type == 9
+                            else {
+                                "rigid_body_index": 0,
+                                "impulse": [0.1, 0.2, 0.3],
+                                "torque": [0.4, 0.5, 0.6],
+                            }
+                        ],
+                    }
+                ]
+
+                report = validate_model_data(model_data, "pmx")
+
+                self.assertEqual(
+                    [(issue.code, issue.path) for issue in report.issues],
+                    [("MORPH_TYPE_UNSUPPORTED", "morphs[0].type")],
+                )
+
+    def test_pmx21_flip_policy_rejects_before_payload_validation(self):
+        cases = (
+            (
+                {"type": "flip", "offsets": [{"morph_index": 2, "flip_rate": 0.25}]},
+                "MORPH_TYPE_UNSUPPORTED",
+            ),
+            (
+                {"type": "flip", "offsets": [{"morph_index": 0, "flip_rate": float("nan")}]},
+                "MORPH_TYPE_UNSUPPORTED",
+            ),
+        )
+        for morph, expected_code in cases:
+            with self.subTest(morph=morph):
+                model_data = _valid_model_data()
+                model_data["morphs"] = [morph]
+                report = validate_model_data(model_data, "pmx")
+                issue_pairs = [(issue.code, issue.path) for issue in report.issues]
+                self.assertIn((expected_code, "morphs[0].type"), issue_pairs)
+
+    def test_action_does_not_call_writer_when_pmx21_morph_is_policy_rejected(self):
+        for morph_type in ("flip", 9, "impulse", 10):
+            with self.subTest(morph_type=morph_type):
+                exporter = _FakeExporter()
+                model_data = _valid_model_data()
+                model_data["morphs"] = [{"type": morph_type, "offsets": []}]
+
+                result = ExportModelAction(pmx_exporter=exporter, collector=None).execute(
+                    ExportModelRequest(
+                        file_path="out.pmx",
+                        options={"export_format": "pmx", "model_data": model_data},
+                    )
+                )
+
+                self.assertFalse(result.succeeded)
+                self.assertIsInstance(result.error, ExportValidationError)
+                self.assertEqual(exporter.calls, [])
+                self.assertEqual(
+                    [(issue.code, issue.path) for issue in result.validation_report.issues],
+                    [("MORPH_TYPE_UNSUPPORTED", "morphs[0].type")],
+                )
+
+    def test_pmx_morph_group_vertex_bone_and_material_references_are_range_checked(self):
+        cases = (
+            ("group", {"morph_index": 1}, "morphs[0].offsets[0].morph_index"),
             ("vertex", {"vertex_index": 3}, "morphs[0].offsets[0].vertex_index"),
             ("bone", {"bone_index": 1}, "morphs[0].offsets[0].bone_index"),
             ("material", {"material_index": 1}, "morphs[0].offsets[0].material_index"),
@@ -738,16 +1089,17 @@ class TestExportModelValidation(unittest.TestCase):
 
         self.assertTrue(report.valid)
 
-    def test_unsupported_pmx_group_morph_is_blocking(self):
+    def test_pmx_group_morph_is_supported(self):
         model_data = _valid_model_data()
-        model_data["morphs"] = [{"type": 0, "offsets": []}]
+        model_data["morphs"] = [
+            {"type": "vertex", "offsets": []},
+            {"type": 0, "offsets": [{"morph_index": 0, "morph_rate": 0.5}]},
+        ]
 
         report = validate_model_data(model_data, "pmx")
 
-        self.assertEqual(
-            [(issue.code, issue.path, issue.severity, issue.blocking) for issue in report.issues],
-            [("MORPH_TYPE_UNSUPPORTED", "morphs[0].type", "fatal", True)],
-        )
+        self.assertTrue(report.valid)
+        self.assertFalse(report.issues)
 
     def test_non_empty_pmd_morphs_are_blocked_as_unsupported(self):
         model_data = _valid_model_data()
@@ -980,10 +1332,47 @@ class TestExportModelValidation(unittest.TestCase):
 
         self.assertIn("NON_FINITE_NUMBER", [issue.code for issue in report.issues])
 
+    def test_recursive_scan_defers_path_construction_for_finite_payload(self):
+        payload = {
+            "vertices": [
+                {"position": [float(index), 0.0, 0.0]}
+                for index in range(4096)
+            ]
+        }
+        issues = []
+
+        with patch.object(export_validator, "_path_for_key", wraps=export_validator._path_for_key) as key_path, patch.object(
+            export_validator,
+            "_path_for_index",
+            wraps=export_validator._path_for_index,
+        ) as index_path:
+            export_validator._scan_non_finite_numbers(payload, "", issues, set())
+
+        self.assertEqual(issues, [])
+        self.assertEqual(key_path.call_count, 0)
+        self.assertEqual(index_path.call_count, 0)
+
+    def test_recursive_scan_preserves_issue_paths_order_and_cycle_protection(self):
+        payload = {"values": [{"bad": math.nan}, {"bad": math.inf}]}
+        payload["cycle"] = payload
+        issues = []
+
+        export_validator._scan_non_finite_numbers(payload, "", issues, set())
+
+        self.assertEqual(
+            [(issue.code, issue.path) for issue in issues],
+            [
+                ("NON_FINITE_NUMBER", "values[0].bad"),
+                ("NON_FINITE_NUMBER", "values[1].bad"),
+            ],
+        )
+
     def test_action_does_not_call_writer_when_morph_preflight_fails(self):
         exporter = _FakeExporter()
         model_data = _valid_model_data()
-        model_data["morphs"] = [{"type": "group", "offsets": []}]
+        model_data["morphs"] = [
+            {"type": "uv", "offsets": [{"vertex_index": 0, "uv_offset": [0.0, 0.0, 0.0]}]}
+        ]
 
         result = ExportModelAction(pmx_exporter=exporter, collector=None).execute(
             ExportModelRequest(
@@ -1251,7 +1640,7 @@ class TestExportModelValidation(unittest.TestCase):
             self.assertEqual(len(exporter.calls), 1)
             self.assertFalse(Path(exporter.calls[0][0]).exists())
 
-    def test_action_does_not_call_writer_when_pmd_skin_preflight_fails(self):
+    def test_action_rejects_pmd_before_skin_preflight(self):
         exporter = _FakeExporter()
         model_data = _valid_model_data()
         model_data["vertices"][0]["bone_weights"] = [0.5, 0.25, 0.25]
@@ -1266,10 +1655,13 @@ class TestExportModelValidation(unittest.TestCase):
         self.assertFalse(result.succeeded)
         self.assertIsInstance(result.error, ExportValidationError)
         self.assertEqual(exporter.calls, [])
-        self.assertEqual(result.validation_report.issues[0].code, "BONE_WEIGHTS_LENGTH")
+        self.assertEqual(
+            result.validation_report.issues[0].code,
+            "PMD_EXPORT_POLICY_REJECT",
+        )
 
-    def test_action_passes_valid_data_to_both_writers(self):
-        for export_format in ("pmx", "pmd"):
+    def test_action_passes_valid_data_to_pmx_writer(self):
+        for export_format in ("pmx",):
             with self.subTest(export_format=export_format), tempfile.TemporaryDirectory() as temp_dir:
                 output_path = Path(temp_dir) / f"out.{export_format}"
                 exporter = _FakeExporter()
@@ -1297,7 +1689,7 @@ class TestExportModelValidation(unittest.TestCase):
                 self.assertEqual(result.payload_fingerprint, fingerprint_payload(_valid_model_data()))
 
     def test_action_does_not_call_writer_or_modify_existing_file_when_preflight_fails(self):
-        for export_format in ("pmx", "pmd"):
+        for export_format in ("pmx",):
             with self.subTest(export_format=export_format), tempfile.TemporaryDirectory() as temp_dir:
                 output_path = Path(temp_dir) / f"existing.{export_format}"
                 original_bytes = b"existing export bytes"
@@ -1324,7 +1716,7 @@ class TestExportModelValidation(unittest.TestCase):
                 self.assertEqual(output_path.read_bytes(), original_bytes)
 
     def test_writer_exception_preserves_valid_report_and_original_error(self):
-        for export_format in ("pmx", "pmd"):
+        for export_format in ("pmx",):
             with self.subTest(export_format=export_format), tempfile.TemporaryDirectory() as temp_dir:
                 output_path = Path(temp_dir) / f"existing.{export_format}"
                 original_bytes = b"existing export bytes"
@@ -1350,7 +1742,7 @@ class TestExportModelValidation(unittest.TestCase):
                 self.assertFalse(Path(exporter.calls[0][0]).exists())
 
     def test_empty_temporary_output_fails_and_preserves_existing_file(self):
-        for export_format in ("pmx", "pmd"):
+        for export_format in ("pmx",):
             with self.subTest(export_format=export_format), tempfile.TemporaryDirectory() as temp_dir:
                 output_path = Path(temp_dir) / f"empty.{export_format}"
                 original_bytes = b"existing export bytes"

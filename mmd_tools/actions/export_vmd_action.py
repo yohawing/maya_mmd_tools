@@ -158,6 +158,13 @@ class ExportVmdAction:
 
     def execute(self, request: ExportVmdRequest) -> ExportVmdResult:
         """Run VMD validation/export and convert failures into a result object."""
+        # Keep derived collector state local so reusing a request cannot carry
+        # raw provenance from a previous collection into a later export.
+        request = ExportVmdRequest(
+            request.file_path,
+            dict(request.options or {}),
+            animation_data=request.animation_data,
+        )
         validation_report: Optional[ExportValidationReport] = None
         payload_fingerprint: Optional[str] = None
         validation_report_artifacts: Optional[ValidationReportArtifactPaths] = None
@@ -196,9 +203,22 @@ class ExportVmdAction:
             if animation_data is None:
                 if self._collector is None:
                     raise ValueError("VMD export requires animation_data or a collector")
-                animation_data = self._collector(request.options)
+                collector_options = dict(request.options)
+                collector_options.setdefault("vmd_mode", mode)
+                animation_data = self._collector(collector_options)
+            if request.options.get("raw_provenance") is None:
+                if isinstance(animation_data, Mapping):
+                    collected_provenance = animation_data.get("raw_provenance")
+                else:
+                    collected_provenance = getattr(animation_data, "raw_provenance", None)
+                if collected_provenance is not None:
+                    request.options["raw_provenance"] = collected_provenance
 
             vmd_data = self._to_vmd_data(animation_data)
+            if request.options.get("raw_provenance") is None:
+                converted_provenance = getattr(vmd_data, "raw_provenance", None)
+                if converted_provenance is not None:
+                    request.options["raw_provenance"] = converted_provenance
             validation_report = self._validate(vmd_data, mode, request.options)
             if validation_report.is_blocking:
                 validation_error = ExportValidationError(validation_report)
@@ -235,7 +255,7 @@ class ExportVmdAction:
             )
             os.close(temporary_fd)
 
-            self._exporter.export_vmd_animation(temporary_path, animation_data)
+            self._exporter.export_vmd_animation(temporary_path, vmd_data)
 
             if self._output_verifier is not None:
                 expected_counts = {

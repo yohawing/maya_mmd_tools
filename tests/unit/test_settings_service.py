@@ -286,6 +286,17 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertNotIn("setup_rig", options)
         self.assertNotIn("setup_bone_orientation", options)
 
+    def test_build_pmx_import_options_defaults_native_render_routes_off(self):
+        self.service.set("ui.general.development_mode", True)
+        native = self.store.data["import"]["native"]
+        native.pop("use_cpp_fast_load")
+        native.pop("use_cpp_vp2_ownership")
+
+        options = self.service.build_pmx_import_options()
+
+        self.assertFalse(options["use_cpp_fast_load"])
+        self.assertFalse(options["use_cpp_vp2_ownership"])
+
     def test_model_control_rig_setting_feeds_pmx_and_vmd_options(self):
         self.service.set("import.model.create_mmd_control_rig", True)
 

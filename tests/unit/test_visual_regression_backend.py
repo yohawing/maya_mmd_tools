@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import unittest
 from types import SimpleNamespace
 from unittest import mock
 
@@ -92,6 +93,47 @@ def test_maya_payload_carries_display_texture_state(tmp_path):
     source = _build_maya_code(**kwargs)
     assert '_display_textures = bool(_payload.get("display_textures", True))' in source
     assert 'capture_panel = _setup_panel(camera, _display_textures)' in source
+
+
+class TestMorphPayload(unittest.TestCase):
+    """Validate optional morph-weight payloads in the Maya-side script."""
+
+    def test_maya_payload_supports_model_scoped_morph_weights(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as temp_dir:
+            tmp_path = Path(temp_dir)
+            kwargs = {
+                "project_root": tmp_path,
+                "cases": [
+                    {
+                        "name": "flip-case",
+                        "model": str(tmp_path / "flip.pmx"),
+                        "camera": {
+                            "position": [0.0, 10.0, 30.0],
+                            "target": [0.0, 10.0, 0.0],
+                            "fov": 30.0,
+                        },
+                        "metadata": {"morph_weights": [{"index": 1, "weight": 1.0}]},
+                    }
+                ],
+                "shader_fx": Path("shader.fx"),
+                "output_dir": tmp_path,
+                "log_path": tmp_path / "capture.log",
+                "width": 64,
+                "height": 64,
+                "compare": False,
+                "debug_lambert_control": False,
+                "hide_orig_shapes": False,
+                "shader_backend": "dx11",
+                "display_textures": True,
+            }
+
+            source = _build_maya_code(**kwargs)
+            compile(source, "<maya-visual-regression>", "exec")
+            self.assertIn("def _apply_case_morph_weights(root, case):", source)
+            self.assertIn('debug_actions["morphWeights"] = morph_weights', source)
+            self.assertIn("cmds.setAttr(plug, weight)", source)
 
 
 def test_maya_payload_opt_in_self_shadow_probe_is_explicit(tmp_path):

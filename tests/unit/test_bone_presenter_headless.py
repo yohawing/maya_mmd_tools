@@ -292,25 +292,6 @@ class _FakeMayaAdapter:
         return True
 
 
-class _FakeBindPoseResult:
-    def __init__(
-        self, *, succeeded=True, error="", model_root="", joint_count=0
-    ):
-        self.succeeded = succeeded
-        self.error = error
-        self.model_root = model_root
-        self.joint_count = joint_count
-
-
-class _FakeBindPoseAction:
-    def __init__(self):
-        self.models = []
-
-    def execute(self, model_root):
-        self.models.append(model_root)
-        return _FakeBindPoseResult(model_root=model_root, joint_count=3)
-
-
 def _make_presenter(adapter=None):
     view = _FakeView()
     app_state = _FakeAppState()
@@ -327,23 +308,48 @@ def _attr_getter(values):
 
 
 class TestBonePresenterHeadless(unittest.TestCase):
-    def test_bind_pose_button_runs_one_shot_action_without_locking_editor(self):
+    def test_reset_pose_button_runs_one_shot_transaction_without_locking_editor(self):
+        class _Cmds:
+            @staticmethod
+            def ls(node=None, long=False, uuid=False, selection=False, **_kwargs):
+                if uuid:
+                    return ["model-uuid"]
+                if selection:
+                    return []
+                if long and isinstance(node, list):
+                    return [f"|model|{joint}" for joint in node]
+                return []
+
         view = _FakeView()
-        app_state = _FakeAppState()
-        action = _FakeBindPoseAction()
-        presenter = BonePresenter(
-            view,
-            app_state,
-            maya_adapter=_FakeMayaAdapter(),
-            bind_pose_action=action,
+        app_state = _FakeAppState(TEST_MODEL)
+        adapter = _FakeMayaAdapter()
+        adapter._cmds = _Cmds()
+        adapter.get_attr = lambda attr: {
+            "|model|joint_a.mmd_vmd_bind_translate": "[1.0, 2.0, 3.0]",
+            "|model|joint_b.mmd_vmd_bind_translate": "[4.0, 5.0, 6.0]",
+        }[attr]
+        presenter = BonePresenter(view, app_state, maya_adapter=adapter)
+        presenter.all_bones = ["joint_a", "joint_b"]
+
+        captured = {}
+
+        class _Transaction:
+            def __init__(self, _adapter, **kwargs):
+                captured.update(kwargs)
+
+            def apply(self):
+                return 2
+
+        with patch("mmd_tools.ui.rest_pose_transaction.ResetPoseTransaction", _Transaction):
+            presenter.reset_pose()
+
+        self.assertEqual(captured["targets"], ["|model|joint_a", "|model|joint_b"])
+        self.assertEqual(
+            captured["bind_translations"]["|model|joint_a"],
+            (1.0, 2.0, 3.0),
         )
-        app_state.current_model_root = TEST_MODEL
-
-        presenter.go_to_bind_pose()
-
-        self.assertEqual(action.models, [TEST_MODEL])
-        self.assertIn("Go to Bind Pose", app_state.status_messages[-1])
-        self.assertIsNone(view.details_enabled)
+        self.assertIn("Reset Pose (2 joints)", app_state.status_messages[-1])
+        self.assertFalse(view.details_enabled)
 
     def test_load_bones_clears_and_returns_when_no_model(self):
         presenter, view, _, adapter = _make_presenter()

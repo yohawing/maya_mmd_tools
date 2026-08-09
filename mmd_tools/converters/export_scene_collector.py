@@ -12,26 +12,98 @@ later collector pass.
 """
 
 import json
+import math
+from pathlib import Path, PureWindowsPath
 from typing import Optional
 
 import maya.api.OpenMaya as om
 import maya.api.OpenMayaAnim as oma
 from maya import cmds
 
-from mmd_tools.converters.morph_converter import MorphConverter
+from mmd_tools.converters.material_shader_parameters import (
+    ATTR_MMD_DIFFUSE_ALPHA,
+    ATTR_MMD_EDGE_ALPHA,
+)
+from mmd_tools.converters.mesh_material_properties import PMX_EDGE_DRAWING_DRAW_FLAG
+from mmd_tools.converters.morph_converter import (
+    MorphConverter,
+    _order_morphs_by_index_if_grouped,
+)
 from mmd_tools.core.constants import (
+    ATTR_MMD_ADDITIONAL_UVS_JSON,
+    ATTR_MMD_AMBIENT_COLOR,
     ATTR_MMD_BONE_INDEX,
+    ATTR_MMD_BONE_FLAGS,
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_NAME_EN,
+    ATTR_MMD_BONE_OFFSET,
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_BONE_PARENT_INDEX,
+    ATTR_MMD_CONNECTION_BONE,
+    ATTR_MMD_CONNECT_BONE_INDEX,
+    ATTR_MMD_CONNECT_INDEX,
+    ATTR_MMD_DEFORM_LAYER,
+    ATTR_MMD_DIFFUSE_COLOR,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
+    ATTR_MMD_DRAW_FLAGS,
+    ATTR_MMD_EDGE_FLAG,
+    ATTR_MMD_EDGE_COLOR,
+    ATTR_MMD_EDGE_SIZE,
+    ATTR_MMD_IK_LIMIT_ANGLE,
+    ATTR_MMD_IK_LINKS,
+    ATTR_MMD_IK_LOOP,
+    ATTR_MMD_IK_TARGET,
+    ATTR_MMD_IK_TARGET_INDEX,
+    ATTR_MMD_EXTERNAL_PARENT_KEY,
+    ATTR_MMD_FIXED_AXIS,
+    ATTR_MMD_GRANT_PARENT,
+    ATTR_MMD_GRANT_PARENT_INDEX,
+    ATTR_MMD_GRANT_RATE,
+    ATTR_MMD_LOCAL_X_AXIS,
+    ATTR_MMD_LOCAL_Z_AXIS,
+    ATTR_MMD_MATERIAL,
     ATTR_MMD_MATERIAL_NAME,
+    ATTR_MMD_MATERIAL_NAME_EN,
+    ATTR_MMD_MEMO,
+    ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_MODEL_NAME,
+    ATTR_MMD_SHARED_TOON_FLAG,
+    ATTR_MMD_SHININESS,
+    ATTR_MMD_SPECULAR_COLOR,
+    ATTR_MMD_SPHERE_MODE,
+    ATTR_MMD_SPHERE_PATH,
+    ATTR_MMD_SPHERE_TEXTURE_INDEX,
+    ATTR_MMD_TEXTURE_INDEX,
+    ATTR_MMD_TEXTURE_TABLE_JSON,
+    ATTR_MMD_TOON_PATH,
+    ATTR_MMD_TOON_TEXTURE_INDEX,
+    ATTR_MMD_PMX_REST_POSITION,
+    ATTR_MMD_PMX_ADDITIONAL_UV_COUNT,
+    ATTR_MMD_PMX_SDEF_VERTEX_COUNT,
+    ATTR_MMD_PMX_SOFT_BODY_COUNT,
+    ATTR_MMD_SDEF_VERTICES_JSON,
+    ATTR_MMD_AXIS_DIRECTION,
+    ATTR_MMD_X_AXIS_DIRECTION,
+    ATTR_MMD_Z_AXIS_DIRECTION,
 )
 from mmd_tools.core.coordinate_transform import maya_point_to_mmd
 from mmd_tools.core.display_frame_metadata import display_frames_from_json
-from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_names
+from mmd_tools.core.pmx_data.bone import PmxBoneFlag
+from mmd_tools.core.morph_metadata_reader import (
+    parse_blendshape_morph_entries,
+)
+
+
+_PMX_TEXTURE_REFERENCE_FIELDS = (
+    ("texture_index", "source_texture_index"),
+    ("sphere_texture_index", "source_sphere_texture_index"),
+    ("toon_texture_index", "source_toon_texture_index"),
+)
+_PMX_TEXTURE_PROVENANCE_FIELDS = (
+    ("texture_path", "texture_index", "source_texture_index"),
+    ("sphere_texture_path", "sphere_texture_index", "source_sphere_texture_index"),
+    ("toon_texture_path", "toon_texture_index", "source_toon_texture_index"),
+)
 
 
 def _get_mesh_shape(node: str) -> str:
@@ -72,9 +144,463 @@ def _get_attr(node: str, attr: str, default=None):
     return default
 
 
+def _has_attr(node: str | None, attr: str) -> bool:
+    """Return whether a Maya attribute can be queried on an existing node."""
+    if not node:
+        return False
+    try:
+        return bool(cmds.attributeQuery(attr, node=node, exists=True))
+    except (RuntimeError, TypeError):
+        # Collector unit tests and stale scene paths may hand us a DAG name
+        # that no longer exists.  Missing provenance is handled by the
+        # caller's fail-closed policy; probing it must not abort collection.
+        return False
+
+
+def _read_soft_body_payload(*nodes: str | None):
+    """Return an export-blocking sentinel for imported PMX soft bodies."""
+    for node in nodes:
+        if not _has_attr(node, ATTR_MMD_PMX_SOFT_BODY_COUNT):
+            continue
+        count = _get_attr(node, ATTR_MMD_PMX_SOFT_BODY_COUNT, None)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            return {"count": count}
+        if count > 0:
+            return [{"count": count}]
+    return None
+
+
+def _read_additional_uv_storage(
+    transform: str,
+    shape: str,
+    vertex_count: int,
+    expected_channel_count: int | None = None,
+) -> tuple[list[list[list[float]]] | None, str | None]:
+    """Read the canonical imported PMX additional-UV payload.
+
+    The payload is stored on the mesh transform because the importer already
+    keeps MMD semantic attributes there.  A shape attribute is accepted as a
+    compatibility fallback for scenes authored by tools that target the mesh
+    shape directly.  Invalid or stale storage is reported to the caller so
+    export validation can fail closed instead of manufacturing zero values.
+    """
+    storage_node = None
+    recorded_channel_count = None
+    for node in (transform, shape):
+        if (
+            recorded_channel_count is None
+            and node
+            and _has_attr(node, ATTR_MMD_PMX_ADDITIONAL_UV_COUNT)
+        ):
+            recorded_channel_count = _get_attr(node, ATTR_MMD_PMX_ADDITIONAL_UV_COUNT, None)
+        if (
+            storage_node is None
+            and node
+            and _has_attr(node, ATTR_MMD_ADDITIONAL_UVS_JSON)
+        ):
+            storage_node = node
+
+    if expected_channel_count is None and recorded_channel_count is not None:
+        if (
+            isinstance(recorded_channel_count, bool)
+            or not isinstance(recorded_channel_count, int)
+            or not 0 <= recorded_channel_count <= 4
+        ):
+            return None, "additional_uvs_storage"
+        expected_channel_count = recorded_channel_count
+
+    if storage_node is None:
+        if expected_channel_count not in (None, 0):
+            return None, "additional_uvs_storage"
+        return None, None
+
+    raw_value = _get_attr(storage_node, ATTR_MMD_ADDITIONAL_UVS_JSON, None)
+    try:
+        payload = json.loads(raw_value) if isinstance(raw_value, str) else raw_value
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None, "additional_uvs_storage"
+
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        return None, "additional_uvs_storage"
+
+    channel_count = payload.get("channel_count")
+    stored_vertex_count = payload.get("vertex_count")
+    source_vertex_count = payload.get("source_vertex_count")
+    source_indices = payload.get("source_vertex_indices")
+    values = payload.get("additional_uvs")
+    if (
+        isinstance(channel_count, bool)
+        or not isinstance(channel_count, int)
+        or not 0 <= channel_count <= 4
+        or isinstance(stored_vertex_count, bool)
+        or not isinstance(stored_vertex_count, int)
+        or stored_vertex_count != vertex_count
+        or isinstance(source_vertex_count, bool)
+        or not isinstance(source_vertex_count, int)
+        or source_vertex_count < vertex_count
+        or not isinstance(source_indices, list)
+        or len(source_indices) != vertex_count
+        or not isinstance(values, list)
+        or len(values) != vertex_count
+    ):
+        return None, "additional_uvs_storage"
+    if expected_channel_count is not None and channel_count != expected_channel_count:
+        return None, "additional_uvs_storage"
+
+    normalized = []
+    for vertex_index, (source_index, channels) in enumerate(zip(source_indices, values)):
+        if (
+            isinstance(source_index, bool)
+            or not isinstance(source_index, int)
+            or source_index < 0
+            or source_index >= source_vertex_count
+            or not isinstance(channels, list)
+            or len(channels) != channel_count
+        ):
+            return None, "additional_uvs_storage"
+        normalized_channels = []
+        for channel in channels:
+            if not isinstance(channel, list) or len(channel) != 4:
+                return None, "additional_uvs_storage"
+            normalized_channel = []
+            for value in channel:
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    return None, "additional_uvs_storage"
+                try:
+                    value = float(value)
+                except (TypeError, ValueError):
+                    return None, "additional_uvs_storage"
+                if not math.isfinite(value):
+                    return None, "additional_uvs_storage"
+                normalized_channel.append(value)
+            normalized_channels.append(normalized_channel)
+        normalized.append(normalized_channels)
+    return normalized, None
+
+
+def _read_sdef_storage(
+    transform: str,
+    shape: str,
+    vertex_count: int,
+) -> tuple[list[dict | None] | None, str | None]:
+    """Read canonical imported PMX SDEF data after Maya skin normalization."""
+    storage_node = None
+    recorded_count = None
+    for node in (transform, shape):
+        if (
+            recorded_count is None
+            and _has_attr(node, ATTR_MMD_PMX_SDEF_VERTEX_COUNT)
+        ):
+            recorded_count = _get_attr(node, ATTR_MMD_PMX_SDEF_VERTEX_COUNT, None)
+        if (
+            storage_node is None
+            and _has_attr(node, ATTR_MMD_SDEF_VERTICES_JSON)
+        ):
+            storage_node = node
+
+    if recorded_count is not None and (
+        isinstance(recorded_count, bool)
+        or not isinstance(recorded_count, int)
+        or recorded_count < 0
+    ):
+        return None, "sdef_storage"
+    if storage_node is None:
+        if recorded_count not in (None, 0):
+            return None, "sdef_storage"
+        return None, None
+
+    raw_value = _get_attr(storage_node, ATTR_MMD_SDEF_VERTICES_JSON, None)
+    try:
+        payload = json.loads(raw_value) if isinstance(raw_value, str) else raw_value
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None, "sdef_storage"
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        return None, "sdef_storage"
+
+    stored_vertex_count = payload.get("vertex_count")
+    source_vertex_count = payload.get("source_vertex_count")
+    source_indices = payload.get("source_vertex_indices")
+    values = payload.get("sdef_vertices")
+    if (
+        isinstance(stored_vertex_count, bool)
+        or not isinstance(stored_vertex_count, int)
+        or stored_vertex_count != vertex_count
+        or isinstance(source_vertex_count, bool)
+        or not isinstance(source_vertex_count, int)
+        or source_vertex_count < vertex_count
+        or not isinstance(source_indices, list)
+        or len(source_indices) != vertex_count
+        or not isinstance(values, list)
+        or len(values) != vertex_count
+    ):
+        return None, "sdef_storage"
+
+    normalized = []
+    actual_count = 0
+    for source_index, value in zip(source_indices, values):
+        if (
+            isinstance(source_index, bool)
+            or not isinstance(source_index, int)
+            or source_index < 0
+            or source_index >= source_vertex_count
+        ):
+            return None, "sdef_storage"
+        if value is None:
+            normalized.append(None)
+            continue
+        if not isinstance(value, dict):
+            return None, "sdef_storage"
+        bone_indices = value.get("bone_indices")
+        bone_weights = value.get("bone_weights")
+        if (
+            not isinstance(bone_indices, list)
+            or len(bone_indices) != 2
+            or not isinstance(bone_weights, list)
+            or len(bone_weights) != 1
+        ):
+            return None, "sdef_storage"
+        if any(
+            isinstance(index, bool) or not isinstance(index, int) or index < 0
+            for index in bone_indices
+        ):
+            return None, "sdef_storage"
+        normalized_weights = []
+        for weight in bone_weights:
+            if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+                return None, "sdef_storage"
+            weight = float(weight)
+            if not math.isfinite(weight):
+                return None, "sdef_storage"
+            normalized_weights.append(weight)
+        normalized_vectors = {}
+        for field_name in ("sdef_c", "sdef_r0", "sdef_r1"):
+            vector = value.get(field_name)
+            if not isinstance(vector, list) or len(vector) != 3:
+                return None, "sdef_storage"
+            normalized_vector = []
+            for component in vector:
+                if isinstance(component, bool) or not isinstance(component, (int, float)):
+                    return None, "sdef_storage"
+                component = float(component)
+                if not math.isfinite(component):
+                    return None, "sdef_storage"
+                normalized_vector.append(component)
+            normalized_vectors[field_name] = normalized_vector
+        actual_count += 1
+        normalized.append(
+            {
+                "bone_indices": [int(index) for index in bone_indices],
+                "bone_weights": normalized_weights,
+                **normalized_vectors,
+            }
+        )
+    if recorded_count is not None and actual_count != recorded_count:
+        return None, "sdef_storage"
+    return normalized, None
+
+
 def _collect_display_frames(root: str) -> list[dict]:
     """Return root-level PMX display-frame metadata collected during import."""
     return display_frames_from_json(_get_attr(root, ATTR_MMD_DISPLAY_FRAMES_JSON, ""))
+
+
+def _read_texture_table(root: str | None) -> list[str] | None:
+    """Read the imported PMX texture table without reconstructing missing entries."""
+    if not root:
+        return None
+    raw_value = _get_attr(root, ATTR_MMD_TEXTURE_TABLE_JSON, None)
+    if raw_value in (None, ""):
+        return None
+    try:
+        table = json.loads(raw_value) if isinstance(raw_value, str) else raw_value
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(table, list) or not all(isinstance(path, str) for path in table):
+        return None
+    return list(table)
+
+
+def _resolve_material_texture_indices(materials: list[dict], texture_table: list[str]) -> None:
+    """Restore writer-facing texture indices from the authoritative PMX table."""
+    for material in materials:
+        had_semantic_missing = "semantic_missing" in material
+        semantic_missing = list(material.get("semantic_missing") or [])
+        for payload_key, source_key in _PMX_TEXTURE_REFERENCE_FIELDS:
+            source_index = material.get(source_key)
+            if isinstance(source_index, bool) or not isinstance(source_index, int):
+                continue
+            if source_index < 0 or source_index >= len(texture_table):
+                if "texture_table" not in semantic_missing:
+                    semantic_missing.append("texture_table")
+                continue
+            material[payload_key] = source_index
+            material.pop(source_key, None)
+
+        unresolved_path = any(
+            material.get(path_key)
+            and not (
+                isinstance(material.get(index_key), int)
+                and not isinstance(material.get(index_key), bool)
+                and 0 <= material[index_key] < len(texture_table)
+            )
+            for path_key, index_key in (
+                ("texture_path", "texture_index"),
+                ("sphere_texture_path", "sphere_texture_index"),
+            )
+        )
+        unresolved_source = any(
+            source_key in material for _, source_key in _PMX_TEXTURE_REFERENCE_FIELDS
+        )
+        if unresolved_path or unresolved_source:
+            if "texture_table" not in semantic_missing:
+                semantic_missing.append("texture_table")
+        else:
+            semantic_missing = [
+                field for field in semantic_missing if field != "texture_table"
+            ]
+        if had_semantic_missing or semantic_missing:
+            material["semantic_missing"] = semantic_missing
+
+
+def _collect_texture_table_from_materials(materials: list[dict]) -> list[str] | None:
+    """Build a PMX texture table from complete relative-path provenance.
+
+    Explicit source indices are treated as authoritative.  A table with a
+    missing slot or conflicting paths cannot be reconstructed safely, so this
+    helper returns ``None`` and leaves the materials fail-closed.  Materials
+    with a path but no authored index may use a newly appended table entry;
+    that assignment does not replace an authored index.
+    """
+    indexed_paths: dict[int, str] = {}
+    unindexed_paths: list[tuple[dict, str, str]] = []
+
+    for material in materials:
+        shared_toon = material.get("shared_toon_flag") == 1
+        for path_key, payload_key, source_key in _PMX_TEXTURE_PROVENANCE_FIELDS:
+            if payload_key == "toon_texture_index" and shared_toon:
+                continue
+
+            path = material.get(path_key)
+            if source_key in material:
+                index = material[source_key]
+                if (
+                    isinstance(index, bool)
+                    or not isinstance(index, int)
+                    or index < 0
+                ):
+                    return None
+            elif payload_key in material:
+                index = material[payload_key]
+                if (
+                    isinstance(index, bool)
+                    or not isinstance(index, int)
+                    or index < 0
+                ):
+                    return None
+            else:
+                index = None
+            has_index = index is not None
+
+            if has_index and (not isinstance(path, str) or not path):
+                return None
+            if not isinstance(path, str) or not path:
+                continue
+
+            if has_index:
+                previous_path = indexed_paths.get(index)
+                if previous_path is not None and previous_path != path:
+                    return None
+                indexed_paths[index] = path
+            else:
+                unindexed_paths.append((material, payload_key, path))
+
+    if not indexed_paths and not unindexed_paths:
+        return None
+
+    if indexed_paths:
+        max_index = max(indexed_paths)
+        texture_table: list[str | None] = [None] * (max_index + 1)
+        for index, path in indexed_paths.items():
+            texture_table[index] = path
+        if any(path is None for path in texture_table):
+            return None
+        complete_table = [path for path in texture_table if path is not None]
+    else:
+        complete_table = []
+
+    path_to_index = {path: index for index, path in enumerate(complete_table)}
+    for material, payload_key, path in unindexed_paths:
+        index = path_to_index.get(path)
+        if index is None:
+            index = len(complete_table)
+            complete_table.append(path)
+            path_to_index[path] = index
+        material[payload_key] = index
+        semantic_missing = material.get("semantic_missing")
+        if isinstance(semantic_missing, list):
+            material["semantic_missing"] = [
+                field for field in semantic_missing if field != payload_key
+            ]
+
+    return complete_table
+
+
+def _apply_texture_table(model_data: dict, model_root: str | None) -> None:
+    """Attach the authoritative PMX table and resolve material indices.
+
+    Imported roots own an authoritative table.  Only a genuinely absent root
+    table may fall back to complete material path provenance; malformed root
+    metadata remains fail-closed rather than being silently reconstructed.
+    """
+    texture_table = _read_texture_table(model_root)
+    if texture_table is None:
+        if model_root and _get_attr(model_root, ATTR_MMD_TEXTURE_TABLE_JSON, None) not in (None, ""):
+            return
+        texture_table = _collect_texture_table_from_materials(model_data.get("materials", []))
+        if texture_table is None:
+            return
+    _resolve_material_texture_indices(model_data.get("materials", []), texture_table)
+    model_data["textures"] = texture_table
+
+
+def _is_default_pmd_display_frame(frame: dict) -> bool:
+    """Return whether one PMD-to-PMX synthetic display frame is present."""
+    name = frame.get("name", "")
+    elements = frame.get("elements", [])
+    if name == "Root":
+        return elements == [{"type": 0, "index": 0}]
+    if name in {"表情", "Exp"}:
+        return all(element.get("type") == 1 for element in elements)
+    return False
+
+
+def _apply_pmd_export_policy(model_data: dict, model_root: str | None) -> dict:
+    """Normalize only PMD-safe defaults without hiding unsupported source data.
+
+    PMD import is routed through a PMX scene representation, which necessarily
+    adds the standard ``Root``/``Exp`` display frames.  Those frames are
+    synthetic and are not PMD source data.  Custom PMD frames remain in the
+    payload and are rejected by the PMD validator instead of being discarded.
+    The collector also uses PMD's valid toon index sentinel for an untextured
+    material; PMD has no PMX ``-1`` index representation.
+    """
+    normalized = dict(model_data)
+    normalized["materials"] = [
+        {
+            **material,
+            "toon_texture_index": 0
+            if material.get("toon_texture_index") == -1
+            else material.get("toon_texture_index", 0),
+        }
+        for material in model_data.get("materials", [])
+    ]
+
+    source_path = _get_attr(model_root, "mmd_source_file", "") if model_root else ""
+    if str(Path(str(source_path))).lower().endswith(".pmd"):
+        frames = list(model_data.get("display_frames") or [])
+        if frames and all(_is_default_pmd_display_frame(frame) for frame in frames):
+            normalized["display_frames"] = []
+    return normalized
 
 
 def _maya_to_mmd_vector(values) -> list[float]:
@@ -130,6 +656,408 @@ def _joint_identity(joint: str) -> str:
     return long_names[0] if long_names else joint
 
 
+_PMX_DEFAULT_BONE_FLAGS = int(
+    PmxBoneFlag.DISPLAY
+    | PmxBoneFlag.OPERATABLE
+    | PmxBoneFlag.ROTATABLE
+    | PmxBoneFlag.MOVABLE
+)
+_PMX_IK_FLAG = int(PmxBoneFlag.IK)
+_PMX_CONNECT_BONE_FLAG = int(PmxBoneFlag.CONNECT_BONE)
+_PMX_GRANT_FLAGS = int(PmxBoneFlag.GRANT_PARENT_ROTATE | PmxBoneFlag.GRANT_PARENT_MOVE)
+_PMX_AXIS_FIXED_FLAG = int(PmxBoneFlag.AXIS_FIXED)
+_PMX_LOCAL_AXIS_FLAG = int(PmxBoneFlag.LOCAL_AXIS)
+_PMX_EXTERNAL_PARENT_FLAG = int(PmxBoneFlag.EXTERNAL_PARENT_DEFORM)
+
+
+def _normalize_maya_vector(value: object) -> object:
+    """Unwrap Maya's one-item compound-vector return without hiding bad data."""
+    if isinstance(value, (list, tuple)) and len(value) == 1:
+        nested = value[0]
+        if isinstance(nested, (list, tuple)):
+            return nested
+    return value
+
+
+def _present_attrs(joint: str, attrs: tuple[str, ...]) -> dict[str, bool]:
+    """Return custom-attribute presence for one joint."""
+    return {attr: cmds.attributeQuery(attr, node=joint, exists=True) for attr in attrs}
+
+
+def _same_authored_value(left: object, right: object) -> bool:
+    """Compare two Maya attribute values without coercing malformed values."""
+    left = _normalize_maya_vector(left)
+    right = _normalize_maya_vector(right)
+    try:
+        result = left == right
+        return result if isinstance(result, bool) else bool(result)
+    except (TypeError, ValueError):
+        return False
+
+
+def _append_semantic_missing(missing: list[str], field_name: str) -> None:
+    """Record one missing or ambiguous PMX field exactly once."""
+    if field_name not in missing:
+        missing.append(field_name)
+
+
+def _register_bone_reference_alias(
+    aliases: dict[str, Optional[int]],
+    alias: object,
+    export_index: int,
+) -> None:
+    """Register one unambiguous authored bone-name alias."""
+    if not isinstance(alias, str) or not alias:
+        return
+    if alias in aliases and aliases[alias] != export_index:
+        aliases[alias] = None
+        return
+    aliases[alias] = export_index
+
+
+def _resolve_ik_bone_reference(
+    value: object,
+    source_to_export: dict[int, Optional[int]],
+    name_to_export: dict[str, Optional[int]],
+) -> object:
+    """Map an imported source index or authored name to export order.
+
+    Unresolved references become ``None`` so the payload validator can report
+    the failure before the writer is called; they are never guessed as an
+    already-exported index.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return source_to_export.get(value)
+    if isinstance(value, str):
+        return name_to_export.get(value)
+    return value
+
+
+def _resolve_ik_links(
+    value: object,
+    source_to_export: dict[int, Optional[int]],
+    name_to_export: dict[str, Optional[int]],
+) -> object:
+    """Resolve the ``bone`` member of each canonical IK-link dictionary."""
+    if not isinstance(value, (list, tuple)):
+        return value
+    resolved_links = []
+    for link in value:
+        if not isinstance(link, dict):
+            resolved_links.append(link)
+            continue
+        resolved_link = dict(link)
+        if "bone" in resolved_link:
+            resolved_link["bone"] = _resolve_ik_bone_reference(
+                resolved_link["bone"], source_to_export, name_to_export
+            )
+        resolved_links.append(resolved_link)
+    return resolved_links
+
+
+def _resolve_authored_reference(
+    values: list[object],
+    source_to_export: dict[int, Optional[int]],
+    name_to_export: dict[str, Optional[int]],
+) -> tuple[object, bool]:
+    """Resolve one or more authored references and detect conflicts."""
+    candidates = [
+        value
+        for value in values
+        if not (isinstance(value, str) and not value)
+    ]
+    if not candidates:
+        return None, True
+
+    resolved = [
+        _resolve_ik_bone_reference(value, source_to_export, name_to_export)
+        for value in candidates
+    ]
+    if any(value is None for value in resolved):
+        return None, True
+    if any(value != resolved[0] for value in resolved[1:]):
+        return None, True
+    return resolved[0], False
+
+
+def _collect_vector_alias(
+    joint: str,
+    present: dict[str, bool],
+    attrs: tuple[str, ...],
+    payload: dict,
+    payload_name: str,
+    semantic_missing: list[str],
+) -> bool:
+    """Collect one vector from equivalent canonical/legacy aliases."""
+    values = [
+        _normalize_maya_vector(_get_attr(joint, attr))
+        for attr in attrs
+        if present[attr]
+    ]
+    if not values:
+        return False
+    payload[payload_name] = values[0]
+    if len(values) > 1 and not all(_same_authored_value(values[0], value) for value in values[1:]):
+        payload[payload_name] = None
+        _append_semantic_missing(semantic_missing, payload_name)
+    return True
+
+
+def _collect_bone_semantic_metadata(
+    joint: str,
+    raw_flags: object,
+    source_to_export: dict[int, Optional[int]],
+    name_to_export: dict[str, Optional[int]],
+) -> dict:
+    """Collect non-IK PMX bone semantics from canonical Maya attributes.
+
+    Missing attributes on legacy joints intentionally retain writer defaults.
+    Once a conditional attribute is authored, however, malformed, conflicting,
+    or unresolved values are retained as explicit semantic-missing payload so
+    preflight can reject them instead of guessing.
+    """
+    present = _present_attrs(
+        joint,
+        (
+            ATTR_MMD_DEFORM_LAYER,
+            ATTR_MMD_PMX_REST_POSITION,
+            ATTR_MMD_BONE_OFFSET,
+            ATTR_MMD_CONNECTION_BONE,
+            ATTR_MMD_CONNECT_INDEX,
+            ATTR_MMD_CONNECT_BONE_INDEX,
+            ATTR_MMD_GRANT_PARENT,
+            ATTR_MMD_GRANT_PARENT_INDEX,
+            ATTR_MMD_GRANT_RATE,
+            ATTR_MMD_FIXED_AXIS,
+            ATTR_MMD_AXIS_DIRECTION,
+            ATTR_MMD_LOCAL_X_AXIS,
+            ATTR_MMD_X_AXIS_DIRECTION,
+            ATTR_MMD_LOCAL_Z_AXIS,
+            ATTR_MMD_Z_AXIS_DIRECTION,
+            ATTR_MMD_EXTERNAL_PARENT_KEY,
+        ),
+    )
+    metadata = {}
+    semantic_missing: list[str] = []
+
+    if present[ATTR_MMD_DEFORM_LAYER]:
+        metadata["transform_layer"] = _get_attr(joint, ATTR_MMD_DEFORM_LAYER)
+    if present[ATTR_MMD_PMX_REST_POSITION]:
+        # Do not fall back to the live transform when the canonical value is
+        # present but malformed; the validator must see the authored value.
+        metadata["position"] = _normalize_maya_vector(
+            _get_attr(joint, ATTR_MMD_PMX_REST_POSITION)
+        )
+
+    valid_flags = isinstance(raw_flags, int) and not isinstance(raw_flags, bool)
+    flags = int(raw_flags) if valid_flags else 0
+
+    if flags & _PMX_CONNECT_BONE_FLAG:
+        reference_attrs = (
+            ATTR_MMD_CONNECT_INDEX,
+            ATTR_MMD_CONNECT_BONE_INDEX,
+            ATTR_MMD_CONNECTION_BONE,
+        )
+        reference_present = [attr for attr in reference_attrs if present[attr]]
+        if reference_present:
+            value, invalid = _resolve_authored_reference(
+                [_get_attr(joint, attr) for attr in reference_present],
+                source_to_export,
+                name_to_export,
+            )
+            metadata["connect_bone_index"] = value
+            if invalid:
+                _append_semantic_missing(semantic_missing, "connect_bone_index")
+    elif present[ATTR_MMD_BONE_OFFSET]:
+        metadata["connect_position_offset"] = _normalize_maya_vector(
+            _get_attr(joint, ATTR_MMD_BONE_OFFSET)
+        )
+
+    if flags & _PMX_GRANT_FLAGS:
+        parent_attrs = (ATTR_MMD_GRANT_PARENT_INDEX, ATTR_MMD_GRANT_PARENT)
+        parent_present = [attr for attr in parent_attrs if present[attr]]
+        grant_related_present = bool(parent_present or present[ATTR_MMD_GRANT_RATE])
+        if grant_related_present:
+            if parent_present:
+                value, invalid = _resolve_authored_reference(
+                    [_get_attr(joint, attr) for attr in parent_present],
+                    source_to_export,
+                    name_to_export,
+                )
+            else:
+                value, invalid = None, True
+            metadata["grant_parent_bone_index"] = value
+            if invalid:
+                _append_semantic_missing(semantic_missing, "grant_parent_bone_index")
+            if present[ATTR_MMD_GRANT_RATE]:
+                metadata["grant_rate"] = _get_attr(joint, ATTR_MMD_GRANT_RATE)
+            else:
+                _append_semantic_missing(semantic_missing, "grant_rate")
+
+    if flags & _PMX_AXIS_FIXED_FLAG:
+        fixed_present = _collect_vector_alias(
+            joint,
+            present,
+            (ATTR_MMD_FIXED_AXIS, ATTR_MMD_AXIS_DIRECTION),
+            metadata,
+            "axis_direction",
+            semantic_missing,
+        )
+        if not fixed_present and any(
+            present[attr] for attr in (ATTR_MMD_FIXED_AXIS, ATTR_MMD_AXIS_DIRECTION)
+        ):
+            _append_semantic_missing(semantic_missing, "axis_direction")
+
+    if flags & _PMX_LOCAL_AXIS_FLAG:
+        x_present = _collect_vector_alias(
+            joint,
+            present,
+            (ATTR_MMD_LOCAL_X_AXIS, ATTR_MMD_X_AXIS_DIRECTION),
+            metadata,
+            "x_axis_direction",
+            semantic_missing,
+        )
+        z_present = _collect_vector_alias(
+            joint,
+            present,
+            (ATTR_MMD_LOCAL_Z_AXIS, ATTR_MMD_Z_AXIS_DIRECTION),
+            metadata,
+            "z_axis_direction",
+            semantic_missing,
+        )
+        local_axis_present = any(
+            present[attr]
+            for attr in (
+                ATTR_MMD_LOCAL_X_AXIS,
+                ATTR_MMD_X_AXIS_DIRECTION,
+                ATTR_MMD_LOCAL_Z_AXIS,
+                ATTR_MMD_Z_AXIS_DIRECTION,
+            )
+        )
+        if local_axis_present and not x_present:
+            _append_semantic_missing(semantic_missing, "x_axis_direction")
+        if local_axis_present and not z_present:
+            _append_semantic_missing(semantic_missing, "z_axis_direction")
+
+    if flags & _PMX_EXTERNAL_PARENT_FLAG and present[ATTR_MMD_EXTERNAL_PARENT_KEY]:
+        metadata["key_value"] = _get_attr(joint, ATTR_MMD_EXTERNAL_PARENT_KEY)
+
+    if semantic_missing:
+        metadata["semantic_missing"] = semantic_missing
+    return metadata
+
+
+def _collect_ik_metadata(
+    joint: str,
+    source_to_export: dict[int, Optional[int]],
+    name_to_export: dict[str, Optional[int]],
+) -> dict:
+    """Collect the supported IK subset from one indexed Maya joint.
+
+    The helper deliberately retains malformed values for validation instead of
+    dropping them.  This keeps incomplete or stale authoring fail-closed.
+    """
+    ik_attrs = (
+        ATTR_MMD_BONE_FLAGS,
+        ATTR_MMD_IK_TARGET,
+        ATTR_MMD_IK_TARGET_INDEX,
+        ATTR_MMD_IK_LOOP,
+        ATTR_MMD_IK_LIMIT_ANGLE,
+        ATTR_MMD_IK_LINKS,
+    )
+    present = {attr: cmds.attributeQuery(attr, node=joint, exists=True) for attr in ik_attrs}
+    raw_flags = _get_attr(joint, ATTR_MMD_BONE_FLAGS) if present[ATTR_MMD_BONE_FLAGS] else None
+    has_ik_flag = (
+        isinstance(raw_flags, int)
+        and not isinstance(raw_flags, bool)
+        and bool(int(raw_flags) & _PMX_IK_FLAG)
+    )
+
+    # The bone presenter creates these attributes on ordinary bones so the UI
+    # can edit them later.  Attribute presence alone therefore cannot mean
+    # that IK was authored.  Treat the presenter defaults as empty, while
+    # retaining non-default or malformed values for fail-closed validation.
+    raw_target = _get_attr(joint, ATTR_MMD_IK_TARGET) if present[ATTR_MMD_IK_TARGET] else None
+    raw_target_index = (
+        _get_attr(joint, ATTR_MMD_IK_TARGET_INDEX)
+        if present[ATTR_MMD_IK_TARGET_INDEX]
+        else None
+    )
+    raw_loop_count = _get_attr(joint, ATTR_MMD_IK_LOOP) if present[ATTR_MMD_IK_LOOP] else None
+    raw_limit_angle = (
+        _get_attr(joint, ATTR_MMD_IK_LIMIT_ANGLE)
+        if present[ATTR_MMD_IK_LIMIT_ANGLE]
+        else None
+    )
+    raw_links = _get_attr(joint, ATTR_MMD_IK_LINKS) if present[ATTR_MMD_IK_LINKS] else None
+    if isinstance(raw_links, str):
+        try:
+            raw_links = json.loads(raw_links)
+        except (TypeError, ValueError):
+            pass
+
+    has_nonempty_links = not (
+        raw_links is None
+        or raw_links == ""
+        or (isinstance(raw_links, (list, tuple)) and not raw_links)
+    )
+    has_ik_payload = (
+        raw_target not in (None, "")
+        or raw_target_index not in (None, -1)
+        or raw_loop_count is not None and raw_loop_count != 10
+        or raw_limit_angle is not None and raw_limit_angle != 2.0
+        or has_nonempty_links
+    )
+    if not has_ik_flag and not has_ik_payload:
+        if present[ATTR_MMD_BONE_FLAGS]:
+            return {"bone_flag": raw_flags}
+        return {}
+
+    metadata = {}
+    if present[ATTR_MMD_BONE_FLAGS]:
+        # Preserve the complete authored flag word.  The old IK-only slice
+        # replaced this with a writer default and silently lost non-IK bits.
+        metadata["bone_flag"] = raw_flags
+    elif has_ik_flag:
+        metadata["bone_flag"] = _PMX_DEFAULT_BONE_FLAGS | _PMX_IK_FLAG
+
+    target_index = None
+    if present[ATTR_MMD_IK_TARGET_INDEX]:
+        target_index = _resolve_ik_bone_reference(
+            raw_target_index, source_to_export, name_to_export
+        )
+        if raw_target not in (None, ""):
+            name_index = _resolve_ik_bone_reference(
+                raw_target, source_to_export, name_to_export
+            )
+            if target_index is None or name_index is None or target_index != name_index:
+                target_index = None
+    elif present[ATTR_MMD_IK_TARGET]:
+        target_index = _resolve_ik_bone_reference(
+            raw_target, source_to_export, name_to_export
+        )
+    if present[ATTR_MMD_IK_TARGET_INDEX] or present[ATTR_MMD_IK_TARGET]:
+        metadata["ik_target_bone_index"] = target_index
+
+    for payload_key, attr in (
+        ("ik_loop_count", ATTR_MMD_IK_LOOP),
+        ("ik_limit_angle", ATTR_MMD_IK_LIMIT_ANGLE),
+    ):
+        if present[attr]:
+            metadata[payload_key] = {
+                ATTR_MMD_IK_LOOP: raw_loop_count,
+                ATTR_MMD_IK_LIMIT_ANGLE: raw_limit_angle,
+            }[attr]
+
+    if present[ATTR_MMD_IK_LINKS]:
+        metadata["ik_links"] = _resolve_ik_links(
+            raw_links, source_to_export, name_to_export
+        )
+    return metadata
+
+
 def _collect_bones_from_joints(joints: list[str]) -> tuple[list[dict], dict[str, int]]:
     """Collect exporter bones from MMD-tagged joints in metadata order."""
 
@@ -147,6 +1075,24 @@ def _collect_bones_from_joints(joints: list[str]) -> tuple[list[dict], dict[str,
         if stored_index is not None:
             stored_to_export[int(stored_index)] = index
 
+    ik_source_to_export: dict[int, Optional[int]] = {}
+    ik_name_to_export: dict[str, Optional[int]] = {}
+    for joint, index in export_index_by_joint.items():
+        stored_index = _get_attr(joint, ATTR_MMD_BONE_INDEX)
+        if isinstance(stored_index, int) and not isinstance(stored_index, bool):
+            if stored_index in ik_source_to_export and ik_source_to_export[stored_index] != index:
+                ik_source_to_export[stored_index] = None
+            else:
+                ik_source_to_export[stored_index] = index
+        aliases = (
+            joint,
+            joint.rsplit("|", 1)[-1],
+            _get_attr(joint, ATTR_MMD_BONE_NAME),
+            _get_attr(joint, ATTR_MMD_BONE_NAME_EN),
+        )
+        for alias in aliases:
+            _register_bone_reference_alias(ik_name_to_export, alias, index)
+
     bones = []
     for joint in ordered:
         parent_index = -1
@@ -159,13 +1105,31 @@ def _collect_bones_from_joints(joints: list[str]) -> tuple[list[dict], dict[str,
                 parent_index = export_index_by_joint[parent]
 
         position = cmds.xform(joint, query=True, worldSpace=True, translation=True)
-        bones.append({
+        flags_present = cmds.attributeQuery(ATTR_MMD_BONE_FLAGS, node=joint, exists=True)
+        raw_flags = _get_attr(joint, ATTR_MMD_BONE_FLAGS) if flags_present else None
+        bone = {
             "name": _get_attr(joint, ATTR_MMD_BONE_NAME, joint.rsplit("|", 1)[-1]),
             "name_english": _get_attr(joint, ATTR_MMD_BONE_NAME_EN, ""),
             "position": _maya_to_mmd_vector(position),
             "parent_index": parent_index,
             "source_joint": joint,
-        })
+        }
+        bone.update(
+            _collect_bone_semantic_metadata(
+                joint,
+                raw_flags,
+                ik_source_to_export,
+                ik_name_to_export,
+            )
+        )
+        bone.update(
+            _collect_ik_metadata(
+                joint,
+                ik_source_to_export,
+                ik_name_to_export,
+            )
+        )
+        bones.append(bone)
     return bones, export_index_by_joint
 
 
@@ -309,8 +1273,8 @@ def _blendshape_aliases_by_index(blend_shape: str) -> dict[int, str]:
     return aliases
 
 
-def _blendshape_stored_names(blend_shape: str) -> dict[int, str]:
-    """Return target index -> raw PMX morph name stored by MorphConverter."""
+def _blendshape_stored_entries(blend_shape: str) -> dict[int, dict]:
+    """Return blendShape target metadata stored by MorphConverter."""
     if not cmds.attributeQuery(ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, node=blend_shape, exists=True):
         return {}
     try:
@@ -318,7 +1282,28 @@ def _blendshape_stored_names(blend_shape: str) -> dict[int, str]:
         parsed = json.loads(raw)
     except (TypeError, ValueError):
         return {}
-    return parse_blendshape_morph_names(parsed)
+    entries = parse_blendshape_morph_entries(parsed)
+    if not isinstance(parsed, dict):
+        return entries
+
+    # Keep the original index value so grouped exports can reject bools and
+    # other non-integer provenance instead of accepting parser coercion.
+    for key, raw_entry in parsed.items():
+        try:
+            target_index = int(key)
+        except (TypeError, ValueError):
+            continue
+        if target_index in entries and isinstance(raw_entry, dict) and "index" in raw_entry:
+            entries[target_index]["index"] = raw_entry["index"]
+    return entries
+
+
+def _blendshape_stored_names(blend_shape: str) -> dict[int, str]:
+    """Return target index -> raw PMX morph name stored by MorphConverter."""
+    return {
+        index: str(entry["name"])
+        for index, entry in _blendshape_stored_entries(blend_shape).items()
+    }
 
 
 def _blendshape_target_indices(blend_shape: str) -> list[int]:
@@ -432,7 +1417,11 @@ def _collect_vertex_morphs(shape: str, vertex_offset: int = 0) -> list[dict]:
             continue
 
         aliases = _blendshape_aliases_by_index(blend_shape)
-        stored_names = _blendshape_stored_names(blend_shape)
+        stored_entries = _blendshape_stored_entries(blend_shape)
+        stored_names = {
+            index: str(entry["name"])
+            for index, entry in stored_entries.items()
+        }
         geometry_index = _blendshape_geometry_index(blend_shape, shape)
         for target_index in target_indices:
             offsets = _stored_blendshape_target_offsets(
@@ -447,13 +1436,17 @@ def _collect_vertex_morphs(shape: str, vertex_offset: int = 0) -> list[dict]:
                 continue
 
             morph_name = stored_names.get(target_index) or aliases.get(target_index) or f"VertexMorph{target_index}"
-            morphs.append({
+            morph_payload = {
                 "type": "vertex",
                 "name": morph_name,
                 "name_english": morph_name,
                 "panel": 4,
                 "offsets": offsets,
-            })
+            }
+            stored_entry = stored_entries.get(target_index, {})
+            if "index" in stored_entry:
+                morph_payload["index"] = stored_entry["index"]
+            morphs.append(morph_payload)
 
     return morphs
 
@@ -478,17 +1471,295 @@ def _make_material_dict(mat_name: str) -> dict:
     }
 
 
-def _resolve_shader_name(sg_node_name: str) -> str:
+def _read_shader_attr(shader: str, attr: str) -> tuple[bool, object]:
+    """Read one custom shader attribute without manufacturing a fallback value."""
+    if not cmds.attributeQuery(attr, node=shader, exists=True):
+        return False, None
+    value = cmds.getAttr(f"{shader}.{attr}")
+    return value is not None, value
+
+
+def _read_shader_scalar(shader: str, attr: str, converter) -> tuple[bool, object]:
+    """Read and convert a scalar shader attribute, treating malformed data as missing."""
+    if converter is int:
+        return _read_shader_integer(shader, attr)
+    present, value = _read_shader_attr(shader, attr)
+    if not present:
+        return False, None
+    try:
+        return True, converter(value)
+    except (TypeError, ValueError):
+        return False, None
+
+
+def _shader_texture_provenance(shader: str) -> tuple[bool, str | None]:
+    """Return whether a main texture file node is connected and its source path."""
+    try:
+        from mmd_tools.core import maya_material_utils
+
+        file_node = maya_material_utils.find_material_texture_file_node(shader)
+        if not file_node:
+            return False, None
+        return True, maya_material_utils.get_mmd_original_texture_path(file_node)
+    except Exception:
+        # A tagged shader must not lose a connected texture merely because
+        # provenance inspection failed. Treat the connection as unknown and
+        # let the writer-facing validator reject the incomplete semantics.
+        return True, None
+
+
+def _read_shader_texture_path(
+    shader: str,
+    attr: str,
+    *,
+    resolve_file_node: bool = False,
+) -> tuple[bool, str | None, bool]:
+    """Read a texture path without exporting a Maya-resolved absolute path."""
+    present, value = _read_shader_scalar(shader, attr, str)
+    if present and not value:
+        connected, _ = _shader_texture_provenance(shader) if resolve_file_node else (False, None)
+        return False, None, connected
+    if not present:
+        if not resolve_file_node:
+            return False, None, False
+        connected, original_path = _shader_texture_provenance(shader)
+        return bool(original_path), original_path, connected
+    if not (Path(value).is_absolute() or PureWindowsPath(value).is_absolute()):
+        return present, value, False
+    if not resolve_file_node:
+        return False, value, False
+
+    connected, original_path = _shader_texture_provenance(shader)
+    return bool(original_path), original_path or value, connected
+
+
+def _read_shader_integer(shader: str, attr: str) -> tuple[bool, int | None]:
+    """Read an integer attribute without silently truncating fractional values."""
+    present, value = _read_shader_attr(shader, attr)
+    if not present or isinstance(value, bool):
+        return False, None
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return False, None
+    if not numeric_value.is_integer():
+        return False, None
+    return True, int(numeric_value)
+
+
+def _read_shader_vector(shader: str, attr: str, size: int) -> tuple[bool, list[float] | None]:
+    """Read a Maya vector attribute in either flat or single-item nested form."""
+    present, value = _read_shader_attr(shader, attr)
+    if not present:
+        return False, None
+    if isinstance(value, (list, tuple)) and len(value) == 1 and isinstance(value[0], (list, tuple)):
+        value = value[0]
+    try:
+        if len(value) != size:
+            return False, None
+        return True, [float(component) for component in value]
+    except (TypeError, ValueError):
+        return False, None
+
+
+def _collect_mmd_material_dict(shader: str, is_pmd: bool = False) -> dict:
+    """Read persisted PMX or PMD semantic values from an MMD-tagged shader.
+
+    Missing semantic values are omitted instead of being replaced with the
+    ordinary Maya/default material values.  ``semantic_missing`` is kept in a
+    stable order so later validation can distinguish incomplete authoring from
+    an authored PMX default.
+    """
+    material = {}
+    semantic_missing = []
+
+    if not is_pmd:
+        material_index_present, material_index = _read_shader_attr(
+            shader,
+            ATTR_MMD_MATERIAL_INDEX,
+        )
+        if (
+            material_index_present
+            and isinstance(material_index, int)
+            and not isinstance(material_index, bool)
+            and material_index >= 0
+        ):
+            material["source_material_index"] = material_index
+        else:
+            semantic_missing.append("source_material_index")
+
+    string_fields = [("name", ATTR_MMD_MATERIAL_NAME)]
+    if not is_pmd:
+        string_fields.append(("name_english", ATTR_MMD_MATERIAL_NAME_EN))
+    for payload_key, attr in string_fields:
+        present, value = _read_shader_scalar(shader, attr, str)
+        if present:
+            material[payload_key] = value
+        else:
+            semantic_missing.append(payload_key)
+
+    diffuse_present, diffuse = _read_shader_vector(shader, ATTR_MMD_DIFFUSE_COLOR, 3)
+    alpha_present, diffuse_alpha = _read_shader_scalar(shader, ATTR_MMD_DIFFUSE_ALPHA, float)
+    if diffuse_present and alpha_present:
+        material["diffuse"] = diffuse + [diffuse_alpha]
+    else:
+        semantic_missing.append("diffuse")
+
+    vector_fields = (
+        ("specular", ATTR_MMD_SPECULAR_COLOR),
+        ("ambient", ATTR_MMD_AMBIENT_COLOR),
+    )
+    for payload_key, attr in vector_fields:
+        present, value = _read_shader_vector(shader, attr, 3)
+        if present:
+            material[payload_key] = value
+        else:
+            semantic_missing.append(payload_key)
+
+    scalar_fields = [("specular_power" if is_pmd else "specular_coefficient", ATTR_MMD_SHININESS, float)]
+    pmd_edge_from_draw_flags = False
+    if is_pmd:
+        edge_present, edge_value = _read_shader_scalar(shader, ATTR_MMD_EDGE_FLAG, int)
+        if edge_present:
+            material["edge_flag"] = edge_value
+        else:
+            scalar_fields.append(("edge_flag", ATTR_MMD_DRAW_FLAGS, int))
+            pmd_edge_from_draw_flags = True
+        scalar_fields.append(("toon_texture_index", ATTR_MMD_TOON_TEXTURE_INDEX, int))
+    else:
+        scalar_fields.extend(
+            (
+                ("draw_flag", ATTR_MMD_DRAW_FLAGS, int),
+                ("edge_size", ATTR_MMD_EDGE_SIZE, float),
+                ("texture_index", ATTR_MMD_TEXTURE_INDEX, int),
+                ("sphere_texture_index", ATTR_MMD_SPHERE_TEXTURE_INDEX, int),
+                ("sphere_mode", ATTR_MMD_SPHERE_MODE, int),
+                ("shared_toon_flag", ATTR_MMD_SHARED_TOON_FLAG, int),
+                ("toon_texture_index", ATTR_MMD_TOON_TEXTURE_INDEX, int),
+                ("memo", ATTR_MMD_MEMO, str),
+            )
+        )
+    for payload_key, attr, converter in scalar_fields:
+        present, value = _read_shader_scalar(shader, attr, converter)
+        if present:
+            material[payload_key] = value
+        else:
+            semantic_missing.append(payload_key)
+
+    if is_pmd:
+        if pmd_edge_from_draw_flags and "edge_flag" in material:
+            material["edge_flag"] = int(bool(material["edge_flag"] & PMX_EDGE_DRAWING_DRAW_FLAG))
+    else:
+        edge_present, edge_color = _read_shader_vector(shader, ATTR_MMD_EDGE_COLOR, 3)
+        edge_alpha_present, edge_alpha = _read_shader_scalar(shader, ATTR_MMD_EDGE_ALPHA, float)
+        if edge_present and edge_alpha_present:
+            material["edge_color"] = edge_color + [edge_alpha]
+        else:
+            semantic_missing.append("edge_color")
+
+    # These paths are provenance only.  No texture table or index remapping is
+    # inferred from them in this collector slice.
+    texture_present, texture_path, texture_connected = _read_shader_texture_path(
+        shader,
+        "mmd_texture_path",
+        resolve_file_node=True,
+    )
+    sphere_present, sphere_path, _ = _read_shader_texture_path(shader, ATTR_MMD_SPHERE_PATH)
+    toon_present = False
+    toon_path = None
+    if not is_pmd and material.get("shared_toon_flag") == 0:
+        toon_present, toon_path, _ = _read_shader_texture_path(shader, ATTR_MMD_TOON_PATH)
+    if not texture_present and (texture_path or texture_connected):
+        semantic_missing.append("texture_path")
+    if not sphere_present and sphere_path:
+        semantic_missing.append("sphere_texture_path")
+    if not toon_present and toon_path:
+        semantic_missing.append("toon_texture_path")
+    if is_pmd:
+        texture_index_present, texture_index = _read_shader_scalar(shader, ATTR_MMD_TEXTURE_INDEX, int)
+        sphere_index_present, sphere_index = _read_shader_scalar(shader, ATTR_MMD_SPHERE_TEXTURE_INDEX, int)
+        if texture_present or sphere_present:
+            material["texture_file_name"] = (
+                f"{texture_path or ''}*{sphere_path}"
+                if sphere_present and sphere_path
+                else texture_path or ""
+            )
+        if (
+            texture_index_present
+            and texture_index >= 0
+            and not texture_present
+            and "texture_path" not in semantic_missing
+        ):
+            semantic_missing.append("texture_path")
+        if (
+            sphere_index_present
+            and sphere_index >= 0
+            and not sphere_present
+            and "sphere_texture_path" not in semantic_missing
+        ):
+            semantic_missing.append("sphere_texture_path")
+    else:
+        if texture_present:
+            material["texture_path"] = texture_path
+        if sphere_present:
+            material["sphere_texture_path"] = sphere_path
+        if toon_present:
+            material["toon_texture_path"] = toon_path
+        if texture_present and (
+            not isinstance(material.get("texture_index"), int)
+            or material["texture_index"] < 0
+        ) and "texture_table" not in semantic_missing:
+            semantic_missing.append("texture_table")
+        if sphere_present and (
+            not isinstance(material.get("sphere_texture_index"), int)
+            or material["sphere_texture_index"] < 0
+        ) and "texture_table" not in semantic_missing:
+            semantic_missing.append("texture_table")
+
+    # Root-level table resolution restores these authored indices later;
+    # shared toon indices are built-in PMX values and remain usable.
+    texture_reference_fields = () if is_pmd else _PMX_TEXTURE_REFERENCE_FIELDS
+    texture_table_missing = False
+    for payload_key, source_key in texture_reference_fields:
+        value = material.get(payload_key)
+        if not isinstance(value, int) or value < 0:
+            continue
+        if payload_key == "toon_texture_index" and material.get("shared_toon_flag") == 1:
+            continue
+        material[source_key] = material.pop(payload_key)
+        texture_table_missing = True
+    if texture_table_missing and "texture_table" not in semantic_missing:
+        semantic_missing.append("texture_table")
+
+    material["semantic_missing"] = semantic_missing
+    return material
+
+
+def _collect_shader_material_dict(sg_node_name: str, is_pmd: bool = False) -> dict:
+    """Collect one SG material, preserving legacy behavior for untagged shaders."""
+    shaders = cmds.listConnections(f"{sg_node_name}.surfaceShader") or []
+    if not shaders:
+        return _make_material_dict(sg_node_name)
+
+    shader = shaders[0]
+    tagged, tag_value = _read_shader_attr(shader, ATTR_MMD_MATERIAL)
+    if tagged and bool(tag_value):
+        return _collect_mmd_material_dict(shader, is_pmd=is_pmd)
+    return _make_material_dict(_resolve_shader_name(sg_node_name, shader=shader))
+
+
+def _resolve_shader_name(sg_node_name: str, shader: Optional[str] = None) -> str:
     """Return the display name for the shader connected to a shadingEngine node.
 
     Reads ``mmd_material_name`` if the attribute is present; otherwise falls
     back to the shader node name.  Falls back to *sg_node_name* when no
     ``surfaceShader`` connection exists.
     """
-    shaders = cmds.listConnections(f"{sg_node_name}.surfaceShader") or []
-    if not shaders:
-        return sg_node_name
-    shader = shaders[0]
+    if shader is None:
+        shaders = cmds.listConnections(f"{sg_node_name}.surfaceShader") or []
+        if not shaders:
+            return sg_node_name
+        shader = shaders[0]
     if cmds.attributeQuery(ATTR_MMD_MATERIAL_NAME, node=shader, exists=True):
         val = cmds.getAttr(f"{shader}.{ATTR_MMD_MATERIAL_NAME}")
         if val:
@@ -496,13 +1767,97 @@ def _resolve_shader_name(sg_node_name: str) -> str:
     return shader
 
 
-def _collect_materials_per_face(shape: str, fn) -> tuple:
+def _order_material_groups_by_source_index(
+    material_groups: list[tuple[dict, list[list[int]]]],
+    is_pmd: bool = False,
+) -> list[tuple[dict, list[list[int]]]]:
+    """Order material/face groups by canonical PMX source material index.
+
+    The source index is authoritative only when every PMX material group has
+    a valid, distinct, non-negative integer index.  Otherwise the supplied
+    order is retained.  Duplicate valid indices are marked as missing so the
+    validator can reject the ambiguous provenance without silently remapping
+    either material or face group.
+    """
+    source_indices = [
+        material.get("source_material_index")
+        for material, _group_faces in material_groups
+    ]
+    indices_are_valid = (
+        not is_pmd
+        and source_indices
+        and all(
+            isinstance(source_index, int)
+            and not isinstance(source_index, bool)
+            and source_index >= 0
+            and "source_material_index"
+            not in (material.get("semantic_missing") or [])
+            for (material, _group_faces), source_index in zip(material_groups, source_indices)
+        )
+    )
+    if indices_are_valid and len(set(source_indices)) == len(source_indices):
+        return sorted(material_groups, key=lambda group: group[0]["source_material_index"])
+
+    if indices_are_valid:
+        duplicate_indices = {
+            source_index
+            for source_index in source_indices
+            if source_indices.count(source_index) > 1
+        }
+        for material, _group_faces in material_groups:
+            if material.get("source_material_index") not in duplicate_indices:
+                continue
+            semantic_missing = list(material.get("semantic_missing") or [])
+            if "source_material_index" not in semantic_missing:
+                semantic_missing.append("source_material_index")
+            material["semantic_missing"] = semantic_missing
+
+    return material_groups
+
+
+def _material_face_groups(
+    materials: list[dict],
+    faces: list[list[int]],
+) -> list[tuple[dict, list[list[int]]]] | None:
+    """Pair contiguous polygon faces with materials using their index counts.
+
+    ``collect_from_mesh`` stores each material's fan-triangulated index count,
+    while ``faces`` stores the original polygon vertex lists.  Return ``None``
+    for an inconsistent payload so a model-root merge can retain its existing
+    safe order rather than guessing a material/face correspondence.
+    """
+    groups = []
+    face_index = 0
+    for material in materials:
+        face_count = material.get("face_count")
+        if isinstance(face_count, bool) or not isinstance(face_count, int) or face_count < 0:
+            return None
+
+        group_faces = []
+        index_count = 0
+        while face_index < len(faces) and index_count < face_count:
+            face = faces[face_index]
+            group_faces.append(face)
+            index_count += max(0, len(face) - 2) * 3
+            face_index += 1
+        if index_count != face_count:
+            return None
+        groups.append((material, group_faces))
+
+    if face_index != len(faces):
+        return None
+    return groups
+
+
+def _collect_materials_per_face(shape: str, fn, is_pmd: bool = False) -> tuple:
     """Return ``(materials, faces)`` with polygons grouped by per-face material.
 
     Uses ``MFnMesh.getConnectedShaders`` to obtain the per-polygon shading-group
     assignment for instance 0.  Materials are ordered by first polygon
-    occurrence so the output is deterministic.  Each material dict has
-    ``face_count`` set to the fan-triangulated index count for its polygon group.
+    occurrence so the output is deterministic, except that a complete set of
+    PMX-tagged groups with distinct ``source_material_index`` values is ordered
+    by that source provenance.  Each material dict has ``face_count`` set to the
+    fan-triangulated index count for its polygon group.
 
     Limitation: vertex indices are not remapped; all materials reference the
     same global vertex array.  Vertex deduplication or per-material re-indexing
@@ -553,15 +1908,25 @@ def _collect_materials_per_face(shape: str, fn) -> tuple:
             mat_order.append(sg_key)
         poly_by_sg[sg_key].append(poly_id)
 
-    materials = []
-    faces = []
+    material_groups = []
     for sg_key in mat_order:
         poly_ids = poly_by_sg[sg_key]
         group_faces = [list(fn.getPolygonVertices(i)) for i in poly_ids]
-        mat_name = "Default" if sg_key == "__unassigned__" else _resolve_shader_name(sg_key)
-        mat = _make_material_dict(mat_name)
+        mat = (
+            _make_material_dict("Default")
+            if sg_key == "__unassigned__"
+            else _collect_shader_material_dict(sg_key, is_pmd=is_pmd)
+        )
         group_faces = [list(reversed(face)) for face in group_faces]
         mat["face_count"] = sum(max(0, len(f) - 2) * 3 for f in group_faces)
+
+        material_groups.append((mat, group_faces))
+
+    material_groups = _order_material_groups_by_source_index(material_groups, is_pmd=is_pmd)
+
+    materials = []
+    faces = []
+    for mat, group_faces in material_groups:
         materials.append(mat)
         faces.extend(group_faces)
 
@@ -593,16 +1958,28 @@ class ExportSceneCollector:
         ``target_mesh`` / ``export_mesh`` / ``mesh`` collect a single mesh.
         """
         model_root = options.get("target_model") or options.get("model_root")
+        export_format = options.get("export_format") or Path(str(options.get("file_path") or "")).suffix
+        is_pmd = str(export_format).lower().lstrip(".") == "pmd"
         if model_root:
-            return self.collect_from_model_root(model_root)
+            model_data = self.collect_from_model_root(model_root, is_pmd=is_pmd)
+        else:
+            target_mesh = options.get("target_mesh") or options.get("export_mesh") or options.get("mesh")
+            if not target_mesh:
+                raise ValueError("ExportSceneCollector requires target_model, model_root, or target_mesh")
+            model_data = self.collect_from_mesh(target_mesh, is_pmd=is_pmd)
 
-        target_mesh = options.get("target_mesh") or options.get("export_mesh") or options.get("mesh")
-        if target_mesh:
-            return self.collect_from_mesh(target_mesh)
+        if is_pmd:
+            return _apply_pmd_export_policy(model_data, model_root)
+        return model_data
 
-        raise ValueError("ExportSceneCollector requires target_model, model_root, or target_mesh")
-
-    def collect_from_mesh(self, transform_or_shape: str) -> dict:
+    def collect_from_mesh(
+        self,
+        transform_or_shape: str,
+        is_pmd: bool = False,
+        *,
+        _resolve_texture_table: bool = True,
+        expected_additional_uv_count: int | None = None,
+    ) -> dict:
         """Collect scene data from a single polygon mesh transform or shape.
 
         Coordinate system: Maya world-space (Y-up, right-handed, units in cm).
@@ -617,6 +1994,12 @@ class ExportSceneCollector:
 
         Args:
             transform_or_shape: Transform or mesh shape node name.
+            _resolve_texture_table: Resolve complete PMX material texture
+                provenance for direct collection.  Model-root collection
+                disables this until all mesh materials have been merged.
+            expected_additional_uv_count: Optional PMX channel count recorded on
+                an imported model root.  A missing or mismatched mesh payload
+                is treated as semantic loss when this is non-zero.
 
         Returns:
             Dict with keys ``model_name``, ``vertices``, ``faces``,
@@ -668,23 +2051,44 @@ class ExportSceneCollector:
                     except Exception:
                         pass
 
+        additional_uv_values, additional_uv_error = _read_additional_uv_storage(
+            transform,
+            shape,
+            vertex_count,
+            expected_additional_uv_count,
+        )
+        sdef_values, sdef_error = _read_sdef_storage(transform, shape, vertex_count)
+
         vertices = []
         for i in range(vertex_count):
             p = points[i]
             n = vertex_normals[i]
             uv = vertex_uvs[i]
-            vertices.append({
+            vertex_data = {
                 "position": _maya_to_mmd_vector([p.x, p.y, p.z]),
                 "normal": _maya_to_mmd_vector([n.x, n.y, n.z]),
                 "uv": [uv[0], uv[1]],
                 "bone_indices": skin_weights[i]["bone_indices"] if skin_weights else [0],
                 "bone_weights": skin_weights[i]["bone_weights"] if skin_weights else [],
-            })
+            }
+            if sdef_values is not None and sdef_values[i] is not None:
+                vertex_data.update(
+                    {
+                        "weight_transform_type": 3,
+                        **sdef_values[i],
+                    }
+                )
+            if additional_uv_values is not None:
+                vertex_data["additional_uvs"] = additional_uv_values[i]
+            semantic_missing = [error for error in (additional_uv_error, sdef_error) if error]
+            if semantic_missing:
+                vertex_data["semantic_missing"] = semantic_missing
+            vertices.append(vertex_data)
 
         # Collect per-face material assignments and group faces contiguously.
-        materials, faces = _collect_materials_per_face(shape, fn)
+        materials, faces = _collect_materials_per_face(shape, fn, is_pmd=is_pmd)
 
-        return {
+        model_data = {
             "model_name": model_name,
             "vertices": vertices,
             "faces": faces,
@@ -693,13 +2097,21 @@ class ExportSceneCollector:
             "bones": bones,
             "morphs": _collect_vertex_morphs(shape),
         }
+        soft_body_payload = _read_soft_body_payload(transform, shape)
+        if soft_body_payload is not None:
+            model_data["soft_bodies"] = soft_body_payload
+        if not is_pmd and _resolve_texture_table:
+            _apply_texture_table(model_data, None)
+        return model_data
 
-    def collect_from_model_root(self, root: str) -> dict:
+    def collect_from_model_root(self, root: str, is_pmd: bool = False) -> dict:
         """Collect and merge all polygon meshes below an MMD model root.
 
         This keeps the same minimum-slice limitations as ``collect_from_mesh``:
         world-space geometry is converted back to MMD basis, but scale
-        normalization is still out of scope.
+        normalization is still out of scope.  Material groups remain paired
+        with their global-index-adjusted faces; complete PMX source material
+        provenance restores their canonical order after the merge.
         """
         shapes = _list_export_mesh_shapes(root)
         if not shapes:
@@ -708,6 +2120,8 @@ class ExportSceneCollector:
         merged_vertices = []
         merged_faces = []
         merged_materials = []
+        merged_material_groups = []
+        can_reorder_material_groups = True
         merged_bones = _collect_model_bones(root)
         vertex_morphs_by_name = {}
         global_bone_by_key = {
@@ -716,9 +2130,24 @@ class ExportSceneCollector:
             if bone.get("source_joint")
         }
         vertex_offset = 0
-
+        expected_additional_uv_count = _get_attr(
+            root,
+            ATTR_MMD_PMX_ADDITIONAL_UV_COUNT,
+            None,
+        )
+        if isinstance(expected_additional_uv_count, bool) or not isinstance(
+            expected_additional_uv_count,
+            int,
+        ):
+            expected_additional_uv_count = None
         for shape in shapes:
-            mesh_data = self.collect_from_mesh(shape)
+            collect_kwargs = {
+                "is_pmd": is_pmd,
+                "_resolve_texture_table": False,
+            }
+            if expected_additional_uv_count is not None:
+                collect_kwargs["expected_additional_uv_count"] = expected_additional_uv_count
+            mesh_data = self.collect_from_mesh(shape, **collect_kwargs)
             local_bones = mesh_data["bones"] or []
             bone_index_map = {}
             added_global_indices = set()
@@ -750,9 +2179,18 @@ class ExportSceneCollector:
                 mesh_vertices.append(merged_vertex)
 
             merged_vertices.extend(mesh_vertices)
-            for face in mesh_data["faces"]:
-                merged_faces.append([index + vertex_offset for index in face])
-            merged_materials.extend(mesh_data["materials"])
+            mesh_faces = [
+                [index + vertex_offset for index in face]
+                for face in mesh_data["faces"]
+            ]
+            merged_faces.extend(mesh_faces)
+            mesh_materials = mesh_data["materials"]
+            merged_materials.extend(mesh_materials)
+            mesh_material_groups = _material_face_groups(mesh_materials, mesh_faces)
+            if mesh_material_groups is None:
+                can_reorder_material_groups = False
+            else:
+                merged_material_groups.extend(mesh_material_groups)
             for morph in mesh_data.get("morphs", []):
                 key = (morph.get("type"), morph.get("name"))
                 if key not in vertex_morphs_by_name:
@@ -768,7 +2206,17 @@ class ExportSceneCollector:
             vertex_offset += len(mesh_vertices)
 
         morphs = list(vertex_morphs_by_name.values())
-        morphs.extend(MorphConverter().collect_morphs_from_scene_for_export())
+        morphs.extend(
+            MorphConverter().collect_morphs_from_scene_for_export(
+                root_group=root,
+                require_contiguous=False,
+            )
+        )
+        morphs = _order_morphs_by_index_if_grouped(
+            morphs,
+            strip_index=True,
+            require_contiguous=True,
+        )
 
         bone_index_by_joint: dict[str, int] = {}
         for index, bone in enumerate(merged_bones):
@@ -782,7 +2230,7 @@ class ExportSceneCollector:
         from .physics_export_collector import collect_physics_from_scene
         rigid_bodies, joints = collect_physics_from_scene(root, bone_index_by_joint)
 
-        return {
+        model_data = {
             "model_name": _get_model_name(root),
             "vertices": merged_vertices,
             "faces": merged_faces,
@@ -793,3 +2241,28 @@ class ExportSceneCollector:
             "rigid_bodies": rigid_bodies,
             "joints": joints,
         }
+        soft_body_payload = _read_soft_body_payload(root)
+        if soft_body_payload is not None:
+            model_data["soft_bodies"] = soft_body_payload
+        if not is_pmd:
+            _apply_texture_table(model_data, root)
+
+        if (
+            can_reorder_material_groups
+            and len(merged_material_groups) == len(merged_materials)
+            and sum(len(group_faces) for _material, group_faces in merged_material_groups)
+            == len(merged_faces)
+        ):
+            ordered_material_groups = _order_material_groups_by_source_index(
+                merged_material_groups,
+                is_pmd=is_pmd,
+            )
+            model_data["materials"] = [
+                material for material, _group_faces in ordered_material_groups
+            ]
+            model_data["faces"] = [
+                face
+                for _material, group_faces in ordered_material_groups
+                for face in group_faces
+            ]
+        return model_data

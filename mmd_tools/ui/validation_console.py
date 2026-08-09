@@ -25,14 +25,53 @@ from ..validation.report_artifacts import (
     ValidationReportArtifactPaths,
     write_validation_report_artifacts,
 )
+from .translations import UITranslator
+
+
+def _issue_display_wording(issue, translator=None):
+    """Resolve catalog wording for the human-facing Console view."""
+    code = issue.code if hasattr(issue, "code") else issue["code"]
+    entry = get_issue_catalog_entry(code)
+    if translator is None:
+        return entry, entry.category, entry.title, entry.impact, entry.remediation
+
+    category = translator.translate(
+        f"validation_categories.{entry.category}.label",
+        default=entry.category,
+    )
+    impact = translator.translate(
+        entry.impact_key,
+        default=translator.translate(
+            f"validation_categories.{entry.category}.impact",
+            default=entry.impact,
+        ),
+    )
+    remediation = translator.translate(
+        entry.remediation_key,
+        default=translator.translate(
+            f"validation_categories.{entry.category}.remediation",
+            default=entry.remediation,
+        ),
+    )
+    title = translator.translate(entry.title_key, default=entry.title)
+    return entry, category, title, impact, remediation
 
 
 def render_validation_console_text(
     report: ExportValidationReport,
     metadata: Optional[Mapping[str, Any]] = None,
+    *,
+    localize: bool = False,
 ) -> str:
     """Render one deterministic Console view from the canonical report."""
     metadata = dict(metadata or {})
+    translator = UITranslator.instance() if localize else None
+
+    def label(key: str, fallback: str) -> str:
+        if translator is None:
+            return fallback
+        return translator.translate(f"validation_console.{key}", default=fallback)
+
     canonical = report.to_canonical_dict(
         target_identity=metadata.get("target_identity"),
         snapshot_fingerprint=metadata.get("payload_fingerprint")
@@ -42,34 +81,67 @@ def render_validation_console_text(
     )
     summary = canonical["summary"]
     lines = [
-        "Export Validation Console",
-        f"Status: {canonical['status'].upper()}",
-        f"Format: {canonical['format'] or 'unknown'}",
-        f"Mode: {canonical['mode']}",
-        f"Target: {canonical['target_identity'] or 'unspecified'}",
-        f"Snapshot: {canonical['snapshot_fingerprint'] or 'unspecified'}",
+        label("title", "Export Validation Console"),
+        f"{label('status', 'Status')}: {canonical['status'].upper()}",
+        f"{label('format', 'Format')}: {canonical['format'] or 'unknown'}",
+        f"{label('mode', 'Mode')}: {canonical['mode']}",
+        f"{label('target', 'Target')}: {canonical['target_identity'] or 'unspecified'}",
+        f"{label('snapshot', 'Snapshot')}: {canonical['snapshot_fingerprint'] or 'unspecified'}",
         (
-            "Summary: "
-            f"fatal={summary['fatal']} warning={summary['warning']} info={summary['info']} "
+            f"{label('summary', 'Summary')}: "
+            f"{summary['fatal']} {label('fatal', 'fatal')} "
+            f"{summary['warning']} {label('warning', 'warning')} "
+            f"{summary['info']} {label('info', 'info')} "
             f"ack={str(canonical['requires_warning_ack']).lower()}"
         ),
         "",
     ]
+    aggregation = canonical.get("issue_aggregation")
+    if aggregation is not None:
+        lines.extend(
+            [
+                (
+                    f"{label('issue_occurrences', 'Issue occurrences')}: "
+                    f"{label('shown', 'shown')}={aggregation['shown_occurrences']} "
+                    f"{label('omitted', 'omitted')}={aggregation['omitted_occurrences']}"
+                ),
+                (
+                    f"{label('issue_groups', 'Issue groups')}: "
+                    f"{label('shown', 'shown')}={aggregation['shown_groups']} / "
+                    f"{label('total', 'total')}={aggregation['total_groups']}"
+                ),
+                "",
+            ]
+        )
     if not canonical["issues"]:
-        lines.append("No validation issues.")
+        lines.append(label("no_issues", "No validation issues."))
         return "\n".join(lines)
     for index, issue in enumerate(canonical["issues"], start=1):
+        _, category, title, impact, remediation = _issue_display_wording(issue, translator)
         lines.extend(
             [
                 f"{index}. [{issue['severity'].upper()}] {issue['code']}",
-                f"   Category: {issue['category']}",
-                f"   Path: {issue['path'] or 'model_data'}",
-                f"   Decision: {'BLOCK' if issue['blocking'] else 'ALLOW'}",
-                f"   Observed: {issue['observed']}",
-                f"   Expected: {issue['expected']}",
-                f"   Impact: {issue['impact']}",
-                f"   Remediation: {issue['remediation']}",
-                f"   Evidence: {json.dumps(issue['evidence'], ensure_ascii=False, sort_keys=True)}",
+                f"   {label('title_label', 'Title')}: {title}",
+                f"   {label('category', 'Category')}: {category}",
+                f"   {label('path', 'Path')}: {issue['path'] or 'model_data'}",
+                f"   {label('decision', 'Decision')}: {label('block', 'BLOCK') if issue['blocking'] else label('allow', 'ALLOW')}",
+            ]
+        )
+        if "occurrence_count" in issue:
+            lines.extend(
+                [
+                    f"   {label('occurrences', 'Occurrences')}: {issue['occurrence_count']}",
+                    f"   {label('path_pattern', 'Path pattern')}: {issue['path_pattern']}",
+                    f"   {label('sample_paths', 'Sample paths')}: {json.dumps(issue['sample_paths'], ensure_ascii=False)}",
+                ]
+            )
+        lines.extend(
+            [
+                f"   {label('observed', 'Observed')}: {issue['observed']}",
+                f"   {label('expected', 'Expected')}: {issue['expected']}",
+                f"   {label('impact', 'Impact')}: {impact}",
+                f"   {label('remediation', 'Remediation')}: {remediation}",
+                f"   {label('evidence', 'Evidence')}: {json.dumps(issue['evidence'], ensure_ascii=False, sort_keys=True)}",
                 "",
             ]
         )
@@ -85,17 +157,18 @@ class ValidationConsole(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._translator = UITranslator.instance()
         self._report: Optional[ExportValidationReport] = None
         self._metadata: Dict[str, Any] = {}
         self._visible_issue_indices = []
 
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
-        self.summary_label = QLabel("No validation report")
+        self.summary_label = QLabel(self._tr("no_report", "No validation report"))
         header.addWidget(self.summary_label)
         header.addStretch()
         self.filter_combo = QComboBox()
-        self.filter_combo.addItem("All", "all")
+        self.filter_combo.addItem(self._tr("all", "All"), "all")
         self.filter_combo.currentIndexChanged.connect(self._refresh_issue_list)
         header.addWidget(self.filter_combo)
         layout.addLayout(header)
@@ -109,21 +182,36 @@ class ValidationConsole(QWidget):
         layout.addWidget(self.detail_text)
 
         actions = QHBoxLayout()
-        self.acknowledge_check = QCheckBox("Acknowledge warnings")
+        self.acknowledge_check = QCheckBox(
+            self._tr("acknowledge_warnings", "Acknowledge warnings")
+        )
         self.acknowledge_check.setEnabled(False)
         self.acknowledge_check.toggled.connect(self.acknowledgement_changed.emit)
         actions.addWidget(self.acknowledge_check)
-        self.revalidate_button = QPushButton("Revalidate")
+        self.revalidate_button = QPushButton(self._tr("revalidate", "Revalidate"))
         self.revalidate_button.clicked.connect(self.revalidate_requested.emit)
         actions.addWidget(self.revalidate_button)
-        self.copy_button = QPushButton("Copy")
+        self.copy_button = QPushButton(self._tr("copy", "Copy"))
         self.copy_button.clicked.connect(self.copy_report)
         actions.addWidget(self.copy_button)
-        self.save_button = QPushButton("Save report")
+        self.save_button = QPushButton(self._tr("save_report", "Save report"))
         self.save_button.clicked.connect(self.save_report)
         actions.addWidget(self.save_button)
         actions.addStretch()
         layout.addLayout(actions)
+
+        self.retranslateUi()
+
+    def _tr(self, key: str, fallback: str) -> str:
+        """Translate one Validation Console label with an English fallback."""
+        return self._translator.translate(f"validation_console.{key}", default=fallback)
+
+    def _category_label(self, category: str) -> str:
+        """Translate a catalog category label without changing its data value."""
+        return self._translator.translate(
+            f"validation_categories.{category}.label",
+            default=category,
+        )
 
     @property
     def report(self) -> Optional[ExportValidationReport]:
@@ -160,7 +248,7 @@ class ValidationConsole(QWidget):
         current = self.filter_combo.currentData() if hasattr(self.filter_combo, "currentData") else "all"
         self.filter_combo.blockSignals(True)
         self.filter_combo.clear()
-        self.filter_combo.addItem("All", "all")
+        self.filter_combo.addItem(self._tr("all", "All"), "all")
         categories = sorted(
             {
                 get_issue_catalog_entry(issue.code).category
@@ -168,7 +256,7 @@ class ValidationConsole(QWidget):
             }
         )
         for category in categories:
-            self.filter_combo.addItem(category, category)
+            self.filter_combo.addItem(self._category_label(category), category)
         index = self.filter_combo.findData(current)
         self.filter_combo.setCurrentIndex(index if index >= 0 else 0)
         self.filter_combo.blockSignals(False)
@@ -176,12 +264,14 @@ class ValidationConsole(QWidget):
     def _refresh_summary(self) -> None:
         """Update the compact status line from report attributes only."""
         if self._report is None:
-            self.summary_label.setText("No validation report")
+            self.summary_label.setText(self._tr("no_report", "No validation report"))
             return
         summary = self._report.to_dict()["summary"]
         self.summary_label.setText(
             f"{self._report.export_format or 'unknown'} / {self._report.mode} — "
-            f"{summary['fatal']} fatal, {summary['warning']} warning, {summary['info']} info"
+            f"{summary['fatal']} {self._tr('fatal', 'fatal')}, "
+            f"{summary['warning']} {self._tr('warning', 'warning')}, "
+            f"{summary['info']} {self._tr('info', 'info')}"
         )
 
     def _refresh_issue_list(self, *_args) -> None:
@@ -196,7 +286,13 @@ class ValidationConsole(QWidget):
             category = get_issue_catalog_entry(issue.code).category
             if selected_category not in (None, "all", category):
                 continue
-            item = QListWidgetItem(f"[{issue.severity.upper()}] {issue.code} — {issue.path}")
+            group = self._report.display_issue_groups[index]
+            occurrence_suffix = (
+                f" ×{group.count}" if self._report.issue_aggregation is not None else ""
+            )
+            item = QListWidgetItem(
+                f"[{issue.severity.upper()}] {issue.code} — {issue.path}{occurrence_suffix}"
+            )
             item.setData(Qt.UserRole, index)
             self.issue_list.addItem(item)
             self._visible_issue_indices.append(index)
@@ -206,7 +302,7 @@ class ValidationConsole(QWidget):
             self.detail_text.clear()
 
     def _show_selected_issue(self, row: int) -> None:
-        """Render the selected issue through the same canonical text helper."""
+        """Render the selected issue through the localized Console helper."""
         if self._report is None or row < 0 or row >= len(self._visible_issue_indices):
             self.detail_text.clear()
             return
@@ -217,7 +313,20 @@ class ValidationConsole(QWidget):
             (issue,),
             mode=self._report.mode,
         )
-        self.detail_text.setPlainText(render_validation_console_text(detail_report, self._metadata))
+        detail = render_validation_console_text(
+            detail_report,
+            self._metadata,
+            localize=True,
+        )
+        if self._report.issue_aggregation is not None:
+            group = self._report.display_issue_groups[issue_index]
+            detail = (
+                f"Occurrences: {group.count}\n"
+                f"Path pattern: {group.path_pattern}\n"
+                f"Sample paths: {json.dumps(group.sample_paths, ensure_ascii=False)}\n\n"
+                + detail
+            )
+        self.detail_text.setPlainText(detail)
 
     def copy_report(self) -> None:
         """Copy the current canonical Console rendering to the clipboard."""
@@ -225,13 +334,22 @@ class ValidationConsole(QWidget):
             return
         clipboard_owner = QApplication.clipboard()
         if clipboard_owner is not None:
-            clipboard_owner.setText(render_validation_console_text(self._report, self._metadata))
+            clipboard_owner.setText(
+                render_validation_console_text(
+                    self._report,
+                    self._metadata,
+                    localize=True,
+                )
+            )
 
     def save_report(self) -> Optional[ValidationReportArtifactPaths]:
         """Save JSON/Markdown artifacts through the canonical artifact writer."""
         if self._report is None:
             return None
-        directory = QFileDialog.getExistingDirectory(self, "Save validation report")
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            self._tr("save_dialog", "Save validation report"),
+        )
         if not directory:
             return None
         paths = write_validation_report_artifacts(
@@ -245,6 +363,19 @@ class ValidationConsole(QWidget):
         )
         self.report_saved.emit(paths)
         return paths
+
+    def retranslateUi(self) -> None:
+        """Refresh labels and the currently selected localized issue detail."""
+        self.summary_label.setText(self._tr("no_report", "No validation report"))
+        self.acknowledge_check.setText(
+            self._tr("acknowledge_warnings", "Acknowledge warnings")
+        )
+        self.revalidate_button.setText(self._tr("revalidate", "Revalidate"))
+        self.copy_button.setText(self._tr("copy", "Copy"))
+        self.save_button.setText(self._tr("save_report", "Save report"))
+        self._refresh_filters()
+        self._refresh_summary()
+        self._refresh_issue_list()
 
 
 __all__ = ["ValidationConsole", "render_validation_console_text"]

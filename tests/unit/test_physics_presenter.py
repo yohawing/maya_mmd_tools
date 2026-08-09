@@ -88,6 +88,11 @@ class TestPresenterModuleStructure(unittest.TestCase):
         self.assertIn("_find_physics_world_shape", func_names)
         self.assertIn('chunkName="MMD Physics Enable"', self.source)
 
+    def test_model_solver_lookup_uses_registry_with_legacy_fallback(self):
+        self.assertIn("_model_physics_solvers", self.source)
+        self.assertIn("REGISTRY_CATEGORY_PHYSICS", self.source)
+        self.assertIn("list_model_registry_members", self.source)
+
     def test_has_parse_vector_str(self):
         self.assertIn("_parse_vector_str", self.source)
 

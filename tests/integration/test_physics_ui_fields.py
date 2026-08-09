@@ -11,6 +11,10 @@ import maya.api.OpenMaya as om
 from maya import cmds
 
 from mmd_tools.converters.export_scene_collector import ExportSceneCollector
+from mmd_tools.core.model_registry import (
+    REGISTRY_CATEGORY_PHYSICS,
+    list_model_registry_members,
+)
 from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.io.pmx_exporter import PmxExporter
 from mmd_tools.ui.presenters.physics_presenter import PhysicsPresenter
@@ -122,6 +126,19 @@ def _source(shape, attr):
     return _long(nodes[0]) if nodes else ""
 
 
+def _model_physics_solver(root):
+    """Resolve the selected model's registry-owned solver."""
+    members = list_model_registry_members(root, REGISTRY_CATEGORY_PHYSICS)
+    if members is None:
+        members = cmds.listConnections(
+            f"{root}.message", source=False, destination=True, type="mmdPhysicsSolver"
+        ) or []
+    return next(
+        (node for node in members if cmds.objExists(node) and cmds.nodeType(node) == "mmdPhysicsSolver"),
+        None,
+    )
+
+
 class _BindingOptionsView:
     def __init__(self):
         self.options = {}
@@ -141,9 +158,7 @@ class TestPhysicsUIFields(MayaTestBase):
     @unittest.skipUnless(FIXTURE.exists(), "hair physics fixture not found")
     def test_apply_recompiles_live_solver_world(self):
         root = _import_fixture(FIXTURE, "LiveApply")
-        solver = (cmds.listConnections(
-            f"{root}.message", source=False, destination=True, type="mmdPhysicsSolver"
-        ) or [None])[0]
+        solver = _model_physics_solver(root)
         self.assertTrue(solver)
         world = (cmds.listConnections(
             f"{solver}.inWorldSettings", source=True, destination=False,
@@ -196,9 +211,7 @@ class TestPhysicsUIFields(MayaTestBase):
     @unittest.skipUnless(FIXTURE.exists(), "hair physics fixture not found")
     def test_unsupported_joint_type_apply_keeps_live_world(self):
         root = _import_fixture(FIXTURE, "UnsupportedJoint")
-        solver = (cmds.listConnections(
-            f"{root}.message", source=False, destination=True, type="mmdPhysicsSolver"
-        ) or [None])[0]
+        solver = _model_physics_solver(root)
         world = (cmds.listConnections(
             f"{solver}.inWorldSettings", source=True, destination=False,
             type="mmdPhysicsWorldShape",

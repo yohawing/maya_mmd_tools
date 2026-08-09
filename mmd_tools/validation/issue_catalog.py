@@ -28,6 +28,16 @@ class IssueCatalogEntry:
     remediation: str
     loss_policy: str = "reject"
 
+    @property
+    def impact_key(self) -> str:
+        """Return the UI translation key for the impact wording."""
+        return f"{self.title_key.rsplit('.', 1)[0]}.impact"
+
+    @property
+    def remediation_key(self) -> str:
+        """Return the UI translation key for the remediation wording."""
+        return f"{self.title_key.rsplit('.', 1)[0]}.remediation"
+
 
 # Keep this list explicit.  The validator may add a code only after its
 # human-facing policy has been registered here as well.
@@ -79,6 +89,7 @@ _KNOWN_ISSUE_CODES = (
     "MATERIAL_NOT_MAPPING",
     "MATERIAL_SHARED_TOON_FLAG_RANGE",
     "MATERIAL_SHARED_TOON_FLAG_TYPE",
+    "MATERIAL_SEMANTIC_MISSING",
     "MATERIAL_SPHERE_MODE_RANGE",
     "MATERIAL_SPHERE_MODE_TYPE",
     "MATERIAL_SPHERE_TEXTURE_INDEX_RANGE",
@@ -135,6 +146,7 @@ _KNOWN_ISSUE_CODES = (
     "PMD_DISPLAY_FRAMES_UNSUPPORTED",
     "PMD_EDGE_FLAG_RANGE",
     "PMD_EDGE_FLAG_TYPE",
+    "PMD_EXPORT_POLICY_REJECT",
     "PMD_IK_DATA_UNSUPPORTED",
     "PMD_JOINTS_UNSUPPORTED",
     "PMD_MORPHS_UNSUPPORTED",
@@ -144,10 +156,13 @@ _KNOWN_ISSUE_CODES = (
     "PMD_VERTEX_LIMIT",
     "PMX_ADDITIONAL_UV_UNSUPPORTED",
     "PMX_BONE_IK_LINKS_NOT_SEQUENCE",
+    "PMX_BONE_SEMANTIC_MISSING",
     "PMX_BONE_IK_LINKS_UNSUPPORTED",
     "PMX_IK_DATA_UNSUPPORTED",
     "PMX_SOFT_BODIES_UNSUPPORTED",
     "PMX_VERTEX_ADDITIONAL_UV_UNSUPPORTED",
+    "PMX_VERTEX_ADDITIONAL_UV_COUNT_MISMATCH",
+    "PMX_VERTEX_SEMANTIC_MISSING",
     "PMX_VERTEX_SDEF_UNSUPPORTED",
     "PMX_VERTEX_SKINNING_TYPE_UNSUPPORTED",
     "RIGID_BODY_BONE_REFERENCE_OUT_OF_RANGE",
@@ -173,6 +188,7 @@ _KNOWN_ISSUE_CODES = (
     "STALE_VALIDATION_SNAPSHOT",
     "TEXT_FIELD_TYPE",
     "TEXTURE_NOT_STRING",
+    "TEXTURES_NOT_SEQUENCE",
     "VERTEX_NOT_MAPPING",
     "VERTICES_EMPTY",
     "VERTICES_NOT_SEQUENCE",
@@ -183,11 +199,13 @@ _KNOWN_ISSUE_CODES = (
     "VMD_FRAME_RANGE",
     "VMD_IK_FLAG_RANGE",
     "VMD_MODE_UNSUPPORTED",
+    "VMD_MODE_C_RAW_LOSS",
     "VMD_NAME_EMPTY",
     "VMD_NON_FINITE_NUMBER",
     "VMD_PERSPECTIVE_RANGE",
     "VMD_QUATERNION_INVALID",
     "VMD_RAW_PROVENANCE_MISSING",
+    "VMD_RAW_PROVENANCE_MISMATCH",
     "VMD_SHADOW_MODE_RANGE",
 )
 
@@ -244,6 +262,8 @@ _CATEGORY_TEXT = {
         "remediation": "Select a live MMD target, bake or restore scene ownership, and repair the export options.",
     },
 }
+
+_WARNING_LOSS_POLICIES = frozenset({"VMD_MODE_C_RAW_LOSS"})
 
 
 def _category_for_code(code: str) -> str:
@@ -305,6 +325,7 @@ def _build_catalog_entry(code: str) -> IssueCatalogEntry:
         expected=wording["expected"],
         impact=wording["impact"],
         remediation=wording["remediation"],
+        loss_policy="warn" if code in _WARNING_LOSS_POLICIES else "reject",
     )
 
 
@@ -335,13 +356,16 @@ def canonical_issue_dict(
     provenance: str = "PayloadValidator",
     snapshot_fingerprint: Optional[str] = None,
     evidence: Optional[Mapping[str, Any]] = None,
+    occurrence_count: Optional[int] = None,
+    path_pattern: Optional[str] = None,
+    sample_paths: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
     """Render one validator issue using fixed catalog wording."""
     entry = get_issue_catalog_entry(issue.code)
     issue_evidence = dict(evidence or {})
     if snapshot_fingerprint is not None:
         issue_evidence.setdefault("snapshot_fingerprint", snapshot_fingerprint)
-    return {
+    payload = {
         "code": issue.code,
         "severity": issue.severity,
         "blocking": issue.blocking,
@@ -359,6 +383,11 @@ def canonical_issue_dict(
         "provenance": provenance,
         "evidence": issue_evidence,
     }
+    if occurrence_count is not None:
+        payload["occurrence_count"] = occurrence_count
+        payload["path_pattern"] = path_pattern
+        payload["sample_paths"] = list(sample_paths or ())
+    return payload
 
 
 def render_validation_report_markdown(
@@ -392,14 +421,29 @@ def render_validation_report_markdown(
         f"- Warning: {summary['warning']}",
         f"- Info: {summary['info']}",
         f"- Warning acknowledgement required: `{str(payload['requires_warning_ack']).lower()}`",
-        "",
-        "## Evidence",
-        "",
-        f"- Report evidence: `{json.dumps(payload['evidence'], ensure_ascii=False, sort_keys=True)}`",
-        "",
-        "## Issues",
-        "",
     ]
+    aggregation = payload.get("issue_aggregation")
+    if aggregation is not None:
+        lines.extend(
+            [
+                f"- Issue display limit: {aggregation['max_display_issues']}",
+                f"- Issue occurrences shown: {aggregation['shown_occurrences']}",
+                f"- Issue occurrences omitted: {aggregation['omitted_occurrences']}",
+                f"- Issue groups shown: {aggregation['shown_groups']} / {aggregation['total_groups']}",
+                f"- Blocking issue present: `{str(aggregation['has_blocking']).lower()}`",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "## Evidence",
+            "",
+            f"- Report evidence: `{json.dumps(payload['evidence'], ensure_ascii=False, sort_keys=True)}`",
+            "",
+            "## Issues",
+            "",
+        ]
+    )
     if not payload["issues"]:
         lines.append("No validation issues.")
     else:
@@ -412,6 +456,18 @@ def render_validation_report_markdown(
                     f"- Category: `{issue['category']}`",
                     f"- Path: `{issue['path'] or 'model_data'}`",
                     f"- Decision: `{'BLOCK' if issue['blocking'] else 'ALLOW'}`",
+                ]
+            )
+            if "occurrence_count" in issue:
+                lines.extend(
+                    [
+                        f"- Occurrences: `{issue['occurrence_count']}`",
+                        f"- Path pattern: `{issue['path_pattern']}`",
+                        f"- Sample paths: `{json.dumps(issue['sample_paths'], ensure_ascii=False)}`",
+                    ]
+                )
+            lines.extend(
+                [
                     f"- Title: {entry.title}",
                     f"- Observed: {issue['observed']}",
                     f"- Expected: {issue['expected']}",

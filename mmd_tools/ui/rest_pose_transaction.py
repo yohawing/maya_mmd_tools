@@ -1,9 +1,8 @@
 """One-shot Reset Pose transaction for Animator controls and MMD joints.
 
-The action writes rest values at the current frame. Static channels receive
-direct values, while directly connected animation curves receive keys. Maya
-Undo is the only way to return to the previous pose; this module intentionally
-owns no temporary display mode or second-click restoration state.
+The action writes rest values only to static channels. Connected animation
+channels are left unchanged, so Reset Pose never creates or edits keys. Maya
+Undo restores changed static values.
 """
 
 from __future__ import annotations
@@ -20,8 +19,6 @@ _CHANNELS = (
     "rotateY",
     "rotateZ",
 )
-
-
 class ResetPoseTransactionError(RuntimeError):
     """Raised when Reset Pose cannot be applied or rolled back exactly."""
 
@@ -68,28 +65,15 @@ class ResetPoseTransaction:
             return 0
         self._snapshots = self._capture_channels(cmds)
         opened = self._open_undo("Animator Reset Pose")
-        if not opened and any(snapshot.writer for snapshot in self._snapshots):
-            raise ResetPoseTransactionError(
-                "Reset Pose requires Maya Undo for animated channels"
-            )
         self._applied = []
         try:
             applied_targets = set()
-            current_time = float(cmds.currentTime(query=True))
             for snapshot in self._snapshots:
                 if not snapshot.writable:
                     continue
-                value = self._rest_value(snapshot.plug)
+                value = self._rest_value(snapshot)
                 self._applied.append(snapshot)
-                if snapshot.writer:
-                    curve = snapshot.writer.rsplit(".", 1)[0]
-                    cmds.setKeyframe(
-                        curve,
-                        time=(current_time, current_time),
-                        value=float(value),
-                    )
-                else:
-                    self._set_static(cmds, snapshot, value)
+                self._set_static(cmds, snapshot, value)
                 applied_targets.add(snapshot.plug.rsplit(".", 1)[0])
             return len(applied_targets)
         except Exception as exc:
@@ -140,11 +124,7 @@ class ResetPoseTransaction:
                         f"multiple Reset Pose writers on {plug}"
                     )
                 writer = incoming[0] if incoming else None
-                writable = (
-                    self._is_direct_anim_curve(cmds, writer)
-                    if writer
-                    else self._is_channel_settable(cmds, plug)
-                )
+                writable = not writer and self._is_channel_settable(cmds, plug)
                 try:
                     locked = bool(cmds.getAttr(plug, lock=True))
                 except Exception:
@@ -155,14 +135,6 @@ class ResetPoseTransaction:
         if not snapshots:
             raise ResetPoseTransactionError("Reset Pose channels are unavailable")
         return tuple(snapshots)
-
-    @staticmethod
-    def _is_direct_anim_curve(cmds, writer: str) -> bool:
-        try:
-            node = writer.rsplit(".", 1)[0]
-            return str(cmds.nodeType(node)).startswith("animCurve")
-        except Exception:
-            return False
 
     @staticmethod
     def _is_channel_settable(cmds, plug: str) -> bool:
@@ -189,7 +161,8 @@ class ResetPoseTransaction:
                 )
             self._set_static(cmds, snapshot, snapshot.value)
 
-    def _rest_value(self, plug: str) -> float:
+    def _rest_value(self, snapshot: _ChannelSnapshot) -> float:
+        plug = snapshot.plug
         attribute = plug.rsplit(".", 1)[-1]
         if attribute.startswith("translate"):
             node = plug.rsplit(".", 1)[0]
@@ -198,6 +171,7 @@ class ResetPoseTransaction:
                 translation = self.bind_translations.get(node.rsplit("|", 1)[-1])
             if translation is not None:
                 return float(translation["XYZ".index(attribute[-1])])
+            return float(snapshot.value)
         return 0.0
 
     def _assert_model_uuid(self, cmds) -> None:

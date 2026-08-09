@@ -12,6 +12,7 @@ from mmd_tools.core.pmx_data.morph import PmxMorphType  # noqa: E402
 from mmd_tools.converters.morph_converter import MorphConverter  # noqa: E402
 from mmd_tools.io.pmx_importer import (  # noqa: E402
     _serialize_pmx_morph_data,
+    _serialize_pmx_texture_table,
     _validate_morph_runtime_requirements,
 )
 from mmd_tools.core.morph_metadata_reader import morph_info_from_presenter_entry  # noqa: E402
@@ -81,6 +82,13 @@ class TestPmxMorphMetadataImport(unittest.TestCase):
 
     def test_missing_morph_list_serializes_as_empty_metadata(self):
         self.assertEqual(json.loads(_serialize_pmx_morph_data(None)), [])
+
+    def test_texture_table_serializes_as_root_owned_json(self):
+        self.assertEqual(
+            json.loads(_serialize_pmx_texture_table(["tex/body.png", "tex/body.spa"])),
+            ["tex/body.png", "tex/body.spa"],
+        )
+        self.assertEqual(json.loads(_serialize_pmx_texture_table(None)), [])
 
     def test_duplicate_and_empty_names_remain_lossless(self):
         metadata = json.loads(

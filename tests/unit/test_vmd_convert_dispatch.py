@@ -166,6 +166,12 @@ class TestVmdConvertDispatch(unittest.TestCase):
         with ExitStack() as stack:
             stack.enter_context(patch.object(self.converter, "_should_use_mmd_runtime_bake", return_value=True))
             stack.enter_context(patch.object(self.converter, "_convert_using_mmd_runtime", return_value=False))
+            store_provenance = stack.enter_context(
+                patch(
+                    "mmd_tools.converters.vmd_converter.store_runtime_registration_provenance",
+                    return_value=True,
+                )
+            )
             apply_ik = stack.enter_context(patch.object(self.converter, "_apply_ik_enabled_animation"))
             result = self.converter.convert(
                 vmd_data,
@@ -186,6 +192,11 @@ class TestVmdConvertDispatch(unittest.TestCase):
         self.assertTrue(warning["bake_mode"])
         self.assertTrue(warning["has_vmd_bytes"])
         self.assertTrue(warning["has_pmx_bytes"])
+        store_provenance.assert_called_once()
+        stored_payload = store_provenance.call_args.args[1]
+        self.assertEqual(stored_payload["registration_mode"], "raw_vmd_source")
+        self.assertEqual(stored_payload["status"], "success")
+        self.assertTrue(stored_payload["raw_bone_interpolation_complete"])
 
     def test_reduce_bake_keys_requires_bake_mode_before_scene_mutation(self):
         """The explicit reduction opt-in cannot fall through to live/legacy import."""

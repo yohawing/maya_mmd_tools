@@ -90,6 +90,13 @@ class TestBakeModeBehavior(unittest.TestCase):
                 patch("mmd_tools.io.pmx_importer.NamespaceUtils.namespace_context", return_value=nullcontext())
             )
             stack.enter_context(patch("mmd_tools.io.model_import_pipeline.cmds.group", return_value="model_root"))
+            stack.enter_context(
+                patch(
+                    "mmd_tools.io.model_import_pipeline.ensure_model_registry",
+                    return_value="model_registry",
+                )
+            )
+            stack.enter_context(patch("mmd_tools.io.model_import_pipeline.register_model_members"))
             stack.enter_context(patch("mmd_tools.io.model_import_pipeline.cmds.select"))
             stack.enter_context(patch("mmd_tools.io.model_import_pipeline.cmds.refresh"))
             stack.enter_context(patch("mmd_tools.io.model_import_pipeline.maya_attribute_utils.set_custom_attributes"))

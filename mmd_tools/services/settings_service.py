@@ -279,14 +279,14 @@ class SettingsService:
         if not is_dev:
             opts.update(_NORMAL_MODE_IMPORT_OVERRIDES)
         if is_dev:
-            opts["use_cpp_fast_load"] = self.get(setting_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, True)
+            opts["use_cpp_fast_load"] = self.get(setting_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, False)
             opts["cpp_fast_load_mesh_only"] = self.get(
                 setting_keys.IMPORT_NATIVE_CPP_FAST_LOAD_MESH_ONLY,
                 True,
             )
             opts["use_cpp_vp2_ownership"] = self.get(
                 setting_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP,
-                True,
+                False,
             )
             opts["use_native_pmx_parse"] = True
             opts["require_native_pmx_parse"] = self.get(

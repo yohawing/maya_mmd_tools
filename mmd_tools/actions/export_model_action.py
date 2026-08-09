@@ -16,6 +16,7 @@ from ..validation.export_validator import (
     ExportValidationIssue,
     ExportValidationReport,
     validate_model_data,
+    pmd_export_policy_report,
 )
 from ..validation.output_verifier import verify_model_output
 from ..validation.mmd_anim_verifier import verify_mmd_anim_asset
@@ -77,7 +78,12 @@ def _default_collect_model_data(options: Dict[str, Any]) -> dict:
         target = selection[0] if selection else None
     if target is None:
         raise ValueError("Model export requires model_data, target_model, target_mesh, or a selected mesh")
-    return collector.collect({"target_mesh": target})
+    return collector.collect(
+        {
+            "target_mesh": target,
+            "export_format": options.get("export_format"),
+        }
+    )
 
 
 class ExportModelAction:
@@ -165,16 +171,27 @@ class ExportModelAction:
             if not export_format:
                 export_format = Path(request.file_path).suffix.lower().lstrip(".") or "pmx"
 
+            if export_format not in ("pmx", "pmd"):
+                raise ValueError(f"Unsupported model export format: {export_format}")
+            if export_format == "pmd":
+                validation_report = pmd_export_policy_report()
+                validation_error = ExportValidationError(validation_report)
+                logger.error("Model export preflight failed: %s", validation_error)
+                return build_result(
+                    status_message=f"Export failed: {validation_error}",
+                    error=validation_error,
+                    warnings=list(validation_report.issues),
+                )
+
             model_data = request.options.get("model_data")
             if model_data is None:
                 model_data = request.options.get("maya_data")
             if model_data is None:
                 if self._collector is None:
                     raise ValueError("Model export requires model_data or a collector")
-                model_data = self._collector(request.options)
-
-            if export_format not in ("pmx", "pmd"):
-                raise ValueError(f"Unsupported model export format: {export_format}")
+                collector_options = dict(request.options)
+                collector_options["export_format"] = export_format
+                model_data = self._collector(collector_options)
 
             source_model_data = model_data
             scene_revision = request.options.get("scene_revision")

@@ -368,6 +368,7 @@ def import_mmd_file(
                     import_scale,
                     options,
                     progress_callback=progress_callback,
+                    is_pmd=True,
                 )
             return _post_model_import_control_rig(model_root, options)
 

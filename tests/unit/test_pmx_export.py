@@ -372,6 +372,143 @@ class TestPmxExporterFromDict(TestBase):
         # Verify face
         self.assertEqual(pmx.faces[0].indices, (0, 1, 2))
 
+    def test_export_additional_uv_roundtrip_uses_python_writer(self):
+        """PMX additional UV channels are serialized and bypass native parts."""
+        native_calls = []
+        exporter = PmxExporter(
+            native_parts_exporter=lambda *args, **kwargs: native_calls.append((args, kwargs)) or b"NATIVE-PMX"
+        )
+        channel_values = (
+            (0.1, 0.2, 0.3, 0.4),
+            (1.1, 1.2, 1.3, 1.4),
+            (2.1, 2.2, 2.3, 2.4),
+        )
+        data = {
+            "model_name": "AdditionalUvTest",
+            "vertices": [
+                {
+                    "position": [0.0, 0.0, 0.0],
+                    "normal": [0.0, 0.0, 1.0],
+                    "uv": [0.0, 0.0],
+                    "additional_uvs": [list(channel_values[0])],
+                },
+                {
+                    "position": [1.0, 0.0, 0.0],
+                    "normal": [0.0, 0.0, 1.0],
+                    "uv": [1.0, 0.0],
+                    "additional_uvs": [list(channel_values[1])],
+                },
+                {
+                    "position": [0.0, 1.0, 0.0],
+                    "normal": [0.0, 0.0, 1.0],
+                    "uv": [0.0, 1.0],
+                    "additional_uvs": [list(channel_values[2])],
+                },
+            ],
+            "faces": [[0, 1, 2]],
+        }
+        out_path = os.path.join(self.temp_dir, "additional_uv.pmx")
+
+        exporter.export_pmx_model(out_path, data)
+
+        pmx = _parse_pmx(out_path)
+        self.assertEqual(native_calls, [])
+        self.assertEqual(pmx.header.additional_uv, 1)
+        self.assertEqual(
+            [tuple(round(value, 6) for value in vertex.additional_uvs[0]) for vertex in pmx.vertices],
+            list(channel_values),
+        )
+
+    def test_export_uv_morph_roundtrip_uses_python_writer(self):
+        """PMX UV morph offsets are serialized for each supported UV morph type."""
+        native_calls = []
+        exporter = PmxExporter(
+            native_parts_exporter=lambda *args, **kwargs: native_calls.append((args, kwargs)) or b"NATIVE-PMX"
+        )
+        data = {
+            "model_name": "UvMorphTest",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [1.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 1.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "morphs": [
+                {
+                    "type": "uv",
+                    "name": "UV morph",
+                    "offsets": [{"vertex_index": 1, "uv_offset": [0.1, 0.2, 0.3, 0.4]}],
+                },
+                {
+                    "type": "additional_uv3",
+                    "name": "Additional UV3 morph",
+                    "offsets": [{"vertex_index": 2, "uv_offset": [-0.1, -0.2, -0.3, -0.4]}],
+                },
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "uv_morph.pmx")
+
+        exporter.export_pmx_model(out_path, data)
+
+        pmx = _parse_pmx(out_path)
+        self.assertEqual(native_calls, [])
+        self.assertEqual([int(morph.morph_type) for morph in pmx.morphs], [3, 6])
+        self.assertEqual(pmx.morphs[0].offsets[0]["vertex_index"], 1)
+        for actual, expected in zip(pmx.morphs[0].offsets[0]["uv_offset"], (0.1, 0.2, 0.3, 0.4)):
+            self.assertAlmostEqual(actual, expected)
+        self.assertEqual(pmx.morphs[1].offsets[0]["vertex_index"], 2)
+        for actual, expected in zip(pmx.morphs[1].offsets[0]["uv_offset"], (-0.1, -0.2, -0.3, -0.4)):
+            self.assertAlmostEqual(actual, expected)
+
+    def test_export_flip_and_impulse_morph_roundtrip_uses_python_writer(self):
+        """PMX 2.1 Flip/Impulse offsets are serialized without native fallback."""
+        native_calls = []
+        exporter = PmxExporter(
+            native_parts_exporter=lambda *args, **kwargs: native_calls.append((args, kwargs)) or b"NATIVE-PMX"
+        )
+        data = {
+            "model_name": "Pmx21MorphTest",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [1.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 1.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "rigid_bodies": [{"name": "ImpulseBody"}],
+            "morphs": [
+                {
+                    "type": "flip",
+                    "name": "Flip morph",
+                    "offsets": [{"morph_index": 1, "flip_rate": 0.25}],
+                },
+                {
+                    "type": "impulse",
+                    "name": "Impulse morph",
+                    "offsets": [
+                        {
+                            "rigid_body_index": 0,
+                            "impulse": [0.1, -0.2, 0.3],
+                            "torque": [-0.4, 0.5, -0.6],
+                        }
+                    ],
+                },
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "pmx21_morphs.pmx")
+
+        exporter.export_pmx_model(out_path, data)
+
+        pmx = _parse_pmx(out_path)
+        self.assertEqual(native_calls, [])
+        self.assertAlmostEqual(pmx.header.version, 2.1, places=6)
+        self.assertEqual([int(morph.morph_type) for morph in pmx.morphs], [9, 10])
+        self.assertEqual(pmx.morphs[0].offsets, [{"morph_index": 1, "flip_rate": 0.25}])
+        self.assertEqual(pmx.morphs[1].offsets[0]["rigid_body_index"], 0)
+        for actual, expected in zip(pmx.morphs[1].offsets[0]["impulse"], (0.1, -0.2, 0.3)):
+            self.assertAlmostEqual(actual, expected)
+        for actual, expected in zip(pmx.morphs[1].offsets[0]["torque"], (-0.4, 0.5, -0.6)):
+            self.assertAlmostEqual(actual, expected)
+
     def test_export_none_textures_writes_valid_pmx(self):
         """textures=None は空テーブルとしてPMXを書き出せる。"""
         data = {
@@ -578,6 +715,11 @@ class TestPmxExporterFromDict(TestBase):
                     f"unsupported_morph_type:{int(morph_type)}",
                 )
                 self.assertIsNone(exporter.to_native_parts(pmx))
+
+        pmx = _minimal_native_parts_pmx()
+        pmx.bones[0].bone_flag = PmxBoneFlag.IK
+        self.assertEqual(exporter.native_parts_export_blocker(pmx), "ik_metadata")
+        self.assertIsNone(exporter.to_native_parts(pmx))
 
     def test_export_display_frame_name_roundtrip_matches_header_encoding(self):
         """dict export でヘッダと同じ encoding_flag で表示枠名を保存できる"""
@@ -1079,6 +1221,50 @@ class TestPmxExporterFromDict(TestBase):
         self.assertAlmostEqual(v1.bone_weights[2], 0.0)
         self.assertAlmostEqual(v1.bone_weights[3], 0.0)
 
+    def test_export_sdef_roundtrip_preserves_raw_vertex_payload(self):
+        """SDEF vertices use the Python writer and retain C/R0/R1 vectors."""
+        native_calls = []
+        exporter = PmxExporter(
+            native_parts_exporter=lambda *args, **kwargs: native_calls.append((args, kwargs))
+            or b"NATIVE-PMX"
+        )
+        data = {
+            "model_name": "SDEFTest",
+            "vertices": [
+                {
+                    "position": [0.0, 0.0, 0.0],
+                    "normal": [0.0, 0.0, 1.0],
+                    "bone_indices": [0, 1],
+                    "bone_weights": [0.75],
+                    "weight_transform_type": 3,
+                    "sdef_c": [0.1, 0.2, 0.3],
+                    "sdef_r0": [0.0, 0.1, 0.0],
+                    "sdef_r1": [0.0, 0.0, 0.1],
+                },
+                {"position": [1.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0]},
+                {"position": [0.0, 1.0, 0.0], "normal": [0.0, 0.0, 1.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "bones": [{"name": "b0"}, {"name": "b1"}],
+        }
+        out_path = os.path.join(self.temp_dir, "sdef.pmx")
+        exporter.export_pmx_model(out_path, data)
+        self.assertEqual(native_calls, [])
+
+        pmx = _parse_pmx(out_path)
+
+        vertex = pmx.vertices[0]
+        self.assertEqual(vertex.weight_transform_type, 3)
+        self.assertEqual(vertex.bone_indices, [0, 1])
+        self.assertAlmostEqual(vertex.bone_weights[0], 0.75)
+        for field_name, expected in (
+            ("sdef_c", (0.1, 0.2, 0.3)),
+            ("sdef_r0", (0.0, 0.1, 0.0)),
+            ("sdef_r1", (0.0, 0.0, 0.1)),
+        ):
+            for actual, expected_value in zip(getattr(vertex, field_name), expected):
+                self.assertAlmostEqual(actual, expected_value)
+
     def test_vertex_unsupported_bone_indices_len_raises(self):
         """bone_indices 長さが 1/2/4 以外で ValueError"""
         for bad_len in (0, 3, 5):
@@ -1213,6 +1399,94 @@ class TestPmxExporterFromDict(TestBase):
         self.assertAlmostEqual(morph.offsets[0]["position_offset"][1], 0.2)
         self.assertAlmostEqual(morph.offsets[0]["position_offset"][2], 0.3)
         self.assertEqual(morph.offsets[1]["vertex_index"], 2)
+
+    def test_export_group_morph_roundtrip(self):
+        """GroupMorph dict の export -> parse_file 検証"""
+        data = {
+            "model_name": "GroupMorphTest",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "morphs": [
+                {
+                    "type": "vertex",
+                    "name": "base",
+                    "offsets": [],
+                },
+                {
+                    "type": PmxMorphType.GroupMorph,
+                    "name": "group_smile",
+                    "name_english": "group_smile_en",
+                    "panel": 4,
+                    "offsets": [{"morph_index": 0, "morph_rate": 0.5}],
+                }
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "group_morph.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = _parse_pmx(out_path)
+
+        self.assertEqual(len(pmx.morphs), 2)
+        morph = pmx.morphs[1]
+        self.assertEqual(morph.name, "group_smile")
+        self.assertEqual(morph.name_english, "group_smile_en")
+        self.assertEqual(morph.panel, 4)
+        self.assertEqual(int(morph.morph_type), int(PmxMorphType.GroupMorph))
+        self.assertEqual(morph.offsets, [{"morph_index": 0, "morph_rate": 0.5}])
+
+    def test_export_group_morph_index_out_of_range_raises(self):
+        """GroupMorph offset の morph_index が PMX morph 数外なら ValueError"""
+        data = {
+            "model_name": "BadGroupMorph",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "morphs": [
+                {
+                    "type": "group",
+                    "name": "bad",
+                    "offsets": [{"morph_index": 1, "morph_rate": 0.5}],
+                }
+            ],
+        }
+        with self.assertRaises(MMDExportException):
+            self.exporter.export_pmx_model(
+                os.path.join(self.temp_dir, "bad_group_morph.pmx"),
+                data,
+            )
+
+    def test_export_group_morph_index_rejects_bool_and_non_integer(self):
+        """GroupMorph offset の morph_index は bool/非整数を拒否する。"""
+        for invalid_index in (True, 0.0, "0"):
+            with self.subTest(invalid_index=invalid_index):
+                data = {
+                    "model_name": "InvalidGroupMorphIndex",
+                    "vertices": [
+                        {"position": [0.0, 0.0, 0.0]},
+                        {"position": [1.0, 0.0, 0.0]},
+                        {"position": [0.0, 1.0, 0.0]},
+                    ],
+                    "faces": [[0, 1, 2]],
+                    "morphs": [
+                        {
+                            "type": "group",
+                            "name": "bad",
+                            "offsets": [{"morph_index": invalid_index, "morph_rate": 0.5}],
+                        }
+                    ],
+                }
+                with self.assertRaises(MMDExportException):
+                    self.exporter.export_pmx_model(
+                        os.path.join(self.temp_dir, f"invalid_group_index_{invalid_index!s}.pmx"),
+                        data,
+                    )
 
     def test_export_bone_morph_roundtrip(self):
         """BoneMorph dict の export -> parse_file 検証"""
@@ -1413,8 +1687,8 @@ class TestPmxExporterFromDict(TestBase):
                 data,
             )
 
-    def test_export_unsupported_morph_types_raise(self):
-        """UV / Flip / Impulse モーフは文字列・enum・数値いずれの指定でも ValueError"""
+    def test_export_unknown_morph_types_raise(self):
+        """Unknown morph types remain rejected by the direct Python writer."""
         _base_data = {
             "model_name": "UnsupportedMorphTypes",
             "vertices": [
@@ -1425,20 +1699,7 @@ class TestPmxExporterFromDict(TestBase):
             "faces": [[0, 1, 2]],
         }
 
-        unsupported_types = [
-            # string aliases
-            "uv",
-            "flip",
-            "impulse",
-            # PmxMorphType enum values
-            PmxMorphType.UVMorph,
-            PmxMorphType.FlipMorph,
-            PmxMorphType.ImpulseMorph,
-            # numeric equivalents
-            int(PmxMorphType.UVMorph),    # 3
-            int(PmxMorphType.FlipMorph),   # 9
-            int(PmxMorphType.ImpulseMorph),  # 10
-        ]
+        unsupported_types = ["unknown", 11]
 
         for morph_type in unsupported_types:
             with self.subTest(morph_type=morph_type):

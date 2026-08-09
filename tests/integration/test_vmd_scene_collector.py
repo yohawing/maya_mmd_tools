@@ -1,5 +1,7 @@
 """Integration tests for VMD export via VmdSceneCollector + VmdExporter."""
 
+import json
+import math
 import os
 
 from maya import cmds
@@ -7,12 +9,37 @@ from maya import cmds
 from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
-from mmd_tools.core.constants import ATTR_MMD_BONE_NAME, ATTR_MMD_CAMERA, ATTR_MMD_LIGHT, ATTR_MMD_MODEL_NAME
+from mmd_tools.core.constants import (
+    ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
+    ATTR_MMD_BONE_NAME,
+    ATTR_MMD_CAMERA,
+    ATTR_MMD_LIGHT,
+    ATTR_MMD_MODEL_NAME,
+    ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON,
+)
+from mmd_tools.core.namespace_utils import NamespaceUtils
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.io.vmd_exporter import VmdExporter
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
+
+
+class _RecordingVmdExporter:
+    """Delegate VMD writing while recording whether the writer was reached."""
+
+    def __init__(self):
+        self.calls = []
+        self._delegate = VmdExporter(native_exporter=None)
+
+    def to_vmd_data(self, animation_data):
+        """Keep the action's normal data normalization contract."""
+        return self._delegate.to_vmd_data(animation_data)
+
+    def export_vmd_animation(self, file_path, animation_data):
+        """Record writer entry before delegating to the real Python writer."""
+        self.calls.append((file_path, animation_data))
+        return self._delegate.export_vmd_animation(file_path, animation_data)
 
 
 class TestVmdSceneCollector(MayaTestBase):
@@ -103,9 +130,128 @@ class TestVmdSceneCollector(MayaTestBase):
         self.assertEqual(result.exported_path, output_path)
         parsed = VmdData().parse_file(output_path)
         self.assertEqual(parsed.header.model_name, "ExportModel")
-        self.assertEqual(len(parsed.bone_frames), 2)
+        self.assertEqual(len(parsed.bone_frames), 11)
+
+    def test_mode_c_frame_range_matches_maya_numeric_oracle(self):
+        cmds.currentUnit(time="ntsc")
+        root, joint = self._make_keyed_joint_scene(
+            keyed_pose=(2.0, 1.0, 2.0),
+            keyed_frame=2,
+        )
+        blend_shape = self._make_keyed_blendshape(root)
+        camera = self._make_keyed_camera()
+        light = self._make_keyed_light()
+        output_path = self.get_temp_filename("mode_c_numeric_oracle.vmd")
+
+        result = ExportVmdAction().execute(
+            ExportVmdRequest(
+                file_path=output_path,
+                options={
+                    "target_model": root,
+                    "export_format": "vmd",
+                    "vmd_mode": "C",
+                    "frame_range": (0, 2),
+                    "blend_shapes": [blend_shape],
+                    "cameras": [camera],
+                    "lights": [light],
+                },
+            )
+        )
+
+        self.assertTrue(result.succeeded, result.error)
+        parsed = VmdData().parse_file(output_path)
+        self.assertEqual(
+            [frame.frame_number for frame in parsed.bone_frames],
+            [0, 1, 2],
+        )
+        for frame in parsed.bone_frames:
+            cmds.currentTime(frame.frame_number, edit=True)
+            expected_x = float(cmds.getAttr(f"{joint}.translateX"))
+            expected_y = float(cmds.getAttr(f"{joint}.translateY"))
+            expected_z = float(cmds.getAttr(f"{joint}.translateZ"))
+            expected_angle = math.radians(float(cmds.getAttr(f"{joint}.rotateZ")))
+            expected_rotation = (
+                0.0,
+                0.0,
+                math.sin(expected_angle / 2.0),
+                math.cos(expected_angle / 2.0),
+            )
+            rotation_dot = abs(
+                sum(actual * expected for actual, expected in zip(frame.rotation, expected_rotation))
+            )
+            self.assertAlmostEqual(frame.position[0], expected_x, places=5)
+            self.assertAlmostEqual(frame.position[1], expected_y, places=5)
+            self.assertAlmostEqual(frame.position[2], -expected_z, places=5)
+            self.assertAlmostEqual(rotation_dot, 1.0, places=5)
+        self.assertEqual(
+            [frame.frame_number for frame in parsed.morph_frames],
+            [0, 1, 2],
+        )
+        self.assertEqual(
+            [frame.frame_number for frame in parsed.camera_frames],
+            [0, 1, 2],
+        )
+        self.assertEqual(
+            [frame.frame_number for frame in parsed.light_frames],
+            [0, 1, 2],
+        )
 
     def test_roundtrip_imported_fixture_motion_exports_parseable_vmd(self):
+        pmx_path = self.fixture_provider.get_pmx_file("mmt_test_model")
+        vmd_path = self.fixture_provider.get_vmd_file("mmt_test_model_test_motion")
+        source_data = VmdData().parse_file(vmd_path)
+
+        root = import_mmd_file(
+            pmx_path,
+            options={"setup_rig": True, "setup_bone_orientation": True},
+        )
+        self.assertIsNotNone(root, "PMX import failed")
+        self.assertTrue(
+            import_mmd_file(vmd_path, options={"target_model": root, "pmx_path": pmx_path}),
+            "VMD import failed",
+        )
+
+        provenance = json.loads(
+            cmds.getAttr(f"{root}.{ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON}")
+        )
+        self.assertTrue(provenance["raw_bone_interpolation_complete"])
+        self.assertTrue(provenance["raw_bone_transform_complete"])
+        self.assertEqual(provenance["raw_bone_key_count"], len(source_data.bone_frames))
+
+        output_path = self.get_temp_filename("imported_fixture_export.vmd")
+        result = ExportVmdAction().execute(
+            ExportVmdRequest(
+                file_path=output_path,
+                options={
+                    "target_model": root,
+                    "export_format": "vmd",
+                    "vmd_mode": "A",
+                },
+            )
+        )
+
+        self.assertTrue(result.succeeded, result.error)
+        parsed = VmdData().parse_file(output_path)
+        self.assertTrue(parsed.header.model_name)
+        self.assertGreater(len(parsed.bone_frames), 0)
+        self.assertTrue(any(frame.bone_name == "センター" for frame in parsed.bone_frames))
+
+        source_interpolation = {
+            (frame.bone_name, frame.frame_number): frame.interpolation
+            for frame in source_data.bone_frames
+        }
+        source_transforms = {
+            (frame.bone_name, frame.frame_number): (frame.position, frame.rotation)
+            for frame in source_data.bone_frames
+        }
+        for frame in parsed.bone_frames:
+            key = (frame.bone_name, frame.frame_number)
+            self.assertIn(key, source_interpolation)
+            self.assertEqual(frame.interpolation, source_interpolation[key])
+            self.assertEqual(frame.position, source_transforms[key][0])
+            self.assertEqual(frame.rotation, source_transforms[key][1])
+
+    def test_mode_a_blocks_imported_fixture_after_bone_transform_edit(self):
         pmx_path = self.fixture_provider.get_pmx_file("mmt_test_model")
         vmd_path = self.fixture_provider.get_vmd_file("mmt_test_model_test_motion")
 
@@ -119,14 +265,76 @@ class TestVmdSceneCollector(MayaTestBase):
             "VMD import failed",
         )
 
-        maya_data = VmdSceneCollector().collect({"target_model": root})
-        output_path = self.get_temp_filename("imported_fixture_export.vmd")
-        VmdExporter().export_vmd_animation(output_path, maya_data)
+        center_joint = next(
+            (
+                joint
+                for joint in (
+                    cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True)
+                    or []
+                )
+                if cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_NAME}") == "センター"
+            ),
+            None,
+        )
+        self.assertIsNotNone(center_joint, "Imported センター joint was not found")
 
-        parsed = VmdData().parse_file(output_path)
-        self.assertTrue(parsed.header.model_name)
-        self.assertGreater(len(parsed.bone_frames), 0)
-        self.assertTrue(any(frame.bone_name == "センター" for frame in parsed.bone_frames))
+        cmds.currentTime(0, edit=True)
+        original_translate_x = float(cmds.getAttr(f"{center_joint}.translateX"))
+        cmds.keyframe(
+            center_joint,
+            attribute="translateX",
+            edit=True,
+            time=(0, 0),
+            valueChange=original_translate_x + 1.0,
+        )
+        self.assertNotAlmostEqual(
+            float(cmds.getAttr(f"{center_joint}.translateX")),
+            original_translate_x,
+        )
+
+        output_path = self.get_temp_filename("edited_fixture_mode_a.vmd")
+        original_output = b"pre-existing VMD output"
+        with open(output_path, "wb") as handle:
+            handle.write(original_output)
+
+        exporter = _RecordingVmdExporter()
+        result = ExportVmdAction(exporter=exporter).execute(
+            ExportVmdRequest(
+                file_path=output_path,
+                options={
+                    "target_model": root,
+                    "export_format": "vmd",
+                    "vmd_mode": "A",
+                },
+            )
+        )
+
+        self.assertFalse(
+            result.succeeded,
+            result.validation_report.to_dict() if result.validation_report else result.status_message,
+        )
+        self.assertIsNotNone(result.validation_report)
+        self.assertIn(
+            "VMD_RAW_PROVENANCE_MISMATCH",
+            [issue.code for issue in result.validation_report.issues],
+        )
+        self.assertEqual(exporter.calls, [])
+        with open(output_path, "rb") as handle:
+            self.assertEqual(handle.read(), original_output)
+
+    def test_mode_c_imported_fixture_fresh_import_matches_exported_bone_payload(self):
+        self._assert_mode_c_fresh_import_bone_payload(
+            "mmt_test_model",
+            "mmt_test_model_test_motion",
+            "mode_c_mmt_fixture_export.vmd",
+        )
+
+    def test_mode_c_one_bone_fixture_fresh_import_matches_exported_bone_payload(self):
+        self._assert_mode_c_fresh_import_bone_payload(
+            "test_1bone_cube",
+            "test_1bone_cube_motion",
+            "mode_c_one_bone_fixture_export.vmd",
+        )
 
     def test_roundtrip_tagged_camera_and_light_to_vmd_frames(self):
         camera = self._make_keyed_camera()
@@ -157,7 +365,160 @@ class TestVmdSceneCollector(MayaTestBase):
         self.assertAlmostEqual(light_frame.position[1], 0.0)
         self.assertAlmostEqual(light_frame.position[2], 0.0)
 
-    def _make_keyed_joint_scene(self, bind_pose=(0.0, 0.0, 0.0), keyed_pose=(5.0, 1.0, 2.0)):
+    def test_namespaced_target_scopes_automatic_blendshape_discovery(self):
+        hero_root = self._make_namespaced_keyed_blendshape("hero", "hero_morph")
+        self._make_namespaced_keyed_blendshape("rival", "rival_morph")
+
+        maya_data = VmdSceneCollector().collect({"target_model": hero_root})
+
+        self.assertEqual(
+            {frame["morph_name"] for frame in maya_data["morph_frames"]},
+            {"hero_morph"},
+        )
+
+    def _make_namespaced_keyed_blendshape(self, namespace, morph_name):
+        with NamespaceUtils.namespace_context(namespace):
+            root = cmds.group(empty=True, name="model_ROOT")
+            base, _base_shape = cmds.polyCube(name="Geometry")
+            target, _target_shape = cmds.polyCube(name="GeometryTarget")
+            cmds.parent(base, root)
+            cmds.parent(target, root)
+            blend_shape = cmds.blendShape(target, base, name="faceBlendShape")[0]
+            cmds.addAttr(
+                blend_shape,
+                longName=ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
+                dataType="string",
+            )
+            cmds.setAttr(
+                f"{blend_shape}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}",
+                '{"0": "' + morph_name + '"}',
+                type="string",
+            )
+            cmds.setKeyframe(blend_shape, attribute="weight[0]", time=5, value=0.5)
+            return (cmds.ls(root, long=True) or [root])[0]
+
+    def _assert_mode_c_fresh_import_bone_payload(
+        self,
+        pmx_fixture_name,
+        vmd_fixture_name,
+        output_file_name,
+    ):
+        """Export one fixture densely, then compare a fresh import to parsed VMD data."""
+        frame_range = (0, 2)
+        expected_frame_numbers = list(range(frame_range[0], frame_range[1] + 1))
+        pmx_path = self.fixture_provider.get_pmx_file(pmx_fixture_name)
+        source_vmd_path = self.fixture_provider.get_vmd_file(vmd_fixture_name)
+
+        source_root = import_mmd_file(
+            pmx_path,
+            options={"setup_rig": True, "setup_bone_orientation": True},
+        )
+        self.assertIsNotNone(source_root, f"PMX import failed: {pmx_fixture_name}")
+        self.assertTrue(
+            import_mmd_file(
+                source_vmd_path,
+                options={"target_model": source_root, "pmx_path": pmx_path},
+            ),
+            f"VMD import failed: {vmd_fixture_name}",
+        )
+
+        output_path = self.get_temp_filename(output_file_name)
+        result = ExportVmdAction().execute(
+            ExportVmdRequest(
+                file_path=output_path,
+                options={
+                    "target_model": source_root,
+                    "export_format": "vmd",
+                    "vmd_mode": "C",
+                    "frame_range": frame_range,
+                },
+            )
+        )
+
+        self.assertTrue(result.succeeded, result.error)
+        exported = VmdData().parse_file(output_path)
+        self.assertGreater(len(exported.bone_frames), 0, "Mode C export has no bone frames")
+        self.assertEqual(
+            sorted({frame.frame_number for frame in exported.bone_frames}),
+            expected_frame_numbers,
+        )
+        exported_by_key = {
+            (frame.bone_name, frame.frame_number): (frame.position, frame.rotation)
+            for frame in exported.bone_frames
+        }
+        self.assertEqual(len(exported_by_key), len(exported.bone_frames))
+        self.assertEqual(
+            len(exported.bone_frames),
+            len({frame.bone_name for frame in exported.bone_frames}) * len(expected_frame_numbers),
+        )
+
+        cmds.file(new=True, force=True)
+        cmds.currentUnit(time="ntsc")
+        fresh_root = import_mmd_file(
+            pmx_path,
+            options={"setup_rig": True, "setup_bone_orientation": True},
+        )
+        self.assertIsNotNone(fresh_root, f"Fresh PMX import failed: {pmx_fixture_name}")
+        self.assertTrue(
+            import_mmd_file(
+                output_path,
+                options={"target_model": fresh_root, "pmx_path": pmx_path},
+            ),
+            "Fresh exported VMD import failed",
+        )
+
+        collected = VmdSceneCollector().collect(
+            {
+                "target_model": fresh_root,
+                "vmd_mode": "C",
+                "frame_range": frame_range,
+            }
+        )
+        collected_by_key = {
+            (frame["bone_name"], frame["frame_number"]): (
+                frame["position"],
+                frame["rotation"],
+            )
+            for frame in collected["bone_frames"]
+        }
+        self.assertEqual(set(collected_by_key), set(exported_by_key))
+        for key in sorted(exported_by_key):
+            expected_position, expected_rotation = exported_by_key[key]
+            actual_position, actual_rotation = collected_by_key[key]
+            self.assertListAlmostEqual(actual_position, expected_position, places=5)
+            self.assertAlmostEqual(
+                abs(sum(actual * expected for actual, expected in zip(actual_rotation, expected_rotation))),
+                1.0,
+                places=5,
+                msg=f"Quaternion mismatch for {key}",
+            )
+
+    def _make_keyed_blendshape(self, root):
+        base, _base_shape = cmds.polyCube(name="mode_c_base")
+        target, _target_shape = cmds.polyCube(name="mode_c_target")
+        cmds.parent(base, root)
+        cmds.parent(target, root)
+        blend_shape = cmds.blendShape(target, base, name="modeCBlendShape")[0]
+        cmds.addAttr(
+            blend_shape,
+            longName=ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
+            dataType="string",
+        )
+        cmds.setAttr(
+            f"{blend_shape}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}",
+            '{"0": "笑い"}',
+            type="string",
+        )
+        cmds.setKeyframe(blend_shape, attribute="weight[0]", time=0, value=0.0)
+        cmds.setKeyframe(blend_shape, attribute="weight[0]", time=2, value=1.0)
+        return blend_shape
+
+    def _make_keyed_joint_scene(
+        self,
+        bind_pose=(0.0, 0.0, 0.0),
+        keyed_pose=(5.0, 1.0, 2.0),
+        keyed_frame=10,
+    ):
         root = cmds.group(empty=True, name="model_root")
         cmds.addAttr(root, longName=ATTR_MMD_MODEL_NAME, dataType="string")
         cmds.setAttr(f"{root}.{ATTR_MMD_MODEL_NAME}", "ExportModel", type="string")
@@ -169,13 +530,13 @@ class TestVmdSceneCollector(MayaTestBase):
         cmds.setAttr(f"{joint}.{ATTR_MMD_BONE_NAME}", "センター", type="string")
 
         cmds.setKeyframe(joint, attribute="translateX", time=0, value=bind_pose[0])
-        cmds.setKeyframe(joint, attribute="translateX", time=10, value=keyed_pose[0])
+        cmds.setKeyframe(joint, attribute="translateX", time=keyed_frame, value=keyed_pose[0])
         cmds.setKeyframe(joint, attribute="translateY", time=0, value=bind_pose[1])
-        cmds.setKeyframe(joint, attribute="translateY", time=10, value=keyed_pose[1])
+        cmds.setKeyframe(joint, attribute="translateY", time=keyed_frame, value=keyed_pose[1])
         cmds.setKeyframe(joint, attribute="translateZ", time=0, value=bind_pose[2])
-        cmds.setKeyframe(joint, attribute="translateZ", time=10, value=keyed_pose[2])
+        cmds.setKeyframe(joint, attribute="translateZ", time=keyed_frame, value=keyed_pose[2])
         cmds.setKeyframe(joint, attribute="rotateZ", time=0, value=0.0)
-        cmds.setKeyframe(joint, attribute="rotateZ", time=10, value=90.0)
+        cmds.setKeyframe(joint, attribute="rotateZ", time=keyed_frame, value=90.0)
         return root, joint
 
     def _make_keyed_camera(self):

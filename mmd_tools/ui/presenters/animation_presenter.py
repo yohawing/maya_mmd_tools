@@ -24,6 +24,10 @@ from ...core.morph_metadata_reader import (
     parse_blendshape_morph_entries,
     morph_info_from_presenter_entry,
 )
+from ...core.model_registry import (
+    REGISTRY_CATEGORY_MORPH,
+    list_model_registry_members_from_adapter,
+)
 from ...core.visibility_state import (
     VisibilityState,
     get_visibility_state,
@@ -1891,14 +1895,23 @@ class AnimationPresenter:
         seen_names: set[str],
     ) -> None:
         try:
-            network_nodes = self.maya_adapter.ls(type="network") or []
+            registry_members = list_model_registry_members_from_adapter(
+                self.maya_adapter,
+                model_root,
+                REGISTRY_CATEGORY_MORPH,
+            )
+            network_nodes = (
+                registry_members
+                if registry_members is not None
+                else self.maya_adapter.ls(type="network") or []
+            )
         except Exception:
             return
         for node in network_nodes:
             try:
                 if not self.maya_adapter.attribute_exists("mmd_morph_type", node):
                     continue
-                if self.maya_adapter.attribute_exists("mmd_model_root", node):
+                if registry_members is None and self.maya_adapter.attribute_exists("mmd_model_root", node):
                     roots = self.maya_adapter.list_connections(f"{node}.mmd_model_root") or []
                     if roots and model_root not in roots:
                         continue
