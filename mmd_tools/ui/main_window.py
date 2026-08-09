@@ -142,9 +142,7 @@ class MainWindow(QMainWindow):
         self.show_window(dockable=dockable)
 
     def closeEvent(self, event):
-        if not self.bone_presenter.disconnect_signals():
-            event.ignore()
-            return
+        self.bone_presenter.disconnect_signals()
         self.save_settings()
         super().closeEvent(event)
 
