@@ -415,6 +415,136 @@ def register_existing_joint(root: str, bone: MmdBoneSpec, adapter: Any) -> None:
         _set_attr(adapter, joint, ATTR_MMD_IK_LINKS, "string", json.dumps([dict(link) for link in bone.ik_links], ensure_ascii=False))
 
 
+def register_existing_joints(root: str, bones: Sequence[MmdBoneSpec], adapter: Any) -> None:
+    """Register a complete set of descendant joints in two metadata phases.
+
+    A PMX bone can reference a later index (IK targets and grant parents are
+    common examples).  The historical single-joint helper intentionally
+    rejects such forward references.  Template creation, however, creates a
+    complete hierarchy before writing metadata, so all base fields are written
+    first and reference aliases are resolved only after every index/name is
+    known.  No partial registration is allowed when validation fails.
+    """
+    if not isinstance(bones, Sequence) or isinstance(bones, (str, bytes, bytearray)):
+        _fail("bones must be a sequence")
+    items = tuple(bones)
+    if not items:
+        _fail("bones must not be empty")
+    if any(not isinstance(item, MmdBoneSpec) for item in items):
+        _fail("bones entries must be MmdBoneSpec values")
+    _require_string(root, field="root")
+    if not _call(adapter, "object_exists", root):
+        _fail("root must exist")
+
+    descendants = _descendant_joints(adapter, root)
+    bindings = [
+        _require_string(item.binding_identity, field=f"bone[{item.index}].binding_identity")
+        for item in items
+    ]
+    if len(set(bindings)) != len(bindings):
+        _fail("bone binding identities must be unique")
+    if any(binding not in descendants for binding in bindings):
+        _fail("all bone bindings must be descendants of root")
+    if any(_exists(adapter, binding, ATTR_MMD_BONE_INDEX) for binding in bindings):
+        _fail("one or more bone joints are already registered")
+    indices = [item.index for item in items]
+    if len(set(indices)) != len(indices):
+        _fail("bone indices must be unique")
+    known_indices = set(indices)
+    for item in items:
+        for field in ("parent_index", "connect_bone_index", "grant_parent_index", "ik_target_index"):
+            value = getattr(item, field)
+            if value is not None and value != -1 and value not in known_indices:
+                _fail(f"bone.{field} references unknown index {value}")
+        flags = int(item.flags)
+        grant_flags = PmxBoneFlag.GRANT_PARENT_ROTATE | PmxBoneFlag.GRANT_PARENT_MOVE
+        if flags & PmxBoneFlag.CONNECT_BONE:
+            if item.connect_bone_index is None or item.connect_bone_index < 0:
+                _fail("CONNECT_BONE requires a non-negative connect_bone_index")
+        elif item.connect_bone_index is not None:
+            _fail("connect_bone_index requires CONNECT_BONE flag")
+        if flags & grant_flags:
+            if item.grant_parent_index is None or item.grant_parent_index < 0:
+                _fail("grant flags require a non-negative grant_parent_index")
+        elif item.grant_parent_index is not None:
+            _fail("grant_parent_index requires a grant flag")
+        if item.fixed_axis is not None and not flags & PmxBoneFlag.AXIS_FIXED:
+            _fail("fixed_axis requires AXIS_FIXED flag")
+        if (item.local_axis_x is not None or item.local_axis_z is not None) and not flags & PmxBoneFlag.LOCAL_AXIS:
+            _fail("local axes require LOCAL_AXIS flag")
+        if item.external_parent_key is not None and not flags & PmxBoneFlag.EXTERNAL_PARENT_DEFORM:
+            _fail("external_parent_key requires EXTERNAL_PARENT_DEFORM flag")
+        if flags & PmxBoneFlag.IK:
+            if item.ik_target_index is None or item.ik_target_index < 0:
+                _fail("IK requires a non-negative ik_target_index")
+        elif item.ik_target_index is not None:
+            _fail("ik_target_index requires IK flag")
+        for link_index, link in enumerate(item.ik_links):
+            if not isinstance(link, Mapping):
+                _fail(f"bone.ik_links[{link_index}] must be a mapping")
+            link_bone = link.get("bone")
+            if not isinstance(link_bone, int) or isinstance(link_bone, bool) or link_bone not in known_indices:
+                _fail(f"bone.ik_links[{link_index}].bone references unknown index {link_bone!r}")
+
+    names_by_index = {item.index: item.name for item in items}
+    # Phase 1: all non-reference payloads.  This intentionally does not call
+    # register_existing_joint(), whose one-at-a-time validation rejects forward
+    # references by design.
+    for item in items:
+        joint = item.binding_identity
+        assert joint is not None
+        flags = int(item.flags)
+        _set_attr(adapter, joint, ATTR_MMD_BONE_NAME, "string", item.name)
+        _set_attr(adapter, joint, ATTR_MMD_BONE_NAME_EN, "string", item.name_english)
+        _set_attr(adapter, joint, ATTR_MMD_BONE_INDEX, "long", item.index)
+        _set_attr(adapter, joint, ATTR_MMD_BONE_PARENT_INDEX, "long", item.parent_index)
+        _set_attr(adapter, joint, ATTR_MMD_PMX_REST_POSITION, "vector", item.rest_position)
+        _set_attr(adapter, joint, ATTR_MMD_DEFORM_LAYER, "long", item.transform_layer)
+        _set_attr(adapter, joint, ATTR_MMD_BONE_FLAGS, "long", item.flags)
+        tail = item.tail_offset or ((0.0, -1.0, 0.0) if flags & PmxBoneFlag.CONNECT_BONE else (0.0, 0.0, 0.0))
+        _set_attr(adapter, joint, ATTR_MMD_BONE_OFFSET, "vector", tail)
+        if flags & (PmxBoneFlag.GRANT_PARENT_ROTATE | PmxBoneFlag.GRANT_PARENT_MOVE):
+            _set_attr(adapter, joint, ATTR_MMD_GRANT_RATE, "double", item.grant_ratio)
+        if flags & PmxBoneFlag.AXIS_FIXED:
+            _set_attr(adapter, joint, ATTR_MMD_FIXED_AXIS, "vector", item.fixed_axis or (0.0, 0.0, 1.0))
+            _set_attr(adapter, joint, ATTR_MMD_AXIS_DIRECTION, "vector", item.fixed_axis or (0.0, 0.0, 1.0))
+        if flags & PmxBoneFlag.LOCAL_AXIS:
+            _set_attr(adapter, joint, ATTR_MMD_LOCAL_X_AXIS, "vector", item.local_axis_x or (1.0, 0.0, 0.0))
+            _set_attr(adapter, joint, ATTR_MMD_X_AXIS_DIRECTION, "vector", item.local_axis_x or (1.0, 0.0, 0.0))
+            _set_attr(adapter, joint, ATTR_MMD_LOCAL_Z_AXIS, "vector", item.local_axis_z or (0.0, 0.0, 1.0))
+            _set_attr(adapter, joint, ATTR_MMD_Z_AXIS_DIRECTION, "vector", item.local_axis_z or (0.0, 0.0, 1.0))
+        if flags & PmxBoneFlag.EXTERNAL_PARENT_DEFORM:
+            _set_attr(adapter, joint, ATTR_MMD_EXTERNAL_PARENT_KEY, "long", item.external_parent_key)
+        if flags & PmxBoneFlag.IK:
+            _set_attr(adapter, joint, ATTR_MMD_IK_LOOP, "long", item.ik_loop_count)
+            _set_attr(adapter, joint, ATTR_MMD_IK_LIMIT_ANGLE, "double", item.ik_limit_radian or 0.0)
+            _set_attr(adapter, joint, ATTR_MMD_IK_LINKS, "string", json.dumps([dict(link) for link in item.ik_links], ensure_ascii=False))
+
+    # Phase 2: index/name aliases.  Every target is guaranteed to exist in the
+    # complete set above, so references are deterministic even when forward.
+    for item in items:
+        joint = item.binding_identity
+        assert joint is not None
+
+        def reference_name(index: int, field: str) -> str:
+            try:
+                return names_by_index[index]
+            except KeyError:
+                _fail(f"bone.{field} references unknown index {index}")
+
+        flags = int(item.flags)
+        if flags & PmxBoneFlag.CONNECT_BONE:
+            _set_attr(adapter, joint, ATTR_MMD_CONNECT_INDEX, "long", item.connect_bone_index)
+            _set_attr(adapter, joint, ATTR_MMD_CONNECT_BONE_INDEX, "long", item.connect_bone_index)
+            _set_attr(adapter, joint, ATTR_MMD_CONNECTION_BONE, "string", reference_name(item.connect_bone_index, "connect_bone_index"))
+        if flags & (PmxBoneFlag.GRANT_PARENT_ROTATE | PmxBoneFlag.GRANT_PARENT_MOVE):
+            _set_attr(adapter, joint, ATTR_MMD_GRANT_PARENT_INDEX, "long", item.grant_parent_index)
+            _set_attr(adapter, joint, ATTR_MMD_GRANT_PARENT, "string", reference_name(item.grant_parent_index, "grant_parent_index"))
+        if flags & PmxBoneFlag.IK:
+            _set_attr(adapter, joint, ATTR_MMD_IK_TARGET_INDEX, "long", item.ik_target_index)
+            _set_attr(adapter, joint, ATTR_MMD_IK_TARGET, "string", reference_name(item.ik_target_index, "ik_target_index"))
+
+
 def _scene_display_payload(adapter: Any, root: str) -> tuple[str, list[dict[str, Any]]] | None:
     if not _exists(adapter, root, ATTR_MMD_DISPLAY_FRAMES_JSON):
         return None
@@ -730,6 +860,7 @@ def unregister_existing_joint(root: str, joint: str, adapter: Any) -> None:
 __all__ = [
     "MayaBoneAuthoringError",
     "register_existing_joint",
+    "register_existing_joints",
     "capture_rest_position",
     "apply_bone_reindex",
     "unregister_existing_joint",

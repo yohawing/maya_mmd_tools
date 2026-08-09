@@ -34,8 +34,12 @@ class SceneModelService:
 
     def list_mmd_models(self):
         """シーン内のMMDモデル root を名前順で返す。"""
-        namespaced = self._cmds_adapter.ls("*:*{}".format(SCENE_ROOT_SUFFIX), type="transform") or []
-        plain = self._cmds_adapter.ls("*{}".format(SCENE_ROOT_SUFFIX), type="transform") or []
+        namespaced = self._cmds_adapter.ls(
+            "*:*{}".format(SCENE_ROOT_SUFFIX), type="transform", long=True
+        ) or []
+        plain = self._cmds_adapter.ls(
+            "*{}".format(SCENE_ROOT_SUFFIX), type="transform", long=True
+        ) or []
 
         mmd_models = []
         for transform in set(namespaced + plain):

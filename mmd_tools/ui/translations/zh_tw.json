@@ -52,6 +52,7 @@
   "buttons": {
     "import": "匯入",
     "export": "匯出",
+    "ok": "確定",
     "apply": "套用",
     "cancel": "取消",
     "browse": "瀏覽...",
@@ -458,6 +459,7 @@
   },
   "actions": {
     "import_model": "匯入模型",
+    "new_mmd_model": "New MMD Model",
     "create_mmd_model": "建立模型",
     "import_animation": "匯入動畫",
     "export": "匯出",

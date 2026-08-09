@@ -55,6 +55,7 @@
     "export": "エクスポート",
     "validate": "検証",
     "apply": "適用",
+    "ok": "OK",
     "cancel": "キャンセル",
     "browse": "参照...",
     "refresh": "更新",
@@ -556,6 +557,7 @@
   },
   "actions": {
     "import_model": "モデルをインポート",
+    "new_mmd_model": "New MMD Model",
     "create_mmd_model": "モデルを作成",
     "import_animation": "アニメーションをインポート",
     "export": "エクスポート",

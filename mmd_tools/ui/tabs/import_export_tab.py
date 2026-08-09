@@ -377,33 +377,6 @@ class ImportExportTab(BaseTab):
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
 
-        # Create Model Group (packaged templates only; no arbitrary file path)
-        self.create_model_group = QGroupBox(self.tr("create_mmd_model", "groups"))
-        create_model_layout = QFormLayout()
-        self.create_model_template_combo = QComboBox()
-        self.create_model_template_label = QLabel(self.tr("model_template", "fields"))
-        create_model_layout.addRow(
-            self.create_model_template_label,
-            self.create_model_template_combo,
-        )
-        self.create_model_name_jp_edit = QLineEdit()
-        self.create_model_name_jp_label = QLabel(self.tr("model_name_jp", "fields"))
-        create_model_layout.addRow(
-            self.create_model_name_jp_label,
-            self.create_model_name_jp_edit,
-        )
-        self.create_model_name_en_edit = QLineEdit()
-        self.create_model_name_en_label = QLabel(self.tr("model_name_en", "fields"))
-        create_model_layout.addRow(
-            self.create_model_name_en_label,
-            self.create_model_name_en_edit,
-        )
-        self.create_model_button = QPushButton(self.tr("create_mmd_model", "actions"))
-        self.create_model_button.setEnabled(False)
-        create_model_layout.addRow(self.create_model_button)
-        self.create_model_group.setLayout(create_model_layout)
-        right_layout.addWidget(self.create_model_group)
-
         # Model Import Group (PMX/PMD)
         self.model_import_group = QGroupBox(self.tr("model_import", "groups"))
         model_import_layout = QFormLayout()
@@ -425,6 +398,10 @@ class ImportExportTab(BaseTab):
         # Import button with new file checkbox
         import_button_layout = QHBoxLayout()
         self.import_button = QPushButton(self.tr("import_model", "actions"))
+        self.new_model_button = QPushButton(self.tr("new_mmd_model", "actions"))
+        # The presenter enables this only when the action and packaged
+        # template metadata are both available.
+        self.new_model_button.setEnabled(False)
         self.new_file_check = QCheckBox(self.tr("new_file", "checkboxes"))
         # NewFileチェックボックスの状態を読み込み
         saved_new_file = self.view_state.get("new_file_check", "false")
@@ -432,6 +409,7 @@ class ImportExportTab(BaseTab):
         # 状態が変更されたら保存
         self.new_file_check.toggled.connect(lambda checked: self.view_state.set("new_file_check", str(checked)))
         import_button_layout.addWidget(self.import_button)
+        import_button_layout.addWidget(self.new_model_button)
         import_button_layout.addWidget(self.new_file_check)
         import_button_layout.addStretch()
         model_import_layout.addRow(import_button_layout)
@@ -796,13 +774,9 @@ class ImportExportTab(BaseTab):
         self.vmd_path_button.setText(self.tr("browse", "buttons"))
         self.export_path_button.setText(self.tr("browse", "buttons"))
         self.import_button.setText(self.tr("import_model", "actions"))
+        self.new_model_button.setText(self.tr("new_mmd_model", "actions"))
         self.import_vmd_button.setText(self.tr("import_animation", "actions"))
         self.export_button.setText(self.tr("export", "buttons"))
-        self.create_model_group.setTitle(self.tr("create_mmd_model", "groups"))
-        self.create_model_template_label.setText(self.tr("model_template", "fields"))
-        self.create_model_name_jp_label.setText(self.tr("model_name_jp", "fields"))
-        self.create_model_name_en_label.setText(self.tr("model_name_en", "fields"))
-        self.create_model_button.setText(self.tr("create_mmd_model", "actions"))
 
         # Tab widget texts
         if hasattr(self, "animation_settings_group"):

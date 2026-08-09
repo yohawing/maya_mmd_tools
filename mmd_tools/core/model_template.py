@@ -20,6 +20,7 @@ from .model_authoring_spec import MmdModelAuthoringSpec
 
 TEMPLATE_SCHEMA_VERSION = 1
 _TEMPLATE_RESOURCE_PATHS = {
+    "pmx20-semistandard-v1": "config/model_templates/pmx20_semistandard_v1.json",
     "pmx20-basic-v1": "config/model_templates/pmx20_basic_v1.json",
 }
 _FRAME_KEYS = {"name", "name_english", "special", "elements"}

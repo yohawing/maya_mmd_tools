@@ -2254,3 +2254,26 @@ def maya_vertex_morph_authoring_smoke(session: nox.Session) -> None:
         env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1", PYTHONIOENCODING="utf-8"),
         external=True,
     )
+
+
+@nox.session(venv_backend="none")
+def maya_model_template_smoke(session: nox.Session) -> None:
+    """Create both packaged model templates in Maya standalone and verify them.
+
+    Examples:
+        uvx nox -s maya_model_template_smoke -- --maya 2024
+        uvx nox -s maya_model_template_smoke -- --maya 2026 --out build/reports/model-template-smoke.json
+    """
+    maya_version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_version)
+    out_path = _option(session.posargs, "--out", None)
+    args = []
+    if out_path:
+        args.extend(("--out", _mayapy_arg_path(mayapy, out_path)))
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tools/maya_model_template_smoke.py"),
+        *args,
+        env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1", PYTHONIOENCODING="utf-8"),
+        external=True,
+    )

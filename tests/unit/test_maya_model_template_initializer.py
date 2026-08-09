@@ -228,6 +228,27 @@ def test_create_model_initializes_root_registry_bindings_and_display_frames() ->
     assert adapter.undo_count == 0
 
 
+def test_create_semistandard_model_registers_full_rig_and_cube_intent() -> None:
+    adapter = FakeMayaAdapter()
+    initializer = MayaModelTemplateInitializer(
+        adapter,
+        metadata_backend_factory=_backend,
+        material_authoring_factory=FakeMaterialAuthoring,
+        mesh_factory=_mesh_factory,
+    )
+
+    result = initializer.create("pmx20-semistandard-v1", "準標準モデル", "Semi Model")
+
+    assert result.root.endswith("_root")
+    assert len(result.spec.bones) == 100
+    assert result.spec.bones[53].ik_target_index == 52
+    assert result.spec.bones[53].ik_links[0]["bone"] == 51
+    assert result.spec.materials[0].name == "Default Material"
+    assert len(adapter.list_relatives(result.root, allDescendents=True, type="joint")) == 100
+    assert adapter.mesh_calls == [(result.root, result.spec.bones[0].binding_identity, "mmdMaterial_0", "mmdMaterial_0_SG")]
+    assert adapter.undo_open_count == adapter.undo_close_count == 1
+
+
 def test_create_model_rolls_back_one_transaction_on_mesh_failure() -> None:
     adapter = FakeMayaAdapter()
 
@@ -264,5 +285,7 @@ def test_create_model_action_is_safe_without_injected_initializer() -> None:
 def test_template_selector_options_are_curated_and_immutable() -> None:
     options = list_model_templates()
     assert isinstance(options, tuple)
-    assert options[0].template_id == "pmx20-basic-v1"
-    assert options[0].label
+    assert [(option.template_id, option.label) for option in options] == [
+        ("pmx20-semistandard-v1", "準標準ボーン"),
+        ("pmx20-basic-v1", "1ボーン1Cube"),
+    ]

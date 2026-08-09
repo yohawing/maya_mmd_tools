@@ -159,6 +159,19 @@ class TestImportExportTabGUI(GuiTestBase):
         self.assertFalse(hasattr(tab, "vpd_not_implemented"))
         tab.deleteLater()
 
+    def test_new_model_entrypoint_is_one_button_next_to_import(self):
+        """The inline template fields are gone; one modal entrypoint shares the import row."""
+        tab = self._create_tab()
+        try:
+            self.assertFalse(hasattr(tab, "create_model_group"))
+            self.assertFalse(hasattr(tab, "create_model_template_combo"))
+            self.assertTrue(hasattr(tab, "new_model_button"))
+            self.assertEqual(tab.import_button.parentWidget(), tab.new_model_button.parentWidget())
+            button_layout = tab.import_button.parentWidget().layout()
+            self.assertEqual(button_layout.indexOf(tab.import_button) + 1, button_layout.indexOf(tab.new_model_button))
+        finally:
+            tab.deleteLater()
+
 
 if __name__ == "__main__":
     unittest.main()

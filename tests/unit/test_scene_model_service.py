@@ -159,6 +159,19 @@ class TestSceneModelService(unittest.TestCase):
 
         self.assertEqual(service.list_mmd_models(), [])
 
+    def test_list_mmd_models_uses_long_paths_for_current_model_identity(self):
+        class _LongPathCmds(_FakeCmds):
+            def ls(self, *args, **kwargs):
+                if kwargs.get("type") == "transform":
+                    return ["|group|model_root"] if kwargs.get("long") else ["model_root"]
+                return super().ls(*args, **kwargs)
+
+        cmds = _LongPathCmds()
+        cmds.attrs = {"|group|model_root": {ATTR_MMD_MODEL_NAME: "Model"}}
+        service = SceneModelService(cmds_module=cmds)
+
+        self.assertEqual(service.list_mmd_models(), ["|group|model_root"])
+
     def test_resolve_model_from_selection_prefers_available_full_path_then_short_name(self):
         cmds = _FakeCmds()
         cmds.selection = ["|grp|child"]

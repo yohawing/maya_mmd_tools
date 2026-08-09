@@ -32,6 +32,20 @@ def test_default_template_has_exact_product_content() -> None:
     assert template.display_frames[1]["elements"] == ()
 
 
+def test_semistandard_template_comes_from_the_authoritative_fixture_shape() -> None:
+    template = load_model_template("pmx20-semistandard-v1")
+    assert template.label == "準標準ボーン"
+    assert len(template.spec.bones) == 100
+    assert template.spec.bones[0].name == "センター"
+    assert template.spec.bones[18].grant_parent_index is None
+    assert template.spec.bones[20].grant_parent_index == 18
+    assert template.spec.bones[53].ik_target_index == 52
+    assert template.spec.bones[53].ik_loop_count == 40
+    assert template.spec.bones[53].ik_links[0]["bone"] == 51
+    assert len(template.spec.materials) == 1
+    assert len(template.display_frames) == 9
+
+
 def test_instantiation_overrides_only_model_names_and_is_fresh() -> None:
     original = load_model_template("pmx20-basic-v1")
     instance = instantiate_model_template("pmx20-basic-v1", "モデル名", "Model Name")
@@ -59,6 +73,9 @@ def test_package_resource_exists_and_is_declared() -> None:
     resource_path = Path(__file__).parents[2] / "mmd_tools" / "config" / "model_templates" / "pmx20_basic_v1.json"
     assert resource_path.is_file()
     json.loads(resource_path.read_text(encoding="utf-8"))
+    semi_resource_path = resource_path.with_name("pmx20_semistandard_v1.json")
+    assert semi_resource_path.is_file()
+    json.loads(semi_resource_path.read_text(encoding="utf-8"))
     assert '"config/model_templates/*.json"' in (Path(__file__).parents[2] / "pyproject.toml").read_text(
         encoding="utf-8"
     )

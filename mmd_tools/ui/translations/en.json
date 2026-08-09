@@ -55,6 +55,7 @@
     "export": "Export",
     "validate": "Validate",
     "apply": "Apply",
+    "ok": "OK",
     "cancel": "Cancel",
     "browse": "Browse...",
     "refresh": "Refresh",
@@ -556,6 +557,7 @@
   },
   "actions": {
     "import_model": "Import Model",
+    "new_mmd_model": "New MMD Model",
     "create_mmd_model": "Create Model",
     "import_animation": "Import Animation",
     "export": "Export",

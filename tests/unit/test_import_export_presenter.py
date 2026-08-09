@@ -61,24 +61,6 @@ class _RecordingButton:
         self.enabled = enabled
 
 
-class _FakeComboBox:
-    def __init__(self):
-        self.items = []
-        self.current_index = 0
-
-    def clear(self):
-        self.items.clear()
-
-    def addItem(self, label, data):
-        self.items.append((label, data))
-
-    def count(self):
-        return len(self.items)
-
-    def currentData(self):
-        return self.items[self.current_index][1] if self.items else None
-
-
 class _FakeLineEdit:
     def __init__(self, text):
         self._text = text
@@ -103,6 +85,7 @@ class _FakeView:
         self.export_button = _FakeButton()
         self.vmd_path_button = _FakeButton()
         self.import_vmd_button = _FakeButton()
+        self.new_model_button = _RecordingButton()
         self.import_path_edit = _FakeLineEdit("model.pmx")
         self.export_path_edit = _FakeLineEdit("out.pmx")
         self.vmd_path_edit = _FakeLineEdit("motion.vmd")
@@ -123,6 +106,33 @@ class _FakeView:
 
     def add_export_path_to_history(self, path):
         self.export_history.append(path)
+
+
+class _ModalDialog:
+    def __init__(self, accepted, values=(None, "", "")):
+        self.accepted = accepted
+        self.values = values
+        self.exec_calls = 0
+
+    def exec_modal(self):
+        self.exec_calls += 1
+        return self.accepted
+
+    def get_request(self):
+        template_id, model_name, model_name_english = self.values
+        if not template_id:
+            return None
+        return CreateModelRequest(
+            template_id=template_id,
+            model_name=model_name,
+            model_name_english=model_name_english,
+        )
+
+
+class _ModalView(_FakeView):
+    def __init__(self):
+        super().__init__()
+        self.new_model_button = _RecordingButton()
 
 
 class _FakeAppState:
@@ -308,12 +318,7 @@ class TestImportExportPresenter(unittest.TestCase):
 
     @staticmethod
     def _create_model_view():
-        view = _FakeView()
-        view.create_model_button = _RecordingButton()
-        view.create_model_template_combo = _FakeComboBox()
-        view.create_model_name_jp_edit = _FakeLineEdit("モデル")
-        view.create_model_name_en_edit = _FakeLineEdit("Model")
-        return view
+        return _FakeView()
 
     def test_create_model_is_disabled_without_injected_action(self):
         view = self._create_model_view()
@@ -326,17 +331,14 @@ class TestImportExportPresenter(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(
-            view.create_model_template_combo.items,
-            [("PMX 2.0 Basic", "pmx20-basic-v1")],
-        )
-        self.assertFalse(view.create_model_button.enabled)
+        self.assertFalse(view.new_model_button.enabled)
 
     def test_create_model_routes_request_and_publishes_new_root(self):
         view = self._create_model_view()
         app_state = _FakeAppState()
         action = MagicMock()
         action.execute.return_value = SimpleNamespace(root="|new_model")
+        dialog = _ModalDialog(True, ("pmx20-basic-v1", "モデル", "Model"))
         presenter = ImportExportPresenter(
             view,
             app_state,
@@ -344,10 +346,11 @@ class TestImportExportPresenter(unittest.TestCase):
             model_template_loader=lambda: (
                 SimpleNamespace(template_id="pmx20-basic-v1", label="PMX 2.0 Basic"),
             ),
+            create_model_dialog_factory=lambda templates, parent: dialog,
         )
 
-        self.assertTrue(view.create_model_button.enabled)
-        self.assertTrue(presenter.create_model())
+        self.assertTrue(view.new_model_button.enabled)
+        self.assertTrue(presenter.open_create_model_dialog())
 
         request = action.execute.call_args.args[0]
         self.assertIsInstance(request, CreateModelRequest)
@@ -364,6 +367,7 @@ class TestImportExportPresenter(unittest.TestCase):
         app_state.current_model_root = "|existing"
         action = MagicMock()
         action.execute.side_effect = RuntimeError("template failed")
+        dialog = _ModalDialog(True, ("pmx20-basic-v1", "モデル", "Model"))
         presenter = ImportExportPresenter(
             view,
             app_state,
@@ -371,13 +375,92 @@ class TestImportExportPresenter(unittest.TestCase):
             model_template_loader=lambda: (
                 SimpleNamespace(template_id="pmx20-basic-v1", label="PMX 2.0 Basic"),
             ),
+            create_model_dialog_factory=lambda templates, parent: dialog,
         )
 
-        self.assertFalse(presenter.create_model())
+        self.assertFalse(presenter.open_create_model_dialog())
 
         self.assertEqual(app_state.current_model_root, "|existing")
         self.assertEqual(app_state.refresh_count, 0)
         self.assertIn("template failed", app_state.statuses[-1])
+
+    def test_new_model_button_opens_injected_dialog_and_cancel_is_side_effect_free(self):
+        view = _ModalView()
+        app_state = _FakeAppState()
+        app_state.current_model_root = "|existing"
+        action = MagicMock()
+        dialog = _ModalDialog(False, ("opaque-template-id", "モデル", "Model"))
+        factory_calls = []
+
+        def factory(templates, parent):
+            factory_calls.append((templates, parent))
+            return dialog
+
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            create_model_action=action,
+            model_template_loader=lambda: (SimpleNamespace(template_id="opaque-template-id", label="Template"),),
+            create_model_dialog_factory=factory,
+        )
+
+        self.assertTrue(view.new_model_button.enabled)
+        self.assertFalse(presenter.open_create_model_dialog())
+        self.assertEqual(dialog.exec_calls, 1)
+        self.assertEqual(len(factory_calls), 1)
+        self.assertEqual(factory_calls[0][0][0].template_id, "opaque-template-id")
+        action.execute.assert_not_called()
+        self.assertEqual(app_state.refresh_count, 0)
+        self.assertEqual(app_state.current_model_root, "|existing")
+        self.assertEqual(app_state.statuses, [])
+
+    def test_new_model_success_uses_opaque_template_id_and_refreshes_before_current_root(self):
+        view = _ModalView()
+        app_state = _FakeAppState()
+        events = []
+        original_refresh = app_state.refresh_model_list
+
+        def refresh():
+            events.append("refresh")
+            original_refresh()
+
+        app_state.refresh_model_list = refresh
+        action = MagicMock()
+        action.execute.return_value = SimpleNamespace(root="|created")
+        dialog = _ModalDialog(True, ("opaque-template-id", "日本語名", "EnglishName"))
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            create_model_action=action,
+            model_template_loader=lambda: (SimpleNamespace(template_id="opaque-template-id", label="Template"),),
+            create_model_dialog_factory=lambda templates, parent: dialog,
+        )
+
+        self.assertTrue(presenter.open_create_model_dialog())
+        request = action.execute.call_args.args[0]
+        self.assertEqual(request.template_id, "opaque-template-id")
+        self.assertEqual(request.model_name, "日本語名")
+        self.assertEqual(request.model_name_english, "EnglishName")
+        self.assertEqual(events, ["refresh"])
+        self.assertEqual(app_state.current_model_root, "|created")
+
+    def test_new_model_button_fails_closed_when_template_loading_fails(self):
+        view = _ModalView()
+        action = MagicMock()
+
+        def loader():
+            raise RuntimeError("packaged template missing")
+
+        presenter = ImportExportPresenter(
+            view,
+            _FakeAppState(),
+            create_model_action=action,
+            model_template_loader=loader,
+        )
+
+        self.assertFalse(view.new_model_button.enabled)
+        self.assertFalse(presenter.open_create_model_dialog())
+        action.execute.assert_not_called()
 
     def test_vmd_reduction_summary_is_localized_and_concise(self):
         presenter = ImportExportPresenter(_FakeView(), _FakeAppState())

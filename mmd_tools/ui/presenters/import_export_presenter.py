@@ -19,6 +19,7 @@ from ...core.model_registry import (
 )
 from ...core.model_template import list_model_templates
 from ...services.settings_service import SettingsService
+from ..create_model_dialog import CreateModelDialog
 from ..model_readme_dialog import ModelReadmeDialogAdapter, read_model_readme
 from .list_presenter_helpers import tr_message, tr_message_format
 from ..translations.translator import UITranslator
@@ -40,6 +41,7 @@ class ImportExportPresenter(QObject):
         model_readme_adapter=None,
         create_model_action=None,
         model_template_loader=None,
+        create_model_dialog_factory=None,
     ):
         super().__init__()
         self.view = view
@@ -55,6 +57,8 @@ class ImportExportPresenter(QObject):
         )
         self.create_model_action = create_model_action
         self.model_template_loader = model_template_loader or list_model_templates
+        self.create_model_dialog_factory = create_model_dialog_factory or CreateModelDialog
+        self._create_model_templates = ()
         self.view.presenter = self
         self.connect_signals()
         self._populate_create_model_templates()
@@ -67,46 +71,64 @@ class ImportExportPresenter(QObject):
         # VMD import signals
         self.view.vmd_path_button.clicked.connect(self.select_vmd_file)
         self.view.import_vmd_button.clicked.connect(self.import_vmd_file)
-        create_button = getattr(self.view, "create_model_button", None)
-        if create_button is not None:
-            create_button.clicked.connect(self.create_model)
+        self.view.new_model_button.clicked.connect(self.open_create_model_dialog)
 
     def _populate_create_model_templates(self):
-        """Populate the selector from curated packaged template metadata only."""
-        combo = getattr(self.view, "create_model_template_combo", None)
-        button = getattr(self.view, "create_model_button", None)
-        if combo is None or button is None:
-            return
-        combo.clear()
+        """Load curated options and gate the New MMD Model button."""
         try:
-            templates = tuple(self.model_template_loader() or ())
+            templates = []
+            for template in tuple(self.model_template_loader() or ()):
+                template_id = getattr(template, "template_id", None)
+                label = getattr(template, "label", None)
+                if isinstance(template_id, str) and template_id and isinstance(label, str):
+                    templates.append(template)
         except Exception:
             logger.error("Failed to load packaged model templates", exc_info=True)
-            templates = ()
-        for template in templates:
-            template_id = getattr(template, "template_id", None)
-            label = getattr(template, "label", None)
-            if isinstance(template_id, str) and template_id and isinstance(label, str):
-                combo.addItem(label, template_id)
+            templates = []
+        self._create_model_templates = tuple(templates)
         action_available = callable(getattr(self.create_model_action, "execute", None))
-        button.setEnabled(action_available and combo.count() > 0)
+        self.view.new_model_button.setEnabled(action_available and bool(self._create_model_templates))
 
-    def create_model(self):
-        """Execute one packaged Create Model request and publish its new root."""
+    def _make_create_model_dialog(self):
+        """Construct the injected dialog factory without loading scene data."""
+        return self.create_model_dialog_factory(self._create_model_templates, self.view)
+
+    def open_create_model_dialog(self):
+        """Open the modal form and create only after the user accepts it."""
+        if not callable(getattr(self.create_model_action, "execute", None)):
+            return False
+        if not self._create_model_templates:
+            return False
+        dialog = self._make_create_model_dialog()
+        if not dialog.exec_modal():
+            return False
+        request = dialog.get_request()
+        if request is None:
+            self.app_state.emit_status(tr_message("create_model_template_required"))
+            return False
+        return self._execute_create_model_request(request)
+
+    def _execute_create_model_request(self, request):
+        """Execute one validated Create Model request and publish its new root."""
         action = self.create_model_action
         if not callable(getattr(action, "execute", None)):
             self.app_state.emit_status(tr_message("create_model_unavailable"))
             return False
-        combo = getattr(self.view, "create_model_template_combo", None)
-        template_id = combo.currentData() if combo is not None else None
+        if not isinstance(request, CreateModelRequest):
+            self.app_state.emit_status(tr_message("create_model_template_required"))
+            return False
+        template_id = request.template_id
         if not isinstance(template_id, str) or not template_id:
             self.app_state.emit_status(tr_message("create_model_template_required"))
             return False
-        request = CreateModelRequest(
-            template_id=template_id,
-            model_name=self.view.create_model_name_jp_edit.text().strip(),
-            model_name_english=self.view.create_model_name_en_edit.text().strip(),
-        )
+        valid_template_ids = {
+            template.template_id
+            for template in self._create_model_templates
+            if isinstance(getattr(template, "template_id", None), str)
+        }
+        if template_id not in valid_template_ids:
+            self.app_state.emit_status(tr_message("create_model_template_required"))
+            return False
         try:
             result = action.execute(request)
             root = getattr(result, "root", None)
