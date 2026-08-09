@@ -174,8 +174,50 @@ def test_binding_identity_and_count_are_strict() -> None:
         project_authoring_spec(_spec(binding_identity="|other"), _oracle())
     oracle = _oracle()
     oracle["materials"].append({"source_material_index": 1, "face_count": 0})
-    with pytest.raises(AuthoringExportIntegrationError, match="material count"):
+    with pytest.raises(AuthoringExportIntegrationError, match="material count|out of range"):
         project_authoring_spec(_spec(), oracle)
+
+
+def test_sparse_material_provenance_fills_leading_middle_and_tail_holes() -> None:
+    base = _spec()
+    materials = tuple(
+        MmdMaterialSpec(name=f"Mat {index}", name_english=f"Mat {index}", index=index)
+        for index in range(4)
+    )
+    spec = MmdModelAuthoringSpec(model=base.model, bones=base.bones, materials=materials, morphs=base.morphs)
+    oracle = _oracle()
+    oracle["materials"] = [
+        {"source_material_index": 2, "face_count": 3, "texture_index": 2},
+    ]
+
+    projected = project_authoring_spec(spec, oracle)
+
+    assert [item["source_material_index"] for item in projected["materials"]] == [0, 1, 2, 3]
+    assert [item["face_count"] for item in projected["materials"]] == [0, 0, 3, 0]
+    assert projected["materials"][0]["texture_index"] == -1
+    assert projected["materials"][2]["texture_index"] == -1
+
+
+@pytest.mark.parametrize(
+    "source_indices",
+    [
+        [0, 0],
+        [4],
+        [-1],
+        [True],
+    ],
+)
+def test_sparse_material_provenance_rejects_duplicate_or_invalid_indices(source_indices) -> None:
+    base = _spec()
+    materials = tuple(
+        MmdMaterialSpec(name=f"Mat {index}", name_english=f"Mat {index}", index=index)
+        for index in range(4)
+    )
+    spec = MmdModelAuthoringSpec(model=base.model, bones=base.bones, materials=materials, morphs=base.morphs)
+    oracle = _oracle()
+    oracle["materials"] = [{"source_material_index": index, "face_count": 0} for index in source_indices]
+    with pytest.raises(AuthoringExportIntegrationError):
+        project_authoring_spec(spec, oracle)
 
 
 def test_unassigned_extra_material_gets_zero_face_placeholder_and_exports(tmp_path: Path) -> None:

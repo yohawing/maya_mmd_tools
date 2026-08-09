@@ -94,6 +94,38 @@ def _require_contiguous_indices(items: Sequence[Any], *, field: str, key: str) -
     return by_index
 
 
+def _require_material_indices(
+    items: Sequence[Any],
+    *,
+    field: str,
+    material_count: int,
+) -> dict[int, Mapping[str, Any]]:
+    """Validate sparse material provenance against the semantic index range.
+
+    Maya's standard shading-engine membership can leave leading or middle PMX
+    materials without any faces.  The collector therefore emits only the
+    materials it observes.  Every observed source index must still be an
+    explicit, unique integer in the authoring range; absent indices are filled
+    by the caller with zero-face placeholders.
+    """
+    by_index: dict[int, Mapping[str, Any]] = {}
+    for position, raw_item in enumerate(items):
+        item = _require_mapping(raw_item, field=f"{field}[{position}]")
+        raw_index = item.get("source_material_index", _MISSING)
+        if raw_index is _MISSING:
+            _fail(f"{field}[{position}] is missing source_material_index")
+        index = _require_index(raw_index, field=f"{field}[{position}].source_material_index")
+        if index >= material_count:
+            _fail(
+                f"{field}[{position}].source_material_index {index} is out of range "
+                f"for {material_count} semantic materials"
+            )
+        if index in by_index:
+            _fail(f"{field} contains duplicate source_material_index {index}")
+        by_index[index] = item
+    return by_index
+
+
 def _require_morph_indices(items: Sequence[Any]) -> dict[int, Mapping[str, Any]]:
     """Use collector list order when its validated payload omits explicit indices."""
     by_index: dict[int, Mapping[str, Any]] = {}
@@ -359,13 +391,18 @@ def project_authoring_spec(
     if len(oracle_morphs) != len(spec.morphs):
         _fail(f"morph count mismatch: spec={len(spec.morphs)} oracle={len(oracle_morphs)}")
 
-    material_by_index = _require_contiguous_indices(oracle_materials, field="oracle.materials", key="source_material_index")
-    # A registry-owned but currently unassigned material has no collector
-    # face entry.  Keep it exportable by supplying a writer-safe zero-face
-    # provenance placeholder; semantic fields are overlaid below.  Existing
-    # oracle entries remain authoritative and must still have contiguous source
-    # indices, so scene-wide or hole-filling inference is never performed.
-    for index in range(len(oracle_materials), len(spec.materials)):
+    material_by_index = _require_material_indices(
+        oracle_materials,
+        field="oracle.materials",
+        material_count=len(spec.materials),
+    )
+    # A registry-owned but currently unassigned material has no collector face
+    # entry.  Keep it exportable by supplying a writer-safe zero-face
+    # provenance placeholder; semantic fields are overlaid below.  This also
+    # covers leading and middle holes, not only the historical tail case.
+    for index in range(len(spec.materials)):
+        if index in material_by_index:
+            continue
         material_by_index[index] = {
             "source_material_index": index,
             "face_count": 0,

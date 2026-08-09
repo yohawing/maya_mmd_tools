@@ -66,18 +66,16 @@ class MaterialTab(BaseTab):
         self.create_btn = QPushButton(self.tr("create", "buttons"))
         self.duplicate_btn = QPushButton(self.tr("duplicate", "buttons"))
         self.delete_btn = QPushButton(self.tr("delete", "buttons"))
-        self.assign_btn = QPushButton(self.tr("assign", "buttons"))
 
         toolbar_layout.addWidget(self.refresh_btn)
         toolbar_layout.addWidget(self.create_btn)
         toolbar_layout.addWidget(self.duplicate_btn)
         toolbar_layout.addWidget(self.delete_btn)
-        toolbar_layout.addWidget(self.assign_btn)
         toolbar_layout.addStretch()
 
         # MaterialPresenter enables writes only after a semantic coordinator
         # has been injected for a valid model root.
-        for button in (self.create_btn, self.duplicate_btn, self.delete_btn, self.assign_btn):
+        for button in (self.create_btn, self.duplicate_btn, self.delete_btn):
             button.setEnabled(False)
 
         material_list_layout.addLayout(toolbar_layout)
@@ -390,7 +388,6 @@ class MaterialTab(BaseTab):
             ("create_btn", "create"),
             ("duplicate_btn", "duplicate"),
             ("delete_btn", "delete"),
-            ("assign_btn", "assign"),
         ):
             button = getattr(self, button_name, None)
             if button is not None:

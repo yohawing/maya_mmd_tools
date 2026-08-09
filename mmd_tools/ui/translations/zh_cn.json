@@ -69,7 +69,6 @@
     "create_work_material": "创建工作材质",
     "apply_work_material": "应用工作材质",
     "clear_work_material": "清除工作材质",
-    "assign": "分配",
     "register_joint": "注册关节",
     "capture_rest": "捕获静止位置",
     "apply_reindex": "应用重新索引",

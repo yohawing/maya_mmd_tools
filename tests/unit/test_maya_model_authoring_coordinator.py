@@ -283,28 +283,28 @@ def _assert_one_successful_transaction(backend: FakeBackend) -> None:
 
 def test_create_and_duplicate_material_generate_fresh_binding_identities() -> None:
     coordinator, backend, materials, _ = _coordinator()
-    created = coordinator.create_material("|root", ["|root|mesh.f[0]"])
+    created = coordinator.create_material("|root")
     assert created.materials[-1].binding_identity == "material1"
-    assert materials.assignments == [(1, ("|root|mesh.f[0]",))]
+    assert materials.assignments == []
     _assert_one_successful_transaction(backend)
 
     backend.rebase_count = 0
-    duplicated = coordinator.duplicate_material("|root", 0, ["|root|mesh.f[1]"])
+    duplicated = coordinator.duplicate_material("|root", 0)
     assert duplicated.materials[-1].binding_identity == "material2"
     assert duplicated.materials[-1].binding_identity != duplicated.materials[0].binding_identity
-    assert materials.assignments[-1] == (2, ("|root|mesh.f[1]",))
+    assert materials.assignments == []
     assert backend.begin_count == 2
     assert backend.commit_count == 2
 
 
 def test_create_and_duplicate_allow_registry_owned_unassigned_materials() -> None:
     coordinator, backend, materials, _ = _coordinator()
-    created = coordinator.create_material("|root", ())
+    created = coordinator.create_material("|root")
     assert created.materials[-1].binding_identity == "material1"
     assert materials.assignments == []
 
     backend.rebase_count = 0
-    duplicated = coordinator.duplicate_material("|root", 0, ())
+    duplicated = coordinator.duplicate_material("|root", 0)
     assert duplicated.materials[-1].binding_identity == "material2"
     assert materials.assignments == []
 
@@ -320,19 +320,9 @@ def test_replace_material_uses_public_binding_api_in_one_transaction() -> None:
     _assert_one_successful_transaction(backend)
 
 
-def test_assign_material_uses_one_transaction_without_changing_spec() -> None:
-    coordinator, backend, materials, _ = _coordinator()
-    original = backend.scene
-    result = coordinator.assign_material("|root", 0, ["|root|mesh.f[0]"])
-
-    assert result == original
-    assert materials.assignments == [(0, ("|root|mesh.f[0]",))]
-    _assert_one_successful_transaction(backend)
-
-
 def test_delete_material_uses_injected_structural_change_and_one_transaction() -> None:
     coordinator, backend, _, _ = _coordinator()
-    coordinator.create_material("|root", ["|root|mesh"])
+    coordinator.create_material("|root")
     backend.rebase_count = 0
 
     result = coordinator.delete_material("|root", 0)
@@ -540,7 +530,7 @@ def test_structural_or_full_apply_failure_rolls_back_original_spec(failure: str)
         backend.fail_section = "materials"
 
     with pytest.raises(MayaModelAuthoringCoordinatorError, match="create_material failed"):
-        coordinator.create_material("|root", ["|root|mesh"])
+        coordinator.create_material("|root")
 
     assert backend.scene == original
     assert backend.begin_count == 1
@@ -554,7 +544,7 @@ def test_nested_transaction_is_rejected_without_rolling_back_outer_owner() -> No
     backend.begin_write("|root")
 
     with pytest.raises(MayaModelAuthoringCoordinatorError, match="nested transaction"):
-        coordinator.assign_material("|root", 0, ["|root|mesh"])
+        coordinator.create_material("|root")
 
     assert backend.active is True
     assert backend.rollback_count == 0

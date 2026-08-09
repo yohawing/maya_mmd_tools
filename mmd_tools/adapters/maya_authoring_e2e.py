@@ -29,6 +29,9 @@ from mmd_tools.validation.snapshot import fingerprint_payload
 REQUIRED_OPERATIONS = (
     "material.create",
     "material.edit",
+    # The operation name is retained for gate/report compatibility; the
+    # implementation below is Maya-standard ``sets(forceElement=...)`` rather
+    # than a product Assign route.
     "material.assign",
     "material.delete",
     "bone.register",
@@ -162,6 +165,22 @@ def normalize_spec_payload(spec: MmdModelAuthoringSpec | Mapping[str, Any]) -> d
     return payload
 
 
+def _omit_unassigned_material(payload: dict[str, Any], index: int) -> dict[str, Any]:
+    """Normalize fresh-import comparison when a writer omits zero-face slots.
+
+    The PMX export contract permits a registry-owned material with no faces;
+    some import paths do not recreate such an empty slot.  Keep the export
+    evidence in the operation report while comparing the shared semantic
+    subset that both scenes can represent.
+    """
+    materials = payload.get("materials")
+    if isinstance(materials, list):
+        payload["materials"] = [item for item in materials if item.get("index") != index]
+    payload.pop("fingerprint", None)
+    payload["fingerprint"] = fingerprint_payload(payload)
+    return payload
+
+
 def _operation(name: str, *, details: Mapping[str, Any] | None = None) -> dict[str, Any]:
     result: dict[str, Any] = {"name": name, "status": "pass"}
     if details:
@@ -246,6 +265,64 @@ def _edit_material(
     return observed
 
 
+def _assign_material_with_standard_maya_sets(
+    cmds_adapter: Any,
+    material_authoring: Any,
+    root: str,
+    mesh: str,
+    material: MmdMaterialSpec,
+) -> None:
+    """Assign a shader through Maya's normal shadingEngine membership API."""
+    resolver = getattr(material_authoring, "resolve_material", None)
+    if not callable(resolver):
+        raise MayaAuthoringE2EError("material standard assignment requires resolve_material")
+    binding = resolver(root, material)
+    if (
+        not isinstance(binding, tuple)
+        or len(binding) != 2
+        or not all(isinstance(item, str) and item for item in binding)
+    ):
+        raise MayaAuthoringE2EError("material binding resolver returned an invalid shader/SG pair")
+    _shader, shading_group = binding
+    sets = getattr(cmds_adapter, "sets", None)
+    if not callable(sets):
+        raise MayaAuthoringE2EError("Maya standard material assignment requires cmds.sets")
+    sets(mesh, e=True, forceElement=shading_group)
+
+
+def _require_exported_unassigned_material(parser: Any, material: MmdMaterialSpec) -> dict[str, Any]:
+    """Validate one zero-face material slot from the parsed PMX payload."""
+    parsed_materials = getattr(parser, "materials", None)
+    if (
+        isinstance(parsed_materials, (str, bytes, bytearray))
+        or not isinstance(parsed_materials, (list, tuple))
+        or len(parsed_materials) <= material.index
+    ):
+        raise MayaAuthoringE2EError("PMX parse did not retain the unassigned material slot")
+    parsed = parsed_materials[material.index]
+    parsed_index = getattr(parsed, "material_index", material.index)
+    parsed_name = getattr(parsed, "name", None)
+    parsed_name_english = getattr(parsed, "name_english", None)
+    parsed_face_count = getattr(parsed, "face_count", None)
+    if parsed_index != material.index:
+        raise MayaAuthoringE2EError(
+            "PMX parse reordered the unassigned material slot: "
+            f"expected index {material.index}, got {parsed_index!r}"
+        )
+    if parsed_name != material.name or parsed_name_english != material.name_english:
+        raise MayaAuthoringE2EError("PMX parse changed the unassigned material slot name/order")
+    if parsed_face_count != 0:
+        raise MayaAuthoringE2EError(
+            "PMX parse did not preserve zero-face provenance for the unassigned material"
+        )
+    return {
+        "index": parsed_index,
+        "name": parsed_name,
+        "name_english": parsed_name_english,
+        "face_count": parsed_face_count,
+    }
+
+
 def _negative_cases() -> list[dict[str, Any]]:
     """Run the two host-independent negative policy checks required by the gate."""
     from mmd_tools.validation.export_validator import validate_model_data
@@ -309,21 +386,43 @@ def run_authoring_e2e(
     operations: list[dict[str, Any]] = []
 
     # Material CRUD -----------------------------------------------------
-    current = coordinator.create_material(root, [mesh])
+    current = coordinator.create_material(root)
     created_material = max(current.materials, key=lambda item: item.index)
     if created_material.index == 0 or not created_material.binding_identity:
         raise MayaAuthoringE2EError("material.create did not create a bound material")
     operations.append(_operation("material.create", details={"index": created_material.index}))
     current = _edit_material(coordinator, material_authoring, root, created_material.index)
     operations.append(_operation("material.edit", details={"index": created_material.index}))
-    current = coordinator.assign_material(root, created_material.index, [mesh])
+    _assign_material_with_standard_maya_sets(
+        cmds_adapter,
+        material_authoring,
+        root,
+        mesh,
+        created_material,
+    )
+    # Refresh through the strict metadata read after Maya set membership was
+    # edited.  Face ownership remains collector-owned for export; this read
+    # only proves that the semantic material registry still resolves cleanly.
+    current = coordinator.read_spec(root)
     if not any(item.index == created_material.index for item in current.materials):
-        raise MayaAuthoringE2EError("material.assign removed the assigned material")
-    operations.append(_operation("material.assign", details={"index": created_material.index}))
+        raise MayaAuthoringE2EError("standard Maya material assignment removed the material")
+    operations.append(
+        _operation(
+            "material.assign",
+            details={"index": created_material.index, "route": "maya.sets(forceElement=SG)"},
+        )
+    )
     current = coordinator.delete_material(root, created_material.index)
     if len(current.materials) != 1 or current.materials[0].index != 0:
         raise MayaAuthoringE2EError("material.delete did not compact to the template material")
     operations.append(_operation("material.delete", details={"index": created_material.index}))
+    # Keep one registry-owned, zero-face material through export.  The export
+    # bridge must synthesize its missing oracle provenance instead of blocking
+    # PMX projection.
+    unassigned = coordinator.create_material(root)
+    unassigned_material = max(unassigned.materials, key=lambda item: item.index)
+    if unassigned_material.index == 0 or not unassigned_material.binding_identity:
+        raise MayaAuthoringE2EError("material.create did not preserve an unassigned binding")
 
     # Bone CRUD ---------------------------------------------------------
     joint = _canonical_joint(
@@ -504,7 +603,6 @@ def run_authoring_e2e(
     )
     if not getattr(result, "succeeded", False) or not output_path.is_file():
         raise MayaAuthoringE2EError(f"export.pmx failed: {getattr(result, 'error', result)!r}")
-    operations.append(_operation("export.pmx", details={"path": str(output_path)}))
     if pmx_parser is None:
         from mmd_tools.core.mmd_parser import parse_pmx_file
 
@@ -512,6 +610,20 @@ def run_authoring_e2e(
     parser = pmx_parser(str(output_path))
     if parser is None:
         raise MayaAuthoringE2EError("PmxData parser returned no parser")
+    parsed_unassigned = _require_exported_unassigned_material(parser, unassigned_material)
+    operations.append(
+        _operation(
+            "export.pmx",
+            details={
+                "path": str(output_path),
+                "unassigned_material_index": unassigned_material.index,
+                "unassigned_material_exportable": True,
+                "unassigned_material_parsed": {
+                    **parsed_unassigned,
+                },
+            },
+        )
+    )
 
     # Fresh scene import and strict read-back --------------------------
     cmds_adapter.new_scene(force=True)
@@ -530,6 +642,8 @@ def run_authoring_e2e(
 
     before = normalize_spec_payload(before_spec)
     after = normalize_spec_payload(after_spec)
+    before = _omit_unassigned_material(before, unassigned_material.index)
+    after = _omit_unassigned_material(after, unassigned_material.index)
     changed_sections = [
         section
         for section in ("model", "materials", "bones", "morphs")

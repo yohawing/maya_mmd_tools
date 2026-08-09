@@ -59,7 +59,6 @@ class TestMaterialPresenter(unittest.TestCase):
                 "create_btn",
                 "duplicate_btn",
                 "delete_btn",
-                "assign_btn",
                 "apply_btn",
                 "reset_btn",
                 "both_face_check",
@@ -151,7 +150,6 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_view.create_btn.setEnabled.assert_called_with(False)
         self.mock_view.duplicate_btn.setEnabled.assert_called_with(False)
         self.mock_view.delete_btn.setEnabled.assert_called_with(False)
-        self.mock_view.assign_btn.setEnabled.assert_called_with(False)
 
     def test_apply_changes_fails_closed_without_coordinator(self):
         self.presenter.current_material = "legacy_material"
@@ -164,7 +162,7 @@ class TestMaterialPresenter(unittest.TestCase):
         attrs.set_custom_attributes.assert_not_called()
         self.mock_app_state.emit_status.assert_called_once()
 
-    def test_authoring_selection_preserves_maya_targets_and_enables_indexed_actions(self):
+    def test_authoring_selection_selects_shader_and_enables_indexed_actions(self):
         presenter, _coordinator = self._make_authoring_presenter()
         item = Mock()
         item.text.return_value = "1:Material"
@@ -174,11 +172,11 @@ class TestMaterialPresenter(unittest.TestCase):
             presenter.on_material_selected(item, None)
 
         self.assertEqual(presenter.current_material_index, 3)
-        self.mock_maya_adapter.select.assert_not_called()
+        self.mock_maya_adapter.select.assert_called_once_with("shader1", replace=True)
         load_properties.assert_called_once_with("shader1")
         self.mock_view.duplicate_btn.setEnabled.assert_called_with(True)
         self.mock_view.delete_btn.setEnabled.assert_called_with(True)
-        self.mock_view.assign_btn.setEnabled.assert_called_with(True)
+        self.mock_maya_adapter.hyper_shade.assert_not_called()
 
     def test_authoring_apply_replaces_complete_spec_without_direct_maya_writes(self):
         """Authoring Apply routes one complete immutable replacement through the coordinator."""
@@ -314,7 +312,7 @@ class TestMaterialPresenter(unittest.TestCase):
         attrs.set_custom_attributes.assert_not_called()
         self.assertTrue(self.mock_app_state.emit_status.called)
 
-    def test_create_and_duplicate_route_explicit_root_index_and_raw_selection(self):
+    def test_create_and_duplicate_do_not_read_or_forward_maya_selection(self):
         presenter, coordinator = self._make_authoring_presenter()
         presenter.current_material_index = 4
         self.mock_maya_adapter.ls.return_value = ["|model_root|mesh.f[2]"]
@@ -322,29 +320,9 @@ class TestMaterialPresenter(unittest.TestCase):
             self.assertTrue(presenter.create_material())
             self.assertTrue(presenter.duplicate_material())
 
-        coordinator.create_material.assert_called_once_with(
-            "|model_root", ("|model_root|mesh.f[2]",)
-        )
-        coordinator.duplicate_material.assert_called_once_with(
-            "|model_root", 4, ("|model_root|mesh.f[2]",)
-        )
-
-    def test_assign_requires_selection_but_delegates_root_ownership_validation(self):
-        presenter, coordinator = self._make_authoring_presenter()
-        presenter.current_material_index = 2
-        self.mock_maya_adapter.ls.return_value = []
-        self.assertFalse(presenter.assign_material())
-        coordinator.assign_material.assert_not_called()
-
-        self.mock_maya_adapter.ls.return_value = ["|other_root|mesh"]
-        coordinator.assign_material.side_effect = RuntimeError("outside model root")
-        with patch.object(presenter, "load_materials"):
-            self.assertFalse(presenter.assign_material())
-        coordinator.assign_material.assert_called_once_with(
-            "|model_root", 2, ("|other_root|mesh",)
-        )
-        statuses = [call.args[0] for call in self.mock_app_state.emit_status.call_args_list]
-        self.assertTrue(any("outside model root" in status for status in statuses))
+        coordinator.create_material.assert_called_once_with("|model_root")
+        coordinator.duplicate_material.assert_called_once_with("|model_root", 4)
+        self.mock_maya_adapter.ls.assert_not_called()
 
     @patch("mmd_tools.ui.qt_compat.QMessageBox.question")
     def test_delete_requires_confirmation_and_routes_index(self, question):
@@ -404,10 +382,51 @@ class TestMaterialPresenter(unittest.TestCase):
 
         self.presenter.load_materials()
 
-        self.mock_maya_adapter.list_relatives.assert_not_called()
+        self.mock_maya_adapter.list_relatives.assert_called_once_with(
+            "|model_root",
+            allDescendents=True,
+            fullPath=True,
+            type="mesh",
+        )
         self.mock_view.material_list.addItem.assert_called_once()
         added_item = self.mock_view.material_list.addItem.call_args.args[0]
         self.assertEqual(added_item.data(Qt.UserRole), "unassigned_shader")
+
+    @patch("mmd_tools.ui.presenters.material_presenter.list_model_registry_members_from_adapter")
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_refresh_projects_standard_set_face_membership_into_material_row(
+        self, mock_maya_attribute_utils, registry_members
+    ):
+        self.mock_app_state.current_model_root = "|model_root"
+        self.mock_maya_adapter.object_exists.return_value = True
+        registry_members.return_value = ["shader1"]
+        self.mock_maya_adapter.list_relatives.return_value = ["|model_root|mesh|meshShape"]
+
+        def list_connections(node, **kwargs):
+            if node == "shader1" and kwargs.get("type") == "shadingEngine":
+                return ["|model_root|meshSG"]
+            return []
+
+        self.mock_maya_adapter.list_connections.side_effect = list_connections
+        self.mock_maya_adapter.sets.return_value = ["|model_root|mesh.f[0:2]"]
+        mock_maya_attribute_utils.get_attribute.side_effect = lambda _node, attr: {
+            ATTR_MMD_MATERIAL_NAME: "Material 1",
+            ATTR_MMD_MATERIAL_NAME_EN: "Material 1 EN",
+        }.get(attr, "")
+
+        self.presenter.load_materials()
+
+        item = self.mock_view.material_list.addItem.call_args.args[0]
+        self.assertIn("meshes=1, faces=3", item.text())
+        self.assertEqual(item.data(Qt.UserRole + 2), "meshes=1, faces=3")
+        self.mock_maya_adapter.sets.assert_called_once_with("|model_root|meshSG", query=True)
+
+        # Maya standard-set membership is changed externally; Refresh must
+        # observe the new graph rather than retaining the previous summary.
+        self.mock_maya_adapter.sets.return_value = []
+        self.presenter.load_materials()
+        refreshed_item = self.mock_view.material_list.addItem.call_args.args[0]
+        self.assertIn("meshes=0, faces=0", refreshed_item.text())
 
     @patch("mmd_tools.ui.presenters.material_presenter.logger")
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
@@ -447,6 +466,7 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_maya_adapter.list_relatives.assert_called_with(
             "test_model",
             allDescendents=True,
+            fullPath=True,
             type="mesh",
         )
         self.mock_maya_adapter.list_connections.assert_any_call(["meshShape"], type="shadingEngine")
@@ -485,9 +505,9 @@ class TestMaterialPresenter(unittest.TestCase):
         self.presenter.load_materials()
 
         item = self.mock_view.material_list.addItem.call_args[0][0]
-        self.assertEqual(item.text(), "1:顔材質（face_material） [Face]")
+        self.assertEqual(item.text(), "1:顔材質（face_material） [Face] [meshes=0, faces=?]")
         self.assertEqual(item.data(Qt.UserRole), material)
-        self.assertEqual(item.toolTip(), material)
+        self.assertEqual(item.toolTip(), f"{material}\nmeshes=0, faces=?")
 
     @patch("mmd_tools.ui.presenters.material_presenter.logger")
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")

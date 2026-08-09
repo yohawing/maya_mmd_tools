@@ -80,7 +80,27 @@ def test_normalize_spec_payload_rejects_unknown_top_level_fields() -> None:
         maya_authoring_e2e.normalize_spec_payload(payload)
 
 
+@pytest.mark.parametrize(
+    "materials",
+    [
+        [],
+        [SimpleNamespace(material_index=1, name="Material 1", name_english="Material 1", face_count=0)],
+        [SimpleNamespace(material_index=1, name="wrong", name_english="Material 1", face_count=0)],
+        [SimpleNamespace(material_index=1, name="Material 1", name_english="Material 1", face_count=3)],
+    ],
+)
+def test_unassigned_material_parse_evidence_fails_closed(materials) -> None:
+    material = MmdMaterialSpec(name="Material 1", name_english="Material 1", index=1)
+    with pytest.raises(maya_authoring_e2e.MayaAuthoringE2EError):
+        maya_authoring_e2e._require_exported_unassigned_material(
+            SimpleNamespace(materials=materials), material
+        )
+
+
 class _FakeCmds:
+    def __init__(self):
+        self.set_calls = []
+
     def list_relatives(self, node, **kwargs):
         if kwargs.get("type") == "mesh":
             return ["|root|mesh|meshShape"]
@@ -100,8 +120,17 @@ class _FakeCmds:
     def new_scene(self, *, force=True):
         assert force is True
 
+    def sets(self, node, **kwargs):
+        assert kwargs.get("e") is True
+        assert kwargs.get("forceElement")
+        self.set_calls.append((node, kwargs["forceElement"]))
+
 
 class _FakeMaterialAuthoring:
+    def resolve_material(self, _root, material):
+        assert material.binding_identity
+        return material.binding_identity, f"{material.binding_identity}SG"
+
     def apply_material_spec_change(self, _root, _old, new, _replacement=None):
         return new
 
@@ -109,6 +138,7 @@ class _FakeMaterialAuthoring:
 class _FakeCoordinator:
     def __init__(self):
         self.spec = _spec()
+        self.material_serial = 0
 
     def read_spec(self, _root):
         return self.spec
@@ -121,22 +151,20 @@ class _FakeCoordinator:
     def _execute(self, _root, _operation, target, structural_write):
         return self._set(structural_write())
 
-    def create_material(self, _root, _targets):
+    def create_material(self, _root):
         value = create_material(self.spec)
         material = max(value.materials, key=lambda item: item.index)
+        self.material_serial += 1
         value = replace(
             value,
             materials=tuple(
-                replace(item, binding_identity="shader1")
+                replace(item, binding_identity=f"shader{self.material_serial}")
                 if item.index == material.index
                 else item
                 for item in value.materials
             ),
         )
         return self._set(value)
-
-    def assign_material(self, _root, _index, _targets):
-        return self.spec
 
     def replace_material(self, _root, material):
         self.spec = replace(
@@ -202,7 +230,22 @@ def test_run_authoring_e2e_executes_all_operations_with_injected_dependencies(mo
 
     def parser(path):
         assert Path(path).is_file()
-        return object()
+        return SimpleNamespace(
+            materials=[
+                SimpleNamespace(
+                    material_index=0,
+                    name="mat",
+                    name_english="mat",
+                    face_count=3,
+                ),
+                SimpleNamespace(
+                    material_index=1,
+                    name="Material 1",
+                    name_english="Material 1",
+                    face_count=0,
+                ),
+            ]
+        )
 
     def importer(_parser, _path, *, options):
         assert options == {"import_physics": False}

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import replace
 import math
+import re
 from typing import Protocol
 
 from mmd_tools.core import maya_attribute_utils
@@ -49,18 +50,17 @@ from .list_presenter_helpers import (
 logger = get_logger(__name__)
 
 MATERIAL_INDEX_ROLE = Qt.UserRole + 1
+MATERIAL_ASSIGNMENT_ROLE = Qt.UserRole + 2
 
 
 class MaterialAuthoringCoordinator(Protocol):
     """Transactional semantic/binding boundary used by Material Tab CRUD."""
 
-    def create_material(self, model_root: str, targets: Sequence[str]) -> object: ...
+    def create_material(self, model_root: str) -> object: ...
 
-    def duplicate_material(self, model_root: str, source_index: int, targets: Sequence[str]) -> object: ...
+    def duplicate_material(self, model_root: str, source_index: int) -> object: ...
 
     def delete_material(self, model_root: str, material_index: int) -> object: ...
-
-    def assign_material(self, model_root: str, material_index: int, targets: Sequence[str]) -> object: ...
 
     def read_spec(self, model_root: str) -> MmdModelAuthoringSpec: ...
 
@@ -98,7 +98,6 @@ class MaterialPresenter:
             ("create_btn", self.create_material),
             ("duplicate_btn", self.duplicate_material),
             ("delete_btn", self.delete_material),
-            ("assign_btn", self.assign_material),
         ):
             button = getattr(self.view, button_name, None)
             if button is not None:
@@ -223,6 +222,11 @@ class MaterialPresenter:
                     (material_index if material_index is not None else ordinal, mat, material_index)
                 )
 
+            assignment_summaries = {
+                mat: self._read_material_assignment_summary(current_model_root, mat)
+                for _display_index, mat, _material_index in indexed_materials
+            }
+
             # Add materials in semantic index order when canonical indices are available.
             for display_index, mat, material_index in sorted(indexed_materials):
                 # 日本語名と英語名を取得
@@ -230,6 +234,8 @@ class MaterialPresenter:
                 en_name = maya_attribute_utils.get_attribute(mat, ATTR_MMD_MATERIAL_NAME_EN)
 
                 display_text = format_indexed_node_label(display_index + 1, jp_name, mat, en_name)
+                assignment_summary = assignment_summaries.get(mat, "meshes=0, faces=0")
+                display_text = f"{display_text} [{assignment_summary}]"
 
                 # リストに追加
                 from ..qt_compat import QListWidgetItem
@@ -237,7 +243,8 @@ class MaterialPresenter:
                 item = QListWidgetItem(display_text)
                 item.setData(Qt.UserRole, mat)  # 実際のマテリアル名を保存
                 item.setData(MATERIAL_INDEX_ROLE, material_index)
-                item.setToolTip(mat)
+                item.setData(MATERIAL_ASSIGNMENT_ROLE, assignment_summary)
+                item.setToolTip(f"{mat}\n{assignment_summary}")
                 self.view.material_list.addItem(item)
 
             # Show placeholder if no materials
@@ -297,20 +304,15 @@ class MaterialPresenter:
         # 変更フラグを事前にリセットして、ロード中の変更検知を無効化
         self.has_unsaved_changes = False
         self.view._set_details_enabled(True)
+        self._update_authoring_actions()
 
         # Mayaでマテリアルを選択
         try:
-            if self.authoring_coordinator is not None:
-                # Preserve the current mesh/face selection for Assign.
-                self._update_authoring_actions()
-                self.load_material_properties(material_name)
-                return
+            # Material-list selection is deliberately shader-only.  Maya's
+            # standard set membership remains the assignment authority; do
+            # not open HyperShade or implicitly assign the selected shader.
             self.maya_adapter.select(material_name, replace=True)
             logger.debug(f"Selected material in Maya: {material_name}")
-
-            # Hypershadeでマテリアルを表示（オプション）
-            if self.maya_adapter.window("hyperShadePanel1Window", exists=True):
-                self.maya_adapter.hyper_shade(material_name, assign=material_name)
         except Exception as e:
             logger.warning(f"Could not select material in Maya: {e}")
 
@@ -326,6 +328,69 @@ class MaterialPresenter:
         except Exception:
             return None
 
+    def _read_material_assignment_summary(self, model_root: str, shader: str) -> str:
+        """Read current Maya shadingEngine membership without mutating scene state.
+
+        The registry remains the material ownership/list authority.  This
+        projection only reports the live standard-set membership below the
+        current model root; export continues to collect face ownership from
+        the same Maya shading graph.
+        """
+        try:
+            meshes = {
+                node
+                for node in (
+                    self.maya_adapter.list_relatives(
+                        model_root,
+                        allDescendents=True,
+                        fullPath=True,
+                        type="mesh",
+                    )
+                    or ()
+                )
+                if isinstance(node, str) and node.startswith(f"{model_root}|")
+            }
+            mesh_parents = {node.rsplit("|", 1)[0] for node in meshes if "|" in node}
+            shading_groups = self.maya_adapter.list_connections(shader, type="shadingEngine") or ()
+            if isinstance(shading_groups, (str, bytes, bytearray)):
+                shading_groups = (shading_groups,)
+            members_by_mesh: dict[str, int] = {}
+            explicit_face_count = 0
+            for shading_group in shading_groups:
+                if not isinstance(shading_group, str):
+                    continue
+                members = self.maya_adapter.sets(shading_group, query=True) or ()
+                if isinstance(members, (str, bytes, bytearray)):
+                    members = (members,)
+                for member in members:
+                    if not isinstance(member, str) or not member.startswith(f"{model_root}|"):
+                        continue
+                    base = member.split(".f[", 1)[0]
+                    if meshes and base not in meshes and base not in mesh_parents:
+                        # Maya may return the transform instead of its shape;
+                        # retain only members that are still below this root.
+                        continue
+                    face_match = re.search(r"\.f\[(\d+)(?::(\d+))?\]", member)
+                    if face_match is None:
+                        members_by_mesh.setdefault(base, 0)
+                        continue
+                    start = int(face_match.group(1))
+                    end = int(face_match.group(2) or start)
+                    if end < start:
+                        continue
+                    members_by_mesh.setdefault(base, 0)
+                    members_by_mesh[base] += end - start + 1
+                    explicit_face_count += end - start + 1
+            mesh_count = len(members_by_mesh)
+            if mesh_count == 0:
+                return "meshes=0, faces=0"
+            face_summary = str(explicit_face_count) if explicit_face_count else "all"
+            return f"meshes={mesh_count}, faces={face_summary}"
+        except Exception:
+            # Refresh must remain usable when an older adapter lacks optional
+            # set-query support; no write or inferred ownership is performed.
+            return "meshes=0, faces=?"
+
     def _update_authoring_actions(self):
         root = self.app_state.current_model_root
         has_root = bool(root and self.maya_adapter.object_exists(root))
@@ -335,17 +400,10 @@ class MaterialPresenter:
             ("create_btn", available),
             ("duplicate_btn", selected),
             ("delete_btn", selected),
-            ("assign_btn", selected),
         ):
             button = getattr(self.view, button_name, None)
             if button is not None:
                 button.setEnabled(bool(enabled))
-
-    def _selection_targets(self):
-        try:
-            return tuple(self.maya_adapter.ls(selection=True, long=True, flatten=True) or ())
-        except Exception:
-            return ()
 
     def _authoring_root(self):
         root = self.app_state.current_model_root
@@ -375,15 +433,13 @@ class MaterialPresenter:
 
     def create_material(self):
         """Request one transactional semantic material creation."""
-        return self._run_authoring("create_material", self._selection_targets())
+        return self._run_authoring("create_material")
 
     def duplicate_material(self):
         """Request duplication of the selected semantic material."""
         if type(self.current_material_index) is not int:
             return False
-        return self._run_authoring(
-            "duplicate_material", self.current_material_index, self._selection_targets()
-        )
+        return self._run_authoring("duplicate_material", self.current_material_index)
 
     def delete_material(self):
         """Confirm and request transactional deletion of the selected material."""
@@ -401,16 +457,6 @@ class MaterialPresenter:
         if reply != QMessageBox.Yes:
             return False
         return self._run_authoring("delete_material", self.current_material_index)
-
-    def assign_material(self):
-        """Request assignment; root ownership validation remains in the binding."""
-        if type(self.current_material_index) is not int:
-            return False
-        targets = self._selection_targets()
-        if not targets:
-            self.app_state.emit_status(self.tr_message("material_authoring_selection_missing"))
-            return False
-        return self._run_authoring("assign_material", self.current_material_index, targets)
 
     def load_material_properties(self, material_name):
         """Load material properties from Maya material"""
@@ -1165,9 +1211,6 @@ class MaterialPresenter:
 
     def on_selection_changed_maya(self):
         """リスト選択が変更されたときにMayaでも選択する"""
-        if self.authoring_coordinator is not None:
-            # Keep explicit mesh/face targets selected for Assign.
-            return
         select_existing_user_role_nodes(
             self.view.material_list,
             self.maya_adapter,

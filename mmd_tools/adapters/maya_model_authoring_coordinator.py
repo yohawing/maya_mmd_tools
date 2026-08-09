@@ -82,7 +82,7 @@ class MayaModelAuthoringCoordinator:
         )
         self._require_methods(
             material_authoring,
-            ("create_material", "resolve_material", "assign_material", "delete_material"),
+            ("create_material", "resolve_material", "delete_material"),
             "material_authoring",
         )
         self._require_methods(
@@ -116,11 +116,9 @@ class MayaModelAuthoringCoordinator:
     def create_material(
         self,
         model_root: str,
-        targets: Sequence[str],
     ) -> MmdModelAuthoringSpec:
-        """Create and assign one default material in the same transaction."""
+        """Create one default material without changing Maya set membership."""
         current = self._read_current(model_root, "create_material")
-        self._require_optional_targets(targets)
         target = self._pure("create_material", lambda: create_material(current))
         created = max(target.materials, key=lambda item: item.index)
         unbound = replace(created, binding_identity=None)
@@ -128,8 +126,6 @@ class MayaModelAuthoringCoordinator:
 
         def bind() -> MmdModelAuthoringSpec:
             bound, _shader, _shading_group = self._materials.create_material(model_root, unbound)
-            if targets:
-                self._materials.assign_material(model_root, bound, tuple(targets))
             return replace_material(target, bound)
 
         return self._execute(model_root, "create_material", target, bind)
@@ -138,11 +134,9 @@ class MayaModelAuthoringCoordinator:
         self,
         model_root: str,
         source_index: int,
-        targets: Sequence[str],
     ) -> MmdModelAuthoringSpec:
-        """Duplicate and assign a material in the same transaction."""
+        """Duplicate one material without changing Maya set membership."""
         current = self._read_current(model_root, "duplicate_material")
-        self._require_optional_targets(targets)
         target = self._pure(
             "duplicate_material",
             lambda: duplicate_material(current, source_index),
@@ -155,8 +149,6 @@ class MayaModelAuthoringCoordinator:
 
         def bind() -> MmdModelAuthoringSpec:
             bound, _shader, _shading_group = self._materials.create_material(model_root, unbound)
-            if targets:
-                self._materials.assign_material(model_root, bound, tuple(targets))
             return replace_material(target, bound)
 
         return self._execute(model_root, "duplicate_material", target, bind)
@@ -196,27 +188,6 @@ class MayaModelAuthoringCoordinator:
             return result
 
         return self._execute(model_root, "replace_material", target, bind)
-
-    def assign_material(
-        self,
-        model_root: str,
-        material_index: int,
-        targets: Sequence[str],
-    ) -> MmdModelAuthoringSpec:
-        """Assign one existing binding to explicit mesh/face targets."""
-        current = self._read_current(model_root, "assign_material")
-        material = self._material(current, material_index)
-        self._require_targets(targets)
-        if material.binding_identity is None:
-            raise MayaModelAuthoringCoordinatorError(
-                f"material {material_index} has no Maya binding identity"
-            )
-
-        def bind() -> MmdModelAuthoringSpec:
-            self._materials.assign_material(model_root, material, tuple(targets))
-            return current
-
-        return self._execute(model_root, "assign_material", current, bind)
 
     def delete_material(self, model_root: str, index: int) -> MmdModelAuthoringSpec:
         """Delete and compact one binding when the structural API is available."""
@@ -693,20 +664,6 @@ class MayaModelAuthoringCoordinator:
         if bone is None:
             raise MayaModelAuthoringCoordinatorError(f"unknown bone index {index}")
         return bone
-
-    @staticmethod
-    def _require_targets(targets: Sequence[str]) -> None:
-        if isinstance(targets, (str, bytes, bytearray)) or not isinstance(targets, Sequence) or not targets:
-            raise MayaModelAuthoringCoordinatorError("targets must be a non-empty sequence")
-        if any(not isinstance(target, str) or not target.strip() for target in targets):
-            raise MayaModelAuthoringCoordinatorError("targets must contain non-empty strings")
-
-    @staticmethod
-    def _require_optional_targets(targets: Sequence[str]) -> None:
-        if isinstance(targets, (str, bytes, bytearray)) or not isinstance(targets, Sequence):
-            raise MayaModelAuthoringCoordinatorError("targets must be a sequence")
-        if any(not isinstance(target, str) or not target.strip() for target in targets):
-            raise MayaModelAuthoringCoordinatorError("targets must contain non-empty strings")
 
     def _canonical_existing_node(self, node: str) -> str:
         if not self._cmds.object_exists(node):
