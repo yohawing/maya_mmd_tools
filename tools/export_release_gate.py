@@ -60,6 +60,8 @@ BONE_SEMANTICS_BOUNDARIES = ("source", "source_import", "exported_file", "fresh_
 BONE_SEMANTICS_COMPARISON_BOUNDARIES = ("source_import", "exported_pmx", "fresh_import")
 VMD_MODEL_TRACKS = ("bone", "morph", "ik_show_hide")
 VMD_MODEL_TRACK_COMPARISON_BOUNDARIES = ("source_import", "exported_file", "fresh_import")
+VMD_MODE_A_COMPARISON_BOUNDARIES = ("source", "source_import", "exported_file", "fresh_import")
+VMD_MODE_A_POSE_FRAMES = (0, 9, 19, 29, 39, 49)
 VMD_CAMERA_LIGHT_TRACKS = ("camera", "light")
 VMD_CAMERA_LIGHT_COMPARISON_BOUNDARIES = ("source", "source_import", "exported_file", "fresh_import")
 VMD_CAMERA_LIGHT_KEY_FRAMES = (0, 30, 60)
@@ -891,6 +893,328 @@ def _validate_vmd_model_tracks_case(case: Mapping[str, Any]) -> list[str]:
     return failures
 
 
+def _validate_vmd_mode_a_case(case: Mapping[str, Any]) -> list[str]:
+    """Require raw-preserving Mode A bone/provenance/pose evidence."""
+    failures: list[str] = []
+
+    def _finite(value: Any) -> bool:
+        return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(float(value))
+
+    def _sha(value: Any) -> bool:
+        return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+
+    def _records(value: Any, label: str) -> list[dict[str, Any]]:
+        if not isinstance(value, list) or not value:
+            failures.append(f"vmd_mode_a.bone_oracle.{label}_missing")
+            return []
+        normalized = []
+        seen = set()
+        for index, record in enumerate(value):
+            if not isinstance(record, dict):
+                failures.append(f"vmd_mode_a.bone_oracle.{label}[{index}] malformed")
+                continue
+            name = record.get("bone_name")
+            frame = record.get("frame_number")
+            position = record.get("position")
+            rotation = record.get("rotation")
+            interpolation = record.get("interpolation")
+            key = (name, frame)
+            valid = (
+                isinstance(name, str)
+                and bool(name)
+                and isinstance(frame, int)
+                and not isinstance(frame, bool)
+                and frame >= 0
+                and isinstance(position, list)
+                and len(position) == 3
+                and all(_finite(item) for item in position)
+                and isinstance(rotation, list)
+                and len(rotation) == 4
+                and all(_finite(item) for item in rotation)
+                and math.sqrt(sum(float(item) ** 2 for item in rotation)) > 1.0e-12
+                and isinstance(interpolation, list)
+                and len(interpolation) == 64
+                and all(
+                    isinstance(byte, int) and not isinstance(byte, bool) and 0 <= byte <= 255
+                    for byte in interpolation
+                )
+                and key not in seen
+            )
+            if not valid:
+                failures.append(f"vmd_mode_a.bone_oracle.{label}[{index}] malformed")
+                continue
+            seen.add(key)
+            normalized.append(record)
+        return normalized
+
+    if case.get("mode") != "A":
+        failures.append("vmd_mode_a.mode must be A")
+    if case.get("raw_provenance_required") is not True:
+        failures.append("vmd_mode_a.raw_provenance_required must be true")
+    identity = case.get("source_identity")
+    if not isinstance(identity, dict):
+        failures.append("vmd_mode_a.source_identity_missing")
+        identity = {}
+    for field in ("pmx_sha256", "source_vmd_sha256", "exported_vmd_sha256"):
+        if not _sha(identity.get(field)):
+            failures.append(f"vmd_mode_a.source_identity.{field} malformed")
+
+    # Recompute each file digest at gate time; report-provided strings alone
+    # must not be sufficient evidence because a path can be replaced after the
+    # probe has completed.
+    for path_field, digest_field in (
+        ("source_model", "pmx_sha256"),
+        ("source", "source_vmd_sha256"),
+        ("output", "exported_vmd_sha256"),
+    ):
+        raw_path = case.get(path_field)
+        if not isinstance(raw_path, str) or not raw_path:
+            failures.append(f"vmd_mode_a.{path_field} missing")
+            continue
+        path = Path(raw_path)
+        if not path.is_file():
+            failures.append(f"vmd_mode_a.{path_field} missing file")
+            continue
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            failures.append(f"vmd_mode_a.{path_field} unreadable: {exc}")
+            continue
+        if digest != identity.get(digest_field):
+            failures.append(f"vmd_mode_a.{path_field} SHA mismatch")
+
+    fixture = case.get("fixture")
+    if not isinstance(fixture, dict):
+        failures.append("vmd_mode_a.fixture_missing")
+    else:
+        if fixture.get("runtime_copy") is not True:
+            failures.append("vmd_mode_a.fixture.runtime_copy must be true")
+        if fixture.get("nonzero_translation_verified") is not True:
+            failures.append("vmd_mode_a.fixture.nonzero_translation_verified must be true")
+        if fixture.get("nonzero_rotation_verified") is not True:
+            failures.append("vmd_mode_a.fixture.nonzero_rotation_verified must be true")
+
+    safety = case.get("output_safety")
+    if not isinstance(safety, dict):
+        failures.append("vmd_mode_a.output_safety_missing")
+    else:
+        for field in ("target_existed_before", "target_exists_after", "created", "overwritten", "preserved", "writer_called"):
+            if not isinstance(safety.get(field), bool):
+                failures.append(f"vmd_mode_a.output_safety.{field} must be boolean")
+        if safety.get("target_exists_after") is not True:
+            failures.append("vmd_mode_a.output_safety.target_exists_after must be true")
+        if safety.get("writer_called") is not True:
+            failures.append("vmd_mode_a.output_safety.writer_called must be true")
+        if safety.get("preserved") is not True:
+            failures.append("vmd_mode_a.output_safety.preserved must be true")
+
+    counts = case.get("parsed_counts")
+    if not isinstance(counts, dict):
+        failures.append("vmd_mode_a.parsed_counts_missing")
+    else:
+        value = counts.get("bone_frames")
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            failures.append("vmd_mode_a.parsed_counts.bone_frames must be positive")
+        for field in ("morph_frames", "camera_frames", "light_frames", "shadow_frames"):
+            if counts.get(field) != 0:
+                failures.append(f"vmd_mode_a.parsed_counts.{field} must be zero")
+
+    oracle = case.get("bone_oracle")
+    if not isinstance(oracle, dict):
+        failures.append("vmd_mode_a.bone_oracle_missing")
+        oracle = {}
+    oracle_records = {
+        boundary: _records(oracle.get(boundary), boundary)
+        for boundary in VMD_MODE_A_COMPARISON_BOUNDARIES
+    }
+    source_records = oracle_records["source"]
+    if source_records:
+        for boundary in ("source_import", "exported_file", "fresh_import"):
+            if oracle_records[boundary] != source_records:
+                failures.append(f"vmd_mode_a.bone_oracle.{boundary} differs from source")
+        if not any(
+            any(abs(float(value)) > 1.0e-6 for value in record["position"])
+            for record in source_records
+        ):
+            failures.append("vmd_mode_a.bone_oracle.source requires nonzero position")
+
+        def _is_identity_quaternion(values: list[Any]) -> bool:
+            norm = math.sqrt(sum(float(value) ** 2 for value in values))
+            if not math.isfinite(norm) or norm <= 1.0e-12:
+                return False
+            normalized = [float(value) / norm for value in values]
+            return (
+                abs(normalized[0]) <= 1.0e-6
+                and abs(normalized[1]) <= 1.0e-6
+                and abs(normalized[2]) <= 1.0e-6
+                and abs(abs(normalized[3]) - 1.0) <= 1.0e-6
+            )
+
+        if not any(not _is_identity_quaternion(record["rotation"]) for record in source_records):
+            failures.append("vmd_mode_a.bone_oracle.source requires nonidentity quaternion")
+    comparison = oracle.get("comparison")
+    if not isinstance(comparison, dict):
+        failures.append("vmd_mode_a.bone_oracle.comparison_missing")
+    else:
+        if comparison.get("status") != "pass":
+            failures.append("vmd_mode_a.bone_oracle.comparison.status must be pass")
+        if comparison.get("boundaries") != list(VMD_MODE_A_COMPARISON_BOUNDARIES):
+            failures.append("vmd_mode_a.bone_oracle.comparison.boundaries mismatch")
+        if comparison.get("checked_frames") != list(VMD_MODE_A_POSE_FRAMES):
+            failures.append("vmd_mode_a.bone_oracle.comparison.checked_frames mismatch")
+        if comparison.get("raw_interpolation_preserved") is not True:
+            failures.append("vmd_mode_a.raw_interpolation_preserved must be true")
+
+    provenance = case.get("provenance")
+    if not isinstance(provenance, dict):
+        failures.append("vmd_mode_a.provenance_missing")
+        provenance = {}
+    for boundary, expected_sha in (
+        ("source_import", identity.get("source_vmd_sha256")),
+        ("fresh_import", identity.get("exported_vmd_sha256")),
+    ):
+        payload = provenance.get(boundary)
+        if not isinstance(payload, dict):
+            failures.append(f"vmd_mode_a.provenance.{boundary}_missing")
+            continue
+        if payload.get("status") != "success":
+            failures.append(f"vmd_mode_a.provenance.{boundary}.status must be success")
+        if payload.get("evaluation_mode") != "authored_sparse_keys":
+            failures.append(
+                f"vmd_mode_a.provenance.{boundary}.evaluation_mode must be authored_sparse_keys"
+            )
+        for field in ("raw_bone_interpolation_complete", "raw_bone_transform_complete"):
+            if payload.get(field) is not True:
+                failures.append(f"vmd_mode_a.provenance.{boundary}.{field} must be true")
+        if payload.get("fallback") != "none":
+            failures.append(f"vmd_mode_a.provenance.{boundary}.fallback must be none")
+        if payload.get("pmx_sha256") != identity.get("pmx_sha256"):
+            failures.append(f"vmd_mode_a.provenance.{boundary}.pmx_sha256 mismatch")
+        if payload.get("raw_vmd_sha256") != expected_sha:
+            failures.append(f"vmd_mode_a.provenance.{boundary}.raw_vmd_sha256 mismatch")
+        if payload.get("raw_bone_key_count") != len(source_records):
+            failures.append(f"vmd_mode_a.provenance.{boundary}.raw_bone_key_count mismatch")
+        if _records(payload.get("raw_bone_interpolation"), f"provenance.{boundary}") != source_records:
+            failures.append(f"vmd_mode_a.provenance.{boundary}.raw_bone_interpolation mismatch")
+    provenance_comparison = provenance.get("comparison")
+    if not isinstance(provenance_comparison, dict):
+        failures.append("vmd_mode_a.provenance.comparison_missing")
+    else:
+        if provenance_comparison.get("status") != "pass":
+            failures.append("vmd_mode_a.provenance.comparison.status must be pass")
+        if provenance_comparison.get("boundaries") != ["source_import", "fresh_import"]:
+            failures.append("vmd_mode_a.provenance.comparison.boundaries mismatch")
+        for field in ("pmx_identity_preserved", "raw_vmd_identity_checked", "raw_blocks_complete"):
+            if provenance_comparison.get(field) is not True:
+                failures.append(f"vmd_mode_a.provenance.comparison.{field} must be true")
+
+    pose = case.get("pose")
+    if not isinstance(pose, dict):
+        failures.append("vmd_mode_a.pose_missing")
+    else:
+        pose_boundaries = {}
+        for boundary in ("source_import", "fresh_import"):
+            payload = pose.get(boundary)
+            if not isinstance(payload, dict):
+                failures.append(f"vmd_mode_a.pose.{boundary}_missing")
+                continue
+            frames = payload.get("frames")
+            if not isinstance(frames, dict) or set(frames) != {str(frame) for frame in VMD_MODE_A_POSE_FRAMES}:
+                failures.append(f"vmd_mode_a.pose.{boundary}.frames mismatch")
+                continue
+            pose_boundaries[boundary] = payload
+            if isinstance(payload.get("joint_count"), bool) or not isinstance(payload.get("joint_count"), int) or payload["joint_count"] <= 0:
+                failures.append(f"vmd_mode_a.pose.{boundary}.joint_count malformed")
+            for frame, joints in frames.items():
+                if not isinstance(joints, list):
+                    failures.append(f"vmd_mode_a.pose.{boundary}.frames[{frame}] malformed")
+                    continue
+                for joint in joints:
+                    if (
+                        not isinstance(joint, dict)
+                        or not isinstance(joint.get("name"), str)
+                        or not isinstance(joint.get("index"), int)
+                        or not isinstance(joint.get("world_matrix"), list)
+                        or len(joint["world_matrix"]) != 16
+                        or not all(_finite(item) for item in joint["world_matrix"])
+                    ):
+                        failures.append(f"vmd_mode_a.pose.{boundary}.frames[{frame}] malformed")
+        if pose_boundaries.get("source_import") and pose_boundaries.get("fresh_import"):
+            source_frames = pose_boundaries["source_import"]["frames"]
+            fresh_frames = pose_boundaries["fresh_import"]["frames"]
+            if set(source_frames) == set(fresh_frames):
+                for frame in source_frames:
+                    source_joints = source_frames[frame]
+                    fresh_joints = fresh_frames[frame]
+                    if len(source_joints) != len(fresh_joints):
+                        failures.append(f"vmd_mode_a.pose frame {frame} joint count mismatch")
+                        continue
+                    for index, (source_joint, fresh_joint) in enumerate(zip(source_joints, fresh_joints)):
+                        if source_joint.get("index") != fresh_joint.get("index") or source_joint.get("name") != fresh_joint.get("name"):
+                            failures.append(f"vmd_mode_a.pose frame {frame} joint {index} identity mismatch")
+                            continue
+                        if any(
+                            abs(float(left) - float(right)) > 1.0e-4
+                            for left, right in zip(
+                                source_joint.get("world_matrix", []),
+                                fresh_joint.get("world_matrix", []),
+                            )
+                        ):
+                            failures.append(f"vmd_mode_a.pose frame {frame} joint {index} worldMatrix mismatch")
+        comparison = pose.get("comparison")
+        if not isinstance(comparison, dict):
+            failures.append("vmd_mode_a.pose.comparison_missing")
+        else:
+            if comparison.get("status") != "pass":
+                failures.append("vmd_mode_a.pose.comparison.status must be pass")
+            if comparison.get("boundaries") != ["source_import", "fresh_import"]:
+                failures.append("vmd_mode_a.pose.comparison.boundaries mismatch")
+            if comparison.get("checked_frames") != list(VMD_MODE_A_POSE_FRAMES):
+                failures.append("vmd_mode_a.pose.comparison.checked_frames mismatch")
+    collection = case.get("collection")
+    if not isinstance(collection, dict) or collection.get("edited_raw_block_policy") != "fail-closed":
+        failures.append("vmd_mode_a.collection.edited_raw_block_policy must be fail-closed")
+    edited_negative = case.get("edited_raw_negative")
+    if not isinstance(edited_negative, dict):
+        failures.append("vmd_mode_a.edited_raw_negative_missing")
+    else:
+        if edited_negative.get("status") != "pass":
+            failures.append("vmd_mode_a.edited_raw_negative.status must be pass")
+        expected_code = "VMD_RAW_PROVENANCE_MISMATCH"
+        if edited_negative.get("expected_issue_code") != expected_code:
+            failures.append("vmd_mode_a.edited_raw_negative.expected_issue_code mismatch")
+        issue_codes = edited_negative.get("issue_codes")
+        if not isinstance(issue_codes, list) or expected_code not in issue_codes:
+            failures.append("vmd_mode_a.edited_raw_negative.issue_codes missing mismatch")
+        if edited_negative.get("writer_called") is not False:
+            failures.append("vmd_mode_a.edited_raw_negative.writer_called must be false")
+        if edited_negative.get("sentinel_preserved") is not True:
+            failures.append("vmd_mode_a.edited_raw_negative.sentinel_preserved must be true")
+        before = edited_negative.get("sentinel_sha256_before")
+        after = edited_negative.get("sentinel_sha256_after")
+        if not _sha(before) or not _sha(after) or before != after:
+            failures.append("vmd_mode_a.edited_raw_negative sentinel SHA mismatch")
+        sentinel_output = edited_negative.get("output")
+        if not isinstance(sentinel_output, str) or not sentinel_output:
+            failures.append("vmd_mode_a.edited_raw_negative.output missing")
+        else:
+            sentinel_path = Path(sentinel_output)
+            if not sentinel_path.is_file():
+                failures.append("vmd_mode_a.edited_raw_negative.output missing file")
+            else:
+                try:
+                    sentinel_digest = hashlib.sha256(sentinel_path.read_bytes()).hexdigest()
+                except OSError as exc:
+                    failures.append(f"vmd_mode_a.edited_raw_negative.output unreadable: {exc}")
+                else:
+                    if sentinel_digest != before or sentinel_digest != after:
+                        failures.append("vmd_mode_a.edited_raw_negative.output SHA mismatch")
+        for field in ("translation_edited", "rotation_edited"):
+            if edited_negative.get(field) is not True:
+                failures.append(f"vmd_mode_a.edited_raw_negative.{field} must be true")
+    return failures
+
+
 def _validate_vmd_camera_light_case(case: Mapping[str, Any]) -> list[str]:
     """Require standalone camera/light Mode C field-level evidence."""
     failures: list[str] = []
@@ -1222,6 +1546,7 @@ def _validate_maya_probe_report(
         "pmx_flip",
         "pmd",
         "vmd",
+        "vmd_mode_a",
         "vmd_model_tracks",
         "vmd_camera_light",
     }
@@ -1337,6 +1662,8 @@ def _validate_maya_probe_report(
             if case.get("mode_c_warning_acknowledged") is not True:
                 failures.append("vmd_model_tracks.mode_c_warning_acknowledged must be true")
             failures.extend(_validate_vmd_model_tracks_case(case))
+        if export_format == "vmd_mode_a":
+            failures.extend(_validate_vmd_mode_a_case(case))
         if export_format == "vmd_camera_light":
             parsed_counts = case.get("parsed_counts")
             if not isinstance(parsed_counts, dict):
