@@ -13,7 +13,7 @@ later collector pass.
 
 import json
 import math
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Optional
 
 import maya.api.OpenMaya as om
@@ -1524,7 +1524,7 @@ def _read_shader_texture_path(
             return False, None, False
         connected, original_path = _shader_texture_provenance(shader)
         return bool(original_path), original_path, connected
-    if not Path(value).is_absolute():
+    if not (Path(value).is_absolute() or PureWindowsPath(value).is_absolute()):
         return present, value, False
     if not resolve_file_node:
         return False, value, False

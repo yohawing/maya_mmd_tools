@@ -118,7 +118,8 @@ class ExportReleaseGateTests(unittest.TestCase):
     def test_binding_artifact_rejects_malformed_schema(self):
         with tempfile.TemporaryDirectory() as directory:
             report_path = Path(directory) / "binding.json"
-            runtime_path = RELEASE_GATE._mmd_anim_runtime_path()
+            runtime_path = Path(directory) / "mmd_runtime_ffi.test"
+            runtime_path.write_bytes(b"runtime")
             report_path.write_text(
                 json.dumps(
                     {
@@ -144,8 +145,10 @@ class ExportReleaseGateTests(unittest.TestCase):
         self.assertIn("report.valid/status", step["error"])
 
     def test_binding_artifact_rejects_binding_root_or_frame_mismatch(self):
-        runtime_path = RELEASE_GATE._mmd_anim_runtime_path()
-        self.assertIsNotNone(runtime_path)
+        runtime_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(runtime_directory.cleanup)
+        runtime_path = Path(runtime_directory.name) / "mmd_runtime_ffi.test"
+        runtime_path.write_bytes(b"runtime")
         base_report = {
             "schema_version": 1,
             "status": "pass",
@@ -992,6 +995,8 @@ class ExportReleaseGateTests(unittest.TestCase):
     def test_release_summary_keeps_cli_and_submodule_provenance_separate(self):
         with tempfile.TemporaryDirectory() as directory:
             out_dir = Path(directory) / "release"
+            runtime_path = Path(directory) / "mmd_runtime_ffi.test"
+            runtime_path.write_bytes(b"runtime")
 
             def run_command(name, command, **_kwargs):
                 if name == "mmd_anim_validation":
@@ -1011,7 +1016,6 @@ class ExportReleaseGateTests(unittest.TestCase):
                     )
                 if name == "mmd_anim_binding_gate":
                     report_path = Path(command[-1])
-                    runtime_path = RELEASE_GATE._mmd_anim_runtime_path()
                     report_path.write_text(
                         json.dumps(
                             {
@@ -1030,6 +1034,10 @@ class ExportReleaseGateTests(unittest.TestCase):
                 return {"name": name, "status": "pass", "returncode": 0}
 
             with mock.patch.object(
+                RELEASE_GATE,
+                "_mmd_anim_runtime_path",
+                return_value=runtime_path,
+            ), mock.patch.object(
                 RELEASE_GATE,
                 "_run_fail_fixture_matrix",
                 return_value={"status": "pass", "fixtures": [], "report_paths": []},
@@ -1081,10 +1089,11 @@ class ExportReleaseGateTests(unittest.TestCase):
     def test_release_summary_marks_targeted_gui_scope(self):
         with tempfile.TemporaryDirectory() as directory:
             out_dir = Path(directory) / "release"
+            runtime_path = Path(directory) / "mmd_runtime_ffi.test"
+            runtime_path.write_bytes(b"runtime")
 
             def run_command(name, command, **_kwargs):
                 if name == "mmd_anim_binding_gate":
-                    runtime_path = RELEASE_GATE._mmd_anim_runtime_path()
                     Path(command[-1]).write_text(
                         json.dumps(
                             {
@@ -1103,6 +1112,10 @@ class ExportReleaseGateTests(unittest.TestCase):
                 return {"name": name, "status": "pass", "returncode": 0}
 
             with mock.patch.object(
+                RELEASE_GATE,
+                "_mmd_anim_runtime_path",
+                return_value=runtime_path,
+            ), mock.patch.object(
                 RELEASE_GATE,
                 "_run_fail_fixture_matrix",
                 return_value={"status": "pass", "fixtures": [], "report_paths": []},
