@@ -7,7 +7,6 @@ import re
 from mmd_tools.adapters import MayaCmdsAdapter
 from ...core.constants import ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON
 from ...core.logger import get_logger
-from ...core.maya_attribute_utils import set_custom_attributes
 from ...core.morph_metadata_reader import (
     MORPH_TAB_GROUP_ORDER,
     PMX_TYPE_TO_UI_INDEX,
@@ -1057,10 +1056,7 @@ class MorphPresenter:
         data = self.morph_data[self.current_morph]
         morph = self._semantic_morph(data)
         if not self._authoring_ready:
-            # Compatibility for old scenes/tests.  The real MorphTab disables
-            # this button when no coordinator is injected, so users cannot
-            # enter this legacy metadata-only path from the authoring UI.
-            self._apply_legacy_changes(data, current_model_root)
+            self._emit_authoring_error("Authoring coordinator is not available")
             return
         if not current_model_root or morph is None:
             return
@@ -1078,26 +1074,6 @@ class MorphPresenter:
             select_index=morph.index,
         ):
             logger.info("Applied semantic changes to morph index %s", morph.index)
-
-    def _apply_legacy_changes(self, data, current_model_root):
-        data["name_jp"] = self.view.morph_name_jp_edit.text()
-        data["name_en"] = self.view.morph_name_en_edit.text()
-        data["panel"] = self.view.panel_combo.currentIndex()
-        ui_type = self.view.morph_type_combo.currentIndex()
-        data["type"] = (
-            UI_INDEX_TO_PMX_TYPE.get(ui_type, 1)
-            if data.get("_pmx_type_raw")
-            else ui_type
-        )
-        data.pop("group", None)
-        if current_model_root and self.maya_adapter.object_exists(current_model_root):
-            self._save_mmd_morph_data(current_model_root)
-        self._cache_morph_capabilities()
-        self._organize_morphs_by_group()
-        logger.info("Applied legacy changes to morph '%s'", self.current_morph)
-        self.app_state.emit_status(
-            tr_message_format("morph_changes_applied", morph=self.current_morph)
-        )
 
     def create_morph(self):
         """Create a semantic morph of the explicitly selected toolbar type."""
@@ -1330,23 +1306,6 @@ class MorphPresenter:
             self.app_state.emit_status(message, level="error")
         except TypeError:
             self.app_state.emit_status(message)
-
-    def _save_mmd_morph_data(self, model_root):
-        """MMDモーフデータを保存"""
-        if any(data.get("_pmx_type_raw") for data in self.morph_data.values()):
-            payload = [
-                {key: value for key, value in data.items() if key not in {"_pmx_type_raw", "group"}}
-                for data in sorted(
-                    self.morph_data.values(), key=lambda item: int(item.get("index", -1))
-                )
-            ]
-        else:
-            payload = {
-                morph_key: {key: value for key, value in data.items() if key != "group"}
-                for morph_key, data in self.morph_data.items()
-            }
-        morph_data_json = json.dumps(payload, ensure_ascii=False)
-        set_custom_attributes(model_root, {"mmdMorphData": morph_data_json})
 
     def reset_changes(self):
         """変更をリセット"""

@@ -2,7 +2,6 @@
 
 import json
 import unittest
-from unittest.mock import patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
 
@@ -522,9 +521,8 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertEqual(presenter.morph_data["material"]["type"], 8)
 
         presenter.current_morph = "material"
-        view.morph_type_combo.setCurrentIndex(10)
         presenter.apply_changes()
-        self.assertEqual(presenter.morph_data["material"]["type"], 2)
+        self.assertEqual(presenter.morph_data["material"]["type"], 8)
 
     def test_runtime_capability_disables_unsupported_controls_without_hiding_details(self):
         presenter, view, _, adapter = _make_presenter()
@@ -1367,7 +1365,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertEqual(view.morph_slider.set_value_calls, [0])
         self.assertEqual(app_state.statuses, [("Reset 1 morph(s)", None)])
 
-    def test_apply_changes_serializes_morph_data_without_real_scene(self):
+    def test_apply_changes_fails_closed_without_coordinator(self):
         adapter = _FakeMayaAdapter()
         adapter.existing.add(TEST_MODEL)
         presenter, view, app_state, _ = _make_presenter(model=TEST_MODEL, adapter=adapter)
@@ -1380,19 +1378,13 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         view.panel_combo.setCurrentIndex(2)
         view.morph_type_combo.setCurrentIndex(1)
 
-        with patch.object(morph_presenter_module, "set_custom_attributes") as set_custom_attributes:
-            presenter.apply_changes()
+        presenter.apply_changes()
 
-        saved_json = set_custom_attributes.call_args[0][1]["mmdMorphData"]
-        self.assertEqual(
-            json.loads(saved_json)["smile"],
-            {"name_jp": "新", "name_en": "new", "panel": 2, "type": 1},
-        )
-        self.assertEqual(presenter.group_morphs["目"], ["smile"])
-        self.assertIn(("object_exists", TEST_MODEL), adapter.calls)
-        self.assertEqual(app_state.statuses, [("Applied morph changes: smile", None)])
+        self.assertEqual(presenter.morph_data["smile"], {"name_jp": "旧", "name_en": "old", "panel": 0, "type": 0})
+        self.assertEqual(presenter.group_morphs, {})
+        self.assertTrue(app_state.statuses)
 
-    def test_apply_changes_rebuilds_capability_cache_after_type_change(self):
+    def test_apply_changes_does_not_rebuild_capability_cache_without_coordinator(self):
         presenter, view, _, _ = _make_presenter()
         presenter.current_morph = "smile"
         data = {"name_jp": "smile", "panel": 3, "type": 0, "index": 1}
@@ -1400,14 +1392,10 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         presenter._cache_morph_capabilities()
         self.assertTrue(presenter._morph_controls_supported(data))
 
-        view.morph_name_jp_edit.setText("smile")
-        view.morph_name_en_edit.setText("")
-        view.panel_combo.setCurrentIndex(3)
-        view.morph_type_combo.setCurrentIndex(1)  # UV is unsupported.
-
         presenter.apply_changes()
 
-        self.assertFalse(presenter._morph_controls_supported(data))
+        self.assertTrue(presenter._morph_controls_supported(data))
+        self.assertEqual(data["type"], 0)
 
 
 if __name__ == "__main__":
