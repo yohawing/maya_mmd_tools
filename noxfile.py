@@ -1094,6 +1094,29 @@ def export_validation_gate(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def model_authoring_gate(session: nox.Session) -> None:
+    """Run the v0.7 model-authoring Maya E2E gate.
+
+    This is a development evidence gate and is intentionally independent from
+    ``export_release_gate``.  The tool reports missing Maya/composition APIs as
+    blocked; no compatibility fallback is added here.
+
+    Examples:
+        uvx nox -s model_authoring_gate
+        uvx nox -s model_authoring_gate -- --manifest build/reports/authoring.json
+    """
+    gate_args = list(session.posargs)
+    if "--strict" not in gate_args:
+        gate_args.append("--strict")
+    session.run(
+        sys.executable,
+        "tools/model_authoring_gate.py",
+        *gate_args,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def export_release_gate(session: nox.Session) -> None:
     """Run the reproducible v0.7 PMX/PMD/VMD export release summary.
 
@@ -2212,4 +2235,22 @@ def runtime_bake_bench(session: nox.Session) -> None:
         mayapy_env=_mayapy_env,
         mayapy_script=_mayapy_script,
         convert_mayapy_path_options=_convert_mayapy_path_options,
+    )
+
+
+@nox.session(venv_backend="none")
+def maya_vertex_morph_authoring_smoke(session: nox.Session) -> None:
+    """Run the split-mesh Vertex Morph target writer in Maya standalone.
+
+    Examples:
+        uvx nox -s maya_vertex_morph_authoring_smoke -- --maya 2024
+        uvx nox -s maya_vertex_morph_authoring_smoke -- --maya 2026
+    """
+    maya_version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_version)
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tools/maya_vertex_morph_authoring_smoke.py"),
+        env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1", PYTHONIOENCODING="utf-8"),
+        external=True,
     )

@@ -34,6 +34,91 @@ _DEFAULT_OUTPUT_VERIFIER = object()
 _DEFAULT_VALIDATOR = object()
 
 
+def _find_authoring_model_root(options: Mapping[str, Any], adapter: Any) -> tuple[str | None, bool]:
+    """Resolve an explicit or selected MMD model root for authoring export.
+
+    The boolean marks an explicit ``target_model``/``model_root`` request;
+    explicit roots are never silently redirected to another DAG ancestor.
+    """
+    explicit_root = options.get("target_model") or options.get("model_root")
+    if explicit_root:
+        return str(explicit_root), True
+
+    selected = options.get("target_mesh") or options.get("export_mesh") or options.get("mesh")
+    if selected and not options.get("_selected_target"):
+        # An explicitly supplied mesh is intentionally the legacy single-mesh
+        # route.  Only a Maya selection may be promoted to an ancestor root.
+        return None, False
+    if not selected:
+        return None, False
+    current = str(selected)
+    for _ in range(64):
+        try:
+            if adapter.attribute_exists("mmd_model_name", current) or adapter.attribute_exists(
+                "mmd_model_name_en", current
+            ):
+                return current, False
+            parents = adapter.list_relatives(current, parent=True, fullPath=True) or []
+        except Exception:
+            return None, False
+        if not parents:
+            return None, False
+        current = str(parents[0])
+    return None, False
+
+
+def _has_authoring_markers(root: str, adapter: Any) -> bool:
+    """Return whether a legacy root contains semantic metadata worth reading."""
+    model_fields = (
+        "mmd_model_name",
+        "mmd_model_name_en",
+        "mmd_comment",
+        "mmd_comment_en",
+    )
+    try:
+        if any(adapter.attribute_exists(field, root) for field in model_fields):
+            return True
+        joints = adapter.list_relatives(root, allDescendents=True, fullPath=True, type="joint") or []
+        for joint in joints:
+            if adapter.attribute_exists("mmd_bone_index", joint):
+                return True
+        # Registry presence is itself a strict authoring marker.  A malformed
+        # connection must reach the backend and fail closed, never downgrade.
+        return bool(adapter.attribute_exists("mmd_model_registry", root))
+    except Exception:
+        # A failed marker probe is not evidence of an ordinary mesh-only root;
+        # let strict authoring read surface the backend error when applicable.
+        return True
+
+
+def _project_authoring_payload(
+    options: Mapping[str, Any],
+    oracle_payload: dict,
+    *,
+    adapter: Any,
+) -> dict:
+    """Read and project semantic Spec when a model-root route is applicable."""
+    semantics = options.get("authoring_semantics", "auto")
+    if semantics not in {"auto", "legacy"}:
+        raise ValueError("authoring_semantics must be 'auto' or 'legacy'")
+    if semantics == "legacy":
+        return oracle_payload
+    root, _ = _find_authoring_model_root(options, adapter)
+    if root is None:
+        return oracle_payload
+
+    from ..adapters.maya_scene_metadata_backend import MayaSceneMetadataBackend
+    from ..adapters.scene_metadata_adapter import SceneMetadataAdapter
+    from ..converters.authoring_export_bridge import project_authoring_spec
+
+    registry_present = bool(adapter.attribute_exists("mmd_model_registry", root))
+    if not registry_present and not _has_authoring_markers(root, adapter):
+        return oracle_payload
+    backend = MayaSceneMetadataBackend(adapter)
+    spec = SceneMetadataAdapter(backend).read_spec(root)
+    return project_authoring_spec(spec, oracle_payload)
+
+
 @dataclass
 class ExportModelRequest:
     """Request data for exporting a PMX/PMD model."""
@@ -70,7 +155,18 @@ def _default_collect_model_data(options: Dict[str, Any]) -> dict:
         or options.get("export_mesh")
         or options.get("mesh")
     ):
-        return collector.collect(options)
+        oracle_payload = collector.collect(options)
+        export_format = str(options.get("export_format") or "").lower().lstrip(".")
+        if export_format != "pmx":
+            return oracle_payload
+        semantics = options.get("authoring_semantics", "auto")
+        if semantics not in {"auto", "legacy"}:
+            raise ValueError("authoring_semantics must be 'auto' or 'legacy'")
+        if semantics == "legacy":
+            return oracle_payload
+        from ..adapters.maya_cmds_adapter import MayaCmdsAdapter
+
+        return _project_authoring_payload(options, oracle_payload, adapter=MayaCmdsAdapter())
 
     target = None
     if target is None:
@@ -78,12 +174,47 @@ def _default_collect_model_data(options: Dict[str, Any]) -> dict:
         target = selection[0] if selection else None
     if target is None:
         raise ValueError("Model export requires model_data, target_model, target_mesh, or a selected mesh")
-    return collector.collect(
-        {
-            "target_mesh": target,
-            "export_format": options.get("export_format"),
-        }
+    export_format = str(options.get("export_format") or "").lower().lstrip(".")
+    semantics = options.get("authoring_semantics", "auto")
+    if semantics not in {"auto", "legacy"}:
+        raise ValueError("authoring_semantics must be 'auto' or 'legacy'")
+
+    adapter = None
+    selected_options = {**options, "target_mesh": target, "_selected_target": True}
+    selected_root = None
+    if export_format == "pmx" and semantics == "auto":
+        from ..adapters.maya_cmds_adapter import MayaCmdsAdapter
+
+        adapter = MayaCmdsAdapter()
+        selected_root, _ = _find_authoring_model_root(selected_options, adapter)
+
+    collector_options = {
+        "target_model": selected_root
+        if selected_root is not None and _has_authoring_markers(selected_root, adapter)
+        else None,
+        "target_mesh": target
+        if selected_root is None or not _has_authoring_markers(selected_root, adapter)
+        else None,
+        "export_format": options.get("export_format"),
+    }
+    collector_options = {key: value for key, value in collector_options.items() if value is not None}
+    oracle_payload = collector.collect(
+        collector_options
     )
+    if export_format != "pmx":
+        return oracle_payload
+    if semantics == "legacy":
+        return oracle_payload
+    if adapter is None:
+        from ..adapters.maya_cmds_adapter import MayaCmdsAdapter
+
+        adapter = MayaCmdsAdapter()
+    project_options = (
+        {**options, "target_model": selected_root}
+        if selected_root is not None
+        else {**options, "target_mesh": target, "_selected_target": True}
+    )
+    return _project_authoring_payload(project_options, oracle_payload, adapter=adapter)
 
 
 class ExportModelAction:
@@ -409,6 +540,10 @@ class ExportModelAction:
                 validation_report_artifacts=validation_report_artifacts,
             )
         except Exception as exc:
+            if validation_report is None:
+                exception_report = getattr(exc, "report", None)
+                if isinstance(exception_report, ExportValidationReport):
+                    validation_report = exception_report
             logger.error("Model export failed: %s", exc, exc_info=True)
             if validation_report is not None and validation_report_artifacts is None:
                 try:

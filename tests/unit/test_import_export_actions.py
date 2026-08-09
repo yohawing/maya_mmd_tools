@@ -27,6 +27,9 @@ from mmd_tools.actions.import_vmd_action import (  # noqa: E402
     ImportVmdRequest,
 )
 from mmd_tools.core.vmd_data import VmdData  # noqa: E402
+from mmd_tools.converters.authoring_export_bridge import (  # noqa: E402
+    AuthoringExportIntegrationError,
+)
 from mmd_tools.validation.export_validator import ExportValidationError  # noqa: E402
 
 
@@ -456,6 +459,182 @@ class TestExportModelAction(unittest.TestCase):
             [{"target_mesh": "selectedMesh", "export_format": "pmd"}],
         )
 
+    def test_default_collector_projects_authoring_spec_for_registry_root(self):
+        oracle = {"vertices": [{"position": [0, 0, 0]}], "faces": [[0, 0, 0]], "marker": "oracle"}
+        calls = []
+
+        class FakeCollector:
+            def collect(self, options):
+                calls.append(("collect", options))
+                return oracle
+
+        class FakeAdapter:
+            def attribute_exists(self, attr, node):
+                return attr == "mmd_model_registry" and node == "|root"
+
+            def list_relatives(self, node, **kwargs):
+                return []
+
+        class FakeBackend:
+            def __init__(self, adapter):
+                calls.append(("backend", adapter))
+
+        class FakeSceneAdapter:
+            def __init__(self, backend):
+                calls.append(("reader", backend))
+
+            def read_spec(self, root):
+                calls.append(("read", root))
+                return "spec"
+
+        def bridge(spec, payload):
+            calls.append(("bridge", spec, payload))
+            return {"projected": True}
+
+        with (
+            mock.patch("mmd_tools.converters.export_scene_collector.ExportSceneCollector", FakeCollector),
+            mock.patch("mmd_tools.adapters.maya_cmds_adapter.MayaCmdsAdapter", FakeAdapter),
+            mock.patch("mmd_tools.adapters.maya_scene_metadata_backend.MayaSceneMetadataBackend", FakeBackend),
+            mock.patch("mmd_tools.adapters.scene_metadata_adapter.SceneMetadataAdapter", FakeSceneAdapter),
+            mock.patch("mmd_tools.converters.authoring_export_bridge.project_authoring_spec", bridge),
+        ):
+            projected = _default_collect_model_data(
+                {"target_model": "|root", "export_format": "pmx"}
+            )
+
+        self.assertEqual(projected, {"projected": True})
+        self.assertEqual([entry[0] for entry in calls], ["collect", "backend", "reader", "read", "bridge"])
+        self.assertIs(calls[-1][2], oracle)
+
+    def test_default_collector_explicit_legacy_skips_authoring_route(self):
+        oracle = {"vertices": [], "faces": [], "marker": "oracle"}
+
+        class FakeCollector:
+            def collect(self, options):
+                return oracle
+
+        with (
+            mock.patch("mmd_tools.converters.export_scene_collector.ExportSceneCollector", FakeCollector),
+            mock.patch(
+                "mmd_tools.adapters.maya_cmds_adapter.MayaCmdsAdapter",
+                side_effect=AssertionError("legacy must not construct authoring adapter"),
+            ),
+        ):
+            result = _default_collect_model_data(
+                {"target_model": "|root", "export_format": "pmx", "authoring_semantics": "legacy"}
+            )
+
+        self.assertIs(result, oracle)
+
+    def test_default_collector_registry_failure_does_not_fallback_to_oracle(self):
+        oracle = {"vertices": [], "faces": []}
+
+        class FakeCollector:
+            def collect(self, options):
+                return oracle
+
+        class FakeAdapter:
+            def attribute_exists(self, attr, node):
+                return attr == "mmd_model_registry"
+
+            def list_relatives(self, node, **kwargs):
+                return []
+
+        class FailingBackend:
+            def __init__(self, adapter):
+                pass
+
+        class FailingSceneAdapter:
+            def __init__(self, backend):
+                pass
+
+            def read_spec(self, root):
+                raise ValueError("broken registry metadata")
+
+        with (
+            mock.patch("mmd_tools.converters.export_scene_collector.ExportSceneCollector", FakeCollector),
+            mock.patch("mmd_tools.adapters.maya_cmds_adapter.MayaCmdsAdapter", FakeAdapter),
+            mock.patch("mmd_tools.adapters.maya_scene_metadata_backend.MayaSceneMetadataBackend", FailingBackend),
+            mock.patch("mmd_tools.adapters.scene_metadata_adapter.SceneMetadataAdapter", FailingSceneAdapter),
+        ):
+            with self.assertRaises(ValueError):
+                _default_collect_model_data({"target_model": "|root", "export_format": "pmx"})
+
+    def test_default_collector_mesh_only_root_keeps_oracle_payload(self):
+        oracle = {"vertices": [], "faces": [], "marker": "oracle"}
+
+        class FakeCollector:
+            def collect(self, options):
+                return oracle
+
+        class MeshOnlyAdapter:
+            def attribute_exists(self, attr, node):
+                return False
+
+            def list_relatives(self, node, **kwargs):
+                return []
+
+        with (
+            mock.patch("mmd_tools.converters.export_scene_collector.ExportSceneCollector", FakeCollector),
+            mock.patch("mmd_tools.adapters.maya_cmds_adapter.MayaCmdsAdapter", MeshOnlyAdapter),
+        ):
+            result = _default_collect_model_data({"target_model": "|root", "export_format": "pmx"})
+
+        self.assertIs(result, oracle)
+
+    def test_selected_descendant_promotes_collection_to_model_root(self):
+        oracle = {"vertices": [], "faces": []}
+        collect_options = []
+        bridge_calls = []
+
+        class FakeCollector:
+            def collect(self, options):
+                collect_options.append(options)
+                return oracle
+
+        class SelectedAdapter:
+            def attribute_exists(self, attr, node):
+                if node == "|root":
+                    return attr in {"mmd_model_name", "mmd_model_registry"}
+                return False
+
+            def list_relatives(self, node, **kwargs):
+                if kwargs.get("parent") and node == "|root|geo|meshShape":
+                    return ["|root|geo"]
+                if kwargs.get("parent") and node == "|root|geo":
+                    return ["|root"]
+                return []
+
+        class FakeBackend:
+            def __init__(self, adapter):
+                pass
+
+        class FakeSceneAdapter:
+            def __init__(self, backend):
+                pass
+
+            def read_spec(self, root):
+                self.root = root
+                return "spec"
+
+        def bridge(spec, payload):
+            bridge_calls.append((spec, payload))
+            return {"projected": True}
+
+        with (
+            mock.patch("maya.cmds.ls", return_value=["|root|geo|meshShape"]),
+            mock.patch("mmd_tools.converters.export_scene_collector.ExportSceneCollector", FakeCollector),
+            mock.patch("mmd_tools.adapters.maya_cmds_adapter.MayaCmdsAdapter", SelectedAdapter),
+            mock.patch("mmd_tools.adapters.maya_scene_metadata_backend.MayaSceneMetadataBackend", FakeBackend),
+            mock.patch("mmd_tools.adapters.scene_metadata_adapter.SceneMetadataAdapter", FakeSceneAdapter),
+            mock.patch("mmd_tools.converters.authoring_export_bridge.project_authoring_spec", bridge),
+        ):
+            result = _default_collect_model_data({"export_format": "pmx"})
+
+        self.assertEqual(result, {"projected": True})
+        self.assertEqual(collect_options, [{"target_model": "|root", "export_format": "pmx"}])
+        self.assertEqual(len(bridge_calls), 1)
+
     def test_execute_reports_missing_collector_or_data(self):
         options = {"file_path": "out.pmx", "export_format": "pmx"}
         action = ExportModelAction(pmx_exporter=_FakePmxExporter(), collector=None)
@@ -466,6 +645,28 @@ class TestExportModelAction(unittest.TestCase):
         self.assertIsNone(result.exported_path)
         self.assertIsInstance(result.error, ValueError)
         self.assertIn("Model export requires model_data or a collector", result.status_message)
+
+    def test_execute_preserves_authoring_integration_report(self):
+        def failing_collector(_options):
+            raise AuthoringExportIntegrationError(
+                "semantic data differs from the scene oracle",
+                code="AUTHORING_ORACLE_MISMATCH",
+                path="morphs[0].offsets",
+            )
+
+        action = ExportModelAction(
+            pmx_exporter=_FakePmxExporter(),
+            collector=failing_collector,
+            output_verifier=None,
+        )
+        result = action.execute(
+            ExportModelRequest(file_path="out.pmx", options={"export_format": "pmx"})
+        )
+
+        self.assertFalse(result.succeeded)
+        self.assertIsInstance(result.error, AuthoringExportIntegrationError)
+        self.assertIsNotNone(result.validation_report)
+        self.assertEqual(result.validation_report.issues[0].code, "AUTHORING_ORACLE_MISMATCH")
 
     def test_execute_reports_unsupported_format(self):
         options = {"file_path": "out.obj", "export_format": "obj", "model_data": {"vertices": [1]}}
