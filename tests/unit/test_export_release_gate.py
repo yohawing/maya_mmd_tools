@@ -25,6 +25,18 @@ from tools.export_release_gate import (
 from tools.export_release_maya_probe import _compare_scene_oracles, _run_vmd_case
 
 
+def _clean_release_provenance(run_id=None):
+    """Return a deterministic clean Git snapshot for isolated summary tests."""
+    return {
+        "run_id": run_id or "test-run-id",
+        "timestamp": "2026-08-09T00:00:00+00:00",
+        "branch": "Feature/v070-export",
+        "head_sha": "a" * 40,
+        "dirty": False,
+        "git_capture": {"branch": True, "head_sha": True, "status": True},
+    }
+
+
 class ExportReleaseGateTests(unittest.TestCase):
     """The release summary must expose omissions and fail-closed fixtures."""
 
@@ -149,13 +161,18 @@ class ExportReleaseGateTests(unittest.TestCase):
         self.addCleanup(runtime_directory.cleanup)
         runtime_path = Path(runtime_directory.name) / "mmd_runtime_ffi.test"
         runtime_path.write_bytes(b"runtime")
+        fake_root = Path(runtime_directory.name) / "root"
+        (fake_root / "external/mmd-anim/bindings/python").mkdir(parents=True)
+        (fake_root / "tests/data").mkdir(parents=True)
+        (fake_root / "tests/data/mmt_test_model.pmx").write_bytes(b"model")
+        (fake_root / "tests/data/mmt_test_model_test_motion.vmd").write_bytes(b"motion")
         base_report = {
             "schema_version": 1,
             "status": "pass",
-            "binding_root": str(RELEASE_GATE.ROOT / "external/mmd-anim/bindings/python"),
+            "binding_root": str(fake_root / "external/mmd-anim/bindings/python"),
             "frame": 0.0,
-            "model": str(RELEASE_GATE.ROOT / "tests/data/mmt_test_model.pmx"),
-            "motion": str(RELEASE_GATE.ROOT / "tests/data/mmt_test_model_test_motion.vmd"),
+            "model": str(fake_root / "tests/data/mmt_test_model.pmx"),
+            "motion": str(fake_root / "tests/data/mmt_test_model_test_motion.vmd"),
             "runtime_library": str(runtime_path),
             "report": {"schema_version": 1, "status": "ready", "issues": []},
         }
@@ -168,12 +185,13 @@ class ExportReleaseGateTests(unittest.TestCase):
                 report = {**base_report, field: value}
                 report_path.write_text(json.dumps(report), encoding="utf-8")
                 step = {"name": "mmd_anim_binding_gate", "status": "pass"}
-                _validate_binding_gate_artifact(
-                    step,
-                    report_path,
-                    runtime_path=runtime_path,
-                    runtime_sha256=RELEASE_GATE._sha256(runtime_path),
-                )
+                with mock.patch.object(RELEASE_GATE, "ROOT", fake_root):
+                    _validate_binding_gate_artifact(
+                        step,
+                        report_path,
+                        runtime_path=runtime_path,
+                        runtime_sha256=RELEASE_GATE._sha256(runtime_path),
+                    )
                 self.assertEqual(step["status"], "fail")
                 self.assertIn(expected_error, step["error"])
 
@@ -997,6 +1015,11 @@ class ExportReleaseGateTests(unittest.TestCase):
             out_dir = Path(directory) / "release"
             runtime_path = Path(directory) / "mmd_runtime_ffi.test"
             runtime_path.write_bytes(b"runtime")
+            fake_root = Path(directory) / "root"
+            (fake_root / "external/mmd-anim/bindings/python").mkdir(parents=True)
+            (fake_root / "tests/data").mkdir(parents=True)
+            (fake_root / "tests/data/mmt_test_model.pmx").write_bytes(b"model")
+            (fake_root / "tests/data/mmt_test_model_test_motion.vmd").write_bytes(b"motion")
 
             def run_command(name, command, **_kwargs):
                 if name == "mmd_anim_validation":
@@ -1021,10 +1044,10 @@ class ExportReleaseGateTests(unittest.TestCase):
                             {
                                 "schema_version": 1,
                                 "status": "pass",
-                                "binding_root": str(RELEASE_GATE.ROOT / "external/mmd-anim/bindings/python"),
+                                "binding_root": str(fake_root / "external/mmd-anim/bindings/python"),
                                 "frame": 0.0,
-                                "model": str(RELEASE_GATE.ROOT / "tests/data/mmt_test_model.pmx"),
-                                "motion": str(RELEASE_GATE.ROOT / "tests/data/mmt_test_model_test_motion.vmd"),
+                                "model": str(fake_root / "tests/data/mmt_test_model.pmx"),
+                                "motion": str(fake_root / "tests/data/mmt_test_model_test_motion.vmd"),
                                 "runtime_library": str(runtime_path),
                                 "report": {"schema_version": 1, "status": "ready", "issues": []},
                             }
@@ -1035,8 +1058,20 @@ class ExportReleaseGateTests(unittest.TestCase):
 
             with mock.patch.object(
                 RELEASE_GATE,
+                "_capture_release_provenance",
+                side_effect=_clean_release_provenance,
+            ), mock.patch.object(
+                RELEASE_GATE,
+                "ROOT",
+                fake_root,
+            ), mock.patch.object(
+                RELEASE_GATE,
                 "_mmd_anim_runtime_path",
                 return_value=runtime_path,
+            ), mock.patch.object(
+                RELEASE_GATE,
+                "_mmd_anim_source_revision",
+                return_value="a" * 40,
             ), mock.patch.object(
                 RELEASE_GATE,
                 "_run_fail_fixture_matrix",
@@ -1091,6 +1126,11 @@ class ExportReleaseGateTests(unittest.TestCase):
             out_dir = Path(directory) / "release"
             runtime_path = Path(directory) / "mmd_runtime_ffi.test"
             runtime_path.write_bytes(b"runtime")
+            fake_root = Path(directory) / "root"
+            (fake_root / "external/mmd-anim/bindings/python").mkdir(parents=True)
+            (fake_root / "tests/data").mkdir(parents=True)
+            (fake_root / "tests/data/mmt_test_model.pmx").write_bytes(b"model")
+            (fake_root / "tests/data/mmt_test_model_test_motion.vmd").write_bytes(b"motion")
 
             def run_command(name, command, **_kwargs):
                 if name == "mmd_anim_binding_gate":
@@ -1099,10 +1139,10 @@ class ExportReleaseGateTests(unittest.TestCase):
                             {
                                 "schema_version": 1,
                                 "status": "pass",
-                                "binding_root": str(RELEASE_GATE.ROOT / "external/mmd-anim/bindings/python"),
+                                "binding_root": str(fake_root / "external/mmd-anim/bindings/python"),
                                 "frame": 0.0,
-                                "model": str(RELEASE_GATE.ROOT / "tests/data/mmt_test_model.pmx"),
-                                "motion": str(RELEASE_GATE.ROOT / "tests/data/mmt_test_model_test_motion.vmd"),
+                                "model": str(fake_root / "tests/data/mmt_test_model.pmx"),
+                                "motion": str(fake_root / "tests/data/mmt_test_model_test_motion.vmd"),
                                 "runtime_library": str(runtime_path),
                                 "report": {"schema_version": 1, "status": "ready", "issues": []},
                             }
@@ -1113,8 +1153,20 @@ class ExportReleaseGateTests(unittest.TestCase):
 
             with mock.patch.object(
                 RELEASE_GATE,
+                "_capture_release_provenance",
+                side_effect=_clean_release_provenance,
+            ), mock.patch.object(
+                RELEASE_GATE,
+                "ROOT",
+                fake_root,
+            ), mock.patch.object(
+                RELEASE_GATE,
                 "_mmd_anim_runtime_path",
                 return_value=runtime_path,
+            ), mock.patch.object(
+                RELEASE_GATE,
+                "_mmd_anim_source_revision",
+                return_value="a" * 40,
             ), mock.patch.object(
                 RELEASE_GATE,
                 "_run_fail_fixture_matrix",
