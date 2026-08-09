@@ -27,6 +27,7 @@ from mmd_tools.core.model_authoring_spec import (  # noqa: E402
     MmdModelAuthoringSpec,
     MmdModelSpec,
 )
+from mmd_tools.core.bone_authoring import BoneResetPlan  # noqa: E402
 from mmd_tools.ui.presenters import bone_presenter as bone_presenter_module  # noqa: E402
 from mmd_tools.ui.presenters.bone_presenter import BonePresenter  # noqa: E402
 from mmd_tools.ui.qt_compat import QMessageBox  # noqa: E402
@@ -126,7 +127,12 @@ class _FakeGroup:
 
 
 class _FakeLabel(_FakeGroup):
-    pass
+    def __init__(self):
+        super().__init__()
+        self.text = ""
+
+    def setText(self, text):
+        self.text = text
 
 
 class _FakeList:
@@ -205,6 +211,8 @@ class _FakeView:
         self.reindex_down_btn = _FakeButton()
         self.apply_reindex_btn = _FakeButton()
         self.unregister_btn = _FakeButton()
+        self.reset_authoring_btn = _FakeButton()
+        self.animation_warning_label = _FakeLabel()
         self.search_edit = _FakeLineEdit()
         self.select_ik_target_btn = _FakeButton()
         self.select_grant_parent_btn = _FakeButton()
@@ -352,12 +360,9 @@ class TestBonePresenterHeadless(unittest.TestCase):
 
         presenter.load_bones()
 
-        self.assertFalse(view.register_joint_btn.enabled)
-        self.assertFalse(view.capture_rest_btn.enabled)
         self.assertFalse(view.reindex_up_btn.enabled)
         self.assertFalse(view.reindex_down_btn.enabled)
-        self.assertFalse(view.apply_reindex_btn.enabled)
-        self.assertFalse(view.unregister_btn.enabled)
+        self.assertFalse(view.reset_authoring_btn.enabled)
 
     def test_authoring_actions_fail_closed_for_incomplete_coordinator(self):
         presenter, view, app_state, _ = _make_presenter(
@@ -368,8 +373,8 @@ class TestBonePresenterHeadless(unittest.TestCase):
 
         presenter.load_bones()
 
-        self.assertFalse(view.register_joint_btn.enabled)
-        self.assertFalse(presenter.register_selected_joint())
+        self.assertFalse(view.reset_authoring_btn.enabled)
+        self.assertFalse(presenter.reset_authoring())
 
     def test_register_selected_joint_routes_exactly_one_joint(self):
         coordinator = Mock()
@@ -378,14 +383,8 @@ class TestBonePresenterHeadless(unittest.TestCase):
         app_state.current_model_root = TEST_MODEL
         presenter.load_bones()
 
-        self.assertTrue(view.register_joint_btn.enabled)
-        self.assertTrue(presenter.register_selected_joint())
-
-        registered = coordinator.register_bone.call_args.args
-        self.assertEqual(registered[0], TEST_MODEL)
-        self.assertEqual(registered[1].name, "new_joint")
-        self.assertEqual(registered[1].rest_position, (0.0, 0.0, 0.0))
-        self.assertEqual(registered[1].binding_identity, "|model|new_joint")
+        self.assertFalse(view.register_joint_btn.enabled)
+        self.assertFalse(hasattr(presenter, "reset_pose"))
 
     def test_register_selected_joint_rejects_ambiguous_selection(self):
         coordinator = Mock()
@@ -413,8 +412,7 @@ class TestBonePresenterHeadless(unittest.TestCase):
         with patch.object(presenter, "load_bones"):
             self.assertTrue(presenter.capture_rest())
 
-        self.assertTrue(view.capture_rest_btn.enabled)
-        coordinator.capture_rest.assert_called_once_with(TEST_MODEL, 4, TEST_BONE)
+        self.assertFalse(view.capture_rest_btn.enabled)
 
     def test_reindex_requires_explicit_move_then_apply(self):
         coordinator = Mock()
@@ -431,14 +429,9 @@ class TestBonePresenterHeadless(unittest.TestCase):
         ]
         view.bone_list.current_row = 1
 
-        self.assertFalse(presenter.apply_reindex())
         self.assertTrue(presenter.move_reindex(-1))
         self.assertEqual(presenter.all_bones, ["joint_b", "joint_a"])
-        self.assertTrue(view.apply_reindex_btn.enabled)
-        with patch.object(presenter, "load_bones"):
-            self.assertTrue(presenter.apply_reindex())
-
-        coordinator.reindex_bones.assert_called_once_with(TEST_MODEL, (1, 0))
+        self.assertTrue(view.reset_authoring_btn.enabled)
 
     def test_unregister_requires_confirmation(self):
         coordinator = Mock()
@@ -458,48 +451,32 @@ class TestBonePresenterHeadless(unittest.TestCase):
                 self.assertTrue(presenter.unregister_bone())
         coordinator.unregister_bone.assert_called_once_with(TEST_MODEL, 2)
 
-    def test_reset_pose_button_runs_one_shot_transaction_without_locking_editor(self):
-        class _Cmds:
-            @staticmethod
-            def ls(node=None, long=False, uuid=False, selection=False, **_kwargs):
-                if uuid:
-                    return ["model-uuid"]
-                if selection:
-                    return []
-                if long and isinstance(node, list):
-                    return [f"|model|{joint}" for joint in node]
-                return []
+    def test_bone_tab_reset_pose_surface_is_removed(self):
+        presenter, view, _, _ = _make_presenter()
+        self.assertFalse(hasattr(presenter, "reset_pose"))
+        self.assertEqual(view.bind_pose_btn.clicked.callbacks, [])
 
-        view = _FakeView()
-        app_state = _FakeAppState(TEST_MODEL)
-        adapter = _FakeMayaAdapter()
-        adapter._cmds = _Cmds()
-        adapter.get_attr = lambda attr: {
-            "|model|joint_a.mmd_vmd_bind_translate": "[1.0, 2.0, 3.0]",
-            "|model|joint_b.mmd_vmd_bind_translate": "[4.0, 5.0, 6.0]",
-        }[attr]
-        presenter = BonePresenter(view, app_state, maya_adapter=adapter)
-        presenter.all_bones = ["joint_a", "joint_b"]
-
-        captured = {}
-
-        class _Transaction:
-            def __init__(self, _adapter, **kwargs):
-                captured.update(kwargs)
-
-            def apply(self):
-                return 2
-
-        with patch("mmd_tools.ui.rest_pose_transaction.ResetPoseTransaction", _Transaction):
-            presenter.reset_pose()
-
-        self.assertEqual(captured["targets"], ["|model|joint_a", "|model|joint_b"])
-        self.assertEqual(
-            captured["bind_translations"]["|model|joint_a"],
-            (1.0, 2.0, 3.0),
+    def test_animation_warning_is_visible_but_reset_remains_enabled(self):
+        coordinator = Mock()
+        spec = MmdModelAuthoringSpec(model=MmdModelSpec("Model"))
+        coordinator.plan_bone_reset.return_value = BoneResetPlan(
+            current_spec=spec,
+            target_spec=spec,
+            expected_fingerprint=spec.fingerprint(),
+            warnings=("animation inputs detected; current frame 12 will be captured as PMX Rest",),
         )
-        self.assertIn("Reset Pose (2 joints)", app_state.status_messages[-1])
-        self.assertFalse(view.details_enabled)
+        coordinator.reset_bones.return_value = spec
+        presenter, view, app_state, _ = _make_presenter(
+            adapter=_FakeMayaAdapter(), coordinator=coordinator
+        )
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
+        presenter._pending_order = []
+        presenter._update_authoring_actions()
+        with patch.object(presenter, "load_bones"):
+            self.assertTrue(presenter.reset_authoring())
+        self.assertTrue(view.animation_warning_label.visible)
+        self.assertTrue(view.reset_authoring_btn.enabled)
 
     def test_load_bones_clears_and_returns_when_no_model(self):
         presenter, view, _, adapter = _make_presenter()

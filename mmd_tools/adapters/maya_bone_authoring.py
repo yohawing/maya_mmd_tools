@@ -8,6 +8,7 @@ performed before the first write in a reindex or unregister operation.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 import json
 import math
 from typing import Any
@@ -43,10 +44,12 @@ from mmd_tools.core.constants import (
     ATTR_MMD_REGISTRY_ROOT,
     ATTR_MMD_REGISTRY_SCHEMA,
     ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON,
+    ATTR_MMD_CONTROL_RIG_JSON,
     ATTR_MMD_PMX_REST_POSITION,
     ATTR_MMD_X_AXIS_DIRECTION,
     ATTR_MMD_Z_AXIS_DIRECTION,
 )
+from mmd_tools.core.bone_authoring import BoneResetPlan, make_bone_reset_plan
 from mmd_tools.core.model_authoring_spec import MmdBoneSpec, MmdModelAuthoringSpec
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
@@ -450,7 +453,12 @@ def register_existing_joints(root: str, bones: Sequence[MmdBoneSpec], adapter: A
     indices = [item.index for item in items]
     if len(set(indices)) != len(indices):
         _fail("bone indices must be unique")
-    known_indices = set(indices)
+    existing_indices = {
+        _read_int(adapter, binding, ATTR_MMD_BONE_INDEX, minimum=0)
+        for binding in descendants
+        if _exists(adapter, binding, ATTR_MMD_BONE_INDEX)
+    }
+    known_indices = set(indices) | existing_indices
     for item in items:
         for field in ("parent_index", "connect_bone_index", "grant_parent_index", "ik_target_index"):
             value = getattr(item, field)
@@ -487,6 +495,17 @@ def register_existing_joints(root: str, bones: Sequence[MmdBoneSpec], adapter: A
                 _fail(f"bone.ik_links[{link_index}].bone references unknown index {link_bone!r}")
 
     names_by_index = {item.index: item.name for item in items}
+    for binding in descendants:
+        if not _exists(adapter, binding, ATTR_MMD_BONE_INDEX):
+            continue
+        index = _read_int(adapter, binding, ATTR_MMD_BONE_INDEX, minimum=0)
+        if not _exists(adapter, binding, ATTR_MMD_BONE_NAME):
+            _fail(f"registered joint {binding!r} is missing {ATTR_MMD_BONE_NAME}")
+        name = _get(adapter, binding, ATTR_MMD_BONE_NAME)
+        _require_string(name, field=f"{binding}.{ATTR_MMD_BONE_NAME}")
+        if index in names_by_index and names_by_index[index] != name:
+            _fail(f"bone index {index} has conflicting names")
+        names_by_index[index] = name
     # Phase 1: all non-reference payloads.  This intentionally does not call
     # register_existing_joint(), whose one-at-a-time validation rejects forward
     # references by design.
@@ -857,6 +876,403 @@ def unregister_existing_joint(root: str, joint: str, adapter: Any) -> None:
             _call(adapter, "delete_attr", f"{joint}.{attr}")
 
 
+def _animation_warning(root: str, joints: Sequence[str], adapter: Any) -> str | None:
+    """Return a non-blocking animation warning, or ``None`` when absent."""
+    try:
+        current = None
+        for name in ("current_time", "currentTime"):
+            method = getattr(adapter, name, None)
+            if callable(method):
+                try:
+                    # MayaCmdsAdapter exposes current_time() without kwargs;
+                    # raw maya.cmds.currentTime accepts query=True.
+                    current = method() if name == "current_time" else method(query=True)
+                except TypeError:
+                    current = method(q=True)
+                break
+        animated = False
+        detector_failed = False
+        control_rig_owned = False
+        if _exists(adapter, root, ATTR_MMD_CONTROL_RIG_JSON):
+            raw_metadata = _get(adapter, root, ATTR_MMD_CONTROL_RIG_JSON)
+            if raw_metadata:
+                try:
+                    metadata = json.loads(raw_metadata)
+                    control_rig_owned = (
+                        isinstance(metadata, Mapping)
+                        and metadata.get("schema") == "mmd_tools.mmd_control_rig"
+                        and bool(metadata)
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    # Malformed model-owned metadata is still a non-blocking
+                    # detector warning; reset remains available.
+                    detector_failed = True
+        for joint in joints:
+            if callable(getattr(adapter, "keyframe", None)):
+                try:
+                    count = _call(
+                        adapter,
+                        "keyframe",
+                        f"{joint}.translate",
+                        query=True,
+                        keyframeCount=True,
+                    )
+                    animated = bool(count)
+                    if not animated:
+                        count = _call(
+                            adapter,
+                            "keyframe",
+                            f"{joint}.rotate",
+                            query=True,
+                            keyframeCount=True,
+                        )
+                        animated = bool(count)
+                except Exception:
+                    # Detector failure is deliberately a warning, never a
+                    # reset blocker.  Continue probing other joints.
+                    detector_failed = True
+            if animated:
+                break
+            # A direct incoming animCurve connection is a valid fallback when
+            # keyframeCount is unavailable.  Ordinary DG/IK connections are
+            # intentionally ignored.
+            if callable(getattr(adapter, "list_connections", None)):
+                for plug in ("translate", "rotate", "scale"):
+                    try:
+                        connections = _call(
+                            adapter,
+                            "list_connections",
+                            f"{joint}.{plug}",
+                            source=True,
+                            destination=False,
+                        ) or []
+                    except Exception:
+                        detector_failed = True
+                        continue
+                    for connection in connections:
+                        try:
+                            if callable(getattr(adapter, "node_type", None)) and _call(
+                                adapter, "node_type", connection
+                            ) == "animCurve":
+                                animated = True
+                                break
+                        except Exception:
+                            detector_failed = True
+                            continue
+                    if animated:
+                        break
+            if animated:
+                break
+        if control_rig_owned:
+            frame = "?" if current is None else str(current)
+            return f"owned Control Rig routes detected; current frame {frame} will be captured as PMX Rest"
+        if not animated and detector_failed:
+            return "animation detection unavailable; current frame will be captured as PMX Rest"
+        if not animated:
+            return None
+        frame = "?" if current is None else str(current)
+        return f"animation inputs detected; current frame {frame} will be captured as PMX Rest"
+    except Exception as exc:
+        return f"animation detection unavailable ({exc}); current frame will be captured as PMX Rest"
+
+
+def _read_only_reason(node: str, adapter: Any) -> str | None:
+    """Probe common injected-adapter read-only/reference contracts."""
+    for method_name in ("is_read_only", "node_is_read_only", "is_locked"):
+        method = getattr(adapter, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            if bool(method(node)):
+                return f"node {node!r} is read-only"
+        except Exception as exc:
+            return f"read-only state for {node!r} is unknown: {exc}"
+    reference_query = getattr(adapter, "reference_query", None)
+    if callable(reference_query):
+        try:
+            if bool(reference_query(node, isNodeReferenced=True)):
+                return f"node {node!r} is referenced/read-only"
+        except Exception as exc:
+            return f"reference state for {node!r} is unknown: {exc}"
+    return None
+
+
+def _validate_removed_scene_references(
+    root: str,
+    removed: Mapping[str, MmdBoneSpec],
+    adapter: Any,
+) -> list[str]:
+    """Inspect display/physics/morph references without mutating Maya."""
+    blockers: list[str] = []
+    removed_indices = {bone.index for bone in removed.values()}
+    display = _scene_display_payload(adapter, root)
+    if display is not None:
+        for frame in display[1]:
+            for element in frame.get("elements", []):
+                if element.get("type") in (0, "bone") and element.get("index") in removed_indices:
+                    blockers.append("removed bone is referenced by display frames")
+    for node in _call(adapter, "list_relatives", root, allDescendents=True, fullPath=True) or []:
+        node = str(node)
+        if _exists(adapter, node, "relatedBoneIndex") and _read_int(adapter, node, "relatedBoneIndex") in removed_indices:
+            blockers.append(f"removed bone is referenced by physics node {node}")
+    for node in _morph_nodes(adapter, root):
+        if _get(adapter, node, "mmd_morph_type") != "bone":
+            continue
+        for attr in (ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON, "mmd_bone_morph_offsets_json"):
+            if not _exists(adapter, node, attr):
+                continue
+            offsets = _mapping_list(_read_json(adapter, node, attr, field=f"{node}.{attr}"), field=f"{node}.{attr}")
+            for offset in offsets:
+                _require_index(offset.get("bone_index"), field=f"{node}.{attr}.bone_index", minimum=0)
+            if any(offset.get("bone_index") in removed_indices for offset in offsets):
+                blockers.append(f"removed bone is referenced by morph node {node}")
+    return sorted(set(blockers))
+
+
+def _validate_scene_binding_payload(
+    root: str,
+    spec: MmdModelAuthoringSpec,
+    adapter: Any,
+) -> list[str]:
+    """Check registered joint reference metadata before structural writes."""
+    blockers: list[str] = []
+    by_binding = {bone.binding_identity: bone for bone in spec.bones if bone.binding_identity is not None}
+    descendants = {
+        _canonical_identity(adapter, item)
+        for item in _descendant_joints(adapter, root)
+        if _exists(adapter, _canonical_identity(adapter, item), ATTR_MMD_BONE_INDEX)
+    }
+    for binding, bone in by_binding.items():
+        if binding not in descendants:
+            continue
+        if _read_int(adapter, binding, ATTR_MMD_BONE_INDEX, minimum=0) != bone.index:
+            blockers.append(f"scene index mismatch for {binding!r}")
+        if not _exists(adapter, binding, ATTR_MMD_BONE_PARENT_INDEX):
+            blockers.append(f"{binding} is missing parent index metadata")
+        else:
+            if _read_int(adapter, binding, ATTR_MMD_BONE_PARENT_INDEX) != bone.parent_index:
+                blockers.append(f"{binding} parent index metadata does not match authoring spec")
+        for field, attrs in _BONE_REFERENCE_FIELDS[1:]:
+            value = getattr(bone, field)
+            present = [attr for attr in attrs if _exists(adapter, binding, attr)]
+            if value is None:
+                if present:
+                    blockers.append(f"{binding} has stale {field} metadata")
+                continue
+            if not present:
+                blockers.append(f"{binding} is missing {field} metadata")
+                continue
+            for attr in present:
+                if _read_int(adapter, binding, attr) != value:
+                    blockers.append(f"{binding}.{attr} does not match authoring spec")
+        if bone.ik_links:
+            if not _exists(adapter, binding, ATTR_MMD_IK_LINKS):
+                blockers.append(f"{binding} is missing IK link metadata")
+            else:
+                try:
+                    links = _mapping_list(
+                        _read_json(adapter, binding, ATTR_MMD_IK_LINKS, field=f"{binding}.{ATTR_MMD_IK_LINKS}"),
+                        field=f"{binding}.{ATTR_MMD_IK_LINKS}",
+                    )
+                    if len(links) != len(bone.ik_links):
+                        blockers.append(f"{binding} IK link metadata does not match authoring spec")
+                except MayaBoneAuthoringError as exc:
+                    blockers.append(str(exc))
+    return sorted(set(blockers))
+
+
+def plan_bone_reset(
+    root: str,
+    current_spec: MmdModelAuthoringSpec,
+    model_scale: float,
+    adapter: Any,
+    *,
+    requested_order: Sequence[str] | None = None,
+) -> BoneResetPlan:
+    """Read-only scene-as-authority preflight for the Bone Tab Reset action."""
+    try:
+        _require_string(root, field="root")
+        scale = _require_number(model_scale, field="model_scale", positive=True)
+        descendants = []
+        for item in _descendant_joints(adapter, root):
+            canonical = _canonical_identity(adapter, item)
+            if canonical not in descendants:
+                descendants.append(canonical)
+        # Existing persisted bindings must resolve to one descendant.  Missing
+        # or ambiguous nodes become removals/blockers before any writes.
+        by_binding = {
+            bone.binding_identity: bone
+            for bone in current_spec.bones
+            if bone.binding_identity is not None
+        }
+        blockers: list[str] = []
+        root_read_only = _read_only_reason(root, adapter)
+        if root_read_only:
+            blockers.append(root_read_only)
+        for joint in descendants:
+            reason = _read_only_reason(joint, adapter)
+            if reason:
+                blockers.append(reason)
+        scene_registered: set[str] = set()
+        for joint in descendants:
+            if not _exists(adapter, joint, ATTR_MMD_BONE_INDEX):
+                if joint in by_binding:
+                    blockers.append(f"registered binding {joint!r} is missing bone index metadata")
+                continue
+            index = _read_int(adapter, joint, ATTR_MMD_BONE_INDEX, minimum=0)
+            if joint not in by_binding:
+                blockers.append(f"unregistered joint {joint!r} has stale bone index {index}")
+                continue
+            if by_binding[joint].index != index:
+                blockers.append(f"scene index mismatch for {joint!r}")
+                continue
+            scene_registered.add(joint)
+        removed = {binding: bone for binding, bone in by_binding.items() if binding not in descendants}
+        blockers.extend(_validate_scene_binding_payload(root, current_spec, adapter))
+        blockers.extend(_validate_removed_scene_references(root, removed, adapter))
+        descriptors: list[MmdBoneSpec] = []
+        provisional_new_indices = {
+            joint: max((bone.index for bone in current_spec.bones), default=-1) + offset
+            for offset, joint in enumerate(
+                (item for item in descendants if item not in by_binding),
+                start=1,
+            )
+        }
+        for joint in descendants:
+            position = capture_rest_position(root, joint, scale, adapter)
+            existing = by_binding.get(joint)
+            if existing is not None:
+                descriptors.append(replace(existing, rest_position=position, binding_identity=joint))
+            else:
+                leaf = joint.rsplit("|", 1)[-1].rsplit(":", 1)[-1]
+                try:
+                    parents = _call(adapter, "list_relatives", joint, parent=True, fullPath=True, type="joint") or []
+                    parent_binding = _canonical_identity(adapter, parents[0]) if len(parents) == 1 else None
+                except Exception:
+                    parent_binding = None
+                parent_index = (
+                    by_binding[parent_binding].index
+                    if parent_binding in by_binding
+                    else provisional_new_indices.get(parent_binding, -1)
+                )
+                descriptors.append(
+                    MmdBoneSpec(
+                        name=leaf,
+                        name_english=leaf,
+                        parent_index=parent_index,
+                        rest_position=position,
+                        tail_offset=(0.0, 0.0, 0.0),
+                        binding_identity=joint,
+                    )
+                )
+        warning = _animation_warning(root, descendants, adapter)
+        effective_order = requested_order
+        if effective_order is None:
+            # Maya's allDescendents order is not a semantic ordering (it is
+            # commonly child-first). Keep persisted bindings stable, then
+            # append newly discovered descendants before contiguous reindex.
+            effective_order = tuple(
+                bone.binding_identity
+                for bone in current_spec.bones
+                if bone.binding_identity in {item.binding_identity for item in descriptors}
+            )
+        plan = make_bone_reset_plan(
+            current_spec,
+            descriptors,
+            requested_order=effective_order,
+            blockers=blockers,
+            warnings=(() if warning is None else (warning,)),
+        )
+        return plan
+    except Exception as exc:
+        return BoneResetPlan(
+            current_spec=current_spec,
+            target_spec=None,
+            expected_fingerprint=current_spec.fingerprint(),
+            blockers=(str(exc),),
+        )
+
+
+def apply_bone_reset_structure(
+    root: str,
+    plan: BoneResetPlan,
+    adapter: Any,
+) -> MmdModelAuthoringSpec:
+    """Apply one already validated structural reset inside an open transaction."""
+    if not isinstance(plan, BoneResetPlan) or not plan.is_valid or plan.target_spec is None:
+        _fail("bone reset plan is blocked or malformed")
+    current = plan.current_spec
+    target = plan.target_spec
+    by_binding = {bone.binding_identity: bone for bone in current.bones if bone.binding_identity is not None}
+    descendants = {
+        _canonical_identity(adapter, item)
+        for item in _descendant_joints(adapter, root)
+    }
+    # Remove metadata that still exists.  All external references were checked
+    # during preflight, so these calls cannot partially fail for semantics.
+    for binding in plan.removed_bindings:
+        if binding in descendants and _exists(adapter, binding, ATTR_MMD_BONE_INDEX):
+            unregister_existing_joint(root, binding, adapter)
+
+    additions = [bone for bone in target.bones if bone.binding_identity not in by_binding]
+    next_index = max((bone.index for bone in current.bones), default=-1) + 1
+    intermediate_indices: dict[str, int] = {
+        binding: bone.index
+        for binding, bone in by_binding.items()
+        if binding is not None and binding in descendants
+    }
+    for bone in additions:
+        if bone.binding_identity is None:
+            _fail("added bone is missing binding identity")
+        intermediate_indices[bone.binding_identity] = next_index
+        next_index += 1
+    target_to_intermediate = {}
+    for bone in target.bones:
+        binding = bone.binding_identity
+        if binding in intermediate_indices:
+            target_to_intermediate[bone.index] = intermediate_indices[binding]
+
+    def remap_intermediate(value: int | None) -> int | None:
+        if value is None or value == -1:
+            return value
+        try:
+            return target_to_intermediate[value]
+        except KeyError as exc:
+            _fail(f"bone reference {value} is not present in reset target")
+            raise AssertionError from exc
+
+    temporary_additions = []
+    for bone in additions:
+        temporary_additions.append(
+            replace(
+                bone,
+                index=intermediate_indices[bone.binding_identity],
+                parent_index=remap_intermediate(bone.parent_index),
+                connect_bone_index=remap_intermediate(bone.connect_bone_index),
+                grant_parent_index=remap_intermediate(bone.grant_parent_index),
+                ik_target_index=remap_intermediate(bone.ik_target_index),
+                ik_links=tuple(
+                    {**link, "bone": remap_intermediate(link.get("bone"))}
+                    for link in bone.ik_links
+                ),
+            )
+        )
+    if temporary_additions:
+        register_existing_joints(root, tuple(temporary_additions), adapter)
+    survivors = [bone for bone in current.bones if bone.binding_identity in descendants and bone.binding_identity in {item.binding_identity for item in target.bones}]
+    intermediate = MmdModelAuthoringSpec(
+        model=current.model,
+        bones=tuple([*survivors, *temporary_additions]),
+        materials=current.materials,
+        morphs=current.morphs,
+        schema_version=current.schema_version,
+    )
+    # One complete remap updates indices and all known display/physics/morph
+    # references after additions/removals have been staged.
+    apply_bone_reindex(root, intermediate, target, adapter)
+    return target
+
+
 __all__ = [
     "MayaBoneAuthoringError",
     "register_existing_joint",
@@ -864,4 +1280,7 @@ __all__ = [
     "capture_rest_position",
     "apply_bone_reindex",
     "unregister_existing_joint",
+    "plan_bone_reset",
+    "apply_bone_reset_structure",
+    "BoneResetPlan",
 ]

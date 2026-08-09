@@ -19,6 +19,10 @@ class MayaCmdsAdapter:
         """Return whether a Maya node exists."""
         return self._cmds.objExists(node)
 
+    def reference_query(self, node, **kwargs):
+        """Return Maya reference state for a node (read-only probe)."""
+        return self._cmds.referenceQuery(node, **kwargs)
+
     def ls(self, *args, **kwargs):
         """Pass through to maya.cmds.ls."""
         return self._cmds.ls(*args, **kwargs)

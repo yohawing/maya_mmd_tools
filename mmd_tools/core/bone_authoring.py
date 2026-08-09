@@ -11,7 +11,7 @@ silently rewritten here.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import math
 from typing import Any
 
@@ -24,6 +24,46 @@ from mmd_tools.core.model_authoring_spec import (
 
 class BoneAuthoringError(ValueError):
     """Raised for any malformed or semantically invalid bone operation."""
+
+
+@dataclass(frozen=True)
+class BoneResetPlan:
+    """Immutable preflight result for one scene-as-authority bone reset.
+
+    ``current_spec`` is the snapshot used during planning and
+    ``target_spec`` is the complete semantic payload that a transaction may
+    apply.  The plan deliberately contains no Maya handles or mutable lists;
+    adapters can therefore reject a stale plan before opening an undo chunk.
+    """
+
+    current_spec: MmdModelAuthoringSpec
+    target_spec: MmdModelAuthoringSpec | None
+    expected_fingerprint: str
+    requested_order: tuple[str, ...] = ()
+    added_bindings: tuple[str, ...] = ()
+    removed_bindings: tuple[str, ...] = ()
+    rest_updated_indices: tuple[int, ...] = ()
+    blockers: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def is_valid(self) -> bool:
+        return not self.blockers and self.target_spec is not None
+
+    @property
+    def diff(self) -> dict[str, int]:
+        return {
+            "added": len(self.added_bindings),
+            "removed": len(self.removed_bindings),
+            "rest_updated": len(self.rest_updated_indices),
+            "reindexed": sum(
+                old.index != new.index
+                for old in self.current_spec.bones
+                for new in ((self.target_spec or self.current_spec).bones)
+                if old.binding_identity is not None
+                and old.binding_identity == new.binding_identity
+            ),
+        }
 
 
 _REFERENCE_FIELDS = (
@@ -386,6 +426,127 @@ def unregister_bone(spec: MmdModelAuthoringSpec, index: int) -> MmdModelAuthorin
         raise BoneAuthoringError(str(exc)) from None
 
 
+def make_bone_reset_plan(
+    spec: MmdModelAuthoringSpec,
+    discovered_bones: Sequence[MmdBoneSpec],
+    *,
+    requested_order: Sequence[str] | None = None,
+    blockers: Sequence[str] = (),
+    warnings: Sequence[str] = (),
+) -> BoneResetPlan:
+    """Build a complete target spec without performing any scene writes.
+
+    ``discovered_bones`` contains one descriptor per descendant joint.  A
+    descriptor whose binding already exists in ``spec`` contributes only its
+    current rest position; all other semantic fields remain authoritative in
+    the persisted spec.  New descriptors are appended after the requested
+    pending order and are compacted to contiguous PMX indices.
+    """
+
+    try:
+        spec = _require_spec(spec)
+        _validate_spec(spec)
+        if isinstance(discovered_bones, (str, bytes, bytearray)) or not isinstance(discovered_bones, Sequence):
+            _fail("discovered_bones must be a sequence")
+        discovered = tuple(_require_bone(item) for item in discovered_bones)
+        bindings = tuple(_require_nonempty_identity(item.binding_identity, context="bone.binding_identity") for item in discovered)
+        if len(set(bindings)) != len(bindings):
+            _fail("discovered bone bindings must be unique")
+        existing_by_binding = {
+            item.binding_identity: item
+            for item in spec.bones
+            if item.binding_identity is not None
+        }
+        discovered_by_binding = dict(zip(bindings, discovered))
+        order = tuple(requested_order or ())
+        if len(set(order)) != len(order):
+            _fail("requested_order must not contain duplicate bindings")
+        if any(binding not in discovered_by_binding for binding in order):
+            _fail("requested_order contains a non-descendant binding")
+        ordered_bindings = list(order)
+        ordered_bindings.extend(binding for binding in bindings if binding not in ordered_bindings)
+        target_items: list[MmdBoneSpec] = []
+        updated_indices: list[int] = []
+        added: list[str] = []
+        removed = [binding for binding in existing_by_binding if binding not in discovered_by_binding]
+        removed_indices = {existing_by_binding[binding].index for binding in removed}
+        semantic_blockers: list[str] = []
+        for bone in spec.bones:
+            if bone.index in removed_indices:
+                continue
+            for field in _REFERENCE_FIELDS:
+                if getattr(bone, field) in removed_indices:
+                    semantic_blockers.append(
+                        f"removed bone is referenced by bones[{bone.index}].{field}"
+                    )
+            for link in bone.ik_links:
+                if link.get("bone") in removed_indices:
+                    semantic_blockers.append(
+                        f"removed bone is referenced by bones[{bone.index}].ik_links"
+                    )
+        for morph in spec.morphs:
+            if morph.morph_type != "bone":
+                continue
+            for offset in morph.offsets:
+                if isinstance(offset, Mapping) and offset.get("bone_index") in removed_indices:
+                    semantic_blockers.append(f"removed bone is referenced by morphs[{morph.index}]")
+        blockers = tuple([*map(str, blockers), *semantic_blockers])
+        next_index = max((item.index for item in spec.bones), default=-1) + 1
+        for binding in ordered_bindings:
+            descriptor = discovered_by_binding[binding]
+            previous = existing_by_binding.get(binding)
+            if previous is None:
+                # The adapter supplies conservative defaults for a new joint.
+                target_items.append(replace(descriptor, index=next_index, binding_identity=binding))
+                next_index += 1
+                added.append(binding)
+                continue
+            updated = replace(previous, rest_position=descriptor.rest_position, binding_identity=binding)
+            if previous.rest_position != updated.rest_position:
+                updated_indices.append(previous.index)
+            target_items.append(updated)
+        intermediate = MmdModelAuthoringSpec(
+            model=spec.model,
+            bones=tuple(target_items),
+            materials=spec.materials,
+            morphs=spec.morphs,
+            schema_version=spec.schema_version,
+        )
+        # Validate removal blockers and rewrite every semantic reference in one
+        # pure operation.  Any reference to a removed bone fails before Maya
+        # writes begin.
+        requested_indices = tuple(item.index for item in target_items)
+        target = reindex_bones(intermediate, requested_indices)
+        _validate_spec(target)
+        return BoneResetPlan(
+            current_spec=spec,
+            target_spec=target,
+            expected_fingerprint=spec.fingerprint(),
+            requested_order=tuple(ordered_bindings),
+            added_bindings=tuple(added),
+            removed_bindings=tuple(removed),
+            rest_updated_indices=tuple(updated_indices),
+            blockers=tuple(str(item) for item in blockers),
+            warnings=tuple(str(item) for item in warnings),
+        )
+    except BoneAuthoringError as exc:
+        return BoneResetPlan(
+            current_spec=spec,
+            target_spec=None,
+            expected_fingerprint=spec.fingerprint(),
+            blockers=tuple([*map(str, blockers), str(exc)]),
+            warnings=tuple(map(str, warnings)),
+        )
+    except Exception as exc:
+        return BoneResetPlan(
+            current_spec=spec,
+            target_spec=None,
+            expected_fingerprint=spec.fingerprint(),
+            blockers=tuple([*map(str, blockers), str(exc)]),
+            warnings=tuple(map(str, warnings)),
+        )
+
+
 __all__ = [
     "BoneAuthoringError",
     "register_bone",
@@ -393,4 +554,6 @@ __all__ = [
     "capture_rest",
     "reindex_bones",
     "unregister_bone",
+    "BoneResetPlan",
+    "make_bone_reset_plan",
 ]

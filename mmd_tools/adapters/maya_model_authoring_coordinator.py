@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 from mmd_tools.adapters import maya_bone_authoring
 from mmd_tools.core.bone_authoring import (
+    BoneResetPlan,
     capture_rest,
     register_bone,
     reindex_bones,
@@ -525,6 +526,65 @@ class MayaModelAuthoringCoordinator:
             return target
 
         return self._execute(model_root, "unregister_bone", target, bind)
+
+    def plan_bone_reset(
+        self,
+        model_root: str,
+        requested_order: Sequence[str] | None = None,
+    ) -> BoneResetPlan:
+        """Build an immutable scene-as-authority reset plan without writes."""
+        current = self._read_current(model_root, "plan_bone_reset")
+        scale = self._resolve_model_scale(model_root)
+        planner = getattr(self._bones, "plan_bone_reset", None)
+        if callable(planner):
+            plan = planner(
+                model_root,
+                current,
+                scale,
+                self._cmds,
+                requested_order=requested_order,
+            )
+        else:
+            raise MayaModelAuthoringCoordinatorError(
+                "bone reset requires a Maya preflight planner; no Maya writes were performed"
+            )
+        if not isinstance(plan, BoneResetPlan):
+            raise MayaModelAuthoringCoordinatorError("bone preflight returned an invalid plan")
+        return plan
+
+    def reset_bones(
+        self,
+        model_root: str,
+        plan: BoneResetPlan | None = None,
+        requested_order: Sequence[str] | None = None,
+    ) -> MmdModelAuthoringSpec:
+        """Apply one complete add/remove/rest/reindex transaction atomically."""
+        if plan is None:
+            plan = self.plan_bone_reset(model_root, requested_order=requested_order)
+        if not isinstance(plan, BoneResetPlan) or not plan.is_valid or plan.target_spec is None:
+            blockers = () if not isinstance(plan, BoneResetPlan) else plan.blockers
+            raise MayaModelAuthoringCoordinatorError(
+                f"bone reset preflight blocked: {'; '.join(blockers) or 'invalid plan'}"
+            )
+        current = self._read_current(model_root, "reset_bones")
+        if current.fingerprint() != plan.expected_fingerprint:
+            raise MayaModelAuthoringCoordinatorError(
+                "bone reset plan is stale; scene/spec changed after preflight"
+            )
+        apply_structure = getattr(self._bones, "apply_bone_reset_structure", None)
+        if not callable(apply_structure):
+            raise MayaModelAuthoringCoordinatorError(
+                "bone reset requires an atomic Maya structural writer; no Maya writes were performed"
+            )
+
+        def bind() -> MmdModelAuthoringSpec:
+            result = apply_structure(model_root, plan, self._cmds)
+            if type(result) is not MmdModelAuthoringSpec:
+                raise TypeError("bone reset structural operation returned an invalid spec")
+            return result
+
+        return self._execute(model_root, "reset_bones", plan.target_spec, bind)
+
 
     # Transaction core ----------------------------------------------------
     def _execute(

@@ -39,10 +39,7 @@ class BoneTab(BaseTab):
         ("fixed_axis_group", "setTitle", "fixed_axis", "groups"),
         ("local_axis_group", "setTitle", "local_axis", "groups"),
         ("refresh_btn", "setText", "refresh", "buttons"),
-        ("register_joint_btn", "setText", "register_joint", "buttons"),
-        ("capture_rest_btn", "setText", "capture_rest", "buttons"),
-        ("apply_reindex_btn", "setText", "apply_reindex", "buttons"),
-        ("unregister_btn", "setText", "unregister", "buttons"),
+        ("reset_authoring_btn", "setText", "reset_authoring", "buttons"),
         ("apply_btn", "setText", "apply", "buttons"),
         ("reset_btn", "setText", "reset", "buttons"),
         ("select_ik_target_btn", "setText", "select", "buttons"),
@@ -116,38 +113,31 @@ class BoneTab(BaseTab):
         # ツールバー
         toolbar_layout = QHBoxLayout()
         self.refresh_btn = MaterialSymbolToolButton("refresh", self.tr("refresh", "buttons"))
-        self.bind_pose_btn = QPushButton(self.tr("reset_pose", "buttons"))
-
         toolbar_layout.addWidget(self.refresh_btn)
-        toolbar_layout.addWidget(self.bind_pose_btn)
         toolbar_layout.addStretch()
 
         bone_tree_layout.addLayout(toolbar_layout)
 
         authoring_toolbar = QHBoxLayout()
-        self.register_joint_btn = QPushButton(self.tr("register_joint", "buttons"))
-        self.capture_rest_btn = QPushButton(self.tr("capture_rest", "buttons"))
         self.reindex_up_btn = QPushButton("↑")
         self.reindex_down_btn = QPushButton("↓")
-        self.apply_reindex_btn = QPushButton(self.tr("apply_reindex", "buttons"))
-        self.unregister_btn = QPushButton(self.tr("unregister", "buttons"))
-        authoring_toolbar.addWidget(self.register_joint_btn)
-        authoring_toolbar.addWidget(self.capture_rest_btn)
         authoring_toolbar.addWidget(self.reindex_up_btn)
         authoring_toolbar.addWidget(self.reindex_down_btn)
-        authoring_toolbar.addWidget(self.apply_reindex_btn)
-        authoring_toolbar.addWidget(self.unregister_btn)
+        self.reset_authoring_btn = QPushButton(self.tr("reset_authoring", "buttons"))
+        authoring_toolbar.addWidget(self.reset_authoring_btn)
         authoring_toolbar.addStretch()
         for button in (
-            self.register_joint_btn,
-            self.capture_rest_btn,
             self.reindex_up_btn,
             self.reindex_down_btn,
-            self.apply_reindex_btn,
-            self.unregister_btn,
+            self.reset_authoring_btn,
         ):
             button.setEnabled(False)
         bone_tree_layout.addLayout(authoring_toolbar)
+
+        self.animation_warning_label = QLabel()
+        self.animation_warning_label.setWordWrap(True)
+        self.animation_warning_label.setVisible(False)
+        bone_tree_layout.addWidget(self.animation_warning_label)
 
         # ボーンリスト（単純なリスト表示）
         self.bone_list = QListWidget()
@@ -612,7 +602,8 @@ class BoneTab(BaseTab):
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""
         apply_translation_registry(self, self._TRANSLATION_REGISTRY)
-        self.bind_pose_btn.setText(self.tr("reset_pose", "buttons"))
+        self.animation_warning_label.setText("")
+        self.reset_authoring_btn.setText(self.tr("reset_authoring", "buttons"))
 
         # ComboBox items - Connection type
         self.connection_type_combo.clear()

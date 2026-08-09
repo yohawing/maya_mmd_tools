@@ -41,6 +41,24 @@ class TestMayaCmdsAdapter(unittest.TestCase):
         self.cmds.objExists.assert_called_once_with("pCube1")
         self.assertIs(result, True)
 
+    def test_reference_query_delegates_read_only_probe(self):
+        self.cmds.referenceQuery.return_value = True
+
+        result = self.adapter.reference_query("|model|joint", isNodeReferenced=True)
+
+        self.cmds.referenceQuery.assert_called_once_with(
+            "|model|joint", isNodeReferenced=True
+        )
+        self.assertTrue(result)
+
+    def test_current_time_delegates_query_without_kwargs_on_adapter(self):
+        self.cmds.currentTime.return_value = 24
+
+        result = self.adapter.current_time()
+
+        self.cmds.currentTime.assert_called_once_with(query=True)
+        self.assertEqual(result, 24)
+
     def test_ls_delegates_args_and_kwargs(self):
         expected = ["root"]
         self.cmds.ls.return_value = expected

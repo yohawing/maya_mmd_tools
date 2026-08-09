@@ -1,10 +1,10 @@
-import json
 import math
 from collections.abc import Sequence
 from dataclasses import replace
 from typing import Protocol
 
 from mmd_tools.adapters import MayaCmdsAdapter
+from mmd_tools.core.bone_authoring import BoneResetPlan
 from mmd_tools.core.model_authoring_spec import MmdBoneSpec
 from ...core.logger import get_logger
 from ...core.maya_attribute_utils import (
@@ -72,6 +72,10 @@ class BoneAuthoringCoordinator(Protocol):
 
     def unregister_bone(self, model_root: str, bone_index: int) -> object: ...
 
+    def plan_bone_reset(self, model_root: str, requested_order=None) -> BoneResetPlan: ...
+
+    def reset_bones(self, model_root: str, plan: BoneResetPlan, requested_order=None) -> object: ...
+
 
 class BonePresenter:
     def __init__(
@@ -90,6 +94,8 @@ class BonePresenter:
         self._model_root_valid = False
         self._registered_indices = {}
         self._reindex_dirty = False
+        self._pending_order = []
+        self._reset_plan = None
         self.bone_data = {}  # Store original bone data for reset
         self.bone_list_items = {}  # Map bone name to list item
         self.all_bones = []  # All bones list
@@ -110,15 +116,10 @@ class BonePresenter:
         self.view.bone_list.currentItemChanged.connect(self.on_bone_selected)
         self.view.bone_list.itemSelectionChanged.connect(self.on_selection_changed_maya)
         self.view.refresh_btn.clicked.connect(self.load_bones)
-        if hasattr(self.view, "bind_pose_btn"):
-            self.view.bind_pose_btn.clicked.connect(self.reset_pose)
         for button_name, handler in (
-            ("register_joint_btn", self.register_selected_joint),
-            ("capture_rest_btn", self.capture_rest),
             ("reindex_up_btn", lambda: self.move_reindex(-1)),
             ("reindex_down_btn", lambda: self.move_reindex(1)),
-            ("apply_reindex_btn", self.apply_reindex),
-            ("unregister_btn", self.unregister_bone),
+            ("reset_authoring_btn", self.reset_authoring),
         ):
             button = getattr(self.view, button_name, None)
             if button is not None:
@@ -158,72 +159,10 @@ class BonePresenter:
         self._model_root_valid = False
         self._registered_indices.clear()
         self._reindex_dirty = False
+        self._pending_order = []
+        self._reset_plan = None
         self._update_authoring_actions()
         reload_for_current_model_change(logger, "BonePresenter", model_root, self.load_bones)
-
-    def reset_pose(self):
-        """Apply Animator Toolset-style Reset Pose to Bone tab joints."""
-        cmds = getattr(self.maya_adapter, "_cmds", None)
-        root = self.app_state.current_model_root
-        try:
-            if cmds is None or not root:
-                raise RuntimeError("MMD model UUID is unavailable")
-            model_joints = cmds.ls(self.all_bones, long=True) or []
-            raw_selection = cmds.ls(selection=True, long=True) or []
-            selected_joints = cmds.ls(selection=True, type="joint", long=True) or []
-            targets = (
-                [joint for joint in selected_joints if joint in set(model_joints)]
-                if raw_selection
-                else model_joints
-            )
-            if not targets:
-                self.app_state.emit_status("No joints selected")
-                return
-
-            roots = cmds.ls(root, uuid=True) or []
-            if len(roots) != 1:
-                raise RuntimeError("MMD model UUID is unavailable")
-
-            from ..rest_pose_transaction import ResetPoseTransaction
-
-            transaction = ResetPoseTransaction(
-                self.maya_adapter,
-                model_root=root,
-                model_uuid=str(roots[0]),
-                targets=targets,
-                bind_translations=self._bind_translations(targets),
-            )
-            count = transaction.apply()
-            self.app_state.emit_status(f"Reset Pose ({count} joints)")
-        except Exception as exc:
-            self.app_state.emit_status(f"Reset Pose failed: {exc}")
-
-    def _bind_translations(self, joints):
-        """Read persisted import-time local translations for ``joints``."""
-
-        values = {}
-        for joint in joints:
-            try:
-                if not self.maya_adapter.attribute_exists(
-                    "mmd_vmd_bind_translate", joint
-                ):
-                    continue
-                raw_value = self.maya_adapter.get_attr(
-                    f"{joint}.mmd_vmd_bind_translate"
-                )
-                parsed = json.loads(raw_value)
-                if not isinstance(parsed, (list, tuple)) or len(parsed) != 3:
-                    continue
-                values[joint] = tuple(float(value) for value in parsed)
-            except (TypeError, ValueError, json.JSONDecodeError):
-                logger.debug("Invalid bind translate metadata on %s", joint)
-            except Exception:
-                logger.debug(
-                    "Failed to read bind translate metadata on %s",
-                    joint,
-                    exc_info=True,
-                )
-        return values
 
     def load_bones(self):
         """ボーンリストをロード"""
@@ -235,6 +174,8 @@ class BonePresenter:
         self._model_root_valid = False
         self._registered_indices.clear()
         self._reindex_dirty = False
+        self._pending_order = []
+        self._reset_plan = None
         self.view.set_bone_details_enabled(False)
 
         current_model_root = self.app_state.current_model_root
@@ -282,6 +223,7 @@ class BonePresenter:
 
         # ボーンをリストに追加
         self.all_bones = sorted_joints
+        self._pending_order = [joint for joint in sorted_joints if joint in self._registered_indices]
         for idx, joint in enumerate(sorted_joints):
             # ボーン情報を取得
             name_jp = get_attribute(joint, ATTR_MMD_BONE_NAME)
@@ -374,28 +316,34 @@ class BonePresenter:
         available = self._authoring_available() and self._model_root_valid
         registered = available and type(self.current_bone_index) is int
         for button_name, enabled in (
-            ("register_joint_btn", available),
-            ("capture_rest_btn", registered),
             ("reindex_up_btn", registered),
             ("reindex_down_btn", registered),
-            ("apply_reindex_btn", available and self._reindex_dirty),
-            ("unregister_btn", registered),
+            ("reset_authoring_btn", available),
+            # Compatibility for injected legacy views; BoneTab no longer
+            # creates these individual-operation buttons.
+            ("register_joint_btn", False),
+            ("capture_rest_btn", False),
+            ("apply_reindex_btn", False),
+            ("unregister_btn", False),
         ):
             button = getattr(self.view, button_name, None)
             if button is not None:
                 button.setEnabled(bool(enabled))
 
     def _authoring_available(self):
-        return self.authoring_coordinator is not None and all(
+        if self.authoring_coordinator is None:
+            return False
+        if not all(
             callable(getattr(self.authoring_coordinator, method, None))
-            for method in (
-                "register_bone",
-                "capture_rest",
-                "read_spec",
-                "replace_bone",
-                "reindex_bones",
-                "unregister_bone",
-            )
+            for method in ("read_spec", "replace_bone")
+        ):
+            return False
+        return all(
+            callable(getattr(self.authoring_coordinator, method, None))
+            for method in ("plan_bone_reset", "reset_bones")
+        ) or all(
+            callable(getattr(self.authoring_coordinator, method, None))
+            for method in ("register_bone", "capture_rest", "reindex_bones", "unregister_bone")
         )
 
     def _authoring_root(self):
@@ -468,26 +416,64 @@ class BonePresenter:
         self.view.bone_list.setCurrentItem(item)
         bone = self.all_bones.pop(row)
         self.all_bones.insert(target, bone)
+        self._pending_order = [item for item in self.all_bones if item in self._registered_indices]
         self._reindex_dirty = True
         self._update_authoring_actions()
         self.app_state.emit_status(tr_message("bone_reindex_pending"))
         return True
 
-    def apply_reindex(self):
-        """Apply the exact visible registered-bone order through the coordinator."""
-        if not self._reindex_dirty:
+    def reset_authoring(self):
+        """Preview then atomically reconcile all descendant joints and PMX data."""
+        root = self._authoring_root()
+        if root is None:
             return False
-        ordered_indices = tuple(
-            self._registered_indices[bone]
-            for bone in self.all_bones
-            if bone in self._registered_indices
+        requested = tuple(self._pending_order or [item for item in self.all_bones if item in self._registered_indices])
+        try:
+            if not callable(getattr(self.authoring_coordinator, "plan_bone_reset", None)):
+                # Legacy injected presenters are kept operational for external
+                # integrations; the production BoneTab always takes the atomic
+                # planner path above.
+                ordered_indices = tuple(self._registered_indices[item] for item in requested)
+                return bool(self.authoring_coordinator.reindex_bones(root, ordered_indices))
+            plan = self._plan_reset()
+            if plan.blockers:
+                self.app_state.emit_status(
+                    tr_message_format("bone_reset_blocked", blockers="; ".join(plan.blockers))
+                )
+                return False
+            result = self.authoring_coordinator.reset_bones(root, plan)
+        except Exception as exc:
+            logger.error("Bone authoring reset failed", exc_info=True)
+            self.app_state.emit_status(
+                tr_message_format("bone_authoring_failed", operation="reset", error=str(exc))
+            )
+            return False
+        self._reindex_dirty = False
+        self.load_bones()
+        diff = plan.diff
+        self.app_state.emit_status(
+            tr_message_format(
+                "bone_reset_succeeded",
+                added=diff["added"], removed=diff["removed"], rest=diff["rest_updated"],
+            )
         )
-        if len(ordered_indices) != len(self._registered_indices) or len(set(ordered_indices)) != len(
-            ordered_indices
-        ):
-            self.app_state.emit_status(tr_message("bone_reindex_invalid"))
-            return False
-        return self._run_authoring("reindex_bones", ordered_indices)
+        return result
+
+    def _plan_reset(self):
+        """Build and display the immutable reset diff without applying it."""
+        root = self._authoring_root()
+        if root is None:
+            return None
+        requested = tuple(self._pending_order or [item for item in self.all_bones if item in self._registered_indices])
+        plan = self.authoring_coordinator.plan_bone_reset(root, requested_order=requested)
+        self._reset_plan = plan
+        warning_text = "; ".join(plan.warnings)
+        label = getattr(self.view, "animation_warning_label", None)
+        if label is not None:
+            label.setText(warning_text)
+            label.setVisible(bool(warning_text))
+        return plan
+
 
     def unregister_bone(self):
         """Confirm and unregister the current semantic bone."""

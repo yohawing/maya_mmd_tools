@@ -1344,6 +1344,35 @@ def maya_viewport_capture(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def maya_bone_reset_smoke(session: nox.Session) -> None:
+    """Run the production Bone Tab reset/reconcile smoke under mayapy.
+
+    The smoke creates a fresh ``pmx20-basic-v1`` template, adds an
+    unregistered descendant, verifies the animated current-frame warning and
+    strict rest/index metadata after one atomic reset, then checks Maya undo.
+    Pass ``--maya 2024`` or ``--maya 2026``; invoke the session once per
+    supported Maya version for the durable matrix.
+    """
+    maya_version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_version)
+    report = _require_build_path(
+        session,
+        f"build/maya-bone-reset-smoke/maya-{maya_version}.json",
+        "--out",
+    )
+    _clear_probe_report(session, report, "Maya bone reset smoke")
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tools/maya_bone_reset_smoke.py",
+        ["--out", str(report)],
+        {"--out"},
+        utf8=True,
+    )
+    _read_probe_report(session, report, "Maya bone reset smoke")
+
+
+@nox.session(venv_backend="none")
 def model_readme_dialog_e2e(session: nox.Session) -> None:
     """Run the real Maya GUI model-readme modal gate for Maya 2024/2026."""
     _run_model_readme_dialog_e2e(
