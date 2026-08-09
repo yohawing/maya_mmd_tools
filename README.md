@@ -39,7 +39,7 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental · �
 | Bone animation | ℹ️ | Basic MMD rigs are supported, but complex mechanisms are not. Bake mode uses [mmd-anim](https://github.com/yohawing/mmd-anim) for high-accuracy baking. |
 | VPD | ✅ | Drag-and-drop import only |
 | Morph animation | ℹ️ | Vertex, bone, and material morphs are supported. UV morph metadata is preserved for development round-trip, but Maya UV-set runtime evaluation remains unverified. Flip and Impulse morphs are not supported. |
-| Camera animation | ✅ | Creates and keys `mmd_camera`. Lighting drives the `mmd_light` controller. Self-shadow is not supported. |
+| Camera animation | ✅ | Creates and keys `mmd_camera`. Lighting drives the `mmd_light` controller. The development-only VMD Mode C path has Maya 2024/2026 field and dense-sampling evidence for standalone camera/light tracks; camera interpolation is normalized by the dense bake rather than raw-preserved. Self-shadow is not supported. |
 | IK on/off frames | ℹ️ | Supported for import and bake. Runtime bake applies the state to the final pose; rig mode keys `mmdCcdIk.enabled`. |
 | Physics | ℹ️ | Supports Bullet-based real-time physics and physics bake. Live evaluation is off by default and can be enabled from the Physics tab. Accuracy is still limited. |
 | HumanIK / retargeting | 🧪 | Experimental support for retargeting between imported MMD models. Try it from `MMD > HumanIK (Experimental)`. |
@@ -51,7 +51,7 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental · �
 - **Detailed documentation is not written yet.** This is an alpha release, and development speed is prioritized over documentation maintenance.
 - **Various features are still incomplete.** This is an experimental alpha release; feedback is welcome.
 - **QDEF and SDEF are not supported.** Meshes may appear thinner with some model and motion combinations.
-- **Export remains development-only.** PMX 2.0 additional UV channels, UV/additional-UV morph metadata, and the documented canonical bone/IK subset are preserved in development-path round trips; UV morphs are not evaluated on Maya UV sets. PMX 2.1 Flip morphs, Impulse morphs, and soft bodies are intentionally rejected in a fail-closed manner; import provenance may be retained only to make that rejection observable. PMD export is rejected, and VMD Mode A requires raw imported key/interpolation provenance.
+- **Export remains development-only.** PMX 2.0 additional UV channels, UV/additional-UV morph metadata, and the documented canonical bone/IK subset are preserved in development-path round trips; UV morphs are not evaluated on Maya UV sets. PMX 2.1 Flip morphs, Impulse morphs, and soft bodies are intentionally rejected in a fail-closed manner; import provenance may be retained only to make that rejection observable. PMD export is rejected. VMD Mode C has development evidence for model, camera, and light tracks but does not preserve raw interpolation; self-shadow is unsupported. VMD Mode A requires raw imported key/interpolation provenance.
 - **HumanIK is published as an experimental feature.** Only the minimum workflow is exposed. Try it from `MMD > HumanIK (Experimental)`.
 - **Leg rotations and bones that conflict with bone morphs work only under the Control Rig.** Bones may become immovable when their connections conflict with bone morphs.
 
