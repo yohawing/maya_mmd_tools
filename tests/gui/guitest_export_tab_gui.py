@@ -30,8 +30,10 @@ class _WarningWorkflow:
     def __init__(self, report):
         self.report = report
         self.acknowledgements = []
+        self.requests = []
 
-    def execute(self, _request, *, acknowledge_warnings=False):
+    def execute(self, request, *, acknowledge_warnings=False):
+        self.requests.append(request)
         self.acknowledgements.append(acknowledge_warnings)
         return ExportWorkflowResult(
             STATE_SUCCEEDED,
@@ -43,8 +45,7 @@ class _WarningWorkflow:
 class _GuiAppState:
     """Minimal app-state surface needed by ExportPresenter in this test."""
 
-    available_models = []
-    current_model_root = None
+    current_model_root = "model_ROOT"
 
     def __init__(self):
         self.statuses = []
@@ -81,25 +82,27 @@ class TestExportTabGUI(GuiTestBase):
         app.sendPostedEvents(tab, QtCore.QEvent.DeferredDelete)
         app.processEvents()
 
-    def test_format_combo_has_pmx_and_vmd_and_vmd_only_shows_mode(self):
-        """PMX/VMD の形式と VMD 専用 mode UI を確認する。"""
+    def test_model_motion_tabs_have_fixed_formats_and_no_target_or_format_widgets(self):
+        """Model/Motion tabs own PMX/VMD and expose no legacy selectors."""
         tab = self._create_visible_tab()
         try:
-            self.assertEqual(
-                [tab.format_combo.itemText(index) for index in range(tab.format_combo.count())],
-                ["pmx", "vmd"],
-            )
-
-            for export_format in ("pmx",):
-                tab.format_combo.setCurrentText(export_format)
-                QApplication.processEvents()
-                self.assertFalse(tab.mode_label.isVisible(), export_format)
-                self.assertFalse(tab.mode_combo.isVisible(), export_format)
-
-            tab.format_combo.setCurrentText("vmd")
-            QApplication.processEvents()
-            self.assertTrue(tab.mode_label.isVisible())
-            self.assertTrue(tab.mode_combo.isVisible())
+            self.assertFalse(hasattr(tab, "target_combo"))
+            self.assertFalse(hasattr(tab, "format_combo"))
+            self.assertEqual(tab.pane_tabs.count(), 2)
+            self.assertEqual(tab.pane_tabs.tabText(0), "モデル")
+            self.assertEqual(tab.pane_tabs.tabText(1), "モーション")
+            self.assertEqual(tab.build_request("model_ROOT").options["export_format"], "pmx")
+            tab.pane_tabs.setCurrentIndex(1)
+            self.assertEqual(tab.mode_combo.currentText(), "C")
+            tab.mode_combo.setCurrentText("A")
+            tab.frame_range_check.setChecked(True)
+            tab.frame_start_spin.setValue(12)
+            tab.frame_end_spin.setValue(42)
+            request = tab.build_request("model_ROOT")
+            self.assertEqual(request.options["export_format"], "vmd")
+            self.assertEqual(request.options["current_model_root"], "model_ROOT")
+            self.assertEqual(request.options["vmd_mode"], "A")
+            self.assertEqual(request.options["frame_range"], (12, 42))
         finally:
             self._delete_tab(tab)
 
@@ -229,6 +232,7 @@ class TestExportTabGUI(GuiTestBase):
         app_state = _GuiAppState()
         presenter = ExportPresenter(tab, app_state, workflow_service=workflow)
         try:
+            tab.pane_tabs.setCurrentIndex(1)
             tab.validation_console.set_report(report, {"fixture": "mode-c-raw-loss"})
             QApplication.processEvents()
 
@@ -242,12 +246,73 @@ class TestExportTabGUI(GuiTestBase):
             QApplication.processEvents()
 
             self.assertEqual(workflow.acknowledgements, [True])
+            self.assertEqual(workflow.requests[0].options["export_format"], "vmd")
+            self.assertEqual(workflow.requests[0].options["current_model_root"], "model_ROOT")
             self.assertEqual(tab.state_label.text(), STATE_SUCCEEDED)
         finally:
             presenter.deleteLater()
             app = QApplication.instance()
             if app is not None:
                 app.sendPostedEvents(presenter, QtCore.QEvent.DeferredDelete)
+            self._delete_tab(tab)
+
+    def test_pane_report_ack_and_output_state_are_isolated(self):
+        """Switching panes restores each report/ack/path without mixing them."""
+        tab = self._create_visible_tab()
+        try:
+            tab.output_path_edit.setText("model.vmd")
+            model_report = ExportValidationReport(
+                "pmx",
+                (ExportValidationIssue("VMD_MODE_C_RAW_LOSS", "warning", False, "mode", "model"),),
+                mode="model",
+            )
+            tab.validation_console.set_report(model_report)
+            tab.validation_console.acknowledge_check.setChecked(True)
+            self.assertTrue(tab.build_request("model_ROOT").file_path.endswith("model.pmx"))
+
+            tab.pane_tabs.setCurrentIndex(1)
+            self.assertIsNone(tab.validation_console.report)
+            self.assertFalse(tab.validation_console.warnings_acknowledged)
+            tab.output_path_edit.setText("motion.pmx")
+            motion_report = ExportValidationReport(
+                "vmd",
+                (ExportValidationIssue("VMD_MODE_C_RAW_LOSS", "warning", False, "mode", "motion"),),
+                mode="C",
+            )
+            tab.validation_console.set_report(motion_report)
+            tab.validation_console.acknowledge_check.setChecked(True)
+
+            tab.pane_tabs.setCurrentIndex(0)
+            self.assertIs(tab.validation_console.report, model_report)
+            self.assertTrue(tab.validation_console.warnings_acknowledged)
+            self.assertEqual(tab.output_path_edit.text(), "model.pmx")
+
+            tab.apply_scale_check.setChecked(not tab.apply_scale_check.isChecked())
+            self.assertIsNone(tab.validation_console.report)
+            tab.pane_tabs.setCurrentIndex(1)
+            self.assertIs(tab.validation_console.report, motion_report)
+            self.assertTrue(tab.validation_console.warnings_acknowledged)
+            self.assertEqual(tab.output_path_edit.text(), "motion.vmd")
+        finally:
+            self._delete_tab(tab)
+
+    def test_current_model_change_invalidates_both_panes(self):
+        """Current Model changes clear both pane reports and acknowledgements."""
+        tab = self._create_visible_tab()
+        try:
+            report = ExportValidationReport(
+                "vmd",
+                (ExportValidationIssue("VMD_MODE_C_RAW_LOSS", "warning", False, "mode", "x"),),
+                mode="C",
+            )
+            tab.validation_console.set_report(report)
+            tab.pane_tabs.setCurrentIndex(1)
+            tab.validation_console.set_report(report)
+            tab.invalidate_all_panes()
+            self.assertIsNone(tab.validation_console.report)
+            tab.pane_tabs.setCurrentIndex(0)
+            self.assertIsNone(tab.validation_console.report)
+        finally:
             self._delete_tab(tab)
 
     def test_validate_and_export_buttons_emit_workflow_requests(self):

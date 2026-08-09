@@ -223,6 +223,30 @@ class ValidationConsole(QWidget):
         """Return the explicit warning acknowledgement state."""
         return self.acknowledge_check.isChecked()
 
+    def snapshot_state(self) -> Dict[str, Any]:
+        """Capture report metadata and acknowledgement for pane switching."""
+        return {
+            "report": self._report,
+            "metadata": dict(self._metadata),
+            "acknowledged": self.warnings_acknowledged,
+        }
+
+    def restore_acknowledgement(self, acknowledged: bool) -> None:
+        """Restore an acknowledgement after set_report resets it."""
+        self.acknowledge_check.blockSignals(True)
+        self.acknowledge_check.setChecked(
+            bool(acknowledged and self._report and self._report.requires_warning_ack)
+        )
+        self.acknowledge_check.blockSignals(False)
+
+    def restore_state(self, snapshot: Optional[Mapping[str, Any]]) -> None:
+        """Restore a pane snapshot without creating a second Console."""
+        if not snapshot:
+            self.set_report(None, {})
+            return
+        self.set_report(snapshot.get("report"), snapshot.get("metadata") or {})
+        self.restore_acknowledgement(bool(snapshot.get("acknowledged", False)))
+
     def set_report(
         self,
         report: Optional[ExportValidationReport],

@@ -28,27 +28,14 @@ class ExportPresenter(QObject):
         self.view.validation_console.acknowledgement_changed.connect(
             self._on_acknowledgement_changed
         )
-        model_list_updated = getattr(app_state, "model_list_updated", None)
-        if model_list_updated is not None:
-            model_list_updated.connect(self.refresh_targets)
         current_model_changed = getattr(app_state, "current_model_changed", None)
         if current_model_changed is not None:
             current_model_changed.connect(self._on_current_model_changed)
-        self.refresh_targets()
-
-    def refresh_targets(self, *_args):
-        """Refresh target choices from the live ApplicationState model list."""
-        self.view.set_targets(
-            getattr(self.app_state, "available_models", []) or [],
-            getattr(self.app_state, "current_model_root", None),
-        )
 
     def _on_current_model_changed(self, model_root):
-        """Prefer the current model when Maya reports a model switch."""
-        self.view.set_targets(
-            getattr(self.app_state, "available_models", []) or [],
-            model_root or None,
-        )
+        """Invalidate both panes when the shared Current Model changes."""
+        del model_root
+        self.view.invalidate_all_panes()
 
     def _on_acknowledgement_changed(self, _acknowledged):
         """Acknowledgement changes affect only the next service execution."""
@@ -58,7 +45,11 @@ class ExportPresenter(QObject):
         """Run preflight and payload validation without writing an output."""
         self.view.set_state(STATE_VALIDATING)
         try:
-            result = self.workflow_service.validate(self.view.build_request())
+            result = self.workflow_service.validate(
+                self.view.build_request(
+                    getattr(self.app_state, "current_model_root", None)
+                )
+            )
         except Exception as exc:
             logger.error("Export validation failed before result creation: %s", exc, exc_info=True)
             self.app_state.emit_status(f"Export validation failed: {exc}")
@@ -72,7 +63,9 @@ class ExportPresenter(QObject):
         self.view.set_state(STATE_EXPORTING)
         try:
             result = self.workflow_service.execute(
-                self.view.build_request(),
+                self.view.build_request(
+                    getattr(self.app_state, "current_model_root", None)
+                ),
                 acknowledge_warnings=self.view.validation_console.warnings_acknowledged,
             )
         except Exception as exc:

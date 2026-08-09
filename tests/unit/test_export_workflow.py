@@ -86,6 +86,38 @@ class TestScenePreflight(unittest.TestCase):
             [issue.code for issue in extension_result.report.issues],
         )
 
+    def test_current_model_does_not_fallback_to_maya_selection(self):
+        class SelectionService(_SceneService):
+            def get_selected_nodes(self):
+                return ["selected_ROOT"]
+
+        result = ScenePreflight(scene_service=SelectionService()).run(
+            {
+                "file_path": "model.pmx",
+                "export_format": "pmx",
+                "require_target": True,
+                "require_current_model": True,
+                "current_model_root": None,
+            }
+        )
+
+        self.assertEqual([issue.code for issue in result.report.issues], ["SCENE_TARGET_MISSING"])
+        self.assertIsNone(result.metadata["target_identity"])
+
+    def test_current_model_stale_is_blocking_before_collection(self):
+        result = ScenePreflight(
+            scene_service=_SceneService(exists=False),
+        ).run(
+            {
+                "file_path": "model.pmx",
+                "export_format": "pmx",
+                "require_current_model": True,
+                "current_model_root": "stale_ROOT",
+            }
+        )
+
+        self.assertEqual([issue.code for issue in result.report.issues], ["SCENE_TARGET_STALE"])
+
     def test_stale_target_and_owner_state_are_fail_closed(self):
         def ownership(_target):
             return {

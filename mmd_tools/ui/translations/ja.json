@@ -29,6 +29,8 @@
   "tabs": {
     "file_io": "インポート",
     "export_workflow": "エクスポート",
+    "export_model": "モデル",
+    "export_motion": "モーション",
     "info": "情報",
     "material": "材質",
     "bone": "ボーン",

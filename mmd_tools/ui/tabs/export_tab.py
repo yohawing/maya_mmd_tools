@@ -1,11 +1,11 @@
-"""Top-level Export workflow tab backed by the shared validation service."""
+"""PMX/VMD export workflow view with isolated Model and Motion panes."""
 
-from typing import Optional
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 from ..base_tab import BaseTab
 from ..qt_compat import (
     QCheckBox,
-    QComboBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -16,6 +16,8 @@ from ..qt_compat import (
     QScrollArea,
     QSpinBox,
     QSplitter,
+    QTabWidget,
+    QComboBox,
     QVBoxLayout,
     QWidget,
     Qt,
@@ -27,28 +29,43 @@ from ...services.export_workflow_service import (
     ExportWorkflowResult,
     STATE_EDITING,
 )
+from ...core import settings_keys
 
 
 class ExportTab(BaseTab):
-    """Collect export options and display one canonical Validation Console."""
+    """Collect fixed-format PMX/VMD options and show one shared console.
+
+    The two pane dictionaries intentionally contain view state only.  The
+    presenter supplies the authoritative current_model_root on every request;
+    this view never exposes a target selector or Maya-selection fallback.
+    """
 
     validate_requested = Signal()
     export_requested = Signal()
+
+    MODEL_PANE = "model"
+    MOTION_PANE = "motion"
 
     def __init__(self, parent=None, settings_service=None):
         super().__init__(parent)
         self.settings_service = settings_service
         self._state = STATE_EDITING
+        self._active_pane = self.MODEL_PANE
+        self._restoring_pane = False
+        self._pane_states: Dict[str, Dict[str, Any]] = {
+            self.MODEL_PANE: {},
+            self.MOTION_PANE: {},
+        }
         self._build_ui()
+        self._load_semantic_preferences()
+        self._capture_pane_state(self.MODEL_PANE)
 
     def _build_ui(self) -> None:
-        """Build the Import-style settings sidebar and export workflow pane."""
+        """Build pane-specific settings and shared workflow controls."""
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
-
         splitter = QSplitter(Qt.Horizontal)
 
-        # Left side: export settings, matching the Import tab's sidebar.
         settings_scroll = QScrollArea()
         settings_scroll.setObjectName("exportSettingsScroll")
         settings_scroll.setWidgetResizable(True)
@@ -56,49 +73,20 @@ class ExportTab(BaseTab):
         settings_widget = QWidget()
         settings_layout = QVBoxLayout(settings_widget)
         self.settings_group = QGroupBox(self.tr("export", "settings"))
-        settings_form = QFormLayout()
-        self._settings_form = settings_form
+        group_layout = QVBoxLayout(self.settings_group)
 
-        self.target_combo = QComboBox()
-        self.target_combo.addItem(self.tr("current_model", "fields").rstrip(":"), "")
-        settings_form.addRow(self.tr("target_model", "fields"), self.target_combo)
-
-        self.format_combo = QComboBox()
-        self.format_combo.addItems(["pmx", "vmd"])
-        self.format_combo.currentTextChanged.connect(self._sync_mode_visibility)
-        settings_form.addRow(self.tr("format", "fields"), self.format_combo)
-
-        self.mode_label = QLabel(self.tr("vmd_mode", "fields"))
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["C", "A"])
-        mode_row = QWidget(self)
-        mode_layout = QHBoxLayout(mode_row)
-        mode_layout.setContentsMargins(0, 0, 0, 0)
-        mode_layout.addWidget(self.mode_combo)
-        mode_layout.addStretch()
-        settings_form.addRow(self.mode_label, mode_row)
-
-        self.frame_range_check = QCheckBox(self.tr("use_frame_range", "checkboxes"))
-        self.frame_start_spin = QSpinBox()
-        self.frame_start_spin.setRange(0, 1000000)
-        self.frame_start_spin.setValue(0)
-        self.frame_end_spin = QSpinBox()
-        self.frame_end_spin.setRange(0, 1000000)
-        self.frame_end_spin.setValue(120)
-        settings_form.addRow(self.tr("range", "fields"), self.frame_range_check)
-        settings_form.addRow(self.tr("start", "fields"), self.frame_start_spin)
-        settings_form.addRow(self.tr("end", "fields"), self.frame_end_spin)
-
-        self.apply_scale_check = QCheckBox(self.tr("apply_scale", "checkboxes"))
-        self.apply_scale_check.setChecked(True)
-        settings_form.addRow(self.tr("options", "fields"), self.apply_scale_check)
-
-        self.settings_group.setLayout(settings_form)
+        self.pane_tabs = QTabWidget()
+        self.pane_tabs.setObjectName("exportPaneTabs")
+        self._model_pane = self._build_model_pane()
+        self._motion_pane = self._build_motion_pane()
+        self.pane_tabs.addTab(self._model_pane, self.tr("export_model", "tabs"))
+        self.pane_tabs.addTab(self._motion_pane, self.tr("export_motion", "tabs"))
+        self.pane_tabs.currentChanged.connect(self._on_pane_changed)
+        group_layout.addWidget(self.pane_tabs)
         settings_layout.addWidget(self.settings_group)
         settings_layout.addStretch()
         settings_scroll.setWidget(settings_widget)
 
-        # Right side: output/action controls followed by the validation console.
         workflow_scroll = QScrollArea()
         workflow_scroll.setObjectName("exportWorkflowScroll")
         workflow_scroll.setWidgetResizable(True)
@@ -107,10 +95,10 @@ class ExportTab(BaseTab):
         workflow_layout = QVBoxLayout(workflow_widget)
 
         self.export_group = QGroupBox(self.tr("export", "groups"))
-        export_form = QFormLayout()
+        export_form = QFormLayout(self.export_group)
         self._export_form = export_form
-
         self.output_path_edit = QLineEdit()
+        self.output_path_edit.setObjectName("exportOutputPath")
         self.output_browse_button = QPushButton(self.tr("browse", "buttons"))
         output_row = QWidget(self)
         output_layout = QHBoxLayout(output_row)
@@ -130,7 +118,6 @@ class ExportTab(BaseTab):
         buttons.addWidget(self.state_label)
         buttons.addStretch()
         export_form.addRow(buttons)
-        self.export_group.setLayout(export_form)
         workflow_layout.addWidget(self.export_group)
 
         self.validation_console = ValidationConsole(self)
@@ -147,22 +134,95 @@ class ExportTab(BaseTab):
         main_layout.addWidget(splitter)
 
         self.output_browse_button.clicked.connect(self._browse_output)
-        for widget, signal_name in (
-            (self.target_combo, "currentTextChanged"),
-            (self.format_combo, "currentTextChanged"),
-            (self.mode_combo, "currentTextChanged"),
-            (self.frame_range_check, "toggled"),
-            (self.frame_start_spin, "valueChanged"),
-            (self.frame_end_spin, "valueChanged"),
-            (self.apply_scale_check, "toggled"),
-            (self.output_path_edit, "textChanged"),
-        ):
-            getattr(getattr(widget, signal_name), "connect")(self._mark_editing)
-        self._sync_mode_visibility(self.format_combo.currentText())
+        self.output_path_edit.textChanged.connect(self._mark_editing)
+
+    def _build_model_pane(self) -> QWidget:
+        """Build the PMX model-only option pane."""
+        pane = QWidget()
+        layout = QFormLayout(pane)
+        self.apply_scale_check = QCheckBox(self.tr("apply_scale", "checkboxes"))
+        self.apply_scale_check.setObjectName("modelApplyScale")
+        self.apply_scale_check.setChecked(True)
+        self.apply_scale_check.toggled.connect(self._mark_editing)
+        layout.addRow(self.tr("options", "fields"), self.apply_scale_check)
+        return pane
+
+    def _build_motion_pane(self) -> QWidget:
+        """Build the VMD Mode A/C and optional frame-range pane."""
+        pane = QWidget()
+        layout = QFormLayout(pane)
+        self.mode_label = QLabel(self.tr("vmd_mode", "fields"))
+        self.mode_combo = QComboBox()
+        self.mode_combo.setObjectName("motionMode")
+        self.mode_combo.addItems(["A", "C"])
+        self.mode_combo.setCurrentText("C")
+        self.mode_combo.currentTextChanged.connect(self._mark_editing)
+        layout.addRow(self.mode_label, self.mode_combo)
+
+        self.frame_range_check = QCheckBox(self.tr("use_frame_range", "checkboxes"))
+        self.frame_range_check.setObjectName("motionUseFrameRange")
+        self.frame_range_check.toggled.connect(self._mark_editing)
+        self.frame_start_spin = QSpinBox()
+        self.frame_start_spin.setObjectName("motionFrameStart")
+        self.frame_start_spin.setRange(0, 1000000)
+        self.frame_start_spin.setValue(0)
+        self.frame_start_spin.valueChanged.connect(self._mark_editing)
+        self.frame_end_spin = QSpinBox()
+        self.frame_end_spin.setObjectName("motionFrameEnd")
+        self.frame_end_spin.setRange(0, 1000000)
+        self.frame_end_spin.setValue(120)
+        self.frame_end_spin.valueChanged.connect(self._mark_editing)
+        layout.addRow(self.tr("range", "fields"), self.frame_range_check)
+        layout.addRow(self.tr("start", "fields"), self.frame_start_spin)
+        layout.addRow(self.tr("end", "fields"), self.frame_end_spin)
+        return pane
+
+    @property
+    def active_pane(self) -> str:
+        """Return the canonical pane identifier."""
+        return self._active_pane
+
+    @property
+    def current_export_format(self) -> str:
+        """Return the fixed format owned by the active pane."""
+        return "pmx" if self._active_pane == self.MODEL_PANE else "vmd"
+
+    def _load_semantic_preferences(self) -> None:
+        """Load semantic preferences without consulting legacy format keys."""
+        service = self.settings_service
+        getter = getattr(service, "get", None) if service is not None else None
+        if not callable(getter):
+            return
+        self.apply_scale_check.setChecked(
+            bool(getter(settings_keys.EXPORT_GENERAL_APPLY_SCALE, True))
+        )
+        mode = str(getter(settings_keys.EXPORT_MOTION_MODE, "C") or "C").upper()
+        self.mode_combo.setCurrentText(mode if mode in ("A", "C") else "C")
+        self.frame_range_check.setChecked(
+            bool(getter(settings_keys.EXPORT_MOTION_USE_FRAME_RANGE, False))
+        )
+        self.frame_start_spin.setValue(
+            int(getter(settings_keys.EXPORT_MOTION_START_FRAME, 0) or 0)
+        )
+        self.frame_end_spin.setValue(
+            int(getter(settings_keys.EXPORT_MOTION_END_FRAME, 120) or 120)
+        )
+
+    def _persist_semantic_preferences(self) -> None:
+        """Persist options that affect export semantics, not transient view state."""
+        service = self.settings_service
+        setter = getattr(service, "set", None) if service is not None else None
+        if not callable(setter):
+            return
+        setter(settings_keys.EXPORT_GENERAL_APPLY_SCALE, self.apply_scale_check.isChecked())
+        setter(settings_keys.EXPORT_MOTION_MODE, self.mode_combo.currentText().upper())
+        setter(settings_keys.EXPORT_MOTION_USE_FRAME_RANGE, self.frame_range_check.isChecked())
+        setter(settings_keys.EXPORT_MOTION_START_FRAME, self.frame_start_spin.value())
+        setter(settings_keys.EXPORT_MOTION_END_FRAME, self.frame_end_spin.value())
 
     def _browse_output(self) -> None:
-        """Select an output path using a format-aware file dialog."""
-        extension = self.format_combo.currentText()
+        """Select an output path using the active pane's fixed extension."""
+        extension = self.current_export_format
         path, _ = QFileDialog.getSaveFileName(
             self,
             self.tr("export_mmd_asset", "messages"),
@@ -170,61 +230,124 @@ class ExportTab(BaseTab):
             f"{extension.upper()} Files (*.{extension});;All Files (*)",
         )
         if path:
-            self.output_path_edit.setText(path)
+            self.output_path_edit.setText(self._coerce_output_path(path, extension))
 
-    def _sync_mode_visibility(self, export_format: str) -> None:
-        """Keep Mode A/C visible only for VMD without hiding policy in UI."""
-        visible = export_format == "vmd"
-        self.mode_label.setVisible(visible)
-        self.mode_combo.setVisible(visible)
+    @staticmethod
+    def _coerce_output_path(path: str, extension: str) -> str:
+        """Return a non-empty path with the pane's canonical suffix."""
+        value = str(path or "").strip()
+        if not value:
+            return ""
+        target = f".{extension}"
+        current = Path(value)
+        if current.suffix.lower() == target:
+            return value
+        return str(current.with_suffix(target))
+
+    def _on_pane_changed(self, index: int) -> None:
+        """Save the outgoing pane and restore the incoming report/ack state."""
+        if self._restoring_pane:
+            return
+        self._capture_pane_state(self._active_pane)
+        self._active_pane = self.MODEL_PANE if index == 0 else self.MOTION_PANE
+        self._restore_pane_state(self._active_pane)
+
+    def _capture_pane_state(self, pane: str) -> None:
+        """Capture controls, workflow status, report, and acknowledgement."""
+        state = self._pane_states[pane]
+        state.update(
+            {
+                "output_path": self.output_path_edit.text(),
+                "state": self._state,
+                "report_snapshot": self.validation_console.snapshot_state(),
+            }
+        )
+        if pane == self.MODEL_PANE:
+            state["apply_scale"] = self.apply_scale_check.isChecked()
+        else:
+            state.update(
+                {
+                    "mode": self.mode_combo.currentText(),
+                    "frame_range": self.frame_range_check.isChecked(),
+                    "frame_start": self.frame_start_spin.value(),
+                    "frame_end": self.frame_end_spin.value(),
+                }
+            )
+
+    def _restore_pane_state(self, pane: str) -> None:
+        """Restore one pane without firing edit invalidation signals."""
+        state = self._pane_states[pane]
+        self._restoring_pane = True
+        try:
+            if pane == self.MODEL_PANE and "apply_scale" in state:
+                self.apply_scale_check.setChecked(bool(state["apply_scale"]))
+            elif pane == self.MOTION_PANE and state:
+                self.mode_combo.setCurrentText(str(state.get("mode", "C")))
+                self.frame_range_check.setChecked(bool(state.get("frame_range", False)))
+                self.frame_start_spin.setValue(int(state.get("frame_start", 0)))
+                self.frame_end_spin.setValue(int(state.get("frame_end", 120)))
+            self.output_path_edit.setText(
+                self._coerce_output_path(
+                    state.get("output_path", ""), self.current_export_format
+                )
+            )
+            self._state = state.get("state", STATE_EDITING)
+            self.state_label.setText(self._state)
+            self.validation_console.restore_state(state.get("report_snapshot"))
+        finally:
+            self._restoring_pane = False
 
     def _mark_editing(self, *_args) -> None:
-        """Invalidate the displayed report when workflow inputs change."""
+        """Invalidate only the active pane when one of its inputs changes."""
+        if self._restoring_pane:
+            return
+        self._state = STATE_EDITING
+        self.state_label.setText(self._state)
+        self.validation_console.clear_report()
+        self._capture_pane_state(self._active_pane)
+        self._persist_semantic_preferences()
+
+    def invalidate_all_panes(self) -> None:
+        """Invalidate reports and acknowledgements after Current Model changes."""
+        for pane in (self.MODEL_PANE, self.MOTION_PANE):
+            self._pane_states[pane]["state"] = STATE_EDITING
+            self._pane_states[pane]["report_snapshot"] = None
         self._state = STATE_EDITING
         self.state_label.setText(self._state)
         self.validation_console.clear_report()
 
-    def set_targets(self, targets, current_target: Optional[str] = None) -> None:
-        """Refresh live model targets while retaining the current selection."""
-        self.target_combo.blockSignals(True)
-        self.target_combo.clear()
-        self.target_combo.addItem(self.tr("current_model", "fields").rstrip(":"), "")
-        for target in targets or []:
-            self.target_combo.addItem(str(target), str(target))
-        if current_target:
-            index = self.target_combo.findData(current_target)
-            if index >= 0:
-                self.target_combo.setCurrentIndex(index)
-        self.target_combo.blockSignals(False)
-
-    def current_target(self) -> Optional[str]:
-        """Return the selected model root, or None for current Maya selection."""
-        value = self.target_combo.currentData()
-        return str(value) if value else None
-
-    def build_request(self) -> ExportWorkflowRequest:
-        """Build the format-neutral request consumed by ExportWorkflowService."""
-        export_format = self.format_combo.currentText().lower()
-        options = {
+    def build_request(self, current_model_root: Optional[str] = None) -> ExportWorkflowRequest:
+        """Build an explicit PMX/VMD request for the shared Current Model."""
+        export_format = self.current_export_format
+        output_path = self._coerce_output_path(
+            self.output_path_edit.text(), export_format
+        )
+        if output_path != self.output_path_edit.text():
+            self._restoring_pane = True
+            try:
+                self.output_path_edit.setText(output_path)
+            finally:
+                self._restoring_pane = False
+        options: Dict[str, Any] = {
             "export_format": export_format,
             "require_target": True,
-            "target_model": self.current_target(),
-            "apply_scale": self.apply_scale_check.isChecked(),
+            "require_current_model": True,
+            "current_model_root": str(current_model_root or "") or None,
         }
-        if export_format == "vmd":
+        if export_format == "pmx":
+            options["apply_scale"] = self.apply_scale_check.isChecked()
+        else:
             options["vmd_mode"] = self.mode_combo.currentText().upper()
-        if self.frame_range_check.isChecked():
-            options["frame_range"] = (
-                self.frame_start_spin.value(),
-                self.frame_end_spin.value(),
-            )
-        return ExportWorkflowRequest(
-            file_path=self.output_path_edit.text().strip(),
-            options=options,
-        )
+            if self.frame_range_check.isChecked():
+                options["frame_range"] = (
+                    self.frame_start_spin.value(),
+                    self.frame_end_spin.value(),
+                )
+        return ExportWorkflowRequest(file_path=output_path, options=options)
 
     def set_result(self, result: ExportWorkflowResult) -> None:
-        """Render a workflow result and its state in the same console."""
+        """Render a workflow result and preserve this pane's acknowledgement."""
+        previous_ack = self.validation_console.warnings_acknowledged
         self._state = result.state
         self.state_label.setText(result.state)
         metadata = dict(result.metadata or {})
@@ -237,6 +360,9 @@ class ExportTab(BaseTab):
                 getattr(action_result, "payload_fingerprint", None),
             )
         self.validation_console.set_report(result.report, metadata)
+        if previous_ack:
+            self.validation_console.restore_acknowledgement(True)
+        self._capture_pane_state(self._active_pane)
 
     def set_state(self, state: str) -> None:
         """Display an in-flight workflow state without altering the report."""
@@ -244,46 +370,16 @@ class ExportTab(BaseTab):
         self.state_label.setText(state)
 
     def retranslateUi(self) -> None:
-        """Refresh Export workflow labels after a language change."""
+        """Refresh Export labels after a language change."""
         self.settings_group.setTitle(self.tr("export", "settings"))
         self.export_group.setTitle(self.tr("export", "groups"))
+        self.pane_tabs.setTabText(0, self.tr("export_model", "tabs"))
+        self.pane_tabs.setTabText(1, self.tr("export_motion", "tabs"))
         self.mode_label.setText(self.tr("vmd_mode", "fields"))
         self.frame_range_check.setText(self.tr("use_frame_range", "checkboxes"))
-        self.apply_scale_check.setText(self.tr("apply_scale", "checkboxes"))
         self.output_browse_button.setText(self.tr("browse", "buttons"))
         self.validate_button.setText(self.tr("validate", "buttons"))
         self.export_button.setText(self.tr("export", "buttons"))
-        self.target_combo.setItemText(0, self.tr("current_model", "fields").rstrip(":"))
-        self._set_form_label(
-            self._settings_form,
-            self.target_combo,
-            self.tr("target_model", "fields"),
-        )
-        self._set_form_label(
-            self._settings_form,
-            self.format_combo,
-            self.tr("format", "fields"),
-        )
-        self._set_form_label(
-            self._settings_form,
-            self.frame_range_check,
-            self.tr("range", "fields"),
-        )
-        self._set_form_label(
-            self._settings_form,
-            self.frame_start_spin,
-            self.tr("start", "fields"),
-        )
-        self._set_form_label(
-            self._settings_form,
-            self.frame_end_spin,
-            self.tr("end", "fields"),
-        )
-        self._set_form_label(
-            self._settings_form,
-            self.apply_scale_check,
-            self.tr("options", "fields"),
-        )
         self._set_form_label(
             self._export_form,
             self.output_path_edit,

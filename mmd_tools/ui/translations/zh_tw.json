@@ -29,6 +29,8 @@
   "tabs": {
     "file_io": "匯入",
     "export_workflow": "匯出",
+    "export_model": "模型",
+    "export_motion": "動作",
     "info": "資訊",
     "material": "材質",
     "bone": "骨骼",

@@ -29,6 +29,8 @@
   "tabs": {
     "file_io": "Import",
     "export_workflow": "Export",
+    "export_model": "Model",
+    "export_motion": "Motion",
     "info": "Info",
     "material": "Material",
     "bone": "Bone",
