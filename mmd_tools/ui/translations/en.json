@@ -819,6 +819,12 @@
     }
   },
   "validation": {
+    "export_workflow_exception": {
+      "title": "Unexpected export workflow failure",
+      "impact": "The export workflow stopped before it could produce a trustworthy result.",
+      "remediation": "Review the reported exception and output path, correct the underlying problem, and retry validation or export.",
+      "action": "Review export workflow failure"
+    },
     "vmd_mode_c_raw_loss": {
       "title": "VMD Mode C raw animation loss",
       "impact": "Dense baking will replace imported raw bone keys and interpolation bytes.",

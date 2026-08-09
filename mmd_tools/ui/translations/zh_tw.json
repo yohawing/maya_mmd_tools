@@ -631,5 +631,13 @@
     "source_not_file": "來源不是檔案",
     "source_not_readable": "無法讀取來源檔案",
     "cache_copy_failed": "無法將貼圖複製到快取"
+  },
+  "validation": {
+    "export_workflow_exception": {
+      "title": "匯出流程意外失敗",
+      "impact": "匯出流程在產生可信結果之前已停止。",
+      "remediation": "請檢查回報的例外與輸出路徑，修正根本問題後重新驗證或匯出。",
+      "action": "檢查匯出流程失敗"
+    }
   }
 }

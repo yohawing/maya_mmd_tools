@@ -179,6 +179,23 @@ class TestExportTabGUI(GuiTestBase):
         tab = self._create_visible_tab()
         try:
             self.assertEqual(tab.validate_button.text(), "検証")
+            self.assertEqual(tab.apply_scale_check.text(), "スケールを適用")
+            self.assertEqual(
+                tab._model_form.labelForField(tab.apply_scale_check).text(),
+                "オプション",
+            )
+            self.assertEqual(
+                tab._motion_form.labelForField(tab.frame_range_check).text(),
+                "範囲",
+            )
+            self.assertEqual(
+                tab._motion_form.labelForField(tab.frame_start_spin).text(),
+                "開始",
+            )
+            self.assertEqual(
+                tab._motion_form.labelForField(tab.frame_end_spin).text(),
+                "終了",
+            )
             self.assertEqual(tab.validation_console.revalidate_button.text(), "再検証")
             self.assertEqual(tab.validation_console.acknowledge_check.text(), "警告を確認済みにする")
             self.assertEqual(tab.validation_console.save_button.text(), "レポートを保存")
@@ -206,6 +223,23 @@ class TestExportTabGUI(GuiTestBase):
             translator.set_language("en")
             tab.retranslateUi()
             self.assertEqual(tab.validate_button.text(), "Validate")
+            self.assertEqual(tab.apply_scale_check.text(), "Apply Scale")
+            self.assertEqual(
+                tab._model_form.labelForField(tab.apply_scale_check).text(),
+                "Options",
+            )
+            self.assertEqual(
+                tab._motion_form.labelForField(tab.frame_range_check).text(),
+                "Range",
+            )
+            self.assertEqual(
+                tab._motion_form.labelForField(tab.frame_start_spin).text(),
+                "Start",
+            )
+            self.assertEqual(
+                tab._motion_form.labelForField(tab.frame_end_spin).text(),
+                "End",
+            )
             self.assertEqual(tab.validation_console.revalidate_button.text(), "Revalidate")
         finally:
             self._delete_tab(tab)

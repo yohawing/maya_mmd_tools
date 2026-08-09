@@ -63,6 +63,7 @@ _KNOWN_ISSUE_CODES = (
     "DISPLAY_FRAME_FIELD_TYPE",
     "DISPLAY_FRAME_NOT_MAPPING",
     "DISPLAY_FRAMES_NOT_SEQUENCE",
+    "EXPORT_WORKFLOW_EXCEPTION",
     "FACE_INDEX_OUT_OF_RANGE",
     "FACE_INDEX_TYPE",
     "FACE_NOT_SEQUENCE",
@@ -250,7 +251,11 @@ _WARNING_LOSS_POLICIES = frozenset({"VMD_MODE_C_RAW_LOSS"})
 
 def _category_for_code(code: str) -> str:
     """Return the fixed report category for a registered issue code."""
-    if code.startswith("OUTPUT_") or code.startswith("MMD_ANIM_"):
+    if (
+        code.startswith("OUTPUT_")
+        or code.startswith("MMD_ANIM_")
+        or code.startswith("EXPORT_WORKFLOW_")
+    ):
         return "output"
     if code.startswith("VMD_"):
         return "animation"

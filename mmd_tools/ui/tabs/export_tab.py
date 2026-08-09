@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 from ..base_tab import BaseTab
 from ..qt_compat import (
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -17,7 +18,6 @@ from ..qt_compat import (
     QSpinBox,
     QSplitter,
     QTabWidget,
-    QComboBox,
     QVBoxLayout,
     QWidget,
     Qt,
@@ -140,6 +140,7 @@ class ExportTab(BaseTab):
         """Build the PMX model-only option pane."""
         pane = QWidget()
         layout = QFormLayout(pane)
+        self._model_form = layout
         self.apply_scale_check = QCheckBox(self.tr("apply_scale", "checkboxes"))
         self.apply_scale_check.setObjectName("modelApplyScale")
         self.apply_scale_check.setChecked(True)
@@ -151,6 +152,7 @@ class ExportTab(BaseTab):
         """Build the VMD Mode A/C and optional frame-range pane."""
         pane = QWidget()
         layout = QFormLayout(pane)
+        self._motion_form = layout
         self.mode_label = QLabel(self.tr("vmd_mode", "fields"))
         self.mode_combo = QComboBox()
         self.mode_combo.setObjectName("motionMode")
@@ -376,10 +378,31 @@ class ExportTab(BaseTab):
         self.pane_tabs.setTabText(0, self.tr("export_model", "tabs"))
         self.pane_tabs.setTabText(1, self.tr("export_motion", "tabs"))
         self.mode_label.setText(self.tr("vmd_mode", "fields"))
+        self.apply_scale_check.setText(self.tr("apply_scale", "checkboxes"))
         self.frame_range_check.setText(self.tr("use_frame_range", "checkboxes"))
         self.output_browse_button.setText(self.tr("browse", "buttons"))
         self.validate_button.setText(self.tr("validate", "buttons"))
         self.export_button.setText(self.tr("export", "buttons"))
+        self._set_form_label(
+            self._model_form,
+            self.apply_scale_check,
+            self.tr("options", "fields"),
+        )
+        self._set_form_label(
+            self._motion_form,
+            self.frame_range_check,
+            self.tr("range", "fields"),
+        )
+        self._set_form_label(
+            self._motion_form,
+            self.frame_start_spin,
+            self.tr("start", "fields"),
+        )
+        self._set_form_label(
+            self._motion_form,
+            self.frame_end_spin,
+            self.tr("end", "fields"),
+        )
         self._set_form_label(
             self._export_form,
             self.output_path_edit,
